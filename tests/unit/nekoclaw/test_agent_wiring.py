@@ -390,7 +390,7 @@ async def test_what_an_earlier_process_left_under_way_shows_in_the_hud_on_first_
     assert [task["id"] for task in listed["tasks"]] == [commission.id]
 
 
-async def _left_by_an_earlier_process(tmp_path: Any) -> Any:
+async def _left_by_an_earlier_process(tmp_path: Any, *, due_in: float = 600.0) -> Any:
     from nekoclaw.host.ledger import Ledger
 
     earlier = Ledger(tmp_path / "nekoclaw" / "ledger.db")
@@ -398,7 +398,12 @@ async def _left_by_an_earlier_process(tmp_path: Any) -> Any:
         lanlan_name="Lan", title="五点提醒我", dispatch_text="五点提醒我", source="dispatch"
     )
     await earlier.transition(
-        commission.id, "working", route="plugin", plugin_id="memo", entry_id="remind", deferred_until=time.time() + 600
+        commission.id,
+        "working",
+        route="plugin",
+        plugin_id="memo",
+        entry_id="remind",
+        deferred_until=time.time() + due_in,
     )
     await earlier.close()
     return commission
@@ -470,6 +475,105 @@ async def test_a_restore_that_failed_is_tried_again(wiring, tmp_path, monkeypatc
     await wiring.mount_module.ready_host()
 
     assert [task["id"] for task in wiring.mount_module.hud.active()] == [commission.id]
+
+
+@pytest.mark.parametrize("nekoclaw_is_on", [True, False])
+async def test_stopping_everything_right_after_a_restart_stops_what_was_left_under_way(
+    wiring, tmp_path, monkeypatch, nekoclaw_is_on
+):
+    # Nothing read the tasks first: no page was open, nothing was dispatched.
+    commission = await _left_by_an_earlier_process(tmp_path)
+    monkeypatch.setattr(wiring.shared.Modules, "analyzer_enabled", nekoclaw_is_on)
+    assert wiring.host_mount.peek_host() is None
+
+    stopped = await wiring.mount_module.stop_everything()
+
+    assert stopped == 1
+    assert (await wiring.host_mount.peek_host().ledger.get(commission.id)).status == "cancelled"
+
+
+async def test_stopping_everything_without_a_record_builds_nothing(wiring, tmp_path):
+    assert await wiring.mount_module.stop_everything() == 0
+
+    assert wiring.host_mount.peek_host() is None
+    assert not (tmp_path / "nekoclaw").exists()
+
+
+async def test_stopping_everything_starts_every_stop_before_it_waits_for_one(wiring, monkeypatch):
+    host = wiring.host_mount.get_host()
+    ids = []
+    for title in ("第一件", "第二件", "第三件"):
+        commission, _ = await host.ledger.create(lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch")
+        await host.ledger.transition(commission.id, "working")
+        ids.append(commission.id)
+    started: list[str] = []
+    slow_to_answer = asyncio.Event()
+    really_abort = host.abort
+
+    async def abort(commission_id: str, *, reason: str = "stopped") -> Any:
+        started.append(commission_id)
+        if len(started) == 1:
+            # The plugin of whichever is stopped first takes its time to
+            # acknowledge the cancel.
+            await slow_to_answer.wait()
+        return await really_abort(commission_id, reason=reason)
+
+    monkeypatch.setattr(host, "abort", abort)
+
+    stopping = asyncio.ensure_future(wiring.mount_module.stop_everything())
+    await wait_until(lambda: len(started) == 3, what="every stop being started")
+    await wait_until(
+        lambda: sorted(task["id"] for task in wiring.mount_module.hud.all() if task["status"] == "cancelled")
+        == sorted(started[1:]),
+        what="the other two being stopped meanwhile",
+    )
+    assert not stopping.done()
+    slow_to_answer.set()
+
+    assert await asyncio.wait_for(stopping, 5.0) == 3
+
+
+async def test_a_stop_that_fails_does_not_keep_the_others_from_being_stopped(wiring, monkeypatch):
+    host = wiring.host_mount.get_host()
+    ids = []
+    for title in ("第一件", "第二件"):
+        commission, _ = await host.ledger.create(lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch")
+        await host.ledger.transition(commission.id, "working")
+        ids.append(commission.id)
+    really_abort = host.abort
+
+    async def abort(commission_id: str, *, reason: str = "stopped") -> Any:
+        if commission_id == ids[0]:
+            raise RuntimeError("database is locked")
+        return await really_abort(commission_id, reason=reason)
+
+    monkeypatch.setattr(host, "abort", abort)
+
+    assert await wiring.mount_module.stop_everything() == 1
+    assert (await host.ledger.get(ids[1])).status == "cancelled"
+
+
+async def test_a_deferred_result_that_ran_out_while_the_process_was_down_fails_when_the_tasks_are_first_read(
+    wiring, tmp_path
+):
+    # Its timer went with the earlier process. A page that only reads the
+    # tasks dispatches nothing, so nothing else would ever look at it.
+    commission = await _left_by_an_earlier_process(tmp_path, due_in=-5.0)
+
+    listed = await wiring.routes.list_tasks()
+
+    assert (await wiring.host_mount.peek_host().ledger.get(commission.id)).status == "failed"
+    assert [(task["id"], task["status"]) for task in listed["tasks"]] == [(commission.id, "failed")]
+
+
+async def test_a_deferred_result_still_in_time_is_timed_again_when_the_tasks_are_first_read(wiring, tmp_path):
+    commission = await _left_by_an_earlier_process(tmp_path)
+
+    await wiring.routes.list_tasks()
+
+    host = wiring.host_mount.peek_host()
+    assert (await host.ledger.get(commission.id)).status == "working"
+    assert commission.id in host.brain._deferred_timers
 
 
 # ---------------------------------------------------------------------------
@@ -962,9 +1066,13 @@ class BrowserAdapter:
         # Closing a browser session takes a moment.
         self.hard_cancel_seconds = 0.0
         self.unwound = 0
+        # Sessions closed, and how many had been when each call started.
+        self.closed = 0
+        self.closed_when_started: list[int] = []
 
     async def run_instruction(self, instruction: str) -> Any:
         self.instructions.append(instruction)
+        self.closed_when_started.append(self.closed)
         try:
             if self.gate is not None:
                 await self.gate.wait()
@@ -981,6 +1089,7 @@ class BrowserAdapter:
     async def cancel(self) -> None:
         self.hard_cancels += 1
         await asyncio.sleep(self.hard_cancel_seconds)
+        self.closed += 1
         if self.stuck is not None and self.hard_cancel_helps:
             self.stuck.set()
 
@@ -1181,9 +1290,71 @@ async def test_a_browser_call_that_never_lets_go_holds_the_lock_for_a_bounded_ti
     assert (browser.hard_cancels, browser.unwound) == (1, 0)
     assert builtins.provider.is_running() is False
     assert builtins.modules.browser_use_dispatch_lock.locked() is False
-    # Let the stuck call go, so nothing is left pending when the test ends.
+    # The lock is free, yet the stuck call still has the browser: a call that
+    # comes now waits for it, for a bounded time as well, and does not start.
+    browser.gate = None
+    refused = await builtins.provider.run(
+        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
+    )
+    assert (refused.success, refused.text) == (False, "browser control is still busy with an earlier call")
+    # Having refused one call does not make it forget what is still going.
+    again = await builtins.provider.run(
+        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
+    )
+    assert again.success is False
+    assert browser.instructions == ["read the page"] and builtins.counted == ["browser"]
+    # Once the stuck call has let go, calls are taken again.
     browser.stuck.set()
     await wait_until(lambda: browser.unwound == 1, what="the stuck call unwinding")
+    outcome = await builtins.provider.run(
+        "builtin:browser", commission_id="c3", arguments={"instruction": "find the opening hours"}
+    )
+    assert outcome.success is True
+
+
+async def test_a_cancelled_browser_call_keeps_the_lock_until_its_session_is_closed(builtins):
+    browser = builtins.browser
+    browser.gate, browser.hard_cancel_seconds = asyncio.Event(), 0.2
+    running = asyncio.ensure_future(
+        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
+    )
+    await wait_until(lambda: browser.instructions, what="the adapter starting")
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, 5.0)
+
+    # The call itself unwound at once. Closing its session took longer, and
+    # the lock was kept for that too: the next call would have been given
+    # the session that was being closed.
+    assert (browser.unwound, browser.closed) == (1, 1)
+    assert builtins.modules.browser_use_dispatch_lock.locked() is False
+
+
+async def test_a_browser_call_waits_for_a_session_that_is_still_being_closed(builtins):
+    browser = builtins.browser
+    browser.gate, browser.hard_cancel_seconds = asyncio.Event(), 0.3
+    running = asyncio.ensure_future(
+        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
+    )
+    await wait_until(lambda: browser.instructions, what="the adapter starting")
+    running.cancel()
+    await wait_until(lambda: browser.hard_cancels == 1, what="the hard cancel starting")
+    # Cancelled once more while it waits for the session to close: it stops
+    # waiting and gives the lock back with the session still being closed.
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, 5.0)
+    assert browser.closed == 0 and builtins.modules.browser_use_dispatch_lock.locked() is False
+    browser.gate = None
+
+    outcome = await builtins.provider.run(
+        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
+    )
+
+    assert outcome.success is True
+    # The second call started only once the session had been closed.
+    assert browser.closed_when_started == [0, 1]
 
 
 async def test_the_browser_switch_is_read_again_once_the_adapter_is_there(builtins, monkeypatch):
@@ -1220,6 +1391,24 @@ async def test_a_keyboard_call_does_not_start_while_an_earlier_worker_is_still_g
     assert outcome.text == "keyboard and mouse control is still busy with an earlier call"
     assert builtins.keyboard.instructions == [] and builtins.counted == []
     assert builtins.provider.is_running() is False
+
+
+async def test_a_keyboard_call_does_not_start_once_switched_off_while_it_waited_for_an_earlier_worker(builtins):
+    keyboard = builtins.keyboard
+    wait_for_the_worker = keyboard.wait_for_completion
+
+    def switched_off_meanwhile(timeout: float = 15.0) -> bool:
+        builtins.modules.agent_flags = {"computer_use_enabled": False, "browser_use_enabled": True}
+        return wait_for_the_worker(timeout)
+
+    keyboard.wait_for_completion = switched_off_meanwhile
+
+    outcome = await builtins.provider.run(
+        "builtin:keyboard_mouse", commission_id="c1", arguments={"instruction": "open the calculator"}
+    )
+
+    assert (outcome.success, outcome.text) == (False, "keyboard and mouse control is switched off")
+    assert keyboard.instructions == [] and builtins.counted == []
 
 
 async def test_a_browser_call_that_finishes_is_not_torn_down(builtins):

@@ -351,8 +351,9 @@ async def ready_host() -> Any:
     """Return the host, building it on first use.
 
     The first time, what a previous process left under way (deferred plugin
-    results, mostly) is taken into the HUD's view, and reports that process
-    did not get to send start going out.
+    results, mostly) is taken into the HUD's view, reports that process did
+    not get to send start going out, and deferred results get their time
+    limits back.
     """
     global _filled_from
     from nekoclaw.host import mount
@@ -365,6 +366,11 @@ async def ready_host() -> Any:
                 if hud.get(commission.id) is None:
                     hud.update(commission)
             host.start()
+            # The timer of a deferred result went with the process that set
+            # it. Without this a page that only reads the tasks would show
+            # one as running for good: what is overdue fails now, the rest
+            # is timed again.
+            await host.brain.expire_deferred()
         except Exception as e:
             # Not marked as done: the next call tries again.
             logger.warning("[Agent] reading the commissions under way failed: %s", e)
@@ -409,23 +415,37 @@ async def stop_everything(reason: str = "Cancelled by user") -> int:
 
     host = peek_host()
     if host is None:
-        return 0
+        # Nothing has used the host in this process, yet an earlier process
+        # may have left a deferred result under way. That is stopped too,
+        # whether or not NekoClaw is on by now.
+        if not await ledger_exists():
+            return 0
+        try:
+            host = await ready_host()
+        except Exception as e:
+            logger.warning("[Agent] opening the ledger to stop what is under way failed: %s", e)
+            return 0
     # A dispatch still in its first round has no commission yet and would be
     # missed below; it is told not to file one.
     host.brain.drop_pending_dispatches()
+    to_stop = [
+        commission
+        for commission in await host.ledger.select(statuses=ACTIVE_STATUSES)
+        # A child is stopped along with its parent. A blocked one has ended
+        # as far as work goes; it only waits to be taken up again.
+        if commission.parent_id is None and commission.status != "blocked"
+    ]
+    # All at once: a plugin that is slow to take its cancel must not keep the
+    # other commissions at work until it has answered.
+    outcomes = await asyncio.gather(
+        *(host.abort(commission.id, reason=reason) for commission in to_stop), return_exceptions=True
+    )
     stopped = 0
-    for commission in await host.ledger.select(statuses=ACTIVE_STATUSES):
-        if commission.parent_id is not None:
-            # Stopped along with its parent.
-            continue
-        if commission.status == "blocked":
-            # Ended already as far as work goes; it only waits to be taken up again.
-            continue
-        try:
-            await host.abort(commission.id, reason=reason)
+    for commission, outcome in zip(to_stop, outcomes):
+        if isinstance(outcome, BaseException):
+            logger.warning("[Agent] stopping commission %s failed: %s", commission.id, outcome)
+        else:
             stopped += 1
-        except Exception as e:
-            logger.warning("[Agent] stopping commission %s failed: %s", commission.id, e)
     return stopped
 
 

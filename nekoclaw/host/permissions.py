@@ -359,6 +359,11 @@ class PermissionGate:
             return PermissionDecision(False, DENIED_NO_ANSWER)
         options = CHOICES if mode == "first_ask" else CHOICES_ALWAYS_ASK
         ask = PermissionAsk(category=category, key=key, detail=dict(detail or {}), options=options)
+        # The session this question is asked in. A "session" answer goes
+        # into this very set. ``end_session`` drops it, so an answer that
+        # comes in after the commission ended is kept for nobody, instead of
+        # starting a new session for a commission that is over.
+        session = self._session_grants.setdefault(commission_id, set())
         try:
             choice = await self._asker(commission_id, ask)
         except asyncio.CancelledError:
@@ -378,7 +383,7 @@ class PermissionGate:
             if not await self._store.set_mode(category, "allow", key, expected_version=version):
                 return await self._decide_again(category, key)
         elif choice == "session":
-            self._session_grants.setdefault(commission_id, set()).add(slot)
+            session.add(slot)
         return PermissionDecision(True)
 
     async def _decide_again(self, category: str, key: str | None) -> PermissionDecision:

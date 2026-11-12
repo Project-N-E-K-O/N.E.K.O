@@ -30,9 +30,10 @@ task agent can be started); only when nothing matches locally and no task agent
 can be started does it make one small-model call."""
 
 TASK_TOOL_TIMEOUT_SECONDS = 2.5
-"""How long the main dialogue's task tools wait for the agent process. The
-host answers a dispatch within ``DISPATCH_FIRST_ROUND_SECONDS`` and a query
-at once; the rest is room for the local request. When it runs out she is told
+"""How long the main dialogue's task tools wait for the agent process, for
+the whole request from connecting to the last byte of the answer. The host
+answers a dispatch within ``DISPATCH_FIRST_ROUND_SECONDS`` and a query at
+once; the rest is room for the local request. When it runs out she is told
 that the task system did not respond, never that the task was taken."""
 
 DISPATCH_TEXT_MAX_TOKENS = 300
@@ -84,6 +85,17 @@ TURN_CHECK_TASK_MAX_TOKENS = 60
 QUESTION_TEXT_MAX_TOKENS = 300
 """Cap on a commission's question as it is put to her to pass on."""
 
+PERMISSION_SUBJECT_MAX_TOKENS = 160
+"""Cap on the command, path or name a permission question quotes. A longer one
+keeps its beginning and its end with a mark in between that says the middle
+was left out. It is the part that gives way: the answers on offer and the
+instruction to hand the answer back come after it, and with this cap the
+whole sentence stays within ``QUESTION_TEXT_MAX_TOKENS`` in every language."""
+
+PERMISSION_SUBJECT_MIN_TOKENS = 24
+"""The least room that part is given in one line of a query answer or a
+brief, mark included."""
+
 # ---------------------------------------------------------------------------
 # What the decision model is shown
 # ---------------------------------------------------------------------------
@@ -120,6 +132,11 @@ QUERY_RESULT_MAX_TOKENS = 400
 
 QUERY_ROW_MAX_TOKENS = 80
 """Cap on one commission line in a query answer."""
+
+QUERY_PERMISSION_ROW_MAX_TOKENS = 120
+"""Cap on the line of a commission that waits for a permission. It names what
+is to be allowed and lists the answers on offer, which in some languages do
+not fit in ``QUERY_ROW_MAX_TOKENS`` next to a title of full length."""
 
 QUERY_RECENT_SECONDS = 24 * 3600.0
 """How far back finished commissions are still listed by a query."""

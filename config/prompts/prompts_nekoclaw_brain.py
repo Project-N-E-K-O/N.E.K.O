@@ -827,6 +827,19 @@ QUESTION_TEXTS = {
     },
 }
 
+# Stands where the middle of a long command or path was left out of a
+# permission question, so the user is told that it is not shown in full.
+PERMISSION_DETAIL_CUT_MARK = {
+    'zh': " …[中间省略，未完整显示]… ",
+    'zh-TW': " …[中間省略，未完整顯示]… ",
+    'en': " …[middle left out, not shown in full]… ",
+    'ja': " …[中略、全文は表示されていません]… ",
+    'ko': " …[중간 생략, 전체가 표시되지 않음]… ",
+    'ru': " …[середина опущена, показано не полностью]… ",
+    'es': " …[parte central omitida, no se muestra completo]… ",
+    'pt': " …[parte central omitida, não aparece por inteiro]… ",
+}
+
 # What a permission prompt is about, by category (``permissions.DEFAULT_MODES``).
 # ``{detail}`` is the command, the path, the server or the capability's title.
 PERMISSION_CATEGORY_TEXTS = {

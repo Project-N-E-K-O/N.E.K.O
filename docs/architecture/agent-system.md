@@ -30,7 +30,7 @@ While the master switch and at least one capability switch are on, `main_logic/c
 | `dispatch_task` | `task` | Hand over something to do. Additions, changes of mind, stop requests, and the user's answer to a pending question also go through it |
 | `query_tasks` | `question` | Ask what is under way, how a commission is going, or whether something can be done. An empty question lists what is under way |
 
-The handlers call `POST /nekoclaw/dispatch` and `POST /nekoclaw/query` on the Agent Server and wait at most 2.5 seconds. If the Agent Server cannot be reached, the tool result states that the task was not handed over. If the request went out and no answer came back in time, it states that it is not known whether the task was handed over (the Agent Server may be carrying it out all the same) and tells the model to check with a query instead of dispatching again. Proactive chat requests carry neither tool.
+The handlers call `POST /nekoclaw/dispatch` and `POST /nekoclaw/query` on the Agent Server and wait at most 2.5 seconds for the whole request. If the Agent Server cannot be reached, or turns the request down without acting on it (a 4xx status), the tool result states that the task was not handed over. If the request went out and no answer came back in time, or the Agent Server answered with an error of its own (a 5xx status), it states that it is not known whether the task was handed over (the Agent Server may be carrying it out all the same) and tells the model to check with a query instead of dispatching again. Proactive chat requests carry neither tool.
 
 ## Inside the host
 

@@ -45,14 +45,21 @@ from ._shared import logger
 # How long a cancelled keyboard-and-mouse call waits for its worker thread to
 # stop before the next call may start; pyautogui must not be driven by two.
 _KEYBOARD_STOP_WAIT_SECONDS = 15.0
-# How long a cancelled browser call waits for the adapter to let go before the
-# next call may start. The adapter's own hard cancel is bounded at 12 seconds.
+# How long a cancelled browser call waits for the adapter to let go and for the
+# browser session to be closed, and how long the next call waits for what is
+# still going after that. The adapter's own hard cancel is bounded at 12 seconds.
 _BROWSER_STOP_WAIT_SECONDS = 15.0
 
 _FLAG_OF = {
     BUILTIN_KEYBOARD_MOUSE: ("computer_use_enabled", "computer_use"),
     BUILTIN_BROWSER: ("browser_use_enabled", "browser_use"),
 }
+
+
+def _drop_outcome(future: "asyncio.Future[Any]") -> None:
+    """Take a stopped call's late result or failure, which is of no use to anyone by now."""
+    if not future.cancelled():
+        future.exception()
 
 
 def _count(agent_type: str) -> None:
@@ -71,6 +78,9 @@ class BuiltinCapabilityProvider:
         self._keyboard_lock: Optional[asyncio.Lock] = None
         # capability id -> commission whose call is being carried out.
         self._running: Dict[str, str] = {}
+        # What a cancelled browser call left going when it stopped waiting:
+        # the call itself, or the closing of the browser session it used.
+        self._browser_leftovers: "set[asyncio.Future[Any]]" = set()
 
     # -- availability -----------------------------------------------------
 
@@ -129,6 +139,10 @@ class BuiltinCapabilityProvider:
                 stopped = await loop.run_in_executor(None, adapter.wait_for_completion, _KEYBOARD_STOP_WAIT_SECONDS)
                 if not stopped:
                     return BuiltinOutcome(False, "keyboard and mouse control is still busy with an earlier call")
+                # That wait can take a while; it may have been switched off meanwhile.
+                ready, reason = self._state(BUILTIN_KEYBOARD_MOUSE)
+                if not ready:
+                    return BuiltinOutcome(False, f"keyboard and mouse control is {reason}")
             _count("cua")
             self._running[BUILTIN_KEYBOARD_MOUSE] = commission_id
             try:
@@ -179,7 +193,12 @@ class BuiltinCapabilityProvider:
             adapter = await _ensure_browser_use_adapter()
             if adapter is None:
                 return BuiltinOutcome(False, "browser control is not available")
-            # Building the adapter takes a while; it may have been switched off meanwhile.
+            # A cancelled call may still be closing the browser session it
+            # used. A call that started now would be given that same session
+            # and have it closed under it.
+            if not await self._earlier_browser_call_is_over():
+                return BuiltinOutcome(False, "browser control is still busy with an earlier call")
+            # Building the adapter and that wait take a while; it may have been switched off meanwhile.
             ready, reason = self._state(BUILTIN_BROWSER)
             if not ready:
                 return BuiltinOutcome(False, f"browser control is {reason}")
@@ -212,30 +231,46 @@ class BuiltinCapabilityProvider:
         would not see it and would keep the lock every later browser call
         needs. So the adapter's hard cancel is started as well: it closes the
         browser session, which makes whatever the call is waiting on fail.
-        The lock is held until the call has let go, for a bounded time.
+
+        The lock is held until the call has let go and the session is closed,
+        for a bounded time: a call that started while the session was still
+        being closed would have it closed under it. What is still going when
+        this stops waiting is remembered, and the next call waits for it.
         """
         try:
             adapter.cancel_running()
         except Exception as exc:
             logger.debug("[Builtin] browser cancel flag failed: %s", exc)
+        closing = None
         hard_cancel = getattr(adapter, "cancel", None)
         if callable(hard_cancel):
             try:
-                _shared._create_tracked_task(hard_cancel())
+                closing = _shared._create_tracked_task(hard_cancel())
             except Exception as exc:
                 logger.warning("[Builtin] browser hard cancel not started (exc_type=%s)", type(exc).__name__)
         run.cancel()
+        run.add_done_callback(_drop_outcome)
+        going = {run} if closing is None else {run, closing}
+        # Remembered before the wait: it may run out of time, or be cancelled once more.
+        self._browser_leftovers |= going
         try:
-            _done, pending = await asyncio.shield(asyncio.wait({run}, timeout=_BROWSER_STOP_WAIT_SECONDS))
+            _done, going = await asyncio.shield(asyncio.wait(going, timeout=_BROWSER_STOP_WAIT_SECONDS))
         except asyncio.CancelledError:
             return
-        if pending:
+        if going:
             logger.warning(
-                "[Builtin] browser call did not stop within %.0fs; the next call may start", _BROWSER_STOP_WAIT_SECONDS
+                "[Builtin] browser call or the closing of its session still going after %.0fs;"
+                " the next call waits for it",
+                _BROWSER_STOP_WAIT_SECONDS,
             )
-        elif not run.cancelled():
-            # Its own failure or late result is of no use to anyone by now.
-            run.exception()
+
+    async def _earlier_browser_call_is_over(self) -> bool:
+        """Wait, for a bounded time, for what a cancelled browser call left going; False if it still is."""
+        going = {item for item in self._browser_leftovers if not item.done()}
+        if going:
+            _done, going = await asyncio.wait(going, timeout=_BROWSER_STOP_WAIT_SECONDS)
+        self._browser_leftovers = set(going)
+        return not going
 
 
 # One per process; its state (what is running) is this process's.

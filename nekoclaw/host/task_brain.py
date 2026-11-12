@@ -186,6 +186,28 @@ def pending_question_text(commission: Commission, lang: str = "en") -> str:
     return str(asked or "")
 
 
+def waiting_row(head: str, commission: Commission, frame: str, lang: str) -> str:
+    """Return the line of a commission that waits for the user: ``head``, then what it asks.
+
+    ``frame`` is the words the question is put in (``{question}``). Empty
+    when the commission asks nothing that can be put in words.
+    """
+    from config.nekoclaw_settings import QUERY_PERMISSION_ROW_MAX_TOKENS, QUERY_ROW_MAX_TOKENS
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    question = commission.question() or {}
+    if question.get("kind") != "permission":
+        asked = pending_question_text(commission, lang)
+        return truncate_to_tokens(f"{head} {frame.format(question=asked)}", QUERY_ROW_MAX_TOKENS) if asked else ""
+    from nekoclaw.host.reports import describe_permission
+
+    # What is to be allowed gives way, not the answers on offer after it: the
+    # line is fitted before the cap is applied, so the cap takes nothing.
+    room = QUERY_PERMISSION_ROW_MAX_TOKENS - count_tokens(f"{head} {frame.format(question='')}") - 2
+    asked = describe_permission(question, lang, max_tokens=room)
+    return truncate_to_tokens(f"{head} {frame.format(question=asked)}", QUERY_PERMISSION_ROW_MAX_TOKENS)
+
+
 def render_receipt(receipt: Receipt, lang: str) -> str:
     """Return a receipt as text, in the given language."""
     from config.prompts.prompts_nekoclaw_brain import NO_CAPABILITY_REASONS, RECEIPT_TEXTS
@@ -963,10 +985,10 @@ class TaskBrain:
 
         def line(commission: Commission) -> str:
             parts = [f"- {commission.title} ({status_word(commission.status, lang)})"]
-            asked = pending_question_text(commission, lang) if commission.status == "waiting_user" else ""
-            if asked:
-                parts.append(words["asked"].format(question=asked))
-            elif commission.result_summary:
+            asking = waiting_row(parts[0], commission, words["asked"], lang) if commission.status == "waiting_user" else ""
+            if asking:
+                return asking
+            if commission.result_summary:
                 parts.append(words["result"].format(summary=commission.result_summary))
             elif commission.status_reason and commission.status in ("failed", "blocked"):
                 parts.append(words["result"].format(summary=commission.status_reason))
@@ -1014,11 +1036,8 @@ class TaskBrain:
         lines: list[str] = []
         for commission in [item for item in rows if item.parent_id is None][:QUERY_LEDGER_ROWS]:
             line = f"- [{status_word(commission.status, lang)}] {commission.title}"
-            if commission.status == "waiting_user":
-                asked = pending_question_text(commission, lang)
-                if asked:
-                    line += " " + words["asked"].format(question=asked)
-            lines.append(truncate_to_tokens(line, QUERY_ROW_MAX_TOKENS))
+            asking = waiting_row(line, commission, words["asked"], lang) if commission.status == "waiting_user" else ""
+            lines.append(asking or truncate_to_tokens(line, QUERY_ROW_MAX_TOKENS))
         return lines
 
     # -- turn check -------------------------------------------------------

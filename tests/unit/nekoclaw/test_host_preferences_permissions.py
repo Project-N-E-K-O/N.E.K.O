@@ -584,6 +584,34 @@ async def test_session_answer_ends_with_the_commission(store):
     assert len(asker.asked) == 2
 
 
+async def test_a_session_answer_that_comes_in_after_the_commission_ended_is_not_kept(store):
+    gate = PermissionGate(store)
+
+    async def answered_as_it_ended(commission_id: str, ask: Any) -> str:
+        # The commission ended (stopped, or it got stuck) with the question still open.
+        gate.end_session(commission_id)
+        return "session"
+
+    gate.set_asker(answered_as_it_ended)
+
+    decision = await gate.check("c1", "run_command", detail={"command": "dir"})
+
+    # The request that asked is covered. Nothing is left for a later run of
+    # that commission, which would otherwise never be asked again.
+    assert decision.allow
+    assert gate.session_grants("c1") == frozenset()
+
+
+async def test_asking_leaves_nothing_behind_for_a_commission_that_gave_no_session_answer(store):
+    gate = PermissionGate(store, Asker("once"))
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert gate.session_grants("c1") == frozenset()
+    gate.end_session("c1")
+
+    assert gate._session_grants == {}
+
+
 async def test_session_answer_is_per_mcp_server(store):
     asker = Asker("session")
     gate = PermissionGate(store, asker)

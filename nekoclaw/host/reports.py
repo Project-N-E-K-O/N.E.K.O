@@ -75,23 +75,45 @@ def _question_lines(questions: Any, words: dict[str, str]) -> str:
     return lines[0] if lines else ""
 
 
-def describe_permission(question: dict[str, Any], lang: str) -> str:
-    """Return what a permission question asks to allow, with the answers on offer, in one short line."""
+def describe_permission(question: dict[str, Any], lang: str, *, max_tokens: int | None = None) -> str:
+    """Return what a permission question asks to allow, with the answers on offer, in one line.
+
+    With ``max_tokens`` the line is made to fit: the command or path gives
+    way (see ``_permission_subject``), the answers on offer never do.
+    """
+    from config.nekoclaw_settings import PERMISSION_SUBJECT_MAX_TOKENS, PERMISSION_SUBJECT_MIN_TOKENS
     from config.prompts._locale import normalize_prompt_locale
-    from config.prompts.prompts_nekoclaw_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_OPTION_NAMES
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_OPTION_NAMES
     from config.prompts.prompts_sys import _loc
+    from utils.tokenize import count_tokens
 
     lang = normalize_prompt_locale(lang)
-    what = _permission_subject(question, _loc(PERMISSION_CATEGORY_TEXTS, lang))
     names = _loc(PERMISSION_OPTION_NAMES, lang)
     offered = [names[option] for option in question.get("options") or [] if option in names]
-    return f"{what} ({' / '.join(offered)})" if offered else what
+    answers = f" ({' / '.join(offered)})" if offered else ""
+    room = PERMISSION_SUBJECT_MAX_TOKENS
+    if max_tokens is not None:
+        unquoted = _permission_subject({**question, "detail": {}, "key": None}, lang, 0)
+        room = min(room, max(PERMISSION_SUBJECT_MIN_TOKENS, max_tokens - count_tokens(unquoted + answers)))
+    return _permission_subject(question, lang, room) + answers
 
 
-def _permission_subject(question: dict[str, Any], categories: dict[str, str]) -> str:
+def _permission_subject(question: dict[str, Any], lang: str, max_tokens: int) -> str:
+    """Return what is to be allowed: the category's words around the command, path or name.
+
+    The quoted part is what the user decides by, and it can be long (a
+    command). Past ``max_tokens`` its beginning and its end are kept, with a
+    mark between them that says the middle is not shown, so a cut is never
+    silent and never takes what follows the quoted part with it.
+    """
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_DETAIL_CUT_MARK
+    from config.prompts.prompts_sys import _loc
+    from utils.tokenize import count_tokens, truncate_head_tail_tokens
+
+    categories = _loc(PERMISSION_CATEGORY_TEXTS, lang)
     detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
     category = str(question.get("category") or "other")
-    specific = (
+    specific = str(
         detail.get("command")
         or detail.get("path")
         or question.get("key")
@@ -99,17 +121,21 @@ def _permission_subject(question: dict[str, Any], categories: dict[str, str]) ->
         or detail.get("tool")
         or ""
     )
-    return categories.get(category, categories["other"]).format(detail=str(specific)).strip()
+    if specific:
+        mark = _loc(PERMISSION_DETAIL_CUT_MARK, lang)
+        mark_tokens = count_tokens(mark)
+        # The helper takes the mark out of the first share alone, which would
+        # leave no beginning in a small budget. It is added to that share
+        # here, so the beginning and the end get the same.
+        kept = max(max_tokens - mark_tokens, 0)
+        specific = truncate_head_tail_tokens(specific, kept - kept // 2 + mark_tokens, kept // 2, separator=mark)
+    return categories.get(category, categories["other"]).format(detail=specific).strip()
 
 
 def render_question(title: str, question: dict[str, Any], lang: str) -> str:
     """Return a commission's pending question as the sentence she passes on to the user."""
-    from config.nekoclaw_settings import QUESTION_TEXT_MAX_TOKENS
-    from config.prompts.prompts_nekoclaw_brain import (
-        PERMISSION_CATEGORY_TEXTS,
-        PERMISSION_OPTION_NAMES,
-        QUESTION_TEXTS,
-    )
+    from config.nekoclaw_settings import PERMISSION_SUBJECT_MAX_TOKENS, QUESTION_TEXT_MAX_TOKENS
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_OPTION_NAMES, QUESTION_TEXTS
     from config.prompts._locale import normalize_prompt_locale
     from config.prompts.prompts_sys import _loc
     from utils.tokenize import truncate_to_tokens
@@ -118,9 +144,11 @@ def render_question(title: str, question: dict[str, Any], lang: str) -> str:
     words = _loc(QUESTION_TEXTS, lang)
     kind = question.get("kind")
     if kind == "permission":
-        categories = _loc(PERMISSION_CATEGORY_TEXTS, lang)
         names = _loc(PERMISSION_OPTION_NAMES, lang)
-        what = _permission_subject(question, categories)
+        # Bounded here, on its own: the cut at the end of this function would
+        # otherwise take the answers on offer and the instruction to hand the
+        # answer back, which come after it in the sentence.
+        what = _permission_subject(question, lang, PERMISSION_SUBJECT_MAX_TOKENS)
         offered = [names[option] for option in question.get("options") or [] if option in names]
         text = words["permission"].format(title=title, what=what, options=" / ".join(offered))
     elif kind == "confirmation":

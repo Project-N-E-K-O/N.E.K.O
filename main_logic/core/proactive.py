@@ -693,6 +693,10 @@ class ProactiveMixin:
             # expected_speech_id already passed through phase2 and was just validated;
             # use that stable snapshot.
             commit_sid = expected_speech_id or self.current_speech_id
+            # What tells a user turn that begins during the awaits below from
+            # this one: its input moves the engagement time, its reply the sid.
+            # getattr: managers built without ``__init__`` (bare test managers).
+            engagement_at_commit = getattr(self, "last_user_engagement_time", None)
             # Pin ordinary proactive output to its own origin.
             mark_turn_origin(self, commit_sid, 'proactive')
             # Enter COMMITTING. send_lanlan_response rechecks after its own final await and
@@ -841,7 +845,15 @@ class ProactiveMixin:
                     # TTS done-signal is best-effort; the delivery itself already succeeded.
                     pass
 
-            self._close_turn_tool_state()
+            if (
+                self.current_speech_id == commit_sid
+                and getattr(self, "last_user_engagement_time", None) == engagement_at_commit
+            ):
+                self._close_turn_tool_state()
+            # Otherwise the user began a turn while this one was being
+            # delivered (the sends and the TTS signal above are awaited).
+            # Its words and its tool calls are that turn's, which closes
+            # them itself when it ends.
             self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
             try:
                 if (self.websocket

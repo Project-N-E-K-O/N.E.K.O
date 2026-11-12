@@ -339,10 +339,10 @@ def _connection_dropped(request: httpx.Request) -> httpx.Response:
     [
         _raising,
         _pool_exhausted,
-        lambda request: httpx.Response(503, json={"text": "starting"}),
         lambda request: httpx.Response(400, json={"detail": "text required"}),
+        lambda request: httpx.Response(422, json={"detail": "not an object"}),
     ],
-    ids=["refused", "no-connection-free", "unavailable", "turned-down"],
+    ids=["refused", "no-connection-free", "turned-down", "unreadable-request"],
 )
 async def test_a_dispatch_that_never_arrived_is_told_as_not_handed_over(agent_process, handler):
     process = agent_process(handler)
@@ -359,11 +359,15 @@ async def test_a_dispatch_that_never_arrived_is_told_as_not_handed_over(agent_pr
     [
         _no_answer_in_time,
         _connection_dropped,
+        # An error of the agent process's own can come after the task was
+        # taken on (while its receipt was being written): not a refusal.
+        lambda request: httpx.Response(500, json={"detail": "Internal Server Error"}),
+        lambda request: httpx.Response(503, json={"text": "busy"}),
         lambda request: httpx.Response(200, json=["not", "an", "object"]),
         lambda request: httpx.Response(200, content=b"not json"),
         lambda request: httpx.Response(200, json={"kind": "accepted", "text": "  "}),
     ],
-    ids=["timed-out", "dropped", "not-an-object", "not-json", "empty-text"],
+    ids=["timed-out", "dropped", "failed-inside", "unavailable", "not-an-object", "not-json", "empty-text"],
 )
 async def test_a_dispatch_that_went_out_unanswered_is_told_as_not_known(agent_process, handler, logged):
     # The agent process may be carrying it out all the same: saying "not
@@ -377,6 +381,33 @@ async def test_a_dispatch_that_went_out_unanswered_is_told_as_not_known(agent_pr
     assert "不确定" in answer and "不要重新派发" in answer.replace("也不要", "不要") and "查询" in answer
     assert len(process.requests) == 1
     assert "闹钟" not in logged[-1]
+
+
+@pytest.mark.asyncio
+async def test_the_time_limit_is_on_the_whole_request_not_on_each_of_its_phases(monkeypatch):
+    # The HTTP client times connecting, sending and reading each on their
+    # own: a request slow in every phase would take several times the limit.
+    monkeypatch.setattr("config.nekoclaw_settings.TASK_TOOL_TIMEOUT_SECONDS", 0.1)
+    given: list[float] = []
+
+    class _SlowInEveryPhase:
+        async def post(self, url, **kwargs):
+            given.append(kwargs["timeout"])
+            for _phase in ("connect", "write", "read"):
+                await asyncio.sleep(kwargs["timeout"] * 0.8)
+            return httpx.Response(200, json={"kind": "accepted", "text": "已受理。"})
+
+    monkeypatch.setattr("utils.internal_http_client.get_internal_http_client", lambda: _SlowInEveryPhase())
+    manager = _manager(lang="zh")
+    loop = asyncio.get_running_loop()
+    began = loop.time()
+
+    answer = await manager._handle_dispatch_task_call({"task": "订一个明早七点的闹钟"})
+
+    assert given == [0.1]
+    assert loop.time() - began < 0.19
+    # Which phase it was in is not known, so neither is whether it arrived.
+    assert answer == TASK_TOOL_UNCERTAIN["zh"]
 
 
 def test_the_answer_for_an_unknown_outcome_exists_in_every_language():
@@ -605,8 +636,12 @@ def test_every_turn_end_put_on_the_queue_closes_what_the_turn_noted():
     import ast
     from pathlib import Path
 
+    # From this file, not from wherever the tests were started.
+    sources = sorted((Path(__file__).resolve().parents[2] / "main_logic" / "core").glob("*.py"))
+    assert {"turn.py", "proactive.py", "streaming.py"} <= {path.name for path in sources}
     offenders: list[str] = []
-    for path in sorted(Path("main_logic/core").glob("*.py")):
+    found: list[str] = []
+    for path in sources:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -627,12 +662,15 @@ def test_every_turn_end_put_on_the_queue_closes_what_the_turn_noted():
             if not builds_turn_end or not puts_on_the_queue:
                 # A copy for the websocket alone ends no turn for the connector.
                 continue
+            found.append(f"{path.name}:{node.name}")
             closes = any(
                 isinstance(item, ast.Attribute) and item.attr == "_close_turn_tool_state" for item in ast.walk(node)
             )
             if not closes:
                 offenders.append(f"{path.name}:{node.name}")
 
+    # The search found what it is about; an empty one would pass for nothing.
+    assert "turn.py:_queue_turn_end" in found and "proactive.py:finish_proactive_delivery" in found
     assert offenders == []
 
 

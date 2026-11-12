@@ -367,9 +367,15 @@ class ToolCallingMixin:
         Returns ``(answer, may_have_arrived)``. ``answer`` is None when no
         usable answer came back. ``may_have_arrived`` then tells the two ways
         of failing apart: False when the request was never delivered or was
-        turned down (no connection, an error status), True when it went out
-        and the answer did not come back in time or could not be read. In the
-        second case the agent process may be carrying it out all the same.
+        turned down before anything was done with it (no connection, a 4xx
+        status), True when it went out and the answer did not come back in
+        time, could not be read, or was an error of the agent process's own
+        (any other status). In the second case the agent process may be
+        carrying it out all the same.
+
+        ``TASK_TOOL_TIMEOUT_SECONDS`` is the limit on the whole request. The
+        HTTP client applies its timeout to connecting, sending and reading
+        each on their own, which could add up to several times that.
         """
         import httpx
 
@@ -380,20 +386,28 @@ class ToolCallingMixin:
             from utils.internal_http_client import get_internal_http_client
 
             client = get_internal_http_client()
-            resp = await client.post(
-                f"http://127.0.0.1:{TOOL_SERVER_PORT}{path}",
-                json=body,
-                timeout=TASK_TOOL_TIMEOUT_SECONDS,
+            resp = await asyncio.wait_for(
+                client.post(
+                    f"http://127.0.0.1:{TOOL_SERVER_PORT}{path}",
+                    json=body,
+                    timeout=TASK_TOOL_TIMEOUT_SECONDS,
+                ),
+                TASK_TOOL_TIMEOUT_SECONDS,
             )
         except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
             logger.warning("[task tools] %s not delivered (%s)", path, type(exc).__name__)
             return None, False
         except Exception as exc:
+            # Running out of the overall limit lands here as well: which
+            # phase it was in is not known, so neither is whether it arrived.
             logger.warning("[task tools] %s sent, no answer (%s)", path, type(exc).__name__)
             return None, True
         if not resp.is_success:
             logger.warning("[task tools] %s returned status=%s", path, resp.status_code)
-            return None, False
+            # A 4xx is the agent process turning the request down before it
+            # did anything with it. Any other status can come after the task
+            # was taken on (an error while its receipt was being written).
+            return None, not 400 <= resp.status_code < 500
         try:
             data = resp.json()
         except Exception as exc:

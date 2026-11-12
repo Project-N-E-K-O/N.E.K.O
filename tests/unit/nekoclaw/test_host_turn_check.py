@@ -417,6 +417,104 @@ async def test_a_permission_question_is_told_with_what_it_asks_to_allow(server, 
     assert expected in answer.text and "run_command" not in answer.text
 
 
+def _long_command() -> str:
+    """A command far longer than any line or question has room for."""
+    return "Remove-Item " + " ".join(f"C:/Users/me/Downloads/old-file-{n}.tmp" for n in range(400)) + " -Recurse -Force"
+
+
+def _full_length_title() -> str:
+    from config.nekoclaw_settings import COMMISSION_TITLE_MAX_TOKENS
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    title = truncate_to_tokens("清理下载文件夹里的旧文件" * 8, COMMISSION_TITLE_MAX_TOKENS)
+    assert count_tokens(title) == COMMISSION_TITLE_MAX_TOKENS
+    return title
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
+async def test_a_long_command_gives_way_in_a_line_and_the_answers_stay(server, hosts, tmp_path, lang):
+    from config.nekoclaw_settings import QUERY_PERMISSION_ROW_MAX_TOKENS
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_DETAIL_CUT_MARK, PERMISSION_OPTION_NAMES
+    from utils.tokenize import count_tokens
+
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    title = _full_length_title()
+    waiting, _ = await host.ledger.create(lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch")
+    await host.ledger.transition(waiting.id, "working")
+    question = {
+        "kind": "permission",
+        "category": "run_command",
+        "detail": {"command": _long_command()},
+        "options": ["always", "session", "once", "deny"],
+    }
+    await host.ledger.transition(waiting.id, "waiting_user", pending_question=json.dumps(question))
+
+    (brief_line,) = await host.brief(lanlan_name="Lan", lang=lang)
+    answer = await host.query("", lanlan_name="Lan", lang=lang)
+    (query_line,) = [line for line in answer.text.splitlines() if line.startswith("- ")]
+
+    for line in (brief_line, query_line):
+        assert count_tokens(line) <= QUERY_PERMISSION_ROW_MAX_TOKENS
+        # The cut is said, and it is in the middle of the command: how the
+        # command begins and how it ends are both still there.
+        assert PERMISSION_DETAIL_CUT_MARK[lang] in line
+        assert "Remove-Item C:/Users" in line and "-Recurse -Force" in line
+        # Every answer on offer is still there, after the command.
+        for name in PERMISSION_OPTION_NAMES[lang].values():
+            assert name in line
+        assert line.rstrip().endswith(")")
+
+
+async def test_a_line_of_another_kind_of_question_keeps_the_ordinary_cap(server, hosts, tmp_path):
+    from config.nekoclaw_settings import QUERY_ROW_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    waiting, _ = await host.ledger.create(lanlan_name="Lan", title="订餐厅", dispatch_text="订餐厅", source="dispatch")
+    await host.ledger.transition(waiting.id, "working")
+    question = {"kind": "report", "question": "订几点的？" + "七点还是九点？" * 200}
+    await host.ledger.transition(waiting.id, "waiting_user", pending_question=json.dumps(question, ensure_ascii=False))
+
+    (line,) = await host.brief(lanlan_name="Lan", lang="zh")
+
+    assert line.startswith("- [等用户回话] 订餐厅 在等用户回答：订几点的？")
+    assert count_tokens(line) == QUERY_ROW_MAX_TOKENS
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
+def test_the_mark_of_a_cut_fits_in_the_least_room_a_command_is_given(lang):
+    from config.nekoclaw_settings import PERMISSION_SUBJECT_MIN_TOKENS
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_DETAIL_CUT_MARK
+    from utils.tokenize import count_tokens
+
+    # With less room than the mark takes, the cut would fall back to a silent one.
+    assert set(PERMISSION_DETAIL_CUT_MARK) == set(LANGUAGES)
+    assert count_tokens(PERMISSION_DETAIL_CUT_MARK[lang]) + 8 <= PERMISSION_SUBJECT_MIN_TOKENS
+
+
+def test_a_short_line_budget_still_quotes_the_command_with_the_mark():
+    from config.nekoclaw_settings import PERMISSION_SUBJECT_MIN_TOKENS
+    from nekoclaw.host.reports import describe_permission
+    from utils.tokenize import count_tokens
+
+    question = {
+        "kind": "permission",
+        "category": "run_command",
+        "detail": {"command": _long_command()},
+        "options": ["always", "session", "once", "deny"],
+    }
+
+    # No room at all: the command still gets its least, and says that it is cut.
+    line = describe_permission(question, "zh", max_tokens=0)
+
+    assert "中间省略" in line and line.endswith("(始终允许 / 仅本会话允许 / 本次允许 / 拒绝)")
+    assert line.startswith("运行命令 Remove-Item")
+    assert count_tokens(line) <= PERMISSION_SUBJECT_MIN_TOKENS + 30
+    # A command that fits is quoted whole, without a mark.
+    short = describe_permission({**question, "detail": {"command": "dir"}}, "zh", max_tokens=40)
+    assert short == "运行命令 dir (始终允许 / 仅本会话允许 / 本次允许 / 拒绝)"
+
+
 async def test_brief_is_empty_with_nothing_under_way_or_when_switched_off(server, hosts, tmp_path):
     switch = {"on": True}
     host = _host(hosts, tmp_path, server, FakeDecisionLLM(), enabled=lambda: switch["on"])
@@ -585,22 +683,37 @@ def test_questions_of_a_task_agent_and_a_confirmation_read_as_sentences():
 @pytest.mark.parametrize("lang", LANGUAGES)
 def test_a_question_is_rendered_in_every_language_within_its_budget(lang):
     from config.nekoclaw_settings import QUESTION_TEXT_MAX_TOKENS
-    from config.prompts.prompts_nekoclaw_brain import PERMISSION_OPTION_NAMES
+    from config.prompts.prompts_nekoclaw_brain import (
+        PERMISSION_DETAIL_CUT_MARK,
+        PERMISSION_OPTION_NAMES,
+        QUESTION_TEXTS,
+    )
     from nekoclaw.host.reports import render_question
     from utils.tokenize import count_tokens
 
     question = {
         "kind": "permission",
         "category": "run_command",
-        "detail": {"command": "echo " + " ".join(f"arg{n}" for n in range(3000))},
+        "detail": {"command": _long_command()},
         "options": ["always", "session", "once", "deny"],
     }
+    title = _full_length_title()
 
-    text = render_question("TITLE", question, lang)
+    text = render_question(title, question, lang)
 
-    assert "TITLE" in text
+    assert title in text
     assert count_tokens(text) <= QUESTION_TEXT_MAX_TOKENS
-    short = render_question("TITLE", {**question, "detail": {"command": "dir"}}, lang)
+    # A command too long to quote loses its middle, and the sentence says so.
+    # What comes after it is whole: every answer on offer, and the
+    # instruction to hand the answer back, down to its last word.
+    assert PERMISSION_DETAIL_CUT_MARK[lang] in text
+    assert "Remove-Item C:/Users" in text and "-Recurse -Force" in text
+    for name in PERMISSION_OPTION_NAMES[lang].values():
+        assert name in text
+    closing = QUESTION_TEXTS[lang]["permission"].split("{options}")[1]
+    assert len(closing) > 10 and text.endswith(closing)
+    short = render_question(title, {**question, "detail": {"command": "dir"}}, lang)
+    assert PERMISSION_DETAIL_CUT_MARK[lang] not in short
     for name in PERMISSION_OPTION_NAMES[lang].values():
         assert name in short
 
