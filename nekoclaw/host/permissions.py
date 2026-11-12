@@ -173,7 +173,10 @@ class PermissionStore:
                 return {}
             return {str(name): mode for name, mode in section.items() if mode in MODES}
 
-        return modes(sections[0]), modes(sections[1])
+        # Server names are looked up as ``mode`` writes them: stripped, and
+        # "*" for none. A key edited by hand is read the same way.
+        servers = {(name.strip() or "*"): mode for name, mode in modes(sections[1]).items()}
+        return modes(sections[0]), servers
 
     def _write(self, categories: dict[str, str], mcp_servers: dict[str, str]) -> None:
         from utils.file_utils import atomic_write_json

@@ -380,6 +380,17 @@ async def test_a_damaged_file_denies_everything(tmp_path, content):
     assert await store.mode("plugin_entry") == "deny"
 
 
+async def test_server_names_edited_by_hand_are_read_as_they_are_looked_up(tmp_path):
+    path = tmp_path / "permissions.json"
+    path.write_text(json.dumps({"mcp_servers": {" github ": "deny", "  ": "allow"}}), encoding="utf-8")
+
+    store = PermissionStore(path)
+
+    # Stripped, as ``mode`` strips the name it is asked about; a blank key is the "*" slot.
+    assert await store.mode("mcp_server", "github") == "deny"
+    assert await store.mode("mcp_server") == "allow"
+
+
 async def test_an_unknown_mode_in_the_file_falls_back_to_the_default(tmp_path):
     path = tmp_path / "permissions.json"
     path.write_text(json.dumps({"categories": {"run_command": "bogus"}}), encoding="utf-8")

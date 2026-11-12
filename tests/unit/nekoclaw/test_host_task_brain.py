@@ -922,6 +922,43 @@ async def test_a_new_dispatch_is_not_taken_for_a_repeat_of_a_sub_familiar(server
 # ---------------------------------------------------------------------------
 
 
+async def test_deferred_work_stopped_before_it_is_bound_does_not_call_the_plugin(server, hosts, tmp_path):
+    bound: list[dict[str, Any]] = []
+
+    async def add(args: dict[str, Any]) -> dict[str, Any]:
+        return finish({"deferred": True, "reminder_id": "r-7", "reply": "will remind at five"})
+
+    async def bind_task(args: dict[str, Any]) -> dict[str, Any]:
+        bound.append(args)
+        return finish({"reply": "bound"})
+
+    server.add_plugin(
+        plugin("memo", "Memos and reminders 提醒", [entry("add", "Add a reminder"), entry("bind_task", "Bind")]),
+        add=add,
+        bind_task=bind_task,
+    )
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("memo", "add")]))
+    held: list[Any] = []
+    spawn = host.brain._spawn
+
+    def hold_binding(coroutine: Any, **kwargs: Any) -> Any:
+        if "_bind_deferred" in getattr(coroutine, "__qualname__", ""):
+            held.append(coroutine)
+            return None
+        return spawn(coroutine, **kwargs)
+
+    host.brain._spawn = hold_binding
+
+    receipt = await _dispatch(host, "五点提醒我开会")
+    await wait_until(lambda: held, what="the binding being started")
+    # Stopped before the binding gets to call the plugin.
+    await host.abort(receipt.commission_id)
+    await held[0]
+
+    assert bound == []
+    assert (await host.ledger.get(receipt.commission_id)).status == "cancelled"
+
+
 async def test_deferred_result_stays_open_until_the_plugin_calls_back(server, hosts, tmp_path):
     bound: list[dict[str, Any]] = []
 

@@ -870,8 +870,13 @@ class FamiliarManager:
         parent = await self._ledger.get(parent_id)
         if parent is None or parent.route != "familiar" or parent.status != "working":
             return
-        if parent_id in self._sessions or parent_id in self._queue or parent_id in self._requeueing:
-            # It came back while the ledger was read.
+        session = self._sessions.get(parent_id)
+        if session is not None and session.ready and self._runtime is not None:
+            # It came back, and was given its work, while the ledger was read.
+            await self._send_text(self._runtime, session, "steer", message)
+            return
+        if session is not None or parent_id in self._queue or parent_id in self._requeueing:
+            # It is on its way back: this goes along with its work.
             self._notes.setdefault(parent_id, []).append(message)
             return
         self._requeueing.add(parent_id)
@@ -1339,6 +1344,18 @@ class FamiliarManager:
         # commission nobody stopped into a stopped one.
         for commission_id in list(self._sessions):
             await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
+        if self._runtime is not None:
+            # A parent whose idle session was closed while its familiars
+            # worked holds no session and is in no queue, yet is this host's
+            # and under way. (With no runtime ever started there is none, and
+            # the ledger is not opened for nothing.)
+            for item in await self._ledger.select(statuses={"working"}):
+                if (
+                    item.route == "familiar"
+                    and item.host_instance == self._ledger.instance
+                    and item.id not in self._sessions
+                ):
+                    await self._ledger.transition(item.id, "failed", reason=_SHUT_DOWN_REASON)
         runtime, self._runtime = self._runtime, None
         if runtime is not None:
             try:

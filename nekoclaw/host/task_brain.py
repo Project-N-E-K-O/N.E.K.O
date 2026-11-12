@@ -575,7 +575,10 @@ class TaskBrain:
             await self._ledger.append_event(commission.id, "deferred", {"reminder_id": reminder_id})
             self._arm_deferred(commission.id, DEFERRED_COMMISSION_SECONDS)
             if reminder_id:
-                self._spawn(self._bind_deferred(commission, outcome.plugin_id, str(reminder_id)))
+                # Tracked as the commission's work, so a stop meanwhile cancels it.
+                self._spawn(
+                    self._bind_deferred(commission, outcome.plugin_id, str(reminder_id)), commission_id=commission.id
+                )
             return
 
         completed = terminal == "completed"
@@ -622,6 +625,10 @@ class TaskBrain:
 
     async def _bind_deferred(self, commission: Commission, plugin_id: str, reminder_id: str) -> None:
         """Tell the plugin which commission its deferred work belongs to."""
+        current = await self._ledger.get(commission.id)
+        if current is None or current.status != "working":
+            # Stopped or ended before the plugin was told: it is not called.
+            return
         outcome = await self._runner.run_entry(
             commission_id=commission.id,
             plugin_id=plugin_id,

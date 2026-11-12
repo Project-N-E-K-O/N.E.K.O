@@ -1582,9 +1582,67 @@ async def test_a_result_takes_up_again_a_parent_whose_idle_session_was_closed(ho
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "there are 3 files"
     # Taken up again where its transcript ends, with the result as its next work.
-    assert any("[sub-familiar agent-1 finished: completed]" in str(message.get("content")) for message in parent.requests[2])
+    resumed = json.dumps(parent.requests[2], ensure_ascii=False)
+    assert "Counting has started." in resumed
+    assert "[sub-familiar agent-1 finished: completed]" in resumed
     (_first, again) = await _events(host, receipt.commission_id, "started")
     assert again.payload["resumed"] is True
+
+
+async def test_shutting_down_ends_a_parent_whose_idle_session_was_closed(hosts, tmp_path):
+    release, wait = _gate()
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "count the files", "prompt": "Count the files."}), finish("tool_calls")],
+            [say("Counting has started."), finish()],
+        ]
+    )
+    child = ScriptedLLM([[wait, say("3 files"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+    receipt = await _dispatch(host, "tell me how many files are in the folder")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the sub-familiar working")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the parent's run ending")
+    await host.familiars._runtime.close(receipt.commission_id)
+    await wait_until(lambda: receipt.commission_id not in host.familiars.running, what="the parent released")
+
+    await host.familiars.shutdown()
+    release.set()
+
+    # Under way and this host's, though it held no session: it ends with the rest.
+    ended = await host.ledger.get(receipt.commission_id)
+    assert (ended.status, ended.status_reason) == ("failed", "the host was shut down")
+
+
+async def test_a_result_for_a_parent_back_at_work_while_it_was_looked_up_is_steered_to_it(hosts, tmp_path):
+    release, wait = _gate()
+    parent = ScriptedLLM(
+        [
+            [call("subagent", {"description": "count the files", "prompt": "Count the files."}), finish("tool_calls")],
+            [say("Counting has started."), finish()],
+            [say("noted"), finish()],
+        ]
+    )
+    child = ScriptedLLM([[wait, say("3 files"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+    receipt = await _dispatch(host, "tell me how many files are in the folder")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the sub-familiar working")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the parent's run ending")
+    runtime = host.familiars._runtime
+    steered: list[str] = []
+    steer = runtime.steer
+
+    async def record(session_id: str, text: str) -> Any:
+        steered.append(text)
+        return await steer(session_id, text)
+
+    runtime.steer = record
+
+    # As when the result found no session, and the parent came back while the ledger was read.
+    await host.familiars._wake_closed_parent(receipt.commission_id, "[an earlier result]")
+
+    assert steered == ["[an earlier result]"]
+    assert host.familiars._notes.get(receipt.commission_id) in (None, [])
+    release.set()
 
 
 async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp_path):
