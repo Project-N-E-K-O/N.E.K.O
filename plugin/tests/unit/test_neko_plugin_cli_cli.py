@@ -1086,6 +1086,8 @@ def test_entry_validation_checks_bool_fields(field: str, value: object, expected
         (float("nan"), ["error"]),
         (float("inf"), ["error"]),
         ("inf", ["error"]),
+        (10**400, ["error"]),
+        (str(10**400), ["error"]),
     ],
 )
 def test_entry_validation_checks_timeout(value: object, expected: list[str], keyed: bool) -> None:

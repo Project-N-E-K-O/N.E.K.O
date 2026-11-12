@@ -752,7 +752,7 @@ def _check_entry_timeout(value: object, label: str, issues: list[tuple[str, str]
         return
     try:
         number = float(value)
-    except ValueError:
+    except (OverflowError, ValueError):
         issues.append(("error", f"{label} must be a number"))
         return
     if not math.isfinite(number):
