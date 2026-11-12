@@ -254,10 +254,12 @@ def test_the_switch_set_later_takes_the_two_tools_out_again(monkeypatch):
     manager = _manager()
     manager._register_builtin_tools()
     assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is not None
+    assert manager.tool_registry.get(QUERY_TOOL_NAME) is not None
     monkeypatch.setenv("NEKO_DISABLE_BUILTIN_TOOLS", "1")
 
     assert manager._register_task_tools() is True
     assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
+    assert manager.tool_registry.get(QUERY_TOOL_NAME) is None
 
 
 def test_a_status_push_that_changes_nothing_registers_nothing_again():

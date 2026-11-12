@@ -101,8 +101,12 @@ def run_connector(monkeypatch):
             )
             return True, "", {}
 
-        async def publish_turn_check(*_args, **kwargs):
-            events.append(("turn_check", kwargs["trigger"], kwargs.get("language")))
+        async def publish_turn_check(**kwargs):
+            # What goes out to the agent process. Whether a turn has anything
+            # to check is decided by the connector's own function, which
+            # stays the real one: a stand-in for it would record a check the
+            # connector never sends.
+            events.append(("turn_check", kwargs["user_text"], kwargs.get("language")))
             return turn_check_result
 
         async def after_settlement():
@@ -111,8 +115,13 @@ def run_connector(monkeypatch):
         monkeypatch.setattr(cross_server, "_post_memory_server", post_memory)
         monkeypatch.setattr(
             cross_server,
-            "_publish_turn_check_with_fallback",
+            "publish_turn_check_reliably",
             publish_turn_check,
+        )
+        # The hint that goes with a check is read from a process-wide cache.
+        monkeypatch.setattr(
+            "main_logic.activity.master_emotion.gate_signal_for",
+            lambda name, text: None,
         )
         queue = asyncio.Queue()
         completion = asyncio.get_running_loop().create_future()
@@ -2093,9 +2102,11 @@ async def test_connector_turn_check_uses_visible_locale_without_promoting_render
             }},
         ],
     )
+    # The check at the end of the first turn, then the one for the turn the
+    # session end cut off.
     assert [event[1:] for event in events if event[0] == "turn_check"] == [
-        ("turn_end", expected_turn_check),
-        ("session_end", expected_turn_check),
+        ("first turn", expected_turn_check),
+        ("second turn", expected_turn_check),
     ]
     memory = [event for event in events if event[0] == "memory"]
     assert [event[1] for event in memory] == ["cache", "process"]
