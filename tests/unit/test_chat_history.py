@@ -66,6 +66,51 @@ def test_scan_budget_can_continue(archive):
     assert browse(archive, 'Alice', cursor=first['nextCursor'], query='Hello')['messages']
 
 
+def test_date_cursor_uses_index_and_closes_connections(archive, monkeypatch):
+    with sqlite3.connect(archive / 'Alice' / 'time_indexed.db') as db:
+        db.execute('CREATE INDEX idx_time_indexed_original_timestamp ON time_indexed_original(timestamp)')
+        db.executemany('INSERT INTO time_indexed_original VALUES(?,?,?,?)',
+                       [(i, 'one', '{}', '2026-11-03') for i in range(67, 20067)])
+    connections = []
+    class TrackedConnection(sqlite3.Connection):
+        closed = False
+        steps = 0
+        def set_progress_handler(self, callback, interval):
+            def tracked():
+                self.steps += 1
+                return callback()
+            return super().set_progress_handler(tracked, interval)
+        def close(self):
+            self.closed = True
+            return super().close()
+    connect = sqlite3.connect
+    def tracked_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs, factory=TrackedConnection)
+        connections.append(connection)
+        return connection
+    monkeypatch.setattr(sqlite3, 'connect', tracked_connect)
+    ids, cursor = [], 0
+    while True:
+        page = browse(archive, 'Alice', day='2026-11-01', cursor=cursor, limit=7)
+        ids.extend(m['id'] for m in page['messages'])
+        cursor = page['nextCursor']
+        if cursor is None:
+            break
+    assert ids == [i for i in range(39, 0, -1) if i != 15]
+    assert not browse(archive, 'Alice', day='2025-01-01')['messages']
+    assert not browse(archive, 'Alice', day='9999-12-31')['messages']
+    with pytest.raises(LookupError):
+        browse(archive, 'Alice', anchor=15)
+    assert all(c.closed for c in connections)
+    assert sum(c.steps for c in connections) < 50  # No scan of the 20,000 unrelated rows.
+
+
+def test_deeply_nested_json_does_not_block_following_rows(archive):
+    with sqlite3.connect(archive / 'Alice' / 'time_indexed.db') as db:
+        db.execute('UPDATE time_indexed_original SET message=? WHERE id=66', ('[' * 2000 + '0' + ']' * 2000,))
+    assert browse(archive, 'Alice', limit=1)['messages'][0]['id'] == 65
+
+
 def test_router_validation_and_offloaded_read(archive, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

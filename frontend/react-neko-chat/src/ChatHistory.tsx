@@ -81,7 +81,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
     return () => controller.abort();
   }, [character, anchor, retry]);
   useEffect(() => {
-    if (anchor && page) dialog.current?.querySelector(`[data-history-id="${anchor}"]`)?.scrollIntoView?.({ block: 'center' });
+    if (anchor && page) dialog.current?.querySelector(`.history-results:not([hidden]) [data-history-id="${anchor}"]`)?.scrollIntoView?.({ block: 'center' });
   }, [page, anchor]);
   const reset = () => { setAnchor(null); };
   const moveDay = (delta: number) => {

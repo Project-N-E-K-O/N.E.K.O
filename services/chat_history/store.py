@@ -5,6 +5,8 @@ import json
 import re
 import sqlite3
 import time
+from contextlib import closing
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -37,7 +39,7 @@ def message(row):
             return None
         content = re.sub(r'^\[\d{8} [^\]\s]+ \d{2}:\d{2}\] ?', '', content)
         return dict(id=row[0], session=row[1], text=content, role=role, time=str(row[3] or ''))
-    except (ValueError, KeyError, TypeError, AttributeError):
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
         return None
 
 
@@ -54,7 +56,7 @@ def browse(root, character, *, day=None, query='', role='all', cursor=0,
         return dict(messages=[], nextCursor=None, scanned=0, available=False)
     deadline = time.monotonic() + 2
     try:
-        with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.1) as db:
+        with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.1)) as db:
             db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
             # Snapshot protects anchor and page from concurrent archive deletion.
             db.execute('BEGIN')
@@ -67,8 +69,13 @@ def browse(root, character, *, day=None, query='', role='all', cursor=0,
                 return dict(messages=[m for r in rows if (m := message(r))], nextCursor=None, scanned=len(rows), available=True)
             where, args = [], []
             if day:
-                where.append('date(timestamp)=?')
-                args.append(day)
+                # Archive timestamps are local ISO dates. Keep the column bare
+                # so SQLite can narrow old/empty days with its timestamp index.
+                selected = date.fromisoformat(day)
+                # A lexical upper bound also keeps date.max queryable.
+                end = (selected + timedelta(days=1)).isoformat() if selected < date.max else '9999-12-32'
+                where.append('timestamp>=? AND timestamp<?')
+                args.extend((day, end))
             if cursor:
                 where.append('id' + ('<' if order == 'desc' else '>') + '?')
                 args.append(cursor)

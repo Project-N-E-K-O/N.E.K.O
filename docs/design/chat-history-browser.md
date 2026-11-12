@@ -64,8 +64,13 @@ of overscan on each side. Binary search locates visible offsets; spacers retain
 scroll range and measurements are corrected when rows render or width changes.
 Loaded message data stays in this dialog's memory for reverse scrolling; DOM
 size stays tied to viewport height. Closing the dialog releases the feed.
+Width changes retain offscreen measurements as estimates until those rows are
+visible again, avoiding a wholesale reset of the reading position.
 Opening context hides and preserves the list, then restores its scroll position
 without re-fetching. The backend retains its existing read-only bounded cursors.
+Date filters use an indexed timestamp range, and every request explicitly closes
+its SQLite connection on success and failure. Deeply nested invalid JSON rows
+are skipped without blocking subsequent messages.
 
 Regression tests cover append/deduplication, in-flight exclusion, retries, stale
 response cancellation, date/all-date scopes, empty batches, end-of-data, and

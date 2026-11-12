@@ -31,7 +31,10 @@ export default function HistoryResults({ entries, renderEntry, load, more, busy,
     const update = () => {
       if (element.clientWidth !== lastWidth.current) {
         lastWidth.current = element.clientWidth;
-        heights.current.clear(); setRevision(v => v + 1);
+        // Retain offscreen measurements as estimates. Resetting them all to
+        // 160px would move the reader to another message after a width change.
+        // Visible rows are remeasured below, including on reverse scrolling.
+        setRevision(v => v + 1);
       }
       setViewport(previous => {
         const next = { top: element.scrollTop, height: element.clientHeight || 600, width: element.clientWidth };

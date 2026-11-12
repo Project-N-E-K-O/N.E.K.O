@@ -10,6 +10,7 @@ it('accepts the history tool position through the public mount contract', () => 
 beforeEach(() => {
   HTMLDialogElement.prototype.showModal = vi.fn();
   HTMLDialogElement.prototype.close = vi.fn();
+  HTMLElement.prototype.scrollIntoView = vi.fn();
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.includes('characters') ? { characters: ['Alice', 'Bob'] } : { messages: [{ id: 5, role: 'user', text: '<script>音乐</script>', time: '2026-11-01' }], nextCursor: null, available: true } })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
@@ -24,6 +25,10 @@ it('searches literal text, locates context and returns to the same result page',
   expect(document.querySelector('script')).toBeNull();
   fireEvent.click(screen.getByText('context'));
   await waitFor(() => expect(fetch).toHaveBeenLastCalledWith(expect.stringContaining('anchor=5'), expect.anything()));
+  await waitFor(() => expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled());
+  const target = vi.mocked(HTMLElement.prototype.scrollIntoView).mock.instances.at(-1) as HTMLElement;
+  expect(target.closest('[hidden]')).toBeNull();
+  expect(target.dataset.historyId).toBe('5');
   fireEvent.click(screen.getByText('back'));
   await screen.findByText('context');
   expect(document.querySelector('.history-results:not([hidden]) [data-history-id="5"]')).not.toBeNull();
