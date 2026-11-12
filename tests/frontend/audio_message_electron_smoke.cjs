@@ -21,6 +21,7 @@ trace('configured');
 const received = [];
 const recordings = new Map();
 let playbackRequests = 0;
+let failNextSend = false;
 const errors = [];
 const windows = [];
 let server;
@@ -32,6 +33,19 @@ async function waitFor(win, expression) {
     const deadline=Date.now()+8000;
     const poll=()=>{if(${expression})return resolve(true);if(Date.now()>deadline)return reject(new Error('Timed out '+${JSON.stringify(expression)}));setTimeout(poll,20);};poll();
   })`);
+}
+
+async function assertRecordingAlert(win, message) {
+  await waitFor(win, `document.querySelector('.audio-message-announcement[role="alert"]')?.textContent.includes(${JSON.stringify(message)})`);
+  const visible = await win.webContents.executeJavaScript(`(() => {
+    const alert = document.querySelector('.audio-message-announcement[role="alert"]');
+    const style = getComputedStyle(alert);
+    const rect = alert.getBoundingClientRect();
+    return style.clipPath === 'none' && style.visibility === 'visible'
+      && rect.width > 1 && rect.height > 1 && rect.top >= 0 && rect.bottom <= innerHeight
+      && rect.left >= 0 && rect.right <= innerWidth && !alert.closest('.compact-chat-surface-frame');
+  })()`);
+  assert.ok(visible, 'the error must be readable without a host toast or clipping by the compact frame');
 }
 
 async function capture(win) {
@@ -106,6 +120,11 @@ app.whenReady().then(async () => {
     assert.equal(message.save_local, true);
     const pcm = Buffer.from(message.audio, 'base64');
     assert.ok(pcm.length >= 3200);
+    if (failNextSend) {
+      failNextSend = false;
+      socket.send(JSON.stringify({ type: 'audio_message_result', request_id: message.request_id, state: 'failed' }));
+      return;
+    }
     received.push(message);
     const row = { request_id: message.request_id, created_at: Date.now(), duration_ms: Math.floor(pcm.length / 32),
       state: 'sending', transcript: '', wav: toWav(pcm) };
@@ -161,7 +180,18 @@ app.whenReady().then(async () => {
     }
     trace(mode + ' chat mounted');
     const before = received.length;
+    await win.webContents.executeJavaScript(`(() => {
+      delete window.showStatusToast;
+      const getUserMedia = navigator.mediaDevices.getUserMedia;
+      navigator.mediaDevices.getUserMedia = async () => {
+        navigator.mediaDevices.getUserMedia = getUserMedia;
+        throw new DOMException('Permission denied', 'NotAllowedError');
+      };
+      document.querySelector('.audio-message-mic').click();
+    })()`, true);
+    await assertRecordingAlert(win, 'Microphone unavailable');
     await capture(win);
+    assert.equal(await win.webContents.executeJavaScript("document.querySelector('.audio-message-announcement')?.textContent"), '');
     trace(mode + ' recorded');
     assert.equal(received.length, before, 'active recording stays local');
     await win.webContents.executeJavaScript("document.querySelector('.audio-message-cancel').click()", true);
@@ -226,6 +256,12 @@ app.whenReady().then(async () => {
       await waitFor(win, "document.querySelectorAll('.message-audio-block').length === 0");
       await waitFor(windows[0], "document.querySelectorAll('.message-audio-block').length === 0");
     }
+    failNextSend = true;
+    await capture(win);
+    await win.webContents.executeJavaScript("document.querySelector('.audio-message-stop').click()", true);
+    await assertRecordingAlert(win, 'Delivery could not be confirmed');
+    await win.webContents.executeJavaScript("document.querySelector('.audio-message-cancel').click()", true);
+    await waitFor(win, "document.querySelector('.audio-message-mic') && !document.querySelector('.audio-message-announcement').textContent");
     console.log('Audio message Electron ' + mode + ' passed');
   }
   assert.deepEqual(errors, []);
