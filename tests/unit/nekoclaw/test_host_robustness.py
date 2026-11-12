@@ -640,7 +640,8 @@ async def test_a_callback_after_a_deadline_passed_while_the_host_was_stopped_is_
         # The plugin's callback is the first thing the new host sees.
         assert await after.complete_deferred(commission.id) is False
         # It timed out, and is reported so, rather than counted as done.
-        assert (await after.ledger.get(commission.id)).status == "failed"
+        failed = await after.ledger.get(commission.id)
+        assert (failed.status, failed.status_reason) == ("failed", "Deferred task timeout (callback not received)")
         await _wait_for(lambda: any(item.get("task_id") == commission.id for item in sent))
     finally:
         await after.shutdown()
