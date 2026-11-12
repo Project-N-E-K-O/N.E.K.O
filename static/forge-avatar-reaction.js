@@ -82,6 +82,14 @@
           body: JSON.stringify({ event_id: item.event_id, rarity: item.rarity, lanlan_name: item.lanlan_name,
             reason: item.reason, active_count: item.active_count, is_career_first: item.is_career_first }),
         });
+        if (response.status === 403 && typeof security.refreshToken === 'function') {
+          var failure = await response.json().catch(function () { return null; });
+          if (failure && failure.error_code === 'csrf_validation_failed') {
+            await security.refreshToken();
+            // 后端重启后沿用同一事件重试，仍受原 deadline 和角色检查约束。
+            throw new Error('drop_event_csrf_refreshed');
+          }
+        }
         if (response.status >= 500) throw new Error('drop_event_unavailable');
         if (response.ok) {
           var result = await response.json();

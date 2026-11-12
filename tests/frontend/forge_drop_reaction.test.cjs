@@ -14,11 +14,17 @@ function harness() {
   const timers = new Map();
   const listeners = new Map();
   const requests = [];
+  const responses = [];
   let failures = 0;
+  let csrfToken = 'test';
+  let refreshes = 0;
   const window = {
     appState: { lanlan_name: 'Lan' },
     forgeDropEffectsEnabled: true,
-    nekoLocalMutationSecurity: { getMutationHeaders: async () => ({ 'X-CSRF-Token': 'test' }) },
+    nekoLocalMutationSecurity: {
+      getMutationHeaders: async () => ({ 'X-CSRF-Token': csrfToken }),
+      refreshToken: async () => { refreshes++; csrfToken = 'refreshed'; },
+    },
     addEventListener(name, callback) {
       if (!listeners.has(name)) listeners.set(name, []);
       listeners.get(name).push(callback);
@@ -36,6 +42,7 @@ function harness() {
     fetch: async (url, options) => {
       requests.push({ url, ...options, body: JSON.parse(options.body) });
       if (failures-- > 0) throw new Error('connection reset');
+      if (responses.length) return responses.shift();
       return { ok: true, status: 200, json: async () => ({ ok: true, queued: true }) };
     },
   });
@@ -46,6 +53,8 @@ function harness() {
   return {
     window, requests, emit,
     failNext: () => { failures = 1; },
+    refreshCount: () => refreshes,
+    respondNext: (status, body) => responses.push({ status, ok: status < 400, json: async () => body }),
     drop: (detail = {}) => emit('neko-forge-credit-drop', {
       event_id: eventId, rarity: 'N', reason: 'emotion_combo', ...detail,
     }),
@@ -106,6 +115,40 @@ test('transient failure retries the same event without submitting a new drop', a
   assert.equal(h.requests[1].body.event_id, eventId);
   await h.advance(1000);
   assert.equal(h.requests.length, 2);
+});
+
+test('stale CSRF refreshes the token and retries the same confirmed event', async () => {
+  const h = harness();
+  h.respondNext(403, { error_code: 'csrf_validation_failed' });
+  h.drop();
+  await h.advance();
+  assert.equal(h.refreshCount(), 1);
+  assert.equal(h.requests.length, 1);
+  await h.advance(1000);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].body.event_id, eventId);
+  assert.equal(h.requests[1].headers['X-CSRF-Token'], 'refreshed');
+  await h.advance(1000);
+  assert.equal(h.requests.length, 2);
+});
+
+test('CSRF recovery remains bounded by the original event deadline', async () => {
+  const h = harness();
+  h.respondNext(403, { error_code: 'csrf_validation_failed' });
+  h.drop();
+  await h.advance();
+  await h.advance(46000);
+  assert.equal(h.requests.length, 1);
+});
+
+test('unrelated forbidden responses do not refresh credentials or retry', async () => {
+  const h = harness();
+  h.respondNext(403, { error_code: 'origin_not_allowed' });
+  h.drop();
+  await h.advance();
+  await h.advance(1000);
+  assert.equal(h.refreshCount(), 0);
+  assert.equal(h.requests.length, 1);
 });
 
 for (const reason of ['character_changed', 'expired']) {
