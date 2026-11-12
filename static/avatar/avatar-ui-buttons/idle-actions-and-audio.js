@@ -447,6 +447,7 @@ function _getNekoIdleCat1VisualActionState(button) {
             timer: 0,
             entryTimer: 0,
             entryPlaybackToken: 0,
+            sourceLoadCleanup: null,
             resumeJourney: false,
             presentationOnTerminal: null
         };
@@ -570,6 +571,10 @@ function _cancelNekoIdleCat1VisualAction(button, options = {}) {
     state.token += 1;
     state.active = false;
     state.actionKey = '';
+    if (state.sourceLoadCleanup) {
+        state.sourceLoadCleanup();
+        state.sourceLoadCleanup = null;
+    }
     if (state.timer) {
         clearTimeout(state.timer);
         state.timer = 0;
@@ -741,8 +746,42 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
             state.entryTimer = setTimeout(verifyEntry, _NEKO_IDLE_RETURN_TRANSITION_MS);
         }
     } else {
+        let onLoad = null;
+        let onError = null;
+        if (sourceTier !== _NEKO_IDLE_TIER_CAT1) {
+            onLoad = () => {
+                if (!_isNekoIdleAnimationRestartUrlForSource(art.getAttribute('src') || '', actionSrc)) return;
+                if (state.sourceLoadCleanup) {
+                    state.sourceLoadCleanup();
+                    state.sourceLoadCleanup = null;
+                }
+                scheduleActionFinish();
+            };
+            onError = () => {
+                if (!_isNekoIdleAnimationRestartUrlForSource(art.getAttribute('src') || '', actionSrc)) return;
+                _cancelNekoIdleCat1VisualAction(button, { reason: profile.cancelledReason });
+            };
+            art.addEventListener('load', onLoad);
+            art.addEventListener('error', onError);
+            state.sourceLoadCleanup = () => {
+                art.removeEventListener('load', onLoad);
+                art.removeEventListener('error', onError);
+            };
+            state.entryTimer = setTimeout(
+                onError,
+                Math.max(5000, _NEKO_IDLE_RETURN_TRANSITION_MS * 5)
+            );
+        }
         _setNekoIdleReturnArtSource(art, actionSrc, sourceTier, { animate: false });
-        scheduleActionFinish();
+        if (sourceTier === _NEKO_IDLE_TIER_CAT1) {
+            scheduleActionFinish();
+        } else if (art.complete) {
+            if (art.naturalWidth > 0) {
+                onLoad();
+            } else {
+                onError();
+            }
+        }
     }
     if (sourceTier === _NEKO_IDLE_TIER_CAT1) {
         _syncNekoIdleCat1CompactMirrorReaction(

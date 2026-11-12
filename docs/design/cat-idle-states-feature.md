@@ -276,6 +276,8 @@ CAT1 正式随机入口只注册一个 `cat1_idle_random` 动作，不把六个 
 
 CAT2/CAT3 在同一 Cat Mind 自主 tick 和动作槽中分别使用 `cat2_idle_random`、`cat3_idle_random`；当前 tier 以外的随机组不参与候选。两组也只在无合并用户输入的 `cat_elapsed`、全局硬门与本组资源能力通过后掷一次 `20%`，命中则先占用本轮动作槽，未命中仍由原有 `cat2_nap_feedback` / `cat3_sleep_feedback` 五维评分决定是否反馈。CAT2 视觉组从严格 `started` 起硬 cooldown `1m`，CAT3 为 `5m`；两组各自冷却，不改变原睡眠反馈的 `10m/12m` 软 cooldown、评分公式或音频门禁。CAT2 组内 `turn_1` 为 `80%`、`back1_1` 为 `20%`；CAT3 组内 `turn_2` 为 `80%`、两个 back 各为 `10%`。视觉-only runner 不要求音频开启，直接 presentation API 不写 Cat Mind cooldown；严格终态只关闭本次生命周期，不结算睡眠反馈五维或 return episode。turn 播完恢复本形态，back 仅在完整播完且正式降级成功后回到 CAT1；取消或 tier/return 中断不伪报完成。
 
+CAT2/CAT3 视觉动作在素材加载成功后才开始计算完整单轮；加载失败或等待超过 `5s` 时取消本次动作并恢复当前形态待机图，不执行 back 降级，也不报告 `done`。
+
 伤心另注册为 `cat1_inactive_sad`，不进入上述六项随机池。自动 CAT1 沿用自动离开控制器的全局 inactivity 起点，所以全局无交互第 10 分钟进入 CAT1 后，在第 13 分钟的首个 30 秒 tick 即可获得资格；它先于随机动作检查且不消耗随机数。只有固定 `sad` runner 回报 `started` 才锁定本轮一次，provider reject、仅 accepted 或启动失败都可在后续 tick 重试。CAT1 期间的标准全局用户活动只重置 Sad 自己的 13 分钟计时和一次性标记，不重置 CAT1→CAT2→CAT3 的 15/18 分钟视觉时钟；既有猫交互 observation 同样重置。再次持续 13 分钟且届时仍在 CAT1 时才可再次触发。该动作无 cooldown、无五维反馈、无短时意图、无 return episode。
 
 `mouse` 是 `896×512` 画布：主猫放入 `175%` 宽图盒后直接复用 return button 既有的 flex 水平居中，不能再叠加 `left:-37.5%`；只有非 flex 的 compact mirror 显式使用该偏移。`lion_dance` 是 `512×704` 画布：主猫使用 `137.5%` 高图盒和 `align-self:flex-end` 底对齐，compact mirror 才使用 `top:-37.5%`。两种 layout 都是为了让首尾猫体与普通 CAT1 位置一致，不能退化为普通 `100% object-fit:contain`。`stroke` 在安装前用同一固定平移对齐了默认 CAT1 的首尾可见形象，无需运行时特殊 layout；其余 11 份素材同样使用标准 `512×512 / normal` 布局。

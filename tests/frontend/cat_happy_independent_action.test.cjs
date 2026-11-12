@@ -208,12 +208,22 @@ function harness(options = {}) {
   let resolveDuration;
   const art = options.hasArt === false ? null : {
     src: options.artSrc || 'idle.gif?v=1',
+    complete: false,
     style: { transform: 'scaleX(-1)', width: '100%', height: '100%', objectFit: 'contain' },
     getAttribute(name) { return name === 'src' ? this.src : null; },
+    addEventListener(name, listener) {
+      if (!this.listeners) this.listeners = new Map();
+      this.listeners.set(name, listener);
+    },
+    removeEventListener(name, listener) {
+      if (this.listeners?.get(name) === listener) this.listeners.delete(name);
+    },
+    dispatch(name) { this.listeners?.get(name)?.(); },
   };
   const container = {
     style: { display: '', left: '12px', top: '24px', width: '122px', height: '122px', transform: 'none' },
     classList: classList(containerClasses),
+    setAttribute() {},
   };
   const journey = {
     paused: false, profile: { walkingSubstate: 'walking' }, substate: 'walking',
@@ -227,6 +237,7 @@ function harness(options = {}) {
     setAttribute: (name, value) => attributes.set(name, String(value)),
     removeAttribute: (name) => attributes.delete(name),
     querySelector: (selector) => selector === '.neko-idle-return-art' ? art : null,
+    closest: () => container,
   };
   const keyBySlot = Object.fromEntries(Object.entries(ALL_CASES).map(([key, entry]) => [entry.slot, key]));
   const context = {
@@ -236,12 +247,15 @@ function harness(options = {}) {
           if (gates.tier !== 'cat2' && gates.tier !== 'cat3') return false;
           demotions.push({ from: gates.tier, source, reason });
           gates.tier = 'cat1';
+          context._applyNekoIdleReturnPresentation(button, 'cat1');
           return true;
         },
       },
     },
     Date: { now: () => nowMs },
-    _NEKO_IDLE_TIER_CAT1: 'cat1', _NEKO_IDLE_TIER_CAT2: 'cat2', _NEKO_IDLE_TIER_CAT3: 'cat3',
+    _NEKO_IDLE_TIER_NONE: 'none', _NEKO_IDLE_TIER_CAT1: 'cat1',
+    _NEKO_IDLE_TIER_CAT2: 'cat2', _NEKO_IDLE_TIER_CAT3: 'cat3',
+    _NEKO_GOODBYE_IDLE_APPEARANCE_CAT: 'cat',
     _NEKO_IDLE_RETURN_TRANSITION_MS: 300,
     _isNekoCatActionResourceAvailable: (key) => capabilities.has(key),
     _getNekoIdleCat1VisualActionAssetUrlForSlot: (slot) => urls[keyBySlot[slot]] || '',
@@ -265,6 +279,15 @@ function harness(options = {}) {
     _getNekoIdleReturnContainerFromButton: () => container,
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton: () => {},
     _isNekoIdleReturnDragActionActive: () => false,
+    _isNekoGoodbyeIdleBallButton: () => false,
+    _setNekoGoodbyeIdleAppearanceForButton: () => {},
+    _isNekoIdleCat1PlaygroundEntryPending: () => false,
+    _isNekoIdleCat1PlaygroundDropActive: () => false,
+    _syncNekoIdleSleepSoundForTier: () => {},
+    _syncNekoIdleCat1AmbientSoundForTier: () => {},
+    _isNekoIdleCat1EatActionActive: () => false,
+    _isNekoIdleCat1PlayActionActive: () => false,
+    _getNekoIdleReturnAssetUrl: (tier) => `${tier}-idle.gif?v=1`,
     _getNekoIdleReturnCurrentArtUrl: (_button, tier) => tier === 'cat1'
       ? 'idle.gif?v=1'
       : `${tier}-idle.gif?v=1`,
@@ -277,7 +300,7 @@ function harness(options = {}) {
     },
     _cleanupNekoIdleArtTransition: () => { cleanup.transition += 1; },
     _clearNekoIdleGifPlaybackSource: () => { cleanup.playback += 1; },
-    _setNekoIdleReturnArtSource: (target, src, tier, sourceOptions) => {
+    _setNekoIdleReturnArtSource: (target, src, tier, sourceOptions = {}) => {
       const playbackSrc = sourceOptions.restartAnimation
         ? `${src}&entry=${sourceOptions.playbackToken}`
         : src;
@@ -322,6 +345,12 @@ function harness(options = {}) {
      this.requestVisual = _requestNekoIdleCat1VisualActionPresentation;`,
     context,
   );
+  vm.runInContext(between(
+    PRESENTATION_SOURCE,
+    'function _applyNekoIdleReturnPresentation',
+    'function _readNekoAutoGoodbyeVisualTier',
+    'return presentation sync',
+  ), context, { filename: PRESENTATION_PATH });
   return {
     context, button, container, art, journey, gates, capabilities, urls,
     attributes, buttonClasses, containerClasses, sources, mirrors, timers, terminals, cleanup, journeyCalls,
@@ -358,6 +387,7 @@ test('every visual action shares one kernel with an explicit profile and request
   for (const [key, entry] of Object.entries(ALL_CASES)) {
     assert.equal(h.context.profiles[key].capability, entry.capability);
     assert.equal(h.context.profiles[key].slot, entry.slot);
+    assert.equal(h.context.profiles[key].requestName, entry.requestApi);
     assert.equal(h.context.profiles[key].layout, entry.layout);
     assert.equal(h.context._getNekoIdleVisualActionTier(h.context.profiles[key]), entry.tier || 'cat1');
     assert.equal(h.context._getNekoIdleVisualActionTerminalTier(h.context.profiles[key]), entry.terminalTier || entry.tier || 'cat1');
@@ -368,6 +398,30 @@ test('every visual action shares one kernel with an explicit profile and request
   }
   assert.match(ACTIONS_SOURCE, /presentationApi\[profile\.requestName\]/,
     'every profile contributes its named public presentation API');
+  const requests = [];
+  h.context._requestNekoIdleCat1VisualActionPresentation = (key, options) => {
+    requests.push({ key, options });
+    return true;
+  };
+  h.context._requestNekoIdleCat1HissStretchPresentation = () => false;
+  vm.runInContext(between(
+    ACTIONS_SOURCE,
+    'function _requestNekoIdleCat1HappyPresentation',
+    "if (typeof window !== 'undefined') {\n    const presentationApi = {",
+    'explicit visual presentation APIs',
+  ), h.context, { filename: ACTIONS_PATH });
+  vm.runInContext(between(
+    ACTIONS_SOURCE,
+    "if (typeof window !== 'undefined') {\n    const presentationApi = {",
+    'function _getNekoIdleCat1PlayActionState',
+    'public presentation API registration',
+  ), h.context, { filename: ACTIONS_PATH });
+  for (const [key, entry] of Object.entries(ALL_CASES)) {
+    const requestOptions = { source: key };
+    assert.equal(typeof h.context.window.NekoCatIdlePresentation[entry.requestApi], 'function');
+    assert.equal(h.context.window.NekoCatIdlePresentation[entry.requestApi](requestOptions), true);
+    assert.deepEqual(requests.at(-1), { key, options: requestOptions });
+  }
 });
 
 test('five sleep-tier actions start in their filename tier and keep explicit terminal behavior', async () => {
@@ -387,6 +441,10 @@ test('five sleep-tier actions start in their filename tier and keep explicit ter
       h.sources[0].options.onTransitionEnd();
     } else {
       assert.deepEqual(h.sources[0].options, { animate: false });
+      await flush();
+      assert.equal(h.timers.some((timer) => timer.delay === entry.duration), false,
+        'the cycle waits for the image to load');
+      h.art.dispatch('load');
     }
     await flush();
     const finishTimer = h.timers.find((timer) => timer.delay === entry.duration);
@@ -398,7 +456,8 @@ test('five sleep-tier actions start in their filename tier and keep explicit ter
         from: entry.tier, source: entry.finished, reason: entry.finished,
       }]);
       assert.equal(h.gates.tier, 'cat1');
-      assert.equal(h.sources.length, 1, 'tier presentation owns the terminal CAT1 art');
+      assert.equal(h.sources.length, 2, 'tier presentation owns the terminal CAT1 art');
+      assert.equal(h.art.src, 'cat1-idle.gif?v=1');
     } else {
       assert.equal(h.demotions.length, 0);
       assert.deepEqual(h.sources.at(-1), {
@@ -417,6 +476,40 @@ test('five sleep-tier actions start in their filename tier and keep explicit ter
   for (const entry of Object.values(SLEEP_CASES)) {
     assert.doesNotMatch(actionSourceWithoutProfiles, new RegExp(`['\"]${entry.capability}['\"]`));
   }
+});
+
+test('sleep back waits for image load and cancels without demotion on load failure', async () => {
+  const waiting = harness();
+  assert.equal(waiting.playSleep('cat2Back1_1'), true);
+  await flush();
+  assert.equal(waiting.timers.length, 1, 'only the load watchdog runs');
+  assert.equal(waiting.timers[0].delay, 5000);
+  waiting.art.dispatch('error');
+  await flush();
+  assert.equal(waiting.demotions.length, 0);
+  assert.equal(waiting.gates.tier, 'cat2');
+  assert.equal(waiting.art.src, 'cat2-idle.gif?v=1');
+  assert.equal(waiting.terminals.length, 1);
+  assert.notEqual(waiting.terminals[0].result, 'done');
+  assert.equal(waiting.timers[0].cleared, true);
+  waiting.art.dispatch('load');
+  assert.equal(waiting.timers.length, 1, 'a late load cannot restart a cancelled action');
+
+  const cancelled = harness();
+  assert.equal(cancelled.playSleep('cat3Back1_1'), true);
+  cancelled.cancel({ restoreArt: false, reason: 'tier-change' });
+  cancelled.art.dispatch('load');
+  await flush();
+  assert.equal(cancelled.timers.length, 1);
+  assert.equal(cancelled.timers[0].cleared, true);
+  assert.equal(cancelled.demotions.length, 0);
+
+  const stalled = harness();
+  assert.equal(stalled.playSleep('cat3Back1_2'), true);
+  stalled.timers[0].callback();
+  assert.equal(stalled.demotions.length, 0);
+  assert.equal(stalled.gates.tier, 'cat3');
+  assert.notEqual(stalled.terminals[0].result, 'done');
 });
 
 test('CAT1 idle random pool contains six equal-width visual actions including mouse', () => {
