@@ -686,10 +686,21 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
     if isinstance(value, list):
         for index, item in enumerate(value):
             label = f"[plugin].entries[{index}]"
+            # The registry also takes a bare string item as the entry id.
+            if isinstance(item, str):
+                if not item.strip():
+                    issues.append((
+                        "warning",
+                        f"{label} is a blank entry id / "
+                        f"{label} 是空的入口 id / {label} のエントリ id が空です",
+                    ))
+                continue
             if not isinstance(item, dict):
                 issues.append((
                     "error",
-                    f"{label} must be a table / {label} 必须是表 / {label} はテーブルである必要があります",
+                    f"{label} must be a table or entry id string / "
+                    f"{label} 必须是表或入口 id 字符串 / "
+                    f"{label} はテーブルまたはエントリ id 文字列である必要があります",
                 ))
                 continue
             _warn_unknown_keys(item, allowed, label, issues)

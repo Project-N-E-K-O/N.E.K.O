@@ -923,24 +923,48 @@ def test_validate_plugin_dir_warns_unknown_entry_field(tmp_path: Path) -> None:
     assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
 
 
-def test_validate_plugin_dir_rejects_non_table_entry_item(tmp_path: Path) -> None:
+def test_validate_plugin_dir_accepts_string_entry_items(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     manifest_path = plugin_dir / "plugin.toml"
     manifest_path.write_text(
         manifest_path.read_text(encoding="utf-8").replace(
             "[plugin]\n",
-            '[plugin]\nentries = ["self_check"]\n',
+            '[plugin]\nentries = ["self_check", "  "]\n',
         ),
         encoding="utf-8",
     )
 
     issues = validate_plugin_dir(plugin_dir)
 
+    assert not any(level == "error" and "[plugin].entries" in message for level, message in issues)
+    assert not any("[plugin].entries[0]" in message for _level, message in issues)
     assert any(
-        level == "error" and message.startswith("[plugin].entries[0] must be a table / ")
-        and "必须是表" in message and "テーブルである必要があります" in message
+        level == "warning" and message.startswith("[plugin].entries[1] is a blank entry id / ")
         for level, message in issues
     )
+
+
+def test_validate_plugin_dir_rejects_non_table_non_string_entry_item(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest_path = plugin_dir / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "[plugin]\n",
+            '[plugin]\nentries = [3, ["self_check"]]\n',
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    for index in (0, 1):
+        assert any(
+            level == "error"
+            and message.startswith(f"[plugin].entries[{index}] must be a table or entry id string / ")
+            and "必须是表或入口 id 字符串" in message
+            and "テーブルまたはエントリ id 文字列である必要があります" in message
+            for level, message in issues
+        )
 
 
 def test_validate_plugin_dir_warns_when_entry_id_is_missing(tmp_path: Path) -> None:
