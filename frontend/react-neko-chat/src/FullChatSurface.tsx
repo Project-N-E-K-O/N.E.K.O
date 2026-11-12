@@ -2878,9 +2878,7 @@ export default function FullChatSurface({
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(7)}
         onClick={compactFanCloseOnAction(() => setHistoryOpen(true))}
       >
-        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-          <path d="M4 4h16v14H8l-4 3V4Z" /><path d="M8 8h8M8 12h6" />
-        </svg>
+        <img src="/static/icons/chat_history.svg" alt="" aria-hidden="true" />
 
       </button>
       <button
