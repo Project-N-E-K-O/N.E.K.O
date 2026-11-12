@@ -15,6 +15,7 @@ from plugin.server.application.install_source import (
     _DEFAULT_INSTALL_SOURCE,
     get_install_source_manager,
 )
+from plugin.server.application.plugins.consent_service import consent_summary
 from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
@@ -550,6 +551,7 @@ def _prepare_plugin_projection(
     )
     plugin_info["id"] = plugin_id
     plugin_info["autostart_pending"] = plugin_id in autostart_pending_ids
+    plugin_info["consent"] = consent_summary(plugin_id, dict(plugin_meta))
     plugin_info["status"] = _resolve_plugin_status(
         plugin_id=plugin_id,
         plugin_meta=plugin_meta,

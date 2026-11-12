@@ -17,6 +17,9 @@ from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
+from plugin.server.application.plugins.capability_analysis_service import (
+    schedule_analysis_many,
+)
 from plugin.server.application.plugins.hot_reload_service import hot_reload_service
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
 from plugin.server.application.plugins.operation_lock import (
@@ -494,6 +497,12 @@ class ServerLifecycleService:
                 str(exc),
             )
             return
+
+        # Queue capability analysis for every registered plugin in one thread
+        # hop before autostart begins.
+        with state.acquire_plugins_read_lock():
+            analysis_ids = list(state.plugins)
+        await asyncio.to_thread(schedule_analysis_many, analysis_ids)
 
         if not independent_ids and not ordered_ids:
             logger.warning("no autostart plugins discovered at startup; plugins may need manual start")

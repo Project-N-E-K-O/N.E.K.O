@@ -4,6 +4,8 @@ import { useI18n } from 'vue-i18n'
 import { deletePlugin } from '@/api/plugins'
 import { buildPluginCli } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
+import { usePluginConsentState } from '@/stores/pluginConsentState'
+import { usePluginStartGate } from '@/composables/usePluginStartGate'
 import type { PluginListAction, PluginMeta } from '@/types/api'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { openExternalUrl } from '@/utils/openExternal'
@@ -32,6 +34,7 @@ const BUILTIN_ACTION_IDS = [
 export function usePluginListContextActions() {
   const router = useRouter()
   const pluginStore = usePluginStore()
+  const startGate = usePluginStartGate()
   const { t, locale } = useI18n()
 
   function isRunning(plugin: PluginListContextPlugin): boolean {
@@ -235,7 +238,7 @@ export function usePluginListContextActions() {
         await router.push({ path: `/plugins/${safeId}`, query: { tab: 'guide' } })
         return
       case 'start':
-        await pluginStore.start(plugin.id)
+        if (!(await startGate.startWithConsent(plugin.id))) return
         ElMessage.success(t('messages.pluginStarted'))
         return
       case 'stop':
@@ -277,6 +280,7 @@ export function usePluginListContextActions() {
       case 'delete':
         {
           const result = await deletePlugin(plugin.id)
+          usePluginConsentState().forget(plugin.id)
           if (result.restored_builtin_restart_error) {
             ElMessage.warning(t('messages.pluginDeletedBuiltinRestartFailed', {
               plugin: plugin.name,

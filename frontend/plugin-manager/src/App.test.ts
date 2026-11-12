@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { expect, it, vi } from 'vitest'
+import { createPinia } from 'pinia'
 import { createApp, defineComponent, h, nextTick, reactive } from 'vue'
 import App from './App.vue'
 import { localeLoadState } from './i18n'
@@ -13,6 +14,7 @@ vi.mock('./components/common/LocaleLoadNotice.vue', () => ({ default: { render: 
 it('gates initial locale loading but preserves route state on later language changes', async () => {
   const counts = reactive({ mounts: 0 })
   const app = createApp(App)
+  app.use(createPinia())
   app.config.globalProperties.$t = (key: string) => key
   app.component('el-config-provider', defineComponent({ setup: (_, { slots }) => () => slots.default?.() }))
   app.component('router-view', defineComponent({ setup() { counts.mounts++; return () => h('input') } }))

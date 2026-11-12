@@ -89,6 +89,10 @@ _ALLOWED_UPLOAD_SUFFIXES = frozenset({".neko-plugin", ".neko-bundle"})
 _UPLOAD_MAX_BYTES = MAX_PLUGIN_PACKAGE_BYTES
 _UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 
+from plugin.server.application.plugins.capability_analysis_service import (
+    notify_install_committed,
+)
+
 logger = get_logger("server.application.plugin_cli")
 plugin_registry_service = PluginRegistryService()
 
@@ -300,6 +304,7 @@ class PluginCliService:
         confirmation_token: str | None = None,
         _allow_external_profiles_root: bool = False,
         _preserve_autostart_plugin_id: str | None = None,
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         install_source_manager = get_install_source_manager()
         reload_install_source = getattr(install_source_manager, "load", None)
@@ -503,11 +508,14 @@ class PluginCliService:
                     "could not record as awaiting approval: "
                     + ", ".join(sorted(unrecorded))
                 )
-            return await self._record_requested_install_source(
+            result = await self._record_requested_install_source(
                 install_result=result,
                 package=package,
                 source=install_source,
             )
+            if _analyze_after_commit:
+                notify_install_committed(result)
+            return result
 
         if action == "override_builtin":
             raise ServerDomainError(
@@ -777,13 +785,15 @@ class PluginCliService:
             "restarted": result.restarted,
             "rollback_status": result.rollback_status,
         }
-        if manual_manager is not None:
-            return response
-        return await self._record_requested_install_source(
-            install_result=response,
-            package=package,
-            source=install_source,
-        )
+        if manual_manager is None:
+            response = await self._record_requested_install_source(
+                install_result=response,
+                package=package,
+                source=install_source,
+            )
+        if _analyze_after_commit:
+            notify_install_committed(response)
+        return response
 
     @serialized_plugin_operation
     async def install_builtin_override(
@@ -791,6 +801,7 @@ class PluginCliService:
         *,
         package: str,
         market_override: dict[str, Any],
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         """Install one verified Market package as the effective user source."""
 
@@ -1019,6 +1030,8 @@ class PluginCliService:
                 "install_source_warning": "; ".join(lock_warnings) if lock_warnings else None,
             }
         )
+        if _analyze_after_commit:
+            notify_install_committed(staged_result)
         return staged_result
 
     async def _install_market_builtin_replacement(
@@ -1213,6 +1226,7 @@ class PluginCliService:
         on_conflict: str = "fail",
         install_source_override: dict[str, Any] | None = None,
         _preserve_autostart_plugin_id: str | None = None,
+        _analyze_after_commit: bool = True,
     ) -> dict[str, object]:
         """Upload, unpack, and atomically record the install source (design §3.3).
 
@@ -1305,6 +1319,7 @@ class PluginCliService:
                     on_conflict=on_conflict,
                     use_staging=True,
                     _allow_external_profiles_root=_allow_external_profiles_root,
+                    _analyze_after_commit=False,
                 )
                 unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
                 warning = await self._record_install_source_best_effort(
@@ -1319,6 +1334,8 @@ class PluginCliService:
                 }
                 if warning is not None:
                     payload["install_source_warning"] = warning
+                if _analyze_after_commit:
+                    notify_install_committed(payload)
                 return payload
             except Exception:
                 self._cleanup_after_failure(
@@ -1372,6 +1389,7 @@ class PluginCliService:
                 unpack_result = await self.install_builtin_override(
                     package=saved_path,
                     market_override=install_source_override,
+                    _analyze_after_commit=False,
                 )
                 # The source-switch transaction has committed and owns its
                 # rollback. Do not let the outer upload cleanup delete the
@@ -1388,12 +1406,15 @@ class PluginCliService:
                     "previous_version": unpack_result.get("previous_version"),
                 }
                 warning = unpack_result.get("install_source_warning")
-                return self._compose_install_result(
+                result = self._compose_install_result(
                     saved=saved,
                     unpack_result=unpack_result,
                     install_dict=install_dict,
                     warnings=[str(warning)] if warning else [],
                 )
+                if _analyze_after_commit:
+                    notify_install_committed(result)
+                return result
             forced_directory_name = install_source_override.get("directory_name")
             use_staging = install_mode == "install" or isinstance(
                 forced_directory_name,
@@ -1439,6 +1460,7 @@ class PluginCliService:
                     ),
                     _allow_external_profiles_root=_allow_external_profiles_root,
                     _preserve_autostart_plugin_id=_preserve_autostart_plugin_id,
+                    _analyze_after_commit=False,
                 )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             target_dir, _target_directory_plugin_id = self._extract_unpack_target(
@@ -1470,12 +1492,15 @@ class PluginCliService:
                     )
                     if refresh_warning is not None:
                         warnings.append(refresh_warning)
-                return self._compose_install_result(
+                result = self._compose_install_result(
                     saved=saved,
                     unpack_result=unpack_result,
                     install_dict=install_dict,
                     warnings=warnings,
                 )
+                if _analyze_after_commit:
+                    notify_install_committed(result)
+                return result
 
             # Step 4b — plugin identity consistency check.
             # When Market tells us "this is plugin X" by passing
@@ -1608,12 +1633,15 @@ class PluginCliService:
                     }
                 )
 
-            return self._compose_install_result(
+            result = self._compose_install_result(
                 saved=saved,
                 unpack_result=unpack_result,
                 install_dict=install_dict,
                 warnings=warnings,
             )
+            if _analyze_after_commit:
+                notify_install_committed(result)
+            return result
 
         except InstallSourceError:
             # Lock write failed — fs cleanup still runs, but propagate the
