@@ -112,8 +112,31 @@ history position, replacing the generic receipt; no recurring system instruction
 or untrusted title is appended. Existing captions are not duplicated.
 
 The current installed conversation model, gpt-6.1-sol, passed all controlled visual
-cases. Native desktop capture and platform-specific behavior still require app
-acceptance; these synthetic runs do not establish Windows/Linux/Tauri support.
+cases. Native app acceptance is recorded below; the synthetic runs alone do not
+establish platform-specific capture behavior.
+
+## Native macOS acceptance, 2026-11-12
+
+The installed Electron app was checked with its configured gpt-6.1-sol model
+and a real TextEdit window containing only synthetic acceptance data. The running
+release included the compact implementation and the latest local chat UI changes.
+
+- A request for the unopened test window returned a missing-window answer.
+- After opening Screen-Alpha.txt, the app selected that window and returned the
+  exact values `TASK_ID = 731` and `STATUS = READY`.
+- A follow-up explicitly requesting a fresh capture and a crop returned
+  `const route = "capture | crop | verify";` exactly. Runtime events confirmed
+  overview, window selection and original-pixel region capture, in that order.
+  The crop was 1124x76 original pixels, derived from the selected window snapshot.
+- A subsequent ordinary chat prompt received an ordinary response, with no new
+  screen-inspection events.
+
+This acceptance used the normal app conversation path. Unlike the independent
+synthetic provider sessions above, these prompts entered the app's normal chat
+history. No personal screen content or app conversation logs are published here.
+This verifies the installed macOS path; it does not establish Windows/Linux/Tauri
+support or eliminate the model-level failure observed in the Qwen experiment.
+
 
 The failed Qwen catgirl session was followed by three additional six-turn sessions;
 all 18 follow-up turns passed. Across the compact visual runs this is 125/126
