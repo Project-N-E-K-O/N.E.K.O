@@ -255,6 +255,33 @@ def test_retry_delay_does_not_overflow_after_many_failures():
     assert retry_delay(10**6) == 300.0
 
 
+async def test_a_question_read_before_its_commission_stopped_waiting_is_not_sent(ledger):
+    commission = await _file(ledger)
+    await ledger.transition(commission.id, "working", reason="test")
+    await ledger.transition(commission.id, "waiting_user", reason="test")
+    first = await ledger.outbox_add(commission.id, "task_result", {"summary": "earlier"})
+    question = await ledger.outbox_add(commission.id, "question", {"question": "allow?"})
+    sent: list[int] = []
+    release = asyncio.Event()
+
+    async def send(item: Any) -> bool:
+        if item.id == first:
+            # While this one is on its way, the commission is answered.
+            await ledger.transition(commission.id, "working", reason="the user answered")
+            await release.wait()
+        sent.append(item.id)
+        return True
+
+    sender = OutboxSender(ledger, send, clock=time.time)
+    flushing = asyncio.ensure_future(sender.flush())
+    release.set()
+    await asyncio.wait_for(flushing, 5)
+
+    # Both rows were read in one batch; the question had become out of date.
+    assert sent == [first]
+    assert question not in [item.id for item in await ledger.outbox_pending()]
+
+
 async def test_the_outbox_loop_retries_after_a_storage_error(ledger, monkeypatch):
     await ledger.outbox_add(None, "receipt", {"text": "hello"})
     monkeypatch.setattr(outbox_module, "retry_delay", lambda _attempts: 0.01)

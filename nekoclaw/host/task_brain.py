@@ -77,6 +77,9 @@ from nekoclaw.host.selection import find_entry, similarity, visible_entries
 
 logger = logging.getLogger(__name__)
 
+# How long closing waits for stops under way before it goes on.
+_CLOSE_STOP_WAIT_SECONDS = 15.0
+
 _DIRECT_STATUS = {"completed": "done", "blocked": "blocked", "failed": "failed"}
 BIND_TASK_ENTRY = "bind_task"
 
@@ -184,6 +187,9 @@ class TaskBrain:
         self._familiars = familiars
         self._enabled = enabled
         self._tasks: set[asyncio.Task[Any]] = set()
+        # Stops under way. Not cancelled on close like the rest: they are
+        # waited for, so a stop asked for is carried out.
+        self._stopping: set[asyncio.Task[Any]] = set()
         # commission id -> its second round or direct plugin call.
         self._work: dict[str, asyncio.Task[Any]] = {}
         self._deferred_timers: dict[str, asyncio.TimerHandle] = {}
@@ -728,7 +734,9 @@ class TaskBrain:
         run or the familiar going.
         """
         caller = asyncio.current_task()
-        stopping = self._spawn(self._abort(commission_id, reason=reason, notify=notify, caller=caller))
+        stopping = asyncio.ensure_future(self._abort(commission_id, reason=reason, notify=notify, caller=caller))
+        self._stopping.add(stopping)
+        stopping.add_done_callback(self._stopping.discard)
         return await asyncio.shield(stopping)
 
     async def _abort(
@@ -914,6 +922,10 @@ class TaskBrain:
         for timer in self._deferred_timers.values():
             timer.cancel()
         self._deferred_timers.clear()
+        if self._stopping:
+            # A stop under way is finished first (within a bound), so its
+            # plugin run is cancelled and its familiar closed.
+            await asyncio.wait(list(self._stopping), timeout=_CLOSE_STOP_WAIT_SECONDS)
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()

@@ -99,6 +99,10 @@ class OutboxSender:
             return 0
         delivered = 0
         for item in await self._ledger.outbox_pending(due_by=self._clock()):
+            if item.kind == "question" and item.commission_id and not await self._still_waiting(item.commission_id):
+                # It stopped waiting after this batch was read; its row is
+                # gone from the ledger and the question is out of date.
+                continue
             try:
                 accepted = bool(await send(item))
                 error = "" if accepted else "not accepted"
@@ -115,6 +119,10 @@ class OutboxSender:
                 await self._ledger.outbox_mark_failed(item.id, error, self._clock() + retry_delay(attempts))
                 logger.info("report %s not delivered (attempt %d): %s", item.id, attempts, error)
         return delivered
+
+    async def _still_waiting(self, commission_id: str) -> bool:
+        commission = await self._ledger.get(commission_id)
+        return commission is not None and commission.status == "waiting_user"
 
     async def _run(self) -> None:
         failures = 0

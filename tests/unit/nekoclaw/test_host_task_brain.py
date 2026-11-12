@@ -751,6 +751,43 @@ async def test_a_stop_whose_caller_goes_away_after_the_status_is_written_still_c
     assert (await host.ledger.get(commission.id)).status == "cancelled"
 
 
+async def test_closing_waits_for_a_stop_under_way(server, hosts, tmp_path, monkeypatch):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="weather", dispatch_text="check the weather", source="dispatch", route="plugin"
+    )
+    await host.ledger.transition(commission.id, "working", reason="test")
+    asked: list[str] = []
+
+    async def cancel_commission(commission_id: str, reason: str = "") -> int:
+        asked.append(commission_id)
+        return 1
+
+    monkeypatch.setattr(host.runner, "cancel_commission", cancel_commission)
+    transition = host.ledger.transition
+    written = asyncio.Event()
+    go_on = asyncio.Event()
+
+    async def slow_after_writing(commission_id: str, status: str, **fields: Any) -> Any:
+        moved = await transition(commission_id, status, **fields)
+        if status == "cancelled":
+            written.set()
+            await go_on.wait()
+        return moved
+
+    host.ledger.transition = slow_after_writing
+    stopping = asyncio.ensure_future(host.abort(commission.id))
+    await asyncio.wait_for(written.wait(), 5)
+    # Closing begins while the stop is half done.
+    closing = asyncio.ensure_future(host.brain.close())
+    await asyncio.sleep(0.05)
+    go_on.set()
+    await asyncio.wait_for(closing, 5)
+
+    assert asked == [commission.id]
+    assert (await stopping).status == "cancelled"
+
+
 async def test_stopping_a_failed_commission_asks_again_to_cancel_a_run_still_known(
     server, hosts, tmp_path, monkeypatch
 ):
