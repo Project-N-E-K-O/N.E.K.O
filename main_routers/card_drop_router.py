@@ -34,10 +34,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from main_logic import client_registration
 from services.chat_sync import host as _chat_sync_host
+from .forge_drop_reaction import router as forge_drop_reaction_router
 
 logger = logging.getLogger("neko.card_drop")
 
 router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
+router.include_router(forge_drop_reaction_router)
 
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "https://community.project-neko.cn"
