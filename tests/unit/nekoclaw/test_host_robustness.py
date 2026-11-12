@@ -282,6 +282,33 @@ async def test_a_question_read_before_its_commission_stopped_waiting_is_not_sent
     assert question not in [item.id for item in await ledger.outbox_pending()]
 
 
+async def test_an_earlier_question_read_in_a_batch_is_not_sent_once_another_one_waits(ledger):
+    commission = await _file(ledger)
+    await ledger.transition(commission.id, "working", reason="test")
+    await ledger.transition(commission.id, "waiting_user", reason="test")
+    first = await ledger.outbox_add(commission.id, "task_result", {"summary": "earlier"})
+    old_question = await ledger.outbox_add(commission.id, "question", {"question": "A?"})
+    sent: list[int] = []
+    asked_again: list[int] = []
+
+    async def send(item: Any) -> bool:
+        if item.id == first:
+            # While this one is on its way, A is answered and B is asked.
+            await ledger.transition(commission.id, "working", reason="the user answered")
+            await ledger.transition(commission.id, "waiting_user", reason="asks again")
+            asked_again.append(await ledger.outbox_add(commission.id, "question", {"question": "B?"}))
+        sent.append(item.id)
+        return True
+
+    sender = OutboxSender(ledger, send, clock=time.time)
+    await sender.flush()
+
+    # A was read in the batch but is gone from the ledger; B goes in a later round.
+    assert old_question not in sent
+    assert sent == [first]
+    assert [item.id for item in await ledger.outbox_pending()] == asked_again
+
+
 async def test_a_question_stored_after_its_commission_stopped_waiting_is_dropped(ledger):
     commission = await _file(ledger)
     await ledger.transition(commission.id, "working", reason="test")

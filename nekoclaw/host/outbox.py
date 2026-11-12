@@ -99,12 +99,18 @@ class OutboxSender:
             return 0
         delivered = 0
         for item in await self._ledger.outbox_pending(due_by=self._clock()):
-            if item.kind == "question" and item.commission_id and not await self._still_waiting(item.commission_id):
-                # It no longer waits, so the question is out of date. Its row
-                # is dropped here too: it may have been stored after the
-                # commission stopped waiting, when nothing removed it.
-                await self._ledger.outbox_drop(item.id)
-                continue
+            if item.kind == "question" and item.commission_id:
+                if not await self._ledger.outbox_unsent(item.id):
+                    # Removed after this batch was read: the commission
+                    # stopped waiting for it, even if it waits for another
+                    # question by now.
+                    continue
+                if not await self._still_waiting(item.commission_id):
+                    # It no longer waits, so the question is out of date. Its
+                    # row is dropped here: it may have been stored after the
+                    # commission stopped waiting, when nothing removed it.
+                    await self._ledger.outbox_drop(item.id)
+                    continue
             try:
                 accepted = bool(await send(item))
                 error = "" if accepted else "not accepted"

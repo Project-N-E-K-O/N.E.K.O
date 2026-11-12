@@ -722,6 +722,13 @@ class Ledger:
 
         return await self.run(work)
 
+    async def outbox_unsent(self, item_id: int) -> bool:
+        """Whether a report is still stored and not yet sent."""
+        return await self.run(
+            lambda conn: conn.execute("SELECT 1 FROM outbox WHERE id = ? AND sent_at IS NULL", (item_id,)).fetchone()
+            is not None
+        )
+
     async def outbox_drop(self, item_id: int) -> None:
         """Remove an unsent report that is out of date."""
         await self.run(lambda conn: conn.execute("DELETE FROM outbox WHERE id = ? AND sent_at IS NULL", (item_id,)))
