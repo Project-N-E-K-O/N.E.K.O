@@ -111,6 +111,30 @@ def test_deeply_nested_json_does_not_block_following_rows(archive):
     assert browse(archive, 'Alice', limit=1)['messages'][0]['id'] == 65
 
 
+def test_chronological_cursor_seeks_past_old_history(archive, monkeypatch):
+    with sqlite3.connect(archive / 'Alice' / 'time_indexed.db') as db:
+        db.execute('CREATE INDEX timestamps ON time_indexed_original(timestamp)')
+        db.executemany('INSERT INTO time_indexed_original VALUES(?,?,?,?)',
+                       [(i, 'old', '{}', '2020-01-01') for i in range(100, 20100)])
+    connections = []
+    class CountedConnection(sqlite3.Connection):
+        steps = 0
+        def set_progress_handler(self, callback, interval):
+            def counted():
+                self.steps += 1
+                return callback()
+            super().set_progress_handler(counted, interval)
+    connect = sqlite3.connect
+    def counted_connect(*args, **kwargs):
+        db = connect(*args, **kwargs, factory=CountedConnection)
+        connections.append(db)
+        return db
+    monkeypatch.setattr(sqlite3, 'connect', counted_connect)
+    page = browse(archive, 'Alice', chronological=True, after_time='2025-01-01', cursor=1, limit=2)
+    assert [m['id'] for m in page['messages']] == [1, 2]
+    assert sum(db.steps for db in connections) < 10
+
+
 def test_router_validation_and_offloaded_read(archive, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

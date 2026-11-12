@@ -83,8 +83,8 @@ def browse(root, character, *, day=None, query='', role='all', cursor=0,
             if chronological:
                 where.append("timestamp IS NOT NULL AND timestamp<>''")
                 if cursor and after_time is not None:
-                    where.append('(timestamp>? OR (timestamp=? AND id>?))')
-                    args.extend((after_time, after_time, cursor))
+                    where.append('(timestamp,id)>(?,?)')
+                    args.extend((after_time, cursor))
             elif cursor:
                 where.append('id' + ('<' if order == 'desc' else '>') + '?')
                 args.append(cursor)
