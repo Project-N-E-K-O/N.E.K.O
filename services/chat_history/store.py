@@ -38,13 +38,17 @@ def message(row):
         if not role or not isinstance(content, str) or not content.strip():
             return None
         content = re.sub(r'^\[\d{8} [^\]\s]+ \d{2}:\d{2}\] ?', '', content)
-        return dict(id=row[0], session=row[1], text=content, role=role, time=str(row[3] or ''))
+        entry = dict(id=row[0], session=row[1], text=content, role=role, time=str(row[3] or ''))
+        record_id = proof.get('recordId')
+        if role == 'assistant' and isinstance(record_id, str) and 0 < len(record_id) <= 200:
+            entry['recordId'] = record_id
+        return entry
     except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
         return None
 
 
 def browse(root, character, *, day=None, query='', role='all', cursor=0,
-           limit=30, order='desc', anchor=None):
+           limit=30, order='desc', anchor=None, chronological=False, after_time=None):
     root = Path(root).resolve()
     if not character or character in ('.', '..') or any(c in character for c in '/\\\0'):
         raise ValueError('invalid_character')
@@ -76,25 +80,36 @@ def browse(root, character, *, day=None, query='', role='all', cursor=0,
                 end = (selected + timedelta(days=1)).isoformat() if selected < date.max else '9999-12-32'
                 where.append('timestamp>=? AND timestamp<?')
                 args.extend((day, end))
-            if cursor:
+            if chronological:
+                where.append("timestamp IS NOT NULL AND timestamp<>''")
+                if cursor and after_time is not None:
+                    where.append('(timestamp>? OR (timestamp=? AND id>?))')
+                    args.extend((after_time, after_time, cursor))
+            elif cursor:
                 where.append('id' + ('<' if order == 'desc' else '>') + '?')
                 args.append(cursor)
             sql = 'SELECT id,session_id,substr(message,1,262144),timestamp FROM time_indexed_original'
             sql += (' WHERE ' + ' AND '.join(where)) if where else ''
-            sql += ' ORDER BY id ' + ('DESC' if order == 'desc' else 'ASC') + ' LIMIT 5001'
+            sql += (' ORDER BY timestamp ASC,id ASC' if chronological else ' ORDER BY id ' + ('DESC' if order == 'desc' else 'ASC')) + ' LIMIT 5001'
             rows = iter(db.execute(sql, args))
-            hits, scanned, last = [], 0, None
+            hits, scanned, last, last_time = [], 0, None, None
+            def result(more):
+                value = dict(messages=hits, nextCursor=last if more else None, scanned=min(scanned, 5000), available=True)
+                if chronological:
+                    value['nextTime'] = last_time if more else None
+                return value
             for row in rows:
                 scanned += 1
                 if scanned > 5000:
-                    return dict(messages=hits, nextCursor=last, scanned=5000, available=True)
+                    return result(True)
                 last = row[0]
+                last_time = row[3]
                 entry = message(row)
                 if entry and (role == 'all' or role == entry['role']) and query.casefold() in entry['text'].casefold():
                     hits.append(entry)
                 if len(hits) == limit:
                     more = next(rows, None) is not None
-                    return dict(messages=hits, nextCursor=last if more else None, scanned=scanned, available=True)
-            return dict(messages=hits, nextCursor=None, scanned=scanned, available=True)
+                    return result(more)
+            return result(False)
     except sqlite3.Error as exc:
         raise HistoryUnavailable('history_unavailable') from exc

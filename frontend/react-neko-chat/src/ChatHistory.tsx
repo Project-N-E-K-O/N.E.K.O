@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { i18n } from './i18n';
 import './chat-history.css';
 import HistoryResults from './HistoryResults';
+import { VoiceReplayIcon } from './VoiceReplayIcon';
+import { useHistoryPlayback } from './useHistoryPlayback';
 import { getHistory as get, useHistoryFeed, type HistoryEntry as Entry, type HistoryPage as Page } from './useHistoryFeed';
 
 const t = (key: string) => i18n(`chatHistory.${key}`, key);
@@ -39,6 +41,9 @@ export function HistoryDialog({ close }: { close: () => void }) {
   const params = new URLSearchParams({ character, q: query, role, limit: '30', order: prefs.order });
   if (day) params.set('day', day);
   const feed = useHistoryFeed(params.toString(), Boolean(character), searchRevision);
+  const playbackScope = new URLSearchParams({ q: query, ...(day ? { day } : {}) }).toString();
+  const playback = useHistoryPlayback(character, `${playbackScope}&role=${role}&revision=${searchRevision}`);
+  const playbackActive = ['loading', 'playing', 'paused'].includes(playback.phase);
   useEffect(() => {
     const prior = document.activeElement as HTMLElement | null;
     const element = dialog.current;
@@ -89,9 +94,17 @@ export function HistoryDialog({ close }: { close: () => void }) {
     value.setDate(value.getDate() + delta);
     setDay(`${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`); reset();
   };
-  const renderEntry = (entry: Entry) => <article key={entry.id} data-history-id={entry.id} className={entry.id === anchor ? 'history-hit' : ''}>
+  const renderEntry = (entry: Entry) => <article key={entry.id} data-history-id={entry.id} className={[entry.id === anchor ? 'history-hit' : '', playbackActive && playback.current?.id === entry.id ? 'history-playing' : ''].join(' ')}>
     <div className="history-meta"><strong>{entry.role === 'user' ? t('user') : character}</strong>{prefs.times && <time>{entry.time}</time>}<span>#{entry.id}</span></div>
     <p><Highlight text={entry.text} query={query} /></p>
+    {entry.voice && <span className="message-voice-replay" data-voice-state={playback.current?.id === entry.id ? playback.phase : 'idle'}>
+      <button type="button" className="message-voice-replay-button"
+        aria-label={t(playbackActive && playback.current?.id === entry.id ? 'voiceStop' : 'voicePlay')}
+        aria-pressed={playbackActive && playback.current?.id === entry.id}
+        onClick={() => playbackActive && playback.current?.id === entry.id ? playback.stop() : playback.start(entry)}>
+        <VoiceReplayIcon playing={playbackActive && playback.current?.id === entry.id} />
+      </button>
+    </span>}
     {anchor === null && <button onClick={() => setAnchor(entry.id)}>{t('context')}</button>}
   </article>;
   return <dialog ref={dialog} className="history-dialog neko-dialog-overlay" data-compact-geometry-owner="surface" data-compact-geometry-item="chatHistoryDialog" data-compact-no-drag="true" aria-labelledby="history-title" onCancel={close}>
@@ -112,6 +125,17 @@ export function HistoryDialog({ close }: { close: () => void }) {
         <label><input type="checkbox" checked={prefs.times} onChange={e => setPrefs({ ...prefs, times: e.target.checked })} />{t('showTime')}</label>
       </div></details>
     </nav>
+    <section className="history-playback" aria-label={t('review')}>
+      <div className="history-playback-controls">
+        {!playbackActive ? <button disabled={!character || role === 'user'} onClick={() => playback.start()}><VoiceReplayIcon />{t('playAll')}</button>
+          : <><button onClick={playback.phase === 'paused' ? playback.resume : playback.pause}>{t(playback.phase === 'paused' ? 'resume' : 'pause')}</button>
+            <button onClick={playback.stop}>{t('voiceStop')}</button></>}
+        <span role="status">{t(playbackActive ? `playback_${playback.phase}` : playback.phase === 'idle' ? 'reviewHint' : `playback_${playback.phase}`)}</span>
+      </div>
+      {playback.current && <div className="history-now-playing"><time>{playback.current.time}</time><span>{playback.current.text}</span>
+        <button onClick={() => setAnchor(playback.current!.id)}>{t('locatePlaying')}</button></div>}
+      {playback.partial && <span className="history-playback-note">{t('voicePartial')}</span>}
+    </section>
     {anchor !== null && <button className="history-back" onClick={() => setAnchor(null)}>{t('back')}</button>}
     {characterError && <div role="alert" className="history-state">{t('error')} <button onClick={() => setRetry(v => v + 1)}>{t('retry')}</button></div>}
     <HistoryResults key={params.toString() + searchRevision} entries={feed.messages} renderEntry={renderEntry}

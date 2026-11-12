@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export type HistoryEntry = { id: number; role: string; text: string; time: string };
+export type HistoryEntry = { id: number; role: string; text: string; time: string; voice?: { recordId: string } };
 export type HistoryPage = { messages: HistoryEntry[]; nextCursor: number | null; available: boolean };
 export async function getHistory<T>(path: string, signal: AbortSignal): Promise<T> {
   const response = await fetch(`/api/chat-history/${path}`, { signal, cache: 'no-store' });

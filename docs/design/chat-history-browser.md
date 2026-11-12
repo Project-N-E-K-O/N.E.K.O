@@ -75,3 +75,29 @@ are skipped without blocking subsequent messages.
 Regression tests cover append/deduplication, in-flight exclusion, retries, stale
 response cancellation, date/all-date scopes, empty batches, end-of-data, and
 bounded rendering with 10,000 messages.
+
+## Saved voice and chronological review
+
+Rows join the optional local `voice_archive/archive.sqlite3` using the immutable
+`metadata.chat_original_source.recordId` and character. Only rows with stored
+chunks expose a voice control; no text/time similarity matching or new TTS calls
+are used. The voice archive is optional: text browsing works without it. This
+reader consumes the existing archive format; it does not enable voice recording
+or migrate another provider's storage. The archive's read endpoint returns the
+original PCM/WAV or Ogg segments only when requested.
+
+`GET /api/chat-history/playback` keeps the selected character/date/keyword scope
+and returns at most 30 candidates per scan, with an exclusive `(timestamp,id)`
+cursor (`after_time`, `cursor`). Ordering is chronological even if import IDs are
+out of time order. Empty batches retain continuation; missing archives finish
+immediately and unavailable archives report an error. The client retains only
+the current queue batch and loads audio for the current message. It skips entries
+whose recordings were removed, shows partial-recording status, and stops on
+network/decode failures without skipping an unknown part of the conversation.
+
+The dialog owns playback independently of virtual rows. Its review strip shows
+the current timestamp/text, pause/resume, stop and a context link. Per-row controls
+use the same speaker/stop icon as live chat. Closing the dialog, changing filters,
+starting another replay or receiving live-speech playback cancels the request and
+releases the media element. Search-result display order does not change playback
+order. User-only filters disable voice review because the archive contains TTS.
