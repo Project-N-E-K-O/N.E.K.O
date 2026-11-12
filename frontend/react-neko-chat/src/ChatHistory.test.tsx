@@ -26,7 +26,8 @@ it('searches literal text, locates context and returns to the same result page',
   fireEvent.click(screen.getByText('context'));
   await waitFor(() => expect(fetch).toHaveBeenLastCalledWith(expect.stringContaining('anchor=5'), expect.anything()));
   await waitFor(() => expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled());
-  const target = vi.mocked(HTMLElement.prototype.scrollIntoView).mock.instances.at(-1) as HTMLElement;
+  const targets = vi.mocked(HTMLElement.prototype.scrollIntoView).mock.instances;
+  const target = targets[targets.length - 1] as HTMLElement;
   expect(target.closest('[hidden]')).toBeNull();
   expect(target.dataset.historyId).toBe('5');
   fireEvent.click(screen.getByText('back'));
