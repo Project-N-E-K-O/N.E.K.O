@@ -7,8 +7,8 @@ The organizer of a character runs it once, during idle maintenance:
    dedup reaches neither of the latter);
 2. ask the model about each pair with the dedup prompt, 20 at a time, saving
    every answer so an interrupted run resumes where it stopped;
-3. archive what a merge or replace folds away, with ``arbitration_archived_at``
-   and ``superseded_by``; point reflections and persona entries at the facts
+3. move what a merge or replace folds away into cold storage, with
+   ``arbitration_archived_at`` and ``superseded_by``; point reflections and persona entries at the facts
    that stand for them; mark a survivor absorbed when what it replaced was;
 4. record the run here and in the snapshot's ``maintenance.legacyDedup``.
 """
@@ -18,7 +18,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from memory import legacy_dedup, organizer
+from memory import cold_store, legacy_dedup, organizer
 from utils.file_utils import atomic_write_json
 
 from . import runtime
@@ -55,6 +55,11 @@ def _read_archive(name):
     if not isinstance(value, list):
         raise ValueError('facts_archive is not a list')
     return value
+
+
+def _read_archive_and_cold(name):
+    """facts_archive.json plus stubs of the cold facts (no text): where folded facts end up."""
+    return [*_read_archive(name), *cold_store.status(str(_directory(name)))]
 
 
 def _save_marker(directory, marker):
@@ -192,6 +197,7 @@ async def _archive_folded(name, folded, fingerprints, stamp):
         return
 
     def mark():
+        from memory.facts import _fact_scoped_identity
         from utils.cloudsave_runtime import cloudsave_writable_transaction
         archive_path = store._facts_archive_path(name)
         with store._get_lock(name):
@@ -199,19 +205,23 @@ async def _archive_folded(name, folded, fingerprints, stamp):
                 archive = _read_archive(name)
                 # Under the fact lock: the survivors as they stand now, live or archived.
                 current = {row.get('id'): row for row in [*archive, *store._facts.get(name, [])] if isinstance(row, dict)}
-                now = stamp
-                changed = False
+                demoted = []
                 for row in archive:
                     survivor = remaining.get(row.get('id')) if isinstance(row, dict) else None
                     if (survivor is not None and not row.get('arbitration_archived_at')
                             and legacy_dedup.fingerprint(row) == fingerprints.get(row['id'])
                             and survivor in current and legacy_dedup.fingerprint(current[survivor]) == fingerprints.get(survivor)):
-                        # Archived by age, never arbitrated: it now also says what replaced it.
-                        row.update(arbitration_archived_at=now, arbitration_reason=legacy_dedup.ARCHIVE_REASON,
-                                   superseded_by=remaining[row['id']])
-                        changed = True
-                if changed:
-                    atomic_write_json(archive_path, archive, indent=2, ensure_ascii=False)
+                        # Archived by age, never arbitrated: it now also says what replaced it,
+                        # and leaves the searchable archive for cold storage.
+                        demoted.append(row)
+                if demoted:
+                    # Cold storage first: a crash in between leaves both copies, read as cold.
+                    cold_store.append(str(_directory(name)), [
+                        {**row, 'arbitration_archived_at': stamp, 'arbitration_reason': legacy_dedup.ARCHIVE_REASON,
+                         'superseded_by': remaining[row['id']]} for row in demoted], identity=_fact_scoped_identity)
+                    leaving = {id(row) for row in demoted}
+                    atomic_write_json(archive_path, [row for row in archive if id(row) not in leaving],
+                                      indent=2, ensure_ascii=False)
 
     from memory.recent import _await_recent_mutation_to_completion
     async with store._get_persist_alock(name):
@@ -305,7 +315,7 @@ async def run(name, *, still_idle=lambda: True):
     # may have changed a fact since. Only folds whose two facts are unchanged apply.
     if not organizer.allowed(name):
         return None
-    archive_now = await asyncio.to_thread(_read_archive, name)
+    archive_now = await asyncio.to_thread(_read_archive_and_cold, name)
     current = legacy_dedup.candidates(await runtime.fact_store.aload_facts(name), archive_now)
     ours = set(marker.get('archiving') or {})
     stamps = list(marker.get('stamps') or ())
@@ -330,7 +340,7 @@ async def run(name, *, still_idle=lambda: True):
     ours, stamps = set(marker['archiving']), marker['stamps']
     # Each folded fact points straight at the one that finally stands for it.
     await _archive_folded(name, mapping, fingerprints, stamp)
-    archive = {row.get('id'): row for row in await asyncio.to_thread(_read_archive, name) if isinstance(row, dict)}
+    archive = {row.get('id'): row for row in await asyncio.to_thread(_read_archive_and_cold, name) if isinstance(row, dict)}
     # Only what the archive now records as folded is repointed and reported: a fact
     # that changed in the last moment was skipped and stays as it is.
     mapping = {loser: survivor for loser, survivor in mapping.items()
@@ -355,50 +365,24 @@ async def run(name, *, still_idle=lambda: True):
 async def restore(name):
     """Bring back the facts the cleanup folded away, each under a new id.
 
-    The archived rows stay as they are: reusing their ids would let a peer's
-    snapshot, which still holds them archived, fold them away again at the next
-    merge. Returns how many facts came back.
+    Goes through cold storage's restore entry: the cold rows stay as they are,
+    because reusing their ids would let a peer's snapshot, which lists them as
+    cold, fold them away again at the next merge. Returns how many facts came back.
     """
-    import hashlib
     directory = _directory(name)
     marker = legacy_dedup.read_marker(directory)
     if not marker or marker.get('stage') != 'done' or not marker.get('archived'):
         return 0
-    store = runtime.fact_store
-    async with store._get_persist_alock(name):
-        archive = await asyncio.to_thread(_read_archive, name)
-        facts = await store.aload_facts(name)
-        # A copy restored earlier may itself have aged into the archive since, or lost
-        # its restored_from in an import; the marker remembers every restore too.
-        restored_from = {row.get('restored_from') for row in [*facts, *archive] if isinstance(row, dict)}
-        restored_from |= set(marker.get('restored') or ())
-        now = datetime.now()
-        added = []
-        for row in archive:
-            if (not isinstance(row, dict) or row.get('id') not in marker['archived']
-                    or row['id'] in restored_from or not row.get('arbitration_archived_at')):
-                continue
-            # The sync state of the archived row (superseded, when it came in a
-            # snapshot) would make the copy travel as folded away again.
-            copy = {key: value for key, value in row.items()
-                    if key not in ('arbitration_archived_at', 'arbitration_reason', 'superseded_by', 'merged_from_ids',
-                                   '_sync_metadata', 'source_sync_id', 'archived_at', 'arbitration_restored_at')}
-            digest = hashlib.sha256(f"{row['id']}|{now.isoformat()}".encode()).hexdigest()[:8]
-            copy.update(id=f"fact_{now.strftime('%Y%m%d%H%M%S')}_{digest}", restored_from=row['id'],
-                        created_at=now.isoformat())
-            added.append(copy)
-        if added:
-            facts.extend(added)
-            await store.asave_facts(name)
-            # Under their new ids, so near-duplicate checks see them again.
-            for row in added if store._time_indexed is not None else ():
-                try:
-                    await store._time_indexed.aindex_fact(name, row['id'], row.get('text', ''))
-                except Exception as error:  # noqa: BLE001 - the backfill repairs a missing row
-                    logger.warning(f"[LegacyDedup] {name}: 恢复的事实写入检索索引失败: {type(error).__name__}")
-            marker = {**marker, 'restored': sorted(set(marker.get('restored') or ()) | {row['restored_from'] for row in added})}
-            await asyncio.to_thread(_save_marker, directory, marker)
+    # The marker remembers every restore too, in case a copy lost its restored_from.
+    done = set(marker.get('restored') or ())
+    from memory.scopes import is_legacy_private_entry
+    # Private-chat facts only, as nominated: a group fact may reuse the same id.
+    added = await runtime.fact_store.arestore_cold_facts(
+        name, lambda row: (row.get('id') in marker['archived'] and row['id'] not in done
+                           and bool(row.get('arbitration_archived_at')) and is_legacy_private_entry(row)))
     if added:
+        marker = {**marker, 'restored': sorted(done | {row['restored_from'] for row in added})}
+        await asyncio.to_thread(_save_marker, directory, marker)
         from .long_term_sync import queue_capture_after_extraction
         queue_capture_after_extraction(name)
     return len(added)

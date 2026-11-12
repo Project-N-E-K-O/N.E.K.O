@@ -10,6 +10,17 @@ import pytest
 
 from memory import legacy_dedup
 
+
+def _cold(directory):
+    """The folded facts: they leave the searchable archive for cold storage."""
+    from memory import cold_store
+    return {row['id']: row for row in cold_store.read_full(str(directory))}
+
+
+def _rewrite_cold(directory, change):
+    from memory import cold_store
+    cold_store.rewrite_rows(str(directory), change)
+
 NAME = '小天'
 SOURCE = 'sync:' + 'a' * 32
 
@@ -166,7 +177,7 @@ async def test_cleanup_archives_only_what_the_model_merges_and_repoints_its_evid
     live = {row['id']: row for row in json.loads((directory / 'facts.json').read_text(encoding='utf-8'))}
     assert set(live) == {'old', 'yes', 'no'}            # 会 / 不会 stay apart: the model said keep_both
     assert live['old']['absorbed'] is True              # stands for the absorbed fact it replaced
-    [archived] = json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))
+    [archived] = _cold(directory).values()
     assert archived['id'] == 'dup' and archived['superseded_by'] == 'old' and archived['arbitration_archived_at']
     [reflection] = json.loads((directory / 'reflections.json').read_text(encoding='utf-8'))
     assert reflection['source_fact_ids'] == ['old', 'yes'] and reflection['counted_fact_ids'] == ['old']
@@ -175,11 +186,13 @@ async def test_cleanup_archives_only_what_the_model_merges_and_repoints_its_evid
     # Recorded on this device and in the snapshot for every other one.
     assert legacy_dedup.local_version(directory) == legacy_dedup.published_version(directory) == legacy_dedup.VERSION
 
-    # The archived fact travels as an arbitration archive, so no peer revives it or reads it as retired.
+    # The folded fact travels as a cold-list item only (no text), so no peer revives it or reads it as retired.
     from memory.long_term_sync import export_document, read_views
-    sent = next(row for row in export_document(read_views(directory), 5000)['entries'] if row['id'] == 'dup')
-    assert sent['metadata']['archived'] is True and sent['metadata']['status'] == 'superseded'
-    assert sent['metadata']['archivedAt'] and sent['metadata']['supersededById'] == 'old'
+    exported = export_document(read_views(directory), 5000)
+    assert all(row['id'] != 'dup' for row in exported['entries'])
+    [sent] = [item for item in exported['cold'] if item['id'] == 'dup']
+    assert sent['status'] == 'superseded' and sent['archivedAt'] and sent['supersededById'] == 'old'
+    assert set(sent) == {'kind', 'subject', 'id', 'status', 'archivedAt', 'supersededById'}
 
     calls = model.calls
     assert await _run(model) is None and model.calls == calls  # runs once
@@ -240,10 +253,42 @@ async def test_restore_brings_folded_facts_back_under_new_ids(memory):
     [back] = [row for row in live if row.get('restored_from') == 'dup']
     assert back['id'] != 'dup' and back['text'] == '博士是一名主播，会日常直播'
     assert 'superseded_by' not in back and 'arbitration_archived_at' not in back
-    # The archived row stays archived, so a peer's copy of it agrees.
-    archived = {row['id']: row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))}
+    # The cold row stays cold, so a peer's listing of it agrees.
+    archived = _cold(directory)
     assert archived['dup']['superseded_by'] == 'old'
     assert await runner.restore(NAME) == 0
+
+
+@pytest.mark.asyncio
+async def test_restore_leaves_a_group_fact_that_reuses_the_folded_id(memory):
+    from app.memory_server import legacy_dedup as runner
+    from memory import cold_store
+    from memory.scopes import MemorySubject
+    directory, facts = memory
+    await _seed(directory, facts)
+    await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    group = {'id': 'dup', 'text': 'a group line', 'entity': 'master',
+             'arbitration_archived_at': '2026-07-01T00:00:00', 'arbitration_reason': 'dedup',
+             **MemorySubject.group_chat('qq', '1').as_entry_fields()}
+    cold_store.append(str(directory), [group])
+    assert await runner.restore(NAME) == 1
+    assert ('dup', group['scope']) in {(row['id'], row.get('scope')) for row in cold_store.read_full(str(directory))}
+
+
+@pytest.mark.asyncio
+async def test_restore_reaches_folds_still_waiting_in_the_archive(memory):
+    """A cleanup that ran before cold storage left its folds in facts_archive.json."""
+    from app.memory_server import legacy_dedup as runner
+    from memory import cold_store
+    directory, facts = memory
+    await _seed(directory, facts)
+    await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
+    # Put the fold back where an older run left it.
+    [folded] = cold_store.read_full(str(directory))
+    cold_store.forget(str(directory), lambda row: True)
+    (directory / 'facts_archive.json').write_text(json.dumps([folded], ensure_ascii=False), encoding='utf-8')
+    assert await runner.restore(NAME) == 1
+    assert [row['id'] for row in cold_store.read_full(str(directory))] == ['dup']
 
 
 @pytest.mark.asyncio
@@ -283,9 +328,11 @@ async def test_duplicates_age_already_archived_are_folded_in_place(memory):
     marker = await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
 
     assert marker['archived'] == {'dup': 'old'}
+    cold = _cold(directory)
+    assert cold['dup']['superseded_by'] == 'old' and cold['dup']['arbitration_archived_at']
     archive = {row['id']: row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))}
-    assert archive['dup']['superseded_by'] == 'old' and archive['dup']['arbitration_archived_at']
-    assert 'arbitration_archived_at' not in archive['old']
+    # The folded one left the searchable archive; the survivor stays there, unmarked.
+    assert set(archive) == {'old'} and 'arbitration_archived_at' not in archive['old']
     [reflection] = json.loads((directory / 'reflections.json').read_text(encoding='utf-8'))
     assert reflection['source_fact_ids'] == ['old']
 
@@ -394,7 +441,7 @@ async def test_a_chain_of_folds_archives_each_fact_against_the_final_survivor(me
     module._decode = _vectors({'c': [1.0, 0.0], 'a': [0.95, 0.3122], 'b': [0.9, 0.4359]})
     model = _Model([{'博士是一名主播，会日常直播', '博士是一名主播，会直播'}, {'博士是一名主播，会直播', '博士是一名主播'}])
     marker = await _run(model)
-    archive = {row['id']: row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))}
+    archive = _cold(directory)
     assert marker['archived']['b'] == 'c' and archive['b']['superseded_by'] == 'c'
 
 
@@ -424,11 +471,8 @@ async def test_a_restore_travels_as_a_live_fact_and_happens_once(memory):
     await _seed(directory, facts)
     await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
     # Imported archived rows carry their sync state; the copy must not inherit it.
-    archive = json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))
-    for row in archive:
-        if row['id'] == 'dup':
-            row['_sync_metadata'] = {'status': 'superseded', 'archivedAt': 1, 'supersededById': 'old'}
-    (directory / 'facts_archive.json').write_text(json.dumps(archive, ensure_ascii=False), encoding='utf-8')
+    _rewrite_cold(directory, lambda row: {**row, '_sync_metadata': {
+        'status': 'superseded', 'archivedAt': 1, 'supersededById': 'old'}} if row['id'] == 'dup' else row)
     owed = []
     from app.memory_server import long_term_sync as lts
     lts.queue_capture_after_extraction = lambda name: owed.append(name)
@@ -441,8 +485,9 @@ async def test_a_restore_travels_as_a_live_fact_and_happens_once(memory):
     # The copy ages into the archive; a second restore still finds it.
     facts._facts[NAME] = [row for row in facts._facts[NAME] if row['id'] != back['id']]
     await facts.asave_facts(NAME)
-    archive = json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8')) + [back]
-    (directory / 'facts_archive.json').write_text(json.dumps(archive, ensure_ascii=False), encoding='utf-8')
+    path = directory / 'facts_archive.json'
+    archive = (json.loads(path.read_text(encoding='utf-8')) if path.exists() else []) + [back]
+    path.write_text(json.dumps(archive, ensure_ascii=False), encoding='utf-8')
     assert await runner.restore(NAME) == 0
 
 
@@ -687,11 +732,8 @@ async def test_a_rerun_knows_its_own_archive_after_an_import_rewrote_the_reason(
     monkeypatch.setattr(runner, '_repoint', crash)
     with pytest.raises(RuntimeError):
         await _run(model)
-    archive = json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8'))
-    for row in archive:
-        if row['id'] == 'dup':
-            row['arbitration_reason'] = 'dedup_arbitration'   # what an import writes
-    (directory / 'facts_archive.json').write_text(json.dumps(archive, ensure_ascii=False), encoding='utf-8')
+    # What an import writes when it moves a listed row into cold storage.
+    _rewrite_cold(directory, lambda row: {**row, 'arbitration_reason': 'dedup_arbitration'} if row['id'] == 'dup' else row)
     monkeypatch.setattr(runner, '_repoint', real)
     marker = await _run(model)
     assert marker['archived'] == {'dup': 'old'}
@@ -739,7 +781,7 @@ async def test_the_archive_time_written_by_the_cleanup_carries_its_offset(memory
     directory, facts = memory
     await _seed(directory, facts)
     await _run(_Model([{'博士是一名主播', '博士是一名主播，会日常直播'}]))
-    [row] = [row for row in json.loads((directory / 'facts_archive.json').read_text(encoding='utf-8')) if row['id'] == 'dup']
+    row = _cold(directory)['dup']
     assert datetime.fromisoformat(row['arbitration_archived_at']).tzinfo is not None
 
 

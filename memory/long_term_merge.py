@@ -11,6 +11,7 @@ import math
 SCHEMA_VERSION = 3
 PROGRESS_MAX = 2000
 EVIDENCE_MAX = 20000
+COLD_MAX = 20000
 MAX_INTEGER = 9_007_199_254_740_991
 
 # A later lifecycle stage wins a contested wording; an equal one goes to the
@@ -42,6 +43,68 @@ def upgraded(document):
               'entries': upgraded_entries(document['entries']),
               'evidence': deepcopy(document.get('evidence') or empty_evidence()), 'progress': {'a': [], 'b': []}}
     return result
+
+
+def cold_item(row):
+    """The cold-list item a whole entry stands for, or None for an ordinary entry.
+
+    Snapshots written before the ``cold`` list existed carried demoted rows in
+    full: a fact archived by arbitration (``archived`` with ``archivedAt`` and a
+    superseded or retracted status) and any archived reflection or persona
+    entry. Every reader turns such a row into its cold-list item.
+    """
+    meta = row['metadata']
+    if row['kind'] == 'fact':
+        if not (meta.get('archived') and meta.get('archivedAt') is not None
+                and meta.get('status') in ('superseded', 'retracted')):
+            return None
+        item = {'kind': 'fact', 'subject': row['subject'], 'id': row['id'], 'status': meta['status'],
+                'archivedAt': meta['archivedAt']}
+        superseded_by = meta.get('supersededById')
+        if meta['status'] == 'superseded' and isinstance(superseded_by, str) and superseded_by.strip():
+            item['supersededById'] = superseded_by
+        return item
+    if meta.get('archivedAt') is None and not meta.get('archived'):
+        return None
+    archived_at = meta.get('archivedAt')
+    if not _number(archived_at):
+        archived_at = meta.get('updatedAt') if _number(meta.get('updatedAt')) else 0
+    return {'kind': row['kind'], 'subject': row['subject'], 'id': row['id'], 'status': 'archived',
+            'archivedAt': archived_at}
+
+
+def coldened(document):
+    """The document with every whole demoted entry moved into its ``cold`` list.
+
+    A row both listed and carried in full is a cold row: the list wins over
+    any copy, wherever the copy came from.
+    """
+    if document is None:
+        return None
+    entries, cold = [], list(document.get('cold') or [])
+    listed = {_key(item) for item in cold}
+    moved = False
+    for row in document['entries']:
+        item = cold_item(row)
+        if item is None and _key(row) not in listed:
+            entries.append(row)
+            continue
+        moved = True
+        if item is not None and _key(item) not in listed:
+            listed.add(_key(item))
+            cold.append(item)
+    if not moved:
+        return document
+    result = {**document, 'entries': entries}
+    if cold:
+        result['cold'] = cold
+    return result
+
+
+def coldened_entries(entries, cold=()):
+    """Entries that stay entries once whole demoted rows and listed ones are taken out."""
+    listed = {_key(item) for item in cold}
+    return [row for row in entries if cold_item(row) is None and _key(row) not in listed]
 
 
 def upgraded_entries(entries):
@@ -247,12 +310,15 @@ def merge_documents(base, local, remote, completed_at, *, report=None):
     evidence lists dropped a record this device held.
     """
     narrow = remote['schemaVersion'] == 1
-    remote = upgraded(remote)
+    remote = coldened(upgraded(remote))
+    local = coldened(local)
     if base is not None and (base['document'].get('lineage', 0) != remote.get('lineage', 0)):
         base = None
-    published = upgraded(base['document']) if base else None
+    published = coldened(upgraded(base['document'])) if base else None
     before_remote = {_key(row): row for row in published['entries']} if base else {}
-    before_local = {_key(row): row for row in upgraded_entries(base['nativeEntries'])} if base else {}
+    before_local = ({_key(row): row for row in coldened_entries(upgraded_entries(base['nativeEntries']),
+                                                                 published.get('cold') or [])}
+                    if base else {})
     mine = {_key(row): row for row in local['entries']}
     theirs = {_key(row): row for row in remote['entries']}
     retired = {(row['subject'], row['id']) for row in remote['evidence']['retirements']}
@@ -280,6 +346,11 @@ def merge_documents(base, local, remote, completed_at, *, report=None):
         if chosen is not None:
             entries[key] = deepcopy(chosen)
     old = published or {'evidence': empty_evidence(), 'progress': {'a': [], 'b': []}}
+    cold = merge_cold(old.get('cold') or [], local.get('cold') or [], remote.get('cold') or [])
+    # A listed row is cold whatever either side did to its copy, and a device
+    # without a base cannot bring a listed row back as new.
+    for item in cold:
+        entries.pop(_key(item), None)
     evidence, dropped_here = merge_evidence(old['evidence'], local['evidence'], remote['evidence'])
     if report is not None:
         report['localEvidenceDropped'] = dropped_here
@@ -299,16 +370,73 @@ def merge_documents(base, local, remote, completed_at, *, report=None):
     lineage = max(local.get('lineage', 0), remote.get('lineage', 0))
     if lineage:
         result['lineage'] = lineage
+    if cold:
+        result['cold'] = cold
     return result
+
+
+def _merge_cold_item(ours, yours):
+    """One row both lists name: the later status (the published one on a tie) and the later time."""
+    chosen = ours if STATUS_RANK.get(ours['status'], 0) > STATUS_RANK.get(yours['status'], 0) else yours
+    item = {'kind': yours['kind'], 'subject': yours['subject'], 'id': yours['id'], 'status': chosen['status'],
+            'archivedAt': max(ours['archivedAt'], yours['archivedAt'])}
+    if 'supersededById' in chosen:
+        item['supersededById'] = chosen['supersededById']
+    return item
+
+
+def merge_cold(base, local, remote):
+    """Join two cold lists: the published order first, then what only this device adds.
+
+    A row the base listed and the remote no longer does was pruned by the
+    organizer and stays pruned, whatever this device holds. A row this device
+    pruned stays pruned unless the remote changed it. At most COLD_MAX rows are
+    kept, the oldest dropped first.
+    """
+    before = {_key(item): item for item in base}
+    mine = {_key(item): item for item in local}
+    result, seen = [], set()
+    for item in remote:
+        key = _key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        ours, old = mine.get(key), before.get(key)
+        if ours is None:
+            if old is None or item != old:
+                result.append(deepcopy(item))
+        elif ours == item or ours == old:
+            result.append(deepcopy(item))
+        else:
+            result.append(_merge_cold_item(ours, item))
+    for item in local:
+        key = _key(item)
+        if key not in seen and key not in before:
+            seen.add(key)
+            result.append(deepcopy(item))
+    return result[-COLD_MAX:]
 
 
 def same_content(left, right):
     """Whether two documents differ only in when they were completed."""
     def body(document):
-        current = upgraded(document)
+        current = coldened(upgraded(document))
         return {**{name: value for name, value in current.items() if name not in ('completedAt', 'entries')},
                 'entries': sorted(current['entries'], key=_key)}
     return body(left) == body(right)
+
+
+# The cold list follows the evidence records: the organizer trims it well before
+# the protocol limit, oldest (first published) first.
+COLD_PRUNE_ABOVE = 16000
+COLD_PRUNE_TO = 12000
+
+
+def prune_cold(cold):
+    """Drop the oldest cold-list rows once the list grows too long; the same list when nothing goes."""
+    if len(cold) <= COLD_PRUNE_ABOVE:
+        return cold
+    return list(cold[-COLD_PRUNE_TO:])
 
 
 # The protocol refuses a snapshot above 20000 evidence records, which would stop

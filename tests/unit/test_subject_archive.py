@@ -9,7 +9,7 @@ Contracts under test (group-memory series 5/7, mainline 1):
   2. Staleness boundary: strictly-greater-than N days; exactly N days is NOT
      stale; a future last write (clock rollback) is NOT stale.
   3. The sweep archives ALL THREE stores of a stale subject (facts move to
-     facts_archive.json with subject_archived_at; reflections through the
+     cold storage (fact_cold/) with subject_archived_at; reflections through the
      event-sourced shard path; persona entries through the shard path) and
      leaves active subjects untouched.
   4. Dry-run moves nothing. A second sweep over an already-archived subject
@@ -83,6 +83,11 @@ def _install(tmpdir: str):
         rec = Reconciler(event_log)
         register_evidence_handlers(rec, pm, re)
     return event_log, fs, pm, re, rec, cm
+
+
+def _cold_rows(fs, name="小天"):
+    from memory import cold_store
+    return cold_store.read_full(fs._character_dir(name))
 
 
 SUBJ_STALE = MemorySubject.group_chat("qq", "111")
@@ -248,9 +253,8 @@ async def test_sweep_archives_all_three_stores_and_spares_active(tmp_path):
     # facts: only active subjects remain in the active pool; archive entries carry subject_archived_at.
     active = await fs.aload_facts("小天")
     assert {f['id'] for f in active} == {"fa1"}
-    with open(os.path.join(str(tmp_path), "小天", "facts_archive.json"),
-              encoding="utf-8") as f:
-        archived_rows = json.load(f)
+    # Archived group facts live in cold storage now, not in facts_archive.json.
+    archived_rows = _cold_rows(fs)
     archived_ids = {r['id'] for r in archived_rows}
     assert archived_ids == {"fs1", "fs2"}
     assert all(r.get('subject_archived_at') for r in archived_rows)
@@ -475,7 +479,8 @@ async def test_sweep_stamps_absorbed_archived_rows_of_stale_subject(tmp_path):
     # After archival: markers remove rows from recall while preserving absorbed provenance.
     assert await _aload_archive_facts(fs, "小天") == []
     with open(fs._facts_archive_path("小天"), encoding="utf-8") as f:
-        rows = json.load(f)
+        assert json.load(f) == []  # Moved out of the searchable archive...
+    rows = _cold_rows(fs)  # ...into cold storage, stamped.
     assert rows[0]['subject_archived_at']
     assert rows[0]['absorbed'] is True
 
@@ -757,8 +762,10 @@ async def test_fts_dedup_lets_revived_subject_restate_archived_fact(tmp_path):
         absorbed=True,
     )
     from utils.file_utils import atomic_write_json
-    with open(fs._facts_archive_path("小天"), encoding="utf-8") as f:
-        rows = json.load(f)
+    rows = []
+    if os.path.exists(fs._facts_archive_path("小天")):
+        with open(fs._facts_archive_path("小天"), encoding="utf-8") as f:
+            rows = json.load(f)
     rows.append(absorbed_row)
     atomic_write_json(fs._facts_archive_path("小天"), rows,
                       indent=2, ensure_ascii=False)
@@ -799,10 +806,8 @@ async def test_restore_roundtrip_all_three_stores(tmp_path):
     ids = {f['id'] for f in active}
     assert {"fs1", "fs2", "fa1"} <= ids
     assert all(not f.get('subject_archived_at') for f in active)
-    # Archive files no longer contain this subject's marked rows.
-    with open(fs._facts_archive_path("小天"), encoding="utf-8") as f:
-        leftover = json.load(f)
-    assert all(not r.get('subject_archived_at') for r in leftover)
+    # Cold storage no longer holds this subject's marked rows.
+    assert all(not r.get('subject_archived_at') for r in _cold_rows(fs))
 
     # reflections return to the main file as confirmed and become actively readable.
     refls = await re.aload_reflections("小天")
@@ -846,18 +851,20 @@ async def test_subject_restore_never_resurrects_an_arbitration_loser(tmp_path):
     assert fs._archive_subject_facts(
         "小天", SUBJ_STALE, NOW.isoformat(), NOW,
     ) == 0
-    with open(archive_path, encoding="utf-8") as handle:
-        rows = json.load(handle)
+    # The legacy loser moved from facts_archive.json into cold storage, unstamped.
+    rows = _cold_rows(fs)
     assert "subject_archived_at" not in rows[0]
 
-    rows[0]["subject_archived_at"] = NOW.isoformat()
-    atomic_write_json(archive_path, rows, indent=2, ensure_ascii=False)
+    from memory import cold_store
+    cold_store.rewrite_rows(
+        fs._character_dir("小天"),
+        lambda row: {**row, "subject_archived_at": NOW.isoformat()},
+    )
     assert fs._restore_subject_facts(
         "小天", SUBJ_STALE, (NOW + timedelta(seconds=1)).isoformat(),
     ) == 1
     assert await fs.aload_facts("小天") == []
-    with open(archive_path, encoding="utf-8") as handle:
-        remaining = json.load(handle)
+    remaining = _cold_rows(fs)
     assert remaining[0]["id"] == "loser"
     assert remaining[0]["arbitration_archived_at"]
     assert "subject_archived_at" not in remaining[0]
