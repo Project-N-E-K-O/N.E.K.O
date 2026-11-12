@@ -541,6 +541,7 @@
     const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_40s';
     const _PROACTIVE_INTERVAL_AB_VALUE = 40;
     const _SHARED_SETTINGS_KEYS = [
+        'activityContextPromptEnabled',
         'proactiveChatEnabled',
         'proactiveVisionEnabled',
         'proactiveVisionChatEnabled',
@@ -585,6 +586,7 @@
 
     function _defaultConversationSettingsForReset() {
         return {
+            activityContextPromptEnabled: true,
             proactiveChatEnabled: true,
             proactiveVisionEnabled: _isUserRegionChina(),
             proactiveVisionChatEnabled: true,
@@ -649,6 +651,7 @@
      */
     function getConversationSettings() {
         const settings = {
+            activityContextPromptEnabled: S.activityContextPromptEnabled,
             proactiveChatEnabled: S.proactiveChatEnabled,
             proactiveVisionEnabled: S.proactiveVisionEnabled,
             proactiveVisionChatEnabled: S.proactiveVisionChatEnabled,
@@ -1179,7 +1182,14 @@
         if (changed && S.renderQuality) {
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
         }
+        syncActivityContextPromptSetting();
         return changed;
+    }
+
+    function syncActivityContextPromptSetting() {
+        if (window.appContextPrompt && typeof window.appContextPrompt.syncSetting === 'function') {
+            window.appContextPrompt.syncSetting();
+        }
     }
 
     function isManualScreenShareActive() {
@@ -1631,6 +1641,9 @@
         const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
             ? window.proactiveVisionEnabled
             : S.proactiveVisionEnabled;
+        const currentContextPrompt = typeof window.activityContextPromptEnabled !== 'undefined'
+            ? window.activityContextPromptEnabled !== false
+            : S.activityContextPromptEnabled !== false;
         const currentVisionChat = typeof window.proactiveVisionChatEnabled !== 'undefined'
             ? window.proactiveVisionChatEnabled
             : S.proactiveVisionChatEnabled;
@@ -1739,6 +1752,7 @@
             : (subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null));
 
         const settings = {
+            activityContextPromptEnabled: currentContextPrompt,
             proactiveChatEnabled: currentProactive,
             proactiveVisionEnabled: currentVision,
             proactiveVisionChatEnabled: currentVisionChat,
@@ -1789,6 +1803,8 @@
         );
 
         // 同步回共享状态，保持一致性
+        S.activityContextPromptEnabled = currentContextPrompt;
+        syncActivityContextPromptSetting();
         S.proactiveChatEnabled = currentProactive;
         S.proactiveVisionEnabled = currentVision;
         S.proactiveVisionChatEnabled = currentVisionChat;
@@ -1977,6 +1993,7 @@
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
                 S.proactiveChatEnabled = settings.proactiveChatEnabled ?? true;
                 S.proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
+                S.activityContextPromptEnabled = settings.activityContextPromptEnabled ?? true;
                 S.proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? true;
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
                 S.proactiveCommunityChatEnabled = settings.proactiveCommunityChatEnabled ?? false;
@@ -2097,6 +2114,7 @@
                 // 首次启动默认开启音乐/meme搭话 + mini-game 邀请
                 S.proactiveMusicEnabled = true;
                 S.proactiveMemeEnabled = true;
+                S.activityContextPromptEnabled = true;
                 S.proactiveMiniGameInviteEnabled = true;
                 // 首次启动默认 token 上限 300（tiktoken o200k_base）
                 S.textGuardMaxLength = 300;
@@ -2369,6 +2387,7 @@
                     // 同步 window 镜像变量，防止 saveSettings() 回滚
                     window.proactiveChatEnabled = S.proactiveChatEnabled;
                     window.proactiveVisionEnabled = S.proactiveVisionEnabled;
+                    window.activityContextPromptEnabled = S.activityContextPromptEnabled;
                     window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
                     window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
                     window.proactiveCommunityChatEnabled = S.proactiveCommunityChatEnabled;

@@ -3986,6 +3986,8 @@
             "proactiveChat": "主动搭话",
             "proactiveVision": "隐私模式",
             "proactiveVisionTooltip": "关闭时：猫娘会根据活跃窗口的标题改变活跃度与搭话模式，可能会在搭话时结合屏幕内容。\n开启时：猫娘无法主动观看屏幕，也无法了解你正在做什么。你仍然可以主动发送截图。",
+            "activityContextPrompt": "屏幕分享情境提示",
+            "activityContextPromptTooltip": "进入工作或娱乐状态时，询问是否调整屏幕分享。关闭后不再询问，保留当前屏幕分享和主动搭话设置。",
             "proactiveVisionChat": "屏幕分享",
             "proactiveVisionChatTooltip": "需开启主动搭话且关闭隐私模式",
             "proactiveNewsChat": "新闻网站",

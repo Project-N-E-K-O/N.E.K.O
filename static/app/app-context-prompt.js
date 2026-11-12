@@ -7,6 +7,7 @@
  *
  * 本模块只负责「要不要弹 + 弹什么 + 用户选了之后改哪个设置」：
  *   - 对所有用户生效（原 A/B 实验组 vision_chat_default_off 的机制已合并进 main）；
+ *   - activityContextPromptEnabled 可持久关闭两类提示，不改变主动搭话或屏幕来源；
  *   - 每个 app 会话每类（play / work）最多弹一次（模块级标志，刷新页面即新会话）；
  *   - play（游戏/娱乐）→ 问要不要开启主动搭话里的「屏幕分享来源」；
  *   - work（专注工作）→ 问要不要关掉「屏幕分享来源」避嫌（不动搭话频率，尊重用户原设定）。
@@ -216,8 +217,25 @@
         }
     }
 
+    function _isEnabled() {
+        const value = typeof window.activityContextPromptEnabled !== 'undefined'
+            ? window.activityContextPromptEnabled : S.activityContextPromptEnabled;
+        return value !== false;
+    }
+
+    function syncSetting() {
+        if (_isEnabled()) return;
+        _pendingContexts.clear();
+        if (!_activeContext) return;
+        _cancelActivePrompt = true;
+        if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
+            _activePromptOverlay.click();
+        }
+    }
+
     async function handle(context) {
         if (context !== 'play' && context !== 'work') return;
+        if (!_isEnabled()) { syncSetting(); return; }
         if (S.gameRouteActive) {
             _markShown(context);
             _pendingContexts.delete(context);
@@ -276,7 +294,7 @@
                 ],
                 onShown: function (modal) {
                     _activePromptOverlay = modal && modal.overlay ? modal.overlay : null;
-                    if (_cancelActivePrompt || S.gameRouteActive || _isGoodbyeActive()) {
+                    if (_cancelActivePrompt || !_isEnabled() || S.gameRouteActive || _isGoodbyeActive()) {
                         _cancelActivePrompt = true;
                         if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
                             _activePromptOverlay.click();
@@ -290,7 +308,7 @@
                     }
                 },
             });
-            if (decision === 'accept') {
+            if (decision === 'accept' && !_cancelActivePrompt && _isEnabled()) {
                 _apply(context);
             }
         } catch (e) {
@@ -386,5 +404,5 @@
         }
     });
 
-    window.appContextPrompt = { handle };
+    window.appContextPrompt = { handle, syncSetting };
 })();

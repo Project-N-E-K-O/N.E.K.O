@@ -1013,6 +1013,12 @@ class UserActivityTracker:
         if is_external_route_active(self.lanlan_name):
             return
         try:
+            # Consume stale signals even when disabled. Read at delivery time so
+            # a live settings change applies without restarting the tracker.
+            from utils.preferences import aload_global_conversation_settings
+            settings = await aload_global_conversation_settings(strict=True)
+            if settings.get('activityContextPromptEnabled', True) is False:
+                return
             await callback(pending['context'])
         except Exception as e:  # noqa: BLE001 - Push failure must not stop the heartbeat.
             logger.debug(
