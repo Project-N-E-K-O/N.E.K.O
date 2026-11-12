@@ -560,7 +560,7 @@ async def test_a_second_cancellation_still_waits_for_the_restore_index_write(tmp
     assert lock.locked() and not task.done()  # the index write is still in flight
     release.set()
     with pytest.raises(asyncio.CancelledError):
-        await task
+        await asyncio.gather(task)
     assert len(done) == 1 and not lock.locked()
 
 
@@ -614,3 +614,19 @@ async def test_the_default_strict_read_treats_a_cold_copy_as_cold(tmp_path):
     rows = await fs.aload_facts_strict(NAME)
     assert [row["id"] for row in rows] == ["live"]
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("active_is_cold", [False, True])
+async def test_an_active_fact_never_hides_another_subjects_archived_row_with_the_same_id(tmp_path, active_is_cold):
+    _, fs, *_ = _install(tmp_path)
+    if active_is_cold:
+        cold_store.append(fs._character_dir(NAME), [_fact("s1", "private", arbitration_archived_at="2026-07-01T00:00:00")])
+    archived = _fact("s1", "group copy", absorbed=True, **GROUP.as_entry_fields())
+    atomic_write_json(fs._facts_path(NAME), [_fact("s1", "private")])
+    atomic_write_json(fs._facts_archive_path(NAME), [archived, _fact("s1", "private", absorbed=True)])
+    fs._facts.pop(NAME, None)
+    expected = ["group copy"] if active_is_cold else ["private", "group copy"]
+    strict = await fs.aload_facts_strict(NAME, include_archive=True)
+    assert [row["text"] for row in strict] == expected
+    assert [row["text"] for row in await fs.aload_facts_full(NAME)] == expected

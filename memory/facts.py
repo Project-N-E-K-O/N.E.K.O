@@ -697,8 +697,8 @@ class FactStore:
         P2). ``UnicodeDecodeError`` is a ``ValueError`` subclass, distinct from
         ``JSONDecodeError``, so it is listed explicitly.
 
-        Rows whose id also exists among the active facts are dropped, keeping
-        the active copy. That is not an optional extra guard — it is the read
+        Rows whose id and subject also exist among the active facts are
+        dropped, keeping the active copy. That is not an optional extra guard — it is the read
         half of ``_archive_absorbed``'s two-file commit protocol, whose write
         order deliberately prefers "the row is in both files" over "the row is
         in neither". Something has to collapse "in both", and a warning makes
@@ -745,18 +745,17 @@ class FactStore:
         # Active/archive ID overlap is residue from an interrupted two-file archive commit.
         # Converge to active copy: at least as recent as archive, authoritative for monotonic
         # flags such as absorbed / signal_processed.
+        # Scoped identity, not the bare id: another subject may reuse the same fact id.
         merged = list(active)
-        active_ids = {
-            fid for fid in (
-                _readable_fact_id(f) for f in merged if isinstance(f, dict)
-            ) if fid is not None
+        active_identities = {
+            identity for identity in map(_fact_scoped_identity, merged)
+            if identity is not None
         }
         dropped = 0
         for f in archived:
             if not isinstance(f, dict):
                 continue
-            fid = _readable_fact_id(f)
-            if fid is not None and fid in active_ids:
+            if _fact_scoped_identity(f) in active_identities:
                 dropped += 1
                 continue
             if _fact_scoped_identity(f) in cold_identities:
@@ -833,7 +832,7 @@ class FactStore:
         paths = [self._facts_path(name)]
         if include_archive:
             paths.append(self._facts_archive_path(name))
-        active_ids: set = set()
+        active_identities: set = set()
         with consistent_view_read(paths[0]):
             for index, path in enumerate(paths):
                 if not os.path.exists(path):
@@ -847,14 +846,15 @@ class FactStore:
                 for row in data:
                     if not isinstance(row, dict):
                         continue
-                    fid = _readable_fact_id(row)
-                    if index == 0:
-                        if fid is not None:
-                            active_ids.add(fid)
-                    elif fid is not None and fid in active_ids:
-                        # Same as load_facts_full: interrupted two-file archive commits duplicate rows; active copy wins.
+                    identity = _fact_scoped_identity(row)
+                    if identity in cold_identities:
                         continue
-                    if _fact_scoped_identity(row) in cold_identities:
+                    if index == 0:
+                        # Only rows still visible after the cold filter shadow archive copies.
+                        if identity is not None:
+                            active_identities.add(identity)
+                    elif identity is not None and identity in active_identities:
+                        # Same as load_facts_full: interrupted two-file archive commits duplicate rows; active copy wins.
                         continue
                     if index > 0 and _is_cold_row(row):
                         if include_cold_stubs:
