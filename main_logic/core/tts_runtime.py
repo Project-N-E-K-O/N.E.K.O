@@ -55,6 +55,7 @@ from main_logic.tts_client import (
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
 )
+from main_logic.tts_client.workers.gptsovits import GPTSOVITS_END_TIMEOUT_SECONDS
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from utils.config_manager import _as_bool, get_reserved
 from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
@@ -1612,6 +1613,12 @@ class TtsRuntimeMixin:
             self.tts_thread, self.tts_request_queue, self.tts_response_queue,
             supports_runtime_overlap=bool(getattr(tts_worker, "supports_runtime_overlap", True)),
         )
+        if provider_key == "gptsovits":
+            # The browser may drain its local buffers while the worker is
+            # still waiting for GSV, with one frame write in flight.
+            runtime.audio_done_timeout_ms = int(
+                1000 * (GPTSOVITS_END_TIMEOUT_SECONDS + TTS_FRAME_WRITE_TIMEOUT_SECONDS)
+            )
         self._tts_runtimes.append(runtime)
         self._tts_runtime = runtime
         try:
@@ -2352,6 +2359,9 @@ class TtsRuntimeMixin:
             "type": "audio_chunk",
             "speech_id": effective_speech_id
         }
+        runtime = tts_output_runtime.get()
+        if runtime is not None and runtime.audio_done_timeout_ms is not None:
+            header["audio_done_timeout_ms"] = runtime.audio_done_timeout_ms
         correlation_id = self._game_speech_correlation_for(effective_speech_id)
         if correlation_id:
             header["sdk_speech_correlation_id"] = correlation_id
