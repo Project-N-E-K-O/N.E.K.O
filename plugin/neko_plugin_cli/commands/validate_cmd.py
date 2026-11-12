@@ -32,6 +32,8 @@ _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
 _PLUGIN_ENTRIES_MAX = 1024
 _PLUGIN_ENTRY_FIELDS_MAX = 64
 _PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
+# Fields the registry coerces with bool(), so "false" would read as True.
+_PLUGIN_ENTRY_BOOL_FIELDS = ("auto_start", "enabled", "dynamic", "model_validate", "quick_action")
 
 
 def validate_plugin_dir(
@@ -691,9 +693,11 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
                 ))
                 continue
             _warn_unknown_keys(item, allowed, label, issues)
+            _check_entry_field_types(item, label, issues)
             # The registry skips a list item whose id is missing or blank.
             # Truthiness avoids recursively stringifying a structured TOML value.
-            if not item.get("id"):
+            entry_id = item.get("id")
+            if not entry_id or (isinstance(entry_id, str) and not entry_id.strip()):
                 issues.append((
                     "warning",
                     f"{label}.id is missing or blank / "
@@ -722,6 +726,7 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
                 ))
                 continue
             _warn_unknown_keys(item, allowed, label, issues)
+            _check_entry_field_types(item, label, issues)
         return
     issues.append((
         "error",
@@ -729,6 +734,34 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
         "[plugin].entries 必须是表或表数组 / "
         "[plugin].entries はテーブルまたはテーブルの配列である必要があります",
     ))
+
+
+def _check_entry_field_types(item: dict[str, object], label: str, issues: list[tuple[str, str]]) -> None:
+    for key in _PLUGIN_ENTRY_BOOL_FIELDS:
+        _check_optional_bool(item, key, f"{label}.{key}", issues)
+    _check_entry_timeout(item.get("timeout"), f"{label}.timeout", issues)
+
+
+def _check_entry_timeout(value: object, label: str, issues: list[tuple[str, str]]) -> None:
+    # Mirrors resolve_entry_timeout(): it accepts anything float() reads, treats
+    # <= 0 as "no per-entry timeout", and silently falls back on anything else.
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        issues.append(("error", f"{label} must be a number"))
+        return
+    try:
+        number = float(value)
+    except ValueError:
+        issues.append(("error", f"{label} must be a number"))
+        return
+    if not math.isfinite(number):
+        issues.append(("error", f"{label} must be finite"))
+        return
+    if isinstance(value, str):
+        issues.append(("warning", f"{label} uses string number '{value}'; prefer a number"))
+    if number < 0:
+        issues.append(("warning", f"{label} is negative, which disables the entry timeout; use 0 for that"))
 
 
 def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:

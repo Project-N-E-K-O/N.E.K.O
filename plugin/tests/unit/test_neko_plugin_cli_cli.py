@@ -1026,7 +1026,7 @@ def test_entry_validation_does_not_stringify_nested_id() -> None:
     assert issues == []
 
 
-@pytest.mark.parametrize("entry_id", [None, "", False, 0, [], {}])
+@pytest.mark.parametrize("entry_id", [None, "", "   ", False, 0, [], {}])
 def test_entry_validation_warns_for_falsey_ids(entry_id: object) -> None:
     from plugin.neko_plugin_cli.commands.validate_cmd import _check_entries
 
@@ -1039,6 +1039,60 @@ def test_entry_validation_warns_for_falsey_ids(entry_id: object) -> None:
     assert "is missing or blank" in message
     assert "缺失或为空" in message
     assert "未指定または空です" in message
+
+
+def _entry_field_issues(item: dict[str, object], keyed: bool) -> list[tuple[str, str]]:
+    from plugin.neko_plugin_cli.commands.validate_cmd import _check_entries
+
+    issues: list[tuple[str, str]] = []
+    if keyed:
+        _check_entries({"run": item}, issues)
+        prefix = "[plugin].entries.run."
+    else:
+        _check_entries([{"id": "run", **item}], issues)
+        prefix = "[plugin].entries[0]."
+    return [(level, message) for level, message in issues if message.startswith(prefix)]
+
+
+@pytest.mark.parametrize("keyed", [False, True])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(True, None), (False, None), ("false", "warning"), ("yes", "warning"), (1, "error"), ("maybe", "error")],
+)
+@pytest.mark.parametrize("field", ["auto_start", "enabled", "dynamic", "model_validate", "quick_action"])
+def test_entry_validation_checks_bool_fields(field: str, value: object, expected: str | None, keyed: bool) -> None:
+    issues = _entry_field_issues({field: value}, keyed)
+
+    if expected is None:
+        assert issues == []
+    else:
+        assert [level for level, _message in issues] == [expected]
+        assert f".{field}" in issues[0][1]
+
+
+@pytest.mark.parametrize("keyed", [False, True])
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (30, []),
+        (2.5, []),
+        (0, []),
+        ("30", ["warning"]),
+        (-5, ["warning"]),
+        ("-5", ["warning", "warning"]),
+        ("thirty", ["error"]),
+        (True, ["error"]),
+        ([30], ["error"]),
+        (float("nan"), ["error"]),
+        (float("inf"), ["error"]),
+        ("inf", ["error"]),
+    ],
+)
+def test_entry_validation_checks_timeout(value: object, expected: list[str], keyed: bool) -> None:
+    issues = _entry_field_issues({"timeout": value}, keyed)
+
+    assert [level for level, _message in issues] == expected
+    assert all(".timeout" in message for _level, message in issues)
 
 
 def test_validate_plugin_dir_accepts_i18n_ui_surface_title(tmp_path: Path) -> None:
