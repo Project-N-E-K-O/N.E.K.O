@@ -16,7 +16,7 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.parametrize("prefix_size", [0, 32])
 @pytest.mark.parametrize("visual", [False, True])
-def test_title_pipes_survive_visual_stream_and_history(
+def test_attachments_keep_existing_pipe_guard(
     prefix_size, visual, monkeypatch
 ):
     monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", lambda: None)
@@ -71,7 +71,7 @@ def test_title_pipes_survive_visual_stream_and_history(
         c._astream_visible_with_tools = stream
         await c.stream_text("Read the title")
         actual = "".join(call.args[0] for call in c.on_text_delta.await_args_list)
-        expected = "".join(parts) if visual else "CS336 | Spring 2026 "
+        expected = "CS336 | Spring 2026 "
         assert actual == expected
         assert c._conversation_history[-1].content == expected
 
@@ -86,12 +86,7 @@ def test_real_tool_loop_carries_overview_window_and_crop_to_final_request(monkey
     monkeypatch.setattr("utils.token_tracker.TokenTracker.get_instance", lambda: None)
 
     async def run():
-        names = [
-            "read_current_screen",
-            "read_screen_window",
-            "zoom_screen_region",
-            "zoom_screen_region",
-        ]
+        names = ["read_current_screen"] * 4
 
         async def handler(call):
             return ToolResult(
@@ -159,7 +154,7 @@ def test_real_tool_loop_carries_overview_window_and_crop_to_final_request(monkey
     asyncio.run(run())
 
 
-def test_followup_source_notice_is_request_only_and_requires_reinspection():
+def test_screen_source_does_not_add_a_recurring_system_notice():
     from tests.unit.test_offline_turn_cancellation_e2e import _client
     from main_logic.tool_calling import ToolDefinition
 
@@ -174,8 +169,7 @@ def test_followup_source_notice_is_request_only_and_requires_reinspection():
     }
     original = list(client._conversation_history)
     view = client._dialog_messages_for_provider(original)
-    assert "Checklist" in view[-1]["content"]
-    assert "read_current_screen" in view[-1]["content"]
+    assert view == original
     assert client._conversation_history == original
     client._tool_definitions = []
     assert client._dialog_messages_for_provider(original) == original

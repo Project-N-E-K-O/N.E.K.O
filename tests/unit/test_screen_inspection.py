@@ -173,12 +173,7 @@ def test_overview_window_and_two_crops_reach_provider_messages():
     client = object.__new__(OmniOfflineClient)
     client._tool_image_locale = lambda: "zh"
     messages, slots, frames = [], [], []
-    names = [
-        "read_current_screen",
-        "read_screen_window",
-        "zoom_screen_region",
-        "zoom_screen_region",
-    ]
+    names = ["read_current_screen"] * 4
     for i, name in enumerate(names):
         result = ToolResult(
             call_id=str(i),
@@ -193,7 +188,7 @@ def test_overview_window_and_two_crops_reach_provider_messages():
     assert len(frames) == 4
     fifth = ToolResult(
         call_id="extra",
-        name="zoom_screen_region",
+        name="read_current_screen",
         output={},
         images=[ToolImage(data_b64="cGl4ZWxz")],
     )
@@ -307,11 +302,7 @@ def test_localized_tools_and_errors(language):
     manager, _ = fixture()
     manager.user_language = language
     tools = m.build_tools(manager)
-    assert {t.name for t in tools} == {
-        "read_current_screen",
-        "read_screen_window",
-        "zoom_screen_region",
-    }
+    assert {t.name for t in tools} == {"read_current_screen"}
     assert all(t.description for t in tools)
     result = m.failure(manager, "disabled")
     expected = {"en": "disabled", "zh-CN": "关闭", "ja": "無効"}[language]

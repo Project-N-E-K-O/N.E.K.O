@@ -116,18 +116,7 @@ class _ToolingMixin(_TurnContextMixin):
         # The synthetic context blocks are not the user's turn: the screen
         # projection still cuts its head right after the real user message.
         projected = self._projected_dialog_messages(messages, context_ids=context_ids)
-        result = self._seat_tool_rounds(projected)
-        source = getattr(self, '_screen_inspection_last_source', None)
-        if source and any(tool.name == 'read_current_screen'
-                          for tool in (getattr(self, '_tool_definitions', ()) or ())):
-            # The previous turn's image slots have been released. Keep the source
-            # as a hint, but explicitly require new evidence for visual follow-ups.
-            # This is request-only: do not accumulate notices in saved history.
-            import json
-            from config.prompts.prompts_screen_inspection import text as screen_text
-            notice = screen_text('followup', self._tool_image_locale())
-            result = [*result, {'role': 'system', 'content': notice + '\n' + json.dumps(source, ensure_ascii=False)}]
-        return result
+        return self._seat_tool_rounds(projected)
 
     def _turn_request_view(self, overrides):
         """Pop a tool loop's turn parameters from ``overrides``.
@@ -868,9 +857,8 @@ class _ToolingMixin(_TurnContextMixin):
 
         # Screen inspection needs overview + window + crop + one re-check.
         # Other tools retain their existing image-count and byte budgets.
-        image_limit = (4 if result.name in {
-            'read_current_screen', 'read_screen_window', 'zoom_screen_region',
-        } else _TOOL_IMAGE_TURN_MAX_COUNT)
+        image_limit = (4 if result.name == 'read_current_screen'
+                       else _TOOL_IMAGE_TURN_MAX_COUNT)
         content = []
         omitted_count = 0
         for img in images:
@@ -957,15 +945,13 @@ class _ToolingMixin(_TurnContextMixin):
                 recall_suffix += _loc(TOOL_IMAGE_RECALL_HINT, lang).format(
                     recall_hint=recall_hint.strip()
                 )
-        slots.append((
-            messages,
-            index,
-            message,
-            _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
-                tool_name=result.name,
-                recall_suffix=recall_suffix,
-            ),
-        ))
+        placeholder = _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
+            tool_name=result.name, recall_suffix=recall_suffix,
+        )
+        if result.name == "read_current_screen":
+            from config.prompts.prompts_screen_inspection import text as screen_text
+            placeholder = screen_text("released", lang)
+        slots.append((messages, index, message, placeholder))
         return message
 
     def _release_tool_image_slots(self, slots=None) -> None:

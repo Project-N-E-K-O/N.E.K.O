@@ -47,48 +47,45 @@ class InspectionError(ValueError):
 
 def build_tools(manager):
     language = getattr(manager, "user_language", None)
-    specs = [
-        ("read_current_screen", "overview", {}, []),
-        (
-            "read_screen_window",
-            "window",
-            {
-                "snapshot_id": {"type": "string"},
-                "window_id": {"type": "string"},
-            },
-            ["snapshot_id", "window_id"],
-        ),
-        (
-            "zoom_screen_region",
-            "region",
-            {
-                "snapshot_id": {"type": "string"},
-                "target": {"type": "string", "enum": ["avatar", "region"]},
-                "region": {
-                    "type": "array",
-                    "items": {"type": "number", "minimum": 0, "maximum": 1},
-                    "minItems": 4,
-                    "maxItems": 4,
-                },
-            },
-            ["snapshot_id", "target"],
-        ),
-    ]
     return [
         ToolDefinition(
-            name=name,
-            description=text(operation, language),
+            name="read_current_screen",
+            description=text("overview", language),
             parameters={
                 "type": "object",
-                "properties": properties,
-                "required": required,
+                "properties": {
+                    "snapshot_id": {"type": "string"},
+                    "window_id": {"type": "string"},
+                    "region": {
+                        "type": "array",
+                        "items": {"type": "number", "minimum": 0, "maximum": 1},
+                        "minItems": 4,
+                        "maxItems": 4,
+                    },
+                },
+                "required": [],
                 "additionalProperties": False,
             },
-            handler=partial(inspect, manager, operation),
+            handler=partial(read_screen, manager),
             metadata={"source": "builtin"},
         )
-        for name, operation, properties, required in specs
     ]
+
+
+async def read_screen(manager, arguments=None):
+    """One model-facing entry; continuation arguments are disclosed in results."""
+    if arguments is None:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        return failure(manager, "invalid_request")
+    if not arguments:
+        return await inspect(manager)
+    keys = set(arguments)
+    if keys == {"snapshot_id", "window_id"}:
+        return await inspect(manager, "window", arguments)
+    if keys == {"snapshot_id", "region"}:
+        return await inspect(manager, "region", {**arguments, "target": "region"})
+    return failure(manager, "invalid_request")
 
 
 def failure(manager, code):
@@ -101,7 +98,10 @@ def failure(manager, code):
             "status": "unavailable",
             "reason": code,
             "message": text(code, language),
-            "guidance": text("unavailable", language),
+            "guidance": text(
+                {"stale_snapshot": "restart", "invalid_request": "invalid_arguments"}.get(code, "unavailable"),
+                language,
+            ),
         },
         "images": [],
     }
@@ -337,11 +337,10 @@ async def _publish(
         "region": region,
         "message": text("evidence", getattr(manager, "user_language", None)),
     }
-    manager.session._screen_inspection_last_source = {
-        "source_id": output["source_id"],
-        "title": output["title"],
-        "captured_at": captured_at,
-    }
+    language = getattr(manager, "user_language", None)
+    output["next_steps"] = [text("region", language)]
+    if windows:
+        output["next_steps"].insert(0, text("window", language))
     logger.info(
         "[screen-inspection] %s snapshot=%s source=%s original=%s preview=%s parent=%s",
         kind,
@@ -359,8 +358,7 @@ async def _publish(
                 "mime": "image/jpeg",
                 "vision_prompt": (
                     f"snapshot_id={snapshot_id}; kind={kind}; source_id={output['source_id']}; "
-                    f"title={output['title']!r}; parent_snapshot_id={parent_id}. "
-                    + output["message"]
+                    f"parent_snapshot_id={parent_id}."
                 ),
             }
         ],
