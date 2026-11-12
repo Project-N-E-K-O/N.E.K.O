@@ -1,3 +1,4 @@
+import ChatHistory from './ChatHistory';
 import { ChatScreenVisibilityProvider, useChatScreenVisibility } from './ChatScreenVisibility';
 import {
   useState,
@@ -6195,6 +6196,7 @@ function CompactChatApp({
       data-compact-tool-layer-open={isCompactSurface && compactInputToolFanOpen ? 'true' : 'false'}
       data-focus-active={focusActive ? 'true' : 'false'}
     >
+      <ChatHistory />
       {focusActive ? (
         <div
           className="chat-surface-focus-indicator"

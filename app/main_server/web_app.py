@@ -815,6 +815,8 @@ app.include_router(mmd_router)
 app.include_router(pngtuber_router)
 app.include_router(jukebox_router)
 app.include_router(workshop_router)
+from main_routers.chat_history_router import router as chat_history_router
+app.include_router(chat_history_router)
 app.include_router(memory_router)
 app.include_router(public_knowledge_router)
 # Canonical chat operations retain their own local authorization, including memory saves.
