@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Refresh all eight locales for the saved chat history browser.
-    const LOCALE_VERSION = '2026-11-12-chat-history';
+    // Refresh all eight locales for continuous history scrolling.
+    const LOCALE_VERSION = '2026-11-12-history-scroll';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

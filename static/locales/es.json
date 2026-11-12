@@ -7318,6 +7318,7 @@
         "retry": "Reintentar"
     },
   "chatHistory": {
+    "end": "Se cargaron todos los mensajes coincidentes",
     "title": "Historial",
     "description": "Busca conversaciones guardadas por fecha o palabra clave.",
     "close": "Cerrar",

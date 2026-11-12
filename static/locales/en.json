@@ -7318,6 +7318,7 @@
         "retry": "Retry"
     },
   "chatHistory": {
+    "end": "All matching messages loaded",
     "title": "Chat history",
     "description": "Browse saved conversations by date or keyword.",
     "close": "Close",

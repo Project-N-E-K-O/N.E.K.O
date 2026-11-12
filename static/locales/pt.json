@@ -7318,6 +7318,7 @@
         "retry": "Tentar novamente"
     },
   "chatHistory": {
+    "end": "Todas as mensagens correspondentes foram carregadas",
     "title": "Histórico",
     "description": "Busque conversas salvas por data ou palavra-chave.",
     "close": "Fechar",
