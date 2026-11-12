@@ -452,7 +452,8 @@ def test_interrupt_cancels_connection_retry_without_replaying_the_old_text(worke
     assert ("__audio_done__", "old") not in run.responses.snapshot()
 
 
-def test_end_timeout_cleans_its_receiver_and_does_not_complete_the_failed_speech(worker, monkeypatch):
+@pytest.mark.parametrize("failure", ["timeout", "close_without_done"])
+def test_terminal_failure_settles_the_speech_after_socket_cleanup(worker, monkeypatch, failure):
     real_wait = gptsovits.asyncio.wait_for
 
     async def timeout_end(task, timeout):
@@ -465,16 +466,78 @@ def test_end_timeout_cleans_its_receiver_and_does_not_complete_the_failed_speech
             raise asyncio.TimeoutError("end timed out")
         return await real_wait(task, timeout)
 
-    monkeypatch.setattr(gptsovits.asyncio, "wait_for", timeout_end)
-    probe, speech = _Socket(), _Socket()
+    if failure == "timeout":
+        monkeypatch.setattr(gptsovits.asyncio, "wait_for", timeout_end)
+    close_gate = threading.Event()
+    probe, speech = _Socket(), _Socket(close_gate=close_gate)
     run = worker(probe, speech)
     run.ready()
     run.put("speech", "A sentence.")
     assert speech.append_sent.wait(2)
     run.put(None)
-    assert speech.closed.wait(2)
-    assert run.responses.wait(lambda items: any(item[0] == "__error__" for item in items))
+    assert speech.end_sent.wait(2)
+    if failure == "close_without_done":
+        speech.events.put(_EOF)
+    assert speech.close_started.wait(2)
     assert ("__audio_done__", "speech") not in run.responses.snapshot()
+    close_gate.set()
+    assert speech.closed.wait(2)
+    run.done("speech")
+    items = run.responses.snapshot()
+    error_index = next(i for i, item in enumerate(items) if item[0] == "__error__")
+    assert items[error_index - 1] == ("__tts_sentence_failed__", "speech", "")
+    assert items[error_index + 1] == ("__audio_done__", "speech")
+
+
+def test_filtered_speech_keeps_its_own_end_and_needs_no_connection(worker):
+    probe, first, following = _Socket(), _Socket(), _Socket()
+    run = worker(probe, first, following)
+    run.ready()
+    run.put("first", "First sentence.")
+    run.put(None)
+    assert first.end_sent.wait(2)
+    run.put("filtered", "=。=")
+    run.put(None)
+    run.put("following", "^_^")
+    run.put("following", "Following sentence.")
+    run.put(None)
+
+    first.feed(_wav())
+    first.finish()
+    run.done("filtered")
+    assert following.end_sent.wait(2)
+    assert [m["data"] for m in following.sent if m["cmd"] == "append"] == ["Following sentence."]
+    following.feed(_wav())
+    following.finish()
+    run.done("following")
+    items = run.responses.snapshot()
+    assert [item[1] for item in items if item[0] == "__audio_done__"] == ["first", "filtered", "following"]
+    assert [item[1] for item in _audio(items)] == ["first", "following"]
+    assert not any(item[0] == "__error__" for item in items)
+
+
+def test_interrupt_during_failed_terminal_cleanup_suppresses_old_done(worker):
+    close_gate = threading.Event()
+    probe, old, new = _Socket(), _Socket(close_gate=close_gate), _Socket()
+    run = worker(probe, old, new)
+    run.ready()
+    run.put("old", "Old sentence.")
+    run.put(None)
+    assert old.end_sent.wait(2)
+    old.events.put(_EOF)
+    assert old.close_started.wait(2)
+
+    run.put("__interrupt__")
+    run.put("new", "New sentence.")
+    run.put(None)
+    assert new.end_sent.wait(2)
+    close_gate.set()
+    assert old.closed.wait(2)
+    new.feed(_wav())
+    new.finish()
+    run.done("new")
+    run.close()
+    assert ("__audio_done__", "old") not in run.responses.snapshot()
 
 
 def test_interrupt_discards_resampler_tail_instead_of_flushing_old_audio(worker):

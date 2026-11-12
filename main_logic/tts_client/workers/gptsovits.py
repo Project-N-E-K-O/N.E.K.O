@@ -126,6 +126,7 @@ class _GsvSpeech:
     commands: asyncio.Queue = field(default_factory=asyncio.Queue)
     task: asyncio.Task | None = None
     cancelled: bool = False
+    failed: bool = False
     ending: bool = False
     closed: bool = False
 
@@ -268,14 +269,14 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 _enqueue_error(response_queue, f"[GPT-SoVITS v3] Worker 错误: {error}")
 
         def put_pcm(speech, payload):
-            if payload and not speech.cancelled:
+            if payload and not (speech.cancelled or speech.failed):
                 response_queue.put(("__audio__", speech.speech_id, payload))
 
         async def receive_audio(speech, ws_conn):
             resampler = None
             source_rate = None
             async for message in ws_conn:
-                if speech.cancelled:
+                if speech.cancelled or speech.failed:
                     return False
                 if isinstance(message, bytes):
                     pcm, source_rate = _extract_pcm_from_wav(message)
@@ -316,6 +317,12 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 # predecessor's task alone.
                 if predecessor is not None:
                     await asyncio.wait((predecessor,))
+                text = await speech.commands.get()
+                if text is None:
+                    # A filtered-only utterance owns an end marker but has no
+                    # text to send or socket to drain.
+                    audio_done.emit(speech.speech_id)
+                    return
                 for attempt in range(3):
                     try:
                         ws_conn = await open_socket()
@@ -327,13 +334,6 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                         await asyncio.sleep(0.5 * (2 ** attempt))
                 receiver = asyncio.create_task(receive_audio(speech, ws_conn))
                 while not speech.cancelled:
-                    command = asyncio.create_task(speech.commands.get())
-                    done, _ = await asyncio.wait((command, receiver), return_when=asyncio.FIRST_COMPLETED)
-                    if receiver in done:
-                        await receiver  # Retrieve upstream errors before reporting an early close.
-                        raise RuntimeError("会话在文本结束前关闭")
-                    text = await command
-                    command = None
                     if text is None:
                         await ws_conn.send(json.dumps({"cmd": "end"}))
                         try:
@@ -346,19 +346,28 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     await ws_conn.send(json.dumps({"cmd": "append", "data": text}))
                     _record_tts_telemetry("gptsovits", len(text))
                     logger.debug("[GPT-SoVITS v3] append (len=%s chars)", len(text))
+                    command = asyncio.create_task(speech.commands.get())
+                    done, _ = await asyncio.wait((command, receiver), return_when=asyncio.FIRST_COMPLETED)
+                    if receiver in done:
+                        await receiver  # Retrieve upstream errors before reporting an early close.
+                        raise RuntimeError("会话在文本结束前关闭")
+                    text = await command
+                    command = None
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 report_error(speech, exc)
                 # Mute before cancelling a failed receiver: a callback may already
                 # have taken a frame off the wire when cancellation arrives.
-                speech.cancelled = True
+                speech.failed = True
             finally:
                 try:
                     await finish_cleanup(ws_conn, receiver, command)
                 finally:
                     speech.closed = True
-            if complete and not speech.cancelled:
+            # Failure already latched the delivery result. Closing the stream
+            # releases downstream completion waiters without claiming success.
+            if not speech.cancelled and (complete or (speech.failed and speech.ending)):
                 audio_done.emit(speech.speech_id)
 
         def retire(speech):
@@ -398,16 +407,15 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                         last_ending_task = current.task
                         current.commands.put_nowait(None)
                     continue
-                if not text or not text.strip() or _gsv_should_drop_chunk(text):
-                    continue
-                if current is None or current.speech_id != sid or current.cancelled or current.closed:
+                if (current is None or current.speech_id != sid
+                        or current.cancelled or current.failed or current.closed):
                     if current is not None and not current.ending:
                         retire(current)
                     current = _GsvSpeech(sid)
                     live_speeches.add(current)
                     current.task = asyncio.create_task(run_speech(current, last_ending_task))
                     current.task.add_done_callback(lambda task, speech=current: speech_finished(speech, task))
-                if not current.ending:
+                if not current.ending and text and text.strip() and not _gsv_should_drop_chunk(text):
                     current.commands.put_nowait(text)
         finally:
             stopping = True
