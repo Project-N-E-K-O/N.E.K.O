@@ -190,6 +190,44 @@
         "media_type": "image/webp"
       }]
     },
+    "action.cat2.back1_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat2-back1-1.webp",
+        "media_type": "image/webp"
+      }],
+      "metadata": {
+        "wideArt": true,
+        "artLayout": "wide-125-centered"
+      }
+    },
+    "action.cat2.turn_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat2-turn-1.webp",
+        "media_type": "image/webp"
+      }],
+      "metadata": {
+        "wideArt": true,
+        "artLayout": "wide-centered"
+      }
+    },
+    "action.cat3.turn_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-turn-2.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat3.back1_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-back1-1.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat3.back1_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-back1-2.webp",
+        "media_type": "image/webp"
+      }]
+    },
     "action.cat1.play_yarn": {
       "resources": [{
         "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.webp",
