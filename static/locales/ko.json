@@ -1424,6 +1424,7 @@
             "requesty": "Requesty(모델 라우터)",
             "opper": "Opper(EU AI 게이트웨이)",
             "atlascloud": "Atlas Cloud(모델 통합 플랫폼)",
+            "uberllm": "UberLLM(모델 게이트웨이)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (자체 호스팅)"
         },
@@ -1502,6 +1503,7 @@
             "requesty": "Requesty",
             "opper": "Opper",
             "atlascloud": "Atlas Cloud",
+            "uberllm": "UberLLM",
             "vllm_omni": "vLLM-Omni(TTS)"
         },
         "freeVersionNoApiKey": "무료 버전에는 API 키가 필요하지 않습니다.",

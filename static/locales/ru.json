@@ -1424,6 +1424,7 @@
             "requesty": "Requesty (маршрутизатор моделей)",
             "opper": "Opper (ИИ-шлюз в ЕС)",
             "atlascloud": "Atlas Cloud (агрегатор моделей)",
+            "uberllm": "UberLLM (шлюз моделей)",
             "vllm_omni": "vLLM-Omni (TTS)",
             "gptsovits": "GPT-SoVITS (свой сервер)"
         },
@@ -1502,6 +1503,7 @@
             "requesty": "Requesty",
             "opper": "Opper",
             "atlascloud": "Atlas Cloud",
+            "uberllm": "UberLLM",
             "vllm_omni": "vLLM-Omni (TTS)"
         },
         "freeVersionNoApiKey": "Бесплатная версия не требует API Key",
