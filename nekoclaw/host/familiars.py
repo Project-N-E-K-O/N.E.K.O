@@ -230,6 +230,9 @@ class FamiliarManager:
         self._resume: dict[str, str] = {}
         # Commissions whose familiar is being started again right now.
         self._taking_up: set[str] = set()
+        # Commissions whose closed session an answer is taking up again right
+        # now; a second answer to the same question is refused meanwhile.
+        self._answering_closed: set[str] = set()
         # Being queued to be taken up again, while that status is written.
         self._requeueing: set[str] = set()
         self._candidates: dict[str, tuple[str, ...]] = {}
@@ -1018,7 +1021,10 @@ class FamiliarManager:
         if session.awaiting_prompt and self._runtime is not None:
             if not session.run_ended:
                 # The run that asked is still winding down. The answer is kept
-                # and handed over the moment it has ended.
+                # and handed over the moment it has ended. A question takes
+                # one answer: a later one does not replace the kept one.
+                if session.held_answer is not None or session.untaken_answer is not None:
+                    return False
                 session.held_answer = text
                 return True
             return await self._deliver_answer(session, text)
@@ -1031,18 +1037,24 @@ class FamiliarManager:
         sessions, those waiting for an answer included. The answer then takes
         the commission up again where its transcript ends.
         """
-        if self._closed:
+        if self._closed or commission_id in self._answering_closed:
+            # Another answer is taking it up again: that one is its next work.
             return False
-        commission = await self._ledger.get(commission_id)
-        if commission is None or commission.route != "familiar" or commission.status != "waiting_user":
-            return False
-        question = commission.question() or {}
-        # A question asked through a tool call is answered to the session that
-        # waits for it; only the question of a report can be answered this way.
-        if question.get("kind") != "report":
-            return False
-        await self._ledger.append_event(commission_id, "answered", {"text": text, "resumed": True})
-        return await self._take_up_again(commission_id, text)
+        self._answering_closed.add(commission_id)
+        try:
+            commission = await self._ledger.get(commission_id)
+            if commission is None or commission.route != "familiar" or commission.status != "waiting_user":
+                return False
+            question = commission.question() or {}
+            # A question asked through a tool call is answered to the session
+            # that waits for it; only the question of a report can be answered
+            # this way.
+            if question.get("kind") != "report":
+                return False
+            await self._ledger.append_event(commission_id, "answered", {"text": text, "resumed": True})
+            return await self._take_up_again(commission_id, text)
+        finally:
+            self._answering_closed.discard(commission_id)
 
     async def _deliver_answer(self, session: _Session, text: str) -> bool:
         """Give an idle session the answer to its ``waiting`` report as its next work."""

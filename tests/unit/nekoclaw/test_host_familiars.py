@@ -719,6 +719,58 @@ async def test_two_answers_at_once_hand_over_one_of_them(hosts, tmp_path):
     assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
 
 
+async def test_a_second_answer_while_the_asking_run_winds_down_does_not_replace_the_first(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    session = host.familiars._sessions[receipt.commission_id]
+    # As while the run that asked is still winding down.
+    session.run_ended = False
+
+    first = await host.answer(receipt.commission_id, "the photos are in D:/Camera")
+    second = await host.answer(receipt.commission_id, "or maybe in E:/Phone")
+
+    assert (first, second) == (True, False)
+    assert session.held_answer == "the photos are in D:/Camera"
+    await host.familiars._runtime.close(receipt.commission_id)
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    sent = json.dumps(llm.requests[1], ensure_ascii=False)
+    assert "the photos are in D:/Camera" in sent
+    assert "E:/Phone" not in sent
+
+
+async def test_two_answers_at_once_to_a_closed_session_take_it_up_with_one_of_them(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    commission_id = await _waiting_and_closed(host, "sort the photos")
+
+    answered = await asyncio.gather(
+        host.answer(commission_id, "the photos are in D:/Camera"),
+        host.answer(commission_id, "or maybe in E:/Phone"),
+    )
+
+    # The second is not passed on as an addition to the first.
+    assert answered == [True, False]
+    done = await wait_status(host, commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    sent = json.dumps(llm.requests[1], ensure_ascii=False)
+    assert "the photos are in D:/Camera" in sent
+    assert "E:/Phone" not in sent
+
+
 async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(hosts, tmp_path):
     scripts = {
         "warm up": ScriptedLLM([[say("warm"), finish()]]),
