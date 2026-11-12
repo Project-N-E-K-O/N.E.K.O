@@ -32,7 +32,7 @@ from PIL import Image
 
 from config import USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
-from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.agent_event_bus import notify_turn_check_ack
 from main_logic.reply_tail import bind_image_validation
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
@@ -919,13 +919,13 @@ async def _handle_agent_event(event: dict):
             await deliver_plugin_card(event, dict(_iter_session_managers()), default_name)
             return
 
-        if event_type == "analyze_ack":
-            logger.info(
-                "[EventBus] analyze_ack received on main: event_id=%s lanlan=%s",
+        if event_type == "turn_check_ack":
+            logger.debug(
+                "[EventBus] turn_check_ack received on main: event_id=%s lanlan=%s",
                 event.get("event_id"),
                 lanlan,
             )
-            notify_analyze_ack(str(event.get("event_id") or ""))
+            notify_turn_check_ack(str(event.get("event_id") or ""))
             return
 
         if event_type == "voice_bridge_result":

@@ -119,11 +119,11 @@ async def _stored_replies(monkeypatch, chunks, tool_names_provider=None):
         posted.append(payload)
         return True, "", {}
 
-    async def publish_analyze(*_args, **_kwargs):
+    async def publish_turn_check(*_args, **_kwargs):
         return True
 
     monkeypatch.setattr(cross_server, "_post_memory_server", post_memory)
-    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", publish_analyze)
+    monkeypatch.setattr(cross_server, "_publish_turn_check_with_fallback", publish_turn_check)
     queue = asyncio.Queue()
     done = asyncio.get_running_loop().create_future()
     connector = asyncio.create_task(cross_server.run_sync_connector(

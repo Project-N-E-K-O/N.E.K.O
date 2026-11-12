@@ -446,7 +446,7 @@ async def test_first_ask_once_allows_this_request_only(store):
     assert first.allow and second.allow
     # Asked again the next time: "once" stores nothing.
     assert [ask.detail for _cid, ask in asker.asked] == [{"command": "dir"}, {"command": "del x"}]
-    assert asker.asked[0][1].options == ("once", "always", "deny")
+    assert asker.asked[0][1].options == ("always", "session", "once", "deny")
     assert await store.mode("run_command") == "first_ask"
 
 
@@ -535,3 +535,155 @@ async def test_a_preference_cannot_open_a_permission(store, preferences):
 
     assert "preferences" not in module.__dict__
     assert "PreferenceStore" not in module.__dict__
+
+
+# ---------------------------------------------------------------------------
+# Permissions: the four answers, and "for this session"
+# ---------------------------------------------------------------------------
+
+
+def test_the_four_answers_in_the_order_they_are_offered():
+    from nekoclaw.host.permissions import CHOICES, CHOICES_ALWAYS_ASK
+
+    assert CHOICES == ("always", "session", "once", "deny")
+    assert CHOICES_ALWAYS_ASK == ("once", "deny")
+
+
+async def test_session_answer_covers_the_rest_of_that_commission_only(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    first = await gate.check("c1", "run_command", detail={"command": "dir"})
+    again = await gate.check("c1", "run_command", detail={"command": "del x"})
+    other_category = await gate.check("c1", "outside_write", detail={"path": "C:/x"})
+    other_commission = await gate.check("c2", "run_command", detail={"command": "dir"})
+
+    assert first.allow and again.allow and other_category.allow and other_commission.allow
+    # Asked once for c1's commands; a different category and a different
+    # commission are asked about on their own.
+    assert [(cid, ask.category) for cid, ask in asker.asked] == [
+        ("c1", "run_command"),
+        ("c1", "outside_write"),
+        ("c2", "run_command"),
+    ]
+    # Nothing is written: the settings still ask.
+    assert await store.mode("run_command") == "first_ask"
+    assert not (store._path()).exists()
+
+
+async def test_session_answer_ends_with_the_commission(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert gate.session_grants("c1") == {("run_command", None)}
+    gate.end_session("c1")
+
+    assert gate.session_grants("c1") == frozenset()
+    assert (await gate.check("c1", "run_command")).allow
+    assert len(asker.asked) == 2
+
+
+async def test_session_answer_is_per_mcp_server(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    assert (await gate.check("c1", "mcp_server", key="notes")).allow
+    assert (await gate.check("c1", "mcp_server", key="notes")).allow
+    assert (await gate.check("c1", "mcp_server", key="calendar")).allow
+
+    assert [ask.key for _cid, ask in asker.asked] == ["notes", "calendar"]
+
+
+async def test_a_task_agent_started_by_another_is_covered_by_its_session_answer(store):
+    parents = {"child": "parent", "grandchild": "child"}
+
+    async def parent_of(commission_id: str) -> Any:
+        return parents.get(commission_id)
+
+    asker = Asker("session")
+    gate = PermissionGate(store, asker, parent_of=parent_of)
+
+    assert (await gate.check("parent", "run_command")).allow
+    assert (await gate.check("child", "run_command")).allow
+    assert (await gate.check("grandchild", "run_command")).allow
+    # What the child is allowed does not reach up to the parent or across to a sibling.
+    assert (await gate.check("child", "outside_write")).allow
+    assert (await gate.check("parent", "outside_write")).allow
+
+    assert [(cid, ask.category) for cid, ask in asker.asked] == [
+        ("parent", "run_command"),
+        ("child", "outside_write"),
+        ("parent", "outside_write"),
+    ]
+
+
+async def test_a_parent_lookup_that_fails_leaves_only_its_own_answers(store):
+    async def broken(commission_id: str) -> Any:
+        raise RuntimeError("ledger closed")
+
+    asker = Asker("session")
+    gate = PermissionGate(store, asker, parent_of=broken)
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert len(asker.asked) == 1
+
+
+async def test_deny_in_the_settings_beats_a_session_answer(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+    assert (await gate.check("c1", "run_command")).allow
+
+    await store.set_mode("run_command", "deny")
+    decision = await gate.check("c1", "run_command")
+
+    assert (decision.allow, decision.reason) == (False, DENIED_BY_SETTINGS)
+
+
+async def test_always_ask_offers_no_session_answer_and_keeps_asking(store):
+    await store.set_mode("run_command", "always_ask")
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    # An approval wider than what was offered covers the one request.
+    assert (await gate.check("c1", "run_command")).allow
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert len(asker.asked) == 2
+    assert asker.asked[0][1].options == ("once", "deny")
+    assert gate.session_grants("c1") == frozenset()
+
+
+async def test_a_session_answer_given_before_the_category_was_set_to_ask_every_time_no_longer_counts(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+    assert (await gate.check("c1", "run_command")).allow
+
+    await store.set_mode("run_command", "always_ask")
+    asker.choice = "once"
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert len(asker.asked) == 2
+
+
+async def test_an_answer_that_is_none_of_the_four_is_a_refusal(store):
+    gate = PermissionGate(store, Asker("sure"))
+
+    decision = await gate.check("c1", "run_command")
+
+    assert (decision.allow, decision.reason) == (False, DENIED_BY_USER)
+
+
+async def test_deny_refuses_this_request_and_changes_nothing(store):
+    asker = Asker("deny")
+    gate = PermissionGate(store, asker)
+
+    assert not (await gate.check("c1", "run_command")).allow
+    asker.choice = "once"
+    assert (await gate.check("c1", "run_command")).allow
+
+    assert await store.mode("run_command") == "first_ask"
+    assert gate.session_grants("c1") == frozenset()
+

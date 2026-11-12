@@ -63,13 +63,15 @@
 
     function scheduleAgentTaskReconciliation() {
         if (_agentTaskReconcileTimer || !window._agentTaskMap) return;
+        // waiting_user (waiting for the user's reply) is still under way;
+        // blocked has ended, like failed.
         if (!Array.from(window._agentTaskMap.values()).some(function (task) {
-            return task.status === 'running' || task.status === 'queued';
+            return task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user';
         })) return;
         _agentTaskReconcileTimer = setInterval(async function () {
             var taskMap = window._agentTaskMap;
             if (!taskMap || !Array.from(taskMap.values()).some(function (task) {
-                return task.status === 'running' || task.status === 'queued';
+                return task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user';
             })) {
                 clearInterval(_agentTaskReconcileTimer);
                 _agentTaskReconcileTimer = null;
@@ -91,7 +93,7 @@
                 }).map(function (task) { return [task.id, task]; }));
                 var changed = false;
                 taskMap.forEach(function (task, id) {
-                    if (task.status !== 'running' && task.status !== 'queued') {
+                    if (task.status !== 'running' && task.status !== 'queued' && task.status !== 'waiting_user') {
                         _agentTaskMissingCounts.delete(id);
                         return;
                     }
@@ -111,7 +113,7 @@
                         return;
                     }
                     _agentTaskMissingCounts.delete(id);
-                    if (['completed', 'failed', 'cancelled'].indexOf(current.status) === -1) return;
+                    if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) === -1) return;
                     var terminalAt = Date.now();
                     taskMap.set(id, Object.assign({}, task, current, { terminal_at: terminalAt }));
                     changed = true;
@@ -124,7 +126,7 @@
                                 var remaining = Array.from(window._agentTaskMap.values());
                                 window.AgentHUD.updateAgentTaskHUD({
                                     success: true, tasks: remaining, total_count: remaining.length,
-                                    running_count: remaining.filter(function (item) { return item.status === 'running'; }).length,
+                                    running_count: remaining.filter(function (item) { return item.status === 'running' || item.status === 'waiting_user'; }).length,
                                     queued_count: remaining.filter(function (item) { return item.status === 'queued'; }).length,
                                     completed_count: remaining.filter(function (item) { return item.status === 'completed'; }).length,
                                     failed_count: remaining.filter(function (item) { return item.status === 'failed'; }).length,
@@ -143,7 +145,7 @@
                     var tasks = Array.from(taskMap.values());
                     window.AgentHUD.updateAgentTaskHUD({
                         success: true, tasks: tasks, total_count: tasks.length,
-                        running_count: tasks.filter(function (task) { return task.status === 'running'; }).length,
+                        running_count: tasks.filter(function (task) { return task.status === 'running' || task.status === 'waiting_user'; }).length,
                         queued_count: tasks.filter(function (task) { return task.status === 'queued'; }).length,
                         completed_count: tasks.filter(function (task) { return task.status === 'completed'; }).length,
                         failed_count: tasks.filter(function (task) { return task.status === 'failed'; }).length,
@@ -3067,12 +3069,12 @@
                     filteredTasks.forEach(function (t) { if (t && t.id) window._agentTaskMap.set(t.id, t); });
                     scheduleAgentTaskReconciliation();
                     var tasks = Array.from(window._agentTaskMap.values());
-                    var hasRunning = tasks.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
+                    var hasRunning = tasks.some(function (t) { return t.status === 'running' || t.status === 'queued' || t.status === 'waiting_user'; });
                     if (tasks.length > 0 && window.AgentHUD && typeof window.AgentHUD.updateAgentTaskHUD === 'function') {
                         window.AgentHUD.showAgentTaskHUD();
                         window.AgentHUD.updateAgentTaskHUD({
                             success: true, tasks: tasks,
-                            running_count: tasks.filter(function (t) { return t.status === 'running'; }).length,
+                            running_count: tasks.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; }).length,
                             queued_count: tasks.filter(function (t) { return t.status === 'queued'; }).length,
                         });
                         if (hasRunning && !window._agentTaskTimeUpdateInterval && !isGoodbyeUiSuppressed()) {
@@ -5010,7 +5012,7 @@
                     }
                     try {
                         var masterOn = !!flags.agent_enabled;
-                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled || flags.openclaw_enabled);
+                        var anyChildOn = !!(flags.computer_use_enabled || flags.browser_use_enabled || flags.user_plugin_enabled);
                         if (masterOn && anyChildOn && typeof window.startAgentTaskPolling === 'function' && !isGoodbyeUiSuppressed()) {
                             window.startAgentTaskPolling();
                         }
@@ -5029,7 +5031,7 @@
                         window._agentTaskMap.forEach(function (t, id) {
                             if (!newMap.has(id)) {
                                 if (curName2 && t.lanlan_name && t.lanlan_name !== curName2) return;
-                                var isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled';
+                                var isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'blocked';
                                 if (isTerminal && t.terminal_at && (now2 - t.terminal_at < LINGER_MS)) {
                                     newMap.set(id, t);
                                 }
@@ -5044,7 +5046,7 @@
                                     success: true,
                                     tasks: tasks2,
                                     total_count: tasks2.length,
-                                    running_count: tasks2.filter(function (t) { return t.status === 'running'; }).length,
+                                    running_count: tasks2.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; }).length,
                                     queued_count: tasks2.filter(function (t) { return t.status === 'queued'; }).length,
                                     completed_count: tasks2.filter(function (t) { return t.status === 'completed'; }).length,
                                     failed_count: tasks2.filter(function (t) { return t.status === 'failed'; }).length,
@@ -5090,17 +5092,17 @@
                             if (existing && existing.params && typeof task.params === 'undefined') {
                                 merged.params = existing.params;
                             }
-                            if (['completed', 'failed', 'cancelled'].indexOf(task.status) !== -1) {
-                                if (!existing || ['completed', 'failed', 'cancelled'].indexOf(existing.status) === -1) {
+                            if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(task.status) !== -1) {
+                                if (!existing || ['completed', 'failed', 'cancelled', 'blocked'].indexOf(existing.status) === -1) {
                                     merged.terminal_at = Date.now();
                                 }
                             }
                             window._agentTaskMap.set(task.id, merged);
-                            if (['completed', 'failed', 'cancelled'].indexOf(task.status) !== -1) {
+                            if (['completed', 'failed', 'cancelled', 'blocked'].indexOf(task.status) !== -1) {
                                 if (window._agentTaskRemoveTimers.has(task.id)) clearTimeout(window._agentTaskRemoveTimers.get(task.id));
                                 window._agentTaskRemoveTimers.set(task.id, setTimeout(function () {
                                     var current = window._agentTaskMap.get(task.id);
-                                    if (current && ['completed', 'failed', 'cancelled'].indexOf(current.status) !== -1) {
+                                    if (current && ['completed', 'failed', 'cancelled', 'blocked'].indexOf(current.status) !== -1) {
                                         window._agentTaskMap.delete(task.id);
                                     }
                                     window._agentTaskRemoveTimers.delete(task.id);
@@ -5109,7 +5111,7 @@
                                         window.AgentHUD.updateAgentTaskHUD({
                                             success: true, tasks: remaining,
                                             total_count: remaining.length,
-                                            running_count: remaining.filter(function (t) { return t.status === 'running'; }).length,
+                                            running_count: remaining.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; }).length,
                                             queued_count: remaining.filter(function (t) { return t.status === 'queued'; }).length,
                                             completed_count: remaining.filter(function (t) { return t.status === 'completed'; }).length,
                                             failed_count: remaining.filter(function (t) { return t.status === 'failed'; }).length,
@@ -5124,7 +5126,7 @@
                         }
                         var tasks3 = Array.from(window._agentTaskMap.values());
                         scheduleAgentTaskReconciliation();
-                        var hasRunning2 = tasks3.some(function (t) { return t.status === 'running' || t.status === 'queued'; });
+                        var hasRunning2 = tasks3.some(function (t) { return t.status === 'running' || t.status === 'queued' || t.status === 'waiting_user'; });
                         if (tasks3.length > 0 && window.AgentHUD) {
                             if (typeof window.AgentHUD.showAgentTaskHUD === 'function') {
                                 window.AgentHUD.showAgentTaskHUD();
@@ -5140,7 +5142,7 @@
                                 success: true,
                                 tasks: tasks3,
                                 total_count: tasks3.length,
-                                running_count: tasks3.filter(function (t) { return t.status === 'running'; }).length,
+                                running_count: tasks3.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; }).length,
                                 queued_count: tasks3.filter(function (t) { return t.status === 'queued'; }).length,
                                 completed_count: tasks3.filter(function (t) { return t.status === 'completed'; }).length,
                                 failed_count: tasks3.filter(function (t) { return t.status === 'failed'; }).length,

@@ -23,12 +23,14 @@ from typing import Any
 
 import pytest
 
+from tests.unit.nekoclaw.fakes import ScriptedLLM
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
     fake_model,
     make_host,
     outbox,
     pick_plugin,
+    scripted_runtime,
     wait_status,
     wait_until,
 )
@@ -660,6 +662,35 @@ async def test_a_stated_reporting_preference_applies_to_unrelated_tasks(server, 
 
     # No word in common, and still given: it is about how every task is reported.
     assert "PREFERENCES:\n- 结果一律用列表汇报" in llm.last("fine")[1]["content"]
+
+
+async def test_a_task_the_model_says_nothing_can_do_starts_no_task_agent(server, hosts, tmp_path):
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[{"route": "none", "reason": "needs hands in the real world"}])
+    started: list[str] = []
+
+    def pick(spec: Any) -> ScriptedLLM:
+        started.append(spec.commission_id)
+        return ScriptedLLM([])
+
+    host = make_host(
+        tmp_path, server, decision_llm=llm, task_agent_model=fake_model, runtime_factory=scripted_runtime(pick)
+    )
+    hosts.append(host)
+
+    receipt = await _dispatch(host, "帮我把厨房的水龙头修好")
+
+    assert receipt.kind == "accepted"
+    failed = await wait_status(host, receipt.commission_id, "failed")
+    assert failed.status_reason == "nothing can do this: needs hands in the real world"
+    (correction,) = await outbox(host, "correction")
+    assert correction.payload["reason"] == "no_capability"
+    assert correction.payload["text"] == "办不了：没有找到能办这件事的能力"
+    # One request to the decision model, no plugin call and no task agent.
+    assert llm.tiers() == ["fine"]
+    assert server.calls == [] and started == []
+    (decision,) = [event for event in await host.ledger.events(receipt.commission_id) if event.type == "decision"]
+    assert (decision.payload["route"], decision.payload["model_calls"]) == ("none", 1)
 
 
 # ---------------------------------------------------------------------------
@@ -1473,3 +1504,38 @@ async def test_run_is_cancelled_even_when_the_request_layer_hides_the_cancellati
     assert done, "the caller kept polling after it was cancelled"
     assert calling.cancelled()
     await wait_until(lambda: server.cancelled == [("weather", run.run_id)], what="the run being cancelled")
+
+
+async def test_deferred_work_is_bound_through_an_entry_hidden_from_selection(server, hosts, tmp_path):
+    # ``bind_task`` is the plugin's own plumbing; a plugin that hides it from
+    # selection is bound all the same, as it was before the host existed.
+    bound: list[dict[str, Any]] = []
+
+    async def add(args: dict[str, Any]) -> dict[str, Any]:
+        return finish({"deferred": True, "reminder_id": "r-7", "reply": "will remind at five"})
+
+    async def bind_task(args: dict[str, Any]) -> dict[str, Any]:
+        bound.append({key: value for key, value in args.items() if key != "_ctx"})
+        return finish({"reply": "bound"})
+
+    server.add_plugin(
+        plugin(
+            "memo",
+            "Memos and reminders 提醒",
+            [entry("add", "Add a reminder"), entry("bind_task", "Bind", metadata={"agent_hidden": True})],
+        ),
+        add=add,
+        bind_task=bind_task,
+    )
+    llm = FakeDecisionLLM(fine=[pick_plugin("memo", "add"), pick_plugin("memo", "bind_task")])
+    host = _host(hosts, tmp_path, server, llm)
+
+    receipt = await _dispatch(host, "五点提醒我开会")
+    await wait_until(lambda: bound, what="the deferred work being bound")
+
+    assert bound == [{"reminder_id": "r-7", "agent_task_id": receipt.commission_id}]
+    # Hidden stays hidden where a model chooses: a dispatch that picks it is refused.
+    second = await _dispatch(host, "绑定一下提醒 r-9")
+    failed = await wait_status(host, second.commission_id, "failed", "done")
+    assert failed.status == "failed"
+    assert len(bound) == 1

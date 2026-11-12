@@ -47,7 +47,7 @@ from utils.internal_http_client import get_internal_http_client
 from utils.language_utils import is_supported_language_code
 from utils.llm_tool_leak_filter import strip_tool_call_leaks
 from utils.logger_config import get_module_logger
-from main_logic.agent_event_bus import publish_analyze_request_reliably
+from main_logic.agent_event_bus import publish_turn_check_reliably
 from services.chat_sync.source import LATE_TEXT_GRACE_SECONDS, AssistantOriginalBuffer
 
 # Setup logger for this module
@@ -65,68 +65,89 @@ emoji_pattern2 = re.compile("["
 emotion_pattern = re.compile('<(.*?)>')
 
 
-async def _publish_analyze_request_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, had_user_input: bool = True, language: str | None = None) -> bool:
-    """Publish analyze request via EventBus with ack/retry.
+def _turn_to_check(messages: list[dict]) -> tuple[str, str, bool] | None:
+    """Return ``(user_text, reply_text, has_attachments)`` of the latest exchange, or None.
 
-    ``had_user_input`` is False for a proactive turn (lanlan spoke with no fresh
-    user input). Such turns carry NO user-text gate hint (master-emotion never
-    re-ran, and the "latest user message" here is a stale prior turn) and are
-    marked ``proactive=True`` so the agent routes them through its throttled
-    proactive path instead of the user-turn dedupe (which would drop them).
+    The latest user message and everything she said after it. None when there
+    is no user message or she said nothing in reply: there is nothing to
+    compare then.
+    """
+    last_user = None
+    for index in range(len(messages) - 1, -1, -1):
+        item = messages[index]
+        if isinstance(item, dict) and item.get("role") == "user":
+            last_user = index
+            break
+    if last_user is None:
+        return None
+    user_message = messages[last_user]
+    user_text = str(user_message.get("content") or user_message.get("text") or "")
+    reply_text = "\n".join(
+        str(item.get("content") or "")
+        for item in messages[last_user + 1:]
+        if isinstance(item, dict) and item.get("role") == "assistant" and item.get("content")
+    )
+    if not reply_text.strip():
+        return None
+    return user_text, reply_text, bool(user_message.get("attachments"))
+
+
+async def _publish_turn_check_with_fallback(lanlan_name: str, trigger: str, messages: list[dict], *, conversation_id: str | None = None, language: str | None = None) -> bool:
+    """Ask the agent process to check the turn that just ended, via EventBus with ack/retry.
+
+    Sent only for a turn the user started and in which she called no tool
+    that acts (the caller decides that). What she said is compared with what
+    was done: a promise is dispatched for her, a wrong "cannot" or "done" is
+    put right by herself after a notice. Whether the turn is worth a model
+    call is decided on the other side.
 
     ``language`` is the live session locale, taken from the same
     ``_current_user_language()`` provider that already feeds the memory-server
-    calls and the agent task-result rendering. The agent process cannot read the
-    session's ``user_language`` on its own, so its analyzer prompts would
+    calls and the task-result rendering. The agent process cannot read the
+    session's ``user_language`` on its own, so what it writes for her would
     otherwise follow the machine's Steam/system locale instead of the UI language.
     """
     try:
+        turn = _turn_to_check(messages)
+        if turn is None:
+            return False
+        user_text, reply_text, has_attachments = turn
+        if not user_text.strip():
+            # A turn of images only: nothing in words to hold her reply against.
+            return False
         # Optional optimization hint: the cheap pre-gate signal the master-emotion
         # call produced at input-time, matched to THIS turn's latest user message.
         # It must NEVER block or abort the publish — wrapped in its own try so any
-        # lazy-import/read failure degrades to None (the agent gate then fails open
-        # and runs its assessment). turn_end also never blocks on the emotion call,
-        # so this only reads an already-cached value. Cache miss / disabled / stale
-        # (different turn) / no-signal / proactive turn → None.
+        # lazy-import/read failure degrades to None (the gate on the other side
+        # then lets the turn through). turn_end also never blocks on the emotion
+        # call, so this only reads an already-cached value. Cache miss / disabled /
+        # stale (different turn) / no-signal → None.
         external_intent = None
-        if had_user_input:
+        # Skip the gate hint when the latest user turn carries attachments:
+        # the actionable intent may live in the image, which the text-only
+        # signal never saw → leave external_intent None.
+        if not has_attachments:
             try:
                 from main_logic.activity.master_emotion import gate_signal_for
-                _latest_user_msg = next(
-                    (m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"),
-                    None,
-                )
-                # Skip the gate hint when the latest user turn carries attachments:
-                # the actionable intent may live in the image, which the text-only
-                # signal never saw → leave external_intent None so the agent fails
-                # open and assesses the turn (never drop an image-driven task).
-                if _latest_user_msg is not None and not _latest_user_msg.get("attachments"):
-                    _latest_user_text = str(_latest_user_msg.get("content") or _latest_user_msg.get("text") or "")
-                    external_intent = gate_signal_for(lanlan_name, _latest_user_text)
+                external_intent = gate_signal_for(lanlan_name, user_text)
             except Exception:
                 external_intent = None
-        sent = await publish_analyze_request_reliably(
+        sent = await publish_turn_check_reliably(
             lanlan_name=lanlan_name,
-            trigger=trigger,
-            messages=messages,
+            user_text=user_text,
+            reply_text=reply_text,
             ack_timeout_s=0.8,
             retries=1,
             conversation_id=conversation_id,
             external_intent=external_intent,
-            proactive=not had_user_input,
             language=language,
         )
         if sent:
-            logger.debug(
-                "[%s] analyze_request forwarded with ack: trigger=%s messages=%d",
-                lanlan_name,
-                trigger,
-                len(messages) if isinstance(messages, list) else 0,
-            )
+            logger.debug("[%s] turn check forwarded with ack: trigger=%s", lanlan_name, trigger)
             return True
     except Exception as e:
         logger.info(
-            "[%s] analyze_request forwarding exception: trigger=%s error=%s",
+            "[%s] turn check forwarding exception: trigger=%s error=%s",
             lanlan_name,
             trigger,
             e,
@@ -979,6 +1000,9 @@ async def run_sync_connector(
     original_output = AssistantOriginalBuffer(tail_grace=LATE_TEXT_GRACE_SECONDS)
     current_turn = 'user'
     had_user_input_this_turn = False  # Whether the current turn has user input; False means proactive chat.
+    # How much of chat_history had been through a turn end already. A session
+    # that ends with a user message past this point was cut off mid-turn.
+    turn_checked_history_len = 0
     current_turn_start_index = 0
     last_screen = None
     pending_user_images: list = []
@@ -1489,8 +1513,12 @@ async def run_sync_connector(
                                     # leftover screenshots/camera frames would contaminate the next analyzer turn.
                                     pending_user_images = []
                                     continue
-                                # Send recent conversation to tool_server nonblockingly for potential-task analysis.
-                                # Skip only the dedicated agent-callback channel to avoid reanalyzing task-result callbacks.
+                                # Ask the agent process to check this turn: what she said against what was done.
+                                # Not for a turn she started herself, not for the dedicated agent-callback
+                                # channel (her words there are about a result she was just given), and not
+                                # for a turn in which she called a tool that acts: then that tool's result
+                                # is the one judgement of the turn.
+                                acted_through_tools = bool(message.get("acted_through_tools")) if isinstance(message, dict) else False
                                 if not shutdown_event.is_set():
                                     selected_pending_user_images, remaining_pending_user_images = (
                                         _partition_pending_user_images_for_turn(
@@ -1519,38 +1547,35 @@ async def run_sync_connector(
                                             f"avatar_drop_turn={latest_user_is_avatar_drop}"
                                         )
                                         if recent and has_user and latest_user_is_avatar_drop:
-                                            logger.info(f"[{lanlan_name}] analyze_request skipped (avatar_drop turn_end), messages={len(recent)}")
-                                        elif recent and not is_agent_callback_turn_end:
-                                            # had_user_input gates the proactive marking: a turn with no
-                                            # user text but WITH a fresh user image (screenshot/camera) is
-                                            # still a user turn — count its attachments as input so it is
-                                            # NOT mis-marked proactive (which, with the feature off, would
-                                            # drop the image task). Only a genuinely self-initiated turn
-                                            # (no text, no image) is proactive.
-                                            _turn_had_user_input = had_user_input_this_turn or bool(selected_pending_user_images)
-                                            sent = await _publish_analyze_request_with_fallback(
+                                            logger.info(f"[{lanlan_name}] turn check skipped (avatar_drop turn_end), messages={len(recent)}")
+                                        elif (
+                                            recent
+                                            and has_user
+                                            and had_user_input_this_turn
+                                            and not is_agent_callback_turn_end
+                                            and not acted_through_tools
+                                        ):
+                                            sent = await _publish_turn_check_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="turn_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
-                                                had_user_input=_turn_had_user_input,
                                                 language=_current_analyze_language(),
                                             )
                                             if sent:
-                                                logger.debug(f"[{lanlan_name}] analyze_request dispatch success (turn_end), messages={len(recent)}")
-                                            else:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch failed (turn_end), messages={len(recent)}")
+                                                logger.debug(f"[{lanlan_name}] turn check sent (turn_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
-                                        logger.debug(f"[{lanlan_name}] 发送到analyzer超时")
+                                        logger.debug(f"[{lanlan_name}] 发送轮次核对请求超时")
                                     except RuntimeError as e:
                                         if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过analyzer请求")
+                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过轮次核对请求")
                                         else:
-                                            logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                            logger.debug(f"[{lanlan_name}] 发送轮次核对请求失败: {e}")
                                     except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e}")
+                                        logger.debug(f"[{lanlan_name}] 发送轮次核对请求失败: {e}")
                                     finally:
                                         pending_user_images = remaining_pending_user_images
+                                turn_checked_history_len = len(chat_history)
 
                                 # Lightweight turn-end cache: write recent history only, without LLM summarization/organization.
                                 # Do not cache proactive chat; persist with the next ordinary turn after the user's response.
@@ -1591,8 +1616,16 @@ async def run_sync_connector(
                                 # Merge unsynced consecutive proactive-chat messages.
                                 merge_unsynced_tail_assistants(chat_history, last_synced_index)
 
-                                # Send recent conversation to tool_server for potential-task analysis, matching turn-end handling.
+                                # A session that ends in the middle of a turn never gets that turn's
+                                # turn end. If the user said something since the last one, the turn is
+                                # checked here, as a turn end would have had it checked.
                                 # Recheck shutdown state.
+                                cut_off_start = min(turn_checked_history_len, len(chat_history))
+                                cut_off_mid_turn = any(
+                                    isinstance(item, dict) and item.get('role') == 'user'
+                                    for item in chat_history[cut_off_start:]
+                                )
+                                turn_checked_history_len = len(chat_history)
                                 if not shutdown_event.is_set():
                                     try:
                                         # Build recent-message summaries and retain this turn's latest image attachments.
@@ -1610,31 +1643,26 @@ async def run_sync_connector(
                                             AVATAR_DROP_SOURCE,
                                         )
                                         if recent and has_user and latest_user_is_avatar_drop:
-                                            logger.info(f"[{lanlan_name}] analyze_request skipped (avatar_drop session_end), messages={len(recent)}")
-                                        elif recent and has_user:
-                                            sent = await _publish_analyze_request_with_fallback(
+                                            logger.info(f"[{lanlan_name}] turn check skipped (avatar_drop session_end), messages={len(recent)}")
+                                        elif recent and has_user and cut_off_mid_turn:
+                                            sent = await _publish_turn_check_with_fallback(
                                                 lanlan_name=lanlan_name,
                                                 trigger="session_end",
                                                 messages=recent,
                                                 conversation_id=uuid.uuid4().hex,
                                                 language=_current_analyze_language(),
-                                                # session_end is terminal — never treated as proactive
-                                                # (had_user_input defaults True), so it always takes the
-                                                # ordinary user-turn path.
                                             )
                                             if sent:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch success (session_end), messages={len(recent)}")
-                                            else:
-                                                logger.info(f"[{lanlan_name}] analyze_request dispatch failed (session_end), messages={len(recent)}")
+                                                logger.debug(f"[{lanlan_name}] turn check sent (session_end), messages={len(recent)}")
                                     except asyncio.TimeoutError:
-                                        logger.debug(f"[{lanlan_name}] 发送到analyzer超时 (session end)")
+                                        logger.debug(f"[{lanlan_name}] 发送轮次核对请求超时 (session end)")
                                     except RuntimeError as e:
                                         if "shutdown" in str(e).lower() or "closed" in str(e).lower():
-                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过analyzer请求")
+                                            logger.info(f"[{lanlan_name}] 进程正在关闭，跳过轮次核对请求")
                                         else:
-                                            logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                            logger.debug(f"[{lanlan_name}] 发送轮次核对请求失败: {e} (session end)")
                                     except Exception as e:
-                                        logger.debug(f"[{lanlan_name}] 发送到analyzer失败: {e} (session end)")
+                                        logger.debug(f"[{lanlan_name}] 发送轮次核对请求失败: {e} (session end)")
                                     finally:
                                         pending_user_images = []
                                 

@@ -49,6 +49,74 @@ KIND_RECEIPT = "receipt"
 CHANNEL_PLUGIN = "user_plugin"
 CHANNEL_TASK_AGENT = "task_agent"
 
+# Receipts that only confirm the "received" she already answered with.
+QUIET_RECEIPTS = frozenset({"accepted", "received", "told", "answered", "stopped", "nothing_active"})
+
+
+def _question_lines(questions: Any, words: dict[str, str]) -> str:
+    """Render the questions of an ``ask_user_question`` call as one line each."""
+    lines: list[str] = []
+    for item in questions if isinstance(questions, list) else []:
+        if isinstance(item, dict):
+            text = str(item.get("question") or "").strip()
+            labels = [
+                str(option.get("label") or "").strip() if isinstance(option, dict) else str(option).strip()
+                for option in (item.get("options") or [])
+            ]
+            labels = [label for label in labels if label]
+            if text and labels:
+                text += words["options"].format(items=" / ".join(labels))
+        else:
+            text = str(item).strip()
+        if text:
+            lines.append(text)
+    if len(lines) > 1:
+        return " ".join(f"{number}. {line}" for number, line in enumerate(lines, 1))
+    return lines[0] if lines else ""
+
+
+def render_question(title: str, question: dict[str, Any], lang: str) -> str:
+    """Return a commission's pending question as the sentence she passes on to the user."""
+    from config.nekoclaw_settings import QUESTION_TEXT_MAX_TOKENS
+    from config.prompts.prompts_nekoclaw_brain import (
+        PERMISSION_CATEGORY_TEXTS,
+        PERMISSION_OPTION_NAMES,
+        QUESTION_TEXTS,
+    )
+    from config.prompts._locale import normalize_prompt_locale
+    from config.prompts.prompts_sys import _loc
+    from utils.tokenize import truncate_to_tokens
+
+    lang = normalize_prompt_locale(lang)
+    words = _loc(QUESTION_TEXTS, lang)
+    kind = question.get("kind")
+    if kind == "permission":
+        categories = _loc(PERMISSION_CATEGORY_TEXTS, lang)
+        names = _loc(PERMISSION_OPTION_NAMES, lang)
+        detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
+        category = str(question.get("category") or "other")
+        specific = (
+            detail.get("command")
+            or detail.get("path")
+            or question.get("key")
+            or detail.get("title")
+            or detail.get("tool")
+            or ""
+        )
+        what = categories.get(category, categories["other"]).format(detail=str(specific)).strip()
+        offered = [names[option] for option in question.get("options") or [] if option in names]
+        text = words["permission"].format(title=title, what=what, options=" / ".join(offered))
+    elif kind == "confirmation":
+        text = words["confirm"].format(title=title, question=str(question.get("question") or "").strip())
+    else:
+        if kind == "questions":
+            asked = _question_lines(question.get("questions"), words)
+        else:
+            parts = [str(question.get("question") or "").strip(), str(question.get("details") or "").strip()]
+            asked = " ".join(part for part in parts if part)
+        text = words["ask"].format(title=title, question=asked)
+    return truncate_to_tokens(text, QUESTION_TEXT_MAX_TOKENS)
+
 
 class Reporter:
     """Stores reports in the outbox and nudges the sender."""
@@ -174,13 +242,19 @@ class Reporter:
         return moved
 
     async def question(self, commission: Commission, question: dict[str, Any]) -> int | None:
-        """Report that a commission waits for the user to answer or approve."""
+        """Report that a commission waits for the user to answer or approve.
+
+        ``text`` is the question as one sentence for her to pass on, in the
+        commission's language; ``question`` keeps its parts for an interface
+        that shows buttons.
+        """
         root = commission
         payload = {
             "lanlan_name": root.lanlan_name,
             "task_id": commission.id,
             "title": commission.title,
             "question": question,
+            "text": render_question(commission.title, question, commission.lang or "en"),
             "delivery_mode": "proactive",
         }
         return await self._add(commission, KIND_QUESTION, payload)
@@ -205,12 +279,45 @@ class Reporter:
         return await self._add(commission, KIND_CORRECTION, payload)
 
     async def receipt(self, lanlan_name: str, *, kind: str, text: str, commission: Commission | None = None) -> int:
-        """Report the conclusion of a first round that outlasted its budget."""
+        """Report the conclusion of a first round that outlasted its budget.
+
+        She answered "received" meanwhile. A conclusion that agrees with that
+        (accepted, passed on, stopped) comes along with her next turn; one
+        she has to act on (nothing can do it, it repeats something, it is
+        unclear which task is meant) wakes her.
+        """
         payload = {
             "lanlan_name": lanlan_name,
             "task_id": commission.id if commission else None,
             "receipt": kind,
             "text": text,
-            "delivery_mode": "proactive",
+            "delivery_mode": "passive" if kind in QUIET_RECEIPTS else "proactive",
         }
         return await self._add(commission, KIND_RECEIPT, payload)
+
+    async def turn_notice(
+        self,
+        lanlan_name: str,
+        *,
+        reason: str,
+        text: str,
+        delivery_mode: str = "proactive",
+        commission: Commission | None = None,
+    ) -> int:
+        """Report what the turn check found: something she said does not match what was done.
+
+        ``reason`` is ``can_do`` (she said it cannot be done; it can),
+        ``no_record`` (she said it is done; no task says so), ``filed`` (she
+        agreed; it was dispatched for her) or ``promised_failed`` (she agreed;
+        it could not be dispatched).
+        """
+        payload = {
+            "lanlan_name": lanlan_name,
+            "task_id": commission.id if commission else None,
+            "title": commission.title if commission else "",
+            "reason": reason,
+            "detail": "",
+            "text": text,
+            "delivery_mode": delivery_mode,
+        }
+        return await self._add(commission, KIND_CORRECTION, payload)

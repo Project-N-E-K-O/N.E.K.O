@@ -39,15 +39,15 @@ async def test_agent_status_update_syncs_master_state_into_session_flags(monkeyp
             "lanlan_name": "lanlan-test",
             "snapshot": {
                 "analyzer_enabled": True,
-                "flags": {"openclaw_enabled": True, "openclaw_ready": True},
+                "flags": {"computer_use_enabled": True, "user_plugin_enabled": False},
             },
         }
     )
 
     assert mgr.seen_flags == {
         "agent_enabled": True,
-        "openclaw_enabled": True,
-        "openclaw_ready": True,
+        "computer_use_enabled": True,
+        "user_plugin_enabled": False,
     }
 
 

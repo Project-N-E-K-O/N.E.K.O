@@ -75,6 +75,8 @@ logger = logging.getLogger(__name__)
 
 TIER_COARSE = "coarse"
 TIER_FINE = "fine"
+# The turn check: the small model again, with a budget of its own.
+TIER_TURN_CHECK = "turn_check"
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
 
@@ -155,11 +157,22 @@ class Selection:
     model_calls: int = 0
 
 
+@dataclass(slots=True)
+class TurnVerdict:
+    """What the turn check concluded about one finished turn."""
+
+    # "none", "unable", "promised" or "claimed_done".
+    kind: str
+    # The action the turn was about, in one sentence; empty for "none".
+    task: str = ""
+    model_calls: int = 0
+
+
 class DecisionLLM(Protocol):
-    """The two model tiers the lexical decision model uses."""
+    """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion from ``TIER_COARSE`` or ``TIER_FINE``."""
+        """Return the text of one completion from ``TIER_COARSE``, ``TIER_FINE`` or ``TIER_TURN_CHECK``."""
 
 
 class DecisionModel(Protocol):
@@ -181,6 +194,14 @@ class DecisionModel(Protocol):
     async def select(self, request: DecisionRequest, triage: Triage) -> Selection:
         """Run the second round."""
 
+    async def judge_turn(self, user_text: str, reply_text: str, lang: str) -> TurnVerdict:
+        """Say what her reply did with the user's request, when she called no task tool.
+
+        One of: nothing to do or she declined on purpose ("none"); she said she
+        cannot ("unable"); she agreed to do it ("promised"); she said it is
+        done ("claimed_done"). It does not judge whether it can be done.
+        """
+
 
 # ---------------------------------------------------------------------------
 # The configured model tiers
@@ -190,9 +211,10 @@ class DecisionModel(Protocol):
 class ConfiguredDecisionLLM:
     """``DecisionLLM`` on the models the analyzer used.
 
-    The coarse screen runs on the small latency-sensitive tier (``emotion``),
-    the fine selection on the ``summary`` tier. Endpoints come from the user's
-    configuration as they are, ``http://`` addresses included.
+    The coarse screen and the turn check run on the small latency-sensitive
+    tier (``emotion``), the fine selection on the ``summary`` tier. Endpoints
+    come from the user's configuration as they are, ``http://`` addresses
+    included.
     """
 
     def __init__(self) -> None:
@@ -202,7 +224,7 @@ class ConfiguredDecisionLLM:
         from utils.config_manager import get_config_manager
         from utils.llm_client import create_chat_llm_async
 
-        slot = "emotion" if tier == TIER_COARSE else "summary"
+        slot = "summary" if tier == TIER_FINE else "emotion"
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
         client = self._clients.get(key)
@@ -226,7 +248,12 @@ class ConfiguredDecisionLLM:
 
         # Same usage bucket as the analyzer it takes over from.
         set_call_type("agent")
-        budget = AGENT_PLUGIN_COARSE_MAX_TOKENS if tier == TIER_COARSE else AGENT_PLUGIN_FULL_MAX_TOKENS
+        from config.nekoclaw_settings import TURN_CHECK_OUTPUT_MAX_TOKENS
+
+        budget = {
+            TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
+            TIER_TURN_CHECK: TURN_CHECK_OUTPUT_MAX_TOKENS,
+        }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)
         return str(getattr(response, "content", "") or "")
@@ -269,6 +296,7 @@ class _Cues:
                 "supplement": _patterns(texts.SUPPLEMENT_CUE_PATTERNS),
                 "answer": _patterns(texts.ANSWER_CUE_PATTERNS),
                 "deny": _patterns(texts.PERMISSION_DENY_PATTERNS),
+                "session": _patterns(texts.PERMISSION_SESSION_PATTERNS),
                 "always": _patterns(texts.PERMISSION_ALWAYS_PATTERNS),
                 "once": _patterns(texts.PERMISSION_ONCE_PATTERNS),
                 "capability_question": _patterns(texts.CAPABILITY_QUESTION_PATTERNS),
@@ -289,18 +317,44 @@ def strip_cues(name: str, text: str) -> str:
 
 
 def parse_permission_choice(text: str) -> str | None:
-    """Return "deny", "always" or "once" for an answer to a permission prompt.
+    """Return "deny", "session", "always" or "once" for an answer to a permission prompt.
 
-    A refusal wins over everything else in the sentence. None when the
-    sentence says neither yes nor no.
+    A refusal wins over everything else in the sentence. Of two scopes named
+    together the narrower one counts. None when the sentence says neither
+    yes nor no.
     """
     if has_cue("deny", text):
         return "deny"
+    if has_cue("session", text):
+        return "session"
     if has_cue("always", text):
         return "always"
     if has_cue("once", text):
         return "once"
     return None
+
+
+def looks_like_a_task(external_intent: float | None, user_text: str, plugins: Sequence[dict[str, Any]]) -> bool:
+    """The free gate in front of the turn check: could this turn be a request to get something done?
+
+    The same rule the analyzer applied before spending a model call. The turn
+    is held back only when the input-time score is known and below the
+    threshold and nothing local speaks for a task: no plugin keyword occurs in
+    the user's words, and every plugin that could take a task has keywords to
+    be matched by (one without any can only be recognised by a model, so its
+    presence lets the turn through).
+    """
+    from config.nekoclaw_settings import TURN_CHECK_INTENT_THRESHOLD
+
+    if external_intent is None or external_intent >= TURN_CHECK_INTENT_THRESHOLD:
+        return True
+    if keyword_hits(user_text, plugins):
+        return True
+    for plugin in plugins:
+        keywords = plugin.get("keywords")
+        if not (isinstance(keywords, list) and keywords) and visible_entries(plugin):
+            return True
+    return False
 
 
 def is_capability_question(text: str) -> bool:
@@ -624,7 +678,7 @@ class LexicalDecisionModel:
     async def _coarse_screen(self, user_text: str, plugins: Sequence[dict[str, Any]], lang: str) -> list[str]:
         """Ask the small model which plugins might be relevant; ids only."""
         from config import AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
-        from config.prompts.prompts_agent import USER_PLUGIN_COARSE_SCREEN_PROMPT
+        from config.prompts.prompts_nekoclaw_brain import TASK_BRAIN_COARSE_SCREEN_PROMPT
         from config.prompts.prompts_sys import _loc
         from utils.tokenize import count_tokens, truncate_to_tokens
 
@@ -635,7 +689,7 @@ class LexicalDecisionModel:
             if count_tokens(short) > AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
                 short = truncate_to_tokens(short, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS - count_tokens("...")) + "..."
             summaries.append(f"- {plugin_id}: {short}")
-        system = _loc(USER_PLUGIN_COARSE_SCREEN_PROMPT, lang).format(
+        system = _loc(TASK_BRAIN_COARSE_SCREEN_PROMPT, lang).format(
             plugin_summaries="\n".join(summaries),
             user_text=user_text,
         )
@@ -652,6 +706,42 @@ class LexicalDecisionModel:
         except Exception as exc:  # noqa: BLE001 - keyword and BM25 matches still stand
             logger.warning("coarse screen failed: %s", type(exc).__name__)
         return []
+
+    # -- turn check -------------------------------------------------------
+
+    async def judge_turn(self, user_text: str, reply_text: str, lang: str) -> TurnVerdict:
+        """Ask the small model once; anything unreadable counts as "none"."""
+        from config.nekoclaw_settings import TURN_CHECK_TASK_MAX_TOKENS
+        from config.prompts.prompts_nekoclaw_brain import (
+            TURN_CHECK_INPUT_TEMPLATE,
+            TURN_CHECK_PROMPT,
+            TURN_CHECK_VERDICTS,
+        )
+        from config.prompts.prompts_sys import _loc
+        from utils.tokenize import truncate_to_tokens
+
+        messages = [
+            {"role": "system", "content": _loc(TURN_CHECK_PROMPT, lang)},
+            {"role": "user", "content": TURN_CHECK_INPUT_TEMPLATE.format(user_text=user_text, reply_text=reply_text)},
+        ]
+        try:
+            raw = await self._llm.complete(TIER_TURN_CHECK, messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - an unanswered check changes nothing
+            logger.warning("turn check failed: %s", type(exc).__name__)
+            return TurnVerdict(kind="none", model_calls=1)
+        answer = parse_json_object(raw) or {}
+        kind = str(answer.get("verdict") or "").strip().lower()
+        if kind not in TURN_CHECK_VERDICTS:
+            kind = "none"
+        task = answer.get("task")
+        task = " ".join(task.split()) if isinstance(task, str) else ""
+        return TurnVerdict(
+            kind=kind,
+            task="" if kind == "none" else truncate_to_tokens(task, TURN_CHECK_TASK_MAX_TOKENS),
+            model_calls=1,
+        )
 
     # -- second round -----------------------------------------------------
 
@@ -764,26 +854,11 @@ class LexicalDecisionModel:
         }
         if _wants_plugin(decision):
             _count("plugin_assess_stage2_actionable")
-            hint = _correction_hint(decision, valid_entries)
-            if hint is not None:
-                # Ask once more with the mistake pointed out, as the analyzer did.
-                from config.prompts.prompts_nekoclaw_brain import SELECT_CORRECTION_TEMPLATE
-
-                messages.append({"role": "assistant", "content": _strip_fences(raw)})
-                messages.append({"role": "user", "content": SELECT_CORRECTION_TEMPLATE.format(hint=hint)})
-                calls += 1
-                retried = None
-                try:
-                    retried = parse_json_object(await self._llm.complete(TIER_FINE, messages))
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - the first answer is judged instead
-                    logger.warning("correction request failed: %s", type(exc).__name__)
-                if retried is not None:
-                    decision = retried
-                still_wrong = _wants_plugin(decision) and _correction_hint(decision, valid_entries) is not None
-                _count("plugin_assess_correction_retry", result="fail" if still_wrong or not _wants_plugin(decision) else "success")
-
+        # An answer naming a plugin or an entry that does not exist is not
+        # asked about again: the task goes to a task agent, or cannot be done
+        # when there is none (``_conclude``). The analyzer's second request
+        # could not catch an entry that exists and is the wrong one, which is
+        # the mistake that does harm.
         return self._conclude(decision, valid_entries, active_rows, fallback_route, shown_ids, calls)
 
     async def _fine(self, messages: list[dict[str, Any]]) -> tuple[str | None, str]:
@@ -836,9 +911,21 @@ class LexicalDecisionModel:
             # Otherwise it named no line that was shown: not a repeat that can
             # be acted on, and the answer is read as below.
 
+        if route == "none":
+            # Neither a plugin entry nor a task agent can do it, or it is not
+            # something to get done: nothing is started.
+            return Selection(
+                route="none",
+                task_description=description,
+                preference=preference,
+                reason=reason,
+                shown_plugin_ids=shown_ids,
+                model_calls=calls,
+            )
+
         if _wants_plugin(decision):
             plugin_id, entry_id = _identifiers(decision)
-            problem = _correction_hint(decision, valid_entries)
+            problem = _identifier_problem(decision, valid_entries)
             if problem is None and plugin_id is not None and entry_id is not None:
                 args = decision.get("plugin_args")
                 return Selection(
@@ -889,8 +976,12 @@ def _wants_plugin(decision: dict[str, Any]) -> bool:
     return bool(decision.get("has_task")) and bool(decision.get("can_execute"))
 
 
-def _correction_hint(decision: dict[str, Any], valid_entries: dict[str, list[str]]) -> str | None:
-    """Return what is wrong with the named plugin and entry, or None when they exist."""
+def _identifier_problem(decision: dict[str, Any], valid_entries: dict[str, list[str]]) -> str | None:
+    """Return what is wrong with the named plugin and entry, or None when they exist.
+
+    The text is kept as the reason of the decision, so the record shows how
+    often a model names something that is not there.
+    """
     plugin_id, entry_id = _identifiers(decision)
     if plugin_id is None:
         return f"plugin_id is required for route=plugin. Available plugins: {list(valid_entries)}"

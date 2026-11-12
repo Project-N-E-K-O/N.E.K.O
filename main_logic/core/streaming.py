@@ -775,36 +775,6 @@ class StreamingMixin:
                         record_data,
                     )
 
-                    openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)
-                    if (
-                        openclaw_magic_command
-                        and self._is_agent_enabled()
-                        and self.agent_flags.get("openclaw_enabled", False)
-                        and self.agent_flags.get("openclaw_ready", False)
-                    ):
-                        self._session_turn_count += 1
-                        self._clear_text_pending_images()
-                        self._mark_magic_command_image_drop_request(message.get("request_id"))
-                        await self.mirror_user_input(
-                            data,
-                            metadata={
-                                "source": "openclaw",
-                                "kind": "magic_command",
-                                "command": openclaw_magic_command,
-                            },
-                            request_id=message.get("request_id"),
-                        )
-                        await self._emit_agent_callback_turn_end(message.get("request_id"))
-                        # An owed wrap-up is not settled here: typed input only
-                        # reaches this through _process_stream_input, whose hold
-                        # (_with_owed_wrap_up_held) pays it once this input has
-                        # been handled; a settle here would return at once.
-                        self._fire_task(self._publish_openclaw_magic_command(openclaw_magic_command))
-                        logger.info("[%s] text input sent explicit openclaw magic command", self.lanlan_name)
-                        if _turn_context_job is not None:
-                            _turn_context_job.cancel()
-                        return
-
                     # Text mode: **prefix this user message's content in place** with pending agent-task
                     # callbacks. LLM treats them as additional context accompanying the user's current utterance,
                     # naturally mentioning them in the same answer instead of starting an independent

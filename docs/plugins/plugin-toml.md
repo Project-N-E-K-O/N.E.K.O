@@ -84,15 +84,19 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "笔记", "memo", "record", "メモ"]
 ```
 
-These fields affect Agent routing after the host has loaded the plugin:
+These fields decide how the Agent (NekoClaw) selects the plugin once the host has loaded it:
 
-- `description` — Full description used in plugin metadata and fine-grained Agent assessment.
-- `short_description` — Compact description used by coarse screening. If absent, the Agent may generate and cache one from `description`.
-- `keywords` — Regular-expression patterns. Matches are unioned into the Stage 1 candidate set; they do not bypass Stage 2 or guarantee execution.
+- `description` — Full description used in plugin metadata and in the fine selection.
+- `short_description` — Compact description read by the coarse screen, which uses at most 150 tokens of it. If absent, the start of `description` is used instead.
+- `keywords` — Regular-expression patterns. A match puts the plugin among the coarse stage's candidates and marks it as a keyword match for the fine selection; it does not bypass the fine selection or guarantee execution.
+
+Selection has two stages. When the descriptions of all selectable plugins and their visible entries together exceed 3000 tokens, a coarse stage keeps the union of three sets: plugins whose keywords match, the ten best BM25 text matches (over the plugin's ID, name, descriptions, and its entries' IDs and descriptions), and the plugins a small model picks from the short descriptions. The fine selection then chooses a `plugin_id` and a runtime `entry_id` and fills in the arguments. At or below 3000 tokens the coarse stage is skipped and every selectable plugin goes to the fine selection.
+
+Selection runs only when the main dialogue model hands a task over: it called its `dispatch_task` tool, or it agreed out loud and the turn check dispatched for it. Finished turns are not analysed automatically, so a plugin that relied on being picked up from a passing remark of the user is selected less often. The text matched against keywords and BM25 is the user's own words together with the sentence the model dispatched. A keyword match in the user's words is also one of the signals that lets a turn through to the turn check.
 
 Set `passive = true` for a listener/integration that must never participate in Agent dispatch. A non-passive plugin also needs at least one Agent-visible runtime entry before it can become a candidate.
 
-The Agent's final Stage 2 decision returns a `plugin_id` and runtime `entry_id`. Both are checked against the candidates shown to that assessment; one corrective retry is allowed, then an invalid decision is rejected.
+The `plugin_id` and `entry_id` chosen by the fine selection are checked against the candidates it was shown. An invalid choice is not asked about again and no entry is called directly: the task goes to a task agent, or is reported as not doable when none is available. The fine selection can also answer that nothing can do the task, or that it is not a task at all (`route="none"`); nothing is started then. What happens when an entry is called is described under "How the Agent calls an entry" in [Entries](./entries).
 
 ```toml
 version = "1.2.0"

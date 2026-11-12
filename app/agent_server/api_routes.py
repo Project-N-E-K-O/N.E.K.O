@@ -13,145 +13,44 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Agent control, execution, and intent-restore endpoints."""
+"""Agent control and intent-restore endpoints."""
 
 from .api_shared import (  # noqa: F401
-    AGENT_HISTORY_TURNS,
-    AGENT_PROACTIVE_ANALYZE_ENABLED,
-    AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION,
-    AgentServerEventBridge,
-    AgentTaskTracker,
     Any,
-    BaseModel,
-    BrowserUseAdapter,
-    ComputerUseAdapter,
-    DEFERRED_TASK_TIMEOUT,
     Dict,
-    DirectTaskExecutor,
-    ERROR_MESSAGE_MAX_CHARS,
-    EXCEPTION_TEXT_MAX_CHARS,
-    FastAPI,
-    Field,
     HTTPException,
-    JSONResponse,
     List,
     Modules,
-    OPENCLAW_ENABLE_CHECK_ATTEMPTS,
-    OPENCLAW_ENABLE_CHECK_INTERVAL,
-    OpenClawAdapter,
     Optional,
-    PLUGIN_NAME_CACHE_TTL,
-    REDACTED_USER_TURN_MARKER,
-    TASK_DETAIL_MAX_TOKENS,
-    TASK_ERROR_MAX_TOKENS,
-    TASK_REGISTRY_CLEANUP_TTL,
-    TASK_TRACKER_DETAIL_MAX_CHARS,
-    TASK_TRACKER_INJECT_DETAIL_MAX_CHARS,
-    TASK_TRACKER_MAX_RECORDS,
-    TASK_TRACKER_TTL,
-    TOOL_SERVER_PORT,
-    TaskDeduper,
-    ThrottledLogger,
-    USER_NOTIFICATION_ERROR_MAX_CHARS,
-    USER_NOTIFICATION_REASON_MAX_CHARS,
     USER_PLUGIN_SERVER_PORT,
-    _LEGACY_CORRECTION_PUBLIC_KEYS,
     _agent_flags_snapshot,
-    _bind_deferred_task,
     _browser_use_dependency_status,
-    _build_analyze_event_fingerprint,
-    _build_assistant_turn_fingerprint,
-    _build_user_turn_fingerprint,
     _bump_state_revision,
-    _cancel_openclaw_enable_probe,
-    _cancel_openclaw_tasks_for_stop,
-    _cleanup_task_registry,
-    _collect_active_openclaw_task_ids,
-    _collect_agent_status_snapshot,
-    _collect_existing_task_descriptions,
     _close_browser_use_adapter,
-    _computer_use_scheduler_loop,
+    _collect_agent_status_snapshot,
     _create_tracked_task,
-    _default_openclaw_task_description,
     _emit_agent_status_update,
-    _emit_main_event,
-    _emit_task_result,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
-    _ensure_browser_use_adapter,
     _fire_agent_llm_connectivity_check,
-    _fire_user_plugin_capability_check,
-    _get_internal_correction_context,
-    _get_plugin_display_id,
-    _get_plugin_friendly_name,
-    _get_throttled_logger,
-    _install_runtime_bindings,
-    _is_duplicate_task,
-    _is_reply_suppressed,
-    _last_user_message_signature,
-    _llm_check_lock,
-    _lookup_llm_result_fields,
-    _normalize_lanlan_key,
-    _now_iso,
-    _openclaw_first_reason,
-    _openclaw_notification,
-    _openclaw_pending,
-    _openclaw_reason_code,
-    _openclaw_reason_text,
-    _plugin_name_cache_lock,
-    _plugin_terminal_status,
-    _public_task_info,
-    _redact_cancelled_user_turns,
-    _repo_root,
-    _resolve_delivery_mode,
-    _resolve_openclaw_sender_id,
-    _rewire_computer_use_dependents,
-    _rp_lang,
-    _rp_phrase,
-    _run_computer_use_task,
-    _run_openclaw_enable_probe,
     _set_capability,
-    _set_internal_correction_context,
-    _spawn_background_cancel,
-    _spawn_task,
-    _start_embedded_user_plugin_server,
-    _start_openclaw_enable_probe,
-    _stop_embedded_user_plugin_server,
-    _task_tracker,
-    _track_background_task,
-    _tracker_desc_for_task_info,
     _try_refresh_computer_use_adapter,
-    _tt,
-    _user_message_payload_text,
-    _user_message_sender_id,
-    _user_message_signature,
     app,
     asyncio,
-    channels,
-    datetime,
-    get_config_manager,
+    builtin_provider,
     httpx,
+    hud,
     json,
-    log_config,
     logger,
-    mimetypes,
     os,
-    parse_browser_use_result,
-    parse_computer_use_result,
-    parse_plugin_result,
-    setup_logging,
+    stop_everything,
     sys,
     time,
-    timezone,
     uuid,
 )
 from .api_runtime import (  # noqa: F401
-    ToolCorrectionPayload,
     _agent_master_enabled,
-    _background_analyze_and_plan,
     _check_agent_api_gate,
-    _do_analyze_and_plan,
-    _handle_proactive_analyze,
     _handle_voice_transcript_request,
     _on_session_event,
     _user_plugins_enabled,
@@ -160,58 +59,12 @@ from .api_runtime import (  # noqa: F401
     complete_deferred_task,
     get_task,
     health,
-    plugin_execute_direct,
+    nekoclaw_brief,
+    nekoclaw_dispatch,
+    nekoclaw_query,
     shutdown,
     startup,
-    submit_task_correction,
 )
-
-
-@app.get("/openclaw/availability")
-async def openclaw_availability():
-    if not Modules.openclaw:
-        return {"enabled": False, "ready": False, "reasons": ["adapter 未加载"]}
-    status = await asyncio.to_thread(Modules.openclaw.is_available)
-    ready = bool(status.get("ready")) if isinstance(status, dict) else False
-    reasons = status.get("reasons", []) if isinstance(status, dict) else []
-    pending = _openclaw_pending()
-    if ready:
-        was_ready = bool(((Modules.capability_cache or {}).get("openclaw") or {}).get("ready"))
-        if pending:
-            _cancel_openclaw_enable_probe()
-        _set_capability("openclaw", True, "")
-        if pending or not was_ready:
-            await _emit_agent_status_update()
-        return status
-    if pending and Modules.agent_flags.get("openclaw_enabled"):
-        _set_capability("openclaw", False, "AGENT_PRECHECK_PENDING")
-        if isinstance(status, dict):
-            status = dict(status)
-            status["pending"] = True
-        return status
-    reason = reasons[0] if reasons else ""
-    was_openclaw_enabled = bool(Modules.agent_flags.get("openclaw_enabled"))
-    previous_capability = dict((Modules.capability_cache or {}).get("openclaw") or {})
-    was_ready = bool(previous_capability.get("ready"))
-    _set_capability("openclaw", False, reason)
-    if was_openclaw_enabled:
-        Modules.agent_flags["openclaw_enabled"] = False
-        Modules.notification = _openclaw_notification("AGENT_OPENCLAW_CAPABILITY_LOST", reasons)
-    # The popup requests the state snapshot and this availability probe in
-    # parallel.  When the snapshot wins the race it contains the startup
-    # PENDING value, so every terminal transition must be pushed even if the
-    # disabled capability was never previously ready.
-    capability_changed = previous_capability != (
-        (Modules.capability_cache or {}).get("openclaw") or {}
-    )
-    if was_openclaw_enabled or was_ready or capability_changed:
-        await _emit_agent_status_update()
-    return status
-
-
-@app.get("/capabilities")
-async def capabilities():
-    return {"success": True, "capabilities": {}}
 
 
 @app.get("/agent/flags")
@@ -234,8 +87,6 @@ async def get_agent_flags():
 
 @app.get("/agent/state")
 async def get_agent_state():
-    if not Modules.task_executor:
-        raise HTTPException(503, "Task executor not ready")
     snapshot = _collect_agent_status_snapshot()
     return {"success": True, "snapshot": snapshot}
 
@@ -357,7 +208,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
     cf = (payload or {}).get("computer_use_enabled")
     bf = (payload or {}).get("browser_use_enabled")
     uf = (payload or {}).get("user_plugin_enabled")
-    nf = (payload or {}).get("openclaw_enabled")
     # ``_persist_intent`` (default True) gates whether this call writes the
     # user's intent to ``agent_runtime_intent.json``. The restore path replays
     # past intents through this same function with ``_persist_intent=False``
@@ -378,34 +228,30 @@ async def set_agent_flags(payload: Dict[str, Any]):
         Modules.user_plugin_lifecycle_seq += 1
         user_plugin_lifecycle_seq = Modules.user_plugin_lifecycle_seq
     # Agent LLM gate fail (endpoint/key not configured) blocks **only** the
-    # three LLM-dependent sub flags. ``user_plugin_enabled`` runs entirely on
+    # two LLM-dependent sub flags. ``user_plugin_enabled`` runs entirely on
     # the plugin lifecycle (no agent LLM involved) so the gate must not
-    # short-circuit its toggle path — historically this branch reset all four
-    # and early-returned, which silently swallowed legitimate user_plugin
+    # short-circuit its toggle path — historically this branch reset every
+    # flag and early-returned, which silently swallowed legitimate user_plugin
     # enable/disable requests whenever the user hadn't configured an agent
-    # endpoint. Here we instead cancel just the three LLM-coupled requests by
+    # endpoint. Here we instead cancel just the LLM-coupled requests by
     # nullifying them, then fall through to the per-flag handling so uf still
     # processes normally.
-    if gate.get("ready") is not True and any(x is True for x in (cf, bf, nf)):
+    if gate.get("ready") is not True and any(x is True for x in (cf, bf)):
         if not isinstance(bf, bool) and old_flags.get("browser_use_enabled", False):
             Modules.browser_use_lifecycle_seq += 1
             browser_use_lifecycle_seq = Modules.browser_use_lifecycle_seq
-        _cancel_openclaw_enable_probe()
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.agent_flags["browser_use_enabled"] = False
-        Modules.agent_flags["openclaw_enabled"] = False
         first_reason = (gate.get('reasons') or ['AGENT_ENDPOINT_NOT_CONFIGURED'])[0]
         browser_use_close_reason = first_reason
         _set_capability("computer_use", False, first_reason)
         _set_capability("browser_use", False, first_reason)
-        _set_capability("openclaw", False, first_reason)
         # Swallow these requests so the per-flag handlers below don't re-toggle
         # them ON; ``uf`` is intentionally left alone so user_plugin processing
         # proceeds.
-        cf = bf = nf = None
+        cf = bf = None
 
     prev_up = Modules.agent_flags.get("user_plugin_enabled", False)
-    prev_nk = Modules.agent_flags.get("openclaw_enabled", False)
 
     # 1. Handle Computer Use Flag with Capability Check
     if isinstance(cf, bool):
@@ -578,28 +424,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
             Modules._persistent_tasks.add(_bg)
             _bg.add_done_callback(Modules._persistent_tasks.discard)
 
-    if isinstance(nf, bool):
-        if nf:
-            if Modules.analyzer_enabled:
-                _start_openclaw_enable_probe(lanlan_name)
-            else:
-                Modules.agent_flags["openclaw_enabled"] = True
-                _set_capability("openclaw", False, "")
-        else:
-            _cancel_openclaw_enable_probe()
-            Modules.agent_flags["openclaw_enabled"] = False
-            _set_capability("openclaw", False, "")
-
     try:
         new_up = Modules.agent_flags.get("user_plugin_enabled", False)
         if prev_up != new_up:
             logger.info("[Agent] user_plugin_enabled toggled %s via /agent/flags", "ON" if new_up else "OFF")
-    except Exception:
-        pass
-    try:
-        new_nk = Modules.agent_flags.get("openclaw_enabled", False)
-        if prev_nk != new_nk:
-            logger.info("[Agent] openclaw_enabled toggled %s via /agent/flags", "ON" if new_nk else "OFF")
     except Exception:
         pass
 
@@ -621,7 +449,6 @@ async def set_agent_flags(payload: Dict[str, Any]):
                 ("computer_use_enabled", cf),
                 ("browser_use_enabled", bf),
                 ("user_plugin_enabled", uf),
-                ("openclaw_enabled", nf),
             ):
                 if not isinstance(requested, bool):
                     continue
@@ -669,8 +496,6 @@ async def agent_command(payload: Dict[str, Any]):
                 else:
                     _set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")
                     _set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")
-                if Modules.agent_flags.get("openclaw_enabled"):
-                    _start_openclaw_enable_probe(lanlan_name)
             else:
                 first_reason = (gate.get("reasons") or ["AGENT_ENDPOINT_NOT_CONFIGURED"])[0]
                 _set_capability("computer_use", False, first_reason)
@@ -687,7 +512,6 @@ async def agent_command(payload: Dict[str, Any]):
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
-            _cancel_openclaw_enable_probe()
             # Invalidate an in-flight user-plugin enable/readiness task before
             # stopping its lifecycle.  The sub-flag intent itself remains ON.
             Modules.user_plugin_lifecycle_seq += 1
@@ -695,15 +519,13 @@ async def agent_command(payload: Dict[str, Any]):
             # gate, not a clear-all command — sub flags carry the user's intent
             # for each component and must survive a master OFF/ON cycle (so the
             # user doesn't have to re-tick every sub-toggle after disabling the
-            # master). All analysis / dispatch paths upstream of sub-flag checks
-            # already test ``Modules.analyzer_enabled`` first (see lines ~1653,
-            # 2007, 2056, 3453), so leaving sub flags ON cannot let any
-            # component "secretly keep running". The actual stop is enforced by
-            # ``end_all`` + ``_ensure_plugin_lifecycle_stopped`` + the probe
-            # cancel above; ``intent`` (persistent) is also intentionally left
-            # untouched here for the same reason.
+            # master). The host, the built-in capabilities and the turn check
+            # all test the master switch first, so leaving sub flags ON cannot
+            # let any component "secretly keep running". The actual stop is
+            # enforced by ``end_all`` + ``_ensure_plugin_lifecycle_stopped``;
+            # ``intent`` (persistent) is also intentionally left untouched
+            # here for the same reason.
             _set_capability("user_plugin", True, "")
-            _set_capability("openclaw", False, "")
             await admin_control({"action": "end_all"})
             await _ensure_plugin_lifecycle_stopped(
                 should_stop=lambda: not Modules.analyzer_enabled
@@ -728,7 +550,7 @@ async def agent_command(payload: Dict[str, Any]):
     if command == "set_flag":
         key = (payload or {}).get("key")
         value = bool((payload or {}).get("value"))
-        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled", "openclaw_enabled"}:
+        if key not in {"computer_use_enabled", "browser_use_enabled", "user_plugin_enabled"}:
             raise HTTPException(400, "invalid flag key")
         t_set = time.perf_counter()
         await set_agent_flags({"lanlan_name": lanlan_name, key: value})
@@ -819,7 +641,7 @@ async def _do_restore_agent_intent() -> None:
     # legitimate persisted state to have e.g. ``analyzer_enabled=False``
     # alongside ``user_plugin_enabled=True`` (the user toggled the master
     # off but kept their sub-flag preferences). In that case we must NOT
-    # spin up plugin lifecycle / probe LLM / fire openclaw probe — the
+    # spin up plugin lifecycle / probe LLM — the
     # user explicitly disabled the master. Sub-flag intents stay in the
     # file untouched, so the next time the user turns the master back on
     # those flags will activate via the normal toggle path.
@@ -861,17 +683,6 @@ async def _do_restore_agent_intent() -> None:
         Modules._persistent_tasks.add(t)
         t.add_done_callback(Modules._persistent_tasks.discard)
         parallel.append(t)
-
-    # OpenClaw has its own bounded probe — no separate retry needed,
-    # ``set_agent_flags`` will fire the probe task and we trust that.
-    if intent.get("openclaw_enabled"):
-        try:
-            await set_agent_flags({
-                "openclaw_enabled": True,
-                "_persist_intent": False,
-            })
-        except Exception as exc:
-            logger.warning("[Agent] Failed to restore openclaw_enabled: %s", exc)
 
     # We deliberately don't gather() the parallel tasks — they update
     # capability + flags + intent on their own, and the user sees the
@@ -986,8 +797,7 @@ async def _restore_user_plugin() -> None:
     """Hand off to the standard /agent/flags path. user_plugin does NOT
     require the LLM probe to be green — plugins run on their own lifecycle,
     so we trigger them straight away in parallel. Any startup failure goes
-    through the existing _bg_plugin_enable async path and lazy-init fallback
-    at first ``analyze`` time still covers leftover cases."""
+    through the existing _bg_plugin_enable async path."""
     try:
         await set_agent_flags({
             "user_plugin_enabled": True,
@@ -1053,7 +863,6 @@ async def notify_config_changed():
     isn't using CU/BU — same rationale as the original docstring: routine
     config saves shouldn't probe for a feature nobody's using."""
     _try_refresh_computer_use_adapter(force=True)
-    _rewire_computer_use_dependents()
     flags = Modules.agent_flags or {}
     if Modules.analyzer_enabled and (
         flags.get("computer_use_enabled") or flags.get("browser_use_enabled")
@@ -1086,185 +895,45 @@ async def browser_use_availability():
     return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "browser-use"}
 
 
-@app.post("/computer_use/run")
-async def computer_use_run(payload: Dict[str, Any]):
-    if not Modules.computer_use:
-        raise HTTPException(503, "ComputerUse not ready")
-    instruction = (payload or {}).get("instruction", "").strip()
-    screenshot_b64 = (payload or {}).get("screenshot_b64")
-    if not instruction:
-        raise HTTPException(400, "instruction required")
-    import base64
-    screenshot = base64.b64decode(screenshot_b64) if isinstance(screenshot_b64, str) else None
-    # Preflight readiness check to avoid scheduling tasks that will fail immediately
-    try:
-        avail = await asyncio.to_thread(Modules.computer_use.is_available)
-        if not avail.get("ready"):
-            return JSONResponse(content={"success": False, "error": "ComputerUse not ready", "reasons": avail.get("reasons", [])}, status_code=503)
-    except Exception as e:
-        return JSONResponse(content={"success": False, "error": f"availability check failed: {e}"}, status_code=503)
-    lanlan_name = (payload or {}).get("lanlan_name")
-    # Dedup check
-    dup, matched = await _is_duplicate_task(instruction, lanlan_name)
-    if dup:
-        return JSONResponse(content={"success": False, "duplicate": True, "matched_id": matched}, status_code=409)
-    info = _spawn_task("computer_use", {"instruction": instruction, "screenshot": screenshot})
-    info["lanlan_name"] = lanlan_name
-    return {"success": True, "task_id": info["id"], "status": info["status"], "start_time": info["start_time"]}
-
-
-@app.post("/browser_use/run")
-async def browser_use_run(payload: Dict[str, Any]):
-    instruction = (payload or {}).get("instruction", "").strip()
-    if not instruction:
-        raise HTTPException(400, "instruction required")
-    # Debug/API entry: must share the dispatch mutex with the analyzer path —
-    # the adapter is a singleton whose cancel flag and browser session cannot
-    # tolerate concurrent run_instruction calls.
-    if Modules.browser_use_dispatch_lock is None:
-        Modules.browser_use_dispatch_lock = asyncio.Lock()
-
-    async def _locked_run():
-        async with Modules.browser_use_dispatch_lock:
-            adapter = await _ensure_browser_use_adapter()
-            if adapter is None:
-                raise HTTPException(503, "BrowserUse not ready")
-            return await adapter.run_instruction(instruction)
-
-    # Run as a tracked background task so end_all can cancel a wedged direct
-    # run (otherwise it would survive end_all still holding the mutex).
-    run_task = asyncio.create_task(_locked_run())
-    Modules._background_tasks.add(run_task)
-    run_task.add_done_callback(Modules._background_tasks.discard)
-    try:
-        result = await run_task
-        return {"success": bool(result.get("success", False)), "result": result}
-    except asyncio.CancelledError:
-        if run_task.cancelled():
-            # end_all tore this direct run down.
-            return JSONResponse(content={"success": False, "error": "cancelled by end_all"}, status_code=500)
-        # The HTTP request itself was cancelled — don't leak the inner task.
-        run_task.cancel()
-        raise
-    except HTTPException:
-        raise
-    except Exception as e:
-        return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
-
-
-@app.get("/mcp/availability")
-async def mcp_availability():
-    return {"ready": False, "capabilities_count": 0, "reasons": ["MCP 已移除"]}
-
-
 @app.get("/tasks")
 async def list_tasks():
-    """Quickly return the status of all current tasks, optimized for response speed"""
-    items = []
+    """Return the tasks under way and those that ended a short while ago.
 
-    try:
-        for tid, info in Modules.task_registry.items():
-            try:
-                task_item = {
-                    "id": info.get("id", tid),
-                    "type": info.get("type"),
-                    "status": info.get("status"),
-                    "start_time": info.get("start_time"),
-                    "params": info.get("params"),
-                    "result": info.get("result"),
-                    "error": info.get("error"),
-                    "lanlan_name": info.get("lanlan_name"),
-                    "source": "runtime"
-                }
-                items.append(task_item)
-            except Exception:
-                continue
-
-        debug_info = {
-            "task_registry_count": len(Modules.task_registry),
-            "total_returned": len(items)
-        }
-
-        return {"tasks": items, "debug": debug_info}
-
-    except Exception as e:
-        return {
-            "tasks": items,
-            "debug": {
-                "error": str(e),
-                "partial_results": True,
-                "total_returned": len(items)
-            }
-        }
+    Read from this process's view of the host's ledger, so it is quick and
+    opens nothing; the HUD calls it every few seconds while a task runs.
+    """
+    items = [dict(task, source="runtime") for task in hud.all()]
+    return {"tasks": items, "debug": {"total_returned": len(items)}}
 
 
 @app.post("/admin/control")
 async def admin_control(payload: Dict[str, Any]):
     action = (payload or {}).get("action")
     if action == "end_all":
-        # Mark every active registry task cancelled and notify the frontend
-        # BEFORE the potentially-slow teardown below. The task HUD is purely
-        # event-driven (no HTTP polling), so without these emits the cards of
-        # tasks whose dispatch coroutine is stuck (e.g. a browser-use agent
-        # wedged inside an LLM call) would stay "running" forever once the
-        # registry is cleared. Dispatch coroutines that do wake up emit the
-        # same terminal event again; duplicate cancel records are tolerated
-        # by design (see get_cancelled_user_sigs).
-        async def _mark_and_emit_cancelled() -> None:
-            for tid, info in list(Modules.task_registry.items()):
-                if info.get("status") not in ("queued", "running"):
-                    continue
-                info["status"] = "cancelled"
-                info["error"] = "Cancelled by user"
-                _task_tracker.record_completed(
-                    info.get("lanlan_name"),
-                    task_id=tid,
-                    method=str(info.get("type") or ""),
-                    desc=_tracker_desc_for_task_info(info),
-                    detail="Cancelled by user",
-                    success=False,
-                    cancelled=True,
-                    trigger_user_fingerprint=info.get("_trigger_user_fingerprint"),
-                )
-                try:
-                    await _emit_main_event(
-                        "task_update", info.get("lanlan_name"),
-                        task={"id": tid, "status": "cancelled", "type": info.get("type"),
-                              "end_time": _now_iso(), "params": info.get("params", {}),
-                              "error": "Cancelled by user"},
-                    )
-                except Exception as exc:
-                    logger.debug("[Agent] end_all: emit task_update(cancelled) failed: task_id=%s error=%s", tid, exc)
+        # Every commission under way is stopped. The status is written first
+        # and the HUD is told from that, so a card never stays "running"
+        # while something slow is still being torn down.
+        stopped = await stop_everything("Cancelled by user")
+        if stopped:
+            logger.info("[Agent] end_all: stopped %d task(s)", stopped)
 
-        await _mark_and_emit_cancelled()
-
-        # Cancel any in-flight background analyzer/dispatch tasks. Include the
-        # per-task dispatch handles explicitly so a handle that fell out of
-        # _background_tasks bookkeeping still receives the cancel.
+        # Background work that belongs to no commission (a turn check, a
+        # voice-transcript hand-over).
         tasks_to_await = []
-        for t in set(Modules._background_tasks) | set(Modules.task_async_handles.values()):
+        for t in set(Modules._background_tasks):
             if not t.done():
                 t.cancel()
                 tasks_to_await.append(t)
         if tasks_to_await:
-            # Bounded wait: a dispatch coroutine stuck in an uncancellable
-            # spot must not wedge end_all itself (the frontend proxy gives up
-            # after 5s and the user sees the ✕ do nothing).
+            # Bounded wait: a coroutine stuck in an uncancellable spot must
+            # not wedge end_all itself (the frontend proxy gives up after 5s
+            # and the user sees the ✕ do nothing).
             done, pending = await asyncio.wait(tasks_to_await, timeout=10.0)
             if pending:
                 logger.warning(
                     "[Agent] end_all: %d task(s) still not finished 10s after cancel; continuing teardown",
                     len(pending),
                 )
-                # A wedged dispatch coroutine may still hold the browser-use
-                # mutex; future tasks would queue on it forever. Every known
-                # handle was cancelled above (the ghost raises CancelledError
-                # at its next await) and the browser session is torn down
-                # below, so handing fresh tasks a new lock is safe.
-                lock = Modules.browser_use_dispatch_lock
-                if lock is not None and lock.locked():
-                    logger.warning("[Agent] end_all: browser_use dispatch lock still held after timeout; resetting")
-                    Modules.browser_use_dispatch_lock = asyncio.Lock()
             for res in done:
                 try:
                     exc = res.exception()
@@ -1274,50 +943,19 @@ async def admin_control(payload: Dict[str, Any]):
                     logger.warning(f"[Agent] Error awaiting cancelled background task: {exc}")
         Modules._background_tasks.clear()
 
-        # Signal computer-use adapter to cancel at next step boundary
-        if Modules.computer_use:
-            Modules.computer_use.cancel_running()
-
-        # Cancel any in-flight asyncio tasks and clear registry
-        if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
-            Modules.active_computer_use_async_task.cancel()
-            try:
-                await Modules.active_computer_use_async_task
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.warning(f"[Agent] Error awaiting cancelled computer use task: {e}")
-
-        # Wait for the underlying thread to actually finish before clearing state,
-        # so no pyautogui calls are still in-flight when we allow new tasks.
+        # A keyboard-and-mouse call the stop above did not reach (its
+        # commission ended on its own meanwhile) is told to stop as well, and
+        # its worker thread is waited for, so no pyautogui calls are still
+        # in-flight when new tasks are allowed.
         cu = Modules.computer_use
-        if cu is not None and hasattr(cu, "wait_for_completion"):
-            loop = asyncio.get_running_loop()
-            finished = await loop.run_in_executor(None, cu.wait_for_completion, 10.0)
-            if not finished:
-                logger.warning("[Agent] CUA thread did not stop within 10s during end_all")
+        if cu is not None:
+            cu.cancel_running()
+            if hasattr(cu, "wait_for_completion") and builtin_provider.is_running():
+                loop = asyncio.get_running_loop()
+                finished = await loop.run_in_executor(None, cu.wait_for_completion, 10.0)
+                if not finished:
+                    logger.warning("[Agent] CUA thread did not stop within 10s during end_all")
 
-        # Rescan right before wiping the registry: an in-flight analyzer may
-        # have registered a new task while any of the awaits above yielded.
-        # Its dispatch handle was cancelled above (or its scheduler guard
-        # skips it), but the frontend still needs the terminal event.
-        await _mark_and_emit_cancelled()
-
-        Modules.task_registry.clear()
-        Modules.last_user_turn_fingerprint.clear()
-        Modules.proactive_analyze_count.clear()
-        Modules.last_proactive_assistant_fingerprint.clear()
-        # Clear scheduling state
-        Modules.computer_use_running = False
-        Modules.active_computer_use_task_id = None
-        Modules.active_computer_use_async_task = None
-        # Drain the asyncio scheduler queue
-        try:
-            if Modules.computer_use_queue is not None:
-                while not Modules.computer_use_queue.empty():
-                    await Modules.computer_use_queue.get()
-        except Exception:
-            pass
         # Signal browser-use adapter to cancel at next step boundary
         try:
             if Modules.browser_use:
@@ -1331,10 +969,9 @@ async def admin_control(payload: Dict[str, Any]):
         except Exception as e:
             logger.warning(f"[Agent] Error cleaning browser-use adapter during end_all: {e}")
         # A disable-triggered close is itself tracked above and may have been
-        # cancelled by this drain. Retry teardown after dispatches quiesce so
+        # cancelled by this drain. Retry teardown after the calls quiesce so
         # keep-alive Chromium cannot survive end_all.
         await _close_browser_use_adapter(update_capability=False)
-        Modules.active_browser_use_task_id = None
         # Reset computer-use step history so stale context is cleared
         try:
             if Modules.computer_use:

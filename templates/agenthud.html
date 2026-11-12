@@ -74,7 +74,7 @@
         fetch('/api/agent/state').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }).then(function (resp) {
             if (!resp || !resp.success || !resp.snapshot) return;
             var activeTasks = resp.snapshot.active_tasks || [];
-            var running = activeTasks.filter(function (t) { return t.status === 'running'; });
+            var running = activeTasks.filter(function (t) { return t.status === 'running' || t.status === 'waiting_user'; });
             var queued = activeTasks.filter(function (t) { return t.status === 'queued'; });
             if (activeTasks.length > 0) {
                 applyAgentData({ tasks: activeTasks, running_count: running.length, queued_count: queued.length });

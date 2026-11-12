@@ -237,7 +237,7 @@ Hosted TSX は exported `ui` namespace と manifest surface を使います。�
 
 ### 返信制御
 
-`finish()` メソッドは `reply` パラメータ（デフォルト `True`）を受け付け、プラグインの結果がメインキャラクターの発話をトリガーするかどうかを制御します。
+`finish()` メソッドは `reply` パラメータ（デフォルト `True`）を受け付け、プラグインの結果がメインキャラクターの発話をトリガーするかどうかを制御します。これが効くのは、Agent がエントリを直接呼んだ場合です。task agent がエントリを呼んだ場合、結果は task agent に返り、ユーザーへの伝え方はその用件自体の設定に従います。
 
 ```python
 # 通常：キャラクターが結果を報告する
@@ -249,7 +249,7 @@ return await self.finish(data={"summary": "完了"}, reply=False)
 
 ### LLM 結果フィールドフィルタリング
 
-`@plugin_entry`（静的エントリ）または `register_dynamic_entry()`（動的エントリ）の `llm_result_fields` パラメータを使用して、メイン LLM が参照できる結果フィールドを制御します。リストにないフィールドは LLM プロンプトから除外されますが、タスクレジストリには保存されます。
+`@plugin_entry`（静的エントリ）または `register_dynamic_entry()`（動的エントリ）の `llm_result_fields` パラメータを使用して、モデルが参照できる結果フィールドを制御します。直接呼び出しではメイン LLM、task agent からの呼び出しではその task agent が対象です。リストにないフィールドはプロンプトから除外されますが、Run の結果には残ります。エントリがフィールドを宣言しない場合にモデルへ何が渡るかは、[エントリーとパラメーター](./entries)の「Agent が entry を呼ぶとき」を参照してください。
 
 ```python
 # 静的エントリ

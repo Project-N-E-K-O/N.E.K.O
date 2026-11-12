@@ -1147,10 +1147,32 @@ class TurnMixin:
         proof = getattr(self, '_chat_original_turns', {}).get(str(speech_id or ''))
         if proof:
             turn_end_msg['chat_original_id'] = proof['recordId']
+        if self._close_turn_tool_state():
+            # She called a tool that acts in this turn; its result was the
+            # one judgement of the turn, so nothing checks her words afterwards.
+            turn_end_msg['acted_through_tools'] = True
         self.sync_message_queue.put(turn_end_msg)
         if reply_turn is not None:
             reply_turn.turn_ended = True
         return turn_end_msg
+
+    def _close_turn_tool_state(self) -> bool:
+        """Reset what a turn noted about its tool calls; returns whether it acted through one.
+
+        Also drops the "…" bubble a tool call lit when she never got to
+        speak afterwards. getattr defaults guard managers built without
+        ``__init__`` (bare test managers).
+        """
+        acted = bool(getattr(self, "_turn_acted_through_tools", False))
+        self._turn_acted_through_tools = False
+        self._turn_has_spoken = False
+        if getattr(self, "_tool_wait_bubble", False):
+            self._tool_wait_bubble = False
+            try:
+                self._fire_task(self._push_focus_thinking(False))
+            except Exception:
+                logger.debug("[%s] clearing the tool-wait bubble failed", self.lanlan_name, exc_info=True)
+        return acted
 
     def _queue_agent_callback_turn_end(self, request_id=None) -> dict:
         """Put a ``turn end agent_callback`` on the sync queue and return it.
@@ -1161,6 +1183,7 @@ class TurnMixin:
         cross_server ends the assistant turn without an analyze request.
         ``_send_turn_end_to_frontend`` sends its WebSocket copy."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end agent_callback'}
+        self._close_turn_tool_state()
         # The source identity stays tied to this speech ID rather than shared flags.
         proof = getattr(self, '_chat_original_turns', {}).get(str(self.current_speech_id or ''))
         if proof:
@@ -2027,6 +2050,10 @@ class TurnMixin:
         cleaned = text.strip()
         if not cleaned:
             return
+        # The user's own words of the turn now starting; the dispatch tool
+        # passes them on with the task (plugins read them as
+        # ``_ctx.latest_user_request``).
+        self._latest_user_utterance = cleaned
         published_at = time.time() if ts is None else ts
         event_id = uuid4().hex
         # Plugin conversations bus: original user wording, paired with _publish_ai_message_to_plugin_bus;
@@ -2285,30 +2312,6 @@ class TurnMixin:
         await self.handle_input_transcript(transcript, is_voice_source=False)
 
     @staticmethod
-    def _normalize_explicit_openclaw_magic_command(text: str) -> Optional[str]:
-        raw = str(text or "").strip()
-        if not raw:
-            return None
-        lowered = " ".join(raw.lower().split())
-        prefix = None
-        for candidate in ("/openclaw ", "/qwenpaw "):
-            if lowered.startswith(candidate):
-                prefix = candidate
-                break
-        if prefix is None:
-            return None
-        command = lowered[len(prefix):].strip()
-        if command in {"/clear", "clear"}:
-            return "/clear"
-        if command in {"/new", "new"}:
-            return "/new"
-        if command in {"/stop", "stop"}:
-            return "/stop"
-        if command in {"/daemon approve", "daemon approve", "/approve", "approve"}:
-            return "/daemon approve"
-        return None
-
-    @staticmethod
     def _normalize_mini_game_magic_command(text: str) -> Optional[str]:
         """Return the game_type for a whole-message ``/<alias>`` mini-game command.
 
@@ -2488,52 +2491,6 @@ class TurnMixin:
         )
         return False
 
-    def _clear_text_pending_images(self) -> None:
-        if not isinstance(self.session, OmniOfflineClient):
-            return
-        pending_images = getattr(self.session, "_pending_images", None)
-        if hasattr(pending_images, "clear"):
-            pending_images.clear()
-        # Empty queues invalidate request-attachment entries; release them too.
-        self._prune_request_staged_images()
-        # Plugin-read image staging is also pending visual context, with identical invalidation.
-        pending_plugin_images = getattr(self.session, "_pending_plugin_images", None)
-        if hasattr(pending_plugin_images, "clear"):
-            pending_plugin_images.clear()
-        # Text bypassing stream_text (magic commands, etc.) makes proactive-staged screenshots
-        # no longer the next reply's context; these paths do not consume them,
-        # so leftovers leak into unrelated messages. Clear here alongside _pending_images,
-        # the symmetric user-did-something-else visual-invalidation choke point (Codex P2).
-        clear_shot = getattr(self.session, "set_proactive_screenshot", None)
-        if callable(clear_shot):
-            clear_shot(None)
-
-    async def _publish_openclaw_magic_command(self, command: str) -> None:
-        try:
-            sent = await _core_facade.publish_analyze_request_reliably(
-                lanlan_name=self.lanlan_name,
-                trigger="text_openclaw_magic_command",
-                messages=[{"role": "user", "content": command}],
-                ack_timeout_s=0.8,
-                retries=1,
-                conversation_id=uuid4().hex,
-                # Session locale (full code) so the agent process prompts in the
-                # UI language instead of its own Steam/system locale.
-                language=getattr(self, "user_language", None),
-            )
-        except Exception as exc:
-            logger.warning("[%s] openclaw magic command publish failed: %s", self.lanlan_name, exc)
-            await self.send_status(json.dumps({
-                "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
-                "details": {"command": command},
-            }))
-            return
-        if not sent:
-            logger.warning("[%s] openclaw magic command publish failed: no ack", self.lanlan_name)
-            await self.send_status(json.dumps({
-                "code": "OPENCLAW_COMMAND_DISPATCH_FAILED",
-                "details": {"command": command},
-            }))
 
     async def handle_input_transcript(
         self,
@@ -2962,6 +2919,10 @@ class TurnMixin:
 
         # Always write sync_message_queue/message_cache regardless of WS success,
         # preserving assistant content in cross_server history after disconnects.
+        if text_clean.strip():
+            # She has said something this turn; a tool call from here on no
+            # longer leaves the user facing silence.
+            self._turn_has_spoken = True
         if is_first_chunk:
             logger.debug("[%s] send_lanlan_response: first chunk (len=%d)", self.lanlan_name, len(text_clean))
             # First visible content of the turn → the model has finished its

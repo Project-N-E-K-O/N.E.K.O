@@ -1122,7 +1122,7 @@ async def test_permission_once_allows_the_request_and_asks_again_next_time(hosts
     question = waiting.question()
     assert question["kind"] == "permission"
     assert question["category"] == "outside_write"
-    assert question["options"] == ["once", "always", "deny"]
+    assert question["options"] == ["always", "session", "once", "deny"]
     assert question["detail"]["path"] == str(tmp_path / "one.txt")
     assert not (tmp_path / "one.txt").exists()
 

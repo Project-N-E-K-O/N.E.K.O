@@ -17,8 +17,9 @@
 The settings live in ``<data root>/nekoclaw/permissions.json``. Each category
 has one of four modes:
 
-* ``first_ask``  - ask the user; "always" turns the category into ``allow``.
-* ``always_ask`` - ask the user every time.
+* ``first_ask``  - ask the user; "always" turns the category into ``allow``,
+  "session" allows it until the asking commission ends.
+* ``always_ask`` - ask the user every time; only "once" and "deny" are offered.
 * ``allow``      - go ahead without asking.
 * ``deny``       - refuse without asking.
 
@@ -34,8 +35,14 @@ written over it meanwhile.
 ``PermissionGate.check`` is the single decision and is called from the two
 places the design names: the runtime's ``decide_permission`` callback for the
 built-in tools, and the gateway's entry for the capabilities it serves.
-Asking means the commission waits for the user, who answers "once", "always"
-or "deny"; "once" covers the one request that asked.
+Asking means the commission waits for the user, who answers one of:
+
+* "always"  - allow from now on; written to the settings file.
+* "session" - allow for the rest of this commission's task agent session. Kept
+  in memory only: it ends with the commission and with the host process.
+  Task agents the commission starts are covered by it as well.
+* "once"    - allow the one request that asked.
+* "deny"    - refuse this request; the settings stay as they are.
 
 Task preferences are never read here: guidance for a model cannot open a
 permission.
@@ -54,7 +61,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 MODES: tuple[str, ...] = ("first_ask", "always_ask", "allow", "deny")
-CHOICES: tuple[str, ...] = ("once", "always", "deny")
+CHOICES: tuple[str, ...] = ("always", "session", "once", "deny")
+# What a category that asks every time offers.
+CHOICES_ALWAYS_ASK: tuple[str, ...] = ("once", "deny")
 
 MCP_SERVER_CATEGORY = "mcp_server"
 
@@ -103,7 +112,8 @@ class PermissionAsk:
     key: str | None
     # What exactly is asked for: tool, path, command and so on.
     detail: dict[str, Any] = field(default_factory=dict)
-    # The answers offered. "always" is missing when the category asks every time.
+    # The answers offered. "always" and "session" are missing when the
+    # category asks every time.
     options: tuple[str, ...] = CHOICES
 
     def to_json(self) -> dict[str, Any]:
@@ -118,6 +128,8 @@ class PermissionAsk:
 
 # Puts the question to the user on behalf of a commission; returns a choice.
 Asker = Callable[[str, PermissionAsk], Awaitable[str]]
+# Returns the commission that started the given one, or None.
+ParentLookup = Callable[[str], Awaitable["str | None"]]
 
 
 def _slot(category: str, key: str | None) -> tuple[str, str | None]:
@@ -270,12 +282,47 @@ class PermissionStore:
 class PermissionGate:
     """Decides one request: by the settings, or by asking the user."""
 
-    def __init__(self, store: PermissionStore, asker: Asker | None = None) -> None:
+    def __init__(
+        self, store: PermissionStore, asker: Asker | None = None, parent_of: ParentLookup | None = None
+    ) -> None:
         self._store = store
         self._asker = asker
+        self._parent_of = parent_of
+        # commission id -> what the user allowed for that commission's session.
+        self._session_grants: dict[str, set[tuple[str, str | None]]] = {}
 
     def set_asker(self, asker: Asker | None) -> None:
         self._asker = asker
+
+    def set_parent_lookup(self, parent_of: ParentLookup | None) -> None:
+        self._parent_of = parent_of
+
+    def end_session(self, commission_id: str) -> None:
+        """Forget what was allowed for a commission's session; call it when the commission ends."""
+        self._session_grants.pop(commission_id, None)
+
+    def session_grants(self, commission_id: str) -> frozenset[tuple[str, str | None]]:
+        """Return what the user allowed for this commission's own session."""
+        return frozenset(self._session_grants.get(commission_id, ()))
+
+    async def _lineage(self, commission_id: str) -> list[str]:
+        """Return the commission and the commissions it descends from, nearest first."""
+        chain = [commission_id]
+        if self._parent_of is None:
+            return chain
+        current = commission_id
+        while True:
+            try:
+                parent = await self._parent_of(current)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - without a known parent only its own grants count
+                logger.debug("looking up the parent of a commission failed", exc_info=True)
+                return chain
+            if not parent or parent in chain:
+                return chain
+            chain.append(parent)
+            current = parent
 
     async def check(
         self,
@@ -286,6 +333,9 @@ class PermissionGate:
         detail: dict[str, Any] | None = None,
     ) -> PermissionDecision:
         """Return whether the commission may do this, asking the user if the mode says so."""
+        # Looked up first, so nothing is awaited between reading the mode and
+        # reading the version it belongs to.
+        lineage = await self._lineage(commission_id)
         mode = await self._store.mode(category, key)
         # Read together with the mode, with nothing awaited in between.
         version = self._store.version
@@ -293,9 +343,15 @@ class PermissionGate:
             return PermissionDecision(True)
         if mode == "deny":
             return PermissionDecision(False, DENIED_BY_SETTINGS)
+        slot = _slot(category, key)
+        if mode == "first_ask" and any(slot in self._session_grants.get(item, ()) for item in lineage):
+            # Allowed for this session, or for the session of the commission
+            # that started this one. A category that asks every time has no
+            # such answer and keeps asking.
+            return PermissionDecision(True)
         if self._asker is None:
             return PermissionDecision(False, DENIED_NO_ANSWER)
-        options = CHOICES if mode == "first_ask" else ("once", "deny")
+        options = CHOICES if mode == "first_ask" else CHOICES_ALWAYS_ASK
         ask = PermissionAsk(category=category, key=key, detail=dict(detail or {}), options=options)
         try:
             choice = await self._asker(commission_id, ask)
@@ -304,13 +360,19 @@ class PermissionGate:
         except Exception as exc:  # noqa: BLE001 - no answer is a refusal
             logger.warning("asking for permission failed: %s", type(exc).__name__)
             return PermissionDecision(False, DENIED_NO_ANSWER)
-        if choice not in ("once", "always"):
+        if choice in ("always", "session") and choice not in options:
+            # Approved, though more widely than this category offers (it asks
+            # every time): the approval covers the one request that asked.
+            choice = "once"
+        if choice not in options or choice == "deny":
             return PermissionDecision(False, DENIED_BY_USER)
         if self._store.version != version:
             return await self._decide_again(category, key)
-        if choice == "always" and "always" in options:
+        if choice == "always":
             if not await self._store.set_mode(category, "allow", key, expected_version=version):
                 return await self._decide_again(category, key)
+        elif choice == "session":
+            self._session_grants.setdefault(commission_id, set()).add(slot)
         return PermissionDecision(True)
 
     async def _decide_again(self, category: str, key: str | None) -> PermissionDecision:

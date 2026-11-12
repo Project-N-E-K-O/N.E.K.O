@@ -166,14 +166,21 @@ class ProactiveMixin:
                 'computer_use_enabled',
                 'browser_use_enabled',
                 'user_plugin_enabled',
-                'openclaw_enabled',
-                'openclaw_ready',
             ]:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
             # Malformed flags payload — keep the current flags.
             pass
+        # The two task tools follow the switches: they are offered to the
+        # model only while NekoClaw is on, so a session without it does not
+        # pay for their definitions. Only an actual change touches the live
+        # session's tool list.
+        try:
+            if self._register_task_tools():
+                self._fire_task(self._sync_tools_to_active_session())
+        except Exception:
+            logger.debug("[%s] task tools not re-registered after a flag update", self.lanlan_name, exc_info=True)
 
     # ------------------------------------------------------------------
     # Voice-chat proactive text trigger (dedicated path)

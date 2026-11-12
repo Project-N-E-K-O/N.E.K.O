@@ -8,7 +8,7 @@
 
 ### `GET /api/agent/flags`
 
-返回 Agent Server 的 flags 快照，包括主开关和 Computer Use、Browser Use、用户插件、OpenClaw 子功能。代理失败返回 `502` 和 `success: false`。
+返回 Agent Server 的 flags 快照，包括总开关和三个能力开关：键鼠（`computer_use_enabled`）、浏览器（`browser_use_enabled`）、用户插件（`user_plugin_enabled`）。代理失败返回 `502` 和 `success: false`。
 
 ### `POST /api/agent/flags`
 
@@ -16,7 +16,7 @@
 
 ### `GET /api/agent/state`
 
-返回 Agent Server 的权威状态快照：revision、flags、capabilities、notification 状态和任务摘要。
+返回 Agent Server 的权威状态快照：revision、flags、capabilities、notification 状态和在办的任务（`active_tasks`）。
 
 ### `POST /api/agent/command`
 
@@ -24,8 +24,8 @@
 
 | 命令 | 附加字段 | 用途 |
 |---|---|---|
-| `set_agent_enabled` | `enabled`，可选 `profile` | 切换主运行时 gate |
-| `set_flag` | `key`、`value` | 切换 `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled`、`openclaw_enabled` 之一 |
+| `set_agent_enabled` | `enabled`，可选 `profile` | 切换总开关；关闭时会叫停全部在办的任务 |
+| `set_flag` | `key`、`value` | 切换 `computer_use_enabled`、`browser_use_enabled`、`user_plugin_enabled` 之一 |
 | `refresh_state` | 无 | 返回并广播新的状态快照 |
 
 `request_id` 和 `lanlan_name` 可选。未知命令或 flag key 由 Agent Server 拒绝；上游/代理失败返回 `502`。
@@ -38,26 +38,37 @@
 | `GET` | `/api/agent/computer_use/availability` | Agent Server 返回的就绪状态与原因 |
 | `GET` | `/api/agent/browser_use/availability` | 浏览器依赖/模型就绪状态 |
 | `GET` | `/api/agent/user_plugin/availability` | 插件服务可达性；不可用时返回 `502` |
-| `GET` | `/api/agent/openclaw/availability` | OpenClaw/QwenPaw 就绪状态；不可用时返回 `502` |
-| `GET` | `/api/agent/mcp/availability` | 兼容响应：MCP 已移出 `brain/`，因此始终不可用 |
 
 ## 任务与管理
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `GET` | `/api/agent/tasks` | 列出 Agent Server 任务快照 |
+| `GET` | `/api/agent/tasks` | 列出任务：在办的，以及最近五分钟内结束的 |
 | `GET` | `/api/agent/tasks/{task_id}` | 读取一个任务 |
-| `POST` | `/api/agent/tasks/{task_id}/cancel` | 取消一个任务；保留上游 `404`，请求已到达但响应超时时使用 `504` |
-| `POST` | `/api/agent/admin/control` | 转发 `{"action":"end_all"}` 等管理操作；仅限本机，会终止活动任务 |
+| `POST` | `/api/agent/tasks/{task_id}/cancel` | 叫停一个任务；保留上游 `404`，请求已到达但响应超时时使用 `504`。任务已经结束时返回 `success: false` 和它的实际 `status` |
+| `POST` | `/api/agent/admin/control` | 转发 `{"action":"end_all"}` 等管理操作；`end_all` 会叫停全部在办的任务。仅限本机 |
 
-## 内部与 UI 辅助路由
+### 任务对象
+
+一个任务就是猫爪台账里一件委托在 HUD 上的样子。`GET /api/agent/tasks` 返回 `{"tasks":[...]}`；状态快照的 `active_tasks` 和 WebSocket 的 `agent_task_update` 消息里是同一种对象。
+
+| 字段 | 含义 |
+|---|---|
+| `id` | 委托号 |
+| `status` | `queued`、`running`、`waiting_user`、`completed`、`blocked`、`failed`、`cancelled` 之一 |
+| `type` | `user_plugin`（直达调用插件入口）、`task_agent`（task agent 在办，界面上叫「使魔」）或 `task`（刚登记，还没决定谁来办） |
+| `start_time`、`end_time` | ISO 时间戳；任务结束后才有 `end_time` |
+| `params` | `description`（标题）和 `instruction`（派发的那句话）；`user_plugin` 任务另有 `plugin_id`、`entry_id`、`plugin_name` |
+| `lanlan_name` | 任务所属的角色 |
+| `error` | 原因，`failed`、`blocked`、`cancelled` 的任务才有 |
+| `progress`、`stage`、`message`、`step`、`step_total` | 直达调用的插件入口上报的进度，可选 |
+
+`waiting_user` 表示任务在等用户回答或批准，仍算在办。`blocked` 表示这件事没办成就停下了，要先具备别的条件才能继续。以后可能增加字段。
+
+## UI 辅助路由
 
 | 方法 | 路径 | 边界 |
 |---|---|---|
-| `POST` | `/api/agent/internal/analyze_request` | 内部降级桥，把 `analyze_request` 发布到主事件总线 |
 | `GET` | `/api/agent/user_plugin/dashboard` | 重定向到本地插件 dashboard；接受经校验的 `v` 和环回 `yui_opener_origin` 查询值 |
-| `GET` | `/api/agent/openclaw/guide` | 渲染本地 OpenClaw 指南页面 |
-| `GET` | `/api/agent/openclaw/guide/content` | 返回本地化指南 Markdown；可选 `lang` 查询参数 |
-| `GET` | `/api/agent/openclaw/guide/assets/{asset_path:path}` | 仅服务固定指南资源目录下的文件；越界或缺失返回 `404` |
 
-analyze bridge 不是公开任务提交 API。Dashboard 和 guide 路由只是浏览器辅助入口，不是 Agent Server 任务 API。
+Dashboard 路由只是浏览器辅助入口，不是任务 API。浏览器没有提交任务的路由：任务由主对话模型用 `dispatch_task` 工具交办，主服务器再转给 Agent Server 的内部路由 `/nekoclaw/dispatch`。参见 [Agent Server API](/zh-CN/api/agent-server)。

@@ -33,8 +33,11 @@ class FakeDecisionLLM:
         *,
         coarse: list[str] | None = None,
         fine: list[Any] | None = None,
+        turn: list[Any] | None = None,
     ) -> None:
         self.coarse = list(coarse or [])
+        # Answers of the turn check, like ``fine``: dicts, strings or exceptions.
+        self.turn = list(turn or [{"verdict": "none", "task": ""}])
         # Each item is a dict (dumped as JSON), a string (sent as is) or an
         # exception (raised). The last one repeats.
         self.fine = list(fine or [{"route": "task_agent"}])
@@ -56,8 +59,9 @@ class FakeDecisionLLM:
             await self.gate.wait()
         if tier == "coarse":
             return json.dumps(self.coarse)
-        index = min(self.count("fine") - 1, len(self.fine) - 1)
-        answer = self.fine[index]
+        answers = self.turn if tier == "turn_check" else self.fine
+        index = min(self.count(tier) - 1, len(answers) - 1)
+        answer = answers[index]
         if isinstance(answer, BaseException):
             raise answer
         return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)

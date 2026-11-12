@@ -94,7 +94,7 @@ def test_wire_payload_preserves_slotted_and_legacy_entry_contract(legacy):
 async def test_registered_entry_survives_ipc_http_listing_and_agent_projection(
     isolated_registry, monkeypatch, declared
 ):
-    from brain.task_executor import DirectTaskExecutor
+    from nekoclaw.host.selection import routable_plugins, visible_entries
     from utils.result_parser import parse_plugin_result
 
     config = {"entries": manifest_entries()} if declared else {}
@@ -137,10 +137,10 @@ async def test_registered_entry_survives_ipc_http_listing_and_agent_projection(
     assert entries["probe"]["metadata"]["agent_auto"] is False
     assert entries["consult"]["timeout"] == 100
     assert entries["consult"]["llm_result_fields"] == ["summary"]
-    executor = object.__new__(DirectTaskExecutor)
-    assert [e["id"] for e in executor._agent_visible_plugin_entries(plugin)] == [
-        "consult"
-    ]
+    # The projection the host's plugin selection works on: the entry switched
+    # off with ``agent_auto`` is gone, the plugin itself stays routable.
+    assert [e["id"] for e in visible_entries(plugin)] == ["consult"]
+    assert [p["id"] for p in routable_plugins([plugin])] == ["contract"]
     assert (
         parse_plugin_result(
             {"summary": "New evidence", "response": {"private": True}},

@@ -84,15 +84,19 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "筆記", "memo", "record", "メモ"]
 ```
 
-これらの field は host が plugin をロードした後の Agent routing に使われます。
+host が plugin をロードした後、Agent（ネコクロー、NekoClaw）はこれらの field を使って plugin を選びます。
 
-- `description` — plugin metadata と Agent fine assessment に使う完全な説明です。
-- `short_description` — coarse screening 用の短い説明です。省略時は `description` から生成して cache される場合があります。
-- `keywords` — 正規表現 pattern です。hit は Stage 1 candidate に union されますが、Stage 2 を省略したり実行を保証したりしません。
+- `description` — plugin metadata と精選に使う完全な説明です。
+- `short_description` — 粗選別が読む短い説明で、読むのは最大 150 token です。省略時は `description` の先頭部分を代わりに使います。
+- `keywords` — 正規表現 pattern です。一致した plugin は粗選別の候補に入り、精選では「キーワード一致」の印が付きます。精選を省略したり、実行を保証したりはしません。
+
+選択は二段階です。選択対象の全 plugin と、その可視 entry の説明の合計が 3000 token を超えるときは、先に粗選別を行い、三つの集合の和を残します。keywords が一致した plugin、BM25 のテキスト一致の上位 10 件（plugin の ID、名前、説明と、entry の ID・説明が対象）、小型モデルが短い説明から選んだ plugin です。その後、精選が `plugin_id` と runtime `entry_id` を選び、引数を埋めます。3000 token 以下なら粗選別は行わず、選択対象の plugin すべてが精選に渡ります。
+
+選択が走るのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はなくなったため、「ユーザーが何気なく口にしただけで選ばれる」ことに頼っていた plugin は、選ばれる回数が減ります。keywords と BM25 が照合するテキストは、ユーザーの元の発言と、モデルが dispatch した一文を合わせたものです。ユーザーの発言が keywords に一致することは、そのターンをターン後チェックへ通すシグナルの一つでもあります。
 
 listener/integration を Agent dispatch から完全に外すには `passive = true` を設定します。non-passive plugin も Agent-visible runtime entry が 1 つ以上なければ candidate になりません。
 
-Stage 2 の最終出力は `plugin_id` と runtime `entry_id` です。どちらも今回表示した candidate set と照合され、最初の不正値だけ correction retry を 1 回行い、それでも不正なら拒否されます。
+精選が返した `plugin_id` と `entry_id` は、そのとき見せた candidate set と照合されます。不正な場合は聞き直さず、どの entry も直接は呼ばれません。その用件は task agent に渡され、task agent が使えないときは「できない」と返されます。精選は、誰にもできない用件、またはそもそも片付ける用件ではないもの（`route="none"`）と答えることもでき、その場合は何も始まりません。entry が呼ばれたときの動作は、[エントリーとパラメーター](./entries)の「Agent が entry を呼ぶとき」を参照してください。
 
 ```toml
 version = "1.2.0"

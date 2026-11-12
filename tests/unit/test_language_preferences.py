@@ -82,7 +82,7 @@ def run_connector(monkeypatch):
         render_provider,
         messages=None,
         after_memory=False,
-        analyze_result=True,
+        turn_check_result=True,
     ):
         events = []
 
@@ -101,9 +101,9 @@ def run_connector(monkeypatch):
             )
             return True, "", {}
 
-        async def publish_analyze(*_args, **kwargs):
-            events.append(("analyze", kwargs["trigger"], kwargs.get("language")))
-            return analyze_result
+        async def publish_turn_check(*_args, **kwargs):
+            events.append(("turn_check", kwargs["trigger"], kwargs.get("language")))
+            return turn_check_result
 
         async def after_settlement():
             events.append(("after",))
@@ -111,8 +111,8 @@ def run_connector(monkeypatch):
         monkeypatch.setattr(cross_server, "_post_memory_server", post_memory)
         monkeypatch.setattr(
             cross_server,
-            "_publish_analyze_request_with_fallback",
-            publish_analyze,
+            "_publish_turn_check_with_fallback",
+            publish_turn_check,
         )
         queue = asyncio.Queue()
         completion = asyncio.get_running_loop().create_future()
@@ -2005,7 +2005,7 @@ async def test_session_end_memory_barrier_clears_after_unsynced_tail(run_connect
         explicit_provider=lambda: "ja",
         render_provider=reject_render_fallback,
         after_memory=True,
-        analyze_result=False,
+        turn_check_result=False,
     )
     memory = next(event for event in events if event[0] == "memory")
     assert memory[1:3] == ("cache", "Mimi")
@@ -2029,7 +2029,7 @@ async def test_connector_memory_locale_provenance(run_connector, provider_mode, 
     events = await run_connector(
         explicit_provider=explicit_provider,
         render_provider=lambda: "ja" if provider_mode == "render_only" else "estonian",
-        analyze_result=False,
+        turn_check_result=False,
     )
     memory = next(event for event in events if event[0] == "memory")
     assert memory[1:3] == ("process", "Mimi")
@@ -2040,7 +2040,7 @@ async def test_connector_memory_locale_provenance(run_connector, provider_mode, 
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("provider_mode", "expected_analyze", "expected_memory"),
+    ("provider_mode", "expected_turn_check", "expected_memory"),
     [
         ("render_only", "ja", (None, "ja")),
         ("explicit", "ko", ("ko", None)),
@@ -2048,10 +2048,10 @@ async def test_connector_memory_locale_provenance(run_connector, provider_mode, 
         ("exception", None, (None, None)),
     ],
 )
-async def test_connector_analyzer_uses_visible_locale_without_promoting_render_hint(
+async def test_connector_turn_check_uses_visible_locale_without_promoting_render_hint(
     run_connector,
     provider_mode,
-    expected_analyze,
+    expected_turn_check,
     expected_memory,
 ):
     render_provider_calls = 0
@@ -2087,9 +2087,9 @@ async def test_connector_analyzer_uses_visible_locale_without_promoting_render_h
             }},
         ],
     )
-    assert [event[1:] for event in events if event[0] == "analyze"] == [
-        ("turn_end", expected_analyze),
-        ("session_end", expected_analyze),
+    assert [event[1:] for event in events if event[0] == "turn_check"] == [
+        ("turn_end", expected_turn_check),
+        ("session_end", expected_turn_check),
     ]
     memory = [event for event in events if event[0] == "memory"]
     assert [event[1] for event in memory] == ["cache", "process"]

@@ -27,6 +27,9 @@ What the gateway serves:
   call, and stopping the commission cancels the run;
 * MCP tools of the servers the user configured (through the ``mcp_adapter``
   plugin, see ``capabilities.py``);
+* the built-in capabilities (keyboard and mouse, browser) while they are
+  available, always listed up front. A call is carried out by the provider
+  the host was given; stopping the commission stops it;
 * two tools of its own, ``capability_search`` and ``capability_call``. Only
   the entries the task brain picked as candidates are listed up front, within
   ``GATEWAY_TOOL_LIST_MAX_TOKENS``; the rest are found and called through
@@ -34,6 +37,13 @@ What the gateway serves:
 
 Permissions are decided here, at the gateway's entry, by the same
 ``PermissionGate`` the built-in tools use.
+
+A plugin entry that answers ``needs_confirmation`` did not carry the call out:
+it wants the user to confirm first. The task agent must not answer for the user,
+so the gateway puts the plugin's question to the user itself (the commission
+waits for the user meanwhile) and hands the task agent the plugin's reply
+together with what the user said. A result that asks for a clarification, and
+a deferred one, go back to the task agent with a note, as before.
 
 Transport: MCP over HTTP POST with JSON answers (``initialize``, ``ping``,
 ``tools/list``, ``tools/call``). The listener is started when the first
@@ -48,11 +58,11 @@ import hmac
 import json
 import logging
 import secrets
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from nekoclaw.host.capabilities import Capability, CapabilityRegistry
+from nekoclaw.host.capabilities import KIND_BUILTIN, Capability, CapabilityRegistry
 from nekoclaw.host.ledger import Commission, Ledger
 from nekoclaw.host.permissions import PermissionGate
 from nekoclaw.host.plugin_runs import (
@@ -101,6 +111,19 @@ _CALL_TOOL_DEFINITION = {
 }
 
 
+# Puts a question to the user on behalf of a commission and returns the
+# answer as ``{"text": ..., "choice": ...}``.
+AskUser = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+def wants_confirmation(run_data: Any) -> bool:
+    """Return whether a plugin result asks for the user's confirmation (not a clarification)."""
+    if not isinstance(run_data, dict) or bool(run_data.get("observation_only")):
+        return False
+    status = str(run_data.get("status") or "").strip().lower()
+    return bool(run_data.get("needs_confirmation")) or status == "confirm_required"
+
+
 class JsonRpcError(Exception):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
@@ -146,17 +169,23 @@ class CapabilityGateway:
         runner: PluginRunner,
         permissions: PermissionGate,
         ledger: Ledger,
+        ask_user: AskUser | None = None,
     ) -> None:
         self._registry = registry
         self._runner = runner
         self._permissions = permissions
         self._ledger = ledger
+        self._ask_user = ask_user
         self._grants: dict[str, Grant] = {}  # by token
         self._by_commission: dict[str, Grant] = {}
         self._server: Any = None
         self._serve_task: asyncio.Task[None] | None = None
         self._start_lock = asyncio.Lock()
         self._port: int | None = None
+
+    def set_ask_user(self, ask_user: AskUser | None) -> None:
+        """Set how a plugin's request for confirmation is put to the user."""
+        self._ask_user = ask_user
 
     # -- tokens -----------------------------------------------------------
 
@@ -404,9 +433,9 @@ class CapabilityGateway:
     async def tool_definitions(self, grant: Grant) -> list[dict[str, Any]]:
         """Return the tools one commission is offered up front.
 
-        The entries of its candidate plugins, as far as the token budget
-        reaches, and the search and call tools when anything is left that was
-        not listed.
+        The built-in capabilities that are available, the entries of its
+        candidate plugins as far as the token budget reaches, and the search
+        and call tools when anything is left that was not listed.
         """
         from config.nekoclaw_settings import GATEWAY_TOOL_LIST_MAX_TOKENS
         from utils.tokenize import count_tokens
@@ -418,8 +447,9 @@ class CapabilityGateway:
         listed: list[dict[str, Any]] = []
         used = 0
         for capability in callable_now:
-            # Plugin entries, and MCP tools when the adapter was among the candidates.
-            if capability.plugin_id not in candidates:
+            # Built-in capabilities always; plugin entries, and MCP tools when
+            # the adapter was among the candidates.
+            if capability.kind != KIND_BUILTIN and capability.plugin_id not in candidates:
                 continue
             definition = _definition(capability)
             cost = count_tokens(json.dumps(definition, ensure_ascii=False))
@@ -488,6 +518,9 @@ class CapabilityGateway:
             )
             return _text(decision.reason or "permission denied", error=True)
 
+        if capability.kind == KIND_BUILTIN:
+            return await self._call_builtin(commission, capability, arguments)
+
         async def run_created(run_id: str) -> None:
             await self._ledger.append_event(
                 commission.id,
@@ -523,13 +556,76 @@ class CapabilityGateway:
             # Without the entry nothing says the data may be shown.
             text = f"{text}\n{json.dumps(outcome.data, ensure_ascii=False, default=str)}"
         if terminal == "blocked":
-            text = (
-                "[The plugin did not carry this out: it needs the user's confirmation or a clarification first.]\n"
-                + text
-            )
+            answer = await self._confirm_with_user(commission, capability, text) if wants_confirmation(outcome.data) else None
+            if answer is not None:
+                text = (
+                    "[The plugin did not carry this out: it needs the user's confirmation first. The user was "
+                    f"asked and answered: {json.dumps(answer, ensure_ascii=False)}. Only if that is a go-ahead, "
+                    "call it again the way the plugin asks; otherwise leave it.]\n" + text
+                )
+            else:
+                text = (
+                    "[The plugin did not carry this out: it needs the user's confirmation or a clarification first.]\n"
+                    + text
+                )
         elif isinstance(outcome.data, dict) and outcome.data.get("deferred") is True:
             text = "[Accepted; the plugin completes this later on its own.]\n" + text
         return _text(truncate_to_tokens(text, GATEWAY_RESULT_MAX_TOKENS))
+
+    async def _confirm_with_user(self, commission: Commission, capability: Capability, text: str) -> str | None:
+        """Put a plugin's request for confirmation to the user; return the answer, or None if it cannot be asked.
+
+        The commission waits for the user meanwhile. The task agent is not asked
+        and cannot answer in the user's place.
+        """
+        from config.nekoclaw_settings import GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        if self._ask_user is None:
+            return None
+        question = {
+            "kind": "confirmation",
+            "question": truncate_to_tokens(text or capability.title, GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS),
+            "capability": capability.id,
+            "title": capability.title,
+        }
+        try:
+            answer = await self._ask_user(commission.id, question)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - it could not be asked; the task agent is told so
+            logger.warning("a plugin's request for confirmation could not be put to the user: %s", type(exc).__name__)
+            return None
+        return str(answer.get("text") or "").strip()
+
+    async def _call_builtin(
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Carry out a built-in capability for a commission."""
+        from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
+        from utils.tokenize import truncate_to_tokens
+
+        await self._ledger.append_event(commission.id, "builtin_run", {"capability": capability.id})
+        try:
+            outcome = await self._registry.run_builtin(capability, commission_id=commission.id, arguments=arguments)
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._ledger.append_event(commission.id, "builtin_run_ended", {"capability": capability.id, "result": "cancelled"})
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on
+            logger.exception("built-in capability %s failed", capability.id)
+            await self._ledger.append_event(
+                commission.id, "builtin_run_ended", {"capability": capability.id, "result": "failed"}
+            )
+            return _text(f"{capability.title} failed: {type(exc).__name__}", error=True)
+        await self._ledger.append_event(
+            commission.id,
+            "builtin_run_ended",
+            {"capability": capability.id, "result": "completed" if outcome.success else "failed"},
+        )
+        text = truncate_to_tokens(outcome.text or ("done" if outcome.success else "failed"), GATEWAY_RESULT_MAX_TOKENS)
+        return _text(text, error=not outcome.success)
 
 
 async def _close_listener(server: Any, task: "asyncio.Task[Any] | None") -> None:

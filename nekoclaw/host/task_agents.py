@@ -45,7 +45,7 @@ from typing import Any, Protocol
 from nekoclaw.host.capabilities import CapabilityRegistry
 from nekoclaw.host.ledger import ACTIVE_STATUSES, Commission, Ledger
 from nekoclaw.host.paths import HostPaths
-from nekoclaw.host.permissions import PermissionAsk, PermissionGate
+from nekoclaw.host.permissions import CHOICES, PermissionAsk, PermissionGate
 from nekoclaw.host.plugin_runs import PluginRunner
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
 from nekoclaw.host.reports import CHANNEL_TASK_AGENT, Reporter
@@ -59,6 +59,7 @@ WEB_SEARCH_ENTRY_ID = "search"
 _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
 _SHUT_DOWN_REASON = "the host was shut down"
+_QUOTA_REASON = "the free daily quota of the agent model is used up"
 # A task agent started by a task agent does not wait in the queue: its parent
 # keeps its own place while it waits, so with every place held by parents
 # nothing would ever move.
@@ -84,6 +85,11 @@ _REPLY_LANGUAGES = {
 ModelConfigProvider = Callable[[], Awaitable["dict[str, Any] | None"]]
 # Builds a runtime from the event sink and the host callbacks.
 RuntimeFactory = Callable[[Callable[[dict[str, Any]], None], Any], Any]
+
+
+# Counts one model request of a task agent against whatever quota applies to
+# its model. Returns False when no request is left; the commission then fails.
+UsageMeter = Callable[[str], Awaitable[bool]]
 
 
 class LessonSink(Protocol):
@@ -205,7 +211,9 @@ class TaskAgentManager:
         enabled: Callable[[], bool] | None = None,
         max_concurrent: int | None = None,
         lessons: LessonSink | None = None,
+        meter: UsageMeter | None = None,
     ) -> None:
+        self._meter = meter
         self._ledger = ledger
         self._preferences = preferences
         self._permissions = permissions
@@ -241,6 +249,9 @@ class TaskAgentManager:
         self._pump: asyncio.Task[None] | None = None
         self._closed = False
         permissions.set_asker(self.ask_permission)
+        # A task agent started by another is covered by what the user allowed
+        # for that one's session.
+        permissions.set_parent_lookup(self._parent_of)
 
     # -- state ------------------------------------------------------------
 
@@ -642,6 +653,8 @@ class TaskAgentManager:
             await self._on_ended(session, event)
         elif kind == "error":
             await self._on_error(session, event)
+        elif kind == "usage":
+            await self._on_usage(session)
 
     def _summary(self, text: str) -> str:
         from config.nekoclaw_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
@@ -744,6 +757,30 @@ class TaskAgentManager:
         elif reason == "error":
             await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
+        for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
+            await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
+            await self.abort(child.id)
+        await self._close_session(session)
+
+    async def _on_usage(self, session: _Session) -> None:
+        """Count one model request; a commission whose quota is used up fails.
+
+        The runtime reports usage once per request, after the request, so the
+        request that uses the last unit still completes.
+        """
+        if self._meter is None or session.closing:
+            return
+        commission_id = session.commission_id
+        try:
+            allowed = await self._meter(commission_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
+            logger.warning("counting a task agent's model request failed", exc_info=True)
+            return
+        if allowed:
+            return
+        await self._fail(commission_id, _QUOTA_REASON)
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
             await self.abort(child.id)
@@ -1148,11 +1185,26 @@ class TaskAgentManager:
                     )
                 )
 
+    async def ask_user(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
+        """Put a question to the user for a commission and wait; returns ``{"text", "choice"}``.
+
+        For the gateway: a plugin that wants the user's confirmation is not
+        answered by the task agent that called it.
+        """
+        return await self._ask(commission_id, question)
+
     async def ask_permission(self, commission_id: str, ask: PermissionAsk) -> str:
         """Ask the user to approve something; the ``Asker`` of the permission gate."""
         answer = await self._ask(commission_id, ask.to_json())
         choice = answer.get("choice")
-        return choice if choice in ask.options else "deny"
+        # Anything that is not one of the four answers is a refusal. An
+        # approval wider than the question offered is narrowed by the gate.
+        return choice if choice in CHOICES else "deny"
+
+    async def _parent_of(self, commission_id: str) -> str | None:
+        """Return the commission that started this one; the permission gate's lookup."""
+        commission = await self._ledger.get(commission_id)
+        return commission.parent_id if commission is not None else None
 
     # -- host callbacks ---------------------------------------------------
 
