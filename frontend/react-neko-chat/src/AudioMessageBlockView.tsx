@@ -19,6 +19,7 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
   const seconds = Math.ceil(block.durationMs / 1000);
   const duration = `0:${String(seconds).padStart(2, '0')}`;
   const title = i18n('chat.audioHistoryMessage', 'Voice message');
+  const playLabel = playing ? i18n('common.pause', 'Pause') : i18n('chat.audioMessagePreview', 'Play recording');
   const url = chatAudioUrl(block.character, block.requestId);
   useEffect(() => {
     const player = audio.current;
@@ -84,7 +85,7 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
           onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
         <button type="button" className="message-audio-play" disabled={!block.available}
           data-playing={playing}
-          aria-label={playing ? i18n('common.pause', 'Pause') : i18n('chat.audioMessagePreview', 'Play recording')}
+          aria-label={block.available ? playLabel : `${title} ${duration}`}
           onClick={togglePlayback}>
           <span className="message-audio-play-disc" data-playing={playing} aria-hidden="true">
             <span className="audio-message-play-icon" />

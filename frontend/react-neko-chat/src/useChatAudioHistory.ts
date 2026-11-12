@@ -11,6 +11,8 @@ type AudioRow = {
   available?: boolean;
 };
 
+type PendingAudio = { target: string; row: AudioRow; saveLocal: boolean };
+
 type HistoryAvailability = boolean | undefined;
 const HISTORY_TIMEOUT_MS = 5000;
 
@@ -21,7 +23,7 @@ export function chatAudioUrl(character: string, id?: string) {
 
 export function useChatAudioHistory(target: string | undefined, author: string) {
   const [loaded, setLoaded] = useState<{ target: string; rows: AudioRow[]; more: boolean }>();
-  const [pending, setPending] = useState<{ target: string; row: AudioRow }[]>([]);
+  const [pending, setPending] = useState<PendingAudio[]>([]);
   const active = useRef<{
     target: string;
     availability: () => Promise<HistoryAvailability>;
@@ -55,7 +57,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
             if (signal.aborted || disposed) return undefined;
             if (response.status !== 403 && response.status !== 404) return undefined;
             setLoaded({ target: character, rows: [], more: false });
-            setPending(entries => entries.filter(entry => entry.target !== character));
+            setPending(entries => entries.filter(entry => entry.target !== character || !entry.saveLocal));
             available = false;
             return available;
           }
@@ -110,7 +112,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
         setLoaded(value => value?.target === character
           ? { ...value, rows: value.rows.filter(keep), more: detail.requestId !== undefined && value.more }
           : value);
-        setPending(entries => entries.filter(entry => entry.target !== character || keep(entry.row)));
+        setPending(entries => entries.filter(entry => entry.target !== character || !entry.saveLocal || keep(entry.row)));
       }
       void refresh();
     }
@@ -162,31 +164,37 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
       error.name = 'AudioMessageRejected';
       throw error;
     }
-    if (!saveLocal) return send(payload);
     const padding = payload.audio.endsWith('==') ? 2 : payload.audio.endsWith('=') ? 1 : 0;
     const bytes = payload.audio.length * 3 / 4 - padding;
-    const matches = (entry: { target: string; row: AudioRow }) =>
+    const matches = (entry: PendingAudio) =>
       entry.target === payload.target && entry.row.request_id === payload.requestId;
     setPending(rows => [...rows.filter(entry => !matches(entry)), {
       target: payload.target,
+      saveLocal,
       row: { request_id: payload.requestId, created_at: Date.now(), state: 'sending', transcript: '',
         duration_ms: Math.floor(bytes * 1000 / (payload.sampleRateHz * 2)), available: false },
     }]);
     try {
-      const result = await send({ ...payload, saveLocal: true });
+      const result = await send({ ...payload, saveLocal });
       if (active.current === session) {
         setPending(rows => rows.map(entry => matches(entry)
-          ? { ...entry, row: { ...entry.row, state: 'sent', available: true } }
+          ? { ...entry, row: { ...entry.row, state: 'sent', available: saveLocal } }
           : entry));
       }
       return result;
     } catch (error) {
       if (active.current === session) {
-        setPending(rows => rows.filter(entry => !matches(entry)));
+        if (saveLocal || (error instanceof Error && error.name === 'AudioMessageRejected')) {
+          setPending(rows => rows.filter(entry => !matches(entry)));
+        } else {
+          setPending(rows => rows.map(entry => matches(entry)
+            ? { ...entry, row: { ...entry.row, state: 'unconfirmed' } }
+            : entry));
+        }
       }
       throw error;
     } finally {
-      if (active.current === session) void session.refresh();
+      if (saveLocal && active.current === session) void session.refresh();
     }
   }
 
