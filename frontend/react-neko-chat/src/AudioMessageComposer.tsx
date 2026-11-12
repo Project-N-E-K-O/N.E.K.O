@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { i18n } from './i18n';
 import {
   AUDIO_MAX_SAMPLES, AUDIO_SAMPLE_RATE, recordAudio, recordingBase64, recordingWav,
@@ -6,6 +7,8 @@ import {
 } from './audioRecording';
 
 const RECORDING_LIMIT_SECONDS = AUDIO_MAX_SAMPLES / AUDIO_SAMPLE_RATE;
+
+type AudioMessageHost = Window & { showStatusToast?: (message: string, duration?: number) => void };
 
 type Props = {
   target?: string;
@@ -61,8 +64,8 @@ export function useAudioMessageComposer({ target, disabled, send }: Props) {
 
   function reportError(message: string) {
     setError(message);
-    (window as Window & { showStatusToast?: (message: string, duration?: number) => void })
-      .showStatusToast?.(message, 5000);
+    const host = window as AudioMessageHost;
+    if (typeof host.showStatusToast === 'function') host.showStatusToast(message, 5000);
   }
 
   async function stop(sendImmediately: boolean) {
@@ -191,6 +194,9 @@ export default function AudioMessageComposer({ composer }: { composer: ReturnTyp
     ? i18n('chat.audioMessageClosePreview', 'Close preview')
     : i18n('chat.audioMessageCancel', 'Discard recording');
   const playbackLabel = playing ? i18n('common.pause', 'Pause') : i18n('chat.audioMessagePreview', 'Preview recording');
+  const showFallback = typeof window !== 'undefined' && typeof (window as AudioMessageHost).showStatusToast !== 'function';
+  const announcement = <span className="audio-message-announcement"
+    data-visible={showFallback && !!error ? 'true' : undefined} role="alert">{error}</span>;
   return <div className="audio-message-composer" data-compact-no-drag="true"
     data-audio-message-active={active ? 'true' : undefined}
     data-compact-hit-region="true" data-compact-geometry-item="audio-message"
@@ -236,6 +242,6 @@ export default function AudioMessageComposer({ composer }: { composer: ReturnTyp
         <span className="audio-message-send-label">{i18n('chat.send', 'Send')}</span>
       </button> : null}
     </div>}
-    <span className="audio-message-announcement" role="alert">{error}</span>
+    {showFallback ? createPortal(announcement, document.body) : announcement}
   </div>;
 }

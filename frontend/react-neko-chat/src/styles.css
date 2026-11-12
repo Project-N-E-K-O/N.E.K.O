@@ -1988,7 +1988,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 }
 
 /* ===== 底部工具栏 ===== */
-:is(.audio-message-composer, .message-audio-block) {
+:is(.audio-message-composer, .message-audio-block, .audio-message-announcement) {
   --audio-ink: #233b52;
   --audio-muted: #506a81;
   --audio-outline: rgba(70, 116, 151, 0.22);
@@ -2000,7 +2000,7 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   --audio-recording: #c93b58;
 }
 
-[data-theme="dark"] :is(.audio-message-composer, .message-audio-block) {
+[data-theme="dark"] :is(.audio-message-composer, .message-audio-block, .audio-message-announcement) {
   --audio-ink: #e1edf7;
   --audio-muted: #a9bfd3;
   --audio-outline: rgba(172, 205, 235, 0.24);
@@ -2479,6 +2479,30 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+.audio-message-announcement[data-visible="true"] {
+  position: fixed;
+  inset-block-start: calc(12px + env(safe-area-inset-top, 0px));
+  inset-inline: 12px;
+  z-index: 100004;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: min(28rem, calc(100% - 24px));
+  height: auto;
+  margin-inline: auto;
+  padding: 8px 12px;
+  border: 1px solid var(--audio-outline);
+  border-radius: 10px;
+  background: var(--audio-surface);
+  color: var(--audio-ink);
+  box-shadow: 0 4px 14px rgba(20, 34, 48, 0.18);
+  font-size: 12px;
+  line-height: 1.45;
+  clip-path: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
 }
 
 .compact-chat-surface-frame[data-audio-message-active="true"] > .compact-chat-capsule-button,
