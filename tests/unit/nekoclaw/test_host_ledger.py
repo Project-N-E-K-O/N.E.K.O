@@ -239,7 +239,8 @@ async def test_every_pair_of_statuses_follows_the_table(ledger, current, target)
 def test_the_transition_table_is_the_intended_one():
     assert ALLOWED_TRANSITIONS == {
         "queued": {"working", "failed", "cancelled"},
-        "working": {"waiting_user", "done", "blocked", "failed", "cancelled"},
+        # Queued when its idle session was closed and a familiar it started reports back.
+        "working": {"waiting_user", "queued", "done", "blocked", "failed", "cancelled"},
         # Queued when its closed session's answer finds no free place.
         "waiting_user": {"working", "queued", "failed", "cancelled"},
         # Taken up again, at once or queued when no familiar place is free.
@@ -387,7 +388,9 @@ async def test_unfinished_commissions_of_an_earlier_process_fail_on_open(tmp_pat
         "done": "done",
         # The plugin may still call back before the deadline.
         "deferred": "working",
-        "expired": "failed",
+        # Past its deadline it is left to the task brain's sweep, which
+        # reports the timeout the way it does while the host runs.
+        "expired": "working",
     }
 
 

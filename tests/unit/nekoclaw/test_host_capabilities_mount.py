@@ -133,8 +133,42 @@ async def test_only_what_is_available_is_served_to_familiars(server):
         "plugin:weather:today",
         "mcp:my_notes:search_notes",
         "plugin:mcp_adapter:connect_server",
-        "plugin:mcp_adapter:mcp_status",
     ]
+
+
+async def test_an_mcp_tool_whose_server_cannot_be_told_is_not_served(server):
+    _mixed(server)
+    registry = CapabilityRegistry(PluginCatalog(client_factory=server.client))
+
+    listed = {item.id: item for item in await registry.list()}
+
+    # Named like no server's tool, yet its id says it is one: no single
+    # server's permission can be said to cover it.
+    status = listed["plugin:mcp_adapter:mcp_status"]
+    assert status.available is False
+    assert "cannot be told" in status.unavailable_reason
+
+
+@pytest.mark.parametrize(
+    ("entry_id", "name", "expected"),
+    [
+        # A server whose own name holds "] ": the id tells which reading is meant.
+        ("mcp_notes] v2_search", "[notes] v2] search", "mcp:notes] v2:search"),
+        ("mcp_notes_v2] search", "[notes] v2] search", "mcp:notes:v2] search"),
+        # Read either way and agreeing with neither: it cannot be told.
+        ("mcp_other_search", "[notes] v2] search", "plugin:mcp_adapter:mcp_other_search"),
+        # A line break in the name does not hide its server.
+        ("mcp_github_create_issue", "[github] create\nissue", "mcp:github:create\nissue"),
+    ],
+)
+async def test_the_server_of_an_mcp_tool_is_read_from_its_name_and_id(server, entry_id, name, expected):
+    server.add_plugin(plugin("mcp_adapter", "MCP Adapter", [entry(entry_id, "A tool", name=name)]))
+    registry = CapabilityRegistry(PluginCatalog(client_factory=server.client))
+
+    (item,) = [item for item in await registry.list() if item.plugin_id == "mcp_adapter"]
+
+    assert item.id == expected
+    assert item.available is expected.startswith("mcp:")
 
 
 async def test_selection_still_sees_mcp_tools_as_entries_of_the_adapter(server):

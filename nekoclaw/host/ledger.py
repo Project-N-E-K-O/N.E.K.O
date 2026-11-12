@@ -68,7 +68,9 @@ ENDED_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled", "bloc
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"working", "failed", "cancelled"}),
-    "working": frozenset({"waiting_user", "done", "blocked", "failed", "cancelled"}),
+    # Queued again when its idle session was closed while its own familiars
+    # worked, and one of their results is to take it up again.
+    "working": frozenset({"waiting_user", "queued", "done", "blocked", "failed", "cancelled"}),
     # Queued when its session was closed while it waited and the answer
     # finds no free place.
     "waiting_user": frozenset({"working", "queued", "failed", "cancelled"}),
@@ -328,19 +330,19 @@ class Ledger:
         """Fail what a previous host process left unfinished.
 
         Nobody is working on those commissions any more. A blocked one stays
-        blocked, and a deferred plugin result that may still arrive keeps its
-        commission open until its deadline. Questions of the failed ones that
-        were never sent are dropped. All of it is one transaction, so no
-        status changes without its event.
+        blocked, and a deferred one stays as it is: until its deadline its
+        plugin's result may still arrive, and past it the task brain's sweep
+        fails it with the same report as when the host kept running.
+        Questions of the failed ones that were never sent are dropped. All of
+        it is one transaction, so no status changes without its event.
         """
-        now = self._clock()
         conn.execute("BEGIN IMMEDIATE")
         try:
             rows = conn.execute(
                 "SELECT id FROM commissions WHERE status IN ('queued','working','waiting_user') "
                 "AND COALESCE(host_instance, '') != ? "
-                "AND NOT (deferred_until IS NOT NULL AND deferred_until > ?)",
-                (self.instance, now),
+                "AND deferred_until IS NULL",
+                (self.instance,),
             ).fetchall()
             for row in rows:
                 self._transition(conn, row["id"], "failed", "the host process ended before this finished", {})

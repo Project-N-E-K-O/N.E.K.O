@@ -589,6 +589,36 @@ def test_ordinary_names_stay_below_the_host_directory(tmp_path):
         assert Path(tmp_path) in session.parents
 
 
+async def test_a_deferred_deadline_passed_while_the_host_was_stopped_is_reported(tmp_path):
+    from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM
+
+    before = make_host(tmp_path, decision_llm=FakeDecisionLLM())
+    commission = await _file(before.ledger, route="plugin", plugin_id="memo", entry_id="add")
+    await before.ledger.transition(commission.id, "working", reason="test")
+    await before.ledger.update(commission.id, deferred_until=before.ledger._clock() + 0.05)
+    await before.shutdown()
+    # The deadline passes while no host runs.
+    await asyncio.sleep(0.1)
+
+    sent: list[dict[str, Any]] = []
+
+    async def send(item: Any) -> bool:
+        sent.append(item.payload)
+        return True
+
+    after = make_host(tmp_path, decision_llm=FakeDecisionLLM(), send_report=send)
+    try:
+        await after.query("what is going on", lanlan_name="Lan")
+        # Reported as a timeout, as when the host kept running.
+        await _wait_for(lambda: any(item.get("task_id") == commission.id for item in sent))
+        (report,) = [item for item in sent if item.get("task_id") == commission.id]
+        assert report["status"] == "failed"
+        assert "timeout" in report["summary"].lower()
+        assert (await after.ledger.get(commission.id)).status == "failed"
+    finally:
+        await after.shutdown()
+
+
 async def test_reports_left_unsent_before_a_restart_go_out_on_first_use(tmp_path):
     from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM
 

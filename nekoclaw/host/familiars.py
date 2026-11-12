@@ -829,18 +829,59 @@ class FamiliarManager:
         from utils.tokenize import truncate_to_tokens
 
         parent_id = str(commission.parent_id)
-        parent = self._sessions.get(parent_id)
-        if parent is None or self._runtime is None:
-            return
         message = texts.FAMILIAR_CHILD_RESULT_TEMPLATE.format(
             name=commission.name or commission.id,
             status=status,
             text=truncate_to_tokens(text, FAMILIAR_CHILD_RESULT_MAX_TOKENS),
         )
+        parent = self._sessions.get(parent_id)
+        if parent is None:
+            await self._wake_closed_parent(parent_id, message)
+            return
+        if self._runtime is None:
+            return
         # Before the parent's next model request, so a parent that waits for
         # its familiars sees the result as soon as it looks; an idle parent is
         # started by it.
         await self._send_text(self._runtime, parent, "steer", message)
+
+    async def _wake_closed_parent(self, parent_id: str, message: str) -> None:
+        """Take up again a working parent whose idle session was closed, a child's result its next work.
+
+        A parent that ended its run while its familiars worked is idle, and an
+        idle runtime closes idle sessions after a while. The result then
+        queues it to be started again where its transcript ends.
+        """
+        if self._closed:
+            return
+        if parent_id in self._queue or parent_id in self._requeueing or parent_id in self._taking_up:
+            # Already on its way back: this result goes along with it.
+            self._notes.setdefault(parent_id, []).append(message)
+            return
+        parent = await self._ledger.get(parent_id)
+        if parent is None or parent.route != "familiar" or parent.status != "working":
+            return
+        if parent_id in self._sessions or parent_id in self._queue or parent_id in self._requeueing:
+            # It came back while the ledger was read.
+            self._notes.setdefault(parent_id, []).append(message)
+            return
+        self._requeueing.add(parent_id)
+        try:
+            moved = await self._ledger.transition(
+                parent_id, "queued", reason="its idle session was closed; a result takes it up again"
+            )
+        finally:
+            self._requeueing.discard(parent_id)
+        if not moved.applied:
+            return
+        if self._closed:
+            await self._ledger.transition(parent_id, "failed", reason=_SHUT_DOWN_REASON)
+            return
+        self._resume[parent_id] = message
+        if parent_id not in self._queue:
+            self._queue.append(parent_id)
+        if len(self._sessions) < self.limit:
+            self._spawn(self._start_next())
 
     # -- driving ----------------------------------------------------------
 
@@ -991,13 +1032,20 @@ class FamiliarManager:
     async def _deliver_answer(self, session: _Session, text: str) -> bool:
         """Give an idle session the answer to its ``waiting`` report as its next work."""
         commission_id = session.commission_id
+        # Marked before anything is awaited: a session that closes meanwhile
+        # leaves the answer to its end, which takes the commission up again.
+        session.untaken_answer = text
         moved = await self._ledger.transition(commission_id, "working", reason="the user answered")
         if not moved.applied:
+            if session.untaken_answer == text:
+                session.untaken_answer = None
             return False
         session.awaiting_prompt = False
         session.held_answer = None
         await self._ledger.append_event(commission_id, "answered", {"text": text})
-        session.untaken_answer = text
+        if self._sessions.get(commission_id) is not session or session.untaken_answer != text:
+            # Closed while the status was written: its end has the answer.
+            return True
         try:
             await self._send_text(self._runtime, session, "prompt", text)
         except BaseException:
@@ -1014,8 +1062,11 @@ class FamiliarManager:
         moved = await self._ledger.transition(
             commission_id, "waiting_user", reason="its session closed before it took the answer"
         )
-        if moved.applied:
-            await self._take_up_again(commission_id, text)
+        if moved.applied and not await self._take_up_again(commission_id, text) and self._closed:
+            # Shutting down began while the status was written: nothing will
+            # take the answer up, and neither the queue nor the sessions hold
+            # it for shutting down to end. It ends here, as they do.
+            await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
 
     async def _ask(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
         """Put a question to the user and wait for the answer.

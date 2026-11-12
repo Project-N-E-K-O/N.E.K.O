@@ -713,6 +713,33 @@ async def test_deferred_commissions_kept_over_a_restart_still_time_out(server, h
     await wait_status(host, receipt.commission_id, "failed", timeout=5)
 
 
+async def test_stopping_a_failed_commission_asks_again_to_cancel_a_run_still_known(
+    server, hosts, tmp_path, monkeypatch
+):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="weather", dispatch_text="check the weather", source="dispatch", route="plugin"
+    )
+    await host.ledger.transition(commission.id, "working", reason="test")
+    # Polling gave up and the cancel did not get through: the commission
+    # failed, the run may still be going and is still known.
+    await host.ledger.transition(commission.id, "failed", reason="polling failed")
+    asked: list[str] = []
+
+    async def cancel_commission(commission_id: str, reason: str = "") -> int:
+        asked.append(commission_id)
+        return 1
+
+    monkeypatch.setattr(host.runner, "active_runs", lambda commission_id: ["run-1"])
+    monkeypatch.setattr(host.runner, "cancel_commission", cancel_commission)
+
+    stopped = await host.abort(commission.id)
+
+    # Failed stays failed, and the stop still reaches the run.
+    assert stopped.status == "failed"
+    assert asked == [commission.id]
+
+
 async def _slow_weather(server: FakePluginServer) -> asyncio.Event:
     started = asyncio.Event()
 

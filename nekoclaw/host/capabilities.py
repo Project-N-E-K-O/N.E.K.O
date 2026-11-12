@@ -61,8 +61,7 @@ MCP_ADAPTER_PLUGIN_ID = "mcp_adapter"
 # a connected server is served on its own, with that server's permission.
 MCP_ADAPTER_GENERIC_ENTRIES = frozenset({"call_tool", "gateway_invoke"})
 _MCP_ENTRY_PREFIX = "mcp_"
-# DOTALL and ``\Z``: a name with a line break in it still names its server.
-_MCP_ENTRY_NAME_RE = re.compile(r"\[(?P<server>.+?)\]\s+(?P<tool>.+)\Z", re.DOTALL)
+_MCP_NAME_SEPARATOR = "] "
 _TOOL_NAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 TOOL_NAME_MAX_LENGTH = 64
 
@@ -163,12 +162,25 @@ def _mcp_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
     entry_id = str(entry.get("id") or "")
     if not entry_id.startswith(_MCP_ENTRY_PREFIX):
         return None
-    match = _MCP_ENTRY_NAME_RE.match(str(entry.get("name") or ""))
-    if match is None:
-        # The adapter names every tool "[server] tool"; anything else is one of
-        # its own entries.
+    # The adapter names every tool "[server] tool" and gives it the id
+    # "mcp_<server>_<tool>"; it lists no server field of its own. A server
+    # name may hold "] " itself, so every way of reading the name is tried,
+    # and when there is more than one the id has to agree with exactly one.
+    name = str(entry.get("name") or "")
+    if not name.startswith("["):
         return None
-    return match.group("server"), match.group("tool")
+    readings = []
+    at = name.find(_MCP_NAME_SEPARATOR, 1)
+    while at != -1:
+        readings.append((name[1:at], name[at + len(_MCP_NAME_SEPARATOR) :]))
+        at = name.find(_MCP_NAME_SEPARATOR, at + 1)
+    readings = [(server, tool) for server, tool in readings if server and tool]
+    if len(readings) > 1:
+        readings = [
+            (server, tool) for server, tool in readings if entry_id == f"{_MCP_ENTRY_PREFIX}{server}_{tool}"
+        ]
+    # None when it cannot be told: no server's permission can be said to cover it.
+    return readings[0] if len(readings) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -245,7 +257,12 @@ def capabilities_of_plugin(plugin: dict[str, Any]) -> list[Capability]:
                 )
             )
             continue
-        generic = plugin_id == MCP_ADAPTER_PLUGIN_ID and entry_id in MCP_ADAPTER_GENERIC_ENTRIES
+        # The adapter's entries that can reach any server, and a server's tool
+        # whose server cannot be told from its name: neither is covered by one
+        # server's permission, so neither is served as a plain plugin entry.
+        generic = plugin_id == MCP_ADAPTER_PLUGIN_ID and (
+            entry_id in MCP_ADAPTER_GENERIC_ENTRIES or entry_id.startswith(_MCP_ENTRY_PREFIX)
+        )
         items.append(
             Capability(
                 id=f"plugin:{plugin_id}:{entry_id}",
@@ -258,9 +275,11 @@ def capabilities_of_plugin(plugin: dict[str, Any]) -> list[Capability]:
                 one_step=True,
                 available=not generic,
                 unavailable_reason=(
-                    "calls a tool of any MCP server without that server's permission; each tool is served on its own"
-                    if generic
-                    else ""
+                    ""
+                    if not generic
+                    else "calls a tool of any MCP server without that server's permission; each tool is served on its own"
+                    if entry_id in MCP_ADAPTER_GENERIC_ENTRIES
+                    else "its MCP server cannot be told from its name, so no server's permission covers it"
                 ),
                 plugin_id=plugin_id,
                 entry_id=entry_id,

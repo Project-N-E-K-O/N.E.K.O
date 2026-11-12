@@ -733,6 +733,10 @@ class TaskBrain:
             commission_id, "cancelled", reason=reason, report=report, deferred_until=None
         )
         if not moved.applied:
+            # Already ended, yet a plugin run whose cancel did not get through
+            # may still be going: a stop asks for that cancel again.
+            if self._runner.active_runs(commission_id):
+                await self._runner.cancel_commission(commission_id, reason)
             return commission
         timer = self._deferred_timers.pop(commission_id, None)
         if timer is not None:
