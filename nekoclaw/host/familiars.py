@@ -128,6 +128,9 @@ class _Session:
     # An answer sent as the session's next work that no event has yet shown
     # it took. Should the session close first, it is taken up again with it.
     untaken_answer: str | None = None
+    # Set once the session has been given its first work. Until then, what is
+    # passed on to it waits in the notes, which go to it right after that work.
+    ready: bool = False
     closing: bool = False
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
@@ -474,6 +477,7 @@ class FamiliarManager:
                 await runtime.close(commission.id)
                 return False
             await self._send_text(runtime, session, "prompt", text)
+            session.ready = True
             # What was passed on while the session was being set up.
             for note in self._notes.pop(commission.id, []):
                 await self._send_text(runtime, session, "steer", note)
@@ -838,6 +842,11 @@ class FamiliarManager:
         if parent is None:
             await self._wake_closed_parent(parent_id, message)
             return
+        if not parent.ready:
+            # Its session is being started (taken up again by an earlier
+            # result, say): this one follows its first work.
+            self._notes.setdefault(parent_id, []).append(message)
+            return
         if self._runtime is None:
             return
         # Before the parent's next model request, so a parent that waits for
@@ -922,8 +931,9 @@ class FamiliarManager:
             # Take it up again where its transcript ends.
             await self._ledger.append_event(commission_id, "told", {"text": text, "resumed": True})
             return await self._take_up_again(commission_id, text)
-        if commission.status == "queued":
-            # Not started yet: it goes along with the work when it starts.
+        if commission.status == "queued" or (session is not None and not session.ready and not session.closing):
+            # Not started yet, or its session not yet given its work: it goes
+            # along with the work when that is given.
             self._notes.setdefault(commission_id, []).append(text)
             await self._ledger.append_event(commission_id, "told", {"text": text, "queued": True})
             return True
@@ -1032,6 +1042,9 @@ class FamiliarManager:
     async def _deliver_answer(self, session: _Session, text: str) -> bool:
         """Give an idle session the answer to its ``waiting`` report as its next work."""
         commission_id = session.commission_id
+        if session.untaken_answer is not None:
+            # Another answer is on its way to it: that one is its next work.
+            return False
         # Marked before anything is awaited: a session that closes meanwhile
         # leaves the answer to its end, which takes the commission up again.
         session.untaken_answer = text

@@ -695,6 +695,82 @@ async def test_an_answer_whose_session_closes_while_its_status_is_written_takes_
     assert again.payload["resumed"] is True
 
 
+async def test_two_answers_at_once_hand_over_one_of_them(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+
+    answered = await asyncio.gather(
+        host.answer(receipt.commission_id, "the photos are in D:/Camera"),
+        host.answer(receipt.commission_id, "or maybe in E:/Phone"),
+    )
+
+    # The first is its next work; the second finds it no longer waiting.
+    assert answered == [True, False]
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
+
+
+async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(hosts, tmp_path):
+    scripts = {
+        "warm up": ScriptedLLM([[say("warm"), finish()]]),
+        "back up the notes": ScriptedLLM([[say("notes backed up"), finish()], [say("ok"), finish()]]),
+    }
+
+    def pick(spec: Any) -> ScriptedLLM:
+        return next(llm for text, llm in scripts.items() if text in (spec.instructions or ""))
+
+    host = _host(hosts, tmp_path, pick)
+    warm = await _dispatch(host, "warm up")
+    await wait_status(host, warm.commission_id, "done")
+    runtime = host.familiars._runtime
+    sent: list[tuple[str, str]] = []
+    start, prompt, steer = runtime.start, runtime.prompt, runtime.steer
+    release = asyncio.Event()
+
+    async def slow_start(spec: Any) -> Any:
+        await release.wait()
+        return await start(spec)
+
+    async def record_prompt(session_id: str, text: str) -> Any:
+        sent.append(("prompt", text))
+        return await prompt(session_id, text)
+
+    async def record_steer(session_id: str, text: str) -> Any:
+        sent.append(("steer", text))
+        return await steer(session_id, text)
+
+    runtime.start, runtime.prompt, runtime.steer = slow_start, record_prompt, record_steer
+    second = await _filed(host, "back up the notes")
+    await host.ledger.transition(second.id, "working", reason="test")
+    await host.ledger.transition(second.id, "blocked", reason="test")
+
+    taking_up = asyncio.ensure_future(host.familiars.tell(second.id, "put it on drive E:"))
+    # Recorded as working before the runtime has opened the session.
+    await wait_status(host, second.id, "working")
+    told = await host.familiars.tell(second.id, "and skip the drafts")
+    await host.familiars._tell_parent(
+        SimpleNamespace(parent_id=second.id, name="agent-9", id="child"), "completed", "drafts listed"
+    )
+    release.set()
+
+    assert told is True
+    assert await taking_up is True
+    await wait_until(lambda: len(sent) == 3, what="the work and both notes being sent")
+    # Nothing reaches the session before its first work does.
+    assert sent[0] == ("prompt", "put it on drive E:")
+    assert sent[1] == ("steer", "and skip the drafts")
+    assert sent[2][0] == "steer" and "drafts listed" in sent[2][1]
+
+
 async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_it_goes_back(hosts, tmp_path):
     llm = ScriptedLLM(
         [

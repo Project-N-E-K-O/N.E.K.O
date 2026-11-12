@@ -693,6 +693,11 @@ class TaskBrain:
         commission = await self._ledger.get(commission_id)
         if commission is None or commission.deferred_until is None or commission.status != "working":
             return False
+        if commission.deferred_until <= self._ledger._clock():
+            # Too late, though no sweep has failed it yet (after a restart,
+            # before the host's first use): it times out, as it would have.
+            await self.expire_deferred()
+            return False
         moved = await self._ledger.transition(
             commission_id, "done", reason="deferred callback completed", deferred_until=None
         )

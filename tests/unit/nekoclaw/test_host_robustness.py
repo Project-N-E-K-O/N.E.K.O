@@ -619,6 +619,33 @@ async def test_a_deferred_deadline_passed_while_the_host_was_stopped_is_reported
         await after.shutdown()
 
 
+async def test_a_callback_after_a_deadline_passed_while_the_host_was_stopped_is_too_late(tmp_path):
+    from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM
+
+    before = make_host(tmp_path, decision_llm=FakeDecisionLLM())
+    commission = await _file(before.ledger, route="plugin", plugin_id="memo", entry_id="add")
+    await before.ledger.transition(commission.id, "working", reason="test")
+    await before.ledger.update(commission.id, deferred_until=before.ledger._clock() + 0.05)
+    await before.shutdown()
+    await asyncio.sleep(0.1)
+
+    sent: list[dict[str, Any]] = []
+
+    async def send(item: Any) -> bool:
+        sent.append(item.payload)
+        return True
+
+    after = make_host(tmp_path, decision_llm=FakeDecisionLLM(), send_report=send)
+    try:
+        # The plugin's callback is the first thing the new host sees.
+        assert await after.complete_deferred(commission.id) is False
+        # It timed out, and is reported so, rather than counted as done.
+        assert (await after.ledger.get(commission.id)).status == "failed"
+        await _wait_for(lambda: any(item.get("task_id") == commission.id for item in sent))
+    finally:
+        await after.shutdown()
+
+
 async def test_reports_left_unsent_before_a_restart_go_out_on_first_use(tmp_path):
     from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM
 
