@@ -61,6 +61,7 @@ from .api_shared import (  # noqa: F401
     os,
     peek_host,
     ready_host,
+    restore_hud,
     shutdown_nekoclaw_host,
     time,
     uuid,
@@ -690,7 +691,10 @@ async def shutdown():
     await _close_browser_use_adapter()
 
     cu = Modules.computer_use
-    if cu is not None and hasattr(cu, "wait_for_completion") and builtin_provider.is_running():
+    # Waited for whether or not a call is on record as running: a cancelled
+    # call is taken off the record after a bounded wait even if its worker
+    # thread has not stopped. An idle adapter returns at once.
+    if cu is not None and hasattr(cu, "wait_for_completion"):
         loop = asyncio.get_running_loop()
         finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
         if not finished:
@@ -809,6 +813,7 @@ async def nekoclaw_brief(lanlan_name: str, language: Optional[str] = None):
 
 @app.get("/tasks/{task_id}")
 async def get_task(task_id: str):
+    await restore_hud()
     task = hud.get(task_id)
     if task is not None:
         return task
@@ -823,6 +828,7 @@ async def cancel_task(task_id: str):
     it afterwards; then the plugin run is cancelled on the plugin server or
     the task agent's session is closed. She is told that it was stopped.
     """
+    await restore_hud()
     host = peek_host()
     task = hud.get(task_id)
     if host is None or task is None:

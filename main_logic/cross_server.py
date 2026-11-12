@@ -1381,6 +1381,7 @@ async def run_sync_connector(
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过memory_server请求")
                                     chat_history.clear()
+                                    turn_checked_history_len = 0
                                     break
                                 
                                 # Send only remaining messages not covered by /cache, triggering LLM settlement.
@@ -1390,6 +1391,7 @@ async def run_sync_connector(
                                     _settle_hot_reset, remaining, *_current_memory_languages(),
                                 ))
                                 chat_history.clear()
+                                turn_checked_history_len = 0
                                 last_synced_index = 0
 
                             if message["data"] in ('turn end', 'turn end agent_callback'): # lanlan's message ended.
@@ -1644,6 +1646,11 @@ async def run_sync_connector(
                                         )
                                         if recent and has_user and latest_user_is_avatar_drop:
                                             logger.info(f"[{lanlan_name}] turn check skipped (avatar_drop session_end), messages={len(recent)}")
+                                        elif message.get("acted_through_tools"):
+                                            # She called a tool that acts in the turn that was cut
+                                            # off. Its result was the judgement of that turn; checking
+                                            # her words now could dispatch the same task again.
+                                            logger.debug(f"[{lanlan_name}] turn check skipped (acted through a tool before session end)")
                                         elif recent and has_user and cut_off_mid_turn:
                                             sent = await _publish_turn_check_with_fallback(
                                                 lanlan_name=lanlan_name,
@@ -1670,6 +1677,7 @@ async def run_sync_connector(
                                 if shutdown_event.is_set():
                                     logger.info(f"[{lanlan_name}] 进程正在关闭，跳过 session end 收尾")
                                     chat_history.clear()
+                                    turn_checked_history_len = 0
                                     last_synced_index = 0
                                     break
                                 
@@ -1682,6 +1690,7 @@ async def run_sync_connector(
                                     *_current_memory_languages(),
                                 ))
                                 chat_history.clear()
+                                turn_checked_history_len = 0
                                 last_synced_index = 0
                         except Exception as e:
                             logger.error(f"[{lanlan_name}] System message error: {e}", exc_info=True)
@@ -1707,6 +1716,7 @@ async def run_sync_connector(
                         # ends already clear these fields in their success path;
                         # repeating the reset here makes the barrier fail closed.
                         chat_history.clear()
+                        turn_checked_history_len = 0
                         last_synced_index = 0
                         user_input_cache = ''
                         user_input_sources.clear()

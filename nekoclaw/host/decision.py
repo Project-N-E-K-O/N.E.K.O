@@ -449,8 +449,11 @@ def read_answer(text: str, active: list[Commission]) -> Triage | None:
         if tokens:
             question_tokens = token_set(_question_text(commission))
             score = len(tokens & question_tokens) / len(tokens)
-        is_permission = (commission.question() or {}).get("kind") == "permission"
-        if is_permission and choice is not None:
+        # A plain yes or no shares no word with the question it answers. It
+        # still bears on a question that asks for exactly that: a permission,
+        # or a confirmation a plugin asked for.
+        asks_yes_or_no = (commission.question() or {}).get("kind") in ("permission", "confirmation")
+        if asks_yes_or_no and choice is not None:
             score += 0.5
         return score
 

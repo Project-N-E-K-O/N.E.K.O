@@ -1045,6 +1045,9 @@ class TurnMixin:
         )
         if kind == "agent_callback":
             if not said:
+                # No turn end goes out; what the cut reply noted about its
+                # tool calls must still not ride on the next turn.
+                self._close_turn_tool_state()
                 return None
             self._flush_ai_turn_text_to_tracker()
             return self._queue_agent_callback_turn_end()
@@ -1058,6 +1061,7 @@ class TurnMixin:
                 owner.meta is not None and self._pending_turn_meta is owner.meta
             ):
                 self._pending_turn_meta = None
+            self._close_turn_tool_state()
             return None
         turn_end_msg = self._queue_turn_end(request_id, reply_turn=owner)
         self._flush_ai_turn_text_to_tracker()
@@ -1166,6 +1170,10 @@ class TurnMixin:
         acted = bool(getattr(self, "_turn_acted_through_tools", False))
         self._turn_acted_through_tools = False
         self._turn_has_spoken = False
+        # The user's words belong to the turn they started. A later turn she
+        # starts herself (a report, a greeting) must not hand them on with a
+        # task of its own.
+        self._latest_user_utterance = ''
         if getattr(self, "_tool_wait_bubble", False):
             self._tool_wait_bubble = False
             try:
@@ -1173,6 +1181,19 @@ class TurnMixin:
             except Exception:
                 logger.debug("[%s] clearing the tool-wait bubble failed", self.lanlan_name, exc_info=True)
         return acted
+
+    def _session_end_message(self) -> dict:
+        """Return the ``session end`` message for the sync queue.
+
+        A session that ends in the middle of a turn never sends that turn's
+        ``turn end``. Whether she acted through a tool in it travels here
+        instead, so the cut-off turn is not checked afterwards and its task
+        is not dispatched a second time.
+        """
+        message: dict = {'type': 'system', 'data': 'session end'}
+        if self._close_turn_tool_state():
+            message['acted_through_tools'] = True
+        return message
 
     def _queue_agent_callback_turn_end(self, request_id=None) -> dict:
         """Put a ``turn end agent_callback`` on the sync queue and return it.
@@ -3361,6 +3382,9 @@ class TurnMixin:
             "request_id": request_id,
             "meta": metadata if isinstance(metadata, dict) else {},
         }
+        # A mirrored reply goes through send_lanlan_response as well and so
+        # counts as "has spoken"; that must not last into the next turn.
+        self._close_turn_tool_state()
         self.sync_message_queue.put(turn_end_msg)
         try:
             if (

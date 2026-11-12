@@ -333,11 +333,17 @@ class PermissionGate:
         detail: dict[str, Any] | None = None,
     ) -> PermissionDecision:
         """Return whether the commission may do this, asking the user if the mode says so."""
-        # Looked up first, so nothing is awaited between reading the mode and
-        # reading the version it belongs to.
-        lineage = await self._lineage(commission_id)
         mode = await self._store.mode(category, key)
-        # Read together with the mode, with nothing awaited in between.
+        if mode == "allow":
+            return PermissionDecision(True)
+        if mode == "deny":
+            return PermissionDecision(False, DENIED_BY_SETTINGS)
+        # Only a mode that asks can use what was allowed for a session, so the
+        # lineage (one ledger read per level) is looked up only now. The mode
+        # is then read again together with its version, with nothing awaited
+        # between the two.
+        lineage = await self._lineage(commission_id) if mode == "first_ask" else [commission_id]
+        mode = await self._store.mode(category, key)
         version = self._store.version
         if mode == "allow":
             return PermissionDecision(True)

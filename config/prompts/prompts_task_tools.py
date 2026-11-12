@@ -75,6 +75,20 @@ QUERY_TOOL_QUESTION_DESCRIPTION = {
 
 # Tool results the main server produces by itself, when the task system
 # could not be asked. They must not read as an acceptance.
+# The request went out and no answer came back in time: the task brain may
+# have taken it all the same. Saying "not handed over" here would have her
+# dispatch it again.
+TASK_TOOL_UNCERTAIN = {
+    'zh': '任务系统还没回话，不确定这件事有没有交出去。不要说已经在办，也不要重新派发；稍后用查询确认。',
+    'zh-TW': '任務系統還沒回話，不確定這件事有沒有交出去。不要說已經在辦，也不要重新派發；稍後用查詢確認。',
+    'en': 'The task system has not answered yet, so it is not known whether this was handed over. Do not say it is under way and do not dispatch it again; check with a query in a moment.',
+    'ja': 'タスクシステムからまだ応答がなく、この用件を渡せたかどうか分かりません。進めているとは言わず、もう一度任せることもせず、少ししてから照会で確かめてください。',
+    'ko': '작업 시스템이 아직 응답하지 않아 이 일이 넘어갔는지 알 수 없습니다. 진행 중이라고 말하지 말고 다시 맡기지도 말고, 잠시 뒤 조회로 확인하세요.',
+    'ru': 'Система задач пока не ответила, поэтому неизвестно, было ли это передано. Не говорите, что это выполняется, и не поручайте повторно; чуть позже проверьте запросом.',
+    'es': 'El sistema de tareas aún no ha respondido, así que no se sabe si esto se entregó. No digas que está en marcha ni lo encargues de nuevo; compruébalo con una consulta en un momento.',
+    'pt': 'O sistema de tarefas ainda não respondeu, então não se sabe se isto foi entregue. Não diga que está em andamento nem encarregue de novo; confira com uma consulta daqui a pouco.',
+}
+
 TASK_TOOL_UNREACHABLE = {
     'zh': '任务系统没有回应，这件事没有交出去。不要说已经在办。',
     'zh-TW': '任務系統沒有回應，這件事沒有交出去。不要說已經在辦。',

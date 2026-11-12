@@ -879,7 +879,30 @@ async def test_available_builtins_are_listed_up_front_without_being_candidates(b
 
     names = await _tool_names(builtin_host, grant)
 
-    assert names == ["plugin__weather__today", "builtin__keyboard_mouse", "builtin__browser", SEARCH_TOOL, CALL_TOOL]
+    assert names == ["builtin__keyboard_mouse", "builtin__browser", "plugin__weather__today", SEARCH_TOOL, CALL_TOOL]
+
+
+async def test_candidate_plugins_that_fill_the_budget_do_not_push_the_builtins_off_the_list(
+    builtin_host, server, monkeypatch
+):
+    import config.nekoclaw_settings as settings
+
+    _catalog(server)
+    grant = _grant(builtin_host, await _commission(builtin_host), "weather")
+    everything = await _tool_names(builtin_host, grant)
+    assert "plugin__weather__today" in everything
+    # Room for the two built-in capabilities and nothing more.
+    definitions = await builtin_host.gateway.tool_definitions(grant)
+    from utils.tokenize import count_tokens
+
+    builtin_cost = sum(
+        count_tokens(json.dumps(item, ensure_ascii=False)) for item in definitions if item["name"].startswith("builtin__")
+    )
+    monkeypatch.setattr(settings, "GATEWAY_TOOL_LIST_MAX_TOKENS", builtin_cost)
+
+    names = await _tool_names(builtin_host, grant)
+
+    assert names == ["builtin__keyboard_mouse", "builtin__browser", SEARCH_TOOL, CALL_TOOL]
 
 
 async def test_builtins_alone_are_enough_for_a_gateway(builtin_host):

@@ -25,6 +25,7 @@ from config.prompts.prompts_task_tools import (
     QUERY_TOOL_NAME,
     TASK_TOOL_EMPTY,
     TASK_TOOL_QUERY_UNREACHABLE,
+    TASK_TOOL_UNCERTAIN,
     TASK_TOOL_UNREACHABLE,
 )
 from main_logic import cross_server, public_knowledge
@@ -237,6 +238,42 @@ def test_the_switch_that_disables_every_built_in_tool_covers_these_two(monkeypat
     assert manager.tool_registry.names() == []
 
 
+def test_that_switch_holds_when_a_switch_update_registers_them_directly(monkeypatch):
+    manager = _manager(agent_enabled=False)
+    manager._register_builtin_tools()
+    monkeypatch.setenv("NEKO_DISABLE_BUILTIN_TOOLS", "1")
+
+    manager.update_agent_flags({"agent_enabled": True})
+
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
+    assert manager.tool_registry.get(QUERY_TOOL_NAME) is None
+    assert manager.fired == []
+
+
+def test_the_switch_set_later_takes_the_two_tools_out_again(monkeypatch):
+    manager = _manager()
+    manager._register_builtin_tools()
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is not None
+    monkeypatch.setenv("NEKO_DISABLE_BUILTIN_TOOLS", "1")
+
+    assert manager._register_task_tools() is True
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
+
+
+def test_a_status_push_that_changes_nothing_registers_nothing_again():
+    manager = _manager()
+    manager._register_builtin_tools()
+    before = (manager.tool_registry.get(DISPATCH_TOOL_NAME), manager.tool_registry.get(QUERY_TOOL_NAME))
+
+    for _ in range(3):
+        manager.update_agent_flags({"agent_enabled": True, "user_plugin_enabled": True})
+
+    # The very same objects: nothing was registered (and logged) a second time.
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is before[0]
+    assert manager.tool_registry.get(QUERY_TOOL_NAME) is before[1]
+    assert manager.fired == []
+
+
 # ---------------------------------------------------------------------------
 # dispatch_task
 # ---------------------------------------------------------------------------
@@ -284,25 +321,70 @@ def _raising(request: httpx.Request) -> httpx.Response:
     raise httpx.ConnectError("refused", request=request)
 
 
+def _pool_exhausted(request: httpx.Request) -> httpx.Response:
+    raise httpx.PoolTimeout("no connection free", request=request)
+
+
+def _no_answer_in_time(request: httpx.Request) -> httpx.Response:
+    raise httpx.ReadTimeout("no answer", request=request)
+
+
+def _connection_dropped(request: httpx.Request) -> httpx.Response:
+    raise httpx.RemoteProtocolError("server disconnected", request=request)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "handler",
     [
         _raising,
+        _pool_exhausted,
         lambda request: httpx.Response(503, json={"text": "starting"}),
-        lambda request: httpx.Response(200, json=["not", "an", "object"]),
-        lambda request: httpx.Response(200, content=b"not json"),
-        lambda request: httpx.Response(200, json={"kind": "accepted", "text": "  "}),
+        lambda request: httpx.Response(400, json={"detail": "text required"}),
     ],
-    ids=["refused", "status", "not-an-object", "not-json", "empty-text"],
+    ids=["refused", "no-connection-free", "unavailable", "turned-down"],
 )
-async def test_when_the_task_system_cannot_be_reached_she_is_told_nothing_was_taken_up(agent_process, handler):
+async def test_a_dispatch_that_never_arrived_is_told_as_not_handed_over(agent_process, handler):
     process = agent_process(handler)
     manager = _manager(lang="ja")
 
     assert await manager._handle_dispatch_task_call({"task": "メモを取って"}) == TASK_TOOL_UNREACHABLE["ja"]
     # Not tried again: a second request could hand the same task over twice.
     assert len(process.requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "handler",
+    [
+        _no_answer_in_time,
+        _connection_dropped,
+        lambda request: httpx.Response(200, json=["not", "an", "object"]),
+        lambda request: httpx.Response(200, content=b"not json"),
+        lambda request: httpx.Response(200, json={"kind": "accepted", "text": "  "}),
+    ],
+    ids=["timed-out", "dropped", "not-an-object", "not-json", "empty-text"],
+)
+async def test_a_dispatch_that_went_out_unanswered_is_told_as_not_known(agent_process, handler, logged):
+    # The agent process may be carrying it out all the same: saying "not
+    # handed over" would have her tell the user so and dispatch it again.
+    process = agent_process(handler)
+    manager = _manager(lang="zh")
+
+    answer = await manager._handle_dispatch_task_call({"task": "订一个明早七点的闹钟"})
+
+    assert answer == TASK_TOOL_UNCERTAIN["zh"] != TASK_TOOL_UNREACHABLE["zh"]
+    assert "不确定" in answer and "不要重新派发" in answer.replace("也不要", "不要") and "查询" in answer
+    assert len(process.requests) == 1
+    assert "闹钟" not in logged[-1]
+
+
+def test_the_answer_for_an_unknown_outcome_exists_in_every_language():
+    languages = {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+
+    assert set(TASK_TOOL_UNCERTAIN) == set(TASK_TOOL_UNREACHABLE) == languages
+    assert len(set(TASK_TOOL_UNCERTAIN.values())) == len(languages)
+    assert all(TASK_TOOL_UNCERTAIN[lang] != TASK_TOOL_UNREACHABLE[lang] for lang in languages)
 
 
 # ---------------------------------------------------------------------------
@@ -434,9 +516,12 @@ def test_closing_a_turn_reports_once_whether_it_acted_and_drops_the_bubble():
     manager._turn_acted_through_tools = True
     manager._turn_has_spoken = True
     manager._tool_wait_bubble = True
+    manager._latest_user_utterance = "帮我放点音乐"
 
     assert manager._close_turn_tool_state() is True
     assert manager._turn_has_spoken is False and manager._tool_wait_bubble is False
+    # The user's words belong to the turn that just ended.
+    assert manager._latest_user_utterance == ""
     assert manager.fired == ["_manager.<locals>._bubble"]
     # The next turn starts clean.
     assert manager._close_turn_tool_state() is False
@@ -463,6 +548,236 @@ def test_a_callback_turn_end_clears_the_mark_without_carrying_it():
 
     assert "acted_through_tools" not in ended
     assert manager._turn_acted_through_tools is False
+
+
+@pytest.mark.asyncio
+async def test_a_task_dispatched_in_a_turn_she_started_herself_carries_no_user_words(agent_process):
+    process = agent_process(lambda request: httpx.Response(200, json={"kind": "accepted", "text": "已受理。"}))
+    manager = _manager()
+    manager._latest_user_utterance = "帮我放点音乐"
+    # The user's turn ends; later she reports a result and dispatches a follow-up on her own.
+    manager._queue_turn_end("req-1")
+
+    await manager._handle_dispatch_task_call({"task": "把下载好的文件整理进文件夹"})
+
+    assert process.requests[0]["body"]["user_text"] == ""
+
+
+def test_a_mirrored_reply_does_not_count_as_having_spoken_in_the_next_turn():
+    manager = _manager()
+    manager.websocket = None
+    manager._turn_has_spoken = True
+    manager._turn_acted_through_tools = True
+
+    asyncio.run(manager.emit_mirror_turn_end(metadata={"mirror": True}))
+
+    assert manager._turn_has_spoken is False and manager._turn_acted_through_tools is False
+    assert "acted_through_tools" not in manager.sync_message_queue.get_nowait()
+
+
+@pytest.mark.parametrize("kind", ["response", "agent_callback"])
+def test_a_reply_cut_off_before_it_said_anything_leaves_nothing_for_the_next_turn(kind):
+    manager = _manager()
+    manager._close_reply_observation = lambda *args, **kwargs: None
+    manager._close_external_reply_observation = lambda *args, **kwargs: None
+    manager._current_ai_turn_observation = None
+    manager._current_ai_turn_text = ""
+    manager._discarded_turn_open = False
+    manager._active_text_request_id = None
+    manager._pending_turn_meta = None
+    # She had called a tool that acts and was interrupted before saying a word.
+    manager._turn_acted_through_tools = True
+    manager._tool_wait_bubble = True
+
+    assert manager._close_interrupted_offline_turn(kind) is None
+
+    assert manager._turn_acted_through_tools is False and manager._tool_wait_bubble is False
+    assert manager.sync_message_queue.empty()
+
+
+def test_every_turn_end_put_on_the_queue_closes_what_the_turn_noted():
+    """No turn end may leave the tool state of its turn for the next one.
+
+    Found by reading the code: every function of the session manager that
+    builds a ``turn end`` message also closes the turn's tool state (or is
+    the one builder the others call).
+    """
+    import ast
+    from pathlib import Path
+
+    offenders: list[str] = []
+    for path in sorted(Path("main_logic/core").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            builds_turn_end = any(
+                isinstance(item, ast.Dict)
+                and any(
+                    isinstance(key, ast.Constant) and key.value == "data"
+                    and isinstance(value, ast.Constant) and isinstance(value.value, str)
+                    and value.value.startswith("turn end")
+                    for key, value in zip(item.keys, item.values)
+                )
+                for item in ast.walk(node)
+            )
+            puts_on_the_queue = any(
+                isinstance(item, ast.Attribute) and item.attr == "sync_message_queue" for item in ast.walk(node)
+            )
+            if not builds_turn_end or not puts_on_the_queue:
+                # A copy for the websocket alone ends no turn for the connector.
+                continue
+            closes = any(
+                isinstance(item, ast.Attribute) and item.attr == "_close_turn_tool_state" for item in ast.walk(node)
+            )
+            if not closes:
+                offenders.append(f"{path.name}:{node.name}")
+
+    assert offenders == []
+
+
+def test_a_session_end_says_whether_she_acted_in_the_turn_it_cut_off():
+    manager = _manager()
+    manager._turn_acted_through_tools = True
+
+    cut_off = manager._session_end_message()
+    between_turns = manager._session_end_message()
+
+    assert cut_off == {"type": "system", "data": "session end", "acted_through_tools": True}
+    assert between_turns == {"type": "system", "data": "session end"}
+    assert manager._turn_acted_through_tools is False
+
+
+@pytest.mark.asyncio
+async def test_the_barrier_kind_of_session_end_carries_it_too():
+    from main_logic.core.lifecycle import LifecycleMixin
+
+    manager = _manager()
+    manager._turn_acted_through_tools = True
+
+    def callback() -> None:
+        return None
+
+    completion = LifecycleMixin._queue_session_end_memory_barrier(manager, callback)
+
+    queued = manager.sync_message_queue.get_nowait()
+    assert queued == {
+        "type": "system",
+        "data": "session end",
+        "acted_through_tools": True,
+        "_after_memory_settlement": callback,
+        "_memory_settlement_done": completion,
+    }
+
+
+# ---------------------------------------------------------------------------
+# When a turn is sent to be checked
+# ---------------------------------------------------------------------------
+
+
+def _said(text: str) -> dict:
+    return {"type": "user", "data": {"data": text, "input_type": "transcript"}}
+
+
+def _replied(text: str) -> dict:
+    return {"type": "json", "data": {"type": "gemini_response", "text": text, "isNewMessage": True}}
+
+
+@pytest.fixture
+def connector(monkeypatch):
+    """The sync connector loop on a queue, with the memory server and the turn check stood in for."""
+    started = []
+
+    async def memory(endpoint, name, payload, *, timeout_s, language=None, render_language=None):
+        return True, "", {}
+
+    def start():
+        triggers: list[str] = []
+
+        async def turn_check(lanlan_name, trigger, messages, *, conversation_id=None, language=None):
+            triggers.append(trigger)
+            return True
+
+        monkeypatch.setattr(cross_server, "_post_memory_server", memory)
+        monkeypatch.setattr(cross_server, "_publish_turn_check_with_fallback", turn_check)
+        queue: asyncio.Queue = asyncio.Queue()
+        started.append(
+            asyncio.create_task(
+                cross_server.run_sync_connector(queue, "Lan", config={"monitor": False, "bullet": False})
+            )
+        )
+        return queue, triggers
+
+    yield start
+    for task in started:
+        task.cancel()
+
+
+async def _drained(queue: asyncio.Queue) -> None:
+    async def poll() -> None:
+        while not queue.empty():
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(poll(), 2.0)
+    # The item taken last is still being handled.
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ending", "expected"),
+    [
+        # A turn that ran to its end: checked once, unless she acted through a tool in it.
+        ([{"type": "system", "data": "turn end"}], ["turn_end"]),
+        ([{"type": "system", "data": "turn end", "acted_through_tools": True}], []),
+        # A session that ended in the middle of the turn: the same rule.
+        ([{"type": "system", "data": "session end"}], ["session_end"]),
+        ([{"type": "system", "data": "session end", "acted_through_tools": True}], []),
+        # A session that ended after the turn did: the turn is not checked twice.
+        ([{"type": "system", "data": "turn end"}, {"type": "system", "data": "session end"}], ["turn_end"]),
+        (
+            [{"type": "system", "data": "turn end", "acted_through_tools": True}, {"type": "system", "data": "session end"}],
+            [],
+        ),
+    ],
+    ids=["turn-end", "turn-end-acted", "cut-off", "cut-off-acted", "ended-after-the-turn", "ended-after-an-acted-turn"],
+)
+async def test_a_turn_in_which_she_acted_through_a_tool_is_never_checked(connector, ending, expected):
+    queue, triggers = connector()
+
+    for item in (_said("帮我订个明早七点的闹钟"), _replied("好，我去订"), *ending):
+        queue.put_nowait(item)
+    await _drained(queue)
+
+    assert triggers == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary",
+    [{"type": "system", "data": "session end"}, {"type": "system", "data": "renew session"}],
+    ids=["session-end", "hot-reset"],
+)
+async def test_the_first_turn_after_the_history_was_emptied_is_checked_when_it_is_cut_off(connector, boundary):
+    # The earlier session leaves a longer history behind than the next one
+    # has when it is cut off; the position the check starts from must not
+    # be left pointing past the end of the new history.
+    queue, triggers = connector()
+    earlier = [
+        _said("帮我查一下上海的天气"), _replied("好，我去查"), {"type": "system", "data": "turn end"},
+        _said("再查一下北京的"), _replied("好的"), {"type": "system", "data": "turn end"},
+    ]
+    for item in (*earlier, boundary):
+        queue.put_nowait(item)
+    await _drained(queue)
+    assert triggers == ["turn_end", "turn_end"]
+
+    # The next session: one exchange, ended before its turn end.
+    for item in (_said("帮我订个明早七点的闹钟"), _replied("好，我去订"), {"type": "system", "data": "session end"}):
+        queue.put_nowait(item)
+    await _drained(queue)
+
+    assert triggers == ["turn_end", "turn_end", "session_end"]
 
 
 # ---------------------------------------------------------------------------

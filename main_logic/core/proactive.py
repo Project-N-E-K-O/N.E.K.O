@@ -841,6 +841,7 @@ class ProactiveMixin:
                     # TTS done-signal is best-effort; the delivery itself already succeeded.
                     pass
 
+            self._close_turn_tool_state()
             self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
             try:
                 if (self.websocket

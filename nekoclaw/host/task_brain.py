@@ -168,11 +168,17 @@ def status_word(status: str, lang: str) -> str:
     return _texts(COMMISSION_STATUS_WORDS, lang).get(status, status)
 
 
-def pending_question_text(commission: Commission) -> str:
+def pending_question_text(commission: Commission, lang: str = "en") -> str:
     """Return what a waiting commission asks the user, in a few words; empty if nothing."""
     question = commission.question()
     if not question:
         return ""
+    if question.get("kind") == "permission":
+        # What is to be allowed and the answers on offer: the category alone
+        # ("run_command") tells the user nothing to decide by.
+        from nekoclaw.host.reports import describe_permission
+
+        return describe_permission(question, lang)
     asked = question.get("question") or question.get("category") or ""
     if not asked and isinstance(question.get("questions"), list) and question["questions"]:
         first = question["questions"][0]
@@ -234,6 +240,9 @@ class TaskBrain:
         # Stops under way. Not cancelled on close like the rest: they are
         # waited for, so a stop asked for is carried out.
         self._stopping: set[asyncio.Task[Any]] = set()
+        # Raised by ``drop_pending_dispatches``; a first round that began
+        # before the raise files nothing.
+        self._dispatch_generation = 0
         # commission id -> its second round or direct plugin call.
         self._work: dict[str, asyncio.Task[Any]] = {}
         self._deferred_timers: dict[str, asyncio.TimerHandle] = {}
@@ -254,6 +263,15 @@ class TaskBrain:
 
             task.add_done_callback(forget)
         return task
+
+    def drop_pending_dispatches(self) -> None:
+        """Make every dispatch still in its first round end without filing a commission.
+
+        Called when everything is stopped: such a dispatch has no commission
+        yet, so stopping the commissions under way would miss it, and it
+        would start its work right after the stop.
+        """
+        self._dispatch_generation += 1
 
     async def settle(self) -> None:
         """Wait for everything running in the background (second rounds, calls)."""
@@ -426,6 +444,7 @@ class TaskBrain:
         from config.nekoclaw_settings import COMMISSION_TITLE_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
+        generation = self._dispatch_generation
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
@@ -459,6 +478,12 @@ class TaskBrain:
             return Receipt(kind="nothing_active", model_calls=calls)
         if triage.kind == "none":
             return Receipt(kind="no_capability", reason=await self._no_capability_reason(), model_calls=calls)
+        # Read again after the waits above: NekoClaw may have been switched
+        # off, or everything stopped, while this round was looking.
+        if not self._is_enabled():
+            return Receipt(kind="no_capability", reason="disabled", model_calls=calls)
+        if generation != self._dispatch_generation:
+            return Receipt(kind="no_capability", reason="stopped", model_calls=calls)
 
         commission, created = await self._ledger.create(
             unless=lambda active: find_duplicate(text, user_text, active),
@@ -938,7 +963,7 @@ class TaskBrain:
 
         def line(commission: Commission) -> str:
             parts = [f"- {commission.title} ({status_word(commission.status, lang)})"]
-            asked = pending_question_text(commission) if commission.status == "waiting_user" else ""
+            asked = pending_question_text(commission, lang) if commission.status == "waiting_user" else ""
             if asked:
                 parts.append(words["asked"].format(question=asked))
             elif commission.result_summary:
@@ -955,7 +980,10 @@ class TaskBrain:
             lines.append(words["recent"])
             lines.extend(line(item) for item in recent)
         if not lines:
-            lines.append(words["empty"])
+            # A question that finds no task at all is often one she should
+            # have dispatched ("look up the weather"): the answer says what a
+            # query is for, so she does not take "no record" for "there is none".
+            lines.append(words["empty_asked"] if text else words["empty"])
         return QueryAnswer(
             text=truncate_to_tokens("\n".join(lines), QUERY_RESULT_MAX_TOKENS),
             commissions=[*active, *recent],
@@ -987,7 +1015,7 @@ class TaskBrain:
         for commission in [item for item in rows if item.parent_id is None][:QUERY_LEDGER_ROWS]:
             line = f"- [{status_word(commission.status, lang)}] {commission.title}"
             if commission.status == "waiting_user":
-                asked = pending_question_text(commission)
+                asked = pending_question_text(commission, lang)
                 if asked:
                     line += " " + words["asked"].format(question=asked)
             lines.append(truncate_to_tokens(line, QUERY_ROW_MAX_TOKENS))
@@ -1102,6 +1130,14 @@ class TaskBrain:
             from config.nekoclaw_settings import HOST_CLOSE_STOP_WAIT_SECONDS
 
             await asyncio.wait(list(self._stopping), timeout=HOST_CLOSE_STOP_WAIT_SECONDS)
+            # What is still not done is ended here: the ledger and the plugin
+            # client it would go on to use are about to be closed.
+            leftover = [task for task in self._stopping if not task.done()]
+            for task in leftover:
+                task.cancel()
+            if leftover:
+                logger.warning("%d stop(s) did not finish before the host closed", len(leftover))
+                await asyncio.gather(*leftover, return_exceptions=True)
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()

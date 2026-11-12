@@ -595,6 +595,28 @@ async def test_session_answer_is_per_mcp_server(store):
     assert [ask.key for _cid, ask in asker.asked] == ["notes", "calendar"]
 
 
+async def test_the_parents_are_looked_up_only_for_a_mode_that_can_use_them(store):
+    looked_up: list[str] = []
+
+    async def parent_of(commission_id: str) -> Any:
+        looked_up.append(commission_id)
+        return None
+
+    gate = PermissionGate(store, Asker("once"), parent_of=parent_of)
+
+    # Allowed outright (the usual case for a plugin entry), forbidden, and
+    # asked every time: none of them can use a session answer.
+    assert (await gate.check("c1", "plugin_entry")).allow
+    await store.set_mode("browser", "deny")
+    assert not (await gate.check("c1", "browser")).allow
+    await store.set_mode("keyboard_mouse", "always_ask")
+    assert (await gate.check("c1", "keyboard_mouse")).allow
+    assert looked_up == []
+
+    assert (await gate.check("c1", "run_command")).allow
+    assert looked_up == ["c1"]
+
+
 async def test_a_task_agent_started_by_another_is_covered_by_its_session_answer(store):
     parents = {"child": "parent", "grandchild": "child"}
 

@@ -181,11 +181,9 @@ class BuiltinCapabilities(Protocol):
 
     def available(self) -> list[Capability]:
         """Return the built-in capabilities, each with its availability as of now. Must not block."""
-        ...
 
     async def run(self, capability_id: str, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
         """Carry out one call. Cancelling it must stop what it started."""
-        ...
 
 
 # Listed when the embedding process offers no built-in capabilities.

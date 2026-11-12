@@ -56,6 +56,39 @@ def test_end_all_stops_every_commission_before_tearing_down(srv, monkeypatch: py
     assert order == ["stop:Cancelled by user", "close_browser"]
 
 
+class _KeyboardWorker:
+    """A keyboard-and-mouse adapter whose worker thread may still be going."""
+
+    def __init__(self) -> None:
+        self.waited: list[float] = []
+        self.cancelled = 0
+
+    def cancel_running(self) -> None:
+        self.cancelled += 1
+
+    def wait_for_completion(self, timeout: float = 15.0) -> bool:
+        self.waited.append(timeout)
+        return True
+
+    def reset(self) -> None:
+        pass
+
+
+def test_end_all_waits_for_the_keyboard_worker_even_with_no_call_on_record(srv, monkeypatch: pytest.MonkeyPatch):
+    # A cancelled call is taken off the record after a bounded wait even if
+    # its thread has not stopped; end_all must not skip the wait for that.
+    worker = _KeyboardWorker()
+    monkeypatch.setattr(srv.Modules, "computer_use", worker)
+    monkeypatch.setattr(srv, "stop_everything", AsyncMock(return_value=0))
+    monkeypatch.setattr(srv, "_close_browser_use_adapter", AsyncMock())
+    assert srv.builtin_provider.is_running() is False
+
+    result = asyncio.run(srv.admin_control({"action": "end_all"}))
+
+    assert result["success"] is True
+    assert worker.cancelled == 1 and worker.waited == [10.0]
+
+
 def test_end_all_retries_browser_close_after_cancelling_tracked_teardown(
     srv, monkeypatch: pytest.MonkeyPatch,
 ):

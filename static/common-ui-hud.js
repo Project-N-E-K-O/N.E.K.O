@@ -1137,6 +1137,10 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'blocked';
         if (isTerminal && !this._taskTerminalAt[t.id]) {
             this._taskTerminalAt[t.id] = now;
+        } else if (!isTerminal && this._taskTerminalAt[t.id]) {
+            // blocked 的委托可以接着办；回到在办时清掉旧的结束时间，
+            // 否则它再次结束时会被当成早就过了展示期。
+            delete this._taskTerminalAt[t.id];
         }
     });
 

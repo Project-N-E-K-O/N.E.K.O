@@ -43,6 +43,7 @@ from .api_shared import (  # noqa: F401
     json,
     logger,
     os,
+    restore_hud,
     stop_everything,
     sys,
     time,
@@ -87,6 +88,8 @@ async def get_agent_flags():
 
 @app.get("/agent/state")
 async def get_agent_state():
+    # A page opened right after a restart finds what was left under way.
+    await restore_hud()
     snapshot = _collect_agent_status_snapshot()
     return {"success": True, "snapshot": snapshot}
 
@@ -899,9 +902,12 @@ async def browser_use_availability():
 async def list_tasks():
     """Return the tasks under way and those that ended a short while ago.
 
-    Read from this process's view of the host's ledger, so it is quick and
-    opens nothing; the HUD calls it every few seconds while a task runs.
+    Read from this process's view of the host's ledger, so it is quick; the
+    HUD calls it every few seconds while a task runs. The ledger is opened
+    only once, when an earlier process left a record and nothing has used
+    the host yet.
     """
+    await restore_hud()
     items = [dict(task, source="runtime") for task in hud.all()]
     return {"tasks": items, "debug": {"total_returned": len(items)}}
 
@@ -950,7 +956,9 @@ async def admin_control(payload: Dict[str, Any]):
         cu = Modules.computer_use
         if cu is not None:
             cu.cancel_running()
-            if hasattr(cu, "wait_for_completion") and builtin_provider.is_running():
+            # Waited for whether or not a call is on record as running (see
+            # the same wait at shutdown); an idle adapter returns at once.
+            if hasattr(cu, "wait_for_completion"):
                 loop = asyncio.get_running_loop()
                 finished = await loop.run_in_executor(None, cu.wait_for_completion, 10.0)
                 if not finished:

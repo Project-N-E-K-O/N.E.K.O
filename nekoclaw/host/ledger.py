@@ -328,7 +328,7 @@ class Ledger:
             try:
                 self._listeners.remove(listener)
             except ValueError:
-                pass
+                pass  # Removed already; unsubscribing twice is fine.
 
         return unsubscribe
 

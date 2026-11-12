@@ -396,6 +396,27 @@ async def test_brief_lists_what_is_under_way_and_what_waits_for_the_user(server,
     assert lines == ["- [排队中] 下载电影", "- [进行中] 整理照片", "- [等用户回话] 订餐厅 在等用户回答：订几点的？"]
 
 
+async def test_a_permission_question_is_told_with_what_it_asks_to_allow(server, hosts, tmp_path):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    waiting, _ = await host.ledger.create(lanlan_name="Lan", title="清理旧文件", dispatch_text="清理旧文件", source="dispatch")
+    await host.ledger.transition(waiting.id, "working")
+    question = {
+        "kind": "permission",
+        "category": "run_command",
+        "detail": {"command": "Remove-Item old.txt"},
+        "options": ["always", "session", "once", "deny"],
+    }
+    await host.ledger.transition(waiting.id, "waiting_user", pending_question=json.dumps(question, ensure_ascii=False))
+
+    lines = await host.brief(lanlan_name="Lan", lang="zh")
+    answer = await host.query("", lanlan_name="Lan", lang="zh")
+
+    # The command itself, not the name of its category.
+    expected = "在等用户回答：运行命令 Remove-Item old.txt (始终允许 / 仅本会话允许 / 本次允许 / 拒绝)"
+    assert lines == [f"- [等用户回话] 清理旧文件 {expected}"]
+    assert expected in answer.text and "run_command" not in answer.text
+
+
 async def test_brief_is_empty_with_nothing_under_way_or_when_switched_off(server, hosts, tmp_path):
     switch = {"on": True}
     host = _host(hosts, tmp_path, server, FakeDecisionLLM(), enabled=lambda: switch["on"])
@@ -682,6 +703,29 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     (report,) = await outbox(host, "task_result")
     assert (report.payload["status"], report.payload["success"]) == ("failed", False)
     assert report.payload["error_message"] == "the free daily quota of the agent model is used up"
+    # Counted before anything was started: not one request went to the model.
+    assert llm.requests == []
+
+
+async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_request(hosts, tmp_path):
+    left = [True, True, False]
+
+    async def meter(commission_id: str) -> bool:
+        return left.pop(0) if left else False
+
+    step = [call("todo_write", {"todos": []}), usage(100), stop("tool_calls")]
+    llm = ScriptedLLM([step, step, step, _report_ready("done")])
+    host = _task_agent_host(hosts, tmp_path, llm, task_agent_meter=meter)
+
+    receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
+    failed = await wait_status(host, receipt.commission_id, "failed")
+
+    assert failed.status_reason == "the free daily quota of the agent model is used up"
+    # The first request was paid for before it was sent, the second as its
+    # usage came in; the third found nothing left. The request already under
+    # way when that was found may still have gone out, and nothing after it.
+    assert left == []
+    assert 3 <= len(llm.requests) <= 4
 
 
 async def test_a_meter_that_cannot_count_does_not_stop_the_work(hosts, tmp_path):

@@ -41,6 +41,7 @@ from config.prompts.prompts_task_tools import (
     QUERY_TOOL_QUESTION_DESCRIPTION,
     TASK_TOOL_EMPTY,
     TASK_TOOL_QUERY_UNREACHABLE,
+    TASK_TOOL_UNCERTAIN,
     TASK_TOOL_UNREACHABLE,
 )
 from config.prompts.prompts_memory import (
@@ -307,6 +308,10 @@ class ToolCallingMixin:
             enabled = bool(self._is_agent_enabled())
         except Exception:
             enabled = False
+        if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
+            # The kill-switch of ``_register_builtin_tools`` holds on this
+            # path too (a switch update calls this directly).
+            enabled = False
         changed = False
         if not enabled:
             for name in (DISPATCH_TOOL_NAME, QUERY_TOOL_NAME):
@@ -348,13 +353,26 @@ class ToolCallingMixin:
             if current is not None and current.metadata.get("source") != "builtin":
                 # A tool of another source holds the name; it is left alone.
                 continue
-            if current is None or current.description != definition.description:
-                changed = True
+            if current is not None and current.description == definition.description:
+                # Registered already, in this language: nothing to do. Every
+                # status push calls this, so it must not register (and log) again.
+                continue
+            changed = True
             self.tool_registry.register(definition, replace=True)
         return changed
 
-    async def _post_to_task_system(self, path: str, body: dict) -> dict | None:
-        """POST one request of a task tool to the agent process; None when it cannot be reached in time."""
+    async def _post_to_task_system(self, path: str, body: dict) -> tuple[dict | None, bool]:
+        """POST one request of a task tool to the agent process.
+
+        Returns ``(answer, may_have_arrived)``. ``answer`` is None when no
+        usable answer came back. ``may_have_arrived`` then tells the two ways
+        of failing apart: False when the request was never delivered or was
+        turned down (no connection, an error status), True when it went out
+        and the answer did not come back in time or could not be read. In the
+        second case the agent process may be carrying it out all the same.
+        """
+        import httpx
+
         from config import TOOL_SERVER_PORT
         from config.nekoclaw_settings import TASK_TOOL_TIMEOUT_SECONDS
 
@@ -367,14 +385,23 @@ class ToolCallingMixin:
                 json=body,
                 timeout=TASK_TOOL_TIMEOUT_SECONDS,
             )
-            if not resp.is_success:
-                logger.warning("[task tools] %s returned status=%s", path, resp.status_code)
-                return None
-            data = resp.json()
-            return data if isinstance(data, dict) else None
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            logger.warning("[task tools] %s not delivered (%s)", path, type(exc).__name__)
+            return None, False
         except Exception as exc:
-            logger.warning("[task tools] %s failed (%s)", path, type(exc).__name__)
-            return None
+            logger.warning("[task tools] %s sent, no answer (%s)", path, type(exc).__name__)
+            return None, True
+        if not resp.is_success:
+            logger.warning("[task tools] %s returned status=%s", path, resp.status_code)
+            return None, False
+        try:
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("[task tools] %s answered with something unreadable (%s)", path, type(exc).__name__)
+            return None, True
+        if not isinstance(data, dict):
+            return None, True
+        return data, True
 
     async def _handle_dispatch_task_call(self, arguments: dict) -> str:
         """Handler for ``dispatch_task``: hand her sentence to the task brain and return its receipt.
@@ -392,7 +419,7 @@ class ToolCallingMixin:
         task = task.strip() if isinstance(task, str) else ""
         if not task:
             return _loc(TASK_TOOL_EMPTY, _lang)
-        data = await self._post_to_task_system(
+        data, may_have_arrived = await self._post_to_task_system(
             "/nekoclaw/dispatch",
             {
                 "text": task,
@@ -407,9 +434,12 @@ class ToolCallingMixin:
         text = str((data or {}).get("text") or "").strip()
         logger.info(
             "[dispatch_task] called by name=%s mode=%s lang=%s → kind=%s",
-            self.lanlan_name, self.input_mode, _lang, (data or {}).get("kind") or "unreachable",
+            self.lanlan_name, self.input_mode, _lang,
+            (data or {}).get("kind") or ("uncertain" if may_have_arrived else "unreachable"),
         )
-        return text or _loc(TASK_TOOL_UNREACHABLE, _lang)
+        if text:
+            return text
+        return _loc(TASK_TOOL_UNCERTAIN if may_have_arrived else TASK_TOOL_UNREACHABLE, _lang)
 
     async def _handle_query_tasks_call(self, arguments: dict) -> str:
         """Handler for ``query_tasks``: ask the task brain what is under way or whether something can be done."""
@@ -417,7 +447,7 @@ class ToolCallingMixin:
         args_dict = arguments if isinstance(arguments, dict) else {}
         question = args_dict.get("question")
         question = question.strip() if isinstance(question, str) else ""
-        data = await self._post_to_task_system(
+        data, _may_have_arrived = await self._post_to_task_system(
             "/nekoclaw/query",
             {"text": question, "lanlan_name": self.lanlan_name, "language": self.user_language},
         )

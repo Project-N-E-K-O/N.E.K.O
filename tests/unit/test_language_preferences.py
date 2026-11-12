@@ -2085,6 +2085,12 @@ async def test_connector_turn_check_uses_visible_locale_without_promoting_render
             {"type": "user", "data": {
                 "data": "second turn", "input_type": "transcript",
             }},
+            # A reply the session end cuts off: without one there is nothing
+            # to check, and the real publisher would send nothing.
+            {"type": "json", "data": {
+                "type": "gemini_response", "text": "second reply",
+                "request_id": "request-2",
+            }},
         ],
     )
     assert [event[1:] for event in events if event[0] == "turn_check"] == [

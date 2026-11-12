@@ -360,15 +360,36 @@ async def ready_host() -> Any:
 
     host = mount.get_host()
     if _filled_from is not host:
-        _filled_from = host
         try:
             for commission in await host.ledger.select(statuses=ACTIVE_STATUSES, oldest_first=True):
                 if hud.get(commission.id) is None:
                     hud.update(commission)
             host.start()
         except Exception as e:
+            # Not marked as done: the next call tries again.
             logger.warning("[Agent] reading the commissions under way failed: %s", e)
+        else:
+            _filled_from = host
     return host
+
+
+async def restore_hud() -> None:
+    """Take what an earlier process left under way into the HUD's view, if there is anything to read.
+
+    The HUD is filled when the host is first used. A page that asks for the
+    tasks before that (right after a restart, with a deferred plugin result
+    still on record) would be shown none, and could not stop one. Returns at
+    once when the host is up, when NekoClaw is off, or when there is no
+    ledger file: nothing is built for an empty record.
+    """
+    host = peek_host()
+    if host is not None and _filled_from is host:
+        return
+    if not nekoclaw_on():
+        return
+    if host is None and not await ledger_exists():
+        return
+    await ready_host()
 
 
 async def ledger_exists() -> bool:
@@ -389,6 +410,9 @@ async def stop_everything(reason: str = "Cancelled by user") -> int:
     host = peek_host()
     if host is None:
         return 0
+    # A dispatch still in its first round has no commission yet and would be
+    # missed below; it is told not to file one.
+    host.brain.drop_pending_dispatches()
     stopped = 0
     for commission in await host.ledger.select(statuses=ACTIVE_STATUSES):
         if commission.parent_id is not None:

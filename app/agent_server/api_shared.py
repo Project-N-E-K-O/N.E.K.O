@@ -115,6 +115,7 @@ from .nekoclaw_mount import (  # noqa: F401
     nekoclaw_on,
     peek_host,
     ready_host,
+    restore_hud,
     send_report,
     shutdown_nekoclaw_host,
     stop_everything,

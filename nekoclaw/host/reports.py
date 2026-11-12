@@ -75,6 +75,33 @@ def _question_lines(questions: Any, words: dict[str, str]) -> str:
     return lines[0] if lines else ""
 
 
+def describe_permission(question: dict[str, Any], lang: str) -> str:
+    """Return what a permission question asks to allow, with the answers on offer, in one short line."""
+    from config.prompts._locale import normalize_prompt_locale
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_OPTION_NAMES
+    from config.prompts.prompts_sys import _loc
+
+    lang = normalize_prompt_locale(lang)
+    what = _permission_subject(question, _loc(PERMISSION_CATEGORY_TEXTS, lang))
+    names = _loc(PERMISSION_OPTION_NAMES, lang)
+    offered = [names[option] for option in question.get("options") or [] if option in names]
+    return f"{what} ({' / '.join(offered)})" if offered else what
+
+
+def _permission_subject(question: dict[str, Any], categories: dict[str, str]) -> str:
+    detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
+    category = str(question.get("category") or "other")
+    specific = (
+        detail.get("command")
+        or detail.get("path")
+        or question.get("key")
+        or detail.get("title")
+        or detail.get("tool")
+        or ""
+    )
+    return categories.get(category, categories["other"]).format(detail=str(specific)).strip()
+
+
 def render_question(title: str, question: dict[str, Any], lang: str) -> str:
     """Return a commission's pending question as the sentence she passes on to the user."""
     from config.nekoclaw_settings import QUESTION_TEXT_MAX_TOKENS
@@ -93,17 +120,7 @@ def render_question(title: str, question: dict[str, Any], lang: str) -> str:
     if kind == "permission":
         categories = _loc(PERMISSION_CATEGORY_TEXTS, lang)
         names = _loc(PERMISSION_OPTION_NAMES, lang)
-        detail = question.get("detail") if isinstance(question.get("detail"), dict) else {}
-        category = str(question.get("category") or "other")
-        specific = (
-            detail.get("command")
-            or detail.get("path")
-            or question.get("key")
-            or detail.get("title")
-            or detail.get("tool")
-            or ""
-        )
-        what = categories.get(category, categories["other"]).format(detail=str(specific)).strip()
+        what = _permission_subject(question, categories)
         offered = [names[option] for option in question.get("options") or [] if option in names]
         text = words["permission"].format(title=title, what=what, options=" / ".join(offered))
     elif kind == "confirmation":

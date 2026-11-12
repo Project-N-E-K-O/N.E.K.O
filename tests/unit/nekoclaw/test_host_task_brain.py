@@ -1216,6 +1216,33 @@ def _returns(envelope: dict[str, Any]) -> Any:
     return handler
 
 
+async def test_a_stop_still_under_way_when_the_host_closes_is_ended_with_it(server, hosts, tmp_path, monkeypatch):
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "HOST_CLOSE_STOP_WAIT_SECONDS", 0.05)
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    never = asyncio.Event()
+    ended: list[str] = []
+
+    async def stuck_stop() -> None:
+        try:
+            await never.wait()
+        except asyncio.CancelledError:
+            ended.append("cancelled")
+            raise
+
+    stopping = asyncio.ensure_future(stuck_stop())
+    host.brain._stopping.add(stopping)
+    stopping.add_done_callback(host.brain._stopping.discard)
+    await asyncio.sleep(0)
+
+    await host.brain.close()
+
+    # Not left running against a ledger that is about to be closed.
+    assert stopping.cancelled() and ended == ["cancelled"]
+    assert host.brain._stopping == set()
+
+
 async def test_query_with_nothing_on_record(server, hosts, tmp_path):
     host = _host(hosts, tmp_path, server, FakeDecisionLLM())
 
@@ -1223,6 +1250,55 @@ async def test_query_with_nothing_on_record(server, hosts, tmp_path):
 
     assert answer.text == "There is no task on record."
     assert answer.commissions == []
+
+
+@pytest.mark.parametrize(
+    ("lang", "expected"),
+    [
+        ("zh", "没有任务记录。查询只看已经交办的任务；要查资料、查状态或办事，请用派发。"),
+        (
+            "en",
+            "There is no task on record. A query only looks at tasks already handed over; "
+            "to look something up, check a status or get something done, dispatch it.",
+        ),
+    ],
+)
+async def test_a_question_that_finds_no_task_says_what_a_query_is_for(server, hosts, tmp_path, lang, expected):
+    # Asked like this she has usually mistaken "look it up" for a query; a
+    # bare "no record" then reads to her as "there is none".
+    _weather(server)
+    llm = FakeDecisionLLM()
+    host = _host(hosts, tmp_path, server, llm)
+
+    answer = await host.query("汐音阁现在有什么定时任务", lanlan_name="Lan", lang=lang)
+
+    assert answer.text == expected
+    assert answer.commissions == []
+    assert llm.calls == []
+
+
+async def test_a_question_that_finds_a_task_lists_it_without_that_note(server, hosts, tmp_path):
+    _weather(server)
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("weather", "today")]))
+    receipt = await _dispatch(host, "查一下上海的天气")
+    await wait_status(host, receipt.commission_id, "done")
+
+    answer = await host.query("天气查得怎么样了", lanlan_name="Lan", lang="zh")
+
+    assert answer.text.startswith("最近办完的：\n- 查一下上海的天气")
+    assert "派发" not in answer.text
+
+
+def test_the_note_exists_in_every_language_and_stays_short():
+    from config.prompts.prompts_nekoclaw_brain import QUERY_TEXTS
+    from utils.tokenize import count_tokens
+
+    assert set(QUERY_TEXTS) == {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    for lang, words in QUERY_TEXTS.items():
+        # The fact first, as before; then what to use instead.
+        assert words["empty_asked"].startswith(words["empty"]), lang
+        assert len(words["empty_asked"]) > len(words["empty"]) + 10, lang
+        assert count_tokens(words["empty_asked"]) <= 60, lang
 
 
 async def test_query_lists_only_her_own_commissions(server, hosts, tmp_path):
@@ -1337,7 +1413,9 @@ async def test_receipts_render_in_every_language(server, hosts, tmp_path):
         assert set(table) == languages
         assert len({frozenset(values) for values in table.values()}) == 1
     assert set(COMMISSION_STATUS_WORDS["en"]) == set(STATUSES)
-    assert set(NO_CAPABILITY_REASONS["en"]) == {"disabled", "not_installed", "not_enabled", "denied", "no_match"}
+    assert set(NO_CAPABILITY_REASONS["en"]) == {
+        "disabled", "not_installed", "not_enabled", "denied", "no_match", "stopped",
+    }
     assert set(RECEIPT_TEXTS["en"]) == {
         "accepted", "received", "duplicate", "no_capability", "stopped", "told", "answered",
         "ambiguous", "nothing_active", "unclear_answer",

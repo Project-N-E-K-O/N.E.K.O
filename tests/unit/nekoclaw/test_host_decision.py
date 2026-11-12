@@ -35,6 +35,7 @@ from nekoclaw.host.decision import (
     is_capability_question,
     parse_json_object,
     parse_permission_choice,
+    read_answer,
 )
 from nekoclaw.host.ledger import Commission
 from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, pick_plugin
@@ -795,6 +796,39 @@ def test_every_language_of_the_fine_selection_keeps_the_identifiers_it_parses():
         assert none_rule.startswith("4. ") and none_rule.count("task_agent") >= 2, lang
         agent_rule = next(line for line in rendered.splitlines() if line.startswith("3. "))
         assert 'route="task_agent"' in agent_rule and agent_rule.count("task_agent") == 2, lang
+
+
+@pytest.mark.parametrize("text", ["可以", "yes", "okay", "不要", "no", "算了"])
+def test_a_plain_yes_or_no_answers_a_plugins_request_for_confirmation(text):
+    # It shares no word with the question and carries no "reply:" in front.
+    question = json.dumps({"kind": "confirmation", "question": "真的要删掉 3 条备忘吗？"}, ensure_ascii=False)
+    waiting = commission("c1", "清理备忘", route="task_agent", status="waiting_user", pending_question=question)
+
+    triage = read_answer(text, [waiting])
+
+    # The words go back as they are; a choice is only read for a permission.
+    assert triage is not None
+    assert (triage.kind, triage.targets, triage.choice) == ("answer", ["c1"], None)
+
+
+def test_a_plain_yes_does_not_answer_a_question_that_asks_for_something_else():
+    question = json.dumps({"kind": "report", "question": "订几点的？"}, ensure_ascii=False)
+    waiting = commission("c1", "订餐厅", route="task_agent", status="waiting_user", pending_question=question)
+
+    assert read_answer("可以", [waiting]) is None
+
+
+def test_a_yes_goes_to_the_one_question_it_can_answer():
+    asks_time = json.dumps({"kind": "report", "question": "订几点的？"}, ensure_ascii=False)
+    asks_yes = json.dumps({"kind": "confirmation", "question": "真的要删掉 3 条备忘吗？"}, ensure_ascii=False)
+    active = [
+        commission("c1", "订餐厅", route="task_agent", status="waiting_user", pending_question=asks_time),
+        commission("c2", "清理备忘", route="task_agent", status="waiting_user", pending_question=asks_yes),
+    ]
+
+    triage = read_answer("可以", active)
+
+    assert triage is not None and (triage.kind, triage.targets) == ("answer", ["c2"])
 
 
 # ---------------------------------------------------------------------------

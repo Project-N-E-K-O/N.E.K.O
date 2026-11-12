@@ -45,6 +45,9 @@ from ._shared import logger
 # How long a cancelled keyboard-and-mouse call waits for its worker thread to
 # stop before the next call may start; pyautogui must not be driven by two.
 _KEYBOARD_STOP_WAIT_SECONDS = 15.0
+# How long a cancelled browser call waits for the adapter to let go before the
+# next call may start. The adapter's own hard cancel is bounded at 12 seconds.
+_BROWSER_STOP_WAIT_SECONDS = 15.0
 
 _FLAG_OF = {
     BUILTIN_KEYBOARD_MOUSE: ("computer_use_enabled", "computer_use"),
@@ -117,8 +120,16 @@ class BuiltinCapabilityProvider:
             adapter = _shared.Modules.computer_use
             if not ready or adapter is None or not hasattr(adapter, "run_instruction"):
                 return BuiltinOutcome(False, f"keyboard and mouse control is {reason or 'not loaded'}")
-            _count("cua")
             loop = asyncio.get_running_loop()
+            if hasattr(adapter, "wait_for_completion"):
+                # A cancelled call gives the lock back after a bounded wait
+                # even if its worker thread is still going. Two threads must
+                # not drive the mouse, so this one starts only once the
+                # earlier one has stopped. An idle adapter returns at once.
+                stopped = await loop.run_in_executor(None, adapter.wait_for_completion, _KEYBOARD_STOP_WAIT_SECONDS)
+                if not stopped:
+                    return BuiltinOutcome(False, "keyboard and mouse control is still busy with an earlier call")
+            _count("cua")
             self._running[BUILTIN_KEYBOARD_MOUSE] = commission_id
             try:
                 # run_instruction blocks until the task is over.
@@ -138,7 +149,7 @@ class BuiltinCapabilityProvider:
                                 _KEYBOARD_STOP_WAIT_SECONDS,
                             )
                     except asyncio.CancelledError:
-                        pass
+                        pass  # Cancelled again while waiting; the cancellation is raised just below.
                 raise
             except Exception as exc:
                 # What an adapter raises can quote the screen or the model; only its type is logged.
@@ -168,15 +179,20 @@ class BuiltinCapabilityProvider:
             adapter = await _ensure_browser_use_adapter()
             if adapter is None:
                 return BuiltinOutcome(False, "browser control is not available")
+            # Building the adapter takes a while; it may have been switched off meanwhile.
+            ready, reason = self._state(BUILTIN_BROWSER)
+            if not ready:
+                return BuiltinOutcome(False, f"browser control is {reason}")
             _count("browser")
             self._running[BUILTIN_BROWSER] = commission_id
+            # Run apart from this coroutine: a cancelled call must be able to
+            # act at once instead of waiting for the adapter to unwind first.
+            run = asyncio.ensure_future(adapter.run_instruction(instruction))
             try:
-                result = await adapter.run_instruction(instruction)
+                result = await asyncio.shield(run)
             except asyncio.CancelledError:
-                try:
-                    adapter.cancel_running()
-                except Exception as exc:
-                    logger.debug("[Builtin] browser cancel flag failed: %s", exc)
+                if not run.done():
+                    await self._stop_browser_run(adapter, run)
                 raise
             except Exception as exc:
                 logger.warning("[Builtin] browser call failed (exc_type=%s)", type(exc).__name__)
@@ -187,6 +203,39 @@ class BuiltinCapabilityProvider:
         success = bool(result.get("success", False)) if isinstance(result, dict) else False
         _ok, detail = parse_browser_use_result(result)
         return BuiltinOutcome(success, detail or ("done" if success else "it did not finish"))
+
+    async def _stop_browser_run(self, adapter: Any, run: "asyncio.Future[Any]") -> None:
+        """Stop a browser call that was cancelled while the adapter was still at work.
+
+        The flag alone only takes effect at the adapter's next step. A call
+        stuck in the browser (a stalled connection, a page that never loads)
+        would not see it and would keep the lock every later browser call
+        needs. So the adapter's hard cancel is started as well: it closes the
+        browser session, which makes whatever the call is waiting on fail.
+        The lock is held until the call has let go, for a bounded time.
+        """
+        try:
+            adapter.cancel_running()
+        except Exception as exc:
+            logger.debug("[Builtin] browser cancel flag failed: %s", exc)
+        hard_cancel = getattr(adapter, "cancel", None)
+        if callable(hard_cancel):
+            try:
+                _shared._create_tracked_task(hard_cancel())
+            except Exception as exc:
+                logger.warning("[Builtin] browser hard cancel not started (exc_type=%s)", type(exc).__name__)
+        run.cancel()
+        try:
+            _done, pending = await asyncio.shield(asyncio.wait({run}, timeout=_BROWSER_STOP_WAIT_SECONDS))
+        except asyncio.CancelledError:
+            return
+        if pending:
+            logger.warning(
+                "[Builtin] browser call did not stop within %.0fs; the next call may start", _BROWSER_STOP_WAIT_SECONDS
+            )
+        elif not run.cancelled():
+            # Its own failure or late result is of no use to anyone by now.
+            run.exception()
 
 
 # One per process; its state (what is running) is this process's.

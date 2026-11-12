@@ -446,7 +446,9 @@ class CapabilityGateway:
         candidates = set(grant.candidate_plugin_ids)
         listed: list[dict[str, Any]] = []
         used = 0
-        for capability in callable_now:
+        # Built-in capabilities first: candidate plugins that fill the budget
+        # must not push them off the list.
+        for capability in sorted(callable_now, key=lambda item: item.kind != KIND_BUILTIN):
             # Built-in capabilities always; plugin entries, and MCP tools when
             # the adapter was among the candidates.
             if capability.kind != KIND_BUILTIN and capability.plugin_id not in candidates:

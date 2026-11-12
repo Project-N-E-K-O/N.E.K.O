@@ -138,6 +138,9 @@ class _Session:
     # passed on to it waits in the notes, which go to it right after that work.
     ready: bool = False
     closing: bool = False
+    # Model requests already counted against the quota before they were
+    # sent; that many usage reports are not counted again.
+    prepaid_requests: int = 0
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
     # ends, the earlier one's end is held here and decides nothing.
@@ -431,6 +434,22 @@ class TaskAgentManager:
             config = await self._model_config()
             if not config or not config.get("model"):
                 raise RuntimeError("no model is configured for task agents")
+            if self._meter is not None:
+                # The first request is counted before anything is started: with
+                # the quota used up, a new task agent sends nothing at all.
+                # (Later requests are counted as their usage is reported.)
+                try:
+                    allowed = await self._meter(commission_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
+                    logger.warning("counting a task agent's model request failed", exc_info=True)
+                else:
+                    if not allowed:
+                        self._discard(commission_id)
+                        await self._fail(commission_id, _QUOTA_REASON)
+                        return False
+                    session.prepaid_requests += 1
             from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
@@ -769,6 +788,10 @@ class TaskAgentManager:
         request that uses the last unit still completes.
         """
         if self._meter is None or session.closing:
+            return
+        if session.prepaid_requests > 0:
+            # Counted before it was sent.
+            session.prepaid_requests -= 1
             return
         commission_id = session.commission_id
         try:
