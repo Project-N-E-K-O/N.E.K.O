@@ -383,6 +383,17 @@ async def test_unrelated_sentence_is_not_taken_as_an_answer():
         ("всегда", "always"),
         ("sí", "once"),
         ("weather in Paris", None),
+        # A negated approval is a refusal, in every language.
+        ("not allowed", "deny"),
+        ("not approved", "deny"),
+        ("I can't allow that", "deny"),
+        ("不同意", "deny"),
+        ("不批准", "deny"),
+        ("許可しません", "deny"),
+        ("허락 안 해", "deny"),
+        ("не разрешаю", "deny"),
+        ("no lo permito", "deny"),
+        ("não permito", "deny"),
     ],
 )
 def test_permission_answers(text, expected):

@@ -561,6 +561,13 @@ class Ledger:
             [*changes.values(), commission_id],
         )
         self._event(conn, commission_id, "status", {"from": current.status, "to": status, "reason": reason})
+        if current.status == "waiting_user":
+            # No longer waiting: a question of it not yet delivered is out of
+            # date (answered, stopped or failed) and must not reach her now.
+            conn.execute(
+                "DELETE FROM outbox WHERE commission_id = ? AND kind = 'question' AND sent_at IS NULL",
+                (commission_id,),
+            )
         updated = _commission(conn.execute("SELECT * FROM commissions WHERE id = ?", (commission_id,)).fetchone())
         return Transition(True, updated, current.status)
 

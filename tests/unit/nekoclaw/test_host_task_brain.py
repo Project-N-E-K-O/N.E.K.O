@@ -713,6 +713,44 @@ async def test_deferred_commissions_kept_over_a_restart_still_time_out(server, h
     await wait_status(host, receipt.commission_id, "failed", timeout=5)
 
 
+async def test_a_stop_whose_caller_goes_away_after_the_status_is_written_still_cancels_the_run(
+    server, hosts, tmp_path, monkeypatch
+):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="weather", dispatch_text="check the weather", source="dispatch", route="plugin"
+    )
+    await host.ledger.transition(commission.id, "working", reason="test")
+    asked: list[str] = []
+
+    async def cancel_commission(commission_id: str, reason: str = "") -> int:
+        asked.append(commission_id)
+        return 1
+
+    monkeypatch.setattr(host.runner, "cancel_commission", cancel_commission)
+    transition = host.ledger.transition
+    written = asyncio.Event()
+    go_on = asyncio.Event()
+
+    async def slow_after_writing(commission_id: str, status: str, **fields: Any) -> Any:
+        moved = await transition(commission_id, status, **fields)
+        if status == "cancelled":
+            # Written; the answer is still on its way back when the caller goes.
+            written.set()
+            await go_on.wait()
+        return moved
+
+    host.ledger.transition = slow_after_writing
+    stopping = asyncio.ensure_future(host.abort(commission.id))
+    await asyncio.wait_for(written.wait(), 5)
+    stopping.cancel()
+    go_on.set()
+    await asyncio.gather(stopping, return_exceptions=True)
+
+    await wait_until(lambda: asked == [commission.id], what="the run being cancelled")
+    assert (await host.ledger.get(commission.id)).status == "cancelled"
+
+
 async def test_stopping_a_failed_commission_asks_again_to_cancel_a_run_still_known(
     server, hosts, tmp_path, monkeypatch
 ):

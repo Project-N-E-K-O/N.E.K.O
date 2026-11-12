@@ -722,7 +722,18 @@ class TaskBrain:
         it afterwards. Then the running parts are told: a plugin run is
         cancelled on the plugin server, a familiar is closed. ``notify`` is
         False when she asked for the stop herself and the receipt tells her.
+
+        The status and what follows it run as one task of their own: a caller
+        that goes away once the status is written does not leave the plugin
+        run or the familiar going.
         """
+        caller = asyncio.current_task()
+        stopping = self._spawn(self._abort(commission_id, reason=reason, notify=notify, caller=caller))
+        return await asyncio.shield(stopping)
+
+    async def _abort(
+        self, commission_id: str, *, reason: str, notify: bool, caller: asyncio.Task[Any] | None
+    ) -> Commission | None:
         commission = await self._ledger.get(commission_id)
         if commission is None:
             return None
@@ -755,7 +766,7 @@ class TaskBrain:
             timer.cancel()
         await self._runner.cancel_commission(commission_id, reason)
         work = self._work.get(commission_id)
-        if work is not None and work is not asyncio.current_task():
+        if work is not None and work is not caller:
             work.cancel()
         if self._familiars is not None:
             await self._familiars.abort(commission_id)

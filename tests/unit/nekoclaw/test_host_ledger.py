@@ -394,6 +394,22 @@ async def test_unfinished_commissions_of_an_earlier_process_fail_on_open(tmp_pat
     }
 
 
+@pytest.mark.parametrize("leaving_to", ["cancelled", "working", "failed", "queued"])
+async def test_an_undelivered_question_is_dropped_once_its_commission_stops_waiting(ledger, leaving_to):
+    commission = await _file(ledger)
+    await _walk(ledger, commission.id, "waiting_user")
+    question = await ledger.outbox_add(commission.id, "question", {"question": "allow?"})
+    result = await ledger.outbox_add(commission.id, "task_result", {"summary": "later"})
+
+    # Stopped, answered on the board, failed or queued again: it waits no longer.
+    assert (await ledger.transition(commission.id, leaving_to, reason="test")).applied
+
+    pending = [item.id for item in await ledger.outbox_pending()]
+    assert question not in pending
+    # Other reports of it are untouched.
+    assert result in pending
+
+
 async def test_a_move_limited_to_some_statuses_is_refused_from_others(ledger):
     commission = await _file(ledger)
     await _walk(ledger, commission.id, "working")

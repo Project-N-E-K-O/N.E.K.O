@@ -1161,7 +1161,10 @@ async def test_permission_always_is_remembered(hosts, tmp_path):
     await wait_status(host, receipt.commission_id, "done")
     assert (tmp_path / "one.txt").exists() and (tmp_path / "two.txt").exists()
     assert await host.permission_store.mode("outside_write") == "allow"
-    assert len(await outbox(host, "question")) == 1
+    # Asked once: the second write was allowed by the remembered answer. (Its
+    # question row is gone: never delivered here, and out of date once answered.)
+    waits = [event for event in await _events(host, receipt.commission_id, "status") if event.payload["to"] == "waiting_user"]
+    assert len(waits) == 1
 
 
 async def test_permission_denied_is_told_to_the_familiar(hosts, tmp_path):

@@ -582,13 +582,15 @@ ANSWER_CUE_PATTERNS = (
 )
 
 # Answers to a permission prompt. Checked in this order: deny, always, once.
+# A negated approval ("not allowed", "不同意") is a refusal: the approving
+# words alone would otherwise read as yes, so every negation counts here.
 PERMISSION_DENY_PATTERNS = (
-    r"不行|不可以|不能|不允许|不允許|不准|別|别|拒绝|拒絕|禁止|不要",
-    r"\b(?:no|nope|deny|denied|don'?t|do\s+not|refuse|never)\b",
-    r"だめ|ダメ|駄目|許可しない|いいえ|拒否",
-    r"안\s?돼|안\s?됨|거절|아니",
-    r"\bнет\b|нельзя|запрет|отказ",
-    r"\b(?:no|nunca|den[ií]ega\w*|rechaz\w*|não|nao|negar|recus\w*)\b",
+    r"不行|不可以|不能|不允许|不允許|不准|別|别|拒绝|拒絕|禁止|不要|不同意|不批准|不好|不用|算了|没门|沒門",
+    r"\b(?:no|nope|not|deny|denied|don'?t|do\s+not|doesn'?t|isn'?t|aren'?t|can'?t|cannot|won'?t|shouldn'?t|mustn'?t|refuse|reject|never|nah)\b",
+    r"だめ|ダメ|駄目|許可しない|許可しません|いいえ|拒否|やめて|しないで|いや",
+    r"안\s?돼|안\s?됨|안\s?해|하지\s?마|불허|거절|아니",
+    r"\bнет\b|\bне\b|нельзя|запрет|отказ",
+    r"\b(?:no|nunca|den[ií]ega\w*|rechaz\w*|não|nao|negar|recus\w*|jam[aá]s)\b",
 )
 
 PERMISSION_ALWAYS_PATTERNS = (
