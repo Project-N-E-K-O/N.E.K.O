@@ -24,11 +24,11 @@ model, for instance) only has to provide its two methods:
 * ``triage``, the first round. Local work: is this a stop request, an answer,
   an addition or a repeat of something under way, and are there candidates.
   It makes no model call, with one exception: when nothing matches locally
-  and no familiar can be started, it runs the small-model coarse screen once
+  and no task agent can be started, it runs the small-model coarse screen once
   before concluding that nothing can do this.
 * ``select``, the second round. Chooses a plugin entry and fills in its
   arguments; plugins come first. When no entry fits or the task needs several
-  steps, it hands over to a familiar. That is decided by the same request,
+  steps, it hands over to a task agent. That is decided by the same request,
   never by a further one.
 
 ``LexicalDecisionModel`` is today's implementation: keyword patterns, BM25,
@@ -41,7 +41,7 @@ and what the small model picks.
 Model calls per path (asserted in ``tests/unit/nekoclaw/test_host_decision.py``):
 
 * ``triage``: 0; 1 (small model) only when there is no local candidate and no
-  familiar.
+  task agent.
 * ``probe`` for a query: always 0.
 * ``select``: 1; 2 when the descriptions exceed the threshold (coarse screen
   plus fine selection), unless ``triage`` already ran the coarse screen, whose
@@ -95,13 +95,13 @@ class DecisionRequest:
     # The plugins selection may choose from (running, visible).
     plugins: list[dict[str, Any]] = field(default_factory=list)
     # Her commissions that are under way, newest first. Commissions her
-    # familiars started for themselves are not among them.
+    # task agents started for themselves are not among them.
     active: list[Commission] = field(default_factory=list)
-    # Commissions started by her familiars that wait for the user. Their
+    # Commissions started by her task agents that wait for the user. Their
     # questions reach the user too, so an answer can be about them; a stop,
     # a repeat or an addition never is.
     answerable: list[Commission] = field(default_factory=list)
-    familiar_available: bool = False
+    task_agent_available: bool = False
     # Rendered task preferences for the fine selection (already within budget).
     preferences: str = ""
 
@@ -139,7 +139,7 @@ class Triage:
 class Selection:
     """Conclusion of the second round."""
 
-    # "plugin", "familiar", "duplicate" or "none".
+    # "plugin", "task_agent", "duplicate" or "none".
     route: str
     plugin_id: str | None = None
     entry_id: str | None = None
@@ -150,7 +150,7 @@ class Selection:
     # A lasting instruction the sentence stated, if any.
     preference: str | None = None
     reason: str = ""
-    # The plugins the fine selection was shown; a familiar starts with these.
+    # The plugins the fine selection was shown; a task agent starts with these.
     shown_plugin_ids: list[str] = field(default_factory=list)
     model_calls: int = 0
 
@@ -421,7 +421,7 @@ def _answer(commission: Commission, choice: str | None) -> Triage:
 def can_be_repeated(commission: Commission) -> bool:
     """Return whether a new dispatch can be a repeat of this commission.
 
-    Not a commission a familiar started for itself: she never dispatched it.
+    Not a commission a task agent started for itself: she never dispatched it.
     Not a direct plugin call left ``blocked`` either (the plugin asked for a
     confirmation or a clarification): nothing takes it up again, so the same
     request dispatched once more is the confirmed one and has to run.
@@ -467,15 +467,15 @@ def read_repeat_or_addition(request: DecisionRequest) -> Triage | None:
 
     if not has_cue("supplement", text):
         return None
-    # An addition can only be passed on to a familiar; a plugin run takes none.
-    familiars = [commission for commission in request.active if commission.route == "familiar"]
-    if not familiars:
+    # An addition can only be passed on to a task agent; a plugin run takes none.
+    task_agents = [commission for commission in request.active if commission.route == "task_agent"]
+    if not task_agents:
         return None
     content = token_set(strip_cues("vague", strip_cues("supplement", text)))
-    scored = [(_coverage(content, commission), commission) for commission in familiars]
+    scored = [(_coverage(content, commission), commission) for commission in task_agents]
     related = [item for item in scored if item[0] >= SUPPLEMENT_MIN_OVERLAP]
-    if len(familiars) == 1 and (related or not content):
-        return Triage(kind="tell", targets=[familiars[0].id])
+    if len(task_agents) == 1 and (related or not content):
+        return Triage(kind="tell", targets=[task_agents[0].id])
     target = _single_best(related)
     if target is not None:
         return Triage(kind="tell", targets=[target.id])
@@ -604,7 +604,7 @@ class LexicalDecisionModel:
         hits = keyword_hits(match_text, plugins)
         kept, _ = stage1_filter(match_text, plugins)
         candidates = [str(plugin.get("id")) for plugin in kept]
-        if candidates or request.familiar_available:
+        if candidates or request.task_agent_available:
             return Triage(kind="new", keyword_hit_ids=hits, candidate_ids=candidates)
         if not plugins:
             return Triage(kind="none", reason="no_match")
@@ -612,7 +612,7 @@ class LexicalDecisionModel:
             # Asked by a query, which stays local: whether one of the plugins
             # fits after all is left open rather than answered with a no.
             return Triage(kind="unsure")
-        # Nothing matched by its words and there is no familiar to fall back
+        # Nothing matched by its words and there is no task agent to fall back
         # on. Before saying it cannot be done, let the small model look once.
         coarse = await self._coarse_screen(match_text, plugins, request.lang)
         known = {str(plugin.get("id")) for plugin in plugins}
@@ -692,7 +692,7 @@ class LexicalDecisionModel:
         from config.prompts.prompts_sys import _loc
         from utils.tokenize import count_tokens, truncate_to_tokens
 
-        fallback_route = "familiar" if request.familiar_available else "none"
+        fallback_route = "task_agent" if request.task_agent_available else "none"
         all_plugins = request.plugins
         if not all_plugins:
             return Selection(route=fallback_route, reason="No active plugins")

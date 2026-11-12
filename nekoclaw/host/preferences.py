@@ -23,11 +23,11 @@ Who writes, and when it takes effect:
 * something she states through a dispatch (``state``) applies at once;
 * something inferred from being stopped or corrected (``observe``) applies
   once the same tendency was seen ``PREFERENCE_INFERRED_THRESHOLD`` times and
-  is marked as inferred. ``feedback`` a familiar files with ``note_lesson`` is
+  is marked as inferred. ``feedback`` a task agent files with ``note_lesson`` is
   handled this way too;
 * the console edits entries directly (``edit``, ``set_active``, ``remove``).
 
-Who reads: the fine selection and a familiar's instructions get the relevant
+Who reads: the fine selection and a task agent's instructions get the relevant
 entries through ``render``, at most ``PREFERENCE_PROMPT_MAX_TOKENS`` tokens.
 
 A preference is guidance for a model. It is never consulted when a permission

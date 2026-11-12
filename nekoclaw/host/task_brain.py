@@ -19,18 +19,18 @@ task brain is what remembers. It lives in the host, keeps every commission in
 the ledger and decides who gets a commission done.
 
 ``dispatch`` takes one sentence from her. New work, an addition, a change of
-mind, a stop request and the answer to a familiar's question all arrive this
+mind, a stop request and the answer to a task agent's question all arrive this
 way; which commission a sentence is about is worked out against the ledger.
 It waits for the first round only:
 
 * first round (waited for, local): is it a stop request, an answer, an
-  addition or a repeat; are there candidate plugins; can a familiar be
+  addition or a repeat; are there candidate plugins; can a task agent be
   started. The receipt says one of: already under way, nothing can do this,
   accepted (or stopped / passed on, for sentences about an existing
   commission). If it takes longer than ``DISPATCH_FIRST_ROUND_SECONDS`` the
   receipt is "received" and the conclusion follows as a report.
 * second round (not waited for): choose a plugin entry and call it, or hand
-  over to a familiar. Plugins come first. If this round overturns the
+  over to a task agent. Plugins come first. If this round overturns the
   receipt (accepted, but nothing can do it; or it repeats something after
   all), she is told at once through a ``correction`` report.
 
@@ -174,7 +174,7 @@ class TaskBrain:
         decision: DecisionModel,
         reporter: Reporter,
         permission_store: PermissionStore,
-        familiars: Any = None,
+        task_agents: Any = None,
         enabled: Callable[[], bool] | None = None,
     ) -> None:
         self._ledger = ledger
@@ -184,7 +184,7 @@ class TaskBrain:
         self._decision = decision
         self._reporter = reporter
         self._permission_store = permission_store
-        self._familiars = familiars
+        self._task_agents = task_agents
         self._enabled = enabled
         self._tasks: set[asyncio.Task[Any]] = set()
         # Stops under way. Not cancelled on close like the rest: they are
@@ -215,8 +215,8 @@ class TaskBrain:
         """Wait for everything running in the background (second rounds, calls)."""
         while self._tasks:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
-        if self._familiars is not None:
-            await self._familiars.settle()
+        if self._task_agents is not None:
+            await self._task_agents.settle()
 
     def _is_enabled(self) -> bool:
         if self._closed:
@@ -228,10 +228,10 @@ class TaskBrain:
         except Exception:  # noqa: BLE001 - an unreadable switch counts as off
             return False
 
-    async def _familiar_available(self) -> bool:
-        if self._familiars is None:
+    async def _task_agent_available(self) -> bool:
+        if self._task_agents is None:
             return False
-        available, _reason = await self._familiars.available()
+        available, _reason = await self._task_agents.available()
         return available
 
     async def _no_capability_reason(self) -> str:
@@ -247,7 +247,7 @@ class TaskBrain:
 
     async def _request(self, text: str, user_text: str, lanlan_name: str, lang: str) -> DecisionRequest:
         under_way = await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
-        # Familiars started by familiars are their parents' business (as in
+        # Task agents started by task agents are their parents' business (as in
         # ``query``): she never dispatched them, so a stop, a repeat or an
         # addition is not about them. Their questions reach the user, though,
         # so an answer can be.
@@ -258,7 +258,7 @@ class TaskBrain:
         # Only "deny" counts here, on purpose: a direct call is one she
         # dispatched and the model chose, called without asking as the
         # analyzer does today. The asking modes apply where the design puts
-        # the questions: a familiar's tool calls and the capability gateway.
+        # the questions: a task agent's tool calls and the capability gateway.
         plugins_forbidden = await self._permission_store.mode("plugin_entry") == "deny"
         return DecisionRequest(
             dispatch_text=text,
@@ -267,7 +267,7 @@ class TaskBrain:
             plugins=[] if plugins_forbidden else await self._without_denied_mcp(await self._registry.plugins()),
             active=active,
             answerable=answerable,
-            familiar_available=await self._familiar_available(),
+            task_agent_available=await self._task_agent_available(),
         )
 
     async def _denied_mcp(self) -> McpDenial:
@@ -459,8 +459,8 @@ class TaskBrain:
                 )
             if selection.route == "plugin":
                 await self._call_plugin(commission, selection, request)
-            elif selection.route == "familiar" and self._familiars is not None:
-                await self._familiars.submit(commission, candidate_plugin_ids=selection.shown_plugin_ids)
+            elif selection.route == "task_agent" and self._task_agents is not None:
+                await self._task_agents.submit(commission, candidate_plugin_ids=selection.shown_plugin_ids)
             elif selection.route == "duplicate" and selection.duplicate_of:
                 await self._overturn_duplicate(commission, selection.duplicate_of)
             else:
@@ -558,7 +558,7 @@ class TaskBrain:
         entry: dict[str, Any] | None,
         outcome: RunOutcome,
     ) -> None:
-        from config.nekoclaw_settings import DEFERRED_COMMISSION_SECONDS, FAMILIAR_RESULT_SUMMARY_MAX_TOKENS
+        from config.nekoclaw_settings import DEFERRED_COMMISSION_SECONDS, TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
         detail = describe_result(entry, outcome, lang=commission.lang)
@@ -626,7 +626,7 @@ class TaskBrain:
             _DIRECT_STATUS[terminal],
             reason=outcome.reason or terminal,
             report=report,
-            result_summary=truncate_to_tokens(summary, FAMILIAR_RESULT_SUMMARY_MAX_TOKENS),
+            result_summary=truncate_to_tokens(summary, TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS),
         )
 
     async def _bind_deferred(self, commission: Commission, plugin_id: str, reminder_id: str) -> None:
@@ -726,12 +726,12 @@ class TaskBrain:
 
         The status is set first, so nothing that is still running can change
         it afterwards. Then the running parts are told: a plugin run is
-        cancelled on the plugin server, a familiar is closed. ``notify`` is
+        cancelled on the plugin server, a task agent is closed. ``notify`` is
         False when she asked for the stop herself and the receipt tells her.
 
         The status and what follows it run as one task of their own: a caller
         that goes away once the status is written does not leave the plugin
-        run or the familiar going.
+        run or the task agent going.
         """
         caller = asyncio.current_task()
         stopping = asyncio.ensure_future(self._abort(commission_id, reason=reason, notify=notify, caller=caller))
@@ -749,7 +749,7 @@ class TaskBrain:
         if notify:
             report = self._reporter.task_result_report(
                 commission,
-                channel=CHANNEL_PLUGIN if commission.route == "plugin" else "familiar",
+                channel=CHANNEL_PLUGIN if commission.route == "plugin" else "task_agent",
                 success=False,
                 summary=reason,
                 detail=reason,
@@ -776,8 +776,8 @@ class TaskBrain:
         work = self._work.get(commission_id)
         if work is not None and work is not caller:
             work.cancel()
-        if self._familiars is not None:
-            await self._familiars.abort(commission_id)
+        if self._task_agents is not None:
+            await self._task_agents.abort(commission_id)
         target = (
             # Without an entry id the plugin alone names it, not "<plugin>.None".
             (f"{commission.plugin_id}.{commission.entry_id}" if commission.entry_id else str(commission.plugin_id))
@@ -796,16 +796,16 @@ class TaskBrain:
         return moved.commission
 
     async def tell(self, commission_id: str, text: str) -> bool:
-        """Pass a sentence on to a commission. Only a familiar can take one."""
-        if self._familiars is None:
+        """Pass a sentence on to a commission. Only a task agent can take one."""
+        if self._task_agents is None:
             return False
-        return await self._familiars.tell(commission_id, text)
+        return await self._task_agents.tell(commission_id, text)
 
     async def answer(self, commission_id: str, text: str, *, choice: str | None = None) -> bool:
         """Give the user's answer to a commission that waits for one."""
-        if self._familiars is None:
+        if self._task_agents is None:
             return False
-        return await self._familiars.answer(commission_id, text, choice)
+        return await self._task_agents.answer(commission_id, text, choice)
 
     # -- query ------------------------------------------------------------
 
@@ -817,7 +817,7 @@ class TaskBrain:
         matching, so the answer agrees with the receipt a dispatch would get;
         nothing is filed and nothing runs. In the one case where a dispatch
         would let the small model look (nothing matches locally and no
-        familiar can be started) the answer is left open: ``can_do`` is None.
+        task agent can be started) the answer is left open: ``can_do`` is None.
         """
         from config.nekoclaw_settings import (
             QUERY_LEDGER_ROWS,
@@ -857,7 +857,7 @@ class TaskBrain:
             elif names:
                 answer = words["can_plugin"].format(names=", ".join(names[:5]))
             else:
-                answer = words["can_familiar"]
+                answer = words["can_task_agent"]
             return QueryAnswer(
                 text=truncate_to_tokens(answer, QUERY_RESULT_MAX_TOKENS), can_do=can_do, reason=reason, model_calls=calls
             )
@@ -870,7 +870,7 @@ class TaskBrain:
             updated_since=now - QUERY_RECENT_SECONDS,
             limit=QUERY_LEDGER_ROWS * 4,
         )
-        # Familiars started by familiars are their parents' business.
+        # Task agents started by task agents are their parents' business.
         active = [item for item in active if item.parent_id is None]
         recent = [item for item in recent if item.parent_id is None]
         if text:
@@ -924,7 +924,7 @@ class TaskBrain:
         self._deferred_timers.clear()
         if self._stopping:
             # A stop under way is finished first (within a bound), so its
-            # plugin run is cancelled and its familiar closed.
+            # plugin run is cancelled and its task agent closed.
             await asyncio.wait(list(self._stopping), timeout=_CLOSE_STOP_WAIT_SECONDS)
         tasks = list(self._tasks)
         for task in tasks:

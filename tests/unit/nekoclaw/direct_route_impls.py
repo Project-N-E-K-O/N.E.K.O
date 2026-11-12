@@ -206,7 +206,7 @@ class NekoclawDirectRoute:
             root=tmp_path / "nekoclaw",
             client_factory=server.client,
             decision=self._decision,
-            familiars_enabled=lambda: False,
+            task_agents_enabled=lambda: False,
         )
 
     async def close(self) -> None:

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Familiars driven by the host: the real runtime in process, a scripted model."""
+"""Task agents driven by the host: the real runtime in process, a scripted model."""
 
 from __future__ import annotations
 
@@ -45,9 +45,9 @@ async def hosts() -> Any:
 
 
 def _host(hosts: list[Any], tmp_path: Path, llm: Any, **kwargs: Any) -> Any:
-    """A host with no plugins, so every dispatch goes to a familiar."""
+    """A host with no plugins, so every dispatch goes to a task agent."""
     pick = llm if callable(llm) else (lambda spec: llm)
-    kwargs.setdefault("familiar_model", fake_model)
+    kwargs.setdefault("task_agent_model", fake_model)
     kwargs.setdefault("decision_llm", FakeDecisionLLM())
     host = make_host(tmp_path, None, runtime_factory=scripted_runtime(pick), **kwargs)
     hosts.append(host)
@@ -66,7 +66,7 @@ def _report(status: str, summary: str, **extra: Any) -> list[Any]:
 
 
 async def _events(host: Any, commission_id: str, kind: str | None = None) -> list[Any]:
-    await host.familiars.settle()
+    await host.task_agents.settle()
     return [event for event in await host.ledger.events(commission_id) if kind is None or event.type == kind]
 
 
@@ -84,17 +84,17 @@ def _gate() -> tuple[asyncio.Event, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def test_nothing_runs_until_a_familiar_is_needed(hosts, tmp_path):
+async def test_nothing_runs_until_a_task_agent_is_needed(hosts, tmp_path):
     host = _host(hosts, tmp_path, ScriptedLLM())
 
     await host.query("what is going on", lanlan_name="Lan")
 
-    assert not host.familiars.runtime_started
+    assert not host.task_agents.runtime_started
     assert not host.gateway.started
-    assert host.familiars.running == []
+    assert host.task_agents.running == []
 
 
-async def test_commission_goes_to_a_familiar_and_its_report_ends_it(hosts, tmp_path):
+async def test_commission_goes_to_a_task_agent_and_its_report_ends_it(hosts, tmp_path):
     llm = ScriptedLLM([_report("ready", "sorted 12 photos", details="in D:/Photos/by-month")])
     host = _host(hosts, tmp_path, llm)
 
@@ -104,18 +104,18 @@ async def test_commission_goes_to_a_familiar_and_its_report_ends_it(hosts, tmp_p
     # No plugin exists, so no model was asked how to route it.
     assert host.decision._llm.calls == []
     done = await wait_status(host, receipt.commission_id, "done")
-    assert (done.route, done.runtime) == ("familiar", "builtin")
+    assert (done.route, done.runtime) == ("task_agent", "builtin")
     assert done.result_summary == "sorted 12 photos\nin D:/Photos/by-month"
     assert Path(done.workdir).is_dir()
-    # The familiar was given her sentence as its work and the user's words in its brief.
+    # The task agent was given her sentence as its work and the user's words in its brief.
     request = llm.requests[0]
     assert request[-1]["content"].startswith("sort the photos in my downloads folder")
     assert "can you sort my photos" in request[0]["content"]
     assert "commission for Lan" in request[0]["content"]
     # The session is closed again and its place is free.
-    await wait_until(lambda: host.familiars.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
     (report,) = await outbox(host, "task_result")
-    assert report.payload["channel"] == "familiar"
+    assert report.payload["channel"] == "task_agent"
     assert (report.payload["status"], report.payload["success"]) == ("completed", True)
     assert report.payload["summary"] == "sorted 12 photos\nin D:/Photos/by-month"
     assert report.payload["delivery_mode"] == "proactive"
@@ -131,7 +131,7 @@ async def test_the_session_is_the_commission_and_lives_below_the_data_root(hosts
     receipt = await _dispatch(host, "tidy the desktop")
     await wait_status(host, receipt.commission_id, "done")
 
-    session_dir = tmp_path / "nekoclaw" / "familiar" / "projects" / "_daily" / "sessions" / receipt.commission_id
+    session_dir = tmp_path / "nekoclaw" / "task_agents" / "projects" / "_daily" / "sessions" / receipt.commission_id
     assert (session_dir / "transcript.jsonl").is_file()
     assert (session_dir / "work").is_dir()
 
@@ -157,10 +157,10 @@ async def test_blocked_and_failed_reports(hosts, tmp_path, status, expected):
     assert ended.result_summary == "the folder is on a drive that is not connected"
     (report,) = await outbox(host, "task_result")
     assert (report.payload["status"], report.payload["success"]) == (expected, False)
-    await wait_until(lambda: host.familiars.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
 
 
-async def test_delivery_follows_the_commission_setting_then_the_familiars_wish(hosts, tmp_path):
+async def test_delivery_follows_the_commission_setting_then_the_task_agents_wish(hosts, tmp_path):
     llm = ScriptedLLM([_report("ready", "one", delivery="passive"), _report("ready", "two", delivery="passive")])
     host = _host(hosts, tmp_path, llm)
 
@@ -169,11 +169,11 @@ async def test_delivery_follows_the_commission_setting_then_the_familiars_wish(h
     second, _created = await host.ledger.create(
         lanlan_name="Lan", title="backup", dispatch_text="back up the notes", source="dispatch", delivery="silent"
     )
-    await host.familiars.submit(second)
+    await host.task_agents.submit(second)
     await wait_status(host, second.id, "done")
 
     reports = await outbox(host, "task_result")
-    # The familiar asked for "passive": used where the commission says nothing,
+    # The task agent asked for "passive": used where the commission says nothing,
     # overruled where the commission is set to silent (nothing is reported).
     assert [report.payload["delivery_mode"] for report in reports] == ["passive"]
 
@@ -207,37 +207,37 @@ async def test_text_increments_are_stored_as_one_row(hosts, tmp_path):
     assert texts[0].payload["text"] == "".join(f"word{n} " for n in range(50))
 
 
-async def test_familiar_that_cannot_be_started_fails_the_commission(hosts, tmp_path):
+async def test_task_agent_that_cannot_be_started_fails_the_commission(hosts, tmp_path):
     def broken(on_event: Any, callbacks: Any) -> Any:
         raise RuntimeError("the runtime process could not be created")
 
-    host = make_host(tmp_path, None, familiar_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=broken)
+    host = make_host(tmp_path, None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=broken)
     hosts.append(host)
 
     receipt = await _dispatch(host, "sort the photos")
 
     failed = await wait_status(host, receipt.commission_id, "failed")
     assert "could not be started" in failed.status_reason
-    assert host.familiars.running == []
+    assert host.task_agents.running == []
     (report,) = await outbox(host, "task_result")
     assert report.payload["status"] == "failed"
 
 
-async def test_without_a_model_no_familiar_is_available(hosts, tmp_path):
+async def test_without_a_model_no_task_agent_is_available(hosts, tmp_path):
     from tests.unit.nekoclaw.host_fakes import no_model
 
-    host = _host(hosts, tmp_path, ScriptedLLM(), familiar_model=no_model)
+    host = _host(hosts, tmp_path, ScriptedLLM(), task_agent_model=no_model)
 
     receipt = await _dispatch(host, "sort the photos")
 
     assert (receipt.kind, receipt.reason) == ("no_capability", "not_installed")
-    assert not host.familiars.runtime_started
+    assert not host.task_agents.runtime_started
 
 
-async def test_switched_off_familiars_are_not_available(hosts, tmp_path):
-    host = _host(hosts, tmp_path, ScriptedLLM(), familiars_enabled=lambda: False)
+async def test_switched_off_task_agents_are_not_available(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM(), task_agents_enabled=lambda: False)
 
-    assert await host.familiars.available() == (False, "not_enabled")
+    assert await host.task_agents.available() == (False, "not_enabled")
     assert (await _dispatch(host, "sort the photos")).kind == "no_capability"
 
 
@@ -247,10 +247,10 @@ async def test_switched_off_familiars_are_not_available(hosts, tmp_path):
 
 
 async def test_default_limit_is_ten(hosts, tmp_path):
-    from config.nekoclaw_settings import FAMILIAR_MAX_CONCURRENT
+    from config.nekoclaw_settings import TASK_AGENT_MAX_CONCURRENT
 
-    assert FAMILIAR_MAX_CONCURRENT == 10
-    assert _host(hosts, tmp_path, ScriptedLLM()).familiars.limit == 10
+    assert TASK_AGENT_MAX_CONCURRENT == 10
+    assert _host(hosts, tmp_path, ScriptedLLM()).task_agents.limit == 10
 
 
 async def test_commissions_beyond_the_limit_wait_in_the_queue(hosts, tmp_path):
@@ -267,7 +267,7 @@ async def test_commissions_beyond_the_limit_wait_in_the_queue(hosts, tmp_path):
         seen.append(text)
         return scripts[text]
 
-    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    host = _host(hosts, tmp_path, pick, max_task_agents=1)
 
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "working")
@@ -276,8 +276,8 @@ async def test_commissions_beyond_the_limit_wait_in_the_queue(hosts, tmp_path):
     await host.brain.settle()
 
     # One place: the other two are registered and wait.
-    assert host.familiars.running == [first.commission_id]
-    assert host.familiars.queued == [second.commission_id, third.commission_id]
+    assert host.task_agents.running == [first.commission_id]
+    assert host.task_agents.queued == [second.commission_id, third.commission_id]
     assert (await host.ledger.get(second.commission_id)).status == "queued"
     assert seen == ["sort the photos"]
 
@@ -287,7 +287,7 @@ async def test_commissions_beyond_the_limit_wait_in_the_queue(hosts, tmp_path):
     await wait_status(host, third.commission_id, "done")
     # Started in the order they were queued, one at a time.
     assert seen == ["sort the photos", "back up the notes", "empty the recycle bin"]
-    assert host.familiars.queued == []
+    assert host.task_agents.queued == []
 
 
 async def test_a_queued_commission_can_be_stopped_before_it_starts(hosts, tmp_path):
@@ -298,7 +298,7 @@ async def test_a_queued_commission_can_be_stopped_before_it_starts(hosts, tmp_pa
         started.append(spec.session_id)
         return ScriptedLLM([[wait, say("done"), finish()]])
 
-    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    host = _host(hosts, tmp_path, pick, max_task_agents=1)
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "working")
     second = await _dispatch(host, "back up the notes")
@@ -307,14 +307,14 @@ async def test_a_queued_commission_can_be_stopped_before_it_starts(hosts, tmp_pa
     await host.abort(second.commission_id)
     release.set()
     await wait_status(host, first.commission_id, "done")
-    await wait_until(lambda: host.familiars.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
 
     assert (await host.ledger.get(second.commission_id)).status == "cancelled"
     assert started == [first.commission_id]
 
 
 async def _filed(host: Any, text: str, **values: Any) -> Any:
-    values.setdefault("route", "familiar")
+    values.setdefault("route", "task_agent")
     commission, _created = await host.ledger.create(
         lanlan_name="Lan", title=text, dispatch_text=text, source="dispatch", **values
     )
@@ -345,14 +345,14 @@ async def test_commissions_handed_over_at_once_do_not_overrun_the_limit(hosts, t
         started.append(spec.session_id)
         return ScriptedLLM([[wait, say("done"), finish()]])
 
-    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    host = _host(hosts, tmp_path, pick, max_task_agents=1)
     first = await _filed(host, "sort the photos")
     second = await _filed(host, "back up the notes")
 
-    await asyncio.gather(host.familiars.submit(first), host.familiars.submit(second))
+    await asyncio.gather(host.task_agents.submit(first), host.task_agents.submit(second))
 
-    assert host.familiars.running == [first.id]
-    assert host.familiars.queued == [second.id]
+    assert host.task_agents.running == [first.id]
+    assert host.task_agents.queued == [second.id]
     assert (await host.ledger.get(second.id)).status == "queued"
     release.set()
     await wait_status(host, second.id, "done")
@@ -361,17 +361,17 @@ async def test_commissions_handed_over_at_once_do_not_overrun_the_limit(hosts, t
 
 async def test_a_place_freed_by_a_stop_during_preparation_goes_to_the_queue(hosts, tmp_path):
     entered, release, model = _slow_model()
-    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]), familiar_model=model, max_familiars=1)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]), task_agent_model=model, max_task_agents=1)
     first = await _filed(host, "sort the photos")
     second = await _filed(host, "back up the notes")
-    handing = asyncio.ensure_future(host.familiars.submit(first))
+    handing = asyncio.ensure_future(host.task_agents.submit(first))
     await asyncio.wait_for(entered.wait(), 5)
-    await host.familiars.submit(second)
-    assert host.familiars.queued == [second.id]
+    await host.task_agents.submit(second)
+    assert host.task_agents.queued == [second.id]
 
     # Stopped while its session is still being prepared.
     await host.ledger.transition(first.id, "cancelled", reason="stopped by the user")
-    await host.familiars.abort(first.id)
+    await host.task_agents.abort(first.id)
     release.set()
     _ = await handing
 
@@ -381,18 +381,18 @@ async def test_a_place_freed_by_a_stop_during_preparation_goes_to_the_queue(host
 
 async def test_a_place_freed_by_a_cancelled_start_goes_to_the_queue(hosts, tmp_path):
     entered, release, model = _slow_model()
-    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]), familiar_model=model, max_familiars=1)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]), task_agent_model=model, max_task_agents=1)
     first = await _filed(host, "sort the photos")
     await host.ledger.transition(first.id, "working", reason="test")
     await host.ledger.transition(first.id, "blocked", reason="test")
     second = await _filed(host, "back up the notes")
     # A start that is itself cancelled while the session is prepared (callers
     # run starts as shielded tasks, so this is a shutdown cancelling them).
-    assert host.familiars._take_place(first.id)
-    starting = asyncio.ensure_future(host.familiars._start(first.id, prompt="the drive is E: now"))
+    assert host.task_agents._take_place(first.id)
+    starting = asyncio.ensure_future(host.task_agents._start(first.id, prompt="the drive is E: now"))
     await asyncio.wait_for(entered.wait(), 5)
-    await host.familiars.submit(second)
-    assert host.familiars.queued == [second.id]
+    await host.task_agents.submit(second)
+    assert host.task_agents.queued == [second.id]
 
     starting.cancel()
     await asyncio.gather(starting, return_exceptions=True)
@@ -419,7 +419,7 @@ async def test_stopping_closes_the_session_and_nothing_overwrites_cancelled(host
 
     assert stopped.kind == "stopped"
     assert stopped.commission_id == receipt.commission_id
-    await wait_until(lambda: host.familiars.running == [], what="the session being closed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being closed")
     release.set()
     await host.brain.settle()
     after = await host.ledger.get(receipt.commission_id)
@@ -434,7 +434,7 @@ async def test_shutting_the_host_down_fails_what_was_under_way(tmp_path):
     host = make_host(
         tmp_path,
         None,
-        familiar_model=fake_model,
+        task_agent_model=fake_model,
         decision_llm=FakeDecisionLLM(),
         runtime_factory=scripted_runtime(lambda spec: ScriptedLLM([[wait, say("done"), finish()]])),
     )
@@ -456,16 +456,16 @@ async def test_shutting_the_host_down_fails_what_was_under_way(tmp_path):
     assert (commission.status, commission.status_reason) == ("failed", "the host was shut down")
 
 
-async def test_shutting_familiars_down_fails_what_was_queued(hosts, tmp_path):
+async def test_shutting_task_agents_down_fails_what_was_queued(hosts, tmp_path):
     release, wait = _gate()
-    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait, say("done"), finish()]]), max_familiars=1)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[wait, say("done"), finish()]]), max_task_agents=1)
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "working")
     second = await _dispatch(host, "back up the notes")
     await host.brain.settle()
-    assert host.familiars.queued == [second.commission_id]
+    assert host.task_agents.queued == [second.commission_id]
 
-    await host.familiars.shutdown()
+    await host.task_agents.shutdown()
     release.set()
 
     queued = await host.ledger.get(second.commission_id)
@@ -474,17 +474,17 @@ async def test_shutting_familiars_down_fails_what_was_queued(hosts, tmp_path):
 
 async def test_nothing_is_started_after_shutting_down(hosts, tmp_path):
     host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]))
-    await host.familiars.shutdown()
+    await host.task_agents.shutdown()
     blocked = await _filed(host, "sort the photos")
     await host.ledger.transition(blocked.id, "working", reason="test")
     await host.ledger.transition(blocked.id, "blocked", reason="test")
     fresh = await _filed(host, "back up the notes")
 
-    assert await host.familiars.tell(blocked.id, "try again") is False
-    await host.familiars.submit(fresh)
+    assert await host.task_agents.tell(blocked.id, "try again") is False
+    await host.task_agents.submit(fresh)
 
-    assert not host.familiars.runtime_started
-    assert host.familiars.running == [] and host.familiars.queued == []
+    assert not host.task_agents.runtime_started
+    assert host.task_agents.running == [] and host.task_agents.queued == []
     assert (await host.ledger.get(blocked.id)).status == "blocked"
     after = await host.ledger.get(fresh.id)
     assert (after.status, after.status_reason) == ("failed", "the host was shut down")
@@ -510,17 +510,17 @@ async def test_stopping_while_the_session_comes_up_gives_it_no_work(hosts, tmp_p
         def __getattr__(self, name: str) -> Any:
             return getattr(self.inner, name)
 
-    host = make_host(tmp_path, None, familiar_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=SlowStart)
+    host = make_host(tmp_path, None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=SlowStart)
     hosts.append(host)
     receipt = await _dispatch(host, "sort the photos")
     await asyncio.wait_for(starting.wait(), 5)
 
     await host.abort(receipt.commission_id)
     may_start.set()
-    await wait_until(lambda: not host.familiars._starting, what="the start being over")
-    await wait_until(lambda: host.familiars.running == [], what="the place being freed")
-    await wait_until(lambda: not host.familiars._runtime.inner.core._sessions, what="the session being closed")
-    await host.familiars.settle()
+    await wait_until(lambda: not host.task_agents._starting, what="the start being over")
+    await wait_until(lambda: host.task_agents.running == [], what="the place being freed")
+    await wait_until(lambda: not host.task_agents._runtime.inner.core._sessions, what="the session being closed")
+    await host.task_agents.settle()
 
     assert llm.requests == []
     assert (await host.ledger.get(receipt.commission_id)).status == "cancelled"
@@ -571,7 +571,7 @@ async def test_a_question_cleared_after_its_commission_failed_does_not_set_it_wo
     host = _host(hosts, tmp_path, llm)
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "waiting_user")
-    session = host.familiars._sessions[receipt.commission_id]
+    session = host.task_agents._sessions[receipt.commission_id]
     await wait_until(lambda: session.question is not None, what="the question waiting")
 
     # Failed while the question waits (as shutting down does), then the
@@ -607,7 +607,7 @@ async def test_waiting_report_keeps_the_session_for_the_answer(hosts, tmp_path):
 
     waiting = await wait_status(host, receipt.commission_id, "waiting_user")
     assert waiting.question() == {"kind": "report", "question": "Which folder holds the photos?", "details": ""}
-    assert host.familiars.running == [receipt.commission_id]
+    assert host.task_agents.running == [receipt.commission_id]
     assert len(await outbox(host, "question")) == 1
 
     answered = await _dispatch(host, "answer: the photos are in D:/Camera")
@@ -622,9 +622,9 @@ async def _waiting_and_closed(host: Any, text: str) -> str:
     receipt = await _dispatch(host, text)
     await wait_status(host, receipt.commission_id, "waiting_user")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
-    await host.familiars._runtime.close(receipt.commission_id)
-    await host.familiars.settle()
-    assert receipt.commission_id not in host.familiars.running
+    await host.task_agents._runtime.close(receipt.commission_id)
+    await host.task_agents.settle()
+    assert receipt.commission_id not in host.task_agents.running
     assert (await host.ledger.get(receipt.commission_id)).status == "waiting_user"
     return receipt.commission_id
 
@@ -640,14 +640,14 @@ async def test_an_answer_kept_for_a_wake_up_that_never_ran_survives_the_session_
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "waiting_user")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
-    session = host.familiars._sessions[receipt.commission_id]
+    session = host.task_agents._sessions[receipt.commission_id]
     # A child's result was steered to wake it, so the answer is kept for the
     # end of that run; the runtime is exiting and the run never comes.
     session.run_ended = False
     assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
     assert session.held_answer == "the photos are in D:/Camera"
 
-    await host.familiars._runtime.close(receipt.commission_id)
+    await host.task_agents._runtime.close(receipt.commission_id)
 
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "sorted D:/Camera"
@@ -665,7 +665,7 @@ async def test_an_answer_sent_to_a_session_that_closes_before_taking_it_takes_it
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "waiting_user")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
-    runtime = host.familiars._runtime
+    runtime = host.task_agents._runtime
     prompt = runtime.prompt
     sent: list[str] = []
 
@@ -700,7 +700,7 @@ async def test_an_answer_whose_session_closes_while_its_status_is_written_takes_
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "waiting_user")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
-    runtime = host.familiars._runtime
+    runtime = host.task_agents._runtime
     transition = host.ledger.transition
 
     async def transition_while_closing(commission_id: str, status: str, **fields: Any) -> Any:
@@ -709,7 +709,7 @@ async def test_an_answer_whose_session_closes_while_its_status_is_written_takes_
             # The idle runtime closes the session while the answer's status
             # is being written; its "closed" is handled before the answer goes on.
             await runtime.close(commission_id)
-            await wait_until(lambda: commission_id not in host.familiars._sessions, what="the session released")
+            await wait_until(lambda: commission_id not in host.task_agents._sessions, what="the session released")
         return moved
 
     host.ledger.transition = transition_while_closing
@@ -760,7 +760,7 @@ async def test_a_second_answer_while_the_asking_run_winds_down_does_not_replace_
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "waiting_user")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
-    session = host.familiars._sessions[receipt.commission_id]
+    session = host.task_agents._sessions[receipt.commission_id]
     # As while the run that asked is still winding down.
     session.run_ended = False
 
@@ -769,7 +769,7 @@ async def test_a_second_answer_while_the_asking_run_winds_down_does_not_replace_
 
     assert (first, second) == (True, False)
     assert session.held_answer == "the photos are in D:/Camera"
-    await host.familiars._runtime.close(receipt.commission_id)
+    await host.task_agents._runtime.close(receipt.commission_id)
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "sorted D:/Camera"
     sent = json.dumps(llm.requests[1], ensure_ascii=False)
@@ -788,10 +788,10 @@ async def test_an_answer_kept_when_its_session_closes_is_not_displaced_by_a_late
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "waiting_user")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
-    session = host.familiars._sessions[receipt.commission_id]
+    session = host.task_agents._sessions[receipt.commission_id]
     session.run_ended = False
     assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
-    handle = host.familiars._handle
+    handle = host.task_agents._handle
     later: list[bool] = []
 
     async def answer_right_after_closing(event: dict[str, Any]) -> None:
@@ -800,8 +800,8 @@ async def test_an_answer_kept_when_its_session_closes_is_not_displaced_by_a_late
             # The kept answer is about to take it up again, but has not started yet.
             later.append(await host.answer(receipt.commission_id, "or maybe in E:/Phone"))
 
-    host.familiars._handle = answer_right_after_closing
-    await host.familiars._runtime.close(receipt.commission_id)
+    host.task_agents._handle = answer_right_after_closing
+    await host.task_agents._runtime.close(receipt.commission_id)
 
     done = await wait_status(host, receipt.commission_id, "done")
     assert later == [False]
@@ -847,7 +847,7 @@ async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(h
     host = _host(hosts, tmp_path, pick)
     warm = await _dispatch(host, "warm up")
     await wait_status(host, warm.commission_id, "done")
-    runtime = host.familiars._runtime
+    runtime = host.task_agents._runtime
     sent: list[tuple[str, str]] = []
     start, prompt, steer = runtime.start, runtime.prompt, runtime.steer
     release = asyncio.Event()
@@ -869,11 +869,11 @@ async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(h
     await host.ledger.transition(second.id, "working", reason="test")
     await host.ledger.transition(second.id, "blocked", reason="test")
 
-    taking_up = asyncio.ensure_future(host.familiars.tell(second.id, "put it on drive E:"))
+    taking_up = asyncio.ensure_future(host.task_agents.tell(second.id, "put it on drive E:"))
     # Recorded as working before the runtime has opened the session.
     await wait_status(host, second.id, "working")
-    told = await host.familiars.tell(second.id, "and skip the drafts")
-    await host.familiars._tell_parent(
+    told = await host.task_agents.tell(second.id, "and skip the drafts")
+    await host.task_agents._tell_parent(
         SimpleNamespace(parent_id=second.id, name="agent-9", id="child"), "completed", "drafts listed"
     )
     release.set()
@@ -898,7 +898,7 @@ async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "waiting_user")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
-    runtime = host.familiars._runtime
+    runtime = host.task_agents._runtime
     prompt = runtime.prompt
 
     async def lost(session_id: str, text: str) -> None:
@@ -914,7 +914,7 @@ async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_
         moved = await transition(commission_id, status, **fields)
         if fields.get("reason") == "its session closed before it took the answer":
             # Shutting down begins while the status is being written.
-            shutting.append(asyncio.ensure_future(host.familiars.shutdown()))
+            shutting.append(asyncio.ensure_future(host.task_agents.shutdown()))
             await asyncio.sleep(0)
         return moved
 
@@ -922,7 +922,7 @@ async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_
     await runtime.close(receipt.commission_id)
     await wait_until(lambda: bool(shutting), what="shutting down to begin")
     await asyncio.gather(*shutting)
-    await host.familiars.settle()
+    await host.task_agents.settle()
 
     ended = await wait_status(host, receipt.commission_id, "failed")
     assert ended.status_reason == "the host was shut down"
@@ -939,13 +939,13 @@ async def test_a_refused_wake_up_hands_over_the_kept_answer(hosts, tmp_path):
     receipt = await _dispatch(host, "sort the photos")
     await wait_status(host, receipt.commission_id, "waiting_user")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
-    session = host.familiars._sessions[receipt.commission_id]
+    session = host.task_agents._sessions[receipt.commission_id]
     session.run_ended = False
     session.sent += 1
     assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
 
     # The runtime refuses the steer that was to wake it: no run starts.
-    await host.familiars._on_error(session, {"type": "error", "command": "steer", "message": "refused"})
+    await host.task_agents._on_error(session, {"type": "error", "command": "steer", "message": "refused"})
 
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "sorted D:/Camera"
@@ -961,7 +961,7 @@ async def test_two_sentences_at_once_for_a_commission_with_no_place_are_queued_t
     def pick(spec: Any) -> ScriptedLLM:
         return next(llm for text, llm in scripts.items() if text in (spec.instructions or ""))
 
-    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    host = _host(hosts, tmp_path, pick, max_task_agents=1)
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "working")
     second = await _filed(host, "back up the notes")
@@ -969,12 +969,12 @@ async def test_two_sentences_at_once_for_a_commission_with_no_place_are_queued_t
     await host.ledger.transition(second.id, "blocked", reason="test")
 
     told = await asyncio.gather(
-        host.familiars.tell(second.id, "put it on drive E:"),
-        host.familiars.tell(second.id, "and skip the drafts"),
+        host.task_agents.tell(second.id, "put it on drive E:"),
+        host.task_agents.tell(second.id, "and skip the drafts"),
     )
 
     assert told == [True, True]
-    assert host.familiars.queued == [second.id]
+    assert host.task_agents.queued == [second.id]
     release.set()
     await wait_status(host, second.id, "done")
     sent = " | ".join(str(message.get("content")) for message in scripts["back up the notes"].requests[0])
@@ -1005,12 +1005,12 @@ async def test_an_answer_after_the_idle_session_was_closed_takes_it_up_again(hos
 
 async def test_taking_up_again_outlives_a_caller_cancelled_meanwhile(hosts, tmp_path):
     entered, release, model = _slow_model()
-    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("photos sorted"), finish()]]), familiar_model=model)
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("photos sorted"), finish()]]), task_agent_model=model)
     commission = await _filed(host, "sort the photos")
     await host.ledger.transition(commission.id, "working", reason="test")
     await host.ledger.transition(commission.id, "blocked", reason="test")
 
-    telling = asyncio.ensure_future(host.familiars.tell(commission.id, "the drive is E: now"))
+    telling = asyncio.ensure_future(host.task_agents.tell(commission.id, "the drive is E: now"))
     await asyncio.wait_for(entered.wait(), 5)
     # Whoever passed it on goes away (a dispatch cancelled by a shutdown, say)
     # while the session is being set up; the start goes on regardless.
@@ -1024,16 +1024,16 @@ async def test_taking_up_again_outlives_a_caller_cancelled_meanwhile(hosts, tmp_
 async def test_a_second_sentence_while_taking_up_again_goes_along_with_that_start(hosts, tmp_path):
     entered, release, model = _slow_model()
     llm = ScriptedLLM([[say("photos sorted"), finish()]])
-    host = _host(hosts, tmp_path, lambda spec: llm, familiar_model=model)
+    host = _host(hosts, tmp_path, lambda spec: llm, task_agent_model=model)
     commission = await _filed(host, "sort the photos")
     await host.ledger.transition(commission.id, "working", reason="test")
     await host.ledger.transition(commission.id, "blocked", reason="test")
 
-    first = asyncio.ensure_future(host.familiars.tell(commission.id, "the drive is E: now"))
+    first = asyncio.ensure_future(host.task_agents.tell(commission.id, "the drive is E: now"))
     await asyncio.wait_for(entered.wait(), 5)
     # Still blocked while its session is set up; a second sentence arrives.
-    assert await host.familiars.tell(commission.id, "and skip the screenshots") is True
-    assert host.familiars.queued == []
+    assert await host.task_agents.tell(commission.id, "and skip the screenshots") is True
+    assert host.task_agents.queued == []
     release.set()
     assert await first is True
 
@@ -1055,15 +1055,15 @@ async def test_an_answer_told_after_the_idle_session_was_closed_waits_for_a_plac
     def pick(spec: Any) -> ScriptedLLM:
         return next(llm for text, llm in scripts.items() if text in (spec.instructions or ""))
 
-    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    host = _host(hosts, tmp_path, pick, max_task_agents=1)
     commission_id = await _waiting_and_closed(host, "sort the photos")
     other = await _filed(host, "back up the notes")
-    assert await host.familiars.submit(other) is True
+    assert await host.task_agents.submit(other) is True
     await wait_status(host, other.id, "working")
 
-    assert await host.familiars.tell(commission_id, "the photos are in D:/Camera") is True
+    assert await host.task_agents.tell(commission_id, "the photos are in D:/Camera") is True
     assert (await host.ledger.get(commission_id)).status == "queued"
-    assert host.familiars.queued == [commission_id]
+    assert host.task_agents.queued == [commission_id]
 
     release.set()
     done = await wait_status(host, commission_id, "done")
@@ -1079,17 +1079,17 @@ async def test_answer_arriving_before_the_asking_run_has_ended_is_not_lost(hosts
         ]
     )
     host = _host(hosts, tmp_path, llm)
-    handle_report = host.familiars._on_report
+    handle_report = host.task_agents._on_report
     early: list[bool] = []
 
     async def answer_at_once(session: Any, event: dict[str, Any]) -> None:
         await handle_report(session, event)
         if event.get("status") == "waiting":
             # The report is being handled while its run is still winding down.
-            running = host.familiars._runtime.core._sessions[session.commission_id].running
-            early.append(running and await host.familiars.answer(session.commission_id, "it is D:/Camera"))
+            running = host.task_agents._runtime.core._sessions[session.commission_id].running
+            early.append(running and await host.task_agents.answer(session.commission_id, "it is D:/Camera"))
 
-    host.familiars._on_report = answer_at_once
+    host.task_agents._on_report = answer_at_once
 
     receipt = await _dispatch(host, "sort the photos")
 
@@ -1167,7 +1167,7 @@ async def test_permission_always_is_remembered(hosts, tmp_path):
     assert len(waits) == 1
 
 
-async def test_permission_denied_is_told_to_the_familiar(hosts, tmp_path):
+async def test_permission_denied_is_told_to_the_task_agent(hosts, tmp_path):
     llm = ScriptedLLM([_write_outside(tmp_path), _report("blocked", "not allowed to write there")])
     host = _host(hosts, tmp_path, llm)
     receipt = await _dispatch(host, "write a file outside the work folder")
@@ -1215,7 +1215,7 @@ async def test_stopping_while_it_waits_for_an_answer(hosts, tmp_path):
     await wait_status(host, receipt.commission_id, "waiting_user")
 
     await host.abort(receipt.commission_id)
-    await wait_until(lambda: host.familiars.running == [], what="the session being closed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being closed")
     await host.brain.settle()
 
     assert (await host.ledger.get(receipt.commission_id)).status == "cancelled"
@@ -1277,7 +1277,7 @@ async def test_lesson_sink_can_be_replaced(hosts, tmp_path):
     class Sink:
         async def submit(self, commission: Any, lesson: dict[str, Any]) -> str:
             received.append((commission.id, lesson))
-            return "kept in the familiar space"
+            return "kept in the task agent space"
 
     llm = ScriptedLLM([_note("lesson", "Photo dates", "Use EXIF dates"), _report("ready", "done")])
     host = _host(hosts, tmp_path, llm, lessons=Sink())
@@ -1310,10 +1310,10 @@ class _SearchRunner:
 async def test_web_search_runs_the_search_plugin(hosts, tmp_path):
     host = _host(hosts, tmp_path, ScriptedLLM())
     runner = _SearchRunner()
-    host.familiars._runner = runner
+    host.task_agents._runner = runner
     commission = await _filed(host, "look up the weather")
 
-    result = await host.familiars._cb_web_search(commission.id, {"queries": ["weather tomorrow"]})
+    result = await host.task_agents._cb_web_search(commission.id, {"queries": ["weather tomorrow"]})
 
     assert result == {"results": [{"query": "weather tomorrow", "sources": [{"url": "https://example.com/weather", "title": "Weather"}]}]}
     assert [(call["plugin_id"], call["entry_id"], call["args"]) for call in runner.calls] == [
@@ -1334,7 +1334,7 @@ async def test_web_search_obeys_the_plugin_switch_and_permission(hosts, tmp_path
     if blocked_by == "permission":
         await host.permission_store.set_mode("plugin_entry", "deny")
     runner = _SearchRunner()
-    host.familiars._runner = runner
+    host.task_agents._runner = runner
 
     receipt = await _dispatch(host, "look up the weather")
 
@@ -1352,7 +1352,7 @@ async def test_web_search_obeys_the_plugin_switch_and_permission(hosts, tmp_path
 # ---------------------------------------------------------------------------
 
 
-async def test_addition_is_passed_on_to_the_running_familiar(hosts, tmp_path):
+async def test_addition_is_passed_on_to_the_running_task_agent(hosts, tmp_path):
     release, wait = _gate()
     llm = ScriptedLLM(
         [
@@ -1383,7 +1383,7 @@ async def test_a_blocked_commission_is_taken_up_again_where_it_stopped(hosts, tm
     host = _host(hosts, tmp_path, lambda spec: scripts.pop(0))
     receipt = await _dispatch(host, "sort the photos on the camera drive")
     await wait_status(host, receipt.commission_id, "blocked")
-    await wait_until(lambda: host.familiars.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
 
     told = await _dispatch(host, "also the camera drive photos are on E: now")
 
@@ -1401,17 +1401,17 @@ async def test_addition_arriving_while_the_blocked_session_is_still_closing(host
         ScriptedLLM([_report("ready", "sorted after all")]),
     ]
     host = _host(hosts, tmp_path, lambda spec: scripts.pop(0))
-    handle_report = host.familiars._on_report
+    handle_report = host.task_agents._on_report
     told: list[bool] = []
 
     async def tell_at_once(session: Any, event: dict[str, Any]) -> None:
         await handle_report(session, event)
         if event.get("status") == "blocked":
             # Its session is still there: neither ended nor released yet.
-            assert session.commission_id in host.familiars.running
-            told.append(await host.familiars.tell(session.commission_id, "the drive is E: now"))
+            assert session.commission_id in host.task_agents.running
+            told.append(await host.task_agents.tell(session.commission_id, "the drive is E: now"))
 
-    host.familiars._on_report = tell_at_once
+    host.task_agents._on_report = tell_at_once
 
     receipt = await _dispatch(host, "sort the photos on the camera drive")
 
@@ -1432,7 +1432,7 @@ async def test_addition_for_a_queued_commission_goes_along_when_it_starts(hosts,
     def pick(spec: Any) -> ScriptedLLM:
         return next(llm for text, llm in scripts.items() if text in (spec.instructions or ""))
 
-    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    host = _host(hosts, tmp_path, pick, max_task_agents=1)
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "working")
     second = await _dispatch(host, "back up the notes")
@@ -1448,7 +1448,7 @@ async def test_addition_for_a_queued_commission_goes_along_when_it_starts(hosts,
 
 
 # ---------------------------------------------------------------------------
-# Familiars started by familiars
+# Task agents started by task agents
 # ---------------------------------------------------------------------------
 
 
@@ -1482,7 +1482,7 @@ async def test_an_answer_while_a_child_result_keeps_the_parent_busy_waits_for_th
     assert {"role": "user", "content": "by month"} in parent.requests[3]
 
 
-async def test_sub_familiar_runs_under_its_parent_and_reports_back_to_it(hosts, tmp_path):
+async def test_child_task_agent_runs_under_its_parent_and_reports_back_to_it(hosts, tmp_path):
     parent = ScriptedLLM(
         [
             [call("subagent", {"description": "count the files", "prompt": "Count the files in the folder."}), finish("tool_calls")],
@@ -1504,29 +1504,29 @@ async def test_sub_familiar_runs_under_its_parent_and_reports_back_to_it(hosts, 
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "there are 3 files"
     (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
-    assert (sub.source, sub.route, sub.name, sub.status) == ("familiar", "familiar", "agent-1", "done")
+    assert (sub.source, sub.route, sub.name, sub.status) == ("task_agent", "task_agent", "agent-1", "done")
     assert (sub.title, sub.dispatch_text) == ("count the files", "Count the files in the folder.")
     assert sub.lanlan_name == "Lan"
-    # The child got its part as its work and may not start familiars itself.
+    # The child got its part as its work and may not start task agents itself.
     child_spec = next(spec for spec in specs if not spec.top_level)
     assert child_spec.disabled_tools == ["subagent"]
     assert child.requests[0][-1]["content"] == "Count the files in the folder."
     assert "subagent" not in [tool["function"]["name"] for tool in child.overrides[0].get("tools", [])]
     # Its result came back to the parent as a message, and the parent listed it.
-    assert "[sub-familiar agent-1 finished: completed]\n3 files" in json.dumps(parent.requests[2], ensure_ascii=False).replace("\\n", "\n")
+    assert "[child task agent agent-1 finished: completed]\n3 files" in json.dumps(parent.requests[2], ensure_ascii=False).replace("\\n", "\n")
     listing = next(message["content"] for message in parent.requests[2] if message.get("role") == "tool" and "lead" in str(message.get("content")))
     assert listing.startswith("lead [working]")
     assert "agent-1 [" in listing
     # Only the commission she gave is reported to her.
     reports = await outbox(host, "task_result")
     assert [report.payload["task_id"] for report in reports] == [receipt.commission_id]
-    # And a query lists her commission, not its sub-familiar.
+    # And a query lists her commission, not its child task agent.
     view = await host.query("", lanlan_name="Lan", lang="en")
     assert [item.id for item in view.commissions] == [receipt.commission_id]
 
 
 @pytest.mark.parametrize("where", ["outside", "inside"])
-async def test_sub_familiar_works_inside_its_parents_folder(hosts, tmp_path, where):
+async def test_child_task_agent_works_inside_its_parents_folder(hosts, tmp_path, where):
     outside = tmp_path / "elsewhere"
     cwd = str(outside) if where == "outside" else "part"
     parent = ScriptedLLM(
@@ -1553,7 +1553,7 @@ async def test_sub_familiar_works_inside_its_parents_folder(hosts, tmp_path, whe
         assert Path(sub.workdir).is_dir()
 
 
-async def test_sub_familiars_count_towards_the_limit(hosts, tmp_path):
+async def test_child_task_agents_count_towards_the_limit(hosts, tmp_path):
     parent = ScriptedLLM(
         [
             [call("subagent", {"description": "part one", "prompt": "Do part one."}), finish("tool_calls")],
@@ -1561,7 +1561,7 @@ async def test_sub_familiars_count_towards_the_limit(hosts, tmp_path):
         ]
     )
     child = ScriptedLLM([[say("part one done"), finish()]])
-    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child, max_familiars=1)
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child, max_task_agents=1)
 
     receipt = await _dispatch(host, "do the work in two parts")
     await wait_status(host, receipt.commission_id, "done")
@@ -1570,13 +1570,13 @@ async def test_sub_familiars_count_towards_the_limit(hosts, tmp_path):
     # a place its parent keeps while waiting for the child, so it is refused
     # and the parent is told to do that part itself.
     (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
-    assert (sub.status, sub.status_reason) == ("failed", "no familiar place was free")
-    assert host.familiars.queued == []
+    assert (sub.status, sub.status_reason) == ("failed", "no task agent place was free")
+    assert host.task_agents.queued == []
     assert child.requests == []
     assert any("do this part yourself" in str(message.get("content")) for message in parent.requests[1])
 
 
-async def test_no_sub_familiar_starts_for_a_parent_stopped_meanwhile(hosts, tmp_path, monkeypatch):
+async def test_no_child_task_agent_starts_for_a_parent_stopped_meanwhile(hosts, tmp_path, monkeypatch):
     parent = ScriptedLLM(
         [
             [call("subagent", {"description": "part one", "prompt": "Do part one."}), finish("tool_calls")],
@@ -1585,7 +1585,7 @@ async def test_no_sub_familiar_starts_for_a_parent_stopped_meanwhile(hosts, tmp_
     )
     child = ScriptedLLM([[say("part one done"), finish()]])
     host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
-    real_workdir = host.familiars._child_workdir
+    real_workdir = host.task_agents._child_workdir
 
     async def stopped_meanwhile(parent_commission: Any, cwd: Any) -> Any:
         # The parent is stopped while the child is being prepared, before
@@ -1594,14 +1594,14 @@ async def test_no_sub_familiar_starts_for_a_parent_stopped_meanwhile(hosts, tmp_
         await host.ledger.transition(parent_commission.id, "cancelled", reason="stopped by the user")
         return await real_workdir(parent_commission, cwd)
 
-    monkeypatch.setattr(host.familiars, "_child_workdir", stopped_meanwhile)
+    monkeypatch.setattr(host.task_agents, "_child_workdir", stopped_meanwhile)
     receipt = await _dispatch(host, "do the work in two parts")
-    await wait_until(lambda: _children(host, receipt.commission_id), what="the sub-familiar being filed")
+    await wait_until(lambda: _children(host, receipt.commission_id), what="the child task agent being filed")
     # The callback that filed it goes on to check the parent; it is not one of
     # the events ``settle`` waits for.
-    await wait_until(lambda: _child_status(host, receipt.commission_id, "cancelled"), what="the sub-familiar being stopped")
+    await wait_until(lambda: _child_status(host, receipt.commission_id, "cancelled"), what="the child task agent being stopped")
     await host.brain.settle()
-    await host.familiars.settle()
+    await host.task_agents.settle()
 
     (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
     assert (sub.status, sub.status_reason) == ("cancelled", "its parent was stopped")
@@ -1617,7 +1617,7 @@ async def _children(host: Any, commission_id: str) -> bool:
     return bool(await host.ledger.select(parent_id=commission_id))
 
 
-async def test_stopping_a_commission_stops_its_sub_familiars(hosts, tmp_path):
+async def test_stopping_a_commission_stops_its_child_task_agents(hosts, tmp_path):
     release, wait = _gate()
     parent = ScriptedLLM(
         [
@@ -1629,7 +1629,7 @@ async def test_stopping_a_commission_stops_its_sub_familiars(hosts, tmp_path):
     child = ScriptedLLM([[wait, say("part one done"), finish()]])
     host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
     receipt = await _dispatch(host, "do the work in two parts")
-    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the sub-familiar working")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the child task agent working")
     (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
 
     await host.abort(receipt.commission_id)
@@ -1637,7 +1637,7 @@ async def test_stopping_a_commission_stops_its_sub_familiars(hosts, tmp_path):
     # Stopped together with its parent, by the time the stop returns.
     stopped = await host.ledger.get(sub.id)
     assert (stopped.status, stopped.status_reason) == ("cancelled", "its parent was stopped")
-    await wait_until(lambda: host.familiars.running == [], what="both sessions being closed")
+    await wait_until(lambda: host.task_agents.running == [], what="both sessions being closed")
     release.set()
     await host.brain.settle()
 
@@ -1645,12 +1645,12 @@ async def test_stopping_a_commission_stops_its_sub_familiars(hosts, tmp_path):
     assert (await host.ledger.get(sub.id)).status == "cancelled"
 
 
-async def test_parent_is_not_done_while_a_familiar_it_started_still_works(hosts, tmp_path):
+async def test_parent_is_not_done_while_a_task_agent_it_started_still_works(hosts, tmp_path):
     release, wait = _gate()
     parent = ScriptedLLM(
         [
             [call("subagent", {"description": "count the files", "prompt": "Count the files."}), finish("tool_calls")],
-            # It ends its turn without waiting for the familiar it started.
+            # It ends its turn without waiting for the task agent it started.
             [say("Counting has started."), finish()],
             _report("ready", "there are 3 files"),
         ]
@@ -1660,19 +1660,19 @@ async def test_parent_is_not_done_while_a_familiar_it_started_still_works(hosts,
 
     receipt = await _dispatch(host, "tell me how many files are in the folder")
     await wait_until(lambda: len(parent.requests) == 2, what="the parent's second request")
-    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the sub-familiar working")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the child task agent working")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the parent's run ending")
 
     # Its run is over, yet the commission is not: the result is still to come.
     assert (await host.ledger.get(receipt.commission_id)).status == "working"
-    assert receipt.commission_id in host.familiars.running
+    assert receipt.commission_id in host.task_agents.running
     assert await outbox(host, "task_result") == []
 
     release.set()
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "there are 3 files"
-    # The familiar's result woke it up again.
-    assert any("[sub-familiar agent-1 finished: completed]" in str(message.get("content")) for message in parent.requests[2])
+    # The task agent's result woke it up again.
+    assert any("[child task agent agent-1 finished: completed]" in str(message.get("content")) for message in parent.requests[2])
 
 
 async def test_a_result_takes_up_again_a_parent_whose_idle_session_was_closed(hosts, tmp_path):
@@ -1688,12 +1688,12 @@ async def test_a_result_takes_up_again_a_parent_whose_idle_session_was_closed(ho
     host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
 
     receipt = await _dispatch(host, "tell me how many files are in the folder")
-    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the sub-familiar working")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the child task agent working")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the parent's run ending")
-    # Idle while its familiar works, the parent's session is closed as an
+    # Idle while its task agent works, the parent's session is closed as an
     # idle runtime closes idle sessions.
-    await host.familiars._runtime.close(receipt.commission_id)
-    await wait_until(lambda: receipt.commission_id not in host.familiars.running, what="the parent released")
+    await host.task_agents._runtime.close(receipt.commission_id)
+    await wait_until(lambda: receipt.commission_id not in host.task_agents.running, what="the parent released")
     assert (await host.ledger.get(receipt.commission_id)).status == "working"
 
     release.set()
@@ -1703,7 +1703,7 @@ async def test_a_result_takes_up_again_a_parent_whose_idle_session_was_closed(ho
     # Taken up again where its transcript ends, with the result as its next work.
     resumed = json.dumps(parent.requests[2], ensure_ascii=False)
     assert "Counting has started." in resumed
-    assert "[sub-familiar agent-1 finished: completed]" in resumed
+    assert "[child task agent agent-1 finished: completed]" in resumed
     (_first, again) = await _events(host, receipt.commission_id, "started")
     assert again.payload["resumed"] is True
 
@@ -1719,12 +1719,12 @@ async def test_shutting_down_ends_a_parent_whose_idle_session_was_closed(hosts, 
     child = ScriptedLLM([[wait, say("3 files"), finish()]])
     host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
     receipt = await _dispatch(host, "tell me how many files are in the folder")
-    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the sub-familiar working")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the child task agent working")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the parent's run ending")
-    await host.familiars._runtime.close(receipt.commission_id)
-    await wait_until(lambda: receipt.commission_id not in host.familiars.running, what="the parent released")
+    await host.task_agents._runtime.close(receipt.commission_id)
+    await wait_until(lambda: receipt.commission_id not in host.task_agents.running, what="the parent released")
 
-    await host.familiars.shutdown()
+    await host.task_agents.shutdown()
     release.set()
 
     # Under way and this host's, though it held no session: it ends with the rest.
@@ -1744,9 +1744,9 @@ async def test_a_result_for_a_parent_back_at_work_while_it_was_looked_up_is_stee
     child = ScriptedLLM([[wait, say("3 files"), finish()]])
     host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
     receipt = await _dispatch(host, "tell me how many files are in the folder")
-    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the sub-familiar working")
+    await wait_until(lambda: _child_working(host, receipt.commission_id), what="the child task agent working")
     await wait_until(lambda: _ended(host, receipt.commission_id), what="the parent's run ending")
-    runtime = host.familiars._runtime
+    runtime = host.task_agents._runtime
     steered: list[str] = []
     steer = runtime.steer
 
@@ -1757,10 +1757,10 @@ async def test_a_result_for_a_parent_back_at_work_while_it_was_looked_up_is_stee
     runtime.steer = record
 
     # As when the result found no session, and the parent came back while the ledger was read.
-    await host.familiars._wake_closed_parent(receipt.commission_id, "[an earlier result]")
+    await host.task_agents._wake_closed_parent(receipt.commission_id, "[an earlier result]")
 
     assert steered == ["[an earlier result]"]
-    assert host.familiars._notes.get(receipt.commission_id) in (None, [])
+    assert host.task_agents._notes.get(receipt.commission_id) in (None, [])
     release.set()
 
 
@@ -1800,7 +1800,7 @@ async def test_a_parent_woken_by_a_result_is_not_ended_by_its_earlier_run(hosts,
     )
     child = ScriptedLLM([[say("3 files"), finish()]])
     host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
-    handle = host.familiars._handle
+    handle = host.task_agents._handle
 
     async def parent_ends_meanwhile(event: dict[str, Any]) -> None:
         if event.get("type") == "ended" and event.get("reason") == "completed":
@@ -1808,12 +1808,12 @@ async def test_a_parent_woken_by_a_result_is_not_ended_by_its_earlier_run(hosts,
             if commission is not None and commission.parent_id is not None:
                 # The child's result is handled only once the parent's run
                 # has ended too, so that run's "ended" waits behind it.
-                lead = host.familiars._runtime.core._sessions[commission.parent_id]
+                lead = host.task_agents._runtime.core._sessions[commission.parent_id]
                 release.set()
                 await wait_until(lambda: not lead.running, what="the parent's run ending")
         await handle(event)
 
-    host.familiars._handle = parent_ends_meanwhile
+    host.task_agents._handle = parent_ends_meanwhile
 
     receipt = await _dispatch(host, "tell me how many files are in the folder")
 
@@ -1821,19 +1821,19 @@ async def test_a_parent_woken_by_a_result_is_not_ended_by_its_earlier_run(hosts,
     # The result is that of the run the child's result started.
     assert done.result_summary == "there are 3 files"
     assert len(parent.requests) == 3
-    assert any("[sub-familiar agent-1 finished: completed]" in str(message.get("content")) for message in parent.requests[2])
+    assert any("[child task agent agent-1 finished: completed]" in str(message.get("content")) for message in parent.requests[2])
 
 
 async def _blocked_with_closing_session(host: Any, text: str) -> Any:
     """A blocked commission whose old session is still on its way out."""
-    from nekoclaw.host.familiars import _Session
+    from nekoclaw.host.task_agents import _Session
 
     commission = await _filed(host, text)
     await host.ledger.transition(commission.id, "working", reason="test")
     await host.ledger.transition(commission.id, "blocked", reason="test")
     session = _Session(commission.id)
     session.closing = True
-    host.familiars._sessions[commission.id] = session
+    host.task_agents._sessions[commission.id] = session
     return commission
 
 
@@ -1847,24 +1847,24 @@ async def test_a_retry_whose_old_session_closes_meanwhile_still_starts(hosts, tm
         if status == "queued":
             # The old session's "closed" arrives while the status is written:
             # the place comes free while the queue is still empty.
-            await host.familiars._release(commission_id)
+            await host.task_agents._release(commission_id)
         return await real_transition(commission_id, status, **kwargs)
 
     monkeypatch.setattr(host.ledger, "transition", closing_meanwhile)
-    host.familiars._candidates[commission.id] = ("weather",)
-    start = host.familiars._start
+    host.task_agents._candidates[commission.id] = ("weather",)
+    start = host.task_agents._start
     candidates_at_start: list[Any] = []
 
     async def recording_start(commission_id: str, **kwargs: Any) -> bool:
-        candidates_at_start.append(host.familiars._candidates.get(commission_id))
+        candidates_at_start.append(host.task_agents._candidates.get(commission_id))
         return await start(commission_id, **kwargs)
 
-    monkeypatch.setattr(host.familiars, "_start", recording_start)
+    monkeypatch.setattr(host.task_agents, "_start", recording_start)
 
-    assert await host.familiars.tell(commission.id, "the drive is E: now") is True
+    assert await host.task_agents.tell(commission.id, "the drive is E: now") is True
 
     await wait_status(host, commission.id, "done", timeout=5)
-    assert host.familiars.queued == []
+    assert host.task_agents.queued == []
     # Its candidate plugins went along with the retry.
     assert candidates_at_start == [("weather",)]
 
@@ -1880,18 +1880,18 @@ async def test_a_retry_queued_while_shutting_down_is_failed_not_left_queued(host
         if status == "queued" and not shutting:
             # Shutting down starts while the status is written and empties
             # the queue before the retry is in it.
-            shutting.append(asyncio.ensure_future(host.familiars.shutdown()))
-            await wait_until(lambda: host.familiars._closed, what="shutting down starting")
+            shutting.append(asyncio.ensure_future(host.task_agents.shutdown()))
+            await wait_until(lambda: host.task_agents._closed, what="shutting down starting")
         return await real_transition(commission_id, status, **kwargs)
 
     monkeypatch.setattr(host.ledger, "transition", shut_down_meanwhile)
 
-    assert await host.familiars.tell(commission.id, "the drive is E: now") is False
+    assert await host.task_agents.tell(commission.id, "the drive is E: now") is False
 
     await asyncio.wait_for(shutting[0], 5)
     after = await host.ledger.get(commission.id)
     assert (after.status, after.status_reason) == ("failed", "the host was shut down")
-    assert host.familiars.queued == []
+    assert host.task_agents.queued == []
 
 
 async def test_what_is_said_to_a_queued_retry_survives_its_old_session_closing(hosts, tmp_path):
@@ -1899,11 +1899,11 @@ async def test_what_is_said_to_a_queued_retry_survives_its_old_session_closing(h
     host = _host(hosts, tmp_path, lambda spec: llm)
     commission = await _blocked_with_closing_session(host, "sort the photos")
 
-    assert await host.familiars.tell(commission.id, "the drive is E: now") is True
+    assert await host.task_agents.tell(commission.id, "the drive is E: now") is True
     assert (await host.ledger.get(commission.id)).status == "queued"
-    assert await host.familiars.tell(commission.id, "and skip the screenshots") is True
+    assert await host.task_agents.tell(commission.id, "and skip the screenshots") is True
     # Now the old session is gone and the retry takes its place.
-    await host.familiars._release(commission.id)
+    await host.task_agents._release(commission.id)
 
     await wait_status(host, commission.id, "done", timeout=5)
     sent = "\n".join(str(message.get("content")) for message in llm.requests[0])
@@ -1921,7 +1921,7 @@ async def test_a_retry_waiting_for_a_place_can_be_stopped(hosts, tmp_path):
     def pick(spec: Any) -> ScriptedLLM:
         return next(llm for text, llm in scripts.items() if text in (spec.instructions or ""))
 
-    host = _host(hosts, tmp_path, pick, max_familiars=1)
+    host = _host(hosts, tmp_path, pick, max_task_agents=1)
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "working")
     second = await _filed(host, "back up the notes")
@@ -1929,9 +1929,9 @@ async def test_a_retry_waiting_for_a_place_can_be_stopped(hosts, tmp_path):
     await host.ledger.transition(second.id, "failed", reason="test")
 
     # No place is free: the retry waits, and says so.
-    assert await host.familiars.tell(second.id, "try drive E: this time") is True
+    assert await host.task_agents.tell(second.id, "try drive E: this time") is True
     assert (await host.ledger.get(second.id)).status == "queued"
-    assert host.familiars.queued == [second.id]
+    assert host.task_agents.queued == [second.id]
 
     stopped = await host.abort(second.id)
     assert stopped is not None and stopped.status == "cancelled"
@@ -1951,7 +1951,7 @@ async def _child_working(host: Any, commission_id: str) -> bool:
     return bool(children) and children[0].status == "working"
 
 
-async def test_a_familiar_being_started_outlives_whoever_handed_it_over(tmp_path, hosts):
+async def test_a_task_agent_being_started_outlives_whoever_handed_it_over(tmp_path, hosts):
     llm = ScriptedLLM([_report("ready", "sorted")])
     inner = scripted_runtime(lambda spec: llm)
     may_start = asyncio.Event()
@@ -1971,7 +1971,7 @@ async def test_a_familiar_being_started_outlives_whoever_handed_it_over(tmp_path
         def __getattr__(self, name: str) -> Any:
             return getattr(self._runtime, name)
 
-    host = make_host(tmp_path, None, familiar_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=SlowStart)
+    host = make_host(tmp_path, None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=SlowStart)
     hosts.append(host)
     receipt = await _dispatch(host, "sort the photos")
     await asyncio.wait_for(starting.wait(), 5)
@@ -1980,7 +1980,7 @@ async def test_a_familiar_being_started_outlives_whoever_handed_it_over(tmp_path
     # the session is still coming up.
     host.brain._work[receipt.commission_id].cancel()
     await asyncio.sleep(0.05)
-    assert host.familiars.running == [receipt.commission_id]
+    assert host.task_agents.running == [receipt.commission_id]
     may_start.set()
 
     # The session is neither lost nor left half set up: the work gets done.
@@ -1989,7 +1989,7 @@ async def test_a_familiar_being_started_outlives_whoever_handed_it_over(tmp_path
 
 
 async def test_a_start_shutdown_gives_up_on_leaves_no_commission_working(tmp_path, hosts, monkeypatch):
-    from nekoclaw.host import familiars as familiars_module
+    from nekoclaw.host import task_agents as task_agents_module
 
     inner = scripted_runtime(lambda spec: ScriptedLLM([_report("ready", "sorted")]))
     starting = asyncio.Event()
@@ -2007,15 +2007,15 @@ async def test_a_start_shutdown_gives_up_on_leaves_no_commission_working(tmp_pat
         def __getattr__(self, name: str) -> Any:
             return getattr(self._runtime, name)
 
-    monkeypatch.setattr(familiars_module, "_SHUTDOWN_START_WAIT_SECONDS", 0.2)
-    host = make_host(tmp_path, None, familiar_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=NeverStarts)
+    monkeypatch.setattr(task_agents_module, "_SHUTDOWN_START_WAIT_SECONDS", 0.2)
+    host = make_host(tmp_path, None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=NeverStarts)
     hosts.append(host)
     receipt = await _dispatch(host, "sort the photos")
     await asyncio.wait_for(starting.wait(), 5)
     # Recorded as working before the runtime was asked to start the session.
     assert (await host.ledger.get(receipt.commission_id)).status == "working"
 
-    await host.familiars.shutdown()
+    await host.task_agents.shutdown()
 
     failed = await host.ledger.get(receipt.commission_id)
     assert (failed.status, failed.status_reason) == ("failed", "the host was shut down")
@@ -2046,26 +2046,26 @@ async def test_starting_a_queued_commission_does_not_hold_up_runtime_events(tmp_
     host = make_host(
         tmp_path,
         None,
-        familiar_model=fake_model,
+        task_agent_model=fake_model,
         decision_llm=FakeDecisionLLM(),
         runtime_factory=SlowSecondStart,
-        max_familiars=1,
+        max_task_agents=1,
     )
     hosts.append(host)
     first = await _filed(host, "sort the photos")
     second = await _filed(host, "back up the notes")
-    await host.familiars.submit(first)
-    await host.familiars.submit(second)
-    assert host.familiars.queued == [second.id]
+    await host.task_agents.submit(first)
+    await host.task_agents.submit(second)
+    assert host.task_agents.queued == [second.id]
 
     # The first one ends; its place goes to the second, whose session is slow to come up.
     await asyncio.wait_for(second_starting.wait(), 5)
 
     # Meanwhile the events that arrived are still handled.
-    await asyncio.wait_for(host.familiars.settle(), 2)
+    await asyncio.wait_for(host.task_agents.settle(), 2)
     assert (await host.ledger.get(first.id)).status == "done"
     # The start is one that shutting down waits for.
-    assert host.familiars._starting
+    assert host.task_agents._starting
 
     may_start.set()
     done = await wait_status(host, second.id, "done")

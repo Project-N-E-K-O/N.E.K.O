@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The capability gateway over its real listener, and a familiar using it.
+"""The capability gateway over its real listener, and a task agent using it.
 
 These tests open a loopback socket, so they run in the serial shard.
 """
@@ -76,7 +76,7 @@ def _weather(server: FakePluginServer, handler: Any = None) -> None:
 
 async def _working_commission(host: Any) -> Any:
     commission, _created = await host.ledger.create(
-        lanlan_name="Lan", title="trip", dispatch_text="plan the trip", user_text="plan my trip", source="dispatch", route="familiar"
+        lanlan_name="Lan", title="trip", dispatch_text="plan the trip", user_text="plan my trip", source="dispatch", route="task_agent"
     )
     await host.ledger.transition(commission.id, "working")
     return commission
@@ -203,22 +203,22 @@ async def test_dropping_a_call_cancels_the_plugin_run(server, hosts, tmp_path):
     calling.cancel()
     await asyncio.gather(calling, return_exceptions=True)
 
-    # The familiar gave up on the call; the run is cancelled on the plugin server.
+    # The task agent gave up on the call; the run is cancelled on the plugin server.
     await wait_until(lambda: server.cancelled == [("weather", run.run_id)], what="the run being cancelled")
 
 
 # ---------------------------------------------------------------------------
-# A familiar using the gateway
+# A task agent using the gateway
 # ---------------------------------------------------------------------------
 
 
-def _familiar_host(hosts: list[Any], tmp_path: Any, server: FakePluginServer, llm: ScriptedLLM, **kwargs: Any) -> Any:
+def _task_agent_host(hosts: list[Any], tmp_path: Any, server: FakePluginServer, llm: ScriptedLLM, **kwargs: Any) -> Any:
     host = make_host(
         tmp_path,
         server,
-        familiar_model=fake_model,
-        # The fine selection hands the task to a familiar.
-        decision_llm=FakeDecisionLLM(fine=[{"route": "familiar", "reason": "several steps"}]),
+        task_agent_model=fake_model,
+        # The fine selection hands the task to a task agent.
+        decision_llm=FakeDecisionLLM(fine=[{"route": "task_agent", "reason": "several steps"}]),
         runtime_factory=scripted_runtime(lambda spec: llm),
         **kwargs,
     )
@@ -226,7 +226,7 @@ def _familiar_host(hosts: list[Any], tmp_path: Any, server: FakePluginServer, ll
     return host
 
 
-async def test_familiar_calls_a_plugin_entry_through_the_gateway(server, hosts, tmp_path):
+async def test_task_agent_calls_a_plugin_entry_through_the_gateway(server, hosts, tmp_path):
     _weather(server)
     server.add_plugin(plugin("lamp", "Controls the desk lamp", [entry("switch", "Turn the lamp on or off")]))
     llm = ScriptedLLM(
@@ -235,7 +235,7 @@ async def test_familiar_calls_a_plugin_entry_through_the_gateway(server, hosts, 
             [call("report", {"status": "ready", "summary": "Lyon is sunny; pack light"}, "c2"), finish("tool_calls")],
         ]
     )
-    host = _familiar_host(hosts, tmp_path, server, llm)
+    host = _task_agent_host(hosts, tmp_path, server, llm)
     assert not host.gateway.started
 
     receipt = await host.dispatch(
@@ -243,7 +243,7 @@ async def test_familiar_calls_a_plugin_entry_through_the_gateway(server, hosts, 
     )
 
     done = await wait_status(host, receipt.commission_id, "done")
-    assert done.route == "familiar"
+    assert done.route == "task_agent"
     assert host.gateway.started
     # Offered next to the built-in tools, by the names the gateway gave them.
     offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
@@ -255,16 +255,16 @@ async def test_familiar_calls_a_plugin_entry_through_the_gateway(server, hosts, 
     assert (request["task_id"], request["plugin_id"], request["entry_id"]) == (receipt.commission_id, "weather", "today")
     assert request["args"]["_ctx"]["latest_user_request"] == "what should I pack for Lyon"
     assert llm.requests[1][-1]["content"] == "sunny in Lyon"
-    # The entry's result went to the familiar only; she gets the familiar's report.
+    # The entry's result went to the task agent only; she gets the task agent's report.
     reports = [item for item in await host.ledger.outbox_pending() if item.kind == "task_result"]
     assert [report.payload["summary"] for report in reports] == ["Lyon is sunny; pack light"]
-    assert reports[0].payload["channel"] == "familiar"
+    assert reports[0].payload["channel"] == "task_agent"
     # The token died with the commission.
-    await wait_until(lambda: host.familiars.running == [], what="the session being released")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
     assert host.gateway._by_commission == {}
 
 
-async def test_stopping_the_commission_cancels_the_run_its_familiar_started(server, hosts, tmp_path):
+async def test_stopping_the_commission_cancels_the_run_its_task_agent_started(server, hosts, tmp_path):
     started = asyncio.Event()
 
     async def slow(args: dict[str, Any]) -> dict[str, Any]:
@@ -274,7 +274,7 @@ async def test_stopping_the_commission_cancels_the_run_its_familiar_started(serv
 
     _weather(server, slow)
     llm = ScriptedLLM([[call("plugin__weather__today", {"city": "Lyon"}), finish("tool_calls")]])
-    host = _familiar_host(hosts, tmp_path, server, llm)
+    host = _task_agent_host(hosts, tmp_path, server, llm)
     receipt = await host.dispatch("check the weather in Lyon and write packing advice", lanlan_name="Lan", lang="en")
     await asyncio.wait_for(started.wait(), 15)
     (run,) = server.runs()
@@ -283,7 +283,7 @@ async def test_stopping_the_commission_cancels_the_run_its_familiar_started(serv
 
     assert (await host.ledger.get(receipt.commission_id)).status == "cancelled"
     assert server.cancelled == [("weather", run.run_id)]
-    await wait_until(lambda: host.familiars.running == [], what="the session being closed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being closed")
 
 
 async def test_mcp_tool_asks_the_user_through_the_commission(server, hosts, tmp_path):
@@ -304,7 +304,7 @@ async def test_mcp_tool_asks_the_user_through_the_commission(server, hosts, tmp_
             [call("report", {"status": "ready", "summary": "found 3 notes"}, "c2"), finish("tool_calls")],
         ]
     )
-    host = _familiar_host(hosts, tmp_path, server, llm)
+    host = _task_agent_host(hosts, tmp_path, server, llm)
 
     receipt = await host.dispatch("look through my notes about Lyon and summarise them", lanlan_name="Lan", lang="en")
 

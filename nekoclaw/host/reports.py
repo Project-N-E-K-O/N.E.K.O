@@ -25,7 +25,7 @@ result reported here has the same ``status``, ``delivery_mode``,
 ``result_kind`` and ``expires_in_s`` the user-plugin channel gives it
 (``tests/unit/nekoclaw/test_contract_plugin_results.py``).
 
-Commissions started by another familiar report to that familiar, not to her,
+Commissions started by another task agent report to that task agent, not to her,
 so nothing is written for them here.
 
 How a commission ended is best stored together with the status change that
@@ -47,7 +47,7 @@ KIND_CORRECTION = "correction"
 KIND_RECEIPT = "receipt"
 
 CHANNEL_PLUGIN = "user_plugin"
-CHANNEL_FAMILIAR = "familiar"
+CHANNEL_TASK_AGENT = "task_agent"
 
 
 class Reporter:
@@ -82,7 +82,7 @@ class Reporter:
         """Build the ``(kind, payload)`` row that reports how a commission ended.
 
         Stores nothing. Returns None for a silent commission and for one
-        started by another familiar, which are not reported to her.
+        started by another task agent, which are not reported to her.
         """
         if commission.parent_id is not None or delivery_mode == "silent":
             return None

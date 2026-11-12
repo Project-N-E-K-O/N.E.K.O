@@ -281,7 +281,7 @@ async def test_a_server_allowed_on_its_own_is_reached_while_mcp_servers_are_deni
     await host.brain.settle()
 
     # A server's own setting comes before the category's, as for the
-    # familiars' calls through the gateway; the rest stay forbidden.
+    # task agents' calls through the gateway; the rest stay forbidden.
     offered = json.dumps(next(messages for tier, messages in llm.calls if tier == "fine"), ensure_ascii=False)
     assert "mcp_github_create_issue" in offered
     assert "mcp_notes_search" not in offered
@@ -398,7 +398,7 @@ async def test_no_capability_after_the_coarse_screen_finds_nothing(server, hosts
 
     receipt = await _dispatch(host, "zzz qqq")
 
-    # The one case that waits for a model: nothing matched and no familiar.
+    # The one case that waits for a model: nothing matched and no task agent.
     assert (receipt.kind, receipt.reason, receipt.model_calls) == ("no_capability", "no_match", 1)
     assert llm.tiers() == ["coarse"]
     assert await host.ledger.select() == []
@@ -533,7 +533,7 @@ async def test_dispatch_text_is_capped_in_tokens_before_it_is_stored(server, hos
 
 async def test_accepted_but_nothing_fits_is_corrected_at_once(server, hosts, tmp_path):
     _weather(server)
-    llm = FakeDecisionLLM(fine=[{"route": "familiar", "reason": "no entry fits"}])
+    llm = FakeDecisionLLM(fine=[{"route": "task_agent", "reason": "no entry fits"}])
     host = _host(hosts, tmp_path, server, llm)
 
     receipt = await _dispatch(host, "把天气预报画成一张海报")
@@ -950,41 +950,41 @@ async def test_stop_without_saying_which_lists_the_candidates(server, hosts, tmp
     assert (await host.ledger.get(one.commission_id)).status == "working"
 
 
-async def test_stop_without_saying_which_leaves_sub_familiars_out(server, hosts, tmp_path):
+async def test_stop_without_saying_which_leaves_child_task_agents_out(server, hosts, tmp_path):
     host = _host(hosts, tmp_path, server, FakeDecisionLLM())
     lead, _created = await host.ledger.create(
         lanlan_name="Lan", title="整理照片", dispatch_text="整理下载文件夹里的照片", user_text="帮我整理照片",
         source="dispatch",
     )
-    await host.ledger.transition(lead.id, "working", route="familiar")
+    await host.ledger.transition(lead.id, "working", route="task_agent")
     children = []
     for number in range(2):
         child, _created = await host.ledger.create(
             lanlan_name="Lan", title=f"子任务{number}", dispatch_text=f"按月份分第{number}批照片",
-            user_text="帮我整理照片", source="familiar", parent_id=lead.id,
+            user_text="帮我整理照片", source="task_agent", parent_id=lead.id,
         )
-        await host.ledger.transition(child.id, "working", route="familiar")
+        await host.ledger.transition(child.id, "working", route="task_agent")
         children.append(child)
 
     receipt = await _dispatch(host, "算了，别弄了")
 
-    # Her familiar started the other two; she only ever dispatched this one.
+    # Her task agent started the other two; she only ever dispatched this one.
     assert (receipt.kind, receipt.commission_id) == ("stopped", lead.id)
     assert (await host.ledger.get(lead.id)).status == "cancelled"
 
 
-async def test_a_new_dispatch_is_not_taken_for_a_repeat_of_a_sub_familiar(server, hosts, tmp_path):
+async def test_a_new_dispatch_is_not_taken_for_a_repeat_of_a_child_task_agent(server, hosts, tmp_path):
     _weather(server)
     host = _host(hosts, tmp_path, server, FakeDecisionLLM(fine=[pick_plugin("weather", "today")]))
     lead, _created = await host.ledger.create(
         lanlan_name="Lan", title="出门准备", dispatch_text="帮他准备出门", user_text="我要出门了", source="dispatch",
     )
-    await host.ledger.transition(lead.id, "working", route="familiar")
+    await host.ledger.transition(lead.id, "working", route="task_agent")
     child, _created = await host.ledger.create(
         lanlan_name="Lan", title="天气", dispatch_text="查一下上海的天气然后汇总",
-        user_text="我要出门了", source="familiar", parent_id=lead.id,
+        user_text="我要出门了", source="task_agent", parent_id=lead.id,
     )
-    await host.ledger.transition(child.id, "working", route="familiar")
+    await host.ledger.transition(child.id, "working", route="task_agent")
 
     receipt = await _dispatch(host, "查一下上海的天气", user_text="我要出门了")
 
@@ -1239,7 +1239,7 @@ async def test_can_it_be_done_agrees_with_the_dispatch_receipt_and_files_nothing
 
     assert (can_weather.can_do, can_weather.model_calls) == (True, 0)
     assert can_weather.text == "能办：有对得上的插件（weather）。"
-    # Nothing matches locally and there is no familiar. A dispatch would let
+    # Nothing matches locally and there is no task agent. A dispatch would let
     # the small model look before saying no; a query asks no model, so it does
     # not say no either.
     assert (unsure.can_do, unsure.reason, unsure.model_calls) == (None, "", 0)
@@ -1268,8 +1268,8 @@ async def test_can_it_be_done_with_nothing_installed_is_a_plain_no(server, hosts
     assert llm.calls == []
 
 
-async def test_can_it_be_done_with_a_familiar_available(server, hosts, tmp_path):
-    host = _host(hosts, tmp_path, server, FakeDecisionLLM(), familiar_model=fake_model)
+async def test_can_it_be_done_with_a_task_agent_available(server, hosts, tmp_path):
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM(), task_agent_model=fake_model)
 
     answer = await host.query("can you tidy my desktop", lanlan_name="Lan", lang="en")
 

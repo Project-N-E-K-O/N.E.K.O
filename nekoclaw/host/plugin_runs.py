@@ -14,7 +14,7 @@
 
 """Calling a plugin entry: the one piece of code every caller goes through.
 
-The task brain calling an entry directly and a familiar calling it through the
+The task brain calling an entry directly and a task agent calling it through the
 capability gateway both end in ``PluginRunner.run_entry``. It sends the existing
 ``POST /runs`` request to the plugin server, polls ``GET /runs/{id}``, reads
 the result from ``GET /runs/{id}/export`` and, when the commission is stopped,

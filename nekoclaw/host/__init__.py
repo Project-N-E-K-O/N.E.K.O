@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The NekoClaw host: everything around the familiar runtime.
+"""The NekoClaw host: everything around the agent runtime.
 
 Design: ``docs/design/nekoclaw-rewrite.md``, sections 4 to 6 and 10; what
 differs from it is listed in section 6.9 there. The host lives in the agent
@@ -36,10 +36,10 @@ Modules:
 * ``task_brain``   - dispatch (two rounds), query, stopping, answers.
 * ``reports``      - what she is told: results, questions, corrections.
   Written to the outbox first; ``outbox`` sends and retries.
-* ``familiars``    - starts and drives familiars; the host side of the
+* ``task_agents``    - starts and drives task agents; the host side of the
   runtime's callbacks.
 * ``gateway``      - the MCP service on the loopback address that hands
-  plugin entries and MCP tools to familiars.
+  plugin entries and MCP tools to task agents.
 * ``paths``        - where the host keeps its files.
 * ``service``      - puts the parts together.
 * ``mount``        - one host per process, built on first use; the agent

@@ -156,7 +156,7 @@ async def test_select_filters_by_owner_status_and_parent(ledger):
     ledger.clock.now += 1
     second = await _file(ledger, title="two", lanlan_name="Other")
     ledger.clock.now += 1
-    child = await _file(ledger, title="child", parent_id=first.id, source="familiar")
+    child = await _file(ledger, title="child", parent_id=first.id, source="task_agent")
     await _walk(ledger, first.id, "done")
 
     assert [item.id for item in await ledger.select()] == [child.id, second.id, first.id]
@@ -239,11 +239,11 @@ async def test_every_pair_of_statuses_follows_the_table(ledger, current, target)
 def test_the_transition_table_is_the_intended_one():
     assert ALLOWED_TRANSITIONS == {
         "queued": {"working", "failed", "cancelled"},
-        # Queued when its idle session was closed and a familiar it started reports back.
+        # Queued when its idle session was closed and a task agent it started reports back.
         "working": {"waiting_user", "queued", "done", "blocked", "failed", "cancelled"},
         # Queued when its closed session's answer finds no free place.
         "waiting_user": {"working", "queued", "failed", "cancelled"},
-        # Taken up again, at once or queued when no familiar place is free.
+        # Taken up again, at once or queued when no task agent place is free.
         "blocked": {"working", "queued", "failed", "cancelled"},
         "failed": {"working", "queued"},
         "done": set(),
@@ -615,21 +615,21 @@ async def test_reporter_writes_the_fields_of_a_task_result_within_their_budgets(
     assert (payload["delivery_mode"], payload["result_kind"], payload["expires_in_s"]) == ("proactive", "task_result", None)
 
 
-async def test_reporter_stores_nothing_for_a_silent_result_or_a_sub_familiar(ledger):
+async def test_reporter_stores_nothing_for_a_silent_result_or_a_child_task_agent(ledger):
     from nekoclaw.host.reports import Reporter
 
     parent = await _file(ledger)
-    child = await _file(ledger, title="part one", parent_id=parent.id, source="familiar")
+    child = await _file(ledger, title="part one", parent_id=parent.id, source="task_agent")
     reporter = Reporter(ledger)
 
     silent = await reporter.task_result(
         parent, channel="user_plugin", success=True, summary="ok", status="completed", delivery_mode="silent"
     )
-    from_child = await reporter.task_result(child, channel="familiar", success=True, summary="ok", status="completed")
+    from_child = await reporter.task_result(child, channel="task_agent", success=True, summary="ok", status="completed")
     correction = await reporter.correction(child, reason="no_capability")
 
     assert (silent, from_child, correction) == (None, None, None)
     assert await ledger.outbox_pending() == []
-    # A question from a sub-familiar still has to reach the user.
+    # A question from a child task agent still has to reach the user.
     assert await reporter.question(child, {"kind": "questions", "questions": []}) is not None
     assert [item.kind for item in await ledger.outbox_pending()] == ["question"]

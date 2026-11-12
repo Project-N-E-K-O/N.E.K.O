@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""What familiars are permitted to do (design section 10.1).
+"""What task agents are permitted to do (design section 10.1).
 
 The settings live in ``<data root>/nekoclaw/permissions.json``. Each category
 has one of four modes:

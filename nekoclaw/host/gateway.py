@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The capability gateway: an MCP service for familiars, on the loopback address.
+"""The capability gateway: an MCP service for task agents, on the loopback address.
 
-Familiars reach everything that is not a built-in tool through here (design
+Task agents reach everything that is not a built-in tool through here (design
 section 10), so a capability is implemented once whichever runtime runs the
-familiar. Each commission gets a token of its own; a request without a known
+task agent. Each commission gets a token of its own; a request without a known
 token is refused, and the token stops working when the commission ends.
 
 What the gateway serves:
@@ -37,7 +37,7 @@ Permissions are decided here, at the gateway's entry, by the same
 
 Transport: MCP over HTTP POST with JSON answers (``initialize``, ``ping``,
 ``tools/list``, ``tools/call``). The listener is started when the first
-familiar needs it, on a port chosen by the system, and never at startup.
+task agent needs it, on a port chosen by the system, and never at startup.
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ def _definition(capability: Capability) -> dict[str, Any]:
 
 
 class CapabilityGateway:
-    """Serves capabilities to familiars. See the module docstring."""
+    """Serves capabilities to task agents. See the module docstring."""
 
     def __init__(
         self,
@@ -318,7 +318,7 @@ class CapabilityGateway:
         try:
             await asyncio.wait({work, disconnect}, return_when=asyncio.FIRST_COMPLETED)
             if not work.done():
-                # The familiar gave up on this call (its run was stopped):
+                # The task agent gave up on this call (its run was stopped):
                 # stop the work, which also cancels a plugin run under way.
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
@@ -411,7 +411,7 @@ class CapabilityGateway:
         from config.nekoclaw_settings import GATEWAY_TOOL_LIST_MAX_TOKENS
         from utils.tokenize import count_tokens
 
-        callable_now = await self._registry.callable_by_familiars()
+        callable_now = await self._registry.callable_by_task_agents()
         if not callable_now:
             return []
         candidates = set(grant.candidate_plugin_ids)
@@ -443,7 +443,7 @@ class CapabilityGateway:
             inner = arguments.get("arguments")
             name, arguments = target, inner if isinstance(inner, dict) else {}
         capability = next(
-            (item for item in await self._registry.callable_by_familiars() if item.tool_name == name), None
+            (item for item in await self._registry.callable_by_task_agents() if item.tool_name == name), None
         )
         if capability is None:
             return _text(f"no capability named {name}; use {SEARCH_TOOL} to find one", error=True)
@@ -456,7 +456,7 @@ class CapabilityGateway:
         from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS, GATEWAY_SEARCH_RESULTS
         from utils.tokenize import truncate_to_tokens
 
-        capabilities = await self._registry.callable_by_familiars()
+        capabilities = await self._registry.callable_by_task_agents()
         if not capabilities:
             return "No capabilities are available."
         scores = bm25_scores(query, [f"{item.title} {item.description} {item.tool_name}" for item in capabilities])
@@ -519,7 +519,7 @@ class CapabilityGateway:
             return _text(truncate_to_tokens(text or str(outcome.error or "failed"), GATEWAY_RESULT_MAX_TOKENS), error=True)
         if entry is not None and llm_result_fields(entry) is None and outcome.data is not None:
             # The entry does not say which fields a model should read; a
-            # familiar gets the data itself so it can go on working with it.
+            # task agent gets the data itself so it can go on working with it.
             # Without the entry nothing says the data may be shown.
             text = f"{text}\n{json.dumps(outcome.data, ensure_ascii=False, default=str)}"
         if terminal == "blocked":

@@ -278,7 +278,7 @@ def child_main(connection: Any, options: dict[str, Any]) -> None:
 
 
 class SubprocessRuntime:
-    """``FamiliarRuntime`` whose sessions live in a child process."""
+    """``AgentRuntime`` whose sessions live in a child process."""
 
     def __init__(
         self,
@@ -557,7 +557,7 @@ class SubprocessRuntime:
         )
         return False
 
-    async def start(self, spec: protocol.FamiliarSpec) -> None:
+    async def start(self, spec: protocol.TaskAgentSpec) -> None:
         if self._shutdowns:
             # As in the in-process runtime: a session asked for while the
             # runtime is being shut down is refused. (An idle child that is

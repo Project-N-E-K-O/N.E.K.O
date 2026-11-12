@@ -241,7 +241,7 @@ async def test_creating_a_goal_needs_text_from_the_user_in_that_run(tmp_path: Pa
     finally:
         await session.close()
 
-    # Neither does a familiar that another familiar started.
+    # Neither does a task agent that another task agent started.
     llm = ScriptedLLM([[call("create_goal", {"objective": "Child goal"}), finish("tool_calls")], [say("ok"), finish()]])
     session, events = await open_session(make_spec(tmp_path, "s3", top_level=False), llm)
     try:

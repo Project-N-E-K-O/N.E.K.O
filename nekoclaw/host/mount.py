@@ -43,7 +43,7 @@ def configure(**options: Any) -> None:
     """Remember the options ``NekoClawHost`` is built with later.
 
     Accepts the keyword arguments of ``nekoclaw.host.service.NekoClawHost``,
-    typically ``enabled``, ``plugins_enabled``, ``familiars_enabled``,
+    typically ``enabled``, ``plugins_enabled``, ``task_agents_enabled``,
     ``change_token`` and ``send_report``. Calling it again replaces them; a
     host that already exists is not rebuilt.
     """

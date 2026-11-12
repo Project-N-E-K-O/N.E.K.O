@@ -203,7 +203,7 @@ async def test_reporter_moves_and_reports_in_one_step(ledger):
     await ledger.transition(commission.id, "working")
 
     report = reporter.task_result_report(
-        commission, channel="familiar", success=True, summary="done it", status="completed"
+        commission, channel="task_agent", success=True, summary="done it", status="completed"
     )
     moved = await reporter.transition(commission.id, "done", reason="finished", report=report, result_summary="x")
 
@@ -217,12 +217,12 @@ async def test_reporter_moves_and_reports_in_one_step(ledger):
 async def test_reporter_builds_nothing_for_silent_or_child_commissions(ledger):
     reporter = Reporter(ledger)
     commission = await _file(ledger)
-    child = await _file(ledger, source="familiar", parent_id=commission.id)
+    child = await _file(ledger, source="task_agent", parent_id=commission.id)
 
     silent = reporter.task_result_report(
-        commission, channel="familiar", success=True, summary="s", status="completed", delivery_mode="silent"
+        commission, channel="task_agent", success=True, summary="s", status="completed", delivery_mode="silent"
     )
-    for_child = reporter.task_result_report(child, channel="familiar", success=True, summary="s", status="completed")
+    for_child = reporter.task_result_report(child, channel="task_agent", success=True, summary="s", status="completed")
 
     assert silent is None and for_child is None
     await ledger.transition(commission.id, "working")
@@ -236,7 +236,7 @@ async def test_reporter_stores_nothing_when_the_move_is_refused(ledger):
     reporter = Reporter(ledger, sender)  # type: ignore[arg-type]
     commission = await _file(ledger)
     await ledger.transition(commission.id, "cancelled")
-    report = reporter.task_result_report(commission, channel="familiar", success=True, summary="s", status="completed")
+    report = reporter.task_result_report(commission, channel="task_agent", success=True, summary="s", status="completed")
 
     moved = await reporter.transition(commission.id, "done", report=report)
 
@@ -538,24 +538,24 @@ async def test_always_still_turns_the_category_to_allow_when_nothing_changed(tmp
 # ---------------------------------------------------------------------------
 
 
-def _slow_familiars(host: Any) -> tuple[asyncio.Event, asyncio.Event]:
+def _slow_task_agents(host: Any) -> tuple[asyncio.Event, asyncio.Event]:
     entered = asyncio.Event()
     release = asyncio.Event()
-    original = host.familiars.shutdown
+    original = host.task_agents.shutdown
 
     async def slow() -> None:
         entered.set()
         await release.wait()
         await original()
 
-    host.familiars.shutdown = slow
+    host.task_agents.shutdown = slow
     return entered, release
 
 
 async def test_a_cancelled_shutdown_still_finishes_and_a_retry_waits_for_it(tmp_path):
     host = make_host(tmp_path)
     await host.ledger.open()
-    entered, release = _slow_familiars(host)
+    entered, release = _slow_task_agents(host)
 
     first = asyncio.ensure_future(host.shutdown())
     await asyncio.wait_for(entered.wait(), 3.0)
@@ -590,9 +590,9 @@ def _unreachable(**_kwargs: Any) -> Any:
 
 
 async def test_no_second_host_is_built_while_the_first_shuts_down(mount, tmp_path):
-    mount.configure(root=tmp_path / "nekoclaw", familiar_model=no_model, client_factory=_unreachable)
+    mount.configure(root=tmp_path / "nekoclaw", task_agent_model=no_model, client_factory=_unreachable)
     host = mount.get_host()
-    entered, release = _slow_familiars(host)
+    entered, release = _slow_task_agents(host)
 
     closing = asyncio.ensure_future(mount.shutdown_host())
     await asyncio.wait_for(entered.wait(), 3.0)
@@ -612,9 +612,9 @@ async def test_no_second_host_is_built_while_the_first_shuts_down(mount, tmp_pat
 
 
 async def test_a_host_whose_shutdown_finished_in_the_background_is_replaced(mount, tmp_path):
-    mount.configure(root=tmp_path / "nekoclaw", familiar_model=no_model, client_factory=_unreachable)
+    mount.configure(root=tmp_path / "nekoclaw", task_agent_model=no_model, client_factory=_unreachable)
     host = mount.get_host()
-    entered, release = _slow_familiars(host)
+    entered, release = _slow_task_agents(host)
 
     closing = asyncio.ensure_future(mount.shutdown_host())
     await asyncio.wait_for(entered.wait(), 3.0)

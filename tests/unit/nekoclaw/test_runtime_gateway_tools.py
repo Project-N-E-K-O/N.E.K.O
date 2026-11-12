@@ -26,8 +26,8 @@ import pytest
 
 from nekoclaw.runtime.core import InProcessRuntime
 from nekoclaw.runtime.model import LLMClientProvider
-from nekoclaw.runtime.protocol import FamiliarSpec, GatewaySpec
-from nekoclaw.runtime.session import FamiliarSession
+from nekoclaw.runtime.protocol import TaskAgentSpec, GatewaySpec
+from nekoclaw.runtime.session import TaskAgentSession
 from nekoclaw.runtime.tools.gateway import GatewayClient, GatewayError, _last_event_data, build_gateway_tools
 from tests.unit.nekoclaw.fakes import Recorder, ScriptedLLM, call, finish, make_spec, open_session, say
 
@@ -115,7 +115,7 @@ def gateway() -> Any:
     fake.close()
 
 
-def _spec(tmp_path: Path, gateway: FakeGateway, **overrides: Any) -> FamiliarSpec:
+def _spec(tmp_path: Path, gateway: FakeGateway, **overrides: Any) -> TaskAgentSpec:
     return make_spec(tmp_path, gateway=GatewaySpec(url=gateway.url, token=TOKEN), **overrides)
 
 
@@ -325,7 +325,7 @@ async def test_start_fails_when_the_gateway_cannot_be_reached(tmp_path, gateway)
         async def client_factory() -> ScriptedLLM:
             return ScriptedLLM()
 
-        return await FamiliarSession.open(
+        return await TaskAgentSession.open(
             session_spec, host, emit, model=LLMClientProvider(session_spec.model, client_factory=client_factory)
         )
 
@@ -347,11 +347,11 @@ def test_gateway_spec_is_optional_and_strict():
 
     base = {"session_id": "s1", "workdir": "w", "session_dir": "d", "model": {"model": "m"}}
 
-    assert FamiliarSpec(**base).gateway is None
-    spec = FamiliarSpec(**base, gateway={"url": "http://127.0.0.1:1/mcp", "token": "t"})
+    assert TaskAgentSpec(**base).gateway is None
+    spec = TaskAgentSpec(**base, gateway={"url": "http://127.0.0.1:1/mcp", "token": "t"})
     assert spec.gateway.url == "http://127.0.0.1:1/mcp"
     # The token never shows up when a spec is printed.
     assert "token" not in repr(spec.gateway)
     for bad in ({"url": "http://127.0.0.1:1/mcp"}, {"url": "", "token": "t"}, {"url": "u", "token": "t", "extra": 1}):
         with pytest.raises(ValidationError):
-            FamiliarSpec(**base, gateway=bad)
+            TaskAgentSpec(**base, gateway=bad)

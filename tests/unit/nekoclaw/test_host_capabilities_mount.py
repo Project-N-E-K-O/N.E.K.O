@@ -123,11 +123,11 @@ async def test_list_has_plugin_entries_mcp_tools_and_builtin_placeholders(server
         assert listed[name].unavailable_reason
 
 
-async def test_only_what_is_available_is_served_to_familiars(server):
+async def test_only_what_is_available_is_served_to_task_agents(server):
     _mixed(server)
     registry = CapabilityRegistry(PluginCatalog(client_factory=server.client))
 
-    served = [item.id for item in await registry.callable_by_familiars()]
+    served = [item.id for item in await registry.callable_by_task_agents()]
 
     assert served == [
         "plugin:weather:today",
@@ -196,7 +196,7 @@ async def test_tools_registered_for_the_main_dialogue_are_not_entries(server):
     server.add_plugin(plugin("memo", "Memos", [entry("__llm_tool__add", "Add"), entry("list", "List")]))
     registry = CapabilityRegistry(PluginCatalog(client_factory=server.client))
 
-    assert [item.id for item in await registry.callable_by_familiars()] == ["plugin:memo:list"]
+    assert [item.id for item in await registry.callable_by_task_agents()] == ["plugin:memo:list"]
 
 
 def test_passive_plugin_contributes_nothing():
@@ -327,12 +327,12 @@ async def test_failed_fetch_keeps_the_last_list(server):
 async def test_building_the_host_starts_nothing(server, tmp_path):
     before = {thread.ident for thread in threading.enumerate()}
 
-    host = make_host(tmp_path, server, familiar_model=fake_model, decision_llm=FakeDecisionLLM())
+    host = make_host(tmp_path, server, task_agent_model=fake_model, decision_llm=FakeDecisionLLM())
 
     try:
         assert not (tmp_path / "nekoclaw").exists()
         assert not host.ledger.opened
-        assert not host.familiars.runtime_started
+        assert not host.task_agents.runtime_started
         assert not host.gateway.started
         assert server.plugins_requests == 0
         assert {thread.ident for thread in threading.enumerate()} == before

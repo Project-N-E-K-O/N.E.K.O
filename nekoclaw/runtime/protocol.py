@@ -19,7 +19,7 @@ in-process runtime and the subprocess shell.
 
 Commands (``type`` field):
 
-* ``start``      - create a session from a ``FamiliarSpec``.
+* ``start``      - create a session from a ``TaskAgentSpec``.
 * ``prompt``     - hand the session work. Rejected while a run is in progress.
 * ``steer``      - deliver text before the next model request of the current
   run; on an idle session it starts a run.
@@ -124,8 +124,8 @@ class GatewaySpec(_Strict):
     token: str = Field(min_length=1, repr=False)
 
 
-class FamiliarSpec(_Strict):
-    """Everything needed to create one familiar session."""
+class TaskAgentSpec(_Strict):
+    """Everything needed to create one task agent session."""
 
     session_id: str = Field(pattern=SESSION_ID_PATTERN)
     # Directory the tools resolve relative paths against.
@@ -138,13 +138,13 @@ class FamiliarSpec(_Strict):
     instructions: str | None = None
     # Language for text meant for the user, e.g. "Simplified Chinese".
     reply_language: str | None = None
-    # False for a familiar started by another familiar: such a session cannot
+    # False for a task agent started by another task agent: such a session cannot
     # manage goals on the strength of the messages it receives.
     top_level: bool = True
     goal: GoalSpec | None = None
     limits: RuntimeLimits = Field(default_factory=RuntimeLimits)
-    # Tools withheld from this session's model, e.g. ["subagent"] for a familiar
-    # that may not start further familiars.
+    # Tools withheld from this session's model, e.g. ["subagent"] for a task agent
+    # that may not start further task agents.
     disabled_tools: list[str] = Field(default_factory=list)
     # Tool name -> how many of its most recent image results stay in context.
     image_retention: dict[str, int] = Field(default_factory=dict)
@@ -160,7 +160,7 @@ class FamiliarSpec(_Strict):
 
 class StartCommand(_Strict):
     type: Literal["start"] = "start"
-    spec: FamiliarSpec
+    spec: TaskAgentSpec
 
 
 class PromptCommand(_Strict):

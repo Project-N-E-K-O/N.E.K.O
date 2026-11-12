@@ -1,4 +1,4 @@
-"""Locks the system prompt and the tool definitions a familiar's model receives.
+"""Locks the system prompt and the tool definitions a task agent's model receives.
 
 The wording comes from dsh, where it was tuned against benchmarks, so a change
 must be deliberate. When one is intended, regenerate the expected files with::
@@ -186,4 +186,4 @@ def test_dsh_paragraph_variants_follow_the_offered_tools() -> None:
     assert "Use read on a matched file" in prompt("grep", "read")
     assert "Use the returned source snippets when available" in prompt("web_search")
     assert "Follow up with web_fetch" in prompt("web_search", "web_fetch")
-    assert texts.FAMILIAR_IDENTITY in prompt()
+    assert texts.TASK_AGENT_IDENTITY in prompt()

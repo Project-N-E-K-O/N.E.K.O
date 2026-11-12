@@ -37,7 +37,7 @@ class FakeDecisionLLM:
         self.coarse = list(coarse or [])
         # Each item is a dict (dumped as JSON), a string (sent as is) or an
         # exception (raised). The last one repeats.
-        self.fine = list(fine or [{"route": "familiar"}])
+        self.fine = list(fine or [{"route": "task_agent"}])
         self.calls: list[tuple[str, list[dict[str, Any]]]] = []
         self.gate: asyncio.Event | None = None
 
@@ -86,7 +86,7 @@ def scripted_runtime(pick: Callable[[Any], ScriptedLLM]) -> Callable[[Any, Any],
     def factory(on_event: Any, host: Any) -> Any:
         from nekoclaw.runtime.core import InProcessRuntime
         from nekoclaw.runtime.model import LLMClientProvider
-        from nekoclaw.runtime.session import FamiliarSession
+        from nekoclaw.runtime.session import TaskAgentSession
 
         async def opener(spec: Any, host_bridge: Any, emit: Any) -> Any:
             llm = pick(spec)
@@ -95,7 +95,7 @@ def scripted_runtime(pick: Callable[[Any], ScriptedLLM]) -> Callable[[Any, Any],
                 return llm
 
             provider = LLMClientProvider(spec.model, client_factory=client_factory)
-            return await FamiliarSession.open(spec, host_bridge, emit, model=provider)
+            return await TaskAgentSession.open(spec, host_bridge, emit, model=provider)
 
         runtime = InProcessRuntime(on_event, host, open_session=opener)
         created.append(runtime)
@@ -110,7 +110,7 @@ def make_host(tmp_path: Path, server: Any = None, **kwargs: Any) -> Any:
     from nekoclaw.host.service import NekoClawHost
 
     kwargs.setdefault("root", tmp_path / "nekoclaw")
-    kwargs.setdefault("familiar_model", no_model)
+    kwargs.setdefault("task_agent_model", no_model)
     if server is not None:
         kwargs.setdefault("client_factory", server.client)
     else:

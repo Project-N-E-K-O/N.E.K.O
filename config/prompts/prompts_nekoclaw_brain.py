@@ -16,7 +16,7 @@
 
 * ``TASK_BRAIN_SELECT_PROMPT``: the fine selection of the decision model. It
   takes over the plugin rules of ``USER_PLUGIN_SYSTEM_PROMPT``
-  (``prompts_agent.py``) and adds the hand-over to a familiar, which the same
+  (``prompts_agent.py``) and adds the hand-over to a task agent, which the same
   request decides. The coarse screen keeps using
   ``USER_PLUGIN_COARSE_SCREEN_PROMPT`` unchanged.
 * Receipts and query answers: short lines returned to the main dialogue model
@@ -41,13 +41,13 @@ TASK_BRAIN_SELECT_PROMPT = {
 指令：
 1. 判断上面某个插件入口调用一次能否办完 TASK。插件优先。
 2. 能：返回 route="plugin"，以及 plugin_id、entry_id 和匹配入口 schema 的 plugin_args。
-3. 没有合适的入口，或这件事要多步、要多个工具：返回 route="familiar"。不要勉强选一个只对得上一半的插件。
+3. 没有合适的入口，或这件事要多步、要多个工具：返回 route="task_agent"。不要勉强选一个只对得上一半的插件。
 4. TASK 和 ACTIVE_TASKS 里某一行是同一件事：返回 route="duplicate"，duplicate_of 填那一行的序号。
 5. 输出必须只是一个 JSON 对象，不含解释性文字、markdown 或代码块。
 
 输出格式（严格 JSON）：
 {{
-    "route": "plugin" | "familiar" | "duplicate",
+    "route": "plugin" | "task_agent" | "duplicate",
     "task_description": "简要描述",
     "plugin_id": "插件 id 或 null",
     "entry_id": "插件内的入口 id 或 null",
@@ -58,7 +58,7 @@ TASK_BRAIN_SELECT_PROMPT = {
 }}
 
 非常重要：
-- 严格匹配：plugin_id 和 entry_id 是代码标识符，必须从上面的列表中原样复制（区分大小写、逐字符匹配），不要发明、缩写或改写。找不到完全匹配就用 route="familiar"。
+- 严格匹配：plugin_id 和 entry_id 是代码标识符，必须从上面的列表中原样复制（区分大小写、逐字符匹配），不要发明、缩写或改写。找不到完全匹配就用 route="task_agent"。
 - route="plugin" 时 entry_id 必填。
 - 入口有 args(...) 信息时，plugin_args 用那些字段名，只包含 schema 中列出的字段。
 - 入口 schema 需要用户文本字段（例如 command/message/query/objective）时，必须复制 USER_SAID 原文；不要翻译、摘要、改写或补全。
@@ -74,13 +74,13 @@ TASK_BRAIN_SELECT_PROMPT = {
 指令：
 1. 判斷上面某個外掛入口呼叫一次能不能辦完 TASK。外掛優先。
 2. 能：回傳 route="plugin"，以及 plugin_id、entry_id 和符合入口 schema 的 plugin_args。
-3. 沒有合適的入口，或這件事要多步、要多個工具：回傳 route="familiar"。不要勉強選一個只對得上一半的外掛。
+3. 沒有合適的入口，或這件事要多步、要多個工具：回傳 route="task_agent"。不要勉強選一個只對得上一半的外掛。
 4. TASK 和 ACTIVE_TASKS 裡某一行是同一件事：回傳 route="duplicate"，duplicate_of 填那一行的序號。
 5. 輸出必須只有一個 JSON 物件，不含解釋性文字、markdown 或程式碼區塊。
 
 輸出格式（嚴格 JSON）：
 {{
-    "route": "plugin" | "familiar" | "duplicate",
+    "route": "plugin" | "task_agent" | "duplicate",
     "task_description": "簡要描述",
     "plugin_id": "外掛 id 或 null",
     "entry_id": "外掛裡的入口 id 或 null",
@@ -91,7 +91,7 @@ TASK_BRAIN_SELECT_PROMPT = {
 }}
 
 非常重要：
-- 嚴格比對：plugin_id 和 entry_id 是程式識別碼，必須從上面的清單原樣複製（區分大小寫、逐字元比對），不要發明、縮寫或改寫。找不到完全相符的就用 route="familiar"。
+- 嚴格比對：plugin_id 和 entry_id 是程式識別碼，必須從上面的清單原樣複製（區分大小寫、逐字元比對），不要發明、縮寫或改寫。找不到完全相符的就用 route="task_agent"。
 - route="plugin" 時 entry_id 必填。
 - 入口有 args(...) 資訊時，plugin_args 用那些欄位名，只包含 schema 裡列出的欄位。
 - 入口 schema 需要使用者文字欄位（例如 command/message/query/objective）時，必須照抄 USER_SAID 原文；不要翻譯、摘要、改寫或補齊。
@@ -107,13 +107,13 @@ The user message gives TASK (what has to get done) and USER_SAID (the user's own
 INSTRUCTIONS:
 1. Decide whether ONE call to ONE plugin entry above gets TASK done. Plugins come first.
 2. If yes: return route="plugin" with plugin_id, entry_id and plugin_args matching the entry's schema.
-3. If no entry fits, or the task needs several steps or several tools: return route="familiar". Do NOT force a plugin that only half fits.
+3. If no entry fits, or the task needs several steps or several tools: return route="task_agent". Do NOT force a plugin that only half fits.
 4. If TASK is the same task as a line of ACTIVE_TASKS: return route="duplicate" and that line's number in duplicate_of.
 5. OUTPUT MUST BE ONLY a single JSON object. No explanatory text, markdown or code fences.
 
 OUTPUT FORMAT (strict JSON):
 {{
-    "route": "plugin" | "familiar" | "duplicate",
+    "route": "plugin" | "task_agent" | "duplicate",
     "task_description": "brief description",
     "plugin_id": "plugin id or null",
     "entry_id": "entry id inside that plugin or null",
@@ -124,7 +124,7 @@ OUTPUT FORMAT (strict JSON):
 }}
 
 VERY IMPORTANT:
-- STRICT MATCHING: plugin_id and entry_id are code identifiers. Copy them EXACTLY (case-sensitive, character-for-character) from the list above. Do NOT invent, abbreviate or rephrase them. If no exact match exists, use route="familiar".
+- STRICT MATCHING: plugin_id and entry_id are code identifiers. Copy them EXACTLY (case-sensitive, character-for-character) from the list above. Do NOT invent, abbreviate or rephrase them. If no exact match exists, use route="task_agent".
 - route="plugin" requires entry_id.
 - If the entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
 - When the entry schema needs a user-text field (e.g. command/message/query/objective), copy USER_SAID verbatim; do not translate, summarize, rewrite or complete it.
@@ -140,13 +140,13 @@ Return only the JSON object, nothing else.""",
 指示：
 1. 上のプラグインエントリのどれか 1 つを 1 回呼ぶだけで TASK が片付くか判断します。プラグイン優先です。
 2. 片付く場合：route="plugin" と、plugin_id、entry_id、エントリの schema に合う plugin_args を返します。
-3. 合うエントリがない、または複数の手順や複数のツールが必要な場合：route="familiar" を返します。半分しか合わないプラグインを無理に選ばないでください。
+3. 合うエントリがない、または複数の手順や複数のツールが必要な場合：route="task_agent" を返します。半分しか合わないプラグインを無理に選ばないでください。
 4. TASK が ACTIVE_TASKS のある行と同じ用件の場合：route="duplicate" を返し、duplicate_of にその行の番号を入れます。
 5. 出力は JSON オブジェクト 1 つだけにします。説明文、markdown、コードブロックは付けません。
 
 出力形式（厳密な JSON）：
 {{
-    "route": "plugin" | "familiar" | "duplicate",
+    "route": "plugin" | "task_agent" | "duplicate",
     "task_description": "簡潔な説明",
     "plugin_id": "プラグイン id または null",
     "entry_id": "プラグイン内のエントリ id または null",
@@ -157,7 +157,7 @@ Return only the JSON object, nothing else.""",
 }}
 
 非常に重要：
-- 厳密一致：plugin_id と entry_id はコード識別子です。上の一覧からそのまま写してください（大文字小文字を区別、1 文字ずつ一致）。作り出したり、省略したり、言い換えたりしないでください。完全一致がなければ route="familiar" にします。
+- 厳密一致：plugin_id と entry_id はコード識別子です。上の一覧からそのまま写してください（大文字小文字を区別、1 文字ずつ一致）。作り出したり、省略したり、言い換えたりしないでください。完全一致がなければ route="task_agent" にします。
 - route="plugin" のとき entry_id は必須です。
 - エントリに args(...) があれば、plugin_args にはそのフィールド名を使い、schema にあるフィールドだけを入れます。
 - エントリの schema がユーザーのテキスト（command/message/query/objective など）を求めるときは、USER_SAID を原文のまま写します。翻訳、要約、書き換え、補完はしません。
@@ -173,13 +173,13 @@ JSON オブジェクトだけを返してください。""",
 지침:
 1. 위 플러그인 엔트리 하나를 한 번 호출해서 TASK를 끝낼 수 있는지 판단합니다. 플러그인이 우선입니다.
 2. 끝낼 수 있으면: route="plugin"과 plugin_id, entry_id, 엔트리 schema에 맞는 plugin_args를 반환합니다.
-3. 맞는 엔트리가 없거나 여러 단계 또는 여러 도구가 필요하면: route="familiar"를 반환합니다. 절반만 맞는 플러그인을 억지로 고르지 마세요.
+3. 맞는 엔트리가 없거나 여러 단계 또는 여러 도구가 필요하면: route="task_agent"를 반환합니다. 절반만 맞는 플러그인을 억지로 고르지 마세요.
 4. TASK가 ACTIVE_TASKS의 어느 줄과 같은 일이면: route="duplicate"를 반환하고 duplicate_of에 그 줄의 번호를 넣습니다.
 5. 출력은 JSON 객체 하나뿐이어야 합니다. 설명 문장, markdown, 코드 블록을 넣지 마세요.
 
 출력 형식(엄격한 JSON):
 {{
-    "route": "plugin" | "familiar" | "duplicate",
+    "route": "plugin" | "task_agent" | "duplicate",
     "task_description": "간단한 설명",
     "plugin_id": "플러그인 id 또는 null",
     "entry_id": "플러그인 안의 엔트리 id 또는 null",
@@ -190,7 +190,7 @@ JSON オブジェクトだけを返してください。""",
 }}
 
 매우 중요:
-- 엄격한 일치: plugin_id와 entry_id는 코드 식별자입니다. 위 목록에서 그대로 복사하세요(대소문자 구분, 글자 단위 일치). 지어내거나 줄이거나 바꿔 쓰지 마세요. 정확히 일치하는 것이 없으면 route="familiar"로 합니다.
+- 엄격한 일치: plugin_id와 entry_id는 코드 식별자입니다. 위 목록에서 그대로 복사하세요(대소문자 구분, 글자 단위 일치). 지어내거나 줄이거나 바꿔 쓰지 마세요. 정확히 일치하는 것이 없으면 route="task_agent"로 합니다.
 - route="plugin"이면 entry_id가 필수입니다.
 - 엔트리에 args(...) 정보가 있으면 plugin_args에 그 필드 이름을 쓰고, schema에 있는 필드만 넣습니다.
 - 엔트리 schema가 사용자 텍스트 필드(command/message/query/objective 등)를 요구하면 USER_SAID를 원문 그대로 복사합니다. 번역, 요약, 바꿔 쓰기, 보완을 하지 마세요.
@@ -206,13 +206,13 @@ JSON 객체만 반환하세요.""",
 ИНСТРУКЦИИ:
 1. Определите, выполнит ли TASK ОДИН вызов ОДНОЙ точки входа плагина из списка. Плагины в приоритете.
 2. Если да: верните route="plugin", а также plugin_id, entry_id и plugin_args по схеме точки входа.
-3. Если ни одна точка входа не подходит или задаче нужно несколько шагов либо несколько инструментов: верните route="familiar". НЕ подбирайте плагин, который подходит лишь наполовину.
+3. Если ни одна точка входа не подходит или задаче нужно несколько шагов либо несколько инструментов: верните route="task_agent". НЕ подбирайте плагин, который подходит лишь наполовину.
 4. Если TASK совпадает с одной из строк ACTIVE_TASKS: верните route="duplicate" и номер этой строки в duplicate_of.
 5. ВЫВОД ДОЛЖЕН БЫТЬ ТОЛЬКО одним объектом JSON. Без пояснений, markdown и блоков кода.
 
 ФОРМАТ ВЫВОДА (строгий JSON):
 {{
-    "route": "plugin" | "familiar" | "duplicate",
+    "route": "plugin" | "task_agent" | "duplicate",
     "task_description": "краткое описание",
     "plugin_id": "id плагина или null",
     "entry_id": "id точки входа в этом плагине или null",
@@ -223,7 +223,7 @@ JSON 객체만 반환하세요.""",
 }}
 
 ОЧЕНЬ ВАЖНО:
-- СТРОГОЕ СОВПАДЕНИЕ: plugin_id и entry_id — идентификаторы в коде. Копируйте их ТОЧНО (с учётом регистра, символ в символ) из списка выше. НЕ выдумывайте, не сокращайте и не перефразируйте. Если точного совпадения нет, используйте route="familiar".
+- СТРОГОЕ СОВПАДЕНИЕ: plugin_id и entry_id — идентификаторы в коде. Копируйте их ТОЧНО (с учётом регистра, символ в символ) из списка выше. НЕ выдумывайте, не сокращайте и не перефразируйте. Если точного совпадения нет, используйте route="task_agent".
 - Для route="plugin" обязателен entry_id.
 - Если у точки входа есть args(...), используйте эти имена полей в plugin_args и только поля из схемы.
 - Если схеме нужно текстовое поле пользователя (например command/message/query/objective), копируйте USER_SAID дословно; не переводите, не сокращайте, не переписывайте и не дополняйте.
@@ -239,13 +239,13 @@ El mensaje del usuario trae TASK (lo que hay que hacer) y USER_SAID (las palabra
 INSTRUCCIONES:
 1. Decide si UNA llamada a UNA entrada de plugin de la lista resuelve TASK. Los plugins van primero.
 2. Si es así: devuelve route="plugin" con plugin_id, entry_id y plugin_args según el schema de la entrada.
-3. Si ninguna entrada encaja, o la tarea necesita varios pasos o varias herramientas: devuelve route="familiar". NO fuerces un plugin que solo encaja a medias.
+3. Si ninguna entrada encaja, o la tarea necesita varios pasos o varias herramientas: devuelve route="task_agent". NO fuerces un plugin que solo encaja a medias.
 4. Si TASK es la misma tarea que una línea de ACTIVE_TASKS: devuelve route="duplicate" y el número de esa línea en duplicate_of.
 5. LA SALIDA DEBE SER SOLO un objeto JSON. Sin texto explicativo, markdown ni bloques de código.
 
 FORMATO DE SALIDA (JSON estricto):
 {{
-    "route": "plugin" | "familiar" | "duplicate",
+    "route": "plugin" | "task_agent" | "duplicate",
     "task_description": "descripción breve",
     "plugin_id": "id del plugin o null",
     "entry_id": "id de la entrada dentro del plugin o null",
@@ -256,7 +256,7 @@ FORMATO DE SALIDA (JSON estricto):
 }}
 
 MUY IMPORTANTE:
-- COINCIDENCIA ESTRICTA: plugin_id y entry_id son identificadores de código. Cópialos EXACTAMENTE (distinguiendo mayúsculas, carácter por carácter) de la lista. NO los inventes, abrevies ni reformules. Si no hay coincidencia exacta, usa route="familiar".
+- COINCIDENCIA ESTRICTA: plugin_id y entry_id son identificadores de código. Cópialos EXACTAMENTE (distinguiendo mayúsculas, carácter por carácter) de la lista. NO los inventes, abrevies ni reformules. Si no hay coincidencia exacta, usa route="task_agent".
 - route="plugin" exige entry_id.
 - Si la entrada tiene args(...), usa esos nombres de campo en plugin_args y solo los campos del schema.
 - Cuando el schema pide un campo de texto del usuario (p. ej. command/message/query/objective), copia USER_SAID tal cual; no lo traduzcas, resumas, reescribas ni completes.
@@ -272,13 +272,13 @@ A mensagem do usuário traz TASK (o que precisa ser feito) e USER_SAID (as palav
 INSTRUÇÕES:
 1. Decida se UMA chamada a UMA entrada de plugin da lista resolve TASK. Plugins vêm primeiro.
 2. Se sim: retorne route="plugin" com plugin_id, entry_id e plugin_args conforme o schema da entrada.
-3. Se nenhuma entrada servir, ou a tarefa precisar de vários passos ou várias ferramentas: retorne route="familiar". NÃO force um plugin que só serve pela metade.
+3. Se nenhuma entrada servir, ou a tarefa precisar de vários passos ou várias ferramentas: retorne route="task_agent". NÃO force um plugin que só serve pela metade.
 4. Se TASK for a mesma tarefa de uma linha de ACTIVE_TASKS: retorne route="duplicate" e o número dessa linha em duplicate_of.
 5. A SAÍDA DEVE SER APENAS um objeto JSON. Sem texto explicativo, markdown ou blocos de código.
 
 FORMATO DE SAÍDA (JSON estrito):
 {{
-    "route": "plugin" | "familiar" | "duplicate",
+    "route": "plugin" | "task_agent" | "duplicate",
     "task_description": "descrição breve",
     "plugin_id": "id do plugin ou null",
     "entry_id": "id da entrada dentro do plugin ou null",
@@ -289,7 +289,7 @@ FORMATO DE SAÍDA (JSON estrito):
 }}
 
 MUITO IMPORTANTE:
-- CORRESPONDÊNCIA ESTRITA: plugin_id e entry_id são identificadores de código. Copie-os EXATAMENTE (diferenciando maiúsculas, caractere por caractere) da lista. NÃO invente, abrevie nem reformule. Se não houver correspondência exata, use route="familiar".
+- CORRESPONDÊNCIA ESTRITA: plugin_id e entry_id são identificadores de código. Copie-os EXATAMENTE (diferenciando maiúsculas, caractere por caractere) da lista. NÃO invente, abrevie nem reformule. Se não houver correspondência exata, use route="task_agent".
 - route="plugin" exige entry_id.
 - Se a entrada tiver args(...), use esses nomes de campo em plugin_args e apenas os campos do schema.
 - Quando o schema pedir um campo de texto do usuário (ex.: command/message/query/objective), copie USER_SAID literalmente; não traduza, resuma, reescreva nem complete.
@@ -476,35 +476,35 @@ NO_CAPABILITY_REASONS = {
 
 QUERY_TEXTS = {
     'zh': {"active": "在办的事：", "recent": "最近办完的：", "empty": "没有任务记录。",
-           "can_plugin": "能办：有对得上的插件（{names}）。", "can_familiar": "能办：可以交给使魔去做。",
+           "can_plugin": "能办：有对得上的插件（{names}）。", "can_task_agent": "能办：可以交给使魔去做。",
            "cannot": "办不了：{reason}", "asked": "在等用户回答：{question}", "result": "结果：{summary}",
            "unsure": "没找到现成的能力，真要办可以派发试试。"},
     'zh-TW': {"active": "在辦的事：", "recent": "最近辦完的：", "empty": "沒有任務記錄。",
-              "can_plugin": "能辦：有對得上的外掛（{names}）。", "can_familiar": "能辦：可以交給使魔去做。",
+              "can_plugin": "能辦：有對得上的外掛（{names}）。", "can_task_agent": "能辦：可以交給使魔去做。",
               "cannot": "辦不了：{reason}", "asked": "在等使用者回答：{question}", "result": "結果：{summary}",
               "unsure": "沒找到現成的能力，真要辦可以派發試試。"},
     'en': {"active": "Under way:", "recent": "Recently finished:", "empty": "There is no task on record.",
-           "can_plugin": "Can be done: matching plugins exist ({names}).", "can_familiar": "Can be done: a familiar can take it.",
+           "can_plugin": "Can be done: matching plugins exist ({names}).", "can_task_agent": "Can be done: a familiar can take it.",
            "cannot": "Cannot be done: {reason}", "asked": "waiting for the user to answer: {question}", "result": "result: {summary}",
            "unsure": "No ready capability was found; to really get it done, dispatch it and see."},
     'ja': {"active": "進めている用件：", "recent": "最近終わった用件：", "empty": "用件の記録はありません。",
-           "can_plugin": "対応できます：合うプラグインがあります（{names}）。", "can_familiar": "対応できます：使い魔に任せられます。",
+           "can_plugin": "対応できます：合うプラグインがあります（{names}）。", "can_task_agent": "対応できます：使い魔に任せられます。",
            "cannot": "対応できません：{reason}", "asked": "ユーザーの回答待ち：{question}", "result": "結果：{summary}",
            "unsure": "すぐ使える能力は見つかりませんでした。本当に片付けたいなら任せてみてください。"},
     'ko': {"active": "진행 중인 일:", "recent": "최근 끝난 일:", "empty": "작업 기록이 없습니다.",
-           "can_plugin": "처리할 수 있습니다: 맞는 플러그인이 있습니다({names}).", "can_familiar": "처리할 수 있습니다: 사역마에게 맡길 수 있습니다.",
+           "can_plugin": "처리할 수 있습니다: 맞는 플러그인이 있습니다({names}).", "can_task_agent": "처리할 수 있습니다: 사역마에게 맡길 수 있습니다.",
            "cannot": "처리할 수 없습니다: {reason}", "asked": "사용자 답변 대기: {question}", "result": "결과: {summary}",
            "unsure": "바로 쓸 수 있는 능력은 찾지 못했습니다. 정말 처리하려면 맡겨 보세요."},
     'ru': {"active": "Выполняется:", "recent": "Недавно завершено:", "empty": "Записей о задачах нет.",
-           "can_plugin": "Сделать можно: есть подходящие плагины ({names}).", "can_familiar": "Сделать можно: это можно поручить фамильяру.",
+           "can_plugin": "Сделать можно: есть подходящие плагины ({names}).", "can_task_agent": "Сделать можно: это можно поручить фамильяру.",
            "cannot": "Сделать нельзя: {reason}", "asked": "ждёт ответа пользователя: {question}", "result": "результат: {summary}",
            "unsure": "Готовой возможности не нашлось; чтобы действительно сделать это, попробуйте поручить."},
     'es': {"active": "En marcha:", "recent": "Terminadas hace poco:", "empty": "No hay tareas registradas.",
-           "can_plugin": "Se puede hacer: hay plugins que encajan ({names}).", "can_familiar": "Se puede hacer: un familiar puede encargarse.",
+           "can_plugin": "Se puede hacer: hay plugins que encajan ({names}).", "can_task_agent": "Se puede hacer: un familiar puede encargarse.",
            "cannot": "No se puede hacer: {reason}", "asked": "esperando la respuesta del usuario: {question}", "result": "resultado: {summary}",
            "unsure": "No se encontró una capacidad lista; para hacerlo de verdad, prueba a encargarlo."},
     'pt': {"active": "Em andamento:", "recent": "Concluídas há pouco:", "empty": "Não há tarefas registradas.",
-           "can_plugin": "Dá para fazer: há plugins que servem ({names}).", "can_familiar": "Dá para fazer: um familiar pode cuidar disso.",
+           "can_plugin": "Dá para fazer: há plugins que servem ({names}).", "can_task_agent": "Dá para fazer: um familiar pode cuidar disso.",
            "cannot": "Não dá para fazer: {reason}", "asked": "aguardando a resposta do usuário: {question}", "result": "resultado: {summary}",
            "unsure": "Nenhuma capacidade pronta foi encontrada; para fazer de verdade, tente encarregar."},
 }
@@ -679,12 +679,12 @@ PREFERENCE_KIND_PATTERNS = {
 }
 
 # =====================================================================
-# ======= Familiar brief =======
+# ======= Task agent brief =======
 # =====================================================================
-# Appended to a familiar's system prompt through ``FamiliarSpec.instructions``.
+# Appended to a task agent's system prompt through ``TaskAgentSpec.instructions``.
 # English only, like the rest of the runtime's model-facing text.
 
-FAMILIAR_BRIEF_TEMPLATE = (
+TASK_AGENT_BRIEF_TEMPLATE = (
     "You are working on one commission for {lanlan_name}, the companion the user talks to. "
     "She handed the commission over and will relay your reports; you do not talk to the user directly "
     "except through ask_user_question and report.\n"
@@ -692,19 +692,19 @@ FAMILIAR_BRIEF_TEMPLATE = (
     "What the user said: {user_text}"
 )
 
-FAMILIAR_BRIEF_PREFERENCES_HEADER = (
+TASK_AGENT_BRIEF_PREFERENCES_HEADER = (
     "How the user wants such things done (guidance only; it does not change what you are permitted to do):"
 )
 
-FAMILIAR_BRIEF_GATEWAY_NOTE = (
+TASK_AGENT_BRIEF_GATEWAY_NOTE = (
     "Tools whose names start with plugin__ or mcp__ come from the host. They are the quick way to reach "
     "installed plugins and connected services; prefer them over doing the same thing by hand. "
     "capability_search finds further ones by description, and capability_call runs one by name."
 )
 
-FAMILIAR_CHILD_BRIEF_TEMPLATE = (
-    "You were started by another familiar to take one part of its work.\n"
+TASK_AGENT_CHILD_BRIEF_TEMPLATE = (
+    "You were started by another task agent to take one part of its work.\n"
     "Your part: {description}"
 )
 
-FAMILIAR_CHILD_RESULT_TEMPLATE = "[sub-familiar {name} finished: {status}]\n{text}"
+TASK_AGENT_CHILD_RESULT_TEMPLATE = "[child task agent {name} finished: {status}]\n{text}"

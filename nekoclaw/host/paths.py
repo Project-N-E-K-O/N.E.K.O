@@ -19,13 +19,13 @@
     <data root>/nekoclaw/
     ├─ ledger.db                 the commission ledger
     ├─ permissions.json          permission settings
-    └─ familiar/projects/_daily/sessions/<commission id>/
+    └─ task_agents/projects/_daily/sessions/<commission id>/
         ├─ transcript.jsonl      written by the runtime
         ├─ outputs/              large tool output, written by the runtime
-        └─ work/                 the familiar's working directory, unless
+        └─ work/                 the task agent's working directory, unless
                                  the commission names another one
 
-The session directory follows the layout planned for the familiar space
+The session directory follows the layout planned for the task agent space
 (design section 12.1), so nothing has to move once that exists. Every path is
 computed when it is asked for; resolving the data root reads configuration, so
 callers on the event loop do it in a worker thread.
@@ -105,7 +105,7 @@ class HostPaths:
         """Return a commission's session directory; raises ValueError for an unsafe name."""
         project_name = _segment(project or DEFAULT_PROJECT, "project")
         session_name = _segment(commission_id, "commission id")
-        return self.root() / "familiar" / "projects" / project_name / "sessions" / session_name
+        return self.root() / "task_agents" / "projects" / project_name / "sessions" / session_name
 
     def work_dir(self, commission_id: str, project: str | None = None) -> Path:
         return self.session_dir(commission_id, project) / "work"

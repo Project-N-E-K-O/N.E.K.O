@@ -989,7 +989,7 @@ async def startup():
     except Exception as e:
         logger.warning(f"[Agent] Failed to set http plugin_list_provider: {e}")
 
-    # NekoClaw host (task brain, familiars, capability gateway). This only tells
+    # NekoClaw host (task brain, task agents, capability gateway). This only tells
     # it how to read this process's switches; it is built on the first dispatch
     # and nothing dispatches to it yet. Must stay free of I/O: see the startup
     # path rules.
