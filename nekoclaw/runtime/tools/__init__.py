@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Built-in tools of the familiar runtime.
+"""Built-in tools of the agent runtime.
 
 Names, parameters and descriptions come from
 ``config/prompts/prompts_nekoclaw_tools.py``; the implementations live in this

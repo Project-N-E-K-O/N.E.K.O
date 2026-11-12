@@ -20,8 +20,8 @@ from nekoclaw.runtime.core import InProcessRuntime, RuntimeCore
 from nekoclaw.runtime.host import HostCallbacks, NoHost
 from nekoclaw.runtime.model import LLMClientProvider
 from nekoclaw.runtime.process import SubprocessRuntime
-from nekoclaw.runtime.protocol import FamiliarSpec, ModelConfig, parse_command, parse_event
-from nekoclaw.runtime.session import FamiliarSession
+from nekoclaw.runtime.protocol import TaskAgentSpec, ModelConfig, parse_command, parse_event
+from nekoclaw.runtime.session import TaskAgentSession
 from tests.unit.nekoclaw.fake_openai_server import (
     FakeOpenAIServer,
     sse_finish,
@@ -37,7 +37,7 @@ pytestmark = pytest.mark.integration_serial
 API_KEY = "sk-child-only-secret"
 
 
-def _spec(tmp_path: Path, session_id: str, base_url: str) -> FamiliarSpec:
+def _spec(tmp_path: Path, session_id: str, base_url: str) -> TaskAgentSpec:
     return make_spec(
         tmp_path,
         session_id,
@@ -728,7 +728,7 @@ async def test_a_start_waits_for_the_same_session_to_finish_closing(tmp_path: Pa
         async def factory() -> ScriptedLLM:
             return llm
 
-        session = await FamiliarSession.open(
+        session = await TaskAgentSession.open(
             spec, host, emit, model=LLMClientProvider(spec.model, client_factory=factory)
         )
         close = session.close
@@ -815,7 +815,7 @@ def _scripted_opener(scripts: dict[str, ScriptedLLM]):  # noqa: ANN202
         async def factory() -> ScriptedLLM:
             return llm
 
-        return await FamiliarSession.open(
+        return await TaskAgentSession.open(
             spec, host, emit, model=LLMClientProvider(spec.model, client_factory=factory)
         )
 
@@ -914,4 +914,4 @@ def test_commands_are_validated_at_the_boundary(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         parse_command({"type": "explode"})
     with pytest.raises(ValidationError):
-        FamiliarSpec(session_id="../evil", workdir="w", session_dir="s", model=ModelConfig(model="m"))
+        TaskAgentSpec(session_id="../evil", workdir="w", session_dir="s", model=ModelConfig(model="m"))

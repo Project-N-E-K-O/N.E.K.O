@@ -1,4 +1,4 @@
-"""A familiar session end to end with a scripted model: commands, events, transcript."""
+"""A task agent session end to end with a scripted model: commands, events, transcript."""
 
 from __future__ import annotations
 

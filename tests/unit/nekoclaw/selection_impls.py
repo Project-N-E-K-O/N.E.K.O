@@ -246,7 +246,7 @@ class NekoclawSelection:
             user_text=user_text,
             lang=lang,
             plugins=routable_plugins(plugins),
-            familiar_available=False,
+            task_agent_available=False,
         )
         selection = await LexicalDecisionModel(_LLM()).select(request, Triage(kind="new"))
 

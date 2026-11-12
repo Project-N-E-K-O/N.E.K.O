@@ -31,7 +31,7 @@ What is in it:
   entry named ``mcp_<server>_<tool>``; here they count as MCP tools of their
   server, which is what permissions are asked for. The adapter's entries that
   call a tool of whatever server their arguments name (``call_tool``,
-  ``gateway_invoke``) are not served to familiars;
+  ``gateway_invoke``) are not served to task agents;
 * built-in capabilities (keyboard and mouse, browser): listed as not yet
   available; they arrive with a later change.
 
@@ -91,7 +91,7 @@ class Capability:
     # How it is called: a plugin entry (also for MCP tools, through mcp_adapter).
     plugin_id: str | None = None
     entry_id: str | None = None
-    # The name a familiar calls it by through the gateway.
+    # The name a task agent calls it by through the gateway.
     tool_name: str = ""
 
 
@@ -138,7 +138,7 @@ def gateway_tool_name(prefix: str, first: str, second: str) -> str:
     Characters a tool name may not contain become ``_``. A name that had to be
     changed or cut, or whose parts could be split at ``__`` in more than one
     way (``a__b`` + ``c`` against ``a`` + ``b__c``), ends in a short hash of
-    the parts. ``CapabilityRegistry.callable_by_familiars`` drops any name
+    the parts. ``CapabilityRegistry.callable_by_task_agents`` drops any name
     that still comes out twice.
     """
     raw = f"{prefix}__{first}__{second}"
@@ -351,7 +351,7 @@ class CapabilityRegistry:
         items.extend(BUILTIN_CAPABILITIES)
         return items
 
-    async def callable_by_familiars(self) -> list[Capability]:
+    async def callable_by_task_agents(self) -> list[Capability]:
         """Return the capabilities the gateway can serve right now.
 
         A tool name shared by two capabilities is served for neither: a call

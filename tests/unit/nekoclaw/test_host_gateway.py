@@ -15,7 +15,7 @@
 """The capability gateway, asked directly: tools, calls, permissions.
 
 Nothing here opens a socket; ``test_host_gateway_http.py`` covers the listener
-and a familiar using it.
+and a task agent using it.
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ async def _commission(host: Any, **values: Any) -> Any:
         "dispatch_text": "plan the trip",
         "user_text": "帮我规划一下行程",
         "source": "dispatch",
-        "route": "familiar",
+        "route": "task_agent",
         "conversation_id": "conv-3",
         "lang": "en",
     }
@@ -276,7 +276,7 @@ async def test_capability_call_needs_a_name(host, server):
     assert result["isError"]
 
 
-async def test_result_fields_the_entry_declares_are_all_a_familiar_gets(host, server):
+async def test_result_fields_the_entry_declares_are_all_a_task_agent_gets(host, server):
     server.add_plugin(
         plugin("memo", "Memos", [entry("list", "List memos", llm_result_fields=["summary"])]),
         list=_returns(finish({"summary": "2 memos", "internal": {"token": "secret"}})),
@@ -336,7 +336,7 @@ async def test_failed_run_is_an_error_result(host, server):
     assert "storage offline" in _text(result)
 
 
-async def test_confirmation_request_is_passed_to_the_familiar_as_such(host, server):
+async def test_confirmation_request_is_passed_to_the_task_agent_as_such(host, server):
     server.add_plugin(
         plugin("memo", "Memos", [entry("purge", "Delete all memos", llm_result_fields=["reply"])]),
         purge=_returns(finish({"needs_confirmation": True, "reply": "really delete 3 memos?"})),

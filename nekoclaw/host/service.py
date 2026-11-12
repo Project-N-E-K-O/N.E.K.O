@@ -17,11 +17,11 @@
 ``NekoClawHost`` builds the parts and connects them. Building it does no
 work: no file is opened, no thread or process is started, nothing listens and
 nothing is fetched. The ledger file is opened by the first dispatch or query,
-the runtime and the gateway are started by the first familiar.
+the runtime and the gateway are started by the first task agent.
 
 Whoever embeds the host supplies what it cannot know by itself, all optional:
 
-* ``enabled`` / ``plugins_enabled`` / ``familiars_enabled`` - the switches;
+* ``enabled`` / ``plugins_enabled`` / ``task_agents_enabled`` - the switches;
 * ``change_token`` - changes whenever the plugin list may have changed;
 * ``send_report`` - delivers an outbox row to the main server. Without it
   reports are stored and wait. Reports an earlier run left unsent go out
@@ -40,8 +40,8 @@ from typing import Any
 
 from nekoclaw.host.capabilities import CapabilityRegistry
 from nekoclaw.host.decision import ConfiguredDecisionLLM, DecisionLLM, DecisionModel, LexicalDecisionModel
-from nekoclaw.host.familiars import (
-    FamiliarManager,
+from nekoclaw.host.task_agents import (
+    TaskAgentManager,
     LessonSink,
     ModelConfigProvider,
     RuntimeFactory,
@@ -60,8 +60,8 @@ from nekoclaw.host.task_brain import QueryAnswer, Receipt, TaskBrain
 logger = logging.getLogger(__name__)
 
 
-async def configured_familiar_model() -> dict[str, Any] | None:
-    """Return the model familiars use: the existing agent model slot.
+async def configured_task_agent_model() -> dict[str, Any] | None:
+    """Return the model task agents use: the existing agent model slot.
 
     The address is taken as configured, ``http://`` included.
     """
@@ -79,7 +79,7 @@ async def configured_familiar_model() -> dict[str, Any] | None:
 
 
 class NekoClawHost:
-    """The task brain with its ledger, familiars and gateway."""
+    """The task brain with its ledger, task agents and gateway."""
 
     def __init__(
         self,
@@ -87,16 +87,16 @@ class NekoClawHost:
         root: Path | Callable[[], Path] | None = None,
         enabled: Callable[[], bool] | None = None,
         plugins_enabled: Callable[[], bool] | None = None,
-        familiars_enabled: Callable[[], bool] | None = None,
+        task_agents_enabled: Callable[[], bool] | None = None,
         change_token: Callable[[], Any] | None = None,
         send_report: SendReport | None = None,
         plugin_base_url: str | None = None,
         client_factory: ClientFactory | None = None,
         decision: DecisionModel | None = None,
         decision_llm: DecisionLLM | None = None,
-        familiar_model: ModelConfigProvider = configured_familiar_model,
+        task_agent_model: ModelConfigProvider = configured_task_agent_model,
         runtime_factory: RuntimeFactory = default_runtime_factory,
-        max_familiars: int | None = None,
+        max_task_agents: int | None = None,
         lessons: LessonSink | None = None,
     ) -> None:
         self.paths = HostPaths(root)
@@ -112,7 +112,7 @@ class NekoClawHost:
         self.gateway = CapabilityGateway(
             registry=self.registry, runner=self.runner, permissions=self.permissions, ledger=self.ledger
         )
-        self.familiars = FamiliarManager(
+        self.task_agents = TaskAgentManager(
             ledger=self.ledger,
             preferences=self.preferences,
             permissions=self.permissions,
@@ -120,11 +120,11 @@ class NekoClawHost:
             registry=self.registry,
             reporter=self.reporter,
             paths=self.paths,
-            model_config=familiar_model,
+            model_config=task_agent_model,
             gateway=self.gateway,
             runtime_factory=runtime_factory,
-            enabled=familiars_enabled,
-            max_concurrent=max_familiars,
+            enabled=task_agents_enabled,
+            max_concurrent=max_task_agents,
             lessons=lessons,
         )
         self._decision_llm = decision_llm
@@ -141,7 +141,7 @@ class NekoClawHost:
             decision=self.decision,
             reporter=self.reporter,
             permission_store=self.permission_store,
-            familiars=self.familiars,
+            task_agents=self.task_agents,
             enabled=enabled,
         )
         # Set when shutting down starts; the task finishes when it is done.
@@ -210,7 +210,7 @@ class NekoClawHost:
         return self._shutdown_task is not None and self._shutdown_task.done()
 
     async def shutdown(self) -> None:
-        """Stop familiars, the gateway and background work, and close the ledger.
+        """Stop task agents, the gateway and background work, and close the ledger.
 
         The steps run in a task of their own. A caller that is cancelled stops
         waiting, but the steps still finish; calling again waits for them.
@@ -223,7 +223,7 @@ class NekoClawHost:
     async def _shutdown_steps(self) -> None:
         steps = (
             ("task brain", self.brain.close),
-            ("familiars", self.familiars.shutdown),
+            ("task_agents", self.task_agents.shutdown),
             ("gateway", self.gateway.stop),
             ("plugin runs", self.runner.aclose),
             ("outbox", self.outbox.close),

@@ -12,20 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Starting and driving familiars: one commission, one session.
+"""Starting and driving task agents: one commission, one session.
 
-``FamiliarManager`` is the only user of the runtime's driver interface
+``TaskAgentManager`` is the only user of the runtime's driver interface
 (``nekoclaw.runtime``). It
 
-* starts the runtime when the first familiar is needed, never before;
+* starts the runtime when the first task agent is needed, never before;
 * gives every commission a session of its own, whose id is the commission id;
-* keeps at most ``FAMILIAR_MAX_CONCURRENT`` familiars at work and leaves the
-  rest ``queued`` until a place is free. Familiars started by other familiars
+* keeps at most ``TASK_AGENT_MAX_CONCURRENT`` task agents at work and leaves the
+  rest ``queued`` until a place is free. Task agents started by other task agents
   count the same;
 * turns the runtime's events into ledger rows and status changes, and into
   reports for her;
 * serves the runtime's host callbacks: permissions, questions for the user,
-  reports, lessons, web search and sub-familiars.
+  reports, lessons, web search and child task agents.
 
 Status changes all go through ``Ledger.transition``. In particular a
 commission that was stopped is ``cancelled`` before its session is told to
@@ -48,7 +48,7 @@ from nekoclaw.host.paths import HostPaths
 from nekoclaw.host.permissions import PermissionAsk, PermissionGate
 from nekoclaw.host.plugin_runs import PluginRunner
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
-from nekoclaw.host.reports import CHANNEL_FAMILIAR, Reporter
+from nekoclaw.host.reports import CHANNEL_TASK_AGENT, Reporter
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +59,10 @@ WEB_SEARCH_ENTRY_ID = "search"
 _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
 _SHUT_DOWN_REASON = "the host was shut down"
-# A familiar started by a familiar does not wait in the queue: its parent
+# A task agent started by a task agent does not wait in the queue: its parent
 # keeps its own place while it waits, so with every place held by parents
 # nothing would ever move.
-_NO_PLACE_REASON = "no familiar place was free"
+_NO_PLACE_REASON = "no task agent place was free"
 # Children that can still produce a result their parent should wait for.
 _STILL_WORKING = frozenset({"queued", "working", "waiting_user"})
 _REPORT_TO_STATUS = {"ready": "done", "blocked": "blocked", "failed": "failed"}
@@ -79,7 +79,7 @@ _REPLY_LANGUAGES = {
     "pt": "Portuguese",
 }
 
-# Returns the model endpoint for familiars as keyword arguments of
+# Returns the model endpoint for task agents as keyword arguments of
 # ``nekoclaw.runtime.protocol.ModelConfig``, or None when none is configured.
 ModelConfigProvider = Callable[[], Awaitable["dict[str, Any] | None"]]
 # Builds a runtime from the event sink and the host callbacks.
@@ -89,7 +89,7 @@ RuntimeFactory = Callable[[Callable[[dict[str, Any]], None], Any], Any]
 class LessonSink(Protocol):
     """Receives what ``note_lesson`` files, except ``feedback``.
 
-    The familiar space implements this; until it exists the default sink keeps
+    The task agent space implements this; until it exists the default sink keeps
     the lessons as events of the commission.
     """
 
@@ -186,8 +186,8 @@ def build_answers(questions: list[Any], text: str) -> dict[str, Any]:
     return {"answers": answers}
 
 
-class FamiliarManager:
-    """Runs familiars for commissions. See the module docstring."""
+class TaskAgentManager:
+    """Runs task agents for commissions. See the module docstring."""
 
     def __init__(
         self,
@@ -228,7 +228,7 @@ class FamiliarManager:
         # What a commission taken up again is told: an addition to a blocked or
         # failed one, or the answer to one whose waiting session was closed.
         self._resume: dict[str, str] = {}
-        # Commissions whose familiar is being started again right now.
+        # Commissions whose task agent is being started again right now.
         self._taking_up: set[str] = set()
         # Commissions whose closed session an answer is taking up again right
         # now; a second answer to the same question is refused meanwhile.
@@ -248,9 +248,9 @@ class FamiliarManager:
     def limit(self) -> int:
         if self._max_concurrent is not None:
             return self._max_concurrent
-        from config.nekoclaw_settings import FAMILIAR_MAX_CONCURRENT
+        from config.nekoclaw_settings import TASK_AGENT_MAX_CONCURRENT
 
-        return FAMILIAR_MAX_CONCURRENT
+        return TASK_AGENT_MAX_CONCURRENT
 
     @property
     def running(self) -> list[str]:
@@ -266,7 +266,7 @@ class FamiliarManager:
         return self._runtime is not None
 
     async def available(self) -> tuple[bool, str]:
-        """Return whether a familiar could be started, and if not, why."""
+        """Return whether a task agent could be started, and if not, why."""
         if self._closed:
             return False, "disabled"
         if self._enabled is not None:
@@ -278,7 +278,7 @@ class FamiliarManager:
         try:
             config = await self._model_config()
         except Exception as exc:  # noqa: BLE001 - no usable configuration
-            logger.warning("the familiar model configuration cannot be read: %s", type(exc).__name__)
+            logger.warning("the task agent model configuration cannot be read: %s", type(exc).__name__)
             return False, "not_enabled"
         if not config or not config.get("model"):
             return False, "not_enabled"
@@ -328,14 +328,14 @@ class FamiliarManager:
     # -- starting ---------------------------------------------------------
 
     async def submit(self, commission: Commission, *, candidate_plugin_ids: Any = (), wait: bool = True) -> bool:
-        """Hand a commission to a familiar: now if a place is free, else when one is.
+        """Hand a commission to a task agent: now if a place is free, else when one is.
 
         With ``wait`` False a commission that finds no free place is failed
         instead of queued. Returns whether it was started or queued.
         """
         self._candidates[commission.id] = tuple(str(item) for item in candidate_plugin_ids)
-        if commission.route != "familiar":
-            await self._ledger.update(commission.id, route="familiar")
+        if commission.route != "task_agent":
+            await self._ledger.update(commission.id, route="task_agent")
         if self._closed:
             self._candidates.pop(commission.id, None)
             await self._ledger.transition(commission.id, "failed", reason=_SHUT_DOWN_REASON)
@@ -374,15 +374,15 @@ class FamiliarManager:
         return True
 
     async def _brief(self, commission: Commission, *, with_gateway: bool) -> str:
-        from config.nekoclaw_settings import FAMILIAR_BRIEF_MAX_TOKENS
+        from config.nekoclaw_settings import TASK_AGENT_BRIEF_MAX_TOKENS
         from config.prompts import prompts_nekoclaw_brain as texts
         from utils.tokenize import truncate_to_tokens
 
         if commission.parent_id is not None:
-            parts = [texts.FAMILIAR_CHILD_BRIEF_TEMPLATE.format(description=commission.title)]
+            parts = [texts.TASK_AGENT_CHILD_BRIEF_TEMPLATE.format(description=commission.title)]
         else:
             parts = [
-                texts.FAMILIAR_BRIEF_TEMPLATE.format(
+                texts.TASK_AGENT_BRIEF_TEMPLATE.format(
                     lanlan_name=commission.lanlan_name,
                     dispatch_text=commission.dispatch_text,
                     user_text=commission.user_text or commission.dispatch_text,
@@ -390,10 +390,10 @@ class FamiliarManager:
             ]
         preferences = await self._preferences.render(f"{commission.dispatch_text}\n{commission.user_text}")
         if preferences:
-            parts.append(f"{texts.FAMILIAR_BRIEF_PREFERENCES_HEADER}\n{preferences}")
+            parts.append(f"{texts.TASK_AGENT_BRIEF_PREFERENCES_HEADER}\n{preferences}")
         if with_gateway:
-            parts.append(texts.FAMILIAR_BRIEF_GATEWAY_NOTE)
-        return truncate_to_tokens("\n\n".join(parts), FAMILIAR_BRIEF_MAX_TOKENS)
+            parts.append(texts.TASK_AGENT_BRIEF_GATEWAY_NOTE)
+        return truncate_to_tokens("\n\n".join(parts), TASK_AGENT_BRIEF_MAX_TOKENS)
 
     async def _launch(self, commission_id: str, *, prompt: str | None = None) -> bool:
         """Start a commission whose place is taken; a place it leaves unused goes to the queue."""
@@ -419,8 +419,8 @@ class FamiliarManager:
                 return False
             config = await self._model_config()
             if not config or not config.get("model"):
-                raise RuntimeError("no model is configured for familiars")
-            from nekoclaw.runtime import FamiliarSpec, ModelConfig
+                raise RuntimeError("no model is configured for task agents")
+            from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
             session_dir = self._paths.session_dir(commission.id, commission.project)
@@ -437,12 +437,12 @@ class FamiliarManager:
             session_path, workdir = await asyncio.to_thread(prepare)
 
             gateway_spec = None
-            if self._gateway is not None and await self._registry.callable_by_familiars():
+            if self._gateway is not None and await self._registry.callable_by_task_agents():
                 url = await self._gateway.start()
                 token = self._gateway.issue(commission.id, candidate_plugin_ids=self._candidates.get(commission.id, ()))
                 gateway_spec = GatewaySpec(url=url, token=token)
 
-            spec = FamiliarSpec(
+            spec = TaskAgentSpec(
                 session_id=commission.id,
                 workdir=workdir,
                 session_dir=session_path,
@@ -450,7 +450,7 @@ class FamiliarManager:
                 instructions=await self._brief(commission, with_gateway=gateway_spec is not None),
                 reply_language=_REPLY_LANGUAGES.get(commission.lang or "", None),
                 top_level=commission.parent_id is None,
-                # A familiar started by a familiar starts none itself.
+                # A task agent started by a task agent starts none itself.
                 disabled_tools=["subagent"] if commission.parent_id is not None else [],
                 gateway=gateway_spec,
             )
@@ -458,9 +458,9 @@ class FamiliarManager:
             moved = await self._ledger.transition(
                 commission.id,
                 "working",
-                reason="a familiar took it up",
+                reason="a task agent took it up",
                 runtime=RUNTIME_BUILTIN,
-                route="familiar",
+                route="task_agent",
                 workdir=workdir,
             )
             if not moved.applied:
@@ -499,9 +499,9 @@ class FamiliarManager:
                 )
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
-            logger.warning("starting a familiar for %s failed: %s", commission_id, exc)
+            logger.warning("starting a task agent for %s failed: %s", commission_id, exc)
             self._discard(commission_id)
-            await self._fail(commission_id, f"the familiar could not be started: {exc}")
+            await self._fail(commission_id, f"the task agent could not be started: {exc}")
             return False
 
     @staticmethod
@@ -567,15 +567,15 @@ class FamiliarManager:
 
     async def _flush(self, session: _Session) -> None:
         """Write buffered text and tool output as event rows."""
-        from config.nekoclaw_settings import FAMILIAR_EVENT_TEXT_MAX_CHARS
+        from config.nekoclaw_settings import TASK_AGENT_EVENT_TEXT_MAX_CHARS
 
         rows: list[tuple[str, dict[str, Any]]] = []
         if session.text:
             text = "".join(session.text)
             session.text.clear()
             session.text_size = 0
-            for start in range(0, len(text), FAMILIAR_EVENT_TEXT_MAX_CHARS):
-                rows.append(("text", {"text": text[start : start + FAMILIAR_EVENT_TEXT_MAX_CHARS]}))
+            for start in range(0, len(text), TASK_AGENT_EVENT_TEXT_MAX_CHARS):
+                rows.append(("text", {"text": text[start : start + TASK_AGENT_EVENT_TEXT_MAX_CHARS]}))
         for call_id, parts in session.updates.items():
             text = "".join(parts)
             # Of long output the end is what shows where the tool stands.
@@ -585,7 +585,7 @@ class FamiliarManager:
                     {
                         "tool_call_id": call_id,
                         "tool_name": session.update_names.get(call_id, ""),
-                        "text": text[-FAMILIAR_EVENT_TEXT_MAX_CHARS:],
+                        "text": text[-TASK_AGENT_EVENT_TEXT_MAX_CHARS:],
                     },
                 )
             )
@@ -597,7 +597,7 @@ class FamiliarManager:
     @staticmethod
     def _compact(event: dict[str, Any]) -> dict[str, Any]:
         """Return the event without ids the row already has, long strings cut."""
-        from config.nekoclaw_settings import FAMILIAR_EVENT_TEXT_MAX_CHARS
+        from config.nekoclaw_settings import TASK_AGENT_EVENT_TEXT_MAX_CHARS
 
         compact: dict[str, Any] = {}
         for key, value in event.items():
@@ -605,15 +605,15 @@ class FamiliarManager:
                 continue
             if isinstance(value, (dict, list)):
                 dumped = json.dumps(value, ensure_ascii=False, default=str)
-                if len(dumped) > FAMILIAR_EVENT_TEXT_MAX_CHARS:
-                    value = dumped[:FAMILIAR_EVENT_TEXT_MAX_CHARS] + "…"
-            elif isinstance(value, str) and len(value) > FAMILIAR_EVENT_TEXT_MAX_CHARS:
-                value = value[:FAMILIAR_EVENT_TEXT_MAX_CHARS] + "…"
+                if len(dumped) > TASK_AGENT_EVENT_TEXT_MAX_CHARS:
+                    value = dumped[:TASK_AGENT_EVENT_TEXT_MAX_CHARS] + "…"
+            elif isinstance(value, str) and len(value) > TASK_AGENT_EVENT_TEXT_MAX_CHARS:
+                value = value[:TASK_AGENT_EVENT_TEXT_MAX_CHARS] + "…"
             compact[key] = value
         return compact
 
     async def _handle(self, event: dict[str, Any]) -> None:
-        from config.nekoclaw_settings import FAMILIAR_EVENT_TEXT_MAX_CHARS
+        from config.nekoclaw_settings import TASK_AGENT_EVENT_TEXT_MAX_CHARS
 
         kind = event.get("type")
         session = self._sessions.get(str(event.get("session_id") or ""))
@@ -626,7 +626,7 @@ class FamiliarManager:
             delta = str(event.get("delta") or "")
             session.text.append(delta)
             session.text_size += len(delta)
-            if session.text_size >= FAMILIAR_EVENT_TEXT_MAX_CHARS:
+            if session.text_size >= TASK_AGENT_EVENT_TEXT_MAX_CHARS:
                 await self._flush(session)
             return
         if kind == "tool_update":
@@ -644,10 +644,10 @@ class FamiliarManager:
             await self._on_error(session, event)
 
     def _summary(self, text: str) -> str:
-        from config.nekoclaw_settings import FAMILIAR_RESULT_SUMMARY_MAX_TOKENS
+        from config.nekoclaw_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        return truncate_to_tokens(text, FAMILIAR_RESULT_SUMMARY_MAX_TOKENS)
+        return truncate_to_tokens(text, TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS)
 
     async def _on_report(self, session: _Session, event: dict[str, Any]) -> None:
         status = str(event.get("status") or "")
@@ -661,7 +661,7 @@ class FamiliarManager:
             moved = await self._ledger.transition(
                 commission_id,
                 "waiting_user",
-                reason="the familiar needs an answer",
+                reason="the task agent needs an answer",
                 pending_question=json.dumps(question, ensure_ascii=False),
             )
             if moved.applied and moved.commission is not None:
@@ -677,7 +677,7 @@ class FamiliarManager:
         await self._end(
             commission_id,
             target,
-            reason=f"the familiar reported {status}",
+            reason=f"the task agent reported {status}",
             text=text,
             suggested_delivery=event.get("delivery"),
             result_summary=self._summary(text),
@@ -715,7 +715,7 @@ class FamiliarManager:
             inputs = event.get("inputs")
             if isinstance(inputs, int) and inputs < session.sent:
                 # Text sent after this run had finished (a result from a
-                # familiar it started, or something the user said) started
+                # task agent it started, or something the user said) started
                 # another run. That run's end decides; this one's is kept in
                 # case the text is refused and no such run comes.
                 session.held_end = event
@@ -731,7 +731,7 @@ class FamiliarManager:
                 # A blocked child has reported already and its session is
                 # gone; it produces nothing more to wait for.
                 if await self._ledger.select(parent_id=commission_id, statuses=_STILL_WORKING):
-                    # Familiars it started are still at work. Their results
+                    # Task agents it started are still at work. Their results
                     # arrive as messages and start its next run; it is not done.
                     return
                 # The run ended without a closing report: its last words are the result.
@@ -773,7 +773,7 @@ class FamiliarManager:
                     await self._deliver_answer(session, answer)
             return
         if command == "start":
-            await self._fail(commission_id, f"the familiar could not be started: {message}")
+            await self._fail(commission_id, f"the task agent could not be started: {message}")
             await self._release(commission_id)
         elif command == "prompt":
             session.untaken_answer = None
@@ -806,7 +806,7 @@ class FamiliarManager:
 
         A report to her is stored in the same transaction as the status
         change, so a crash in between cannot leave a finished commission
-        that is never reported. A parent familiar is told after the change.
+        that is never reported. A parent task agent is told after the change.
         Returns whether the change was made.
         """
         commission = await self._ledger.get(commission_id)
@@ -815,19 +815,19 @@ class FamiliarManager:
         report = None
         if commission.parent_id is None and target != "cancelled":
             # Whoever stopped it knows; the task brain reports a stop when one is due.
-            # The commission's own setting decides; the familiar's wish is the fallback.
+            # The commission's own setting decides; the task agent's wish is the fallback.
             delivery = commission.delivery or (
                 suggested_delivery if suggested_delivery in ("proactive", "passive", "silent") else "proactive"
             )
             report = self._reporter.task_result_report(
                 commission,
-                channel=CHANNEL_FAMILIAR,
+                channel=CHANNEL_TASK_AGENT,
                 success=target == "done",
                 summary=text,
                 detail=text,
                 error_message=text if target == "failed" else "",
                 status=_STATUS_TO_REPORT.get(target, target),
-                source_kind="familiar",
+                source_kind="task_agent",
                 source_name=commission.title,
                 delivery_mode=delivery,
             )
@@ -839,15 +839,15 @@ class FamiliarManager:
         return True
 
     async def _tell_parent(self, commission: Commission, status: str, text: str) -> None:
-        from config.nekoclaw_settings import FAMILIAR_CHILD_RESULT_MAX_TOKENS
+        from config.nekoclaw_settings import TASK_AGENT_CHILD_RESULT_MAX_TOKENS
         from config.prompts import prompts_nekoclaw_brain as texts
         from utils.tokenize import truncate_to_tokens
 
         parent_id = str(commission.parent_id)
-        message = texts.FAMILIAR_CHILD_RESULT_TEMPLATE.format(
+        message = texts.TASK_AGENT_CHILD_RESULT_TEMPLATE.format(
             name=commission.name or commission.id,
             status=status,
-            text=truncate_to_tokens(text, FAMILIAR_CHILD_RESULT_MAX_TOKENS),
+            text=truncate_to_tokens(text, TASK_AGENT_CHILD_RESULT_MAX_TOKENS),
         )
         parent = self._sessions.get(parent_id)
         if parent is None:
@@ -861,14 +861,14 @@ class FamiliarManager:
         if self._runtime is None:
             return
         # Before the parent's next model request, so a parent that waits for
-        # its familiars sees the result as soon as it looks; an idle parent is
+        # its task agents sees the result as soon as it looks; an idle parent is
         # started by it.
         await self._send_text(self._runtime, parent, "steer", message)
 
     async def _wake_closed_parent(self, parent_id: str, message: str) -> None:
         """Take up again a working parent whose idle session was closed, a child's result its next work.
 
-        A parent that ended its run while its familiars worked is idle, and an
+        A parent that ended its run while its task agents worked is idle, and an
         idle runtime closes idle sessions after a while. The result then
         queues it to be started again where its transcript ends.
         """
@@ -879,7 +879,7 @@ class FamiliarManager:
             self._notes.setdefault(parent_id, []).append(message)
             return
         parent = await self._ledger.get(parent_id)
-        if parent is None or parent.route != "familiar" or parent.status != "working":
+        if parent is None or parent.route != "task_agent" or parent.status != "working":
             return
         session = self._sessions.get(parent_id)
         if session is not None and session.ready and self._runtime is not None:
@@ -911,7 +911,7 @@ class FamiliarManager:
     # -- driving ----------------------------------------------------------
 
     async def abort(self, commission_id: str) -> None:
-        """Stop a commission's familiar, and the familiars it started.
+        """Stop a commission's task agent, and the task agents it started.
 
         The caller has set the commission ``cancelled`` already.
         """
@@ -931,11 +931,11 @@ class FamiliarManager:
         await self._close_session(session)
 
     async def tell(self, commission_id: str, text: str) -> bool:
-        """Pass a sentence on to a commission's familiar. Returns whether it was delivered."""
+        """Pass a sentence on to a commission's task agent. Returns whether it was delivered."""
         if self._closed:
             return False
         commission = await self._ledger.get(commission_id)
-        if commission is None or commission.route != "familiar" or self._closed:
+        if commission is None or commission.route != "task_agent" or self._closed:
             return False
         session = self._sessions.get(commission_id)
         if session is not None and self._runtime is not None and session.awaiting_prompt:
@@ -962,7 +962,7 @@ class FamiliarManager:
         return False
 
     async def _take_up_again(self, commission_id: str, text: str) -> bool:
-        """Start a commission's familiar again where its transcript ends, ``text`` its next work.
+        """Start a commission's task agent again where its transcript ends, ``text`` its next work.
 
         Its old session is gone or on its way out. Without a free place it is
         queued, which a stop can still end. Returns whether it was started or
@@ -1056,7 +1056,7 @@ class FamiliarManager:
             if self._closed:
                 return False
             commission = await self._ledger.get(commission_id)
-            if commission is None or commission.route != "familiar" or commission.status != "waiting_user":
+            if commission is None or commission.route != "task_agent" or commission.status != "waiting_user":
                 return False
             question = commission.question() or {}
             # A question asked through a tool call is answered to the session
@@ -1242,10 +1242,10 @@ class FamiliarManager:
 
         return {"results": list(await asyncio.gather(*(one(query) for query in queries)))}
 
-    # -- sub-familiars ----------------------------------------------------
+    # -- child task agents ----------------------------------------------------
 
     async def _team(self, session_id: str) -> tuple[Commission | None, list[Commission]]:
-        """Return the lead of the caller's team and the familiars the lead started."""
+        """Return the lead of the caller's team and the task agents the lead started."""
         commission = await self._ledger.get(session_id)
         if commission is None:
             return None, []
@@ -1268,7 +1268,7 @@ class FamiliarManager:
         if parent is None:
             raise RuntimeError("unknown commission")
         if parent.parent_id is not None:
-            raise RuntimeError("a sub-familiar cannot start further familiars")
+            raise RuntimeError("a child task agent cannot start further task agents")
         _lead, members = await self._team(session_id)
         taken = {member.name for member in members}
         name = payload.get("name")
@@ -1283,8 +1283,8 @@ class FamiliarManager:
             title=str(payload.get("description") or name),
             dispatch_text=str(payload.get("prompt") or ""),
             user_text=parent.user_text,
-            source="familiar",
-            route="familiar",
+            source="task_agent",
+            route="task_agent",
             parent_id=parent.id,
             name=name,
             project=parent.project,
@@ -1298,7 +1298,7 @@ class FamiliarManager:
         current = await self._ledger.get(parent.id)
         if current is None or current.status not in ("working", "waiting_user"):
             await self._ledger.transition(child.id, "cancelled", reason="its parent was stopped")
-            raise RuntimeError("the commission was stopped; no familiar is started")
+            raise RuntimeError("the commission was stopped; no task agent is started")
         await self._ledger.append_event(parent.id, "subagent_started", {"name": name, "commission_id": child.id})
         # It starts now or not at all (see ``_NO_PLACE_REASON``); the parent
         # is told so and can do that part itself. Its result comes back to the
@@ -1308,9 +1308,9 @@ class FamiliarManager:
         return {"name": name}
 
     async def _child_workdir(self, parent: Commission, cwd: Any) -> str | None:
-        """Return the working directory of a familiar the parent starts.
+        """Return the working directory of a task agent the parent starts.
 
-        Inside its working directory a familiar writes without being asked, so
+        Inside its working directory a task agent writes without being asked, so
         a child may only work inside its parent's. A directory elsewhere falls
         back to the parent's own: the child then has to ask before writing
         there, exactly as the parent has to.
@@ -1325,7 +1325,7 @@ class FamiliarManager:
         wanted = root / cwd
         if await asyncio.to_thread(is_inside, wanted, root):
             return str(wanted)
-        logger.info("sub-familiar of %s asked for a folder outside its parent's; using the parent's", parent.id)
+        logger.info("child task agent of %s asked for a folder outside its parent's; using the parent's", parent.id)
         return str(root)
 
     async def _cb_subagent_list(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1353,7 +1353,7 @@ class FamiliarManager:
         target = await self._member(session_id, str(payload.get("agent") or ""))
         if target is None or target.id == session_id:
             raise RuntimeError(f"no other agent named {payload.get('agent')!r}")
-        await self._ledger.transition(target.id, "cancelled", reason="interrupted by another familiar")
+        await self._ledger.transition(target.id, "cancelled", reason="interrupted by another task agent")
         await self.abort(target.id)
         return None
 
@@ -1379,13 +1379,13 @@ class FamiliarManager:
         for commission_id in list(self._sessions):
             await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
         if self._runtime is not None:
-            # A parent whose idle session was closed while its familiars
+            # A parent whose idle session was closed while its task agents
             # worked holds no session and is in no queue, yet is this host's
             # and under way. (With no runtime ever started there is none, and
             # the ledger is not opened for nothing.)
             for item in await self._ledger.select(statuses={"working"}):
                 if (
-                    item.route == "familiar"
+                    item.route == "task_agent"
                     and item.host_instance == self._ledger.instance
                     and item.id not in self._sessions
                 ):

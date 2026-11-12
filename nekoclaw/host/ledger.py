@@ -68,15 +68,15 @@ ENDED_STATUSES: frozenset[str] = frozenset({"done", "failed", "cancelled", "bloc
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "queued": frozenset({"working", "failed", "cancelled"}),
-    # Queued again when its idle session was closed while its own familiars
+    # Queued again when its idle session was closed while its own task agents
     # worked, and one of their results is to take it up again.
     "working": frozenset({"waiting_user", "queued", "done", "blocked", "failed", "cancelled"}),
     # Queued when its session was closed while it waited and the answer
     # finds no free place.
     "waiting_user": frozenset({"working", "queued", "failed", "cancelled"}),
-    # Blocked and failed commissions can be taken up again: the familiar's
+    # Blocked and failed commissions can be taken up again: the task agent's
     # transcript is on disk.
-    # Queued again when no familiar place is free to take them up at once.
+    # Queued again when no task agent place is free to take them up at once.
     "blocked": frozenset({"working", "queued", "failed", "cancelled"}),
     "failed": frozenset({"working", "queued"}),
     "done": frozenset(),
@@ -84,8 +84,8 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "cancelled": frozenset(),
 }
 
-SOURCES: tuple[str, ...] = ("dispatch", "promised", "familiar")
-ROUTES: tuple[str, ...] = ("plugin", "familiar")
+SOURCES: tuple[str, ...] = ("dispatch", "promised", "task_agent")
+ROUTES: tuple[str, ...] = ("plugin", "task_agent")
 
 _SCHEMA_VERSION = 1
 _BUSY_TIMEOUT_SECONDS = 5.0
@@ -168,9 +168,9 @@ class Commission:
     dispatch_text: str
     user_text: str
     # "dispatch": she called the tool. "promised": filed for her after she
-    # agreed out loud. "familiar": started by another familiar.
+    # agreed out loud. "task_agent": started by another task agent.
     source: str
-    # "plugin" or "familiar"; None until the second round has decided.
+    # "plugin" or "task_agent"; None until the second round has decided.
     route: str | None
     project: str | None
     workdir: str | None
@@ -192,7 +192,7 @@ class Commission:
     # The entry a direct call goes to.
     plugin_id: str | None
     entry_id: str | None
-    # How a parent familiar addresses this one.
+    # How a parent task agent addresses this one.
     name: str | None
     # Until when a deferred plugin result may still arrive.
     deferred_until: float | None
@@ -254,7 +254,7 @@ class OutboxItem:
 
 
 def new_commission_id() -> str:
-    """Return a new commission id. It doubles as the familiar's session id."""
+    """Return a new commission id. It doubles as the task agent's session id."""
     return uuid.uuid4().hex
 
 

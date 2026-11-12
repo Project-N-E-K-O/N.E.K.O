@@ -100,10 +100,10 @@ async def test_first_round_of_a_new_task_makes_no_model_call():
     assert "weather" in triage.candidate_ids
 
 
-async def test_first_round_with_no_plugin_match_but_a_familiar_makes_no_model_call():
+async def test_first_round_with_no_plugin_match_but_a_task_agent_makes_no_model_call():
     llm = FakeDecisionLLM()
 
-    triage = await LexicalDecisionModel(llm).triage(request("zzz qqq", familiar_available=True))
+    triage = await LexicalDecisionModel(llm).triage(request("zzz qqq", task_agent_available=True))
 
     assert llm.calls == []
     assert (triage.kind, triage.candidate_ids, triage.model_calls) == ("new", [], 0)
@@ -120,11 +120,11 @@ async def test_first_round_with_no_plugins_at_all_makes_no_model_call():
 
 @pytest.mark.parametrize("coarse, kind", [(["lamp"], "new"), ([], "none"), (["not-installed"], "none")])
 async def test_the_one_exception_is_a_single_small_model_call(coarse, kind):
-    # No local candidate and no familiar to fall back on: one coarse screen,
+    # No local candidate and no task agent to fall back on: one coarse screen,
     # on the small tier, before saying that nothing can do this.
     llm = FakeDecisionLLM(coarse=coarse)
 
-    triage = await LexicalDecisionModel(llm).triage(request("zzz qqq", familiar_available=False))
+    triage = await LexicalDecisionModel(llm).triage(request("zzz qqq", task_agent_available=False))
 
     assert llm.tiers() == ["coarse"]
     assert (triage.kind, triage.model_calls) == (kind, 1)
@@ -167,7 +167,7 @@ async def test_stop_words_about_something_else_are_a_task_of_their_own():
     llm = FakeDecisionLLM()
     active = [commission("c1", "查一下上海的气温")]
 
-    triage = await LexicalDecisionModel(llm).triage(request("取消明早七点的闹钟", active=active, familiar_available=True))
+    triage = await LexicalDecisionModel(llm).triage(request("取消明早七点的闹钟", active=active, task_agent_available=True))
 
     assert triage.kind == "new"
     assert llm.calls == []
@@ -179,7 +179,7 @@ async def test_a_stop_sharing_only_a_common_word_is_not_about_that_commission(te
     llm = FakeDecisionLLM()
     active = [commission("c1", "查一下上海明天的天气 check tomorrow's weather")]
 
-    triage = await LexicalDecisionModel(llm).triage(request(text, active=active, familiar_available=True))
+    triage = await LexicalDecisionModel(llm).triage(request(text, active=active, task_agent_available=True))
 
     assert triage.kind == "new"
     assert llm.calls == []
@@ -190,7 +190,7 @@ async def test_a_stop_naming_only_common_words_among_several_is_not_a_question_b
     active = [commission("c1", "查一下上海明天的天气"), commission("c2", "明天整理下载文件夹里的照片")]
 
     triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
-        request("取消明天的", active=active, familiar_available=True)
+        request("取消明天的", active=active, task_agent_available=True)
     )
 
     assert triage.kind == "new"
@@ -240,30 +240,30 @@ async def test_a_plugin_commission_left_blocked_is_not_repeated():
     )
 
     triage = await LexicalDecisionModel(llm).triage(
-        request("把明早7点的闹钟定上", user_text="明早7点叫我", active=[blocked], familiar_available=True)
+        request("把明早7点的闹钟定上", user_text="明早7点叫我", active=[blocked], task_agent_available=True)
     )
 
     assert triage.kind == "new"
     assert find_duplicate("把明早7点的闹钟定上", "明早7点叫我", [blocked]) is None
 
 
-async def test_a_familiar_commission_left_blocked_is_still_a_repeat():
-    blocked = commission("c1", "整理下载文件夹里的照片", status="blocked", route="familiar")
+async def test_a_task_agent_commission_left_blocked_is_still_a_repeat():
+    blocked = commission("c1", "整理下载文件夹里的照片", status="blocked", route="task_agent")
 
     assert find_duplicate("整理下载文件夹里的照片", "", [blocked]) is blocked
 
 
-async def test_a_sub_familiars_commission_is_not_repeated():
-    child = commission("c2", "整理下载文件夹里的照片", user_text="帮我整理照片", route="familiar", parent_id="c1")
+async def test_a_child_task_agents_commission_is_not_repeated():
+    child = commission("c2", "整理下载文件夹里的照片", user_text="帮我整理照片", route="task_agent", parent_id="c1")
 
     assert find_duplicate("整理下载文件夹里的照片", "帮我整理照片", [child]) is None
 
 
-async def test_a_sub_familiars_question_can_still_be_answered():
+async def test_a_child_task_agents_question_can_still_be_answered():
     question = json.dumps({"kind": "questions", "questions": [{"id": "q1", "question": "照片按月份还是按地点分？"}]})
-    parent = commission("c1", "整理下载文件夹里的照片", route="familiar")
+    parent = commission("c1", "整理下载文件夹里的照片", route="task_agent")
     child = commission(
-        "c2", "整理照片", route="familiar", parent_id="c1", status="waiting_user", pending_question=question
+        "c2", "整理照片", route="task_agent", parent_id="c1", status="waiting_user", pending_question=question
     )
 
     triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
@@ -307,15 +307,15 @@ async def test_a_different_task_is_not_a_repeat():
     active = [commission("c1", "查一下上海明天的天气")]
 
     triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
-        request("把台灯关掉", active=active, familiar_available=True)
+        request("把台灯关掉", active=active, task_agent_available=True)
     )
 
     assert triage.kind == "new"
 
 
-async def test_addition_goes_to_the_familiar_it_is_about():
+async def test_addition_goes_to_the_task_agent_it_is_about():
     active = [
-        commission("c1", "整理下载文件夹里的照片", route="familiar"),
+        commission("c1", "整理下载文件夹里的照片", route="task_agent"),
         commission("c2", "查一下上海明天的天气", route="plugin"),
     ]
 
@@ -328,7 +328,7 @@ async def test_addition_cannot_go_to_a_plugin_run():
     active = [commission("c2", "查一下上海明天的天气", route="plugin")]
 
     triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
-        request("另外天气结果发我邮箱", active=active, familiar_available=True)
+        request("另外天气结果发我邮箱", active=active, task_agent_available=True)
     )
 
     assert triage.kind == "new"
@@ -336,7 +336,7 @@ async def test_addition_cannot_go_to_a_plugin_run():
 
 async def test_answer_to_a_waiting_commission_is_read_locally():
     question = json.dumps({"kind": "questions", "questions": [{"id": "q1", "question": "照片按月份还是按地点分？"}]})
-    active = [commission("c1", "整理下载文件夹里的照片", route="familiar", status="waiting_user", pending_question=question)]
+    active = [commission("c1", "整理下载文件夹里的照片", route="task_agent", status="waiting_user", pending_question=question)]
     llm = FakeDecisionLLM()
 
     triage = await LexicalDecisionModel(llm).triage(request("回答：按月份分", active=active))
@@ -351,7 +351,7 @@ async def test_answer_to_a_waiting_commission_is_read_locally():
 )
 async def test_answer_to_a_permission_prompt_carries_the_choice(text, choice):
     question = json.dumps({"kind": "permission", "category": "run_command", "detail": {"command": "dir"}})
-    active = [commission("c1", "整理下载文件夹里的照片", route="familiar", status="waiting_user", pending_question=question)]
+    active = [commission("c1", "整理下载文件夹里的照片", route="task_agent", status="waiting_user", pending_question=question)]
 
     triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(request(text, active=active))
 
@@ -360,10 +360,10 @@ async def test_answer_to_a_permission_prompt_carries_the_choice(text, choice):
 
 async def test_unrelated_sentence_is_not_taken_as_an_answer():
     question = json.dumps({"kind": "questions", "questions": [{"id": "q1", "question": "照片按月份还是按地点分？"}]})
-    active = [commission("c1", "整理下载文件夹里的照片", route="familiar", status="waiting_user", pending_question=question)]
+    active = [commission("c1", "整理下载文件夹里的照片", route="task_agent", status="waiting_user", pending_question=question)]
 
     triage = await LexicalDecisionModel(FakeDecisionLLM()).triage(
-        request("把台灯关掉", active=active, familiar_available=True)
+        request("把台灯关掉", active=active, task_agent_available=True)
     )
 
     assert triage.kind == "new"
@@ -443,16 +443,16 @@ async def test_direct_plugin_costs_one_fine_selection():
     assert selection.shown_plugin_ids == ["weather", "lamp"]
 
 
-async def test_handing_over_to_a_familiar_is_decided_by_the_same_call():
-    llm = FakeDecisionLLM(fine=[{"route": "familiar", "reason": "needs several steps"}])
+async def test_handing_over_to_a_task_agent_is_decided_by_the_same_call():
+    llm = FakeDecisionLLM(fine=[{"route": "task_agent", "reason": "needs several steps"}])
     model = LexicalDecisionModel(llm)
-    req = request("查上海明天的天气，再写成一份出行建议存到桌面", familiar_available=True)
+    req = request("查上海明天的天气，再写成一份出行建议存到桌面", task_agent_available=True)
 
     selection = await model.select(req, await model.triage(req))
 
-    # One request in total: no second one asks "should a familiar take this".
+    # One request in total: no second one asks "should a task agent take this".
     assert llm.tiers() == ["fine"]
-    assert (selection.route, selection.model_calls) == ("familiar", 1)
+    assert (selection.route, selection.model_calls) == ("task_agent", 1)
 
 
 async def test_large_catalog_costs_coarse_screen_plus_fine_selection():
@@ -473,12 +473,12 @@ async def test_large_catalog_costs_coarse_screen_plus_fine_selection():
 
 
 async def test_coarse_screen_of_the_first_round_is_not_paid_for_twice():
-    # Large catalog, nothing matches locally, no familiar: the first round
+    # Large catalog, nothing matches locally, no task agent: the first round
     # runs the coarse screen (the exception) and the second round reuses it.
     plugins = large_catalog()
     llm = FakeDecisionLLM(coarse=["bulk07"], fine=[pick_plugin("bulk07", "run")])
     model = LexicalDecisionModel(llm)
-    req = request("qqqq", plugins=plugins, familiar_available=False)
+    req = request("qqqq", plugins=plugins, task_agent_available=False)
 
     triage = await model.triage(req)
     selection = await model.select(req, triage)
@@ -492,38 +492,38 @@ async def test_coarse_screen_of_the_first_round_is_not_paid_for_twice():
 async def test_no_plugins_means_no_model_call_at_all():
     llm = FakeDecisionLLM()
     model = LexicalDecisionModel(llm)
-    req = request("整理一下桌面", plugins=[], familiar_available=True)
+    req = request("整理一下桌面", plugins=[], task_agent_available=True)
 
     selection = await model.select(req, await model.triage(req))
 
     assert llm.calls == []
-    assert (selection.route, selection.model_calls) == ("familiar", 0)
+    assert (selection.route, selection.model_calls) == ("task_agent", 0)
 
 
 async def test_large_catalog_with_no_candidate_skips_the_fine_selection():
     llm = FakeDecisionLLM(coarse=[])
     model = LexicalDecisionModel(llm)
-    req = request("qqqq", plugins=large_catalog(), familiar_available=True)
+    req = request("qqqq", plugins=large_catalog(), task_agent_available=True)
 
     selection = await model.select(req, await model.triage(req))
 
     # The analyzer asked the fine selection even with nothing to choose from.
     assert llm.tiers() == ["coarse"]
-    assert (selection.route, selection.model_calls, selection.shown_plugin_ids) == ("familiar", 1, [])
+    assert (selection.route, selection.model_calls, selection.shown_plugin_ids) == ("task_agent", 1, [])
 
 
 async def test_an_answer_naming_an_unknown_entry_gets_one_correction_never_two():
     wrong = pick_plugin("weather", "now")
     llm = FakeDecisionLLM(fine=[wrong, wrong, wrong])
     model = LexicalDecisionModel(llm)
-    req = request("查一下上海明天的天气", familiar_available=True)
+    req = request("查一下上海明天的天气", task_agent_available=True)
 
     selection = await model.select(req, Triage(kind="new"))
 
     assert llm.tiers() == ["fine", "fine"]
     assert selection.model_calls == 2
-    # Still wrong after the correction: no plugin is called; a familiar takes it.
-    assert (selection.route, selection.plugin_id) == ("familiar", None)
+    # Still wrong after the correction: no plugin is called; a task agent takes it.
+    assert (selection.route, selection.plugin_id) == ("task_agent", None)
     assert "CORRECTION" in llm.last("fine")[-1]["content"]
 
 
@@ -541,10 +541,10 @@ async def test_an_unusable_answer_costs_one_call_and_falls_back(answer):
     llm = FakeDecisionLLM(fine=[answer])
     model = LexicalDecisionModel(llm)
 
-    with_familiar = await model.select(request("查天气", familiar_available=True), Triage(kind="new"))
-    without = await model.select(request("查天气", familiar_available=False), Triage(kind="new"))
+    with_task_agent = await model.select(request("查天气", task_agent_available=True), Triage(kind="new"))
+    without = await model.select(request("查天气", task_agent_available=False), Triage(kind="new"))
 
-    assert (with_familiar.route, with_familiar.model_calls) == ("familiar", 1)
+    assert (with_task_agent.route, with_task_agent.model_calls) == ("task_agent", 1)
     assert (without.route, without.model_calls) == ("none", 1)
     assert llm.count() == 2
 
@@ -556,7 +556,7 @@ async def test_an_unusable_answer_costs_one_call_and_falls_back(answer):
 
 async def test_fine_selection_sees_task_user_words_ledger_and_preferences():
     llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
-    active = [commission("c1", "整理下载文件夹里的照片", route="familiar")]
+    active = [commission("c1", "整理下载文件夹里的照片", route="task_agent")]
     req = request("查一下上海明天的天气", user_text="明天上海冷不冷", active=active, preferences="- 查天气默认查上海", lang="zh")
 
     await LexicalDecisionModel(llm).select(req, Triage(kind="new"))
@@ -567,7 +567,7 @@ async def test_fine_selection_sees_task_user_words_ledger_and_preferences():
         "TASK: 查一下上海明天的天气",
         "USER_SAID: 明天上海冷不冷",
         "ACTIVE_TASKS:",
-        "1. [working] 整理下载文件夹里的照片 (familiar)",
+        "1. [working] 整理下载文件夹里的照片 (task_agent)",
         "PREFERENCES:",
         "- 查天气默认查上海",
     ]
@@ -589,7 +589,7 @@ async def test_ledger_view_of_the_fine_selection_has_at_most_three_rows():
 
     assert DECISION_LEDGER_ROWS == 3
     llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today")])
-    active = [commission(f"c{n}", f"任务 {n} " + "很长的描述 " * 80, route="familiar") for n in range(9)]
+    active = [commission(f"c{n}", f"任务 {n} " + "很长的描述 " * 80, route="task_agent") for n in range(9)]
     active.append(commission("near", "查一下北京明天的天气", route="plugin", plugin_id="weather", entry_id="today"))
 
     await LexicalDecisionModel(llm).select(request("查一下上海明天的天气", active=active), Triage(kind="new"))
@@ -661,7 +661,7 @@ def test_every_language_of_the_fine_selection_keeps_the_identifiers_it_parses():
         for needle in (
             "- demo: Demo | entries: [run]",
             'route="plugin"',
-            'route="familiar"',
+            'route="task_agent"',
             'route="duplicate"',
             '"plugin_id"',
             '"entry_id"',
@@ -697,10 +697,10 @@ async def test_duplicate_of_an_unlisted_line_is_not_acted_on(number):
     active = [commission("c1", "查一下北京明天的天气", route="plugin")]
 
     selection = await LexicalDecisionModel(llm).select(
-        request("看看北京明天天气如何", active=active, familiar_available=True), Triage(kind="new")
+        request("看看北京明天天气如何", active=active, task_agent_available=True), Triage(kind="new")
     )
 
-    assert (selection.route, selection.duplicate_of) == ("familiar", None)
+    assert (selection.route, selection.duplicate_of) == ("task_agent", None)
 
 
 async def test_a_stated_preference_is_returned():
@@ -725,7 +725,7 @@ async def test_answer_in_the_analyzers_older_shape_is_understood():
     [
         ('{"route": "plugin"}', {"route": "plugin"}),
         ('```json\n{"route": "plugin",}\n```', {"route": "plugin"}),
-        ('Sure: {"route": "familiar", "x": {"y": 1}} done', {"route": "familiar", "x": {"y": 1}}),
+        ('Sure: {"route": "task_agent", "x": {"y": 1}} done', {"route": "task_agent", "x": {"y": 1}}),
         ("[]", None),
         ("", None),
         ("no json here", None),
@@ -839,13 +839,13 @@ async def test_coarse_and_fine_use_the_analyzers_models_and_budgets(configured):
     assert all(client.closed for client in created)
 
 
-async def test_familiars_use_the_agent_model_slot_with_its_address_as_configured(configured):
-    from nekoclaw.host.service import configured_familiar_model
+async def test_task_agents_use_the_agent_model_slot_with_its_address_as_configured(configured):
+    from nekoclaw.host.service import configured_task_agent_model
     from nekoclaw.runtime.protocol import ModelConfig
 
     config, _created, _call_types = configured
 
-    model = await configured_familiar_model()
+    model = await configured_task_agent_model()
 
     assert config.asked == ["agent"]
     assert model == {
@@ -856,7 +856,7 @@ async def test_familiars_use_the_agent_model_slot_with_its_address_as_configured
     }
     assert ModelConfig(**model).base_url == "http://10.0.0.5:1234/v1"
     config.slots["agent"] = {"model": "", "base_url": "", "api_key": ""}
-    assert await configured_familiar_model() is None
+    assert await configured_task_agent_model() is None
 
 
 # ---------------------------------------------------------------------------
@@ -867,7 +867,7 @@ async def test_familiars_use_the_agent_model_slot_with_its_address_as_configured
 async def test_probe_for_a_query_leaves_open_what_only_a_model_could_tell():
     llm = FakeDecisionLLM(coarse=["lamp"])
     model = LexicalDecisionModel(llm)
-    nothing_matches = request("zzz qqq", familiar_available=False)
+    nothing_matches = request("zzz qqq", task_agent_available=False)
 
     for_query = await model.probe(nothing_matches, ask_model=False)
     for_dispatch = await model.probe(nothing_matches)
@@ -882,7 +882,7 @@ async def test_probe_for_a_query_leaves_open_what_only_a_model_could_tell():
     "values, kind",
     [
         ({"dispatch_text": "查一下上海明天的天气"}, "new"),
-        ({"dispatch_text": "zzz qqq", "familiar_available": True}, "new"),
+        ({"dispatch_text": "zzz qqq", "task_agent_available": True}, "new"),
         ({"dispatch_text": "zzz qqq", "plugins": []}, "none"),
     ],
 )

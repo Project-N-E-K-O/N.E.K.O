@@ -15,7 +15,7 @@
 """Callbacks the host injects into the runtime.
 
 Some tools cannot be carried out inside the runtime: asking the user, filing a
-report, storing a lesson, searching the web and starting further familiars all
+report, storing a lesson, searching the web and starting further task agents all
 belong to the host. The runtime defines those tools and executes them through
 the callbacks below. A tool whose callback is missing is not offered to the
 model at all.

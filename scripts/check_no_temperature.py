@@ -36,7 +36,7 @@ body at all"). Any caller passing ``temperature=...`` defeats this contract.
 Scope
 -----
 This check runs over ``app/memory_server/`` + ``memory/`` + ``utils/`` +
-``nekoclaw/`` (the familiar runtime, written after the rule) only.
+``nekoclaw/`` (the agent runtime, written after the rule) only.
 Other parts of the codebase (``brain/``, ``main_routers/``, plugin-specific LLM
 adapters, testbench harnesses) have their own temperature semantics and are
 explicitly out of scope. Pass paths explicitly to scan elsewhere.
@@ -73,7 +73,7 @@ from typing import Iterable, Iterator
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Default scope: the memory subsystem, the helpers it relies on, and the
-# familiar runtime. See module docstring for rationale.
+# agent runtime. See module docstring for rationale.
 DEFAULT_PATHS: list[str] = ["app/memory_server", "memory", "utils", "nekoclaw"]
 
 # Mirrors check_no_loguru.py for consistency.

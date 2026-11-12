@@ -15,11 +15,11 @@
 """Tools served by the host's capability gateway.
 
 The host runs an MCP service on the loopback address and gives every session
-its own token (``FamiliarSpec.gateway``). When a session starts, the runtime
+its own token (``TaskAgentSpec.gateway``). When a session starts, the runtime
 asks the gateway for its tool list and offers those tools next to the built-in
 ones; a call is forwarded to the gateway and its text comes back as the tool
 result. Plugin entries, MCP tools and, later, the keyboard, mouse and browser
-tools reach a familiar this way, so they are implemented once for every
+tools reach a task agent this way, so they are implemented once for every
 runtime.
 
 This is a small MCP client: JSON-RPC 2.0 over HTTP POST, one request per

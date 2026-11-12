@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Built-in familiar runtime: a complete harness without memory.
+"""Built-in agent runtime: a complete harness without memory.
 
-A familiar (an execution session) runs its own loop here and calls tools to do
+A task agent (an execution session) runs its own loop here and calls tools to do
 its work. Nothing in the application imports this package yet; later changes
 connect it to the host.
 
@@ -27,7 +27,7 @@ Modules:
 * ``permissions`` - the gate in front of the built-in tools.
 * ``context``     - result cap, pruning, summary and overflow recovery.
 * ``guards``      - repeated-call reminder and goal rounds.
-* ``session``     - one familiar: loop, tools, context and transcript together.
+* ``session``     - one task agent: loop, tools, context and transcript together.
 * ``core``        - many sessions on one event loop; the in-process runtime.
 * ``process``     - the same runtime in a child process.
 * ``protocol``    - session spec, commands and events as JSON.
@@ -42,10 +42,10 @@ from __future__ import annotations
 from typing import Any
 
 _EXPORTS = {
-    "FamiliarRuntime": "nekoclaw.runtime.core",
+    "AgentRuntime": "nekoclaw.runtime.core",
     "InProcessRuntime": "nekoclaw.runtime.core",
     "SubprocessRuntime": "nekoclaw.runtime.process",
-    "FamiliarSpec": "nekoclaw.runtime.protocol",
+    "TaskAgentSpec": "nekoclaw.runtime.protocol",
     "GoalSpec": "nekoclaw.runtime.protocol",
     "ModelConfig": "nekoclaw.runtime.protocol",
     "RuntimeLimits": "nekoclaw.runtime.protocol",

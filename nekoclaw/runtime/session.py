@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""One familiar session: the loop wired to tools, context management and disk.
+"""One task agent session: the loop wired to tools, context management and disk.
 
 A session owns a harness from ``nekoclaw.runtime.loop`` and adds everything
 around it:
@@ -335,7 +335,7 @@ class SessionRecorder:
             await asyncio.gather(writer, return_exceptions=True)
 
 
-class FamiliarHarness(AgentHarness):
+class SessionHarness(AgentHarness):
     """The ported harness plus what a session needs to reach inside it."""
 
     @property
@@ -362,12 +362,12 @@ class FamiliarHarness(AgentHarness):
         return False
 
 
-class FamiliarSession(SessionInbox):
-    """A running familiar. Create one with ``FamiliarSession.open``."""
+class TaskAgentSession(SessionInbox):
+    """A running task agent. Create one with ``TaskAgentSession.open``."""
 
     def __init__(
         self,
-        spec: protocol.FamiliarSpec,
+        spec: protocol.TaskAgentSpec,
         host: HostBridge,
         emit: EventSink,
         *,
@@ -401,7 +401,7 @@ class FamiliarSession(SessionInbox):
         self._gateway: Any = None
         # Set in _open.
         self._recorder: SessionRecorder
-        self.harness: FamiliarHarness
+        self.harness: SessionHarness
         self.transcript: Transcript
         self.context: ContextManager
         self.jobs: JobRegistry
@@ -415,14 +415,14 @@ class FamiliarSession(SessionInbox):
     @classmethod
     async def open(
         cls,
-        spec: protocol.FamiliarSpec,
+        spec: protocol.TaskAgentSpec,
         host: HostBridge,
         emit: EventSink,
         *,
         model: LLMClientProvider | None = None,
         platform: str | None = None,
         clock: Callable[[], datetime] | None = None,
-    ) -> "FamiliarSession":
+    ) -> "TaskAgentSession":
         """Create the session, continuing its transcript if one exists."""
         session = cls(spec, host, emit, model=model, platform=platform, clock=clock)
         await session._open()
@@ -496,7 +496,7 @@ class FamiliarSession(SessionInbox):
             instructions=spec.instructions,
         )
 
-        self.harness = FamiliarHarness(
+        self.harness = SessionHarness(
             AgentHarnessConfig(
                 provider=self,
                 model=spec.model.model,

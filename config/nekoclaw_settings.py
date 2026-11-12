@@ -26,7 +26,7 @@ budgets bound text that reaches a model; they are applied with
 DISPATCH_FIRST_ROUND_SECONDS = 1.0
 """How long ``dispatch`` waits for the first round before answering "received".
 The first round is local (duplicates, keyword and BM25 candidates, whether a
-familiar can be started); only when nothing matches locally and no familiar
+task agent can be started); only when nothing matches locally and no task agent
 can be started does it make one small-model call."""
 
 DISPATCH_TEXT_MAX_TOKENS = 300
@@ -59,7 +59,7 @@ DECISION_LEDGER_ROW_MAX_TOKENS = 60
 
 PREFERENCE_PROMPT_MAX_TOKENS = 150
 """Cap on the task preferences injected into the fine selection and into a
-familiar's instructions (design section 5.1)."""
+task agent's instructions (design section 5.1)."""
 
 PREFERENCE_TEXT_MAX_TOKENS = 60
 """Cap on a single stored preference."""
@@ -88,24 +88,24 @@ QUERY_RECENT_SECONDS = 24 * 3600.0
 """How far back finished commissions are still listed by a query."""
 
 # ---------------------------------------------------------------------------
-# Familiars
+# Task agents
 # ---------------------------------------------------------------------------
 
-FAMILIAR_MAX_CONCURRENT = 10
-"""Familiars at work at the same time; further commissions wait in the queue."""
+TASK_AGENT_MAX_CONCURRENT = 10
+"""Task agents at work at the same time; further commissions wait in the queue."""
 
-FAMILIAR_BRIEF_MAX_TOKENS = 1200
-"""Cap on the host's instructions appended to a familiar's system prompt."""
+TASK_AGENT_BRIEF_MAX_TOKENS = 1200
+"""Cap on the host's instructions appended to a task agent's system prompt."""
 
-FAMILIAR_RESULT_SUMMARY_MAX_TOKENS = 400
+TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS = 400
 """Cap on the result summary stored for a commission."""
 
-FAMILIAR_EVENT_TEXT_MAX_CHARS = 4000
+TASK_AGENT_EVENT_TEXT_MAX_CHARS = 4000
 """Size of one stored ``text`` or ``tool_update`` event row (display only,
 never sent to a model). Longer runs of output are split into several rows."""
 
-FAMILIAR_CHILD_RESULT_MAX_TOKENS = 1500
-"""Cap on a sub-familiar's result when it is handed back to its parent."""
+TASK_AGENT_CHILD_RESULT_MAX_TOKENS = 1500
+"""Cap on a child task agent's result when it is handed back to its parent."""
 
 DEFERRED_COMMISSION_SECONDS = 3600.0
 """How long a deferred plugin result may stay open before the commission fails."""
