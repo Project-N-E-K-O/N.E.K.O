@@ -1,15 +1,29 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useEffect } from 'react';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import AudioMessageComposer from './AudioMessageComposer';
-import { recordAudio, type AudioMessagePayload } from './audioRecording';
+import App from './App';
+import AudioMessageComposerView, { useAudioMessageComposer } from './AudioMessageComposer';
+import { AUDIO_MAX_SAMPLES, recordAudio, type AudioMessagePayload } from './audioRecording';
 
 vi.mock('./audioRecording', async importOriginal => ({
   ...await importOriginal<typeof import('./audioRecording')>(),
   recordAudio: vi.fn(),
 }));
 
+function AudioMessageComposer({ onBusyChange, ...props }: Parameters<typeof useAudioMessageComposer>[0] & {
+  onBusyChange: (busy: boolean) => void;
+}) {
+  const composer = useAudioMessageComposer(props);
+  useEffect(() => onBusyChange(composer.active), [composer.active, onBusyChange]);
+  return <AudioMessageComposerView composer={composer} />;
+}
+
 describe('recording draft submission', () => {
+  const showStatusToast = vi.fn();
+
   beforeEach(() => {
+    showStatusToast.mockClear();
+    vi.stubGlobal('showStatusToast', showStatusToast);
     vi.stubGlobal('URL', { ...URL, createObjectURL: vi.fn(() => 'blob:recording'), revokeObjectURL: vi.fn() });
     vi.mocked(recordAudio).mockResolvedValue({ stop: vi.fn(async () => new Int16Array(16000)), cancel: vi.fn() });
   });
@@ -23,6 +37,7 @@ describe('recording draft submission', () => {
     render(<AudioMessageComposer target="YUI" disabled={false} send={vi.fn()} onBusyChange={busy} />);
     fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
     expect(screen.getByRole('alert')).toHaveTextContent('Use HTTPS');
+    expect(showStatusToast).toHaveBeenCalledWith(expect.stringContaining('Use HTTPS'), expect.any(Number));
     expect(screen.queryByText('Preparing…')).toBeNull();
     expect(busy).not.toHaveBeenCalledWith(true);
     expect(recordAudio).not.toHaveBeenCalled();
@@ -78,12 +93,52 @@ describe('recording draft submission', () => {
     expect(await screen.findByRole('button', { name: 'Stop and send' })).toBeVisible();
   });
 
+  it('keeps recording across folding and unfolding, then stops at the limit while folded', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 404 })));
+    const stop = vi.fn(async () => new Int16Array(AUDIO_MAX_SAMPLES));
+    const cancel = vi.fn();
+    const send = vi.fn();
+    vi.mocked(recordAudio).mockResolvedValueOnce({ stop, cancel });
+    const onCompactMinimizeRequest = vi.fn();
+    const props = { audioMessageTarget: 'YUI', onComposerAudioMessage: send, onCompactMinimizeRequest };
+    vi.useFakeTimers();
+    try {
+      const view = render(<App {...props} chatSurfaceMode="compact" />);
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' })); });
+      expect(screen.getByRole('button', { name: 'Stop and send' })).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: 'Minimize' }));
+      expect(onCompactMinimizeRequest).toHaveBeenCalledOnce();
+      view.rerender(<App {...props} chatSurfaceMode="minimized" />);
+      expect(screen.queryByRole('button', { name: 'Stop and send' })).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
+      expect(stop).not.toHaveBeenCalled();
+      expect(cancel).not.toHaveBeenCalled();
+      view.rerender(<App {...props} chatSurfaceMode="compact" />);
+      expect(screen.getByRole('button', { name: 'Stop and send' })).toBeVisible();
+      expect(screen.getByText('0:01')).toBeVisible();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Minimize' }));
+      view.rerender(<App {...props} chatSurfaceMode="minimized" />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(28_800); });
+      expect(stop).toHaveBeenCalledOnce();
+      view.rerender(<App {...props} chatSurfaceMode="compact" />);
+      expect(screen.getByRole('button', { name: 'Preview recording' })).toHaveTextContent('0:30');
+      expect(screen.getByRole('button', { name: 'Send recording' })).toBeEnabled();
+      expect(send).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('preserves preview after uncertain delivery and provides no resend action', async () => {
     const send = vi.fn(async () => { throw new Error('socket closed after write'); });
-    render(<AudioMessageComposer target="YUI" disabled={false} send={send} onBusyChange={() => {}} />);
+    const busy = vi.fn();
+    render(<AudioMessageComposer target="YUI" disabled={false} send={send} onBusyChange={busy} />);
     fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
     fireEvent.click(await screen.findByRole('button', { name: /Stop/ }));
-    await waitFor(() => expect(screen.getByRole('alert')).toBeVisible());
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Delivery could not be confirmed'));
+    expect(showStatusToast).toHaveBeenCalledWith(screen.getByRole('alert').textContent, expect.any(Number));
+    expect(busy).toHaveBeenLastCalledWith(false);
     expect(screen.getByLabelText('Preview recording')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Send recording' })).toBeNull();
     expect(send).toHaveBeenCalledTimes(1);
@@ -103,6 +158,7 @@ describe('recording draft submission', () => {
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     view.rerender(<AudioMessageComposer {...props} disabled />);
     await act(async () => { rejectSend(rejected); });
+    expect(showStatusToast).toHaveBeenCalledWith(screen.getByRole('alert').textContent, expect.any(Number));
     const retry = screen.getByRole('button', { name: 'Send recording' });
     expect(retry).toBeDisabled();
     fireEvent.click(retry);

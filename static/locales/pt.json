@@ -776,6 +776,7 @@
         "audioMessageSend": "Enviar gravação",
         "audioMessageSending": "Enviando…",
         "audioMessageCancel": "Descartar gravação",
+        "audioMessageClosePreview": "Fechar prévia",
         "audioMessageMicrophoneError": "Microfone indisponível. Verifique a permissão e tente novamente.",
         "exportAudioOmitted": "A exportação não inclui mensagens de voz nem transcrições. Você pode vê-las no histórico da conversa.",
         "audioMessageSendError": "Não foi possível confirmar a entrega. Confira a conversa antes de gravar novamente.",

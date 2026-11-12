@@ -164,11 +164,6 @@ app.whenReady().then(async () => {
     await capture(win);
     trace(mode + ' recorded');
     assert.equal(received.length, before, 'active recording stays local');
-    if (mode === 'compact') {
-      await win.webContents.executeJavaScript("document.querySelector('.compact-chat-minimize-ball').click()");
-      assert.equal(await win.webContents.executeJavaScript("compactMinimizeRequests"), 0);
-      await waitFor(win, "document.querySelector('.audio-message-stop')");
-    }
     await win.webContents.executeJavaScript("document.querySelector('.audio-message-cancel').click()", true);
     await waitFor(win, "document.querySelector('.audio-message-mic')");
     assert.equal(received.length, before, 'cancelled recording stays local');
@@ -181,9 +176,28 @@ app.whenReady().then(async () => {
       await waitFor(win, `document.querySelector('.compact-chat-surface-frame[data-compact-chat-state="input"] .audio-message-mic')`);
     }
     await capture(win);
+    if (mode === 'compact') {
+      await win.webContents.executeJavaScript("document.querySelector('.compact-chat-minimize-ball').click()", true);
+      await waitFor(win, "compactMinimizeRequests === 2");
+      await win.webContents.executeJavaScript(`void window.NekoChatWindow.mountChatWindow(document.getElementById('root'), {
+        ...audioSmokeProps, chatSurfaceMode: 'minimized',
+      })`);
+      await waitFor(win, "!document.querySelector('.compact-chat-surface-frame')");
+      await new Promise(resolve => setTimeout(resolve, 1400));
+      assert.equal(await win.webContents.executeJavaScript('recordedTracks.at(-1).readyState'), 'live');
+      assert.equal(received.length, before, 'folding never sends the recording');
+      await win.webContents.executeJavaScript(`void window.NekoChatWindow.mountChatWindow(document.getElementById('root'), {
+        ...audioSmokeProps, compactChatState: 'input',
+      })`);
+      await waitFor(win, "document.querySelector('.audio-message-stop') && Number(document.querySelector('.audio-message-clock').textContent.split(':')[1]) >= 1");
+    }
     await win.webContents.executeJavaScript("const button=document.querySelector('.audio-message-stop');button.click();button.click();", true);
     await waitFor(win, "document.querySelector('.audio-message-mic')");
     assert.equal(received.length, before + 1, 'double stop produces one message');
+    if (mode === 'compact') {
+      const duration = Buffer.from(received.at(-1).audio, 'base64').length / 32000;
+      assert.ok(duration >= 1.3, 'sent audio includes samples recorded while folded');
+    }
     assert.equal(await win.webContents.executeJavaScript('recordedTracks.length === 2 && recordedTracks.every(track=>track.readyState === "ended")'), true);
     await waitFor(win, `document.querySelectorAll('.message-audio-block').length === ${before + 1}`);
     assert.equal(await win.webContents.executeJavaScript("document.querySelector('.message-audio-transcript')"), null);

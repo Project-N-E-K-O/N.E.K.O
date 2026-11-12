@@ -329,6 +329,10 @@ test('host mode changes preserve an active voice message', () => {
   assert.equal(parts.setChatSurfaceMode('minimized'), 'compact');
   assert.equal(parts.pendingChatSurfaceMode, null);
 
+  assert.equal(parts.setChatSurfaceMode('minimized', { fromCompactMinimizeButton: true }), 'compact');
+  assert.equal(parts.pendingChatSurfaceMode.mode, 'minimized');
+  parts.pendingChatSurfaceMode = null;
+
   audioActive = false;
   assert.equal(parts.setChatSurfaceMode('minimized'), 'compact');
   assert.equal(parts.pendingChatSurfaceMode.mode, 'minimized');

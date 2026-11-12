@@ -776,6 +776,7 @@
         "audioMessageSend": "録音を送信",
         "audioMessageSending": "送信中…",
         "audioMessageCancel": "録音を破棄",
+        "audioMessageClosePreview": "プレビューを閉じる",
         "audioMessageMicrophoneError": "マイクを使用できません。権限を確認して再試行してください。",
         "exportAudioOmitted": "音声メッセージと文字起こしはエクスポートに含まれません。チャット履歴で確認できます。",
         "audioMessageSendError": "送信結果を確認できません。再録音する前に会話を確認してください。",

@@ -1354,7 +1354,7 @@
         var previousMode = I.getCurrentChatSurfaceMode();
         var nextMinimized = normalized === 'minimized';
         var previousMinimized = previousMode === 'minimized';
-        if (nextMinimized && !previousMinimized
+        if (nextMinimized && !previousMinimized && transitionOptions.fromCompactMinimizeButton !== true
                 && I.getShell()?.querySelector('.audio-message-composer[data-audio-message-active="true"]')) {
             return previousMode;
         }

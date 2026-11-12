@@ -12,6 +12,7 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
   const audio = useRef<HTMLAudioElement>(null);
   const moreButton = useRef<HTMLButtonElement>(null);
   const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [transcriptOpen, setTranscriptOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -23,6 +24,7 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
   const url = chatAudioUrl(block.character, block.requestId);
   useEffect(() => {
     const player = audio.current;
+    setProgress(0);
     return () => {
       if (player?.hasAttribute('src')) {
         player.pause();
@@ -82,7 +84,11 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
       }}>
       <div className="message-audio-controls">
         <audio ref={audio} preload="none" hidden
-          onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
+          onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)}
+          onTimeUpdate={({ currentTarget: { currentTime, duration } }) => {
+            if (duration > 0 && Number.isFinite(duration)) setProgress(Math.min(currentTime / duration, 1));
+          }}
+          onEnded={() => { setPlaying(false); setProgress(0); }} />
         <button type="button" className="message-audio-play" disabled={!block.available}
           data-playing={playing}
           aria-label={block.available ? playLabel : `${title} ${duration}`}
@@ -90,7 +96,10 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
           <span className="message-audio-play-disc" data-playing={playing} aria-hidden="true">
             <span className="audio-message-play-icon" />
           </span>
-          <span>{duration}</span>
+          <span className="audio-message-track" aria-hidden="true">
+            <span style={{ inlineSize: `${progress * 100}%` }} />
+          </span>
+          <span className="message-audio-duration">{duration}</span>
         </button>
         {block.available && <button ref={moreButton} type="button" className="message-audio-more"
           aria-label={i18n('chat.audioHistoryActions', 'Recording actions')}
