@@ -187,6 +187,23 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "brain",
         )
     ),
+    # The NekoClaw host (task brain, familiars, gateway) reaches plugins over
+    # HTTP and needs ``plugin.settings`` only. It takes over from the analyzer
+    # in ``brain`` and must not lean on it, and its task preferences stay apart
+    # from every memory: neither reads or writes the other.
+    *(
+        ("nekoclaw/host/", package, reason)
+        for package, reason in (
+            ("brain", "the task brain replaces the analyzer and never imports it"),
+            ("memory", "task preferences and persona memory never read or write each other"),
+            ("knowledge", "the NekoClaw host keeps apart from the knowledge subsystem"),
+            ("main_logic", "the NekoClaw host reaches the main dialogue through its outbox only"),
+            ("main_routers", "the NekoClaw host reaches the main dialogue through its outbox only"),
+            ("services", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
+            ("theater_workshop", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
+            ("steamworks", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
+        )
+    ),
 ]
 
 

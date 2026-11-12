@@ -39,7 +39,10 @@ per-session ``seq`` that increases by one:
 * ``report``      - a structured report made through the ``report`` tool.
 * ``usage``       - token usage of one model request and the context size.
 * ``ended``       - a run finished and the session is idle (``completed``,
-  ``aborted``, ``error``), or the session is gone (``closed``).
+  ``aborted``, ``error``), or the session is gone (``closed``). A finished
+  run states ``inputs``: how many texts (``prompt``, ``steer``,
+  ``follow_up``) the session had taken by then. A driver that has sent more
+  knows that a later run is under way.
 * ``error``       - a command was rejected.
 
 The subprocess shell adds messages of its own: ``host_request`` (the runtime
@@ -112,6 +115,15 @@ class RuntimeLimits(_Strict):
     goal_max_rounds: int = Field(default=100, ge=1)
 
 
+class GatewaySpec(_Strict):
+    """Where a session reaches the host's capability gateway (an MCP service)."""
+
+    # Endpoint on the loopback address, e.g. "http://127.0.0.1:50123/mcp".
+    url: str = Field(min_length=1)
+    # Issued by the host for this one session; sent as a bearer token.
+    token: str = Field(min_length=1, repr=False)
+
+
 class FamiliarSpec(_Strict):
     """Everything needed to create one familiar session."""
 
@@ -136,6 +148,9 @@ class FamiliarSpec(_Strict):
     disabled_tools: list[str] = Field(default_factory=list)
     # Tool name -> how many of its most recent image results stay in context.
     image_retention: dict[str, int] = Field(default_factory=dict)
+    # The host's capability gateway. Its tools are offered next to the
+    # built-in ones; without it the session has the built-in tools only.
+    gateway: GatewaySpec | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +305,8 @@ class EndedEvent(_SessionEvent):
     # Text of the last model response of the run.
     text: str = ""
     error: str | None = None
+    # Texts the session had taken when the run finished; None for ``closed``.
+    inputs: int | None = None
 
 
 class ErrorEvent(_SessionEvent):
