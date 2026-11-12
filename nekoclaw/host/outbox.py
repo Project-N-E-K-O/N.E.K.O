@@ -100,15 +100,17 @@ class OutboxSender:
         delivered = 0
         for item in await self._ledger.outbox_pending(due_by=self._clock()):
             if item.kind == "question" and item.commission_id:
-                if not await self._ledger.outbox_unsent(item.id):
+                # The row and its commission are read together, so nothing can
+                # change between the two.
+                state = await self._ledger.outbox_question_state(item.id)
+                if state == "gone":
                     # Removed after this batch was read: the commission
                     # stopped waiting for it, even if it waits for another
                     # question by now.
                     continue
-                if not await self._still_waiting(item.commission_id):
-                    # It no longer waits, so the question is out of date. Its
-                    # row is dropped here: it may have been stored after the
-                    # commission stopped waiting, when nothing removed it.
+                if state == "stale":
+                    # Stored after the commission stopped waiting, when
+                    # nothing removed it: out of date, and dropped here.
                     await self._ledger.outbox_drop(item.id)
                     continue
             try:
@@ -127,10 +129,6 @@ class OutboxSender:
                 await self._ledger.outbox_mark_failed(item.id, error, self._clock() + retry_delay(attempts))
                 logger.info("report %s not delivered (attempt %d): %s", item.id, attempts, error)
         return delivered
-
-    async def _still_waiting(self, commission_id: str) -> bool:
-        commission = await self._ledger.get(commission_id)
-        return commission is not None and commission.status == "waiting_user"
 
     async def _run(self) -> None:
         failures = 0

@@ -722,12 +722,25 @@ class Ledger:
 
         return await self.run(work)
 
-    async def outbox_unsent(self, item_id: int) -> bool:
-        """Whether a report is still stored and not yet sent."""
-        return await self.run(
-            lambda conn: conn.execute("SELECT 1 FROM outbox WHERE id = ? AND sent_at IS NULL", (item_id,)).fetchone()
-            is not None
-        )
+    async def outbox_question_state(self, item_id: int) -> str:
+        """Say whether an unsent question may still go out, read in one transaction.
+
+        ``"current"``: it is stored and unsent and its commission waits.
+        ``"gone"``: it was removed or sent already. ``"stale"``: it is still
+        stored, but its commission no longer waits.
+        """
+
+        def work(conn: sqlite3.Connection) -> str:
+            row = conn.execute(
+                "SELECT c.status AS status FROM outbox o LEFT JOIN commissions c ON c.id = o.commission_id "
+                "WHERE o.id = ? AND o.sent_at IS NULL",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                return "gone"
+            return "current" if row["status"] == "waiting_user" else "stale"
+
+        return await self.run(work)
 
     async def outbox_drop(self, item_id: int) -> None:
         """Remove an unsent report that is out of date."""

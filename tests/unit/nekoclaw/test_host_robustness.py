@@ -309,6 +309,26 @@ async def test_an_earlier_question_read_in_a_batch_is_not_sent_once_another_one_
     assert [item.id for item in await ledger.outbox_pending()] == asked_again
 
 
+async def test_whether_a_question_may_go_out_is_read_from_the_row_and_its_commission_at_once(ledger):
+    commission = await _file(ledger)
+    await ledger.transition(commission.id, "working", reason="test")
+    await ledger.transition(commission.id, "waiting_user", reason="test")
+    question_a = await ledger.outbox_add(commission.id, "question", {"question": "A?"})
+    assert await ledger.outbox_question_state(question_a) == "current"
+
+    # A is answered, then B is asked: A is gone though the commission waits again.
+    await ledger.transition(commission.id, "working", reason="the user answered")
+    await ledger.transition(commission.id, "waiting_user", reason="asks again")
+    question_b = await ledger.outbox_add(commission.id, "question", {"question": "B?"})
+    assert await ledger.outbox_question_state(question_a) == "gone"
+    assert await ledger.outbox_question_state(question_b) == "current"
+
+    # Stored after its commission stopped waiting: still there, but out of date.
+    await ledger.transition(commission.id, "cancelled", reason="stopped")
+    late = await ledger.outbox_add(commission.id, "question", {"question": "C?"})
+    assert await ledger.outbox_question_state(late) == "stale"
+
+
 async def test_a_question_stored_after_its_commission_stopped_waiting_is_dropped(ledger):
     commission = await _file(ledger)
     await ledger.transition(commission.id, "working", reason="test")
