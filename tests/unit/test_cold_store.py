@@ -532,3 +532,85 @@ def test_an_id_two_subjects_share_never_lets_a_character_only_line_count_as_back
                              {"persona": {}, "facts": [], "archive": [], "reflections": []})
     [row] = result["reflections"]
     assert awaits_user_signal(row)
+
+
+# ── review round 4 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancellation_still_waits_for_the_restore_index_write(tmp_path):
+    import asyncio
+    _, fs, *_ = _install(tmp_path)
+    cold_store.append(fs._character_dir(NAME), [_fact("p1", "folded", arbitration_archived_at="2026-07-01T00:00:00")])
+    started, release, done = asyncio.Event(), asyncio.Event(), []
+
+    class _SlowIndex:
+        async def aindex_fact(self, name, fact_id, text):
+            started.set()
+            await release.wait()
+            done.append(fact_id)
+
+    fs._time_indexed = _SlowIndex()
+    task = asyncio.create_task(fs.arestore_cold_facts(NAME, lambda row: True))
+    await started.wait()
+    for _ in range(2):
+        task.cancel()
+        await asyncio.sleep(0)
+    lock = fs._get_persist_alock(NAME)
+    assert lock.locked() and not task.done()  # the index write is still in flight
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(done) == 1 and not lock.locked()
+
+
+def test_a_copy_withdrawn_under_another_subject_never_clears_the_characters_own_words():
+    from memory.evidence import awaits_user_signal
+    from memory.long_term_sync import import_document
+    fact = {"kind": "fact", "subject": "master", "id": "f1", "text": "the character said it",
+            "metadata": {"source": "ai_disclosure", "signalJudged": True}}
+    withdrawn = {"kind": "fact", "subject": "neko", "id": "f1", "status": "retracted", "archivedAt": 1}
+    reflection = {"kind": "reflection", "subject": "master", "id": "r1", "text": "rests on f1",
+                  "metadata": {"status": "pending", "sourceFactIds": ["f1"], "countedFactIds": ["f1"]}}
+    result = import_document(_document([fact, reflection], cold=[withdrawn]),
+                             {"persona": {}, "facts": [], "archive": [], "reflections": []})
+    [row] = result["reflections"]
+    assert row["fact_source_counts"] == {"user": 0, "ai": 1}
+    assert awaits_user_signal(row)
+
+
+@pytest.mark.asyncio
+async def test_an_active_row_with_a_malformed_id_does_not_break_the_cold_filter(tmp_path):
+    from memory.archive_shards import append_to_shard_sync
+    _, fs, _, re, *_ = _install(tmp_path)
+    directory = fs._character_dir(NAME)
+    good = {"id": "r1", "text": "archived", "entity": "master", "status": "confirmed",
+            "created_at": "2026-06-01T00:00:00", "source_fact_ids": []}
+    broken = {**good, "id": ["bad"], "text": "malformed row"}
+    atomic_write_json(os.path.join(directory, "reflections.json"), [good, broken])
+    append_to_shard_sync(cold_store.cold_dir(directory, "reflection"), [good])
+    assert [row["text"] for row in await re.aload_reflections(NAME)] == ["malformed row"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_persona_built_from_settings_leaves_archived_entries_archived(tmp_path):
+    import hashlib
+    from memory.archive_shards import append_to_shard_sync
+    _, fs, pm, *_ = _install(tmp_path)
+    directory = fs._character_dir(NAME)
+    atomic_write_json(os.path.join(directory, "settings.json"), {"主人": {"爱好": "喝茶", "城市": "杭州"}})
+    archived_id = "legacy_" + hashlib.sha256("爱好: 喝茶".encode()).hexdigest()[:8]
+    append_to_shard_sync(cold_store.cold_dir(directory, "persona"),
+                         [{"id": archived_id, "text": "爱好: 喝茶", "entity_key": "master"}])
+    persona = await pm.aensure_persona(NAME)
+    assert [row["text"] for row in persona["master"]["facts"]] == ["城市: 杭州"]
+
+
+@pytest.mark.asyncio
+async def test_the_default_strict_read_treats_a_cold_copy_as_cold(tmp_path):
+    _, fs, *_ = _install(tmp_path)
+    cold_store.append(fs._character_dir(NAME), [_fact("c1", "cold", arbitration_archived_at="2026-07-01T00:00:00")])
+    atomic_write_json(fs._facts_path(NAME), [_fact("c1", "cold"), _fact("live", "live")])
+    rows = await fs.aload_facts_strict(NAME)
+    assert [row["id"] for row in rows] == ["live"]
+

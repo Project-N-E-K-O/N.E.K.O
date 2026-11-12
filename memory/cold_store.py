@@ -232,6 +232,7 @@ def without_cold_copies(
     any_subject = {row_id for subject, row_id in cold if subject is None}
     return [row for row in rows
             if not (isinstance(row, dict) and _private(row)
+                    and _matchable(row.get("id")) and _matchable(subject_of(row))
                     and ((subject_of(row), row.get("id")) in cold or row.get("id") in any_subject))]
 
 

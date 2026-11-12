@@ -615,6 +615,9 @@ def import_document(incoming, existing, *, merged=False, source_evidence=None, k
     for fact_id in shared_ids:
         if 'ai_disclosure' in fact_copy_sources.get(fact_id, ()) or fact_id not in incoming_fact_sources:
             incoming_fact_sources[fact_id] = 'ai_disclosure'
+            # A copy withdrawn under another subject must not erase the character's
+            # own words: counted as the character's, the line keeps waiting for the user.
+            withdrawn_facts.discard(fact_id)
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
         if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:

@@ -817,12 +817,13 @@ class FactStore:
         from memory.long_term_sync import require_consistent_views, consistent_view_read
         require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         from utils.file_utils import read_json_tolerating_replace
-        cold_stubs: list[dict] = []
-        if include_cold_stubs:
-            try:
-                cold_stubs = self._shared_cold_fact_stubs(name)
-            except cold_store.ColdStoreUnreadable as e:
-                raise RuntimeError(f"cold facts of {name!r} unreadable: {e}") from e
+        try:
+            cold_stubs = (
+                self._shared_cold_fact_stubs(name) if include_cold_stubs
+                else self._cold_fact_stubs(name)
+            )
+        except cold_store.ColdStoreUnreadable as e:
+            raise RuntimeError(f"cold facts of {name!r} unreadable: {e}") from e
         cold_identities = {
             identity for identity in map(_fact_scoped_identity, cold_stubs)
             if identity is not None
@@ -860,7 +861,8 @@ class FactStore:
                             rows.append(cold_store.stub(row))
                         continue
                     rows.append(row)
-        rows.extend(dict(row) for row in cold_stubs)
+        if include_cold_stubs:
+            rows.extend(dict(row) for row in cold_stubs)
         return rows
 
     async def aload_facts_strict(
@@ -2291,7 +2293,17 @@ class FactStore:
                 try:
                     await asyncio.shield(index_task)
                 except asyncio.CancelledError:
-                    await asyncio.wait({index_task})
+                    # Every further cancellation is absorbed too, as the trust
+                    # persist path above does: the lock is released only once the
+                    # index write has finished.
+                    current_task = asyncio.current_task()
+                    while not index_task.done():
+                        try:
+                            await asyncio.shield(index_task)
+                        except asyncio.CancelledError:
+                            if current_task is not None:
+                                while current_task.cancelling():
+                                    current_task.uncancel()
                     raise
         return restored
 

@@ -182,6 +182,8 @@ class PersistenceMixin:
         # Auto-migrate from legacy settings
         persona = self._empty_persona()
         self._migrate_from_settings(name, persona)
+        # Settings may still hold an entry archived since; the archived copy wins.
+        self._drop_cold_copies(name, persona)
         self._sync_character_card(name, persona)
         self._personas[name] = persona
         self.save_persona(name, persona)
@@ -282,6 +284,8 @@ class PersistenceMixin:
 
         persona = self._empty_persona()
         await self._async_migrate_from_settings(name, persona)
+        # Settings may still hold an entry archived since; the archived copy wins.
+        await asyncio.to_thread(self._drop_cold_copies, name, persona)
         await self._async_sync_character_card(name, persona)
         self._personas[name] = persona
         await self.asave_persona(name, persona)
