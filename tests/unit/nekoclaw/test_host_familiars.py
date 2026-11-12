@@ -577,9 +577,21 @@ async def test_a_question_cleared_after_its_commission_failed_does_not_set_it_wo
     # Failed while the question waits (as shutting down does), then the
     # callback that waited is given up on.
     await host.ledger.transition(receipt.commission_id, "failed", reason="the host was shut down")
-    session.question.cancel()
-    await wait_until(lambda: session.question is None, what="the question cleared")
+    transition = host.ledger.transition
+    cleanups: list[Any] = []
 
+    async def recording(commission_id: str, status: str, **fields: Any) -> Any:
+        moved = await transition(commission_id, status, **fields)
+        if fields.get("reason") == "the user answered":
+            cleanups.append(moved)
+        return moved
+
+    host.ledger.transition = recording
+    session.question.cancel()
+
+    # Checked once the question's cleanup has written (or been refused) its status.
+    await wait_until(lambda: cleanups, what="the question's cleanup")
+    assert not cleanups[0].applied
     assert (await host.ledger.get(receipt.commission_id)).status == "failed"
 
 
