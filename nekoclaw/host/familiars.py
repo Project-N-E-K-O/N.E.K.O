@@ -694,11 +694,19 @@ class FamiliarManager:
             # fail the commission now finds no session and is ignored, so
             # without this it would stay working for nobody.
             untaken, session.untaken_answer = session.untaken_answer, None
+            claimed = (kept is not None or untaken is not None) and not self._closed
+            if claimed:
+                # Claimed for that answer before anything is awaited, so an
+                # answer arriving before it is handed on is refused rather
+                # than taking its place.
+                self._answering_closed.add(commission_id)
             await self._release(commission_id)
-            if kept is not None and not self._closed:
-                self._spawn(self._answer_closed(commission_id, kept))
-            elif untaken is not None and not self._closed:
-                self._spawn(self._answer_untaken(commission_id, untaken))
+            if not claimed:
+                return
+            if kept is not None:
+                self._spawn(self._answer_closed(commission_id, kept, claimed=True))
+            else:
+                self._spawn(self._answer_untaken(commission_id, str(untaken)))
             return
         commission = await self._ledger.get(commission_id)
         if commission is None:
@@ -1030,18 +1038,23 @@ class FamiliarManager:
             return await self._deliver_answer(session, text)
         return False
 
-    async def _answer_closed(self, commission_id: str, text: str) -> bool:
+    async def _answer_closed(self, commission_id: str, text: str, *, claimed: bool = False) -> bool:
         """Answer a ``waiting`` report whose session was closed meanwhile.
 
         A runtime with nothing to do exits after a while and closes its idle
         sessions, those waiting for an answer included. The answer then takes
-        the commission up again where its transcript ends.
+        the commission up again where its transcript ends. ``claimed`` is
+        True for an answer its session kept, claimed for it when the session
+        closed.
         """
-        if self._closed or commission_id in self._answering_closed:
-            # Another answer is taking it up again: that one is its next work.
-            return False
-        self._answering_closed.add(commission_id)
+        if not claimed:
+            if self._closed or commission_id in self._answering_closed:
+                # Another answer is taking it up again: that one is its next work.
+                return False
+            self._answering_closed.add(commission_id)
         try:
+            if self._closed:
+                return False
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.route != "familiar" or commission.status != "waiting_user":
                 return False
@@ -1088,15 +1101,19 @@ class FamiliarManager:
 
         The answer moved it to ``working``; it goes back to waiting for that
         answer, which then takes it up again as an answer to a closed session does.
+        The commission was claimed for this answer when its session closed.
         """
-        moved = await self._ledger.transition(
-            commission_id, "waiting_user", reason="its session closed before it took the answer"
-        )
-        if moved.applied and not await self._take_up_again(commission_id, text) and self._closed:
-            # Shutting down began while the status was written: nothing will
-            # take the answer up, and neither the queue nor the sessions hold
-            # it for shutting down to end. It ends here, as they do.
-            await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
+        try:
+            moved = await self._ledger.transition(
+                commission_id, "waiting_user", reason="its session closed before it took the answer"
+            )
+            if moved.applied and not await self._take_up_again(commission_id, text) and self._closed:
+                # Shutting down began while the status was written: nothing will
+                # take the answer up, and neither the queue nor the sessions hold
+                # it for shutting down to end. It ends here, as they do.
+                await self._ledger.transition(commission_id, "failed", reason=_SHUT_DOWN_REASON)
+        finally:
+            self._answering_closed.discard(commission_id)
 
     async def _ask(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
         """Put a question to the user and wait for the answer.

@@ -765,6 +765,40 @@ async def test_a_second_answer_while_the_asking_run_winds_down_does_not_replace_
     assert "E:/Phone" not in sent
 
 
+async def test_an_answer_kept_when_its_session_closes_is_not_displaced_by_a_later_one(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    session = host.familiars._sessions[receipt.commission_id]
+    session.run_ended = False
+    assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
+    handle = host.familiars._handle
+    later: list[bool] = []
+
+    async def answer_right_after_closing(event: dict[str, Any]) -> None:
+        await handle(event)
+        if event.get("type") == "ended" and event.get("reason") == "closed" and not later:
+            # The kept answer is about to take it up again, but has not started yet.
+            later.append(await host.answer(receipt.commission_id, "or maybe in E:/Phone"))
+
+    host.familiars._handle = answer_right_after_closing
+    await host.familiars._runtime.close(receipt.commission_id)
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert later == [False]
+    assert done.result_summary == "sorted D:/Camera"
+    sent = json.dumps(llm.requests[1], ensure_ascii=False)
+    assert "the photos are in D:/Camera" in sent
+    assert "E:/Phone" not in sent
+
+
 async def test_two_answers_at_once_to_a_closed_session_take_it_up_with_one_of_them(hosts, tmp_path):
     llm = ScriptedLLM(
         [
