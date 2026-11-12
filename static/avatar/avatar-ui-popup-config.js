@@ -34,6 +34,13 @@ function createSettingsPopupShowSync(prefix) {
         // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), window.proactiveVisionEnabled, true);
         syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), window.mouseTrackingEnabled);
+        const contextPrompt = document.querySelector(`#${prefix}-activity-context-prompt`);
+        if (contextPrompt && typeof window.activityContextPromptEnabled !== 'undefined') {
+            contextPrompt.checked = window.activityContextPromptEnabled !== false;
+            if (typeof window.updateChatModeStyle === 'function') {
+                requestAnimationFrame(() => window.updateChatModeStyle(contextPrompt));
+            }
+        }
         if (window.CHAT_MODE_CONFIG) {
             window.CHAT_MODE_CONFIG.forEach(config => {
                 const cb = document.querySelector(`#${prefix}-proactive-${config.mode}-chat`);
@@ -163,6 +170,7 @@ window.showMMDPopup = showMMDPopup;
 window.hideMMDPopup = hideMMDPopup;
 
 const _mmdPopupConfig = {
+    _onPopupShow: createSettingsPopupShowSync('mmd'),
     animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },

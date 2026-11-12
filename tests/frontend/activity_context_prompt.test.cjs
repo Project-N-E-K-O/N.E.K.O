@@ -147,3 +147,51 @@ test('settings save, server hydration, reload, and cross-window changes carry th
   assert.equal(reboot.window.appState[key], true);
   assert.equal(reboot.sandbox.synced, true);
 });
+test('disable invalidates the rest of an already-running replay batch', async () => {
+  const h = boot({ready: false, deferred: true});
+  h.window.appState.proactiveChatEnabled = false;
+  await h.window.appContextPrompt.handle('work');
+  await h.window.appContextPrompt.handle('play');
+  h.window.nekoTelemetryBranch = 'main';
+  h.events.get('neko:telemetry-branch-resolved')();
+  assert.equal(h.prompts.length, 1);
+  h.window.appState.activityContextPromptEnabled = false;
+  h.window.appContextPrompt.syncSetting();
+  h.window.appState.activityContextPromptEnabled = true;
+  h.prompts[0].show();
+  await tick();
+  assert.equal(h.prompts.length, 1);
+});
+test('cross-window prompt changes preserve the proactive timer', async () => {
+  const h = settingsBoot();
+  await tick(); await tick();
+  let schedules = 0;
+  h.window.scheduleProactiveChat = () => schedules++;
+  h.listeners.get('storage')({key: 'project_neko_settings', newValue: JSON.stringify({activityContextPromptEnabled: false})});
+  assert.equal(h.window.appState.activityContextPromptEnabled, false);
+  assert.equal(schedules, 0);
+  h.listeners.get('storage')({key: 'project_neko_settings', newValue: JSON.stringify({proactiveChatInterval: 123})});
+  assert.equal(schedules, 1);
+});
+test('reopening each avatar settings popup refreshes the separate prompt checkbox', () => {
+  for (const prefix of ['live2d', 'vrm', 'mmd']) {
+    const cb = {checked: true}; let styles = 0;
+    const window = {activityContextPromptEnabled: false, addEventListener() {}, updateChatModeStyle(node) {assert.equal(node, cb); styles++;}};
+    const document = {querySelector(selector) {return selector === `#${prefix}-activity-context-prompt` ? cb : null;}};
+    const sandbox = {window, document, AVATAR_POPUP_ANIMATION_DURATION_MS: 200, requestAnimationFrame(fn) {fn();}};
+    vm.createContext(sandbox);
+    vm.runInContext(fs.readFileSync(path.join(root, 'static/avatar/avatar-ui-popup-config.js'), 'utf8'), sandbox);
+    sandbox.createSettingsPopupShowSync(prefix)({querySelector() {return null;}}, 'settings');
+    assert.equal(cb.checked, false);
+    assert.equal(styles, 1);
+  }
+});
+test('hydrating only the prompt preference does not reschedule proactive chat', async () => {
+  const store = new Map([['project_neko_settings', JSON.stringify({activityContextPromptEnabled: true, proactiveVisionChatEnabled: true})]]);
+  const h = settingsBoot(store, {activityContextPromptEnabled: false});
+  let schedules = 0;
+  h.window.scheduleProactiveChat = () => schedules++;
+  await tick(); await tick();
+  assert.equal(h.window.appState.activityContextPromptEnabled, false);
+  assert.equal(schedules, 0);
+});

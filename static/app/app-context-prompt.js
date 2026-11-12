@@ -44,6 +44,7 @@
     // 本会话就再也看不到这次弹窗了。按类别存（而非单槽）避免决议前先后收到
     // play + work 时只剩最后一个、另一类被吞——与「每会话每类一次」语义保持一致。
     const _pendingContexts = new Set();
+    let _pendingGeneration = 0;
 
     // 读 flag 当前值：优先 window 镜像，回退 appState。
     function _flag(name) {
@@ -225,6 +226,7 @@
 
     function syncSetting() {
         if (_isEnabled()) return;
+        _pendingGeneration += 1;
         _pendingContexts.clear();
         if (!_activeContext) return;
         _cancelActivePrompt = true;
@@ -331,10 +333,12 @@
     // （重放途中新攒的事件由当前弹窗 finally 再触发一次 drain 接住）。
     function _drainPending() {
         if (_pendingContexts.size === 0) return;
+        const generation = _pendingGeneration;
         const pend = Array.from(_pendingContexts);
         _pendingContexts.clear();
         (async function () {
             for (const ctx of pend) {
+                if (generation !== _pendingGeneration || !_isEnabled()) return;
                 // 按单个 ctx 隔离异常：play/work 是一次性事件，前一个意外抛错不能连累
                 // 后一个不被消费（否则那类本会话就丢了）。
                 try {

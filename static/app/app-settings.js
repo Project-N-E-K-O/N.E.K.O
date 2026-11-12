@@ -431,12 +431,16 @@
                 acceptedSettings[key] = serverSettings[key];
             }
         }
+        let shouldReschedule = hasSharedSchedulingChanges(acceptedSettings);
         let changed = applySharedRuntimeSettings(acceptedSettings);
         // Preserve server-only conversation keys that are intentionally not in
         // the cross-window shared-settings list.
         for (const key of Object.keys(acceptedSettings)) {
             if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1 || key === 'userLanguage') continue;
-            if (S[key] !== acceptedSettings[key]) changed = true;
+            if (S[key] !== acceptedSettings[key]) {
+                changed = true;
+                shouldReschedule = true;
+            }
             S[key] = acceptedSettings[key];
             if (Object.prototype.hasOwnProperty.call(window, key)) {
                 window[key] = S[key];
@@ -463,7 +467,7 @@
                 (key) => _SHARED_SETTINGS_KEYS.indexOf(key) !== -1
             )
         });
-        if (changed) {
+        if (changed && shouldReschedule) {
             if (typeof window.appProactive !== 'undefined'
                 && window.appProactive.scheduleProactiveChat) {
                 window.appProactive.scheduleProactiveChat();
@@ -1146,6 +1150,14 @@
             _crossWindowMutationVersion += 1;
             _crossWindowKeyMutationVersions[key] = _crossWindowMutationVersion;
         });
+    }
+
+    // Preserve existing scheduling behavior except for the dialog-only preference.
+    function hasSharedSchedulingChanges(settings) {
+        return !!settings && _SHARED_SETTINGS_KEYS.some((key) =>
+            key !== 'activityContextPromptEnabled'
+            && Object.prototype.hasOwnProperty.call(settings, key)
+            && S[key] !== settings[key]);
     }
 
     function applySharedRuntimeSettings(settings) {
@@ -2281,6 +2293,7 @@
                     });
                 }
                 let hasUpdate = false;
+                let shouldReschedule = false;
 
                 // 只要 server 给了 branch，本次首启决议就算完成，清掉 pending marker；下次
                 // 启动不再尝试。GET 失败则 marker 留着，下次在线启动重新决议。原本这里还会
@@ -2296,6 +2309,7 @@
                     // 若用户在 60s periodic 之前关掉 app，首启的本地默认值就永远到不了服务器。
                     // 这里 hasUpdate=true 让下方 saveSettings 走完整路径推一次
                     hasUpdate = true;
+                    shouldReschedule = true;
                 }
 
                 const acceptedSharedSettings = {};
@@ -2321,8 +2335,10 @@
                         } else if (S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
                             hasUpdate = true;
+                            shouldReschedule = true;
                         }
                     }
+                    shouldReschedule = shouldReschedule || hasSharedSchedulingChanges(acceptedSharedSettings);
                     if (applySharedRuntimeSettings(acceptedSharedSettings)) {
                         hasUpdate = true;
                     }
@@ -2354,6 +2370,7 @@
                     if (adoptedAsrDecision
                         || S.independentAsrEnabled !== previousAsr) {
                         hasUpdate = true;
+                        shouldReschedule = true;
                     }
                 }
 
@@ -2374,6 +2391,7 @@
                         && S.proactiveChatInterval === C.DEFAULT_PROACTIVE_CHAT_INTERVAL) {
                     S.proactiveChatInterval = _PROACTIVE_INTERVAL_AB_VALUE;
                     hasUpdate = true;
+                    shouldReschedule = true;
                     console.log('[app-settings] A/B 实验组', telemetryBranch, '：主动搭话间隔默认', _PROACTIVE_INTERVAL_AB_VALUE, '秒');
                 }
 
@@ -2415,10 +2433,12 @@
                         )
                     });
                     // 重新初始化主动搭话调度器（使用最新标志）
-                    if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
-                        window.appProactive.scheduleProactiveChat();
-                    } else if (typeof window.scheduleProactiveChat === 'function') {
-                        window.scheduleProactiveChat();
+                    if (shouldReschedule) {
+                        if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
+                            window.appProactive.scheduleProactiveChat();
+                        } else if (typeof window.scheduleProactiveChat === 'function') {
+                            window.scheduleProactiveChat();
+                        }
                     }
                 }
 
@@ -2775,6 +2795,7 @@
                 }
             }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
+            const shouldReschedule = hasSharedSchedulingChanges(incoming);
             const changed = applySharedRuntimeSettings(incoming);
             // Adopted = survived every stale / revision check and was applied.
             // Not this window's handshake authority, but an open voice panel
@@ -2925,7 +2946,7 @@
                 ));
             }
             stopVisionAfterPrivacyEnabled();
-            if (changed && typeof window.scheduleProactiveChat === 'function') {
+            if (changed && shouldReschedule && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();
             }
             if (pendingKeysToReassert.length > 0 && !(meta && meta.pendingRecovery)) {

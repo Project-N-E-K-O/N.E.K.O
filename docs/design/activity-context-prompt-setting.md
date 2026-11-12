@@ -17,7 +17,10 @@ optional prompt. The frontend also checks the current preference before enqueue,
 on actual display, and before applying an acceptance. Disabling clears deferred
 signals and dismisses a visible prompt; a queued dialog is cancelled when its
 queue slot opens. Enabling permits future signals, without replaying stale ones
-or resetting the existing once-per-session limit.
+or resetting the existing once-per-session limit. A generation counter also invalidates
+replay batches already copied out of the deferred queue. Settings popups refresh
+the separate checkbox when reopened, and prompt-only synchronization does not
+restart proactive chat timers.
 
 Tests cover API round trips and malformed values, revision conflicts, partial
 writes, backend delivery gating, local reload/server hydration, cross-window
