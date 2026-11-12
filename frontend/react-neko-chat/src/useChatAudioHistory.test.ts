@@ -14,6 +14,58 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it('shows a remote recording for the current chat without enabling local history', async () => {
+  const fetchHistory = vi.fn(async () => new Response(null, { status: 403 }));
+  vi.stubGlobal('fetch', fetchHistory);
+  const { result, rerender } = renderHook(({ target }) => useChatAudioHistory(target, 'You'), {
+    initialProps: { target: 'YUI' },
+  });
+  let finish!: () => void;
+  const send = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+  let submitted!: Promise<unknown>;
+  await act(async () => { submitted = result.current.submit(payload, send); });
+
+  expect(result.current.messages).toMatchObject([{
+    id: `audio-message:${payload.requestId}`, role: 'user', status: 'sending',
+    blocks: [{ type: 'audio_message', state: 'sending', available: false, transcript: '' }],
+  }]);
+  expect(send).toHaveBeenCalledExactlyOnceWith({ ...payload, saveLocal: false });
+  act(() => { window.dispatchEvent(new Event('voice-input-socket-open')); });
+  await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(2));
+  await act(async () => { finish(); await submitted; });
+  expect(result.current.messages).toMatchObject([{
+    status: 'sent', blocks: [{ state: 'sent', available: false, canLoadOlder: false }],
+  }]);
+
+  act(() => { window.dispatchEvent(new Event('react-chat-window:messages-cleared')); });
+  expect(result.current.messages).toEqual([]);
+  await act(async () => { await result.current.submit(payload, vi.fn().mockResolvedValue(undefined)); });
+  expect(result.current.messages).toHaveLength(1);
+  rerender({ target: 'Other' });
+  rerender({ target: 'YUI' });
+  expect(result.current.messages).toEqual([]);
+});
+
+it.each([true, false])('handles a remote send failure according to whether it was rejected (%s)', async rejected => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 403 })));
+  const { result } = renderHook(() => useChatAudioHistory('YUI', 'You'));
+  const failure = new Error(rejected ? 'busy' : 'socket closed');
+  if (rejected) failure.name = 'AudioMessageRejected';
+  const send = vi.fn().mockRejectedValue(failure);
+
+  await act(async () => {
+    await expect(result.current.submit(payload, send)).rejects.toBe(failure);
+  });
+  expect(send).toHaveBeenCalledTimes(1);
+  if (rejected) {
+    expect(result.current.messages).toEqual([]);
+  } else {
+    expect(result.current.messages).toMatchObject([{
+      blocks: [{ state: 'unconfirmed', available: false }],
+    }]);
+  }
+});
+
 it('keeps a confirmed recording playable when the history refresh times out', async () => {
   vi.useFakeTimers();
   const fetchHistory = vi.fn().mockResolvedValueOnce(historyPage());
