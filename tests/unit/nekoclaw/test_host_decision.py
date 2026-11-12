@@ -642,12 +642,14 @@ def test_every_language_of_the_fine_selection_opens_as_the_analyzers_do(lang):
     from config.prompts.prompts_agent import USER_PLUGIN_COARSE_SCREEN_PROMPT, USER_PLUGIN_SYSTEM_PROMPT
     from config.prompts.prompts_nekoclaw_brain import TASK_BRAIN_SELECT_PROMPT
 
-    # The phrase the analyzer's prompts open with in every language, untranslated.
+    # The phrase the analyzer's prompts open with in every language, untranslated;
+    # the paired block markers of the other prompts would do as well.
     phrase = "automation assessment agent"
     assert phrase in USER_PLUGIN_SYSTEM_PROMPT[lang].splitlines()[0]
     assert phrase in USER_PLUGIN_COARSE_SCREEN_PROMPT[lang].splitlines()[0]
 
-    assert phrase in TASK_BRAIN_SELECT_PROMPT[lang].splitlines()[0]
+    text = TASK_BRAIN_SELECT_PROMPT[lang]
+    assert phrase in text.splitlines()[0] or ("======以下为" in text and "======以上为" in text)
 
 
 def test_every_language_of_the_fine_selection_keeps_the_identifiers_it_parses():
