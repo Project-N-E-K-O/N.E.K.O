@@ -149,6 +149,7 @@ function _handleNekoIdleSleepTierScaredContextMenu(button, event) {
     const started = request.call(presentation, {
         animateEntry: true,
         button,
+        userInitiated: true,
         prepareCat1: () => autoGoodbye.demoteVisualTierToCat1(
             'cat-contextmenu-demotion',
             'cat1-scared-action'
@@ -172,7 +173,7 @@ function _handleNekoIdleCat1VisualActionRandomContextMenu(button, event) {
     const request = presentation && presentation[requestName];
     if (typeof request !== 'function') return false;
 
-    const started = request.call(presentation) === true;
+    const started = request.call(presentation, { button, userInitiated: true }) === true;
     if (!started) return false;
     event.preventDefault();
     event.stopPropagation();

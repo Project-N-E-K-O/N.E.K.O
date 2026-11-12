@@ -360,6 +360,49 @@ const _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES = Object.freeze({
     })
 });
 
+const _NEKO_IDLE_SLEEP_VISUAL_ACTION_PROFILES = Object.freeze({
+    cat2Back1_1: Object.freeze({
+        key: 'cat2Back1_1', slot: 'action.cat2.back1_1', capability: 'cat2_back1_1',
+        requestName: 'requestCat2Back1_1', tier: 'cat2', terminalTier: 'cat1',
+        layout: 'wide-125-centered',
+        startedReason: 'cat2-back1-1-action', cancelledReason: 'cat2-back1-1-action-cancelled',
+        finishedReason: 'cat2-back1-1-action-finished'
+    }),
+    cat2Turn1: Object.freeze({
+        key: 'cat2Turn1', slot: 'action.cat2.turn_1', capability: 'cat2_turn_1',
+        requestName: 'requestCat2Turn1', tier: 'cat2',
+        layout: 'wide-centered',
+        startedReason: 'cat2-turn-1-action', cancelledReason: 'cat2-turn-1-action-cancelled',
+        finishedReason: 'cat2-turn-1-action-finished'
+    }),
+    cat3Turn2: Object.freeze({
+        key: 'cat3Turn2', slot: 'action.cat3.turn_2', capability: 'cat3_turn_2',
+        requestName: 'requestCat3Turn2', tier: 'cat3',
+        layout: 'normal',
+        startedReason: 'cat3-turn-2-action', cancelledReason: 'cat3-turn-2-action-cancelled',
+        finishedReason: 'cat3-turn-2-action-finished'
+    }),
+    cat3Back1_1: Object.freeze({
+        key: 'cat3Back1_1', slot: 'action.cat3.back1_1', capability: 'cat3_back1_1',
+        requestName: 'requestCat3Back1_1', tier: 'cat3', terminalTier: 'cat1',
+        layout: 'normal',
+        startedReason: 'cat3-back1-1-action', cancelledReason: 'cat3-back1-1-action-cancelled',
+        finishedReason: 'cat3-back1-1-action-finished'
+    }),
+    cat3Back1_2: Object.freeze({
+        key: 'cat3Back1_2', slot: 'action.cat3.back1_2', capability: 'cat3_back1_2',
+        requestName: 'requestCat3Back1_2', tier: 'cat3', terminalTier: 'cat1',
+        layout: 'normal',
+        startedReason: 'cat3-back1-2-action', cancelledReason: 'cat3-back1-2-action-cancelled',
+        finishedReason: 'cat3-back1-2-action-finished'
+    })
+});
+
+const _NEKO_IDLE_VISUAL_ACTION_PROFILES = Object.freeze({
+    ..._NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES,
+    ..._NEKO_IDLE_SLEEP_VISUAL_ACTION_PROFILES
+});
+
 const _NEKO_IDLE_CAT1_RANDOM_VISUAL_ACTION_KEYS = Object.freeze([
     'happy',
     'touch',
@@ -368,15 +411,30 @@ const _NEKO_IDLE_CAT1_RANDOM_VISUAL_ACTION_KEYS = Object.freeze([
     'love1',
     'wagging'
 ]);
-
-function _pickNekoIdleCat1RandomVisualActionKey() {
+function _pickNekoIdleRandomVisualActionKey(tier) {
     const roll = Math.max(0, Math.min(0.999999999999, Number(Math.random()) || 0));
+    if (tier === _NEKO_IDLE_TIER_CAT2) return roll < 0.8 ? 'cat2Turn1' : 'cat2Back1_1';
+    if (tier === _NEKO_IDLE_TIER_CAT3) {
+        if (roll < 0.8) return 'cat3Turn2';
+        return roll < 0.9 ? 'cat3Back1_1' : 'cat3Back1_2';
+    }
+    if (tier !== _NEKO_IDLE_TIER_CAT1) return '';
     const index = Math.floor(roll * _NEKO_IDLE_CAT1_RANDOM_VISUAL_ACTION_KEYS.length);
     return _NEKO_IDLE_CAT1_RANDOM_VISUAL_ACTION_KEYS[index] || '';
 }
 
 function _getNekoIdleCat1VisualActionProfile(actionKey) {
-    return _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES[actionKey] || null;
+    return _NEKO_IDLE_VISUAL_ACTION_PROFILES[actionKey] || null;
+}
+
+function _getNekoIdleVisualActionTier(profile) {
+    return profile && profile.tier ? profile.tier : _NEKO_IDLE_TIER_CAT1;
+}
+
+function _getNekoIdleVisualActionTerminalTier(profile) {
+    return profile && profile.terminalTier
+        ? profile.terminalTier
+        : _getNekoIdleVisualActionTier(profile);
 }
 
 function _getNekoIdleCat1VisualActionState(button) {
@@ -433,7 +491,7 @@ function _setNekoIdleCat1VisualActionClass(button, activeProfile = null) {
     if (container) {
         container.classList.toggle('is-cat1-visual-action', active);
     }
-    Object.values(_NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES).forEach((profile) => {
+    Object.values(_NEKO_IDLE_VISUAL_ACTION_PROFILES).forEach((profile) => {
         if (!profile.className) return;
         const profileActive = active && activeProfile.key === profile.key;
         button.classList.toggle(profile.className, profileActive);
@@ -458,7 +516,9 @@ function _setNekoIdleCat1VisualActionClass(button, activeProfile = null) {
 function _restoreNekoIdleCat1VisualActionArt(button, state, options = {}) {
     if (!button || options.restoreArt === false) return;
     const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
-    if (tier !== _NEKO_IDLE_TIER_CAT1 || _isNekoIdleReturnDragActionActive(button)) return;
+    const profile = options.profile || null;
+    if ((profile && tier !== _getNekoIdleVisualActionTier(profile)) ||
+        _isNekoIdleReturnDragActionActive(button)) return;
 
     const art = button.querySelector('.neko-idle-return-art');
     const idleSrc = _getNekoIdleReturnCurrentArtUrl(button, tier);
@@ -466,18 +526,36 @@ function _restoreNekoIdleCat1VisualActionArt(button, state, options = {}) {
         _setNekoIdleReturnArtSource(art, idleSrc, tier, { animate: options.animate === true });
     }
 
-    if (state && state.resumeJourney) {
-        _resumeNekoIdleCat1Journey(button);
-    } else {
-        _scheduleNekoIdleCat1JourneySync(button);
-    }
+    if (tier === _NEKO_IDLE_TIER_CAT1) {
+        if (state && state.resumeJourney) {
+            _resumeNekoIdleCat1Journey(button);
+        } else {
+            _scheduleNekoIdleCat1JourneySync(button);
+        }
 
-    _syncNekoIdleCat1CompactMirrorReaction(
-        button,
-        _getNekoIdleReturnContainerFromButton(button),
-        idleSrc,
-        options.reason || 'cat1-visual-action-finished'
-    );
+        _syncNekoIdleCat1CompactMirrorReaction(
+            button,
+            _getNekoIdleReturnContainerFromButton(button),
+            idleSrc,
+            options.reason || 'cat1-visual-action-finished'
+        );
+    }
+}
+
+function _finishNekoIdleVisualActionTierTransition(profile) {
+    if (!profile ||
+        _getNekoIdleVisualActionTerminalTier(profile) === _getNekoIdleVisualActionTier(profile)) {
+        return true;
+    }
+    const autoGoodbye = typeof window !== 'undefined' ? window.nekoAutoGoodbye : null;
+    if (_getNekoIdleVisualActionTerminalTier(profile) !== _NEKO_IDLE_TIER_CAT1 ||
+        !autoGoodbye || typeof autoGoodbye.demoteVisualTierToCat1 !== 'function') {
+        return false;
+    }
+    return autoGoodbye.demoteVisualTierToCat1(
+        profile.finishedReason,
+        profile.finishedReason
+    ) === true;
 }
 
 function _cancelNekoIdleCat1VisualAction(button, options = {}) {
@@ -501,10 +579,18 @@ function _cancelNekoIdleCat1VisualAction(button, options = {}) {
         state.entryTimer = 0;
     }
     _setNekoIdleCat1VisualActionClass(button, null);
-    _restoreNekoIdleCat1VisualActionArt(button, state, options);
+    const requestedReason = options.reason || profile.cancelledReason;
+    const isFinished = requestedReason === profile.finishedReason;
+    const tierTransitionRequired = isFinished &&
+        _getNekoIdleVisualActionTerminalTier(profile) !== _getNekoIdleVisualActionTier(profile);
+    const tierTransitionFinished = !tierTransitionRequired ||
+        _finishNekoIdleVisualActionTierTransition(profile);
+    const reason = tierTransitionFinished ? requestedReason : profile.cancelledReason;
+    if (!tierTransitionRequired || !tierTransitionFinished) {
+        _restoreNekoIdleCat1VisualActionArt(button, state, { ...options, profile, reason });
+    }
     state.resumeJourney = false;
     if (presentationOnTerminal) {
-        const reason = options.reason || profile.cancelledReason;
         const result = _getNekoCatMindCancelResult(reason, profile.finishedReason);
         try {
             presentationOnTerminal(result, { reason });
@@ -530,9 +616,10 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
     if (_isNekoIdleDesktopWindowInteractionActionActive(button)) return false;
     if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return false;
     const currentTier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    const sourceTier = profile.tier || _NEKO_IDLE_TIER_CAT1;
     const prepareCat1 = currentTier !== _NEKO_IDLE_TIER_CAT1 && actionKey === 'scared' &&
         typeof options.prepareCat1 === 'function' ? options.prepareCat1 : null;
-    if (currentTier !== _NEKO_IDLE_TIER_CAT1 && !prepareCat1) return false;
+    if (currentTier !== sourceTier && !prepareCat1) return false;
     if (_isNekoIdleReturnDragActionBlocking(button) || _isAnyNekoIdleReturnDragActionBlocking()) return false;
     if (_isNekoIdleCompactSurfaceDragging()) return false;
     if (_isNekoCatMindReturnPending(button) || _isAnyNekoCatMindReturnPending()) return false;
@@ -553,8 +640,11 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
     }
 
     const state = _getNekoIdleCat1VisualActionState(button);
-    const journey = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
-    const shouldResumeJourney = _shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey);
+    const journey = sourceTier === _NEKO_IDLE_TIER_CAT1
+        ? button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey
+        : null;
+    const shouldResumeJourney = sourceTier === _NEKO_IDLE_TIER_CAT1 &&
+        _shouldResumeNekoIdleJourneyAfterActionTakeover(art, journey);
     if (shouldResumeJourney && !journey.paused) {
         _pauseNekoIdleCat1Journey(button);
     }
@@ -595,7 +685,9 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
             }, delayMs);
         });
     };
-    if (options.animateEntry === true) {
+    const animateEntry = options.animateEntry === true ||
+        (options.animateEntry !== false && profile.animateEntry === true);
+    if (animateEntry) {
         // Chromium shares an animated-image timeline across elements using the
         // same URL. Alternate two bounded URLs so the post-fade main art starts
         // at frame zero without growing the decoded-image cache indefinitely.
@@ -610,7 +702,7 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
                 reason: profile.cancelledReason
             });
         };
-        _setNekoIdleReturnArtSource(art, actionSrc, _NEKO_IDLE_TIER_CAT1, {
+        _setNekoIdleReturnArtSource(art, actionSrc, sourceTier, {
             animate: true,
             restartAnimation: true,
             playbackToken: entryPlaybackToken,
@@ -649,16 +741,18 @@ function _playNekoIdleCat1VisualAction(button, actionKey, options = {}) {
             state.entryTimer = setTimeout(verifyEntry, _NEKO_IDLE_RETURN_TRANSITION_MS);
         }
     } else {
-        _setNekoIdleReturnArtSource(art, actionSrc, _NEKO_IDLE_TIER_CAT1, { animate: false });
+        _setNekoIdleReturnArtSource(art, actionSrc, sourceTier, { animate: false });
         scheduleActionFinish();
     }
-    _syncNekoIdleCat1CompactMirrorReaction(
-        button,
-        container,
-        actionSrc,
-        profile.startedReason,
-        profile.layout
-    );
+    if (sourceTier === _NEKO_IDLE_TIER_CAT1) {
+        _syncNekoIdleCat1CompactMirrorReaction(
+            button,
+            container,
+            actionSrc,
+            profile.startedReason,
+            profile.layout
+        );
+    }
 
     return true;
 }
@@ -920,10 +1014,29 @@ function _requestNekoIdleCat1HissStretchPresentation() {
 function _requestNekoIdleCat1VisualActionPresentation(actionKey, options = {}) {
     const profile = _getNekoIdleCat1VisualActionProfile(actionKey);
     if (!profile || !_isNekoCatActionResourceAvailable(profile.capability)) return false;
+    const userButton = options.userInitiated === true ? options.button : null;
+    if (userButton && _isNekoCatMindAudioActionActive()) {
+        const userTier = _normalizeNekoIdleReturnTier(
+            userButton.getAttribute('data-neko-idle-tier')
+        );
+        if (userTier === _NEKO_IDLE_TIER_CAT1) {
+            _stopNekoIdleCat1AmbientSoundAudio({ reason: 'user-visual-action' });
+        } else if (userTier === _NEKO_IDLE_TIER_CAT2 || userTier === _NEKO_IDLE_TIER_CAT3) {
+            _stopNekoIdleSleepSoundAudio({ reason: 'user-visual-action' });
+        }
+    }
     const preparedButton = actionKey === 'scared' && typeof options.prepareCat1 === 'function'
         ? options.button
         : null;
-    const button = preparedButton || _findNekoIdleCat1PresentationButton();
+    const sourceTier = profile.tier || _NEKO_IDLE_TIER_CAT1;
+    const gate = sourceTier === _NEKO_IDLE_TIER_CAT1 ? null : _getNekoCatMindRuntimeGateSnapshot();
+    if (gate && (!gate.validCatRuntime || gate.tier !== sourceTier || gate.returnPending ||
+        gate.dragPending || gate.dragging || gate.edgePeekActive || gate.transitionActive ||
+        gate.activeIndependentAction || !gate.returnBallVisible || gate.chatSurfaceDragging ||
+        gate.yarnDragActive || gate.yarnSettling)) return false;
+    const button = preparedButton || (sourceTier === _NEKO_IDLE_TIER_CAT1
+        ? _findNekoIdleCat1PresentationButton()
+        : _findNekoCatMindVisibleButtonForTier(sourceTier));
     return !!(button && _playNekoIdleCat1VisualAction(button, actionKey, options));
 }
 
@@ -946,7 +1059,7 @@ if (typeof window !== 'undefined') {
         requestCat1Touch: _requestNekoIdleCat1TouchPresentation,
         requestCat1Cosplay1: _requestNekoIdleCat1Cosplay1Presentation
     };
-    Object.values(_NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES).forEach((profile) => {
+    Object.values(_NEKO_IDLE_VISUAL_ACTION_PROFILES).forEach((profile) => {
         if (presentationApi[profile.requestName]) return;
         presentationApi[profile.requestName] = (options = {}) => (
             _requestNekoIdleCat1VisualActionPresentation(profile.key, options)

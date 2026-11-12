@@ -100,6 +100,41 @@ const CASES = Object.freeze({
   }),
 });
 
+const SLEEP_CASES = Object.freeze({
+  cat2Back1_1: Object.freeze({
+    capability: 'cat2_back1_1', slot: 'action.cat2.back1_1',
+    requestApi: 'requestCat2Back1_1', url: 'cat2-back1-1.webp?v=1', duration: 4040,
+    layout: 'wide-125-centered', tier: 'cat2', terminalTier: 'cat1',
+    started: 'cat2-back1-1-action', finished: 'cat2-back1-1-action-finished',
+  }),
+  cat2Turn1: Object.freeze({
+    capability: 'cat2_turn_1', slot: 'action.cat2.turn_1',
+    requestApi: 'requestCat2Turn1', url: 'cat2-turn-1.webp?v=1', duration: 5040,
+    layout: 'wide-centered', tier: 'cat2',
+    started: 'cat2-turn-1-action', finished: 'cat2-turn-1-action-finished',
+  }),
+  cat3Turn2: Object.freeze({
+    capability: 'cat3_turn_2', slot: 'action.cat3.turn_2',
+    requestApi: 'requestCat3Turn2', url: 'cat3-turn-2.webp?v=1', duration: 5930,
+    layout: 'normal', tier: 'cat3',
+    started: 'cat3-turn-2-action', finished: 'cat3-turn-2-action-finished',
+  }),
+  cat3Back1_1: Object.freeze({
+    capability: 'cat3_back1_1', slot: 'action.cat3.back1_1',
+    requestApi: 'requestCat3Back1_1', url: 'cat3-back1-1.webp?v=1', duration: 5040,
+    layout: 'normal', tier: 'cat3', terminalTier: 'cat1',
+    started: 'cat3-back1-1-action', finished: 'cat3-back1-1-action-finished',
+  }),
+  cat3Back1_2: Object.freeze({
+    capability: 'cat3_back1_2', slot: 'action.cat3.back1_2',
+    requestApi: 'requestCat3Back1_2', url: 'cat3-back1-2.webp?v=1', duration: 5390,
+    layout: 'normal', tier: 'cat3', terminalTier: 'cat1',
+    started: 'cat3-back1-2-action', finished: 'cat3-back1-2-action-finished',
+  }),
+});
+
+const ALL_CASES = Object.freeze({ ...CASES, ...SLEEP_CASES });
+
 function between(source, startMarker, endMarker, label) {
   const start = source.indexOf(startMarker);
   const end = source.indexOf(endMarker, start);
@@ -166,9 +201,10 @@ function harness(options = {}) {
     compactDrag: false, pending: false, anyPending: false, transition: false,
     edge: false, independent: false, audio: false,
   };
-  const capabilities = new Set(Object.values(CASES).map((entry) => entry.capability));
-  const urls = Object.fromEntries(Object.entries(CASES).map(([key, entry]) => [key, entry.url]));
-  const durations = Object.fromEntries(Object.values(CASES).map((entry) => [entry.url, entry.duration]));
+  const capabilities = new Set(Object.values(ALL_CASES).map((entry) => entry.capability));
+  const urls = Object.fromEntries(Object.entries(ALL_CASES).map(([key, entry]) => [key, entry.url]));
+  const durations = Object.fromEntries(Object.values(ALL_CASES).map((entry) => [entry.url, entry.duration]));
+  const demotions = [];
   let resolveDuration;
   const art = options.hasArt === false ? null : {
     src: options.artSrc || 'idle.gif?v=1',
@@ -192,9 +228,20 @@ function harness(options = {}) {
     removeAttribute: (name) => attributes.delete(name),
     querySelector: (selector) => selector === '.neko-idle-return-art' ? art : null,
   };
-  const keyBySlot = Object.fromEntries(Object.entries(CASES).map(([key, entry]) => [entry.slot, key]));
+  const keyBySlot = Object.fromEntries(Object.entries(ALL_CASES).map(([key, entry]) => [entry.slot, key]));
   const context = {
-    window: {}, Date: { now: () => nowMs }, _NEKO_IDLE_TIER_CAT1: 'cat1',
+    window: {
+      nekoAutoGoodbye: {
+        demoteVisualTierToCat1(source, reason) {
+          if (gates.tier !== 'cat2' && gates.tier !== 'cat3') return false;
+          demotions.push({ from: gates.tier, source, reason });
+          gates.tier = 'cat1';
+          return true;
+        },
+      },
+    },
+    Date: { now: () => nowMs },
+    _NEKO_IDLE_TIER_CAT1: 'cat1', _NEKO_IDLE_TIER_CAT2: 'cat2', _NEKO_IDLE_TIER_CAT3: 'cat3',
     _NEKO_IDLE_RETURN_TRANSITION_MS: 300,
     _isNekoCatActionResourceAvailable: (key) => capabilities.has(key),
     _getNekoIdleCat1VisualActionAssetUrlForSlot: (slot) => urls[keyBySlot[slot]] || '',
@@ -218,7 +265,9 @@ function harness(options = {}) {
     _getNekoIdleReturnContainerFromButton: () => container,
     _syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton: () => {},
     _isNekoIdleReturnDragActionActive: () => false,
-    _getNekoIdleReturnCurrentArtUrl: () => 'idle.gif?v=1',
+    _getNekoIdleReturnCurrentArtUrl: (_button, tier) => tier === 'cat1'
+      ? 'idle.gif?v=1'
+      : `${tier}-idle.gif?v=1`,
     _pauseNekoIdleCat1Journey: () => { journeyCalls.pause += 1; journey.paused = true; },
     _resumeNekoIdleCat1Journey: () => { journeyCalls.resume += 1; journey.paused = false; },
     _scheduleNekoIdleCat1JourneySync: () => { journeyCalls.sync += 1; },
@@ -262,10 +311,21 @@ function harness(options = {}) {
   };
   vm.createContext(context);
   vm.runInContext(visualSource(), context, { filename: ACTIONS_PATH });
-  vm.runInContext('this.profiles = _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES;', context);
+  vm.runInContext(between(
+    ACTIONS_SOURCE,
+    'function _requestNekoIdleCat1VisualActionPresentation',
+    'function _requestNekoIdleCat1HappyPresentation',
+    'visual action presentation request',
+  ), context, { filename: ACTIONS_PATH });
+  vm.runInContext(
+    `this.profiles = _NEKO_IDLE_VISUAL_ACTION_PROFILES;
+     this.requestVisual = _requestNekoIdleCat1VisualActionPresentation;`,
+    context,
+  );
   return {
     context, button, container, art, journey, gates, capabilities, urls,
     attributes, buttonClasses, containerClasses, sources, mirrors, timers, terminals, cleanup, journeyCalls,
+    demotions,
     play(key, onTerminal = (result, detail) => terminals.push({ result, detail })) {
       const wrapper = CASES[key].wrapper;
       return wrapper
@@ -273,6 +333,11 @@ function harness(options = {}) {
         : context._playNekoIdleCat1VisualAction(button, key, { onTerminal });
     },
     cancel(cancelOptions) { context._cancelNekoIdleCat1VisualAction(button, cancelOptions); },
+    playSleep(key, onTerminal = (result, detail) => terminals.push({ result, detail })) {
+      const entry = SLEEP_CASES[key];
+      gates.tier = entry.tier;
+      return context._playNekoIdleCat1VisualAction(button, key, { onTerminal });
+    },
     resolveDuration(ms) { assert.equal(typeof resolveDuration, 'function'); resolveDuration(ms); },
     setNow(ms) { nowMs = ms; },
   };
@@ -283,24 +348,75 @@ async function flush() {
   await Promise.resolve();
 }
 
-test('every CAT1 visual action shares one kernel with an explicit profile and request API', () => {
+test('every visual action shares one kernel with an explicit profile and request API', () => {
   const source = visualSource();
   assert.match(source, /function _playNekoIdleCat1VisualAction\(button, actionKey, options = \{\}\)/);
   assert.match(source, /function _cancelNekoIdleCat1VisualAction\(button, options = \{\}\)/);
   assert.doesNotMatch(source, /_playNekoIdleSound\s*\(|_beginNekoCatMindStateAction\s*\(/);
   const h = harness();
-  assert.deepEqual(Object.keys(h.context.profiles), Object.keys(CASES));
-  for (const [key, entry] of Object.entries(CASES)) {
+  assert.deepEqual(Object.keys(h.context.profiles), Object.keys(ALL_CASES));
+  for (const [key, entry] of Object.entries(ALL_CASES)) {
     assert.equal(h.context.profiles[key].capability, entry.capability);
     assert.equal(h.context.profiles[key].slot, entry.slot);
-    assert.equal(h.context.profiles[key].requestName, entry.requestApi);
     assert.equal(h.context.profiles[key].layout, entry.layout);
+    assert.equal(h.context._getNekoIdleVisualActionTier(h.context.profiles[key]), entry.tier || 'cat1');
+    assert.equal(h.context._getNekoIdleVisualActionTerminalTier(h.context.profiles[key]), entry.terminalTier || entry.tier || 'cat1');
+    assert.equal(h.context.profiles[key].animateEntry === true, entry.animateEntry === true);
     assert.equal(h.context.profiles[key].className, entry.legacyClassName,
       `${key} has no action-specific class beyond the three compatibility classes`);
     if (entry.wrapper) assert.equal(typeof h.context[entry.wrapper], 'function');
   }
   assert.match(ACTIONS_SOURCE, /presentationApi\[profile\.requestName\]/,
     'every profile contributes its named public presentation API');
+});
+
+test('five sleep-tier actions start in their filename tier and keep explicit terminal behavior', async () => {
+  for (const [key, entry] of Object.entries(SLEEP_CASES)) {
+    const h = harness();
+    assert.equal(h.playSleep(key), true, `${key} starts from ${entry.tier}`);
+    assert.equal(h.attributes.get('data-neko-cat1-visual-action'), key);
+    assert.equal(h.attributes.get('data-neko-cat1-visual-layout') || 'normal', entry.layout);
+    assert.equal(h.sources[0].src, entry.url);
+    assert.equal(h.sources[0].tier, entry.tier);
+    assert.equal(h.journeyCalls.pause, 0, 'sleep actions do not own the CAT1 journey');
+    assert.equal(h.mirrors.length, 0, 'sleep actions do not publish a CAT1 compact mirror');
+
+    if (entry.animateEntry) {
+      assert.equal(h.sources[0].options.animate, true);
+      h.art.src = `${entry.url}&entry=1`;
+      h.sources[0].options.onTransitionEnd();
+    } else {
+      assert.deepEqual(h.sources[0].options, { animate: false });
+    }
+    await flush();
+    const finishTimer = h.timers.find((timer) => timer.delay === entry.duration);
+    assert.ok(finishTimer, `${key} owns one audited cycle`);
+    finishTimer.callback();
+
+    if (entry.terminalTier === 'cat1') {
+      assert.deepEqual(h.demotions, [{
+        from: entry.tier, source: entry.finished, reason: entry.finished,
+      }]);
+      assert.equal(h.gates.tier, 'cat1');
+      assert.equal(h.sources.length, 1, 'tier presentation owns the terminal CAT1 art');
+    } else {
+      assert.equal(h.demotions.length, 0);
+      assert.deepEqual(h.sources.at(-1), {
+        src: `${entry.tier}-idle.gif?v=1`, tier: entry.tier, options: { animate: false },
+      });
+      assert.equal(h.gates.tier, entry.tier);
+    }
+    assert.equal(h.terminals[0].result, 'done');
+    assert.equal(h.terminals[0].detail.reason, entry.finished);
+  }
+
+  const actionSourceWithoutProfiles = ACTIONS_SOURCE.replace(
+    between(ACTIONS_SOURCE, 'const _NEKO_IDLE_CAT1_VISUAL_ACTION_PROFILES', 'const _NEKO_IDLE_CAT1_RANDOM_VISUAL_ACTION_KEYS', 'profiles'),
+    '',
+  );
+  for (const entry of Object.values(SLEEP_CASES)) {
+    assert.doesNotMatch(actionSourceWithoutProfiles, new RegExp(`['\"]${entry.capability}['\"]`));
+  }
 });
 
 test('CAT1 idle random pool contains six equal-width visual actions including mouse', () => {
@@ -327,8 +443,28 @@ test('CAT1 idle random pool contains six equal-width visual actions including mo
   for (const [roll, expected] of cases) {
     h.context.__idleRandomRoll = roll;
     vm.runInContext('Math.random = () => globalThis.__idleRandomRoll;', h.context);
-    assert.equal(h.context._pickNekoIdleCat1RandomVisualActionKey(), expected, String(roll));
+    assert.equal(h.context._pickNekoIdleRandomVisualActionKey('cat1'), expected, String(roll));
   }
+});
+
+test('sleep-tier visual pools keep turn at 80% and split CAT3 back evenly', () => {
+  const h = harness();
+  const cases = [
+    ['cat2', 0, 'cat2Turn1'],
+    ['cat2', 0.799999, 'cat2Turn1'],
+    ['cat2', 0.8, 'cat2Back1_1'],
+    ['cat3', 0.799999, 'cat3Turn2'],
+    ['cat3', 0.8, 'cat3Back1_1'],
+    ['cat3', 0.899999, 'cat3Back1_1'],
+    ['cat3', 0.9, 'cat3Back1_2'],
+    ['cat3', 0.999999, 'cat3Back1_2'],
+  ];
+  for (const [tier, roll, expected] of cases) {
+    h.context.__idleRandomRoll = roll;
+    vm.runInContext('Math.random = () => globalThis.__idleRandomRoll;', h.context);
+    assert.equal(h.context._pickNekoIdleRandomVisualActionKey(tier), expected, `${tier} ${roll}`);
+  }
+  assert.equal(h.context._pickNekoIdleRandomVisualActionKey('none'), '');
 });
 
 test('each visual action owns one audited cycle, restores directly and restarts its animation', async () => {
@@ -757,7 +893,10 @@ test('presentation sync preserves the active visual animation instead of restart
     'return presentation sync',
   );
   let currentSrc = 'touch.gif?v=1';
+  let visualActionActive = true;
+  let visualActionTier = 'cat1';
   const writes = [];
+  const visualCancels = [];
   let journeySyncs = 0;
   const art = { getAttribute: (name) => name === 'src' ? currentSrc : '' };
   const container = { setAttribute() {} };
@@ -782,8 +921,17 @@ test('presentation sync preserves the active visual animation instead of restart
     _syncNekoIdleCat1AmbientSoundForTier: () => {},
     _isNekoIdleCat1EatActionActive: () => false,
     _isNekoIdleCat1PlayActionActive: () => false,
-    _isNekoIdleCat1VisualActionActive: () => true,
+    _isNekoIdleCat1VisualActionActive: () => visualActionActive,
+    _getNekoIdleCat1ActiveVisualActionProfile: () => visualActionActive
+      ? { tier: visualActionTier }
+      : null,
+    _getNekoIdleVisualActionTier: (profile) => profile.tier,
+    _cancelNekoIdleCat1VisualAction: (_button, options) => {
+      visualCancels.push({ ...options });
+      visualActionActive = false;
+    },
     _getNekoIdleCat1VisualActionAssetUrl: () => 'touch.gif?v=1',
+    _getNekoIdleReturnAssetUrl: (tier) => `${tier}-idle.gif?v=1`,
     _isNekoIdleAnimationRestartUrlForSource: (candidate, base) => candidate === base,
     _setNekoIdleReturnArtSource: (_art, src, tier, options) => writes.push({
       src, tier, options: { ...options },
@@ -798,6 +946,16 @@ test('presentation sync preserves the active visual animation instead of restart
   currentSrc = 'idle.gif?v=1';
   context._applyNekoIdleReturnPresentation(button, 'cat1');
   assert.deepEqual(writes, [{ src: 'touch.gif?v=1', tier: 'cat1', options: { animate: false } }]);
+
+  visualActionActive = true;
+  visualActionTier = 'cat2';
+  currentSrc = 'cat2-turn.gif?v=1';
+  context._applyNekoIdleReturnPresentation(button, 'cat1');
+  assert.deepEqual(visualCancels, [{ restoreArt: false, reason: 'tier-change' }],
+    'an external tier change releases a sleep action immediately');
+  assert.deepEqual(writes.at(-1), {
+    src: 'cat1-idle.gif?v=1', tier: 'cat1', options: {},
+  });
 });
 
 test('CAT1 right-click gives stroke 50% and splits the other 50% across five independent actions', () => {
@@ -819,11 +977,16 @@ test('CAT1 right-click gives stroke 50% and splits the other 50% across five ind
   let goodbye = false;
   let requestAllowed = true;
   const requests = [];
+  const requestOptions = [];
   const presentation = {
-    requestCat1Stroke: () => { requests.push('requestCat1Stroke'); return requestAllowed; },
+    requestCat1Stroke: (options) => {
+      requests.push('requestCat1Stroke'); requestOptions.push(options); return requestAllowed;
+    },
   };
   for (const requestName of expectedOtherRequests) {
-    presentation[requestName] = () => { requests.push(requestName); return requestAllowed; };
+    presentation[requestName] = (options) => {
+      requests.push(requestName); requestOptions.push(options); return requestAllowed;
+    };
   }
   const context = {
     window: { NekoCatIdlePresentation: presentation },
@@ -884,6 +1047,8 @@ test('CAT1 right-click gives stroke 50% and splits the other 50% across five ind
     const right = event(2);
     assert.equal(context._handleNekoIdleCat1VisualActionRandomContextMenu(button, right), true);
     assert.equal(requests.at(-1), expectedRequest, String(roll));
+    assert.equal(requestOptions.at(-1).button, button);
+    assert.equal(requestOptions.at(-1).userInitiated, true);
     assert.deepEqual([right.prevented, right.stopped], [1, 1]);
   }
   requestAllowed = false;
@@ -954,6 +1119,7 @@ test('CAT2 and CAT3 right-click demote to CAT1 and request scared with the share
     assert.equal(requests.length, 1);
     assert.equal(requests[0].animateEntry, true);
     assert.equal(requests[0].button, button);
+    assert.equal(requests[0].userInitiated, true);
     assert.equal(typeof requests[0].prepareCat1, 'function');
     assert.deepEqual([event.prevented, event.stopped], [1, 1]);
   }
@@ -1031,6 +1197,53 @@ test('sleep-tier right-click stays atomic while a transition hard gate is active
   assert.equal(demotions, 0);
   assert.equal(requests, 0);
   assert.deepEqual([event.prevented, event.stopped], [0, 0]);
+});
+
+test('sleep-tier actions stay independent from middle-button input', () => {
+  assert.doesNotMatch(RETURN_SOURCE, /_NEKO_IDLE_SLEEP_VISUAL_ACTION_PREVIEW_REQUESTS/);
+  assert.doesNotMatch(RETURN_SOURCE, /_handleNekoIdleSleepVisualActionMiddleClick/);
+  assert.doesNotMatch(RETURN_SOURCE, /__nekoIdleSleepVisualActionPreviewState/);
+});
+
+test('user visual actions preempt only the active Cat Mind audio before normal gates run', () => {
+  const h = harness();
+  const interruptions = [];
+  h.gates.tier = 'cat3';
+  h.gates.audio = true;
+  h.context._getNekoCatMindRuntimeGateSnapshot = () => ({
+    validCatRuntime: true,
+    tier: h.gates.tier,
+    returnPending: false,
+    dragPending: false,
+    dragging: false,
+    edgePeekActive: false,
+    transitionActive: false,
+    activeIndependentAction: h.gates.independent || h.gates.audio,
+    returnBallVisible: true,
+    chatSurfaceDragging: false,
+    yarnDragActive: false,
+    yarnSettling: false,
+  });
+  h.context._findNekoCatMindVisibleButtonForTier = () => h.button;
+  h.context._stopNekoIdleSleepSoundAudio = (options) => {
+    interruptions.push({ kind: 'sleep', ...options });
+    h.gates.audio = false;
+  };
+  h.context._stopNekoIdleCat1AmbientSoundAudio = (options) => {
+    interruptions.push({ kind: 'cat1', ...options });
+    h.gates.audio = false;
+  };
+
+  assert.equal(h.context.requestVisual(
+    'cat3Turn2', { button: h.button }
+  ), false, 'non-user presentation still respects audio ownership');
+  assert.equal(interruptions.length, 0);
+
+  assert.equal(h.context.requestVisual(
+    'cat3Turn2', { button: h.button, userInitiated: true }
+  ), true);
+  assert.deepEqual(interruptions, [{ kind: 'sleep', reason: 'user-visual-action' }]);
+  assert.equal(h.button.__nekoIdleCat1VisualActionState.actionKey, 'cat3Turn2');
 });
 
 test('individual visual APIs stay presentation-only while Cat Mind uses grouped random and timed actions', () => {

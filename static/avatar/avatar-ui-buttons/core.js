@@ -387,6 +387,8 @@ const _NEKO_CAT_MIND_ACTION_IDS = Object.freeze({
     CAT1_SMALL_MOVE: 'cat1_small_move',
     CAT1_PLAY_YARN: 'cat1_play_yarn',
     CAT1_IDLE_RANDOM: 'cat1_idle_random',
+    CAT2_IDLE_RANDOM: 'cat2_idle_random',
+    CAT3_IDLE_RANDOM: 'cat3_idle_random',
     CAT1_INACTIVE_SAD: 'cat1_inactive_sad',
     CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
     CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback'
