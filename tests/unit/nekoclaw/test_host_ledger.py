@@ -394,6 +394,19 @@ async def test_unfinished_commissions_of_an_earlier_process_fail_on_open(tmp_pat
     }
 
 
+async def test_a_move_limited_to_some_statuses_is_refused_from_others(ledger):
+    commission = await _file(ledger)
+    await _walk(ledger, commission.id, "working")
+    await ledger.transition(commission.id, "failed", reason="test")
+
+    # failed -> working is allowed in general, but not when only waiting may move.
+    moved = await ledger.transition(commission.id, "working", reason="answered", only_from=("waiting_user",))
+
+    assert not moved.applied
+    assert (await ledger.get(commission.id)).status == "failed"
+    assert (await ledger.transition(commission.id, "working", reason="taken up")).applied
+
+
 async def test_reopening_in_the_same_process_object_is_refused(ledger):
     commission = await _file(ledger)
     await _walk(ledger, commission.id, "working")

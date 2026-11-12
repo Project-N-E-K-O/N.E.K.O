@@ -525,6 +525,7 @@ class Ledger:
         status: str,
         reason: str,
         values: dict[str, Any],
+        only_from: frozenset[str] | None = None,
     ) -> Transition:
         if status not in STATUSES:
             raise ValueError(f"unknown status {status!r}")
@@ -536,6 +537,8 @@ class Ledger:
             return Transition(False, None, None, "unknown commission")
         if status == current.status:
             return Transition(False, current, current.status, f"already {status}")
+        if only_from is not None and current.status not in only_from:
+            return Transition(False, current, current.status, f"{current.status}, not {sorted(only_from)}")
         if status not in ALLOWED_TRANSITIONS[current.status]:
             refusal = f"{current.status} cannot become {status}"
             self._event(conn, commission_id, "transition_refused", {"from": current.status, "to": status, "reason": reason})
@@ -568,9 +571,13 @@ class Ledger:
         *,
         reason: str = "",
         outbox: Iterable[tuple[str, dict[str, Any]]] = (),
+        only_from: Iterable[str] | None = None,
         **values: Any,
     ) -> Transition:
         """Move a commission to ``status`` if ``ALLOWED_TRANSITIONS`` permits it.
+
+        With ``only_from``, the move is also refused unless the commission is
+        in one of those statuses, checked in the same transaction.
 
         This is the only way a status changes. A refused move changes nothing
         and is recorded as a ``transition_refused`` event; in particular a
@@ -584,9 +591,10 @@ class Ledger:
         happen. Their row ids are in ``Transition.outbox_ids``.
         """
         reports = [(kind, dict(payload)) for kind, payload in outbox]
+        sources = None if only_from is None else frozenset(only_from)
 
         def work(conn: sqlite3.Connection) -> Transition:
-            moved = self._transition(conn, commission_id, status, reason, values)
+            moved = self._transition(conn, commission_id, status, reason, values, sources)
             if not moved.applied or not reports:
                 return moved
             ids = tuple(self._outbox_insert(conn, commission_id, kind, payload) for kind, payload in reports)

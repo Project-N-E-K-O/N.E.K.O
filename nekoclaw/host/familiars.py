@@ -1123,8 +1123,13 @@ class FamiliarManager:
                 return await future
             finally:
                 session.question = None
-                # Refused, and rightly so, when the commission was stopped meanwhile.
-                await asyncio.shield(self._ledger.transition(commission_id, "working", reason="the user answered"))
+                # Back to working only from waiting: a commission stopped, or
+                # failed (by shutting down, say) meanwhile, stays as it is.
+                await asyncio.shield(
+                    self._ledger.transition(
+                        commission_id, "working", reason="the user answered", only_from=("waiting_user",)
+                    )
+                )
 
     async def ask_permission(self, commission_id: str, ask: PermissionAsk) -> str:
         """Ask the user to approve something; the ``Asker`` of the permission gate."""

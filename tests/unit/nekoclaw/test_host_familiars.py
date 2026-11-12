@@ -565,6 +565,24 @@ async def test_question_for_the_user_waits_and_the_answer_goes_back(hosts, tmp_p
     assert statuses == ["working", "waiting_user", "working", "done"]
 
 
+async def test_a_question_cleared_after_its_commission_failed_does_not_set_it_working(hosts, tmp_path):
+    questions = [{"id": "how", "question": "Sort by month or by place?", "options": [{"label": "month"}]}]
+    llm = ScriptedLLM([[call("ask_user_question", {"questions": questions}), finish("tool_calls")]])
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    session = host.familiars._sessions[receipt.commission_id]
+    await wait_until(lambda: session.question is not None, what="the question waiting")
+
+    # Failed while the question waits (as shutting down does), then the
+    # callback that waited is given up on.
+    await host.ledger.transition(receipt.commission_id, "failed", reason="the host was shut down")
+    session.question.cancel()
+    await wait_until(lambda: session.question is None, what="the question cleared")
+
+    assert (await host.ledger.get(receipt.commission_id)).status == "failed"
+
+
 async def test_waiting_report_keeps_the_session_for_the_answer(hosts, tmp_path):
     llm = ScriptedLLM(
         [
