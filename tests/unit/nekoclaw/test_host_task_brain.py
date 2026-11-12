@@ -953,7 +953,8 @@ async def test_deferred_work_stopped_before_it_is_bound_does_not_call_the_plugin
     await wait_until(lambda: held, what="the binding being started")
     # Stopped before the binding gets to call the plugin.
     await host.abort(receipt.commission_id)
-    await held[0]
+    # The binding now runs to its end.
+    assert await held[0] is None
 
     assert bound == []
     assert (await host.ledger.get(receipt.commission_id)).status == "cancelled"
