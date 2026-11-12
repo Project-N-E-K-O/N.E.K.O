@@ -1081,7 +1081,16 @@ def _entry_field_issues(item: dict[str, object], keyed: bool) -> list[tuple[str,
 @pytest.mark.parametrize("keyed", [False, True])
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(True, None), (False, None), ("false", "warning"), ("yes", "warning"), (1, "error"), ("maybe", "error")],
+    [
+        (True, None),
+        (False, None),
+        ("false", "error"),
+        ("no", "error"),
+        ("yes", "error"),
+        ("", "error"),
+        (1, "error"),
+        ("maybe", "error"),
+    ],
 )
 @pytest.mark.parametrize("field", ["auto_start", "enabled", "dynamic", "model_validate", "quick_action"])
 def test_entry_validation_checks_bool_fields(field: str, value: object, expected: str | None, keyed: bool) -> None:
@@ -1092,6 +1101,8 @@ def test_entry_validation_checks_bool_fields(field: str, value: object, expected
     else:
         assert [level for level, _message in issues] == [expected]
         assert f".{field}" in issues[0][1]
+        if isinstance(value, str):
+            assert "reads any non-empty string as true" in issues[0][1]
 
 
 @pytest.mark.parametrize("keyed", [False, True])

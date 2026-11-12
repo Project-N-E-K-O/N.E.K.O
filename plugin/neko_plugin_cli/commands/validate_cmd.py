@@ -749,8 +749,22 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
 
 def _check_entry_field_types(item: dict[str, object], label: str, issues: list[tuple[str, str]]) -> None:
     for key in _PLUGIN_ENTRY_BOOL_FIELDS:
-        _check_optional_bool(item, key, f"{label}.{key}", issues)
+        _check_entry_bool(item.get(key), f"{label}.{key}", issues)
     _check_entry_timeout(item.get("timeout"), f"{label}.timeout", issues)
+
+
+def _check_entry_bool(value: object, label: str, issues: list[tuple[str, str]]) -> None:
+    # Unlike _check_optional_bool, no string spelling is safe here: the registry
+    # applies bool(), so "false", "no", "0" and "off" all read as True.
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, str):
+        issues.append((
+            "error",
+            f"{label} must be true/false, not a string; the registry reads any non-empty string as true",
+        ))
+        return
+    issues.append(("error", f"{label} must be a boolean"))
 
 
 def _check_entry_timeout(value: object, label: str, issues: list[tuple[str, str]]) -> None:
