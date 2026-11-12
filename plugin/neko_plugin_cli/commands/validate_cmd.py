@@ -701,6 +701,18 @@ def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
                 ))
         return
     if isinstance(value, dict):
+        # The registry iterates a keyed table by key, so the declared fields
+        # never reach the entry. Flag it until the runtime normalizes it.
+        if value:
+            issues.append((
+                "warning",
+                "[plugin].entries as a keyed table is not applied at runtime; "
+                "its declared fields are ignored. Use [[plugin.entries]] with id = \"...\" instead / "
+                "[plugin].entries 的键控表形式在运行时不会生效，其声明字段会被忽略，"
+                "请改用 [[plugin.entries]] 并填写 id / "
+                "[plugin].entries のキー付きテーブル形式は実行時に反映されず、宣言したフィールドは無視されます。"
+                "[[plugin.entries]] と id を使用してください",
+            ))
         for entry_id, item in value.items():
             label = f"[plugin].entries.{entry_id}"
             if not isinstance(item, dict):

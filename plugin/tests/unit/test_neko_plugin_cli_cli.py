@@ -837,7 +837,7 @@ def test_validate_plugin_dir_accepts_entry_contract_and_display_fields(tmp_path:
     )
 
 
-def test_validate_plugin_dir_accepts_empty_and_keyed_entries(tmp_path: Path) -> None:
+def test_validate_plugin_dir_accepts_empty_and_warns_keyed_entries(tmp_path: Path) -> None:
     empty = _make_plugin_dir(tmp_path / "empty")
     manifest_path = empty / "plugin.toml"
     manifest_path.write_text(
@@ -872,6 +872,17 @@ def test_validate_plugin_dir_accepts_empty_and_keyed_entries(tmp_path: Path) -> 
         for _level, message in keyed_issues
     )
     assert not any(level == "error" and "entries" in message for level, message in keyed_issues)
+    keyed_warnings = [
+        message for level, message in keyed_issues
+        if level == "warning" and message.startswith("[plugin].entries as a keyed table is not applied")
+    ]
+    assert len(keyed_warnings) == 1
+    assert "[[plugin.entries]]" in keyed_warnings[0]
+    assert "运行时不会生效" in keyed_warnings[0]
+    assert "実行時に反映されず" in keyed_warnings[0]
+    assert not any(
+        "keyed table" in message for _level, message in empty_issues
+    )
 
 
 def test_validate_plugin_dir_rejects_scalar_entries(tmp_path: Path) -> None:
