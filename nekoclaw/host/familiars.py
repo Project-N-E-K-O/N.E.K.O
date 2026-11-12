@@ -125,12 +125,32 @@ class _Session:
     # arrived before it did.
     run_ended: bool = False
     held_answer: str | None = None
+    # An answer sent as the session's next work that no event has yet shown
+    # it took. Should the session close first, it is taken up again with it.
+    untaken_answer: str | None = None
     closing: bool = False
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
     # ends, the earlier one's end is held here and decides nothing.
     sent: int = 0
     held_end: dict[str, Any] | None = None
+
+
+def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
+    """Whether a session event shows the session took everything sent to it.
+
+    A refusal does not, nor does the session closing. The end of a run that
+    took fewer texts than were sent is an earlier run's end.
+    """
+    kind = event.get("type")
+    if kind == "error":
+        return False
+    if kind == "ended":
+        if event.get("reason") == "closed":
+            return False
+        inputs = event.get("inputs")
+        return not isinstance(inputs, int) or inputs >= sent
+    return True
 
 
 def default_runtime_factory(on_event: Callable[[dict[str, Any]], None], host: Any) -> Any:
@@ -593,6 +613,8 @@ class FamiliarManager:
         if session is None:
             # Process-level messages, and events of sessions already released.
             return
+        if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
+            session.untaken_answer = None
         if kind == "text":
             delta = str(event.get("delta") or "")
             session.text.append(delta)
@@ -661,9 +683,15 @@ class FamiliarManager:
             # An answer kept for a run that never came is not lost with the
             # session: it takes the commission up again from its transcript.
             kept, session.held_answer = session.held_answer, None
+            # An answer already sent but not taken: the refusal that would
+            # fail the commission now finds no session and is ignored, so
+            # without this it would stay working for nobody.
+            untaken, session.untaken_answer = session.untaken_answer, None
             await self._release(commission_id)
             if kept is not None and not self._closed:
                 self._spawn(self._answer_closed(commission_id, kept))
+            elif untaken is not None and not self._closed:
+                self._spawn(self._answer_untaken(commission_id, untaken))
             return
         commission = await self._ledger.get(commission_id)
         if commission is None:
@@ -733,6 +761,7 @@ class FamiliarManager:
             await self._fail(commission_id, f"the familiar could not be started: {message}")
             await self._release(commission_id)
         elif command == "prompt":
+            session.untaken_answer = None
             await self._fail(commission_id, message)
             await self._close_session(session)
         elif command == "close":
@@ -968,8 +997,25 @@ class FamiliarManager:
         session.awaiting_prompt = False
         session.held_answer = None
         await self._ledger.append_event(commission_id, "answered", {"text": text})
-        await self._send_text(self._runtime, session, "prompt", text)
+        session.untaken_answer = text
+        try:
+            await self._send_text(self._runtime, session, "prompt", text)
+        except BaseException:
+            session.untaken_answer = None
+            raise
         return True
+
+    async def _answer_untaken(self, commission_id: str, text: str) -> None:
+        """Take a commission up again with an answer its session closed before taking.
+
+        The answer moved it to ``working``; it goes back to waiting for that
+        answer, which then takes it up again as an answer to a closed session does.
+        """
+        moved = await self._ledger.transition(
+            commission_id, "waiting_user", reason="its session closed before it took the answer"
+        )
+        if moved.applied:
+            await self._take_up_again(commission_id, text)
 
     async def _ask(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
         """Put a question to the user and wait for the answer.

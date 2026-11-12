@@ -624,6 +624,41 @@ async def test_an_answer_kept_for_a_wake_up_that_never_ran_survives_the_session_
     assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
 
 
+async def test_an_answer_sent_to_a_session_that_closes_before_taking_it_takes_it_up_again(hosts, tmp_path):
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    runtime = host.familiars._runtime
+    prompt = runtime.prompt
+    sent: list[str] = []
+
+    async def lost(session_id: str, text: str) -> None:
+        # The idle runtime is closing the session: the prompt never lands, and
+        # its refusal comes after "closed", when there is no session to fail.
+        sent.append(text)
+
+    runtime.prompt = lost
+    assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
+    runtime.prompt = prompt
+    assert sent == ["the photos are in D:/Camera"]
+    assert (await host.ledger.get(receipt.commission_id)).status == "working"
+
+    await runtime.close(receipt.commission_id)
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
+    (_first, again) = await _events(host, receipt.commission_id, "started")
+    assert again.payload["resumed"] is True
+
+
 async def test_a_refused_wake_up_hands_over_the_kept_answer(hosts, tmp_path):
     llm = ScriptedLLM(
         [

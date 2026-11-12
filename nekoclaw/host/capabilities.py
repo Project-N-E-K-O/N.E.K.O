@@ -61,7 +61,8 @@ MCP_ADAPTER_PLUGIN_ID = "mcp_adapter"
 # a connected server is served on its own, with that server's permission.
 MCP_ADAPTER_GENERIC_ENTRIES = frozenset({"call_tool", "gateway_invoke"})
 _MCP_ENTRY_PREFIX = "mcp_"
-_MCP_ENTRY_NAME_RE = re.compile(r"^\[(?P<server>.+?)\]\s+(?P<tool>.+)$")
+# DOTALL and ``\Z``: a name with a line break in it still names its server.
+_MCP_ENTRY_NAME_RE = re.compile(r"\[(?P<server>.+?)\]\s+(?P<tool>.+)\Z", re.DOTALL)
 _TOOL_NAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 TOOL_NAME_MAX_LENGTH = 64
 
@@ -170,21 +171,45 @@ def _mcp_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
     return match.group("server"), match.group("tool")
 
 
-def mcp_entry_forbidden(plugin_id: str, entry: dict[str, Any], denied_servers: Any, all_denied: bool) -> bool:
+@dataclass(frozen=True)
+class McpDenial:
+    """The MCP server settings, read the way ``PermissionStore.mode`` reads them.
+
+    ``servers`` holds the modes set for single servers (``"*"`` is the slot
+    for a request that names no server); ``category`` is the mode of the
+    ``mcp_server`` category, which a server without its own mode falls back to.
+    """
+
+    servers: dict[str, str]
+    category: str
+
+    def server_denied(self, server: str) -> bool:
+        """Whether this server is forbidden: its own mode first, else the category's."""
+        slot = (server or "").strip() or "*"
+        return self.servers.get(slot, self.category) == "deny"
+
+    @property
+    def any_denied(self) -> bool:
+        """Whether some server, or a server not named, may be forbidden."""
+        return self.category == "deny" or "deny" in self.servers.values()
+
+
+def mcp_entry_forbidden(plugin_id: str, entry: dict[str, Any], denial: McpDenial) -> bool:
     """Whether a plugin entry reaches an MCP server the permission settings forbid.
 
-    ``denied_servers`` are the servers set to "deny"; ``all_denied`` is True
-    when MCP servers as a whole are. A server's tool is forbidden when its
-    server is; the adapter's entries that can reach any server are forbidden
-    as soon as any server is, since which one they reach cannot be told.
+    A server's tool is forbidden when its server is. The adapter's entries
+    that can reach any server, and a tool entry whose server cannot be read
+    from its name, are forbidden as soon as any server may be, since which
+    one they reach cannot be told.
     """
     if plugin_id != MCP_ADAPTER_PLUGIN_ID:
         return False
     identity = _mcp_identity(entry)
     if identity is not None:
-        return all_denied or identity[0] in denied_servers
-    if str(entry.get("id") or "") in MCP_ADAPTER_GENERIC_ENTRIES:
-        return all_denied or bool(denied_servers)
+        return denial.server_denied(identity[0])
+    entry_id = str(entry.get("id") or "")
+    if entry_id in MCP_ADAPTER_GENERIC_ENTRIES or entry_id.startswith(_MCP_ENTRY_PREFIX):
+        return denial.any_denied
     return False
 
 

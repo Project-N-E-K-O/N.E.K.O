@@ -51,7 +51,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from nekoclaw.host.capabilities import CapabilityRegistry, mcp_entry_forbidden
+from nekoclaw.host.capabilities import CapabilityRegistry, McpDenial, mcp_entry_forbidden
 from nekoclaw.host.decision import (
     DecisionModel,
     DecisionRequest,
@@ -73,7 +73,7 @@ from nekoclaw.host.plugin_runs import (
 )
 from nekoclaw.host.preferences import PreferenceStore, describe_stop, preference_kind, stop_tendency_prefix
 from nekoclaw.host.reports import CHANNEL_PLUGIN, Reporter
-from nekoclaw.host.selection import find_entry, similarity
+from nekoclaw.host.selection import find_entry, similarity, visible_entries
 
 logger = logging.getLogger(__name__)
 
@@ -264,13 +264,12 @@ class TaskBrain:
             familiar_available=await self._familiar_available(),
         )
 
-    async def _denied_mcp(self) -> tuple[set[str], bool]:
-        """Return the MCP servers set to "deny", and whether all of them are."""
+    async def _denied_mcp(self) -> McpDenial:
+        """Return the MCP server settings as of now."""
         snapshot = await self._permission_store.snapshot()
-        servers = snapshot.get("mcp_servers") or {}
-        denied = {str(name) for name, mode in servers.items() if mode == "deny" and name != "*"}
-        all_denied = servers.get("*") == "deny" or (snapshot.get("categories") or {}).get("mcp_server") == "deny"
-        return denied, all_denied
+        servers = {str(name): str(mode) for name, mode in (snapshot.get("mcp_servers") or {}).items()}
+        category = str((snapshot.get("categories") or {}).get("mcp_server") or "")
+        return McpDenial(servers=servers, category=category)
 
     async def _without_denied_mcp(self, plugins: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Leave out the MCP tools of servers the permission settings forbid.
@@ -279,8 +278,8 @@ class TaskBrain:
         "deny" is not reached by her dispatches either, nor through the
         adapter's entries that can reach any server.
         """
-        denied, all_denied = await self._denied_mcp()
-        if not denied and not all_denied:
+        denial = await self._denied_mcp()
+        if not denial.any_denied:
             return plugins
         kept: list[dict[str, Any]] = []
         for plugin in plugins:
@@ -289,12 +288,16 @@ class TaskBrain:
             allowed = [
                 entry
                 for entry in entries
-                if not (isinstance(entry, dict) and mcp_entry_forbidden(plugin_id, entry, denied, all_denied))
+                if not (isinstance(entry, dict) and mcp_entry_forbidden(plugin_id, entry, denial))
             ]
             if len(allowed) == len(entries):
                 kept.append(plugin)
-            elif allowed:
-                kept.append({**plugin, "entries": allowed})
+                continue
+            trimmed = {**plugin, "entries": allowed}
+            # Kept only while something routable is left: hidden entries alone
+            # would still make the plugin look able to take the task.
+            if visible_entries(trimmed):
+                kept.append(trimmed)
         return kept
 
     # -- dispatch ---------------------------------------------------------
@@ -499,8 +502,7 @@ class TaskBrain:
         _plugin, entry = find_entry(request.plugins, str(selection.plugin_id), selection.entry_id)
         if entry is None:
             return False
-        denied, all_denied = await self._denied_mcp()
-        return mcp_entry_forbidden(str(selection.plugin_id), entry, denied, all_denied)
+        return mcp_entry_forbidden(str(selection.plugin_id), entry, await self._denied_mcp())
 
     async def _call_plugin(self, commission: Commission, selection: Selection, request: DecisionRequest) -> None:
         """Call the chosen plugin entry and turn its result into the commission's end."""

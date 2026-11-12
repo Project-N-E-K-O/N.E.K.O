@@ -162,7 +162,9 @@ async def test_unreadable_status_answers_end_the_wait(server):
     assert faults.polls - polls_before == MAX_CONSECUTIVE_POLL_ERRORS
     # Given up on, the run is cancelled rather than left going.
     await wait_until(lambda: server.cancelled == [("weather", run_id)], what="the run being cancelled")
-    assert runner.active_runs("c1") == []
+    # The server records the cancel before its answer reaches the runner; the
+    # run is forgotten once that answer is in.
+    await wait_until(lambda: runner.active_runs("c1") == [], what="the accepted cancel being taken in")
     await runner.aclose()
 
 
