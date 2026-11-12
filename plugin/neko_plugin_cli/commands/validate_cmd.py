@@ -10,6 +10,7 @@ import re
 import stat
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from plugin._types.entry_metadata import ENTRY_CONTRACT_FIELDS
 from plugin._types.plugin_types import (
     SUPPORTED_PLUGIN_TYPES,
     format_plugin_type_choice_error,
@@ -28,6 +29,9 @@ from ..core.plugin_source import load_plugin_source
 from ..core.toml_utils import load_toml
 
 _PLUGIN_RUNTIME_TIMEOUT_MAX = 300.0
+_PLUGIN_ENTRIES_MAX = 1024
+_PLUGIN_ENTRY_FIELDS_MAX = 64
+_PLUGIN_ENTRY_KEY_LENGTH_MAX = 256
 
 
 def validate_plugin_dir(
@@ -160,6 +164,7 @@ def _check_plugin_toml_schema(
         "passive",
         "version",
         "entry",
+        "entries",
         "author",
         "i18n",
         "sdk",
@@ -201,6 +206,7 @@ def _check_plugin_toml_schema(
     _check_safety_table(plugin_table.get("safety"), issues)
     _check_config_profiles_table(plugin_table.get("config_profiles"), issues)
     _check_dependency_tables(plugin_table.get("dependency"), issues)
+    _check_entries(plugin_table.get("entries"), issues)
     _check_ui_table(plugin_dir, plugin_table.get("ui"), issues)
     _check_runtime_table(config.get("plugin_runtime"), issues)
     _check_plugin_state_table(config.get("plugin_state"), issues)
@@ -631,6 +637,86 @@ def _check_dependency_tables(value: object, issues: list[tuple[str, str]]) -> No
             if isinstance(conflicts, str):
                 continue
             _check_string_list(conflicts, f"{label}.conflicts", issues, required=False)
+
+
+def _check_entries(value: object, issues: list[tuple[str, str]]) -> None:
+    if value is None:
+        return
+    # Bound iteration, unknown-key sorting and diagnostic size before scanning.
+    if isinstance(value, (list, dict)):
+        if len(value) > _PLUGIN_ENTRIES_MAX:
+            issues.append((
+                "error",
+                f"[plugin].entries exceeds {_PLUGIN_ENTRIES_MAX} entries / "
+                f"[plugin].entries 超过 {_PLUGIN_ENTRIES_MAX} 个条目 / "
+                f"[plugin].entries が {_PLUGIN_ENTRIES_MAX} 件を超えています",
+            ))
+            return
+        if isinstance(value, dict) and any(len(key) > _PLUGIN_ENTRY_KEY_LENGTH_MAX for key in value):
+            issues.append((
+                "error",
+                f"[plugin].entries keys must not exceed {_PLUGIN_ENTRY_KEY_LENGTH_MAX} characters / "
+                f"[plugin].entries 键名不能超过 {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 个字符 / "
+                f"[plugin].entries のキーは {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 文字以内にしてください",
+            ))
+            return
+        for item in value.values() if isinstance(value, dict) else value:
+            if not isinstance(item, dict):
+                continue
+            if len(item) > _PLUGIN_ENTRY_FIELDS_MAX:
+                issues.append((
+                    "error",
+                    f"[plugin].entries tables must not exceed {_PLUGIN_ENTRY_FIELDS_MAX} fields / "
+                    f"[plugin].entries 表不能超过 {_PLUGIN_ENTRY_FIELDS_MAX} 个字段 / "
+                    f"[plugin].entries のテーブルは {_PLUGIN_ENTRY_FIELDS_MAX} フィールド以内にしてください",
+                ))
+                return
+            if any(len(key) > _PLUGIN_ENTRY_KEY_LENGTH_MAX for key in item):
+                issues.append((
+                    "error",
+                    f"[plugin].entries field names must not exceed {_PLUGIN_ENTRY_KEY_LENGTH_MAX} characters / "
+                    f"[plugin].entries 字段名不能超过 {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 个字符 / "
+                    f"[plugin].entries のフィールド名は {_PLUGIN_ENTRY_KEY_LENGTH_MAX} 文字以内にしてください",
+                ))
+                return
+    # id plus the display fields registry copies, union the shared contract tuple.
+    allowed = {"id", "name", "description", "input_schema"} | set(ENTRY_CONTRACT_FIELDS)
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            label = f"[plugin].entries[{index}]"
+            if not isinstance(item, dict):
+                issues.append((
+                    "error",
+                    f"{label} must be a table / {label} 必须是表 / {label} はテーブルである必要があります",
+                ))
+                continue
+            _warn_unknown_keys(item, allowed, label, issues)
+            # The registry skips a list item whose id is missing or blank.
+            # Truthiness avoids recursively stringifying a structured TOML value.
+            if not item.get("id"):
+                issues.append((
+                    "warning",
+                    f"{label}.id is missing or blank / "
+                    f"{label}.id 缺失或为空 / {label}.id が未指定または空です",
+                ))
+        return
+    if isinstance(value, dict):
+        for entry_id, item in value.items():
+            label = f"[plugin].entries.{entry_id}"
+            if not isinstance(item, dict):
+                issues.append((
+                    "error",
+                    f"{label} must be a table / {label} 必须是表 / {label} はテーブルである必要があります",
+                ))
+                continue
+            _warn_unknown_keys(item, allowed, label, issues)
+        return
+    issues.append((
+        "error",
+        "[plugin].entries must be a table or array of tables / "
+        "[plugin].entries 必须是表或表数组 / "
+        "[plugin].entries はテーブルまたはテーブルの配列である必要があります",
+    ))
 
 
 def _check_ui_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:

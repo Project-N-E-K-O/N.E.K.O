@@ -793,6 +793,243 @@ def test_validate_plugin_dir_accepts_previous_plugin_ids(tmp_path: Path) -> None
     assert not any("previous_ids is not a recognized" in message for _level, message in issues)
 
 
+def test_validate_plugin_dir_accepts_declared_plugin_entries(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(
+        plugin_dir,
+        """
+        [[plugin.entries]]
+        id = "self_check"
+        name = "Self Check"
+        description = "Return plugin version and readiness"
+        """,
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
+    assert not any(
+        "[plugin].entries" in message and "is not a recognized" in message
+        for _level, message in issues
+    )
+
+
+def test_validate_plugin_dir_accepts_entry_contract_and_display_fields(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(
+        plugin_dir,
+        """
+        [[plugin.entries]]
+        id = "self_check"
+        name = "Self Check"
+        description = "Return plugin version and readiness"
+        input_schema = { query = "string" }
+        timeout = 30
+        auto_start = true
+        """,
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert not any(
+        "[plugin].entries" in message and "is not a recognized" in message
+        for _level, message in issues
+    )
+
+
+def test_validate_plugin_dir_accepts_empty_and_keyed_entries(tmp_path: Path) -> None:
+    empty = _make_plugin_dir(tmp_path / "empty")
+    manifest_path = empty / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "[plugin]\n",
+            "[plugin]\nentries = []\n",
+        ),
+        encoding="utf-8",
+    )
+
+    empty_issues = validate_plugin_dir(empty)
+
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in empty_issues)
+    assert not any(level == "error" and "entries" in message for level, message in empty_issues)
+
+    keyed = _make_plugin_dir(tmp_path / "keyed")
+    _append_raw_install_declaration(
+        keyed,
+        """
+        [plugin.entries.self_check]
+        name = "Self Check"
+        description = "Return plugin version and readiness"
+        """,
+    )
+
+    keyed_issues = validate_plugin_dir(keyed)
+
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in keyed_issues)
+    assert not any("self_check is not a recognized" in message for _level, message in keyed_issues)
+    assert not any(
+        "[plugin].entries" in message and "is not a recognized" in message
+        for _level, message in keyed_issues
+    )
+    assert not any(level == "error" and "entries" in message for level, message in keyed_issues)
+
+
+def test_validate_plugin_dir_rejects_scalar_entries(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest_path = plugin_dir / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "[plugin]\n",
+            '[plugin]\nentries = "self_check"\n',
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "error" and message.startswith("[plugin].entries must be a table or array of tables / ")
+        and "必须是表或表数组" in message and "テーブルの配列" in message
+        for level, message in issues
+    )
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_warns_unknown_entry_field(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(
+        plugin_dir,
+        """
+        [[plugin.entries]]
+        id = "self_check"
+        not_a_field = true
+        """,
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert ("warning", "[plugin].entries[0].not_a_field is not a recognized plugin.toml field") in issues
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
+
+
+def test_validate_plugin_dir_rejects_non_table_entry_item(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest_path = plugin_dir / "plugin.toml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "[plugin]\n",
+            '[plugin]\nentries = ["self_check"]\n',
+        ),
+        encoding="utf-8",
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "error" and message.startswith("[plugin].entries[0] must be a table / ")
+        and "必须是表" in message and "テーブルである必要があります" in message
+        for level, message in issues
+    )
+
+
+def test_validate_plugin_dir_warns_when_entry_id_is_missing(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    _append_raw_install_declaration(
+        plugin_dir,
+        """
+        [[plugin.entries]]
+        name = "Missing id"
+        description = "Skipped by the registry"
+
+        [[plugin.entries]]
+        id = "self_check"
+        name = "Self Check"
+        description = "Still validated"
+        """,
+    )
+
+    issues = validate_plugin_dir(plugin_dir)
+
+    assert any(
+        level == "warning" and message.startswith("[plugin].entries[0].id is missing or blank / ")
+        and "缺失或为空" in message and "未指定または空です" in message
+        for level, message in issues
+    )
+    assert not any(level == "error" and "[plugin].entries" in message for level, message in issues)
+    assert not any("[plugin].entries is not a recognized" in message for _level, message in issues)
+    assert not any(
+        "[plugin].entries[1]" in message and "is not a recognized" in message
+        for _level, message in issues
+    )
+
+
+@pytest.mark.parametrize("keyed", [False, True])
+@pytest.mark.parametrize("oversized", [False, True])
+@pytest.mark.parametrize("dimension", ["entries", "fields", "field_name", "entry_key"])
+def test_entry_validation_bounds(dimension: str, oversized: bool, keyed: bool) -> None:
+    from plugin.neko_plugin_cli.commands import validate_cmd
+
+    count = 1
+    entry_id = "self_check"
+    item = {"id": entry_id}
+    if dimension == "entries":
+        count = validate_cmd._PLUGIN_ENTRIES_MAX + int(oversized)
+    elif dimension == "fields":
+        item.update({f"unknown_{index}": True for index in range(
+            validate_cmd._PLUGIN_ENTRY_FIELDS_MAX - 1 + int(oversized)
+        )})
+    elif dimension == "field_name":
+        item["x" * (validate_cmd._PLUGIN_ENTRY_KEY_LENGTH_MAX + int(oversized))] = True
+    elif dimension == "entry_key":
+        entry_id = "x" * (validate_cmd._PLUGIN_ENTRY_KEY_LENGTH_MAX + int(oversized))
+        item["id"] = entry_id
+
+    entries = {entry_id: item} if keyed else [item] * count
+    if keyed and dimension == "entries":
+        entries = {str(index): item for index in range(count)}
+    issues: list[tuple[str, str]] = []
+
+    validate_cmd._check_entries(entries, issues)
+
+    # List IDs are values, not diagnostic labels, and need no length bound.
+    if oversized and (dimension != "entry_key" or keyed):
+        assert len(issues) == 1
+        level, message = issues[0]
+        assert level == "error"
+        assert len(message.split(" / ")) == 3
+        assert len(message) < 400
+    else:
+        assert not any(level == "error" for level, _message in issues)
+
+
+def test_entry_validation_does_not_stringify_nested_id() -> None:
+    from plugin.neko_plugin_cli.commands.validate_cmd import _check_entries
+
+    nested: object = "id"
+    for _ in range(2000):
+        nested = [nested]
+    issues: list[tuple[str, str]] = []
+
+    _check_entries([{"id": nested}], issues)
+
+    assert issues == []
+
+
+@pytest.mark.parametrize("entry_id", [None, "", False, 0, [], {}])
+def test_entry_validation_warns_for_falsey_ids(entry_id: object) -> None:
+    from plugin.neko_plugin_cli.commands.validate_cmd import _check_entries
+
+    issues: list[tuple[str, str]] = []
+    _check_entries([{"id": entry_id}], issues)
+
+    assert len(issues) == 1
+    level, message = issues[0]
+    assert level == "warning"
+    assert "is missing or blank" in message
+    assert "缺失或为空" in message
+    assert "未指定または空です" in message
+
+
 def test_validate_plugin_dir_accepts_i18n_ui_surface_title(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
     (plugin_dir / "onboarding.md").write_text("Guide\n", encoding="utf-8")
