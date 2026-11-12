@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -200,6 +201,68 @@ async def test_no_capability_when_the_plugin_switch_is_off(server, hosts, tmp_pa
     receipt = await _dispatch(host, "查一下上海的天气")
 
     assert (receipt.kind, receipt.reason) == ("no_capability", "not_enabled")
+
+
+def _mcp_notes(server: FakePluginServer, calls: list[str]) -> None:
+    def tool(name: str) -> Any:
+        async def handler(args: dict[str, Any]) -> dict[str, Any]:
+            calls.append(name)
+            return finish({"reply": f"{name} done"})
+
+        return handler
+
+    server.add_plugin(
+        plugin(
+            "mcp_adapter",
+            "MCP Adapter",
+            [
+                entry("mcp_github_create_issue", "Open an issue on github", name="[github] create_issue"),
+                entry("mcp_notes_search", "Search the notes", name="[notes] search"),
+                entry("call_tool", "Call any tool of any connected server", name="Call tool"),
+            ],
+            keywords=["github", "issue", "notes"],
+        ),
+        mcp_github_create_issue=tool("github"),
+        mcp_notes_search=tool("notes"),
+        call_tool=tool("call_tool"),
+    )
+
+
+async def test_a_denied_mcp_server_is_not_reached_by_a_dispatch(server, hosts, tmp_path):
+    calls: list[str] = []
+    _mcp_notes(server, calls)
+    llm = FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", "mcp_github_create_issue")])
+    host = _host(hosts, tmp_path, server, llm)
+    await host.permission_store.set_mode("mcp_server", "deny", key="github")
+
+    receipt = await _dispatch(host, "go open a github issue about the crash")
+    await host.brain.settle()
+
+    # The forbidden server's tool, and the entries that could reach any server,
+    # are not offered; the other server's tool still is.
+    offered = json.dumps(next(messages for tier, messages in llm.calls if tier == "fine"), ensure_ascii=False)
+    assert "mcp_github_create_issue" not in offered
+    assert "call_tool" not in offered
+    assert "mcp_notes_search" in offered
+    assert calls == []
+    assert (await host.ledger.get(receipt.commission_id)).status == "failed"
+
+
+async def test_an_mcp_server_denied_while_the_model_chooses_is_not_called(server, hosts, tmp_path):
+    calls: list[str] = []
+    _mcp_notes(server, calls)
+    llm = FakeDecisionLLM(fine=[pick_plugin("mcp_adapter", "mcp_github_create_issue")])
+    llm.gate = asyncio.Event()
+    host = _host(hosts, tmp_path, server, llm)
+
+    receipt = await _dispatch(host, "go open a github issue about the crash")
+    await wait_until(lambda: _asked(llm), what="the fine selection being asked")
+    await host.permission_store.set_mode("mcp_server", "deny", key="github")
+    llm.gate.set()
+    await host.brain.settle()
+
+    assert calls == []
+    assert (await host.ledger.get(receipt.commission_id)).status == "failed"
 
 
 async def test_no_capability_when_permissions_forbid_plugins(server, hosts, tmp_path):

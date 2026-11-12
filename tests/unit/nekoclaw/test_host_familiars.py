@@ -1386,7 +1386,9 @@ async def test_parent_does_not_wait_for_a_child_that_reported_blocked(hosts, tmp
     # is done rather than left working with its place held.
     done = await wait_status(host, receipt.commission_id, "done")
     assert done.result_summary == "The vault stays shut; everything else is done."
-    # With its parent finished, the blocked child is closed like any other.
+    # With its parent finished, the blocked child is closed like any other
+    # (right after the parent's status is written).
+    await wait_until(lambda: _child_status(host, receipt.commission_id, "cancelled"), what="the child being closed")
     (sub,) = await host.ledger.select(parent_id=receipt.commission_id)
     assert (sub.status, sub.status_reason) == ("cancelled", "its parent finished")
 

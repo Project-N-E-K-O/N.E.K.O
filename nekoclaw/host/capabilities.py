@@ -170,6 +170,24 @@ def _mcp_identity(entry: dict[str, Any]) -> tuple[str, str] | None:
     return match.group("server"), match.group("tool")
 
 
+def mcp_entry_forbidden(plugin_id: str, entry: dict[str, Any], denied_servers: Any, all_denied: bool) -> bool:
+    """Whether a plugin entry reaches an MCP server the permission settings forbid.
+
+    ``denied_servers`` are the servers set to "deny"; ``all_denied`` is True
+    when MCP servers as a whole are. A server's tool is forbidden when its
+    server is; the adapter's entries that can reach any server are forbidden
+    as soon as any server is, since which one they reach cannot be told.
+    """
+    if plugin_id != MCP_ADAPTER_PLUGIN_ID:
+        return False
+    identity = _mcp_identity(entry)
+    if identity is not None:
+        return all_denied or identity[0] in denied_servers
+    if str(entry.get("id") or "") in MCP_ADAPTER_GENERIC_ENTRIES:
+        return all_denied or bool(denied_servers)
+    return False
+
+
 def capabilities_of_plugin(plugin: dict[str, Any]) -> list[Capability]:
     """Return the capabilities one running plugin contributes."""
     plugin_id = str(plugin.get("id") or "")

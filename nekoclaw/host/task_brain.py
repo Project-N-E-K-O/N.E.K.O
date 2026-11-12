@@ -51,7 +51,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from nekoclaw.host.capabilities import CapabilityRegistry
+from nekoclaw.host.capabilities import CapabilityRegistry, mcp_entry_forbidden
 from nekoclaw.host.decision import (
     DecisionModel,
     DecisionRequest,
@@ -258,11 +258,44 @@ class TaskBrain:
             dispatch_text=text,
             user_text=user_text,
             lang=lang,
-            plugins=[] if plugins_forbidden else await self._registry.plugins(),
+            plugins=[] if plugins_forbidden else await self._without_denied_mcp(await self._registry.plugins()),
             active=active,
             answerable=answerable,
             familiar_available=await self._familiar_available(),
         )
+
+    async def _denied_mcp(self) -> tuple[set[str], bool]:
+        """Return the MCP servers set to "deny", and whether all of them are."""
+        snapshot = await self._permission_store.snapshot()
+        servers = snapshot.get("mcp_servers") or {}
+        denied = {str(name) for name, mode in servers.items() if mode == "deny" and name != "*"}
+        all_denied = servers.get("*") == "deny" or (snapshot.get("categories") or {}).get("mcp_server") == "deny"
+        return denied, all_denied
+
+    async def _without_denied_mcp(self, plugins: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Leave out the MCP tools of servers the permission settings forbid.
+
+        "Deny" holds everywhere, the direct route included: a server set to
+        "deny" is not reached by her dispatches either, nor through the
+        adapter's entries that can reach any server.
+        """
+        denied, all_denied = await self._denied_mcp()
+        if not denied and not all_denied:
+            return plugins
+        kept: list[dict[str, Any]] = []
+        for plugin in plugins:
+            plugin_id = str(plugin.get("id") or "")
+            entries = plugin.get("entries") or []
+            allowed = [
+                entry
+                for entry in entries
+                if not (isinstance(entry, dict) and mcp_entry_forbidden(plugin_id, entry, denied, all_denied))
+            ]
+            if len(allowed) == len(entries):
+                kept.append(plugin)
+            elif allowed:
+                kept.append({**plugin, "entries": allowed})
+        return kept
 
     # -- dispatch ---------------------------------------------------------
 
@@ -461,9 +494,17 @@ class TaskBrain:
 
     # -- the direct route -------------------------------------------------
 
+    async def _mcp_forbidden(self, selection: Selection, request: DecisionRequest) -> bool:
+        """Whether the chosen entry reaches an MCP server forbidden by now."""
+        _plugin, entry = find_entry(request.plugins, str(selection.plugin_id), selection.entry_id)
+        if entry is None:
+            return False
+        denied, all_denied = await self._denied_mcp()
+        return mcp_entry_forbidden(str(selection.plugin_id), entry, denied, all_denied)
+
     async def _call_plugin(self, commission: Commission, selection: Selection, request: DecisionRequest) -> None:
         """Call the chosen plugin entry and turn its result into the commission's end."""
-        if await self._permission_store.mode("plugin_entry") == "deny":
+        if await self._permission_store.mode("plugin_entry") == "deny" or await self._mcp_forbidden(selection, request):
             # Forbidden while the model was choosing: nothing is called.
             await self._overturn_no_capability(commission, "denied")
             return
