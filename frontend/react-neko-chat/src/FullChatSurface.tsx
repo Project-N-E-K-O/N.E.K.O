@@ -1,3 +1,4 @@
+import { HistoryDialog } from './ChatHistory';
 import { ClearChatScreenButton } from './ChatScreenVisibility';
 /**
  * Full-window chat surface. Its history, composer and responsive layout remain
@@ -131,6 +132,7 @@ const COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER = [
   'jukebox',
   'export',
   'avatar',
+  'history',
 ] as const;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER.length;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 28;
@@ -500,6 +502,7 @@ export default function FullChatSurface({
   const [draft, setDraft] = useState('');
   const [catDraft, setCatDraft] = useState('');
   const visibleDraft = catLocalTextOnly ? catDraft : draft;
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
@@ -2865,6 +2868,22 @@ export default function FullChatSurface({
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
       </button>
       <button
+        className="composer-tool-btn compact-input-tool-item compact-input-tool-item-history"
+        type="button"
+        aria-label={i18n('chatHistory.title', 'Chat history')}
+        data-neko-tooltip={i18n('chatHistory.title', 'Chat history')}
+        disabled={isCompactToolWheelActionDisabled(7)}
+        tabIndex={getCompactToolWheelTabIndex(7)}
+        aria-hidden={getCompactToolWheelAriaHidden(7)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(7)}
+        onClick={compactFanCloseOnAction(() => setHistoryOpen(true))}
+      >
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <path d="M4 4h16v14H8l-4 3V4Z" /><path d="M8 8h8M8 12h6" />
+        </svg>
+
+      </button>
+      <button
         className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportHistoryOpen ? ' is-active' : ''}`}
         type="button"
         aria-label={compactExportHistoryButtonLabel}
@@ -3196,6 +3215,7 @@ export default function FullChatSurface({
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
       data-focus-active={focusActive ? 'true' : 'false'}
     >
+      {historyOpen && <HistoryDialog close={() => setHistoryOpen(false)} />}
       {focusActive ? (
         <div
           className="chat-surface-focus-indicator"

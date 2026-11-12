@@ -1,7 +1,9 @@
 # Saved chat history browser
 
-The shared React chat window exposes a read-only history dialog in desktop and
-web layouts. It selects a configured character, browses an archive date, searches
+The shared React chat window exposes a read-only history dialog through the
+existing tool wheel in both compact and full layouts. The modal registers with
+the desktop full-window overlay and geometry protocols so native hit testing
+captures controls, scrolling and the backdrop; closing restores normal hit regions. It selects a configured character, browses an archive date, searches
 literal text (case insensitive), filters by speaker, and opens a message's nearby
 context. Closing the context returns to the same search page. Escape closes the
 native modal and restores focus. Plain text rendering prevents archived markup

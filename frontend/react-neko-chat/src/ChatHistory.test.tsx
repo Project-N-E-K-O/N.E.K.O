@@ -4,6 +4,7 @@ import { HistoryDialog } from './ChatHistory';
 
 beforeEach(() => {
   HTMLDialogElement.prototype.showModal = vi.fn();
+  HTMLDialogElement.prototype.close = vi.fn();
   vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, json: async () => url.includes('characters') ? { characters: ['Alice', 'Bob'] } : { messages: [{ id: 5, role: 'user', text: '<script>音乐</script>', time: '2026-11-01' }], nextCursor: 5, available: true } })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); localStorage.clear(); });
@@ -28,4 +29,31 @@ it('resets pagination when changing character and persists only preferences', as
   fireEvent.change(screen.getByLabelText('character'), { target: { value: 'Bob' } });
   await waitFor(() => expect(fetch).toHaveBeenLastCalledWith(expect.stringContaining('character=Bob&q=&role=all&cursor=0'), expect.anything()));
   expect(localStorage.getItem('neko.chatHistory.preferences')).not.toContain('Bob');
+});
+
+it('registers the modal with desktop hit testing and refreshes geometry on close', async () => {
+  const refresh = vi.fn();
+  window.addEventListener('neko:compact-interaction-geometry-refresh', refresh);
+  const view = render(<HistoryDialog close={vi.fn()} />);
+  expect(screen.getByRole('dialog', { hidden: true })).toHaveClass('neko-dialog-overlay');
+  expect(screen.getByRole('dialog', { hidden: true })).toHaveAttribute('data-compact-geometry-owner', 'surface');
+  expect(refresh).toHaveBeenCalled();
+  view.unmount();
+  expect(HTMLDialogElement.prototype.close).toHaveBeenCalled();
+  window.removeEventListener('neko:compact-interaction-geometry-refresh', refresh);
+});
+
+it('opens history from the existing compact wheel and closes only the modal', async () => {
+  const { default: App } = await import('./App');
+  const view = render(<App chatSurfaceMode="compact" compactChatState="input"
+    compactToolFanOpenRequest={{ id: 'history-test', open: true }}
+    compactToolWheelIndexRequest={{ id: 'history-index', index: 7 }} />);
+  const button = view.container.querySelector('.compact-input-tool-item-history') as HTMLButtonElement;
+  await waitFor(() => expect(button).not.toBeDisabled());
+  expect(view.container.querySelector('.history-launch')).toBeNull();
+  fireEvent.click(button);
+  await screen.findByText('<script>音乐</script>');
+  fireEvent.click(screen.getByLabelText('close'));
+  expect(view.container.querySelector('.history-dialog')).toBeNull();
+  expect(view.container.querySelector('.app-shell')).not.toBeNull();
 });

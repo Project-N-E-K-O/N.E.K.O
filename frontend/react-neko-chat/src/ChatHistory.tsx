@@ -19,11 +19,6 @@ function Highlight({ text, query }: { text: string; query: string }) {
   const parts = text.split(new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'));
   return <>{parts.map((part, index) => index % 2 ? <mark key={index}>{part}</mark> : part)}</>;
 }
-export default function ChatHistory() {
-  const [open, setOpen] = useState(false);
-  return <><button className="history-launch" onClick={() => setOpen(true)} aria-label={t('title')}>{t('title')}</button>
-    {open && <HistoryDialog close={() => setOpen(false)} />}</>;
-}
 export function HistoryDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [names, setNames] = useState<string[]>([]);
@@ -47,8 +42,21 @@ export function HistoryDialog({ close }: { close: () => void }) {
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     const prior = document.activeElement as HTMLElement | null;
-    dialog.current?.showModal();
-    return () => { prior?.focus(); };
+    const element = dialog.current;
+    element?.showModal();
+    const refresh = () => window.dispatchEvent(new Event('neko:compact-interaction-geometry-refresh'));
+    refresh();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(refresh);
+    if (dialog.current) observer?.observe(dialog.current);
+    window.addEventListener('resize', refresh);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', refresh);
+      element?.close();
+      // Wait for React to remove the modal before restoring native hit regions.
+      requestAnimationFrame(refresh);
+      prior?.focus();
+    };
   }, []);
   useEffect(() => {
     const controller = new AbortController();
@@ -84,7 +92,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
     value.setDate(value.getDate() + delta);
     setDay(`${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`); reset();
   };
-  return <dialog ref={dialog} className="history-dialog" aria-labelledby="history-title" onCancel={close}>
+  return <dialog ref={dialog} className="history-dialog neko-dialog-overlay" data-compact-geometry-owner="surface" data-compact-geometry-item="chatHistoryDialog" data-compact-no-drag="true" aria-labelledby="history-title" onCancel={close}>
     <header><div><h2 id="history-title">{t('title')}</h2><p>{t('description')}</p></div><button onClick={close} aria-label={t('close')}>×</button></header>
     <form onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); reset(); setRetry(v => v + 1); }}>
       <label>{t('character')}<select value={character} onChange={e => { setCharacter(e.target.value); reset(); }}>{names.map(n => <option key={n}>{n}</option>)}</select></label>
