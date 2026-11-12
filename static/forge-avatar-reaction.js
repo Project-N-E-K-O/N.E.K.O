@@ -46,6 +46,17 @@
     }, 500);
   }
 
+  function waitForDropStep(operation, deadline) {
+    var timer;
+    return Promise.race([
+      operation,
+      new Promise(function (_, reject) {
+        timer = setTimeout(function () { reject(new Error('drop_step_timeout')); },
+          Math.max(1, Math.min(10000, deadline - Date.now())));
+      }),
+    ]).finally(function () { clearTimeout(timer); });
+  }
+
   async function submitNextDrop() {
     var item = pendingDrops[0];
     if (!item) return;
@@ -66,7 +77,7 @@
     }
     dropRequestActive = true;
     try {
-      var headers = await security.getMutationHeaders();
+      var headers = await waitForDropStep(security.getMutationHeaders(), item.deadline);
       // 获取 token 期间用户仍可切换角色；过期事件不再提交聊天。
       if (Date.now() > item.deadline
           || currentCharacter() !== item.lanlan_name) {
@@ -83,16 +94,16 @@
             reason: item.reason, active_count: item.active_count, is_career_first: item.is_career_first }),
         });
         if (response.status === 403 && typeof security.refreshToken === 'function') {
-          var failure = await response.json().catch(function () { return null; });
+          var failure = await waitForDropStep(response.json(), item.deadline);
           if (failure && failure.error_code === 'csrf_validation_failed') {
-            await security.refreshToken();
+            await waitForDropStep(security.refreshToken(), item.deadline);
             // 后端重启后沿用同一事件重试，仍受原 deadline 和角色检查约束。
             throw new Error('drop_event_csrf_refreshed');
           }
         }
-        if (response.status >= 500) throw new Error('drop_event_unavailable');
+        if (response.status >= 500 || response.status === 409) throw new Error('drop_event_unavailable');
         if (response.ok) {
-          var result = await response.json();
+          var result = await waitForDropStep(response.json(), item.deadline);
           if (result.ok === false) throw new Error('drop_event_not_queued');
         }
       } finally {

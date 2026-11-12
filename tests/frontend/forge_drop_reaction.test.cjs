@@ -63,7 +63,7 @@ function harness() {
       for (const [id, timer] of [...timers]) {
         if (timer.due <= now) { timers.delete(id); timer.callback(); }
       }
-      for (let i = 0; i < 12; i++) await Promise.resolve();
+      await new Promise(resolve => setImmediate(resolve));
     },
   };
 }
@@ -148,6 +148,51 @@ test('unrelated forbidden responses do not refresh credentials or retry', async 
   await h.advance();
   await h.advance(1000);
   assert.equal(h.refreshCount(), 0);
+  assert.equal(h.requests.length, 1);
+});
+
+test('stalled headers time out, preserve the event, and do not block later drops', async () => {
+  const h = harness();
+  const security = h.window.nekoLocalMutationSecurity;
+  const getHeaders = security.getMutationHeaders;
+  let resolveLateHeaders;
+  let calls = 0;
+  security.getMutationHeaders = () => calls++ === 0
+    ? new Promise(resolve => { resolveLateHeaders = resolve; }) : getHeaders();
+  const nextId = '22222222-2222-4222-8222-222222222222';
+  h.drop();
+  h.drop({ event_id: nextId });
+  await h.advance();
+  assert.equal(h.requests.length, 0);
+  await h.advance(10000);
+  resolveLateHeaders({ 'X-CSRF-Token': 'late' });
+  await h.advance(500);
+  assert.equal(h.requests.length, 0);
+  await h.advance(500);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].body.event_id, eventId);
+  assert.equal(h.requests[0].headers['X-CSRF-Token'], 'test');
+  await h.advance(500);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].body.event_id, nextId);
+});
+
+test('temporary startup conflicts retry the same event', async () => {
+  const h = harness();
+  h.respondNext(409, { error_code: 'storage_startup_blocked' });
+  h.drop();
+  await h.advance();
+  await h.advance(1000);
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].body.event_id, eventId);
+});
+
+test('invalid drop requests remain terminal', async () => {
+  const h = harness();
+  h.respondNext(400, { detail: 'invalid_event_id' });
+  h.drop();
+  await h.advance();
+  await h.advance(1000);
   assert.equal(h.requests.length, 1);
 });
 
