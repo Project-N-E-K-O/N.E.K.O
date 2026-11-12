@@ -100,8 +100,10 @@ class OutboxSender:
         delivered = 0
         for item in await self._ledger.outbox_pending(due_by=self._clock()):
             if item.kind == "question" and item.commission_id and not await self._still_waiting(item.commission_id):
-                # It stopped waiting after this batch was read; its row is
-                # gone from the ledger and the question is out of date.
+                # It no longer waits, so the question is out of date. Its row
+                # is dropped here too: it may have been stored after the
+                # commission stopped waiting, when nothing removed it.
+                await self._ledger.outbox_drop(item.id)
                 continue
             try:
                 accepted = bool(await send(item))

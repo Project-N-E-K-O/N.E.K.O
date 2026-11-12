@@ -33,7 +33,7 @@
 # message is built by ``build_selection_request`` below.
 
 TASK_BRAIN_SELECT_PROMPT = {
-    'zh': """你是任务路由器。可用插件列表：
+    'zh': """你是一个用户插件automation assessment agent, 负责任务路由。可用插件列表：
 {plugins_desc}
 
 用户消息里有：TASK（要办的事）、USER_SAID（用户原话），可能还有 ACTIVE_TASKS 和 PREFERENCES。
@@ -66,7 +66,7 @@ TASK_BRAIN_SELECT_PROMPT = {
 - 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑。
 只返回 JSON 对象，不含其他内容。""",
 
-    'zh-TW': """你是任務路由器。可用外掛清單：
+    'zh-TW': """你是一個使用者外掛automation assessment agent, 負責任務路由。可用外掛清單：
 {plugins_desc}
 
 使用者訊息裡有：TASK（要辦的事）、USER_SAID（使用者原話），可能還有 ACTIVE_TASKS 和 PREFERENCES。
@@ -99,7 +99,7 @@ TASK_BRAIN_SELECT_PROMPT = {
 - 標了 [KEYWORD MATCH] 的外掛已經通過關鍵字預篩，優先考慮。
 只回傳 JSON 物件，不含其他內容。""",
 
-    'en': """You are a task router. AVAILABLE PLUGINS:
+    'en': """You are a User Plugin automation assessment agent, routing tasks. AVAILABLE PLUGINS:
 {plugins_desc}
 
 The user message gives TASK (what has to get done) and USER_SAID (the user's own words), and may give ACTIVE_TASKS and PREFERENCES.
@@ -132,7 +132,7 @@ VERY IMPORTANT:
 - Plugins marked [KEYWORD MATCH] passed a keyword pre-filter; consider them first.
 Return only the JSON object, nothing else.""",
 
-    'ja': """あなたはタスクルーターです。利用可能なプラグイン一覧：
+    'ja': """あなたはユーザープラグイン automation assessment agent, タスクの振り分けを担当します。利用可能なプラグイン一覧：
 {plugins_desc}
 
 ユーザーメッセージには TASK（片付ける用件）と USER_SAID（ユーザー本人の言葉）があり、ACTIVE_TASKS と PREFERENCES が付くこともあります。
@@ -165,7 +165,7 @@ Return only the JSON object, nothing else.""",
 - [KEYWORD MATCH] の付いたプラグインはキーワードの事前選別を通っています。優先して検討してください。
 JSON オブジェクトだけを返してください。""",
 
-    'ko': """당신은 작업 라우터입니다. 사용 가능한 플러그인 목록:
+    'ko': """당신은 사용자 플러그인 automation assessment agent, 작업 라우팅을 담당합니다. 사용 가능한 플러그인 목록:
 {plugins_desc}
 
 사용자 메시지에는 TASK(처리할 일)와 USER_SAID(사용자가 한 말 그대로)가 있고, ACTIVE_TASKS와 PREFERENCES가 붙을 수 있습니다.
@@ -198,7 +198,7 @@ JSON オブジェクトだけを返してください。""",
 - [KEYWORD MATCH]가 붙은 플러그인은 키워드 사전 선별을 통과했습니다. 먼저 검토하세요.
 JSON 객체만 반환하세요.""",
 
-    'ru': """Вы маршрутизатор задач. ДОСТУПНЫЕ ПЛАГИНЫ:
+    'ru': """Вы — пользовательский плагин automation assessment agent, отвечаете за маршрутизацию задач. ДОСТУПНЫЕ ПЛАГИНЫ:
 {plugins_desc}
 
 В сообщении пользователя есть TASK (что нужно сделать) и USER_SAID (слова самого пользователя), могут быть ACTIVE_TASKS и PREFERENCES.
@@ -231,7 +231,7 @@ JSON 객체만 반환하세요.""",
 - Плагины с пометкой [KEYWORD MATCH] прошли отбор по ключевым словам; рассмотрите их первыми.
 Верните только объект JSON, больше ничего.""",
 
-    'es': """Eres un enrutador de tareas. PLUGINS DISPONIBLES:
+    'es': """Eres un User Plugin automation assessment agent que enruta tareas. PLUGINS DISPONIBLES:
 {plugins_desc}
 
 El mensaje del usuario trae TASK (lo que hay que hacer) y USER_SAID (las palabras del propio usuario), y puede traer ACTIVE_TASKS y PREFERENCES.
@@ -264,7 +264,7 @@ MUY IMPORTANTE:
 - Los plugins marcados con [KEYWORD MATCH] pasaron un prefiltro de palabras clave; considéralos primero.
 Devuelve solo el objeto JSON, nada más.""",
 
-    'pt': """Você é um roteador de tarefas. PLUGINS DISPONÍVEIS:
+    'pt': """Você é um User Plugin automation assessment agent que roteia tarefas. PLUGINS DISPONÍVEIS:
 {plugins_desc}
 
 A mensagem do usuário traz TASK (o que precisa ser feito) e USER_SAID (as palavras do próprio usuário), e pode trazer ACTIVE_TASKS e PREFERENCES.

@@ -282,6 +282,27 @@ async def test_a_question_read_before_its_commission_stopped_waiting_is_not_sent
     assert question not in [item.id for item in await ledger.outbox_pending()]
 
 
+async def test_a_question_stored_after_its_commission_stopped_waiting_is_dropped(ledger):
+    commission = await _file(ledger)
+    await ledger.transition(commission.id, "working", reason="test")
+    await ledger.transition(commission.id, "waiting_user", reason="test")
+    # Stopped before the question was stored: nothing removed it on the way out.
+    await ledger.transition(commission.id, "cancelled", reason="stopped")
+    question = await ledger.outbox_add(commission.id, "question", {"question": "allow?"})
+    sent: list[int] = []
+
+    async def send(item: Any) -> bool:
+        sent.append(item.id)
+        return True
+
+    sender = OutboxSender(ledger, send, clock=time.time)
+    await sender.flush()
+
+    # Neither sent nor left due, where it would be read again and again.
+    assert sent == []
+    assert question not in [item.id for item in await ledger.outbox_pending()]
+
+
 async def test_the_outbox_loop_retries_after_a_storage_error(ledger, monkeypatch):
     await ledger.outbox_add(None, "receipt", {"text": "hello"})
     monkeypatch.setattr(outbox_module, "retry_delay", lambda _attempts: 0.01)
