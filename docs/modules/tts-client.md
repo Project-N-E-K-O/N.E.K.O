@@ -69,7 +69,7 @@ Startup and synthesis failures are returned through control/error messages. The 
 
 ### GPT-SoVITS utterance lifecycle
 
-The worker has one request-queue consumer. Each utterance owns an asyncio task for connecting, sending text, receiving audio, and draining completion. `(None, None)` only queues that utterance's end operation; control consumption continues throughout the up-to-30-second drain. A new speech ID or `__interrupt__` mutes the retired utterance before cancelling its network work and closing its socket. Connection, handshake, retry, and send waits are cancellable, and old cleanup cannot alter a replacement connection.
+The worker has one request-queue consumer. Each utterance owns an asyncio task for connecting, sending text, receiving audio, and draining completion. `(None, None)` queues that utterance's end operation. A normal successor waits for the previous utterance's tail and completion in its own task, while the control loop keeps reading requests throughout the up-to-30-second drain. A new speech ID replaces an utterance whose end has not been queued. `__interrupt__` cancels active and queued utterances, muting their output before closing their sockets. Connection, handshake, retry, and send waits are cancellable, and old cleanup cannot alter a replacement connection.
 
 PCM is always tagged as `("__audio__", original_speech_id, payload)`. Cancelled utterances suppress late audio, errors, and completion. Normal completion flushes the resampler tail before one `__audio_done__` for that ID; interruption discards the old tail and omits normal completion. Shutdown waits for receiver/socket cleanup. The initial readiness probe has no speech ID and emits no audio completion.
 

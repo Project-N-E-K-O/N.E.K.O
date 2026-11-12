@@ -211,6 +211,37 @@ def _audio(items):
     return [item for item in items if isinstance(item, tuple) and item[0] == "__audio__"]
 
 
+def test_ended_speeches_drain_in_order_without_an_interrupt(worker):
+    probe, first, second, third = _Socket(), _Socket(), _Socket(), _Socket()
+    run = worker(probe, first, second, third)
+    run.ready()
+    run.put("first", "First sentence.")
+    run.put(None)
+    assert first.end_sent.wait(2)
+    run.put("second", "Second sentence.")
+    run.put(None)
+    run.put("third", "Third sentence.")
+    run.put(None)
+    assert not second.connect_started.wait(0.2)
+    assert not first.close_started.is_set()
+
+    for sid, socket in (("first", first), ("second", second), ("third", third)):
+        assert socket.end_sent.wait(2)
+        socket.feed(_wav(rate=32000, samples=3200))
+        socket.finish()
+        run.done(sid)
+
+    items = run.responses.snapshot()
+    previous_done = -1
+    for sid in ("first", "second", "third"):
+        done = ("__audio_done__", sid)
+        audio = [(i, item[2]) for i, item in enumerate(items) if item[:2] == ("__audio__", sid)]
+        assert items.count(done) == 1
+        assert sum(len(pcm) for _, pcm in audio) == 9600
+        assert all(previous_done < index < items.index(done) for index, _ in audio)
+        previous_done = items.index(done)
+
+
 def test_end_wait_does_not_block_interrupt_or_the_next_speech(worker):
     probe, old, new = _Socket(), _Socket(), _Socket()
     run = worker(probe, old, new)
@@ -219,11 +250,14 @@ def test_end_wait_does_not_block_interrupt_or_the_next_speech(worker):
     assert old.append_sent.wait(2)
     run.put(None)
     assert old.end_sent.wait(2)
+    run.put("queued", "Queued sentence.")
+    run.put(None)
     # Never release old's synthesis/done gate. The control queue must still run.
     run.put("__interrupt__")
     run.put("new", "New sentence.")
     assert old.closed.wait(2), "interrupt is stuck behind normal end"
     assert new.append_sent.wait(2)
+    assert [m["data"] for m in new.sent if m["cmd"] == "append"] == ["New sentence."]
     new.feed(_wav(2000))
     run.put(None)
     assert new.end_sent.wait(2)
@@ -231,6 +265,7 @@ def test_end_wait_does_not_block_interrupt_or_the_next_speech(worker):
     run.done("new")
     items = run.responses.snapshot()
     assert ("__audio_done__", "old") not in items
+    assert ("__audio_done__", "queued") not in items
     assert [item[1] for item in _audio(items)] == ["new"]
 
 

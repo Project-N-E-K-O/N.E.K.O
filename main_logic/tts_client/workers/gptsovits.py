@@ -201,6 +201,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
     async def async_worker():
         current = None
+        last_ending_task = None
         live_speeches = set()
         stopping = False
 
@@ -302,7 +303,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                     return True
             return False
 
-        async def run_speech(speech):
+        async def run_speech(speech, predecessor):
             ws_conn = receiver = command = None
             complete = False
             audio_done = AudioDoneEmitter(response_queue)
@@ -310,6 +311,11 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 # Cancelling one utterance must not cancel shared initialization.
                 if not await asyncio.shield(startup):
                     return
+                # A normal successor starts after the previous end publishes
+                # its tail and completion. Cancelling this wait leaves the
+                # predecessor's task alone.
+                if predecessor is not None:
+                    await asyncio.wait((predecessor,))
                 for attempt in range(3):
                     try:
                         ws_conn = await open_socket()
@@ -381,21 +387,25 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
                 if sid == "__interrupt__":
-                    retire(current)
+                    for speech in live_speeches:
+                        retire(speech)
                     current = None
+                    last_ending_task = None
                     continue
                 if sid is None:
                     if current is not None and not current.cancelled and not current.closed and not current.ending:
                         current.ending = True
+                        last_ending_task = current.task
                         current.commands.put_nowait(None)
                     continue
                 if not text or not text.strip() or _gsv_should_drop_chunk(text):
                     continue
                 if current is None or current.speech_id != sid or current.cancelled or current.closed:
-                    retire(current)
+                    if current is not None and not current.ending:
+                        retire(current)
                     current = _GsvSpeech(sid)
                     live_speeches.add(current)
-                    current.task = asyncio.create_task(run_speech(current))
+                    current.task = asyncio.create_task(run_speech(current, last_ending_task))
                     current.task.add_done_callback(lambda task, speech=current: speech_finished(speech, task))
                 if not current.ending:
                     current.commands.put_nowait(text)
