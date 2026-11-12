@@ -7320,7 +7320,7 @@
   "chatHistory": {
     "review": "Repaso de voz",
     "autoContinue": "Reproducir la siguiente voz automáticamente",
-    "autoContinueHint": "Al reproducir un mensaje de voz, continúa en orden cronológico con los filtros actuales. Desactívalo para parar al terminar el mensaje actual.",
+    "autoContinueHint": "Al reproducir una voz, continúa cronológicamente entre fechas para este personaje, manteniendo el filtro de palabras clave. Desactívalo para parar al terminar el mensaje actual.",
     "voicePlay": "Reproducir esta voz",
     "voiceStop": "Detener reproducción",
     "pause": "Pausar",

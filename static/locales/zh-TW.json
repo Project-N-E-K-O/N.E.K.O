@@ -7320,7 +7320,7 @@
   "chatHistory": {
     "review": "語音回顧",
     "autoContinue": "語音自動連播",
-    "autoContinueHint": "點擊一段語音後，依時間繼續播放目前篩選範圍內的後續語音。關閉後播完目前這段即停止。",
+    "autoContinueHint": "點擊一段語音後，依時間繼續播放目前角色的後續語音，可跨日連播並保留關鍵字篩選。關閉後播完目前這段即停止。",
     "voicePlay": "播放這則語音",
     "voiceStop": "停止播放",
     "pause": "暫停",

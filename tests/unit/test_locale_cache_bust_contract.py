@@ -66,6 +66,7 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        '2026-11-12-history-autoplay-setting',
         '2026-11-12-history-voice',
         "2026-11-12-history-scroll",
         "2026-11-12-chat-history",

@@ -7320,7 +7320,7 @@
   "chatHistory": {
     "review": "Voice review",
     "autoContinue": "Automatically play next voice",
-    "autoContinueHint": "After you play a voice message, continue in time order within the current filters. Turn off to stop after the current message.",
+    "autoContinueHint": "After you play a voice message, continue chronologically across dates for this character, keeping the keyword filter. Turn off to stop after the current message.",
     "voicePlay": "Play this voice",
     "voiceStop": "Stop playback",
     "pause": "Pause",

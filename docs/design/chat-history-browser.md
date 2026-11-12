@@ -102,7 +102,10 @@ starting another replay or receiving live-speech playback cancels the request an
 releases the media element. Search-result display order does not change playback
 order. Settings contain a persisted, default-on automatic continuation switch.
 Clicking a row's voice control starts there and continues strictly after its
-(timestamp, id) within the current date/search filters. Opening the dialog alone
+(timestamp, id) across dates, retaining the character and keyword filters. The
+date selector scopes browsing only: a voice selected at 23:55 can continue to
+00:05 the next day, even while browsing a single date. Changing the browsing
+date still cancels playback without sending that date to the playback endpoint. Opening the dialog alone
 does not start audio. Turning continuation off lets all segments of the current
 message finish, then stops; turning it on during playback enables continuation.
 There is no separate start-all button. User-only results have no TTS controls.

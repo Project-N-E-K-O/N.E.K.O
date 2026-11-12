@@ -41,8 +41,9 @@ export function HistoryDialog({ close }: { close: () => void }) {
   const params = new URLSearchParams({ character, q: query, role, limit: '30', order: prefs.order });
   if (day) params.set('day', day);
   const feed = useHistoryFeed(params.toString(), Boolean(character), searchRevision);
-  const playbackScope = new URLSearchParams({ q: query, ...(day ? { day } : {}) }).toString();
-  const playback = useHistoryPlayback(character, `${playbackScope}&role=${role}&revision=${searchRevision}`, prefs.autoContinue);
+  // The day limits browsing, not continuation across midnight. It still resets playback on selection changes.
+  const playbackScope = new URLSearchParams({ q: query }).toString();
+  const playback = useHistoryPlayback(character, `${playbackScope}&role=${role}&revision=${searchRevision}`, prefs.autoContinue, day);
   const playbackActive = ['loading', 'playing', 'paused'].includes(playback.phase);
   useEffect(() => {
     const prior = document.activeElement as HTMLElement | null;

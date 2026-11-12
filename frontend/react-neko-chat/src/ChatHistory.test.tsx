@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { HistoryDialog } from './ChatHistory';
 import { chatWindowPropsSchema } from './message-schema';
 
@@ -84,4 +84,38 @@ it('defaults automatic continuation on in settings and remembers the switch with
   render(<HistoryDialog close={vi.fn()} />);
   expect(screen.getByLabelText('autoContinue')).not.toBeChecked();
   expect(vi.mocked(fetch).mock.calls.every(([url]) => !String(url).includes('/playback?'))).toBe(true);
+});
+
+it('continues across midnight from a date-filtered view and stops when the browsing date changes', async () => {
+  const before = { id: 10, role: 'assistant', text: 'night voice', time: '2026-11-10 23:55:00', voice: { recordId: 'night' } };
+  const after = { id: 11, role: 'assistant', text: 'next morning voice', time: '2026-11-11 00:05:00', voice: { recordId: 'morning' } };
+  let audio!: { onended: (() => void) | null; pause: ReturnType<typeof vi.fn>; play: ReturnType<typeof vi.fn> };
+  class AudioFixture {
+    onended = null; onerror = null; src = ''; preload = '';
+    pause = vi.fn(); play = vi.fn(async () => {}); load = vi.fn(); removeAttribute = vi.fn();
+    constructor() { audio = this; }
+  }
+  vi.stubGlobal('Audio', AudioFixture);
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () =>
+    url.includes('characters') ? { characters: ['Alice'] } : url.includes('/voice-archive/message?')
+      ? { clips: [{ url: '/api/voice-archive/clips/' + 'a'.repeat(64) + '/0', complete: true }] }
+      : { messages: url.includes('/playback?') ? [after] : [before], nextCursor: null, available: true } })));
+  render(<HistoryDialog close={vi.fn()} />);
+  await screen.findByText('night voice');
+  fireEvent.change(screen.getByLabelText('date', { selector: 'input' }), { target: { value: '2026-11-10' } });
+  fireEvent.change(screen.getByLabelText('keyword'), { target: { value: 'voice' } });
+  fireEvent.click(screen.getByText('search'));
+  fireEvent.click(await screen.findByLabelText('voicePlay'));
+  await waitFor(() => expect(audio.play).toHaveBeenCalledTimes(1));
+  await act(async () => audio.onended?.());
+  await waitFor(() => expect(audio.play).toHaveBeenCalledTimes(2));
+  expect(screen.getByText('next morning voice')).toBeInTheDocument();
+  const call = vi.mocked(fetch).mock.calls.find(([url]) => String(url).includes('/playback?'))!;
+  const params = new URL(String(call[0]), 'http://localhost').searchParams;
+  expect(params.has('day')).toBe(false);
+  expect(Object.fromEntries(params)).toMatchObject({ character: 'Alice', q: 'voice', cursor: '10', after_time: before.time });
+  expect(screen.getByLabelText('date', { selector: 'input' })).toHaveValue('2026-11-10');
+  fireEvent.change(screen.getByLabelText('date', { selector: 'input' }), { target: { value: '2026-11-11' } });
+  expect(audio.onended).toBeNull();
+  expect(document.querySelector('.history-playback')).toBeNull();
 });
