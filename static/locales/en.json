@@ -7319,8 +7319,8 @@
     },
   "chatHistory": {
     "review": "Voice review",
-    "playAll": "Play in time order",
-    "reviewHint": "Play saved voices from earliest to latest within the current filters",
+    "autoContinue": "Automatically play next voice",
+    "autoContinueHint": "After you play a voice message, continue in time order within the current filters. Turn off to stop after the current message.",
     "voicePlay": "Play this voice",
     "voiceStop": "Stop playback",
     "pause": "Pause",

@@ -30,7 +30,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
   const [role, setRole] = useState('all');
   const [prefs, setPrefs] = useState(() => {
     const p = preferences();
-    return { order: p?.order === 'asc' ? 'asc' : 'desc', times: p?.times !== false };
+    return { order: p?.order === 'asc' ? 'asc' : 'desc', times: p?.times !== false, autoContinue: p?.autoContinue !== false };
   });
   const [searchRevision, setSearchRevision] = useState(0);
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -42,7 +42,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
   if (day) params.set('day', day);
   const feed = useHistoryFeed(params.toString(), Boolean(character), searchRevision);
   const playbackScope = new URLSearchParams({ q: query, ...(day ? { day } : {}) }).toString();
-  const playback = useHistoryPlayback(character, `${playbackScope}&role=${role}&revision=${searchRevision}`);
+  const playback = useHistoryPlayback(character, `${playbackScope}&role=${role}&revision=${searchRevision}`, prefs.autoContinue);
   const playbackActive = ['loading', 'playing', 'paused'].includes(playback.phase);
   useEffect(() => {
     const prior = document.activeElement as HTMLElement | null;
@@ -122,20 +122,21 @@ export function HistoryDialog({ close }: { close: () => void }) {
       <label>{t('speaker')}<select value={role} onChange={e => { setRole(e.target.value); reset(); }}>{['all', 'user', 'assistant'].map(r => <option value={r} key={r}>{t(r)}</option>)}</select></label>
       <details><summary>{t('settings')}</summary><div className="history-settings">
         <label>{t('order')}<select value={prefs.order} onChange={e => { setPrefs({ ...prefs, order: e.target.value }); reset(); }}><option value="desc">{t('newest')}</option><option value="asc">{t('oldest')}</option></select></label>
+        <label><input type="checkbox" checked={prefs.autoContinue} onChange={e => setPrefs({ ...prefs, autoContinue: e.target.checked })} />{t('autoContinue')}</label>
+        <p>{t('autoContinueHint')}</p>
         <label><input type="checkbox" checked={prefs.times} onChange={e => setPrefs({ ...prefs, times: e.target.checked })} />{t('showTime')}</label>
       </div></details>
     </nav>
-    <section className="history-playback" aria-label={t('review')}>
+    {playback.phase !== 'idle' && <section className="history-playback" aria-label={t('review')}>
       <div className="history-playback-controls">
-        {!playbackActive ? <button disabled={!character || role === 'user'} onClick={() => playback.start()}><VoiceReplayIcon />{t('playAll')}</button>
-          : <><button onClick={playback.phase === 'paused' ? playback.resume : playback.pause}>{t(playback.phase === 'paused' ? 'resume' : 'pause')}</button>
+        {playbackActive && <><button onClick={playback.phase === 'paused' ? playback.resume : playback.pause}>{t(playback.phase === 'paused' ? 'resume' : 'pause')}</button>
             <button onClick={playback.stop}>{t('voiceStop')}</button></>}
-        <span role="status">{t(playbackActive ? `playback_${playback.phase}` : playback.phase === 'idle' ? 'reviewHint' : `playback_${playback.phase}`)}</span>
+        <span role="status">{t(`playback_${playback.phase}`)}</span>
       </div>
       {playback.current && <div className="history-now-playing"><time>{playback.current.time}</time><span>{playback.current.text}</span>
         <button onClick={() => setAnchor(playback.current!.id)}>{t('locatePlaying')}</button></div>}
       {playback.partial && <span className="history-playback-note">{t('voicePartial')}</span>}
-    </section>
+    </section>}
     {anchor !== null && <button className="history-back" onClick={() => setAnchor(null)}>{t('back')}</button>}
     {characterError && <div role="alert" className="history-state">{t('error')} <button onClick={() => setRetry(v => v + 1)}>{t('retry')}</button></div>}
     <HistoryResults key={params.toString() + searchRevision} entries={feed.messages} renderEntry={renderEntry}

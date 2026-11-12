@@ -126,3 +126,50 @@ it('rejects unsafe clip URLs and does not continue after a network error', async
   await waitFor(() => expect(result.current.phase).toBe('error'));
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+it('continues from the selected voice by time and id without replaying earlier messages', async () => {
+  const fetcher = vi.fn(async (url: string) => url.includes('/playback?')
+    ? response({ messages: [entry(3)], nextCursor: null }) : manifest());
+  vi.stubGlobal('fetch', fetcher);
+  const { result } = renderHook(() => useHistoryPlayback('Alice', 'day=2026-11-01&q=message'));
+  act(() => result.current.start(entry(2)));
+  await waitFor(() => expect(result.current.phase).toBe('playing'));
+  expect(fetcher.mock.calls).toHaveLength(1);
+  act(() => players[0].onended?.());
+  await waitFor(() => expect(result.current.current?.id).toBe(3));
+  const url = new URL(fetcher.mock.calls.find(([url]) => url.includes('/playback?'))![0], 'http://localhost');
+  expect(Object.fromEntries(url.searchParams)).toMatchObject({ character: 'Alice', day: '2026-11-01', q: 'message', cursor: '2', after_time: entry(2).time });
+});
+
+it('applies the continuation switch during playback without cutting off message segments', async () => {
+  const fetcher = vi.fn(async (url: string) => url.includes('/playback?')
+    ? response({ messages: [entry(2), entry(3)], nextCursor: null })
+    : response({ clips: [{ url: clip, complete: true }, { url: clip.replace(/0$/, '1'), complete: true }] }));
+  vi.stubGlobal('fetch', fetcher);
+  const { result, rerender } = renderHook(({ enabled }) => useHistoryPlayback('Alice', '', enabled), { initialProps: { enabled: false } });
+  act(() => result.current.start(entry(1)));
+  await waitFor(() => expect(result.current.phase).toBe('playing'));
+  rerender({ enabled: true });
+  act(() => players[0].onended?.());
+  await waitFor(() => expect(players[0].play).toHaveBeenCalledTimes(2));
+  act(() => players[0].onended?.());
+  await waitFor(() => expect(players[0].play).toHaveBeenCalledTimes(3));
+  expect(result.current.current?.id).toBe(2);
+  rerender({ enabled: false });
+  expect(players[0].src).toBe(clip);
+  act(() => players[0].onended?.());
+  await waitFor(() => expect(players[0].play).toHaveBeenCalledTimes(4));
+  act(() => players[0].onended?.());
+  await waitFor(() => expect(result.current.phase).toBe('done'));
+  expect(fetcher.mock.calls.some(([url]) => url.includes('record-3'))).toBe(false);
+});
+
+it('plays only the selected message when continuation is disabled', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+  const { result } = renderHook(() => useHistoryPlayback('Alice', '', false));
+  act(() => result.current.start(entry(1)));
+  await waitFor(() => expect(result.current.phase).toBe('playing'));
+  act(() => players[0].onended?.());
+  await waitFor(() => expect(result.current.phase).toBe('done'));
+  expect(fetch).toHaveBeenCalledTimes(1);
+});

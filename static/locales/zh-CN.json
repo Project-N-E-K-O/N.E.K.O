@@ -7319,8 +7319,8 @@
     },
   "chatHistory": {
     "review": "语音回顾",
-    "playAll": "按时间连播",
-    "reviewHint": "按当前筛选范围，从早到晚播放已保存的语音",
+    "autoContinue": "语音自动连播",
+    "autoContinueHint": "点击一条语音后，按时间继续播放当前筛选范围内的后续语音。关闭后播完当前这条即停止。",
     "voicePlay": "播放这条语音",
     "voiceStop": "停止播放",
     "pause": "暂停",

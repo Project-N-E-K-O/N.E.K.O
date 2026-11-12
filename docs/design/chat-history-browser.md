@@ -100,4 +100,9 @@ the current timestamp/text, pause/resume, stop and a context link. Per-row contr
 use the same speaker/stop icon as live chat. Closing the dialog, changing filters,
 starting another replay or receiving live-speech playback cancels the request and
 releases the media element. Search-result display order does not change playback
-order. User-only filters disable voice review because the archive contains TTS.
+order. Settings contain a persisted, default-on automatic continuation switch.
+Clicking a row's voice control starts there and continues strictly after its
+(timestamp, id) within the current date/search filters. Opening the dialog alone
+does not start audio. Turning continuation off lets all segments of the current
+message finish, then stops; turning it on during playback enables continuation.
+There is no separate start-all button. User-only results have no TTS controls.

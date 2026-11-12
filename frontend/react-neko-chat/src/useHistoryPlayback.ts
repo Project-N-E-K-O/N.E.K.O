@@ -9,9 +9,11 @@ const idle: PlaybackState = { phase: 'idle', current: null, sequence: false, par
 
 // This player belongs to the dialog, never a virtual row. At most one page of
 // identities and the current audio resource are held by the playback queue.
-export function useHistoryPlayback(character: string, scope: string) {
+export function useHistoryPlayback(character: string, scope: string, autoContinue = true) {
   const [state, setState] = useState<PlaybackState>(idle);
   const session = useRef<Session>();
+  const autoContinueRef = useRef(autoContinue);
+  autoContinueRef.current = autoContinue;
   const stop = () => session.current?.stop();
   useEffect(() => {
     const onSpeech = (event: Event) => { if ((event as CustomEvent).detail?.active) session.current?.stop(); };
@@ -28,7 +30,7 @@ export function useHistoryPlayback(character: string, scope: string) {
     let current: HistoryEntry | null = single ?? null, partial = false;
     let wake: (() => void) | undefined, rejectClip: ((error: Error) => void) | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const publish = (phase: Phase) => { if (!stopped) setState({ phase, current, partial, sequence: !single }); };
+    const publish = (phase: Phase) => { if (!stopped) setState({ phase, current, partial, sequence: autoContinueRef.current }); };
     const abortError = () => new DOMException('Playback stopped', 'AbortError');
     const check = () => { if (stopped) throw abortError(); };
     const finish = (phase: Phase = 'idle') => {
@@ -100,16 +102,23 @@ export function useHistoryPlayback(character: string, scope: string) {
     void (async () => {
       try {
         if (single?.voice) await message(single);
-        else if (!single) {
-          let cursor = 0, afterTime = '';
+        if ((!single || single.time) && autoContinueRef.current) {
+          let cursor = single?.id ?? 0, afterTime = single?.time ?? '';
           do {
-            await ready(); publish('loading');
+            await ready();
+            if (!autoContinueRef.current) break;
+            publish('loading');
             const params = new URLSearchParams(scope);
             params.set('character', character); params.set('cursor', String(cursor));
             if (afterTime) params.set('after_time', afterTime);
             const page = await json<HistoryPage & { nextTime?: string }>(`/api/chat-history/playback?${params}`);
             if (!page) throw new Error('history_unavailable');
-            for (const entry of page.messages) if (entry.voice) await message(entry);
+            for (const entry of page.messages) {
+              await ready();
+              if (!autoContinueRef.current) break;
+              if (entry.voice) await message(entry);
+            }
+            if (!autoContinueRef.current) break;
             if (page.nextCursor === null) break;
             if (!page.nextTime || (page.nextTime === afterTime && page.nextCursor <= cursor) || page.nextTime < afterTime) throw new Error('invalid_cursor');
             cursor = page.nextCursor; afterTime = page.nextTime;

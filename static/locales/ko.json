@@ -7319,8 +7319,8 @@
     },
   "chatHistory": {
     "review": "음성 돌아보기",
-    "playAll": "시간순 연속 재생",
-    "reviewHint": "현재 필터 범위의 저장된 음성을 오래된 순서로 재생",
+    "autoContinue": "음성 자동 연속 재생",
+    "autoContinueHint": "음성을 선택하면 현재 필터에 맞는 다음 음성을 시간순으로 재생합니다. 끄면 현재 메시지를 재생한 뒤 멈춥니다.",
     "voicePlay": "이 음성 재생",
     "voiceStop": "재생 중지",
     "pause": "일시 정지",

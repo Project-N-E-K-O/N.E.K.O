@@ -7319,8 +7319,8 @@
     },
   "chatHistory": {
     "review": "Repaso de voz",
-    "playAll": "Reproducir en orden temporal",
-    "reviewHint": "Reproduce las voces guardadas de la más antigua a la más reciente según los filtros",
+    "autoContinue": "Reproducir la siguiente voz automáticamente",
+    "autoContinueHint": "Al reproducir un mensaje de voz, continúa en orden cronológico con los filtros actuales. Desactívalo para parar al terminar el mensaje actual.",
     "voicePlay": "Reproducir esta voz",
     "voiceStop": "Detener reproducción",
     "pause": "Pausar",

@@ -69,3 +69,19 @@ it('opens history from the existing compact wheel and closes only the modal', as
   expect(view.container.querySelector('.history-dialog')).toBeNull();
   expect(view.container.querySelector('.app-shell')).not.toBeNull();
 });
+
+it('defaults automatic continuation on in settings and remembers the switch without starting audio', async () => {
+  const view = render(<HistoryDialog close={vi.fn()} />);
+  await screen.findByText('<script>音乐</script>');
+  const setting = screen.getByLabelText('autoContinue');
+  expect(setting).toBeChecked();
+  expect(setting.closest('details')).not.toBeNull();
+  expect(screen.queryByText('playAll')).toBeNull();
+  expect(document.querySelector('.history-playback')).toBeNull();
+  fireEvent.click(setting);
+  expect(JSON.parse(localStorage.getItem('neko.chatHistory.preferences')!).autoContinue).toBe(false);
+  view.unmount();
+  render(<HistoryDialog close={vi.fn()} />);
+  expect(screen.getByLabelText('autoContinue')).not.toBeChecked();
+  expect(vi.mocked(fetch).mock.calls.every(([url]) => !String(url).includes('/playback?'))).toBe(true);
+});
