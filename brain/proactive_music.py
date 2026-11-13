@@ -52,6 +52,22 @@ def proactive_music_query(text: str) -> str | None:
             continue
         title = next(group for group in match.groups() if group is not None).strip()
         if title:
+            # Preserve a named recording instead of silently choosing another artist.
+            offer = _OFFER.search(prefix)
+            artist_prefix = prefix[offer.start():] if offer else prefix
+            artist = re.search(r"(?:听听|听一下|听|播放|放一首|放首|listen to|play)\s*(.+?)\s*的\s*$", artist_prefix, re.I)
+            suffix = text[match.end():match.end() + end.start()] if end else text[match.end():]
+            possessive = re.search(r"(?:listen to|play)\s+(.+?)[’']s\s*$", artist_prefix, re.I)
+            by_artist = re.match(r"\s+by\s+(.+?)(?:[.!?。！？,，]|$)", suffix, re.I)
+            if artist:
+                title += " " + artist.group(1).strip()
+            elif possessive:
+                title += " " + possessive.group(1).strip()
+            elif by_artist:
+                title += " " + by_artist.group(1).strip()
+            elif "的" in prefix or re.match(r"\s+by\b", suffix, re.I):
+                # An unparsed artist must not turn into an unqualified title.
+                continue
             offers.append(title)
     unique = list(dict.fromkeys(offers))
     return unique[0] if len(unique) == 1 else None

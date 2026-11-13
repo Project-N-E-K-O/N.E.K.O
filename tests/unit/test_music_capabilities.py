@@ -293,3 +293,78 @@ async def test_music_prefix_is_full_for_current_turn_but_compact_in_next_request
     client.script = [[_text("Followup"), _text("", "stop")]]
     await client.stream_text("next question")
     assert "TAIL_SECRET" not in str(client.requests[-1])
+
+
+@pytest.mark.parametrize("text,action", [
+    ("收藏這首", "like"), ("把這首加入喜歡的音樂", "like"),
+    ("把這首加入我的網易雲夜讀歌單", "add"),
+    ("從網易雲夜讀歌單刪除這首", "remove"),
+    ("在網易雲新建歌單夜讀", "create"), ("取消這首歌的紅心", "unlike"),
+    ("给这首点红心", "like"), ("喜欢一下这首", "like"),
+    ("Save this song", "like"), ("Like the current song", "like"),
+    ("Add this song to my Night playlist", "add"),
+    ("Remove this song from my Night playlist", "remove"),
+    ("Create a NetEase playlist called Night", "create"), ("Unlike this song", "unlike"),
+    ("Show my liked songs", "liked"), ("Show my NetEase playlists", "playlists"),
+    ("Show my NetEase account", "account"), ("Play my NetEase playlist", "play"),
+])
+def test_multilingual_library_operations(text, action):
+    assert cloud_music_actions(text) == [action]
+
+
+@pytest.mark.parametrize("text", ["停止网易云歌单连播", "网易云歌单切到下一首",
+    "停止網易雲歌單連播", "Stop my NetEase playlist", "Skip to the next song in my NetEase playlist"])
+def test_library_words_do_not_hide_playback_controls(text):
+    catalog = [{"id": "netease_music", "entries": [
+        {"id": "cloud_music", "input_schema": deepcopy(CLOUD_SCHEMA)},
+        {"id": "playlist", "input_schema": {"properties": {"action": {"enum": ["stop", "next", "save"]}}}},
+    ]}]
+    result = scoped_music_catalog(catalog, text)
+    playlist = next(e for e in result[0]["entries"] if e["id"] == "playlist")
+    assert set(playlist["input_schema"]["properties"]["action"]["enum"]) == {"stop", "next"}
+    assert catalog[0]["entries"][1]["input_schema"]["properties"]["action"]["enum"] == ["stop", "next", "save"]
+
+
+@pytest.mark.parametrize("text", ["我不想收藏这首", "別取消這首歌的紅心", "Don't save this song", "Do not unlike this track"])
+def test_refusal_never_exposes_cloud_writes(text):
+    from utils.music_intent import CLOUD_WRITE_ACTIONS
+    assert not (set(cloud_music_actions(text)) & CLOUD_WRITE_ACTIONS)
+
+
+@pytest.mark.parametrize("text", ["我帮你把这首歌加入喜欢的音乐吧", "把这首收藏到本地歌单", "Create a NetEase playlist"])
+def test_proactive_catalog_removes_all_save_actions(text):
+    catalog = [{"id": "netease_music", "entries": [
+        {"id": "cloud_music", "input_schema": deepcopy(CLOUD_SCHEMA)},
+        {"id": "playlist", "input_schema": {"properties": {"action": {"enum": ["save", "save_current", "next"]}}}},
+    ]}]
+    result = scoped_music_catalog(catalog, text, proactive=True)
+    assert not any(e["id"] == "cloud_music" for e in result[0]["entries"])
+    assert result[0]["entries"][0]["input_schema"]["properties"]["action"]["enum"] == ["next"]
+
+
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt", "tchinese"])
+def test_capability_and_compact_history_use_prompt_locale(lang):
+    from config.prompts.prompts_music_capability import MUSIC_CAPABILITY, MUSIC_HISTORY_PREFIX
+    from config.prompts._locale import normalize_prompt_locale
+    from utils.music_capability_context import compact_music_history
+    locale = normalize_prompt_locale(lang)
+    assert music_capability_prompt({"status": "running", "entries": [{"id": "cloud_music"}]}, lang).strip() == MUSIC_CAPABILITY[locale]
+    assert compact_music_history("track detail", lang).startswith(MUSIC_HISTORY_PREFIX[locale])
+
+
+@pytest.mark.parametrize("action", ["save", "save_current"])
+async def test_proactive_local_save_is_denied_even_with_explicit_local_words(action):
+    from plugin.tests.unit.plugins.netease_music.test_plugin import _make_plugin, _Provider, _ctx
+    plugin, _, _ = _make_plugin(_Provider())
+    result = await plugin.playlist(action, name="Night", _ctx={**_ctx(), "request_source": "proactive", "latest_user_request": "保存这首到本地歌单"})
+    assert result["finish"]["data"]["status"] == "blocked"
+
+
+def test_save_and_skip_keeps_both_required_entries():
+    catalog = [{"id": "netease_music", "entries": [
+        {"id": "cloud_music", "input_schema": deepcopy(CLOUD_SCHEMA)},
+        {"id": "playlist", "input_schema": {"properties": {"action": {"enum": ["stop", "next", "save"]}}}},
+    ]}]
+    entries = scoped_music_catalog(catalog, "收藏这首歌，然后放下一首")[0]["entries"]
+    assert {e["id"]: e["input_schema"]["properties"]["action"]["enum"] for e in entries} == {
+        "cloud_music": ["like"], "playlist": ["next"]}

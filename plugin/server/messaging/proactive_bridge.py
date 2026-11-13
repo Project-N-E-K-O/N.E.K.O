@@ -417,6 +417,7 @@ class ProactiveBridge:
                 events_out.append(
                     {
                         "event_type": "music_play_url",
+                        **({"playback_source": "proactive"} if plugin_id == "netease_music" and ui.get("playback_source") == "proactive" else {}),
                         **({"netease_id": ui["netease_id"]} if plugin_id == "netease_music" and ui.get("netease_id") else {}),
                         **({"queue_ticket": ui["queue_ticket"]} if plugin_id == "netease_music" and ui.get("queue_ticket") else {}),
                         "lanlan_name": target_lanlan,

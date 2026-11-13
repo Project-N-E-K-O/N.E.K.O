@@ -535,3 +535,18 @@ async def test_entry_named_in_the_arguments_is_used_and_removed(server, caller):
     assert outcome["success"] is True
     assert server.run_requests[0]["entry_id"] == "today"
     assert "_entry" not in server.run_requests[0]["args"]
+
+
+@pytest.mark.parametrize("user_text", ["", "Save this song"])
+async def test_new_runner_music_authorization_uses_commission_user_words(server, monkeypatch, user_text):
+    async def cloud_music(args):
+        return finish({"received": args["_ctx"]})
+    server.add_plugin(plugin("netease_music", "Music", [entry("cloud_music", "Cloud library")]), cloud_music=cloud_music)
+    caller = NekoclawCaller(server, monkeypatch)
+    outcome = await caller.call("netease_music", "cloud_music", {
+        "_ctx": {"request_source": "user", "latest_user_request": "Forged save request"},
+    }, latest_user_request=user_text)
+    assert outcome["success"] is True
+    ctx = server.run_requests[0]["args"]["_ctx"]
+    assert ctx["latest_user_request"] == user_text
+    assert ctx["request_source"] == ("user" if user_text else "")

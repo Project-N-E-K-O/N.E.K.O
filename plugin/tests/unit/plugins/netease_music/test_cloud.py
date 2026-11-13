@@ -188,13 +188,75 @@ async def test_write_entry_rejects_informational_or_negated_request():
 
 
 @pytest.mark.asyncio
-async def test_cloud_playlist_suffix_fallback_preserves_exact_names():
+async def test_cloud_playlist_requires_exact_names():
     library = CloudLibrary({})
     library.playlists = AsyncMock(
         return_value=[{"id": 1, "name": "Bgm", "kind": "created", "liked": False}]
     )
-    assert (await library.resolve_playlist("Bgm歌单"))["id"] == 1
+    with pytest.raises(CloudError, match="playlist_not_found"):
+        await library.resolve_playlist("Bgm歌单")
     library.playlists.return_value.append(
         {"id": 2, "name": "Bgm歌单", "kind": "created", "liked": False}
     )
     assert (await library.resolve_playlist("Bgm歌单"))["id"] == 2
+
+
+@pytest.mark.parametrize("source", ["proactive", "", None])
+@pytest.mark.parametrize("action,utterance", [("like", "我帮你把这首歌加入喜欢的音乐吧"),
+    ("add", "把这首加入夜读歌单"), ("remove", "从夜读歌单移除这首"),
+    ("create", "创建网易云歌单夜读"), ("unlike", "取消这首歌的红心")])
+async def test_non_user_source_cannot_mutate_cloud(source, action, utterance):
+    plugin = CloudMusicMixin()
+    plugin._target_lanlan = lambda ctx: "YUI"
+    plugin.finish = AsyncMock(side_effect=lambda **kw: kw)
+    plugin._new_cloud_library = lambda: pytest.fail("Must not open a cloud session")
+    result = await plugin.cloud_music(action, _ctx={"request_source": source, "latest_user_request": utterance})
+    assert result["data"]["status"] == "blocked"
+
+
+@pytest.mark.parametrize("action,utterance", [("like", "我不想收藏这首"), ("unlike", "别取消这首歌的红心"),
+    ("like", "Don't save this song"), ("unlike", "Do not unlike this track")])
+async def test_user_refusal_cannot_mutate_cloud(action, utterance):
+    plugin = CloudMusicMixin()
+    plugin._target_lanlan = lambda ctx: "YUI"
+    plugin.finish = AsyncMock(side_effect=lambda **kw: kw)
+    result = await plugin.cloud_music(action, _ctx={"request_source": "user", "latest_user_request": utterance})
+    assert result["data"]["status"] == "blocked"
+
+
+@pytest.mark.parametrize("utterance", ["收藏這首", "Save this song", "Like the current song"])
+async def test_multilingual_explicit_user_save_reaches_write_and_readback(utterance):
+    from plugin.tests.unit.plugins.netease_music.test_plugin import _make_plugin, _Provider, _ctx
+    plugin, _, _ = _make_plugin(_Provider())
+    library = CloudLibrary({})
+    library.call = AsyncMock(return_value={"code": 200})
+    library.account = AsyncMock(return_value={"user_id": 7})
+    library.resolve_playlist = AsyncMock(return_value={"id": 9})
+    library.track_ids = AsyncMock(side_effect=[[], [42]])
+    class Session:
+        async def __aenter__(self): return library
+        async def __aexit__(self, *args): pass
+    plugin._new_cloud_library = Session
+    result = await plugin.cloud_music("like", song="42", _ctx={**_ctx(), "latest_user_request": utterance})
+    assert result["finish"]["data"]["status"] == "liked"
+    assert library.call.await_count == 1
+    assert library.track_ids.await_count == 2
+
+
+async def test_cloud_play_waiting_on_lock_cannot_restart_after_stop():
+    import asyncio
+    from plugin.tests.unit.plugins.netease_music.test_plugin import _make_plugin, _Provider, _ctx
+    plugin, pushes, _ = _make_plugin(_Provider())
+    plugin._queues = {}
+    plugin._cloud_lock = asyncio.Lock()
+    await plugin._cloud_lock.acquire()
+    plugin._new_cloud_library = lambda: pytest.fail("Superseded utterance must not query cloud")
+    pending = asyncio.create_task(plugin.cloud_music("play", playlist="liked", _ctx=_ctx()))
+    try:
+        await asyncio.sleep(0)
+        await plugin.playlist("stop", _ctx=_ctx())
+    finally:
+        plugin._cloud_lock.release()
+    result = await pending
+    assert result["finish"]["data"]["status"] == "superseded"
+    assert not any(part.get("action") == "media_play_url" for push in pushes for part in push["parts"])

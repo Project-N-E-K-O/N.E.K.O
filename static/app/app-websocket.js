@@ -1019,7 +1019,7 @@
         var dispatchResult;
         try {
             dispatchResult = await window.dispatchMusicPlay(track, {
-                source: 'music_play_url',
+                source: response.playback_source === 'proactive' ? 'proactive' : 'music_play_url',
                 reason: reason || 'websocket',
                 getCancellationReason: () => epoch !== musicPlayCommandEpoch ? 'superseded' : ''
             });

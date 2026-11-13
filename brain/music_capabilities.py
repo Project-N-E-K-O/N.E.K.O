@@ -3,6 +3,7 @@
 import re
 from copy import deepcopy
 from utils.music_capability_context import requests_local_music
+from utils.music_intent import CLOUD_WRITE_ACTIONS, music_write_action, normalize_music_request
 
 _DETAILS = {
     "account": ("查询网易云登录账号昵称、ID及会员类型。", []),
@@ -44,7 +45,19 @@ _DETAILS = {
 }
 
 
+def playback_control_actions(text):
+    text = normalize_music_request(text)
+    actions = []
+    if re.search(r"停止|停播|\bstop\b", text):
+        actions.append("stop")
+    if re.search(r"下一首|切歌|换一首|\bskip\b|\bnext (?:song|track)\b", text):
+        actions.append("next")
+    return actions
+
+
 def cloud_music_actions(text, context=""):
+    text = normalize_music_request(text)
+    context = normalize_music_request(context)
     if requests_local_music(text):
         return []
     if context and re.search(r"下一页|上一页|继续列", text):
@@ -61,6 +74,27 @@ def cloud_music_actions(text, context=""):
                     return previous
                 # Do not page an older music request across a new unrelated task.
                 break
+    write = music_write_action(text)
+    if write:
+        return [write]
+    # Playback controls take precedence over a cloud-library list fallback.
+    if playback_control_actions(text):
+        return []
+    if re.search(r"\b(?:netease|my playlists?|liked songs|daily recommendations?|daily mix|saved artists|favorite artists|favourite artists)\b", text):
+        if re.search(r"\b(?:account|profile|login|nickname|membership)\b", text):
+            return ["account"]
+        if re.search(r"\bartists?\b", text):
+            return ["artists"]
+        if re.search(r"\bplay\b", text) and re.search(r"playlist|liked|daily", text):
+            return ["play"]
+        if re.search(r"daily", text):
+            return ["daily"]
+        if re.search(r"liked songs", text):
+            return ["liked"]
+        if re.search(r"\b(?:tracks|songs)\b.*\bplaylist\b|\bplaylist\b.*\b(?:tracks|songs)\b", text):
+            return ["tracks"]
+        if re.search(r"playlist", text):
+            return ["playlists"]
     # Song saves default to the account, even without the word NetEase.
     save = bool(re.search(r"收藏|保存|存到|加到|加入|添加|放进", text))
     music_save = save and bool(
@@ -82,29 +116,6 @@ def cloud_music_actions(text, context=""):
         r"我的|我收藏|我创建|云端|账号|自己的|喜欢的音乐|日推", text
     ):
         return []  # Public playlist/song search keeps its existing provider route.
-    if re.search(r"取消.*(喜欢|红心)|不再喜欢", text):
-        return ["unlike"]
-    if re.search(r"创建|新建|建一[张个]", text):
-        return ["create"]
-    if re.search(r"移除|删掉|删除|去掉", text):
-        return ["remove"]
-    if "喜欢的音乐" in text and re.search(r"加到|加入|收藏|保存|存到", text):
-        return ["like"]
-    if (
-        save
-        and re.search(r"歌单", text)
-        and re.search(
-            r"添加|加到|加入|存到|放进|保存到|收藏到|保存进|收藏进|这首|那首|正在听|正在播放",
-            text,
-        )
-    ):
-        return ["add"]
-    if re.search(r"添加|加到|加入|存到|放进|保存到", text):
-        return ["add"]
-    if re.search(r"红心|(?:收藏|喜欢)(?:一下)?这首", text) or (
-        music_save and not re.search(r"歌单", text)
-    ):
-        return ["like"]
     if re.search(r"账号|昵称|会员|登录|个人资料", text):
         return ["account"]
     if re.search(r"收藏.*歌手", text):
@@ -126,9 +137,11 @@ def cloud_music_actions(text, context=""):
     return []
 
 
-def scoped_music_catalog(plugins, text, context=""):
+def scoped_music_catalog(plugins, text, context="", *, proactive=False):
     """Copy metadata; never mutate the cached plugin registry or other turns."""
     actions = cloud_music_actions(text, context)
+    if proactive:
+        actions = [action for action in actions if action not in CLOUD_WRITE_ACTIONS]
     result = []
     for plugin in plugins:
         if plugin.get("id") != "netease_music":
@@ -139,7 +152,7 @@ def scoped_music_catalog(plugins, text, context=""):
             plugin["entries"] = [
                 e for e in plugin.get("entries", []) if e.get("id") != "cloud_music"
             ]
-            if not requests_local_music(text):
+            if proactive or not requests_local_music(text):
                 for entry in plugin["entries"]:
                     if entry.get("id") == "playlist":
                         action = (
@@ -157,8 +170,14 @@ def scoped_music_catalog(plugins, text, context=""):
             plugin["description"] = "网易云账号与云端音乐库（本轮按需提供的能力）。"
             entries = [
                 e for e in plugin.get("entries", []) if e.get("id") == "cloud_music"
+                or (e.get("id") == "playlist" and playback_control_actions(text))
             ]
             for entry in entries:
+                if entry.get("id") == "playlist":
+                    action = (entry.get("input_schema") or {}).get("properties", {}).get("action", {})
+                    if "enum" in action:
+                        action["enum"] = [a for a in action["enum"] if a in playback_control_actions(text)]
+                    continue
                 entry["description"] = " ".join(_DETAILS[a][0] for a in actions)
                 schema = entry.get("input_schema") or {}
                 props = schema.get("properties") or {}

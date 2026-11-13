@@ -1511,3 +1511,41 @@ test('paused queue remains resumable past the cleanup timeout', async t => {
   s.clickClose();
   assert.equal(events.at(-1).queue_closed, true);
 });
+
+for (const transport of ['ipc', 'broadcast']) test(`plugin ID reaches classification through ${transport} snapshot`, async t => {
+    const {owner, follower} = pair(t, transport === 'broadcast' ? {channelHub:new Set()} : {});
+    const pending = owner.w.sendMusicMessageDetailed({neteaseId:123,name:'Plugin song',artist:'Artist',
+        url:'https://music.163.com/test.mp3'}, true);
+    await owner.advance(100); await pending; await flush();
+    assert.equal(owner.w.getMusicPlaybackSnapshot().track.neteaseId,123);
+    assert.equal(follower.w.getMusicPlaybackSnapshot().track.neteaseId,123);
+    const requests=[];
+    follower.w.live2dManager={currentModel:{}};
+    follower.w.fetch=async (url,options)=>{requests.push(JSON.parse(options.body));return {ok:false};};
+    follower.w.eval(fs.readFileSync(path.join(root,'static/avatar/avatar-music-mood.js'),'utf8'));
+    follower.w.nekoMusicMood.sync();
+    assert.equal(requests[0].netease_id,'123');
+    assert.equal(requests[0].track_id,'netease:123');
+});
+
+for (const event of ['waiting', 'stalled']) test(`closing ${event} playback preserves recommendation and sends terminal receipt`, async t => {
+    const s=createSurface(t), r=await startRecommendation(s,1);
+    const player=s.players[0];
+    player.emit(event);
+    assert.equal(player._musicPlaybackReportContext.lastReportedState,'buffering');
+    assert.equal(player._musicPlaybackReportContext.recommendationLastState,'playing');
+    assert.ok(!r.events.some(e=>e.kind==='buffering'));
+    s.clickClose(); await flush();
+    assert.equal(r.events.filter(e=>['stopped','ended','failed'].includes(e.kind)).length,1);
+    assert.ok(r.awareness.some(e=>e.state==='ended'));
+});
+
+test('buffering player rejects a proactive plugin dispatch at final playback boundary', async t => {
+    const s=createSurface(t);await (await s.start(true)).promise;await s.advance(100);
+    const player=s.players[0];player.emit('waiting');
+    s.w.eval(fs.readFileSync(path.join(root,'static/app/app-chat.js'),'utf8'));
+    const result=await s.w.dispatchMusicPlayDetailed({neteaseId:999,name:'Incoming',artist:'Artist',url:'https://music.163.com/other.mp3'}, {source:'proactive'});
+    assert.equal(result.ok,false);
+    assert.equal(player.destroyed,false);
+    assert.equal(s.players.length,1);
+});

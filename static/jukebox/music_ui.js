@@ -307,6 +307,8 @@
     }
 
     function reportRecommendationPlaybackState(state, evidenceContext, failureReason) {
+        // Buffering is transport state, not a recommendation feedback event.
+        if (state === 'buffering') return;
         try {
             // Recommendation evidence is independent of the conversational socket.
             // Only the owning player carries this immutable recommendation id.
@@ -828,7 +830,7 @@
         const audio = localPlayer.audio;
         return {
             track: currentPlayingTrack ? {
-                id: currentPlayingTrack.id, source: currentPlayingTrack.source, tags: currentPlayingTrack.tags,
+                neteaseId: currentPlayingTrack.neteaseId, id: currentPlayingTrack.id, source: currentPlayingTrack.source, tags: currentPlayingTrack.tags,
                 name: currentPlayingTrack.name,
                 artist: currentPlayingTrack.artist,
                 cover: currentPlayingTrack.cover,
@@ -873,7 +875,7 @@
         if (!trackInfo) return;
         broadcastBarState({
             track: {
-                id: trackInfo.id, source: trackInfo.source, tags: trackInfo.tags,
+                neteaseId: trackInfo.neteaseId, id: trackInfo.id, source: trackInfo.source, tags: trackInfo.tags,
                 name: trackInfo.name,
                 artist: trackInfo.artist,
                 cover: trackInfo.cover,
@@ -2526,7 +2528,7 @@
             fullTeardown
             && terminalReportContext
             && ((userClosed && terminalReportContext.queueTicket)
-                || ['playing', 'paused'].includes(terminalReportContext.lastReportedState)
+                || ['playing', 'paused', 'buffering'].includes(terminalReportContext.lastReportedState)
                 || ['playing', 'paused'].includes(terminalReportContext.recommendationLastState))
         ) {
             // Automatic cleanup releases the old UI, not the pending queue.

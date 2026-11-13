@@ -8,6 +8,7 @@ from plugin.sdk.plugin import plugin_entry, tr
 from .cloud import CloudLibrary, CloudError, page, song_summary
 from .playlists import Queue
 from .provider import select_first_exact_match
+from utils.music_intent import CLOUD_WRITE_ACTIONS, music_write_action
 
 CLOUD_SCHEMA = {
     "type": "object",
@@ -146,17 +147,10 @@ class CloudMusicMixin:
                 data={"status": "error", "summary": "分页参数无效。"},
                 delivery="proactive",
             )
-        write_verbs = {
-            "create": r"创建|新建|建一",
-            "add": r"添加|加到|加入|存到|保存|收藏|放进",
-            "remove": r"移除|删掉|删除|去掉",
-            "like": r"收藏|喜欢|红心|加到|加入|保存",
-            "unlike": r"取消|不再喜欢|移除|去掉",
-        }
         request = str((_ctx or {}).get("latest_user_request") or "")
-        if action in write_verbs and (
-            not re.search(write_verbs[action], request)
-            or re.search(r"不要|别帮|别给|先别|不需要|不用|如何|怎么", request)
+        if action in CLOUD_WRITE_ACTIONS and (
+            (_ctx or {}).get("request_source") != "user"
+            or music_write_action(request) != action
         ):
             return await self.finish(
                 data={
@@ -175,12 +169,16 @@ class CloudMusicMixin:
             )
         if not hasattr(self, "_cloud_lock"):
             self._cloud_lock = asyncio.Lock()
+        key = self._session_key(target)
+        generation = self._begin_request(key) if action == "play" else None
         task = asyncio.current_task()
         if not hasattr(self, "_active_play_tasks"):
             self._active_play_tasks = set()
         self._active_play_tasks.add(task)
         try:
             async with self._cloud_lock:
+                if action == "play" and not self._is_current(key, generation):
+                    return await self._finish_silent("superseded")
                 async with self._new_cloud_library() as cloud:
                     result = await self._cloud_operation(
                         cloud,
@@ -193,6 +191,8 @@ class CloudMusicMixin:
                         kind,
                         privacy,
                         str((_ctx or {}).get("music_request_id") or ""),
+                        generation=generation,
+                        proactive=(_ctx or {}).get("request_source") == "proactive",
                     )
             if action == "play":  # _advance already returned a plugin finish envelope.
                 return result
@@ -254,10 +254,14 @@ class CloudMusicMixin:
         kind,
         privacy,
         request_id="",
+        *,
+        generation=None,
+        proactive=False,
     ):
         if action == "play":
             key = self._session_key(target)
-            generation = self._begin_request(key)
+            if generation is None:
+                generation = self._begin_request(key)
         if action == "account":
             return {"account": await cloud.account()}
         if action == "playlists":
@@ -292,7 +296,7 @@ class CloudMusicMixin:
                 raise CloudError("playlist_unavailable")
             if not self._is_current(key, generation):
                 return await self._finish_silent("superseded")
-            queue = self._queues[key] = Queue(name, tracks)
+            queue = self._queues[key] = Queue(name, tracks, proactive_start=proactive)
             self._note(
                 target,
                 f"从网易云歌单《{name}》准备了 {len(tracks)} 首，开始尝试播放。"

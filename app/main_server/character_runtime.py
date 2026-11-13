@@ -1079,6 +1079,7 @@ async def _handle_agent_event(event: dict):
             payload = {
                 "type": "music_play_url",
                 "netease_id": event.get("netease_id"),
+                **({"playback_source": "proactive"} if event.get("playback_source") == "proactive" else {}),
                 "queue_ticket": event.get("queue_ticket"),
                 "url": event.get("url"),
                 "name": event.get("name") or "Plugin Music",

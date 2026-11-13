@@ -13,7 +13,7 @@ ORIGINAL = "去听那首《Keep Me Warm》吧，适合现在的工作节奏。"
     [
         (ORIGINAL, "Keep Me Warm"),
         ("给你推荐一首《晴天》，陪你工作。", "晴天"),
-        ("来听听 Chace 的《Keep Me Warm》吧。", "Keep Me Warm"),
+        ("来听听 Chace 的《Keep Me Warm》吧。", "Keep Me Warm Chace"),
         ('Let\'s listen to "Keep Me Warm".', "Keep Me Warm"),
         ("《晴天》的歌词写得很好。", None),
         ("我昨天推荐你听《晴天》。", None),
@@ -150,7 +150,7 @@ def test_song_offers_survive_general_cap_but_still_dedupe(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "state,expected",
-    [("playing", False), ("paused", False), ("ended", True), ("error", True)],
+    [("buffering", False), ("playing", False), ("paused", False), ("ended", True), ("error", True)],
 )
 async def test_live_status_blocks_occupied_player(monkeypatch, state, expected):
     from main_routers import music_router, shared_state
@@ -190,3 +190,60 @@ async def test_rechecks_player_before_plugin_http_dispatch(monkeypatch):
     )
     assert result.success is False
     assert result.reason == "player_occupied"
+
+
+@pytest.mark.parametrize("source", ["proactive", "user"])
+async def test_planning_provenance_overrides_model_context_before_dispatch(monkeypatch, source):
+    import json
+    import httpx
+    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
+    from brain import proactive_music
+    from plugin.tests.unit.plugins.netease_music.test_plugin import _make_plugin, _Provider, _ctx
+    from plugin.plugins.netease_music.cloud_entry import CLOUD_SCHEMA
+    executor = object.__new__(DirectTaskExecutor)
+    catalog = [{"id": "netease_music", "entries": [{"id": "cloud_music", "input_schema": CLOUD_SCHEMA}]}]
+    executor.plugin_list_provider = AsyncMock(return_value=catalog)
+    executor.plugin_list = catalog
+    utterance = "我帮你把这首歌加入喜欢的音乐吧"
+    executor._assess_user_plugin = AsyncMock(return_value=UserPluginDecision(
+        has_task=True, can_execute=True, plugin_id="netease_music", entry_id="cloud_music",
+        plugin_args={"action": "like", "song": "current", "_ctx": {"request_source": "user", "latest_user_request": "收藏这首"}},
+    ))
+    plan = await executor._analyze_and_execute_inner(
+        messages=[{"role": "assistant" if source == "proactive" else "user", "content": utterance}],
+        lanlan_name="Mika", agent_flags={"user_plugin_enabled": True}, proactive=source == "proactive",
+    )
+    assert plan.request_source == source
+    assert executor._assess_user_plugin.call_args.kwargs["proactive"] is (source == "proactive")
+    monkeypatch.setattr(proactive_music, "proactive_music_block_reason", AsyncMock(return_value=None))
+    received = []
+    async def handle(req):
+        received.append(json.loads(req.content))
+        return httpx.Response(200, json={"run_id": "r", "run_token": "t"})
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handle)))
+    executor._await_run_completion = AsyncMock(return_value={"success": True})
+    await executor._execute_user_plugin("test", plugin_id=plan.tool_name, entry_id=plan.entry_id,
+        plugin_args=plan.tool_args, latest_user_request=plan.latest_user_request,
+        request_source=plan.request_source, lanlan_name="Mika")
+    ctx = received[0]["args"]["_ctx"]
+    assert ctx["request_source"] == source
+    assert ctx["latest_user_request"] == utterance
+    if source == "proactive":
+        plugin, _, _ = _make_plugin(_Provider())
+        plugin._new_cloud_library = lambda: pytest.fail("Proactive dialogue reached cloud writer")
+        result = await plugin.cloud_music("like", song="current", _ctx=ctx)
+        assert result["finish"]["data"]["status"] == "blocked"
+
+
+@pytest.mark.parametrize("text", ["来听听 Chace 的《Keep Me Warm》吧。", "来听听Chace的《Keep Me Warm》吧。", 'Let\'s listen to "Keep Me Warm" by Chace.'])
+def test_artist_qualified_offer_selects_matching_recording(text):
+    from plugin.plugins.netease_music.models import SongCandidate
+    from plugin.plugins.netease_music.provider import select_first_exact_match
+    query = proactive_music_query(text)
+    candidates = [SongCandidate(1, "Keep Me Warm", "Other"), SongCandidate(2, "Keep Me Warm", "Chace")]
+    assert select_first_exact_match(query, candidates).song_id == 2
+
+
+def test_english_possessive_keeps_named_artist():
+    assert proactive_music_query("Let's listen to Chace's \"Keep Me Warm\".") == "Keep Me Warm Chace"

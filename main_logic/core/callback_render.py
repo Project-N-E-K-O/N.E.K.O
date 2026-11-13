@@ -187,7 +187,7 @@ def _build_callback_instruction(
     from utils.music_capability_context import is_music_evidence, compact_music_history
     if compact_music:
         callbacks = [
-            {**cb, "summary": compact_music_history(cb.get("summary") or cb.get("detail") or ""), "detail": ""}
+            {**cb, "summary": compact_music_history(cb.get("summary") or cb.get("detail") or "", lang=lang), "detail": ""}
             if is_music_evidence(cb) and (cb.get("status") or "completed") == "completed" else cb
             for cb in callbacks
         ]

@@ -366,11 +366,6 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 - 严格匹配：plugin_id 和 entry_id 是代码标识符。你必须从上面的可用插件列表中原样复制它们（区分大小写、逐字符匹配）。不要发明、缩写或改写它们。如果找不到完全匹配，设置 can_execute=false。
 - 如果入口有 args(...) 信息，在 plugin_args 中使用那些字段名。只包含 schema 中列出的字段。
 - 当入口 schema 需要用户文本字段（例如 command/message/query/objective）时，必须复制用户最新消息原文；不要翻译、摘要、改写或补全。
-- 对音乐播放入口，query 按入口 schema 传“歌名 歌手”。用户要求播放歌曲时，若 netease_music 可用，默认用它在线点歌；“我们的本地歌单”“我们自己收藏的歌单”由 netease_music.playlist 管理，按名字播放用 replay。用户明确指定点歌台或本地音频文件时用 jukebox_controller；网易云不可用时允许点歌台处理普通点歌。
-- 明确点名一首或“给我挑一首”才用 play_netease_music。歌名、歌手以本轮用户或本轮已商定的曲目为准，不要复制前几轮旧歌名。仅讨论口味或只求推荐时不播放。
-- “放点歌”“放音乐陪我”默认用 netease_music.playlist，action=curate，遵守用户指定的数量，未指定时 tracks 为 6 到 8 个“歌名 | 歌手”字符串。结合用户在历史和当前聊天说过的口味，本次反馈优先。可用 name 命名本组。指定搜网易云歌单用 action=search，name 只传关键词。歌曲收藏默认网易云：“收藏这首”用 cloud_music 的 like、song=current；指定歌单则用 add、playlist=完整名称。只有明确说“本地”才用 save_current；保存整组到本地才用 save。重播自己存的歌单时，先按下一条规则确认名称是否明确，再选择 replay 或 list。用户要求调整后面几首用 revise 和新 tracks，保持当前曲目。网易云切下一首用 next，停止连播用 stop；若当前在点歌台播放则使用点歌台控制，无法判断播放器时先确认。
-- 重播本地歌单按完整名称查找；明确给出的引号内名称保持原样，不能擅自裁掉名称本身的“歌单”后缀。名称不明确时可先 list；若尝试 replay 后收到 playlist_not_found 或 playlist_name_ambiguous，向用户展示返回的 names，让用户选定，不要自行改播其他名称。首次重播不要传 name_confirmed=true；只有上一轮已返回候选、用户本轮明确选定其中一个时，才在 replay 中传 name_confirmed=true。例如候选为“夜读、夜读歌单”，用户回答“选夜读歌单，不是夜读”，传 name="夜读歌单"、name_confirmed=true。
-- 本地收藏必须明确说“本地”，name 使用完整名称，不能擅自裁掉名称本身的“歌单”后缀；云端收藏默认点红心或加入指定云端歌单。
 - 如果用户的意图与任何插件的描述功能不明确匹配，设置 has_task=false。
 - 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑这些插件是否匹配用户意图。
 只返回 JSON 对象，不含其他内容。""",

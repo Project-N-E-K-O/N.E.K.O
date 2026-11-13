@@ -25,3 +25,18 @@ test('no-match toast uses the selected locale', async () => {
   await window.processMusicCommands('[play_music: {"name":"Song","artist":"Band"}]');
   assert.deepEqual(toasts, ['translated:music.noExactRecording']);
 });
+
+const websocketSource = readFileSync(require.resolve('../../static/app/app-websocket.js'), 'utf8');
+const pluginDispatch = websocketSource.slice(websocketSource.indexOf('async function dispatchMusicPlayUrlResponse('),
+  websocketSource.indexOf('function handleMusicPlayUrlResponse('));
+for (const proactive of [true, false]) test(`plugin websocket dispatch preserves identity and source (proactive=${proactive})`, async () => {
+  const played = [], claims = [];
+  const context = {window:{dispatchMusicPlay:async (track, options)=>{played.push({track,options});return true;}},
+    console, musicPlayCommandEpoch:1, getMusicPlayUrlClaimKey:()=> 'key', claimMusicPlayUrl:key=>claims.push(key)};
+  runInNewContext(pluginDispatch, context);
+  await context.dispatchMusicPlayUrlResponse({url:'https://m10.music.126.net/song.mp3',netease_id:123,
+    ...(proactive ? {playback_source:'proactive'} : {})}, 'websocket', 1);
+  assert.equal(played[0].track.neteaseId,123);
+  assert.equal(played[0].options.source,proactive ? 'proactive' : 'music_play_url');
+  assert.deepEqual(claims,['key']);
+});

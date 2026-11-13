@@ -46,3 +46,12 @@ test('request sends bounded metadata, no signed URL or chat data',()=>{
  assert.equal(JSON.stringify(h.requests[0].body).includes('private'),false);
  assert.equal(h.requests[0].body.track_id,'library:42');
 });
+
+for (const url of ['https://m7.music.126.net/audio.mp3?token=secret', '/api/music/proxy?url=signed&netease_id=123']) {
+ test(`plugin song identity survives opaque media URL ${url.split('?')[0]}`, () => {
+  const h=setup();h.change({track:{neteaseId:123,name:'Plugin song',artist:'Artist',url}});
+  assert.equal(h.requests[0].body.track_id,'netease:123');
+  assert.equal(h.requests[0].body.netease_id,'123');
+  assert.equal(JSON.stringify(h.requests[0].body).includes('secret'),false);
+ });
+}

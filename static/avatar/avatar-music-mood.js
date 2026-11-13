@@ -7,7 +7,8 @@
         if (!track) return null;
         const url = String(track.url || '');
         const match = url.match(/\/api\/music\/play\/netease\/(\d+)/);
-        const netease = match ? match[1] : (track.source === 'netease' ? String(track.id || '') : '');
+        const explicitId = String(track.neteaseId || '');
+        const netease = /^\d{1,20}$/.test(explicitId) ? explicitId : match ? match[1] : (track.source === 'netease' ? String(track.id || '') : '');
         // Never send signed URLs, covers, playback IDs, or chat context to inference.
         const id = netease ? 'netease:' + netease : track.id
             ? String(track.source || 'local') + ':' + track.id

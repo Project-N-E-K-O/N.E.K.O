@@ -122,6 +122,7 @@ def _ctx(
     result = {
         "lanlan_name": lanlan_name,
         "conversation_id": conversation_id,
+        "request_source": "user",
     }
     if language is not None:
         result["language"] = language

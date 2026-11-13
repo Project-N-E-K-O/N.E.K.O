@@ -12,6 +12,7 @@ import httpx
 from plugin.sdk.plugin import Err, SdkError, plugin_entry, tr
 from utils.file_utils import atomic_write_json
 from utils.music_capability_context import requests_local_music
+from utils.music_intent import music_write_refused
 
 from .models import SongCandidate
 from .provider import ProviderError, select_recording
@@ -29,6 +30,7 @@ class Queue:
     pending_advance: tuple[int, int] | None = None
     retry_ticket: str = ""
     revision: int = 0
+    proactive_start: bool = False
 
 
 class PlaylistMixin:
@@ -150,7 +152,11 @@ class PlaylistMixin:
         target = self._target_lanlan(_ctx or {})
         if not target:
             return Err(SdkError(t("playlist.target")))
-        if action in {"save", "save_current"} and not requests_local_music((_ctx or {}).get("latest_user_request")):
+        if action in {"save", "save_current"} and (
+            (_ctx or {}).get("request_source") != "user"
+            or not requests_local_music((_ctx or {}).get("latest_user_request"))
+            or music_write_refused((_ctx or {}).get("latest_user_request"))
+        ):
             return await self.finish(data={"status": "blocked", "summary": t("playlist.local_required")}, delivery="proactive")
         key = self._session_key(target)
         q = self._queues.get(key)
@@ -284,7 +290,7 @@ class PlaylistMixin:
                 q.tracks = prefix + tail
                 self._note(target, t("playlist.revised", count=len(tail)))
                 return await self._finish_silent("revised")
-            q = self._queues[key] = Queue(name, rows, locale)
+            q = self._queues[key] = Queue(name, rows, locale, proactive_start=(_ctx or {}).get("request_source") == "proactive")
             self._note(target, t("playlist.playing", name=name, count=len(rows)))
             return await self._advance(provider, target, key, q)
 
@@ -344,7 +350,8 @@ class PlaylistMixin:
             if not still_playing_queue():
                 break
             q.ticket = secrets.token_hex(16)
-            if self._push_track(target, track, media, q.ticket):
+            if self._push_track(target, track, media, q.ticket, proactive=q.proactive_start):
+                q.proactive_start = False
                 q.advancing_ticket = q.retry_ticket = ""
                 return await self.finish(
                     data={

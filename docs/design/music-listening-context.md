@@ -67,3 +67,15 @@ Backend tests exercise the actual offline request view and saved history, plus
 owner connection loss, TTL, request mismatch, low confidence and failure/cache
 boundaries. These tests do not measure visual expression quality. Desktop-size
 appearance requires separate comparison with the optional profile extension.
+
+
+## Playback identity and buffering
+
+Plugin playback carries its NetEase song ID through the initial player state,
+local snapshot and cross-window mirror. Classification uses that ID even when
+the audio URL is a CDN or proxy URL; signed URLs remain outside the model input.
+Buffering retains player occupancy and ends the current listening observation.
+It does not introduce a new recommendation-feedback event kind. Closing during
+buffering sends the terminal playback receipt and releases the confirmed track.
+Proactive plugin playback retains its source through the plugin event bridge and
+WebSocket dispatch, so the frontend applies its existing occupancy protection.

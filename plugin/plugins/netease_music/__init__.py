@@ -246,7 +246,7 @@ class NeteaseMusicPlugin(CloudMusicMixin, PlaylistMixin, CredentialUiMixin, Neko
         if not self._is_current(session_key, generation):
             return await self._finish_silent("superseded")
 
-        if not self._push_track(target_lanlan, selected, media):
+        if not self._push_track(target_lanlan, selected, media, proactive=ctx.get("request_source") == "proactive"):
             return self._error("errors.delivery_failed", "播放动作提交失败。", code="delivery_rejected", ctx=ctx)
         getattr(self, "_queues", {}).pop(session_key, None)
         return await self.finish(
@@ -263,7 +263,7 @@ class NeteaseMusicPlugin(CloudMusicMixin, PlaylistMixin, CredentialUiMixin, Neko
             delivery="silent",
         )
 
-    def _push_track(self, target_lanlan, selected, media, ticket=""):
+    def _push_track(self, target_lanlan, selected, media, ticket="", *, proactive=False):
         allowlist_receipt = self.push_message(
             source=_SOURCE,
             visibility=[],
@@ -293,6 +293,7 @@ class NeteaseMusicPlugin(CloudMusicMixin, PlaylistMixin, CredentialUiMixin, Neko
                     "name": selected.name,
                     "artist": selected.artist,
                     "netease_id": selected.song_id,
+                    **({"playback_source": "proactive"} if proactive else {}),
                     **({"queue_ticket": ticket} if ticket else {}),
                 }
             ],

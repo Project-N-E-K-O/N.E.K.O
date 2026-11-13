@@ -6,7 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from brain.task_executor import DirectTaskExecutor
-from config.prompts.prompts_music_assessment import MUSIC_QUERY_GUIDANCE
+from config.prompts.prompts_music_assessment import music_query_guidance
+
+MUSIC_QUERY_GUIDANCE = music_query_guidance("en")
 
 
 @pytest.mark.parametrize("plugin_id", ["netease_music", "weather"])
@@ -89,9 +91,38 @@ async def test_music_catalog_preserves_other_tools_and_dialogue(followup, query)
     assert conversation in requests[0][1]["content"]
     assert "- web_search:" in requests[0][0]["content"]
     assert "play_netease_music" in requests[0][0]["content"]
-    assert "cloud_music" not in requests[0][0]["content"]
+    assert "cloud_music args(" not in requests[0][0]["content"]
     assert MUSIC_QUERY_GUIDANCE in requests[0][0]["content"]
     assert decision.can_execute is (query is not None)
     if query:
         assert decision.plugin_id == "web_search"
         assert decision.plugin_args == {"query": query}
+
+
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+async def test_localized_music_rules_are_loaded_only_for_selected_plugin(lang, monkeypatch):
+    from unittest.mock import AsyncMock
+    import brain.task_executor as task_executor
+    from config.prompts.prompts_agent import USER_PLUGIN_SYSTEM_PROMPT
+    from config.prompts.prompts_sys import SESSION_INIT_PROMPT_AGENT, SESSION_INIT_PROMPT_AGENT_DYNAMIC
+    from config.prompts.prompts_music_assessment import music_query_guidance
+    requests = []
+    executor = DirectTaskExecutor.__new__(DirectTaskExecutor)
+    executor._STAGE1_TRIGGER_TOKENS = 0
+    async def answer(messages):
+        requests.append(messages)
+        return SimpleNamespace(content='{"has_task": false, "can_execute": false}')
+    executor._get_llm = lambda **kwargs: SimpleNamespace(ainvoke=answer)
+    executor._stage1_llm_coarse_screen = AsyncMock(return_value=["weather"])
+    monkeypatch.setattr(task_executor, "stage1_filter", lambda query, plugins, **kwargs: ([plugins[1]], {}))
+    plugins = [{"id": "netease_music", "entries": [{"id": "play_netease_music"}]},
+               {"id": "weather", "entries": [{"id": "forecast"}]}]
+    await executor._assess_user_plugin("user: weather tomorrow", plugins, lang=lang)
+    assert music_query_guidance(lang) not in requests[0][0]["content"]
+    assert "netease_music" not in requests[0][0]["content"]
+    executor._STAGE1_TRIGGER_TOKENS = 100000
+    await executor._assess_user_plugin("user: play music", plugins, lang=lang)
+    assert music_query_guidance(lang) in requests[-1][0]["content"]
+    assert "playlist.save_current" not in USER_PLUGIN_SYSTEM_PROMPT[lang]
+    assert "歌单" not in SESSION_INIT_PROMPT_AGENT[lang]
+    assert "歌单" not in SESSION_INIT_PROMPT_AGENT_DYNAMIC[lang]

@@ -627,6 +627,11 @@ class PluginRunner:
             # rewrote. A value the arguments already carry is kept.
             if latest_user_request:
                 ctx.setdefault("latest_user_request", latest_user_request)
+            if plugin_id == "netease_music":
+                # Commission user_text is supplied separately from model dispatch/args.
+                # An autonomous commission cannot manufacture authorization via _ctx.
+                ctx["latest_user_request"] = latest_user_request
+                ctx["request_source"] = "user" if latest_user_request else ""
             entry_timeout = _ctx_entry_timeout(ctx, entry_timeout)
             ctx["entry_timeout"] = entry_timeout
             safe_args["_ctx"] = ctx

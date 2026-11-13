@@ -132,11 +132,6 @@ class CloudLibrary:
                 and p["kind"] == "created"
             )
         ]
-        if not matches and selector.endswith("歌单"):
-            # Accept the unquoted conversational suffix only when exact lookup failed.
-            matches = [
-                p for p in rows if p["name"].casefold() == selector[:-2].casefold()
-            ]
         if len(matches) != 1:
             raise CloudError("ambiguous_playlist" if matches else "playlist_not_found")
         selected = matches[0]
