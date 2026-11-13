@@ -33,6 +33,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from utils.deployment import has_forwarding_metadata
 
+from plugin.server.application.plugins.capability_analysis_service import (
+    notify_install_committed,
+)
 from plugin.server.application.plugin_cli import get_plugin_cli_service
 from plugin.logging_config import get_logger
 from plugin.core.plugin_layout import PluginLayout, resolve_plugin_layout
@@ -4365,7 +4368,7 @@ async def _replace_market_plugin_transaction(
     else:
         validate_manual_backup = None
     try:
-        return await replace_plugin(
+        result = await replace_plugin(
             layout=layout,
             install_new=install_new,
             additional_targets=additional_targets,
@@ -4374,6 +4377,8 @@ async def _replace_market_plugin_transaction(
             validate_channel_specific=validate_channel_specific,
             on_rollback_start=on_rollback_start,
         )
+        notify_install_committed(result.install_result)
+        return result
     except ReplacePluginError:
         if rollback_install_source is not None:
             await rollback_install_source()
@@ -4581,6 +4586,7 @@ async def _do_upgrade(
                 on_conflict="fail",
                 install_source_override=market_override,
                 _preserve_autostart_plugin_id=installed_plugin_id,
+                _analyze_after_commit=False,
             )
 
         async def rollback_install_source() -> None:

@@ -314,6 +314,11 @@ class SynthesisMixin:
             the same rid, and the post-LLM in-lock dedup append catches it. The
             losing side returns [] without polluting the caller's view.
         """
+        from memory import organizer
+        if not organizer.allowed(lanlan_name, subject):
+            # Every caller reaches synthesis through here, so one check covers the
+            # background loop and the reflect endpoint alike.
+            return []
         from config.prompts.prompts_memory import get_reflection_prompt
 
         from memory.scopes import coerce_subject

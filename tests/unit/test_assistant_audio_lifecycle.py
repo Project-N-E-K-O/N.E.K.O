@@ -24,8 +24,10 @@ def test_audio_queue_and_decoder_lifecycle():
     )
     assert result.returncode == 0, f"audio lifecycle harness failed:\n{result.stdout}\n{result.stderr}"
     report = json.loads(result.stdout.strip().splitlines()[-1])
-    assert report["count"] == 31
+    assert report["count"] == 33
     assert "playback-id-randomness-failure-does-not-break-player" in report["checks"]
     assert "playback-report-identity-and-real-stop-reasons" in report["checks"]
     assert "cancel-wakes-receive-queue-before-old-owner-finishes" in report["checks"]
     assert "cancel-wakes-outer-blob-resume-and-reset-waits" in report["checks"]
+    assert "gsv-pcm-gap-waits-for-authoritative-audio-done" in report["checks"]
+    assert "late-same-speech-after-fallback-can-settle-again" in report["checks"]

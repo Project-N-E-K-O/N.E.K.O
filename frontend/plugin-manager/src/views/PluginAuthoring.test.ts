@@ -241,38 +241,40 @@ async function flush() {
   }
 }
 
-let switchLocale: (language: 'en-US' | 'zh-CN') => void
+let switchLocale: (language: keyof typeof authoringMessages) => void
 
 async function mount() {
   const container = document.createElement('div')
   document.body.append(container)
   const app = createApp(PluginAuthoring)
   app.use(ElementPlus)
-  const i18n = createI18n({
-      legacy: false,
-      locale: 'en-US',
-      messages: {
-        'en-US': {
-          authoring: en,
-          plugins: { typePlugin: 'Plugin', typeAdapter: 'Adapter' },
-          common: {
-            cancel: 'Cancel',
-            close: 'Close',
-            noData: 'No data',
-            loading: 'Loading',
-            edit: 'Edit',
-            save: 'Save',
-          },
-          status: { running: 'Running', stopped: 'Stopped' },
-        },
-        'zh-CN': {
-          authoring: authoringMessages['zh-CN'],
-          plugins: { typePlugin: '插件', typeAdapter: '适配器' },
-          common: { cancel: '取消', close: '关闭', edit: '编辑', save: '保存' },
-          status: { running: '运行中', stopped: '已停止' },
-        },
+  const messages = {
+    'en-US': {
+      plugins: { typePlugin: 'Plugin', typeAdapter: 'Adapter' },
+      common: {
+        cancel: 'Cancel',
+        close: 'Close',
+        noData: 'No data',
+        loading: 'Loading',
+        edit: 'Edit',
+        save: 'Save',
       },
-    })
+      status: { running: 'Running', stopped: 'Stopped' },
+    },
+    'zh-CN': {
+      plugins: { typePlugin: '插件', typeAdapter: '适配器' },
+      common: { cancel: '取消', close: '关闭', edit: '编辑', save: '保存' },
+      status: { running: '运行中', stopped: '已停止' },
+    },
+  }
+  const i18n = createI18n({
+    legacy: false,
+    locale: 'en-US',
+    messages: Object.fromEntries(Object.entries(authoringMessages).map(([language, authoring]) => [
+      language,
+      { ...messages[language === 'zh-CN' ? 'zh-CN' : 'en-US'], authoring },
+    ])),
+  })
   switchLocale = (language) => { i18n.global.locale.value = language }
   app.use(i18n)
   app.mount(container)
@@ -285,7 +287,7 @@ async function mount() {
 }
 
 function buttons(text: string) {
-  return [...document.querySelectorAll('button')].filter(
+  return [...document.querySelectorAll<HTMLElement>('button, a.el-button')].filter(
     (element) => element.textContent?.trim() === text
   )
 }
@@ -758,6 +760,7 @@ describe('authoring workbench backed by the server project list', () => {
       readyToolchain({
         uv: { installed: false, version: null },
         gh: { installed: true, version: '2.101.0', authenticated: false, login: null },
+        source_checkout: false,
       })
     )
     const container = await mount()
@@ -765,6 +768,10 @@ describe('authoring workbench backed by the server project list', () => {
     const tools = page('toolchain')
     expect(tools.style.display).not.toBe('none')
     expect(tools.querySelector('h3')!.textContent).toContain('0. Prepare tools')
+    expect([...tools.querySelectorAll('[data-tool]')].map((item) => item.getAttribute('data-tool'))).toEqual([
+      'git', 'gitIdentity', 'uv', 'gh', 'githubAccount',
+    ])
+    expect(tools.textContent).not.toContain('git clone')
     const uv = tools.querySelector('[data-tool="uv"]')!
     expect(uv.textContent).toContain(en.toolMissing)
     expect(uv.textContent).toContain(en.toolRequired)
@@ -1447,15 +1454,95 @@ it('explains an unavailable existing-project picker without offering a manual pa
   expect(document.querySelectorAll('.el-message-box__input').length).toBe(0)
 })
 
-it('documents the explicit external project path for each follow-up CLI command', async () => {
+it.each([
+  ['zh-CN', 'https://project-neko.online/zh-CN/plugins/'],
+  ['zh-TW', 'https://project-neko.online/zh-CN/plugins/'],
+  ['en-US', 'https://project-neko.online/plugins/'],
+  ['ja', 'https://project-neko.online/ja/plugins/'],
+  ['ko', 'https://project-neko.online/plugins/'],
+  ['ru', 'https://project-neko.online/plugins/'],
+  ['es', 'https://project-neko.online/plugins/'],
+  ['pt', 'https://project-neko.online/plugins/'],
+] as const)('keeps native tutorial navigation for the active %s locale', async (language, url) => {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
   await mount()
+  switchLocale(language)
+  await flush()
+  const link = buttons(authoringMessages[language].help)[0] as HTMLAnchorElement
+  expect(link.tagName).toBe('A')
+  expect(link.href).toBe(url)
+  expect(link.target).toBe('_blank')
+  expect(link.rel).toBe('noopener noreferrer')
+  const event = new MouseEvent('click', { bubbles: true, cancelable: true })
+  expect(link.dispatchEvent(event)).toBe(true)
+  expect(event.defaultPrevented).toBe(false)
+  expect(open).not.toHaveBeenCalled()
+  expect(document.querySelector('.el-drawer')).toBeNull()
+})
+
+it('uses the newly applied locale when the tutorial is opened again', async () => {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
+  await mount()
+  expect((buttons(en.help)[0] as HTMLAnchorElement).href).toBe('https://project-neko.online/plugins/')
   await click(en.help)
-  const commands = [...document.querySelectorAll('.authoring-help-drawer pre')].map((el) => el.textContent).join('\n')
-  for (const command of ['check', 'check-release', 'build', 'publish']) {
-    const expected = command === 'check-release'
-      ? 'check "<parent-directory>/<plugin_id>" --release'
-      : `${command} "<parent-directory>/<plugin_id>"`
-    expect(commands).toContain(expected)
+  switchLocale('ja')
+  await flush()
+  expect((buttons(authoringMessages.ja.help)[0] as HTMLAnchorElement).href).toBe(
+    'https://project-neko.online/ja/plugins/'
+  )
+  await click(authoringMessages.ja.help)
+  expect(open).not.toHaveBeenCalled()
+})
+
+it('preserves native middle-click navigation for the tutorial in browsers', async () => {
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
+  await mount()
+  const link = buttons(en.help)[0] as HTMLAnchorElement
+  const event = new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true })
+  expect(link.dispatchEvent(event)).toBe(true)
+  expect(event.defaultPrevented).toBe(false)
+  expect(link.href).toBe('https://project-neko.online/plugins/')
+  expect(open).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['click', 0],
+  ['auxclick', 1],
+] as const)('routes tutorial %s to the system browser in Electron', async (type, button) => {
+  const openExternal = vi.fn()
+  Object.defineProperty(window, 'electronShell', { value: { openExternal }, configurable: true })
+  const open = vi.spyOn(window, 'open')
+  try {
+    await mount()
+    switchLocale('zh-CN')
+    await flush()
+    const link = buttons(authoringMessages['zh-CN'].help)[0]!
+    const event = new MouseEvent(type, { button, bubbles: true, cancelable: true })
+    expect(link.dispatchEvent(event)).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://project-neko.online/zh-CN/plugins/')
+    expect(open).not.toHaveBeenCalled()
+    expect(document.querySelector('.el-drawer')).toBeNull()
+  } finally {
+    Reflect.deleteProperty(window, 'electronShell')
+  }
+})
+
+it('leaves the tutorial context menu available in Electron', async () => {
+  const openExternal = vi.fn()
+  Object.defineProperty(window, 'electronShell', { value: { openExternal }, configurable: true })
+  const open = vi.spyOn(window, 'open')
+  try {
+    await mount()
+    const link = buttons(en.help)[0] as HTMLAnchorElement
+    const event = new MouseEvent('auxclick', { button: 2, bubbles: true, cancelable: true })
+    expect(link.dispatchEvent(event)).toBe(true)
+    expect(event.defaultPrevented).toBe(false)
+    expect(link.href).toBe('https://project-neko.online/plugins/')
+    expect(openExternal).not.toHaveBeenCalled()
+    expect(open).not.toHaveBeenCalled()
+  } finally {
+    Reflect.deleteProperty(window, 'electronShell')
   }
 })
 

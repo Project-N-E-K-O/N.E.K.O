@@ -89,6 +89,36 @@ def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_plugin_consent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Real consent and report stores, isolated in a temporary directory."""
+    import json
+    from plugin.server.infrastructure import plugin_consent
+    from plugin.server.application.plugins import (
+        capability_analysis_service,
+        consent_service,
+    )
+    from plugin.server.infrastructure.capability_reports import CapabilityReportStore
+
+    class Manager:
+        def get_runtime_config_path(self, name):
+            return tmp_path / "consent" / name
+        def save_json_config(self, name, data):
+            path = self.get_runtime_config_path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+    store = plugin_consent.PluginConsentStore(Manager())
+    monkeypatch.setattr(plugin_consent, "consent_store", store)
+    monkeypatch.setattr(consent_service, "consent_store", store)
+    runner = capability_analysis_service.CapabilityAnalysisService(
+        CapabilityReportStore(tmp_path / "reports")
+    )
+    monkeypatch.setattr(capability_analysis_service, "analysis_service", runner)
+    yield store
+    runner.shutdown()
+
+
+@pytest.fixture(autouse=True)
 def _clear_leaked_running_loop(request: pytest.FixtureRequest):
     """Temporarily clear any running event loop leaked by Playwright's greenlet
     so that sync tests see a clean ``asyncio.get_running_loop() → RuntimeError``

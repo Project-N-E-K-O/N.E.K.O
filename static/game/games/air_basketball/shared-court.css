@@ -1,0 +1,171 @@
+/* One 4:3 illustrated machine. The two inventories remain separate internally. */
+.shared-court {
+  --avatar-gutter: clamp(52px, 9vw, 120px);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto;
+  gap: 0;
+  flex: none;
+  width: min(calc(100% - var(--avatar-gutter) - var(--avatar-gutter)), calc((100dvh - 180px) * 4 / 3), 1020px);
+  max-width: none;
+  height: auto;
+  padding: 0;
+  margin: auto;
+  margin-right: auto;
+  border: 0;
+  border-radius: 15px 15px 5px 5px;
+  background: rgba(251, 253, 253, .95);
+  box-shadow: 0 16px 40px rgba(43, 78, 96, .15);
+}
+
+.shared-court .arcade-machine {
+  min-height: 0;
+  grid-template-rows: 82px auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.shared-court .versus { display: none; }
+.shared-court .machine-marquee {
+  height: 82px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  border: 0;
+  border-radius: 15px 0 0 0;
+  background: transparent;
+}
+.shared-court .neko-machine .machine-marquee { border-radius: 0 15px 0 0; background: transparent; }
+.shared-court .machine-marquee span { font-size: 17px; }
+.shared-court .machine-marquee small { display: none; }
+.shared-court .machine-marquee::before,
+.shared-court .machine-marquee::after { display: none; }
+
+.shared-court .machine-screen {
+  aspect-ratio: 2 / 3;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  animation: none;
+}
+.shared-court canvas[id$="-court"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.shared-court .machine-controls { display: none; }
+.shared-court .lane-hud {
+  top: -75px;
+  left: 78px;
+  right: 12px;
+  width: auto;
+  grid-template-columns: 1.3fr 1fr;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.shared-court .lane-hud::before { display: none; }
+.shared-court .lane-hud span { min-height: 34px; padding: 2px 5px; border: 0; }
+.shared-court .lane-hud span:first-child b { font-size: 28px; }
+.shared-court .lane-hud b { font-size: 20px; }
+.shared-court .fever-meter {
+  top: -28px;
+  left: 14px;
+  width: calc(50% - 22px);
+  grid-template-columns: 25px 1fr;
+}
+.shared-court .interference-meter {
+  top: -22px;
+  left: calc(50% + 7px);
+  width: calc(50% - 21px);
+}
+.shared-court .interference-meter span { bottom: 9px; }
+.shared-court .neko-avatar {
+  right: -25%;
+  bottom: 0;
+  width: 60%;
+  height: 67%;
+  aspect-ratio: auto;
+}
+.shared-court .gesture-guide { max-width: 155%; font-size: 9px; bottom: 8px; }
+.shared-court .neko-status { bottom: 8px; font-size: 9px; }
+.shared-court :is(.gesture-guide, .neko-status) { pointer-events: none; }
+.shot-hint {
+  position: fixed;
+  z-index: 7;
+  left: clamp(108px, var(--shot-hint-x, 50vw), calc(100vw - 108px));
+  max-width: min(216px, calc(100vw - 16px));
+  padding: 5px 10px;
+  border-radius: 10px;
+  transform: translate(-50%, -100%);
+  background: #f8fdff;
+  color: #274a5e;
+  box-shadow: 0 2px 9px rgba(42, 77, 100, .18);
+  font-size: 12px;
+  text-align: center;
+  pointer-events: none;
+}
+.shared-court .machine-screen::after { display: none; }
+/* Original fever selectors are more specific than the plain screen rule.
+   Without these overrides, play restores two inset cabinet frames. */
+.shared-court .machine-screen:has(.fever-meter.is-active),
+.shared-court .machine-screen:is(.is-disrupted, .combo-impact, .incoming-warning) {
+  border: 0;
+  box-shadow: none;
+  animation: none;
+}
+.shared-court .arcade-machine::before,
+.shared-court .arcade-machine::after,
+.shared-court .machine-screen::before,
+.shared-court .machine-screen::after {
+  content: none;
+  display: none;
+}
+.shared-court .lane-hud span:nth-child(2),
+.shared-court .stage-banner { display: none; }
+/* Fever bars, particles and callouts provide feedback without cabinet frames. */
+
+.pause-overlay {
+  position: absolute;
+  z-index: 30;
+  inset: 76px 0 0;
+  display: grid;
+  place-items: center;
+  background: rgba(231, 243, 248, .6);
+  backdrop-filter: blur(3px);
+}
+.pause-overlay[hidden] { display: none; }
+/* Keep both header rows usable when the pause layer covers the court. */
+body.is-match-paused .match-header {
+  position: relative;
+  z-index: 31;
+}
+body.is-match-paused,
+body.is-match-paused * { cursor: auto !important; }
+body.is-match-paused .mouse-steal-layer,
+body.is-match-paused .cross-ball { visibility: hidden; }
+.pause-card {
+  display: grid;
+  justify-items: center;
+  gap: 20px;
+  padding: 28px 48px;
+  border: 2px solid rgba(60, 96, 117, .22);
+  border-radius: 18px;
+  background: #fbfdfd;
+}
+
+@media (max-width: 720px) {
+  .shared-court .machine-marquee { padding-inline: 9px; }
+  .shared-court .machine-marquee span { font-size: 14px; }
+  .shared-court .lane-hud { left: 61px; right: 7px; }
+  .shared-court .lane-hud span:first-child b { font-size: 24px; }
+  .shared-court .lane-hud b { font-size: 16px; }
+}

@@ -52,6 +52,18 @@ uv run neko-plugin build qq_auto_reply
 uv run neko-plugin analyze qq_auto_reply mijia
 ```
 
+Release checks temporarily default to the Market's legacy review mode: the
+paused source/package security scan (including binary and scan-size limits) is
+skipped. Set `NEKO_PLUGIN_MARKET_SECURITY_CHECKS=1` to enable package scanning
+(`package-security`) in `check -r` and `precheck`. The release checks in
+`check -r --market-release`, `publish <plugin>`, and `publish github <plugin>`
+also scan committed files when Git can list them in the plugin repository
+(`source-security`).
+`publish market <github-release-url>` only notifies Market and performs no local
+scanning. Release checks validate the package and verify its payload hash in
+all modes. They run plugin tests when the plugin has a `tests/` directory and
+tests have not been skipped with `--skip-tests`.
+
 To install a built package, open the N.E.K.O Plugin Center and use **Import**.
 The compatibility `neko-plugin install` command intentionally refuses to write
 plugin runtime directories so command-line tools cannot bypass the same

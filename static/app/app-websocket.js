@@ -3869,7 +3869,8 @@
                         typeof window.appAudioPlayback.rememberAssistantAudioSpeechTurn === 'function') {
                         window.appAudioPlayback.rememberAssistantAudioSpeechTurn(
                             speechId || S.currentPlayingSpeechId || null,
-                            resolveAssistantLifecycleTurnId(response.turn_id)
+                            resolveAssistantLifecycleTurnId(response.turn_id),
+                            response.audio_done_timeout_ms
                         );
                     }
                     S.skipNextAudioBlob = false;

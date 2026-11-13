@@ -223,9 +223,10 @@ async def build_farewell_summary() -> dict[str, Any]:
         return {"flashback": None}
 
     facts_path = context.facts_path
+    archive_path = facts_path.with_name("facts_archive.json")
     raw, raw_archive = await asyncio.gather(
-        asyncio.to_thread(forge._load_facts_json, facts_path),
-        asyncio.to_thread(forge._load_facts_json, facts_path.with_name("facts_archive.json")),
+        asyncio.to_thread(lambda: forge._without_cold_copies(forge._load_facts_json(facts_path), facts_path)),
+        asyncio.to_thread(lambda: forge._without_cold_copies(forge._load_facts_json(archive_path), archive_path)),
     )
     memory_count, _, _ = await asyncio.to_thread(forge._memory_identity_stats, raw, raw_archive)
     flashback = await asyncio.to_thread(select_flashback, raw, raw_archive)

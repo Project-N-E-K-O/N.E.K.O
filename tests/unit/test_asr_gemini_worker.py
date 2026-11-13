@@ -143,6 +143,7 @@ async def test_commit_sends_wav_structured_request_and_one_final() -> None:
     assert "tools" not in call["config"]
     assert "system_instruction" not in call["config"]
     assert call["config"]["response_mime_type"] == "application/json"
+    assert call["config"]["thinking_config"] == {"thinking_level": "minimal"}
     assert call["config"]["response_json_schema"]["required"] == ["transcript"]
     content = call["contents"][0]
     assert content["role"] == "user"

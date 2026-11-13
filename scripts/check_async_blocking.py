@@ -100,6 +100,9 @@ DEFAULT_PATHS = [
     "brain",
     # shared services (chat_sync / theater) running on the main server loop
     "services",
+    # agent runtime: many sessions share one loop, in a child process or in
+    # the host's own
+    "nekoclaw",
 ]
 # NOTE: ``plugin/`` is intentionally NOT in the default scope. Plugin code uses
 # pyzmq sockets (``sock.connect`` / ``sock.recv`` via async zmq) and

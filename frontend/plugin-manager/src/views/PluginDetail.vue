@@ -190,6 +190,9 @@
           </div>
         </el-tab-pane>
 
+        <el-tab-pane :label="$t('pluginConsent.title')" name="permissions">
+          <PluginPermissions v-if="activeTab === 'permissions'" :key="pluginId" :plugin-id="pluginId" />
+        </el-tab-pane>
         <el-tab-pane :label="$t('plugins.entries')" name="entries">
           <div data-yui-guide-id="plugin-detail-entries">
             <EntryList :entries="plugin.entries || []" :plugin-id="pluginId" :plugin-status="pluginStatus" />
@@ -233,6 +236,7 @@ import PluginAutoStartSwitch from '@/components/plugin/PluginAutoStartSwitch.vue
 import EntryList from '@/components/plugin/EntryList.vue'
 import MetricsCard from '@/components/metrics/MetricsCard.vue'
 import PluginConfigEditor from '@/components/plugin/PluginConfigEditor.vue'
+import PluginPermissions from '@/components/plugin/PluginPermissions.vue'
 import PluginModelBindings from '@/components/plugin/PluginModelBindings.vue'
 import LogViewer from '@/components/logs/LogViewer.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -284,7 +288,7 @@ const surfaceActivationRevisions = ref<Record<string, number>>({})
 // 被压到一屏后，.el-card 默认的 overflow:hidden 会把内容直接裁掉而不是让它滚动。
 const fillTabs = new Set(['panel', 'guide', 'logs'])
 const isFillTab = computed(() => fillTabs.has(activeTab.value))
-const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs'])
+const allowedTabs = new Set(['panel', 'guide', 'ui', 'info', 'entries', 'metrics', 'config', 'logs', 'permissions'])
 // Focus mode belongs to the panel tab: leaving it (e.g. a surface opening the
 // logs tab) also ends focus, so coming back starts with the normal chrome.
 const focusRequested = ref(false)

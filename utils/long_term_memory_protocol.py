@@ -3,19 +3,28 @@
 from copy import deepcopy
 from datetime import datetime, timedelta
 import math
+import re
 
 MAX_INTEGER = 9_007_199_254_740_991
 MAX_ENTRIES = 20_000
+SCHEMA_VERSION = 3
+PROGRESS_MAX = 2000
+ORGANIZER_RANKS = (1, 2, 3, 4)
+_V3_METADATA = frozenset(("signalJudged", "userConfirmCount", "countedFactIds", "factSourceCounts"))
 SUBJECTS = frozenset(("master", "neko", "relationship"))
 KINDS = frozenset(("persona", "fact", "reflection"))
 _NUMBER_FIELDS = frozenset(("createdAt", "updatedAt", "eventAt", "sourceCreatedAt", "importance",
     "reinforcement", "disputation", "reinLastSignalAt", "dispLastSignalAt", "userFactReinforceCount",
     "promotedAt", "voidedAt", "evidenceReviewedAt", "evidenceReviewAttemptAt", "eventStartAt", "eventEndAt", "sourceUpgradedAt", "confirmedAt", "archivedAt", "suppressedAt", "subZeroDays"))
-_BOOL_FIELDS = frozenset(("protected", "absorbed", "archived", "autoConfirmed"))
-_ID_LIST_FIELDS = frozenset(("sourceMessageIds", "sourceFactIds", "sourceReflectionIds", "signalFactIds", "mergedFromIds"))
+_BOOL_FIELDS = frozenset(("protected", "absorbed", "archived", "autoConfirmed", "signalJudged"))
+_ID_LIST_FIELDS = frozenset(("sourceMessageIds", "sourceFactIds", "sourceReflectionIds", "signalFactIds", "mergedFromIds", "countedFactIds"))
 _TEXT_FIELDS = frozenset(("sourceSyncId", "supersededById", "absorbedInto", "relationType", "temporalScope", "subZeroLastIncrementDate", "synthesisBatchId"))
 _STATUS = frozenset(("active", "pending", "confirmed", "promoted", "promote_blocked", "denied", "superseded", "retracted", "merged", "archived"))
 _REVIEW = frozenset(("supported", "unsupported", "missing_sources"))
+COLD_MAX = 20_000
+_COLD_STATUS = {"fact": frozenset(("superseded", "retracted")),
+                "reflection": frozenset(("archived",)), "persona": frozenset(("archived",))}
+_COLD_FIELDS = frozenset(("kind", "subject", "id", "status", "archivedAt"))
 
 
 def _text(value, limit):
@@ -34,6 +43,41 @@ def _identifier(value, limit):
 def _number(value):
     if type(value) not in (int, float) or not math.isfinite(value) or abs(value) > MAX_INTEGER:
         raise ValueError('invalid_long_term_memory')
+
+
+def _timestamp(value):
+    """Millisecond times must also convert to a calendar date, as clients parse them."""
+    _number(value)
+    try:
+        datetime(1970, 1, 1) + timedelta(milliseconds=value)
+    except OverflowError:
+        raise ValueError("invalid_long_term_memory") from None
+
+
+def _cold(value, active):
+    """Cold-stored rows travel as identities and states only; their text stays on the device.
+
+    Same shape the sync service checks: no row both cold and an entry, no
+    repeated row, at most COLD_MAX rows.
+    """
+    if not isinstance(value, list) or len(value) > COLD_MAX:
+        raise ValueError("invalid_long_term_memory")
+    seen = set()
+    for row in value:
+        if (not isinstance(row, dict) or not isinstance(row.get("kind"), str) or row["kind"] not in KINDS
+                or not isinstance(row.get("status"), str) or row["status"] not in _COLD_STATUS[row["kind"]]):
+            raise ValueError("invalid_long_term_memory")
+        superseded = row["kind"] == "fact" and row["status"] == "superseded"
+        if (set(row) != _COLD_FIELDS | ({"supersededById"} if superseded and "supersededById" in row else set())
+                or not isinstance(row["subject"], str) or row["subject"] not in SUBJECTS):
+            raise ValueError("invalid_long_term_memory")
+        identity = (row["kind"], row["subject"], _identifier(row["id"], 200))
+        if identity in seen or identity in active:
+            raise ValueError("invalid_long_term_memory")
+        seen.add(identity)
+        _timestamp(row["archivedAt"])
+        if "supersededById" in row:
+            _text(row["supersededById"], 200)
 
 
 def _event_when(value):
@@ -88,10 +132,56 @@ def _evidence(value):
         ids.add(fp)
 
 
+def _count(value):
+    if type(value) is not int or not 0 <= value <= MAX_INTEGER:
+        raise ValueError('invalid_long_term_memory')
+
+
+def _progress(value):
+    """Each pass lists the message identities it has already sent through extraction."""
+    if not isinstance(value, dict) or set(value) != {'a', 'b'}:
+        raise ValueError('invalid_long_term_memory')
+    for items in value.values():
+        if not isinstance(items, list) or len(items) > PROGRESS_MAX:
+            raise ValueError('invalid_long_term_memory')
+        for item in items:
+            if not isinstance(item, str) or not re.fullmatch(r'[0-9a-f]{32}', item):
+                raise ValueError('invalid_long_term_memory')
+        if len(items) != len(set(items)):
+            raise ValueError('invalid_long_term_memory')
+
+
+def _organizer(value):
+    """The holder's own clock only makes a renewal differ; no reader compares it with theirs."""
+    if (not isinstance(value, dict) or set(value) != {'deviceId', 'renewedAt', 'rank'}
+            or not isinstance(value['deviceId'], str) or not re.fullmatch(r'[0-9a-f]{32}', value['deviceId'])
+            or type(value['renewedAt']) is not int or not 0 < value['renewedAt'] <= MAX_INTEGER
+            or type(value['rank']) is not int or value['rank'] not in ORGANIZER_RANKS):
+        raise ValueError('invalid_long_term_memory')
+
+
+def _maintenance(value):
+    if not isinstance(value, dict) or len(value) > 16:
+        raise ValueError('invalid_long_term_memory')
+    for key, item in value.items():
+        if (not isinstance(key, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9]{0,39}', key)
+                or type(item) is not int or not 1 <= item <= 1000):
+            raise ValueError('invalid_long_term_memory')
+
+
+def _top_level(value):
+    version = value.get("schemaVersion")
+    if version == 3:
+        required = {"schemaVersion", "completedAt", "entries", "evidence", "progress"}
+        return required <= set(value) <= required | {"organizer", "maintenance", "lineage", "cold"}
+    return set(value) == ({"schemaVersion", "completedAt", "entries", "evidence"} if version == 2
+                          else {"schemaVersion", "completedAt", "entries"})
+
+
 def document(value):
     """Validate only learned entries, without accepting arbitrary native file payloads."""
-    if (not isinstance(value, dict) or set(value) != ({"schemaVersion", "completedAt", "entries", "evidence"} if value.get("schemaVersion") == 2 else {"schemaVersion", "completedAt", "entries"})
-            or type(value["schemaVersion"]) is not int or value["schemaVersion"] not in (1, 2)
+    if (not isinstance(value, dict) or not _top_level(value)
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] not in (1, 2, 3)
             or type(value["completedAt"]) is not int or not 0 < value["completedAt"] <= MAX_INTEGER
             or not isinstance(value["entries"], list) or len(value["entries"]) > MAX_ENTRIES):
         raise ValueError("invalid_long_term_memory")
@@ -112,9 +202,18 @@ def document(value):
         seen.add(identity)
         _text(row["text"], 16_000)
         for key, item in row["metadata"].items():
+            if key in _V3_METADATA and value["schemaVersion"] != 3:
+                raise ValueError("invalid_long_term_memory")
             if key == "eventEndAt" and item is None:
                 continue
-            if key in _NUMBER_FIELDS:
+            if key == "userConfirmCount":
+                _count(item)
+            elif key == "factSourceCounts":
+                if not isinstance(item, dict) or set(item) != {"user", "ai"}:
+                    raise ValueError("invalid_long_term_memory")
+                for count in item.values():
+                    _count(count)
+            elif key in _NUMBER_FIELDS:
                 if type(item) not in (int, float) or not math.isfinite(item) or abs(item) > MAX_INTEGER:
                     raise ValueError("invalid_long_term_memory")
                 if key.endswith('At'):
@@ -158,16 +257,48 @@ def document(value):
                     raise ValueError("invalid_long_term_memory")
             else:
                 raise ValueError("invalid_long_term_memory")
-    if value['schemaVersion'] == 2: _evidence(value['evidence'])
+    if value['schemaVersion'] >= 2:
+        _evidence(value['evidence'])
+    if value['schemaVersion'] == 3:
+        _progress(value['progress'])
+        if 'organizer' in value:
+            _organizer(value['organizer'])
+        if 'maintenance' in value:
+            _maintenance(value['maintenance'])
+        # Raised by a writer that could not read the revision it replaces, so readers
+        # holding that revision do not mistake the missing entries for deletions.
+        if 'lineage' in value and (type(value['lineage']) is not int or not 1 <= value['lineage'] <= MAX_INTEGER):
+            raise ValueError('invalid_long_term_memory')
+        if 'cold' in value:
+            _cold(value['cold'], seen)
     return deepcopy(value)
 
 
 def mutation(value):
-    if not isinstance(value, dict) or set(value) != {"operationId", "document"}:
+    """A base revision makes the write conditional; schema 3 is never written without one."""
+    if (not isinstance(value, dict)
+            or not {"operationId", "document"} <= set(value) <= {"operationId", "baseRevision", "document"}):
         raise ValueError("invalid_long_term_memory")
     from utils.recent_memory_protocol import identity
     identity(value["operationId"])
-    return {"operationId": value["operationId"], "document": document(value["document"])}
+    if "baseRevision" in value:
+        _count(value["baseRevision"])
+    checked = document(value["document"])
+    if checked['schemaVersion'] == 3 and "baseRevision" not in value:
+        raise ValueError("invalid_long_term_memory")
+    return {**value, "document": checked}
+
+
+def receipt(value, owner, uid, operation):
+    """A refused conditional write names the revision to merge with instead of being accepted."""
+    expected = {'ownerId', 'characterSyncId', 'operationId', 'revision', 'accepted'}
+    if (not isinstance(value, dict) or not expected <= set(value) <= expected | {'conflict'}
+            or value['ownerId'] != owner or value['characterSyncId'] != uid or value['operationId'] != operation
+            or type(value['accepted']) is not bool or type(value['revision']) is not int
+            or ('conflict' in value and (value['conflict'] is not True or value['accepted']))
+            or not (1 if value['accepted'] else 0) <= value['revision'] <= MAX_INTEGER):
+        raise ValueError('invalid_long_term_memory')
+    return dict(value)
 
 
 def head(value, owner, uid):

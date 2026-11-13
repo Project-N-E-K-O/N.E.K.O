@@ -108,21 +108,5 @@ export const zhCN: PublishGuide = {
         { label: 'gh auth login 说明', url: 'https://cli.github.com/manual/gh_auth_login' },
       ],
     },
-    sourceCheckout: {
-      purpose:
-        '检查、创建仓库和发布，都是由 N.E.K.O 在后台运行 neko-plugin 命令完成的，这需要 N.E.K.O 以源码方式运行（从 Git 仓库克隆下来、用 uv 启动）。打包好的安装版没有这些工具，因此无法在这里发布。',
-      install: [
-        {
-          platform: '获取 N.E.K.O 源码并运行',
-          commands: [
-            'git clone https://github.com/Project-N-E-K-O/N.E.K.O.git',
-            'cd N.E.K.O',
-            'uv sync',
-          ],
-          note: '然后按仓库 README 的说明，用源码方式启动 N.E.K.O，再回到插件工作台。',
-        },
-      ],
-      links: [{ label: 'N.E.K.O 仓库', url: 'https://github.com/Project-N-E-K-O/N.E.K.O' }],
-    },
   },
 }

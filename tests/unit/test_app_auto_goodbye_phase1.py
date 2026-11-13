@@ -395,6 +395,26 @@ def test_app_auto_goodbye_phase1_harness():
           assert(home.goodbyeEvents[0].autoGoodbye === true, 'auto-goodbye detail should be preserved');
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'auto-goodbye should move to cat1');
 
+          // CAT2/CAT3 context-menu scared demotion owns a real CAT1 countdown
+          // restart; a plain visual assignment would bounce back on the next tick.
+          const scaredDemotion = createHarness('/', {{ barrierResolved: true }});
+          await scaredDemotion.flush();
+          scaredDemotion.setSocketOpen(true);
+          scaredDemotion.tickAll();
+          scaredDemotion.advance(CAT3_MS);
+          scaredDemotion.tickAll();
+          scaredDemotion.tickAll();
+          assert(scaredDemotion.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'scared demotion fixture reaches cat3');
+          assert(scaredDemotion.win.nekoAutoGoodbye.demoteVisualTierToCat1(
+            'cat-contextmenu-demotion', 'cat1-scared-action'
+          ) === true, 'CAT3 context menu should demote to CAT1');
+          assert(scaredDemotion.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'scared demotion reaches CAT1 immediately');
+          scaredDemotion.tickAll();
+          assert(scaredDemotion.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'next tick must not bounce back to CAT3');
+          scaredDemotion.advance(CAT2_DELTA_MS);
+          scaredDemotion.tickAll();
+          assert(scaredDemotion.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'CAT1 countdown resumes the standard five-minute CAT2 boundary');
+
           // Electron can register the auto controller before the surface listener.
           // The auto latch must survive until the surface applies its manager flags.
           const deferredGoodbye = createHarness('/', {{
@@ -449,10 +469,16 @@ def test_app_auto_goodbye_phase1_harness():
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'goodbye idle should progress to cat3');
           const cat3Baseline = home.win.nekoAutoGoodbye.getState().lastInteractionAt;
+          let activeCatUserInteraction = null;
+          home.win.addEventListener('neko:auto-goodbye:state-change', (event) => {{
+            if (event.detail && event.detail.type === 'user-interaction') activeCatUserInteraction = event.detail;
+          }});
           home.doc.dispatchEvent(new CustomEventLike('pointerdown'));
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'pointerdown during goodbye should keep the current tier');
           assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'pointerdown during goodbye should not refresh idle baseline');
+          assert(activeCatUserInteraction && activeCatUserInteraction.source === 'pointerdown', 'active cat should publish standard user activity for independent inactivity policies');
+          assert(activeCatUserInteraction.preserveVisualTierCountdown === true, 'activity bridge must preserve the visual-tier countdown');
           home.setBodyClass('neko-model-dragging', true);
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'drag suppression during goodbye should not refresh idle baseline');

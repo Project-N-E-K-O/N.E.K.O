@@ -31,6 +31,12 @@
         return Math.max(0, Math.min(1, value));
     }
 
+    function normalizeStrength(value) {
+        if (value === undefined || value === null) return 1;
+        const strength = Number(value);
+        return Number.isFinite(strength) ? clamp01(strength) : 0;
+    }
+
     function recoveryFactor(elapsedMs) {
         if (elapsedMs <= HOLD_MS) return 1;
         const progress = clamp01((elapsedMs - HOLD_MS) / (DURATION_MS - HOLD_MS));
@@ -62,10 +68,11 @@
      * Origins are percentages so a renderer can apply `${originX}% ${originY}%`.
      */
     function computeCollisionDeformation(input = {}) {
-        const { direction, impactVelocityChange, elapsedMs, reducedMotion = false,
+        const { direction, impactVelocityChange, elapsedMs, reducedMotion = false, strength = 1,
             visibleInsetRatios = null } = input;
         const origin = resolveOrigin(direction, visibleInsetRatios);
-        if (reducedMotion || !origin
+        const normalizedStrength = normalizeStrength(strength);
+        if (reducedMotion || normalizedStrength <= 0 || !origin
             || !Number.isFinite(impactVelocityChange) || impactVelocityChange <= REST_SPEED_PX_PER_SECOND
             || !Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs >= DURATION_MS) {
             return IDENTITY;
@@ -80,7 +87,8 @@
         );
         const vertical = direction === 'up' || direction === 'down';
         const compression = (MIN_COMPRESSION
-            + (MAX_COMPRESSION - MIN_COMPRESSION) * speedProgress) * recoveryFactor(elapsedMs);
+            + (MAX_COMPRESSION - MIN_COMPRESSION) * speedProgress) *
+            recoveryFactor(elapsedMs) * normalizedStrength;
 
         return Object.freeze({
             active: true,
@@ -151,10 +159,17 @@
         return true;
     }
 
+    function cancelDeformationExpiry(state) {
+        if (!state || state.expiryTimer === null || state.expiryTimer === undefined) return;
+        if (typeof global.clearTimeout === 'function') global.clearTimeout(state.expiryTimer);
+        state.expiryTimer = null;
+    }
+
     function clearCollisionDeformation(button, owner = null) {
         if (!button) return false;
         const state = activeDeformations.get(button);
         if (owner !== null && (!state || state.owner !== owner)) return false;
+        cancelDeformationExpiry(state);
         const existed = activeDeformations.delete(button);
         if (button.classList) button.classList.remove(ACTIVE_CLASS);
         if (button.style) {
@@ -170,6 +185,7 @@
 
     function beginCollisionDeformation(button, input = {}) {
         const { direction, impactVelocityChange, startedAt, reducedMotion = false, owner = null,
+            strength = 1,
             visibleInsetRatios = null } = input;
         if (reducedMotion) {
             clearCollisionDeformation(button);
@@ -179,19 +195,36 @@
             direction,
             impactVelocityChange,
             elapsedMs: 0,
+            strength,
             visibleInsetRatios,
         });
         if (!button || !sample.active || !Number.isFinite(startedAt)) return false;
         const pivot = readTransformPivot(button);
-        activeDeformations.set(button, {
+        cancelDeformationExpiry(activeDeformations.get(button));
+        const state = {
             owner,
             direction,
             impactVelocityChange,
+            strength: normalizeStrength(strength),
             startedAt,
             visibleInsetRatios,
             pivot,
-        });
-        return applyCollisionDeformation(button, sample, pivot);
+            expiryTimer: null,
+        };
+        activeDeformations.set(button, state);
+        if (!applyCollisionDeformation(button, sample, pivot)) {
+            activeDeformations.delete(button);
+            return false;
+        }
+        if (typeof global.setTimeout === 'function') {
+            state.expiryTimer = global.setTimeout(() => {
+                if (activeDeformations.get(button) === state) clearCollisionDeformation(button, owner);
+            }, DURATION_MS);
+            if (state.expiryTimer && typeof state.expiryTimer.unref === 'function') {
+                state.expiryTimer.unref();
+            }
+        }
+        return true;
     }
 
     function renderCollisionDeformation(button, timestamp, reducedMotion = false,
@@ -207,6 +240,7 @@
             direction: state.direction,
             impactVelocityChange: state.impactVelocityChange,
             elapsedMs: Math.max(0, timestamp - state.startedAt),
+            strength: state.strength,
             visibleInsetRatios: state.visibleInsetRatios,
         });
         if (!sample.active) {

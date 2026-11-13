@@ -48,6 +48,7 @@ import { useI18n } from 'vue-i18n'
 import { VideoPlay, VideoPause, Refresh, Monitor } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
+import { usePluginStartGate } from '@/composables/usePluginStartGate'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { openExternalUrl } from '@/utils/openExternal'
 import { isOpenUiNavigationAction } from '@/utils/pluginListActions'
@@ -60,6 +61,7 @@ interface Props {
 
 const props = defineProps<Props>()
 const pluginStore = usePluginStore()
+const startGate = usePluginStartGate()
 const router = useRouter()
 const { t, locale } = useI18n()
 
@@ -175,7 +177,7 @@ async function handleOpenUi() {
 async function handleStart() {
   try {
     loading.value = true
-    await pluginStore.start(props.pluginId)
+    if (!(await startGate.startWithConsent(props.pluginId))) return
     // Hosted panel 的 context 刷新是尽力而为的后续动作（内部还带重试延时），
     // 不能 await —— 否则每个插件的启停按钮都要多转两秒，成功提示也跟着晚发。
     void refreshHostedPanelsAfterRuntimeChange?.().catch(() => {})

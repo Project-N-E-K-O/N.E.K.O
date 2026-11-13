@@ -1,3 +1,4 @@
+import { pluginConsentMessages } from '../plugin-consent'
 import { modelApiMessages } from '../model-api'
 import { modelBindingsMessages } from '../model-bindings'
 import { authoringMessages } from '../authoring'
@@ -6,6 +7,7 @@ import { authoringMessages } from '../authoring'
  * 日本語言語パック
  */
 export default {
+  pluginConsent: pluginConsentMessages['ja'],
   authoring: authoringMessages['ja'],
   modelApi: modelApiMessages['ja'],
   modelBindings: modelBindingsMessages['ja'],

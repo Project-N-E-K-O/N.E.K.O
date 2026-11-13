@@ -24,7 +24,15 @@ def test_next_wake_retains_retry_and_origin_deadlines_without_one_second_ticks(t
     assert scheduler.next_wake_at() is None
 
 
-@pytest.mark.parametrize('code', ['long_term_memory_capacity_exceeded', 'long_term_archive_subject_unavailable'])
+def test_only_fixed_capture_diagnostics_are_stored(tmp_path):
+    scheduler = ChatSyncScheduler(tmp_path / 'scheduler.db')
+    with pytest.raises(ValueError, match='^invalid_long_term_diagnostic$'):
+        scheduler.record_long_term_capture_error('role', 3, 'long_term_memory_evidence_trimmed')
+    assert scheduler.local_memory_diagnostics('role') == []
+
+
+@pytest.mark.parametrize('code', ['long_term_memory_capacity_exceeded', 'long_term_memory_evidence_capacity_exceeded',
+                                  'long_term_archive_subject_unavailable'])
 def test_local_memory_diagnostic_is_durable_without_transport_retry_or_extra_writes(tmp_path, code):
     path = tmp_path / 'scheduler.db'
     scheduler = ChatSyncScheduler(path, clock=lambda: 1000)

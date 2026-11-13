@@ -127,8 +127,8 @@ def stage_authority(runtime):
         for table in ('chat_pending', 'chat_batches', 'chat_deletions', 'chat_originals', 'chat_downloaded'):
             ledger.execute(f'DELETE FROM {table}')
     with closing(store_connection(directory / 'state.sqlite3')) as state, state:
-        if state.execute("SELECT 1 FROM sqlite_master WHERE name='long_term_memory_state'").fetchone():
-            state.execute('DELETE FROM long_term_memory_state')
+        # The confirmed long-term base is pinned to the old epoch in its own file,
+        # so a new epoch no longer reads it.
         state.execute('UPDATE sync_settings SET device_id=?', (uuid4().hex,))
         for row in state.execute('SELECT character_uid FROM sync_bindings').fetchall():
             state.execute('UPDATE sync_bindings SET enabled=0,generation=generation+1,request_id=?,binding_id=NULL WHERE character_uid=?', (uuid4().hex, row[0]))
