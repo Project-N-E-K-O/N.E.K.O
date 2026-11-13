@@ -1297,8 +1297,6 @@ async def run_sync_connector(
                 return "obsolete", ""
             if retired or (language is not None and language != _current_user_language()):
                 language, render_language = None, language or render_language
-            if memory_lock is not None:
-                message_queue.memory_summary_in_flight = endpoint in ("process", "renew", "settle")
             try:
                 ok, detail, result = await _post_memory_server(
                     endpoint, lanlan_name, messages, timeout_s=timeout_s,
@@ -1310,9 +1308,6 @@ async def run_sync_connector(
                     _mark_memory_cache_exception(lanlan_name, MEMORY_CACHE_SCOPE_TURN_END, exc, memory_cache_health_state)
                 outcome = "retry" if _memory_request_not_sent(exc) else "unconfirmed"
                 return outcome, type(exc).__name__
-            finally:
-                if memory_lock is not None:
-                    message_queue.memory_summary_in_flight = False
             if endpoint == "cache":
                 if ok:
                     _mark_memory_cache_success(lanlan_name, MEMORY_CACHE_SCOPE_TURN_END, memory_cache_health_state)

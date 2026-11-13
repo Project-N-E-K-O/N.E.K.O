@@ -58,6 +58,7 @@ def _build_history_request_payload(messages: list[dict]) -> str:
         ("cloudsave-before-write", "direct clear during retry"),
         ("cloudsave-before-write", "retry waiting for direct clear"),
         ("cloudsave-before-write", "direct clear during summary"),
+        ("cloudsave-before-write", "direct clear after summary timeout"),
     ],
 )
 async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatch, tmp_path, failure, boundary):
@@ -89,7 +90,8 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
     recent = CompressedRecentHistoryManager()
     summary_started = asyncio.Event()
     summary_interrupted = asyncio.Event()
-    if boundary == "direct clear during summary":
+    summary_timeout = boundary == "direct clear after summary timeout"
+    if boundary == "direct clear during summary" or summary_timeout:
         recent.compress_threshold = 1
         recent.max_history_length = 2
         monkeypatch.setattr(runtime, "_summary_preemption_windows", {})
@@ -134,6 +136,8 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
     responses = asyncio.Queue()
     first_request = True
     retry_started, release_retry, clear_waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    cache_dispatched = asyncio.Event()
+    detached_renew = None
     if lock_failure:
         original_acquire = recent_file._RecentFileLock.acquire
 
@@ -145,8 +149,15 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
         monkeypatch.setattr(recent_file._RecentFileLock, "acquire", acquire)
 
     async def post(url, **kwargs):
-        nonlocal first_request
+        nonlocal first_request, detached_renew
         endpoint = httpx.URL(url).path.split("/")[1]
+        if summary_timeout and endpoint == "renew":
+            # The connector times out while the remote route is still holding the settle lock.
+            detached_renew = asyncio.create_task(peer.post(url, **kwargs))
+            await summary_started.wait()
+            raise httpx.ReadTimeout("client stopped waiting for the summary")
+        if summary_timeout and endpoint == "cache" and not first_request:
+            cache_dispatched.set()
         if endpoint == "process" and boundary in ("direct clear during retry", "retry waiting for direct clear"):
             retry_started.set()
             if boundary == "direct clear during retry":
@@ -203,6 +214,23 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
                 assert recent._pending_batches("Neko") == []
                 post_turn._spawn_outbox_post_turn_signals.assert_not_awaited()
 
+            if summary_timeout:
+                root_mode = ROOT_MODE_NORMAL
+                queue.put({"type": "system", "data": "renew session"})
+                await asyncio.wait_for(summary_started.wait(), 3)
+                send_turn(2)
+                await asyncio.wait_for(cache_dispatched.wait(), 3)
+                await asyncio.wait_for(crud._clear_character_recent_history(config, "Neko"), 3)
+                assert summary_interrupted.is_set()
+                assert (await detached_renew).json()["status"] == "processed"
+                assert (await asyncio.wait_for(responses.get(), 3))[0] == "cache"
+                assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+                send_turn(3)
+                assert (await asyncio.wait_for(responses.get(), 3))[0] == "cache"
+                persisted = recent_path.read_text(encoding="utf-8")
+                assert "User 1" not in persisted and "User 2" not in persisted
+                assert persisted.count("User 3") == 1
+                return
             if boundary == "direct clear during summary":
                 language = "ja"
                 root_mode = ROOT_MODE_NORMAL
@@ -302,6 +330,9 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
                 current_analyze = json.dumps(analyze.await_args.kwargs["messages"], ensure_ascii=False)
                 assert "User 2" in current_analyze and "User 1" not in current_analyze
         finally:
+            if detached_renew is not None and not detached_renew.done():
+                await routes.preempt_summary("Neko")
+                await asyncio.wait_for(detached_renew, 3)
             connector.cancel()
             await asyncio.gather(connector, return_exceptions=True)
 
