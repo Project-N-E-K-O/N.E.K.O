@@ -899,3 +899,20 @@ async def test_a_provider_that_keeps_refusing_the_pictures_of_a_session_is_sent_
     assert told == ["this session only"] and provider.supports_images is False
     await _events(provider, _with_screenshots("QUFB", "QkJC", "Q0ND"))
     assert [_pictures(request) for request in llm.requests] == [1, 0, 1, 0, 0]
+
+
+async def test_a_picture_the_user_gave_that_was_refused_is_left_out_as_well() -> None:
+    llm = ScriptedLLM(
+        [[_Rejected("The image format image/bmp is not supported", 400)], [say("I cannot see it."), finish()]]
+    )
+    provider, told = _seeing(llm)
+    messages = [
+        UserMessage(content=[TextContent(text="what is this?"), ImageContent(data="QUFB", mime_type="image/bmp")])
+    ]
+
+    events = await _events(provider, messages)
+
+    assert events[-1].message.text == "I cannot see it."
+    assert [_pictures(request) for request in llm.requests] == [1, 0]
+    assert llm.requests[1][-1]["content"] == "what is this?\n[image omitted: the provider refused this picture]"
+    assert told == [] and provider.supports_images is True

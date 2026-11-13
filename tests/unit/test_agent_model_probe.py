@@ -561,3 +561,24 @@ async def test_switching_the_keyboard_off_needs_no_check(setup, switch, desktop,
 
     assert result["agent_flags"]["computer_use_enabled"] is False
     assert switch.notification() is None and switch.checks == []
+
+
+async def test_availability_says_why_the_model_is_sent_no_pictures(setup, switch, monkeypatch, tmp_path):
+    from nekoclaw.host import mount
+    from nekoclaw.host.model_capabilities import ModelCapabilityStore
+
+    config = setup.probe.model_config()
+    store = ModelCapabilityStore(tmp_path / "model_capabilities.json")
+    assert await store.note_images_refused(
+        config.get("base_url"), config.get("model"), "This model does not support image input."
+    )
+    monkeypatch.setattr(mount, "peek_host", lambda: SimpleNamespace(model_capabilities=store))
+    setup.probe.check_connectivity()
+
+    status = await switch.routes.computer_use_availability()
+    await _settled()
+
+    # The tool is switched on and ready, and still not given to a task agent: this says why.
+    told = status["model_images"]
+    assert (told["sees"], told["source"], told["reason"]) == (False, "refused", "This model does not support image input.")
+    assert told["lapses_at"] > told["noted_at"] > 0

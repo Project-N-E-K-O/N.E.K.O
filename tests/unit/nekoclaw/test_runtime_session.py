@@ -684,6 +684,8 @@ async def test_a_model_that_refuses_pictures_is_reported_once_and_the_run_goes_o
         # One event, though two results with a picture followed the refusal.
         learned = events.of("model_capability")
         assert [(event["session_id"], event["supports_images"]) for event in learned] == [("s1", False)]
+        # It is about the model, and says what the provider said: the host writes both down.
+        assert (learned[0]["lasting"], learned[0]["reason"]) == (True, str(refusal))
         assert [_picture_count(request) for request in llm.requests] == [0, 1, 0, 0]
         # The refused request is not a failed response of the run.
         assert events.of("error") == []
@@ -749,3 +751,45 @@ async def test_the_image_pools_of_the_spec_reach_the_context_manager(tmp_path: P
     finally:
         await pooled.close()
         await plain.close()
+
+
+class _Refused(RuntimeError):
+    """A provider error that carries the HTTP status it came with."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def test_pictures_refused_for_what_they_were_are_reported_as_this_sessions_only(tmp_path: Path) -> None:
+    from PIL import Image
+
+    said = "The image format image/png is not supported. " + "x" * 400
+    llm = ScriptedLLM(
+        [
+            [call("read_image", {"file_path": "shot.png"}), finish("tool_calls")],
+            # The request that carries the first picture back is refused for what the picture is ...
+            [_Refused(said, 400)],
+            # ... goes again without it, and the model looks at another picture,
+            [call("read_image", {"file_path": "other.png"}, "c2"), finish("tool_calls")],
+            # which is refused as well.
+            [_Refused(said, 400)],
+            [say("Saw neither."), finish()],
+        ]
+    )
+    spec = _seeing_spec(tmp_path)
+    Image.new("RGB", (4, 4), (30, 30, 200)).save(Path(spec.workdir) / "other.png", format="PNG")
+    session, events = await open_session(spec, llm)
+    try:
+        session.prompt("look at both pictures")
+        ended = await events.wait_ended()
+
+        assert (ended["reason"], ended["text"]) == ("completed", "Saw neither.")
+        # The first refusal took one picture out; the second ended the pictures of this session.
+        assert [_picture_count(request) for request in llm.requests] == [0, 1, 0, 1, 0]
+        (learned,) = events.of("model_capability")
+        # Said of these pictures, not of the model: the host is told so, with what the provider said, shortened.
+        assert (learned["supports_images"], learned["lasting"]) == (False, False)
+        assert learned["reason"] == said[:300]
+    finally:
+        await session.close()

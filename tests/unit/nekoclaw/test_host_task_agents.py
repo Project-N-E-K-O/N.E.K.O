@@ -2926,7 +2926,9 @@ async def test_a_model_found_to_take_no_pictures_loses_the_picture_tools_in_the_
     listed = [tool["name"] for tool in await host.gateway.tool_definitions(grant)]
     assert "computer" in listed
 
-    runtime.say(commission.id, "model_capability", supports_images=False)
+    runtime.say(
+        commission.id, "model_capability", supports_images=False, reason="This model does not support image input."
+    )
     await host.task_agents.settle()
 
     # Its screenshots no longer reach the model: it would go on clicking a screen it cannot see.
@@ -2938,7 +2940,8 @@ async def test_a_model_found_to_take_no_pictures_loses_the_picture_tools_in_the_
     # A commission that is not under way has no token to change.
     host.gateway.images_refused("no-such-commission")
     # What the provider said is kept with what is remembered.
-    assert await host.model_capabilities.sees_images(None, "fake-model") is False
+    told = await host.model_capabilities.describe(None, "fake-model")
+    assert (told["sees"], told["source"], told["reason"]) == (False, "refused", "This model does not support image input.")
 
 
 async def test_pictures_refused_for_what_they_were_end_the_pictures_of_the_session_and_nothing_is_remembered(
