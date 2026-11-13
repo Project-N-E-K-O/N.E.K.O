@@ -197,6 +197,10 @@ class AXNode:
         value = self.payload.get("backendDOMNodeId")
         return int(value) if isinstance(value, int) else None
 
+    @property
+    def hidden(self) -> bool:
+        return self._hidden
+
     def _plain_text_field(self) -> bool:
         if self._richly_editable:
             return False
@@ -206,8 +210,9 @@ class AXNode:
 
     def has_focusable_child(self) -> bool:
         if self._has_focusable_child is None:
-            self._has_focusable_child = any(child._focusable or child.has_focusable_child() for child in self.children)
-        return self._has_focusable_child
+            # Worked out for the whole tree at once, from the bottom up.
+            _mark_focusable_children(self)
+        return bool(self._has_focusable_child)
 
     def is_leaf(self) -> bool:
         if not self.children:
@@ -320,48 +325,88 @@ class SnapshotNode:
         return str(value) if value else ""
 
 
-def _collect_interesting(collection: set[int], node: AXNode, inside_control: bool) -> None:
-    if node.is_interesting(inside_control) or node.frame is not None:
-        collection.add(id(node))
-    if node.is_leaf():
-        return
-    inside_control = inside_control or node.is_control()
-    for child in node.children:
-        _collect_interesting(collection, child, inside_control)
+# The three walks below go without recursion: a page may be nested deeper
+# than Python lets a function call itself.
 
 
-def _serialize(node: AXNode, interesting: set[int] | None, loader_id: str, frame_id: str) -> list[SnapshotNode]:
-    children: list[SnapshotNode] = []
-    for child in node.children:
-        # Line fragments of a text node: they repeat the text and stand for no element.
-        if child.role == "InlineTextBox":
+def _mark_focusable_children(root: AXNode) -> None:
+    """Work out, for every node, whether anything below it takes the focus."""
+    seen: set[int] = set()
+    stack: list[tuple[AXNode, bool]] = [(root, False)]
+    while stack:
+        node, expanded = stack.pop()
+        if expanded:
+            node._has_focusable_child = any(child._focusable or bool(child._has_focusable_child) for child in node.children)
             continue
-        children.extend(_serialize(child, interesting, loader_id, frame_id))
-    if interesting is not None and id(node) not in interesting:
-        return children
-    attributes = node.attributes()
-    if node.role == "option" and attributes.get("name"):
-        # The node of an option does not carry its value; its text stands for it.
-        attributes["value"] = str(attributes["name"])
-    serialized = SnapshotNode(
-        role=node.role,
-        attributes=attributes,
-        backend_node_id=node.backend_node_id,
-        loader_id=loader_id,
-        frame_id=frame_id,
-        children=children,
-    )
-    if node.frame is not None:
-        serialized.children.append(node.frame)
-    return [serialized]
+        if id(node) in seen:
+            continue  # Named as a child twice; a tree that is none cannot go round for ever.
+        seen.add(id(node))
+        stack.append((node, True))
+        stack.extend((child, False) for child in node.children)
+
+
+def _collect_interesting(collection: set[int], root: AXNode) -> None:
+    seen: set[int] = set()
+    stack: list[tuple[AXNode, bool]] = [(root, False)]
+    while stack:
+        node, inside_control = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if node.is_interesting(inside_control) or node.frame is not None:
+            collection.add(id(node))
+        if node.is_leaf():
+            continue
+        inside_control = inside_control or node.is_control()
+        stack.extend((child, inside_control) for child in node.children)
+
+
+def _serialize(root: AXNode, interesting: set[int] | None, loader_id: str, frame_id: str) -> list[SnapshotNode]:
+    # What each node turned into, until the node above it takes it up.
+    done: dict[int, list[SnapshotNode]] = {}
+    seen: set[int] = set()
+    stack: list[tuple[AXNode, bool]] = [(root, False)]
+    while stack:
+        node, expanded = stack.pop()
+        if not expanded:
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            stack.append((node, True))
+            # Line fragments of a text node: they repeat the text and stand for no element.
+            stack.extend((child, False) for child in node.children if child.role != "InlineTextBox")
+            continue
+        children: list[SnapshotNode] = []
+        for child in node.children:
+            children.extend(done.pop(id(child), ()))
+        if interesting is not None and id(node) not in interesting:
+            done[id(node)] = children
+            continue
+        attributes = node.attributes()
+        if node.role == "option" and attributes.get("name"):
+            # The node of an option does not carry its value; its text stands for it.
+            attributes["value"] = str(attributes["name"])
+        serialized = SnapshotNode(
+            role=node.role,
+            attributes=attributes,
+            backend_node_id=node.backend_node_id,
+            loader_id=loader_id,
+            frame_id=frame_id,
+            children=children,
+        )
+        if node.frame is not None:
+            serialized.children.append(node.frame)
+        done[id(node)] = [serialized]
+    return done.get(id(root), [])
 
 
 def serialize_tree(root: AXNode, *, verbose: bool, loader_id: str, frame_id: str) -> SnapshotNode | None:
     """Return the tree as snapshot nodes: every node when ``verbose``, else the interesting ones."""
     interesting: set[int] | None = None
     if not verbose:
+        _mark_focusable_children(root)
         interesting = set()
-        _collect_interesting(interesting, root, False)
+        _collect_interesting(interesting, root)
     serialized = _serialize(root, interesting, loader_id, frame_id)
     return serialized[0] if serialized else None
 
@@ -374,6 +419,9 @@ class Snapshot:
     root: SnapshotNode
     verbose: bool
     by_uid: dict[str, SnapshotNode]
+    # Embedded pages (iframes) whose content is not in the tree: of another
+    # site, which lives in another process, or more or deeper than are read.
+    unlisted_frames: int = 0
 
 
 def assign_uids(root: SnapshotNode, snapshot_id: int, known: dict[str, str]) -> dict[str, SnapshotNode]:
@@ -423,6 +471,18 @@ def _redundant_text_children(node: SnapshotNode, verbose: bool) -> bool:
     return _strip_whitespace(text) == _strip_whitespace(node.name)
 
 
+_LINE_BREAKS = str.maketrans({"\r": "", "\n": "\\n", "\u2028": "\\n", "\u2029": "\\n", "\x0b": "\\n", "\x0c": "\\n"})
+
+
+def _one_line(text: str) -> str:
+    """Return text as it is written into a line: a line break in it (a code block, a text area) as ``\\n``.
+
+    A node is one line of the snapshot, whatever its text holds; how much of
+    a snapshot is shown, and where to read on, is counted in those lines.
+    """
+    return text.translate(_LINE_BREAKS) if any(mark in text for mark in "\r\n\u2028\u2029\x0b\x0c") else text
+
+
 def _line(node: SnapshotNode) -> str:
     parts: list[str] = []
     if node.uid:
@@ -430,7 +490,7 @@ def _line(node: SnapshotNode) -> str:
     if node.role and node.role != "StaticText":
         parts.append("ignored" if node.role == "none" else node.role)
     if node.name:
-        parts.append(f'"{node.name}"')
+        parts.append(f'"{_one_line(node.name)}"')
     is_option = node.role == "option"
     for key in sorted(node.attributes):
         if key == "name":
@@ -449,7 +509,7 @@ def _line(node: SnapshotNode) -> str:
             if key == "url" and isinstance(value, str) and value.startswith("data:"):
                 # Other addresses are kept whole: the snapshot is their only full copy.
                 value = value[:_DATA_URL_SHOWN_CHARACTERS] + "..." if len(value) > _DATA_URL_SHOWN_CHARACTERS else value
-            parts.append(f'{key}="{value}"')
+            parts.append(f'{key}="{_one_line(value) if isinstance(value, str) else value}"')
     return " ".join(parts)
 
 

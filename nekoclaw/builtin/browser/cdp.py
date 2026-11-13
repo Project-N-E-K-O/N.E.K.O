@@ -39,6 +39,9 @@ DEFAULT_COMMAND_TIMEOUT_SECONDS = 30.0
 CONNECT_TIMEOUT_SECONDS = 10.0
 # The code a browser answers with when the session a command names is gone.
 SESSION_GONE_CODE = -32001
+# A message this long (the tree of a large page, a screenshot) is parsed in a
+# worker thread: parsing megabytes would hold the event loop up.
+PARSE_IN_THREAD_BYTES = 256 * 1024
 
 # Called with ``(method, params, session_id)`` for every event.
 EventListener = Callable[[str, dict[str, Any], "str | None"], None]
@@ -178,7 +181,11 @@ class CdpConnection:
         try:
             async for raw in self._socket:
                 try:
-                    message = json.loads(raw)
+                    if len(raw) >= PARSE_IN_THREAD_BYTES:
+                        # Awaited before the next message is read, so the order stays.
+                        message = await asyncio.to_thread(json.loads, raw)
+                    else:
+                        message = json.loads(raw)
                 except ValueError:
                     continue
                 if not isinstance(message, dict):

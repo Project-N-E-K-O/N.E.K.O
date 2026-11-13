@@ -50,9 +50,14 @@ COORDINATE_MAX = 999
 # Screenshots are bounded to this height before they are handed to a model,
 # as the loop this replaces did: small interface text must stay readable.
 SCREENSHOT_HEIGHT = 1080
-# Byte ceiling of one screenshot. Three stay in a task agent's context, and
-# providers refuse requests whose body grows much beyond half a megabyte.
+# Byte ceiling of one screenshot. Three screenshots stay in a task agent's
+# context, of all the built-in tools together (``TASK_AGENT_SCREENSHOTS_KEPT``),
+# and the request must stay well under what providers take: the loop this
+# replaces kept to about half a megabyte.
 SCREENSHOT_MAX_BYTES = 200 * 1024
+# How long letting go of held keys waits for a call that still has the
+# keyboard and the mouse.
+RELEASE_WAIT_SECONDS = 5.0
 # How long after an action the screenshot of its result is taken.
 SETTLE_SECONDS = 0.6
 WAIT_DEFAULT_SECONDS = 1.0
@@ -620,7 +625,24 @@ class Desktop:
         )
 
     def release_held(self) -> bool:
-        """Let go of what an earlier call left held; True when nothing is left."""
+        """Let go of what an earlier call left held; True when nothing is left.
+
+        Not while a call has the keyboard and the mouse: it would let go of
+        a key that call is holding down, and both would switch pyautogui's
+        fail-safe off and on again, which can leave it off for good (the
+        pointer in a corner is the one brake the user has). It waits a
+        moment for the call; if the call is still at it, False comes back
+        and what is held is let go of by that call, or by the next.
+        """
+        if not EXECUTION_LOCK.acquire(timeout=RELEASE_WAIT_SECONDS):
+            return False
+        try:
+            return self._release_held()
+        finally:
+            EXECUTION_LOCK.release()
+
+    def _release_held(self) -> bool:
+        """As ``release_held``, for the thread that has ``EXECUTION_LOCK``."""
         if not self._held_keys and not self._held_buttons:
             return True
         backend = self.backend()
@@ -663,7 +685,7 @@ class Desktop:
                 raise DesktopStopped("stopped") from exc
             finally:
                 if self._held_keys or self._held_buttons:
-                    self.release_held()
+                    self._release_held()
         finally:
             EXECUTION_LOCK.release()
         return DesktopResult(

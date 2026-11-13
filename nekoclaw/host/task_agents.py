@@ -67,6 +67,8 @@ _NO_PLACE_REASON = "no task agent place was free"
 # Children that can still produce a result their parent should wait for.
 _STILL_WORKING = frozenset({"queued", "working", "waiting_user"})
 _REPORT_TO_STATUS = {"ready": "done", "blocked": "blocked", "failed": "failed"}
+# The pool the screenshots of every built-in tool are counted in (``TaskAgentSpec.image_pools``).
+SCREENSHOT_POOL = "builtin_screenshots"
 _STATUS_TO_REPORT = {"done": "completed", "blocked": "blocked", "failed": "failed", "cancelled": "cancelled"}
 _REPLY_LANGUAGES = {
     "zh": "Simplified Chinese",
@@ -616,24 +618,23 @@ class TaskAgentManager:
 
         Every tool that needs a model that sees pictures hands screenshots
         back. The first value gives the number for each such tool; the second
-        puts the tools of one group in one pool, so the number is counted
-        for the group as a whole and not once per tool.
+        puts them all in one pool, so the number is the most that stay in
+        the context at all, whichever tools they came from: what one
+        screenshot may weigh is set for that many (``SCREENSHOT_MAX_BYTES``).
         """
         from config.nekoclaw_settings import TASK_AGENT_SCREENSHOTS_KEPT
         from nekoclaw.host.gateway import CALL_TOOL
 
         retention: dict[str, int] = {}
-        pools: dict[str, str] = {}
         for capability in capabilities:
             if capability.needs_images and capability.group:
                 retention[capability.tool_name] = TASK_AGENT_SCREENSHOTS_KEPT
-                pools[capability.tool_name] = capability.group
         if retention:
             # The same tools can be called by name through the gateway's own
             # call tool, and their screenshots then come back as results of
-            # that tool. Counted on their own, so they are limited as well.
+            # that tool: counted along.
             retention[CALL_TOOL] = TASK_AGENT_SCREENSHOTS_KEPT
-        return retention, pools
+        return retention, {name: SCREENSHOT_POOL for name in retention}
 
     async def _pay_first_request(self, session: _Session) -> bool:
         """Count a session's first model request before it is made; False when the quota is used up.
@@ -858,7 +859,13 @@ class TaskAgentManager:
 
     async def _on_model_capability(self, session: _Session, event: dict[str, Any]) -> None:
         """Remember that the model of a session turned out to take no pictures."""
-        if event.get("supports_images") is not False or self._model_capabilities is None or session.model is None:
+        if event.get("supports_images") is not False:
+            return
+        if self._gateway is not None:
+            # For this session at once: its screenshots no longer reach the
+            # model, so the tools that work from them are of no use to it.
+            self._gateway.images_refused(session.commission_id)
+        if self._model_capabilities is None or session.model is None:
             return
         base_url, model = session.model
         try:

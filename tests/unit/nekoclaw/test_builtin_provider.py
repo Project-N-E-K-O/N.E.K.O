@@ -134,7 +134,8 @@ class FakeDesktop:
 class FakeBrowserTools:
     """Stands in for ``BrowserTools``."""
 
-    def __init__(self) -> None:
+    def __init__(self, session: Any = None) -> None:
+        self.session = session
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.outcome = BuiltinOutcome(True, "Successfully clicked on the element")
         self.error: Exception | None = None
@@ -143,8 +144,16 @@ class FakeBrowserTools:
         self.released_calls = 0
         self.closed = 0
         self.window_info: dict[str, Any] | None = None
+        # Called while the call waits its turn, before it is carried out.
+        self.while_waiting: Any = None
 
-    async def call(self, tool_name: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def call(self, tool_name: str, arguments: dict[str, Any], *, refused: Any = None) -> BuiltinOutcome:
+        if self.while_waiting is not None:
+            self.while_waiting()
+        # As the real ones: asked when the call's turn has come.
+        why = refused() if refused is not None else None
+        if why:
+            return BuiltinOutcome(False, why)
         self.calls.append((tool_name, arguments))
         self.entered.set()
         if self.gate is not None:
@@ -689,3 +698,20 @@ async def test_shutting_down_closes_the_browser_even_when_held_input_cannot_be_r
     rig.desktop.release_error = RuntimeError("the keyboard is gone")
     await rig.provider.aclose()
     assert rig.browser.closed == 1
+
+
+async def test_a_browser_call_that_waited_its_turn_is_not_carried_out_once_the_browser_is_switched_off(rig: Rig) -> None:
+    # Switched off while the call queued behind another one.
+    rig.browser.while_waiting = lambda: rig.state.states.__setitem__(BUILTIN_GROUP_BROWSER, (False, "switched off"))
+    outcome = await rig.provider.run(rig.tool("browser_click"), commission_id="c1", arguments={"uid": "1_1"})
+    assert outcome == BuiltinOutcome(False, "browser control is switched off")
+    assert rig.browser.calls == [] and not rig.provider.is_running(BUILTIN_GROUP_BROWSER)
+
+
+def test_the_browser_the_tools_drive_is_told_which_ports_are_this_applications_own(monkeypatch: Any) -> None:
+    ports = lambda: {48911, 48915}  # noqa: E731 - the very object is looked for below
+    monkeypatch.setattr(tools_module, "BrowserTools", FakeBrowserTools)
+    provider = BuiltinToolProvider(state=Switches(), own_ports=ports)
+    session = provider.browser().session
+    assert session._own_ports is ports
+    assert BuiltinToolProvider(state=Switches()).browser().session._own_ports is None

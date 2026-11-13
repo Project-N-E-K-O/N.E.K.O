@@ -56,6 +56,7 @@ from nekoclaw.builtin.browser.session import (
     _DOM_QUIET,
     _ELEMENT_OF_NODE,
     _FIND_TEXT,
+    _FOCUS_FOR_TYPING,
     _PREPARE_FILL,
     _REACHES,
     _SELECT_OPTION,
@@ -94,6 +95,7 @@ class Element:
         on_press: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_input: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_change: Callable[["FakeBrowser", "FakePage"], None] | None = None,
+        on_focus: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         frame: "Document | None" = None,
         quad: list[float] | None = None,
         script_error: str | None = None,
@@ -114,6 +116,8 @@ class Element:
         self.on_input = on_input
         # Called when a script sets the value of a select (the page's own ``change`` handler).
         self.on_change = on_change
+        # Called when a script gives the element the focus (the page's own ``focus`` handler).
+        self.on_focus = on_focus
         # What lies over the element (a banner, a dialog of the page), and
         # where: None for all of it, else ``(left, top, right, bottom)``.
         self.cover: Element | None = None
@@ -401,6 +405,11 @@ class FakeBrowser:
         ]
         self.sent: list[Sent] = []
         self.connections: list[FakeConnection] = []
+        # ``(target id or None for the whole browser, patterns)`` of every ``Fetch.enable``.
+        self.fetch_enabled: list[tuple[str | None, list[str]]] = []
+        # ``(request id, "continued" or the reason it was failed for, session)``.
+        self.fetch_answers: list[tuple[str, str, str | None]] = []
+        self.held_requests: list[str] = []
         self.gates: list[Gate] = []
         # method -> an exception to raise instead of answering.
         self.failures: dict[str, Exception] = {}
@@ -843,6 +852,34 @@ class FakeBrowser:
         page.scrolled_to.append(element)
         return {}
 
+    # Fetch: requests held for whoever enabled it, the whole browser (``page`` is None) or one page
+
+    def _do_Fetch_enable(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
+        patterns = [item["urlPattern"] for item in command.params["patterns"]]
+        assert patterns, "without patterns every request of the browser would be held"
+        self.fetch_enabled.append((page.target_id if page is not None else None, patterns))
+        return {}
+
+    def _do_Fetch_failRequest(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
+        self.fetch_answers.append((command.params["requestId"], command.params["errorReason"], command.session_id))
+        return {}
+
+    def _do_Fetch_continueRequest(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
+        self.fetch_answers.append((command.params["requestId"], "continued", command.session_id))
+        return {}
+
+    def hold_request(self, url: str, page: FakePage | None = None) -> str:
+        """Hold a request to ``url`` as the browser does for whoever enabled ``Fetch``; returns its id."""
+        request_id = f"interception-{len(self.fetch_answers) + len(self.held_requests) + 1}"
+        self.held_requests.append(request_id)
+        params = {"requestId": request_id, "request": {"url": url, "method": "GET"}}
+        if page is None:
+            self._emit("Fetch.requestPaused", params)
+        else:
+            for session_id in sorted(page.sessions):
+                self._emit("Fetch.requestPaused", params, session_id)
+        return request_id
+
     def _do_DOM_getNodeForLocation(self, command: Sent, page: FakePage) -> dict[str, Any]:
         assert set(command.params) == {"x", "y"}, "pointer-events: none must keep its meaning"
         assert isinstance(command.params["x"], int) and isinstance(command.params["y"], int)
@@ -873,6 +910,14 @@ class FakeBrowser:
             related = hit in element.walk() or element in hit.walk()
             return {"result": {"type": "boolean", "value": True} if related else {"type": "string", "value": f'{hit.role} "{hit.name}"'}}
         arguments = [item.get("value") for item in command.params.get("arguments") or ()]
+        if function == _FOCUS_FOR_TYPING:
+            assert command.params.get("returnByValue") is True and arguments == []
+            target = element.parent if element.kind == "option" and element.parent is not None else element
+            page.focused = target
+            target.all_selected = True
+            if target.on_focus is not None:
+                target.on_focus(self, page)
+            return {"result": {"type": "boolean", "value": True}}
         if function == _ELEMENT_OF_NODE:
             assert command.params.get("returnByValue") is False
             if not element.connected:
@@ -931,8 +976,6 @@ class FakeBrowser:
         if target.kind == "text":
             if target.readonly:
                 return {"kind": "error", "message": "the element is read-only"}
-            page.focused = target
-            target.all_selected = True
             return {"kind": "type"}
         return {"kind": "error", "message": f"it is not an element that can be filled in ({target.role})"}
 
@@ -1132,6 +1175,7 @@ class BrowserWorld:
     # finishing until the test sets the event.
     launch_gate: asyncio.Event | None = None
     connect_gate: asyncio.Event | None = None
+    close_gate: asyncio.Event | None = None
     launch_error: Exception | None = None
     attach_error: Exception | None = None
     connect_error: Exception | None = None
@@ -1192,6 +1236,8 @@ class BrowserWorld:
 
     async def _close(self, browser: RunningBrowser, connection: Any = None) -> None:
         self.closed.append((browser, connection))
+        if self.close_gate is not None:
+            await self.close_gate.wait()
         if self.close_error is not None:
             raise self.close_error
 

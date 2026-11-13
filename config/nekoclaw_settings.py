@@ -200,6 +200,11 @@ task agent's context; older ones are replaced with a placeholder. The old
 keyboard-and-mouse loop sent the current screenshot and the two before it."""
 
 BROWSER_SNAPSHOT_MAX_TOKENS = 3000
+# Text a page writes that goes into a tool result outside the snapshot: what
+# a dialog of the page says, and the address of a page in the list of pages.
+# Longer text is cut and the number of characters left out is told.
+BROWSER_DIALOG_TEXT_MAX_TOKENS = 200
+BROWSER_PAGE_URL_MAX_TOKENS = 40
 """Cap on one page snapshot handed to a task agent. A longer one is cut and
 ends with a line saying so and how to see the rest."""
 

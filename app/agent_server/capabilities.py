@@ -26,7 +26,7 @@ through the facade at call time.
 import json
 import asyncio
 import time
-from typing import Dict, Any, Optional, Tuple
+from typing import Callable, Dict, Any, Optional, Tuple
 
 from . import _shared
 from ._shared import (
@@ -104,12 +104,19 @@ def _keyboard_mouse_availability() -> Dict[str, Any]:
     }
 
 
-def _set_closed_browser_capability(capability_reason: Optional[str]) -> None:
+async def _set_closed_browser_capability(capability_reason: Optional[str], still_current: Callable[[], bool]) -> None:
+    """Say what the browser tools can do now that the browser is closed.
+
+    ``still_current`` is asked again after the search for a browser, which
+    runs in a worker thread (it reads the settings and looks at files): the
+    switch may have been set anew meanwhile, and that setting's word stands.
+    """
     if capability_reason is not None:
         _set_capability("browser_use", False, capability_reason)
         return
-    dependency_ready, dependency_error = _browser_dependency_status()
-    _set_capability("browser_use", dependency_ready, dependency_error)
+    dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
+    if still_current():
+        _set_capability("browser_use", dependency_ready, dependency_error)
 
 
 async def _close_browser(
@@ -125,6 +132,9 @@ async def _close_browser(
     """
     from .nekoclaw_builtins import provider
 
+    def still_current() -> bool:
+        return expected_lifecycle_seq is None or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
+
     cancelled = False
     try:
         await provider.close_browser()
@@ -134,15 +144,8 @@ async def _close_browser(
     except Exception as exc:
         logger.warning("[Agent] Closing the browser failed: %s", exc)
     finally:
-        if (
-            not cancelled
-            and update_capability
-            and (
-                expected_lifecycle_seq is None
-                or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
-            )
-        ):
-            _set_closed_browser_capability(capability_reason)
+        if not cancelled and update_capability and still_current():
+            await _set_closed_browser_capability(capability_reason, still_current)
 
 
 def _try_refresh_model_probe(force: bool = False) -> bool:

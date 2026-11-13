@@ -41,10 +41,12 @@ a window provided by the desktop shell would be.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from nekoclaw.builtin.browser import launcher
 from nekoclaw.builtin.browser.cdp import SESSION_GONE_CODE, CdpClosed, CdpConnection, CdpError, CdpTimeout
@@ -71,21 +73,23 @@ MAX_IFRAME_DEPTH = 3
 MAX_IFRAMES = 12
 FULL_PAGE_MAX_HEIGHT = 6000
 ALLOWED_URL_SCHEMES = ("http://", "https://")
-# Pages of the browser itself (its settings, its sign-in and sync dialogs, its
-# developer tools) and of its extensions. They are not pages of the web: none
-# of them is listed to the model or driven.
-BROWSER_OWN_SCHEMES = (
-    "devtools://",
-    "chrome-extension://",
-    "extension://",
-    "chrome://",
-    "chrome-untrusted://",
-    "chrome-search://",
-    "edge://",
-    "brave://",
-    "opera://",
-    "vivaldi://",
-)
+# The longest any call waits for a page, whatever ``timeout`` it was given:
+# the calls of a browser are carried out one after the other, and a wait
+# holds up the ones behind it.
+MAX_TIMEOUT_SECONDS = 120.0
+
+
+def is_web_page(url: str) -> bool:
+    """Whether a tab shows a page of the web (or none yet), going by its address.
+
+    Only those are listed to the model and driven. Not the browser's own
+    pages (its settings, its sign-in and sync dialogs, its developer tools:
+    ``chrome://``, ``edge://``, ``devtools://``), not those of extensions, and
+    not a file of this computer the user has open in a tab (``file://``):
+    reading files has its own permission, which the browser is no way round.
+    """
+    lowered = url.strip().lower()
+    return not lowered or lowered == "about:blank" or lowered.startswith(ALLOWED_URL_SCHEMES)
 
 # Returns the debugging endpoint of a window the desktop shell provides when
 # no browser is installed, or None when it provides none.
@@ -166,7 +170,8 @@ _REACHES = """function(hit) {
   if (label && label.control === this) return true;
   const said = (hit.getAttribute && hit.getAttribute('aria-label')) || hit.textContent || '';
   const name = said.trim().replace(/\\s+/g, ' ').slice(0, 40);
-  return (hit.nodeName || 'node').toLowerCase() + (hit.id ? '#' + hit.id : '') + (name ? ' "' + name + '"' : '');
+  const id = hit.id ? '#' + String(hit.id).slice(0, 40) : '';
+  return (hit.nodeName || 'node').toLowerCase().slice(0, 40) + id + (name ? ' "' + name + '"' : '');
 }"""
 
 # The points of an element's box that are tried, as fractions of its visible
@@ -220,6 +225,7 @@ _PREPARE_FILL = """function(value) {
   }
   if (tag === 'INPUT' && type === 'file') return {kind: 'error', message: 'a file input cannot be filled in'};
   if (tag === 'INPUT' && ['date', 'time', 'datetime-local', 'month', 'week', 'color', 'range'].includes(type)) {
+    if (el.readOnly) return {kind: 'error', message: 'the element is read-only'};
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(el, value);
     el.dispatchEvent(new Event('input', {bubbles: true}));
@@ -228,20 +234,29 @@ _PREPARE_FILL = """function(value) {
   }
   if (tag === 'INPUT' || tag === 'TEXTAREA') {
     if (el.readOnly) return {kind: 'error', message: 'the element is read-only'};
-    el.focus();
-    if (typeof el.select === 'function') el.select();
     return {kind: 'type'};
   }
+  if (el.isContentEditable) return {kind: 'type'};
+  return {kind: 'error', message: 'it is not an element that can be filled in (' + tag.toLowerCase() + ')'};
+}"""
+
+# Run before text is typed into an element: gives it the focus and selects
+# what it holds, so that the text takes its place. A step of its own, apart
+# from ``_PREPARE_FILL``: a page may open a dialog when the focus moves, and
+# then nothing has been typed yet.
+_FOCUS_FOR_TYPING = """function() {
+  let el = this;
+  el.focus();
   if (el.isContentEditable) {
-    el.focus();
     const range = document.createRange();
     range.selectNodeContents(el);
     const selection = window.getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
-    return {kind: 'type'};
+  } else if (typeof el.select === 'function') {
+    el.select();
   }
-  return {kind: 'error', message: 'it is not an element that can be filled in (' + tag.toLowerCase() + ')'};
+  return true;
 }"""
 
 _DOM_QUIET = """new Promise(resolve => {
@@ -272,9 +287,17 @@ class BrowserSession:
         *,
         settings: BrowserSettingsStore | None = None,
         fallback_endpoint: FallbackEndpoint | None = None,
+        own_ports: Callable[[], Iterable[int]] | None = None,
     ) -> None:
         self._settings = settings or BrowserSettingsStore()
         self._fallback_endpoint = fallback_endpoint
+        # Returns the ports this application's own services listen on. The
+        # browser is kept from reaching them: see ``_keep_from_own_ports``.
+        self._own_ports = own_ports
+        self._blocked_ports: frozenset[int] = frozenset()
+        # True when the whole browser is kept from them, not only the pages worked on.
+        self._blocked_everywhere = False
+        self._answers: set[asyncio.Future[None]] = set()
         self._connection: CdpConnection | None = None
         self._browser: launcher.RunningBrowser | None = None
         self._pages: dict[str, Page] = {}  # by target id, in the order they appeared
@@ -358,6 +381,7 @@ class BrowserSession:
         self._user_browser = attach
         connection.on_event(self._on_event)
         try:
+            await self._keep_from_own_ports(connection, browser)
             await connection.send("Target.setDiscoverTargets", {"discover": True})
             targets = await connection.send("Target.getTargets")
             for info in targets.get("targetInfos") or ():
@@ -376,6 +400,68 @@ class BrowserSession:
             # held, so ``close`` closes it.
             await self._drop_connection()
             raise
+
+    def _block_patterns(self) -> list[dict[str, str]]:
+        # By port alone, whatever the host: a name that resolves to this
+        # computer reaches the same service as 127.0.0.1 does.
+        return [{"urlPattern": f"*://*:{port}/*"} for port in sorted(self._blocked_ports)]
+
+    async def _keep_from_own_ports(self, connection: CdpConnection, browser: launcher.RunningBrowser) -> None:
+        """Have requests to this application's own ports failed, wherever in the browser they come from.
+
+        None of those services is of use to a task agent, and some answer a
+        request from this computer without asking who sent it; a page must
+        not be able to reach them, by a link, a redirect or a request of its
+        own. In a browser this process started, the whole browser is kept
+        from them (every page, embedded page of another site and worker). A
+        browser that is the user's, or a window of the desktop shell, is
+        somebody else's as a whole (the shell's own windows talk to those
+        very ports): there only the pages that are worked on are kept from
+        them, when they are attached to. WebSocket connections are not
+        covered by either; the browser's protocol has no way to fail them.
+        """
+        self._blocked_everywhere = False
+        ports: set[int] = set()
+        if self._own_ports is not None:
+            try:
+                ports = {int(port) for port in self._own_ports() if 0 < int(port) < 65536}
+            except Exception:  # noqa: BLE001 - told loudly; the browser is still usable
+                logger.warning("the ports of this application's own services are not known; none is kept from the browser", exc_info=True)
+        self._blocked_ports = frozenset(ports)
+        if not self._blocked_ports or not browser.owned:
+            return
+        try:
+            await connection.send("Fetch.enable", {"patterns": self._block_patterns()})
+            self._blocked_everywhere = True
+        except CdpError:
+            logger.warning("the whole browser cannot be kept from this application's own ports; each page is instead", exc_info=True)
+
+    def _answer_paused(self, params: dict[str, Any], session_id: str | None) -> None:
+        """Answer a request the browser holds for us: failed when it goes to one of the ports, else let on.
+
+        Every held request is answered, or the page would wait for it for ever.
+        """
+        connection = self._connection
+        request_id = params.get("requestId")
+        if connection is None or not isinstance(request_id, str):
+            return
+        port = port_of(str((params.get("request") or {}).get("url") or ""))
+        if port in self._blocked_ports:
+            # The port only: an address may carry a token.
+            logger.info("kept the browser from reaching port %s of this application", port)
+            method, payload = "Fetch.failRequest", {"requestId": request_id, "errorReason": "BlockedByClient"}
+        else:
+            method, payload = "Fetch.continueRequest", {"requestId": request_id}
+        answer = asyncio.ensure_future(self._send_quietly(connection, method, payload, session_id))
+        self._answers.add(answer)
+        answer.add_done_callback(self._answers.discard)
+
+    @staticmethod
+    async def _send_quietly(connection: CdpConnection, method: str, params: dict[str, Any], session_id: str | None) -> None:
+        try:
+            await connection.send(method, params, session_id=session_id, timeout=10.0)
+        except (CdpError, CdpClosed, CdpTimeout):
+            logger.debug("%s was not taken", method, exc_info=True)
 
     async def _close_once_started(self, starting: "asyncio.Future[launcher.RunningBrowser]") -> None:
         """Close the browser a start brings up after its caller has gone; never raises."""
@@ -426,13 +512,18 @@ class BrowserSession:
     async def close(self) -> None:
         """Drop the connection and close the browser if this process started it."""
         await self._settle_abandoned()
-        browser, self._browser = self._browser, None
+        browser = self._browser
         connection = self._connection
         if browser is not None:
             try:
                 await launcher.close(browser, connection)
             except Exception:  # noqa: BLE001 - the connection is dropped either way
                 logger.warning("closing the browser failed", exc_info=True)
+            # Let go of only now: a close that was cancelled half way (the
+            # user stopping everything) still knows which browser to close
+            # when it is asked for again.
+            if self._browser is browser:
+                self._browser = None
         await self._drop_connection()
         self._window = None
 
@@ -451,8 +542,10 @@ class BrowserSession:
         if not target_id:
             return
         url = str(info.get("url") or "")
-        if url.lower().startswith(BROWSER_OWN_SCHEMES):
-            # Also a page that was listed and has gone to one of these since.
+        if not is_web_page(url) or (self._blocked_ports and port_of(url) in self._blocked_ports):
+            # Not a page of the web, or one of this application's own pages
+            # (which the user may have open in the browser that is attached
+            # to). Also a page that was listed and has gone there since.
             self._forget_page(target_id)
             return
         page = self._pages.get(target_id)
@@ -495,6 +588,9 @@ class BrowserSession:
         return self._pages.get(page.target_id) is page
 
     def _on_event(self, method: str, params: dict[str, Any], session_id: str | None) -> None:
+        if method == "Fetch.requestPaused":
+            self._answer_paused(params, session_id)
+            return
         if method in ("Target.targetCreated", "Target.targetInfoChanged"):
             self._note_target(params.get("targetInfo") or {})
             return
@@ -515,10 +611,13 @@ class BrowserSession:
         if page is None:
             return
         if method == "Page.javascriptDialogOpening":
+            from config.nekoclaw_settings import BROWSER_DIALOG_TEXT_MAX_TOKENS
+
             page.dialog = Dialog(
-                kind=str(params.get("type") or "alert"),
-                message=str(params.get("message") or ""),
-                default_prompt=str(params.get("defaultPrompt") or ""),
+                kind=str(params.get("type") or "alert")[:40],
+                # Written by the page, and as long as the page likes.
+                message=bounded(str(params.get("message") or ""), BROWSER_DIALOG_TEXT_MAX_TOKENS),
+                default_prompt=bounded(str(params.get("defaultPrompt") or ""), BROWSER_DIALOG_TEXT_MAX_TOKENS),
             )
             page.dialog_event.set()
         elif method == "Page.javascriptDialogClosed":
@@ -588,6 +687,11 @@ class BrowserSession:
         attached = await connection.send("Target.attachToTarget", {"targetId": page.target_id, "flatten": True})
         page.session_id = str(attached["sessionId"])
         await connection.send("Page.enable", session_id=page.session_id)
+        if self._blocked_ports and not self._blocked_everywhere:
+            try:
+                await connection.send("Fetch.enable", {"patterns": self._block_patterns()}, session_id=page.session_id)
+            except CdpError:
+                logger.warning("a page cannot be kept from this application's own ports", exc_info=True)
         try:
             # A window nobody looks at still behaves as the focused one.
             await connection.send("Emulation.setFocusEmulationEnabled", {"enabled": True}, session_id=page.session_id)
@@ -685,10 +789,17 @@ class BrowserSession:
         dialog = page.dialog
         if dialog is None:
             return ""
-        return (
-            f"# Open dialog\n{dialog.kind}: {dialog.message}\n"
-            "Call browser_handle_dialog to handle it before continuing."
-        )
+        kind = f"{'an' if dialog.kind[:1] in 'aeiou' else 'a'} {dialog.kind}"
+        if dialog.message:
+            # Quoted on a line of its own and named as the page's: what a page
+            # says in a dialog is its text, not a word of this tool.
+            said = (
+                f"The page opened {kind} dialog. Its text, written by the page:\n"
+                f"{json.dumps(dialog.message, ensure_ascii=False)}"
+            )
+        else:
+            said = f"The page opened {kind} dialog; it has no text of its own."
+        return f"# Open dialog\n{said}\nCall browser_handle_dialog to handle it before continuing."
 
     def require_no_dialog(self, page: Page) -> None:
         if page.dialog is not None:
@@ -702,7 +813,7 @@ class BrowserSession:
         return page
 
     async def new_page(self, url: str, *, background: bool = False, timeout: float | None = None) -> Page:
-        check_url(url)
+        check_url(url, self._blocked_ports)
         connection = self._require_connection()
         if not self._can_create_tabs:
             raise BrowserError("This browser cannot open new tabs. Use browser_navigate_page on the current page instead.")
@@ -724,6 +835,8 @@ class BrowserSession:
         page = self.page_by_id(page_id)
         if len(self._pages) <= 1:
             raise BrowserError("The last open page cannot be closed.")
+        if self._user_browser and not page.own:
+            raise BrowserError(f"Page {page.id} is a tab of the user's own, not one opened for this work: it is not closed.")
         await self._require_connection().send("Target.closeTarget", {"targetId": page.target_id})
         self._forget_page(page.target_id)
 
@@ -742,12 +855,12 @@ class BrowserSession:
 
     async def navigate(self, page: Page, kind: str, url: str | None, timeout: float | None = None) -> str:
         """Go to an address, back, forward, or reload; return a sentence about what happened."""
-        limit = timeout if timeout and timeout > 0 else NAVIGATION_TIMEOUT_SECONDS
+        limit = min(timeout, MAX_TIMEOUT_SECONDS) if timeout and timeout > 0 else NAVIGATION_TIMEOUT_SECONDS
         # A request that is refused leaves the page, and the uids of it, as they are.
         if kind == "url":
             if not url:
                 raise BrowserError("A URL is required to navigate.")
-            check_url(url)
+            check_url(url, self._blocked_ports)
         elif kind not in ("back", "forward", "reload"):
             raise BrowserError("type must be one of: url, back, forward, reload")
         page.load_event.clear()
@@ -779,6 +892,9 @@ class BrowserSession:
             index = int(history.get("currentIndex") or 0) + (-1 if kind == "back" else 1)
             if not 0 <= index < len(entries):
                 raise BrowserError(f"Unable to navigate {kind}: there is no page to go {kind} to.")
+            # The history of a tab may hold what the user opened in it: a
+            # file of this computer, one of this application's own pages.
+            check_url(str(entries[index].get("url") or "about:blank"), self._blocked_ports)
             await self._send(page, "Page.navigateToHistoryEntry", {"entryId": entries[index]["id"]})
             done = f"Successfully navigated {kind}."
         else:
@@ -822,50 +938,71 @@ class BrowserSession:
             answer = await self._send(page, "Accessibility.getFullAXTree", timeout=SNAPSHOT_TIMEOUT_SECONDS)
         except CdpError as exc:
             raise BrowserError(f"The page could not be read ({exc.message}). Reload it or select another page.") from exc
-        root = build_ax_tree(answer.get("nodes") or [])
+        # The tree of a large page is tens of thousands of nodes: built and
+        # laid out in a worker thread, not on the event loop.
+        root = await asyncio.to_thread(build_ax_tree, answer.get("nodes") or [])
         if root is None:
             raise BrowserError("The page has no content to take a snapshot of yet. Wait a moment and try again.")
-        budget = [MAX_IFRAMES]
-        await self._attach_frames(page, root, verbose, depth=0, budget=budget)
-        tree = serialize_tree(
-            root, verbose=verbose, loader_id=page.frame_loaders.get(page.main_frame_id, ""), frame_id=page.main_frame_id
+        budget, unlisted = [MAX_IFRAMES], [0]
+        await self._attach_frames(page, root, verbose, depth=0, budget=budget, unlisted=unlisted)
+        tree = await asyncio.to_thread(
+            serialize_tree,
+            root,
+            verbose=verbose,
+            loader_id=page.frame_loaders.get(page.main_frame_id, ""),
+            frame_id=page.main_frame_id,
         )
         if tree is None:
             raise BrowserError("The page has nothing to list. Wait a moment and try again.")
         snapshot_id = self._next_snapshot_id
         self._next_snapshot_id += 1
-        by_uid = assign_uids(tree, snapshot_id, page.known_uids)
-        page.snapshot = Snapshot(snapshot_id=snapshot_id, root=tree, verbose=verbose, by_uid=by_uid)
+        by_uid = await asyncio.to_thread(assign_uids, tree, snapshot_id, page.known_uids)
+        page.snapshot = Snapshot(
+            snapshot_id=snapshot_id, root=tree, verbose=verbose, by_uid=by_uid, unlisted_frames=unlisted[0]
+        )
         return page.snapshot
 
-    async def _attach_frames(self, page: Page, root: Any, verbose: bool, *, depth: int, budget: list[int]) -> None:
-        """Give every embedded document of the same process its own tree, a few levels deep."""
+    async def _attach_frames(
+        self, page: Page, root: Any, verbose: bool, *, depth: int, budget: list[int], unlisted: list[int]
+    ) -> None:
+        """Give every embedded document of the same process its own tree, a few levels deep.
+
+        ``unlisted`` counts the embedded pages that can be seen on the page
+        and whose content is not read: the model is told how many there are.
+        """
+        # Not the ones nobody sees (tracking frames, of which a page may have dozens).
+        nodes = [node for node in iframe_nodes(root) if not (node.ignored or node.hidden)]
         if depth >= MAX_IFRAME_DEPTH:
+            unlisted[0] += len(nodes)
             return
-        for node in iframe_nodes(root):
+        for index, node in enumerate(nodes):
             if budget[0] <= 0:
+                unlisted[0] += len(nodes) - index
                 return
             budget[0] -= 1
             try:
                 described = await self._send(page, "DOM.describeNode", {"backendNodeId": node.backend_node_id}, timeout=5.0)
                 frame_id = str((described.get("node") or {}).get("frameId") or "")
                 if not frame_id or frame_id not in page.frame_loaders:
+                    # A frame of another site lives in another process and is not reached this way.
+                    unlisted[0] += 1
                     continue
                 answer = await self._send(
                     page, "Accessibility.getFullAXTree", {"frameId": frame_id}, timeout=SNAPSHOT_TIMEOUT_SECONDS
                 )
             except (CdpError, BrowserError):
-                # A frame of another site lives in another process and is not
-                # reached this way; frames also come and go at any time.
+                # Frames also come and go at any time.
+                unlisted[0] += 1
                 continue
-            inner = build_ax_tree(answer.get("nodes") or [])
+            inner = await asyncio.to_thread(build_ax_tree, answer.get("nodes") or [])
             if inner is None:
+                unlisted[0] += 1
                 continue
-            await self._attach_frames(page, inner, verbose, depth=depth + 1, budget=budget)
+            await self._attach_frames(page, inner, verbose, depth=depth + 1, budget=budget, unlisted=unlisted)
             loader_id = page.frame_loaders.get(frame_id)
             if loader_id is None:
                 continue  # Taken out of the page while it was read.
-            node.frame = serialize_tree(inner, verbose=verbose, loader_id=loader_id, frame_id=frame_id)
+            node.frame = await asyncio.to_thread(serialize_tree, inner, verbose=verbose, loader_id=loader_id, frame_id=frame_id)
 
     # -- elements -------------------------------------------------------------
 
@@ -993,7 +1130,8 @@ class BrowserSession:
             # have without the check.
             return True
         value = (answer.get("result") or {}).get("value")
-        return value if isinstance(value, str) and value else True
+        # Written by the page: kept short.
+        return value[:160] if isinstance(value, str) and value else True
 
     async def _point(self, page: Page, uid: str, node: SnapshotNode, object_id: str) -> tuple[float, float]:
         """Return the point of the element the mouse is sent to, scrolling the element into view first.
@@ -1091,6 +1229,14 @@ class BrowserSession:
             x, y = await self._point(page, uid, node, object_id)
             await self._click_at(page, x, y)
         elif kind == "type":
+            try:
+                await self._call(page, object_id, _FOCUS_FOR_TYPING)
+            except _DialogOpened:
+                # Opened by the page when the focus moved: nothing was typed.
+                raise BrowserError(
+                    f"A dialog opened when the element with uid {uid} was given the focus, before anything was "
+                    f"typed into it. Handle the dialog, then fill the element in again.\n{self.dialog_notice(page)}"
+                ) from None
             if value:
                 await self._send_unless_dialog(page, "Input.insertText", {"text": value})
             else:
@@ -1231,7 +1377,7 @@ class BrowserSession:
         import json
 
         self.require_no_dialog(page)
-        limit = timeout if timeout and timeout > 0 else WAIT_FOR_DEFAULT_SECONDS
+        limit = min(timeout, MAX_TIMEOUT_SECONDS) if timeout and timeout > 0 else WAIT_FOR_DEFAULT_SECONDS
         loop = asyncio.get_running_loop()
         deadline = loop.time() + limit
         expression = f"{_FIND_TEXT}({json.dumps(texts, ensure_ascii=False)})"
@@ -1292,12 +1438,51 @@ class BrowserSession:
         return dict(self._window) if self._window else None
 
 
-def check_url(url: str) -> None:
-    """Refuse addresses a page is not to be sent to: anything but http, https and the blank page."""
+def port_of(url: str) -> int | None:
+    """Return the port an address goes to, as a browser reads the address; None when it cannot be told."""
+    # A browser drops tabs and line breaks from an address and reads a
+    # backslash as a slash.
+    cleaned = url.strip().replace("\t", "").replace("\r", "").replace("\n", "").replace("\\", "/")
+    try:
+        parts = urlsplit(cleaned)
+        port = parts.port
+    except ValueError:
+        return None
+    if port is not None:
+        return port
+    return {"http": 80, "ws": 80, "https": 443, "wss": 443}.get(parts.scheme.lower())
+
+
+def check_url(url: str, blocked_ports: Collection[int] = ()) -> None:
+    """Refuse addresses a page is not to be sent to.
+
+    Anything but http, https and the blank page; and the ports of this
+    application's own services, on whatever host.
+    """
     lowered = url.strip().lower()
-    if lowered == "about:blank" or lowered.startswith(ALLOWED_URL_SCHEMES):
+    if lowered == "about:blank":
         return
-    raise BrowserError(
-        f"{url!r} cannot be opened: only http:// and https:// addresses are. Local files are read with the "
-        "file tools, not the browser."
-    )
+    if not lowered.startswith(ALLOWED_URL_SCHEMES):
+        raise BrowserError(
+            f"{url!r} cannot be opened: only http:// and https:// addresses are. Local files are read with the "
+            "file tools, not the browser."
+        )
+    if blocked_ports and port_of(url) in blocked_ports:
+        raise BrowserError(
+            f"{url!r} cannot be opened: that port belongs to this application's own services, which the browser "
+            "is kept away from."
+        )
+
+
+def bounded(text: str, max_tokens: int) -> str:
+    """Return text a page wrote, cut to a number of tokens; what was left out is counted at its end."""
+    # Cut by characters first: counting the tokens of megabytes takes seconds.
+    head = text[: max_tokens * 16]
+    if len(head.encode("utf-8", errors="replace")) <= max_tokens and len(head) == len(text):
+        return text  # A token is at least one byte: it fits without counting.
+    from utils.tokenize import truncate_to_tokens
+
+    cut = truncate_to_tokens(head, max_tokens)
+    if len(cut) >= len(text):
+        return text
+    return f"{cut}... [{len(text) - len(cut)} more characters not shown]"

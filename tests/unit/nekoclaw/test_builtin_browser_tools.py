@@ -60,7 +60,10 @@ ORDER_SNAPSHOT = [
     '  uid=1_12 button "Hidden"',
 ]
 SNAPSHOT_HEADER = "## Latest page snapshot"
-NOTICE = "# Open dialog\nalert: Draft saved\nCall browser_handle_dialog to handle it before continuing."
+NOTICE = (
+    "# Open dialog\nThe page opened an alert dialog. Its text, written by the page:\n"
+    '"Draft saved"\nCall browser_handle_dialog to handle it before continuing.'
+)
 CUT_OFF = re.compile(
     r"\[The snapshot is cut off here: (\d+) of (\d+) lines shown\. To read on, call browser_take_snapshot with offset=(\d+)\.\]"
 )
@@ -415,8 +418,8 @@ async def test_filling_a_select_whose_change_asks_first_answers_at_once_with_the
     outcome = await asyncio.wait_for(tools.call(TOOL_PREFIX + "fill", {"uid": uid_of("Product"), "value": "Steel Bolt"}), 1.0)
     assert outcome == BuiltinOutcome(
         True,
-        "Successfully filled out the element\n# Open dialog\nconfirm: Change the product?\n"
-        "Call browser_handle_dialog to handle it before continuing.",
+        "Successfully filled out the element\n# Open dialog\nThe page opened a confirm dialog. Its text, "
+        'written by the page:\n"Change the product?"\nCall browser_handle_dialog to handle it before continuing.',
     )
     assert product.value == "Steel Bolt"
     handled = await call(tools, "handle_dialog", action="accept")
@@ -897,3 +900,146 @@ async def test_closing_closes_the_browser_and_a_later_call_starts_it_again(tools
 def test_the_tools_keep_to_the_screenshot_ceiling_and_the_prefix() -> None:
     assert tools_module.SCREENSHOT_MAX_BYTES == 300 * 1024
     assert tools_module.TOOL_PREFIX == "browser_"
+
+
+# ---------------------------------------------------------------------------
+# What was done and what the page then looked like are told apart
+# ---------------------------------------------------------------------------
+
+
+async def test_an_action_that_was_carried_out_is_answered_as_done_when_the_page_cannot_be_read_after_it(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    def send(browser: Any, page: Any) -> None:
+        # The page the form leads to is so heavy that its tree cannot be had.
+        browser.refuse("Accessibility.getFullAXTree", "Timed out building the tree")
+        browser.go(page, THANKS)
+
+    world.browser.serve("http://shop.test/pay", lambda: Document("Pay", el("button", "Pay now", on_click=send)))
+    opened = await call(tools, "navigate_page", url="http://shop.test/pay")
+    fake = world.browser.page("target-1")
+    button = fake.find("Pay now")
+    outcome = await call(tools, "click", uid="1_1")
+    # A failure here would be read as "not paid", and paid a second time.
+    assert outcome.success, outcome.text
+    assert outcome.text.startswith(
+        "Successfully clicked on the element\nThe page changed to another document; its snapshot follows.\n"
+        "The page could not be read afterwards, so no snapshot is shown. What is said above was done: do not repeat it."
+    )
+    assert "Timed out building the tree" in outcome.text and button.clicks == 1
+    assert opened.success
+    # Reading the page is all the next call was asked for: that fails as itself.
+    alone = await call(tools, "take_snapshot")
+    assert not alone.success and "Timed out building the tree" in alone.text
+
+
+async def test_a_tab_that_was_opened_is_answered_as_opened_when_its_page_cannot_be_read(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.refuse("Accessibility.getFullAXTree", "Timed out building the tree")
+    outcome = await call(tools, "new_page", url=TERMS)
+    assert outcome.success, outcome.text
+    assert outcome.text.startswith(f"## Pages\n1: {ORDER}\n2: {TERMS} [selected]\nThe page could not be read afterwards")
+    assert len(world.browser.pages) == 2
+
+
+async def test_a_page_whose_text_holds_line_breaks_is_cut_by_its_entries_and_says_where_to_read_on(
+    tools: BrowserTools, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "BROWSER_SNAPSHOT_MAX_TOKENS", 60)
+    # A code block, a log, a JSON document: one piece of text with hundreds of line breaks of its own.
+    log = "\n".join(f"line {number} of the log" for number in range(300))
+    world.browser.serve("http://shop.test/log", lambda: Document("Log", el("StaticText", log), el("button", "Download")))
+    first = await call(tools, "navigate_page", url="http://shop.test/log")
+    shown = snapshot_of(first.text)
+    note = CUT_OFF.fullmatch(shown[-1])
+    assert note is not None, shown[-1]
+    # Three entries in all, however many line breaks the text holds; one is shown.
+    assert [int(group) for group in note.groups()] == [1, 3, 1]
+    assert shown[:-1] == ['uid=1_0 RootWebArea "Log"']
+    assert count_tokens(first.text) < 200
+    # The text is one line of the snapshot: its line breaks are written out.
+    rest = await call(tools, "take_snapshot", offset=1)
+    body = snapshot_of(rest.text)
+    assert body[1].startswith('  uid=1_1 "line 0 of the log\\nline 1 of the log\\nline 2') and "\n" not in body[1]
+
+
+def test_entries_that_hold_line_breaks_of_their_own_are_still_counted_as_entries() -> None:
+    lines = ["first " * 10, "a\nb\nc\nd\ne\nf " * 30, "last"]
+    text, shown = cap_lines(lines, 14)
+    # The line breaks inside the second entry are not taken for three more entries.
+    assert (text, shown) == (lines[0], 1)
+    assert cap_lines(lines, 100_000) == ("\n".join(lines), 3)
+
+
+@pytest.mark.parametrize(("asked", "seconds"), [(5000, 5.0), (120_000, 120.0), (10**9, 120.0), (0, None), (-5, None), ("60", None), (True, None)])
+def test_a_wait_is_as_long_as_asked_up_to_the_longest_allowed(asked: Any, seconds: float | None) -> None:
+    from nekoclaw.builtin.browser.tools import _seconds
+
+    assert _seconds({"timeout": asked}) == seconds
+    assert _seconds({}) is None
+
+
+async def test_the_list_of_pages_names_the_first_ones_and_the_selected_one_and_cuts_long_addresses(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    from nekoclaw.builtin.browser.tools import PAGES_LISTED
+
+    await on_the_order_form(tools)
+    for number in range(30):
+        world.browser.add_page(f"http://shop.test/item/{number}?" + "tracking=" + "x" * 3000)
+    selected = await call(tools, "select_page", pageId=25)
+    assert selected.success, selected.text
+    listed = (await call(tools, "list_pages")).text.split("\n")
+    assert listed[0] == "## Pages" and listed[1] == f"1: {ORDER}"
+    assert len(listed) == 1 + PAGES_LISTED + 1 + 1
+    assert listed[-2].startswith("25: http://shop.test/item/23?tracking=") and listed[-2].endswith("more characters not shown] [selected]")
+    assert listed[-1] == f"[{31 - PAGES_LISTED - 1} more pages are open and not listed here.]"
+    assert count_tokens("\n".join(listed)) < 900
+
+
+async def test_the_snapshot_is_given_what_the_rest_of_the_answer_leaves_of_a_results_size(
+    tools: BrowserTools, monkeypatch: Any
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    assert await tools._room_for_snapshot([]) == settings.BROWSER_SNAPSHOT_MAX_TOKENS
+    assert await tools._room_for_snapshot(["Successfully clicked on the element"]) == settings.BROWSER_SNAPSHOT_MAX_TOKENS
+    long = "word " * 2000
+    used = count_tokens(long)
+    room = await tools._room_for_snapshot([long])
+    assert room == settings.GATEWAY_RESULT_MAX_TOKENS - used - 200 < settings.BROWSER_SNAPSHOT_MAX_TOKENS
+    # Never nothing at all, and never more than a snapshot may be.
+    assert await tools._room_for_snapshot(["word " * 20000]) == 200
+    monkeypatch.setattr(settings, "BROWSER_SNAPSHOT_MAX_TOKENS", 60)
+    assert await tools._room_for_snapshot([]) == 60
+
+
+async def test_the_snapshot_says_how_many_embedded_pages_it_does_not_list(tools: BrowserTools, world: BrowserWorld) -> None:
+    world.browser.serve(
+        "http://shop.test/checkout-elsewhere",
+        lambda: Document("Checkout", el("button", "Back"), el("Iframe", "Payment"), el("Iframe", "Captcha")),
+    )
+    world.browser.serve("http://shop.test/one-frame", lambda: Document("Checkout", el("button", "Back"), el("Iframe", "Payment")))
+    outcome = await call(tools, "navigate_page", url="http://shop.test/checkout-elsewhere")
+    assert snapshot_of(outcome.text)[-1] == (
+        "[2 embedded pages (iframe) on this page are not listed: of another site, or more than are read. "
+        "What is in them cannot be read or acted on by uid.]"
+    )
+    outcome = await call(tools, "navigate_page", url="http://shop.test/one-frame")
+    assert snapshot_of(outcome.text)[-1].startswith("[1 embedded page (iframe) on this page is not listed:")
+    # A page without any says nothing of the kind.
+    assert "not listed" not in (await call(tools, "navigate_page", url=ORDER)).text
+
+
+async def test_a_call_whose_turn_comes_after_the_browser_was_switched_off_is_not_carried_out(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    outcome = await tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, refused=lambda: "browser control is switched off")
+    assert outcome == BuiltinOutcome(False, "browser control is switched off")
+    # The browser was not started for it.
+    assert world.launched == [] and world.connected == []
+    assert (await tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, refused=lambda: None)).success

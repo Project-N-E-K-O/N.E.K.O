@@ -909,3 +909,59 @@ def test_the_elements_of_an_embedded_document_keep_their_uids_while_the_outer_do
     lines, second = _with_frame(inner, known=known, snapshot_id=2)
     assert set(first) == set(second)
     assert lines[4] == '      uid=1_4 textbox "Card number"'
+
+
+def test_text_with_line_breaks_is_one_line_of_the_snapshot() -> None:
+    code = "def main():\n    return 1\r\n\u2028done"
+    lines, _tree, _by_uid = snapshot_of(
+        page(ax("textbox", "Notes", dom=2, focusable=True, value="first line\nsecond line"), ax("StaticText", code, dom=3))
+    )
+    assert lines == [
+        'uid=1_0 RootWebArea "Shop"',
+        '  uid=1_1 textbox "Notes" value="first line\\nsecond line"',
+        '  uid=1_2 "def main():\\n    return 1\\n\\ndone"',
+    ]
+    assert all("\n" not in line and "\r" not in line for line in lines)
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+def test_a_page_nested_deeper_than_python_calls_itself_is_listed_all_the_same(verbose: bool) -> None:
+    import sys
+
+    depth = sys.getrecursionlimit() * 3
+    payloads: list[dict[str, Any]] = []
+    for number in range(1, depth + 1):
+        payloads.append(
+            {
+                "nodeId": str(number),
+                "ignored": False,
+                "role": {"type": "role", "value": "generic" if 1 < number < depth else ("RootWebArea" if number == 1 else "button")},
+                "name": {"type": "computedString", "value": "Deep" if number in (1, depth) else ""},
+                "properties": [{"name": "focusable", "value": {"type": "boolean", "value": True}}] if number in (1, depth) else [],
+                "backendDOMNodeId": number,
+                "childIds": [str(number + 1)] if number < depth else [],
+            }
+        )
+    root = build_ax_tree(payloads)
+    assert root is not None
+    tree = serialize_tree(root, verbose=verbose, loader_id="L1", frame_id="F1")
+    assert tree is not None
+    by_uid = assign_uids(tree, 1, {})
+    lines = format_lines(tree, verbose=verbose)
+    if verbose:
+        assert len(lines) == depth and len(by_uid) == depth
+    else:
+        # The wrappers in between are dropped; the button at the bottom is found.
+        assert lines == ['uid=1_0 RootWebArea "Deep"', '  uid=1_1 button "Deep"']
+
+
+def test_a_list_that_names_a_node_as_its_own_ancestor_does_not_go_round_for_ever() -> None:
+    payloads = flat(page(ax("button", "Go", dom=2, focusable=True)))
+    # Malformed: the button names the root as its child.
+    payloads[1]["childIds"] = ["1"]
+    root = build_ax_tree(payloads)
+    assert root is not None
+    tree = serialize_tree(root, verbose=False, loader_id="L1", frame_id="F1")
+    assert tree is not None
+    assign_uids(tree, 1, {})
+    assert format_lines(tree, verbose=False) == ['uid=1_0 RootWebArea "Shop"', '  uid=1_1 button "Go"']

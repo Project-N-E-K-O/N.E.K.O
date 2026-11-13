@@ -81,8 +81,44 @@ def _on_browser_window(window: Optional[Dict[str, Any]]) -> None:
         _send_activity(BUILTIN_GROUP_BROWSER, "started", commission_id)
 
 
+def _own_ports() -> set[int]:
+    """Return the ports this application's own services listen on, on this computer.
+
+    The browser the browser tools drive is kept away from them: none is of
+    any use to a task agent, and some answer a request from this computer
+    without asking who sent it.
+    """
+    from config import (
+        COMMENTER_SERVER_PORT,
+        MAIN_SERVER_PORT,
+        MEMORY_SERVER_PORT,
+        MONITOR_SERVER_PORT,
+        TOOL_SERVER_PORT,
+        USER_PLUGIN_SERVER_PORT,
+    )
+
+    ports = {
+        MAIN_SERVER_PORT,
+        MEMORY_SERVER_PORT,
+        MONITOR_SERVER_PORT,
+        COMMENTER_SERVER_PORT,
+        TOOL_SERVER_PORT,
+        USER_PLUGIN_SERVER_PORT,
+    }
+    try:
+        from nekoclaw.host import mount
+
+        # The capability gateway picks its port when it starts to listen.
+        port = getattr(getattr(mount.peek_host(), "gateway", None), "port", None)
+        if isinstance(port, int):
+            ports.add(port)
+    except Exception as exc:
+        logger.debug("[Builtin] the gateway's port is not known: %s", exc)
+    return ports
+
+
 # One per process; the browser it starts and the keys it holds are this process's.
-provider = BuiltinToolProvider(state=_state, on_browser_window=_on_browser_window)
+provider = BuiltinToolProvider(state=_state, on_browser_window=_on_browser_window, own_ports=_own_ports)
 
 
 def group_in_use(group: Optional[str] = None) -> bool:

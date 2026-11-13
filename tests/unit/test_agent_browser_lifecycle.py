@@ -886,3 +886,71 @@ async def test_shutdown_finishes_when_the_browser_will_not_close(modules, proces
 
     assert browser.closes >= 1
     assert process[-1] == "status"
+
+
+# ---------------------------------------------------------------------------
+# Closing: the search for a browser is not done on the event loop
+# ---------------------------------------------------------------------------
+
+
+async def test_after_a_close_the_search_for_a_browser_runs_in_a_worker_thread(modules, search, browser, monkeypatch):
+    import threading
+
+    loop_thread = threading.current_thread()
+    searched_in: list[threading.Thread] = []
+    real = capabilities._browser_dependency_status
+
+    def status() -> tuple[bool, str]:
+        searched_in.append(threading.current_thread())
+        return real()
+
+    monkeypatch.setattr(capabilities, "_browser_dependency_status", status)
+    await capabilities._close_browser()
+    # It reads the settings file and looks at files (the registry, on Windows).
+    assert len(searched_in) == 1 and searched_in[0] is not loop_thread
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_a_switch_set_anew_while_the_search_runs_keeps_its_word(modules, search, browser, monkeypatch):
+    import threading
+
+    searching, go_on = threading.Event(), threading.Event()
+
+    def slow_status() -> tuple[bool, str]:
+        searching.set()
+        assert go_on.wait(5.0)
+        return False, "AGENT_BROWSER_NOT_FOUND"
+
+    monkeypatch.setattr(capabilities, "_browser_dependency_status", slow_status)
+    seq = modules.browser_use_lifecycle_seq
+    closing = asyncio.ensure_future(capabilities._close_browser(expected_lifecycle_seq=seq))
+    assert await asyncio.to_thread(searching.wait, 5.0)
+    # The user switches the browser on again while the files are looked at.
+    modules.browser_use_lifecycle_seq = seq + 1
+    capabilities._set_capability("browser_use", True, "")
+    go_on.set()
+    await asyncio.wait_for(closing, 5.0)
+    assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+def test_the_ports_the_browser_is_kept_from_are_those_of_every_service_of_this_application(monkeypatch):
+    import config
+    from nekoclaw.host import mount
+
+    monkeypatch.setattr(mount, "peek_host", lambda: None)
+    services = {
+        config.MAIN_SERVER_PORT,
+        config.MEMORY_SERVER_PORT,
+        config.MONITOR_SERVER_PORT,
+        config.COMMENTER_SERVER_PORT,
+        config.TOOL_SERVER_PORT,
+        config.USER_PLUGIN_SERVER_PORT,
+    }
+    assert nekoclaw_builtins._own_ports() == services
+    # The capability gateway picks its port when it starts to listen.
+    monkeypatch.setattr(mount, "peek_host", lambda: SimpleNamespace(gateway=SimpleNamespace(port=51234)))
+    assert nekoclaw_builtins._own_ports() == services | {51234}
+    monkeypatch.setattr(mount, "peek_host", lambda: SimpleNamespace(gateway=SimpleNamespace(port=None)))
+    assert nekoclaw_builtins._own_ports() == services
+    # They are what the provider of this process hands to the browser it starts.
+    assert nekoclaw_builtins.provider._own_ports is nekoclaw_builtins._own_ports

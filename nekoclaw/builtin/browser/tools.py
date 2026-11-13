@@ -29,6 +29,10 @@ turned out to be another document (the old uids are of no use then).
 A snapshot has an upper size (``BROWSER_SNAPSHOT_MAX_TOKENS``). A longer one
 is cut at the end of a line and says so, with the offset to read on from.
 The screenshot tool hands its picture back as a picture, never as text.
+
+What was done and what the page then looked like are told apart: an action
+that was carried out is answered as done even when the page could not be
+read afterwards, so that it is not carried out a second time.
 """
 
 from __future__ import annotations
@@ -40,13 +44,15 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from nekoclaw.builtin.browser.cdp import CdpClosed, CdpError, CdpTimeout
-from nekoclaw.builtin.browser.session import BrowserError, BrowserSession, Page
+from nekoclaw.builtin.browser.session import MAX_TIMEOUT_SECONDS, BrowserError, BrowserSession, Page, bounded
 from nekoclaw.builtin.browser.snapshot import Snapshot, format_lines
 from nekoclaw.host.capabilities import BuiltinImage, BuiltinOutcome
 
 logger = logging.getLogger(__name__)
 
 TOOL_PREFIX = "browser_"
+# How many open pages the list of pages names.
+PAGES_LISTED = 12
 # Byte ceiling of one screenshot handed to a model.
 SCREENSHOT_MAX_BYTES = 300 * 1024
 
@@ -59,7 +65,14 @@ def cap_lines(lines: list[str], max_tokens: int) -> tuple[str, int]:
     cut = truncate_to_tokens(text, max_tokens)
     if len(cut) >= len(text):
         return text, len(lines)
-    shown = cut.count("\n")
+    # The whole entries that fit, by their lengths. Not by the line breaks in
+    # what was cut: an entry may hold line breaks of its own.
+    shown, used = 0, 0
+    for line in lines:
+        used += len(line) + (1 if shown else 0)
+        if used > len(cut):
+            break
+        shown += 1
     if shown:
         return "\n".join(lines[:shown]), shown
     # One line longer than everything allowed (a page that is one block of
@@ -73,7 +86,8 @@ def _seconds(arguments: dict[str, Any]) -> float | None:
     value = arguments.get("timeout")
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
-    return float(value) / 1000.0
+    # However long the model asks for: the calls behind this one wait with it.
+    return min(float(value) / 1000.0, MAX_TIMEOUT_SECONDS)
 
 
 def _text(arguments: dict[str, Any], name: str) -> str:
@@ -111,12 +125,21 @@ class BrowserTools:
     def session(self) -> BrowserSession:
         return self._session
 
-    async def call(self, tool_name: str, arguments: dict[str, Any]) -> BuiltinOutcome:
-        """Carry out one call and return its answer; failures come back as text for the model."""
+    async def call(
+        self, tool_name: str, arguments: dict[str, Any], *, refused: Callable[[], str | None] | None = None
+    ) -> BuiltinOutcome:
+        """Carry out one call and return its answer; failures come back as text for the model.
+
+        ``refused`` is asked once the call's turn has come and returns why
+        it is not to be carried out after all, or None.
+        """
         handler = self._handlers.get(tool_name[len(TOOL_PREFIX) :] if tool_name.startswith(TOOL_PREFIX) else "")
         if handler is None:
             return BuiltinOutcome(False, f"unknown tool {tool_name}")
         async with self._lock:
+            why = refused() if refused is not None else None
+            if why:
+                return BuiltinOutcome(False, why)
             try:
                 await self._session.start()
                 outcome = await handler(arguments)
@@ -146,24 +169,45 @@ class BrowserTools:
     # -- building answers --------------------------------------------------
 
     def _pages_section(self) -> str:
+        from config.nekoclaw_settings import BROWSER_PAGE_URL_MAX_TOKENS
+
         selected = self._session.current()
+        pages = self._session.pages()
+        # The first ones and the selected one; a browser the user is using may have dozens open.
+        shown = [page for index, page in enumerate(pages) if index < PAGES_LISTED or page is selected]
         lines = ["## Pages"]
-        for page in self._session.pages():
+        for page in shown:
             mark = " [selected]" if page is selected else ""
-            lines.append(f"{page.id}: {page.url or 'about:blank'}{mark}")
+            # An address is as long as a page makes it.
+            url = bounded((page.url or "about:blank").replace("\n", " ").replace("\r", " "), BROWSER_PAGE_URL_MAX_TOKENS)
+            lines.append(f"{page.id}: {url}{mark}")
+        if len(shown) < len(pages):
+            lines.append(f"[{len(pages) - len(shown)} more pages are open and not listed here.]")
         return "\n".join(lines)
 
-    async def _snapshot_section(self, snapshot: Snapshot, offset: int = 0) -> str:
+    async def _snapshot_section(self, snapshot: Snapshot, offset: int = 0, max_tokens: int | None = None) -> str:
         from config.nekoclaw_settings import BROWSER_SNAPSHOT_MAX_TOKENS
 
-        lines = format_lines(snapshot.root, verbose=snapshot.verbose)
+        max_tokens = BROWSER_SNAPSHOT_MAX_TOKENS if max_tokens is None else max_tokens
+        # Laid out in a worker thread: a large page is tens of thousands of lines.
+        lines = await asyncio.to_thread(format_lines, snapshot.root, verbose=snapshot.verbose)
         total = len(lines)
         offset = max(0, offset)
         parts = ["## Latest page snapshot"]
+        unlisted = ""
+        if snapshot.unlisted_frames:
+            count = snapshot.unlisted_frames
+            unlisted = (
+                f"[{count} embedded page{'s' if count != 1 else ''} (iframe) on this page "
+                f"{'are' if count != 1 else 'is'} not listed: of another site, or more than are read. "
+                "What is in them cannot be read or acted on by uid.]"
+            )
         if offset >= total:
             parts.append(f"[The snapshot has {total} lines; there is nothing after line {total}.]")
+            if unlisted:
+                parts.append(unlisted)
             return "\n".join(parts)
-        text, shown = await asyncio.to_thread(cap_lines, lines[offset:], BROWSER_SNAPSHOT_MAX_TOKENS)
+        text, shown = await asyncio.to_thread(cap_lines, lines[offset:], max_tokens)
         if offset:
             parts.append(f"[Lines {offset + 1} to {offset + shown} of {total}.]")
         parts.append(text)
@@ -173,6 +217,8 @@ class BrowserTools:
                 f"[The snapshot is cut off here: {end} of {total} lines shown. To read on, call "
                 f"browser_take_snapshot with offset={end}.]"
             )
+        if unlisted:
+            parts.append(unlisted)
         return "\n".join(parts)
 
     async def _answer(
@@ -185,7 +231,10 @@ class BrowserTools:
         offset: int = 0,
         verbose: bool = False,
         images: tuple[BuiltinImage, ...] = (),
+        acted: bool | None = None,
     ) -> BuiltinOutcome:
+        """Put an answer together. ``acted``: something was done to the page (by default, when ``lines`` say so)."""
+        acted = bool(lines) if acted is None else acted
         parts = list(lines)
         if page is not None and page.dialog is not None:
             parts.append(self._session.dialog_notice(page))
@@ -193,9 +242,37 @@ class BrowserTools:
         if pages:
             parts.append(self._pages_section())
         if snapshot and page is not None:
-            taken = await self._session.take_snapshot(page, verbose=verbose)
-            parts.append(await self._snapshot_section(taken, offset))
+            try:
+                taken = await self._session.take_snapshot(page, verbose=verbose)
+            except (BrowserError, CdpError, CdpTimeout) as exc:
+                if not acted:
+                    raise
+                # What was done is done. Answered as a failure, it would be
+                # done again (a form sent twice); the page is read separately.
+                reason = str(exc) if isinstance(exc, BrowserError) else f"{type(exc).__name__}: {exc}"
+                parts.append(
+                    "The page could not be read afterwards, so no snapshot is shown. What is said above was done: "
+                    f"do not repeat it. Call browser_take_snapshot to read the page. ({reason})"
+                )
+            else:
+                parts.append(await self._snapshot_section(taken, offset, await self._room_for_snapshot(parts)))
         return BuiltinOutcome(True, "\n".join(part for part in parts if part), images)
+
+    @staticmethod
+    async def _room_for_snapshot(parts: list[str]) -> int:
+        """Return how many tokens the snapshot may take, after what the answer already says.
+
+        The gateway cuts a whole result at ``GATEWAY_RESULT_MAX_TOKENS``,
+        from its end: a snapshot that ran past it would lose its last lines
+        and the note about where to read on.
+        """
+        from config.nekoclaw_settings import BROWSER_SNAPSHOT_MAX_TOKENS, GATEWAY_RESULT_MAX_TOKENS
+        from utils.tokenize import count_tokens
+
+        said = "\n".join(part for part in parts if part)
+        used = await asyncio.to_thread(count_tokens, said) if said else 0
+        # The notes that come with a snapshot (where it was cut, what is not listed) take about this much.
+        return min(BROWSER_SNAPSHOT_MAX_TOKENS, max(200, GATEWAY_RESULT_MAX_TOKENS - used - 200))
 
     async def _after(self, page: Page, done: str, arguments: dict[str, Any], navigations: int, pages: int) -> BuiltinOutcome:
         """Answer an action: with a snapshot when asked for one, or when the page became another document."""
@@ -319,7 +396,8 @@ class BrowserTools:
         page = await self._session.new_page(
             _text(arguments, "url"), background=arguments.get("background") is True, timeout=_seconds(arguments)
         )
-        return await self._answer(page, [], snapshot=True, pages=True)
+        # The tab is open whether or not its page can be read.
+        return await self._answer(page, [], snapshot=True, pages=True, acted=True)
 
     async def _close_page(self, arguments: dict[str, Any]) -> BuiltinOutcome:
         await self._session.close_page(arguments.get("pageId"))

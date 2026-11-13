@@ -1136,6 +1136,49 @@ def test_no_action_is_carried_out_while_held_input_cannot_be_let_go(rig: Rig) ->
     assert not EXECUTION_LOCK.locked()
 
 
+def test_releasing_by_hand_waits_for_a_call_that_has_the_keyboard_and_does_nothing_while_it_is_at_it(
+    rig: Rig, monkeypatch: Any
+) -> None:
+    # A call that was stopped and whose worker is still at it (stuck taking
+    # its screenshot) holds a key down. Letting go from another thread now
+    # would release a key that call is holding, and both would switch the
+    # fail-safe off and on again, which can leave it off for good.
+    monkeypatch.setattr(desktop, "RELEASE_WAIT_SECONDS", 0.01)
+    rig.desktop._held_keys.append("shift")
+    assert EXECUTION_LOCK.acquire(blocking=False)
+    try:
+        assert rig.desktop.release_held() is False
+        assert rig.log() == [] and rig.desktop._held_keys == ["shift"]
+        assert rig.backend.FAILSAFE is True
+    finally:
+        EXECUTION_LOCK.release()
+    # Once the call has let go of the keyboard, the key is released.
+    assert rig.desktop.release_held() is True
+    assert rig.inputs() == [("keyUp", ("shift",), {"_pause": False})]
+    assert rig.backend.FAILSAFE is True and not EXECUTION_LOCK.locked()
+
+
+def test_a_call_lets_go_of_what_it_held_without_waiting_for_itself(rig: Rig, monkeypatch: Any) -> None:
+    # The call has the keyboard while it lets go at its end: it must not wait for itself to give it up.
+    monkeypatch.setattr(desktop, "RELEASE_WAIT_SECONDS", 3.0)
+    tries: list[int] = []
+
+    def stuck_the_first_time(*_args: Any, **_kwargs: Any) -> None:
+        tries.append(1)
+        if len(tries) == 1:
+            raise RuntimeError("the key is stuck")
+
+    rig.desktop._held_keys.append("shift")
+    rig.backend.hooks["keyUp"] = stuck_the_first_time
+    started = time.monotonic()
+    with pytest.raises(DesktopActionError, match="left held by an earlier call could not be released"):
+        rig.act("click", {"x": 500, "y": 500})
+    assert time.monotonic() - started < 1.0
+    # Tried once more as the call ended, and let go of then.
+    assert len(tries) == 2 and rig.desktop._held_keys == []
+    assert not EXECUTION_LOCK.locked()
+
+
 def test_releasing_by_hand_lets_go_of_keys_and_buttons(rig: Rig) -> None:
     # Nothing held: nothing is sent.
     assert rig.desktop.release_held() is True

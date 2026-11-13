@@ -102,6 +102,32 @@ POPUP = """<!doctype html><html><head><title>Sign in</title></head><body>
 <button type="button" onclick="window.close()">Allow</button>
 </body></html>"""
 
+# A code block of many lines, a date nobody may change, and a page of another
+# site embedded in this one (``localhost`` and ``127.0.0.1`` are two sites).
+REPORT = """<!doctype html><html><head><title>Report</title></head><body>
+<pre>__LOG__</pre>
+<label>Delivery date <input type="date" name="delivery" value="2026-11-20" readonly></label>
+<label>Note <input name="note" onfocus="alert('Sign in to leave a note')"></label>
+<button type="button">Download</button>
+<iframe src="__OTHER_SITE__/card" title="Card of another site"></iframe>
+</body></html>"""
+
+# Reaches for a port of this application in every way a page can.
+REACHING = """<!doctype html><html><head><title>Reaching</title></head><body>
+<p id="out">waiting</p>
+<a href="__OWN__/by-link">Settings of the application</a>
+<script>
+fetch('__OWN__/by-fetch', {mode: 'no-cors'}).then(function () { return 'reached'; }, function () { return 'failed'; })
+  .then(function (how) { document.getElementById('out').textContent = 'fetch ' + how; });
+new Image().src = '__OWN__/by-image';
+</script>
+<iframe src="__OTHER_SITE__/reaching-frame" title="Frame of another site"></iframe>
+</body></html>"""
+
+REACHING_FRAME = """<!doctype html><html><head><title>Frame</title></head><body>
+<script>fetch('__OWN__/by-frame-of-another-site', {mode: 'no-cors'}).catch(function () {});</script>
+</body></html>"""
+
 DRAFT = """<!doctype html><html><head><title>Draft</title></head><body>
 <label>Message <input name="message"></label>
 <script>
@@ -125,6 +151,14 @@ class _Site(http.server.BaseHTTPRequestHandler):
             body = POPUP
         elif url.path == "/draft":
             body = DRAFT
+        elif url.path in ("/report", "/reaching", "/reaching-frame"):
+            port = self.server.server_address[1]
+            body = {"/report": REPORT, "/reaching": REACHING, "/reaching-frame": REACHING_FRAME}[url.path]
+            body = (
+                body.replace("__LOG__", "\n".join(f"line {number} of the log" for number in range(400)))
+                .replace("__OTHER_SITE__", f"http://localhost:{port}")
+                .replace("__OWN__", f"http://127.0.0.1:{getattr(self.server, 'own_port', 9)}")
+            )
         elif url.path == "/submit":
             query = urllib.parse.parse_qs(url.query)
             name = (query.get("name") or [""])[0]
@@ -259,7 +293,7 @@ async def test_a_dialog_is_reported_and_handled_and_text_that_comes_later_is_wai
     clicked = await call(tools, "click", uid=uid_of(opened.text, "button", "Save draft"))
     # The page is blocked by its dialog; the call came back all the same.
     assert time.monotonic() - started < 15.0
-    assert clicked.success and "# Open dialog\nalert: Draft saved\n" in clicked.text
+    assert clicked.success and '# Open dialog\nThe page opened an alert dialog. Its text, written by the page:\n"Draft saved"\n' in clicked.text
     blocked = await call(tools, "take_screenshot")
     assert not blocked.success and "browser_handle_dialog" in blocked.text
     handled = await call(tools, "handle_dialog", action="accept")
@@ -336,7 +370,10 @@ async def test_a_select_that_asks_before_it_changes_and_a_window_that_closes_its
     # Not after the thirty seconds a command to the page is given.
     assert time.monotonic() - started < 10.0
     assert filled.success, filled.text
-    assert filled.text.startswith("Successfully filled out the element\n# Open dialog\nconfirm: Change the product?\n")
+    assert filled.text.startswith(
+        "Successfully filled out the element\n# Open dialog\nThe page opened a confirm dialog. "
+        'Its text, written by the page:\n"Change the product?"\n'
+    )
     assert (await call(tools, "handle_dialog", action="accept")).success
     shown = await call(tools, "take_snapshot")
     assert re.search(r'combobox "Product".*value="Steel Bolt"', shown.text)
@@ -365,7 +402,125 @@ async def test_a_page_that_asks_before_it_is_left_answers_at_once(tools: Browser
     leaving = await call(tools, "navigate_page", url=site + "/terms")
     assert time.monotonic() - started < 10.0
     assert leaving.success, leaving.text
-    assert leaving.text.startswith(f"The page asks for confirmation before it is left; {site}/terms is not loaded yet.\n# Open dialog\nbeforeunload:")
+    assert leaving.text.startswith(
+        f"The page asks for confirmation before it is left; {site}/terms is not loaded yet.\n"
+        "# Open dialog\nThe page opened a beforeunload dialog"
+    )
     assert (await call(tools, "handle_dialog", action="accept")).success
     found = await call(tools, "wait_for", text=["Returns within 30 days."], timeout=10000)
     assert found.success and 'heading "Terms of sale"' in found.text
+
+
+class _Own(http.server.BaseHTTPRequestHandler):
+    """Stands in for one of this application's own services: records who reached it."""
+
+    def do_GET(self) -> None:  # noqa: N802 - the name the base class calls
+        self.server.reached.append(self.path)  # type: ignore[attr-defined]
+        body = b"<!doctype html><title>Own</title><h1>Settings of the application</h1>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_POST = do_GET  # noqa: N815
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - the signature of the base class
+        return None
+
+
+async def test_a_code_block_a_locked_date_a_field_that_asks_on_focus_and_a_frame_of_another_site(
+    tools: BrowserTools, site: str, monkeypatch: Any
+) -> None:
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "BROWSER_SNAPSHOT_MAX_TOKENS", 300)
+    opened = await call(tools, "navigate_page", url=site + "/report")
+    assert opened.success, opened.text
+    # The code block is hundreds of lines of text in one element: the snapshot
+    # is cut all the same, and says where to read on.
+    assert re.search(r"\[The snapshot is cut off here: \d+ of \d+ lines shown\. To read on, call browser_take_snapshot with offset=\d+\.\]", opened.text)
+    # The page of the other site is not in the snapshot, and the snapshot says so.
+    assert "[1 embedded page (iframe) on this page is not listed:" in opened.text
+    assert "Card number" not in opened.text
+
+    monkeypatch.setattr(settings, "BROWSER_SNAPSHOT_MAX_TOKENS", 3000)
+    whole = await call(tools, "take_snapshot")
+    assert "line 0 of the log\\nline 1 of the log" in whole.text or "line 399 of the log" in whole.text
+    date = uid_of(whole.text, "Date", "Delivery date") if 'Date "Delivery date"' in whole.text else None
+    if date is None:
+        found = re.search(r'uid=(\S+) \S+ "Delivery date"', whole.text)
+        assert found is not None, whole.text
+        date = found.group(1)
+    locked = await call(tools, "fill", uid=date, value="2027-01-01")
+    assert not locked.success and "the element is read-only" in locked.text
+    session = tools.session
+    value = await session._send(
+        session.selected(), "Runtime.evaluate", {"expression": "document.querySelector('[name=delivery]').value", "returnByValue": True}
+    )
+    assert value["result"]["value"] == "2026-11-20"
+
+    # A field that opens a dialog when it gets the focus: nothing was typed, and that is what is said.
+    note = uid_of(whole.text, "textbox", "Note")
+    started = time.monotonic()
+    asked = await call(tools, "fill", uid=note, value="leave at the door")
+    assert time.monotonic() - started < 10.0
+    assert not asked.success
+    assert f"A dialog opened when the element with uid {note} was given the focus, before anything was typed into it." in asked.text
+    assert '"Sign in to leave a note"' in asked.text
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    typed = await session._send(
+        session.selected(), "Runtime.evaluate", {"expression": "document.querySelector('[name=note]').value", "returnByValue": True}
+    )
+    assert typed["result"]["value"] == ""
+
+
+async def test_the_browser_is_kept_from_the_ports_of_this_application(tmp_path: Path) -> None:
+    own = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Own)
+    own.reached = []  # type: ignore[attr-defined]
+    served = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Site)
+    served.own_port = own.server_address[1]  # type: ignore[attr-defined]
+    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (own, served)]
+    for thread in threads:
+        thread.start()
+    own_url, site = f"http://127.0.0.1:{own.server_address[1]}", f"http://127.0.0.1:{served.server_address[1]}"
+    store = BrowserSettingsStore(tmp_path / "nekoclaw")
+    store.save(BrowserSettings(headless=True))
+    made = BrowserTools(BrowserSession(settings=store, own_ports=lambda: {own.server_address[1]}))
+    profile = store.profile_dir()
+    try:
+        # The task agent cannot send a page there.
+        direct = await call(made, "navigate_page", url=own_url + "/config")
+        assert not direct.success and "that port belongs to this application's own services" in direct.text
+        other_name = await call(made, "new_page", url=f"http://localhost:{own.server_address[1]}/config")
+        assert not other_name.success and "this application's own services" in other_name.text
+
+        # A page cannot reach it either: by a request of its own, by a picture,
+        # from a frame of another site, or by a link that is clicked.
+        opened = await call(made, "navigate_page", url=site + "/reaching")
+        assert opened.success, opened.text
+        found = await call(made, "wait_for", text=["fetch failed", "fetch reached"], timeout=15000)
+        assert found.success and "fetch failed" in found.text, found.text
+        await asyncio.sleep(1.0)
+        clicked = await call(made, "click", uid=uid_of(found.text, "link", "Settings of the application"), includeSnapshot=True)
+        # The click was made; where it led was failed by the browser, not loaded.
+        assert clicked.success, clicked.text
+        assert "<h1>Settings of the application</h1>" not in clicked.text and 'heading "Settings of the application"' not in clicked.text
+        await asyncio.sleep(1.0)
+        assert own.reached == [], own.reached
+        # A tab that shows one of its pages is not among the pages listed.
+        listed = await call(made, "list_pages")
+        assert own_url not in listed.text
+    finally:
+        try:
+            await made.aclose()
+            deadline = time.monotonic() + 15.0
+            while not await asyncio.to_thread(_browser_gone, profile) and time.monotonic() < deadline:
+                await asyncio.sleep(0.2)
+        finally:
+            await asyncio.to_thread(launcher.kill_tree, await asyncio.to_thread(launcher.browser_process_on, profile))
+            for server in (own, served):
+                server.shutdown()
+                server.server_close()
+            for thread in threads:
+                thread.join(5)

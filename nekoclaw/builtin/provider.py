@@ -31,7 +31,7 @@ import asyncio
 import base64
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from nekoclaw.host.capabilities import (
@@ -71,8 +71,12 @@ class BuiltinToolProvider:
         desktop: Any = None,
         browser: Any = None,
         on_browser_window: WindowListener | None = None,
+        own_ports: Callable[[], Iterable[int]] | None = None,
     ) -> None:
         self._state = state
+        # Returns the ports of this application's own services; the browser
+        # is kept from reaching them (see ``BrowserSession``).
+        self._own_ports = own_ports
         # Told when the window of the browser being driven is first known, or
         # has moved: the browser is only started by the first call, after the
         # commission began to occupy it.
@@ -138,9 +142,10 @@ class BuiltinToolProvider:
 
     def browser(self) -> Any:
         if self._browser is None:
+            from nekoclaw.builtin.browser.session import BrowserSession
             from nekoclaw.builtin.browser.tools import BrowserTools
 
-            self._browser = BrowserTools()
+            self._browser = BrowserTools(BrowserSession(own_ports=self._own_ports))
         return self._browser
 
     # -- calls --------------------------------------------------------------
@@ -207,9 +212,15 @@ class BuiltinToolProvider:
         return BuiltinOutcome(True, result.text, images)
 
     async def _run_browser(self, tool_name: str, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+        def still_on() -> str | None:
+            # Asked when the call's turn has come: the browser may have been
+            # switched off while it waited, and must not be started again.
+            ready, reason = self._state(BUILTIN_GROUP_BROWSER)
+            return None if ready else f"browser control is {reason or 'switched off'}"
+
         self._running[BUILTIN_GROUP_BROWSER] = commission_id
         try:
-            outcome = await self.browser().call(tool_name, arguments)
+            outcome = await self.browser().call(tool_name, arguments, refused=still_on)
         finally:
             if self._running.get(BUILTIN_GROUP_BROWSER) == commission_id:
                 del self._running[BUILTIN_GROUP_BROWSER]

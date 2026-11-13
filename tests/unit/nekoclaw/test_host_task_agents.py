@@ -2766,12 +2766,13 @@ async def test_the_spec_and_the_gateway_token_agree_on_pictures_and_screenshots_
     assert grant.supports_images is sees_pictures
     assert (spec.gateway.url, spec.gateway.token) == ("http://127.0.0.1:1/mcp", grant.token)
     # Every tool that hands screenshots back and can be called now is kept
-    # that many of, counted by the group it belongs to. A tool without
-    # pictures has no rule, nor has one that is switched off. The same
-    # tools called by name through the gateway's call tool hand their
-    # screenshots back as results of that tool: limited too, on its own.
+    # that many of. A tool without pictures has no rule, nor has one that is
+    # switched off. The same tools called by name through the gateway's call
+    # tool hand their screenshots back as results of that tool: it has the
+    # rule too. All of them are counted together: that many screenshots stay
+    # in the context, whichever tools they came from.
     assert spec.image_retention == {"computer": 5, "browser_take_screenshot": 5, "capability_call": 5}
-    assert spec.image_pools == {"computer": "keyboard_mouse", "browser_take_screenshot": "browser"}
+    assert set(spec.image_pools) == set(spec.image_retention) and len(set(spec.image_pools.values())) == 1
 
 
 def test_screenshots_fetched_through_the_call_tool_do_not_pile_up_in_the_context():
@@ -2782,8 +2783,10 @@ def test_screenshots_fetched_through_the_call_tool_do_not_pile_up_in_the_context
 
     screen = SimpleNamespace(tool_name="computer", needs_images=True, group="keyboard_mouse")
     plain = SimpleNamespace(tool_name="weather", needs_images=False, group=None)
-    retention, pools = TaskAgentManager._image_retention([screen, plain])
-    assert retention[CALL_TOOL] == retention["computer"] and CALL_TOOL not in pools
+    page = SimpleNamespace(tool_name="browser_take_screenshot", needs_images=True, group="browser")
+    retention, pools = TaskAgentManager._image_retention([screen, page, plain])
+    kept_at_most = retention[CALL_TOOL]
+    assert retention == {"computer": kept_at_most, "browser_take_screenshot": kept_at_most, CALL_TOOL: kept_at_most}
 
     def shot(tool: str, number: int) -> Row:
         message = ToolResultMessage(
@@ -2793,12 +2796,15 @@ def test_screenshots_fetched_through_the_call_tool_do_not_pile_up_in_the_context
         )
         return Row(f"entry-{number}", "message", message)
 
-    # The model takes its screenshots through the call tool instead of calling ``computer``.
-    rows = [shot(CALL_TOOL, number) for number in range(retention[CALL_TOOL] + 2)] + [shot("computer", 99)]
+    # Screenshots of the desktop, of a page, and some taken through the call
+    # tool instead of calling the tools by their names: the newest stay,
+    # that many in all. (What one may weigh is set for that many.)
+    names = [CALL_TOOL, "computer", "browser_take_screenshot"]
+    rows = [shot(names[number % 3], number) for number in range(kept_at_most * 3 + 1)]
     kept = retain_recent_images(rows, retention, pools)
     assert kept is not None
     with_picture = [row.entry_id for row in kept if any(isinstance(block, ImageContent) for block in row.message.content)]
-    assert with_picture == [f"entry-{number}" for number in range(2, retention[CALL_TOOL] + 2)] + ["entry-99"]
+    assert with_picture == [f"entry-{number}" for number in range(kept_at_most * 2 + 1, kept_at_most * 3 + 1)]
 
     # With no tool that hands pictures back there is nothing to limit.
     assert TaskAgentManager._image_retention([plain]) == ({}, {})
@@ -2823,6 +2829,34 @@ async def test_a_model_found_to_take_no_pictures_is_remembered_for_the_task_agen
     ]
     await _started(host, runtimes, "water the plants")
     assert [spec.model.supports_images for spec in runtime.specs] == [True, False]
+
+
+async def test_a_model_found_to_take_no_pictures_loses_the_picture_tools_in_the_session_that_found_it_out(
+    hosts, tmp_path
+):
+    host, runtimes = _recording_host(hosts, tmp_path, builtins=_ScreenTools())
+
+    async def no_listener() -> str:
+        return "http://127.0.0.1:1/mcp"
+
+    host.gateway.start = no_listener
+    commission, runtime = await _started(host, runtimes)
+    grant = host.gateway._by_commission[commission.id]
+    assert grant.supports_images is True
+    listed = [tool["name"] for tool in await host.gateway.tool_definitions(grant)]
+    assert "computer" in listed
+
+    runtime.say(commission.id, "model_capability", supports_images=False)
+    await host.task_agents.settle()
+
+    # Its screenshots no longer reach the model: it would go on clicking a screen it cannot see.
+    assert grant.supports_images is False
+    assert "computer" not in [tool["name"] for tool in await host.gateway.tool_definitions(grant)]
+    refused = await host.gateway.call_tool(grant, "computer", {"action": "click", "x": 1, "y": 1})
+    assert refused["isError"] is True
+    assert refused["content"][0]["text"].startswith("computer works from pictures, and the model in use does not take pictures")
+    # A commission that is not under way has no token to change.
+    host.gateway.images_refused("no-such-commission")
 
 
 async def test_what_is_remembered_is_the_model_the_session_was_started_with(hosts, tmp_path):

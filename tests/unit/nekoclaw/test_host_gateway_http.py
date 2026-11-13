@@ -114,6 +114,8 @@ async def test_listener_starts_on_first_use_on_the_loopback_address(server, host
 
     assert url.startswith("http://127.0.0.1:") and url.endswith("/mcp")
     assert await host.gateway.start() == url
+    # The port it picked, for whoever has to know it (the browser is kept away from it).
+    assert host.gateway.port == int(url.split(":")[2].split("/")[0])
     await host.gateway.stop()
     assert not host.gateway.started
     with pytest.raises(httpx.HTTPError):
@@ -239,7 +241,7 @@ async def test_runtime_client_gets_the_pictures_of_a_builtin_tool_only_if_its_mo
     else:
         assert names == ["browser_take_snapshot"]
         result = await client.call("computer", {"action": "click"})
-        assert result.is_error and "no capability named computer" in result.text
+        assert result.is_error and result.text.startswith("computer works from pictures")
         assert result.images == ()
 
 

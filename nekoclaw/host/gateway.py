@@ -236,6 +236,16 @@ class CapabilityGateway:
         self._by_commission[commission_id] = grant
         return grant.token
 
+    def images_refused(self, commission_id: str) -> None:
+        """The model of a commission's task agent turned out not to take pictures.
+
+        The tools that work from pictures are no longer offered to it nor
+        carried out for it: it would go on clicking a screen it cannot see.
+        """
+        grant = self._by_commission.get(commission_id)
+        if grant is not None:
+            grant.supports_images = False
+
     def revoke(self, commission_id: str) -> None:
         """Make a commission's token useless and stop its calls that are still going."""
         grant = self._by_commission.pop(commission_id, None)
@@ -258,6 +268,11 @@ class CapabilityGateway:
     @property
     def started(self) -> bool:
         return self._port is not None
+
+    @property
+    def port(self) -> int | None:
+        """Return the port the gateway listens on, or None while it does not listen."""
+        return self._port
 
     @property
     def url(self) -> str:
@@ -520,15 +535,16 @@ class CapabilityGateway:
                 return _text(f"{CALL_TOOL} needs the name of a capability", error=True)
             inner = arguments.get("arguments")
             name, arguments = target, inner if isinstance(inner, dict) else {}
-        capability = next(
-            (
-                item
-                for item in self._offered(grant, await self._registry.callable_by_task_agents())
-                if item.tool_name == name
-            ),
-            None,
-        )
+        callable_now = await self._registry.callable_by_task_agents()
+        capability = next((item for item in self._offered(grant, callable_now) if item.tool_name == name), None)
         if capability is None:
+            if any(item.tool_name == name for item in callable_now):
+                # Left out by ``_offered``: it works from pictures.
+                return _text(
+                    f"{name} works from pictures, and the model in use does not take pictures: it cannot be used "
+                    "in this task. Go on without it, or report that the task needs a model that can see.",
+                    error=True,
+                )
             return _text(f"no capability named {name}; use {SEARCH_TOOL} to find one", error=True)
         commission = await self._ledger.get(grant.commission_id)
         if commission is None or not commission.active:

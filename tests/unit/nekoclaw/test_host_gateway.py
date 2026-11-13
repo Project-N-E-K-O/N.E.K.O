@@ -1136,8 +1136,13 @@ async def test_a_tool_that_needs_pictures_is_kept_from_a_model_that_cannot_see_t
 
     # All it can use is listed, so it is not given the search tools either.
     assert names == ["browser_navigate_page"]
-    assert direct["isError"] is True and "no capability named computer" in _text(direct)
-    assert through["isError"] is True and "no capability named browser_take_screenshot" in _text(through)
+    # Said as what it is, not as a tool that does not exist.
+    assert direct["isError"] is True and _text(direct).startswith(
+        "computer works from pictures, and the model in use does not take pictures"
+    )
+    assert through["isError"] is True and _text(through).startswith("browser_take_screenshot works from pictures")
+    unknown = await _call(builtin_host, grant, "computer_use_legacy", {})
+    assert unknown["isError"] is True and "no capability named computer_use_legacy" in _text(unknown)
     assert "computer" not in found and "browser_take_screenshot" not in found
     assert builtin_host.provider.calls == [] and asker.asked == []
 
