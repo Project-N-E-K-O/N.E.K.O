@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -81,7 +82,7 @@ async def test_chat_pipeline_holds_drop_during_playback_and_renders_normal_event
     prompts = []
     drop = {
         **payload(), "rarity": "SSR", "reason": "emotion_combo", "active_count": 100000,
-        "expires_at": "2026-11-14T08:00:00+08:00",
+        "expires_at": "2026-11-14T00:00:00Z",
     }
 
     async def deliver(callbacks):
@@ -107,7 +108,8 @@ async def test_chat_pipeline_holds_drop_during_playback_and_renders_normal_event
         assert "Lan" in prompts[0] and "自然、簡潔" in prompts[0]
         assert build_forge_drop_chat_context("zh-TW") in prompts[0]
         assert '"rarity": "SSR"' in prompts[0] and '"active_count": 100000' in prompts[0]
-        assert '"expires_at": "2026-11-14T00:00:00+00:00"' in prompts[0]
+        local_expiry = datetime.fromisoformat(drop["expires_at"]).astimezone()
+        assert f'"expires_at": "{local_expiry.isoformat()}"' in prompts[0]
         manager.mirror_assistant_speech.assert_not_called()
     finally:
         delivery.drain_pending()
