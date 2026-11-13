@@ -84,3 +84,20 @@ def test_unreadable_preferences_do_not_send_a_prompt(monkeypatch):
     asyncio.run(tracker._drain_context_prompt())
     assert tracker._context_prompt_pending is None
     tracker._on_context_prompt.assert_not_awaited()
+
+
+def test_route_takeover_during_settings_read_consumes_prompt(monkeypatch):
+    tracker = UserActivityTracker.__new__(UserActivityTracker)
+    tracker.lanlan_name = 'fixture'
+    tracker._context_prompt_pending = {'context': 'work'}
+    tracker._on_context_prompt = AsyncMock()
+    active = False
+    async def read_settings(**kwargs):
+        nonlocal active
+        active = True
+        return {KEY: True}
+    monkeypatch.setattr('main_logic.activity.tracker.is_external_route_active', lambda _: active)
+    monkeypatch.setattr(preferences, 'aload_global_conversation_settings', read_settings)
+    asyncio.run(tracker._drain_context_prompt())
+    assert tracker._context_prompt_pending is None
+    tracker._on_context_prompt.assert_not_awaited()

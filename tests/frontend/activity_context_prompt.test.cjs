@@ -173,19 +173,34 @@ test('cross-window prompt changes preserve the proactive timer', async () => {
   h.listeners.get('storage')({key: 'project_neko_settings', newValue: JSON.stringify({proactiveChatInterval: 123})});
   assert.equal(schedules, 1);
 });
-test('reopening each avatar settings popup refreshes the separate prompt checkbox', () => {
-  for (const prefix of ['live2d', 'vrm', 'mmd']) {
-    const cb = {checked: true}; let styles = 0;
-    const window = {activityContextPromptEnabled: false, addEventListener() {}, updateChatModeStyle(node) {assert.equal(node, cb); styles++;}};
-    const document = {querySelector(selector) {return selector === `#${prefix}-activity-context-prompt` ? cb : null;}};
-    const sandbox = {window, document, AVATAR_POPUP_ANIMATION_DURATION_MS: 200, requestAnimationFrame(fn) {fn();}};
+for (const deferred of [false, true]) {
+  test(`registered avatar hooks refresh settings (deferred=${deferred})`, () => {
+    const checkboxes = new Map(['live2d', 'vrm', 'mmd'].map(prefix => [`#${prefix}-activity-context-prompt`, {checked: true}]));
+    const events = new Map();
+    const window = {activityContextPromptEnabled: true, addEventListener(name, fn) {events.set(name, fn);}, updateChatModeStyle() {}};
+    const document = {getElementById() {return {};}, querySelector(selector) {return checkboxes.get(selector) ?? null;}};
+    const sandbox = {window, document, requestAnimationFrame(fn) {fn();}, Live2DManager: class {}};
+    if (!deferred) Object.assign(sandbox, {VRMManager: class {}, MMDManager: class {}});
     vm.createContext(sandbox);
-    vm.runInContext(fs.readFileSync(path.join(root, 'static/avatar/avatar-ui-popup-config.js'), 'utf8'), sandbox);
-    sandbox.createSettingsPopupShowSync(prefix)({querySelector() {return null;}}, 'settings');
-    assert.equal(cb.checked, false);
-    assert.equal(styles, 1);
-  }
-});
+    for (const file of ['avatar-ui-popup.js', 'avatar-ui-popup-config.js']) {
+      vm.runInContext(fs.readFileSync(path.join(root, 'static/avatar', file), 'utf8'), sandbox);
+    }
+    if (deferred) {
+      Object.assign(sandbox, {VRMManager: class {}, MMDManager: class {}});
+      events.get('vrm-modules-ready')();
+      events.get('mmd-modules-ready')();
+    }
+    for (const [name, prefix] of [['Live2DManager', 'live2d'], ['VRMManager', 'vrm'], ['MMDManager', 'mmd']]) {
+      const manager = new sandbox[name]();
+      assert.equal(typeof manager._onPopupShow, 'function');
+      for (const enabled of [true, false, true]) {
+        window.activityContextPromptEnabled = enabled;
+        manager._onPopupShow({querySelector() {return null;}}, 'settings');
+        assert.equal(checkboxes.get(`#${prefix}-activity-context-prompt`).checked, enabled);
+      }
+    }
+  });
+}
 test('hydrating only the prompt preference does not reschedule proactive chat', async () => {
   const store = new Map([['project_neko_settings', JSON.stringify({activityContextPromptEnabled: true, proactiveVisionChatEnabled: true})]]);
   const h = settingsBoot(store, {activityContextPromptEnabled: false});

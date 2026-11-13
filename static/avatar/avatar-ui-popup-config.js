@@ -170,7 +170,9 @@ window.showMMDPopup = showMMDPopup;
 window.hideMMDPopup = hideMMDPopup;
 
 const _mmdPopupConfig = {
-    _onPopupShow: createSettingsPopupShowSync('mmd'),
+    overrides: {
+        _onPopupShow: createSettingsPopupShowSync('mmd')
+    },
     animationDurationMs: AVATAR_POPUP_ANIMATION_DURATION_MS,
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },

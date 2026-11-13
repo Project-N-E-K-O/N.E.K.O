@@ -1019,6 +1019,8 @@ class UserActivityTracker:
             settings = await aload_global_conversation_settings(strict=True)
             if settings.get('activityContextPromptEnabled', True) is False:
                 return
+            if is_external_route_active(self.lanlan_name):
+                return
             await callback(pending['context'])
         except Exception as e:  # noqa: BLE001 - Push failure must not stop the heartbeat.
             logger.debug(
