@@ -793,19 +793,15 @@ appearanceTest.describe('filter bar layout and interaction', () => {
       const input = bar.getByRole('textbox')
       await expect(market.getByText('Fixture One', { exact: true })).toBeVisible()
       await expect(market.getByText('Fixture Two', { exact: true })).toBeVisible()
-      // Resizing starts the shared reflow animation. This case checks the
-      // settled wrapping; the frame-by-frame motion cases above cover transit.
-      await expect(async () => {
-        const layout = await bar.evaluate(element => {
-          const controls = element.querySelector('.wb-filter-bar__controls')!.getBoundingClientRect()
-          const rules = element.querySelector('.wb-filter-bar__rules-trigger')!.getBoundingClientRect()
-          const input = element.querySelector('.wb-filter-bar__input')!.getBoundingClientRect()
-          return { controls, rules, input }
-        })
-        expect(layout.input.top).toBeGreaterThanOrEqual(layout.rules.bottom)
-        expect(layout.input.width).toBeGreaterThanOrEqual(200)
-        expect(layout.input.right).toBeLessThanOrEqual(layout.controls.right + TOLERANCE)
-      }).toPass({ timeout: 5000 })
+      const layout = await bar.evaluate(element => {
+        const controls = element.querySelector('.wb-filter-bar__controls')!.getBoundingClientRect()
+        const rules = element.querySelector('.wb-filter-bar__rules-trigger')!.getBoundingClientRect()
+        const input = element.querySelector('.wb-filter-bar__input')!.getBoundingClientRect()
+        return { controls, rules, input }
+      })
+      expect(layout.input.top).toBeGreaterThanOrEqual(layout.rules.bottom)
+      expect(layout.input.width).toBeGreaterThanOrEqual(200)
+      expect(layout.input.right).toBeLessThanOrEqual(layout.controls.right + TOLERANCE)
       await input.fill('Fixture One')
       await expect(market.getByText('Fixture Two', { exact: true })).toHaveCount(0)
       await input.hover()
