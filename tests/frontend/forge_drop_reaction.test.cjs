@@ -85,7 +85,7 @@ test('only confirmed drops enter chat; duplicate events and balance snapshots st
 test('drop facts enter the normal chat scheduler even during playback', async () => {
   const h = harness();
   h.window.appState.isPlaying = true;
-  h.drop({ rarity: 'SSR', reason: '5rounds', active_count: 4, is_career_first: true });
+  h.drop({ rarity: 'ssr', reason: '5rounds', active_count: 4, is_career_first: true });
   await h.advance();
   assert.equal(h.requests.length, 1);
   assert.equal(h.requests[0].body.rarity, 'SSR');

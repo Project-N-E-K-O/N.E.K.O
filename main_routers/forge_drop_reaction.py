@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from config.prompts.prompts_forge_drop import build_forge_drop_chat_context
 from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY
 from main_routers.shared_state import get_config_manager, get_session_manager
+from utils.language_utils import get_global_language_full
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ async def react_to_credit_drop(request: Request):
     # Only supported drop fields enter the context; callers cannot supply a reply or prompt.
     reason = data.get("reason")
     facts = {
-        "event": "forge_credit_dropped", "item": "锻造券", "quantity": 1,
+        "event": "forge_credit_dropped", "quantity": 1,
         "rarity": rarity,
         "reason": reason if isinstance(reason, str) and reason in _DROP_REASONS else "unknown",
         "is_career_first": data.get("is_career_first") is True,
@@ -62,12 +63,15 @@ async def react_to_credit_drop(request: Request):
     active_count = data.get("active_count")
     if type(active_count) is int and 0 <= active_count <= 100000:
         facts["active_count"] = active_count
+    language = getattr(manager, "user_language", None) or get_global_language_full()
+    guidance = build_forge_drop_chat_context(language)
     callback = {
         "event": "agent_task_callback", "origin": "event", "channel": "forge_drop",
         "task_id": event_id, "status": "completed", "success": True,
         "source_kind": "system", "source_name": "forge_drop",
-        "summary": json.dumps(facts, ensure_ascii=False),
-        "detail": build_forge_drop_chat_context(getattr(manager, "user_language", "zh-CN")),
+        # Both text and voice render the summary; detail can be omitted.
+        "summary": f"{guidance}\n{json.dumps(facts, ensure_ascii=False)}",
+        "detail": "",
         "delivery_mode": "proactive", "context_type": "forge_drop",
         "metadata": {"context_type": "forge_drop", "event_id": event_id},
         CALLBACK_EXPIRES_AT_KEY: time.monotonic() + 45,

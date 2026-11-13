@@ -129,7 +129,7 @@
     if (!character || pendingDrops.length >= 8) return;
     seenDrops.add(id);
     if (seenDrops.size > 256) seenDrops.delete(seenDrops.values().next().value);
-    pendingDrops.push({ event_id: id, rarity: detail.rarity || 'N', lanlan_name: character,
+    pendingDrops.push({ event_id: id, rarity: String(detail.rarity || 'N').toUpperCase(), lanlan_name: character,
       reason: detail.reason, active_count: detail.active_count, is_career_first: detail.is_career_first,
       deadline: Date.now() + 45000 });
     scheduleDrop();
