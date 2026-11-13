@@ -12,3 +12,5 @@ Provider 是数据驱动的。当前发行定义在 `config/api_providers.json`�
 同一 JSON 还包含 keybook、API-key registry、原生 TTS/免费语音、默认模型元数据、直播和审核设置；这些有各自消费者，不是通用 Provider 字段。
 
 修改时保持 key 稳定、不得写真实密钥；可见文字同步 8 个 locale，并运行测试与文档构建。字段契约见 [API Provider 字段参考](/api_providers_fields)。面向用户的免费路径、自带 Key 与本地组件区别见[费用与 Provider](/zh-CN/guide/cost-and-providers)。
+
+ChatGPT 订阅登录使用独立的 OAuth 凭证存储和账号模型列表，参见 [ChatGPT 订阅接入](/zh-CN/config/chatgpt)。

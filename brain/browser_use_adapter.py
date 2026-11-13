@@ -612,6 +612,18 @@ class BrowserUseAdapter:
         model = api_cfg.get("model", "") or ""
         provider_type = str(api_cfg.get("provider_type") or "openai_compatible").strip().lower()
 
+        if provider_type == "chatgpt":
+            from brain.browser_use_chatgpt import NekoChatChatGPT
+            from config import COMPUTER_USE_MAX_TOKENS
+
+            return NekoChatChatGPT(
+                model=model, base_url=base_url,
+                max_completion_tokens=COMPUTER_USE_MAX_TOKENS, timeout=65.0,
+                dont_force_structured_output=mode == "text",
+                remove_min_items_from_schema=mode == "text",
+                remove_defaults_from_schema=mode == "text",
+            )
+
         if _is_anthropic_endpoint(base_url, provider_type):
             from brain.browser_use_anthropic import (
                 NekoChatAnthropic,
@@ -854,6 +866,8 @@ class BrowserUseAdapter:
 
                         async def _on_step_end(a: Any) -> None:
                             nonlocal _disconnect_errors, _content_filter_errors
+                            if getattr(llm, "provider", None) == "chatgpt":
+                                llm.raise_terminal_error()
                             if self._cancelled:
                                 print("[BrowserUse] Task cancelled by user", flush=True)
                                 raise asyncio.CancelledError("Task cancelled by user")
@@ -903,6 +917,8 @@ class BrowserUseAdapter:
                             timeout=timeout_s,
                         )
                         self._session_ever_started = True
+                        if getattr(llm, "provider", None) == "chatgpt":
+                            llm.raise_terminal_error()
 
                         successful = (
                             history.is_successful()
@@ -1028,6 +1044,10 @@ class BrowserUseAdapter:
                     continue
                 if browser_session:
                     await self._remove_overlay(browser_session)
+                from utils.chatgpt_auth import ChatGPTAuthError
+                from utils.llm_client.chatgpt_client import ChatGPTResponseError
+                if isinstance(e, (ChatGPTAuthError, ChatGPTResponseError)):
+                    return {"success": False, "error": str(e)}
                 if self._is_browser_disconnected_error(e):
                     logger.warning("[BrowserUse] Browser disconnected, task aborted: %s", e)
                     return {"success": False, "error": "Browser disconnected - browser window was closed"}

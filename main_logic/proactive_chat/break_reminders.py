@@ -298,7 +298,7 @@ async def _deliver_break_reminder_via_llm(
         correction_base_url = correction_config.get("base_url")
         correction_api_key = correction_config.get("api_key")
         correction_provider_type = correction_config.get("provider_type")
-        if not correction_model or not correction_api_key:
+        if not correction_model or (not correction_api_key and correction_provider_type != 'chatgpt'):
             logger.warning(
                 "[%s] break reminder skipped: correction model misconfigured",
                 lanlan_name,

@@ -559,7 +559,7 @@ def _looks_like_anthropic_messages_url(url: str | None) -> bool:
 
 def _normalize_provider_type(profile: dict[str, Any] | None, url: str | None = None) -> str:
     provider_type = str((profile or {}).get("provider_type") or "openai_compatible").strip().lower()
-    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts"):
+    if provider_type not in ("openai_compatible", "anthropic", "websocket", "tts", "chatgpt"):
         return "openai_compatible"
     if provider_type == "openai_compatible" and _looks_like_anthropic_messages_url(url):
         return "anthropic"
@@ -609,6 +609,22 @@ async def _test_connectivity_candidates(
                 )
             else:
                 result = {"success": False, "error": "不支持的 TTS 探测协议", "error_code": "unsupported"}
+        elif provider_type == "chatgpt":
+            from config import OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+            from utils.llm_client.chatgpt_client import ChatChatGPT, ChatGPTOutputLimitError
+            client = await asyncio.to_thread(ChatChatGPT, base_url=candidate_url, model=model,
+                                 max_completion_tokens=OPENAI_CONNECTIVITY_TEST_MAX_TOKENS, timeout=15)
+            try:
+                await client.ainvoke("Reply OK.")
+                result = {"success": True, "message": "ChatGPT connected"}
+            except ChatGPTOutputLimitError:
+                # A valid response that spent this small probe budget on
+                # reasoning still establishes model/account connectivity.
+                result = {"success": True, "message": "ChatGPT connected"}
+            except Exception:
+                result = {"success": False, "error": "ChatGPT request failed. Check sign-in, model and plan usage.", "error_code": "chatgpt_unavailable"}
+            finally:
+                await client.aclose()
         elif provider_type == "anthropic":
             result = await _test_anthropic(candidate_url, api_key, model=model, is_free=is_free)
         else:
@@ -892,6 +908,8 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
             # Use conversation_model as the test model (most representative)
             model = profile.get("conversation_model", "")
             provider_type = _normalize_provider_type(profile, url_stripped)
+            if provider_type == "chatgpt":
+                model = (req.model or "").strip()
             is_free = profile.get("is_free_version", False)
             _source_label = profile.get("name", provider_key)
         else:
@@ -926,10 +944,13 @@ async def test_connectivity(req: ConnectivityTestRequest) -> dict:
 
         url_stripped = req.url.strip()
         url_candidates = [url_stripped]
-        model = (req.model or "gpt-3.5-turbo").strip()
         provider_type = _normalize_provider_type({"provider_type": req.provider_type}, url_stripped)
+        model = (req.model or ("" if provider_type == "chatgpt" else "gpt-3.5-turbo")).strip()
         is_free = bool(req.is_free)
         _source_label = _identify_provider_label(url_stripped, is_free)
+
+    if provider_type == "chatgpt" and not model:
+        return {"success": False, "error": "Choose a ChatGPT model before testing connectivity.", "error_code": "missing_params"}
 
     # sub_type is allowed only for Mode 2 (custom URL); for Mode 1 built-in providers,
     # api_providers.json determines provider_type, which must not be overridden by the frontend's sub_type

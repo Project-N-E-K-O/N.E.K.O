@@ -281,3 +281,8 @@ plugin/plugins/data/user_profile_cache.json
 /docs/**/*after*.jpeg
 /docs/**/*before*.webp
 /docs/**/*after*.webp
+
+# Local OAuth credentials are never project configuration.
+chatgpt_oauth.json
+chatgpt_oauth.json.lock
+.chatgpt-*

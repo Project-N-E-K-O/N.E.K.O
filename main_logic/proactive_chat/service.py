@@ -1713,7 +1713,7 @@ async def handle_proactive_chat(
             conversation_model = conversation_config.get("model")
             conversation_api_key = conversation_config.get("api_key")
 
-            if not conversation_model or not conversation_api_key:
+            if not conversation_model or (not conversation_api_key and conversation_config.get('provider_type') != 'chatgpt'):
                 logger.error("对话模型配置缺失: model或api_key未设置")
                 return await _end_proactive(
                     ProactiveChatResult(

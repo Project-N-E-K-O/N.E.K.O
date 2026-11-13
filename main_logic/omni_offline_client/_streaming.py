@@ -549,7 +549,7 @@ class _StreamingMixin:
         emotion_model = emotion_config.get('model')
         emotion_base_url = emotion_config.get('base_url')
         emotion_provider_type = emotion_config.get('provider_type')
-        if not (emotion_api_key and emotion_model):
+        if not emotion_model or (not emotion_api_key and emotion_provider_type != 'chatgpt'):
             logger.info("summary: emotion 模型/Key 未配置，跳过长回复摘要")
             return None
 

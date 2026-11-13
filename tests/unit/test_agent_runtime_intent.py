@@ -371,7 +371,8 @@ def test_check_connectivity_returns_tuple_on_missing_config(monkeypatch: pytest.
     assert adapter.init_ok is False
 
 
-def test_check_connectivity_success_returns_empty_reason(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "chatgpt"])
+def test_check_connectivity_success_returns_empty_reason(monkeypatch: pytest.MonkeyPatch, provider_type):
     from brain import computer_use as cu_module
 
     fake_llm = MagicMock()
@@ -388,6 +389,7 @@ def test_check_connectivity_success_returns_empty_reason(monkeypatch: pytest.Mon
         "api_key": "sk-test",
         "base_url": "https://api.example.com",
         "model": "test-model",
+        "provider_type": provider_type,
     })
     adapter._llm_client = None
     adapter._llm_client_sig = None
@@ -398,6 +400,12 @@ def test_check_connectivity_success_returns_empty_reason(monkeypatch: pytest.Mon
     assert ok is True
     assert reason == ""
     assert adapter.init_ok is True
+    expected_budget = (
+        cu_module.OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+        if provider_type == "chatgpt" else cu_module.LLM_PING_MAX_TOKENS
+    )
+    assert fake_llm.invoke_raw.call_args.kwargs["max_completion_tokens"] == expected_budget
+    assert fake_llm.invoke_raw.call_args.kwargs["timeout"] == 4.0
 
 
 def test_check_connectivity_accepts_anthropic_raw_message(monkeypatch: pytest.MonkeyPatch):

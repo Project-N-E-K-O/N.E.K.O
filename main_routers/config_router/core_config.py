@@ -692,6 +692,15 @@ async def update_core_config(request: Request):
                         apply_core_config_secret_update(core_cfg, data, field)
                     else:
                         core_cfg[field] = data[field]
+        # OAuth is a per-model choice with an account-specific model catalog.
+        for mt in CORE_CONFIG_MODEL_TYPES:
+            if core_cfg.get(f'{mt}ModelProvider') == 'chatgpt':
+                if mt not in ('conversation', 'summary', 'gameMain', 'gameSummary', 'correction', 'emotion', 'vision', 'agent'):
+                    return {"success": False, "error": "ChatGPT plan usage supports text and vision slots only"}
+                if not str(core_cfg.get(f'{mt}ModelId') or '').strip():
+                    return {"success": False, "error": "Select an available ChatGPT model before saving"}
+                core_cfg[f'{mt}ModelUrl'] = 'https://api.openai.com/v1'
+                core_cfg[f'{mt}ModelApiKey'] = ''
         # Lazy migration after retiring gptsovitsEnabled, at the save boundary, symmetric with #1842 voice_id:
         # ttsModelProvider=='gptsovits' is the sole GSV-enabled truth; old gptsovitsEnabled remains only
         # pre-#1830 compatibility fallback. Frontend loading pins enabled GSV dropdowns to 'gptsovits', so any submitted

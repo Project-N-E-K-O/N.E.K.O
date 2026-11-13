@@ -33,7 +33,7 @@ import traceback
 from io import BytesIO
 import httpx
 from PIL import Image
-from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_TOKENS, MAIN_SERVER_PORT
+from config import get_agent_extra_body, COMPUTER_USE_MAX_TOKENS, LLM_PING_MAX_TOKENS, MAIN_SERVER_PORT, OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
 from utils.config_manager import get_config_manager
 from utils.llm_client import create_chat_llm, ChatOpenAI
 from utils.logger_config import get_module_logger
@@ -235,6 +235,11 @@ def _classify_connectivity_exception(exc: Optional[Exception]) -> str:
     """
     if exc is None:
         return "AGENT_LLM_UNREACHABLE"
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return "AGENT_API_KEY_INVALID"
+    if status == 429:
+        return "AGENT_QUOTA_EXCEEDED"
     msg = str(exc).lower()
     if any(tok in msg for tok in _PERMANENT_AUTH_TOKENS):
         return "AGENT_API_KEY_INVALID"
@@ -1028,7 +1033,11 @@ class ComputerUseAdapter:
                 # request won't clip the latter's budget or timeout.
                 resp = self._llm_client.invoke_raw(
                     [{"role": "user", "content": "ok"}],
-                    max_completion_tokens=LLM_PING_MAX_TOKENS,
+                    # Responses rejects the legacy five-token probe budget.
+                    max_completion_tokens=(
+                        OPENAI_CONNECTIVITY_TEST_MAX_TOKENS
+                        if provider_type == "chatgpt" else LLM_PING_MAX_TOKENS
+                    ),
                     extra_body=extra or None,
                     timeout=timeout_s,
                 )
@@ -1042,6 +1051,15 @@ class ComputerUseAdapter:
                 return True, ""
             except Exception as e:
                 last_exc = e
+                from utils.llm_client.chatgpt_client import ChatGPTOutputLimitError
+                if isinstance(e, ChatGPTOutputLimitError):
+                    # A valid budget-exhausted response proves connectivity even
+                    # when all tokens went to reasoning. Never retry this probe.
+                    self.init_ok = True
+                    self.last_error = None
+                    return True, ""
+                if _classify_connectivity_exception(e) in PERMANENT_CONNECTIVITY_REASONS:
+                    break
                 if attempt < _retries:
                     import time
                     delay = 3 * (attempt + 1)
@@ -1522,6 +1540,10 @@ class ComputerUseAdapter:
                     max_completion_tokens=self.max_completion_tokens,
                     extra_body=extra or None,
                 )
+                if (self._agent_model_cfg.get("provider_type") == "chatgpt"
+                        and resp.choices and resp.choices[0].finish_reason == "length"):
+                    from utils.llm_client.chatgpt_client import ChatGPTResponseError
+                    raise ChatGPTResponseError("ChatGPT computer action output was truncated. Increase the output budget.")
                 content, reasoning = _extract_raw_llm_text(resp)
 
                 parsed = parse_response(content, reasoning if self.thinking else None)
@@ -1532,6 +1554,11 @@ class ComputerUseAdapter:
                     "[CUA] No code (attempt %d): %.300s", attempt + 1, content
                 )
             except Exception as e:
+                from utils.chatgpt_auth import ChatGPTAuthError
+                from utils.llm_client.chatgpt_client import ChatGPTResponseError
+                if isinstance(e, (ChatGPTAuthError, ChatGPTResponseError)):
+                    # Escape both this retry loop and the outer action loop.
+                    raise
                 logger.error("[CUA] LLM error (attempt %d): %s", attempt + 1, e)
                 if attempt < 2:
                     self._interruptible_sleep(1)

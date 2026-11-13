@@ -212,7 +212,10 @@ async def _fetch_models(url: str, api_key: str, provider_type: str) -> dict[str,
     from utils.llm_client import ChatAnthropic, ChatOpenAI
 
     try:
-        if provider_type == "anthropic":
+        if provider_type == "chatgpt":
+            from utils.llm_client.chatgpt_client import ChatChatGPT
+            client = await asyncio.to_thread(ChatChatGPT, base_url=url, timeout=_MODEL_LIST_TIMEOUT_SECONDS)
+        elif provider_type == "anthropic":
             client = ChatAnthropic(
                 base_url=url,
                 api_key=api_key or None,

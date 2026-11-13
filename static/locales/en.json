@@ -1303,6 +1303,23 @@
         "connectionError": "Connection Error"
     },
     "api": {
+    "chatgpt": {
+      "description": "Use your ChatGPT plan for text conversations and image understanding. Speech recognition and synthesis keep their own providers.",
+      "account": "ChatGPT account",
+      "login": "Continue with ChatGPT",
+      "add": "Add account",
+      "logout": "Sign out selected account",
+      "instructions": "After signing in, enable custom API in Advanced settings. Choose ChatGPT (subscription) for a model slot, select an available model, then save settings.",
+      "usage": "ChatGPT usage and permissions",
+      "managed": "Managed by ChatGPT sign-in",
+      "noAccount": "No saved account",
+      "pending": "Complete sign-in in your browser.",
+      "expired": "Sign-in timed out. Please try again.",
+      "connected": "ChatGPT connected. Choose a model and save settings.",
+      "signedOut": "ChatGPT is not connected.",
+      "failed": "ChatGPT connection failed.",
+      "revocationUnconfirmed": "Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation."
+    },
     "imageModelConfig": "Image generation",
     "imageModelExamplePlaceholder": "e.g., gpt-image-2, wanx2.1-t2i-turbo",
     "imageModelApiKeyPlaceholder": "Custom endpoint key; named providers use the API Key Book",

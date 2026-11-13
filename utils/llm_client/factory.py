@@ -66,6 +66,18 @@ def create_chat_llm(
     """
     from config.providers import get_cache_kwargs, get_extra_body
 
+    if provider_type == "chatgpt":
+        from .chatgpt_client import ChatChatGPT
+
+        if extra_body is _SENTINEL:
+            extra_body = get_extra_body(model, base_url) or None
+        return ChatChatGPT(
+            model=model, base_url=base_url, streaming=streaming,
+            max_completion_tokens=max_completion_tokens, max_tokens=max_tokens,
+            timeout=timeout, extra_body=extra_body, model_kwargs=model_kwargs,
+            tools=tools, tool_choice=tool_choice, **kw,
+        )
+
     is_anthropic = _is_anthropic_endpoint(base_url, provider_type)
 
     cache_kw = get_cache_kwargs(base_url)

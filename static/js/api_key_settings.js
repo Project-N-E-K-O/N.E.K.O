@@ -1267,6 +1267,8 @@ function getTtsProviderMeta(pk) {
 function isProviderCapableForModelType(providerKey, modelType) {
     const pk = String(providerKey || '').trim();
     if (!pk || pk === 'custom' || pk.startsWith('follow_')) return true;
+    const supportedTypes = getProviderInfo(pk).supported_model_types;
+    if (Array.isArray(supportedTypes) && !supportedTypes.includes(modelType)) return false;
 
     if (modelType === 'omni') {
         // 实时全模态槽不提供任何具名服务商，只留「跟随」与「自定义」。
@@ -1331,7 +1333,7 @@ function getProviderType(providerKey, fallback = 'openai_compatible') {
     const providerType = String(profile.provider_type || profile.providerType || fallback || 'openai_compatible')
         .trim()
         .toLowerCase();
-    return ['openai_compatible', 'anthropic', 'websocket', 'tts'].includes(providerType)
+    return ['openai_compatible', 'anthropic', 'websocket', 'tts', 'chatgpt'].includes(providerType)
         ? providerType
         : 'openai_compatible';
 }
@@ -1694,6 +1696,11 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         }
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey, provider);
+        if (pInfo.auth_type === 'oauth' && keyInput) {
+            setMaskedInput(keyInput, '');
+            keyInput.placeholder = window.t ? window.t('api.chatgpt.managed') : 'Managed by ChatGPT sign-in';
+            removeKeyBookLink(keyInput);
+        }
     }
     if (modelType === 'tts') {
         updateTtsProviderFieldVisibility(provider);
@@ -4907,10 +4914,14 @@ const ConnectivityManager = {
                 }
             }
 
+            if (result.providerType === 'chatgpt') {
+                result.model = result.model || (modelIdInput ? modelIdInput.value.trim() : '');
+            }
             omitMaskedSecretFromConnectivity(result);
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
                     result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+                    if (result.providerType === 'chatgpt') result.cacheId += `|model:${result.model}`;
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(
                         result.providerType,
@@ -5033,6 +5044,7 @@ const ConnectivityManager = {
                     // Built-in provider mode
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
+                    if (provider_key === 'chatgpt') body.model = model || '';
                     if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
@@ -5190,7 +5202,7 @@ const ConnectivityManager = {
                     else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') isFree = true;
                     // For custom provider, also pass model from the input
                     const modelInput = document.getElementById(`${mt}ModelId`);
-                    const model = modelInput ? modelInput.value.trim() : '';
+                    const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
@@ -5343,7 +5355,7 @@ const ConnectivityManager = {
                         isFree = true;
                     }
                     const modelInput = document.getElementById(`${mt}ModelId`);
-                    const model = modelInput ? modelInput.value.trim() : '';
+                    const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,

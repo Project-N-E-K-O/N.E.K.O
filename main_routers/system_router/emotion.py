@@ -947,7 +947,8 @@ async def emotion_analysis(request: Request):
         api_key = api_key or emotion_api_key
         model = model or emotion_model
         
-        if not api_key:
+        # Subscription authentication is resolved by the shared client factory.
+        if not api_key and emotion_provider_type != 'chatgpt':
             return {"error": "情绪分析模型配置缺失: API密钥未提供且配置中未设置默认密钥"}
         
         if not model:
@@ -976,7 +977,6 @@ async def emotion_analysis(request: Request):
             emotion_base_url,
             api_key,
             provider_type=emotion_provider_type,
-            temperature=0.3,
             # Gemini may return Markdown requiring more tokens.
             max_completion_tokens=EMOTION_ANALYSIS_MAX_TOKENS,
             timeout=30,

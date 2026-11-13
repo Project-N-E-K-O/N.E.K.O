@@ -1303,6 +1303,23 @@
         "connectionError": "接続エラー"
     },
     "api": {
+    "chatgpt": {
+      "description": "ChatGPT プランでテキスト会話と画像理解を利用します。音声認識と音声合成はそれぞれのプロバイダーを使用します。",
+      "account": "ChatGPT アカウント",
+      "login": "Continue with ChatGPT",
+      "add": "アカウントを追加",
+      "logout": "選択したアカウントからログアウト",
+      "instructions": "ログイン後、詳細設定でカスタム API を有効にし、モデルのプロバイダーを ChatGPT (subscription) に設定して、モデル一覧から選択し保存してください。",
+      "usage": "ChatGPT の使用量と権限",
+      "managed": "ChatGPT ログインで管理",
+      "noAccount": "保存済みアカウントなし",
+      "pending": "ブラウザーでログインを完了してください。",
+      "expired": "ログインがタイムアウトしました。再試行してください。",
+      "connected": "ChatGPT に接続しました。モデルを選択して保存してください。",
+      "signedOut": "ChatGPT に接続されていません。",
+      "failed": "ChatGPT への接続に失敗しました。",
+      "revocationUnconfirmed": "ローカルでログアウトしました。リモートの失効を確認するには ChatGPT の設定でアプリを切断してください。"
+    },
     "imageModelConfig": "画像生成",
     "imageModelExamplePlaceholder": "例: gpt-image-2、wanx2.1-t2i-turbo",
     "imageModelApiKeyPlaceholder": "カスタム接続先のキー。既定プロバイダーは API キー管理簿を使用",
