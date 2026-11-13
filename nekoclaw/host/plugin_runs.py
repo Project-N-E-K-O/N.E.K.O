@@ -103,7 +103,7 @@ def _normalize_timeout(value: Any) -> Any:
         return None
     try:
         seconds = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _TIMEOUT_UNSET
     return seconds if seconds > 0 else None
 
@@ -617,8 +617,10 @@ class PluginRunner:
         safe_args = dict(plugin_args)
         entry_timeout = resolve_entry_timeout(plugin, requested_entry, self._default_entry_timeout())
         try:
-            ctx = safe_args.get("_ctx")
+            ctx = safe_args.pop("_ctx", None)
             ctx = dict(ctx) if isinstance(ctx, dict) else {}
+            # Never forward an unverified model-supplied _ctx after a parsing error.
+            safe_args["_ctx"] = ctx
             if lanlan_name and "lanlan_name" not in ctx:
                 ctx["lanlan_name"] = lanlan_name
             if conversation_id:
@@ -627,6 +629,12 @@ class PluginRunner:
             # rewrote. A value the arguments already carry is kept.
             if latest_user_request:
                 ctx.setdefault("latest_user_request", latest_user_request)
+            if plugin_id == "netease_music":
+                # Commission user_text is supplied separately from model dispatch/args.
+                # An autonomous commission cannot manufacture authorization via _ctx.
+                ctx["latest_user_request"] = latest_user_request
+                ctx["request_source"] = "user" if latest_user_request else ""
+                ctx["authorized_action"] = safe_args.get("action", "") if latest_user_request else ""
             entry_timeout = _ctx_entry_timeout(ctx, entry_timeout)
             ctx["entry_timeout"] = entry_timeout
             safe_args["_ctx"] = ctx

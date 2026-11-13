@@ -64,6 +64,7 @@ _CONTEXT_APPEND_SOURCE_MAX_TOKENS = {
     "game.postgame": 1500,
     "proactive.context": 1000,
     "proactive.callback": 1000,
+    "music_library.result": 2500,
     "topic.hook": 1000,
     "topic.material": 1000,
     "realtime.prime": 1000,

@@ -549,11 +549,9 @@ def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id
     if used >= cap:
         logger.info("[AgentAnalyze] skip proactive: per-session cap reached (%d/%d, lanlan=%s)", used, cap, lanlan_name)
         return
-    # Reserve the slot + dedupe fp BEFORE dispatch so concurrent proactive events
-    # can't both pass the cap check.
+    # Reserve and deduplicate before model assessment.
     Modules.proactive_analyze_count[lanlan_key] = used + 1
     Modules.last_proactive_assistant_fingerprint[lanlan_key] = fp
-    logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, lanlan=%s)", used + 1, cap, lanlan_name)
     _create_tracked_task(_background_analyze_and_plan(
         messages, lanlan_name, conversation_id=conversation_id,
         external_intent=None, proactive=True, session_language=session_language,
@@ -1293,7 +1291,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                 _plugin_msg = str(res.result.get("message") or "") if isinstance(res.result, dict) else ""
                 _error_to_pass = (run_error or res.error) if not res.success else None
                 detail = parse_plugin_result(
-                    run_data,
+                    run_data, plugin_id=plugin_id, entry_id=entry_id,
                     llm_result_fields=_llm_fields,
                     plugin_message=_plugin_msg,
                     error=_error_to_pass,
@@ -1342,6 +1340,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         status=_explicit_status,
                         source_kind="plugin",
                         source_name=display_id,
+                        plugin_id=plugin_id, entry_id=entry_id,
                         delivery_mode=_delivery_mode,
                         result_kind=_result_kind if _completed else "task_result",
                         expires_in_s=_expires_in_s if _completed else None,
@@ -1371,6 +1370,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         status="cancelled",
                         source_kind="plugin",
                         source_name=display_id,
+                        plugin_id=plugin_id, entry_id=entry_id,
                         delivery_mode=_delivery_mode,
                     )
                 except Exception as emit_err:
@@ -1407,6 +1407,7 @@ async def plugin_execute_direct(payload: Dict[str, Any]):
                         status="failed",
                         source_kind="plugin",
                         source_name=display_id,
+                        plugin_id=plugin_id, entry_id=entry_id,
                         delivery_mode=_delivery_mode,
                     )
                 except Exception as emit_err:

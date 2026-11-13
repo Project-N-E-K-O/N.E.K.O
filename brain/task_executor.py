@@ -152,6 +152,7 @@ class TaskResult:
     entry_id: Optional[str] = None
     reason: str = ""
     latest_user_request: str = ""
+    request_source: str = ""
     normalized_intent: str = ""
     recent_context: Optional[List[Dict[str, str]]] = None
 
@@ -1520,7 +1521,7 @@ class DirectTaskExecutor:
             logger.warning("[PluginFilter] Stage1 LLM coarse screen failed: %s", e)
         return []
 
-    async def _assess_user_plugin(self, conversation: str, plugins: Any, lang: str = "en") -> UserPluginDecision:
+    async def _assess_user_plugin(self, conversation: str, plugins: Any, lang: str = "en", *, proactive: bool = False) -> UserPluginDecision:
         """
         Two-stage plugin assessment:
         - Stage 2 only (plugins_desc <= AGENT_PLUGIN_DESC_BM25_THRESHOLD tokens):
@@ -1555,6 +1556,8 @@ class DirectTaskExecutor:
         # Pre-filter: only keep plugins that have at least one Agent-visible entry.
         # This prevents hidden-entry-only plugins from leaking into Stage 1 (BM25 / keyword / coarse-screen).
         # Keep the full list for valid_entries_map so error reasons can distinguish "no visible entries" from "not found".
+        from brain.music_capabilities import scoped_music_catalog
+        plugin_list = scoped_music_catalog(plugin_list, self._extract_latest_user_intent(conversation), conversation, proactive=proactive)
         all_plugin_list = list(plugin_list)
         pre_filter_count = len(plugin_list)
         plugin_list = [p for p in plugin_list if self._agent_visible_plugin_entries(p)]
@@ -1649,6 +1652,9 @@ class DirectTaskExecutor:
 
         # Stage 2: full LLM assessment
         system_prompt = _loc(USER_PLUGIN_SYSTEM_PROMPT, lang).format(plugins_desc=plugins_desc)
+        if any(p.get("id") == "netease_music" for p in plugins):
+            from config.prompts.prompts_music_assessment import music_query_guidance
+            system_prompt += "\n" + music_query_guidance(lang)
 
         user_prompt = f"Conversation:\n{conversation}\n\nUser intent (one-line): {user_intent}"
 
@@ -2164,7 +2170,8 @@ class DirectTaskExecutor:
             # Reuse cache in ordinary turns; refetch only when lifecycle signals / TTL indicate possible changes.
             plugins = await self.plugin_list_provider(force_refresh=False)
         if user_plugin_enabled and plugins:
-            parallel_tasks.append(('up', self._assess_user_plugin(conversation, plugins, lang=lang)))
+            plugin_conversation = conversation
+            parallel_tasks.append(('up', self._assess_user_plugin(plugin_conversation, plugins, lang=lang, proactive=proactive)))
 
         # Unified channel evaluation: qwenpaw / browser / computer.
         has_any_unified = qwenpaw_available or browser_available or cu_available
@@ -2229,6 +2236,7 @@ class DirectTaskExecutor:
                 entry_id=up_decision.entry_id,
                 reason=up_decision.reason,
                 latest_user_request=latest_user_request,
+                request_source="proactive" if proactive else "user",
             )
 
         # 2. Unified channels, priority qwenpaw > browser_use > computer_use.
@@ -2314,6 +2322,7 @@ class DirectTaskExecutor:
         lanlan_name: Optional[str] = None,
         conversation_id: Optional[str] = None,
         latest_user_request: str = "",
+        request_source: str = "",
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> TaskResult:
         """
@@ -2437,6 +2446,18 @@ class DirectTaskExecutor:
                         reason=reason or "invalid_entry_id",
                     )
         # New run protocol: default path (POST /runs, return accepted immediately)
+        proactive_playback = request_source == "proactive" and (
+            plugin_entry_id == "play_netease_music"
+            or (plugin_entry_id == "cloud_music" and plugin_args.get("action") == "play")
+            or (plugin_entry_id == "playlist" and plugin_args.get("action") in {"curate", "replay", "next", "revise"})
+        )
+        if plugin_id == "netease_music" and (proactive_playback or reason == "proactive_music_recommendation"):
+            from brain.proactive_music import proactive_music_block_reason
+            blocked = await proactive_music_block_reason(lanlan_name)
+            if blocked:
+                logger.info("[ProactiveMusic] dispatch skipped: %s", blocked)
+                return TaskResult(task_id=task_id, has_task=True, success=False,
+                    execution_method="user_plugin", reason=blocked, error=blocked)
         try:
             runs_endpoint = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/runs"
 
@@ -2461,6 +2482,11 @@ class DirectTaskExecutor:
                 # setdefault prioritizes any same-name value plugins supplied earlier.
                 if latest_user_request:
                     ctx_obj.setdefault("latest_user_request", latest_user_request)
+                # Authorization provenance comes from the orchestrator, never model arguments.
+                if plugin_id == "netease_music":
+                    ctx_obj["request_source"] = request_source
+                    ctx_obj["latest_user_request"] = latest_user_request
+                    ctx_obj["authorized_action"] = safe_args.get("action", "") if request_source == "user" else ""
                 entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
                 effective_entry_timeout = _resolve_ctx_entry_timeout(ctx_obj, entry_timeout)
                 ctx_obj["entry_timeout"] = effective_entry_timeout
@@ -2733,6 +2759,7 @@ class DirectTaskExecutor:
         lanlan_name: Optional[str] = None,
         conversation_id: Optional[str] = None,
         latest_user_request: str = "",
+        request_source: str = "",
         on_progress: Optional[Callable[..., Awaitable[None]]] = None,
     ) -> TaskResult:
         """
@@ -2753,6 +2780,7 @@ class DirectTaskExecutor:
                 entry_id=entry_id,
                 task_description=f"Direct plugin call {plugin_id}",
                 reason="direct_call",
+                request_source=request_source,
                 lanlan_name=lanlan_name,
                 conversation_id=conversation_id,
                 latest_user_request=latest_user_request,

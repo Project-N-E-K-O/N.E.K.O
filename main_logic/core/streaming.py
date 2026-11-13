@@ -981,6 +981,13 @@ class StreamingMixin:
                             nonlocal _cb_turn_committed
                             _cb_turn_committed = True
 
+                        from utils.music_capability_context import is_music_evidence
+                        if any(is_music_evidence(cb) for cb in _agent_cb_drained):
+                            from .callback_render import _build_callback_instruction
+                            stream_text_kwargs["system_prefix_history"] = _build_callback_instruction(
+                                _agent_cb_drained, lang=self.user_language,
+                                lanlan_name=self.lanlan_name, master_name=self.master_name, compact_music=True,
+                            )
                         if _agent_cb_images:
                             stream_text_kwargs["system_prefix_images"] = _agent_cb_images
                         if _agent_cb_drained:
@@ -1030,6 +1037,9 @@ class StreamingMixin:
                                 reply_tail_registry.prepare_reply(self, reply_turn, user_text=record_data)
                             observation_token = _reply_observation_owner.set(reply_turn)
                             try:
+                                if self.current_speech_id == new_user_sid:
+                                    from main_logic.listening_context import attach_listening_context
+                                    attach_listening_context(self, message, stream_text_kwargs)
                                 await self.session.stream_text(data, **stream_text_kwargs)
                             finally:
                                 _reply_observation_owner.reset(observation_token)

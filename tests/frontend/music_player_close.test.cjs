@@ -90,6 +90,7 @@ function createSurface(t, options = {}) {
                 this.audio.ended = false;
                 this.audio.paused = false;
                 this.emit('play');
+                if (this.audio.readyState >= 3) this.emit('playing');
                 return Promise.resolve();
             };
             this.audio.pause = () => {
@@ -604,6 +605,7 @@ test('hiding after music has started does not cancel playback while metadata is 
     r.show(); await s.advance(10100);
     const player = s.players[0];
     assert.equal(player.audio.paused, false);
+    player.emit('playing'); // Playback confirmation is distinct from the play attempt.
     Object.defineProperty(s.w.document, 'visibilityState', { get: () => 'hidden' });
     s.w.document.dispatchEvent(new s.w.Event('visibilitychange'));
     player.audio.dispatchEvent(new s.w.Event('loadedmetadata'));
@@ -1308,4 +1310,242 @@ test('non-full teardown releases the real keyboard shortcut before the next play
     pressSpace();
     assert.equal(oldCalls, 1);
     assert.equal(newCalls, 1, 'replacement player must receive the shortcut');
+});
+
+test('listening pose follows actual local playback, including buffering and pause', async t => {
+    const s = createSurface(t);
+    await (await s.start(true)).promise;
+    const player = s.players[0];
+    player.play();
+    assert.equal(s.w.isMusicAudible(), true);
+    player.emit('waiting');
+    assert.equal(s.w.isMusicAudible(), false);
+    player.emit('playing');
+    assert.equal(s.w.isMusicAudible(), true);
+    player.pause();
+    assert.equal(s.w.isMusicAudible(), false);
+    player.play();
+    assert.equal(s.w.isMusicAudible(), true);
+    s.w.destroyMusicPlayer(true, true, true);
+    assert.equal(s.w.isMusicAudible(), false);
+});
+
+test('listening pose uses cross-window playback state and expires stale owners', async t => {
+    const s = createSurface(t);
+    const state = {...endedState, paused:false, ended:false, currentTime:10, buffering:false};
+    s.receive(remoteEvent('coord', {coordType:'music_started', playbackId:state.playbackId}));
+    s.receive(remoteEvent('bar_state', state));
+    assert.equal(s.w.isMusicAudible(), true);
+    for (const patch of [{paused:true}, {buffering:true}, {ended:true}, {loadError:true}, {initial:true}]) {
+        s.receive(remoteEvent('bar_state', {...state, ...patch}));
+        assert.equal(s.w.isMusicAudible(), false);
+    }
+    s.receive(remoteEvent('bar_state', state));
+    assert.equal(s.w.isMusicAudible(), true);
+    await s.advance(31000);
+    assert.equal(s.w.isMusicAudible(), false);
+});
+
+test('local playback changes notify the avatar synchronously, before its next polling tick', async t => {
+    const s = createSurface(t); await (await s.start()).promise;
+    const player = s.players[0], observed = [];
+    s.w.addEventListener('neko-music-playback-change', () => observed.push(s.w.isMusicAudible()));
+    const expectImmediate = (action, value) => {
+        const before = observed.length; action();
+        assert.ok(observed.length > before, 'playback transition must notify without a timer');
+        assert.equal(observed.at(-1), value);
+    };
+    expectImmediate(() => player.play(), true);
+    expectImmediate(() => player.emit('waiting'), false);
+    expectImmediate(() => player.emit('playing'), true);
+    expectImmediate(() => player.pause(), false);
+    expectImmediate(() => player.play(), true);
+    expectImmediate(() => { player.audio.ended = true; player.emit('ended'); }, false);
+    expectImmediate(() => player.play(), true);
+    expectImmediate(() => s.w.destroyMusicPlayer(true, true, true), false);
+});
+
+test('cross-window playback changes notify the avatar synchronously on pause and end', async t => {
+    const s = createSurface(t), observed = [];
+    const state = {...endedState, paused:false, ended:false, currentTime:10, buffering:false};
+    s.w.addEventListener('neko-music-playback-change', () => observed.push(s.w.isMusicAudible()));
+    s.receive(remoteEvent('coord', {coordType:'music_started', playbackId:state.playbackId}));
+    const expectState = (patch, expected) => {
+        const before = observed.length;
+        s.receive(remoteEvent('bar_state', {...state, ...patch}));
+        assert.ok(observed.length > before);
+        assert.equal(observed.at(-1), expected);
+    };
+    expectState({}, true); expectState({paused:true}, false);
+    expectState({}, true); expectState({ended:true}, false);
+    expectState({}, true);
+    s.receive(remoteEvent('coord', {coordType:'music_ended', playbackId:state.playbackId}));
+    assert.equal(observed.at(-1), false);
+});
+
+for (const transport of ['ipc','broadcast']) test(`mood snapshot follows real ${transport} playback mirror`, async t => {
+    const {owner, follower} = pair(t, transport === 'broadcast' ? {channelHub:new Set()} : {});
+    const promise = owner.w.sendMusicMessageDetailed({id:123,source:'netease',name:'track',artist:'artist',
+        tags:['gentle'],url:'https://music.163.com/test.mp3'}, true);
+    await owner.advance(100); await promise; await flush();
+    const snapshot = follower.w.getMusicPlaybackSnapshot();
+    assert.equal(snapshot.audible,true);
+    assert.equal(snapshot.track.id,123);
+    assert.deepEqual(Array.from(snapshot.track.tags),['gentle']);
+    assert.equal(snapshot.playbackId,owner.w.getMusicPlaybackSnapshot().playbackId);
+    owner.players[0].audio.pause(); await flush();
+    assert.equal(follower.w.getMusicPlaybackSnapshot().audible,false);
+    await owner.players[0].audio.play(); await flush();
+    assert.equal(follower.w.getMusicPlaybackSnapshot().audible,true);
+    owner.w.destroyMusicPlayer(true,true,true); await flush();
+    assert.equal(follower.w.getMusicPlaybackSnapshot().audible,false);
+});
+
+
+for (const state of ['loading', 'ended']) {
+  test(`closing a queued ${state} track reports queue cancellation`, async t => {
+    const s = createSurface(t);
+    const events = [];
+    s.w.appState = {socket:{readyState:1, send:raw=>events.push(JSON.parse(raw))}};
+    await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',queueTicket:'a'.repeat(32)}, false);
+    if (state === 'ended') { s.players[0].play(); s.players[0].finish(); }
+    s.clickClose();
+    assert.equal(events.filter(e => e.queue_closed).length, 1);
+    assert.equal(events.find(e => e.queue_closed).queue_ticket, 'a'.repeat(32));
+  });
+}
+
+for (const terminal of ['ended', 'error']) {
+  test(`automatic ${terminal} cleanup never cancels a pending queue`, async t => {
+    const s = createSurface(t);
+    const events=[];
+    s.w.appState={socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+    await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',queueTicket:'a'.repeat(32)},false);
+    s.players[0].play();
+    if (terminal === 'ended') s.players[0].finish();
+    else { s.players[0].audio.error={code:2}; s.players[0].emit('error'); }
+    await s.advance(250);
+    const terminalCount = events.filter(e=>e.state===terminal && e.queue_ticket).length;
+    assert.ok(terminalCount > 0);
+    await s.advance(22000);
+    assert.equal(s.players[0].destroyed,true);
+    assert.equal(events.filter(e=>e.queue_closed).length,0);
+    assert.equal(events.filter(e=>e.state===terminal && e.queue_ticket).length,terminalCount);
+  });
+}
+
+test('socket reconnect re-confirms the existing playing track', async t => {
+  const s=createSurface(t), events=[];
+  s.w.appState={socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+  await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',neteaseId:7},false);
+  s.players[0].play();
+  const original=events.find(e=>e.state==='playing');
+  events.length=0;
+  const socket={readyState:1,send:raw=>events.push(JSON.parse(raw))};
+  s.w.appState.socket=socket;
+  s.w.dispatchEvent(new s.w.CustomEvent('neko:music-socket-open',{detail:{socket}}));
+  assert.equal(events.length,1);
+  assert.equal(events[0].state,'playing');
+  assert.equal(events[0].playback_id,original.playback_id);
+  assert.equal(events[0].netease_id,7);
+});
+
+for (const state of ['playing', 'ended', 'closed']) {
+  test(`character switch does not report old ${state} playback to the new character`, async t => {
+    const s = createSurface(t), events = [];
+    s.w.lanlan_config = {lanlan_name:'Alice'};
+    s.w.appState = {socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+    await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',neteaseId:7,queueTicket:'a'.repeat(32)},false);
+    s.players[0].play();
+    events.length = 0;
+    s.w.lanlan_config.lanlan_name = 'Bob';
+    const socket = s.w.appState.socket = {readyState:1,send:raw=>events.push(JSON.parse(raw))};
+    if (state === 'ended') s.players[0].finish();
+    if (state === 'closed') s.clickClose();
+    s.w.dispatchEvent(new s.w.CustomEvent('neko:music-socket-open',{detail:{socket}}));
+    assert.deepEqual(events, []);
+    s.w.lanlan_config.lanlan_name = 'Alice';
+    s.w.dispatchEvent(new s.w.CustomEvent('neko:music-socket-open',{detail:{socket}}));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].state, state === 'closed' ? 'ended' : state);
+    assert.equal(events[0].queue_closed, state === 'closed');
+  });
+}
+
+for (const terminal of ['ended', 'error', 'closed']) {
+  test(`reconnect delivers offline ${terminal} after player cleanup exactly once`, async t => {
+    const s = createSurface(t), events = [];
+    s.w.lanlan_config = {lanlan_name:'Alice'};
+    const socket = s.w.appState = {socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+    await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',queueTicket:'a'.repeat(32)},false);
+    s.players[0].play();
+    events.length = 0;
+    socket.socket.readyState = 3;
+    if (terminal === 'ended') s.players[0].finish();
+    else if (terminal === 'error') { s.players[0].audio.error={code:2}; s.players[0].emit('error'); }
+    else { s.players[0].finish(); s.clickClose(); }
+    await s.advance(22000);
+    assert.equal(s.players[0].destroyed, true);
+    assert.deepEqual(events, []);
+    socket.socket.readyState = 1;
+    for (let i=0;i<2;i++) s.w.dispatchEvent(new s.w.CustomEvent('neko:music-socket-open',{detail:{socket:socket.socket}}));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].queue_ticket, 'a'.repeat(32));
+    assert.equal(events[0].state, terminal === 'closed' ? 'ended' : terminal);
+    assert.equal(events[0].queue_closed, terminal === 'closed');
+  });
+}
+
+test('paused queue remains resumable past the cleanup timeout', async t => {
+  const s = createSurface(t), events = [];
+  s.w.appState = {socket:{readyState:1,send:raw=>events.push(JSON.parse(raw))}};
+  await s.w.sendMusicMessageDetailed({name:'Song',artist:'Band',url:'https://music.163.com/test.mp3',queueTicket:'a'.repeat(32)},false);
+  const player = s.players[0];
+  player.play();
+  player.audio.pause();
+  await s.advance(72000);
+  assert.equal(player.destroyed, false);
+  assert.equal(events.at(-1).state, 'paused');
+  player.play();
+  assert.equal(events.at(-1).state, 'playing');
+  s.clickClose();
+  assert.equal(events.at(-1).queue_closed, true);
+});
+
+for (const transport of ['ipc', 'broadcast']) test(`plugin ID reaches classification through ${transport} snapshot`, async t => {
+    const {owner, follower} = pair(t, transport === 'broadcast' ? {channelHub:new Set()} : {});
+    const pending = owner.w.sendMusicMessageDetailed({neteaseId:123,name:'Plugin song',artist:'Artist',
+        url:'https://music.163.com/test.mp3'}, true);
+    await owner.advance(100); await pending; await flush();
+    assert.equal(owner.w.getMusicPlaybackSnapshot().track.neteaseId,123);
+    assert.equal(follower.w.getMusicPlaybackSnapshot().track.neteaseId,123);
+    const requests=[];
+    follower.w.live2dManager={currentModel:{}};
+    follower.w.fetch=async (url,options)=>{requests.push(JSON.parse(options.body));return {ok:false};};
+    follower.w.eval(fs.readFileSync(path.join(root,'static/avatar/avatar-music-mood.js'),'utf8'));
+    follower.w.nekoMusicMood.sync();
+    assert.equal(requests[0].netease_id,'123');
+    assert.equal(requests[0].track_id,'netease:123');
+});
+
+for (const event of ['waiting', 'stalled']) test(`closing ${event} playback preserves recommendation and sends terminal receipt`, async t => {
+    const s=createSurface(t), r=await startRecommendation(s,1);
+    const player=s.players[0];
+    player.emit(event);
+    assert.equal(player._musicPlaybackReportContext.lastReportedState,'buffering');
+    assert.equal(player._musicPlaybackReportContext.recommendationLastState,'playing');
+    assert.ok(!r.events.some(e=>e.kind==='buffering'));
+    s.clickClose(); await flush();
+    assert.equal(r.events.filter(e=>['stopped','ended','failed'].includes(e.kind)).length,1);
+    assert.ok(r.awareness.some(e=>e.state==='ended'));
+});
+
+test('buffering player rejects a proactive plugin dispatch at final playback boundary', async t => {
+    const s=createSurface(t);await (await s.start(true)).promise;await s.advance(100);
+    const player=s.players[0];player.emit('waiting');
+    s.w.eval(fs.readFileSync(path.join(root,'static/app/app-chat.js'),'utf8'));
+    const result=await s.w.dispatchMusicPlayDetailed({neteaseId:999,name:'Incoming',artist:'Artist',url:'https://music.163.com/other.mp3'}, {source:'proactive'});
+    assert.equal(result.ok,false);
+    assert.equal(player.destroyed,false);
+    assert.equal(s.players.length,1);
 });

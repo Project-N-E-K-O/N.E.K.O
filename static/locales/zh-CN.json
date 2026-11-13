@@ -5371,6 +5371,7 @@
         }
     },
     "music": {
+        "noExactRecording": "没有找到歌名与歌手相符的版本。",
         "recommendation": {
             "title": "音乐推荐",
             "pending": "想听听这首歌吗？",

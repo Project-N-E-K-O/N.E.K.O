@@ -648,6 +648,10 @@ async def handle_proactive_chat(
 
         # Get session manager.
         mgr = session_manager.get(lanlan_name)
+        if mgr is not None:
+            # Preserve the frontend's skip cooldown for the later Agent plugin
+            # dispatch as well as the recommendation-generation stage.
+            mgr._proactive_music_cooldown = bool(music_cooldown)
         vision_consent_epoch = getattr(mgr, "_proactive_vision_revocation_epoch", 0)
         manager_exists = bool(mgr)
         entry_result = _decide_manager_entry_guard(

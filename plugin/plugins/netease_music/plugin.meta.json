@@ -1,7 +1,7 @@
 {
   "build_env": {
-    "arch": "AMD64",
-    "os": "win32",
+    "arch": "arm64",
+    "os": "darwin",
     "python": "3.11"
   },
   "entries": [
@@ -38,6 +38,101 @@
       },
       "return_message": "",
       "timeout": null
+    },
+    {
+      "auto_start": false,
+      "description": {
+        "$i18n": "cloud.description",
+        "default": "Read and maintain the NetEase cloud library on explicit request. Return only the requested page."
+      },
+      "event_key": "netease_music.cloud_music",
+      "event_type": "plugin_entry",
+      "id": "cloud_music",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "account",
+              "playlists",
+              "tracks",
+              "play",
+              "liked",
+              "daily",
+              "artists",
+              "create",
+              "add",
+              "remove",
+              "like",
+              "unlike"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "default": "all",
+            "enum": [
+              "all",
+              "created",
+              "subscribed"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "playlist": {
+            "description": "云端歌单精确名称或ID；liked=喜欢的音乐；daily=日推",
+            "maxLength": 100,
+            "type": "string"
+          },
+          "privacy": {
+            "default": true,
+            "type": "boolean"
+          },
+          "song": {
+            "description": "歌名 歌手或歌曲ID；current=正在听；queue=整组当前队列（仅add）",
+            "maxLength": 100,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "summary",
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {},
+          "summary": {}
+        },
+        "required": [
+          "summary",
+          "execution"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "cloud.title",
+        "default": "NetEase account and cloud library"
+      },
+      "return_message": "",
+      "timeout": 120
     },
     {
       "auto_start": false,
@@ -79,6 +174,116 @@
       },
       "return_message": "",
       "timeout": 20.0
+    },
+    {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entry.playlist.description",
+        "default": "放点歌、陪伴连播默认 curate：结合聊天和音乐偏好记忆选 6 至 8 首，tracks 为字符串数组，每项「歌名 | 歌手」。搜网易云现成歌单用 search，name 传关键词。revise 按新偏好替换尚未播放的曲目，不打断当前歌；save_current 将此刻播放器确认的一首追加到指定本地歌单，自动去重；仅在明确保存整张播放队列时用 save；replay 重放“我们自己的本地歌单”或已收藏的 name；list 列出收藏；next 下一首；stop 停止。"
+      },
+      "event_key": "netease_music.playlist",
+      "event_type": "plugin_entry",
+      "id": "playlist",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "curate",
+              "revise",
+              "search",
+              "save_current",
+              "save",
+              "replay",
+              "list",
+              "next",
+              "stop"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "name_confirmed": {
+            "type": "boolean"
+          },
+          "search_type": {
+            "default": "playlist",
+            "description": "Explicit object type; empty results never change it.",
+            "enum": [
+              "playlist",
+              "artist",
+              "song"
+            ],
+            "type": "string"
+          },
+          "tracks": {
+            "items": {
+              "maxLength": 150,
+              "type": "string"
+            },
+            "maxItems": 24,
+            "type": "array"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {}
+        },
+        "required": [
+          "execution"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "playlist.title",
+        "default": "网易云歌单连播与收藏"
+      },
+      "return_message": "",
+      "timeout": 90
+    },
+    {
+      "auto_start": false,
+      "description": "",
+      "event_key": "netease_music.playlist_terminal",
+      "event_type": "plugin_entry",
+      "id": "playlist_terminal",
+      "input_schema": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_schema": {},
+      "metadata": {
+        "agent_hidden": true
+      },
+      "model_validate": true,
+      "name": "播放器队列回执",
+      "return_message": "",
+      "timeout": 90
     },
     {
       "auto_start": false,
@@ -130,7 +335,10 @@
   "entries_config_sha256": "",
   "entry_methods": {
     "clear_music_u": "clear_music_u",
+    "cloud_music": "cloud_music",
     "play_netease_music": "play_netease_music",
+    "playlist": "playlist",
+    "playlist_terminal": "playlist_terminal",
     "save_music_u": "save_music_u"
   },
   "handlers": {
@@ -175,6 +383,108 @@
         "priority": 0
       },
       "timeout": null
+    },
+    "netease_music.cloud_music": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "cloud.description",
+        "default": "Read and maintain the NetEase cloud library on explicit request. Return only the requested page."
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "cloud_music",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "account",
+              "playlists",
+              "tracks",
+              "play",
+              "liked",
+              "daily",
+              "artists",
+              "create",
+              "add",
+              "remove",
+              "like",
+              "unlike"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "default": "all",
+            "enum": [
+              "all",
+              "created",
+              "subscribed"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "playlist": {
+            "description": "云端歌单精确名称或ID；liked=喜欢的音乐；daily=日推",
+            "maxLength": 100,
+            "type": "string"
+          },
+          "privacy": {
+            "default": true,
+            "type": "boolean"
+          },
+          "song": {
+            "description": "歌名 歌手或歌曲ID；current=正在听；queue=整组当前队列（仅add）",
+            "maxLength": 100,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "summary",
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {},
+          "summary": {}
+        },
+        "required": [
+          "summary",
+          "execution"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "cloud.title",
+        "default": "NetEase account and cloud library"
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": 120
     },
     "netease_music.play_netease_music": {
       "auto_start": false,
@@ -224,6 +534,131 @@
         "priority": 0
       },
       "timeout": 20.0
+    },
+    "netease_music.playlist": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entry.playlist.description",
+        "default": "放点歌、陪伴连播默认 curate：结合聊天和音乐偏好记忆选 6 至 8 首，tracks 为字符串数组，每项「歌名 | 歌手」。搜网易云现成歌单用 search，name 传关键词。revise 按新偏好替换尚未播放的曲目，不打断当前歌；save_current 将此刻播放器确认的一首追加到指定本地歌单，自动去重；仅在明确保存整张播放队列时用 save；replay 重放“我们自己的本地歌单”或已收藏的 name；list 列出收藏；next 下一首；stop 停止。"
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "playlist",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "curate",
+              "revise",
+              "search",
+              "save_current",
+              "save",
+              "replay",
+              "list",
+              "next",
+              "stop"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "name_confirmed": {
+            "type": "boolean"
+          },
+          "search_type": {
+            "default": "playlist",
+            "description": "Explicit object type; empty results never change it.",
+            "enum": [
+              "playlist",
+              "artist",
+              "song"
+            ],
+            "type": "string"
+          },
+          "tracks": {
+            "items": {
+              "maxLength": 150,
+              "type": "string"
+            },
+            "maxItems": 24,
+            "type": "array"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {}
+        },
+        "required": [
+          "execution"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "playlist.title",
+        "default": "网易云歌单连播与收藏"
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": 90
+    },
+    "netease_music.playlist_terminal": {
+      "auto_start": false,
+      "description": "",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "playlist_terminal",
+      "input_schema": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
+      "metadata": {
+        "agent_hidden": true
+      },
+      "model_validate": true,
+      "name": "播放器队列回执",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": 90
     },
     "netease_music.save_music_u": {
       "auto_start": false,
@@ -373,6 +808,108 @@
       },
       "timeout": null
     },
+    "netease_music:plugin_entry:cloud_music": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "cloud.description",
+        "default": "Read and maintain the NetEase cloud library on explicit request. Return only the requested page."
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "cloud_music",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "account",
+              "playlists",
+              "tracks",
+              "play",
+              "liked",
+              "daily",
+              "artists",
+              "create",
+              "add",
+              "remove",
+              "like",
+              "unlike"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "default": "all",
+            "enum": [
+              "all",
+              "created",
+              "subscribed"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "maximum": 50,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "maximum": 100000,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "playlist": {
+            "description": "云端歌单精确名称或ID；liked=喜欢的音乐；daily=日推",
+            "maxLength": 100,
+            "type": "string"
+          },
+          "privacy": {
+            "default": true,
+            "type": "boolean"
+          },
+          "song": {
+            "description": "歌名 歌手或歌曲ID；current=正在听；queue=整组当前队列（仅add）",
+            "maxLength": 100,
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "summary",
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {},
+          "summary": {}
+        },
+        "required": [
+          "summary",
+          "execution"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "cloud.title",
+        "default": "NetEase account and cloud library"
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": 120
+    },
     "netease_music:plugin_entry:play_netease_music": {
       "auto_start": false,
       "description": {
@@ -421,6 +958,131 @@
         "priority": 0
       },
       "timeout": 20.0
+    },
+    "netease_music:plugin_entry:playlist": {
+      "auto_start": false,
+      "description": {
+        "$i18n": "entry.playlist.description",
+        "default": "放点歌、陪伴连播默认 curate：结合聊天和音乐偏好记忆选 6 至 8 首，tracks 为字符串数组，每项「歌名 | 歌手」。搜网易云现成歌单用 search，name 传关键词。revise 按新偏好替换尚未播放的曲目，不打断当前歌；save_current 将此刻播放器确认的一首追加到指定本地歌单，自动去重；仅在明确保存整张播放队列时用 save；replay 重放“我们自己的本地歌单”或已收藏的 name；list 列出收藏；next 下一首；stop 停止。"
+      },
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "playlist",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "curate",
+              "revise",
+              "search",
+              "save_current",
+              "save",
+              "replay",
+              "list",
+              "next",
+              "stop"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "type": "string"
+          },
+          "name_confirmed": {
+            "type": "boolean"
+          },
+          "search_type": {
+            "default": "playlist",
+            "description": "Explicit object type; empty results never change it.",
+            "enum": [
+              "playlist",
+              "artist",
+              "song"
+            ],
+            "type": "string"
+          },
+          "tracks": {
+            "items": {
+              "maxLength": 150,
+              "type": "string"
+            },
+            "maxItems": 24,
+            "type": "array"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": [
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {}
+        },
+        "required": [
+          "execution"
+        ],
+        "type": "object"
+      },
+      "metadata": {},
+      "model_validate": true,
+      "name": {
+        "$i18n": "playlist.title",
+        "default": "网易云歌单连播与收藏"
+      },
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": 90
+    },
+    "netease_music:plugin_entry:playlist_terminal": {
+      "auto_start": false,
+      "description": "",
+      "dynamic": false,
+      "enabled": true,
+      "event_type": "plugin_entry",
+      "extra": {},
+      "id": "playlist_terminal",
+      "input_schema": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "kind": "action",
+      "llm_result_fields": null,
+      "llm_result_schema": null,
+      "metadata": {
+        "agent_hidden": true
+      },
+      "model_validate": true,
+      "name": "播放器队列回执",
+      "persist": null,
+      "quick_action": false,
+      "quick_action_config": {
+        "icon": null,
+        "priority": 0
+      },
+      "timeout": 90
     },
     "netease_music:plugin_entry:save_music_u": {
       "auto_start": false,
@@ -479,10 +1141,12 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 72120,
+  "source_bytes": 141076,
   "source_files": [
     "README.md",
     "__init__.py",
+    "cloud.py",
+    "cloud_entry.py",
     "config.schema.json",
     "credential_ui.py",
     "credentials.py",
@@ -495,9 +1159,10 @@
     "i18n/zh-CN.json",
     "i18n/zh-TW.json",
     "models.py",
+    "playlists.py",
     "plugin.toml",
     "provider.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "e79348d720840f769e104a902cf2648692414e976690cb5a4af603919dc110eb"
+  "source_sha256": "8c72144fcf7457cb379651e52f15bf65dee3085a22e157bc29e1607c77bce7f5"
 }

@@ -3121,6 +3121,10 @@
             }
             var isReactWindowSource = options.source === 'react-chat-window';
             var messageSource = typeof options.source === 'string' ? options.source.trim() : '';
+            // Capture the pet's current music pose before starting this reply can retire it.
+            var listeningContext = text && options.visitLine !== true
+                && ['', 'react-chat-window', 'legacy-text-button'].includes(messageSource)
+                ? await window.nekoListeningContext?.capture(requestId) : null;
             var reactOptimisticMessageId = '';
             var reactOptimisticMessageAppended = null;
             var sentUserContent = false;
@@ -3389,6 +3393,8 @@
                         if (memoryText) {
                             textMessage.memory_text = memoryText;
                         }
+                        var currentListeningContext = window.nekoListeningContext?.forMessage(listeningContext);
+                        if (currentListeningContext) textMessage.listening_context = currentListeningContext;
                         if (messageSource) {
                             textMessage.source = messageSource;
                         }

@@ -5371,6 +5371,7 @@
         }
     },
     "music": {
+        "noExactRecording": "曲名とアーティストの両方が一致する音源が見つかりません。",
         "recommendation": {
             "title": "音楽のおすすめ",
             "pending": "この曲を聴いてみますか？",

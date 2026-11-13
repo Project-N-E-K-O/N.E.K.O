@@ -1306,3 +1306,8 @@ __all__ = [
     'VISIT_REPORT_STALE_S',
     'VISIT_ACCOUNTS_FILENAME',
 ]
+
+
+# Whole-track lyrics/tag classification: no dialogue or audio is submitted.
+MUSIC_MOOD_INPUT_MAX_TOKENS = 1800
+MUSIC_MOOD_OUTPUT_MAX_TOKENS = 256

@@ -44,6 +44,8 @@ async def _emit_task_result(
     delivery_mode: str = "proactive",
     result_kind: str = "task_result",
     expires_in_s: Optional[float] = None,
+    plugin_id: str | None = None,
+    entry_id: str | None = None,
 ) -> None:
     """Emit a structured task_result event to main_server.
 
@@ -69,6 +71,10 @@ async def _emit_task_result(
         TASK_LARGE_DETAIL_MAX_TOKENS as _DETAIL_LIMIT,
         TASK_ERROR_MAX_TOKENS as _ERROR_LIMIT,
     )
+    from utils.music_capability_context import music_result_token_limit
+    music_limit = music_result_token_limit(plugin_id, entry_id) if success else None
+    if music_limit:
+        _SUMMARY_LIMIT = _DETAIL_LIMIT = music_limit
     # Truncate once and reuse, avoiding double encoding of the same summary in text/summary fields
     # and consolidating final-budget ownership here.
     _summary_t = _tt(summary, _SUMMARY_LIMIT)
@@ -90,6 +96,7 @@ async def _emit_task_result(
         source_name=source_name or "",
         delivery_mode=delivery_mode,
         result_kind=result_kind,
+        **({"metadata": {"music_library_evidence": True}} if music_limit else {}),
         expires_in_s=expires_in_s,
         timestamp=_now_iso(),
     )

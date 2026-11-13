@@ -277,6 +277,10 @@
             && previousContext.recommendationId === (options.recommendationId || '')
             && previousContext.url === String(track.url || '');
         return {
+            characterName: String(window.lanlan_config?.lanlan_name || ''),
+            neteaseId: track.neteaseId,
+            queueTicket: track.queueTicket || '',
+            musicRequestId: track.musicRequestId || '',
             playbackId: playbackId || '',
             token: token,
             lifecycleStartedAt: getMusicLifecycleTimestamp(),
@@ -303,6 +307,8 @@
     }
 
     function reportRecommendationPlaybackState(state, evidenceContext, failureReason) {
+        // Buffering is transport state, not a recommendation feedback event.
+        if (state === 'buffering') return;
         try {
             // Recommendation evidence is independent of the conversational socket.
             // Only the owning player carries this immutable recommendation id.
@@ -340,24 +346,37 @@
         }
     }
 
+    // Retain terminal receipts independently of the player: its UI may be
+    // destroyed before the character's socket reconnects.
+    const pendingMusicTerminalReports = new Map();
+
+    function sendMusicPlaybackReport(report) {
+        if (report.characterName !== String(window.lanlan_config?.lanlan_name || '')) return false;
+        const socket = window.appState?.socket;
+        if (!socket || typeof socket.send !== 'function') return false;
+        if (socket.readyState !== 1 && typeof socket.readyState !== 'undefined') return false;
+        try {
+            socket.send(JSON.stringify(report.payload));
+            return true;
+        } catch (_) { return false; }
+    }
+
     function reportMusicPlaybackState(state, track, playbackContext, failureReason) {
         reportRecommendationPlaybackState(state, playbackContext, failureReason);
-        try {
-            const appState = window.appState;
-            const socket = appState && appState.socket;
-            if (!socket || typeof socket.send !== 'function') return;
-            if (socket.readyState !== 1 && typeof socket.readyState !== 'undefined') return;
-            const context = playbackContext || createMusicPlaybackReportContext(
-                getCurrentMusicPlaybackId(),
-                currentMusicPlaybackContext,
-                track,
-                latestMusicRequestToken
-            );
-            const currentTrack = track || context.track || {};
-            socket.send(JSON.stringify({
+        const context = playbackContext || createMusicPlaybackReportContext(
+            getCurrentMusicPlaybackId(), currentMusicPlaybackContext, track, latestMusicRequestToken
+        );
+        const currentTrack = track || context.track || {};
+        const report = {
+            characterName: context.characterName,
+            payload: {
                 action: 'music_playback_state',
                 state: state,
                 playback_id: context.playbackId,
+                netease_id: context.neteaseId,
+                queue_ticket: context.queueTicket || '',
+                music_request_id: context.musicRequestId || '',
+                queue_closed: failureReason === 'closed',
                 playback_window_id: MUSIC_COORD_SENDER_ID,
                 playback_started_at: context.lifecycleStartedAt,
                 source: context.source,
@@ -368,9 +387,18 @@
                     name: String(currentTrack.name || '').slice(0, 120),
                     artist: String(currentTrack.artist || '').slice(0, 120)
                 }
-            }));
-            context.lastReportedState = state;
-        } catch (_) { /* best-effort playback awareness */ }
+            }
+        };
+        const key = JSON.stringify([context.characterName, context.playbackId, context.queueTicket]);
+        const terminal = state === 'ended' || state === 'error';
+        if (sendMusicPlaybackReport(report)) {
+            pendingMusicTerminalReports.delete(key);
+        } else if (terminal) {
+            const previous = pendingMusicTerminalReports.get(key);
+            // An explicit close must supersede an undelivered ended/error.
+            if (!previous?.payload.queue_closed) pendingMusicTerminalReports.set(key, report);
+        }
+        context.lastReportedState = state;
     }
 
     function reportMusicPlaybackFailureIfNeeded(playbackContext, failureReason, deferFailureUi) {
@@ -463,6 +491,7 @@
                     if (sid === mirrorBarLeaderSender && !isCurrentMirrorPlayback(data)) return;
                     remoteMusicSenders.delete(sid);
                 }
+                notifyMusicPlaybackChange();
             };
             // 窗口关闭时通告一声 music_ended 并关闭 channel，避免对端等 30s TTL 才意识到我退出
             window.addEventListener('pagehide', (event) => {
@@ -551,6 +580,10 @@
     function applyChatMirror(data) {
         if (!data || typeof data !== 'object') return;
         if (data.target && data.target !== MUSIC_COORD_SENDER_ID) return;
+        if (data.type === 'listening_context_request' || data.type === 'listening_context_response') {
+            window.dispatchEvent(new CustomEvent('neko:listening-context', { detail: data }));
+            return;
+        }
         if (data.type === 'recommendation_request' || data.type === 'recommendation_snapshot' || data.type === 'recommendation_reset') {
             window.dispatchEvent(new CustomEvent('neko:chat-mirror', { detail: data }));
             return;
@@ -797,6 +830,7 @@
         const audio = localPlayer.audio;
         return {
             track: currentPlayingTrack ? {
+                neteaseId: currentPlayingTrack.neteaseId, id: currentPlayingTrack.id, source: currentPlayingTrack.source, tags: currentPlayingTrack.tags,
                 name: currentPlayingTrack.name,
                 artist: currentPlayingTrack.artist,
                 cover: currentPlayingTrack.cover,
@@ -804,6 +838,7 @@
             } : null,
             paused: audio ? !!audio.paused : true,
             ended: audio ? !!audio.ended : false,
+            buffering: !audio || audio.readyState < 3 || !!localPlayer._musicBuffering,
             currentTime: audio ? (audio.currentTime || 0) : 0,
             duration: audio && isFinite(audio.duration) ? (audio.duration || 0) : 0,
             volume: (typeof localPlayer.volume === 'function') ? (localPlayer.volume() || 0) : 0,
@@ -812,9 +847,14 @@
         };
     };
 
+    function notifyMusicPlaybackChange() {
+        window.dispatchEvent(new CustomEvent('neko-music-playback-change'));
+    }
+
     const emitBarState = () => {
         const state = computeCurrentBarState();
         if (!state) return;
+        notifyMusicPlaybackChange();
         broadcastBarState(state);
     };
 
@@ -835,6 +875,7 @@
         if (!trackInfo) return;
         broadcastBarState({
             track: {
+                neteaseId: trackInfo.neteaseId, id: trackInfo.id, source: trackInfo.source, tags: trackInfo.tags,
                 name: trackInfo.name,
                 artist: trackInfo.artist,
                 cover: trackInfo.cover,
@@ -1495,6 +1536,7 @@
         if (!state) return false;
         if (mirrorBarDestroyTimer) { clearTimeout(mirrorBarDestroyTimer); mirrorBarDestroyTimer = null; }
         mirrorBarLastState = state;
+        notifyMusicPlaybackChange();
 
         const track = state.track || {};
 
@@ -1631,6 +1673,7 @@
         mirrorBarElement = null;
         mirrorBarTrackSig = null;
         mirrorBarLastState = null;
+        notifyMusicPlaybackChange();
         clearMusicMountRelocationRetry();
         if (!musicBar || musicBar.dataset.mirror !== 'true') return;
         musicBar.dataset.skipMountRelocation = 'true';
@@ -1741,6 +1784,7 @@
             if (sender === mirrorBarLeaderSender && !isCurrentMirrorPlayback(payload)) return;
             remoteMusicSenders.delete(sender);
         }
+        notifyMusicPlaybackChange();
     }
 
     function applyMusicPlayerBridgeEvent(event) {
@@ -2421,11 +2465,26 @@
     };
 
 
+    window.closeNeteasePlayer = () => {
+        if (localPlayer?._musicPlaybackReportContext?.neteaseId) closeLocalMusicPlayer();
+    };
+
     function closeLocalMusicPlayer() {
         recordMusicCloseFeedback(playbackStartedAt);
         playbackStartedAt = 0;
-        destroyMusicPlayer(true, true, true);
+        destroyMusicPlayer(true, true, true, false, true);
     }
+
+    window.addEventListener('neko:music-socket-open', (event) => {
+        if (event.detail?.socket !== window.appState?.socket) return;
+        for (const [key, report] of pendingMusicTerminalReports) {
+            if (sendMusicPlaybackReport(report)) pendingMusicTerminalReports.delete(key);
+        }
+        const context = localPlayer && localPlayer._musicPlaybackReportContext;
+        const audio = localPlayer && localPlayer.audio;
+        if (!context?.playbackStarted || !audio || audio.ended || localPlayer._destroying || localPlayer._loadError) return;
+        reportMusicPlaybackState(audio.paused ? 'paused' : 'playing', null, context);
+    });
 
     function releaseMusicPlayerInstance(player) {
         if (!player) return;
@@ -2458,7 +2517,8 @@
         removeDOM = true,
         fullTeardown = false,
         updateToken = false,
-        preserveMusicCard = false
+        preserveMusicCard = false,
+        userClosed = false
     ) => {
         // 播放器销毁即结束当前曲目生命周期，清起播时间戳，避免残留到下一首
         playbackStartedAt = 0;
@@ -2467,10 +2527,13 @@
         if (
             fullTeardown
             && terminalReportContext
-            && (['playing', 'paused'].includes(terminalReportContext.lastReportedState)
+            && ((userClosed && terminalReportContext.queueTicket)
+                || ['playing', 'paused', 'buffering'].includes(terminalReportContext.lastReportedState)
                 || ['playing', 'paused'].includes(terminalReportContext.recommendationLastState))
         ) {
-            reportMusicPlaybackState('ended', null, terminalReportContext);
+            // Automatic cleanup releases the old UI, not the pending queue.
+            const context = userClosed ? terminalReportContext : { ...terminalReportContext, queueTicket: '' };
+            reportMusicPlaybackState('ended', null, context, userClosed ? 'closed' : '');
         }
         // 重要：销毁播放器意味着取消所有正在进行的异步加载令牌
         // 只有在 fullTeardown (手动关闭) 或明确要求时才更新 token
@@ -2514,6 +2577,7 @@
         if (!fullTeardown) clearManagedListeners();
         releaseMusicPlayerInstance(localPlayer);
         localPlayer = null;
+        notifyMusicPlaybackChange();
 
         if (removeDOM) {
             disconnectTitleMarqueeObserver();
@@ -2884,11 +2948,16 @@
                 // 【核心修复】使用闭包固定当前的播放器实例
                 const boundPlayer = localPlayer;
 
-                boundPlayer.on('play', () => {
+                // 'play' only means an attempt; 'playing' confirms decoded audio is ready.
+                boundPlayer.on('playing', () => {
                     const reportContext = getOwnedMusicPlaybackReportContext(boundPlayer, 'playing');
                     if (!reportContext) return;
+                    if (reportContext.lastReportedState === 'error') return;
+                    if (reportContext.stallTimer) clearTimeout(reportContext.stallTimer);
+                    reportContext.stallTimer = null;
                     reportContext.playbackStarted = true;
                     reportContext.mediaReady = true;
+                    boundPlayer._musicBuffering = false;
                     if (autoDestroyTimer) { clearTimeout(autoDestroyTimer); autoDestroyTimer = null; }
                     updatePlayBtnState(true);
                     autoplayBlocked = false;
@@ -2903,16 +2972,35 @@
                     startMusicHeartbeat();
                     emitBarState();
                 });
+                for (const event of ['waiting', 'stalled']) boundPlayer.on(event, () => {
+                    const context = getOwnedMusicPlaybackReportContext(boundPlayer, 'buffering');
+                    if (!context || !context.playbackStarted || boundPlayer.audio.paused) return;
+                    boundPlayer._musicBuffering = true;
+                    reportMusicPlaybackState('buffering', null, context);
+                    emitBarState();
+                    setMusicBarVisualState(musicBar, 'loading');
+                    const token = boundPlayer._latestToken;
+                    if (context.stallTimer) return;
+                    context.stallTimer = setTimeout(() => {
+                        if (localPlayer === boundPlayer && boundPlayer._latestToken === token
+                            && context.lastReportedState === 'buffering') {
+                            reportMusicPlaybackFailureIfNeeded(context, 'load_timeout', false);
+                            boundPlayer.audio.pause();
+                        }
+                    }, 15000);
+                });
                 boundPlayer.on('pause', () => {
                     const playbackState = boundPlayer.audio && boundPlayer.audio.ended ? 'ended' : 'paused';
                     const reportContext = getOwnedMusicPlaybackReportContext(boundPlayer, playbackState);
                     if (!reportContext) return;
+                    if (reportContext.lastReportedState === 'error') return;
                     if (!reportContext.mediaReady && reportContext.hasNextCandidate) return;
                     updatePlayBtnState(false);
                     const tokenAtEvent = boundPlayer._latestToken;
                     if (autoDestroyTimer) clearTimeout(autoDestroyTimer);
                     autoDestroyTimer = setTimeout(() => {
                         if (localPlayer === boundPlayer && boundPlayer._latestToken === tokenAtEvent) {
+                            if (reportContext.queueTicket && !boundPlayer.audio.ended) return;
                             destroyMusicPlayer(true, true, true);
                         }
                     }, MUSIC_CONFIG.timeouts.paused);
@@ -3749,6 +3837,24 @@
     window.destroyMusicPlayer = destroyMusicPlayer;
     window.getMusicPlayerInstance = getMusicPlayerInstance;
     window.isMusicPlaying = isMusicPlaying;
+    // Actual playback only: occupancy also includes paused/pending owners.
+    // Mirrors carry the same state across Electron's separate chat partitions.
+    window.isMusicAudible = () => {
+        if (localPlayer) {
+            const state = computeCurrentBarState();
+            return !!(state && !state.paused && !state.ended && !state.loadError && !state.buffering);
+        }
+        const state = mirrorBarLastState;
+        const expires = remoteMusicSenders.get(mirrorBarLeaderSender) || 0;
+        return !!(state && mirrorBarLeaderSender && expires > Date.now()
+            && !state.initial && !state.paused && !state.ended && !state.loadError && !state.buffering);
+    };
+    window.getMusicPlaybackSnapshot = () => {
+        const state = localPlayer ? computeCurrentBarState() : mirrorBarLastState;
+        return { track: state?.track || null, playbackId: state?.playbackId || '',
+            paused: state?.paused !== false, ended: !!state?.ended,
+            audible: window.isMusicAudible(), source: localPlayer ? 'local' : 'mirror' };
+    };
     window.isMusicOccupied = isMusicOccupied;
     window.isMusicCooldown = isInMusicCooldown;
     window.getMusicCurrentTrack = getMusicCurrentTrack;
