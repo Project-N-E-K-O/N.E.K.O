@@ -1307,6 +1307,74 @@ async def test_kept_text_survives_the_runtime_going_away_before_the_prompt_was_s
     assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "try again"]
 
 
+async def test_the_sentence_of_a_start_that_fails_while_it_is_set_up_is_kept(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _kept_after_a_quota_failure(host)
+    model_config = host.task_agents._model_config
+
+    async def no_model() -> dict[str, Any]:
+        return {}
+
+    host.task_agents._model_config = no_model
+    await host.task_agents.tell(commission.id, "try again")
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    host.task_agents._model_config = model_config
+
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "try again"]
+
+
+async def test_what_was_passed_on_while_a_start_was_set_up_is_kept_when_its_prompt_is_refused_later(hosts, tmp_path):
+    # The process runtime answers a prompt it refuses with an event that comes
+    # after the prompt call returned, by when what came meanwhile was steered.
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _kept_after_a_quota_failure(host)
+    runtime = host.task_agents._runtime
+    start, prompt, steer = runtime.start, runtime.prompt, runtime.steer
+    steered: list[str] = []
+
+    async def start_with_a_note(spec: Any) -> None:
+        await start(spec)
+        await host.task_agents.tell(spec.session_id, "and drive F: too")
+
+    async def refused_later(session_id: str, text: str) -> None:
+        async def later() -> None:
+            await asyncio.sleep(0.01)
+            await host.task_agents._handle(
+                {"type": "error", "session_id": session_id, "command": "prompt", "message": "a run is under way"}
+            )
+
+        asyncio.get_running_loop().create_task(later())
+
+    async def record_steer(session_id: str, text: str) -> None:
+        steered.append(text)
+
+    runtime.start, runtime.prompt, runtime.steer = start_with_a_note, refused_later, record_steer
+    await host.task_agents.tell(commission.id, "try again")
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    runtime.start, runtime.prompt, runtime.steer = start, prompt, steer
+
+    assert steered == ["and drive F: too"]
+    assert host.task_agents._carried.get(commission.id) == [
+        "the photos are on drive E:",
+        "try again",
+        "and drive F: too",
+    ]
+
+
 async def test_kept_text_survives_a_prompt_the_runtime_refuses(hosts, tmp_path):
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
     paid = [False]

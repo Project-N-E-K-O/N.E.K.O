@@ -450,6 +450,9 @@ class TaskAgentManager:
         session = self._sessions.get(commission_id)
         if session is None:
             return False
+        # The sentence this start was given is the user's from the outset:
+        # a failure while it is set up keeps it too.
+        session.carried = [prompt] if prompt is not None else []
         carried: list[str] = []
         try:
             commission = await self._ledger.get(commission_id)
@@ -551,8 +554,10 @@ class TaskAgentManager:
                 return False
             await self._send_text(runtime, session, "prompt", text)
             session.ready = True
-            # What was passed on while the session was being set up.
+            # What was passed on while the session was being set up. Like the
+            # prompt, it is the user's until the run is seen at work.
             for note in self._notes.pop(commission.id, []):
+                session.carried.append(note)
                 await self._send_text(runtime, session, "steer", note)
             return True
         except asyncio.CancelledError:
