@@ -77,6 +77,9 @@ TIER_COARSE = "coarse"
 TIER_FINE = "fine"
 # The turn check: the small model again, with a budget of its own.
 TIER_TURN_CHECK = "turn_check"
+# A short description for a plugin whose manifest has none: the small model,
+# once per plugin and description, in the background.
+TIER_SHORT_DESCRIPTION = "short_description"
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
 
@@ -172,7 +175,7 @@ class DecisionLLM(Protocol):
     """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion from ``TIER_COARSE``, ``TIER_FINE`` or ``TIER_TURN_CHECK``."""
+        """Return the text of one completion from ``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK`` or ``TIER_SHORT_DESCRIPTION``."""
 
 
 class DecisionModel(Protocol):
@@ -211,10 +214,10 @@ class DecisionModel(Protocol):
 class ConfiguredDecisionLLM:
     """``DecisionLLM`` on the models the analyzer used.
 
-    The coarse screen and the turn check run on the small latency-sensitive
-    tier (``emotion``), the fine selection on the ``summary`` tier. Endpoints
-    come from the user's configuration as they are, ``http://`` addresses
-    included.
+    The coarse screen, the turn check and short descriptions run on the small
+    latency-sensitive tier (``emotion``), the fine selection on the ``summary``
+    tier. Endpoints come from the user's configuration as they are,
+    ``http://`` addresses included.
     """
 
     def __init__(self) -> None:
@@ -243,7 +246,7 @@ class ConfiguredDecisionLLM:
         return client
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        from config import AGENT_PLUGIN_COARSE_MAX_TOKENS, AGENT_PLUGIN_FULL_MAX_TOKENS
+        from config import AGENT_PLUGIN_COARSE_MAX_TOKENS, AGENT_PLUGIN_FULL_MAX_TOKENS, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
         from utils.token_tracker import set_call_type
 
         # Same usage bucket as the analyzer it takes over from.
@@ -253,6 +256,7 @@ class ConfiguredDecisionLLM:
         budget = {
             TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
             TIER_TURN_CHECK: TURN_CHECK_OUTPUT_MAX_TOKENS,
+            TIER_SHORT_DESCRIPTION: AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
         }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)

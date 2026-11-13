@@ -2956,10 +2956,6 @@ class TurnMixin:
 
         # Always write sync_message_queue/message_cache regardless of WS success,
         # preserving assistant content in cross_server history after disconnects.
-        if text_clean.strip():
-            # She has said something this turn; a tool call from here on no
-            # longer leaves the user facing silence.
-            self._turn_has_spoken = True
         if is_first_chunk:
             logger.debug("[%s] send_lanlan_response: first chunk (len=%d)", self.lanlan_name, len(text_clean))
             # First visible content of the turn → the model has finished its
@@ -2975,6 +2971,12 @@ class TurnMixin:
         # did not.
         if not guarded_delivery_is_current():
             return None
+
+        if text_clean.strip():
+            # She has said something this turn; a tool call from here on no
+            # longer leaves the user facing silence. Not before the check
+            # above: text it turns away was never said.
+            self._turn_has_spoken = True
 
         # Append to current AI text buffer, later flushed for activity-tracker
         # unfinished_thread detection. Rejected guarded publishing must not pollute buffers,

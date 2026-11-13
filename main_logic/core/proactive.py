@@ -854,10 +854,15 @@ class ProactiveMixin:
                 # starts herself has no task tools to act through.
                 if self._close_turn_tool_state():
                     turn_end_msg['acted_through_tools'] = True
-            # Otherwise the user began a turn while this one was being
-            # delivered (the sends and the TTS signal above are awaited).
-            # Its words and its tool calls are that turn's, which closes
-            # them itself when it ends.
+            else:
+                # The user began a turn while this one was being delivered
+                # (the sends and the TTS signal above are awaited). Its words
+                # and its tool calls are that turn's, which closes them itself
+                # when it ends. Nor may this turn end have cross_server check
+                # that turn by it: it carries none of that turn's marks, and a
+                # task done through a tool would be dispatched again. The
+                # callback kind ends a turn without a check.
+                turn_end_msg['data'] = 'turn end agent_callback'
             self.sync_message_queue.put(turn_end_msg)
             try:
                 if (self.websocket

@@ -938,3 +938,51 @@ async def test_finish_proactive_delivery_stages_screenshot_only_under_live_conse
     mgr.session.set_proactive_screenshot.assert_called_once_with(
         None if live_consent is False else "SHOT_B64"
     )
+
+
+async def _finish_with_engagement_during_publish(engaged: bool) -> LLMSessionManager:
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.last_user_engagement_time = None
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    # A tool that acts was called in the turn that is current at the end.
+    mgr._turn_acted_through_tools = True
+
+    async def publish(*_args, **kwargs):
+        kwargs["on_published"](100.0)
+        if engaged:
+            # The user begins a turn while this one is being delivered.
+            mgr.last_user_engagement_time = 101.0
+        return True
+
+    mgr.send_lanlan_response = AsyncMock(side_effect=publish)
+    await LLMSessionManager.finish_proactive_delivery(
+        mgr,
+        "搭话",
+        expected_speech_id="s_proactive",
+        expected_user_engagement_time=None,
+    )
+    return mgr
+
+
+async def test_a_proactive_turn_end_carries_whether_its_turn_acted():
+    mgr = await _finish_with_engagement_during_publish(engaged=False)
+
+    assert mgr.sync_message_queue.get_nowait() == {
+        "type": "system",
+        "data": "turn end",
+        "acted_through_tools": True,
+    }
+    assert mgr._turn_acted_through_tools is False
+
+
+async def test_a_proactive_turn_end_after_the_user_began_a_turn_does_not_have_that_turn_checked():
+    # Ending a turn the plain way would have cross_server check the user's
+    # new turn by it, without that turn's marks: a task done through a tool
+    # would be dispatched again. The callback kind ends it without a check.
+    mgr = await _finish_with_engagement_during_publish(engaged=True)
+
+    assert mgr.sync_message_queue.get_nowait() == {"type": "system", "data": "turn end agent_callback"}
+    # The new turn's marks are left for its own turn end.
+    assert mgr._turn_acted_through_tools is True

@@ -43,6 +43,9 @@ class FakeDecisionLLM:
         self.fine = list(fine or [{"route": "task_agent"}])
         self.calls: list[tuple[str, list[dict[str, Any]]]] = []
         self.gate: asyncio.Event | None = None
+        # Answers for short descriptions (strings or exceptions), in order.
+        self.short: list[Any] = []
+        self.short_calls: list[list[dict[str, Any]]] = []
 
     def count(self, tier: str | None = None) -> int:
         return sum(1 for called, _ in self.calls if tier is None or called == tier)
@@ -54,6 +57,15 @@ class FakeDecisionLLM:
         return next(messages for called, messages in reversed(self.calls) if called == tier)
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
+        if tier == "short_description":
+            # Written in the background whenever a plugin without one is
+            # listed; kept apart so it does not change what the other tests
+            # count. Answers nothing usable unless a test sets ``short``.
+            self.short_calls.append([dict(message) for message in messages])
+            answer = self.short.pop(0) if self.short else ""
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
         self.calls.append((tier, [dict(message) for message in messages]))
         if self.gate is not None:
             await self.gate.wait()

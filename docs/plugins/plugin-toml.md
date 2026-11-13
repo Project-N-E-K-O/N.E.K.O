@@ -87,7 +87,7 @@ keywords = ["note", "笔记", "memo", "record", "メモ"]
 These fields decide how the Agent (NekoClaw) selects the plugin once the host has loaded it:
 
 - `description` — Full description used in plugin metadata and in the fine selection.
-- `short_description` — Compact description read by the coarse screen, which uses at most 150 tokens of it. If absent, the start of `description` is used instead.
+- `short_description` — Compact description read by the coarse screen, which uses at most 150 tokens of it. **Write one.** If it is absent and `description` is longer than those 150 tokens, the host has the small model write one from `description` in the background, once per plugin and description (one model request, kept in `nekoclaw/plugin_short_descriptions.json` under the data directory); until that is done, or when it fails, the start of `description` is used instead.
 - `keywords` — Regular-expression patterns. A match puts the plugin among the coarse stage's candidates and marks it as a keyword match for the fine selection; it does not bypass the fine selection or guarantee execution.
 
 Selection has two stages. When the descriptions of all selectable plugins and their visible entries together exceed 3000 tokens, a coarse stage keeps the union of three sets: plugins whose keywords match, the ten best BM25 text matches (over the plugin's ID, name, descriptions, and its entries' IDs and descriptions), and the plugins a small model picks from the short descriptions. The fine selection then chooses a `plugin_id` and a runtime `entry_id` and fills in the arguments. At or below 3000 tokens the coarse stage is skipped and every selectable plugin goes to the fine selection.

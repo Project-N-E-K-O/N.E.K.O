@@ -338,6 +338,18 @@ def build_selection_request(
 # =====================================================================
 # ======= Coarse screening (small model, plugin ids only) =======
 # =====================================================================
+# Short description of a plugin whose manifest has none. Written once per
+# plugin and description, in the background, and kept on disk; the coarse
+# screen below reads it. The text is the old task executor's, unchanged, and
+# in English only as it was: the summary is read by the model, never shown.
+
+PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT = (
+    "You are an agentic automation assessment agent, generate a concise plugin summary under 200 tokens in English."
+)
+
+PLUGIN_SHORT_DESCRIPTION_USER_TEMPLATE = "Plugin: {plugin_id}\nDescription: {description}\n\nReturn ONLY the summary."
+
+# =====================================================================
 # Used when the descriptions of all plugins exceed the two-stage threshold,
 # and once in the first round when nothing matches locally and no task agent can
 # be started. The text is the analyzer's coarse-screening prompt, moved here

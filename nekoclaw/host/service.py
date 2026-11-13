@@ -64,6 +64,7 @@ from nekoclaw.host.permissions import PermissionGate, PermissionStore
 from nekoclaw.host.plugin_runs import ClientFactory, PluginCatalog, PluginRunner
 from nekoclaw.host.preferences import PreferenceStore
 from nekoclaw.host.reports import CHANNEL_PLUGIN, CHANNEL_TASK_AGENT, Reporter
+from nekoclaw.host.short_descriptions import ShortDescriptions
 from nekoclaw.host.task_brain import ProgressListener, QueryAnswer, Receipt, TaskBrain, TurnCheck
 
 logger = logging.getLogger(__name__)
@@ -123,7 +124,16 @@ class NekoClawHost:
             self.ledger.subscribe(on_commission)
         self.catalog = PluginCatalog(base_url=plugin_base_url, client_factory=client_factory, change_token=change_token)
         self.runner = PluginRunner(self.catalog, base_url=plugin_base_url, client_factory=client_factory)
-        self.registry = CapabilityRegistry(self.catalog, plugins_enabled=plugins_enabled, builtins=builtins)
+        self._decision_llm = decision_llm
+        if decision is None and self._decision_llm is None:
+            self._decision_llm = ConfiguredDecisionLLM()
+        self.short_descriptions = ShortDescriptions(self.paths.short_descriptions_json, self._decision_llm)
+        self.registry = CapabilityRegistry(
+            self.catalog,
+            plugins_enabled=plugins_enabled,
+            builtins=builtins,
+            short_descriptions=self.short_descriptions,
+        )
         self.outbox = OutboxSender(self.ledger, send_report)
         self.reporter = Reporter(self.ledger, self.outbox)
         self.gateway = CapabilityGateway(
@@ -148,10 +158,7 @@ class NekoClawHost:
         # A plugin's request for confirmation is put to the user by the
         # gateway, through the same waiting the task agents' own questions use.
         self.gateway.set_ask_user(self.task_agents.ask_user)
-        self._decision_llm = decision_llm
         if decision is None:
-            if self._decision_llm is None:
-                self._decision_llm = ConfiguredDecisionLLM()
             decision = LexicalDecisionModel(self._decision_llm)
         self.decision = decision
         self.brain = TaskBrain(
@@ -300,6 +307,7 @@ class NekoClawHost:
             ("task_agents", self.task_agents.shutdown),
             ("gateway", self.gateway.stop),
             ("plugin runs", self.runner.aclose),
+            ("short descriptions", self.short_descriptions.aclose),
             ("outbox", self.outbox.close),
         )
         for name, step in steps:

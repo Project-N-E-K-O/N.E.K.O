@@ -1134,3 +1134,26 @@ async def test_an_unacknowledged_or_failing_send_reports_false_and_raises_nothin
 
     monkeypatch.setattr(cross_server, "publish_turn_check_reliably", _raise)
     assert await cross_server._publish_turn_check_with_fallback("Lan", "session_end", _EXCHANGE) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("published", [True, False])
+async def test_only_text_that_was_published_counts_as_having_spoken(published):
+    # A reply turned away at the publish boundary was never said: a tool call
+    # after it must still light the "…" bubble.
+    from tests.unit.test_core_game_route_memory_contract import _make_manager
+
+    manager = _make_manager()
+    manager._turn_has_spoken = False
+    checks: list[int] = []
+
+    def still_ours() -> bool:
+        # Owned when the chunk comes in; taken over (or not) during the
+        # first-chunk cleanup it awaits.
+        checks.append(1)
+        return len(checks) == 1 or published
+
+    result = await TurnMixin.send_lanlan_response(manager, "好的", is_first_chunk=True, publish_if=still_ours)
+
+    assert (result is None) is (not published)
+    assert manager._turn_has_spoken is published

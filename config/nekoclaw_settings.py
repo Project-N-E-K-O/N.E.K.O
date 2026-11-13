@@ -215,3 +215,17 @@ OUTBOX_RETRY_BASE_SECONDS = 1.0
 OUTBOX_RETRY_MAX_SECONDS = 300.0
 """Reports that could not be delivered are retried after 1 s, 2 s, 4 s ...,
 at most every five minutes."""
+
+# ---------------------------------------------------------------------------
+# Plugin short descriptions
+# ---------------------------------------------------------------------------
+
+PLUGIN_SHORT_DESCRIPTION_INPUT_MAX_TOKENS = 1000
+"""Cap on a plugin's description as it is given to the small model that writes
+a short description for a plugin whose manifest has none. A manifest's
+description is uncapped."""
+
+PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS = 600.0
+"""How long a plugin whose short description could not be written waits before
+it is tried again. Without it a model that is not configured, or one that keeps
+failing, would be asked again every time the plugins are listed."""

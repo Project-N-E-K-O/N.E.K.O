@@ -87,7 +87,7 @@ keywords = ["笔记", "note", "记录", "备忘", "memo", "メモ"]
 宿主完成加载后，Agent（猫爪，NekoClaw）按这些字段筛选插件：
 
 - `description` — 完整描述，同时用于插件元数据和精选。
-- `short_description` — 粗筛读的短描述，最多读 150 token；缺失时改用 `description` 的开头部分。
+- `short_description` — 粗筛读的短描述，最多读 150 token。**请写上。** 缺失且 `description` 超过这 150 token 时，宿主会在后台让小模型按 `description` 写一份，每个插件、每版描述只写一次（一次模型请求，存在数据目录的 `nekoclaw/plugin_short_descriptions.json`）；写好之前或写失败时，改用 `description` 的开头部分。
 - `keywords` — 正则表达式模式。命中的插件会进入粗筛的候选集，并在精选时标为关键词命中；它不会跳过精选，也不保证执行。
 
 筛选分两级。全部可选插件及其可见入口的描述合计超过 3000 token 时先粗筛，取三者的并集：关键词命中的插件、BM25 文本匹配的前 10 名（匹配插件的 ID、名称、描述，以及入口的 ID 和描述）、小模型按短描述挑出的插件。然后由精选选出 `plugin_id` 和运行时 `entry_id`，并填好参数。不超过 3000 token 时跳过粗筛，全部可选插件直接进入精选。

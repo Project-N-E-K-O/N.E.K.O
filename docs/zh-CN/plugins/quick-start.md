@@ -215,6 +215,8 @@ supported = ">=0.1.0,<0.3.0"
 - `entry` 告诉 N.E.K.O 从哪个 Python 模块加载哪个类，格式是 `模块路径:类名`。
 - `[plugin.sdk]` 声明这个插件推荐和支持的 SDK 版本范围。
 
+给别人用之前，在 `[plugin]` 下补上 `description` 和一句话的 `short_description`（见[插件配置](/zh-CN/plugins/plugin-toml)）。猫爪靠它们给任务挑插件；没写 `short_description` 而 `description` 又长时，会让模型写一份，要多花一次请求。
+
 脚手架还会在源码目录中生成 `config.example.toml`，为新用户提供初始运行设置：
 
 ```toml

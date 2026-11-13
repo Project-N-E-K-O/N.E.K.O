@@ -762,7 +762,20 @@ def test_every_prompt_table_sent_to_a_model_is_under_that_check():
         name for name in dir(prompts_nekoclaw_brain) if name.endswith("_PROMPT") and name.isupper()
     }
 
-    assert sent_to_a_model == {"TASK_BRAIN_SELECT_PROMPT", "TASK_BRAIN_COARSE_SCREEN_PROMPT", "TURN_CHECK_PROMPT"}
+    assert sent_to_a_model == {
+        "TASK_BRAIN_SELECT_PROMPT",
+        "TASK_BRAIN_COARSE_SCREEN_PROMPT",
+        "TURN_CHECK_PROMPT",
+        "PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT",
+    }
+
+
+def test_the_short_description_prompt_opens_as_the_analyzers_did():
+    # One text for every language (the summary is read by the model only),
+    # under the same check as the tables above.
+    from config.prompts.prompts_nekoclaw_brain import PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT
+
+    assert "automation assessment agent" in PLUGIN_SHORT_DESCRIPTION_SYSTEM_PROMPT.splitlines()[0]
 
 
 def test_every_language_of_the_fine_selection_keeps_the_identifiers_it_parses():

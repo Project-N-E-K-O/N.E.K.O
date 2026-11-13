@@ -44,6 +44,7 @@ the ``mcp_adapter`` plugin, exactly as the analyzer saw them.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -378,10 +379,13 @@ class CapabilityRegistry:
         *,
         plugins_enabled: Callable[[], bool] | None = None,
         builtins: BuiltinCapabilities | None = None,
+        short_descriptions: Any = None,
     ) -> None:
         self._catalog = catalog
         self._plugins_enabled = plugins_enabled
         self._builtins = builtins
+        # ``nekoclaw.host.short_descriptions.ShortDescriptions``, or None.
+        self._short_descriptions = short_descriptions
 
     def invalidate(self) -> None:
         """Forget the cached plugin list. Call it when a plugin's lifecycle changes."""
@@ -399,11 +403,20 @@ class CapabilityRegistry:
         """Return the plugins the decision model selects from.
 
         Running, not passive, with at least one visible entry; none when the
-        plugin switch is off.
+        plugin switch is off. A plugin whose manifest has no short description
+        gets the one written for it, once there is one.
         """
         if not self.plugins_enabled():
             return []
-        return routable_plugins(await self._catalog.plugins())
+        plugins = routable_plugins(await self._catalog.plugins())
+        if self._short_descriptions is not None:
+            try:
+                plugins = await self._short_descriptions.apply(plugins)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - listed by their descriptions, as without it
+                logger.warning("applying the plugin short descriptions failed", exc_info=True)
+        return plugins
 
     async def summary(self) -> CatalogSummary:
         installed = await self._catalog.installed()
