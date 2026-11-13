@@ -2967,13 +2967,16 @@ async def test_closing_that_is_stopped_while_an_earlier_browser_is_tried_again_h
 
     monkeypatch.setattr(session_module.launcher, "close", held_for_the_earlier_one)
     closing = asyncio.ensure_future(session.close())
-    await asyncio.wait_for(reached.wait(), 5.0)
-    # The user stops everything while the browser of earlier is tried again.
-    await _cancelled(closing)
+    try:
+        await asyncio.wait_for(reached.wait(), 5.0)
+        # The user stops everything while the browser of earlier is tried again.
+        await _cancelled(closing)
 
-    # What was being driven is let go of altogether; only the earlier one is still to be closed.
-    assert not session.connected and session.pages() == []
-    gate.set()
+        # What was being driven is let go of altogether; only the earlier one is still to be closed.
+        assert not session.connected and session.pages() == []
+    finally:
+        # Whatever went wrong above, nothing is left waiting behind this test.
+        gate.set()
     tried = len(world.closed)
     await session.close()
     assert [browser for browser, _connection in world.closed[tried:]] == [half_closed]
