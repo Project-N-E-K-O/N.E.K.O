@@ -385,25 +385,21 @@ async def test_another_characters_task_is_no_record_for_her(server, hosts, tmp_p
 
 
 
-async def _two_done(host: Any, lanlan_name: str = "Lan") -> None:
+async def _two_done(host: Any) -> None:
     for title, summary in (("记个提醒：五分钟后喝水", "已记下"), ("把购物清单写进文件", "已写好")):
         commission, _created = await host.ledger.create(
-            lanlan_name=lanlan_name, title=title, dispatch_text=title, source="dispatch"
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch"
         )
         await host.ledger.transition(commission.id, "working")
         await host.ledger.transition(commission.id, "done", result_summary=summary)
 
 
-@pytest.mark.parametrize("claim", ["提醒和购物清单都办好了", "把清单写好存进目录，并定好喝水的提醒"])
-async def test_what_she_says_is_done_right_after_looking_her_tasks_up_is_not_corrected(
-    server, hosts, tmp_path, claim
-):
-    # Seen in the real app (the second claim, word for word): she looked her
-    # tasks up and said both were done. Her one summary matched neither task
-    # alone, the correction told her it was not on record, and she
-    # dispatched both again.
+async def test_what_she_says_is_done_right_after_looking_her_tasks_up_is_not_corrected(server, hosts, tmp_path):
+    # Seen in the real app: she looked her tasks up and said both were done.
+    # Her one summary matched neither task alone, the correction told her it
+    # was not on record, and she dispatched both again.
     _weather(server)
-    llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": claim}])
+    llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": "提醒和购物清单都办好了"}])
     host = _host(hosts, tmp_path, server, llm)
     await _two_done(host)
 
@@ -417,73 +413,38 @@ async def test_what_she_says_is_done_right_after_looking_her_tasks_up_is_not_cor
 
 @pytest.mark.parametrize(
     "how",
-    [
-        "no_query",
-        "other_character",
-        "long_ago",
-        "capability_question",
-        "nothing_done",
-        "answered_again_with_nothing_done",
-        "next_turn",
-        "dispatched",
-        "about_another_task",
-        "about_a_result",
-    ],
+    ["no_query", "other_character", "long_ago", "capability_question", "nothing_done", "next_turn", "dispatched"],
 )
 async def test_what_she_says_is_done_is_still_checked_without_a_fresh_look_at_her_tasks(
     server, hosts, tmp_path, monkeypatch, how
 ):
-    # Except where the case is about what she says, she says the two tasks are
-    # done in one sentence, which no single task matches: only a fresh answer
-    # telling her of them may keep it from being corrected.
     _weather(server)
-    task = "提醒和购物清单都办好了"
-    user_text = "那两件事怎么样了"
-    if how == "about_another_task":
-        task = "订去东京的机票"
-    elif how == "about_a_result":
-        # Words that only a result has do not make a claim about its task;
-        # the long question keeps the record check itself from matching.
-        task = "订去东京的机票"
-        user_text = "那个周末出发去日本玩的整个行程安排现在到底进行到哪一步了你快点仔细告诉我吧"
-    claim = {"verdict": "claimed_done", "task": task}
+    claim = {"verdict": "claimed_done", "task": "订去东京的机票"}
     llm = FakeDecisionLLM(turn=[{"verdict": "none"}, claim] if how == "next_turn" else [claim])
     host = _host(hosts, tmp_path, server, llm)
+    if how != "nothing_done":
+        await _two_done(host)
     if how == "nothing_done":
         # An answer that names nothing done backs no claim that something is.
-        for title in ("记个提醒：五分钟后喝水", "把购物清单写进文件"):
-            working, _created = await host.ledger.create(
-                lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch"
-            )
-            await host.ledger.transition(working.id, "working")
-        await host.query("", lanlan_name="Lan", lang="zh")
-    elif how == "about_a_result":
-        flights, _created = await host.ledger.create(
-            lanlan_name="Lan", title="查航班", dispatch_text="查航班", source="dispatch"
+        working, _created = await host.ledger.create(
+            lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"
         )
-        await host.ledger.transition(flights.id, "working")
-        await host.ledger.transition(flights.id, "done", result_summary="东京的机票")
-        await host.query("", lanlan_name="Lan", lang="zh")
-    else:
-        await _two_done(host)
-    if how == "answered_again_with_nothing_done":
-        # A later answer with nothing done in it takes back what an earlier one said.
-        await host.query("", lanlan_name="Lan", lang="zh")
-        monkeypatch.setattr("config.nekoclaw_settings.QUERY_RECENT_SECONDS", -1.0)
+        await host.ledger.transition(working.id, "working")
         await host.query("", lanlan_name="Lan", lang="zh")
     elif how == "next_turn":
         # The answer was given in an earlier turn, whose check took it.
         await host.query("", lanlan_name="Lan", lang="zh")
         await _check(host, "那两件事怎么样了", "都办好啦", external_intent=0.8)
-    elif how == "about_another_task":
-        # The answer named other tasks as done; the flight is not one of them.
-        await host.query("", lanlan_name="Lan", lang="zh")
     elif how == "dispatched":
         # A turn in which she dispatches is not checked; the next one is.
         await host.query("", lanlan_name="Lan", lang="zh")
         await host.dispatch("查上海明天的天气", lanlan_name="Lan", lang="zh")
     elif how == "other_character":
-        await _two_done(host, "Mei")
+        hers, _created = await host.ledger.create(
+            lanlan_name="Mei", title="订去东京的机票", dispatch_text="订去东京的机票", source="dispatch"
+        )
+        await host.ledger.transition(hers.id, "working")
+        await host.ledger.transition(hers.id, "done", result_summary="订好了")
         await host.query("", lanlan_name="Mei", lang="zh")
     elif how == "long_ago":
         await host.query("", lanlan_name="Lan", lang="zh")
@@ -492,15 +453,11 @@ async def test_what_she_says_is_done_is_still_checked_without_a_fresh_look_at_he
         # Whether something can be done says nothing about what was done.
         await host.query("能不能订机票", lanlan_name="Lan", lang="zh")
 
-    result = await _check(host, user_text, "都办好啦", external_intent=0.8)
+    result = await _check(host, "机票订了吗", "订好啦，明早八点的", external_intent=0.8)
 
     assert (result.verdict, result.action, result.skipped) == ("claimed_done", "corrected", "")
     assert [notice for notice in await _notices(host) if notice[0] == "no_record"] == [
-        (
-            "no_record",
-            "proactive",
-            f"刚才你说「{task}」已经办好了，但任务记录里没有这件事。请自然地向用户更正；真要办，就用任务派发工具。",
-        )
+        ("no_record", "proactive", "刚才你说「订去东京的机票」已经办好了，但任务记录里没有这件事。请自然地向用户更正；真要办，就用任务派发工具。")
     ]
 
 

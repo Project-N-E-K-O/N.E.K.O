@@ -81,7 +81,7 @@ from nekoclaw.host.plugin_runs import (
 )
 from nekoclaw.host.preferences import PreferenceStore, describe_stop, preference_kind, stop_tendency_prefix
 from nekoclaw.host.reports import CHANNEL_PLUGIN, Reporter
-from nekoclaw.host.selection import find_entry, similarity, token_set, visible_entries
+from nekoclaw.host.selection import find_entry, similarity, visible_entries
 
 logger = logging.getLogger(__name__)
 
@@ -297,10 +297,9 @@ class TaskBrain:
         # before the raise files nothing.
         self._dispatch_generation = 0
         # Character -> when her question about her tasks was last answered
-        # with tasks that are done (ledger clock), and the words of those
-        # tasks. Taken by the next turn check for her: what she says is done
-        # in that turn, if it is about them, comes from the record.
-        self._done_answers: dict[str, tuple[float, frozenset[str]]] = {}
+        # with one that is done (ledger clock). Taken by the next turn check
+        # for her: what she says is done in that turn comes from the record.
+        self._status_answered_at: dict[str, float] = {}
         # commission id -> its second round or direct plugin call.
         self._work: dict[str, asyncio.Task[Any]] = {}
         self._deferred_timers: dict[str, asyncio.TimerHandle] = {}
@@ -458,7 +457,7 @@ class TaskBrain:
 
         # A turn in which she dispatches is not checked: an answer she got
         # in it must not carry over to the next turn's check.
-        self._done_answers.pop(lanlan_name, None)
+        self._status_answered_at.pop(lanlan_name, None)
         # Read before the first round is scheduled: it only starts when the
         # loop gets to it, and a stop in between must still reach it.
         if generation is None:
@@ -1034,16 +1033,10 @@ class TaskBrain:
                 recent = sorted(recent, key=relevance, reverse=True)
         active = active[:QUERY_LEDGER_ROWS]
         recent = recent[: QUERY_LEDGER_ROWS - len(active)]
-        done = [item for item in recent if item.status == "done"]
-        if done:
-            # The tasks' own words, not their results: a result's "done"
-            # would match any claim that something is done.
-            self._done_answers[lanlan_name] = (
-                now,
-                frozenset().union(*(token_set(commission_text(item)) for item in done)),
-            )
+        if any(item.status == "done" for item in recent):
+            self._status_answered_at[lanlan_name] = now
         else:
-            self._done_answers.pop(lanlan_name, None)
+            self._status_answered_at.pop(lanlan_name, None)
 
         def line(commission: Commission) -> str:
             parts = [f"- {commission.title} ({status_word(commission.status, lang)})"]
@@ -1132,7 +1125,7 @@ class TaskBrain:
 
         lang = prompt_language(lang)
         # Only this turn's check may lean on an answer given in it.
-        done_answer = self._done_answers.pop(lanlan_name, None)
+        answered_at = self._status_answered_at.pop(lanlan_name, None)
         if not TURN_CHECK_ENABLED or not self._is_enabled():
             return TurnCheck("skipped", skipped="disabled")
         # As of the turn that is being checked; see the "promised" verdict below.
@@ -1159,9 +1152,11 @@ class TaskBrain:
                 await self._reporter.turn_notice(lanlan_name, reason="can_do", text=words["can_do"].format(task=task))
                 result.action = "corrected"
         elif verdict.kind == "claimed_done":
-            if self._read_from_answer(done_answer, task):
-                # She had just looked her tasks up and was told these are
-                # done: what she says is done was read from the record. Matching her summary against
+            from config.nekoclaw_settings import TURN_CHECK_STATUS_ANSWER_SECONDS
+
+            if answered_at is not None and self._ledger._clock() - answered_at <= TURN_CHECK_STATUS_ANSWER_SECONDS:
+                # She had just looked her tasks up and was told of one that
+                # is done: what she says is done was read from the record. Matching her summary against
                 # single tasks misses one that covers several, and a
                 # correction then has her dispatch finished work again.
                 result.skipped = "looked_up"
@@ -1199,22 +1194,6 @@ class TaskBrain:
                 commission=receipt.commissions[0] if receipt.commissions else None,
             )
         return result
-
-    def _read_from_answer(self, done_answer: tuple[float, frozenset[str]] | None, task: str) -> bool:
-        """Whether what she says is done is about the done tasks an answer just told her of.
-
-        The share of the claim's words found among those tasks' words: a
-        claim that sums several of them up is about them as a whole.
-        """
-        from config.nekoclaw_settings import TURN_CHECK_STATUS_ANSWER_MIN_COVERAGE, TURN_CHECK_STATUS_ANSWER_SECONDS
-
-        if done_answer is None:
-            return False
-        answered_at, words = done_answer
-        if self._ledger._clock() - answered_at > TURN_CHECK_STATUS_ANSWER_SECONDS:
-            return False
-        claim = token_set(task)
-        return bool(claim) and len(claim & words) / len(claim) >= TURN_CHECK_STATUS_ANSWER_MIN_COVERAGE
 
     async def _has_record(self, lanlan_name: str, text: str) -> bool:
         """Whether any of her tasks, under way or ended lately, is about this."""
