@@ -159,9 +159,18 @@ _COMPANION_ENTRIES = {"nekoclaw/ledger.db-wal": "nekoclaw/ledger.db"}
 
 # Completed migrations may already have different plugin approvals and code
 # at the target. Only move installed code as part of a full storage migration.
+# The same goes for an entry and its companion: the catch-up publishes entry
+# by entry, and stopped between the two it has nothing that finishes the
+# pair or takes it back, so the half that arrived would be taken for the new
+# root's own. A full migration moves both in one transaction. (A v1
+# migration was made by a build from before there was any such pair; one
+# found in its old root all the same stays there and is named by cleanup.)
 _V1_CATCH_UP_ENTRIES = tuple(
     name for name in MIGRATED_RUNTIME_ENTRY_NAMES
-    if name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES and name not in _PLUGIN_INSTALLATION_ENTRIES
+    if name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
+    and name not in _PLUGIN_INSTALLATION_ENTRIES
+    and name not in _COMPANION_ENTRIES
+    and name not in _COMPANION_ENTRIES.values()
 )
 
 
@@ -2331,15 +2340,6 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
         and entry_parents_are_real_directories(source_root, entry_name)
         and _entry_exists(source_root / entry_name)
     ]
-    for companion_entry, owner_entry in _COMPANION_ENTRIES.items():
-        target_has_owner = _entry_exists(target_root / owner_entry)
-        target_has_companion = _entry_exists(target_root / companion_entry)
-        if target_has_companion and not target_has_owner:
-            # What the new root holds is not a pair: neither half is added to.
-            candidates = [name for name in candidates if name not in (owner_entry, companion_entry)]
-        elif owner_entry not in candidates or target_has_owner:
-            # Only ever copied together with what it belongs to.
-            candidates = [name for name in candidates if name != companion_entry]
     copied: list[str] = []
     skipped: list[str] = []
     copied_source_fingerprints: dict[str, str] = {}
