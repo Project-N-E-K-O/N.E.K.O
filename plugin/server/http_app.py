@@ -21,6 +21,10 @@ from utils.host_origin_guard import HostOriginGuardMiddleware
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import shutdown as lifecycle_shutdown
 from plugin.server.lifecycle import startup as lifecycle_startup
+from plugin.server.messaging.llm_tool_registry import (
+    release_tool_host_instance,
+    start_tool_host_instance,
+)
 from plugin.server.routes import (
     config_router,
     documents_router,
@@ -136,6 +140,7 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # An incorrect default in this direction merely leaves standalone-server plugins stopped, visibly and harmlessly.
     manage_lifecycle = bool(getattr(app.state, "manage_plugin_lifecycle", False))
 
+    tool_host_id = await start_tool_host_instance()
     capability_analysis_service.analysis_service.start()
 
     if _can_register_faulthandler_signal():
@@ -251,6 +256,7 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             try:
                 await lifecycle_shutdown()
             finally:
+                await release_tool_host_instance(tool_host_id)
                 # The knowledge bridge uses the shared loopback client; a
                 # standalone plugin server owns its process, so it closes it.
                 # Embedded in another server, that server does.
@@ -264,6 +270,8 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
                         type(exc).__name__,
                         str(exc),
                     )
+        else:
+            await release_tool_host_instance(tool_host_id)
 
 
 def build_plugin_server_app(
