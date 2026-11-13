@@ -87,7 +87,7 @@ keywords = ["note", "筆記", "memo", "record", "メモ"]
 host が plugin をロードした後、Agent（ネコクロー、NekoClaw）はこれらの field を使って plugin を選びます。
 
 - `description` — plugin metadata と精選に使う完全な説明です。
-- `short_description` — 粗選別が読む短い説明で、読むのは最大 150 token です。**書いておいてください。** 省略されていて `description` がこの 150 token を超えるときは、ホストがバックグラウンドで小さいモデルに `description` から書かせますデータディレクトリの `nekoclaw/plugin_short_descriptions.json` に保存し、成功すればプラグインと説明の版ごとにモデルへのリクエスト 1 回です。リクエストが失敗した場合や 150 token を超えた場合は保存せず、10 分後に再試行し、そのたびにリクエストが 1 回かかります。保存されるまでは `description` の先頭部分を代わりに使います。
+- `short_description` — 粗選別が読む短い説明で、読むのは最大 150 token です。**書いておいてください。** 省略されていて `description` がこの 150 token を超えるときは、ホストがバックグラウンドで小さいモデルに `description` から書かせますデータディレクトリの `nekoclaw/plugin_short_descriptions.json` に保存し、成功すればプラグインと説明の版ごとにモデルへのリクエスト 1 回です。150 token を超えた結果は 150 に切り詰めて保存します。リクエストが失敗した場合は保存せず、10 分後に再試行し（`description` が変わればすぐ再試行）、そのたびにリクエストが 1 回かかります。保存されるまでは `description` の先頭部分を代わりに使います。
 - `keywords` — 正規表現 pattern です。一致した plugin は粗選別の候補に入り、精選では「キーワード一致」の印が付きます。精選を省略したり、実行を保証したりはしません。
 
 選択は二段階です。選択対象の全 plugin と、その可視 entry の説明の合計が 3000 token を超えるときは、先に粗選別を行い、三つの集合の和を残します。keywords が一致した plugin、BM25 のテキスト一致の上位 10 件（plugin の ID、名前、説明と、entry の ID・説明が対象）、小型モデルが短い説明から選んだ plugin です。その後、精選が `plugin_id` と runtime `entry_id` を選び、引数を埋めます。3000 token 以下なら粗選別は行わず、選択対象の plugin すべてが精選に渡ります。

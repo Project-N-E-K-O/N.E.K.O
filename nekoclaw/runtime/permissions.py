@@ -112,8 +112,20 @@ def is_inside(path: Path, workdir: Path) -> bool:
         return False
 
 
-def classify(tool: str, arguments: Mapping[str, Any], workdir: Path) -> PermissionRequest:
-    """Classify one tool call into a permission category."""
+def classify(
+    tool: str,
+    arguments: Mapping[str, Any],
+    workdir: Path,
+    *,
+    readable: tuple[Path, ...] = (),
+) -> PermissionRequest:
+    """Classify one tool call into a permission category.
+
+    ``readable`` are directories outside the working directory that are
+    read as if they were inside it: the session's own ``outputs``, where a
+    result too long for the context is kept and the model is told to read
+    it. Writing there still counts as writing outside.
+    """
     base = str(workdir)
     if tool in _COMMAND_TOOLS:
         # The approver must see where the command really runs.
@@ -135,7 +147,7 @@ def classify(tool: str, arguments: Mapping[str, Any], workdir: Path) -> Permissi
         key = _WRITE_TOOLS[tool] if writes else _READ_TOOLS[tool]
         raw = arguments.get(key)
         path = resolve_path(workdir, raw) if isinstance(raw, str) and raw.strip() else workdir
-        if is_inside(path, workdir):
+        if is_inside(path, workdir) or (not writes and any(is_inside(path, root) for root in readable)):
             category: Category = "workdir_files"
         else:
             category = "outside_write" if writes else "outside_read"
@@ -159,6 +171,7 @@ def make_permission_hook(
     host: HostBridge,
     session_id: str,
     is_cancelled: Callable[[], bool],
+    readable: tuple[Path, ...] = (),
 ) -> BeforeToolCall:
     """Build the loop's before-tool hook. It returns ``(blocked, reason)``."""
 
@@ -177,7 +190,7 @@ def make_permission_hook(
                 await asyncio.gather(task, return_exceptions=True)
 
     async def before_tool_call(call: ToolCall) -> tuple[bool, str | None]:
-        request = classify(call.name, call.arguments, workdir)
+        request = classify(call.name, call.arguments, workdir, readable=readable)
         if request.category == "other":
             return False, None
         default = default_permission_decision(request)

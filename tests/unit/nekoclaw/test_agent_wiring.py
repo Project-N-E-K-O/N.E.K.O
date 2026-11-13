@@ -520,6 +520,31 @@ async def test_a_host_that_cannot_be_built_is_not_tried_again_on_every_poll(wiri
     assert tries == [1, 1]
 
 
+async def test_a_ledger_that_cannot_be_read_is_not_tried_again_on_every_poll(wiring, tmp_path, monkeypatch):
+    # The host is built, but reading what was left under way fails: that
+    # waits as well, instead of one warning per poll.
+    await _left_by_an_earlier_process(tmp_path)
+    host = wiring.host_mount.get_host()
+    reads: list[int] = []
+    now = [1000.0]
+
+    async def locked(*args: Any, **kwargs: Any) -> Any:
+        reads.append(1)
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(host.ledger, "select", locked)
+    monkeypatch.setattr(wiring.mount_module, "_restore_clock", lambda: now[0])
+
+    for _ in range(3):
+        await wiring.routes.list_tasks()
+        now[0] += 5
+    assert reads == [1]
+
+    now[0] += wiring.mount_module.RESTORE_RETRY_SECONDS
+    await wiring.routes.list_tasks()
+    assert reads == [1, 1]
+
+
 @pytest.mark.parametrize("nekoclaw_is_on", [True, False])
 async def test_stopping_everything_right_after_a_restart_stops_what_was_left_under_way(
     wiring, tmp_path, monkeypatch, nekoclaw_is_on

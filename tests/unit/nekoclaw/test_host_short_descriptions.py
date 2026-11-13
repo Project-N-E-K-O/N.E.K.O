@@ -134,7 +134,7 @@ async def test_a_changed_description_is_written_again(tmp_path):
     assert len(llm.short_calls) == 2
 
 
-@pytest.mark.parametrize("answer", ["", RuntimeError("no model configured"), "word " * 400])
+@pytest.mark.parametrize("answer", ["", RuntimeError("no model configured")])
 async def test_a_failure_is_not_kept_and_tried_again_only_after_a_while(tmp_path, monkeypatch, answer):
     from config import nekoclaw_settings
     from nekoclaw.host.short_descriptions import ShortDescriptions
@@ -293,4 +293,39 @@ async def test_a_changed_description_is_not_written_twice_while_the_old_one_is_b
 
     assert len(llm.short_calls) == 2
     (listed,) = await short.apply([changed])
+    assert listed["short_description"] == "Weather and air quality."
+
+
+async def test_an_answer_longer_than_the_coarse_screen_reads_is_kept_cut(tmp_path):
+    from config import AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    llm = FakeDecisionLLM()
+    llm.short = ["Weather forecasts. " * 100]
+    short = _short(llm, tmp_path / "short.json")
+
+    await short.apply([_weather()])
+    await _written(short)
+    (listed,) = await short.apply([_weather()])
+
+    # Asking again would cost a request each time and could come out as long.
+    assert listed["short_description"].startswith("Weather forecasts.")
+    assert count_tokens(listed["short_description"]) <= AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
+    assert len(llm.short_calls) == 1
+
+
+async def test_a_failed_plugin_whose_description_changed_is_tried_again_at_once(tmp_path):
+    llm = FakeDecisionLLM()
+    llm.short = [RuntimeError("busy"), "Weather and air quality."]
+    short = _short(llm, tmp_path / "short.json")
+    await short.apply([_weather()])
+    await _written(short)
+
+    # The author fixed the description: no need to wait out the pause.
+    changed = plugin("weather", LONG + "It also reports the air quality.")
+    await short.apply([changed])
+    await _written(short)
+    (listed,) = await short.apply([changed])
+
+    assert len(llm.short_calls) == 2
     assert listed["short_description"] == "Weather and air quality."

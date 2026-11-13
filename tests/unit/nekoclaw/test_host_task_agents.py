@@ -958,6 +958,38 @@ async def test_what_the_user_added_while_it_was_queued_stays_when_the_quota_is_u
     assert host.task_agents._notes.get(second.commission_id) == ["skip the drafts"]
 
 
+async def test_a_start_given_up_for_the_quota_keeps_its_place_until_its_session_is_closed(hosts, tmp_path):
+    # The user takes the failed commission up again while its old session is
+    # still closing. The new session waits for the old one to go; the old
+    # one's close must not release it.
+    paid = [True, False, True]
+    pick = lambda spec: ScriptedLLM([[say("done"), finish()]])  # noqa: E731
+    host = _host(hosts, tmp_path, pick)
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    warm = await _dispatch(host, "warm up")
+    await wait_status(host, warm.commission_id, "done")
+    runtime = host.task_agents._runtime
+    close = runtime.close
+    release = asyncio.Event()
+
+    async def slow_close(session_id: str) -> None:
+        await release.wait()
+        await close(session_id)
+
+    runtime.close = slow_close
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "failed")
+    # Taken up again while the old session is still closing.
+    told = asyncio.ensure_future(host.task_agents.tell(first.commission_id, "try again"))
+    await asyncio.sleep(0.05)
+    release.set()
+    assert await told is True
+
+    await wait_status(host, first.commission_id, "done", timeout=10)
 async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_it_goes_back(hosts, tmp_path):
     llm = ScriptedLLM(
         [

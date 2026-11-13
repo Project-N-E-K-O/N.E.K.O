@@ -141,6 +141,9 @@ class _Session:
     # Model requests already counted against the quota before they were
     # sent; that many usage reports are not counted again.
     prepaid_requests: int = 0
+    # Set when the session is closed before its work was given: what was
+    # passed on for that work is kept when the session is released.
+    keep_notes: bool = False
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
     # ends, the earlier one's end is held here and decides nothing.
@@ -504,17 +507,17 @@ class TaskAgentManager:
                 await runtime.close(commission.id)
                 return False
             if not await self._pay_first_request(session):
-                # Given up before its place is: what the user added before
-                # and while it was being set up stays for when it is taken up
-                # again, as it did when this failed before anything was
-                # started. The session's events then find no session and
-                # change nothing.
-                self._discard(commission.id)
+                # What the user added before and while it was being set up
+                # stays for when it is taken up again, as it did when this
+                # failed before anything was started. The session keeps its
+                # place until its own close comes back, as every other close
+                # does: a new session of the same commission started before
+                # that would be released by it.
+                session.keep_notes = True
                 if notes:
                     self._notes[commission.id] = [*notes, *self._notes.get(commission.id, [])]
                 await self._fail(commission.id, _QUOTA_REASON)
-                session.closing = True
-                await runtime.close(commission.id)
+                await self._close_session(session)
                 return False
             if await stopped_meanwhile():
                 # The stop has closed the session already.
@@ -605,8 +608,10 @@ class TaskAgentManager:
             if self._gateway is not None:
                 self._gateway.revoke(commission_id)
         else:
+            session = self._sessions.get(commission_id)
             self._discard(commission_id)
-            self._notes.pop(commission_id, None)
+            if session is None or not session.keep_notes:
+                self._notes.pop(commission_id, None)
         if self._queue and not self._closed:
             self._spawn(self._start_next())
 

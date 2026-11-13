@@ -62,8 +62,9 @@ class ShortDescriptions:
         self._written: dict[str, tuple[str, str]] | None = None
         self._loading: asyncio.Lock | None = None
         self._writing_file: asyncio.Lock | None = None
-        # plugin id -> when it failed; tried again after a while.
-        self._failed_at: dict[str, float] = {}
+        # plugin id -> (description key, when it failed); tried again after a
+        # while, or at once for a description that has changed since.
+        self._failed_at: dict[str, tuple[str, float]] = {}
         self._in_flight: set[str] = set()
         # description key -> whether it is longer than the coarse screen reads.
         self._long: dict[str, bool] = {}
@@ -183,10 +184,14 @@ class ShortDescriptions:
         due = []
         for plugin in missing:
             plugin_id = str(plugin.get("id"))
-            failed_at = self._failed_at.get(plugin_id)
+            failed = self._failed_at.get(plugin_id)
             if plugin_id in self._in_flight:
                 continue
-            if failed_at is not None and now - failed_at < PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS:
+            if (
+                failed is not None
+                and failed[0] == description_key(str(plugin.get("description") or "").strip())
+                and now - failed[1] < PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS
+            ):
                 continue
             due.append(plugin)
         if not due:
@@ -210,7 +215,7 @@ class ShortDescriptions:
                     logger.debug("writing a short description for %s failed (exc_type=%s)", plugin_id, type(exc).__name__)
                     short = ""
                 if not short:
-                    self._failed_at[plugin_id] = self._clock()
+                    self._failed_at[plugin_id] = (description_key(description), self._clock())
                     continue
                 self._failed_at.pop(plugin_id, None)
                 written = await self._load()
@@ -227,7 +232,7 @@ class ShortDescriptions:
                 self._in_flight.discard(str(plugin.get("id")))
 
     async def _ask(self, plugin_id: str, description: str) -> str:
-        """Return the model's short description, or empty when it is unusable."""
+        """Return the model's short description, cut to what the coarse screen reads; empty when there is none."""
         from config import AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
         from config.nekoclaw_settings import PLUGIN_SHORT_DESCRIPTION_INPUT_MAX_TOKENS
         from config.prompts.prompts_nekoclaw_brain import (
@@ -248,8 +253,10 @@ class ShortDescriptions:
             },
         ]
         text = str(await self._llm.complete(TIER_SHORT_DESCRIPTION, messages) or "").strip()
-        if not text or count_tokens(text) > AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
-            return ""
+        if count_tokens(text) > AGENT_PLUGIN_SHORTDESC_MAX_TOKENS:
+            # Kept cut rather than thrown away: asking again would cost a
+            # request each time and could come out as long.
+            text = truncate_to_tokens(text, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS).strip()
         return text
 
     async def _keep(self, written: dict[str, tuple[str, str]]) -> None:
