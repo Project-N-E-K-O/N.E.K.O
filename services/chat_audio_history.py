@@ -108,6 +108,15 @@ class ChatAudioHistory:
                   self.character_uid, submitted_at))
             return inserted.rowcount == 1
 
+    def release_unsent(self, request_id: str) -> bool:
+        """Release this process's reservation when no provider send was attempted."""
+        with self._connection() as connection:
+            removed = connection.execute("""
+                DELETE FROM recordings
+                 WHERE character_uid = ? AND request_id = ? AND process_id = ? AND state = 'sending'
+            """, (self.character_uid, request_id, _PROCESS_ID))
+            return removed.rowcount == 1
+
     def update(self, request_id: str, *, state: str | None = None, transcript: str | None = None) -> bool:
         with self._connection() as connection:
             updated = connection.execute("""

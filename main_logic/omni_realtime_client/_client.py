@@ -388,6 +388,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._enable_silence_timeout = (
             _effective_api_type.lower() in ['glm', 'free']
             and not self._livestream_mode
+            and turn_detection_mode != TurnDetectionMode.MANUAL
         )
         self._silence_timeout_seconds = 90  # Automatically close after 90 seconds without voice input
         self._silence_check_task = None

@@ -776,6 +776,7 @@
         "audioMessageSend": "发送录音",
         "audioMessageSending": "发送中…",
         "audioMessageCancel": "取消录音",
+        "audioMessageManualUnavailable": "语音服务未确认支持发送录音。你可以重试或切换服务商。",
         "audioMessageClosePreview": "关闭预览",
         "audioMessageMicrophoneError": "无法使用麦克风，请检查权限后重试。",
         "exportAudioOmitted": "导出不包含语音消息和转写，可在聊天记录中查看。",

@@ -1020,16 +1020,18 @@ async def test_connect_qwen_server_vad_preserves_payload():
 
 
 @pytest.mark.unit
-def test_silence_timeout_uses_inferred_free_api_type():
+@pytest.mark.parametrize("manual", [False, True])
+def test_silence_timeout_uses_inferred_free_api_type(manual):
     client = OmniRealtimeClient(
         base_url="wss://www.lanlan.tech/tts",
         api_key="sk-test",
         model="free-realtime",
+        turn_detection_mode=TurnDetectionMode.MANUAL if manual else TurnDetectionMode.SERVER_VAD,
     )
 
     assert client._api_type == ""
     assert client._is_free_provider is True
-    assert client._enable_silence_timeout is True
+    assert client._enable_silence_timeout is not manual
 
 
 # ──────────────────────────────────────────────────────────────────────

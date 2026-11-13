@@ -131,12 +131,15 @@ export function useAudioMessageComposer({ target, disabled, send }: Props) {
     } catch (failure) {
       if (own !== generation.current) return;
       if (failure instanceof Error && failure.name === 'AudioMessageRejected'
-          && (failure.message === 'busy' || failure.message === 'storage')) {
+          && ['busy', 'storage', 'manual_unavailable'].includes(failure.message)) {
         submitted.current = false;
         setPhase('preview');
-        reportError(failure.message === 'storage'
-          ? i18n('chat.audioHistoryStorageError', 'The recording could not be saved. Try again.')
-          : i18n('chat.audioMessageBusy', 'The conversation is busy. Try sending the recording again when it is ready.'));
+        const messages = {
+          busy: i18n('chat.audioMessageBusy', 'The conversation is busy. Try sending the recording again when it is ready.'),
+          storage: i18n('chat.audioHistoryStorageError', 'The recording could not be saved. Try again.'),
+          manual_unavailable: i18n('chat.audioMessageManualUnavailable', 'The voice provider could not confirm recording support. You can retry or change providers.'),
+        };
+        reportError(messages[failure.message as keyof typeof messages]);
         return;
       }
       setPhase('failed');

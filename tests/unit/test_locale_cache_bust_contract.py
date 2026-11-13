@@ -82,6 +82,9 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-03-theater-market-chat-sync-merge",
         "2026-11-14-theater-handoff-nekoclaw-merge",
         "2026-11-14-chat-audio-theater-nekoclaw-merge",
+        "2026-11-14-chat-audio-theater-nekoclaw-close-preview",
+        "2026-11-14-chat-audio-manual-unavailable",
+        "2026-11-13-chat-audio-close-preview",
         "2026-11-12-chat-audio-atlascloud-main-merge",
         "2026-11-11-chat-audio-messages",
         "2026-11-11-chat-audio-main-merge",
@@ -579,7 +582,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "a9a23d5bc882242ecc974567748508d7758554dde9fa18d667050eb00ef098a2"
+LOCALE_KEY_SIGNATURE = "f3af38a9854d9878d8177eb03cffc069115dee927b6f1c5d434a9cd596ce440e"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

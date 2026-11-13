@@ -776,6 +776,7 @@
         "audioMessageSend": "Enviar grabación",
         "audioMessageSending": "Enviando…",
         "audioMessageCancel": "Descartar grabación",
+        "audioMessageManualUnavailable": "El servicio de voz no confirmó la compatibilidad con las grabaciones. Puedes volver a intentarlo o cambiar de proveedor.",
         "audioMessageClosePreview": "Cerrar vista previa",
         "audioMessageMicrophoneError": "El micrófono no está disponible. Revisa el permiso y vuelve a intentarlo.",
         "exportAudioOmitted": "La exportación no incluye mensajes de voz ni transcripciones. Puedes consultarlos en el historial del chat.",

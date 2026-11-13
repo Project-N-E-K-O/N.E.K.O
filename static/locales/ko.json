@@ -776,6 +776,7 @@
         "audioMessageSend": "녹음 보내기",
         "audioMessageSending": "보내는 중…",
         "audioMessageCancel": "녹음 취소",
+        "audioMessageManualUnavailable": "음성 서비스가 녹음 메시지 지원 여부를 확인하지 못했습니다. 다시 시도하거나 서비스 제공업체를 변경하세요.",
         "audioMessageClosePreview": "미리보기 닫기",
         "audioMessageMicrophoneError": "마이크를 사용할 수 없습니다. 권한을 확인하고 다시 시도하세요.",
         "exportAudioOmitted": "음성 메시지와 전사 내용은 내보내기에 포함되지 않습니다. 채팅 기록에서 확인할 수 있습니다.",

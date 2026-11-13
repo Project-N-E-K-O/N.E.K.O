@@ -47,6 +47,8 @@ from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
+from config import MEMORY_SERVER_PORT
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import (
@@ -98,6 +100,7 @@ from utils.external_route_registry import (
     is_character_lifecycle_locked,
 )
 from utils.recent_file import capture_recent_generation, write_recent_payload
+from utils.internal_http_client import get_internal_http_client
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -203,6 +206,20 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
     set_reserved(character_payload, "ai_context", "rename_events", events[-20:])
 
 
+async def _preempt_recent_history_summary(queue, character_name: str) -> None:
+    if not getattr(queue, "memory_summary_in_flight", False):
+        return
+    try:
+        encoded_name = quote(character_name, safe="")
+        async with asyncio.timeout(1.0):
+            await get_internal_http_client().post(
+                f"http://127.0.0.1:{MEMORY_SERVER_PORT}/preempt_summary/{encoded_name}",
+                timeout=1.0,
+            )
+    except Exception:
+        logger.debug("Failed to preempt summary before recent history clear", exc_info=True)
+
+
 async def _clear_character_recent_history(
     config_manager,
     character_name: str,
@@ -233,6 +250,9 @@ async def _clear_character_recent_history(
         if retry_lock is not None:
             queue.recent_context_version += 1
 
+    # Preempt the summary before waiting for the lock. The request still owns
+    # the write order until its append and remaining settlement have finished.
+    await _preempt_recent_history_summary(queue, character_name)
     async with retry_lock or nullcontext():
         await await_retirement(clear_and_invalidate())
 

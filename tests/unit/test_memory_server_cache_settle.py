@@ -57,6 +57,7 @@ def _build_history_request_payload(messages: list[dict]) -> str:
         ("cloudsave-before-write", "direct context clear"),
         ("cloudsave-before-write", "direct clear during retry"),
         ("cloudsave-before-write", "retry waiting for direct clear"),
+        ("cloudsave-before-write", "direct clear during summary"),
     ],
 )
 async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatch, tmp_path, failure, boundary):
@@ -86,6 +87,22 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
     monkeypatch.setattr("memory.recent.get_config_manager", lambda: config)
     monkeypatch.setattr("utils.cloudsave_runtime.fence.is_cloudsave_disabled_due_to_local_state_unavailable", lambda: False)
     recent = CompressedRecentHistoryManager()
+    summary_started = asyncio.Event()
+    summary_interrupted = asyncio.Event()
+    if boundary == "direct clear during summary":
+        recent.compress_threshold = 1
+        recent.max_history_length = 2
+        monkeypatch.setattr(runtime, "_summary_preemption_windows", {})
+
+        async def block_summary(*_args):
+            summary_started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                summary_interrupted.set()
+
+        monkeypatch.setattr(recent, "compress_history", block_summary)
+        monkeypatch.setattr(review, "_on_compress_done", AsyncMock())
 
     async def store_time_index(_uid, _messages, name):
         nonlocal root_mode
@@ -113,6 +130,7 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
     app.post("/cache/{lanlan_name}")(routes.cache_conversation)
     app.post("/process/{lanlan_name}")(routes.process_conversation)
     app.post("/renew/{lanlan_name}")(routes.process_conversation_for_renew)
+    app.post("/preempt_summary/{lanlan_name}")(routes.preempt_summary)
     responses = asyncio.Queue()
     first_request = True
     retry_started, release_retry, clear_waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -162,6 +180,7 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
         queue.put({"type": "system", "data": "turn end"})
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as peer:
+        monkeypatch.setattr(crud, "get_internal_http_client", lambda: peer)
         monkeypatch.setattr(cross_server, "get_internal_http_client", lambda: SimpleNamespace(post=post))
         connector = asyncio.create_task(cross_server.run_sync_connector(
             queue, "Neko", config={"monitor": False, "bullet": False},
@@ -184,7 +203,17 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
                 assert recent._pending_batches("Neko") == []
                 post_turn._spawn_outbox_post_turn_signals.assert_not_awaited()
 
-            if boundary == "direct clear during retry":
+            if boundary == "direct clear during summary":
+                language = "ja"
+                root_mode = ROOT_MODE_NORMAL
+                queue.put({"type": "system", "data": "session end"})
+                await asyncio.wait_for(summary_started.wait(), 3)
+                await asyncio.wait_for(crud._clear_character_recent_history(config, "Neko"), 3)
+                assert summary_interrupted.is_set()
+                endpoint, _, processed = await asyncio.wait_for(responses.get(), 3)
+                assert endpoint == "process" and processed.json()["status"] == "processed"
+                assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+            elif boundary == "direct clear during retry":
                 language = "ja"
                 root_mode = ROOT_MODE_NORMAL
                 queue.put({"type": "system", "data": "session end"})
@@ -264,7 +293,8 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
             persisted = recent_path.read_text(encoding="utf-8")
             for text in ("User 1", "Assistant 1"):
                 assert persisted.count(text) == int(boundary not in (
-                    "language switch", "direct context clear", "direct clear during retry", "retry waiting for direct clear",
+                    "language switch", "direct context clear", "direct clear during retry",
+                    "retry waiting for direct clear", "direct clear during summary",
                 ))
             for text in ("User 2", "Assistant 2"):
                 assert persisted.count(text) == 1

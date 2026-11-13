@@ -11,7 +11,12 @@ from uuid import uuid4
 from services.chat_audio_history import history_for_character
 from utils.external_route_registry import is_external_route_active
 from utils.theater_activity import is_theater_active
-from main_logic.audio_message_payload import AUDIO_MESSAGE_MODE, AudioMessageRecord, decode_audio_message
+from main_logic.audio_message_payload import (
+    AUDIO_MESSAGE_MODE,
+    AudioMessageManualModeUnconfirmed,
+    AudioMessageRecord,
+    decode_audio_message,
+)
 from main_logic.session_state import session_reply_in_progress
 
 
@@ -164,6 +169,7 @@ class AudioMessageMixin:
                         reserved = await reservation
                         raise
                     if not reserved:
+                        self._audio_message_records.pop(request_id, None)
                         receipt = await asyncio.to_thread(history.receipt, request_id)
                         record.state, record.code = receipt_result(receipt)
                         return
@@ -244,6 +250,17 @@ class AudioMessageMixin:
                 and target._connection_generation == target_connection_generation
             ):
                 self.request_end_session(by_server=True)
+            if isinstance(exc, AudioMessageManualModeUnconfirmed):
+                try:
+                    released = await asyncio.to_thread(history.release_unsent, request_id)
+                except (OSError, SQLiteError):
+                    released = False
+                if released:
+                    reserved = False
+                    self._audio_message_records.pop(request_id, None)
+                    record.state, record.code = "rejected", "manual_unavailable"
+                    if save_local:
+                        await history_changed()
             if isinstance(exc, asyncio.CancelledError):
                 raise
         finally:

@@ -776,6 +776,7 @@
         "audioMessageSend": "Отправить запись",
         "audioMessageSending": "Отправка…",
         "audioMessageCancel": "Удалить запись",
+        "audioMessageManualUnavailable": "Голосовой сервис не подтвердил поддержку отправки записей. Повторите попытку или смените сервис.",
         "audioMessageClosePreview": "Закрыть предпросмотр",
         "audioMessageMicrophoneError": "Микрофон недоступен. Проверьте разрешения и повторите попытку.",
         "exportAudioOmitted": "Голосовые сообщения и их расшифровки не включаются в экспорт. Их можно посмотреть в истории чата.",
