@@ -77,6 +77,10 @@ async def read_screen(manager, arguments=None):
         arguments = {}
     if not isinstance(arguments, dict):
         return failure(manager, "invalid_request")
+    # Some providers serialize every optional schema field with an empty value.
+    # Ignore those placeholders while keeping non-empty combinations strict.
+    arguments = {key: value for key, value in arguments.items()
+                 if value is not None and value != "" and value != [] and value != {}}
     if not arguments:
         return await inspect(manager)
     keys = set(arguments)
