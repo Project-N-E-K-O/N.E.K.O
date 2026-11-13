@@ -210,3 +210,35 @@ test('hydrating only the prompt preference does not reschedule proactive chat', 
   assert.equal(h.window.appState.activityContextPromptEnabled, false);
   assert.equal(schedules, 0);
 });
+
+test('MMD popup refresh keeps the model-specific cursor-follow choice', () => {
+  const events = new Map();
+  const tracking = {checked: true, updates: 0, updateStyle() {this.updates++;}};
+  const prompt = {checked: true};
+  const window = {
+    mouseTrackingEnabled: true,
+    activityContextPromptEnabled: true,
+    addEventListener(name, fn) {events.set(name, fn);},
+  };
+  const document = {querySelector(selector) {
+    return selector === '#mmd-activity-context-prompt' ? prompt : null;
+  }};
+  const sandbox = {window, document, requestAnimationFrame(fn) {fn();}, MMDManager: class {}};
+  vm.createContext(sandbox);
+  for (const file of ['avatar-ui-popup.js', 'avatar-ui-popup-config.js']) {
+    vm.runInContext(fs.readFileSync(path.join(root, 'static/avatar', file), 'utf8'), sandbox);
+  }
+  const manager = new sandbox.MMDManager();
+  manager.cursorFollow = {enabled: false};
+  const popup = {querySelector(selector) {
+    return selector === '#mmd-mouse-tracking-toggle' ? tracking : null;
+  }};
+  manager._onPopupShow(popup, 'settings');
+  assert.equal(tracking.checked, false);
+  assert.equal(tracking.updates, 1);
+  assert.equal(window.mouseTrackingEnabled, true);
+  assert.equal(prompt.checked, true);
+  manager.cursorFollow.enabled = true;
+  manager._onPopupShow(popup, 'settings');
+  assert.equal(tracking.checked, true);
+});
