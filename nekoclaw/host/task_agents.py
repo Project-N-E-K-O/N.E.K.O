@@ -813,6 +813,12 @@ class TaskAgentManager:
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
             await self.abort(child.id)
+        if session.closing and reason == "error":
+            # A close was asked for, and the session ended with an error
+            # instead (its runtime process went away): the close will not
+            # come back, so nothing else would release it.
+            await self._release(commission_id)
+            return
         await self._close_session(session)
 
     async def _on_usage(self, session: _Session) -> None:

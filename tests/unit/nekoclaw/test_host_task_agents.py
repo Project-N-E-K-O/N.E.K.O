@@ -990,6 +990,50 @@ async def test_a_start_given_up_for_the_quota_keeps_its_place_until_its_session_
     assert await told is True
 
     await wait_status(host, first.commission_id, "done", timeout=10)
+
+
+async def test_a_closing_session_whose_runtime_went_away_is_released(hosts, tmp_path):
+    # Given up for the quota, its session waits for its close; the runtime
+    # process exits before answering, which ends the session with an error.
+    paid = [True, False, True]
+    pick = lambda spec: ScriptedLLM([[say("done"), finish()]])  # noqa: E731
+    host = _host(hosts, tmp_path, pick)
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    warm = await _dispatch(host, "warm up")
+    await wait_status(host, warm.commission_id, "done")
+    runtime = host.task_agents._runtime
+    close = runtime.close
+    closes: list[str] = []
+
+    async def unanswered_close(session_id: str) -> None:
+        closes.append(session_id)
+
+    runtime.close = unanswered_close
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "failed")
+    await wait_until(lambda: closes == [first.commission_id], what="the close being asked for")
+    host.task_agents._notes.setdefault(first.commission_id, []).append("skip the drafts")
+    assert first.commission_id in host.task_agents._sessions
+
+    await host.task_agents._handle(
+        {"type": "ended", "session_id": first.commission_id, "reason": "error", "error": "the runtime process exited"}
+    )
+
+    assert first.commission_id not in host.task_agents._sessions
+    assert host.task_agents._notes.get(first.commission_id) == ["skip the drafts"]
+    # Gone from the runtime as with its process (the in-process runtime
+    # stands in for it); what it says now finds no session.
+    runtime.close = close
+    await close(first.commission_id)
+    await host.task_agents.settle()
+    assert await host.task_agents.tell(first.commission_id, "try again") is True
+    await wait_status(host, first.commission_id, "done", timeout=10)
+
+
 async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_it_goes_back(hosts, tmp_path):
     llm = ScriptedLLM(
         [
