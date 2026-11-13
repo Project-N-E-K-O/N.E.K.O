@@ -83,7 +83,7 @@ Cat Mind 不写 DOM、不直接播放素材、不直接操作窗口，也不保�
 
 avatar 侧另有只读 observation adapter：它只汇总已有的毛线拖拽阶段、坐标和猫/毛线矩形，生成完整手势事实；不写 journey 状态、不选动作，也不启动 runner。输入适配和动作执行因此仍是两个方向明确、职责分离的边界。
 
-只有 runner 真实进入 `started` 后，Cat Mind 才写 cooldown 并重置共享节奏分。provider dry-run 必须只读；provider 拒绝、adapter 接受后启动失败或终态先于 started 都不得写 cooldown、不得伪造完成反馈或经历。未确认的 request 最多占用 `5s`，已经 accepted 但没有 started 的 request 最多占用 `12s`，超时只释放调度租约并记录协议失败，避免 selector 永久卡住。音频动作只有 `audio.play()` 成功后才能报告 started，不能在仅创建 `Audio` 时提前开始冷却。六个五维评分动作统一使用连续恢复曲线；普通状态使用原节奏底部，只有 active action 被下一次真实拖拽中断时临时加深连续恢复底部，避免没有完成反馈的高需求在随后每次拖拽后连播。它们的 cooldown 不从实际动作分数中扣除，只产生 `0–1` 的独立排序位。有多个合法候选时，更久没执行的动作优先；只有一个动作达到资格时，新鲜 cooldown 也不会阻止它执行。CAT1 空闲视觉随机组是明确例外，使用 5 分钟硬 cooldown 和 30 秒 tick 上的固定概率，不进入五维评分排序。
+只有 runner 真实进入 `started` 后，Cat Mind 才写 cooldown 并重置共享节奏分。provider dry-run 必须只读；provider 拒绝、adapter 接受后启动失败或终态先于 started 都不得写 cooldown、不得伪造完成反馈或经历。未确认的 request 最多占用 `5s`，已经 accepted 但没有 started 的 request 最多占用 `12s`，超时只释放调度租约并记录协议失败，避免 selector 永久卡住。音频动作只有 `audio.play()` 成功后才能报告 started，不能在仅创建 `Audio` 时提前开始冷却。六个五维评分动作统一使用连续恢复曲线；普通状态使用原节奏底部，只有 active action 被下一次真实拖拽中断时临时加深连续恢复底部，避免没有完成反馈的高需求在随后每次拖拽后连播。它们的 cooldown 不从实际动作分数中扣除，只产生 `0–1` 的独立排序位。有多个合法候选时，更久没执行的动作优先；只有一个动作达到资格时，新鲜 cooldown 也不会阻止它执行。三个形态各自的视觉随机组是明确例外，在 30 秒 tick 上使用固定概率和本组硬 cooldown，不进入五维评分排序。
 
 动作进行中到达的用户 observation 不会丢失，也不会在旧回调内同步连播。Cat Mind 会把同类触发合并为一次 deferred reevaluation，在 runner 终态和表现恢复后异步重新计分。明确毛线意图暂时被 provider 拒绝时，后续既有 walk/stretch 完成可以作为“条件已变化”的唤醒事实；它们仍不是主动候选，也不直接指定玩球。
 
@@ -204,9 +204,11 @@ CAT1 本地文字另有固定 `5%` 的哈气回复彩蛋。它不是 observation
 | CAT1 | `cat1_idle_random` | 六个独立视觉 profile 的统一随机入口 | CAT1 自主 tick、5 分钟硬 cooldown、六份资源均可用 |
 | CAT1 | `cat1_inactive_sad` | 持续无交互后的伤心表现 | CAT1、标准 inactivity 达 13 分钟、本轮未 started |
 | CAT2 | `cat2_nap_feedback` | 小憩声音/气泡反馈 | 睡眠反馈 runner 可用 |
+| CAT2 | `cat2_idle_random` | CAT2 turn/back 独立视觉动作组 | CAT2 自主 tick、1 分钟硬 cooldown、两份资源均可用 |
 | CAT3 | `cat3_sleep_feedback` | 熟睡声音/气泡反馈 | 睡眠反馈 runner 可用 |
+| CAT3 | `cat3_idle_random` | CAT3 turn/back 独立视觉动作组 | CAT3 自主 tick、5 分钟硬 cooldown、三份资源均可用 |
 
-以下不是主动候选：drag、hover、return、tier demotion、除 `happy / touch / mouse / laugh / love1 / wagging` 统一随机组和 `sad` 时序入口外的 8.3.1 至 8.3.3 CAT1 视觉-only 独立动作、walk-to-chat、compact top edge、mirror、chat idle-dock、屏幕边缘探头、四个桌面窗口互动，以及原 journey 到达聊天球后的局部尾动作。六个随机成员不各自注册候选，只由单一 `cat1_idle_random` 动作占用一次调度机会；`sad` 也不以 `cat1_sad` presentation capability 入池，只由 `cat1_inactive_sad` 调度。
+以下不是主动候选：drag、hover、return、tier demotion、除 `happy / touch / mouse / laugh / love1 / wagging` 统一随机组和 `sad` 时序入口外的 8.3.1 至 8.3.3 CAT1 视觉-only 独立动作、walk-to-chat、compact top edge、mirror、chat idle-dock、屏幕边缘探头、四个桌面窗口互动，以及原 journey 到达聊天球后的局部尾动作。各形态的视觉随机成员不各自注册候选，只由本形态的单一随机动作占用一次调度机会；`sad` 也不以 `cat1_sad` presentation capability 入池，只由 `cat1_inactive_sad` 调度。
 
 Cat Mind 不主动 walk-to-chat。玩毛线要求已经 settled near-chat；小移动不借此接近聊天球，但会沿用既有两种 runner 形态：最小化聊天球 near-chat 时移动猫与球，聊天窗已展开或 compact surface 可用时只移动猫。没有对应 surface 或表现条件不满足时，provider 拒绝动作。
 
@@ -270,7 +272,11 @@ CAT1 另注册两个视觉-only 独立 runner：`window.NekoCatIdlePresentation.
 
 CAT2/CAT3 的猫本体右键使用独立人工入口：不参与 CAT1 加权随机，而是固定触发原第 6 项 `scared`，并把自动视觉 tier 的推进基准正式重放到 CAT1 的累计 `10m`。旧睡眠 art 通过已有 `820ms` 双图层 tier transition 直接渐变到 scared；渐变完成并从首帧重新载入后，才开始计算 scared 的完整 `4.04s` 单轮，结束后利用对齐尾帧直接恢复 CAT1 idle。后续仍按标准在 CAT1 停留 `5m` 再进入 CAT2，不会在下一 tick 被旧的全局空闲时长立即推回 CAT2/CAT3。气泡或呼吸球上的右键不触发此入口。
 
-正式随机入口只注册一个 `cat1_idle_random` 动作，不把六个 profile 分别变成候选。每个没有合并用户输入的 CAT1 30 秒自主 tick，在全局硬门通过后先检查 5 分钟硬 cooldown 和六份素材能力；可用时以 `20%` 概率争夺本轮唯一动作槽。命中后不再运行本轮原有评分候选，未命中才交给原 Cat Mind 评分，因此它会真实参与调度而不是等待所有旧动作失败。统一入口随后在 `happy / touch / mouse / laugh / love1 / wagging` 中各以 `1/6` 选一次并锁定到终态；单个成员在一个合格 tick 的无条件概率约为 `3.33%`。硬 cooldown 只从严格 `started` 开始，期间不做 provider 检查、不消耗随机数；done/cancelled/interrupted 不修改五维、短时意图或 return episode。
+CAT1 正式随机入口只注册一个 `cat1_idle_random` 动作，不把六个 profile 分别变成候选。每个没有合并用户输入的 CAT1 30 秒自主 tick，在全局硬门通过后先检查 5 分钟硬 cooldown 和六份素材能力；可用时以 `20%` 概率争夺本轮唯一动作槽。命中后不再运行本轮原有评分候选，未命中才交给原 Cat Mind 评分，因此它会真实参与调度而不是等待所有旧动作失败。统一入口随后在 `happy / touch / mouse / laugh / love1 / wagging` 中各以 `1/6` 选一次并锁定到终态；单个成员在一个合格 tick 的无条件概率约为 `3.33%`。硬 cooldown 只从严格 `started` 开始，期间不做 provider 检查、不消耗随机数；done/cancelled/interrupted 不修改五维、短时意图或 return episode。
+
+CAT2/CAT3 在同一 Cat Mind 自主 tick 和动作槽中分别使用 `cat2_idle_random`、`cat3_idle_random`；当前 tier 以外的随机组不参与候选。两组也只在无合并用户输入的 `cat_elapsed`、全局硬门与本组资源能力通过后掷一次 `20%`，命中则先占用本轮动作槽，未命中仍由原有 `cat2_nap_feedback` / `cat3_sleep_feedback` 五维评分决定是否反馈。CAT2 视觉组从严格 `started` 起硬 cooldown `1m`，CAT3 为 `5m`；两组各自冷却，不改变原睡眠反馈的 `10m/12m` 软 cooldown、评分公式或音频门禁。CAT2 组内 `turn_1` 为 `80%`、`back1_1` 为 `20%`；CAT3 组内 `turn_2` 为 `80%`、两个 back 各为 `10%`。视觉-only runner 不要求音频开启，直接 presentation API 不写 Cat Mind cooldown；严格终态只关闭本次生命周期，不结算睡眠反馈五维或 return episode。turn 播完恢复本形态，back 仅在完整播完且正式降级成功后回到 CAT1；取消或 tier/return 中断不伪报完成。
+
+CAT2/CAT3 视觉动作在素材加载成功后才开始计算完整单轮；加载失败或等待超过 `5s` 时取消本次动作并恢复当前形态待机图，不执行 back 降级，也不报告 `done`。
 
 伤心另注册为 `cat1_inactive_sad`，不进入上述六项随机池。自动 CAT1 沿用自动离开控制器的全局 inactivity 起点，所以全局无交互第 10 分钟进入 CAT1 后，在第 13 分钟的首个 30 秒 tick 即可获得资格；它先于随机动作检查且不消耗随机数。只有固定 `sad` runner 回报 `started` 才锁定本轮一次，provider reject、仅 accepted 或启动失败都可在后续 tick 重试。CAT1 期间的标准全局用户活动只重置 Sad 自己的 13 分钟计时和一次性标记，不重置 CAT1→CAT2→CAT3 的 15/18 分钟视觉时钟；既有猫交互 observation 同样重置。再次持续 13 分钟且届时仍在 CAT1 时才可再次触发。该动作无 cooldown、无五维反馈、无短时意图、无 return episode。
 
@@ -363,9 +369,11 @@ Electron 正式入口按上述节奏枚举全部可见窗口，保留从前到�
 
 落稳后停止物理 RAF，仍允许其他动作启动；相同窗口场景的心跳不重新启动物理，也不持续注入速度。窗口列表、层叠、几何或猫容器尺寸变化时更新碰撞边界并唤醒。窗口部分移出屏幕时使用可见范围；窗口小到容不下猫、读取失败或 session 清空时退出。承载窗口关闭时保留位置、速度、碰撞形变和物理时钟，优先转入能容纳当前位置的剩余窗口，不把新旧窗口边界差当作晃窗冲量。没有窗口承接，或明确收到 `no-window` / `no-window-on-model-display` 时，仅让正在进行的物理运动继续到屏幕底部落稳，再释放重力控制；途中仍能碰到剩余可见边框或转入新窗口。按住时关闭窗口保持指针优先，return/退出形态/卸载仍立即终止衔接。减少动态效果偏好会关闭回弹和压缩外观，保留下落。
 
-Playground 按下准备拖拽时由指针控制位置，未移动松开则继续；真正拖走后，拖动中的每个位置都可让猫跨入或跨出有效窗口，松手只完成当前 owner 的交接，不继续寻找新窗口。毛线球未移动松开是恢复聊天框的短点击，不进入投掷路径；恢复后仅移除毛线球 body，猫仍由 Playground 持有。拖拽使用松手前 `120ms` 的屏幕坐标估算水平、垂直抛出速度，沿甩动方向继续运动；抛掷不能跨越窗口边界，已在窗口内的抛掷仍受该窗口边框碰撞。DOM、Windows carrier 和 Playground 共享同一 release velocity 采样，不重复叠加冲量。普通猫拖拽不接入 gravity。return、呼吸球、容器移除和卸载清理 RAF、观察器和压缩样式，保留实际落点；重力不写 Cat Mind 的五维、cooldown 或 return episode。
+Playground 按下准备拖拽时由指针控制位置，未移动松开则继续；真正拖走后，拖动中的每个位置都可让猫跨入或跨出有效窗口，松手只完成当前 owner 的交接，不继续寻找新窗口。毛线球未移动松开是恢复聊天框的短点击，不进入投掷路径；恢复后仅移除本轮毛线球 body，猫与问号方块仍由 Playground 持有。聊天在同一会话内再次最小化时创建全新的重力毛线球，允许反复展开/最小化；上一轮迟到确认不能影响新一轮。拖拽使用松手前 `120ms` 的屏幕坐标估算水平、垂直抛出速度，沿甩动方向继续运动；抛掷不能跨越窗口边界，已在窗口内的抛掷仍受该窗口边框碰撞。DOM、Windows carrier 和 Playground 共享同一 release velocity 采样，不重复叠加冲量。Playground 毛线球使用独立无尾圆形素材；地面/墙面接触和滚动半径使用素材真实可见圆球边界，body-body 仍使用改造前的 AABB inset。落地和水平拖动按实际位移滚动，空中沿用通用角速度。问号方块的固定角度归正与毛线球的圆形滚动是互不共享可变状态的形状策略，已有线性物理保持不变。普通猫拖拽不接入 gravity。return、呼吸球、容器移除和卸载清理 RAF、观察器和压缩样式，保留实际落点；重力不写 Cat Mind 的五维、cooldown 或 return episode。
 
-毛线球短点击通过一次性 `activationId` 串联 renderer、本地页面 relay、Electron preload/main 和 Compact Chat；BroadcastChannel 与 IPC 的重复送达只允许一次恢复。Electron 的 Playground desktop bridge lock 在 `RESTORE_COMPLETE` 确认后释放，renderer 重载或恢复失败时由有界超时兜底；转发失败不会把锁永久留在 active，也不会提前删除可重试的恢复状态。
+Playground 碰撞形变是 body 级显式能力，默认关闭；每个 body 的强度和渲染目标独立，碰撞求解只报告事实，不能按猫、毛线球或问号方块 id 决定表现。body-body 只在一对物体首次形成接触时报告撞击；持续承托产生的约束冲量不重复启动形变，分离后重新接触才算下一次撞击。猫显式保留既有完整强度，网页内毛线球和桌面毛线球镜像统一使用猫的一半强度，问号方块保持无形变默认值。旋转图片位于形变层内部，因此毛线球形变不能覆盖自身滚动旋转；到期清理由形变模块自身兜底，不依赖物体继续运动或物理 RAF 持续运行。
+
+毛线球短点击通过每轮独立的 `activationId` 串联 renderer、本地页面 relay、Electron preload/main 和 Compact Chat；BroadcastChannel 与 IPC 的重复送达只允许一次恢复。surface 事实按时间戳优先、同一时间戳内再按生命周期序号排序，renderer 重载后序号从低值重新开始不能屏蔽更新。`RESTORE_COMPLETE` 只结束本轮激活事务，Electron 的 Playground desktop bridge lock 保持到整个 Playground 的最终出口；成功展开同时消费“入口主动最小化”的恢复所有权，用户之后再次最小化不属于 Playground。renderer 重载、恢复失败和有界超时保留当前可重试毛线球；转发失败不能释放会话锁。聊天 surface 的素材由聊天模块根据 Playground 会话中的 `yarnEnabled` 选择，只有猫的 Visit Cat World 会话不得换成 Playground 毛线球素材，物理模块不能直接写入 React 所有的 `src/srcset`。
 
 Windows 仅在 Playground 玩法活动期间，让猫形态的四种模型统一沿用页面内连续拖拽，保持原生承载窗口大小与可见性，松手同一事件内提交位置并继承速度；不再经过原生缩窗、隐藏、恢复窗口和双 RAF 等待。以 Playground 的 active 生命周期作为切换条件，玩法退出后恢复原生拖拽；仅启用设置但未进入玩法、普通 CAT1/CAT2/CAT3 和呼吸球都保留原生窗口移动路径。Windows 多窗口模式在创建返回按钮时就注册页面拖拽，包括初始隐藏或呼吸球形态，确保之后进入玩法时已有处理器接手；玩法外的鼠标和触摸仍由原生捕获监听器独占。其他平台继续原有路径，Niri 的裁剪确认与最终帧等待仍保留。
 

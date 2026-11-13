@@ -15,7 +15,7 @@ from uuid import uuid4
 from memory.long_term_sync import DesktopLongTermAdapter, JOURNAL, LongTermMemoryRecoveryRequired, advance_view_generation, managed_path, view_files, export_document, import_document, read_views
 from memory.long_term_sync import LongTermArchiveSubjectUnavailable, LongTermMemoryCapacityExceeded, RetirementSubjectConflict, retirement_evidence, validate_retirement_subjects
 from memory.long_term_sync import LongTermEvidenceCapacityExceeded
-from memory.long_term_merge import EVIDENCE_MAX, merge_documents, prune_evidence, same_content, upgraded
+from memory.long_term_merge import EVIDENCE_MAX, coldened, merge_documents, prune_cold, prune_evidence, same_content, upgraded
 from utils.long_term_memory_protocol import MAX_ENTRIES, MAX_INTEGER
 from memory.recent import _await_recent_mutation_to_completion as _complete_file_commit
 from services.chat_sync.long_term_protocol import head
@@ -265,6 +265,7 @@ def _capture(name, force, expected_uid=None, require_consumed=False):
             with runtime.fact_store._get_lock(name):
                 if local['unseenRevision']:
                     _raise_lineage(name)
+                _prune_cold(name, base)
                 if _prune_evidence(name, base):
                     try:
                         # Shown in the sync panel for a while: old records are gone for good.
@@ -347,15 +348,15 @@ def _renewed_with(name, document, base, device, now):
 
 def _unpublished(document, base):
     """Whether this device holds anything the confirmed base does not."""
-    published = upgraded(base['document']) if base and base['document'] is not None else None
+    published = coldened(upgraded(base['document'])) if base and base['document'] is not None else None
     if published is None:
         return bool(document['entries'] or document['evidence']['retirements'] or document['evidence']['confirmations']
                     or document['progress']['a'] or document['progress']['b']
-                    or any(field in document for field in ('organizer', 'maintenance', 'lineage')))
+                    or any(field in document for field in ('organizer', 'maintenance', 'lineage', 'cold')))
     if document['entries'] != base['nativeEntries']:
         return True
     return any(document.get(field) != published.get(field)
-               for field in ('evidence', 'progress', 'organizer', 'maintenance', 'lineage'))
+               for field in ('evidence', 'progress', 'organizer', 'maintenance', 'lineage', 'cold'))
 
 
 def _evidence_over_limit(evidence):
@@ -415,6 +416,40 @@ def _prune_evidence(name, base):
     logger.warning(f'[LongTermSync] {name}: evidence records trimmed to stay below the snapshot limit')
     assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
     atomic_write_json(path, {**state, 'evidence': pruned}, ensure_ascii=False, indent=2)
+    return True
+
+
+def _prune_cold(name, base):
+    """Keep the cold list far below the size at which a snapshot is refused. Returns whether it trimmed.
+
+    Same rule as the evidence records: only the organizer trims, and only
+    what the server already holds. A trimmed row this device still holds cold
+    is remembered in ``coldPruned``, or the next export would list it again.
+    """
+    from memory.long_term_sync import local_cold_items, read_views
+    path = Path(runtime._config_manager.memory_dir) / name / 'long_term_portable.json'
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return False
+    cold = state.get('cold') if isinstance(state, dict) else None
+    if not isinstance(cold, list):
+        return False
+    published = (base['document'].get('cold') or None) if base and base['document'] else None
+    if cold != published or not organizes(name):
+        return False
+    pruned = prune_cold(cold)
+    if pruned is cold:
+        return False
+    kept = {(item['kind'], item['subject'], item['id']) for item in pruned}
+    held = {(item['kind'], item['subject'], item['id'])
+            for item in local_cold_items(read_views(path.parent))}
+    dropped = {(item['kind'], item['subject'], item['id']) for item in cold} - kept
+    remembered = {tuple(item) for item in state.get('coldPruned') or []} | (dropped & held)
+    logger.warning(f'[LongTermSync] {name}: cold list trimmed to stay below the snapshot limit')
+    assert_cloudsave_writable(runtime._config_manager, operation='sync', target=f'memory/{name}/long_term_portable.json')
+    atomic_write_json(path, {**state, 'cold': pruned, 'coldPruned': [list(item) for item in sorted(remembered)]},
+                      ensure_ascii=False, indent=2)
     return True
 
 
@@ -534,6 +569,21 @@ def _published_organizer(name):
     local = DesktopLongTermAdapter(runtime._config_manager).read_local(binding, writer.epoch())
     base = local['base'] if local else None
     return uid, device, (base['document'].get('organizer') if base and base['document'] else None)
+
+
+def confirmed_maintenance(name):
+    """The ``maintenance`` map of the last snapshot the server confirmed, or None for a character that does not sync."""
+    writer, uid = _authority(), _uid(name)
+    if writer is None or uid is None:
+        return None
+    binding = _binding(uid)
+    if binding is None:
+        return None
+    local = DesktopLongTermAdapter(runtime._config_manager).read_local(binding, writer.epoch())
+    base = local['base'] if local else None
+    document = base['document'] if base and base['document'] else {}
+    maintenance = document.get('maintenance')
+    return dict(maintenance) if isinstance(maintenance, dict) else {}
 
 
 def organizes(name):

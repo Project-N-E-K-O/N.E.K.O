@@ -1213,6 +1213,24 @@ async def api_record_surfaced(request: Request, lanlan_name: str):
     return result
 
 
+@app.post("/internal/memory/{lanlan_name}/legacy_dedup/restore")
+async def api_restore_legacy_dedup(request: Request, lanlan_name: str):
+    """Bring back the facts the one-time duplicate cleanup folded away.
+
+    They come back under new ids, so a peer that still holds the archived rows
+    cannot fold them away again; the folded rows stay archived. A device that
+    syncs should look at the result after its next sync.
+    """
+    from . import legacy_dedup
+    # Loopback skips credentials, so a page in a browser could post here; only
+    # the app's own services may (same rule as the knowledge routes).
+    if any(header in request.headers for header in ("origin", "referer", "sec-fetch-site")):
+        raise HTTPException(status_code=403, detail={"ok": False, "reason": "untrusted_origin"})
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    restored = await legacy_dedup.restore(lanlan_name)
+    return {"ok": True, "restored": restored, "restored_as_new_ids": True}
+
+
 @app.post("/cache/{lanlan_name}")
 async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     """The "lightweight persistence" endpoint at every turn end: writes recent.json +
@@ -1611,7 +1629,9 @@ async def write_visit_facts(lanlan_name: str, req: VisitFactsRequest):
             return {"ok": True, "written": written_n, "deduped": deduped_n, "duplicate": True}
         # Missing content hash or malformed counts: infer from this visit's fact-pool rows as for absent records, filling only gaps.
         try:
-            rows = await runtime.fact_store.aload_facts_strict(lanlan_name, include_archive=True)
+            rows = await runtime.fact_store.aload_facts_strict(
+                lanlan_name, include_archive=True, include_cold_stubs=True,
+            )
         except RuntimeError as exc:
             # Never guess on read failure: permissive active-pool loading caches an empty list, whose writeback would erase existing facts.
             logger.warning(f"[MemoryServer] visit_facts {lanlan_name}: fact pool unreadable: {exc}")
@@ -1619,8 +1639,12 @@ async def write_visit_facts(lanlan_name: str, req: VisitFactsRequest):
         mine = [row for row in rows if row.get("origin") == "neko_visit" and row.get("visit_id") == req.visit_id]
         already = len(mine)
         known_effects = {row.get("effect_key") for row in mine}
-        expected = {idempotency.effect_key_for(key, i): text for i, text in enumerate(texts)}
-        if any(expected.get(row.get("effect_key")) != row.get("text") for row in mine):
+        # Compared by wording hash: a cold row is only a stub, without its text.
+        from memory.cold_store import text_sha256
+        expected = {idempotency.effect_key_for(key, i): text_sha256(text) for i, text in enumerate(texts)}
+        if any(expected.get(row.get("effect_key"))
+               != (row["text_sha256"] if "text_sha256" in row else text_sha256(row.get("text")))
+               for row in mine):
             # Reach fact-pool recovery only for missing/malformed key records: if this visit's rows differ from current request text,
             # current content cannot be reported written (same handling as content_hash mismatch).
             raise HTTPException(status_code=422, detail="visit_id reused with different facts")
@@ -2510,7 +2534,7 @@ async def _count_stranded_rows(account_id, snapshot_before) -> int | None:
             # the operator's only cue that ``scoped_forget`` is still needed.
             # The loader already collapses rows present in both files and
             # degrades to active-only on a corrupt archive.
-            rows = await runtime.fact_store.aload_facts_full(name)
+            rows = await runtime.fact_store.aload_facts_full(name, include_cold_stubs=True)
         except Exception as exc:  # noqa: BLE001 - same
             logger.warning(f"[Identity] stranded_rows 读取 {name} 失败: {exc}")
             return None
@@ -7037,6 +7061,12 @@ async def list_scoped_subjects(lanlan_name: str, platform: str):
     archived_facts = await asyncio.to_thread(
         _read_json_list_for_listing, os.path.join(character_dir, "facts_archive.json"),
     )
+    # Cold facts count too (archived subjects live there), as stubs without text.
+    from memory import cold_store
+    try:
+        archived_facts = list(archived_facts) + await cold_store.astatus(character_dir)
+    except cold_store.ColdStoreUnreadable as exc:
+        logger.warning(f"[MemoryServer] list_scoped_subjects {lanlan_name}: cold facts unreadable: {exc}")
     def _fact_id(fact: dict):
         # Old/manual files may have unhashable list/object IDs: accept strings/integers only;
         # treat others as no ID, preventing one corrupt row from making the entire listing return 500.

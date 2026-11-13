@@ -976,6 +976,13 @@ body.neko-game-active [id$="-lock-icon"] {
     height: 100% !important;
 }
 
+.neko-idle-return-btn[data-neko-cat1-visual-layout="wide-125-centered"] > .neko-idle-return-art {
+    width: 125% !important;
+    min-width: 125%;
+    max-width: none;
+    height: 100% !important;
+}
+
 .neko-idle-return-btn[data-neko-cat1-visual-layout="tall-bottom"] > .neko-idle-return-art {
     width: 100% !important;
     height: 137.5% !important;
@@ -1014,7 +1021,8 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(1);
 }
 
-.neko-idle-return-btn.is-neko-collision-deforming > .neko-idle-return-art {
+.neko-idle-return-btn.is-neko-collision-deforming > .neko-idle-return-art,
+.neko-playground-collision-deformation-target.is-neko-collision-deforming {
     translate:
         var(--neko-collision-shift-x, 0%)
         var(--neko-collision-shift-y, 0%);

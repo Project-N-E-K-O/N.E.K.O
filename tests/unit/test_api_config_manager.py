@@ -62,6 +62,7 @@ class TestKeybookSaveLoad:
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
         'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
         'assistApiKeyOpper': 'ASSIST_API_KEY_OPPER',
+        'assistApiKeyAtlascloud': 'ASSIST_API_KEY_ATLASCLOUD',
     }
 
     @pytest.mark.unit
@@ -108,6 +109,7 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_ORCAROUTER',
                        'ASSIST_API_KEY_REQUESTY',
                        'ASSIST_API_KEY_OPPER',
+                       'ASSIST_API_KEY_ATLASCLOUD',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -440,12 +442,50 @@ _ASSIST_ONLY_PROVIDERS = sorted(
 )
 
 
+class TestAtlasCloudResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('atlascloud_key', ['', 'apikey-atlascloud-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, atlascloud_key,
+    ):
+        """Resolve each Atlas Cloud task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'atlascloud',
+            'assistApiKeyAtlascloud': atlascloud_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['CORE_API_KEY'] == core_key
+        assert cfg['ASSIST_API_KEY_ATLASCLOUD'] == atlascloud_key
+        assert cfg['OPENROUTER_API_KEY'] == atlascloud_key
+        assert cfg['AUDIO_API_KEY'] == (
+            core_key if core_provider != 'free' else ''
+        )
+        assert cfg['AGENT_MODEL_API_KEY'] == atlascloud_key
+        for task, model in {
+            'conversation': 'google/gemini-3.1-flash-lite',
+            'summary': 'deepseek-ai/deepseek-v4-flash',
+            'correction': 'deepseek-ai/deepseek-v4-flash',
+            'emotion': 'google/gemini-2.5-flash-lite',
+            'vision': 'google/gemini-3.1-flash-lite',
+            'agent': 'google/gemini-3-flash-preview',
+        }.items():
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == atlascloud_key, task
+            assert resolved['base_url'] == 'https://api.atlascloud.ai/v1', task
+            assert resolved['model'] == model, task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+
 class TestAssistOnlyKeyIsolation:
     """coreApiKey always belongs to another vendor when the assist provider is assist-only."""
 
     @pytest.mark.unit
     def test_catalog_has_assist_only_providers(self):
-        assert {'deepseek', 'orcarouter', 'requesty', 'opper'} <= set(_ASSIST_ONLY_PROVIDERS)
+        assert {'deepseek', 'orcarouter', 'requesty', 'opper', 'atlascloud'} <= set(_ASSIST_ONLY_PROVIDERS)
         assert not {'qwen', 'openai', 'free'} & set(_ASSIST_ONLY_PROVIDERS)
 
     @pytest.mark.unit
@@ -1080,6 +1120,7 @@ class TestProviderExclusion:
             'orcarouter',
             'requesty',
             'opper',
+            'atlascloud',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',

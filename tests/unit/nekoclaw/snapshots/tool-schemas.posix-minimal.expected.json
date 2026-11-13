@@ -1,0 +1,334 @@
+[
+ {
+  "name": "bash",
+  "description": "Execute a bash command (`bash -c`) and return its stdout/stderr. Each call runs in a fresh shell; pass `workdir` instead of using `cd`. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. Provide `description` before `command` in the arguments. Before any delete or move, verify that the resolved absolute target path is the intended one; never run it against a computed path you have not checked. An unset variable expands to an empty string, so guard variables in such paths with `${VAR:?}`.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "description": {
+     "type": "string",
+     "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\"."
+    },
+    "command": {
+     "type": "string",
+     "description": "The bash command to execute."
+    },
+    "timeoutMs": {
+     "type": "number",
+     "description": "Timeout in milliseconds. The executor applies its configured default and cap; on expiry the command moves to the background as a job instead of being killed."
+    },
+    "workdir": {
+     "type": "string",
+     "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."
+    },
+    "run_in_background": {
+     "type": "boolean",
+     "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies."
+    }
+   },
+   "required": [
+    "description",
+    "command"
+   ]
+  }
+ },
+ {
+  "name": "create_goal",
+  "description": "Create a persisted goal that keeps this session working across automatic continuation rounds. Use it when the direct human request is a long-running objective, even if the user did not say \"goal\"; not for single-turn work.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "objective": {
+     "type": "string",
+     "description": "The concrete completion objective inferred from the direct human request."
+    },
+    "max_goal_rounds": {
+     "type": "number",
+     "description": "Optional positive safe-integer limit on automatic continuation rounds."
+    }
+   },
+   "required": [
+    "objective"
+   ]
+  }
+ },
+ {
+  "name": "edit",
+  "description": "Edit an existing UTF-8 text file by replacing literal text.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "file_path": {
+     "type": "string",
+     "description": "Path to edit, resolved by the filesystem backend. Provide `file_path` before `old_string` and `new_string` in the arguments."
+    },
+    "old_string": {
+     "type": "string",
+     "description": "Literal text to replace."
+    },
+    "new_string": {
+     "type": "string",
+     "description": "Literal replacement text. Use an empty string to delete the match."
+    },
+    "replace_all": {
+     "type": "boolean",
+     "description": "Replace all matches. Defaults to false; when false, old_string must appear exactly once."
+    }
+   },
+   "required": [
+    "file_path",
+    "old_string",
+    "new_string"
+   ]
+  }
+ },
+ {
+  "name": "get_goal",
+  "description": "Read the current session goal, including the id and revision that update_goal requires.",
+  "parameters": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "glob",
+  "description": "Find files, not directories, whose paths match a glob pattern, including hidden and ignored files. Returns up to 100 paths in modification-time order; a larger result keeps the first paths and reports where the complete list was saved.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "pattern": {
+     "type": "string",
+     "description": "Glob pattern to match file paths against (e.g. \"**/*.ts\", \"src/**/*.test.js\"). A pattern with no \"/\" matches the basename at any depth, so \"*\" and \"*.ts\" both search the whole tree; include a separator to anchor the depth."
+    },
+    "path": {
+     "type": "string",
+     "description": "Directory to search in. Defaults to the session workspace; a relative path resolves against it."
+    }
+   },
+   "required": [
+    "pattern"
+   ]
+  }
+ },
+ {
+  "name": "grep",
+  "description": "Search file contents with a regular expression. Returns matching lines with line numbers, grouped by file. Returns up to 250 matches; a larger result reports where the complete match list was saved.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "pattern": {
+     "type": "string",
+     "description": "Regular expression to search for (Python `re` syntax, matched line by line)."
+    },
+    "path": {
+     "type": "string",
+     "description": "File or directory to search. Defaults to the session workspace; a relative path resolves against it."
+    },
+    "include": {
+     "type": "string",
+     "description": "One glob filter for which files to search (e.g. \"*.ts\", \"*.{js,jsx}\"). Not a list; negation is not supported."
+    }
+   },
+   "required": [
+    "pattern"
+   ]
+  }
+ },
+ {
+  "name": "job_kill",
+  "description": "Request cancellation of a running background job.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "job_id": {
+     "type": "string",
+     "description": "Job id returned by the tool that started the background work."
+    },
+    "reason": {
+     "type": "string",
+     "description": "Optional short reason, recorded in the log and forwarded to the job."
+    }
+   },
+   "required": [
+    "job_id"
+   ]
+  }
+ },
+ {
+  "name": "job_list",
+  "description": "List your background jobs (running and finished) with their ids, kinds, and statuses.",
+  "parameters": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "job_output",
+  "description": "Read a background job: output since the previous read for stream jobs, or the result of a finished final-output job.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "job_id": {
+     "type": "string",
+     "description": "Job id returned by the tool that started the background work."
+    },
+    "wait": {
+     "type": "boolean",
+     "description": "Block until the job finishes or the timeout expires; a timed-out wait leaves the job running. Defaults to false."
+    },
+    "timeout_ms": {
+     "type": "number",
+     "description": "Max wait in milliseconds with wait: true. Defaults to and is capped by configuration."
+    }
+   },
+   "required": [
+    "job_id"
+   ]
+  }
+ },
+ {
+  "name": "read",
+  "description": "Read a UTF-8 text file and return line-numbered content.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "file_path": {
+     "type": "string",
+     "description": "Path to read, resolved by the filesystem backend."
+    },
+    "offset": {
+     "type": "number",
+     "description": "1-based first line to return. Defaults to 1."
+    },
+    "limit": {
+     "type": "number",
+     "description": "Maximum number of lines to return. Defaults to 2000."
+    }
+   },
+   "required": [
+    "file_path"
+   ]
+  }
+ },
+ {
+  "name": "todo_write",
+  "description": "Record and update a task list to plan multi-step work and show progress; skip it for trivial single-step tasks. Add one todo per concrete step before you start. While work remains, keep the todos being worked on `in_progress`, several only when work runs in parallel. Mark each todo `completed` as soon as it is done.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "todos": {
+     "type": "array",
+     "description": "The COMPLETE task list, replacing any previous list.",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+       "content": {
+        "type": "string",
+        "description": "What the task is — a short imperative line."
+       },
+       "status": {
+        "type": "string",
+        "description": "pending (not started) | in_progress (now) | completed (done).",
+        "enum": [
+         "pending",
+         "in_progress",
+         "completed"
+        ]
+       }
+      },
+      "required": [
+       "content",
+       "status"
+      ]
+     }
+    }
+   },
+   "required": [
+    "todos"
+   ]
+  }
+ },
+ {
+  "name": "update_goal",
+  "description": "Update the current goal.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "goal_id": {
+     "type": "string",
+     "description": "Exact id returned by get_goal."
+    },
+    "revision": {
+     "type": "number",
+     "description": "Exact positive revision returned by get_goal."
+    },
+    "action": {
+     "type": "string",
+     "description": "edit, pause, and resume require a direct top-level human request. complete and blocked are also allowed during an automatic continuation of this goal; blocked is rejected before the configured minimum round count.",
+     "enum": [
+      "edit",
+      "pause",
+      "resume",
+      "complete",
+      "blocked"
+     ]
+    },
+    "objective": {
+     "type": "string",
+     "description": "Replacement objective; valid only with action edit."
+    },
+    "max_goal_rounds": {
+     "type": "number",
+     "description": "Replacement cap; valid only with action edit."
+    },
+    "blocked_reason": {
+     "type": "string",
+     "description": "Required only with action blocked: the concrete condition that persisted across rounds and blocks progress."
+    }
+   },
+   "required": [
+    "goal_id",
+    "revision",
+    "action"
+   ]
+  }
+ },
+ {
+  "name": "web_fetch",
+  "description": "Fetch the content of a specific HTTP(S) URL and return it decoded to text.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "url": {
+     "type": "string",
+     "description": "The HTTP(S) URL to fetch."
+    }
+   },
+   "required": [
+    "url"
+   ]
+  }
+ },
+ {
+  "name": "write",
+  "description": "Create or fully replace a UTF-8 text file.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "file_path": {
+     "type": "string",
+     "description": "Path to write, resolved by the filesystem backend. Provide `file_path` before `content` in the arguments."
+    },
+    "content": {
+     "type": "string",
+     "description": "Full UTF-8 text content to write."
+    }
+   },
+   "required": [
+    "file_path",
+    "content"
+   ]
+  }
+ }
+]

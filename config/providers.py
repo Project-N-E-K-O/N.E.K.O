@@ -227,6 +227,9 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
     "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER_MINIMAL,
+    # Atlas Cloud's DeepSeek id (lowercase; SiliconFlow spells it deepseek-ai/DeepSeek-V4-Flash).
+    # Atlas turns DeepSeek thinking off only through reasoning:{effort:none}; see ROUTER_REASONING.
+    "deepseek-ai/deepseek-v4-flash": EXTRA_BODY_OPENROUTER,
     "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.5-flash-lite": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
@@ -441,11 +444,45 @@ _ORCAROUTER_REASONING = RouterReasoningConfig(
         "deepseek-v4-flash-free": "deepseek-v4-flash",
     },
 )
+# Atlas Cloud (api.atlascloud.ai/v1) honours a different knob per upstream, so it has no host-wide
+# conversion. Observed (2026-11-11, reasoning tokens on a short logic prompt):
+#   - Gemini: top-level reasoning_effort works on every model; reasoning:{effort} is ignored on
+#     2.5-flash / 2.5-flash-lite. 2.5-flash-lite does not think with none but does with minimal
+#     (~400); 2.5-flash bottoms out at minimal (~350, ~1300 unset); 3.1-flash-lite / 3.5-flash
+#     reach 0 with minimal; 3-flash-preview keeps thinking (~500-1000) under every knob;
+#     3.8-flash returns 400 on none / minimal.
+#   - DeepSeek (deepseek-ai/deepseek-v4-flash): only reasoning:{effort:none} reaches 0 (6/6);
+#     top-level reasoning_effort, thinking.type and enable_thinking are ignored (6/6 still think),
+#     so the registered OpenRouter body is sent unchanged.
+#   - Claude: ids are dotted, some with a route suffix (-ccmax / -aws); the native thinking block
+#     passes through on 5.x (haiku-5.5 and sonnet-5 honour {type:disabled}; sonnet-5.5 returns 400
+#     on disabled and accepts between_tools), while reasoning_effort low / medium / high return 400
+#     on 5.5. 4.x ignores the thinking block and does not think by default.
+#   - max_completion_tokens and max_tokens both cap reasoning + answer; sending both returns 400.
+ATLASCLOUD_REASONING_EFFORT: dict[str, tuple[str, str]] = {
+    "google/gemini-2.5-flash": ("minimal", "low"),
+    "google/gemini-2.5-flash-lite": ("none", "low"),
+    "google/gemini-3-flash-preview": ("minimal", "low"),
+    "google/gemini-3.1-flash-lite": ("minimal", "low"),
+    "google/gemini-3.5-flash": ("minimal", "low"),
+    "google/gemini-3.8-flash": ("low", "low"),
+}
+_ATLASCLOUD_REASONING = RouterReasoningConfig(
+    strip_prefixes=("anthropic/",),
+    dotted_versions=True,
+    model_aliases={
+        "claude-haiku-5-5-ccmax": "claude-haiku-5-5",
+        "claude-sonnet-5-5-ccmax": "claude-sonnet-5-5",
+        "claude-sonnet-5-aws": "claude-sonnet-5",
+    },
+    efforts=ATLASCLOUD_REASONING_EFFORT,
+)
 ROUTER_REASONING: dict[str, RouterReasoningConfig] = {
     "router.requesty.ai": _REQUESTY_REASONING,
     "router.eu.requesty.ai": _REQUESTY_REASONING,
     "api.opper.ai": _OPPER_REASONING,
     "api.orcarouter.ai": _ORCAROUTER_REASONING,
+    "api.atlascloud.ai": _ATLASCLOUD_REASONING,
 }
 
 

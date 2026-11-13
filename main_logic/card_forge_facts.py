@@ -140,6 +140,14 @@ async def resolve_active_neko_context(
     )
 
 
+def _without_cold_copies(rows: list[dict[str, Any]], path: Path) -> list[dict[str, Any]]:
+    """Drop rows also held in cold storage next to ``path``: a cold copy is never shown."""
+    from memory import cold_store
+    from memory.facts import _fact_scoped_identity
+    return cold_store.without_cold_copies(str(Path(path).parent), "fact", rows, lambda row: row.get("entity"),
+                                          identity=_fact_scoped_identity)
+
+
 def _load_facts_json(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
@@ -768,7 +776,7 @@ async def build_forge_facts_payload(
         if path is None:
             error = "facts_source_not_configured"
         else:
-            raw = await asyncio.to_thread(_load_facts_json, path)
+            raw = await asyncio.to_thread(lambda: _without_cold_copies(_load_facts_json(path), path))
             if not raw and error is None:
                 error = "facts_file_empty_or_missing"
 
@@ -779,7 +787,8 @@ async def build_forge_facts_payload(
     )
     # Local archives only belong to the local fallback, never to a remote pool.
     if archive_path is not None and not remote_facts_used:
-        raw_archive = await asyncio.to_thread(_load_facts_json, archive_path)
+        raw_archive = await asyncio.to_thread(
+            lambda: _without_cold_copies(_load_facts_json(archive_path), archive_path))
 
     excluded_ids = _parse_csv_set(exclude_fact_ids)
     excluded_hashes = _parse_csv_set(exclude_hashes)

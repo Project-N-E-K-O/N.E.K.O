@@ -51,6 +51,18 @@ def local_state(owner):
     return owner.adapter.read_local(owner.binding, owner.runtime.writer.epoch())
 
 
+def cold_views(views, **rows_by_kind):
+    """``views`` plus cold rows as read_views presents them: stubs, never text."""
+    from memory import cold_store
+    fields = {'fact': 'entity', 'reflection': 'entity', 'persona': 'entity_key'}
+    return {**views, 'coldStubs': {kind: [cold_store.stub(row, subject_field=fields[kind]) for row in rows]
+                                   for kind, rows in rows_by_kind.items()}}
+
+
+def cold_ids(document):
+    return {item['id'] for item in document.get('cold', [])}
+
+
 def learned(completed=2000, text='learned preference'):
     return {'schemaVersion': 1, 'completedAt': completed, 'entries': [
         {'kind': 'persona', 'subject': 'master', 'id': 'p1', 'text': text,
@@ -1572,7 +1584,7 @@ def test_pending_dormant_fact_keeps_retirement_assertion_after_reexport(tmp_path
 
 
 @pytest.mark.parametrize('survivor', [None, 'survivor'])
-def test_arbitrated_fact_roundtrip_preserves_recall_exclusion_and_manual_restore(survivor):
+def test_arbitrated_fact_travels_as_a_cold_listing_and_lands_in_cold_storage(survivor):
     from memory.long_term_sync import timestamp
     loser = {'id': 'loser', 'text': 'a duplicate assertion', 'entity': 'master', 'importance': 7,
              'source': 'user_observation', 'source_message_ids': ['original-user'],
@@ -1580,54 +1592,48 @@ def test_arbitrated_fact_roundtrip_preserves_recall_exclusion_and_manual_restore
              'arbitration_archived_at': '2026-10-28T00:00:00+00:00', 'arbitration_reason': 'dedup_arbitration'}
     if survivor:
         loser['superseded_by'] = survivor
+    # Still in facts_archive.json, as before cold storage existed.
     existing = {'persona': {}, 'facts': [], 'archive': [loser], 'reflections': []}
     portable = export_document(existing, 3000)
-    metadata = portable['entries'][0]['metadata']
-    assert metadata['status'] == ('superseded' if survivor else 'retracted')
-    assert metadata['archived'] is True
-    assert metadata['sourceMessageIds'] == ['original-user'] and metadata['sourceCreatedAt'] == 0
+    assert portable['entries'] == []
+    item = {'kind': 'fact', 'subject': 'master', 'id': 'loser',
+            'status': 'superseded' if survivor else 'retracted',
+            'archivedAt': timestamp(loser['arbitration_archived_at']),
+            **({'supersededById': survivor} if survivor else {})}
+    assert portable['cold'] == [item]
+    assert 'a duplicate assertion' not in json.dumps(portable, ensure_ascii=False)
 
+    # A device without the row only keeps the listing; no text arrives.
     received = import_document(portable, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
-    assert received['facts'] == []
-    assert len(received['archive']) == 1
-    restored = received['archive'][0]
-    assert timestamp(restored['arbitration_archived_at']) == timestamp(loser['arbitration_archived_at'])
-    assert restored.get('superseded_by') == survivor
-    assert export_document(received, 4000)['entries'][0]['metadata']['status'] == metadata['status']
-
-    # Mirror FactStore.arestore_arbitrated_fact's explicit restore markers.
-    for key in ('arbitration_archived_at', 'arbitration_reason', 'superseded_by'):
-        restored.pop(key, None)
-    restored['arbitration_restored_at'] = '2026-10-29T00:00:00'
-    received.update(facts=[restored], archive=[])
-    restored_entry = export_document(received, 5000)['entries'][0]
-    assert restored_entry['id'] == 'loser'
-    active = restored_entry['metadata']
-    assert active['archived'] is False
-    assert not {'status', 'archivedAt', 'supersededById', 'arbitrationAction'} & active.keys()
+    assert received['facts'] == [] and received['archive'] == [] and received['factCold'] == {}
+    assert received['sync']['cold'] == [item]
+    # A device holding it live moves its own copy into cold storage.
+    live = {key: value for key, value in loser.items() if not key.startswith('arbitration') and key != 'superseded_by'}
+    holder = import_document(portable, {'persona': {}, 'facts': [live], 'archive': [], 'reflections': []})
+    assert holder['facts'] == []
+    [(relative, [moved])] = holder['factCold'].items()
+    assert relative.startswith('fact_cold/')
+    assert timestamp(moved['arbitration_archived_at']) == item['archivedAt']
+    assert moved.get('superseded_by') == survivor and moved['text'] == loser['text']
+    assert export_document({**holder, 'factCold': {}}, 4000)['cold'] == [item]
 
 
-@pytest.mark.parametrize('restored_at,active_wins', [
-    (None, False), ('2026-10-27T00:00:00', False), ('2026-10-29T00:00:00', True),
-    ('2026-10-26T00:00:00', True),
-])
+@pytest.mark.parametrize('restored_at', [None, '2026-10-27T00:00:00', '2026-10-29T00:00:00'])
 @pytest.mark.parametrize('legacy_duplicate', [False, True])
-def test_interrupted_arbitration_export_respects_archive_and_later_explicit_restore(restored_at, active_wins, legacy_duplicate):
+def test_interrupted_arbitration_export_lists_the_row_cold_whatever_copy_is_left(restored_at, legacy_duplicate):
     active = {'id': 'loser', 'entity': 'master', 'text': 'duplicate assertion', 'importance': 7,
               'source_message_ids': ['original'], 'source_created_at': '1970-01-01T00:00:00+00:00'}
     archived = {**active, 'arbitration_archived_at': '2026-10-28T00:00:00', 'superseded_by': 'winner'}
     if restored_at:
+        # A same-id restore of the retired kind: the cold copy still wins (restores now use new ids).
         active['arbitration_restored_at'] = restored_at
-        archived['arbitration_restored_at'] = '2026-10-27T00:00:00'
     views = {'persona': {}, 'facts': [active], 'archive': ([dict(active)] if legacy_duplicate else []) + [archived], 'reflections': []}
     before = deepcopy(views)
     portable = export_document(views, 3000)
-    row = portable['entries'][0]
-    assert row['id'] == 'loser' and row['metadata']['sourceCreatedAt'] == 0
-    assert row['metadata']['archived'] is not active_wins
-    assert row['metadata'].get('status') == (None if active_wins else 'superseded')
+    assert portable['entries'] == []
+    assert [(item['id'], item['status'], item['supersededById']) for item in portable['cold']] == [('loser', 'superseded', 'winner')]
     native = import_document(portable, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
-    assert [fact['id'] for fact in native['facts']] == (['loser'] if active_wins else [])
+    assert native['facts'] == []
     assert views == before
 
 
@@ -1716,11 +1722,12 @@ async def test_expiry_rejects_old_writer_epoch(owner):
 
 
 @pytest.mark.asyncio
-async def test_received_arbitration_archive_can_be_restored_by_native_fact_store(owner, monkeypatch):
+async def test_received_cold_listing_moves_the_local_copy_and_restores_under_a_new_id(owner, monkeypatch):
     from memory import facts
     from memory.long_term_sync import view_files
-    loser = {'id': 'loser', 'text': 'a duplicate assertion', 'entity': 'master', 'importance': 7,
-             'arbitration_archived_at': '2026-10-28T00:00:00+00:00', 'superseded_by': 'survivor'}
+    live = {'id': 'loser', 'text': 'a duplicate assertion', 'entity': 'master', 'importance': 7}
+    atomic_write_json(owner.directory / FILES['facts'], [live])
+    loser = {**live, 'arbitration_archived_at': '2026-10-28T00:00:00+00:00', 'superseded_by': 'survivor'}
     portable = export_document({'persona': {}, 'facts': [], 'archive': [loser], 'reflections': []}, 3000)
     received = import_document(portable, read_views(owner.directory))
     for relative, value in view_files(received).items():
@@ -1729,10 +1736,15 @@ async def test_received_arbitration_archive_can_be_restored_by_native_fact_store
     monkeypatch.setattr(facts, 'assert_cloudsave_writable', lambda *args, **kwargs: None)
     store = facts.FactStore()
     assert await store.aget_unabsorbed_facts('Neko') == []
-    assert await store.arestore_arbitrated_fact('Neko', 'loser')
-    active = export_document(read_views(owner.directory), 4000)['entries'][0]
-    assert active['id'] == 'loser' and active['metadata']['archived'] is False
+    [back] = await store.arestore_cold_facts('Neko', lambda row: row['id'] == 'loser')
+    assert back['id'] != 'loser' and back['restored_from'] == 'loser' and back['text'] == live['text']
+    exported = export_document(read_views(owner.directory), 4000)
+    [active] = exported['entries']
+    assert active['id'] == back['id'] and active['metadata']['archived'] is False
     assert 'status' not in active['metadata']
+    assert cold_ids(exported) == {'loser'}
+    # A second restore of the same cold row finds it already restored.
+    assert await store.arestore_cold_facts('Neko', lambda row: row['id'] == 'loser') == []
     assert owner.raw.read_bytes() == b'synthetic raw archive remains byte-identical'
 
 
@@ -1756,8 +1768,13 @@ def test_persona_history_is_restored_for_native_readers_and_later_exports(archiv
     if archived:
         entry['metadata'].update(archived=True, archivedAt=1500)
     restored = import_document(incoming, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
-    native = (next(iter(restored['personaArchives'].values()))[0] if archived
-              else restored['persona']['master']['facts'][0])
+    if archived:
+        # An archived entry is cold: only its listing arrives, its wording stays on the sender.
+        assert restored['personaArchives'] == {} and restored['persona']['master']['facts'] == []
+        assert [item['id'] for item in restored['sync']['cold']] == ['p1']
+        assert 'earlier wording' not in json.dumps(export_document(restored, 3000))
+        return
+    native = restored['persona']['master']['facts'][0]
     assert [item['text'] for item in native['version_history']] == ['earlier wording', 'old wording']
     assert native['version_history'][0]['replaced_at'] is not None
     exported = export_document(restored, 3000)
@@ -1852,47 +1869,63 @@ def test_sync_retains_persona_protection_flag(protected):
 
 @pytest.mark.parametrize('kind', ['persona', 'reflection'])
 @pytest.mark.parametrize('active_duplicate', [False, True])
-def test_archived_memory_replacement_retains_local_coverage_audit(kind, active_duplicate):
+def test_archived_memory_is_never_rewritten_and_wins_over_an_active_copy(kind, active_duplicate):
     entry = {'id': 'archived', 'text': 'unchanged impression', 'source': 'reflection',
              'entity_key' if kind == 'persona' else 'entity': 'master', 'status': 'confirmed',
              'covered_fact_ids': ['archive-audit'], 'archived_at': '2026-10-01T00:00:00'}
     field = 'personaArchives' if kind == 'persona' else 'reflectionArchives'
-    existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [], field: {'old.json': [entry]}}
-    incoming = export_document(existing, 3000)
+    existing = cold_views({'persona': {}, 'facts': [], 'archive': [], 'reflections': []}, **{kind: [entry]})
     if active_duplicate:
+        # A cloud save brought back an older copy after the row went cold here.
         active = {**entry, 'covered_fact_ids': ['active-audit']}
+        active.pop('archived_at')
         if kind == 'persona':
             existing['persona'] = {'master': {'facts': [active]}}
         else:
             existing['reflections'] = [active]
-        incoming = export_document(existing, 3000)
+    incoming = export_document(existing, 3000)
+    assert incoming['entries'] == [] and cold_ids(incoming) == {'archived'}
     before = deepcopy(existing)
     result = merged_import(incoming, existing, baseline=incoming['entries'])
-    restored = [row for rows in result[field].values() for row in rows]
-    assert len(restored) == 1
-    # A snapshot that changes nothing leaves every row, and its audit, exactly as it was.
-    assert restored[0]['covered_fact_ids'] == ['archive-audit']
-    assert result[field] == existing[field]
-    if active_duplicate:
-        assert (result['persona']['master']['facts'] if kind == 'persona' else result['reflections']) == [active]
+    # No archive shard is written: the cold row stays exactly as it is on disk.
+    assert result[field] == {}
+    # The cold copy wins: an active copy of the same row leaves the active view.
+    assert (result['persona'].get('master', {}).get('facts', []) if kind == 'persona' else result['reflections']) == []
     assert 'covered_fact_ids' not in json.dumps(export_document(result, 3000))
     assert existing == before
 
 
 @pytest.mark.parametrize('kind', ['persona', 'reflection'])
 def test_import_keeps_a_retired_row_that_was_already_archived(kind):
-    """An archived row retired by introspection stays on this device: the
-    snapshot entry for it is skipped, so dropping the local copy would lose it."""
+    """An archived row retired by introspection stays on this device: an import
+    never rewrites cold storage, and the row travels as its listing only."""
     entry = {'id': 'archived', 'text': 'retired impression', 'source': 'reflection',
              'entity_key' if kind == 'persona' else 'entity': 'master', 'status': 'confirmed',
              'archived_at': '2026-10-01T00:00:00',
              'permanent_suppression': {'at': '2026-10-02T00:00:00', 'reason': 'hollow', 'issue': 'hollow'}}
     field = 'personaArchives' if kind == 'persona' else 'reflectionArchives'
-    existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [], field: {'old.json': [entry]}}
+    existing = cold_views({'persona': {}, 'facts': [], 'archive': [], 'reflections': []}, **{kind: [entry]})
     incoming = export_document(existing, 3000)
+    assert incoming['entries'] == [] and cold_ids(incoming) == {'archived'}
     result = import_document(incoming, existing)
-    assert [row['id'] for rows in result[field].values() for row in rows] == ['archived']
-    assert 'permanent_suppression' in result[field]['old.json'][0]
+    assert result[field] == {}
+    assert [item['id'] for item in result['sync']['cold']] == ['archived']
+
+
+def test_merged_import_of_an_unchanged_snapshot_keeps_device_only_fields():
+    """A peer's later revision with nothing new must not rebuild this device's rows:
+    rebuilding drops the vector cache, re-queues judged facts and re-runs the event-time review."""
+    fact = {'id': 'f1', 'text': 'likes green tea', 'entity': 'master', 'source': 'user_observation', 'hash': 'f1',
+            'created_at': '2026-11-01T00:00:00', 'source_message_ids': ['sync:' + 'a' * 32],
+            'schema_version': 2, 'signal_processed': False, 'embedding': 'AAAAAA==',
+            'embedding_text_sha256': 'x', 'embedding_model_id': 'm', 'importance': 5, 'tags': ['tea']}
+    reflection = {'id': 'ref_1', 'text': 'tea person', 'entity': 'master', 'status': 'confirmed', 'source_fact_ids': ['f1'],
+                  'created_at': '2026-11-02T00:00:00', 'confirmed_at': '2026-11-03T00:00:00', 'schema_version': 2,
+                  'last_refine_cluster_hash': 'h'}
+    existing = {'persona': {}, 'facts': [fact], 'archive': [], 'reflections': [reflection]}
+    after = merged_import(export_document(existing, 2000), existing)
+    assert after['facts'] == [fact]
+    assert after['reflections'] == [reflection]
 
 
 def test_import_keeps_local_accounting_outside_the_protocol():
@@ -2018,13 +2051,14 @@ def test_a_line_confirmed_by_the_sender_is_not_held_back_by_local_counts():
 
 
 @pytest.mark.parametrize('status', ['superseded', 'retracted'])
-def test_an_archived_retired_reflection_survives_a_reexport(status):
+def test_an_archived_reflection_from_an_older_snapshot_stays_listed_cold(status):
     entry = {'kind': 'reflection', 'subject': 'neko', 'id': 'r1', 'text': 'old line',
              'metadata': {'createdAt': 1000, 'status': status, 'archivedAt': 2000, 'sourceFactIds': []}}
     incoming = {'schemaVersion': 2, 'completedAt': 3000, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': [entry]}
     imported = import_document(incoming, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
-    [row] = export_document(imported, 4000)['entries']
-    assert row['id'] == 'r1' and row['metadata']['status'] == status
+    exported = export_document(imported, 4000)
+    assert exported['entries'] == []
+    assert exported['cold'] == [{'kind': 'reflection', 'subject': 'neko', 'id': 'r1', 'status': 'archived', 'archivedAt': 2000}]
 
 
 def test_export_removes_repeated_source_ids_before_the_transfer_limit():
@@ -2093,21 +2127,24 @@ async def test_correction_time_accepts_the_roles_that_may_correct_the_subject(su
     assert result.get('retiredThroughAt') == (2000 if resolved else None)
 
 
-def test_formal_archives_roundtrip_and_keep_scoped_partitions(tmp_path):
+def test_formal_archives_travel_as_cold_listings_only(tmp_path):
     directory = tmp_path / 'Neko'
     for folder, entry in [
         ('persona_archive', {'id': 'p-old', 'text': 'archived persona', 'entity_key': 'master', 'source': 'reflection', 'archived_at': '2026-10-01T00:00:00'}),
         ('reflection_archive', {'id': 'r-old', 'text': 'archived reflection', 'entity': 'neko', 'status': 'denied', 'source_fact_ids': ['f1'], 'archived_at': '2026-10-01T00:00:00'}),
+        ('reflection_archive', {'id': 'r-group', 'text': 'group reflection', 'entity': 'neko', 'scope': 'group:one', 'status': 'denied', 'archived_at': '2026-10-01T00:00:00'}),
     ]:
         path = directory / folder / '2026-10-01_aaaaaaaa.json'
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps([entry]))
+        rows = json.loads(path.read_text()) if path.exists() else []
+        path.write_text(json.dumps(rows + [entry]))
     views = read_views(directory)
     portable = export_document(views, 3000)
-    assert {row['id'] for row in portable['entries']} == {'p-old', 'r-old'}
+    assert portable['entries'] == []
+    assert cold_ids(portable) == {'p-old', 'r-old'}
+    assert 'archived persona' not in json.dumps(portable) and 'archived reflection' not in json.dumps(portable)
     restored = import_document(portable, {'persona': {}, 'facts': [], 'archive': [], 'reflections': []})
-    assert any(row['id'] == 'p-old' for rows in restored['personaArchives'].values() for row in rows)
-    assert any(row['id'] == 'r-old' for rows in restored['reflectionArchives'].values() for row in rows)
+    assert restored['personaArchives'] == {} and restored['reflectionArchives'] == {}
     assert export_document(restored, 3000) == portable
 
 
@@ -2150,7 +2187,7 @@ def test_legacy_persona_archive_resolves_subject_from_durable_event(tmp_path):
     path.write_text(json.dumps([{'id': 'old', 'text': 'archived relationship', 'archived_at': '2026-10-01T00:00:00'}]))
     (directory / 'events.ndjson').write_text(json.dumps({'type': 'persona.fact_added', 'payload': {
         'entity_key': 'relationship', 'entry_id': 'old', 'archive_shard_path': path.name}}) + '\n')
-    assert export_document(read_views(directory), 3000)['entries'][0]['subject'] == 'relationship'
+    assert export_document(read_views(directory), 3000)['cold'][0]['subject'] == 'relationship'
     assert 'entity_key' not in json.loads(path.read_text())[0]
 
 
@@ -2186,7 +2223,7 @@ async def test_native_capture_makes_legacy_subject_durable_before_journal_compac
                                             now=datetime(2026, 11, 3))
         assert second.pinned == 0 and second.dropped_lines == 1
     assert '"archived"' not in journal.read_text(encoding='utf-8')
-    assert export_document(read_views(owner.directory), 3000)['entries'][0]['subject'] == 'relationship'
+    assert export_document(read_views(owner.directory), 3000)['cold'][0]['subject'] == 'relationship'
     assert (owner.directory / 'events_applied.json').read_bytes() == before_sentinel
 
 
@@ -2566,7 +2603,7 @@ def test_legacy_subject_recovery_matches_the_archived_copy_and_refuses_ambiguous
         with pytest.raises(ValueError, match='^long_term_archive_subject_unavailable$'):
             read_views(tmp_path)
     else:
-        assert read_views(tmp_path)['personaArchives']['persona_archive/' + path.name][0]['entity_key'] == 'master'
+        assert read_views(tmp_path)['coldStubs']['persona'][0]['entity_key'] == 'master'
     assert json.loads(path.read_text(encoding='utf-8')) == [row]
 
 
@@ -2660,21 +2697,21 @@ async def test_evidence_only_change_is_captured_with_no_active_memories(owner):
     assert not owner.native._capture('Neko', False)
 
 
-def test_formal_archives_keep_scoped_and_card_entries_and_respect_shard_capacity():
+def test_archived_entries_of_an_older_snapshot_become_listings_without_shard_writes():
     from config import ARCHIVE_FILE_MAX_ENTRIES
-    existing = {'persona': {}, 'facts': [], 'archive': [], 'reflections': [], 'personaArchives': {
-        'persona_archive/2026-10-01_aaaaaaaa.json': [
-            {'id': 'group', 'entity_key': 'master', 'scope': 'group:one', 'text': 'group memory'},
-            {'id': 'card', 'entity_key': 'neko', 'source': 'character_card', 'text': 'static card'},
-            {'id': 'old-private', 'entity_key': 'master', 'text': 'obsolete private'}]}}
+    existing = cold_views({'persona': {}, 'facts': [], 'archive': [], 'reflections': []}, persona=[
+        {'id': 'group', 'entity_key': 'master', 'scope': 'group:one', 'text': 'group memory'},
+        {'id': 'card', 'entity_key': 'neko', 'source': 'character_card', 'text': 'static card'},
+        {'id': 'old-private', 'entity_key': 'master', 'text': 'obsolete private', 'archived_at': '2026-10-01T00:00:00'}])
     incoming = {'schemaVersion': 2, 'completedAt': 3000, 'evidence': {'retirements': [], 'confirmations': []}, 'entries': [
         {'kind': 'persona', 'subject': 'master', 'id': f'archived-{i}', 'text': f'archived {i}',
          'metadata': {'archived': True, 'archivedAt': 1790784000000}} for i in range(ARCHIVE_FILE_MAX_ENTRIES + 1)]}
     result = import_document(incoming, existing)
-    rows = [row for shard in result['personaArchives'].values() for row in shard]
-    assert {row['id'] for row in rows} == {'group', 'card'} | {f'archived-{i}' for i in range(ARCHIVE_FILE_MAX_ENTRIES + 1)}
-    assert all(len(shard) <= ARCHIVE_FILE_MAX_ENTRIES for shard in result['personaArchives'].values())
-    assert len(export_document(result, 3000)['entries']) == ARCHIVE_FILE_MAX_ENTRIES + 1
+    # Nothing local to move, and cold shards on disk are never rewritten by an import.
+    assert result['personaArchives'] == {}
+    exported = export_document(result, 3000)
+    assert exported['entries'] == []
+    assert cold_ids(exported) == {f'archived-{i}' for i in range(ARCHIVE_FILE_MAX_ENTRIES + 1)} | {'old-private'}
 
 
 @pytest.mark.asyncio
@@ -2701,8 +2738,10 @@ async def test_formal_archive_apply_rolls_back_all_shards_and_replays_after_inde
     assert (owner.directory / JOURNAL).is_file()
     monkeypatch.setattr(owner.native, '_replace_fact_index', original)
     assert await owner.native.consume(UID)
+    assert old.read_bytes() == old_bytes
     exported = export_document(read_views(owner.directory), 3000)
-    assert {row['id'] for row in exported['entries']} >= {'p1', 'r1', 'local-archive'}
+    assert cold_ids(exported) >= {'p1', 'r1', 'local-archive'}
+    assert {row['id'] for row in exported['entries']} == {'f1'}
     assert owner.raw.read_bytes() == raw_bytes
     assert not (owner.directory / JOURNAL).exists()
 
@@ -2736,20 +2775,20 @@ async def test_cancelling_snapshot_apply_waits_for_consistent_file_commit(owner,
 
 
 @pytest.mark.asyncio
-async def test_real_native_reflection_archive_is_present_in_sync_snapshot(tmp_path):
+async def test_real_native_reflection_archive_is_listed_cold_in_sync_snapshot(tmp_path):
     from tests.unit.test_evidence_archive import _install
     _ev, _fs, _pm, engine, _rec, _cm = _install(str(tmp_path))
     await engine.asave_reflections('小天', [{'id': 'native-archive', 'entity': 'master', 'text': 'archived native reflection',
         'status': 'confirmed', 'created_at': '2026-10-01T00:00:00', 'source_fact_ids': []}])
     assert await engine.aarchive_reflection('小天', 'native-archive')
     views = read_views(tmp_path/'小天')
-    physical = [row for rows in views['reflectionArchives'].values() for row in rows]
-    exported = export_document(views, 3000)['entries']
+    assert [row['id'] for row in views['coldStubs']['reflection']] == ['native-archive']
+    assert 'text' not in views['coldStubs']['reflection'][0]
+    exported = export_document(views, 3000)
+    assert exported['entries'] == [] and cold_ids(exported) == {'native-archive'}
     received = merged_import({'schemaVersion':2, 'completedAt':4000, 'entries':[], 'evidence':{'retirements':[],'confirmations':[]}}, views, baseline=None)
-    retained = [row['id'] for rows in received['reflectionArchives'].values() for row in rows]
-    print(json.dumps({'probe':'real_archive', 'physical_statuses':[r['status'] for r in physical], 'exported_ids':[r['id'] for r in exported], 'native_ids_after_unrelated_snapshot':retained}))
-    assert any(row['id'] == 'native-archive' for row in exported)
-    assert 'native-archive' in retained
+    assert received['reflectionArchives'] == {}
+    assert [item['id'] for item in received['sync']['cold']] == ['native-archive']
 
 
 @pytest.mark.asyncio

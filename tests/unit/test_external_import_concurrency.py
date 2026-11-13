@@ -488,7 +488,7 @@ class _DailyConcurrencyHarness(FactStore):
     async def aload_facts(self, lanlan_name):
         return []
 
-    async def aload_facts_full(self, lanlan_name):
+    async def aload_facts_full(self, lanlan_name, *, include_cold_stubs=False):
         # Isolate real disk state: _acollect_day_fp_sources now reads active and archive sources.
         return []
 

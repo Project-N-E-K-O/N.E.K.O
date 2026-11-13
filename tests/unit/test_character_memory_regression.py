@@ -5188,29 +5188,72 @@ async def test_sync_workshop_character_cards_persists_character_origin_metadata(
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("card_payload", "expected_model_field", "expected_model_ref", "expected_display_name"),
+    (
+        "card_payload", "expected_model_field", "expected_model_ref", "expected_display_name",
+        "local_override", "republished_model",
+    ),
     (
         (
             {
                 "档案名": "工坊VRM角色",
                 "昵称": "来自创意工坊 VRM",
                 "model_type": "vrm",
-                "vrm": "/workshop/3671939765/avatar/BlueCat.vrm",
+                "vrm": "/user_vrm/BlueCat.vrm",
             },
             "vrm",
-            "/workshop/3671939765/avatar/BlueCat.vrm",
+            "/workshop/3671939765/BlueCat.vrm",
             "BlueCat",
+            None,
+            None,
         ),
         (
             {
                 "档案名": "工坊MMD角色",
                 "昵称": "来自创意工坊 MMD",
                 "model_type": "mmd",
-                "mmd": "/workshop/3671939765/miku/Miku.pmx",
+                "mmd": "/user_mmd/miku/Miku.pmx",
             },
             "mmd",
             "/workshop/3671939765/miku/Miku.pmx",
             "Miku",
+            "/user_mmd/Custom.pmx",
+            None,
+        ),
+        (
+            {
+                "档案名": "工坊重新发布MMD角色",
+                "model_type": "live3d",
+                "mmd": "/workshop/123/Avatar.pmx",
+            },
+            "mmd",
+            "/workshop/3671939765/123/Avatar.pmx",
+            "Avatar",
+            None,
+            ("123/Avatar.pmx", "123/Avatar.pmx"),
+        ),
+        (
+            {
+                "档案名": "工坊本地MMD重新发布角色",
+                "model_type": "live3d",
+                "mmd": "/user_mmd/Avatar.pmx",
+            },
+            "mmd",
+            "/workshop/3671939765/Avatar.pmx",
+            "Avatar",
+            None,
+            ("123/Avatar.pmx", "123/Avatar.pmx"),
+        ),
+        (
+            {
+                "档案名": "工坊根目录MMD角色",
+                "model_type": "live3d",
+                "mmd": "/user_mmd/Avatar.pmx",
+            },
+            "mmd",
+            "/workshop/3671939765/Avatar.pmx",
+            "Avatar",
+            None,
+            ("/workshop/123/Avatar.pmx", "Avatar.pmx"),
         ),
     ),
 )
@@ -5219,7 +5262,12 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
     expected_model_field,
     expected_model_ref,
     expected_display_name,
+    local_override,
+    republished_model,
 ):
+    from main_routers.workshop_router.meta import _build_subscriber_workshop_model_ref
+    from utils.config_manager import get_reserved, set_reserved
+
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(cm)
@@ -5246,7 +5294,11 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
 
             installed_folder = Path(td) / "mock_workshop_live3d_item"
             installed_folder.mkdir(parents=True, exist_ok=True)
-            (installed_folder / "角色卡.chara.json").write_text(
+            packaged_file = installed_folder / expected_model_ref.removeprefix("/workshop/3671939765/")
+            packaged_file.parent.mkdir(parents=True, exist_ok=True)
+            packaged_file.touch()
+            card_file = installed_folder / "角色卡.chara.json"
+            card_file.write_text(
                 json.dumps(card_payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
@@ -5268,21 +5320,126 @@ async def test_sync_workshop_character_cards_persists_live3d_workshop_origin_met
             ):
                 sync_result = await workshop_router_module.sync_workshop_character_cards()
 
-        assert sync_result["added"] == 1
+                assert sync_result["added"] == 1
+                current_characters = cm.load_characters()
+                name = card_payload["档案名"]
+                payload = current_characters["猫娘"][name]
+                assert get_reserved(payload, "avatar", "asset_source") == "steam_workshop"
+                assert get_reserved(payload, "avatar", "asset_source_id") == "3671939765"
+                assert get_reserved(payload, "avatar", "model_type") == "live3d"
+                assert get_reserved(payload, "avatar", expected_model_field, "model_path") == expected_model_ref
+                assert get_reserved(payload, "character_origin", "source") == "steam_workshop"
+                assert get_reserved(payload, "character_origin", "source_id") == "3671939765"
+                assert get_reserved(payload, "character_origin", "display_name") == expected_display_name
+                assert get_reserved(payload, "character_origin", "model_ref") == expected_model_ref
 
-        from utils.config_manager import get_reserved
+                old_model_ref = _build_subscriber_workshop_model_ref(
+                    "3671939765", card_payload[expected_model_field],
+                )
+                set_reserved(payload, "character_origin", "model_ref", old_model_ref)
+                set_reserved(payload, "avatar", expected_model_field, "model_path", local_override or old_model_ref)
+                if local_override:
+                    set_reserved(payload, "avatar", "asset_source", "local_imported")
+                    set_reserved(payload, "avatar", "asset_source_id", "")
+                await cm.asave_characters(current_characters)
 
-        current_characters = cm.load_characters()
-        payload = current_characters.get("猫娘", {}).get(card_payload["档案名"])
-        assert isinstance(payload, dict)
-        assert get_reserved(payload, "avatar", "asset_source", default="") == "steam_workshop"
-        assert get_reserved(payload, "avatar", "asset_source_id", default="") == "3671939765"
-        assert get_reserved(payload, "avatar", "model_type", default="") == "live3d"
-        assert get_reserved(payload, "avatar", expected_model_field, "model_path", default="") == expected_model_ref
-        assert get_reserved(payload, "character_origin", "source", default="") == "steam_workshop"
-        assert get_reserved(payload, "character_origin", "source_id", default="") == "3671939765"
-        assert get_reserved(payload, "character_origin", "display_name", default="") == expected_display_name
-        assert get_reserved(payload, "character_origin", "model_ref", default="") == expected_model_ref
+                if republished_model:
+                    updated_card_ref, updated_file_path = republished_model
+                    updated_card = {**card_payload, expected_model_field: updated_card_ref}
+                    card_file.write_text(json.dumps(updated_card, ensure_ascii=False), encoding="utf-8")
+                    republished_file = installed_folder / updated_file_path
+                    republished_file.parent.mkdir(parents=True, exist_ok=True)
+                    republished_file.touch()
+                    expected_model_ref = f"/workshop/3671939765/{updated_file_path}"
+                    original_file = installed_folder / old_model_ref.removeprefix("/workshop/3671939765/")
+                    original_file.parent.mkdir(parents=True, exist_ok=True)
+                    original_file.touch()
+                    reload_characters = AsyncMock()
+                    with (
+                        patch.object(cm, "aload_characters", wraps=cm.aload_characters) as load,
+                        patch.object(cm, "asave_characters", wraps=cm.asave_characters) as save,
+                        patch.object(workshop_router_module, "get_initialize_character_data", return_value=reload_characters),
+                    ):
+                        await workshop_router_module.sync_workshop_character_cards()
+                        await workshop_router_module.sync_workshop_character_cards()
+                        assert load.await_count == 2
+                        save.assert_not_awaited()
+                        reload_characters.assert_not_awaited()
+                    original_file.unlink()
+
+                with patch.object(cm, "asave_characters", wraps=cm.asave_characters) as save:
+                    repaired = await workshop_router_module.sync_workshop_character_cards()
+                    await workshop_router_module.sync_workshop_character_cards()
+                    save.assert_awaited_once()
+
+                assert repaired["added"] == 0
+                assert repaired["errors"] == 0
+                payload = cm.load_characters()["猫娘"][name]
+                assert get_reserved(payload, "character_origin", "model_ref") == expected_model_ref
+                assert get_reserved(payload, "avatar", expected_model_field, "model_path") == (
+                    local_override or expected_model_ref
+                )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_repair_cancellation_waits_for_config_save(tmp_path, monkeypatch):
+    from main_routers.workshop_router import sync_cards
+    from utils.config_manager import get_reserved, set_reserved
+
+    name = "工坊VRM角色"
+    item_id = "123"
+    old_ref = f"/workshop/{item_id}/user_vrm/Avatar.vrm"
+    character = {}
+    set_reserved(character, "character_origin", "source", "steam_workshop")
+    set_reserved(character, "character_origin", "source_id", item_id)
+    set_reserved(character, "character_origin", "model_ref", old_ref)
+    characters = {"猫娘": {name: character}}
+    (tmp_path / "Avatar.vrm").touch()
+    (tmp_path / "Avatar.chara.json").write_text(
+        json.dumps({"档案名": name, "vrm": "/user_vrm/Avatar.vrm"}),
+        encoding="utf-8",
+    )
+
+    lock = asyncio.Lock()
+    save_started = asyncio.Event()
+    finish_save = asyncio.Event()
+    saved = []
+
+    async def save_characters(data):
+        save_started.set()
+        await finish_save.wait()
+        saved.append(data)
+
+    config_mgr = SimpleNamespace(
+        aload_characters=AsyncMock(side_effect=lambda: copy.deepcopy(characters)),
+        asave_characters=save_characters,
+    )
+    monkeypatch.setattr(sync_cards, "_ugc_sync_lock", lock)
+    monkeypatch.setattr(sync_cards, "get_config_manager", lambda: config_mgr)
+    monkeypatch.setattr(sync_cards, "get_subscribed_workshop_items", AsyncMock(return_value={
+        "success": True,
+        "items": [{"publishedFileId": item_id, "installedFolder": str(tmp_path)}],
+    }))
+    monkeypatch.setattr(sync_cards, "is_write_fence_active", lambda _: False)
+    monkeypatch.setattr(sync_cards, "_load_deleted_character_names", lambda _: set())
+    monkeypatch.setattr(sync_cards, "_ensure_workshop_card_face_meta", lambda *_: False)
+
+    sync = asyncio.create_task(sync_cards.sync_workshop_character_cards())
+    try:
+        await asyncio.wait_for(save_started.wait(), timeout=5)
+        sync.cancel()
+        await asyncio.sleep(0)
+        assert lock.locked()
+        assert not sync.done()
+    finally:
+        finish_save.set()
+        outcome, = await asyncio.gather(sync, return_exceptions=True)
+
+    assert isinstance(outcome, asyncio.CancelledError)
+    assert not lock.locked()
+    assert len(saved) == 1
+    assert get_reserved(saved[0]["猫娘"][name], "character_origin", "model_ref") == f"/workshop/{item_id}/Avatar.vrm"
 
 
 @pytest.mark.unit

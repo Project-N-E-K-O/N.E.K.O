@@ -23,16 +23,6 @@ const en = {
   invalidId: 'Use a lowercase ID starting with a letter.',
   required: 'Enter a name and a valid ID.',
   files: 'Standard project',
-  helpIntro: 'Key commands for creating and shipping a plugin.',
-  helpStart: 'Your first plugin',
-  helpChecks: 'Understand your checks',
-  helpPublish: 'Share your plugin',
-  helpStartBody:
-    'Use New plugin in the workbench to create a project. The command below is for a source checkout, run from the N.E.K.O root; --output selects the plugin directory, named after its ID.',
-  helpChecksBody:
-    'Errors block the relevant workflow. Warnings need judgment. A passing static check does not replace entry tests or Hosted UI verification. Reports belong to a source snapshot.',
-  helpPublishBody:
-    'Commit and push in the plugin’s own repository. Submit the plugin for Market review from the Publish tab. After approval, publish a version from the approved commit and wait for the package, check report and evidence assets.',
   parentDirectory: 'Parent directory',
   chooseFolder: 'Choose folder',
   createPlugin: 'Create plugin',
@@ -384,16 +374,6 @@ export const authoringMessages = {
     invalidId: '请填写以小写字母开头的有效 ID。',
     required: '请填写名称和有效 ID。',
     files: '标准项目结构',
-    helpIntro: '围绕当前步骤，了解你需要知道的事情。',
-    helpStart: '制作第一个插件',
-    helpChecks: '读懂检查结果',
-    helpPublish: '分享你的插件',
-    helpStartBody:
-      '优先使用工作台的「新建插件」。下方命令用于源码版，请在 N.E.K.O 根目录执行；--output 指定源码目录，目录名须与插件 ID 一致。',
-    helpChecksBody:
-      '错误会阻止对应流程，警告需要结合实际判断。静态检查通过后，仍需测试入口与 Hosted UI。每份报告都对应一份源码快照。',
-    helpPublishBody:
-      '在插件自己的仓库中 commit 和 push。在发布页向 Market 投稿审核；审核通过后，用通过审核的 commit 发布版本，等待安装包、检查报告和发布证据三项资产就绪。',
     parentDirectory: '父目录',
     chooseFolder: '选择文件夹',
     createPlugin: '创建插件',
@@ -732,16 +712,6 @@ export const authoringMessages = {
     invalidId: '請填寫以小寫字母開頭的有效 ID。',
     required: '請填寫名稱和有效 ID。',
     files: '標準專案結構',
-    helpIntro: '圍繞目前步驟，了解需要知道的事情。',
-    helpStart: '製作第一個外掛',
-    helpChecks: '讀懂檢查結果',
-    helpPublish: '分享你的外掛',
-    helpStartBody:
-      '優先使用工作台的「新增外掛」。下方命令用於原始碼版，請在 N.E.K.O 根目錄執行；--output 指定原始碼目錄，目錄名須與外掛 ID 一致。',
-    helpChecksBody:
-      '錯誤會阻止對應流程，警告需要結合實際判斷。靜態檢查通過後，仍需測試入口與 Hosted UI。每份報告都對應一份原始碼快照。',
-    helpPublishBody:
-      '在外掛自己的儲存庫中 commit 並 push。在發布頁向 Market 投稿審核；審核通過後，以通過審核的 commit 發布版本，等待安裝包、檢查報告與發布證據三項資產就緒。',
     parentDirectory: '父目錄',
     chooseFolder: '選擇資料夾',
     createPlugin: '建立外掛',
@@ -1080,16 +1050,6 @@ export const authoringMessages = {
     invalidId: '英小文字から始まる有効な ID を入力してください。',
     required: '名前と有効な ID を入力してください。',
     files: '標準構成',
-    helpIntro: '今のステップに必要な短いガイド。',
-    helpStart: '最初のプラグイン',
-    helpChecks: 'チェックを理解する',
-    helpPublish: 'プラグインを共有',
-    helpStartBody:
-      'ワークベンチの新規プラグインを使って作成します。下のコマンドはソース版の N.E.K.O ルートで実行し、--output に ID と同名のソースディレクトリを指定します。',
-    helpChecksBody:
-      'エラーは処理を止め、警告は判断を促します。静的チェックは実行や Hosted UI テストの代わりにはなりません。',
-    helpPublishBody:
-      'プラグイン自身のリポジトリで commit と push を行います。公開タブから Market の審査に提出します。承認後、承認されたコミットからバージョンを公開し、パッケージ、チェックレポート、エビデンスの 3 つのアセットがそろうまで待ちます。',
     parentDirectory: '親ディレクトリ',
     chooseFolder: 'フォルダーを選択',
     createPlugin: 'プラグインを作成',
@@ -1438,16 +1398,6 @@ export const authoringMessages = {
     invalidId: '소문자로 시작하는 유효한 ID를 입력하세요.',
     required: '이름과 유효한 ID를 입력하세요.',
     files: '표준 프로젝트 구조',
-    helpIntro: '현재 단계에 필요한 짧은 가이드입니다.',
-    helpStart: '첫 플러그인',
-    helpChecks: '검사 이해하기',
-    helpPublish: '플러그인 공유',
-    helpStartBody:
-      '워크벤치의 새 플러그인으로 생성하세요. 아래 명령은 소스 버전의 N.E.K.O 루트에서 실행하며, --output에 ID와 같은 이름의 소스 디렉터리를 지정합니다.',
-    helpChecksBody:
-      '오류는 해당 과정을 막고 경고는 판단이 필요합니다. 정적 검사는 실행과 Hosted UI 테스트를 대신하지 않습니다.',
-    helpPublishBody:
-      '플러그인 자체 저장소에서 commit 및 push 하세요. 게시 탭에서 Market 심사에 제출합니다. 승인 후 승인된 커밋으로 버전을 게시하고 패키지, 검사 보고서, 증거 자산 세 가지가 준비될 때까지 기다리세요.',
     parentDirectory: '상위 폴더',
     chooseFolder: '폴더 선택',
     createPlugin: '플러그인 만들기',
@@ -1792,16 +1742,6 @@ export const authoringMessages = {
     invalidId: 'Введите ID, начинающийся со строчной буквы.',
     required: 'Введите название и корректный ID.',
     files: 'Стандартная структура',
-    helpIntro: 'Краткое руководство для текущего этапа.',
-    helpStart: 'Первый плагин',
-    helpChecks: 'Как читать проверки',
-    helpPublish: 'Распространение плагина',
-    helpStartBody:
-      'Создавайте проект через New plugin в рабочей области. Команда ниже запускается из корня исходников N.E.K.O; --output задаёт каталог с именем ID плагина.',
-    helpChecksBody:
-      'Ошибки блокируют этап, предупреждения требуют оценки. Статическая проверка не заменяет тестирование поведения и Hosted UI.',
-    helpPublishBody:
-      'Сделайте commit и push в собственном репозитории плагина. Отправьте плагин на проверку Market со вкладки публикации. После одобрения опубликуйте версию из одобренного коммита и дождитесь пакета, отчёта проверки и файла доказательств.',
     parentDirectory: 'Родительский каталог',
     chooseFolder: 'Выбрать папку',
     createPlugin: 'Создать плагин',
@@ -2149,16 +2089,6 @@ export const authoringMessages = {
     invalidId: 'Introduce un ID válido que empiece con minúscula.',
     required: 'Introduce un nombre y un ID válido.',
     files: 'Estructura estándar',
-    helpIntro: 'Una guía breve para el paso actual.',
-    helpStart: 'Tu primer plugin',
-    helpChecks: 'Entender los resultados',
-    helpPublish: 'Compartir tu plugin',
-    helpStartBody:
-      'Usa Nuevo plugin en el taller. El comando siguiente se ejecuta desde la raíz del código fuente de N.E.K.O; --output indica el directorio, cuyo nombre debe coincidir con el ID.',
-    helpChecksBody:
-      'Los errores bloquean y los avisos requieren criterio. Las comprobaciones estáticas no sustituyen las pruebas de entradas o Hosted UI.',
-    helpPublishBody:
-      'Haz commit y push en el repositorio propio del plugin. Envía el plugin a revisión del Market desde la pestaña de publicación. Tras la aprobación, publica una versión desde el commit aprobado y espera el paquete, el informe de comprobación y la evidencia.',
     parentDirectory: 'Carpeta principal',
     chooseFolder: 'Elegir carpeta',
     createPlugin: 'Crear plugin',
@@ -2505,16 +2435,6 @@ export const authoringMessages = {
     invalidId: 'Informe um ID válido iniciado por minúscula.',
     required: 'Informe um nome e um ID válido.',
     files: 'Estrutura padrão',
-    helpIntro: 'Um guia curto para a etapa atual.',
-    helpStart: 'Seu primeiro plugin',
-    helpChecks: 'Entender verificações',
-    helpPublish: 'Compartilhar seu plugin',
-    helpStartBody:
-      'Use Novo plugin na bancada. O comando abaixo é executado na raiz do código-fonte do N.E.K.O; --output define o diretório com o mesmo nome do ID do plugin.',
-    helpChecksBody:
-      'Erros bloqueiam a etapa; avisos exigem avaliação. Verificações estáticas não substituem testes de entradas e Hosted UI.',
-    helpPublishBody:
-      'Faça commit e push no repositório do próprio plugin. Envie o plugin para revisão do Market na aba de publicação. Após a aprovação, publique uma versão a partir do commit aprovado e aguarde o pacote, o relatório de verificação e a evidência.',
     parentDirectory: 'Diretório pai',
     chooseFolder: 'Escolher pasta',
     createPlugin: 'Criar plugin',

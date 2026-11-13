@@ -44,6 +44,12 @@ from memory.facts import _merge_archive_entries
 # ── helpers ──────────────────────────────────────────────────────────
 
 
+def _cold_rows(directory):
+    """Arbitration losers live in cold storage (memory/cold_store.py), not facts_archive.json."""
+    from memory import cold_store
+    return cold_store.read_full(str(directory))
+
+
 def test_archive_merge_preserves_arbitration_marker_from_crash_duplicate():
     existing = [{
         "id": "loser",
@@ -1471,8 +1477,8 @@ async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
     assert active[0]["speaker_trust"] == pytest.approx(0.8)
     assert active[0]["importance"] == 5
     assert active[0].get("speaker_provenance_mixed") is not True
-    archive_path = tmp_path / "Neko" / "facts_archive.json"
-    archived = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert not (tmp_path / "Neko" / "facts_archive.json").exists()
+    archived = _cold_rows(tmp_path / "Neko")
     loser = next(fact for fact in archived if fact["id"] == "c1")
     assert loser["superseded_by"] == "e1"
     assert loser["arbitration_reason"] == "fact_dedup_merge"
@@ -1485,10 +1491,11 @@ async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
         return original_load_facts(name)
 
     fs.load_facts = _load_only_before_lock
-    assert await fs.arestore_arbitrated_fact("Neko", "c1")
-    assert {fact["id"] for fact in await fs.aload_facts("Neko")} == {"c1", "e1"}
-    remaining_archive = json.loads(archive_path.read_text(encoding="utf-8"))
-    assert all(fact.get("id") != "c1" for fact in remaining_archive)
+    # Restoring goes through cold storage: a copy under a new id, the cold row stays.
+    [back] = await fs.arestore_cold_facts("Neko", lambda row: row["id"] == "c1")
+    assert back["restored_from"] == "c1" and back["text"] == "小明不喜欢猫"
+    assert {fact["id"] for fact in await fs.aload_facts("Neko")} == {back["id"], "e1"}
+    assert [fact["id"] for fact in _cold_rows(tmp_path / "Neko")] == ["c1"]
 
 
 @pytest.mark.asyncio
@@ -1512,150 +1519,6 @@ async def test_invalid_or_same_canonical_speaker_cannot_drive_trust_arbitration(
         assert await resolver.aresolve("Neko") == 1
 
     assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]
-
-
-@pytest.mark.asyncio
-async def test_restore_arbitrated_fact_normalizes_legacy_numeric_ids(tmp_path):
-    fs, _resolver = _install_resolver(str(tmp_path))
-    await _seed_facts(fs, "Neko", [_fact("active", "survivor")])
-    archive_path = tmp_path / "Neko" / "facts_archive.json"
-    legacy = _fact("5", "legacy loser")
-    legacy["id"] = 5
-    archive_path.write_text(json.dumps([{
-        **legacy,
-        "arbitration_archived_at": "2026-08-01T00:00:00",
-        "arbitration_reason": "fact_dedup_merge",
-    }]), encoding="utf-8")
-
-    assert await fs.arestore_arbitrated_fact("Neko", "5")
-    restored = await fs.aload_facts("Neko")
-    assert {fact["id"] for fact in restored} == {"active", 5}
-    restored_row = next(fact for fact in restored if fact["id"] == 5)
-    assert restored_row["restored_at"]
-    assert restored_row["arbitration_restored_at"] == restored_row["restored_at"]
-    assert json.loads(archive_path.read_text(encoding="utf-8")) == []
-
-
-@pytest.mark.asyncio
-async def test_restore_arbitrated_fact_keeps_scalar_id_types_distinct(tmp_path):
-    from memory.scopes import MemorySubject
-
-    fs, _resolver = _install_resolver(str(tmp_path))
-    await _seed_facts(fs, "Neko", [])
-    subject = MemorySubject.group_chat("qq", "7788")
-    fields = subject.as_entry_fields()
-    archive_path = tmp_path / "Neko" / "facts_archive.json"
-    integer_loser = {**_fact("integer-1", "integer loser"), **fields}
-    integer_loser["id"] = 1
-    archive_path.write_text(json.dumps([
-        {
-            **integer_loser,
-            "arbitration_archived_at": "2026-08-01T00:00:00",
-        },
-        {
-            **_fact("1", "string loser"), **fields,
-            "arbitration_archived_at": "2026-08-01T00:00:01",
-        },
-    ]), encoding="utf-8")
-
-    assert await fs.arestore_arbitrated_fact("Neko", "1", subject=subject)
-    active = await fs.aload_facts("Neko")
-    assert [(type(row["id"]), row["text"]) for row in active] == [
-        (str, "string loser"),
-    ]
-    remaining = json.loads(archive_path.read_text(encoding="utf-8"))
-    assert [(type(row["id"]), row["text"]) for row in remaining] == [
-        (int, "integer loser"),
-    ]
-
-    # Preserve the compatibility path for an archive containing only a
-    # legacy numeric id addressed by its historical string form.
-    assert await fs.arestore_arbitrated_fact("Neko", "1", subject=subject)
-    active = await fs.aload_facts("Neko")
-    assert {(type(row["id"]), row["text"]) for row in active} == {
-        (str, "string loser"), (int, "integer loser"),
-    }
-    assert json.loads(archive_path.read_text(encoding="utf-8")) == []
-
-
-@pytest.mark.asyncio
-async def test_restore_arbitrated_fact_uses_full_scoped_identity(tmp_path):
-    from memory.scopes import MemorySubject
-
-    fs, _resolver = _install_resolver(str(tmp_path))
-    await _seed_facts(fs, "Neko", [])
-    target = MemorySubject.group_participant("qq", "7788", "1001")
-    foreign = MemorySubject.group_participant("qq", "8899", "1001")
-    archive_path = tmp_path / "Neko" / "facts_archive.json"
-    archived = [
-        {
-            **_fact("shared", "target loser"),
-            **target.as_entry_fields(),
-            "arbitration_archived_at": "2026-08-01T00:00:00",
-        },
-        {
-            **_fact("shared", "foreign loser"),
-            **foreign.as_entry_fields(),
-            "arbitration_archived_at": "2026-08-01T00:00:01",
-        },
-    ]
-    archive_path.write_text(json.dumps(archived), encoding="utf-8")
-
-    assert not await fs.arestore_arbitrated_fact("Neko", "shared")
-    assert await fs.arestore_arbitrated_fact(
-        "Neko", "shared", subject=target,
-    )
-    active = await fs.aload_facts("Neko")
-    assert [fact["text"] for fact in active] == ["target loser"]
-    remaining = json.loads(archive_path.read_text(encoding="utf-8"))
-    assert [fact["text"] for fact in remaining] == ["foreign loser"]
-
-
-@pytest.mark.asyncio
-async def test_restore_arbitrated_fact_rejects_subject_archived_row(tmp_path):
-    fs, _resolver = _install_resolver(str(tmp_path))
-    await _seed_facts(fs, "Neko", [_fact("active", "survivor")])
-    archive_path = tmp_path / "Neko" / "facts_archive.json"
-    archived = {
-        **_fact("loser", "subject-archived arbitration loser"),
-        "arbitration_archived_at": "2026-08-01T00:00:00",
-        "subject_archived_at": "2026-08-01T00:00:01",
-    }
-    archive_path.write_text(json.dumps([archived]), encoding="utf-8")
-
-    assert not await fs.arestore_arbitrated_fact("Neko", "loser")
-    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["active"]
-    assert json.loads(archive_path.read_text(encoding="utf-8")) == [archived]
-
-
-@pytest.mark.asyncio
-async def test_subject_restore_unblocks_dual_marked_arbitration_row(tmp_path):
-    from memory.scopes import MemorySubject
-
-    fs, _resolver = _install_resolver(str(tmp_path))
-    subject = MemorySubject.group_chat("qq", "7788")
-    await _seed_facts(fs, "Neko", [])
-    archive_path = tmp_path / "Neko" / "facts_archive.json"
-    archived = {
-        **_fact("loser", "dual-marked loser"),
-        **subject.as_entry_fields(),
-        "arbitration_archived_at": "2026-08-01T00:00:00",
-        "subject_archived_at": "2026-08-01T00:00:01",
-    }
-    archive_path.write_text(json.dumps([archived]), encoding="utf-8")
-
-    assert not await fs.arestore_arbitrated_fact(
-        "Neko", "loser", subject=subject,
-    )
-    assert await fs.arestore_subject_facts("Neko", subject) == 1
-    assert await fs.aload_facts("Neko") == []
-    pending = json.loads(archive_path.read_text(encoding="utf-8"))
-    assert pending[0]["arbitration_archived_at"]
-    assert "subject_archived_at" not in pending[0]
-    assert await fs.arestore_arbitrated_fact(
-        "Neko", "loser", subject=subject,
-    )
-    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["loser"]
 
 
 @pytest.mark.asyncio
@@ -1779,9 +1642,10 @@ async def test_arbitration_uses_full_identity_for_duplicate_ids_across_scopes(
     assert active_by_subject[
         (foreign_existing_subject.subject_id, "e1")
     ]["text"] == "小红喜欢猫"
+    # The earlier loser still waits in facts_archive.json; the new one went cold.
     archived = json.loads(
         archive_path.read_text(encoding="utf-8")
-    )
+    ) + _cold_rows(tmp_path / "Neko")
     assert [(fact["subject_id"], fact["id"]) for fact in archived] == [
         (foreign_candidate_subject.subject_id, "c1"),
         (target_candidate_subject.subject_id, "c1"),
@@ -1811,9 +1675,7 @@ async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_p
     assert active[0]["speaker_trust"] == pytest.approx(0.8)
     assert active[0]["importance"] == 5
     assert active[0].get("speaker_provenance_mixed") is not True
-    archived = json.loads(
-        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
-    )
+    archived = _cold_rows(tmp_path / "Neko")
     assert next(fact for fact in archived if fact["id"] == "e1")[
         "superseded_by"
     ] == "c1"
@@ -1879,9 +1741,7 @@ async def test_trust_does_not_collapse_distinct_temporal_fact_states(tmp_path):
 
     active = await fs.aload_facts("Neko")
     assert [fact["id"] for fact in active] == ["c1"]
-    archived = json.loads(
-        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
-    )
+    archived = _cold_rows(tmp_path / "Neko")
     assert next(fact for fact in archived if fact["id"] == "e1")[
         "superseded_by"
     ] == "c1"
@@ -1911,9 +1771,7 @@ async def test_trust_preserves_bounded_episode_against_undated_state(tmp_path):
 
     active = await fs.aload_facts("Neko")
     assert [fact["id"] for fact in active] == ["c1"]
-    archived = json.loads(
-        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
-    )
+    archived = _cold_rows(tmp_path / "Neko")
     assert next(fact for fact in archived if fact["id"] == "e1")[
         "superseded_by"
     ] == "c1"
@@ -1945,9 +1803,7 @@ async def test_mixed_residual_provenance_cannot_drive_fact_trust_arbitration(
     active = await fs.aload_facts("Neko")
     assert [fact["id"] for fact in active] == ["e1"]
     assert active[0]["speaker_provenance_mixed"] is True
-    archived = json.loads(
-        (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
-    )
+    archived = _cold_rows(tmp_path / "Neko")
     assert [fact["id"] for fact in archived] == ["c1"]
 
 
@@ -2512,7 +2368,7 @@ async def test_aresolve_shows_the_newer_record_as_the_candidate(tmp_path, answer
         return
     assert active == {survivor}
     loser = ({"c1", "e1"} - {survivor}).pop()
-    archived = json.loads((tmp_path / "小天" / "facts_archive.json").read_text(encoding="utf-8"))
+    archived = _cold_rows(tmp_path / "小天")
     row = next(fact for fact in archived if fact["id"] == loser)
     assert row["superseded_by"] == survivor and row["arbitration_reason"] == reason
     kept = next(fact for fact in await fs.aload_facts("小天") if fact["id"] == survivor)

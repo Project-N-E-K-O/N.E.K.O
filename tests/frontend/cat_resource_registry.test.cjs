@@ -51,6 +51,11 @@ const VISUAL_ACTION_ASSETS = Object.freeze([
   { actionId: 'cat1_scared', slot: 'action.cat1.scared', file: 'cat-idle-cat1-scared.webp', durationMs: 4040, bounds: [512, 512, 27, 1, 434, 512], metadata: {} },
   { actionId: 'cat1_stroke', slot: 'action.cat1.stroke', file: 'cat-idle-cat1-stroke.webp', durationMs: 7980, bounds: [512, 512, 86, 14, 435, 492], metadata: {} },
   { actionId: 'cat1_wagging', slot: 'action.cat1.wagging', file: 'cat-idle-cat1-wagging.webp', durationMs: 4040, bounds: [512, 512, 0, 44, 400, 512], metadata: {} },
+  { actionId: 'cat2_back1_1', slot: 'action.cat2.back1_1', file: 'cat-idle-cat2-back1-1.webp', durationMs: 4040, bounds: [640, 512, 42, 15, 636, 494], metadata: { wideArt: true, artLayout: 'wide-125-centered' } },
+  { actionId: 'cat2_turn_1', slot: 'action.cat2.turn_1', file: 'cat-idle-cat2-turn-1.webp', durationMs: 5040, bounds: [896, 512, 202, 108, 706, 448], metadata: { wideArt: true, artLayout: 'wide-centered' } },
+  { actionId: 'cat3_turn_2', slot: 'action.cat3.turn_2', file: 'cat-idle-cat3-turn-2.webp', durationMs: 5930, bounds: [512, 512, 13, 99, 500, 466], metadata: {} },
+  { actionId: 'cat3_back1_1', slot: 'action.cat3.back1_1', file: 'cat-idle-cat3-back1-1.webp', durationMs: 5040, bounds: [512, 512, 59, 5, 501, 498], metadata: {} },
+  { actionId: 'cat3_back1_2', slot: 'action.cat3.back1_2', file: 'cat-idle-cat3-back1-2.webp', durationMs: 5390, bounds: [512, 512, 58, 46, 485, 499], metadata: {} },
 ]);
 
 function loadRegistry(source = fs.readFileSync(REGISTRY_PATH, 'utf8'), overrides = {}, group = 'dev_neko') {
@@ -93,7 +98,7 @@ function parseAnimatedWebpDurationMs(buffer) {
 
 function expectedInsets(bounds, layout = 'normal') {
   const [width, height, left, top, right, bottom] = bounds;
-  const boxWidth = layout === 'wide-centered' ? 1.75 : 1;
+  const boxWidth = layout === 'wide-centered' ? 1.75 : (layout === 'wide-125-centered' ? 1.25 : 1);
   const boxHeight = layout === 'tall-bottom' ? 1.375 : 1;
   const scale = Math.min(boxWidth / width, boxHeight / height);
   const x = (1 - width * scale) / 2;
@@ -188,6 +193,8 @@ test('static cat manifests and registry stay slot-compatible', () => {
     'cat1_small_move',
     'cat1_play_yarn',
     'cat1_idle_random',
+    'cat2_idle_random',
+    'cat3_idle_random',
     'cat1_inactive_sad',
     'cat2_nap_feedback',
     'cat3_sleep_feedback',
@@ -201,7 +208,7 @@ test('static cat manifests and registry stay slot-compatible', () => {
   assert.equal(unknownAction.reason, 'unknown_action');
 });
 
-test('every animation in the CAT1 action directory is registered exactly once', () => {
+test('every animation in the action directory is registered exactly once', () => {
   const actionFiles = fs.readdirSync(ACTION_DIR)
     .filter((name) => name.endsWith('.gif') || name.endsWith('.webp'))
     .sort();
@@ -216,7 +223,7 @@ test('every animation in the CAT1 action directory is registered exactly once', 
     .map((resourcePath) => path.basename(resourcePath))
     .sort();
 
-  assert.equal(actionFiles.length, 18, 'audited action directory size');
+  assert.equal(actionFiles.length, 23, 'audited action directory size');
   assert.deepEqual(registeredActionFiles, actionFiles, 'no action asset may remain outside the manifest');
   assert.equal(new Set(registeredActionFiles).size, registeredActionFiles.length,
     'one action file must not be assigned to multiple slots');
@@ -302,7 +309,7 @@ test('every animated WebP appearance has its exact one-cycle duration registered
   const files = fs.readdirSync(APPEARANCE_DIR, { recursive: true, withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.webp'))
     .map((entry) => path.join(entry.parentPath, entry.name));
-  assert.equal(files.length, 29);
+  assert.equal(files.length, 34);
   for (const filename of files) {
     const relative = path.relative(APPEARANCE_DIR, filename).split(path.sep).join('/');
     const url = `/static/assets/cat-resources/appearance/dev_neko/${relative}`;
@@ -460,6 +467,8 @@ test('every registered action exposes the design dependency matrix', () => {
       ],
       voice: [],
     },
+    cat2_idle_random: { appearance: ['action.cat2.back1_1', 'action.cat2.turn_1'], voice: [] },
+    cat3_idle_random: { appearance: ['action.cat3.turn_2', 'action.cat3.back1_1', 'action.cat3.back1_2'], voice: [] },
     cat1_inactive_sad: { appearance: ['action.cat1.sad'], voice: [] },
     cat2_nap_feedback: { appearance: ['idle.cat2'], voice: ['cat2.sleep'] },
     cat3_sleep_feedback: { appearance: ['idle.cat3'], voice: ['cat3.sleep'] },
@@ -540,6 +549,11 @@ test('missing action resources are rejected with a stable dependency reason', ()
     ['cat1_idle_random', 'action.cat1.laugh', 'appearance_unavailable'],
     ['cat1_idle_random', 'action.cat1.love_1', 'appearance_unavailable'],
     ['cat1_idle_random', 'action.cat1.wagging', 'appearance_unavailable'],
+    ['cat2_idle_random', 'action.cat2.turn_1', 'appearance_unavailable'],
+    ['cat2_idle_random', 'action.cat2.back1_1', 'appearance_unavailable'],
+    ['cat3_idle_random', 'action.cat3.turn_2', 'appearance_unavailable'],
+    ['cat3_idle_random', 'action.cat3.back1_1', 'appearance_unavailable'],
+    ['cat3_idle_random', 'action.cat3.back1_2', 'appearance_unavailable'],
     ['cat1_inactive_sad', 'action.cat1.sad', 'appearance_unavailable'],
     ['cat2_nap_feedback', 'idle.cat2', 'appearance_unavailable'],
     ['cat3_sleep_feedback', 'cat3.sleep', 'voice_unavailable'],

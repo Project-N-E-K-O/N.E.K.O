@@ -165,6 +165,9 @@ class PersistenceMixin:
                     if self._is_persona_empty(data):
                         self._migrate_from_settings(name, data)
                         migrated = True
+                    # After the layout is current and settings are folded in, so
+                    # every section is where the archived copies say it is.
+                    self._drop_cold_copies(name, data)
                     # Synchronize character card.
                     if self._sync_character_card(name, data):
                         migrated = True
@@ -179,10 +182,23 @@ class PersistenceMixin:
         # Auto-migrate from legacy settings
         persona = self._empty_persona()
         self._migrate_from_settings(name, persona)
+        # Settings may still hold an entry archived since; the archived copy wins.
+        self._drop_cold_copies(name, persona)
         self._sync_character_card(name, persona)
         self._personas[name] = persona
         self.save_persona(name, persona)
         return persona
+
+    def _drop_cold_copies(self, name: str, persona: dict) -> None:
+        """Drop private persona entries also held in the archive shards (cold storage wins)."""
+        from memory import cold_store
+        directory = os.path.join(self._config_manager.memory_dir, name)
+        for subject, section in persona.items():
+            if not isinstance(section, dict) or not isinstance(section.get('facts'), list):
+                continue
+            section['facts'] = cold_store.without_cold_copies(
+                directory, 'persona', section['facts'], lambda _row, subject=subject: subject,
+            )
 
     async def aensure_persona(self, name: str) -> dict:
         """Thread-safe wrapper. The two branches that `asave_persona()` to disk —
@@ -250,6 +266,8 @@ class PersistenceMixin:
                     if self._is_persona_empty(data):
                         await self._async_migrate_from_settings(name, data)
                         migrated = True
+                    # Same order as the sync loader: after layout and settings migration.
+                    await asyncio.to_thread(self._drop_cold_copies, name, data)
                     if await self._async_sync_character_card(name, data):
                         migrated = True
                     if migrated:
@@ -266,6 +284,8 @@ class PersistenceMixin:
 
         persona = self._empty_persona()
         await self._async_migrate_from_settings(name, persona)
+        # Settings may still hold an entry archived since; the archived copy wins.
+        await asyncio.to_thread(self._drop_cold_copies, name, persona)
         await self._async_sync_character_card(name, persona)
         self._personas[name] = persona
         await self.asave_persona(name, persona)

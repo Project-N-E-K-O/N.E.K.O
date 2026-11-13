@@ -387,6 +387,8 @@ const _NEKO_CAT_MIND_ACTION_IDS = Object.freeze({
     CAT1_SMALL_MOVE: 'cat1_small_move',
     CAT1_PLAY_YARN: 'cat1_play_yarn',
     CAT1_IDLE_RANDOM: 'cat1_idle_random',
+    CAT2_IDLE_RANDOM: 'cat2_idle_random',
+    CAT3_IDLE_RANDOM: 'cat3_idle_random',
     CAT1_INACTIVE_SAD: 'cat1_inactive_sad',
     CAT2_NAP_FEEDBACK: 'cat2_nap_feedback',
     CAT3_SLEEP_FEEDBACK: 'cat3_sleep_feedback'
@@ -574,6 +576,7 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_GRAVITY_PX_PER_SECOND2 = 2600;
 const _NEKO_IDLE_CAT1_PLAYGROUND_MAX_DELTA_MS = 50;
 const _NEKO_IDLE_CAT1_PLAYGROUND_HORIZONTAL_DAMPING = 0.992;
 const _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING = 0.988;
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ = 0.90;
 const _NEKO_IDLE_CAT1_PLAYGROUND_WALL_RESTITUTION = 0.42;
 const _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION = 0.52;
 const _NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC = 38;
@@ -600,10 +603,16 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS = Object.freeze({
     bottom: 15 / 512
 });
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS = Object.freeze({
-    left: 35 / 963,
-    top: 36 / 930,
-    right: 36 / 963,
-    bottom: 35 / 930
+    left: 62 / 512,
+    top: 62 / 512,
+    right: 62 / 512,
+    bottom: 62 / 512
+});
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS = Object.freeze({
+    left: 20 / 512,
+    top: 20 / 512,
+    right: 20 / 512,
+    bottom: 20 / 512
 });
 const _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS = Object.freeze({
     left: 80 / 960,
@@ -615,7 +624,7 @@ const _NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3;
 const _NEKO_IDLE_CAT1_PLAYGROUND_POINTER_SAMPLE_LIMIT = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_MIN_CLICK_DRAG_PX = 5;
 const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS = 900;
-const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball-playground.png';
 let _nekoIdleCat1PlaygroundViewportBottomPx = null;
 let _nekoIdleCat1PlaygroundViewportTopPx = null;
 let _nekoIdleCat1PlaygroundViewportLeftPx = null;
