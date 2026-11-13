@@ -85,13 +85,15 @@ test('only confirmed drops enter chat; duplicate events and balance snapshots st
 test('drop facts enter the normal chat scheduler even during playback', async () => {
   const h = harness();
   h.window.appState.isPlaying = true;
-  h.drop({ rarity: 'ssr', reason: '5rounds', active_count: 4, is_career_first: true });
+  const expiresAt = '2026-11-14T00:00:00Z';
+  h.drop({ rarity: 'ssr', reason: '5rounds', active_count: 4, is_career_first: true, expires_at: expiresAt });
   await h.advance();
   assert.equal(h.requests.length, 1);
   assert.equal(h.requests[0].body.rarity, 'SSR');
   assert.equal(h.requests[0].body.reason, '5rounds');
   assert.equal(h.requests[0].body.active_count, 4);
   assert.equal(h.requests[0].body.is_career_first, true);
+  assert.equal(h.requests[0].body.expires_at, expiresAt);
 });
 
 test('the animation switch does not hide drop facts from normal chat', async () => {

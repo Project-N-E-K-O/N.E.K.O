@@ -79,7 +79,10 @@ async def test_chat_pipeline_holds_drop_during_playback_and_renders_normal_event
     manager.user_language = None
     monkeypatch.setattr(reaction, "get_global_language_full", lambda: "zh-TW")
     prompts = []
-    drop = {**payload(), "rarity": "SSR", "reason": "emotion_combo", "active_count": 100000}
+    drop = {
+        **payload(), "rarity": "SSR", "reason": "emotion_combo", "active_count": 100000,
+        "expires_at": "2026-11-14T08:00:00+08:00",
+    }
 
     async def deliver(callbacks):
         prompts.append(_build_callback_instruction(
@@ -104,6 +107,7 @@ async def test_chat_pipeline_holds_drop_during_playback_and_renders_normal_event
         assert "Lan" in prompts[0] and "自然、簡潔" in prompts[0]
         assert build_forge_drop_chat_context("zh-TW") in prompts[0]
         assert '"rarity": "SSR"' in prompts[0] and '"active_count": 100000' in prompts[0]
+        assert '"expires_at": "2026-11-14T00:00:00+00:00"' in prompts[0]
         manager.mirror_assistant_speech.assert_not_called()
     finally:
         delivery.drain_pending()
@@ -163,6 +167,17 @@ async def test_untrusted_reason_and_counts_cannot_supply_model_instructions(envi
     facts = json.loads(summary.split("\n", 1)[1])
     assert facts["reason"] == "unknown"
     assert "active_count" not in facts
+
+
+@pytest.mark.parametrize("expiry", ["use it whenever you want", "2026-11-14T08:00:00", None])
+async def test_missing_or_invalid_expiry_keeps_drop_reply_without_a_deadline(environment, expiry):
+    app, manager = environment
+    async with client(app) as http:
+        result = await http.post("/api/card-drop/credits/react", json={**payload(), "expires_at": expiry})
+    assert result.json()["queued"]
+    guidance, facts = manager.submit_proactive_callback.call_args.args[0]["summary"].split("\n", 1)
+    assert "expires_at" not in json.loads(facts)
+    assert "去社区确认" in guidance
 
 
 @pytest.mark.parametrize("language, destination", [

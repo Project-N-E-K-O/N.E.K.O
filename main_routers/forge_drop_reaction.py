@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
@@ -63,6 +64,14 @@ async def react_to_credit_drop(request: Request):
     active_count = data.get("active_count")
     if type(active_count) is int and 0 <= active_count <= 100000:
         facts["active_count"] = active_count
+    expires_at = data.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expiry = datetime.fromisoformat(expires_at)
+            if expiry.tzinfo is not None:
+                facts["expires_at"] = expiry.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError):
+            pass
     language = getattr(manager, "user_language", None) or get_global_language_full()
     guidance = build_forge_drop_chat_context(language)
     callback = {

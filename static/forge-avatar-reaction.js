@@ -91,7 +91,8 @@
           method: 'POST', credentials: 'same-origin', signal: controller.signal,
           headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
           body: JSON.stringify({ event_id: item.event_id, rarity: item.rarity, lanlan_name: item.lanlan_name,
-            reason: item.reason, active_count: item.active_count, is_career_first: item.is_career_first }),
+            reason: item.reason, active_count: item.active_count, is_career_first: item.is_career_first,
+            expires_at: item.expires_at }),
         });
         if (response.status === 403 && typeof security.refreshToken === 'function') {
           var failure = await waitForDropStep(response.json(), item.deadline);
@@ -131,7 +132,7 @@
     if (seenDrops.size > 256) seenDrops.delete(seenDrops.values().next().value);
     pendingDrops.push({ event_id: id, rarity: String(detail.rarity || 'N').toUpperCase(), lanlan_name: character,
       reason: detail.reason, active_count: detail.active_count, is_career_first: detail.is_career_first,
-      deadline: Date.now() + 45000 });
+      expires_at: detail.expires_at, deadline: Date.now() + 45000 });
     scheduleDrop();
   }
 
