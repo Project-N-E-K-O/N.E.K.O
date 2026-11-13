@@ -637,7 +637,6 @@ class _SyncMessageQueue(asyncio.Queue):
     def __init__(self, maxsize: int = 0):
         super().__init__(maxsize)
         self.deferred_memory_lock = asyncio.Lock()
-        self.memory_summary_in_flight = False
         self.recent_context_version = 0
 
     def put(self, item):  # type: ignore[override]

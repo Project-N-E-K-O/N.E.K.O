@@ -207,15 +207,20 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
 
 
 async def _preempt_recent_history_summary(queue, character_name: str) -> None:
-    if not getattr(queue, "memory_summary_in_flight", False):
+    write_lock = getattr(queue, "deferred_memory_lock", None)
+    if write_lock is None or not write_lock.locked():
         return
+    # A cache request can hold the local lock while waiting behind a summary
+    # whose caller timed out. The short preemption window also covers summary
+    # requests admitted just after this call, moving their compression to background.
     try:
         encoded_name = quote(character_name, safe="")
         async with asyncio.timeout(1.0):
-            await get_internal_http_client().post(
+            response = await get_internal_http_client().post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/preempt_summary/{encoded_name}",
                 timeout=1.0,
             )
+            response.raise_for_status()
     except Exception:
         logger.debug("Failed to preempt summary before recent history clear", exc_info=True)
 

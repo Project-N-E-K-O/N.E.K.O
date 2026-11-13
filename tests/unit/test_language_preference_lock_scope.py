@@ -186,7 +186,7 @@ async def test_session_reconciliation_runs_without_the_config_transaction(monkey
     barrier timeout.
     """
     observed = {}
-    queue = SimpleNamespace(memory_summary_in_flight=True)
+    queue = SimpleNamespace(deferred_memory_lock=asyncio.Lock())
 
     async def preempt_summary(active_queue, name):
         assert active_queue is queue and name == "Mimi"
