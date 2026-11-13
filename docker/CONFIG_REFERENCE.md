@@ -47,7 +47,7 @@
 |-------|------------|---------|--------|------|
 | 核心 API Key | `coreApiKey` | `NEKO_CORE_API_KEY` | `""` | 核心（实时语音）API 的密钥；`coreApi` 为 `free` 时自动使用内置的 `free-access`，不用填 |
 | 核心 API 提供商 | `coreApi` | `NEKO_CORE_API` | `"qwen"` | 实时语音模型的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`step`、`gemini`、`glm`、`grok`（`config/api_providers.json` 中 `core_api_providers` 的键） |
-| 辅助 API 提供商 | `assistApi` | `NEKO_ASSIST_API` | `"qwen"` | 对话、摘要、纠错、情感、视觉、Agent 等模型默认使用的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`glm`、`step`、`silicon`、`gemini`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`grok`、`openrouter`、`orcarouter`、`requesty`、`opper`（`assist_api_providers` 的键，不含只提供 TTS 的 `vllm_omni`） |
+| 辅助 API 提供商 | `assistApi` | `NEKO_ASSIST_API` | `"qwen"` | 对话、摘要、纠错、情感、视觉、Agent 等模型默认使用的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`glm`、`step`、`silicon`、`gemini`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`grok`、`openrouter`、`orcarouter`、`requesty`、`opper`、`atlascloud`（`assist_api_providers` 的键，不含只提供 TTS 的 `vllm_omni`） |
 
 - `assistApi` 没写或为空时，`coreApi` 为 `free` 则取 `free`，否则取 `qwen`；填了未知值会回退到 `qwen`。entrypoint 生成的文件总会写 `assistApi`（没设 `NEKO_ASSIST_API` 时写 `"qwen"`），所以用环境变量选免费版时要同时设 `NEKO_ASSIST_API=free`，否则辅助 API 是 `qwen`，需要为它提供阿里云百炼的 Key（`free-access` 不会被拿来回退）。
 - 小游戏模型默认分别跟随对话、摘要模型；自定义音色 TTS 没有单独配置、也没有 Qwen（含国际版）Key 时，同样回退到辅助 API。
@@ -66,10 +66,10 @@
 | 硅基流动 API Key | `assistApiKeySilicon` | `NEKO_ASSIST_API_KEY_SILICON` | `""` |
 | Grok（xAI）API Key | `assistApiKeyGrok` | `NEKO_ASSIST_API_KEY_GROK` | `""` |
 | 豆包（火山方舟）API Key | `assistApiKeyDoubao` | `NEKO_ASSIST_API_KEY_DOUBAO` | `""` |
-| 其余提供商的 Key | `assistApiKeyQwenIntl`、`assistApiKeyDeepseek`、`assistApiKeyGemini`、`assistApiKeyKimi`、`assistApiKeyKimiCode`、`assistApiKeyMinimax`、`assistApiKeyMinimaxIntl`、`assistApiKeyMimo`、`assistApiKeyMimoTokenPlan`、`assistApiKeyElevenlabs`、`assistApiKeyClaude`、`assistApiKeyOpenrouter`、`assistApiKeyOrcarouter`、`assistApiKeyRequesty`、`assistApiKeyOpper`、`assistApiKeyDoubaoTts` | -（在 Web UI 里设置或直接编辑文件） | `""` |
+| 其余提供商的 Key | `assistApiKeyQwenIntl`、`assistApiKeyDeepseek`、`assistApiKeyGemini`、`assistApiKeyKimi`、`assistApiKeyKimiCode`、`assistApiKeyMinimax`、`assistApiKeyMinimaxIntl`、`assistApiKeyMimo`、`assistApiKeyMimoTokenPlan`、`assistApiKeyElevenlabs`、`assistApiKeyClaude`、`assistApiKeyOpenrouter`、`assistApiKeyOrcarouter`、`assistApiKeyRequesty`、`assistApiKeyOpper`、`assistApiKeyAtlascloud`、`assistApiKeyDoubaoTts` | -（在 Web UI 里设置或直接编辑文件） | `""` |
 
 - 提供商和字段的对应关系见 `config/api_providers.json` 的 `api_key_registry`；`assistApiKeyMimoTokenPlan` 是 `useMimoTokenPlan` 为 true 时 MiMo 改用的 Key。
-- 当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。**只做辅助的提供商**（不在 `core_api_providers` 里的键：`silicon`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`openrouter`、`orcarouter`、`requesty`、`opper`）不可能是 `coreApi`，`coreApiKey` 必然是别家的 Key，所以它们的 Key 字段即使被选为 `assistApi` 也不回退。ElevenLabs、豆包 TTS 这两个字段同样始终不回退。
+- 当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。**只做辅助的提供商**（不在 `core_api_providers` 里的键：`silicon`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`openrouter`、`orcarouter`、`requesty`、`opper`、`atlascloud`）不可能是 `coreApi`，`coreApiKey` 必然是别家的 Key，所以它们的 Key 字段即使被选为 `assistApi` 也不回退。ElevenLabs、豆包 TTS 这两个字段同样始终不回退。
 - 只做辅助的提供商，文本和 Agent 请求只使用各自的专用字段（如 `assistApiKeyDeepseek`、`assistApiKeyRequesty`），不会借用主服务商的 `coreApiKey`。Docker 仅设置 `NEKO_CORE_API_KEY` 和 `NEKO_ASSIST_API=<只做辅助的提供商>` 不足以使用它们；除上表 entrypoint 支持的几个环境变量外，请在 Web UI 的密钥簿中填写对应 Key，或在持久化的 `core_config.json` 中设置该字段。它们的文本 Key 也不会写入 CosyVoice 使用的 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退逻辑。
 - `mcpToken`（`NEKO_MCP_TOKEN`）：entrypoint 仍会写入这个字段，配置接口也仍会保存它，但当前代码只是把它转存成 `get_core_config()` 返回值里的 `MCP_ROUTER_API_KEY`，没有任何地方读取，填不填都不影响运行。
 
@@ -141,7 +141,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 #### 辅助 API 提供商
 
-`assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter、requesty、opper。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
+`assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter、requesty、opper、atlascloud。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
 
 每个提供商有一个接口地址 `OPENROUTER_URL` 和 6 个模型槽位：
 - `CONVERSATION_MODEL` - 文本对话模型
@@ -178,7 +178,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | glm | glm-5v-turbo | https://open.bigmodel.cn/api/paas/v4 |
 | step | step-5-preview | https://api.stepfun.com/v1 |
 | silicon | Qwen/Qwen3.5-122B-A10B | https://api.siliconflow.cn/v1 |
-| gemini | gemini-3.5-flash | https://generativelanguage.googleapis.com/v1beta/openai/ |
+| gemini | gemini-3.8-flash | https://generativelanguage.googleapis.com/v1beta/openai/ |
 | kimi | kimi-k2.6 | https://api.moonshot.cn/v1 |
 | kimi_code | kimi-for-coding | https://api.kimi.com/coding |
 | deepseek | deepseek-flash | https://api.deepseek.com/v1 |
@@ -188,10 +188,11 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | mimo | mimo-v2.5 | https://api.xiaomimimo.com/v1 |
 | claude | claude-sonnet-5-5 | https://api.anthropic.com/v1 |
 | grok | grok-4.3 | https://api.x.ai/v1 |
-| openrouter | google/gemini-3-flash-preview | https://openrouter.ai/api/v1 |
+| openrouter | google/gemini-3.8-flash | https://openrouter.ai/api/v1 |
 | orcarouter | anthropic/claude-sonnet-5.5 | https://api.orcarouter.ai/v1 |
-| requesty | google/gemini-3-flash-preview | https://router.requesty.ai/v1 |
+| requesty | google/gemini-3.8-flash | https://router.requesty.ai/v1 |
 | opper | gpt-5.4-mini | https://api.opper.ai/v3/compat |
+| atlascloud | google/gemini-3-flash-preview | https://api.atlascloud.ai/v1 |
 
 #### 自定义 Agent 模型
 

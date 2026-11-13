@@ -92,7 +92,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # launcher itself (launcher.py + launcher_core) and the config package (imported by
 # all of them). That includes knowledge (the Memory Server's knowledge routes) and
 # services (main_server's chat-sync / theater routers and main_logic.core import it
-# at module scope).
+# at module scope). nekoclaw is not imported at startup yet; it is listed ahead of
+# being wired into the agent server so it can never grow a heavy module-scope import.
 DEFAULT_PATHS: list[str] = [
     "app",
     "brain",
@@ -101,6 +102,7 @@ DEFAULT_PATHS: list[str] = [
     "main_logic",
     "main_routers",
     "memory",
+    "nekoclaw",
     "services",
     "utils",
     "launcher.py",

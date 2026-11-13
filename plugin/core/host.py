@@ -78,9 +78,16 @@ from plugin.logging_layout import sanitize_log_identifier as _sanitize_plugin_id
 
 def _resolve_current_storage_layout() -> dict[str, Any]:
     from utils.config_manager import get_config_manager
-    from utils.storage_layout import resolve_storage_layout
+    from utils.storage_layout import build_storage_layout
 
-    return resolve_storage_layout(get_config_manager())
+    # The launcher has already selected the runtime layout. Reading the default
+    # policy again can redirect an isolated or recovering instance's plugins.
+    manager = get_config_manager(migrate=False)
+    return build_storage_layout(
+        selected_root=manager.app_docs_dir,
+        anchor_root=manager.anchor_root,
+        source="active_runtime",
+    )
 
 
 def _refresh_child_storage_layout_env(logger_obj: Any) -> None:

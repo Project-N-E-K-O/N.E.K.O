@@ -26,6 +26,7 @@
             chat_sync_unavailable: 'errorNetwork',
             chat_sync_pull_timeout: 'errorNetwork',
             long_term_memory_capacity_exceeded: 'errorLongTermCapacity',
+            long_term_memory_evidence_capacity_exceeded: 'errorLongTermEvidenceCapacity',
             long_term_memory_incoming_pending: 'errorLongTermPending',
             long_term_archive_subject_unavailable: 'errorArchiveSubject',
             recent_write_receipt_conflict: 'errorRecentWriteUnconfirmed',
@@ -46,6 +47,10 @@
         if (!Object.prototype.hasOwnProperty.call(messages, code)) return text('errorUnknown');
         return text('errorDetail', { message: text(messages[code]), code: code });
     }
+
+    // Local diagnostics that report something done, not something wrong: shown as they
+    // are, without the error wording and code.
+    var notices = { long_term_memory_evidence_trimmed: 'noticeLongTermEvidenceTrimmed' };
 
     function characterName() {
         // Resolve the current local profile, then use its persisted UID from the API.
@@ -80,10 +85,15 @@
         activeUid = role ? role.characterSyncId : null;
         var binding = role && role.binding;
         writerRecoveryRequired = !!(state.writerRecoveryRequired || (binding && binding.writerRecoveryRequired));
+        var diagnostics = binding && binding.localMemoryDiagnostics || [];
+        var isNotice = function (code) { return Object.prototype.hasOwnProperty.call(notices, code); };
         var errors = [role && role.syncSetupError, role && role.syncSetupDiagnostic, binding && binding.lastSyncError]
-            .concat(binding && binding.localMemoryDiagnostics || []).filter(Boolean);
+            .concat(diagnostics.filter(function (code) { return !isNotice(code); })).filter(Boolean);
         statusNode.textContent = errors.length ? Array.from(new Set(errors)).map(describeError).join('\n')
             : text(writerRecoveryRequired ? 'writerRecoveryRequired' : 'recoveryNotRequired');
+        Array.from(new Set(diagnostics.filter(isNotice))).forEach(function (code) {
+            statusNode.textContent += '\n' + text(notices[code]);
+        });
         if (binding) {
             if (binding.pendingOriginals || binding.pendingDeletions) {
                 statusNode.textContent += '\n' + text('pending', {
@@ -102,6 +112,7 @@
                 function modelButton(key, action) {
                     var button = document.createElement('button');
                     button.type = 'button';
+                    button.className = 'chat-sync-button' + (action === 'local' ? ' chat-sync-secondary' : '');
                     button.textContent = window.t('cloudModel.' + key);
                     button.addEventListener('click', async function () {
                         if (!dialog.open || activeUid !== modelUid || characterName() !== modelName) return;
@@ -213,6 +224,7 @@
         statusNode.setAttribute('role', 'status');
         dialog.appendChild(statusNode);
         var modelPanel = document.createElement('div');
+        modelPanel.className = 'chat-sync-model';
         modelPanel.dataset.syncModel = '';
         dialog.appendChild(modelPanel);
         dialog.addEventListener('close', function () { settingsCharacterName = null; });

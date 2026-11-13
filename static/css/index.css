@@ -858,6 +858,25 @@ body.neko-game-active [id$="-lock-icon"] {
     height: 100%;
 }
 
+.neko-idle-cat1-compact-mirror[data-neko-cat1-art-layout="wide-centered"] .neko-idle-cat1-compact-mirror-art {
+    width: 175%;
+    min-width: 175%;
+    max-width: none;
+    height: 100%;
+    position: relative;
+    left: -37.5%;
+}
+
+.neko-idle-cat1-compact-mirror[data-neko-cat1-art-layout="tall-bottom"] .neko-idle-cat1-compact-mirror-art {
+    width: 100%;
+    height: 137.5%;
+    min-height: 137.5%;
+    max-height: none;
+    position: relative;
+    top: -37.5%;
+    object-position: center bottom;
+}
+
 .neko-idle-return-btn {
     --neko-idle-return-size: clamp(96px, 14vw, 122px);
     position: relative;
@@ -950,6 +969,29 @@ body.neko-game-active [id$="-lock-icon"] {
     height: 100% !important;
 }
 
+.neko-idle-return-btn[data-neko-cat1-visual-layout="wide-centered"] > .neko-idle-return-art {
+    width: 175% !important;
+    min-width: 175%;
+    max-width: none;
+    height: 100% !important;
+}
+
+.neko-idle-return-btn[data-neko-cat1-visual-layout="wide-125-centered"] > .neko-idle-return-art {
+    width: 125% !important;
+    min-width: 125%;
+    max-width: none;
+    height: 100% !important;
+}
+
+.neko-idle-return-btn[data-neko-cat1-visual-layout="tall-bottom"] > .neko-idle-return-art {
+    width: 100% !important;
+    height: 137.5% !important;
+    min-height: 137.5%;
+    max-height: none;
+    align-self: flex-end;
+    object-position: center bottom;
+}
+
 #react-chat-window-shell.is-minimized[data-neko-cat1-play-hidden="true"] {
     visibility: hidden !important;
     pointer-events: none !important;
@@ -979,7 +1021,8 @@ body.neko-game-active [id$="-lock-icon"] {
     --neko-idle-return-facing-transform: scaleX(1);
 }
 
-.neko-idle-return-btn.is-neko-collision-deforming > .neko-idle-return-art {
+.neko-idle-return-btn.is-neko-collision-deforming > .neko-idle-return-art,
+.neko-playground-collision-deformation-target.is-neko-collision-deforming {
     translate:
         var(--neko-collision-shift-x, 0%)
         var(--neko-collision-shift-y, 0%);
@@ -1156,6 +1199,10 @@ body.neko-game-active [id$="-lock-icon"] {
 .neko-idle-return-btn.is-cat1-desktop-window-top-edge-walking .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-desktop-window-edge-peek-walking .neko-idle-thought-bubble,
 .neko-idle-return-button-container.is-cat1-desktop-window-edge-peeking .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-visual-action .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-happy .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-touching .neko-idle-thought-bubble,
+.neko-idle-return-btn.is-cat1-cosplay-1 .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-stretching .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-playing .neko-idle-thought-bubble,
 .neko-idle-return-btn.is-cat1-eating:not(.is-thought-bubble-popping) .neko-idle-thought-bubble,

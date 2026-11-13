@@ -71,7 +71,7 @@ export const PUBLISH_STEP_ORDER: readonly PublishStepId[] = [
 /** Every page of the publish tab; a page's number is its index (step 0 prepares the machine). */
 export const PUBLISH_PAGE_ORDER: readonly PublishPageId[] = ['toolchain', ...PUBLISH_STEP_ORDER]
 
-export type ToolId = 'git' | 'gitIdentity' | 'uv' | 'gh' | 'githubAccount' | 'sourceCheckout'
+export type ToolId = 'git' | 'gitIdentity' | 'uv' | 'gh' | 'githubAccount'
 
 export interface ToolCheck {
   id: ToolId
@@ -380,9 +380,8 @@ const bySeverity = (blockers: ActionBlocker[]) => [
 
 /**
  * Step 0. Required: git (the plugin's own repository, commits need an author),
- * uv (`uvx` runs the pinned ruff in checks and `publish`) and a N.E.K.O source
- * checkout (the server runs the CLI from it). gh is recommended: it creates the
- * repository and signs GitHub reads in; without it those are done by hand.
+ * uv (`uvx` runs the pinned ruff in checks and `publish`). gh is recommended:
+ * it creates the repository and signs GitHub reads in; without it those are done by hand.
  */
 function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
   const check = (
@@ -405,7 +404,6 @@ function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
     check('uv', toolchain?.uv.installed, toolchain?.uv.version, true),
     check('gh', gh?.installed, gh?.version, false),
     check('githubAccount', gh ? gh.authenticated : undefined, gh?.login, false),
-    check('sourceCheckout', toolchain?.source_checkout, null, true),
   ]
   const state: PublishStepState = !toolchain
     ? 'unknown'
@@ -418,8 +416,7 @@ function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
 /** A required tool that is missing makes every publish mode fail on the server or in the CLI. */
 function toolchainBlockers(page: ToolchainPage, mode: PublishMode): ActionBlocker[] {
   // Notifying the Market runs no ruff, so it does not need uv.
-  const needed: ToolId[] =
-    mode === 'market_notify' ? ['git', 'sourceCheckout'] : ['git', 'uv', 'sourceCheckout']
+  const needed: ToolId[] = mode === 'market_notify' ? ['git'] : ['git', 'uv']
   return page.tools
     .filter((tool) => needed.includes(tool.id) && tool.state === 'missing')
     .map((tool) => hard('toolchain', message('publishToolMissingBlocker', { tool: TOOL_NAMES[tool.id] })))
@@ -432,7 +429,6 @@ export const TOOL_NAMES: Record<ToolId, string> = {
   uv: 'uv',
   gh: 'GitHub CLI (gh)',
   githubAccount: 'GitHub',
-  sourceCheckout: 'N.E.K.O',
 }
 
 /** Each later step that is not done yet points at the current page. */

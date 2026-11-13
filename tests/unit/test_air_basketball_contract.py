@@ -71,7 +71,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert 'canvas id="neko-court"' in html
     assert '/static/game/games/air_basketball/game.js?v=' in html
     assert "playerLane.canvas.addEventListener('pointerdown'" in game
-    assert "nekoLane.releaseAutoShot" in game
+    assert "lane.releaseAutoShot" in game
     assert "const STAGE_THRESHOLDS = [0, 12, 30, 54]" in game
     assert "const FEVER_HITS = 5" in game
     assert "const FEVER_SECONDS = 7" in game
@@ -89,7 +89,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert "gameStartedElapsedMs:0" in game
     assert "* lane.width / Math.max(1, rect.width)" in game
     assert "const requestedCost = Math.hypot(dx, dy) * ACTION_BALANCE.JAM_DRAG_SCALE" in game
-    assert game.index("spendFocus('player', cost)") < game.index("lane.interfere(appliedDx, appliedDy, appliedPoint)")
+    assert game.index("spendFocus('player', cost)") < game.index("lane.interfere(appliedDx, appliedDy, appliedPoint, interferenceBall)")
     assert "class ShotLane" in physics
     assert "const assetVersion = new URL(import.meta.url).search" in physics
     assert "versionedAsset('./assets/neko-basketball.png')" in physics
@@ -99,7 +99,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert "collideRim" in physics
     assert "getAimTelemetry" in physics
     assert "getHoopPose" in physics
-    assert "const flight = .98 + Math.random() * .06" in physics
+    assert "let flight = .98 + Math.random() * .06" in physics
     assert "(1 - difficulty) * 360 + stagePenalty" in physics
     assert "STAGE_RULES" in physics
     assert 'id="air-neko-avatar"' in html
@@ -241,7 +241,7 @@ def test_air_basketball_mvp_interaction_contract():
     assert "/static/game/sdk/neko-minigame-audio-host.js?v=" in html
     assert 'three/addons/loaders/GLTFLoader.js": "/static/libs/three/addons/loaders/GLTFLoader.js?v=' in html
     assert "user-scalable=no" not in html
-    assert html.count('<link rel="preload" as="image" href="/static/game/games/air_basketball/assets/') == 3
+    assert html.count('<link rel="preload" as="image" href="/static/game/games/air_basketball/assets/') == 4
     assert "window.NekoMiniGame.connect" in sdk_bootstrap
     assert "import(`./avatar-host.js${assetVersion}`)" in sdk_bootstrap
     assert "NekoMiniGame audio host is unavailable" in sdk_bootstrap
@@ -293,13 +293,16 @@ def test_air_basketball_mvp_interaction_contract():
     assert "function beginMouseSteal()" in game
     assert "function endMouseSteal(escaped = false)" in game
     assert "const NEKO_ACTION = Object.freeze" in game
-    assert "NEKO_BALL_POOL = Object.freeze({ TOTAL:2, READY:1, MAX_ACTIVE:2, MAX_AIRBORNE:2 })" in game
+    assert "const INITIAL_BALLS_PER_SIDE = 4;" in game
+    assert "NEKO_BALL_POOL = Object.freeze({ TOTAL:INITIAL_BALLS_PER_SIDE, READY:INITIAL_BALLS_PER_SIDE," in game
+    assert "playerLane.enableBallPool(INITIAL_BALLS_PER_SIDE)" in game
+    assert "nekoLane.enableBallPool(INITIAL_BALLS_PER_SIDE)" in game
     assert "NEKO_SHOT_DELAY = Object.freeze({ MIN:1.9, MAX:2.5, BUSY_BONUS:.45, PRANK_RECOVERY:1.4, RETURN_RETRY:.32 })" in game
     assert "function nekoActiveBallCount()" in game
     assert "Math.min(transitBalls, representedTwice)" in game
     assert "nekoBallInventoryReady()" in game
     assert "function nekoPrankInventoryReady()" in game
-    assert "return !nekoLane.ball.flying" in game
+    assert "return ball && !nekoLane.ball.flying" in game
     assert "&& !nekoLane.ball.inTransit" in game
     assert "if (!nekoPrankInventoryReady())" in game
     assert "countActiveBalls({ owner = null, nativeShot = null } = {})" in physics
@@ -318,13 +321,15 @@ def test_air_basketball_mvp_interaction_contract():
     assert "state.nekoAction !== NEKO_ACTION.IDLE" in game
     assert "beginNekoAction(NEKO_ACTION.HOOP)" in game
     assert "beginNekoAction(NEKO_ACTION.PLAYER)" in game
-    assert "const shot = nekoLane.releaseAutoShot(difficulty)" in game
+    assert "const shot = lane.releaseAutoShot(difficulty, { ball, owner:'neko'" in game
     assert "endNekoAction(NEKO_ACTION.HOOP)" in game
     assert "throwChaosBall(playerLane, 'neko', 'right');\n    endNekoAction(NEKO_ACTION.PLAYER)" in game
-    assert "releaseAutoShot(difficulty = .72)" in physics
-    assert "getHoopPoseAt(this.stageClock + flight)" in physics
+    assert "releaseAutoShot(difficulty = .72, {" in physics
+    # Both inventories predict the same shared hoop at the same world time.
+    assert "const clock = this.sharedCourt?.clock ?? this.stageClock" in physics
+    assert "getHoopPoseAt(clock + flight)" in physics
     assert "const horizontalTravel = (1 - Math.exp(-dampingRate * flight)) / dampingRate" in physics
-    assert "const rimClearance = Math.min(10, this.ball.r * .5)" in physics
+    assert "const rimClearance = Math.min(10, ball.r * .5)" in physics
     assert "nativeShot:true" in physics
     assert "countActiveGuestBalls({ owner = null, nativeShot = null } = {})" in physics
     assert "this.guests.shift()" not in physics
@@ -481,7 +486,8 @@ def test_air_basketball_mvp_interaction_contract():
     assert "@media (max-height: 680px)" in arcade_css
     assert "overflow-y: auto" in arcade_css
     assert "@keyframes cross-flight" not in arcade_css
-    assert 'id="player-power-fill"' in html
+    assert 'id="player-power-fill"' not in html
+    assert 'id="shot-hint"' in html
     assert 'id="player-fever-fill"' in html
     assert 'id="neko-stage"' in html
     # The embedded /chat iframe ran a second, independent chat client for the
@@ -498,9 +504,9 @@ def test_air_basketball_mvp_interaction_contract():
     reserved_routes = character_names.split("RESERVED_ROUTE_NAMES = frozenset({", 1)[1].split("})", 1)[0]
     assert '"air_basketball"' in reserved_routes
     expected_keys = {
-        "title", "gestureHint", "chaosBall", "opponentReady", "voiceOpening",
+        "title", "gestureHint", "shotFirstHint", "shotFocusLow", "chaosBall", "opponentReady", "voiceOpening",
         "avatarUnavailable", "arenaLabel", "sdkUnavailable", "runtimeStartFailed", "mouseStealCaught",
-        "mouseStealEscape", "voiceMouseSteal",
+        "mouseStealEscape", "voiceMouseSteal", "ballSupply",
     }
     for locale in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"):
         payload = json.loads(

@@ -1,77 +1,100 @@
 """Bound delivery of completed learned-memory snapshots, independent of raw archives."""
 
-from contextlib import closing
+import time
 
-from services.chat_sync.long_term_protocol import head, mutation
+from services.chat_sync.long_term_protocol import head, mutation, receipt
 from services.chat_sync.recent_protocol import canonical
-from services.chat_sync.writer import registered_writer, store_connection
+from services.chat_sync.writer import registered_writer
+
+# Each refusal is followed by a merge with the newer revision; this many in a
+# row means another device keeps publishing first, so the lane backs off.
+MAX_CONSECUTIVE_CONFLICTS = 5
+
+
+class LongTermMemoryRetryLater(OSError):
+    """The upload cannot land right now. An OSError, so the scheduler backs off and tries
+    again instead of blocking the binding until it is enabled anew."""
 
 
 class LongTermMemorySync:
     def __init__(self, path, adapter):
         self.path, self.adapter = path, adapter
-        with closing(store_connection(path)) as conn, conn:
-            conn.execute('CREATE TABLE IF NOT EXISTS long_term_memory_state '
-                         '(domain TEXT PRIMARY KEY, acknowledged TEXT, revision INTEGER NOT NULL DEFAULT 0)')
-
-    def state(self, domain):
-        with closing(store_connection(self.path)) as conn:
-            row = conn.execute('SELECT acknowledged,revision FROM long_term_memory_state WHERE domain=?', (domain,)).fetchone()
-        return {'acknowledged': row[0], 'revision': row[1]} if row else {'acknowledged': None, 'revision': 0}
-
-    def acknowledge(self, domain, operation, revision=None):
-        with closing(store_connection(self.path)) as conn, conn:
-            conn.execute('INSERT INTO long_term_memory_state VALUES(?,?,0) ON CONFLICT(domain) '
-                         'DO UPDATE SET acknowledged=EXCLUDED.acknowledged', (domain, operation))
-            if revision is not None:
-                conn.execute('UPDATE long_term_memory_state SET revision=? WHERE domain=?', (revision, domain))
-
-    def applied(self, domain, revision):
-        with closing(store_connection(self.path)) as conn, conn:
-            conn.execute('INSERT INTO long_term_memory_state VALUES(?,NULL,?) ON CONFLICT(domain) '
-                         'DO UPDATE SET revision=EXCLUDED.revision', (domain, revision))
+        self._conflicts = {}
 
     async def sync(self, domain, binding, epoch, request, commit, *, can_apply, session_fingerprint):
         key = domain.key()
-        state = await commit(self.state, key)
         local = await commit(self.adapter.read_local, binding, epoch)
+        pending = local['pending'] if local else None
         path = f'/v1/chat-sync/characters/{domain.character_uid}/long-term-memory'
-        if local and local['operationId'] != state['acknowledged'] and not local['operationId'].startswith(('download:', 'quarantined:')):
-            body = canonical(mutation({'operationId': local['operationId'], 'document': local['document']}))
-            receipt = await request('PUT', path, body)
-            if (not isinstance(receipt, dict) or set(receipt) != {'ownerId', 'characterSyncId', 'operationId', 'revision', 'accepted'}
-                    or receipt['ownerId'] != domain.owner_id or receipt['characterSyncId'] != domain.character_uid
-                    or receipt['operationId'] != local['operationId'] or type(receipt['accepted']) is not bool
-                    or type(receipt['revision']) is not int or not (1 if receipt['accepted'] else 0) <= receipt['revision'] <= 9_007_199_254_740_991):
-                raise ValueError('invalid_long_term_memory')
-            revision = receipt['revision'] if receipt['accepted'] else None
-            await commit(self.acknowledge, key, local['operationId'], revision)
-            if revision is not None:
-                state['revision'] = revision
+        unsupported = False
+        if pending:
+            # The server writes only onto the revision this snapshot was merged with.
+            body = canonical(mutation({'operationId': pending['operationId'], 'baseRevision': pending['baseRevision'],
+                                       'document': pending['document']}))
+            try:
+                answer = receipt(await request('PUT', path, body), domain.owner_id, domain.character_uid, pending['operationId'])
+            except ValueError as error:
+                if getattr(error, 'status_code', None) != 400:
+                    raise
+                # A server that does not know conditional writes yet. Nothing is recorded
+                # as uploaded; what it holds is still fetched below, then the lane backs off.
+                answer, unsupported = None, True
+            if answer is None:
+                pass
+            elif answer['accepted']:
+                self._conflicts.pop(key, None)
+                await commit(self.adapter.acknowledge, binding, epoch, pending['operationId'], answer['revision'])
+            elif answer.get('conflict'):
+                # Another device published first. Nothing is recorded as uploaded;
+                # the newer revision is fetched below and merged by the memory owner.
+                self._conflicts[key] = self._conflicts.get(key, 0) + 1
+                if self._conflicts[key] > MAX_CONSECUTIVE_CONFLICTS:
+                    self._conflicts.pop(key, None)
+                    raise LongTermMemoryRetryLater('long_term_memory_conflict_unresolved')
+            else:
+                await commit(self.adapter.refresh_pending, binding, epoch, pending['operationId'],
+                             time.time_ns() // 1_000_000)
+                raise LongTermMemoryRetryLater('long_term_memory_upload_refused')
+        result = await self._pull(domain, binding, epoch, request, commit, can_apply, session_fingerprint, path)
+        if unsupported:
+            raise LongTermMemoryRetryLater('long_term_memory_upload_unsupported')
+        return result
+
+    async def _pull(self, domain, binding, epoch, request, commit, can_apply, session_fingerprint, path):
+        revision = await commit(self.adapter.base_revision, binding, epoch)
         metadata = head(await request('GET', path + '?metadataOnly=true', None), domain.owner_id, domain.character_uid)
-        if metadata.get('expired'):
-            await commit(self._expire_incoming, binding, epoch, metadata)
-            await commit(self.applied, key, max(state['revision'], metadata['revision']))
-            return {'changed': False, 'hasMore': False}
+        if metadata.get('expired') or metadata['revision'] < revision:
+            return await self._follow(binding, epoch, metadata, commit)
         pending_auth = await commit(self.adapter.needs_reauthentication, binding, epoch, session_fingerprint)
-        if not metadata['revision'] or (metadata['revision'] <= state['revision'] and not pending_auth):
+        if not metadata['revision'] or (metadata['revision'] <= revision and not pending_auth):
+            # Nothing newer is published: only now does this device know every
+            # progress entry other devices have shared.
+            await commit(self.adapter.mark_checked, domain.character_uid, time.time_ns() // 1_000_000)
             return {'changed': False, 'hasMore': False}
+        # Something newer exists. Until it is fetched and applied, an earlier check must
+        # not let extraction run on progress this device has not read.
+        await commit(self.adapter.clear_checked, domain.character_uid)
         if not can_apply():
             return {'changed': False, 'hasMore': True}
+        if not pending_auth and await commit(self.adapter.staged_revision, binding, epoch) == metadata['revision']:
+            # Already downloaded and waiting for the memory owner.
+            return {'changed': True, 'hasMore': False}
         remote = head(await request('GET', path, None), domain.owner_id, domain.character_uid)
         if remote.get('expired'):
-            await commit(self._expire_incoming, binding, epoch, remote)
-            await commit(self.applied, key, max(state['revision'], remote['revision']))
-            return {'changed': False, 'hasMore': False}
+            return await self._follow(binding, epoch, remote, commit)
         if remote.get('document') is None or remote['revision'] < metadata['revision']:
             raise ValueError('invalid_long_term_memory')
-        expected = local['operationId'] if local else None
         if not can_apply():
             return {'changed': False, 'hasMore': True}
-        staged = await commit(self.adapter.stage_remote, binding, remote, epoch, expected, session_fingerprint)
-        if staged:
-            await commit(self.applied, key, remote['revision'])
+        staged = await commit(self.adapter.stage_remote, binding, remote, epoch, revision, session_fingerprint)
         return {'changed': staged, 'hasMore': not staged}
+
+    async def _follow(self, binding, epoch, metadata, commit):
+        """Adopt a revision number whose body cannot be merged: expired, or a server that restarted."""
+        if metadata.get('expired'):
+            await commit(self._expire_incoming, binding, epoch, metadata)
+        await commit(self.adapter.adopt_revision, binding, epoch, metadata['revision'])
+        return {'changed': False, 'hasMore': False}
 
     def _expire_incoming(self, binding, epoch, expired):
         writer = registered_writer(self.path.parent)

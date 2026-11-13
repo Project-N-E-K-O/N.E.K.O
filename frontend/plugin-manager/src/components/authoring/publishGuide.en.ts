@@ -108,21 +108,5 @@ export const enUS: PublishGuide = {
         { label: 'gh auth login manual', url: 'https://cli.github.com/manual/gh_auth_login' },
       ],
     },
-    sourceCheckout: {
-      purpose:
-        'Checks, repository creation and publishing run neko-plugin commands in the background, which needs N.E.K.O running from source (cloned with Git, started with uv). The packaged desktop build does not include these tools, so it cannot publish from here.',
-      install: [
-        {
-          platform: 'Get the N.E.K.O source and run it',
-          commands: [
-            'git clone https://github.com/Project-N-E-K-O/N.E.K.O.git',
-            'cd N.E.K.O',
-            'uv sync',
-          ],
-          note: 'Then start N.E.K.O from source as its README describes, and come back to the plugin studio.',
-        },
-      ],
-      links: [{ label: 'N.E.K.O repository', url: 'https://github.com/Project-N-E-K-O/N.E.K.O' }],
-    },
   },
 }

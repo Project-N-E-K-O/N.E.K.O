@@ -9,10 +9,20 @@ from tests.unit.avatar_ui_buttons_source import read_avatar_ui_buttons_source
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_DIR = PROJECT_ROOT / "static" / "avatar" / "avatar-ui-buttons"
+PLAYGROUND_YARN_ASSET_PATH = (
+    PROJECT_ROOT / "static" / "assets" / "neko-idle" / "chat-minimized-yarn-ball-playground.png"
+)
 
 
 def _read_avatar_ui_buttons_source() -> str:
     return read_avatar_ui_buttons_source()
+
+
+def test_cat1_playground_yarn_asset_is_centered_square_rgba():
+    with Image.open(PLAYGROUND_YARN_ASSET_PATH) as asset:
+        rgba = asset.convert("RGBA")
+        assert rgba.size == (512, 512)
+        assert rgba.getchannel("A").getbbox() == (62, 62, 450, 450)
 
 
 APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
@@ -25,12 +35,12 @@ MMD_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "mmd" / "mmd-ui-buttons.js"
 LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
 LIVE2D_INTERACTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
-CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat1.gif"
-CAT1_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat1-click.gif"
-CAT2_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat2.gif"
-CAT2_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat2-click.gif"
-CAT3_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat3.gif"
-CAT3_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat3-click.gif"
+CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat1.webp"
+CAT1_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat1-click.webp"
+CAT2_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat2.webp"
+CAT2_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat2-click.webp"
+CAT3_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "idle" / "cat-idle-cat3.webp"
+CAT3_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "click" / "cat-idle-cat3-click.webp"
 CAT1_VOICE_CLICK_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "interaction" / "cat1-voice-click.mp3"
 CAT1_VOICE1_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "ambient" / "cat1-voice1.mp3"
 CAT1_VOICE2_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "ambient" / "cat1-voice2.mp3"
@@ -42,11 +52,11 @@ CAT3_SLEEP_SOUND2_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / 
 CAT1_WALK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "movement" / "cat-idle-cat4-1.gif"
 CAT1_STRETCH_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "movement" / "cat-idle-cat4-2.gif"
 CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "movement" / "cat-idle-cat4-3.gif"
-CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-1.gif"
-CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-2.gif"
-CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-3.gif"
-CAT4_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-4.gif"
-CAT1_RAPID_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-5.gif"
+CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-1.webp"
+CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-2.webp"
+CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-3.webp"
+CAT4_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-4.webp"
+CAT1_RAPID_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "appearance" / "dev_neko" / "drag" / "cat-idle-cat-move-5.webp"
 CAT1_RAPID_DRAG_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "cat-resources" / "voice" / "dev_neko" / "interaction" / "cat1-voice-funny.mp3"
 CAT1_QUESTION_MARK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-question-mark.png"
 CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
@@ -87,9 +97,9 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     app_ui_source = read_js_parts(APP_UI_PATH)
 
     # Non-click states
-    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.webp" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.webp" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.webp" in source
     assert "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-1.gif" in source
     assert "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-2.gif" in source
     assert '_NEKO_IDLE_TIER_CAT1' in source
@@ -97,9 +107,9 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert '_NEKO_IDLE_TIER_CAT3' in source
 
     # Click states
-    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat1-click.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat1-click.webp" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.webp" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.webp" in source
     assert "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-click.mp3" in source
     assert "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice1.mp3" in source
     assert "/static/assets/cat-resources/voice/dev_neko/ambient/cat1-voice2.mp3" in source
@@ -107,11 +117,11 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/cat-resources/voice/dev_neko/sleep/cat2-sleep1.mp3" in source
     assert "/static/assets/cat-resources/voice/dev_neko/sleep/cat3-sleep1.mp3" in source
     assert "/static/assets/cat-resources/appearance/dev_neko/movement/cat-idle-cat4-3.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-4.gif" in source
-    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-5.gif" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.webp" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.webp" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.webp" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-4.webp" in source
+    assert "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-5.webp" in source
     assert "/static/assets/cat-resources/voice/dev_neko/interaction/cat1-voice-funny.mp3" in source
     assert "/static/assets/neko-idle/cat_model_change.gif" in app_ui_source
     assert '_getNekoIdleReturnClickAssetUrl' in source
@@ -218,8 +228,9 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "window.addEventListener('neko:idle-cat1-playground-entry-request', _handleNekoIdleCat1PlaygroundEntryRequest);" in source
     assert "button.__nekoIdleCat1PlaygroundDropState" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_AIR_ASSET_URL = _getNekoCatAppearanceUrl('playground.cat1.air', { random: false })" in source
-    assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball.png'" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_ASSET_URL = '/static/assets/neko-idle/chat-minimized-yarn-ball-playground.png'" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING = 0.988" in source
+    assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ = 0.90" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC = 3" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS = 2" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS = 0.65" in source
@@ -231,13 +242,15 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "right: 97 / 512" in source
     assert "bottom: 15 / 512" in source
     assert "const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS = Object.freeze({" in source
-    assert "left: 35 / 963" in source
-    assert "top: 36 / 930" in source
-    assert "right: 36 / 963" in source
-    assert "bottom: 35 / 930" in source
+    assert "left: 62 / 512" in source
+    assert "top: 62 / 512" in source
+    assert "right: 62 / 512" in source
+    assert "bottom: 62 / 512" in source
+    assert "const _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS = Object.freeze({" in source
+    assert "left: 20 / 512" in source
     assert "function _normalizeNekoIdleCat1PlaygroundBodyMass(mass)" in source
     assert "function _normalizeNekoIdleCat1PlaygroundVisibleInsetRatios(ratios)" in source
-    assert "function _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body)" in source
+    assert "function _getNekoIdleCat1PlaygroundBodyVisibleInsetsPx(body, insetRatios = null)" in source
     assert "function _getNekoIdleCat1PlaygroundBodyCollisionRect(body)" in source
     assert "function _getNekoIdleCat1PlaygroundViewportBottomPx()" in source
     assert "function _refreshNekoIdleCat1PlaygroundViewportBottom()" in source
@@ -280,27 +293,45 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
         "function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {})",
         "cat1 playground register physics bodies",
     )
+    yarn_attach_block = _source_slice_between(
+        source,
+        "function _attachNekoIdleCat1PlaygroundYarnBody(button, target, options = {})",
+        "function _registerNekoIdleCat1PlaygroundPhysicsBodies(button, options = {})",
+        "cat1 playground attach yarn body",
+    )
     assert "id: 'cat'" in register_block
-    assert "id: 'yarn'" in register_block
-    assert "id: 'desktop-yarn'" in register_block
+    assert "id: 'yarn'" in yarn_attach_block
+    assert "id: 'desktop-yarn'" in yarn_attach_block
     assert "id: 'question-block'" in register_block
     assert "mass: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_BODY_MASS" in register_block
-    assert register_block.count("mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS") == 2
+    assert "collisionDeformationProfile: { strength: 1, renderMode: 'legacy-child' }" in register_block
+    assert "collisionDeformationElement: button" in register_block
+    assert yarn_attach_block.count("collisionDeformationProfile: { strength: 0.5 }") == 2
+    assert yarn_attach_block.count("mass: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_MASS") == 2
+    assert yarn_attach_block.count(
+        "groundHorizontalDampingAt60Hz: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_GROUND_DAMPING_AT_60HZ"
+    ) == 2
     assert "mass: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_BODY_MASS" in register_block
+    assert yarn_attach_block.count("rotationEnabled: true") == 2
     assert register_block.count("rotationEnabled: true") == 1
     assert "angularDamping: _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING" in register_block
     assert "angularGroundDamping: _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING" in register_block
-    assert register_block.count("settleRotationWhenGrounded: true") == 1
-    assert "restRotationStepRad: Math.PI / 2" in register_block
-    assert "restRotationOffsetRad: 0" in register_block
+    assert yarn_attach_block.count("rotationBehaviors: { circularRolling: { radiusScale: 1 } }") == 2
+    assert "rotationBehaviors: { steppedRest: { stepRad: Math.PI / 2, offsetRad: 0 } }" in register_block
     assert "visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_CAT_VISIBLE_INSET_RATIOS" in register_block
-    assert register_block.count("visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS") == 2
+    assert yarn_attach_block.count("visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_VISIBLE_INSET_RATIOS") == 2
+    assert yarn_attach_block.count(
+        "bodyCollisionInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_YARN_BODY_COLLISION_INSET_RATIOS"
+    ) == 2
     assert "visibleInsetRatios: _NEKO_IDLE_CAT1_PLAYGROUND_QUESTION_BLOCK_VISIBLE_INSET_RATIOS" in register_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_DESKTOP_CHAT_BODY_MASS" not in source
-    assert "const mirror = _createNekoIdleCat1PlaygroundDesktopYarnMirror(target.rect);" in register_block
-    assert "state.targetElement = mirror;" in register_block
-    assert "desktop: true" in register_block
-    assert "mirror.parentNode.removeChild(mirror)" in register_block
+    assert "const visual = _createNekoIdleCat1PlaygroundDesktopYarnMirror(target.rect);" in yarn_attach_block
+    assert "const mirror = visual && visual.element;" in yarn_attach_block
+    assert "state.targetElement = mirror;" in yarn_attach_block
+    assert "desktop: true" in yarn_attach_block
+    assert "mirror.parentNode.removeChild(mirror)" in yarn_attach_block
+    assert "_getNekoIdleCat1PairMoveChatTarget()," in register_block
+    assert "{ refresh: false }" in register_block
     assert "state.start = _captureNekoIdleCat1PlaygroundStartPositions(state);" in register_block
 
     playground_bounds_block = _source_slice_between(
@@ -326,7 +357,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     reclamp_block = _source_slice_between(
         source,
         "function _reclampNekoIdleCat1PlaygroundBodyAfterBoundsChange(body)",
-        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)",
+        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second, contacts = null)",
         "cat1 playground resize reclamp",
     )
     assert "const wasGrounded = !!body.grounded;" in reclamp_block
@@ -370,12 +401,14 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
         "cat1 playground physics tick",
     )
     assert "function _resolveNekoIdleCat1PlaygroundBodyCollisions(state)" in source
-    assert "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)" in source
+    assert "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second, contacts = null)" in source
     assert "_resolveNekoIdleCat1PlaygroundBodyCollisions(state)" in physics_block
     assert "body.vy += state.gravityPxPerSecond2 * dt;" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_RESTITUTION" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_FLOOR_REST_SPEED_PX_PER_SEC" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_DAMPING" in physics_block
+    assert "Number.isFinite(body.groundHorizontalDampingAt60Hz)" in physics_block
+    assert "Math.pow(body.groundHorizontalDampingAt60Hz, Math.max(0, dt * 60))" in physics_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" in physics_block
     assert "body.vx = 0;" in physics_block
     assert "body.y = body.floorY;" in physics_block
@@ -399,7 +432,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_dispatchNekoIdleDesktopChatPairMoveBounds" in source
     collision_block = _source_slice_between(
         source,
-        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second)",
+        "function _resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, first, second, contacts = null)",
         "function _stepNekoIdleCat1PlaygroundPhysics(button, now)",
         "cat1 playground generic body collision",
     )
@@ -408,7 +441,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "Array.from(state.bodies.values())" in collision_block
     assert "for (let i = 0; i < bodies.length; i += 1)" in collision_block
     assert "for (let j = i + 1; j < bodies.length; j += 1)" in collision_block
-    assert "_resolveNekoIdleCat1PlaygroundBodyCollisionPair(state, bodies[i], bodies[j])" in collision_block
+    assert "state, bodies[i], bodies[j], contacts" in collision_block
+    assert "state.bodyCollisionContacts = contacts;" in collision_block
     assert "const mass = _normalizeNekoIdleCat1PlaygroundBodyMass(options.mass);" in source
     assert "mass: mass" in source
     assert "inverseMass: 1 / mass" in source
@@ -416,15 +450,24 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "angularVelocity: Number(options.angularVelocity) || 0" in source
     assert "angularDamping: Number(options.angularDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_ANGULAR_DAMPING" in source
     assert "angularGroundDamping: Number(options.angularGroundDamping) || _NEKO_IDLE_CAT1_PLAYGROUND_DEFAULT_GROUND_ANGULAR_DAMPING" in source
-    assert "settleRotationWhenGrounded: !!options.settleRotationWhenGrounded" in source
-    assert "restRotationStepRad: Math.max(0, Number(options.restRotationStepRad) || 0)" in source
-    assert "restRotationOffsetRad: Number(options.restRotationOffsetRad) || 0" in source
+    assert "rotationBehaviors: rotationBehaviors" in source
+    assert "steppedRest: steppedRest && Number(steppedRest.stepRad) > 0" in source
+    assert "circularRolling: circularRolling" in source
+    assert "rotationBehaviorState:" in source
+    assert "function _normalizeNekoIdleCat1PlaygroundCollisionDeformationProfile(profile)" in source
+    assert "collisionDeformationProfile: collisionDeformationProfile" in source
+    assert "collisionDeformationElement: options.collisionDeformationElement || null" in source
+    assert "rotationElement: questionBlockImage || questionBlockElement" in register_block
+    assert "function _activateNekoIdleCat1PlaygroundBodyCollisionDeformation(button, body)" in source
+    assert "function _renderNekoIdleCat1PlaygroundCollisionDeformations(state, timestamp, reducedMotion)" in source
     assert "rotationSettling: false" in source
     assert "function _getNekoIdleCat1PlaygroundThrowAngularVelocity(body, velocity, state)" in source
     assert "function _getNekoIdleCat1PlaygroundNearestRestRotation(body)" in source
     assert "function _shouldNekoIdleCat1PlaygroundBodySettleRotation(body)" in source
     assert "function _stepNekoIdleCat1PlaygroundBodyRestRotation(body, dt)" in source
     assert "function _stepNekoIdleCat1PlaygroundBodyRotation(body, dt)" in source
+    assert "function _stepNekoIdleCat1PlaygroundCircularRollingPosition(body, nextX)" in source
+    assert "function _getNekoIdleCat1PlaygroundCircularRollingRadius(body)" in source
     assert "function _isNekoIdleCat1PlaygroundBodyRestRotationPending(body)" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_MAX_ANGULAR_VELOCITY_RAD_PER_SEC" in source
     assert "Math.round((rotation - offset) / step) * step + offset" in source
@@ -457,6 +500,7 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "delta * settleSpeed * settleSpeed * dt" in rest_rotation_block
     assert "body.angularVelocity = _clampNekoIdleCat1PlaygroundAngularVelocity(" in rest_rotation_block
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_GROUND_STOP_VELOCITY_PX_PER_SEC" not in rest_rotation_block
+    assert "body.id === 'yarn'" not in rest_rotation_block
     assert "first.inverseMass" in collision_block
     assert "second.inverseMass" in collision_block
     assert "first.mass" in collision_block
@@ -467,6 +511,9 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "firstShare = firstCanMove && secondCanMove ? 0.5" not in collision_block
     assert "body.id === 'cat'" not in collision_block
     assert "body.id === 'yarn'" not in collision_block
+    assert "if (firstCanMove) {" in collision_block
+    assert "if (secondCanMove) {" in collision_block
+    assert "else if (second.id === 'cat'" not in collision_block
     set_position_block = _source_slice_between(
         source,
         "function _setNekoIdleCat1PlaygroundBodyPosition(body, left, top, options = {})",
@@ -479,8 +526,8 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_setNekoIdleCat1PlaygroundFixedBodyPosition(body.element, body.x, body.y);" in set_position_block
     assert "function _setNekoIdleCat1PlaygroundFixedBodyPosition(element, left, top)" in set_position_block
     assert "_applyNekoIdleCat1PlaygroundBodyRotation(body);" in set_position_block
-    assert "body.element.style.transformOrigin = 'center center';" in set_position_block
-    assert "body.element.style.transform = `rotate(${Number(body.rotation) || 0}rad)`;" in set_position_block
+    assert "element.style.transformOrigin = 'center center';" in set_position_block
+    assert "element.style.transform = `rotate(${Number(body.rotation) || 0}rad)`;" in set_position_block
     assert set_position_block.index("body.id === 'yarn'") < set_position_block.index("_setNekoIdleCat1PlaygroundFixedBodyPosition(body.element, body.x, body.y);")
 
     release_block = _source_slice_between(
@@ -493,20 +540,22 @@ def test_cat1_playground_drop_lifecycle_and_physics_are_centralized():
     assert "_clearNekoIdleCat1PlaygroundPointerListeners(button);" in release_block
     assert "_syncNekoIdleCat1QuestionMarkKeyboardAvailabilityForButton(button);" in release_block
     assert "if (state.released) return false;" in release_block
-    assert "const cleanups = state.cleanups.splice(0);" in release_block
-    assert "cleanups.forEach((cleanup) => {" in release_block
+    assert "state.bodies.forEach((body) => {" in release_block
+    assert "_disposeNekoIdleCat1PlaygroundBody(state, body);" in release_block
+    assert "state.cleanups" not in release_block
     assert "_dispatchNekoIdleCat1PlaygroundState(button, false, reason || 'release');" in release_block
 
-    assert "function _dispatchNekoIdleCat1PlaygroundState(button, active, reason)" in source
+    assert "function _dispatchNekoIdleCat1PlaygroundState(button, active, reason, options = {})" in source
     playground_state_block = _source_slice_between(
         source,
-        "function _dispatchNekoIdleCat1PlaygroundState(button, active, reason)",
+        "function _dispatchNekoIdleCat1PlaygroundState(button, active, reason, options = {})",
         "function _acquireNekoIdleCat1PlaygroundDropLifecycle(button, entryDetail)",
         "cat1 playground desktop shell state dispatch",
     )
     assert "new CustomEvent('neko:idle-cat1-playground-state'" in playground_state_block
     assert "active: !!active" in playground_state_block
     assert "reason: reason || (active ? 'active' : 'inactive')" in playground_state_block
+    assert "restoreChatOnExit:" in playground_state_block
 
     assert "function _releaseAllNekoIdleCat1PlaygroundDropLifecycles(reason)" in source
     page_release_block = _source_slice_between(
@@ -592,9 +641,8 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
         "const cancelled = !!(event && event.type === 'pointercancel');",
         "if (!cancelled && !state.pendingYarnActivationId && (body.id === 'yarn' || body.id === 'desktop-yarn')) {",
         "const activationResult = _dispatchNekoIdleCat1PlaygroundYarnActivate",
-        "if (activationResult === true) {",
-        "_removeNekoIdleCat1PlaygroundYarnBody(button);",
         "state.pendingYarnActivationId = activationResult;",
+        "state.pendingYarnActivationGeneration = Number(body.yarnGeneration) || 0;",
     )
     assert "state.phase = 'ballistic';" in pointer_up_block
     assert "state.suppressClickBodyId = body.id;" in pointer_up_block
@@ -643,8 +691,8 @@ def test_cat1_playground_click_exit_is_not_armed_as_drag_on_pointerdown():
     assert "activationId," in source
     assert "neko:idle-cat1-playground-yarn-activate" in source
     assert "neko:idle-cat1-playground-yarn-activation-ack" in source
-    assert "if (detail.confirmed === true) _removeNekoIdleCat1PlaygroundYarnBody(button);" in source
-    assert "return window.__NEKO_DESKTOP_RUNTIME__ ? activationId : dispatched;" in source
+    assert "currentBody.yarnGeneration === activationGeneration" in source
+    assert "return dispatched ? activationId : false;" in source
     assert "action: 'idle_cat1_playground_yarn_activate'" in source
     assert "function _bindNekoIdleCat1PlaygroundBodyInput(button, body, bind)" in source
 
@@ -700,7 +748,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "function _requestNekoIdleCat1PlaygroundYarnTarget(detail)" in source
     assert "function _startNekoIdleCat1PlaygroundDropAfterYarnTargetReady(button, detail)" in source
     assert "function _isNekoIdleCat1PlaygroundEntryPending(button)" in source
-    assert "function _cancelNekoIdleCat1PlaygroundPendingEntry(button)" in source
+    assert "function _cancelNekoIdleCat1PlaygroundPendingEntry(button, options = {})" in source
     assert "_NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS" in source
 
     entry_block = _source_slice_between(
@@ -735,7 +783,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     request_block = _source_slice_between(
         source,
         "function _requestNekoIdleCat1PlaygroundYarnTarget(detail)",
-        "function _cancelNekoIdleCat1PlaygroundPendingEntry(button)",
+        "function _cancelNekoIdleCat1PlaygroundPendingEntry(button, options = {})",
         "cat1 playground yarn target request",
     )
     assert "_getNekoIdleCat1PairMoveChatTarget()" in request_block
@@ -768,7 +816,9 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "_requestNekoIdleCat1PlaygroundYarnTarget(detail);" in wait_block
     assert "_setNekoIdleCat1QuestionMarkKeyboardTarget(null);" in wait_block
     assert "_getNekoIdleCat1PairMoveChatTarget()" in wait_block
-    assert "_startNekoIdleCat1PlaygroundDrop(button, detail);" in wait_block
+    assert "restoreChatOnExit: false" in wait_block
+    assert "restoreChatOnExit: true" in wait_block
+    assert "_startNekoIdleCat1PlaygroundDrop(button, pending.detail);" in wait_block
     assert "window.requestAnimationFrame(poll);" in wait_block
     assert "Date.now() - startedAt >= _NEKO_IDLE_CAT1_PLAYGROUND_YARN_TARGET_WAIT_MS" in wait_block
 
@@ -793,6 +843,7 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "window.addEventListener('neko:idle-cat1-playground-yarn-request', _handleIdleCat1PlaygroundYarnRequest);" in app_source
     assert "function _handleIdleCat1PlaygroundYarnActivate(event)" in app_source
     assert "window.addEventListener('neko:idle-cat1-playground-yarn-activate', _handleIdleCat1PlaygroundYarnActivate);" in app_source
+    assert "window.addEventListener('neko:idle-cat1-playground-state', _handleIdleCat1PlaygroundState);" in app_source
     app_block = _source_slice_between(
         app_source,
         "function _handleIdleCat1PlaygroundYarnRequest(event)",
@@ -802,7 +853,9 @@ def test_cat1_playground_entry_minimizes_chat_to_yarn_before_drop():
     assert "setChatSurfaceMode('minimized')" in app_block
     assert "getCurrentChatSurfaceMode() === 'minimized'" in app_block
     assert "window.__NEKO_DESKTOP_RUNTIME__ && detail.via === 'broadcast-channel'" in app_block
-    assert "detail.reason" not in app_block
+    assert "neko:idle-cat1-playground-yarn-activation-ack" in app_block
+    assert "detail.restoreChatOnExit !== true" in app_block
+    assert "detail.restoreChatOnExit !== true" in app_block
     assert "cat1-playground-entry" not in app_block
 
 
@@ -2356,7 +2409,7 @@ def test_return_button_idle_tier_switch_uses_crossfade_motion():
     assert '@media (prefers-reduced-motion: reduce)' in css_source
 
 
-def test_return_button_hover_click_gif_finishes_before_restore():
+def test_return_button_hover_click_animation_finishes_before_restore():
     source = _read_avatar_ui_buttons_source()
 
     assert '_NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map()' in source
@@ -2365,6 +2418,7 @@ def test_return_button_hover_click_gif_finishes_before_restore():
     assert '_patchGifDelayRate' in source
     assert '_getNekoIdleGifPlaybackSource' in source
     assert '_getNekoIdleGifDurationMs' in source
+    assert '_getNekoIdleAnimationDurationMs' in source
     assert '_playNekoIdleHoverArt' in source
     assert '_finishNekoIdleHoverArtAfterPlayback' in source
     assert '_clearNekoIdleHoverPlayback' in source
@@ -3663,10 +3717,12 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     _assert_source_order(
         mirror_active_block,
         "cat1 compact mirror active payload",
-        "const assetUrl = options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1);",
+        "const assetUrl = options.assetUrl || currentArtUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1);",
+        "const artLayout = requestedArtLayout === 'wide-centered' || requestedArtLayout === 'tall-bottom'",
         "_postNekoIdleCat1CompactMirrorState({",
         "active: true,",
         "assetUrl,",
+        "artLayout,",
     )
     mirror_state_block = source.split("function _setNekoIdleCat1CompactMirrorActive", 1)[1].split(
         "const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect)",
@@ -3680,7 +3736,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
         "if (!container.__nekoIdleCat1CompactMirrorActive) return true;"
     )
     assert "_syncNekoIdleCat1CompactMirrorReaction(button, container, reactionSrc, 'cat1-sound-reaction')" in source
-    assert "_getNekoIdleGifDurationMs(reactionSrc)" in source
+    assert "_getNekoIdleAnimationDurationMs(reactionSrc)" in source
     assert "const remainingMs = Math.max(0, (Number(durationMs) || 0) - elapsedMs);" in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_PROFILES' in source

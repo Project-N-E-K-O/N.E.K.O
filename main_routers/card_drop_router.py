@@ -1890,6 +1890,10 @@ async def bind_client_approve_endpoint(request: Request, payload: dict = Body(..
     cors = _sync_cors_headers(request)
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not client_registration.proof_transport_allowed(_social_base_url()):
+        return JSONResponse(
+            {"detail": "insecure_transport"}, status_code=403, headers=cors
+        )
     sync_ticket = payload.get("sync_ticket") or payload.get("syncTicket")
     if not _consume_sync_ticket(sync_ticket):
         return JSONResponse(

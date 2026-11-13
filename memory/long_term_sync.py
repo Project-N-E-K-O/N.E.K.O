@@ -11,16 +11,21 @@ from pathlib import Path
 import sys
 from uuid import uuid4
 
+from memory import cold_store
 from memory.evidence import count_fact_sources
 from memory.introspection import PERMANENT_SUPPRESSION_KEY, is_permanently_suppressed
-from utils.long_term_memory_protocol import MAX_ENTRIES, document, head
+from memory.long_term_merge import COLD_MAX, coldened, empty_evidence, merge_retirement
+from utils.long_term_memory_protocol import MAX_ENTRIES, SCHEMA_VERSION, document, head
 from utils.recent_memory_protocol import canonical
 
 
 SUBJECTS = ('master', 'neko', 'relationship')
 FILES = {'persona': 'persona.json', 'facts': 'facts.json', 'archive': 'facts_archive.json', 'reflections': 'reflections.json', 'sync': 'long_term_portable.json'}
 JOURNAL = '.long_term_apply.json'
-ARCHIVES = {'personaArchives': 'persona_archive', 'reflectionArchives': 'reflection_archive'}
+# Views holding cold rows an import moves into cold storage, each as new shards
+# (relative path -> rows). A cold row's text never enters a snapshot: the views
+# read from disk carry only stubs of what is already cold (``coldStubs``).
+COLD_VIEWS = {'factCold': 'fact', 'reflectionArchives': 'reflection', 'personaArchives': 'persona'}
 
 
 class LongTermMemoryRecoveryRequired(RuntimeError):
@@ -35,11 +40,15 @@ class LongTermMemoryCapacityExceeded(ValueError):
         super().__init__('long_term_memory_capacity_exceeded')
 
 
-class LongTermArchiveSubjectUnavailable(ValueError):
-    """A legacy archive has no unambiguous subject evidence left locally."""
+class LongTermEvidenceCapacityExceeded(LongTermMemoryCapacityExceeded):
+    """The retirement or confirmation records alone are more than a snapshot may carry."""
 
     def __init__(self):
-        super().__init__('long_term_archive_subject_unavailable')
+        ValueError.__init__(self, 'long_term_memory_evidence_capacity_exceeded')
+
+
+# A legacy persona archive row has no unambiguous subject evidence left locally.
+LongTermArchiveSubjectUnavailable = cold_store.ColdArchiveSubjectUnavailable
 
 
 class RetirementSubjectConflict(ValueError):
@@ -93,13 +102,12 @@ def consistent_view_read(path):
 
 
 def managed_path(relative):
-    return relative in FILES.values() or relative == 'reflections_archive.json' or bool(
-        re.fullmatch(r'(?:persona_archive|reflection_archive)/[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9a-f]{8}\.json', relative))
+    return relative in FILES.values() or relative == 'reflections_archive.json' or cold_store.is_managed_relative(relative)
 
 
 def view_files(views):
     return {**{filename: views[key] for key, filename in FILES.items()},
-            **{relative: rows for key in ARCHIVES for relative, rows in views.get(key, {}).items()}}
+            **{relative: rows for key in COLD_VIEWS for relative, rows in views.get(key, {}).items()}}
 
 
 EVIDENCE_FIELDS = {'reinforcement': 'reinforcement', 'disputation': 'disputation', 'importance': 'importance',
@@ -187,65 +195,112 @@ def read_views(directory, *, recovering=False, repair_archive=None):
         if not isinstance(value, dict if key in ('persona', 'sync') else list):
             raise ValueError('invalid_long_term_memory')
         result[key] = value
-    from memory.archive_shards import _list_shard_files
-    for key, folder in ARCHIVES.items():
+    try:
+        result['coldStubs'] = cold_store.sync_stubs(directory, repair=repair_archive)
+        # Names only, so a new shard an import writes never lands on an existing file.
+        result['coldShardNames'] = cold_store.shard_relatives(directory)
+    except cold_store.ColdStoreUnreadable as error:
+        raise ValueError('invalid_long_term_archive') from error
+    for key in COLD_VIEWS:
         result[key] = {}
-        paths = [f'{folder}/{filename}' for filename, _, _ in _list_shard_files(str(Path(directory) / folder))]
-        if key == 'reflectionArchives' and (Path(directory) / 'reflections_archive.json').exists():
-            paths.append('reflections_archive.json')
-        for relative in paths:
-            rows = json.loads((Path(directory) / relative).read_text(encoding='utf-8'))
-            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-                raise ValueError('invalid_long_term_archive')
-            result[key][relative] = rows
-    # Older persona shards omit their subject; the durable archive event owns it.
-    unresolved = {(relative.rsplit('/', 1)[-1], row.get('id')) for relative, rows in result['personaArchives'].items()
-                  for row in rows if private(row) and not row.get('entity_key')}
-    subjects = {}
-    if unresolved:
-        copies = Counter((relative.rsplit('/', 1)[-1], row.get('id')) for relative, rows in result['personaArchives'].items()
-                         for row in rows if private(row))
-        try:
-            with (Path(directory) / 'events.ndjson').open(encoding='utf-8') as events:
-                for line in events:
-                    try:
-                        event = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(event, dict) or not isinstance(event.get('payload'), dict):
-                        continue
-                    payload = event.get('payload') or {}
-                    if not isinstance(payload.get('archive_shard_path'), str) or not isinstance(payload.get('entry_id'), str):
-                        continue
-                    identity = (payload.get('archive_shard_path'), payload.get('entry_id'))
-                    if identity in unresolved and event.get('type') == 'persona.fact_added' and payload.get('entity_key') in SUBJECTS:
-                        snapshot = payload.get('entry_snapshot')
-                        stamp = payload.get('archived_at') or (snapshot.get('archived_at') if isinstance(snapshot, dict) else None)
-                        if stamp is not None and not isinstance(stamp, str):
-                            continue
-                        subjects.setdefault(identity, set()).add((stamp, payload['entity_key']))
-        except FileNotFoundError:
-            pass
-        unavailable = False
-        for relative, rows in result['personaArchives'].items():
-            repaired = False
-            for row in rows:
-                if private(row) and not row.get('entity_key'):
-                    identity = (relative.rsplit('/', 1)[-1], row.get('id'))
-                    candidates = subjects.get(identity, ())
-                    matched = {subject for stamp, subject in candidates if stamp and stamp == row.get('archived_at')}
-                    if not matched and copies[identity] == 1 and all(not stamp for stamp, _ in candidates):
-                        matched = {subject for _, subject in candidates}
-                    if len(matched) != 1:
-                        unavailable = True
-                    else:
-                        row['entity_key'] = matched.pop()
-                        repaired = True
-            if repaired and repair_archive is not None:
-                repair_archive(relative, rows)
-        if unavailable:
-            raise LongTermArchiveSubjectUnavailable()
     return result
+
+
+_shared_cold_cache = {}
+
+
+def shared_cold_facts(directory):
+    """The fact items of the shared ``cold`` list this device last merged, by (subject, id).
+
+    Read from the local sync state and cached on its size and mtime. Empty
+    when the character is not synced or the state cannot be read.
+    """
+    path = Path(directory) / FILES['sync']
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}
+    stamp = (stat.st_size, stat.st_mtime_ns)
+    cached = _shared_cold_cache.get(str(path))
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    items = state.get('cold') if isinstance(state, dict) else None
+    result = {(item.get('subject'), item.get('id')): item for item in items or []
+              if isinstance(item, dict) and item.get('kind') == 'fact'}
+    _shared_cold_cache[str(path)] = (stamp, result)
+    return result
+
+
+def _cold_key(kind, subject, row):
+    return kind, subject, row.get('id') or row.get('legacy_id') or _entry_id(subject, row)
+
+
+def _portable_id(value):
+    return isinstance(value, str) and bool(value.strip()) and len(value) <= 200 and value == value.strip()
+
+
+def _cold_listing(kind, row):
+    """The cold-list item for a cold row (a stub or a whole demoted row), or None when it is not shared."""
+    subject = row.get('entity_key' if kind == 'persona' else 'entity')
+    if not private(row) or subject not in SUBJECTS or (kind == 'persona' and row.get('source') == 'character_card'):
+        return None
+    key = _cold_key(kind, subject, row)
+    if not _portable_id(key[2]):
+        return None
+
+    def instant(*fields):
+        for field in fields:
+            try:
+                value = timestamp(row.get(field))
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+            if value and iso(value) is not None:
+                return value
+        return 0
+    if kind == 'fact':
+        if not row.get('arbitration_archived_at'):
+            return None
+        item = {'kind': kind, 'subject': subject, 'id': key[2],
+                'status': 'superseded' if row.get('superseded_by') else 'retracted',
+                'archivedAt': instant('arbitration_archived_at', 'updated_at', 'created_at')}
+        if row.get('superseded_by') and _portable_id(str(row['superseded_by'])):
+            item['supersededById'] = str(row['superseded_by'])
+        return item
+    return {'kind': kind, 'subject': subject, 'id': key[2], 'status': 'archived',
+            'archivedAt': instant('archived_at', 'updated_at', 'created_at')}
+
+
+def local_cold_items(views):
+    """Cold-list items for every cold row this device holds, including demoted rows not yet moved."""
+    stubs = views.get('coldStubs') or {}
+    items = [_cold_listing(kind, row) for kind in ('fact', 'reflection', 'persona') for row in stubs.get(kind, [])]
+    from memory.facts import _is_cold_row
+    items += [_cold_listing('fact', row) for row in views.get('archive', []) if isinstance(row, dict) and _is_cold_row(row)]
+    return [item for item in items if item is not None]
+
+
+def _stored_cold_keys(views):
+    """Keys of the rows already in cold shards here (not the demoted rows still waiting in the archive)."""
+    stubs = views.get('coldStubs') or {}
+    items = (_cold_listing(kind, row) for kind in ('fact', 'reflection', 'persona') for row in stubs.get(kind, []))
+    return {(item['kind'], item['subject'], item['id']) for item in items if item is not None}
+
+
+def _cold_list(views, state):
+    """The ``cold`` list to publish: the shared list, then what went cold here since."""
+    def key(item):
+        return item['kind'], item['subject'], item['id']
+    listed = [deepcopy(item) for item in state.get('cold') or []]
+    known = {key(item) for item in listed} | {tuple(item) for item in state.get('coldPruned') or []}
+    for item in local_cold_items(views):
+        if key(item) not in known:
+            known.add(key(item))
+            listed.append(item)
+    return listed[-COLD_MAX:]
 
 
 def export_document(views, completed_at, *, source_evidence=None):
@@ -253,7 +308,13 @@ def export_document(views, completed_at, *, source_evidence=None):
            and row.get('_near_dup_pending') for row in views.get('facts', [])):
         raise ValueError('long_term_memory_arbitration_pending')
     rows = {}
-    arbitrated_facts = {}
+    state = views.get('sync') or {}
+    cold = _cold_list(views, state)
+    # Never an entry: anything listed, anything cold here (a list trim does not
+    # make it shareable again), and anything trimmed while still cold here.
+    cold_keys = ({(item['kind'], item['subject'], item['id']) for item in cold}
+                 | {(item['kind'], item['subject'], item['id']) for item in local_cold_items(views)}
+                 | {tuple(item) for item in state.get('coldPruned') or []})
 
     def add(kind, subject, value, *, archived=False):
         if not private(value) or subject not in SUBJECTS:
@@ -291,6 +352,10 @@ def export_document(views, completed_at, *, source_evidence=None):
         for original, portable in [('event_when_raw', 'eventWhen'), ('status', 'status'), ('relation_type', 'relationType'),
                                   ('temporal_scope', 'temporalScope')]:
             if native.get(original) is not None: metadata[portable] = deepcopy(native[original])
+        if kind != 'persona' and _schema_current(native):
+            # An explicit null tells the receiver this row was already examined for
+            # event time, so it does not ask a model to examine it again.
+            metadata.setdefault('temporalScope' if kind == 'reflection' else 'eventWhen', None)
         if native.get('version_history') is not None:
             history = []
             for item in native['version_history'][-5:]:
@@ -319,7 +384,9 @@ def export_document(views, completed_at, *, source_evidence=None):
                 if all(value is not None for value in times): metadata['sourceCreatedAt'] = max(times)
                 else: metadata.pop('sourceCreatedAt', None)
             if native.get('source') in ('user_observation', 'ai_disclosure', 'chat'): metadata['source'] = native['source']
-            metadata.update(importance=native.get('importance', 5), absorbed=bool(native.get('absorbed')), archived=archived)
+            # Rows written before the marker existed were never queued for judging.
+            metadata.update(importance=native.get('importance', 5), absorbed=bool(native.get('absorbed')), archived=archived,
+                            signalJudged=bool(native.get('signal_processed', True)))
             if native.get('arbitration_archived_at'):
                 metadata.update(status='superseded' if native.get('superseded_by') else 'retracted',
                                 archivedAt=timestamp(native['arbitration_archived_at']))
@@ -339,6 +406,19 @@ def export_document(views, completed_at, *, source_evidence=None):
                 metadata['evidenceReviewedAt'] = timestamp(native['confirmed_at'])
             if native.get('promoted_at'):
                 metadata['promotedAt'] = timestamp(native['promoted_at'])
+        if kind in ('persona', 'reflection'):
+            # What a receiver needs to keep the "backed by the user" gate: explicit
+            # confirmations, which facts were counted, and the counts themselves for
+            # when those facts are not in the snapshot.
+            confirms = native.get('user_confirm_count')
+            if type(confirms) is int and confirms >= 0:
+                metadata['userConfirmCount'] = confirms
+            counted = native.get('counted_fact_ids')
+            if isinstance(counted, list):
+                metadata['countedFactIds'] = [fid for fid in dict.fromkeys(counted) if isinstance(fid, str) and fid.strip()][:200]
+            counts = native.get('fact_source_counts')
+            if isinstance(counts, dict) and all(type(counts.get(key)) is int and counts[key] >= 0 for key in ('user', 'ai')):
+                metadata['factSourceCounts'] = {'user': counts['user'], 'ai': counts['ai']}
         if kind in ('persona', 'reflection') and is_permanently_suppressed(native):
             # Retired by introspection on this device: peers drop it instead
             # of injecting it, and this device keeps its own row (see import).
@@ -347,22 +427,13 @@ def export_document(views, completed_at, *, source_evidence=None):
             if isinstance(marker, dict) and marker.get('merged_into'):
                 metadata['supersededById'] = str(marker['merged_into'])[:200]
         identity = (kind, subject, key)
-        if kind == 'fact':
-            if archived and native.get('arbitration_archived_at'):
-                arbitrated_facts[identity] = native.get('arbitration_restored_at')
-            elif not archived and identity in arbitrated_facts:
-                # Two-file commits can leave both copies. An explicit restore changes
-                # the native restore marker even when the wall clock moves backwards.
-                restored = native.get('arbitration_restored_at')
-                if not restored or restored == arbitrated_facts[identity]:
-                    return
-        if identity not in rows or not archived or (kind == 'fact' and native.get('arbitration_archived_at')):
+        if identity in cold_keys or (kind == 'fact' and _is_cold_row(native)):
+            # A cold row travels as its cold-list item only, whatever copy is left elsewhere.
+            return
+        if identity not in rows or not archived:
             rows[identity] = {'kind': kind, 'subject': subject, 'id': key, 'text': text, 'metadata': metadata}
 
-    for key, kind, subject_key in [('personaArchives', 'persona', 'entity_key'), ('reflectionArchives', 'reflection', 'entity')]:
-        for values in views.get(key, {}).values():
-            for value in values:
-                add(kind, value.get(subject_key), value, archived=True)
+    from memory.facts import _is_cold_row
     for subject in SUBJECTS:
         section = views['persona'].get(subject) or {}
         for value in section.get('facts', []):
@@ -374,13 +445,26 @@ def export_document(views, completed_at, *, source_evidence=None):
     for value in views['reflections']:
         if isinstance(value, dict):
             add('reflection', value.get('entity'), value)
-    state = views.get('sync') or {}
     for entry in state.get('dormantEntries', []):
-        rows.setdefault((entry['kind'], entry['subject'], entry['id']), deepcopy(entry))
+        if (entry['kind'], entry['subject'], entry['id']) not in cold_keys:
+            rows.setdefault((entry['kind'], entry['subject'], entry['id']), deepcopy(entry))
     if len(rows) > MAX_ENTRIES:
         raise LongTermMemoryCapacityExceeded()
-    return document({'schemaVersion': 2, 'completedAt': completed_at, 'entries': [rows[key] for key in sorted(rows)],
-                     'evidence': deepcopy(state.get('evidence') or {'retirements': [], 'confirmations': []})})
+    progress = state.get('progress') or {}
+    exported = {'schemaVersion': SCHEMA_VERSION, 'completedAt': completed_at, 'entries': [rows[key] for key in sorted(rows)],
+                'evidence': deepcopy(state.get('evidence') or empty_evidence()),
+                'progress': {name: list(progress.get(name) or []) for name in ('a', 'b')}}
+    for field in ('organizer', 'maintenance', 'lineage'):
+        if state.get(field):
+            exported[field] = deepcopy(state[field])
+    if cold:
+        exported['cold'] = cold
+    return document(exported)
+
+
+def _schema_current(native):
+    from config import MEMORY_SCHEMA_VERSION_CURRENT
+    return (native.get('schema_version') or 1) >= MEMORY_SCHEMA_VERSION_CURRENT
 
 
 def validate_retirement_subjects(previous, incoming):
@@ -392,53 +476,70 @@ def validate_retirement_subjects(previous, incoming):
         subjects[row['id']] = row['subject']
 
 
-def import_document(incoming, existing, *, baseline=None, source_evidence=None, keep_unpublished_retirements=True):
-    incoming = document(incoming)
-    validate_retirement_subjects(existing.get('sync', {}).get('evidence', {}).get('retirements', []),
+def import_document(incoming, existing, *, merged=False, source_evidence=None, keep_unpublished_retirements=True):
+    """Write a portable document into native views.
+
+    merged says the document already contains what this device holds (the
+    result of a three-way merge): rows it leaves exactly as this device exports
+    them are kept untouched, and its evidence replaces the local evidence
+    instead of being joined with it.
+    """
+    incoming = coldened(document(incoming))
+    previous_state = existing.get('sync') or {}
+    validate_retirement_subjects(previous_state.get('evidence', {}).get('retirements', []),
                                  incoming.get('evidence', {}).get('retirements', []))
     result = deepcopy(existing)
-    result['sync'] = {'evidence': deepcopy(incoming.get('evidence') or existing.get('sync', {}).get('evidence') or {'retirements': [], 'confirmations': []}), 'dormantEntries': []}
-    for field, key in [('retirements', 'id'), ('confirmations', 'fingerprint')]:
-        retained = {row[key]: deepcopy(row) for row in existing.get('sync', {}).get('evidence', {}).get(field, [])}
-        for incoming_row in result['sync']['evidence'][field]:
-            row = deepcopy(incoming_row)
-            previous = retained.get(row[key])
-            if field == 'retirements' and previous:
-                old_proof = bool(previous.get('retiredBySourceMessageIds') or previous.get('retiredThroughAtFromCorrection'))
-                new_proof = bool(row.get('retiredBySourceMessageIds') or row.get('retiredThroughAtFromCorrection'))
-                times = [item['retiredThroughAt'] for item, proof in [(previous, old_proof), (row, new_proof)]
-                         if 'retiredThroughAt' in item and (proof or not (old_proof or new_proof))]
-                row = {**previous, **row, 'sourceMessageIds': list(dict.fromkeys(previous['sourceMessageIds'] + row['sourceMessageIds']))}
-                corrections = list(dict.fromkeys(previous.get('retiredBySourceMessageIds', []) + row.get('retiredBySourceMessageIds', [])))
-                if corrections: row['retiredBySourceMessageIds'] = corrections
-                if times:
-                    row['retiredThroughAt'] = max(times)
-                    if old_proof or new_proof: row['retiredThroughAtFromCorrection'] = True
-                else:
-                    row.pop('retiredThroughAt', None)
-                    row.pop('retiredThroughAtFromCorrection', None)
-            retained[row[key]] = row
-        result['sync']['evidence'][field] = list(retained.values())
-    local_persona = {(row.get('entity_key'), _entry_id(row.get('entity_key'), row)): row
-                     for rows in existing.get('personaArchives', {}).values() for row in rows
-                     if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
-    local_persona.update({(subject, _entry_id(subject, row)): row for subject in SUBJECTS
+    result['sync'] = {'evidence': deepcopy(incoming.get('evidence') or previous_state.get('evidence') or empty_evidence()), 'dormantEntries': []}
+    current_schema = incoming['schemaVersion'] == SCHEMA_VERSION
+    for field in ('progress', 'organizer', 'maintenance', 'lineage'):
+        # Older documents know nothing of these, so they cannot clear them.
+        value = incoming.get(field) if current_schema else previous_state.get(field)
+        if value:
+            result['sync'][field] = deepcopy(value)
+    cold = _incoming_cold(incoming, previous_state, current_schema)
+    cold_keys = {(item['kind'], item['subject'], item['id']) for item in cold}
+    if cold:
+        result['sync']['cold'] = cold
+    held_cold = {(item['kind'], item['subject'], item['id']) for item in local_cold_items(existing)}
+    # A listed row this device holds and the list has since dropped was pruned by
+    # the organizer: it must not be listed again from here.
+    pruned = ({tuple(item) for item in previous_state.get('coldPruned') or []}
+              | {(item['kind'], item['subject'], item['id']) for item in previous_state.get('cold') or []}) & held_cold
+    pruned -= cold_keys
+    if pruned:
+        result['sync']['coldPruned'] = [list(item) for item in sorted(pruned)]
+    for key in COLD_VIEWS:
+        result[key] = {}
+    # Only a row already in a cold shard may simply leave the views; a demoted row
+    # still in facts_archive.json is the only copy of its text and moves to a shard.
+    moved_fact_sources = _move_listed_rows_to_cold(result, cold, _stored_cold_keys(existing), incoming['completedAt'],
+                                                   existing.get('coldShardNames', ()))
+    if not merged:
+        for field, key in [('retirements', 'id'), ('confirmations', 'fingerprint')]:
+            retained = {row[key]: deepcopy(row) for row in previous_state.get('evidence', {}).get(field, [])}
+            for incoming_row in result['sync']['evidence'][field]:
+                row = deepcopy(incoming_row)
+                previous = retained.get(row[key])
+                if field == 'retirements' and previous:
+                    row = merge_retirement(previous, row)
+                retained[row[key]] = row
+            result['sync']['evidence'][field] = list(retained.values())
+    local_persona = {(subject, _entry_id(subject, row)): row for subject in SUBJECTS
                      for row in existing['persona'].get(subject, {}).get('facts', [])
-                     if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'})
+                     if isinstance(row, dict) and private(row) and row.get('source') != 'character_card'}
     local_facts = {(row.get('entity'), _entry_id(row.get('entity'), row)): row
                    for row in existing['archive'] + existing['facts'] if isinstance(row, dict) and private(row)}
     local_reflections = {(row.get('entity'), _entry_id(row.get('entity'), row)): row
-                         for rows in existing.get('reflectionArchives', {}).values() for row in rows
-                         if isinstance(row, dict) and private(row)}
-    local_reflections.update({(row.get('entity'), _entry_id(row.get('entity'), row)): row
-                             for row in existing['reflections'] if isinstance(row, dict) and private(row)})
+                         for row in existing['reflections'] if isinstance(row, dict) and private(row)}
     pending = set()
-    if baseline is not None:
-        previous = {(row['kind'], row['subject'], row['id']): row for row in baseline}
+    if merged:
+        # A row the document leaves as this device already exports it stays as it is:
+        # rebuilding it would drop what the protocol does not carry.
         current = {(row['kind'], row['subject'], row['id']): row
                    for row in export_document(existing, incoming['completedAt'], source_evidence=source_evidence)['entries']}
-        pending = {key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key)}
-    result['sync']['dormantEntries'] = [deepcopy(row) for row in existing.get('sync', {}).get('dormantEntries', [])
+        pending = {(row['kind'], row['subject'], row['id']) for row in incoming['entries']
+                   if current.get((row['kind'], row['subject'], row['id'])) == row}
+    result['sync']['dormantEntries'] = [deepcopy(row) for row in previous_state.get('dormantEntries', [])
                                       if (row['kind'], row['subject'], row['id']) in pending]
 
     def retained(kind, subject, value):
@@ -474,11 +575,6 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
         result[field] = [row for row in result[field] if isinstance(row, dict)
                          and (not private(row) or row.get('entity') not in SUBJECTS
                               or retained('fact', row.get('entity'), row))]
-    for key, kind, subject_key in [('personaArchives', 'persona', 'entity_key'), ('reflectionArchives', 'reflection', 'entity')]:
-        result[key] = {relative: [row for row in rows if not private(row) or row.get(subject_key) not in SUBJECTS
-                      or row.get('source') == 'character_card' or retained(kind, row.get(subject_key), row)
-                      or retired(kind, row.get(subject_key), row)]
-                      for relative, rows in result.get(key, {}).items()}
     incoming_reflections = {(row['subject'], row['id']) for row in incoming['entries'] if row['kind'] == 'reflection'}
     result['reflections'] = [row for row in result['reflections'] if isinstance(row, dict)
         and (not private(row) or row.get('entity') not in SUBJECTS or retained('reflection', row.get('entity'), row)
@@ -487,19 +583,54 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                  and (not isinstance(row.get('id'), str)
                       or (row.get('entity'), row.get('id')) not in incoming_reflections)))]
     incoming_fact_sources = {row['id']: _incoming_fact_source(row) for row in incoming['entries'] if row['kind'] == 'fact'}
-    # Local edits still pending stay after this import, so their source is the one that holds.
+    withdrawn_facts = ({row['id'] for row in incoming['entries']
+                        if row['kind'] == 'fact' and row['metadata'].get('status') == 'retracted'}
+                       | {item['id'] for item in cold if item['kind'] == 'fact' and item['status'] == 'retracted'})
+    # A cold fact still counts by its status; its source is known when this device holds it.
+    incoming_fact_sources.update(moved_fact_sources)
+    incoming_fact_sources.update({row['id']: row.get('source')
+                                  for row in (existing.get('coldStubs') or {}).get('fact', [])
+                                  if row.get('id') and private(row)
+                                  and ('fact', row.get('entity'), row['id']) in cold_keys})
+    # Rows kept untouched stay after this import, so their source is the one that holds.
     incoming_fact_sources.update({row['id']: row.get('source') for row in result['archive'] + result['facts']
                                   if isinstance(row, dict) and row.get('id') and private(row)})
+    # Counted facts are named by id alone; an id two subjects share cannot say which
+    # one a reflection rests on. Such a reflection keeps the counts it came with;
+    # without any, the id counts the cautious way: as the character's own words
+    # if any copy is, and as withdrawn if any copy is (see _carried_fact_accounting).
+    fact_subjects, fact_copy_sources = {}, {}
+    for row in incoming['entries']:
+        if row['kind'] == 'fact':
+            fact_subjects.setdefault(row['id'], set()).add(row['subject'])
+            fact_copy_sources.setdefault(row['id'], set()).add(_incoming_fact_source(row))
+    for item in cold:
+        if item['kind'] == 'fact':
+            fact_subjects.setdefault(item['id'], set()).add(item['subject'])
+    for row in result['archive'] + result['facts']:
+        if isinstance(row, dict) and isinstance(row.get('id'), str) and private(row):
+            fact_subjects.setdefault(row['id'], set()).add(row.get('entity'))
+            fact_copy_sources.setdefault(row['id'], set()).add(row.get('source'))
+    shared_ids = frozenset(fact_id for fact_id, subjects in fact_subjects.items() if len(subjects) > 1)
+    for fact_id in shared_ids:
+        if 'ai_disclosure' in fact_copy_sources.get(fact_id, ()) or fact_id not in incoming_fact_sources:
+            incoming_fact_sources[fact_id] = 'ai_disclosure'
+            # A copy withdrawn under another subject must not erase the character's
+            # own words: counted as the character's, the line keeps waiting for the user.
+            withdrawn_facts.discard(fact_id)
     for row in incoming['entries']:
         kind, subject, meta = row['kind'], row['subject'], row['metadata']
         if (kind, subject, row['id']) in pending or (kind, subject, row['id']) in locally_retired:
             continue
-        formally_archived = kind != 'fact' and (meta.get('archivedAt') is not None or meta.get('archived'))
-        arbitrated = kind == 'fact' and meta.get('archived') and meta.get('archivedAt') is not None and meta.get('status') in ('retracted', 'superseded')
-        if not formally_archived and not arbitrated and (meta.get('voidedAt') is not None or meta.get('status') in ('denied', 'retracted', 'superseded', 'merged')):
+        # Whole demoted rows were turned into cold-list items on the way in.
+        if meta.get('voidedAt') is not None or meta.get('status') in ('denied', 'retracted', 'superseded', 'merged'):
             result['sync']['dormantEntries'].append(deepcopy(row))
             continue
         native = {'_sync_metadata': deepcopy(meta), 'id': row['id'], 'text': row['text'], 'source_sync_id': meta.get('sourceSyncId') or f'snapshot:{row["id"]}'[:200]}
+        if ('temporalScope' if kind == 'reflection' else 'eventWhen') in meta and kind != 'persona':
+            # The sender already examined this row for event time.
+            from config import MEMORY_SCHEMA_VERSION_CURRENT
+            native['schema_version'] = MEMORY_SCHEMA_VERSION_CURRENT
         for original, portable in [('created_at', 'createdAt'), ('updated_at', 'updatedAt'),
                                    ('rein_last_signal_at', 'reinLastSignalAt'), ('disp_last_signal_at', 'dispLastSignalAt')]:
             if meta.get(portable) is not None:
@@ -529,6 +660,7 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 for field in ('covered_fact_ids', 'fact_source_counts'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
+            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous, shared_ids)
             if 'protected' in previous:
                 native.setdefault('protected', previous['protected'])
             # The protocol omits receiver-only state and external-import ledgers.
@@ -541,16 +673,21 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 for field in ('source', 'source_id', 'external_import'):
                     if field in previous:
                         native[field] = deepcopy(previous[field])
-            if formally_archived:
-                native['entity_key'] = subject
-                _append_archive(result, 'personaArchives', native, incoming['completedAt'])
-            else:
-                result['persona'][subject]['facts'].append(native)
+            result['persona'][subject]['facts'].append(native)
         elif kind == 'fact':
             native.update(entity=subject, source=_incoming_fact_source(row),
-                          importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')), signal_processed=True,
+                          importance=meta.get('importance', 5), absorbed=bool(meta.get('absorbed')),
+                          # Only a schema 3 writer can say a fact still waits for judging.
+                          signal_processed=bool(meta.get('signalJudged', True)),
                           hash=hashlib.sha256(row['text'].encode()).hexdigest()[:16])
             previous = local_facts.get((subject, row['id']), {})
+            if previous.get('text') == native['text']:
+                # Derived from the wording alone, so still valid for the same wording.
+                for field in ('embedding', 'embedding_text_sha256', 'embedding_model_id', 'tags'):
+                    if field in previous:
+                        native[field] = deepcopy(previous[field])
+                if 'schema_version' in previous:
+                    native.setdefault('schema_version', previous['schema_version'])
             if previous.get('text') == native['text'] and previous.get('extraction_path'):
                 native['extraction_path'] = previous['extraction_path']
             if previous.get('text') == native['text'] and previous.get('external_import'):
@@ -562,10 +699,6 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 proof = merge_fact_source_evidence(previous, native)
                 native.pop('source_created_at', None)
                 native.update(proof)
-            if arbitrated:
-                native.update(arbitration_archived_at=iso(meta['archivedAt']), arbitration_reason='dedup_arbitration')
-                if meta.get('supersededById'):
-                    native['superseded_by'] = meta['supersededById']
             if meta.get('eventAt') is not None:
                 native['event_start_at'] = iso(meta['eventAt'])
             result['archive' if meta.get('archived') else 'facts'].append(native)
@@ -573,6 +706,8 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
             previous = local_reflections.get((subject, row['id']), {})
             if previous.get('text') == native['text'] and 'covered_fact_ids' in previous:
                 native['covered_fact_ids'] = deepcopy(previous['covered_fact_ids'])
+            if previous.get('text') == native['text'] and 'schema_version' in previous:
+                native.setdefault('schema_version', previous['schema_version'])
             native.update(entity=subject, source_fact_ids=list(meta.get('sourceFactIds') or []),
                           status=meta.get('status', 'promoted' if meta.get('promotedAt') else 'confirmed'))
             if native['status'] in ('confirmed', 'promoted') and not native.get('confirmed_at'):
@@ -604,37 +739,140 @@ def import_document(incoming, existing, *, baseline=None, source_evidence=None, 
                 native['fact_source_counts'] = count_fact_sources(
                     [{'source': incoming_fact_sources[fid]} for fid in native['source_fact_ids']])
                 native['counted_fact_ids'] = sorted(native['source_fact_ids'])
-            # Explicit confirmations are not in the protocol either; like the
-            # reinforce count they belong to the row, whatever its current wording.
-            if 'user_confirm_count' in previous:
-                native['user_confirm_count'] = previous['user_confirm_count']
-            if formally_archived:
-                _append_archive(result, 'reflectionArchives', native, incoming['completedAt'])
-            else:
-                result['reflections'].append(native)
+            _carried_fact_accounting(native, meta, incoming_fact_sources, withdrawn_facts, previous, shared_ids)
+            result['reflections'].append(native)
+    # A row left untouched may still rest on facts this document changed: one upgraded
+    # to the user's own words, or withdrawn. Its counts follow the facts as they now stand.
+    kept = [*result['reflections'], *(row for subject in SUBJECTS for row in result['persona'].get(subject, {}).get('facts', []))]
+    for row in kept:
+        if not isinstance(row, dict) or not private(row) or not isinstance(row.get('fact_source_counts'), dict):
+            continue
+        counted = row.get('counted_fact_ids')
+        if isinstance(counted, list) and set(counted) & shared_ids:
+            # Its stored counts say more than an id two subjects share can.
+            continue
+        if isinstance(counted, list) and counted and all(fid in incoming_fact_sources for fid in counted):
+            row['fact_source_counts'] = count_fact_sources(
+                [{'source': incoming_fact_sources[fid]} for fid in counted if fid not in withdrawn_facts])
     return result
 
+
+
+def _carried_fact_accounting(native, meta, fact_sources, withdrawn, previous, shared_ids=frozenset()):
+    """Apply the sender's record of confirmations and counted facts to a rebuilt row.
+
+    With every counted fact in the snapshot the counts are worked out here, so
+    a fact withdrawn or upgraded to the user's own words since then counts as
+    it stands now. Otherwise the sender's counts are used: a row without
+    counts would pass the gate ungated.
+    """
+    if 'userConfirmCount' in meta:
+        native['user_confirm_count'] = meta['userConfirmCount']
+    elif 'user_confirm_count' in previous:
+        # An older writer does not carry it; the count belongs to the row whatever its wording.
+        native['user_confirm_count'] = previous['user_confirm_count']
+    counted, carried = meta.get('countedFactIds'), meta.get('factSourceCounts')
+    if counted is None and carried is None:
+        return
+    ids = list(counted) if counted is not None else list(native.get('source_fact_ids') or [])
+    if counted is not None:
+        native['counted_fact_ids'] = ids
+    if carried is not None and set(ids) & shared_ids:
+        # An id two subjects share cannot be recounted reliably; the sender's counts hold.
+        native['fact_source_counts'] = dict(carried)
+    elif ids and all(fid in fact_sources for fid in ids):
+        native['fact_source_counts'] = count_fact_sources(
+            [{'source': fact_sources[fid]} for fid in ids if fid not in withdrawn])
+    elif carried is not None:
+        native['fact_source_counts'] = dict(carried)
 
 
 def _incoming_fact_source(row):
     return row['metadata'].get('source', 'ai_disclosure' if row['subject'] == 'neko' else 'user_observation')
 
 
-def _append_archive(views, key, entry, completed):
+def _incoming_cold(incoming, previous_state, current_schema):
+    """The cold list after this import. An older document knows nothing of it, so it only adds."""
+    if current_schema:
+        return deepcopy(incoming.get('cold') or [])
+    listed = deepcopy(previous_state.get('cold') or [])
+    known = {(item['kind'], item['subject'], item['id']) for item in listed}
+    for item in incoming.get('cold') or []:
+        if (item['kind'], item['subject'], item['id']) not in known:
+            listed.append(deepcopy(item))
+    return listed[-COLD_MAX:]
+
+
+def _move_listed_rows_to_cold(views, cold, held_cold, completed, taken):
+    """Move this device's copies of listed rows into cold storage; returns the moved facts' sources.
+
+    A copy already cold here only leaves the active views. The rest go to new
+    cold shards, stamped as the list says: a fact as an arbitration loser
+    (``superseded_by`` when the list names a survivor), a reflection or
+    persona entry as archived.
+    """
+    listed = {(item['kind'], item['subject'], item['id']): item for item in cold}
+    if not listed:
+        return {}
+    sources = {}
+    # An interrupted archive commit can leave one fact in both files. Active rows
+    # are visited first, so the newer copy is the one that goes cold; the other
+    # only leaves the views.
+    moved = set(held_cold)
+
+    def take(kind, subject, row):
+        if not isinstance(row, dict) or not private(row) or subject not in SUBJECTS:
+            return False
+        key = (kind, subject, _entry_id(subject, row))
+        item = listed.get(key)
+        if item is None:
+            return False
+        if kind == 'fact':
+            sources.setdefault(key[2], row.get('source'))
+        if key in moved:
+            return True
+        moved.add(key)
+        copy = deepcopy(row)
+        archived_at = iso(item['archivedAt']) or iso(completed)
+        if kind == 'fact':
+            if not copy.get('arbitration_archived_at'):
+                copy.update(arbitration_archived_at=archived_at, arbitration_reason='dedup_arbitration')
+            if item.get('supersededById'):
+                copy['superseded_by'] = item['supersededById']
+            _append_cold(views, 'factCold', copy, completed, taken)
+        else:
+            if kind == 'persona':
+                copy['entity_key'] = subject
+            copy.setdefault('archived_at', archived_at)
+            _append_cold(views, 'personaArchives' if kind == 'persona' else 'reflectionArchives', copy, completed, taken)
+        return True
+
+    for field in ('facts', 'archive'):
+        views[field] = [row for row in views[field] if not take('fact', row.get('entity') if isinstance(row, dict) else None, row)]
+    views['reflections'] = [row for row in views['reflections']
+                            if not take('reflection', row.get('entity') if isinstance(row, dict) else None, row)]
+    for subject in SUBJECTS:
+        section = views['persona'].get(subject)
+        if isinstance(section, dict) and isinstance(section.get('facts'), list):
+            section['facts'] = [row for row in section['facts'] if not take('persona', subject, row)]
+    return sources
+
+
+def _append_cold(views, key, entry, completed, taken):
+    """Put a row into a new cold shard of the views; existing shard files are never rewritten here."""
     from config import ARCHIVE_FILE_MAX_ENTRIES
-    from memory.archive_shards import shard_filename_for
-    archived_at = entry.get('archived_at') or iso(completed)
-    entry['archived_at'] = archived_at
-    date = datetime.fromisoformat(archived_at)
-    folder = ARCHIVES[key]
+    kind = COLD_VIEWS[key]
+    stamp = entry.get('archived_at') or entry.get('arbitration_archived_at') or iso(completed)
+    try:
+        date = datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        date = datetime.fromisoformat(iso(completed))
     shards = views.setdefault(key, {})
-    relative = next((path for path, rows in shards.items()
-                     if path.startswith(f'{folder}/{date:%Y-%m-%d}_') and len(rows) < ARCHIVE_FILE_MAX_ENTRIES), None)
+    relative = next((path for path, rows in shards.items() if len(rows) < ARCHIVE_FILE_MAX_ENTRIES), None)
     if relative is None:
-        relative = f'{folder}/{shard_filename_for(date)}'
-        while relative in shards:
-            relative = f'{folder}/{shard_filename_for(date)}'
-    entry['archive_shard_path'] = relative.rsplit('/', 1)[-1]
+        relative = cold_store.new_shard_relative(kind, date, [*taken, *shards])
+    if kind != 'fact':
+        entry['archive_shard_path'] = relative.rsplit('/', 1)[-1]
     shards.setdefault(relative, []).append(entry)
 
 
@@ -698,7 +936,8 @@ def trusted_message_source(message, fallback_timestamp=None):
     source_proof = original.get('chat_original_source')
     source_proof = source_proof if isinstance(source_proof, dict) else {}
     if not identity:
-        raw_id = original.get('recent_memory_id') or source_proof.get('recordId') or source_proof.get('messageId')
+        raw_id = (original.get('recent_memory_id') or source_proof.get('recordId') or source_proof.get('messageId')
+                  or original.get('memory_message_id'))
         if isinstance(raw_id, str) and re.fullmatch(r'[0-9a-f]{32}', raw_id):
             identity = f'sync:{raw_id}'
         raw_time = original.get('recent_memory_time', source_proof.get('originalTime'))
@@ -751,12 +990,23 @@ async def resolve_retirement_cutoffs(retirements, messages, lookup=None):
             roles = ('ai', 'human') if row['subject'] == 'neko' else ('human',)
             times = [at for identity in ids for role, at in known[identity] if role in roles]
             if times:
-                updates[row['id']] = max(times)
+                # Ids are unique per subject only.
+                updates[(row['subject'], row['id'])] = max(times)
     if not updates:
         return retirements
 
-    return [{**row, **({'retiredThroughAt': updates[row['id']], 'retiredThroughAtFromCorrection': True}
-                     if row['id'] in updates else {})} for row in retirements]
+    return [{**row, **({'retiredThroughAt': updates[(row.get('subject'), row['id'])], 'retiredThroughAtFromCorrection': True}
+                     if row.get('retiredThroughAt') is None and (row.get('subject'), row['id']) in updates else {})}
+            for row in retirements]
+
+
+# At most this many candidate/retired-assertion pairs go to the model in one
+# extraction (three arbitration batches). A long evidence list with unknown
+# correction times would otherwise pair every new fact with every record.
+RETIRED_ASSERTION_REVIEW_MAX_PAIRS = 60
+# A candidate held back for a later review keeps the provenance its messages
+# proved, because those messages may be gone by then.
+STORED_PROOF = '_retirement_review_proof'
 
 
 def _assertion_text(text):
@@ -764,8 +1014,53 @@ def _assertion_text(text):
     return text.strip()
 
 
-async def verify_retired_assertions(retirements, extracted, messages, request, *, default_source):
-    """Use existing arbitration semantics before writes; never discard a candidate tail."""
+def retirement_review_pairs(retirements, extracted, messages, *, default_source, cites_correction=None):
+    """Each candidate's (candidate, retired assertion) pairs that need the model, with its review order."""
+    now = timestamp(datetime.now().isoformat())
+    candidates = []
+    for order, fact in enumerate(extracted):
+        if not isinstance(fact, dict) or not isinstance(fact.get('text'), str):
+            continue
+        source = fact.get('source', default_source)
+        proof = fact_source_evidence([], fact, fact.get('entity', 'master'), messages, source=source)
+        if proof is None:
+            continue
+        ids = set(proof.get('source_message_ids', []))
+        latest = timestamp(proof['source_created_at']) if proof.get('source_created_at') is not None else None
+        if not ids:
+            continue
+        pairs, known = [], True
+        for row in retirements:
+            if (row.get('subject') != fact.get('entity', 'master') or not isinstance(row.get('text'), str)
+                    or _assertion_text(row['text']) == _assertion_text(fact['text'])):
+                continue
+            if cites_correction is not None and ids & set(row.get('retiredBySourceMessageIds') or []):
+                cites_correction.add((id(fact), row['id']))
+            cutoff = row.get('retiredThroughAt')
+            if (latest is not None and not ids.issubset(row.get('sourceMessageIds', []))
+                    and not (cutoff is not None and cutoff <= now and latest <= cutoff)
+                    and not (cutoff is None and row.get('retiredBySourceMessageIds'))):
+                continue
+            pairs.append((fact, row))
+            known = known and cutoff is not None
+        if pairs:
+            # Brought-back candidates keep the queue's order (one that waited again is
+            # already at its end); "known cutoffs first" only orders new candidates.
+            stored = STORED_PROOF in fact
+            candidates.append(((not stored, False if stored else not known, order), pairs))
+    return candidates
+
+
+async def verify_retired_assertions(retirements, extracted, messages, request, *, default_source,
+                                    deferred=None, limit=RETIRED_ASSERTION_REVIEW_MAX_PAIRS):
+    """Use existing arbitration semantics before writes; never discard a candidate tail.
+
+    With ``deferred`` given, one call reviews about ``limit`` pairs: candidates past
+    that budget are appended to it unreviewed, for the caller to keep and bring back.
+    Candidates already carrying a stored proof (brought back) go first, then the
+    ones whose every pair has a known cutoff. The first candidate is always reviewed
+    whole, so a candidate with more pairs than the budget still gets through.
+    """
     from config import EVIDENCE_EXTRACT_FACTS_MODEL_TIER
     from config.prompts.prompts_memory import get_fact_dedup_prompt
     from memory.fact_dedup import FACT_DEDUP_BATCH_LIMIT, _detect_fact_dedup_prompt_language
@@ -805,30 +1100,18 @@ async def verify_retired_assertions(retirements, extracted, messages, request, *
                     continue
                 matched.setdefault(id(fact), set()).add(row['id'])
 
-    now = timestamp(datetime.now().isoformat())
-    for fact in extracted:
-        if not isinstance(fact, dict) or not isinstance(fact.get('text'), str):
+    candidates = retirement_review_pairs(retirements, extracted, messages, default_source=default_source,
+                                         cites_correction=cites_correction)
+    if deferred is not None:
+        candidates.sort(key=lambda item: item[0])
+    spent = 0
+    for _, pairs in candidates:
+        if deferred is not None and spent and spent + len(pairs) > limit:
+            deferred.append(pairs[0][0])
             continue
-        source = fact.get('source', default_source)
-        proof = fact_source_evidence([], fact, fact.get('entity', 'master'), messages, source=source)
-        if proof is None:
-            continue
-        ids = set(proof.get('source_message_ids', []))
-        latest = timestamp(proof['source_created_at']) if proof.get('source_created_at') is not None else None
-        if not ids:
-            continue
-        for row in retirements:
-            if (row.get('subject') != fact.get('entity', 'master') or not isinstance(row.get('text'), str)
-                    or _assertion_text(row['text']) == _assertion_text(fact['text'])):
-                continue
-            if ids & set(row.get('retiredBySourceMessageIds') or []):
-                cites_correction.add((id(fact), row['id']))
-            cutoff = row.get('retiredThroughAt')
-            if (latest is not None and not ids.issubset(row.get('sourceMessageIds', []))
-                    and not (cutoff is not None and cutoff <= now and latest <= cutoff)
-                    and not (cutoff is None and row.get('retiredBySourceMessageIds'))):
-                continue
-            batch.append((fact, row))
+        spent += len(pairs)
+        for pair in pairs:
+            batch.append(pair)
             if len(batch) == FACT_DEDUP_BATCH_LIMIT:
                 await review(batch)
                 batch = []
@@ -846,6 +1129,14 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
     from memory.facts import FactExtractionFailed
     matching = [row for row in retirements if row.get('subject') == entity and isinstance(row.get('text'), str)
                 and (row['id'] in matched_ids or _assertion_text(row['text']) == _assertion_text(fact.get('text', '')))]
+    stored = fact.get(STORED_PROOF)
+    if isinstance(stored, dict):
+        # Proven when the candidate was held back; its messages may be gone now.
+        ids = list(stored.get('source_message_ids') or [])
+        latest = timestamp(stored['source_created_at']) if stored.get('source_created_at') is not None else None
+        if not ids:
+            return None if matching else {}
+        return _retirement_verdict(matching, fact, ids, latest)
     indices = fact.get('source_indices')
     in_range = [index for index in indices if type(index) is int and 1 <= index <= len(source_messages)] if (
         isinstance(indices, list) and source_messages) else []
@@ -870,6 +1161,11 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
         return {}
     ids = [identity for identity, _ in proofs]
     latest = max(at for _, at in proofs) if all(at is not None for _, at in proofs) else None
+    return _retirement_verdict(matching, fact, ids, latest)
+
+
+def _retirement_verdict(matching, fact, ids, latest):
+    """The provenance to keep, or None when a matching retirement covers these sources."""
     for row in matching:
         # Explicit disjoint event ranges describe independent occurrences.
         from memory.temporal import compute_event_timestamps, normalize_event_when
@@ -890,6 +1186,30 @@ def fact_source_evidence(retirements, fact, entity, source_messages, *, source='
             return None
     return {'source_message_ids': ids, **({'source_created_at': iso(latest)} if latest is not None else {})}
 
+# How many replaced snapshots are remembered: enough for one upload in flight plus
+# a capture or two landing during it.
+SENT_SNAPSHOTS_KEPT = 3
+
+
+def _current_state(value):
+    """Read a state file written before uploads carried a base revision.
+
+    A downloaded snapshot was the document the server held, so it is a sound
+    base. Anything else was an upload from this device, recorded as acknowledged
+    whether or not the server took it: it proves nothing, so the device starts
+    without a base and merges as a union with whatever the server holds.
+    """
+    if 'operationId' not in value:
+        return value
+    operation = value['operationId']
+    base = None
+    if isinstance(operation, str) and re.fullmatch(r'download:[0-9]{1,16}', operation):
+        base = {'revision': int(operation[9:]), 'document': value['document'],
+                'nativeEntries': value.get('nativeEntries', value['document']['entries'])}
+    return {**{key: value.get(key) for key in ('ownerId', 'characterSyncId', 'serviceUrl', 'epoch')},
+            'base': base, 'pending': None, 'unseenRevision': False}
+
+
 def domain_filename(owner, uid, service_url):
     return f'{uid}-{hashlib.sha256(canonical([owner, service_url])).hexdigest()[:16]}'
 
@@ -908,6 +1228,50 @@ class DesktopLongTermAdapter:
     def incoming_path(self, uid):
         return self.directory / f'{uid}.incoming.json'
 
+    def _checked_path(self, uid):
+        return self.directory / f'{uid}.checked.json'
+
+    def owed_path(self, uid):
+        """Present while saved memory changes still wait for a snapshot to be captured."""
+        return self.directory / f'{uid}.capture-owed'
+
+    def _evidence_trimmed_path(self, uid):
+        return self.directory / f'{uid}.evidence-trimmed.json'
+
+    def mark_evidence_trimmed(self, uid, at):
+        """Record that this device dropped its oldest evidence records at this moment of its own clock."""
+        from utils.file_utils import atomic_write_json
+        self.directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self._evidence_trimmed_path(uid), {'at': int(at)})
+
+    def evidence_trimmed_at(self, uid):
+        try:
+            at = json.loads(self._evidence_trimmed_path(uid).read_text(encoding='utf-8')).get('at')
+        except (OSError, ValueError, AttributeError):
+            return None
+        return at if type(at) is int else None
+
+    def mark_checked(self, uid, at):
+        """Record that this device held the newest published snapshot at this moment of its own clock."""
+        from utils.file_utils import atomic_write_json
+        self.directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self._checked_path(uid), {'at': int(at)})
+
+    def clear_checked(self, uid):
+        """A newer revision is known to exist, so the last check no longer vouches for anything."""
+        self._checked_path(uid).unlink(missing_ok=True)
+
+    def checked_at(self, uid):
+        try:
+            at = json.loads(self._checked_path(uid).read_text(encoding='utf-8')).get('at')
+        except (OSError, ValueError, AttributeError):
+            return None
+        return at if type(at) is int else None
+
+    def received_directory(self, uid):
+        """Where lines another device said wait for this device to extract facts from them."""
+        return self.directory.parent / 'received' / uid
+
     def expire_incoming(self, binding, epoch, expired, *, require_epoch):
         """Retain obsolete inbox bytes outside the live slot after an authorized expiry."""
         from uuid import uuid4
@@ -925,6 +1289,12 @@ class DesktopLongTermAdapter:
         path.rename(path.with_name(f'{binding["character_uid"]}.expired-{uuid4().hex}.json'))
 
     def read_local(self, binding, epoch):
+        """Return the confirmed base and the snapshot waiting for upload, or None without local state.
+
+        base is what the server confirmed: an accepted upload from this device
+        or a remote revision it applied. pending is never a base, because an
+        upload the server has not accepted proves nothing about other devices.
+        """
         path = self.local_path(binding)
         try:
             stat = path.stat()
@@ -933,26 +1303,121 @@ class DesktopLongTermAdapter:
         stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
         cached = self._cache.get(path)
         if cached is None or cached[0] != stamp:
-            value = json.loads(path.read_text(encoding='utf-8'))
-            document(value['document'])
+            value = _current_state(json.loads(path.read_text(encoding='utf-8')))
+            for part in (value['base'], value['pending']):
+                if part is not None and part['document'] is not None:
+                    document(part['document'])
             self._cache[path] = (stamp, value)
         value = self._cache[path][1]
         if (value.get('epoch') != list(epoch) or value.get('ownerId') != binding['owner_id']
                 or value.get('characterSyncId') != binding['character_uid'] or value.get('serviceUrl') != binding['service_url']):
             return None
-        return {'operationId': value['operationId'], 'document': value['document'],
-                'nativeEntries': value.get('nativeEntries', value['document']['entries'])}
+        return {'base': value['base'], 'pending': value['pending'], 'unseenRevision': bool(value.get('unseenRevision')),
+                'sent': list(value.get('sent') or []), 'republish': bool(value.get('republish'))}
 
-    def stage_remote(self, binding, remote, epoch, expected_operation, session_fingerprint):
+    def write_local(self, binding, epoch, *, base, pending, unseen_revision=False, sent=(), republish=False):
+        """sent keeps snapshots a newer capture replaced while their upload may still be in flight.
+
+        republish says this device holds content the base lacks and no snapshot
+        of it waits yet. It is stored with the base, so a process that exits
+        before capturing still captures after it starts again.
+        """
         from utils.file_utils import atomic_write_json
-        current = self.read_local(binding, epoch)
-        if ((current['operationId'] if current else None) != expected_operation
-                or (current and current['document']['completedAt'] > remote['document']['completedAt'])):
+        atomic_write_json(self.local_path(binding), {
+            'ownerId': binding['owner_id'], 'characterSyncId': binding['character_uid'], 'serviceUrl': binding['service_url'],
+            'epoch': list(epoch), 'base': base, 'pending': pending, 'unseenRevision': bool(unseen_revision),
+            'sent': list(sent)[:SENT_SNAPSHOTS_KEPT], 'republish': bool(republish),
+        }, ensure_ascii=False)
+
+    def base_revision(self, binding, epoch):
+        local = self.read_local(binding, epoch)
+        return local['base']['revision'] if local and local['base'] else 0
+
+    def acknowledge(self, binding, epoch, operation, revision):
+        """The accepted upload becomes the base every later merge starts from."""
+        local = self.read_local(binding, epoch)
+        if not local:
+            return False
+        if local['pending'] and local['pending']['operationId'] == operation:
+            uploaded, waiting = local['pending']['document'], None
+        else:
+            # A capture replaced the snapshot while this upload was in flight. What the
+            # server took is still the base; the newer snapshot now rests on it, so only
+            # what it adds counts as unpublished and nothing is counted twice.
+            uploaded = next((item['document'] for item in local['sent'] if item['operationId'] == operation), None)
+            if uploaded is None:
+                return False
+            waiting = {**local['pending'], 'baseRevision': revision} if local['pending'] else None
+        self.write_local(binding, epoch, pending=waiting,
+                         base={'revision': revision, 'document': uploaded, 'nativeEntries': uploaded['entries']})
+        return True
+
+    def refresh_pending(self, binding, epoch, operation, now):
+        """Give a refused upload a new completion time; one refused as expired would otherwise stay expired."""
+        local = self.read_local(binding, epoch)
+        if not local or not local['pending'] or local['pending']['operationId'] != operation:
+            return False
+        renewed = {**local['pending']['document'], 'completedAt': max(now, local['pending']['document']['completedAt'] + 1)}
+        self.write_local(binding, epoch, base=local['base'], unseen_revision=local['unseenRevision'], sent=local['sent'],
+                         republish=local['republish'],
+                         pending={**local['pending'], 'operationId': uuid4().hex, 'document': renewed})
+        return True
+
+    def adopt_revision(self, binding, epoch, revision):
+        """Follow a revision whose body is gone, or a server that restarted its numbering.
+
+        An expired body cannot be read, so the base keeps its content under the
+        new number and the next upload declares that it never saw that revision.
+        A number below the base means the server lost its history: every local
+        entry then counts as new.
+        """
+        local = self.read_local(binding, epoch) or {'base': None, 'pending': None, 'unseenRevision': False, 'sent': [], 'republish': False}
+        current = local['base']['revision'] if local['base'] else 0
+        if revision == current:
+            return False
+        if revision < current:
+            base, unseen = None, False
+        else:
+            base = {**(local['base'] or {'document': None, 'nativeEntries': []}), 'revision': revision}
+            unseen = True
+        # A snapshot captured against the old number would only be refused again;
+        # what it held has to be captured anew against the adopted one.
+        self.write_local(binding, epoch, base=base, pending=None, unseen_revision=unseen, republish=True)
+        return True
+
+    def stage_remote(self, binding, remote, epoch, expected_revision, session_fingerprint):
+        """Stage a newer revision for the memory owner; the base it merges onto must not have moved."""
+        from utils.file_utils import atomic_write_json
+        if self.base_revision(binding, epoch) != expected_revision or remote['revision'] <= expected_revision:
             return False
         atomic_write_json(self.incoming_path(binding['character_uid']), {
             'binding': binding, 'epoch': list(epoch), 'head': remote, 'sessionFingerprint': session_fingerprint,
         }, ensure_ascii=False)
         return True
+
+    def staged_revision(self, binding, epoch):
+        """The revision already waiting in the inbox for this grant, if any."""
+        try:
+            pending = json.loads(self.incoming_path(binding['character_uid']).read_text(encoding='utf-8'))
+        except (FileNotFoundError, ValueError):
+            return None
+        if pending.get('binding') != binding or pending.get('epoch') != list(epoch):
+            return None
+        revision = (pending.get('head') or {}).get('revision')
+        return revision if type(revision) is int else None
+
+    def forget(self, uid):
+        """Drop the confirmed base and inbox of a role whose cloud copy was retired."""
+        for path in [self.incoming_path(uid), self.directory / f'{uid}.organizer.json', self._checked_path(uid),
+                     self.owed_path(uid), self._evidence_trimmed_path(uid),
+                     *self.directory.glob(f'{uid}-*.json'), *self.directory.glob(f'{uid}.expired-*.json')]:
+            path.unlink(missing_ok=True)
+            self._cache.pop(path, None)
+        received = self.received_directory(uid)
+        if received.is_dir():
+            for path in received.iterdir():
+                path.unlink(missing_ok=True)
+            received.rmdir()
 
     def needs_reauthentication(self, binding, epoch, session_fingerprint):
         try:

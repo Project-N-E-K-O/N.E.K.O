@@ -5666,8 +5666,9 @@ FACT_DEDUP_PROMPT = {
 - keep_both: 看似相似但其实是两件不同的事（如"喜欢"与"讨厌"，或同一对象在不同情境下的不同状态），都保留
 
 注意：
-- 分数高只说明表层相似，不代表语义相同，特别要警惕褒贬相反、肯定/否定相反的情况
-- 优先选 keep_both 而非误合并；记忆系统对错误合并的容忍度低于对冗余的容忍度
+- candidate 是较新的记录。如果 candidate 的文本写明它更正或取代了旧说法，或写明状态已经变了（如"更正了之前说的……""以前……""不再……""现在不……了"这类说明），而 existing 正是被更正、被取代的那个旧说法，选 replace：这是同一件事有了新状态，不是两件并存的事
+- 分数高只说明表层相似，不代表语义相同。褒贬相反、肯定/否定相反的两条，没有上面那种说明时按两件不同的事处理
+- 其余拿不准的情况优先选 keep_both 而非误合并；记忆系统对错误合并的容忍度低于对冗余的容忍度
 
 仅输出 JSON 数组，每项包含 index、action：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
@@ -5683,8 +5684,9 @@ FACT_DEDUP_PROMPT = {
 - keep_both: 看似相似但其實是兩件不同的事（如「喜歡」與「討厭」，或同一物件在不同情境下的不同狀態），都保留
 
 注意：
-- 分數高只說明表層相似，不代表語意相同，特別要警惕褒貶相反、肯定/否定相反的情況
-- 優先選 keep_both 而非誤合併；記憶系統對錯誤合併的容忍度低於對冗餘的容忍度
+- candidate 是較新的紀錄。如果 candidate 的文字寫明它更正或取代了舊說法，或寫明狀態已經變了（如「更正了之前說的……」「以前……」「不再……」「現在不……了」這類說明），而 existing 正是被更正、被取代的那個舊說法，選 replace：這是同一件事有了新狀態，不是兩件並存的事
+- 分數高只說明表層相似，不代表語意相同。褒貶相反、肯定/否定相反的兩條，沒有上面那種說明時按兩件不同的事處理
+- 其餘拿不準的情況優先選 keep_both 而非誤合併；記憶系統對錯誤合併的容忍度低於對冗餘的容忍度
 
 僅輸出 JSON 陣列，每項包含 index、action：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
@@ -5700,8 +5702,9 @@ For each pair, pick one action:
 - keep_both: they look similar but are actually distinct ("likes" vs "dislikes", or the same subject in different contexts) — keep both
 
 Notes:
-- A high score means high *surface* similarity, not semantic identity. Be especially careful about polarity flips (positive/negative, like/dislike).
-- Prefer keep_both over a wrongful merge — the memory system tolerates redundancy much better than incorrect merges.
+- The candidate is the newer record. If the candidate's text says that it corrects or replaces an earlier claim, or that the state has changed (notes such as "corrects the earlier claim that …", "used to …", "no longer …", "not anymore"), and the existing record is that earlier claim, choose replace: the same thing has a new state; these are not two things that both hold.
+- A high score means high *surface* similarity, not semantic identity. Two records of opposite polarity (positive/negative, like/dislike) with no such note are treated as distinct.
+- When otherwise unsure, prefer keep_both over a wrongful merge — the memory system tolerates redundancy much better than incorrect merges.
 
 Output only a JSON array, each item containing index and action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
@@ -5717,8 +5720,9 @@ Output only a JSON array, each item containing index and action:
 - keep_both: 似ているが実際には別の事柄（"好き"と"嫌い"のような極性反転、あるいは異なる文脈での同じ対象）→ 両方残す
 
 注意：
-- スコアが高いのは表層的な類似であり、意味的同一性ではない。特に極性反転（肯定/否定、好き/嫌い）に注意
-- 誤合併よりも keep_both を優先。記憶システムは冗長性より誤合併に対する耐性が低い
+- candidate は新しい方の記録。candidate の本文に、以前の内容を訂正した・置き換えた、または状態が変わったことが書かれていて（「以前の…という内容を訂正」「以前は…」「もう…ない」「今は…しない」などの注記）、existing がまさにその以前の内容である場合は replace を選ぶ。同じ事柄が新しい状態になったのであり、両方が並立する別々の事柄ではない
+- スコアが高いのは表層的な類似であり、意味的同一性ではない。極性が逆（肯定/否定、好き/嫌い）の二件は、上のような注記がなければ別の事柄として扱う
+- それ以外で迷う場合は誤合併よりも keep_both を優先。記憶システムは冗長性より誤合併に対する耐性が低い
 
 JSON 配列のみを出力し、各項目に index と action を含めてください：
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
@@ -5734,8 +5738,9 @@ JSON 配列のみを出力し、各項目に index と action を含めてくだ
 - keep_both: 비슷해 보이지만 실제로는 다른 것 ("좋아함"과 "싫어함" 같은 극성 반전, 혹은 다른 맥락의 같은 대상) — 둘 다 유지
 
 주의:
-- 높은 점수는 표면적 유사도일 뿐 의미적 동일성을 보장하지 않음. 특히 극성 반전(긍정/부정, 좋아함/싫어함)에 주의
-- 잘못된 병합보다 keep_both를 우선. 기억 시스템은 중복보다 잘못된 병합에 대한 내성이 더 낮음
+- candidate는 더 새로운 기록임. candidate의 본문에 이전 내용을 정정했거나 대체했다고, 또는 상태가 바뀌었다고 적혀 있고("이전에 …라고 한 내용을 정정", "예전에는 …", "더 이상 …않음", "이제 …않음" 같은 설명), existing이 바로 그 이전 내용이라면 replace를 선택: 같은 것이 새로운 상태가 된 것이지, 함께 성립하는 서로 다른 두 가지가 아님
+- 높은 점수는 표면적 유사도일 뿐 의미적 동일성을 보장하지 않음. 극성이 반대인(긍정/부정, 좋아함/싫어함) 두 기록은 위와 같은 설명이 없으면 서로 다른 것으로 처리
+- 그 밖에 확신이 없으면 잘못된 병합보다 keep_both를 우선. 기억 시스템은 중복보다 잘못된 병합에 대한 내성이 더 낮음
 
 JSON 배열만 출력하고 각 항목에 index와 action을 포함하세요:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
@@ -5751,8 +5756,9 @@ JSON 배열만 출력하고 각 항목에 index와 action을 포함하세요:
 - keep_both: похожи внешне, но на самом деле разные ("любит" vs "не любит", тот же объект в разных контекстах) — сохранить обе
 
 Замечания:
-- Высокий балл означает поверхностное сходство, а не семантическую идентичность. Особенно осторожно с инверсией полярности (положительное/отрицательное, любит/не любит).
-- Предпочитайте keep_both ошибочному слиянию — система памяти переносит избыточность лучше, чем неверные слияния.
+- candidate — более новая запись. Если в тексте candidate сказано, что он исправляет или заменяет прежнее утверждение либо что состояние изменилось (пометки вроде «исправляет сказанное ранее, что …», «раньше …», «больше не …», «теперь не …»), а existing и есть это прежнее утверждение, выбирайте replace: это то же самое в новом состоянии, а не две вещи, верные одновременно.
+- Высокий балл означает поверхностное сходство, а не семантическую идентичность. Две записи противоположной полярности (положительное/отрицательное, любит/не любит) без такой пометки считаются разными.
+- В остальных сомнительных случаях предпочитайте keep_both ошибочному слиянию — система памяти переносит избыточность лучше, чем неверные слияния.
 
 Выводите только JSON-массив, каждый элемент содержит index и action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
@@ -5768,8 +5774,9 @@ Para cada par, elige una acción:
 - keep_both: parecen similares pero son cosas distintas (por ejemplo "le gusta" vs "no le gusta", o el mismo sujeto en contextos diferentes); conserva ambos
 
 Notas:
-- Una puntuación alta solo indica similitud superficial, no identidad semántica. Ten especial cuidado con inversión de polaridad (positivo/negativo, gusta/no gusta).
-- Prefiere keep_both antes que una fusión errónea; el sistema de memoria tolera mejor la redundancia que las fusiones incorrectas.
+- candidate es el registro más reciente. Si el texto de candidate dice que corrige o reemplaza una afirmación anterior, o que el estado cambió (notas como "corrige lo dicho antes, que …", "antes sí", "ya no …"), y existing es justamente esa afirmación anterior, elige replace: es lo mismo con un estado nuevo, no dos cosas que valen a la vez.
+- Una puntuación alta solo indica similitud superficial, no identidad semántica. Dos registros de polaridad opuesta (positivo/negativo, gusta/no gusta) sin una nota así se tratan como cosas distintas.
+- En los demás casos dudosos, prefiere keep_both antes que una fusión errónea; el sistema de memoria tolera mejor la redundancia que las fusiones incorrectas.
 
 Devuelve solo un array JSON; cada elemento contiene index y action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",
@@ -5785,8 +5792,9 @@ Para cada par, escolha uma ação:
 - keep_both: parecem semelhantes, mas são coisas distintas (por exemplo "gosta" vs "não gosta", ou o mesmo assunto em contextos diferentes); mantenha ambos
 
 Notas:
-- Uma pontuação alta indica apenas similaridade superficial, não identidade semântica. Tenha cuidado especial com inversão de polaridade (positivo/negativo, gosta/não gosta).
-- Prefira keep_both a uma fusão incorreta; o sistema de memória tolera melhor redundância do que fusões erradas.
+- candidate é o registro mais recente. Se o texto de candidate diz que corrige ou substitui uma afirmação anterior, ou que o estado mudou (notas como "corrige o que foi dito antes, que …", "antes …", "não … mais"), e existing é justamente essa afirmação anterior, escolha replace: é a mesma coisa com um estado novo, não duas coisas que valem ao mesmo tempo.
+- Uma pontuação alta indica apenas similaridade superficial, não identidade semântica. Dois registros de polaridade oposta (positivo/negativo, gosta/não gosta) sem uma nota assim são tratados como coisas distintas.
+- Nos demais casos de dúvida, prefira keep_both a uma fusão incorreta; o sistema de memória tolera melhor redundância do que fusões erradas.
 
 Retorne apenas um array JSON; cada item contém index e action:
 [{{"index": 0, "action": "merge"}}, {{"index": 1, "action": "keep_both"}}]""",

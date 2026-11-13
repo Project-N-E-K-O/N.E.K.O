@@ -447,6 +447,21 @@ describe('publishFlow step 0 (toolchain)', () => {
     expect(flow.blockers.github).toEqual([])
   })
 
+  it('does not treat the N.E.K.O source checkout as a preparation tool', () => {
+    const flow = flowOf({
+      status: status(),
+      submission: approved(),
+      task: null,
+      toolchain: { ...ready(), source_checkout: false },
+    })
+    expect(flow.toolchain.tools.map((item) => item.id)).toEqual([
+      'git', 'gitIdentity', 'uv', 'gh', 'githubAccount',
+    ])
+    expect(flow.toolchain.state).toBe('done')
+    expect(flow.currentStepId).toBe('release')
+    expect(flow.blockers.github).toEqual([])
+  })
+
   it('becomes the current page and a hard blocker when a required tool is missing', () => {
     const flow = flowOf({
       status: status(),

@@ -9,6 +9,7 @@
     </div>
     <router-view v-else />
     <LocaleLoadNotice />
+    <PluginConsentDialog v-if="consentState.activeRequest" />
   </el-config-provider>
 </template>
 
@@ -16,6 +17,10 @@
 import { ref, watch } from 'vue'
 import { elementLocale, localeLoadState } from './i18n'
 import LocaleLoadNotice from './components/common/LocaleLoadNotice.vue'
+import PluginConsentDialog from './components/plugin/PluginConsentDialog.vue'
+import { usePluginConsentState } from './stores/pluginConsentState'
+
+const consentState = usePluginConsentState()
 
 const ELEMENT_Z_INDEX = 12000
 const ELEMENT_MESSAGE_CONFIG = { offset: 54 }

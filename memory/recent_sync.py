@@ -73,7 +73,9 @@ def _project(rows, *, assign=False):
         metadata = message_metadata(row)
         proof = metadata.get("chat_original_source")
         proof = proof if isinstance(proof, dict) else {}
-        key = MEMO_ID if role == "memo" else metadata.get(ID_KEY) or proof.get("recordId") or proof.get("messageId")
+        # A spoken line carries no proof, only the identity it was stored under everywhere else.
+        key = MEMO_ID if role == "memo" else (metadata.get(ID_KEY) or proof.get("recordId") or proof.get("messageId")
+                                              or metadata.get("memory_message_id"))
         try:
             identity(key)
             if key in seen or (role != "memo" and key == MEMO_ID):

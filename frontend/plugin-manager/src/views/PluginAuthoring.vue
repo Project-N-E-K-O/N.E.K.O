@@ -51,7 +51,15 @@
               >
             </template>
             <template v-else-if="!requestedProject">
-              <el-button :icon="Reading" @click="helpVisible = true">{{
+              <el-button
+                tag="a"
+                :href="tutorialUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+                :icon="Reading"
+                @click="handleExternalLinkClick($event, tutorialUrl)"
+                @auxclick.middle="handleExternalLinkClick($event, tutorialUrl)"
+              >{{
                 t('authoring.help')
               }}</el-button>
               <el-button :icon="FolderAdd" :disabled="busy" @click="addExisting">{{
@@ -108,7 +116,6 @@
       />
     </el-card>
     <CreatePluginDialog v-model:visible="createVisible" @created="onCreated" />
-    <AuthoringHelpDrawer v-model:visible="helpVisible" />
   </div>
 </template>
 
@@ -134,8 +141,8 @@ import AuthoringProjectList from '@/components/authoring/AuthoringProjectList.vu
 import AuthoringProjectDetails from '@/components/authoring/AuthoringProjectDetails.vue'
 import AuthoringProjectPublish from '@/components/authoring/AuthoringProjectPublish.vue'
 import AuthoringProjectStatus from '@/components/authoring/AuthoringProjectStatus.vue'
-import AuthoringHelpDrawer from '@/components/authoring/AuthoringHelpDrawer.vue'
 import CreatePluginDialog from '@/components/authoring/CreatePluginDialog.vue'
+import { handleExternalLinkClick } from '@/utils/openExternal'
 import {
   projectTitle,
   useAuthoringProjects,
@@ -149,7 +156,7 @@ import {
   type CreatedPluginProject,
 } from '@/api/pluginProjects'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const errorMessage = useProjectErrorMessage()
@@ -163,9 +170,17 @@ const current = computed(() =>
 const headerTitle = computed(() =>
   current.value ? projectTitle(current.value) : t('authoring.title')
 )
+const tutorialUrl = computed(() => {
+  // The docs currently provide Chinese, Japanese and English (at the root).
+  const prefix = ['zh-CN', 'zh-TW'].includes(locale.value)
+    ? '/zh-CN'
+    : locale.value === 'ja'
+      ? '/ja'
+      : ''
+  return `https://project-neko.online${prefix}/plugins/`
+})
 const activeTab = ref('overview')
 const createVisible = ref(false)
-const helpVisible = ref(false)
 const busy = ref(false)
 const projectList = ref<InstanceType<typeof AuthoringProjectList>>()
 const publishPanel = ref<InstanceType<typeof AuthoringProjectPublish>>()

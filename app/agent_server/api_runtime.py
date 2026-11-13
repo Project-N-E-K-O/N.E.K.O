@@ -993,6 +993,13 @@ async def startup():
     except Exception as e:
         logger.warning(f"[Agent] Failed to set http plugin_list_provider: {e}")
 
+    # NekoClaw host (task brain, task agents, capability gateway). This only tells
+    # it how to read this process's switches; it is built on the first dispatch
+    # and nothing dispatches to it yet. Must stay free of I/O: see the startup
+    # path rules.
+    from .nekoclaw_mount import mount_nekoclaw_host
+    mount_nekoclaw_host(_plugin_list_change_token)
+
     # Start computer-use scheduler
     sch_task = asyncio.create_task(_computer_use_scheduler_loop())
     Modules._persistent_tasks.add(sch_task)
@@ -1098,6 +1105,10 @@ async def shutdown():
             )
     except asyncio.TimeoutError:
         logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
+
+    # Stops the NekoClaw host if anything ever started it; a no-op otherwise.
+    from .nekoclaw_mount import shutdown_nekoclaw_host
+    await shutdown_nekoclaw_host()
 
     bridge = Modules.agent_bridge
     if bridge is not None:

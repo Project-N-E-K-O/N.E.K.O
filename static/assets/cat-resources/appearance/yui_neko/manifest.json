@@ -5,62 +5,62 @@
   "slots": {
     "idle.cat1": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat1.webp",
+        "media_type": "image/webp"
       }]
     },
     "idle.cat2": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat2.webp",
+        "media_type": "image/webp"
       }]
     },
     "idle.cat3": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/idle/cat-idle-cat3.webp",
+        "media_type": "image/webp"
       }]
     },
     "click.cat1": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat1-click.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat1-click.webp",
+        "media_type": "image/webp"
       }]
     },
     "click.cat2": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat2-click.webp",
+        "media_type": "image/webp"
       }]
     },
     "click.cat3": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/click/cat-idle-cat3-click.webp",
+        "media_type": "image/webp"
       }]
     },
     "drag.cat1": {
       "resources": [
-        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.gif", "media_type": "image/gif"},
-        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif", "media_type": "image/gif"}
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-1.webp", "media_type": "image/webp"},
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.webp", "media_type": "image/webp"}
       ]
     },
     "drag.cat2": {
       "resources": [
-        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif", "media_type": "image/gif"},
-        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif", "media_type": "image/gif"}
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.webp", "media_type": "image/webp"},
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.webp", "media_type": "image/webp"}
       ]
     },
     "drag.cat3": {
       "resources": [
-        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.gif", "media_type": "image/gif"},
-        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-4.gif", "media_type": "image/gif"}
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-3.webp", "media_type": "image/webp"},
+        {"path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-4.webp", "media_type": "image/webp"}
       ]
     },
     "drag.rapid": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-5.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-5.webp",
+        "media_type": "image/webp"
       }]
     },
     "movement.cat1.walking": {
@@ -83,14 +83,155 @@
     },
     "action.cat1.eat": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.happy": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-happy.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.touch": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-touch.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.cosplay_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-cos-1.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.change": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-change.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.cosplay_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-cos-2.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.eat_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat-2.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.eat_3": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-eat-3.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.laugh": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-laugh.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.lion_dance": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-lion_dance.webp",
+        "media_type": "image/webp"
+      }],
+      "metadata": {
+        "artLayout": "tall-bottom"
+      }
+    },
+    "action.cat1.love_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-love-1.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.mouse": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-mouse.webp",
+        "media_type": "image/webp"
+      }],
+      "metadata": {
+        "wideArt": true,
+        "artLayout": "wide-centered"
+      }
+    },
+    "action.cat1.wave": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-wave.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.sad": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-sad.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.scared": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-scared.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.stroke": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-stroke.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat1.wagging": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat1-wagging.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat2.back1_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat2-back1-1.webp",
+        "media_type": "image/webp"
+      }],
+      "metadata": {
+        "wideArt": true,
+        "artLayout": "wide-125-centered"
+      }
+    },
+    "action.cat2.turn_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat2-turn-1.webp",
+        "media_type": "image/webp"
+      }],
+      "metadata": {
+        "wideArt": true,
+        "artLayout": "wide-centered"
+      }
+    },
+    "action.cat3.turn_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-turn-2.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat3.back1_1": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-back1-1.webp",
+        "media_type": "image/webp"
+      }]
+    },
+    "action.cat3.back1_2": {
+      "resources": [{
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat3-back1-2.webp",
+        "media_type": "image/webp"
       }]
     },
     "action.cat1.play_yarn": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/action/cat-idle-cat-play-1.webp",
+        "media_type": "image/webp"
       }],
       "metadata": {
         "wideArt": true
@@ -98,8 +239,8 @@
     },
     "playground.cat1.air": {
       "resources": [{
-        "path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.gif",
-        "media_type": "image/gif"
+        "path": "/static/assets/cat-resources/appearance/dev_neko/drag/cat-idle-cat-move-2.webp",
+        "media_type": "image/webp"
       }]
     }
   }
