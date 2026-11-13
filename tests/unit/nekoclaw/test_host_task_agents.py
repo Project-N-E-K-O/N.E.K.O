@@ -1162,7 +1162,8 @@ async def test_a_closing_session_that_ends_with_an_ordinary_error_waits_for_its_
 
 
 
-async def test_what_a_quota_failure_kept_survives_a_start_that_cannot_open_its_session(hosts, tmp_path):
+@pytest.mark.parametrize("how", ["reports", "raises"])
+async def test_what_a_quota_failure_kept_survives_a_start_that_cannot_open_its_session(hosts, tmp_path, how):
     llm = ScriptedLLM([[say("photos sorted"), finish()]])
     host = _host(hosts, tmp_path, lambda spec: llm)
     paid = [False]
@@ -1181,7 +1182,13 @@ async def test_what_a_quota_failure_kept_survives_a_start_that_cannot_open_its_s
     start = runtime.start
 
     async def broken_start(spec: Any) -> None:
-        raise RuntimeError("the runtime process could not be created")
+        if how == "raises":
+            raise RuntimeError("the runtime process could not be created")
+        # What the process runtime does: the start returns, and an error
+        # event for the start follows.
+        await host.task_agents._handle(
+            {"type": "error", "session_id": spec.session_id, "command": "start", "message": "could not open"}
+        )
 
     runtime.start = broken_start
     assert await host.task_agents.tell(commission.id, "try again") is False
@@ -1194,6 +1201,41 @@ async def test_what_a_quota_failure_kept_survives_a_start_that_cannot_open_its_s
     await wait_status(host, commission.id, "done", timeout=10)
     sent = " | ".join(str(message.get("content")) for message in llm.requests[0])
     assert sent.index("the photos are on drive E:") < sent.index("once more")
+
+
+
+async def test_what_was_sent_with_the_first_work_is_not_kept_again_when_a_later_step_fails(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _filed(host, "sort the photos")
+    await host.ledger.transition(commission.id, "working", reason="test")
+    await host.ledger.transition(commission.id, "blocked", reason="test")
+    assert await host.task_agents.tell(commission.id, "the photos are on drive E:") is False
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    runtime = host.task_agents._runtime
+    start, steer = runtime.start, runtime.steer
+
+    async def start_while_told(spec: Any) -> None:
+        # Passed on while the session comes up: sent after the first work.
+        host.task_agents._notes.setdefault(spec.session_id, []).append("and skip the drafts")
+        await start(spec)
+
+    async def broken_steer(session_id: str, text: str) -> None:
+        raise RuntimeError("the pipe broke")
+
+    runtime.start, runtime.steer = start_while_told, broken_steer
+    await host.task_agents.tell(commission.id, "try again")
+    await host.task_agents.settle()
+
+    # The kept answer went out with the first work; it is not kept again.
+    assert "the photos are on drive E:" not in host.task_agents._carried.get(commission.id, [])
+    runtime.start, runtime.steer = start, steer
 
 
 async def test_what_is_passed_on_while_a_quota_failure_is_written_comes_before_the_next_sentence(hosts, tmp_path):

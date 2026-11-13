@@ -144,6 +144,9 @@ class _Session:
     # Set when the session is closed before its work was given: what was
     # passed on for that work is kept when the session is released.
     keep_notes: bool = False
+    # What an earlier start given up for the quota kept and this start is
+    # to send; put back when this start fails before its prompt is sent.
+    carried: list[str] = field(default_factory=list)
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
     # ends, the earlier one's end is held here and decides nothing.
@@ -516,6 +519,7 @@ class TaskAgentManager:
                 return False
             notes = self._notes.pop(commission.id, [])
             carried = self._carried.pop(commission.id, [])
+            session.carried = list(carried)
             if prompt is not None:
                 parts = [*carried, prompt]
             else:
@@ -551,6 +555,7 @@ class TaskAgentManager:
                 # it was taken up again) is kept with them, in the order they
                 # came, ahead of whatever the next start is told.
                 kept = [*carried, *([prompt] if prompt is not None else []), *notes]
+                session.carried = []
                 kept += self._notes.pop(commission.id, [])
                 if kept:
                     self._carried[commission.id] = kept
@@ -567,6 +572,7 @@ class TaskAgentManager:
                 await self._close_session(session)
                 return False
             await self._send_text(runtime, session, "prompt", text)
+            session.carried = []
             session.ready = True
             # What was passed on while the session was being set up.
             for note in self._notes.pop(commission.id, []):
@@ -587,9 +593,7 @@ class TaskAgentManager:
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("starting a task agent for %s failed: %s", commission_id, exc)
-            if carried:
-                # Kept for the start after this one, as it was for this one.
-                self._carried[commission_id] = [*carried, *self._carried.get(commission_id, [])]
+            self._put_back_carried(session)
             self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             return False
@@ -670,6 +674,13 @@ class TaskAgentManager:
             if woke:
                 session.run_ended = True
             raise
+
+    def _put_back_carried(self, session: _Session) -> None:
+        """Keep what a failed start was to send for the start after it, as it was kept for this one."""
+        if session.carried:
+            commission_id = session.commission_id
+            self._carried[commission_id] = [*session.carried, *self._carried.get(commission_id, [])]
+            session.carried = []
 
     def _discard(self, commission_id: str) -> None:
         self._sessions.pop(commission_id, None)
@@ -991,6 +1002,9 @@ class TaskAgentManager:
                     await self._deliver_answer(session, answer)
             return
         if command == "start":
+            # The runtime reports a start it could not make here, not by
+            # raising from ``start``.
+            self._put_back_carried(session)
             await self._fail(commission_id, f"the task agent could not be started: {message}")
             await self._release(commission_id)
         elif command == "prompt":
