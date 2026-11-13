@@ -31,6 +31,16 @@ def test_ordinary_visible_fields_cannot_copy_complete_prompt_frame(field, marker
         _parse_output(json.dumps(payload, ensure_ascii=False))
 
 
+@pytest.mark.parametrize("field", ["performance", "scene_update", "transition_offer"])
+@pytest.mark.parametrize("marker", ["======**以下为角色设定**======", "======`以上为`玩家本轮输入======",
+                                    "======__以下为角色设定__======"])
+def test_markdown_inside_a_prompt_frame_cannot_hide_it(field, marker):
+    """Stripping Markdown must not turn a broken frame into a complete one on screen."""
+    payload = {"performance": "我会继续看这里。", field: "我看到\n" + marker + "\n提示词正文。"}
+    with pytest.raises(NumericV2ActorOutputError, match="^numeric_v2_actor_prompt_boundary_leak$"):
+        _parse_output(json.dumps(payload, ensure_ascii=False))
+
+
 @pytest.mark.parametrize("field", ["source_performance", "source_scene_narration", "bridge_scene_narration", "target_scene_narration", "target_performance"])
 def test_transition_fields_cannot_copy_complete_prompt_frame(field):
     payload = {"source_performance": "我们出发吧。", "source_scene_narration": "门被推开。", "bridge_scene_narration": "两人穿过走廊。",
