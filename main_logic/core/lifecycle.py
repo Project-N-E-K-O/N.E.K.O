@@ -1685,6 +1685,8 @@ class LifecycleMixin:
             user_language_provider=lambda: self.user_language,
             on_tool_call=None,
             tool_definitions=tool_definitions,
+            # Recall, overview, selected window, crop, verification, final reply.
+            max_tool_iterations=6,
             enable_long_response_summary=external_tts_enabled,
         )
         session.on_proactive_done = self.handle_proactive_complete

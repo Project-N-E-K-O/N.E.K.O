@@ -1,0 +1,9 @@
+SECOND WINDOW
+Build: cobalt-9136
+
+Item       Quantity    Status
+ORCHID     53          WAIT
+MAPLE      6           READY
+
+Code verification:
+const retryDelayMs = 820;

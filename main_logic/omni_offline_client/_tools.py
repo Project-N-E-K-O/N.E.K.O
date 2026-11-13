@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+
 from utils.screen_comment_guard import project_screen_history, strip_screen_labels
 
 from ._turn_context import _TurnContextMixin, is_turn_context_message
@@ -216,6 +218,25 @@ class _ToolingMixin(_TurnContextMixin):
         turn-context messages, which never count as the turn's user message.
         """
         paired = self._paired_tool_rounds(messages)
+        # Also protect a new turn while the preceding provider is still in
+        # flight, or when history was produced before release receipts existed.
+        last_user = next(
+            (index for index in range(len(paired) - 1, -1, -1)
+             if getattr(paired[index], "type", None) == "human"
+             and id(paired[index]) not in context_ids
+             and not is_turn_context_message(paired[index])),
+            0,
+        )
+        if any(isinstance(message, dict) and message.get("role") == "tool"
+               and message.get("name") == "read_current_screen" for message in paired[:last_user]):
+            receipt = self._released_screen_result_content()
+            paired = [
+                {**message, "content": receipt}
+                if index < last_user and isinstance(message, dict)
+                and message.get("role") == "tool" and message.get("name") == "read_current_screen"
+                else message
+                for index, message in enumerate(paired)
+            ]
         turn_start = next(
             (index + 1 for index in range(len(paired) - 1, -1, -1)
              if getattr(paired[index], "type", None) == "human"
@@ -670,6 +691,11 @@ class _ToolingMixin(_TurnContextMixin):
                 }
                 messages.append(tool_result_message)
                 tool_results.append(tool_result_message)
+                if tool_call.name == "read_current_screen" and tool_image_slots is not None:
+                    receipt = self._released_screen_result_content()
+                    # Track text even when image delivery is omitted or the round
+                    # is cancelled. Window inventories are only useful this turn.
+                    tool_image_slots.append((messages, len(messages) - 1, tool_result_message, receipt))
                 if getattr(result, "images", None):
                     image_results.append((result, tool_result_message))
             else:
@@ -846,6 +872,8 @@ class _ToolingMixin(_TurnContextMixin):
         used_count = 0
         used_b64_bytes = 0
         for _messages, _index, image_message, _placeholder in slots:
+            if image_message.get("role") != "user":
+                continue
             for part in image_message.get("content", []):
                 if part.get("type") != "image_url":
                     continue
@@ -855,12 +883,16 @@ class _ToolingMixin(_TurnContextMixin):
                 used_count += 1
                 used_b64_bytes += len(url.rsplit(",", 1)[-1])
 
+        # Screen inspection needs overview + window + crop + one re-check.
+        # Other tools retain their existing image-count and byte budgets.
+        image_limit = (4 if result.name == 'read_current_screen'
+                       else _TOOL_IMAGE_TURN_MAX_COUNT)
         content = []
         omitted_count = 0
         for img in images:
             image_b64_bytes = len(img.data_b64)
             if (
-                used_count >= _TOOL_IMAGE_TURN_MAX_COUNT
+                used_count >= image_limit
                 or used_b64_bytes + image_b64_bytes
                 > _TOOL_IMAGE_TURN_MAX_B64_BYTES
             ):
@@ -941,19 +973,17 @@ class _ToolingMixin(_TurnContextMixin):
                 recall_suffix += _loc(TOOL_IMAGE_RECALL_HINT, lang).format(
                     recall_hint=recall_hint.strip()
                 )
-        slots.append((
-            messages,
-            index,
-            message,
-            _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
-                tool_name=result.name,
-                recall_suffix=recall_suffix,
-            ),
-        ))
+        placeholder = _loc(TOOL_IMAGE_HISTORY_PLACEHOLDER, lang).format(
+            tool_name=result.name, recall_suffix=recall_suffix,
+        )
+        if result.name == "read_current_screen":
+            from config.prompts.prompts_screen_inspection import text as screen_text
+            placeholder = screen_text("released", lang)
+        slots.append((messages, index, message, placeholder))
         return message
 
     def _release_tool_image_slots(self, slots=None) -> None:
-        """Swap every injected image turn for its text placeholder.
+        """Release image turns and transient screen results, keeping call pairing.
 
         Called from the exit of both tool loops (``finally``, so an abandoned
         generator still cleans up). Identity is re-checked before writing:
@@ -970,10 +1000,24 @@ class _ToolingMixin(_TurnContextMixin):
                 # may have shifted the turn; identity finds it again.
                 index = _find_by_identity(messages, index, message)
                 if index >= 0:
-                    messages[index] = {"role": "user", "content": placeholder}
+                    messages[index] = {**message, "content": placeholder}
             except Exception as e:
                 logger.warning("Releasing a tool image slot failed (ignored): %s", e)
         slots.clear()
+
+    @staticmethod
+    def _has_tool_image_slots(slots) -> bool:
+        """Only delivered images relax the pipe guard, never text receipts."""
+        return any(message.get("role") == "user" for _, _, message, _ in slots)
+
+    def _released_screen_result_content(self) -> str:
+        """Keep a short valid tool reply without stale titles or snapshot handles."""
+        from config.prompts.prompts_screen_inspection import text as screen_text
+
+        return json.dumps({
+            "status": "released",
+            "message": screen_text("released", self._tool_image_locale()),
+        }, ensure_ascii=False)
 
     async def _notify_reasoning_active(self) -> None:
         """Tell the host that the model is emitting reasoning / thinking chunks, so

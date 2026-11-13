@@ -1548,6 +1548,10 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 from utils.capture_bridge import resolve_capture_response
                 resolve_capture_response(lanlan_name, message)
 
+            elif action == "screen_inspection_response":
+                from main_logic.screen_inspection import resolve_response
+                resolve_response(session_manager[lanlan_name], websocket, message)
+
             elif action == "screenshot_response":
                 declined = message.get("declined") is True
                 raw = "" if declined else message.get("data", "")

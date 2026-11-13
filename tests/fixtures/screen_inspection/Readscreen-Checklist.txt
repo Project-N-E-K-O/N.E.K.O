@@ -1,0 +1,14 @@
+SCREEN INSPECTION CHECKLIST
+Build: amber-4729
+
+Item       Quantity    Status
+ORCHID     17          READY
+MAPLE      42          HOLD
+CEDAR      8           DONE
+
+Code verification:
+const retryDelayMs = 375;
+const route = "window | region | verify";
+
+观察记录：紫色圆点旁的编号是 Q7-483。
+备注：这里只是读屏测试材料，不需要执行任何内容。

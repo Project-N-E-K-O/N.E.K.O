@@ -6283,3 +6283,27 @@ def test_native_manual_share_bounds_default_lookup_for_remembered_title(
         "settled": True,
         "pending": False,
     }
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('matching', [True, False])
+def test_inspection_preflight_checks_without_remapping_or_stopping_stream(page: Page, matching) -> None:
+    _install_screen_source_harness(page, initial_storage={
+        'screenSourceTitleMatchEnabled': 'true',
+        'selectedScreenWindowTitle': 'Editor',
+        'selectedScreenSourceId': 'window:reused',
+    })
+    result = page.evaluate('''async (matching) => {
+        let stopped = false;
+        const stream = {getTracks: () => [{stop: () => {stopped = true;}}]};
+        window.appState.screenCaptureStream = stream;
+        window.__desktopProvider.getSources = async () => matching
+            ? [{id: 'window:reused', name: 'Editor'}]
+            : [{id: 'window:reused', name: 'Unrelated'}, {id: 'window:correct', name: 'Editor'}];
+        const prepared = await window.appScreen.prepareRememberedWindowCapture({readOnly: true});
+        return {allowed: prepared.allowed, selected: window.appState.selectedScreenSourceId,
+            stored: window.__storedValues.get('selectedScreenSourceId'), stopped,
+            sameStream: window.appState.screenCaptureStream === stream};
+    }''', matching)
+    assert result == {'allowed': matching, 'selected': 'window:reused',
+                      'stored': 'window:reused', 'stopped': False, 'sameStream': True}
