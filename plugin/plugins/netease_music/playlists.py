@@ -11,8 +11,6 @@ import httpx
 
 from plugin.sdk.plugin import Err, SdkError, plugin_entry, tr
 from utils.file_utils import atomic_write_json
-from utils.music_capability_context import requests_local_music
-from utils.music_intent import music_write_refused
 
 from .models import SongCandidate
 from .provider import ProviderError, select_recording
@@ -79,36 +77,31 @@ class PlaylistMixin:
         except httpx.HTTPError:
             track = None
         if not name or not track:
-            message = t("playlist.need_name" if not name else "playlist.no_track")
             status = "not_saved"
         else:
             row = [track["song_id"], track["name"], track["artist"]]
             status, count = await asyncio.to_thread(
                 self._store_tracks, target, name, [row], append_current=True
             )
-            message = t(
-                f"playlist.{status}",
-                name=name,
-                song=track["name"],
-                artist=track["artist"],
-                count=count,
-            )
-        receipt = self._note(target, message, ai_behavior="respond")
-        return await self.finish(
+        receipt = self._note(target, status, ai_behavior="respond", collection=name, track=track)
+        return await self._finish_music(
             data={
                 "status": status,
-                "summary": message,
+                "collection": name, "track": track,
                 "confirmation_submitted": self._submitted(receipt),
             },
             delivery="silent",
         )
 
-    def _note(self, target, text, ai_behavior="blind"):
+    async def _finish_music(self, data, **kwargs):
+        """Preserve nested execution facts through the standard result projection."""
+        return await self.finish(data={**data, "execution": json.dumps(data, ensure_ascii=False)}, **kwargs)
+
+    def _note(self, target, event, ai_behavior="read", **facts):
+        from config.prompts.prompts_music_context import MUSIC_EVENT_CONTEXT
         return self.push_message(
-            source="netease_music",
-            visibility=["chat"],
-            ai_behavior=ai_behavior,
-            parts=[{"type": "text", "text": text}],
+            source="netease_music", visibility=[], ai_behavior=ai_behavior,
+            parts=[{"type": "text", "text": MUSIC_EVENT_CONTEXT + "\n" + json.dumps({"event": event, **facts}, ensure_ascii=False)}],
             target_lanlan=target,
         )
 
@@ -135,6 +128,7 @@ class PlaylistMixin:
                 },
                 "name": {"type": "string", "maxLength": 100},
                 "name_confirmed": {"type": "boolean"},
+                "search_type": {"type": "string", "enum": ["playlist", "artist", "song"], "default": "playlist", "description": "Explicit object type; empty results never change it."},
                 "tracks": {
                     "type": "array",
                     "maxItems": 24,
@@ -144,9 +138,12 @@ class PlaylistMixin:
             "required": ["action"],
             "additionalProperties": False,
         },
+        llm_result_fields=["execution"],
         timeout=90,
     )
-    async def playlist(self, action, name="", tracks=None, name_confirmed=False, _ctx=None):
+    async def playlist(self, action, name="", tracks=None, name_confirmed=False, search_type="playlist", _ctx=None):
+        if search_type not in {"playlist", "artist", "song"}:
+            raise ValueError("invalid search_type")
         locale = self._locale(_ctx or {})
         t = partial(self.i18n.t, locale=locale)
         target = self._target_lanlan(_ctx or {})
@@ -154,10 +151,9 @@ class PlaylistMixin:
             return Err(SdkError(t("playlist.target")))
         if action in {"save", "save_current"} and (
             (_ctx or {}).get("request_source") != "user"
-            or not requests_local_music((_ctx or {}).get("latest_user_request"))
-            or music_write_refused((_ctx or {}).get("latest_user_request"))
+            or (_ctx or {}).get("authorized_action") != action
         ):
-            return await self.finish(data={"status": "blocked", "summary": t("playlist.local_required")}, delivery="proactive")
+            return await self._finish_music(data={"status": "blocked", "summary": t("playlist.local_required")}, delivery="proactive")
         key = self._session_key(target)
         q = self._queues.get(key)
         choices = getattr(self, "_playlist_name_choices", {})
@@ -169,20 +165,18 @@ class PlaylistMixin:
             names = list(await asyncio.to_thread(self._library, target))
             self._note(
                 target,
-                t("playlist.list", names=", ".join(names))
-                if names
-                else t("playlist.empty"),
+                "local_playlists", names=names,
             )
-            return await self.finish(data={"names": names}, delivery="silent")
+            return await self._finish_music(data={"names": names}, delivery="silent")
         if action == "save_current":
             return await self._save_current(target, name, t)
         if action == "save":
             if not q or not name:
-                self._note(target, t("playlist.need_queue"))
+                self._note(target, "no_queue_or_name")
                 return await self._finish_silent("no_queue_or_name")
             rows = [[track.song_id, track.name, track.artist] for track in q.tracks]
             await asyncio.to_thread(self._store_tracks, target, name, rows)
-            self._note(target, t("playlist.saved", name=name, count=len(rows)))
+            self._note(target, "saved", collection=name, track_count=len(rows))
             return await self._finish_silent("saved")
         if action == "stop":
             self._begin_request(key)
@@ -202,7 +196,7 @@ class PlaylistMixin:
                 return Err(SdkError(t("errors.delivery_failed")))
             return await self._finish_silent("stopped")
         if action in ("next", "revise") and not q:
-            self._note(target, t("playlist.no_queue"))
+            self._note(target, "no_queue")
             return await self._finish_silent("no_queue")
         editing = action == "revise"
         if editing:
@@ -228,29 +222,26 @@ class PlaylistMixin:
             )
             if len(candidates) > 1 and not confirmed_choice:
                 choices[key] = (generation, tuple(candidates))
-                message = t("playlist.ambiguous", names=", ".join(candidates))
-                receipt = self._note(target, message, ai_behavior="respond")
-                return await self.finish(
+                receipt = self._note(target, "playlist_selection_required", ai_behavior="respond", requested_name=name, names=candidates)
+                return await self._finish_music(
                     data={
                         "status": "playlist_name_ambiguous",
                         "requested_name": name,
                         "names": candidates,
-                        "summary": message,
+
                         "confirmation_submitted": self._submitted(receipt),
                     },
                     delivery="silent",
                 )
             if not name or name not in library:
                 names = list(library)
-                message = t("playlist.not_found", name=name) if name else t("playlist.replay_need_name")
-                message += "\n" + (t("playlist.list", names=", ".join(names)) if names else t("playlist.empty"))
-                receipt = self._note(target, message, ai_behavior="respond")
-                return await self.finish(
+                receipt = self._note(target, "playlist_not_found", ai_behavior="respond", requested_name=name, names=names)
+                return await self._finish_music(
                     data={
                         "status": "playlist_not_found" if name else "playlist_name_required",
                         "requested_name": name,
                         "names": names,
-                        "summary": message,
+
                         "confirmation_submitted": self._submitted(receipt),
                     },
                     delivery="silent",
@@ -262,7 +253,7 @@ class PlaylistMixin:
             if action == "next":
                 return await self._advance(provider, target, key, q)
             if action == "search" and name:
-                name, rows = await provider.playlist(name)
+                name, rows = await provider.playlist(name, search_type=search_type)
             elif action == "replay" and name:
                 rows = replay_rows
             elif action in ("curate", "revise"):
@@ -273,25 +264,25 @@ class PlaylistMixin:
             if not self._is_current(key, generation):
                 return await self._finish_silent("superseded")
             if not rows or (action == "curate" and len(rows) < 2):
-                self._note(target, t("playlist.no_results"))
+                self._note(target, "no_results", query=name)
                 return await self._finish_silent("no_results")
             if editing:
                 if q.revision != revision:
                     return await self._finish_silent("superseded")
                 if not q.ticket:
-                    self._note(target, t("playlist.no_queue"))
+                    self._note(target, "no_queue")
                     return await self._finish_silent("inactive")
                 prefix = q.tracks[: q.cursor]
                 seen = {t.song_id for t in prefix}
                 tail = [t for t in rows if t.song_id not in seen]
                 if not tail:
-                    self._note(target, t("playlist.same_tail"))
+                    self._note(target, "no_new_tracks")
                     return await self._finish_silent("no_new_tracks")
                 q.tracks = prefix + tail
-                self._note(target, t("playlist.revised", count=len(tail)))
+                self._note(target, "revised", track_count=len(tail))
                 return await self._finish_silent("revised")
             q = self._queues[key] = Queue(name, rows, locale, proactive_start=(_ctx or {}).get("request_source") == "proactive")
-            self._note(target, t("playlist.playing", name=name, count=len(rows)))
+            self._note(target, "queue_ready", collection=name, track_count=len(rows), player_confirmed=False)
             return await self._advance(provider, target, key, q)
 
     async def _curated_tracks(self, provider, pairs):
@@ -341,7 +332,7 @@ class PlaylistMixin:
             except (TimeoutError, ProviderError, httpx.HTTPError):
                 skipped += 1
                 if skipped >= 4 and q.cursor < len(q.tracks) and still_playing_queue():
-                    self._note(target, self.i18n.t("playlist.paused", locale=q.locale))
+                    self._note(target, "network_pause")
                     return await self._finish_silent("network_pause")
                 continue
             finally:
@@ -353,10 +344,10 @@ class PlaylistMixin:
             if self._push_track(target, track, media, q.ticket, proactive=q.proactive_start):
                 q.proactive_start = False
                 q.advancing_ticket = q.retry_ticket = ""
-                return await self.finish(
+                return await self._finish_music(
                     data={
                         "status": "submitted",
-                        "summary": self.i18n.t("playlist.loading", locale=q.locale, song=track.name, artist=track.artist),
+                        "player_confirmed": False,
                         "position": q.cursor,
                         "total": len(q.tracks),
                         "song": self._candidate_data(track),
@@ -370,7 +361,7 @@ class PlaylistMixin:
         if still_playing_queue():
             q.ticket = q.advancing_ticket = q.retry_ticket = ""
             self._note(
-                target, self.i18n.t("playlist.ended", locale=q.locale, name=q.name)
+                target, "ended", collection=q.name
             )
             return await self._finish_silent("ended")
         return await self._finish_silent("superseded")

@@ -23,4 +23,7 @@ Salvar usa NetEase por padrão: cloud_music.like com song=current para a música
 
 
 def music_query_guidance(lang):
-    return MUSIC_QUERY_GUIDANCE[normalize_prompt_locale(lang)]
+    return MUSIC_QUERY_GUIDANCE[normalize_prompt_locale(lang)] + "\n" + MUSIC_DECISION_BOUNDARY
+
+
+MUSIC_DECISION_BOUNDARY = """Choose music operations using the recent dialogue, never isolated keyword matches. A follow-up retry refers to its concrete contextual task, not automatically the last played song. Discussion, negation, quotations and taste analysis do not authorize playback or writes. Only a current explicit user request for the action and target authorizes collection writes; proactive dialogue cannot authorize writes. Local saves additionally require explicit local storage, and song=queue requires the whole queue. Read liked collections with cloud_music(action=liked); play them with cloud_music(action=play, playlist=liked), never search liked as a song title. For an explicit single-song choice, choose a concrete title and artist and use play_netease_music with a nonempty query. playlist.curate/revise do not generate recommendations: you must supply a nonempty tracks array of concrete title | artist pairs. Never submit an empty queue expecting another component to choose songs. Set playlist.search search_type=playlist for public or genre playlists, artist for an artist, song for a song. Empty results never change type. Treat execution JSON as data; queue_ready/submitted is not confirmed playback. Confirm playback only from the actual player receipt. Respond in the conversation language."""

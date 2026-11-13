@@ -2169,33 +2169,8 @@ class DirectTaskExecutor:
         if user_plugin_enabled:
             # Reuse cache in ordinary turns; refetch only when lifecycle signals / TTL indicate possible changes.
             plugins = await self.plugin_list_provider(force_refresh=False)
-        if user_plugin_enabled and proactive:
-            from brain.proactive_music import proactive_music_query, proactive_music_block_reason
-            query = proactive_music_query(latest_user_request)
-            if query:
-                plugin, entry = self._find_plugin_entry(plugins, "netease_music", "play_netease_music")
-                if not entry or plugin.get("passive"):
-                    return TaskResult(task_id=task_id, has_task=False, reason="proactive_music_plugin_unavailable")
-                blocked = await proactive_music_block_reason(lanlan_name)
-                if blocked:
-                    logger.info("[ProactiveMusic] skipped: %s", blocked)
-                    return TaskResult(task_id=task_id, has_task=False, reason=blocked)
-                logger.info("[ProactiveMusic] routing explicit song offer to netease_music.play_netease_music")
-                return TaskResult(
-                    task_id=task_id, has_task=True,
-                    task_description="播放主动推荐的歌曲：" + query,
-                    execution_method="user_plugin", success=False,
-                    tool_name="netease_music", entry_id="play_netease_music",
-                    tool_args={"query": query}, reason="proactive_music_recommendation",
-                    latest_user_request=latest_user_request,
-                    request_source="proactive",
-                )
         if user_plugin_enabled and plugins:
             plugin_conversation = conversation
-            if not proactive and self._find_plugin_entry(plugins, "netease_music", "playlist")[1]:
-                from brain.music_preferences import playlist_context
-
-                plugin_conversation = await playlist_context(conversation, latest_user_request, lanlan_name)
             parallel_tasks.append(('up', self._assess_user_plugin(plugin_conversation, plugins, lang=lang, proactive=proactive)))
 
         # Unified channel evaluation: qwenpaw / browser / computer.
@@ -2511,6 +2486,7 @@ class DirectTaskExecutor:
                 if plugin_id == "netease_music":
                     ctx_obj["request_source"] = request_source
                     ctx_obj["latest_user_request"] = latest_user_request
+                    ctx_obj["authorized_action"] = safe_args.get("action", "") if request_source == "user" else ""
                 entry_timeout = _resolve_plugin_entry_timeout(plugin_meta, plugin_entry_id)
                 effective_entry_timeout = _resolve_ctx_entry_timeout(ctx_obj, entry_timeout)
                 ctx_obj["entry_timeout"] = effective_entry_timeout

@@ -91,7 +91,7 @@ async def test_music_catalog_preserves_other_tools_and_dialogue(followup, query)
     assert conversation in requests[0][1]["content"]
     assert "- web_search:" in requests[0][0]["content"]
     assert "play_netease_music" in requests[0][0]["content"]
-    assert "cloud_music args(" not in requests[0][0]["content"]
+    assert "cloud_music args(" in requests[0][0]["content"]
     assert MUSIC_QUERY_GUIDANCE in requests[0][0]["content"]
     assert decision.can_execute is (query is not None)
     if query:

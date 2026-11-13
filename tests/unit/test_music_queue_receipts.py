@@ -68,3 +68,19 @@ def test_buffering_then_closed_clears_confirmed_track():
     assert manager._current_netease_track['song_id'] == 1
     assert music_playback.handle_music_playback_state(manager, {**event, 'state':'ended', 'queue_closed':True}, websocket=owner)
     assert manager._current_netease_track is None
+
+
+@pytest.mark.asyncio
+async def test_proactive_receipt_confirms_collectible_track_and_advances_queue(monkeypatch):
+    deliver = AsyncMock()
+    monkeypatch.setattr(music_playback, '_deliver_queue_terminal', deliver)
+    manager = SimpleNamespace(lanlan_name='Example', enqueue_agent_callback=MagicMock())
+    event = dict(state='playing', track={'name':'Example Song','artist':'Example Artist'},
+                 playback_id='proactive-first', playback_window_id='owner',
+                 playback_started_at=100, source='proactive', netease_id=1, queue_ticket='b'*32)
+    assert music_playback.handle_music_playback_state(manager, event)
+    assert manager._current_netease_track['song_id'] == 1
+    assert music_playback.handle_music_playback_state(manager, {**event, 'state':'ended'})
+    await asyncio.gather(*music_playback._queue_callbacks)
+    assert any(call.args == ('Example', 'b'*32, 'ended') for call in deliver.call_args_list)
+    assert manager._current_netease_track is None

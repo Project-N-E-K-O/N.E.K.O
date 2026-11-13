@@ -68,6 +68,22 @@ CASES = [
 ]
 
 
+CASES += [
+    case("boundary_public", "播放网易云公开歌单，关键词 dream pop，只按歌单搜索", "search", args={"search_type": "playlist", "name": "dream pop"}),
+    case("boundary_artist", "用网易云按歌手搜索播放陈奕迅的歌，不要搜公开歌单", "search", args={"search_type": "artist", "name": "陈奕迅"}),
+    case("boundary_liked", "播放我网易云账号里的红心歌单", "play", entry="cloud_music", args={"playlist": "liked"}),
+    case("boundary_taste", "读取我网易云账号的红心歌单，看看我偏好什么曲风，不要切歌", "liked", entry="cloud_music"),
+    case("boundary_retry", "你再试试", "liked", entry="cloud_music", history=[
+        ("user", "播放一首Example Song"), ("assistant", "已经播放。"),
+        ("user", "读取我的网易云红心歌单分析曲风，不要播放"), ("assistant", "刚才读取红心歌单分页失败了。")]),
+    case("boundary_dislike", "我不喜欢这首歌，只是说说，不要改收藏或播放", plugin=None),
+    case("boundary_like_hear", "I would like to hear a song. Pick one and play it on NetEase.", entry="play_netease_music"),
+    case("boundary_positive_save", "我特别喜欢这首，帮我收藏", "like", entry="cloud_music", args={"song": "current"}),
+    case("boundary_reminder_save", "收藏这首歌，别忘了", "like", entry="cloud_music", args={"song": "current"}),
+    case("boundary_local_single", "把这首加入本地歌单夜读，不要保存整张歌单", "save_current", args={"name": "夜读"}),
+]
+
+
 def resolve_i18n(value):
     if isinstance(value, dict):
         if "$i18n" in value:

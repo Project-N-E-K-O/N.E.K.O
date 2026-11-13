@@ -8,6 +8,7 @@ from threading import Lock
 from pathlib import Path
 from typing import Any
 
+import json
 import pytest
 
 from plugin.plugins.netease_music import NeteaseMusicPlugin
@@ -593,7 +594,7 @@ async def test_queue_natural_end_is_once_and_saved_ids_survive_new_instance(tmp_
     await plugin.playlist("search", name="indie", _ctx=_ctx())
     assert provider.resolve_calls == [11]
     ticket = _action(pushes[-1])["queue_ticket"]
-    await plugin.playlist("save", name="读书", _ctx={**_ctx(), "latest_user_request": "保存到本地歌单"})
+    await plugin.playlist("save", name="读书", _ctx={**_ctx(), "latest_user_request": "保存到本地歌单", "authorized_action": "save"})
     assert "https:" not in plugin._library_file("Mika").read_text()
     await plugin.playlist_terminal(ticket, "ended", _ctx={"lanlan_name": "Other"})
     await plugin.playlist_terminal(ticket, "ended", _ctx=_ctx())
@@ -630,8 +631,8 @@ async def test_missing_replay_reports_exact_names_without_replacing_current_queu
     assert data["status"] == "playlist_not_found"
     assert data["requested_name"] == "夜读歌单"
     assert data["names"] == ["夜读", "点歌台精选"]
-    assert "夜读歌单" in data["summary"] and "点歌台精选" in data["summary"]
-    assert "private" not in data["summary"]
+    assert "夜读歌单" in data["execution"] and "点歌台精选" in data["execution"]
+    assert "private" not in data["execution"]
     assert data["confirmation_submitted"] is True
     assert pushes[0]["ai_behavior"] == "respond"
     assert _action(pushes[0])["type"] == "text"
@@ -659,8 +660,8 @@ async def test_missing_replay_handles_empty_library_and_failed_receipt(tmp_path,
     assert data["status"] == status
     assert data["names"] == []
     assert data["confirmation_submitted"] is False
-    assert "playlist." not in data["summary"]
-    assert "saved local playlist" in data["summary"].lower()
+    assert "playlist." not in data["execution"]
+    assert json.loads(data["execution"])["requested_name"] == name
     assert provider.resolve_calls == [] and not provider.closed
     assert plugin._queues == {}
     assert len(pushes) == 1
@@ -790,7 +791,7 @@ async def test_collect_current_song_preserves_library_and_reports_result(tmp_pat
     library = {"dreampop": [[4, "Existing", "Artist"]], "other": [[9, "Other", "Band"]]}
     plugin._write_library("Mika", library)
     for status in ("added", "already_saved", "not_saved"):
-        result = await plugin.playlist("save_current", name="dreampop", _ctx={**_ctx(), "latest_user_request": "保存到本地歌单"})
+        result = await plugin.playlist("save_current", name="dreampop", _ctx={**_ctx(), "latest_user_request": "保存到本地歌单", "authorized_action": "save_current"})
         assert result["finish"]["data"]["status"] == status
         assert pushes[-1]["ai_behavior"] == "respond"
     library["dreampop"].append([7, "Current", "Band"])
@@ -815,7 +816,7 @@ async def test_saved_queue_plays_through_once_despite_duplicate_end_reports(tmp_
         duplicate = await player.playlist_terminal(ticket, "ended", _ctx=_ctx())
         assert duplicate["finish"]["data"]["status"] == "stale"
     assert provider.resolve_calls == [1, 2, 3, 4]
-    assert pushes[-1]["parts"][0]["text"] == "Reached the end of Night."
+    assert json.loads(pushes[-1]["parts"][0]["text"].splitlines()[-1]) == {"event": "ended", "collection": "Night"}
 
 
 @pytest.mark.asyncio
@@ -894,7 +895,7 @@ async def test_collection_reports_failed_confirmation_without_losing_saved_track
     plugin._queues = {}
     plugin.data_path = lambda: tmp_path
     plugin._current_track = AsyncMock(return_value={'song_id':1, 'name':'晴天', 'artist':'周杰伦'})
-    result = await plugin.playlist('save_current', name='夜读', _ctx={**_ctx(), "latest_user_request": "保存到本地歌单"})
+    result = await plugin.playlist('save_current', name='夜读', _ctx={**_ctx(), "latest_user_request": "保存到本地歌单", "authorized_action": "save_current"})
     assert result['finish']['data']['confirmation_submitted'] is False
     assert plugin._library('Mika')['夜读'] == [[1, '晴天', '周杰伦']]
 

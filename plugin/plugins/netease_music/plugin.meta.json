@@ -111,14 +111,17 @@
       },
       "kind": "action",
       "llm_result_fields": [
-        "summary"
+        "summary",
+        "execution"
       ],
       "llm_result_schema": {
         "properties": {
+          "execution": {},
           "summary": {}
         },
         "required": [
-          "summary"
+          "summary",
+          "execution"
         ],
         "type": "object"
       },
@@ -205,6 +208,16 @@
           "name_confirmed": {
             "type": "boolean"
           },
+          "search_type": {
+            "default": "playlist",
+            "description": "Explicit object type; empty results never change it.",
+            "enum": [
+              "playlist",
+              "artist",
+              "song"
+            ],
+            "type": "string"
+          },
           "tracks": {
             "items": {
               "maxLength": 150,
@@ -220,7 +233,18 @@
         "type": "object"
       },
       "kind": "action",
-      "llm_result_schema": {},
+      "llm_result_fields": [
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {}
+        },
+        "required": [
+          "execution"
+        ],
+        "type": "object"
+      },
       "metadata": {},
       "model_validate": true,
       "name": {
@@ -434,14 +458,17 @@
       },
       "kind": "action",
       "llm_result_fields": [
-        "summary"
+        "summary",
+        "execution"
       ],
       "llm_result_schema": {
         "properties": {
+          "execution": {},
           "summary": {}
         },
         "required": [
-          "summary"
+          "summary",
+          "execution"
         ],
         "type": "object"
       },
@@ -543,6 +570,16 @@
           "name_confirmed": {
             "type": "boolean"
           },
+          "search_type": {
+            "default": "playlist",
+            "description": "Explicit object type; empty results never change it.",
+            "enum": [
+              "playlist",
+              "artist",
+              "song"
+            ],
+            "type": "string"
+          },
           "tracks": {
             "items": {
               "maxLength": 150,
@@ -558,8 +595,18 @@
         "type": "object"
       },
       "kind": "action",
-      "llm_result_fields": null,
-      "llm_result_schema": null,
+      "llm_result_fields": [
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {}
+        },
+        "required": [
+          "execution"
+        ],
+        "type": "object"
+      },
       "metadata": {},
       "model_validate": true,
       "name": {
@@ -835,14 +882,17 @@
       },
       "kind": "action",
       "llm_result_fields": [
-        "summary"
+        "summary",
+        "execution"
       ],
       "llm_result_schema": {
         "properties": {
+          "execution": {},
           "summary": {}
         },
         "required": [
-          "summary"
+          "summary",
+          "execution"
         ],
         "type": "object"
       },
@@ -944,6 +994,16 @@
           "name_confirmed": {
             "type": "boolean"
           },
+          "search_type": {
+            "default": "playlist",
+            "description": "Explicit object type; empty results never change it.",
+            "enum": [
+              "playlist",
+              "artist",
+              "song"
+            ],
+            "type": "string"
+          },
           "tracks": {
             "items": {
               "maxLength": 150,
@@ -959,8 +1019,18 @@
         "type": "object"
       },
       "kind": "action",
-      "llm_result_fields": null,
-      "llm_result_schema": null,
+      "llm_result_fields": [
+        "execution"
+      ],
+      "llm_result_schema": {
+        "properties": {
+          "execution": {}
+        },
+        "required": [
+          "execution"
+        ],
+        "type": "object"
+      },
       "metadata": {},
       "model_validate": true,
       "name": {
@@ -1071,7 +1141,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 139419,
+  "source_bytes": 141076,
   "source_files": [
     "README.md",
     "__init__.py",
@@ -1094,5 +1164,5 @@
     "provider.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "593232cd8e0371073c71fcd4a86ef80ce95a7a94fac74c534345d2c7c9d767d2"
+  "source_sha256": "8c72144fcf7457cb379651e52f15bf65dee3085a22e157bc29e1607c77bce7f5"
 }

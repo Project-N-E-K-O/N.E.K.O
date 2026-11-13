@@ -296,8 +296,20 @@ class NeteaseMusicProvider:
                 break
         return candidates
 
-    async def playlist(self, query: str) -> tuple[str, list[SongCandidate]]:
-        """Keep NetEase's order, using stable IDs rather than signed URLs."""
+    async def playlist(self, query: str, *, search_type="playlist") -> tuple[str, list[SongCandidate]]:
+        """Execute the explicit object type without cross-type fallback."""
+        if search_type not in {"playlist", "artist", "song"}:
+            raise ValueError("invalid search_type")
+        if search_type in {"artist", "song"}:
+            songs = await self.search(query)
+            if search_type == "artist":
+                selected = [song for song in songs if any(
+                    _normalize_match(name) == _normalize_match(query)
+                    for name in _artist_names(song))]
+            else:
+                exact = select_first_exact_match(query, songs)
+                selected = [exact] if exact else []
+            return query, selected
         response = await self._client.post(
             SEARCH_URL, data={"s": query, "type": "1000", "limit": "8", "offset": "0"}
         )

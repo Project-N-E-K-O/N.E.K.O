@@ -51,11 +51,3 @@ def music_capability_prompt(plugin, lang="zh"):
     from config.prompts.prompts_music_capability import music_capability_text
 
     return music_capability_text(lang)
-
-
-def requests_local_music(text):
-    import re
-
-    return bool(
-        re.search(r"本地|本機|本机|\blocal\b|ローカル|로컬|локаль", str(text or ""), re.I)
-    )

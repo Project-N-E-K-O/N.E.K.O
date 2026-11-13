@@ -1,14 +1,13 @@
 """One cloud-library entry; detailed action schema is shown only on demand."""
 
 import asyncio
-import re
 import json
 
 from plugin.sdk.plugin import plugin_entry, tr
 from .cloud import CloudLibrary, CloudError, page, song_summary
 from .playlists import Queue
 from .provider import select_first_exact_match
-from utils.music_intent import CLOUD_WRITE_ACTIONS, music_write_action
+from utils.music_permissions import CLOUD_WRITE_ACTIONS
 
 CLOUD_SCHEMA = {
     "type": "object",
@@ -108,7 +107,7 @@ class CloudMusicMixin:
             default="Read and maintain the NetEase cloud library on explicit request. Return only the requested page.",
         ),
         input_schema=CLOUD_SCHEMA,
-        llm_result_fields=["summary"],
+        llm_result_fields=["summary", "execution"],
         timeout=120,
     )
     async def cloud_music(
@@ -137,34 +136,17 @@ class CloudMusicMixin:
                 data={"status": "error", "summary": "未知的云端音乐操作。"},
                 delivery="proactive",
             )
-        if (
-            type(offset) is not int
-            or type(limit) is not int
-            or not 0 <= offset <= 100000
-            or not 1 <= limit <= 50
-        ):
-            return await self.finish(
-                data={"status": "error", "summary": "分页参数无效。"},
-                delivery="proactive",
-            )
-        request = str((_ctx or {}).get("latest_user_request") or "")
+        # Invalid paging values are harmless compatibility errors, not query failures.
+        if type(offset) is not int or not 0 <= offset <= 100000:
+            offset = 0
+        if type(limit) is not int or not 1 <= limit <= 50:
+            limit = 20
         if action in CLOUD_WRITE_ACTIONS and (
             (_ctx or {}).get("request_source") != "user"
-            or music_write_action(request) != action
+            or (_ctx or {}).get("authorized_action") != action
         ):
             return await self.finish(
-                data={
-                    "status": "blocked",
-                    "summary": "本轮没有明确要求这项云端修改，未执行。",
-                },
-                delivery="proactive",
-            )
-        if song == "queue" and not re.search(r"整组|整张|全部|整个|所有", request):
-            return await self.finish(
-                data={
-                    "status": "blocked",
-                    "summary": "未明确要求保存整组曲目，未执行。",
-                },
+                data={"status": "blocked", "summary": "This operation lacks a current user-origin plan."},
                 delivery="proactive",
             )
         if not hasattr(self, "_cloud_lock"):
@@ -297,15 +279,8 @@ class CloudMusicMixin:
             if not self._is_current(key, generation):
                 return await self._finish_silent("superseded")
             queue = self._queues[key] = Queue(name, tracks, proactive_start=proactive)
-            self._note(
-                target,
-                f"从网易云歌单《{name}》准备了 {len(tracks)} 首，开始尝试播放。"
-                + (
-                    f"本次最多载入1000首，歌单共{total}首。"
-                    if total > len(tracks)
-                    else ""
-                ),
-            )
+            self._note(target, "queue_ready", source="netease_cloud", collection=name,
+                       track_count=len(tracks), total=total, player_confirmed=False)
             async with self._new_provider() as provider:
                 return await self._advance(provider, target, key, queue)
         if action == "create":

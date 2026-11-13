@@ -763,7 +763,6 @@ def test_the_entry_point_has_no_runtime_switch():
 # separately; they must not be forced to render away the structured result.
 _QUERY_MEMORY_ROUTE_DEFINITION = "app/memory_server/routes.py"
 _KNOWN_RECALL_CLIENTS = {
-    "brain/music_preferences.py",
     "main_logic/core/tool_calling.py",
 }
 _STRUCTURED_RECALL_CLIENTS = {

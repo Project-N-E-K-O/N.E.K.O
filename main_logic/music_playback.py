@@ -154,7 +154,7 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any], *, websocke
     manager._current_netease_track = (
         {"song_id": song_id, "name": name, "artist": artist}
         if state in ("playing", "paused", "buffering")
-        and event.get("source") == "music_play_url"
+        and event.get("source") in {"music_play_url", "proactive"}
         and type(song_id) is int
         and song_id > 0
         and name
@@ -164,10 +164,10 @@ def handle_music_playback_state(manager: Any, event: dict[str, Any], *, websocke
     manager._music_playback_websocket = websocket
     manager._music_confirmed_state = {"state": state, "song_id": song_id, "name": name, "artist": artist, "confirmed_at": time.time()}
     ticket = event.get("queue_ticket")
-    if event.get("source") == "music_play_url":
+    if event.get("source") in {"music_play_url", "proactive"}:
         logger.info("Music player confirmed: state=%s queue=%s", state, bool(ticket))
     if (
-        event.get("source") == "music_play_url"
+        event.get("source") in {"music_play_url", "proactive"}
         and state in ("ended", "error")
         and isinstance(ticket, str)
         and re.fullmatch("[0-9a-f]{32}", ticket)

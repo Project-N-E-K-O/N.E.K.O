@@ -176,7 +176,7 @@ async def test_playlist_track_order_preserved():
 
 
 @pytest.mark.asyncio
-async def test_write_entry_rejects_informational_or_negated_request():
+async def test_write_entry_without_host_plan_is_rejected():
     plugin = CloudMusicMixin()
     plugin._target_lanlan = lambda ctx: "YUI"
     plugin.finish = AsyncMock(side_effect=lambda **kw: kw)
@@ -216,7 +216,7 @@ async def test_non_user_source_cannot_mutate_cloud(source, action, utterance):
 
 @pytest.mark.parametrize("action,utterance", [("like", "我不想收藏这首"), ("unlike", "别取消这首歌的红心"),
     ("like", "Don't save this song"), ("unlike", "Do not unlike this track")])
-async def test_user_refusal_cannot_mutate_cloud(action, utterance):
+async def test_user_source_without_authorized_plan_cannot_mutate_cloud(action, utterance):
     plugin = CloudMusicMixin()
     plugin._target_lanlan = lambda ctx: "YUI"
     plugin.finish = AsyncMock(side_effect=lambda **kw: kw)
@@ -237,7 +237,7 @@ async def test_multilingual_explicit_user_save_reaches_write_and_readback(uttera
         async def __aenter__(self): return library
         async def __aexit__(self, *args): pass
     plugin._new_cloud_library = Session
-    result = await plugin.cloud_music("like", song="42", _ctx={**_ctx(), "latest_user_request": utterance})
+    result = await plugin.cloud_music("like", song="42", _ctx={**_ctx(), "latest_user_request": utterance, "authorized_action": "like"})
     assert result["finish"]["data"]["status"] == "liked"
     assert library.call.await_count == 1
     assert library.track_ids.await_count == 2

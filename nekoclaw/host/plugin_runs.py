@@ -632,6 +632,7 @@ class PluginRunner:
                 # An autonomous commission cannot manufacture authorization via _ctx.
                 ctx["latest_user_request"] = latest_user_request
                 ctx["request_source"] = "user" if latest_user_request else ""
+                ctx["authorized_action"] = safe_args.get("action", "") if latest_user_request else ""
             entry_timeout = _ctx_entry_timeout(ctx, entry_timeout)
             ctx["entry_timeout"] = entry_timeout
             safe_args["_ctx"] = ctx
