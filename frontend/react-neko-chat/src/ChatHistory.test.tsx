@@ -119,3 +119,39 @@ it('continues across midnight from a date-filtered view and stops when the brows
   expect(audio.onended).toBeNull();
   expect(document.querySelector('.history-playback')).toBeNull();
 });
+
+
+it('loads recording opt-in from the server and saves it independently of autoplay', async () => {
+  let enabled = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => ({ ok: true, json: async () => {
+    if (url.includes('/voice-archive/settings')) {
+      if (options?.method === 'POST') enabled = JSON.parse(String(options.body)).enabled;
+      return { enabled };
+    }
+    return url.includes('characters') ? { characters: ['Alice'] } : { messages: [], nextCursor: null, available: true };
+  } })));
+  const { unmount } = render(<HistoryDialog close={vi.fn()} />);
+  const toggle = screen.getByLabelText('recordVoice');
+  await waitFor(() => expect(toggle).toBeEnabled());
+  expect(toggle).not.toBeChecked();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle).toBeChecked());
+  expect(screen.getByLabelText('autoContinue')).toBeChecked();
+  unmount();
+  render(<HistoryDialog close={vi.fn()} />);
+  await waitFor(() => expect(screen.getByLabelText('recordVoice')).toBeChecked());
+  fireEvent.click(screen.getByLabelText('recordVoice'));
+  await waitFor(() => expect(screen.getByLabelText('recordVoice')).not.toBeChecked());
+});
+
+it('restores the tool toggle when the original entry is disabled on close', async () => {
+  const main = document.createElement('main');
+  const toggle = document.createElement('button'); toggle.className = 'compact-input-tool-toggle';
+  const entry = document.createElement('button');
+  main.append(toggle, entry); document.body.append(main); entry.focus();
+  const { unmount } = render(<HistoryDialog close={vi.fn()} />);
+  await screen.findByText('<script>音乐</script>');
+  entry.disabled = true; entry.blur(); unmount();
+  await waitFor(() => expect(document.activeElement).toBe(toggle));
+  main.remove();
+});

@@ -2206,7 +2206,7 @@ export default function FullChatSurface({
   useEffect(() => {
     const target = composerBottomBarNode;
     if (!target || typeof ResizeObserver === 'undefined') return;
-    const COMPACT_THRESHOLD = 300;
+    const COMPACT_THRESHOLD = 340;
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
         const wantCompact = entry.contentRect.width < COMPACT_THRESHOLD;
@@ -2240,7 +2240,7 @@ export default function FullChatSurface({
       return;
     }
     if (!composerBottomBarNode) return;
-    if (composerBottomBarNode.getBoundingClientRect().width >= 300) {
+    if (composerBottomBarNode.getBoundingClientRect().width >= 340) {
       setComposerLayout(prev => (
         prev === 'compact' || prev === 'collapsing' ? 'expanded' : prev
       ));
@@ -2603,6 +2603,13 @@ export default function FullChatSurface({
       screenY: event.screenY,
     }));
   };
+
+  const historyButtonNode = (
+    <button type="button" className="composer-tool-btn" aria-label={i18n('chatHistory.title', 'Chat history')}
+      data-neko-tooltip={i18n('chatHistory.title', 'Chat history')} onClick={() => setHistoryOpen(true)}>
+      <img src="/static/icons/chat_history.svg" alt="" aria-hidden="true" />
+    </button>
+  );
 
   const compactInputToolFanNode = !catLocalTextOnly
     && isCompactSurface
@@ -3547,6 +3554,8 @@ export default function FullChatSurface({
                       {jukeboxButtonNode}
                       <span className="composer-tool-divider" aria-hidden="true">|</span>
                       {emojiToolMenuNode}
+                      <span className="composer-tool-divider" aria-hidden="true">|</span>
+                      {historyButtonNode}
                     </div>
                   ) : (
                     <div
@@ -3587,6 +3596,7 @@ export default function FullChatSurface({
                           {translateButtonNode}
                           {jukeboxButtonNode}
                           {emojiToolMenuNode}
+                          {historyButtonNode}
                         </div>
                       ) : null}
                     </div>

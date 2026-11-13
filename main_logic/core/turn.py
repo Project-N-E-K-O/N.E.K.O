@@ -3091,6 +3091,10 @@ class TurnMixin:
                     entry['speech_id'] = expected_speech_id
                 cache.append(entry)
 
+        from main_logic.voice_archive import archive_event
+        await archive_event(self, 'text', effective_turn_id,
+                            text=text_clean, is_first=is_first_chunk)
+
         # WS send may fail, but sync/cache already persisted.
         # [DIAG] Blank chat after character switching: log only first chunks, avoiding streaming spam.
         if is_first_chunk:

@@ -7319,6 +7319,8 @@
     },
   "chatHistory": {
     "review": "语音回顾",
+    "recordVoice": "保存语音录音",
+    "recordVoiceHint": "将之后的角色语音保存在本机，用于历史回放。默认关闭。关闭后保留已有录音，无法补录过去的语音。",
     "autoContinue": "语音自动连播",
     "autoContinueHint": "点击一条语音后，按时间继续播放当前角色的后续语音，可跨天连播并保留关键词筛选。关闭后播完当前这条即停止。",
     "voicePlay": "播放这条语音",

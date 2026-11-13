@@ -173,3 +173,24 @@ it('plays only the selected message when continuation is disabled', async () => 
   await waitFor(() => expect(result.current.phase).toBe('done'));
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+
+it('does not overlap speech that was already active before replay starts', () => {
+  vi.stubGlobal('NekoSpeechPlaybackState', { active: true });
+  vi.stubGlobal('fetch', vi.fn());
+  const { result } = renderHook(() => useHistoryPlayback('Alice', ''));
+  act(() => result.current.start(entry(1)));
+  expect(players).toHaveLength(0);
+  expect(fetch).not.toHaveBeenCalled();
+  expect(result.current.phase).toBe('idle');
+});
+
+it('plays only the selected context message under the user-only filter', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => manifest()));
+  const { result } = renderHook(() => useHistoryPlayback('Alice', 'role=user'));
+  act(() => result.current.start(entry(1)));
+  await waitFor(() => expect(result.current.phase).toBe('playing'));
+  act(() => players[0].onended?.());
+  await waitFor(() => expect(result.current.phase).toBe('done'));
+  expect(fetch).toHaveBeenCalledTimes(1);
+});

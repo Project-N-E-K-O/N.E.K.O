@@ -7319,6 +7319,8 @@
     },
   "chatHistory": {
     "review": "Voice review",
+    "recordVoice": "Save voice recordings",
+    "recordVoiceHint": "Save future character speech on this device for history replay. Off by default. Turning this off keeps existing recordings; older speech cannot be recovered.",
     "autoContinue": "Automatically play next voice",
     "autoContinueHint": "After you play a voice message, continue chronologically across dates for this character, keeping the keyword filter. Turn off to stop after the current message.",
     "voicePlay": "Play this voice",

@@ -23,6 +23,7 @@ export function useHistoryPlayback(character: string, scope: string, autoContinu
 
   function start(single?: HistoryEntry) {
     session.current?.stop();
+    if ((window as Window & { NekoSpeechPlaybackState?: { active?: boolean } }).NekoSpeechPlaybackState?.active) return;
     const audio = new Audio();
     audio.preload = 'none';
     const controller = new AbortController();
@@ -102,7 +103,7 @@ export function useHistoryPlayback(character: string, scope: string, autoContinu
     void (async () => {
       try {
         if (single?.voice) await message(single);
-        if ((!single || single.time) && autoContinueRef.current) {
+        if ((!single || single.time) && autoContinueRef.current && new URLSearchParams(scope).get('role') !== 'user') {
           let cursor = single?.id ?? 0, afterTime = single?.time ?? '';
           do {
             await ready();

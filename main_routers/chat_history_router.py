@@ -58,12 +58,15 @@ async def messages(character: str = Query(min_length=1, max_length=200), day: da
 
 @router.get('/playback')
 async def playback(character: str = Query(min_length=1, max_length=200), day: date | None = None,
+                   role: Literal['all', 'user', 'assistant'] = 'all',
                    q: str = Query(default='', max_length=200),
                    cursor: int = Query(default=0, ge=0), after_time: str | None = Query(default=None, max_length=80)):
     if bool(cursor) != bool(after_time):
         raise HTTPException(422, 'invalid_cursor')
     if character not in await characters():
         raise HTTPException(404, 'character_not_found')
+    if role == 'user':
+        return dict(messages=[], nextCursor=None, nextTime=None, available=True)
     try:
         page = await asyncio.to_thread(read_page, character, day=day.isoformat() if day else None,
                                        query=q.strip(), role='assistant', limit=30,

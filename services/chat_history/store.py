@@ -9,6 +9,8 @@ from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
 
+from memory.timeindex import _assistant_text_from_stored_message
+
 
 class HistoryUnavailable(Exception):
     pass
@@ -31,7 +33,7 @@ def message(row):
         if not isinstance(proof, dict) or proof.get('origin') == 'system':
             return None
         role = {'human': 'user', 'ai': 'assistant'}.get(item.get('type'))
-        content = data.get('content', '')
+        content = _assistant_text_from_stored_message(item) if role == 'assistant' else data.get('content', '')
         if isinstance(content, list):
             content = '\n'.join(p['text'] for p in content if isinstance(p, dict)
                                 and p.get('type') == 'text' and isinstance(p.get('text'), str))
@@ -61,7 +63,12 @@ def browse(root, character, *, day=None, query='', role='all', cursor=0,
     deadline = time.monotonic() + 2
     try:
         with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.1)) as db:
-            db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+            expired = False
+            def budget_exhausted():
+                nonlocal expired
+                expired = time.monotonic() > deadline
+                return int(expired)
+            db.set_progress_handler(budget_exhausted, 1000)
             # Snapshot protects anchor and page from concurrent archive deletion.
             db.execute('BEGIN')
             if anchor is not None:
@@ -98,18 +105,23 @@ def browse(root, character, *, day=None, query='', role='all', cursor=0,
                 if chronological:
                     value['nextTime'] = last_time if more else None
                 return value
-            for row in rows:
-                scanned += 1
-                if scanned > 5000:
-                    return result(True)
-                last = row[0]
-                last_time = row[3]
-                entry = message(row)
-                if entry and (role == 'all' or role == entry['role']) and query.casefold() in entry['text'].casefold():
-                    hits.append(entry)
-                if len(hits) == limit:
-                    more = next(rows, None) is not None
-                    return result(more)
+            try:
+                for row in rows:
+                    scanned += 1
+                    if scanned > 5000:
+                        return result(True)
+                    last = row[0]
+                    last_time = row[3]
+                    entry = message(row)
+                    if entry and (role == 'all' or role == entry['role']) and query.casefold() in entry['text'].casefold():
+                        hits.append(entry)
+                    if len(hits) == limit:
+                        more = next(rows, None) is not None
+                        return result(more)
+            except sqlite3.OperationalError as exc:
+                if not (expired and exc.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT and last is not None):
+                    raise
+                return result(True)
             return result(False)
     except sqlite3.Error as exc:
         raise HistoryUnavailable('history_unavailable') from exc

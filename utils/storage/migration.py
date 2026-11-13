@@ -85,6 +85,8 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # The external writer witness stays at anchor_root/state; moving it with
     # this directory would wrongly give a retained/copied root new authority.
     "chat_sync",
+    # Saved speech is durable user data; migrate SQLite and its sidecars together.
+    "voice_archive",
     # Public knowledge: user-imported packs and registry, plus knowledge.db.
     # The database is derived but moves with the rest: migration runs with
     # every server stopped, exactly like memory's SQLite files.

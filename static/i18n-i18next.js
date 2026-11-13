@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Refresh all eight locales for cross-day history voice continuation.
-    const LOCALE_VERSION = '2026-11-12-history-cross-day';
+    const LOCALE_VERSION = '2026-11-13-history-recording';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -18,6 +18,9 @@ function Highlight({ text, query }: { text: string; query: string }) {
 }
 export function HistoryDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const [recording, setRecording] = useState<boolean | null>(null);
+  const [recordingBusy, setRecordingBusy] = useState(false);
+  const [recordingError, setRecordingError] = useState(false);
   const [names, setNames] = useState<string[]>([]);
   const [characterError, setCharacterError] = useState(false);
   const [character, setCharacter] = useState(() => {
@@ -47,6 +50,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
   const playbackActive = ['loading', 'playing', 'paused'].includes(playback.phase);
   useEffect(() => {
     const prior = document.activeElement as HTMLElement | null;
+    const fallback = prior?.closest('main')?.querySelector<HTMLElement>('.compact-input-tool-toggle, .composer-overflow-btn');
     const element = dialog.current;
     element?.showModal();
     const refresh = () => window.dispatchEvent(new Event('neko:compact-interaction-geometry-refresh'));
@@ -60,7 +64,10 @@ export function HistoryDialog({ close }: { close: () => void }) {
       element?.close();
       // Wait for React to remove the modal before restoring native hit regions.
       requestAnimationFrame(refresh);
-      prior?.focus();
+      requestAnimationFrame(() => {
+        prior?.focus();
+        if (!prior?.isConnected || prior.matches(':disabled') || document.activeElement !== prior) fallback?.focus();
+      });
     };
   }, []);
   useEffect(() => {
@@ -76,7 +83,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
     try { localStorage.setItem(storageKey, JSON.stringify(prefs)); } catch { /* Storage can be disabled. */ }
   }, [prefs]);
   useEffect(() => {
-    if (!character || anchor === null) { setPage(null); return; }
+    if (!character || anchor === null) { setPage(null); setBusy(false); setError(false); return; }
     const controller = new AbortController();
     setBusy(true); setError(false); setPage(null);
     const params = new URLSearchParams({ character, anchor: String(anchor) });
@@ -89,6 +96,24 @@ export function HistoryDialog({ close }: { close: () => void }) {
   useEffect(() => {
     if (anchor && page) dialog.current?.querySelector(`.history-results:not([hidden]) [data-history-id="${anchor}"]`)?.scrollIntoView?.({ block: 'center' });
   }, [page, anchor]);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch('/api/voice-archive/settings', { signal: controller.signal, cache: 'no-store' })
+      .then(response => { if (!response.ok) throw new Error('settings'); return response.json(); })
+      .then(data => { if (!controller.signal.aborted) { setRecording(data.enabled === true); setRecordingError(false); } })
+      .catch(error => { if (error.name !== 'AbortError') setRecordingError(true); });
+    return () => controller.abort();
+  }, [retry]);
+  const saveRecording = async (enabled: boolean) => {
+    setRecordingBusy(true); setRecordingError(false);
+    try {
+      const response = await fetch('/api/voice-archive/settings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+      });
+      if (!response.ok) throw new Error('settings');
+      const data = await response.json(); setRecording(data.enabled === true);
+    } catch { setRecordingError(true); } finally { setRecordingBusy(false); }
+  };
   const reset = () => { setAnchor(null); };
   const moveDay = (delta: number) => {
     const value = day ? new Date(`${day}T12:00:00`) : new Date();
@@ -108,7 +133,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
     </span>}
     {anchor === null && <button onClick={() => setAnchor(entry.id)}>{t('context')}</button>}
   </article>;
-  return <dialog ref={dialog} className="history-dialog neko-dialog-overlay" data-compact-geometry-owner="surface" data-compact-geometry-item="chatHistoryDialog" data-compact-no-drag="true" aria-labelledby="history-title" onCancel={close}>
+  return <dialog ref={dialog} className="history-dialog neko-dialog-overlay" data-compact-geometry-owner="surface" data-compact-geometry-item="chatHistoryDialog" data-compact-no-drag="true" aria-labelledby="history-title" onCancel={close} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation(); }}>
     <header><div><h2 id="history-title">{t('title')}</h2><p>{t('description')}</p></div><button onClick={close} aria-label={t('close')}>×</button></header>
     <form onSubmit={e => { e.preventDefault(); setQuery(draft.trim()); reset(); setSearchRevision(v => v + 1); }}>
       <label>{t('character')}<select value={character} onChange={e => { setCharacter(e.target.value); reset(); }}>{names.map(n => <option key={n}>{n}</option>)}</select></label>
@@ -123,6 +148,9 @@ export function HistoryDialog({ close }: { close: () => void }) {
       <label>{t('speaker')}<select value={role} onChange={e => { setRole(e.target.value); reset(); }}>{['all', 'user', 'assistant'].map(r => <option value={r} key={r}>{t(r)}</option>)}</select></label>
       <details><summary>{t('settings')}</summary><div className="history-settings">
         <label>{t('order')}<select value={prefs.order} onChange={e => { setPrefs({ ...prefs, order: e.target.value }); reset(); }}><option value="desc">{t('newest')}</option><option value="asc">{t('oldest')}</option></select></label>
+        <label><input type="checkbox" checked={recording === true} disabled={recording === null || recordingBusy} onChange={e => void saveRecording(e.target.checked)} />{t('recordVoice')}</label>
+        <p>{t('recordVoiceHint')}</p>
+        {recordingError && <p role="alert">{t('error')} <button type="button" onClick={() => setRetry(v => v + 1)}>{t('retry')}</button></p>}
         <label><input type="checkbox" checked={prefs.autoContinue} onChange={e => setPrefs({ ...prefs, autoContinue: e.target.checked })} />{t('autoContinue')}</label>
         <p>{t('autoContinueHint')}</p>
         <label><input type="checkbox" checked={prefs.times} onChange={e => setPrefs({ ...prefs, times: e.target.checked })} />{t('showTime')}</label>
@@ -136,7 +164,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
       </div>
       {playback.current && <div className="history-now-playing"><time>{playback.current.time}</time><span>{playback.current.text}</span>
         <button onClick={() => setAnchor(playback.current!.id)}>{t('locatePlaying')}</button></div>}
-      {playback.partial && <span className="history-playback-note">{t('voicePartial')}</span>}
+      <span className="history-playback-note" role="status">{playback.partial ? t('voicePartial') : ''}</span>
     </section>}
     {anchor !== null && <button className="history-back" onClick={() => setAnchor(null)}>{t('back')}</button>}
     {characterError && <div role="alert" className="history-state">{t('error')} <button onClick={() => setRetry(v => v + 1)}>{t('retry')}</button></div>}

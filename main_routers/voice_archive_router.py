@@ -1,11 +1,14 @@
 """Read-only replay of locally archived speech, matched by immutable identity."""
-from contextlib import closing
+from contextlib import contextmanager
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 import sqlite3
 import wave
+
+from pydantic import BaseModel, StrictBool
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
@@ -21,15 +24,48 @@ async def local_access(request: Request):
 
 router = APIRouter(prefix='/api/voice-archive', dependencies=[Depends(local_access)])
 HEADERS = {'Cache-Control': 'no-store'}
+MAX_CLIP_BYTES = 64 * 1024 * 1024
 
 
+@contextmanager
 def database():
     path = Path(get_config_manager().app_docs_dir) / 'voice_archive' / 'archive.sqlite3'
     if not path.is_file():
         raise HTTPException(404, 'voice_unavailable', headers=HEADERS)
-    db = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=2)
-    db.row_factory = sqlite3.Row
-    return db
+    db = None
+    try:
+        db = sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=.1)
+        db.row_factory = sqlite3.Row
+        yield db
+    except sqlite3.Error:
+        raise HTTPException(503, 'voice_unavailable', headers=HEADERS) from None
+    finally:
+        if db is not None:
+            db.close()
+
+
+class RecordingSettings(BaseModel):
+    enabled: StrictBool
+
+
+@router.get('/settings')
+def recording_settings():
+    from utils.voice_archive_settings import load_settings
+    try:
+        data = load_settings(get_config_manager())
+    except (OSError, ValueError):
+        raise HTTPException(503, 'voice_settings_unavailable', headers=HEADERS) from None
+    return Response(json.dumps(data), media_type='application/json', headers=HEADERS)
+
+
+@router.post('/settings')
+def update_recording_settings(settings: RecordingSettings):
+    from utils.voice_archive_settings import save_settings
+    try:
+        data = save_settings(get_config_manager(), settings.enabled)
+    except OSError:
+        raise HTTPException(503, 'voice_settings_unavailable', headers=HEADERS) from None
+    return Response(json.dumps(data), media_type='application/json', headers=HEADERS)
 
 
 @router.get('/message')
@@ -38,7 +74,7 @@ def message_audio(character: str = Query(min_length=1, max_length=200),
                   speech_id: str = Query(default='', max_length=200)):
     if not record_id and not speech_id:
         raise HTTPException(404, 'voice_unavailable', headers=HEADERS)
-    with closing(database()) as db:
+    with database() as db:
         db.execute('BEGIN')
         # Prefer durable history identity; live messages carry the server turn/speech ID.
         clips = list(db.execute('SELECT id,stream_complete,archive_error FROM clips '
@@ -50,6 +86,8 @@ def message_audio(character: str = Query(min_length=1, max_length=200),
                                    (character, speech_id)))
         playlist = []
         for clip in clips:
+            if not re.fullmatch(r'[a-f0-9]{64}', clip['id']):
+                raise HTTPException(409, 'voice_archive_damaged', headers=HEADERS)
             formats = db.execute('SELECT seq,format,length(data) AS size FROM chunks WHERE clip_id=? ORDER BY seq',
                                  (clip['id'],)).fetchall()
             # Keep format switches separate, just as the archive exporter does.
@@ -65,16 +103,19 @@ def message_audio(character: str = Query(min_length=1, max_length=200),
 
 @router.get('/clips/{clip_id}/{start}')
 def clip_audio(clip_id: str, start: int):
-    with closing(database()) as db:
+    with database() as db:
         db.execute('BEGIN')
-        size = db.execute('SELECT sum(length(data)),min(seq) FROM chunks WHERE clip_id=? AND seq>=?',
-                          (clip_id, start)).fetchone()
-        if size[1] != start:
+        first = db.execute('SELECT format FROM chunks WHERE clip_id=? AND seq=?', (clip_id, start)).fetchone()
+        if first is None or start < 0:
             raise HTTPException(404, 'voice_unavailable', headers=HEADERS)
-        if size[0] > 64 * 1024 * 1024:
+        boundary = db.execute('SELECT min(seq) FROM chunks WHERE clip_id=? AND seq>? AND format<>?',
+                              (clip_id, start, first['format'])).fetchone()[0]
+        where = 'clip_id=? AND seq>=?' + (' AND seq<?' if boundary is not None else '')
+        args = (clip_id, start, boundary) if boundary is not None else (clip_id, start)
+        size = db.execute('SELECT sum(length(data)) FROM chunks WHERE ' + where, args).fetchone()[0]
+        if size > MAX_CLIP_BYTES:
             raise HTTPException(413, 'voice_too_large', headers=HEADERS)
-        parts = db.execute('SELECT format,data,sha256 FROM chunks WHERE clip_id=? AND seq>=? ORDER BY seq',
-                           (clip_id, start)).fetchall()
+        parts = db.execute('SELECT format,data,sha256 FROM chunks WHERE ' + where + ' ORDER BY seq', args).fetchall()
     if not parts or start < 0:
         raise HTTPException(404, 'voice_unavailable', headers=HEADERS)
     fmt = parts[0]['format']

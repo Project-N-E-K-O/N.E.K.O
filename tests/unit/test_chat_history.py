@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 
 import pytest
 from services.chat_history.store import browse, HistoryUnavailable
@@ -9,7 +10,7 @@ from services.chat_history.store import browse, HistoryUnavailable
 def archive(tmp_path):
     directory = tmp_path / 'Alice'
     directory.mkdir()
-    with sqlite3.connect(directory / 'time_indexed.db') as db:
+    with closing(sqlite3.connect(directory / 'time_indexed.db')) as db, db:
         db.execute('CREATE TABLE time_indexed_original(id INTEGER PRIMARY KEY, session_id TEXT, message TEXT, timestamp TEXT)')
         for i in range(1, 67):
             data = {'type': 'human' if i % 2 else 'ai', 'data': {'content': f'Hello 音乐 {i}', 'metadata': {}}}
@@ -59,7 +60,7 @@ def test_missing_corrupt_and_paths(archive):
 
 
 def test_scan_budget_can_continue(archive):
-    with sqlite3.connect(archive / 'Alice' / 'time_indexed.db') as db:
+    with closing(sqlite3.connect(archive / 'Alice' / 'time_indexed.db')) as db, db:
         db.executemany('INSERT INTO time_indexed_original VALUES(?,?,?,?)', [(i, 'one', '{}', '2026-11-03') for i in range(67, 5100)])
     first = browse(archive, 'Alice', query='Hello')
     assert first['messages'] == [] and first['nextCursor']
@@ -67,7 +68,7 @@ def test_scan_budget_can_continue(archive):
 
 
 def test_date_cursor_uses_index_and_closes_connections(archive, monkeypatch):
-    with sqlite3.connect(archive / 'Alice' / 'time_indexed.db') as db:
+    with closing(sqlite3.connect(archive / 'Alice' / 'time_indexed.db')) as db, db:
         db.execute('CREATE INDEX idx_time_indexed_original_timestamp ON time_indexed_original(timestamp)')
         db.executemany('INSERT INTO time_indexed_original VALUES(?,?,?,?)',
                        [(i, 'one', '{}', '2026-11-03') for i in range(67, 20067)])
@@ -106,13 +107,13 @@ def test_date_cursor_uses_index_and_closes_connections(archive, monkeypatch):
 
 
 def test_deeply_nested_json_does_not_block_following_rows(archive):
-    with sqlite3.connect(archive / 'Alice' / 'time_indexed.db') as db:
+    with closing(sqlite3.connect(archive / 'Alice' / 'time_indexed.db')) as db, db:
         db.execute('UPDATE time_indexed_original SET message=? WHERE id=66', ('[' * 2000 + '0' + ']' * 2000,))
     assert browse(archive, 'Alice', limit=1)['messages'][0]['id'] == 65
 
 
 def test_chronological_cursor_seeks_past_old_history(archive, monkeypatch):
-    with sqlite3.connect(archive / 'Alice' / 'time_indexed.db') as db:
+    with closing(sqlite3.connect(archive / 'Alice' / 'time_indexed.db')) as db, db:
         db.execute('CREATE INDEX timestamps ON time_indexed_original(timestamp)')
         db.executemany('INSERT INTO time_indexed_original VALUES(?,?,?,?)',
                        [(i, 'old', '{}', '2020-01-01') for i in range(100, 20100)])
@@ -156,3 +157,60 @@ def test_router_validation_and_offloaded_read(archive, monkeypatch):
     app.dependency_overrides.clear()
     with TestClient(app) as client:
         assert client.get('/api/chat-history/characters').status_code == 403
+
+
+@pytest.mark.parametrize('blocks', [False, True])
+@pytest.mark.parametrize('visible_length', ['7', '0', None, '-1', '99999999999999'])
+def test_assistant_hidden_notes_never_display_or_match(archive, blocks, visible_length):
+    content = 'visible HIDDEN_NOTE'
+    data = {'content': [{'type': 'text', 'text': content}] if blocks else content,
+            'additional_kwargs': {'anti_repeat_visible_text_length': visible_length}}
+    with closing(sqlite3.connect(archive/'Alice/time_indexed.db')) as db, db:
+        db.execute('UPDATE time_indexed_original SET message=? WHERE id=66',
+                   (json.dumps({'type': 'ai', 'data': data}),))
+    assert not browse(archive, 'Alice', query='HIDDEN_NOTE')['messages']
+    context = browse(archive, 'Alice', anchor=65)['messages']
+    entry = next((entry for entry in context if entry['id'] == 66), None)
+    assert (entry['text'] if entry else None) == ('visible' if visible_length == '7' else None)
+
+
+@pytest.mark.parametrize('chronological', [False, True])
+def test_sqlite_deadline_returns_progress_without_skipping_rows(archive, monkeypatch, chronological):
+    from services.chat_history import store
+    from types import SimpleNamespace
+    clock = [0.0]
+    original_message, original_connect = store.message, sqlite3.connect
+    def slow_message(row):
+        clock[0] += 1.1
+        return original_message(row)
+    class EveryStep(sqlite3.Connection):
+        def set_progress_handler(self, callback, interval):
+            super().set_progress_handler(callback, 1)
+    monkeypatch.setattr(store, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(store, 'message', slow_message)
+    monkeypatch.setattr(sqlite3, 'connect', lambda *a, **kw: original_connect(*a, **kw, factory=EveryStep))
+    ids, cursor, after_time = [], 0, None
+    while True:
+        page = browse(archive, 'Alice', cursor=cursor, chronological=chronological, after_time=after_time)
+        ids.extend(entry['id'] for entry in page['messages'])
+        if page['nextCursor'] is None:
+            break
+        assert page['scanned'] > 0
+        assert page['nextCursor'] != cursor
+        cursor, after_time = page['nextCursor'], page.get('nextTime')
+    expected = [i for i in range(1, 67) if i != 15]
+    assert ids == (expected if chronological else expected[::-1])
+
+
+def test_deadline_before_any_row_still_reports_unavailable(archive, monkeypatch):
+    from services.chat_history import store
+    from types import SimpleNamespace
+    ticks = iter([0, 3])
+    connect = sqlite3.connect
+    class EveryStep(sqlite3.Connection):
+        def set_progress_handler(self, callback, interval):
+            super().set_progress_handler(callback, 1)
+    monkeypatch.setattr(store, 'time', SimpleNamespace(monotonic=lambda: next(ticks, 3)))
+    monkeypatch.setattr(sqlite3, 'connect', lambda *a, **kw: connect(*a, **kw, factory=EveryStep))
+    with pytest.raises(HistoryUnavailable):
+        browse(archive, 'Alice')

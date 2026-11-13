@@ -7319,6 +7319,8 @@
     },
   "chatHistory": {
     "review": "Repaso de voz",
+    "recordVoice": "Guardar grabaciones de voz",
+    "recordVoiceHint": "Guarda las futuras intervenciones del personaje en este dispositivo para reproducirlas desde el historial. Desactivado por defecto. Al desactivarlo se conservan las grabaciones; el audio anterior no se puede recuperar.",
     "autoContinue": "Reproducir la siguiente voz automáticamente",
     "autoContinueHint": "Al reproducir una voz, continúa cronológicamente entre fechas para este personaje, manteniendo el filtro de palabras clave. Desactívalo para parar al terminar el mensaje actual.",
     "voicePlay": "Reproducir esta voz",

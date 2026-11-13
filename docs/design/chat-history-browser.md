@@ -1,7 +1,7 @@
 # Saved chat history browser
 
 The shared React chat window exposes a read-only history dialog through the
-existing tool wheel in both compact and full layouts. The modal registers with
+compact tool wheel and the full-layout toolbar (or its narrow overflow menu). The modal registers with
 the desktop full-window overlay and geometry protocols so native hit testing
 captures controls, scrolling and the backdrop; closing restores normal hit regions. It selects a configured character, browses an archive date, searches
 literal text (case insensitive), filters by speaker, and opens a message's nearby
@@ -25,10 +25,10 @@ conversation may not yet be present. This viewer neither changes retention nor
 starts cloud sync. It does not replay messages into a live conversation.
 
 Rows are ordered by persistent archive ID. Each request scans at most 5,000 rows,
-returns at most 100 messages (the viewer requests batches of 30), and has a two-second SQLite execution budget.
+returns at most 100 messages (the viewer requests batches of 30), and has a two-second wall-clock budget. SQLite deadline interrupts after progress return a partial page with the last scanned cursor; both normal and chronological pagination resume without dropping rows. A deadline before any progress still reports unavailable.
 An empty batch with a cursor continues scanning on demand rather than claiming
 there is no match. Literal search runs on decoded visible text so JSON
-metadata and image payloads cannot produce false hits. Oversized/malformed
+metadata and image payloads cannot produce false hits. Assistant text uses the same visible-text parser as memory reads: recorded visible lengths and legacy action-note rules apply before search and context projection. Oversized/malformed
 serialized messages are skipped; the read cap is 262,144 characters per row.
 Anchor context is restricted to the same session, with up to ten rows on either
 side; non-private, system and scoped records are excluded throughout.
@@ -82,8 +82,10 @@ Rows join the optional local `voice_archive/archive.sqlite3` using the immutable
 `metadata.chat_original_source.recordId` and character. Only rows with stored
 chunks expose a voice control; no text/time similarity matching or new TTS calls
 are used. The voice archive is optional: text browsing works without it. This
-reader consumes the existing archive format; it does not enable voice recording
-or migrate another provider's storage. The archive's read endpoint returns the
+PR includes the recorder in `main_logic/voice_archive.py` and its integration in
+`core/turn.py` and `core/tts_runtime.py`; no separate producer is required. It uses
+the existing server-created chat identity and records original outgoing audio.
+No retrospective synthesis or external recording service is used. The archive's read endpoint returns the
 original PCM/WAV or Ogg segments only when requested.
 
 `GET /api/chat-history/playback` keeps the selected character/date/keyword scope
@@ -109,3 +111,32 @@ date still cancels playback without sending that date to the playback endpoint. 
 does not start audio. Turning continuation off lets all segments of the current
 message finish, then stops; turning it on during playback enables continuation.
 There is no separate start-all button. User-only results have no TTS controls.
+
+
+## Recording opt-in and storage
+
+History settings expose **Save voice recordings**, off by default. The local-only
+`GET/POST /api/voice-archive/settings` endpoint reads/writes
+`config/voice_archive.json` (`{"enabled": true}`) using atomic file replacement.
+The setting applies to every character and is checked on subsequent events.
+Disabling keeps existing recordings; past unrecorded speech cannot be recovered.
+The separate automatic continuation preference only controls playback.
+
+The writer stores SHA-256 clip IDs derived from character and speech ID, exact
+record IDs, checksummed PCM16/48 kHz or Ogg chunks, and completion/error markers.
+Audio arriving before text is joined when the text callback provides identity.
+Durable writes run outside the event loop, serialize per session, and complete
+before releasing their lock even after cancellation. Disk errors do not prevent
+live speech; interrupted or partly disabled recordings remain marked incomplete.
+Voice data and SQLite sidecars belong to `MIGRATED_RUNTIME_ENTRY_NAMES` and move
+with the stopped application's runtime data. Credentials and private transcripts
+are absent from PR fixtures and screenshots.
+
+Playback rejects overlap with already-active live speech. A user-only speaker
+filter permits a selected context recording but does not start continuation.
+Mixed-format clips are bounded and loaded one format run at a time. Missing or
+corrupt voice databases do not hide text history; replay reports unavailable.
+
+The recorder, exact-identity join, history controls and replay API stay in this
+PR so a normal installation can produce the data that the new controls consume.
+The feature remains isolated in its own modules with small turn/TTS hooks.
