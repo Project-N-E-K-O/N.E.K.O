@@ -1848,7 +1848,9 @@ class NumericV2BranchService:
                 contract["must_deliver"] = [item for item in deliveries if item != bridge]
         return {
             "global": {
-                "intro": deepcopy(story.get("intro") or {}),
+                # The invite line is for the proactive invitation, not for writing scenes.
+                "intro": {key: deepcopy(value) for key, value in (story.get("intro") or {}).items()
+                          if key != "invitation"},
                 "catgirl_binding": deepcopy(story.get("catgirl_binding") or {}),
                 "content_boundaries": content_boundaries,
                 # The relationship arc constrains only the branch's relationship ceiling and continuity of knowledge; it does not enter the official Story Package.

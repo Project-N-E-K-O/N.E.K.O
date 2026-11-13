@@ -13,6 +13,8 @@ REQUIRED_KEYS = (
     "chat.miniGameInviteOptionsAriaLabel",
     "chat.watchTogetherInviteTitle",
     "chat.watchTogetherInviteHint",
+    "chat.theaterInviteTitle",
+    "chat.theaterInviteHint",
     "chat.avatarToolTemporarilyUnavailable",
     "autostartPrompt.title",
     "autostartPrompt.message",

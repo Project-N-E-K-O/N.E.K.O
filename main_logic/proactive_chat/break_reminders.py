@@ -259,6 +259,7 @@ def _render_work_break_game_invite_prompt(
         minutes=pending.minutes,
         story_title=(theater_story or {}).get("title", ""),
         story_background=(theater_story or {}).get("background", ""),
+        story_invitation=(theater_story or {}).get("invitation", ""),
     )
 
 

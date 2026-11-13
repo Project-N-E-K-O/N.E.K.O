@@ -320,7 +320,8 @@ _MAINLINE_OUTPUT_CONTRACT = """{
     "background": "直接展示给玩家的自然前情提要；像小说或电视剧前情介绍一样衔接第一章，不含策划标签或规则清单",
     "rules": ["影响故事发展的世界规则"],
     "core_mystery": "核心悬念",
-    "core_conflict": "不可调和或需要解决的底层矛盾"
+    "core_conflict": "不可调和或需要解决的底层矛盾",
+    "invitation": "当前角色邀请玩家进入本故事的一两句话，80字以内：从开场情境自然引出邀请，用你和我指代两人，不写姓名、性别代词或剧透，不出现剧本、剧场、演出、演绎、扮演等点明这是演出的词"
   },
   "story_protagonist": {
     "identity": "以 cast_names.catgirl_name 的完整值加中文逗号开头的当前角色身份；旧稿无姓名时沿用其身份开头的原有称呼",
@@ -1535,7 +1536,7 @@ def _validate_idea_outline(
                            "message": "完整修复固定原文数组的对象字段、触发方式及同幕前置引用，保留原文和完成项所引用的id；结局只允许entry。"})
 
     world = obj(candidate.get("world"), "world")
-    for field in ("background", "core_mystery", "core_conflict"):
+    for field in ("background", "core_mystery", "core_conflict", "invitation"):
         text(world.get(field), f"world.{field}")
     text_array(world.get("rules"), "world.rules")
 
@@ -2960,7 +2961,9 @@ class NumericV2Generator(ModelAgent):
             # Refinement is not summary-based regeneration; retain drafts for checking opening/state/reaction timing.
             # Deep copies prevent candidate/caller mutation of input stories; original return contracts still bound actual writeback.
             "existing_story_beat": existing_beat,
-            "story_intro": deepcopy(story_data.get("intro") or {}),
+            # The invite line is for the proactive invitation, not for writing scenes.
+            "story_intro": {key: deepcopy(value) for key, value in (story_data.get("intro") or {}).items()
+                            if key != "invitation"},
             "catgirl_binding": deepcopy(story_data.get("catgirl_binding") or {}),
             "upstream_nodes": upstream_nodes,
             "incoming_routes": incoming_routes,
@@ -3497,6 +3500,8 @@ class NumericV2Generator(ModelAgent):
                 **(dict(cast_names) if cast_names is not None else {}),
                 # World rules/suspense/conflicts support outlining, not direct player exposure; backgrounds retain natural recaps only.
                 "background": world["background"].strip(),
+                # Spoken when an in-voice invitation cannot be generated.
+                "invitation": world["invitation"].strip(),
                 "player_identity": self._join_profile_parts(player["identity"].strip()),
                 "catgirl_identity": self._join_profile_parts(
                     protagonist["identity"].strip(),

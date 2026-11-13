@@ -1451,6 +1451,9 @@ async def handle_proactive_chat(
             user_toggle_enabled=_user_invite_toggle,
             theater_toggle_enabled=_theater_invite_toggle,
             round_id=lifecycle.screenshot_request_id,
+            # A theater invite is spoken in the character's own voice.
+            character_prompt=lanlan_prompt_map.get(lanlan_name, "").replace(
+                "{LANLAN_NAME}", lanlan_name).replace("{MASTER_NAME}", master_name_current),
             **state_storage_kwargs,
         )
         if invite_short_circuit is not None:

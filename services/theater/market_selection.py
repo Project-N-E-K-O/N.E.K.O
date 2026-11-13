@@ -20,4 +20,7 @@ async def market_story(share_id: int | None = None) -> dict:
     intro = preview.get("intro") if isinstance(preview, dict) else None
     background = intro.get("background") if isinstance(intro, dict) else None
     selected["background"] = background[:2000] if isinstance(background, str) else ""
+    # The author's spoken fallback invite; older packages have none.
+    invitation = intro.get("invitation") if isinstance(intro, dict) else None
+    selected["invitation"] = invitation.strip()[:200] if isinstance(invitation, str) else ""
     return selected

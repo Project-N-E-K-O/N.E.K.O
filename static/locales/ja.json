@@ -766,6 +766,8 @@
         "miniGameInviteHint": "一緒に遊びませんか？",
         "watchTogetherInviteTitle": "一緒に動画を見よう",
         "watchTogetherInviteHint": "動画を選んで、一緒に見ながら話そう",
+        "theaterInviteTitle": "小劇場",
+        "theaterInviteHint": "受けると小劇場が開きます。いつでも抜けられます。",
         "miniGameInviteOptionsAriaLabel": "ミニゲーム招待の選択肢",
         "visitBarAriaLabel": "おでかけ",
         "messageReaction": "{{author}} が {{emoji}} でリアクションしました",

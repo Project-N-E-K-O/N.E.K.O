@@ -68,6 +68,11 @@ _FORBIDDEN_LEGACY_FIELDS = frozenset(
     {"interaction_rules", "available_interaction_ids", "choices", "state_schema"}
 )
 _IDENTITY_SEPARATORS = frozenset("，,；;：:\n（(")
+# intro.invitation is what the current character says when an in-voice invite
+# cannot be generated. It stays inside the story's situation, so it must not
+# name the theater itself, and its length matches one spoken invitation.
+MAX_INVITATION_CHARS = 80
+INVITATION_META_TERMS = ("剧本", "剧场", "演出", "演绎", "扮演", "表演", "演一")
 _CHARACTER_STATE_SUBJECTS = {
     "catgirl_state": "女主",
     "player_state": "男主",
@@ -671,6 +676,8 @@ class NumericV2Compiler:
         intro = c.obj(value, "intro")
         for field in ("background", "player_identity", "catgirl_identity"):
             c.require_text(intro.get(field), f"intro.{field}")
+        if "invitation" in intro:
+            NumericV2Compiler._validate_invitation(c, intro)
         # Real nicknames may contain commas or exceed the old first-segment limit; new Workshop packages declare paired names to avoid runtime split-point guessing.
         if "player_name" in intro or "catgirl_name" in intro:
             for role in ("player", "catgirl"):
@@ -699,6 +706,24 @@ class NumericV2Compiler:
                 "intro",
                 "玩家与当前角色身份的首段名称不能相同。",
             )
+
+    @staticmethod
+    def _validate_invitation(c: _Collector, intro: dict[str, Any]) -> None:
+        """Older packages may omit it; when present it must work as a spoken fallback invite."""
+        invitation = c.require_text(intro.get("invitation"), "intro.invitation")
+        if not invitation:
+            return
+        if len(invitation) > MAX_INVITATION_CHARS:
+            c.add("intro_invitation_too_long", "intro.invitation",
+                  f"邀请句不超过 {MAX_INVITATION_CHARS} 个字符，只写一两句。")
+        used = [term for term in INVITATION_META_TERMS if term in invitation]
+        if used:
+            c.add("intro_invitation_meta_term", "intro.invitation",
+                  f"邀请句要从故事开场的情境出发，不能出现“{'”“'.join(used)}”这类点明这是一场演出的词。")
+        names = [str(intro.get(f"{role}_name") or "").strip() for role in ("player", "catgirl")]
+        if any(name and name in invitation for name in names):
+            c.add("intro_invitation_author_name", "intro.invitation",
+                  "邀请句由用户自己的角色说给用户听，用“你”“我”指代两人，不写作者设定的姓名。")
 
     @staticmethod
     def _validate_binding(c: _Collector, value: Any) -> None:

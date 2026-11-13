@@ -219,6 +219,7 @@ def _merge_frame_repair(story_frame, frame, native_issues, author_issues=()):
     # Native paths name compiled fields; only their author inputs may change.
     sources = {
         "intro.background": (("world", "background"),),
+        "intro.invitation": (("world", "invitation"),),
         "intro.player_identity": (("player_role", "identity"),),
         "intro.catgirl_identity": (("story_protagonist", "identity"), ("story_protagonist", "secret_or_wound")),
         "catgirl_binding.role_overlay": (("story_protagonist", "motivation"),),

@@ -766,6 +766,8 @@
         "miniGameInviteHint": "같이 한 판 할까요?",
         "watchTogetherInviteTitle": "같이 영상 보기",
         "watchTogetherInviteHint": "영상을 고르면 같이 보면서 얘기해요",
+        "theaterInviteTitle": "소극장",
+        "theaterInviteHint": "수락하면 소극장이 열려요. 언제든 나갈 수 있어요.",
         "miniGameInviteOptionsAriaLabel": "미니게임 초대 옵션",
         "visitBarAriaLabel": "방문",
         "messageReaction": "{{author}}님이 {{emoji}}로 반응했습니다",

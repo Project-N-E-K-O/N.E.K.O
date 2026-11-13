@@ -766,6 +766,8 @@
         "miniGameInviteHint": "¿Jugamos juntos?",
         "watchTogetherInviteTitle": "Ver juntos",
         "watchTogetherInviteHint": "Elige un vídeo y lo vemos juntos",
+        "theaterInviteTitle": "Teatro",
+        "theaterInviteHint": "Al aceptar se abre el teatro; puedes salir cuando quieras.",
         "miniGameInviteOptionsAriaLabel": "Opciones de invitación al minijuego",
         "visitBarAriaLabel": "Visita",
         "messageReaction": "{{author}} reaccionó con {{emoji}}",

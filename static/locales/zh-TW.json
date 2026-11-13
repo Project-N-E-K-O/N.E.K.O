@@ -766,6 +766,8 @@
         "miniGameInviteHint": "要不要一起玩一局？",
         "watchTogetherInviteTitle": "一起看影片",
         "watchTogetherInviteHint": "挑個影片，我陪你邊看邊聊",
+        "theaterInviteTitle": "小劇場",
+        "theaterInviteHint": "接受後會進入小劇場，隨時可以離開。",
         "miniGameInviteOptionsAriaLabel": "小遊戲邀請選項",
         "visitBarAriaLabel": "串門",
         "messageReaction": "{{author}} 貼了 {{emoji}}",

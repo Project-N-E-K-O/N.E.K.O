@@ -1,6 +1,6 @@
 """Every theater and workshop model request carries the N.E.K.O prompt watermark.
 
-The free text route refuses requests without a ``======以上为`` line, so a
+The free text route refuses requests without the safety watermark line, so a
 theater stage that builds its own system message without the mark fails for
 every user on that route.
 """

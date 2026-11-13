@@ -1893,47 +1893,48 @@ def test_theater_toggle_payload_and_persistence_are_independent():
 
 @pytest.mark.parametrize('title', ['《霓虹下的猫耳重构》', '霓虹下的猫耳重构'])
 @pytest.mark.parametrize('invite_lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
-def test_theater_invite_renders_one_clean_title_in_every_locale(invite_lang, title):
+def test_theater_fallback_line_renders_one_clean_title_in_every_locale(invite_lang, title):
     """Bundled meta.title values carry their own brackets; every locale template adds more."""
     from main_logic.proactive_chat.mini_game_invite import _render_mini_game_invite_line
 
-    line = _render_mini_game_invite_line(
-        'theater', invite_lang, '阿八',
-        selected_story={'title': title}, synopsis='霓虹牌下少了一只猫耳',
-    )
-    # 标题正文出现且只出现一次，外层定界符不叠加。
+    line = _render_mini_game_invite_line('theater', invite_lang, '阿八', selected_story={'title': title})
     assert line.count('霓虹下的猫耳重构') == 1, line
     for opening, closing in ('《》', '『』', '「」', '“”', '‘’', '«»'):
         assert opening * 2 not in line and closing * 2 not in line, line
-    # 摘要是模型现生成的、不保证句末标点，而中日韩模板把它直接接在下一句前面。
-    # 这里直接验「摘要正文后紧跟一个句末标点」，否则 zh 会读成「…一只猫耳要不要陪我…」。
-    after = line.split('霓虹牌下少了一只猫耳', 1)[1][:1]
-    assert after in '。.', (invite_lang, after, line)
-    # 带空格的模板遇到摘要时不应留下连续空格。
     assert '  ' not in line, line
 
 
 @pytest.mark.parametrize('invite_lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
-def test_theater_invite_without_synopsis_keeps_single_spaces(invite_lang):
-    """A timed-out or oversized summary returns an empty string, doubling a template space."""
+def test_theater_invite_lines_stay_inside_the_fiction(invite_lang):
+    """The spoken invite never names a script, acting or the theater; the card does that."""
+    from config.prompts.prompts_proactive import MINI_GAME_INVITE_LINES_BY_GAME, THEATER_STORY_INVITE_LINES
+    from config.prompts.prompts_theater import THEATER_INVITE_META_TERMS
+
+    for line in (MINI_GAME_INVITE_LINES_BY_GAME['theater'][invite_lang], THEATER_STORY_INVITE_LINES[invite_lang]):
+        assert not [term for term in THEATER_INVITE_META_TERMS if term in line.lower()], line
+
+
+@pytest.mark.parametrize('invite_lang,spoken', [('zh', True), ('zh-TW', True), ('en', False), ('ja', False)])
+def test_theater_fallback_speaks_the_author_line_only_in_its_language(invite_lang, spoken):
     from main_logic.proactive_chat.mini_game_invite import _render_mini_game_invite_line
 
+    author = '雾港下雨了，旧车站的失物招领室还亮着灯。你愿意推门进来吗？'
     line = _render_mini_game_invite_line(
-        'theater', invite_lang, '阿八',
-        selected_story={'title': '《月台尽头的猫灯》'}, synopsis='',
-    )
-    assert '  ' not in line, (invite_lang, line)
-    assert line.count('月台尽头的猫灯') == 1, line
+        'theater', invite_lang, '阿八', selected_story={'title': '月台尽头的猫灯', 'invitation': author})
+    if spoken:
+        assert line == f'阿八，{author}'
+    else:
+        assert author not in line and line.count('月台尽头的猫灯') == 1
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('synopsis', ['你我在末班列车月台守住一盏将熄的猫灯，寻找失约旅人的线索。', ''])
-async def test_theater_invitation_uses_short_synopsis_and_freezes_same_market_story(monkeypatch, synopsis):
-    selected = {'id': 42, 'revision': 3, 'file_sha256': 'a' * 64,
-                'title': '月台尽头的猫灯', 'background': '很长的公开前情。' * 100}
+@pytest.mark.parametrize('composed', ['雾港下雨了，失物招领室的灯还亮着……陪我去看看吗？', ''])
+async def test_theater_invitation_prefers_the_character_line_and_freezes_same_market_story(monkeypatch, composed):
+    selected = {'id': 42, 'revision': 3, 'file_sha256': 'a' * 64, 'title': '月台尽头的猫灯',
+                'background': '很长的公开前情。' * 100, 'invitation': '旧车站的灯还亮着，你愿意推门进来吗？'}
     monkeypatch.setattr(sr, '_select_theater_story', AsyncMock(return_value=selected))
-    summarizer = AsyncMock(return_value=synopsis)
-    monkeypatch.setattr(sr, '_summarize_theater_invite', summarizer)
+    composer = AsyncMock(return_value=composed)
+    monkeypatch.setattr(sr, '_compose_theater_invite_line', composer)
     monkeypatch.setattr(sr, 'MINI_GAME_INVITE_TRIGGER_PROBABILITY', 1.0)
     mgr = _make_mgr()
     result = await sr._maybe_deliver_mini_game_invite(
@@ -1941,39 +1942,63 @@ async def test_theater_invitation_uses_short_synopsis_and_freezes_same_market_st
         invite_lang='zh', master_name=MASTER, user_toggle_enabled=False, theater_toggle_enabled=True)
     assert result is not None
     text = mgr.feed_tts_chunk.call_args.args[0]
-    assert selected['title'] in text and '要不要' in text
-    assert not synopsis or synopsis in text
+    # The character's own line wins; when it fails, the author's line is spoken.
+    assert text == (composed or f'{MASTER}，{selected["invitation"]}')
     assert selected['background'] not in text
     assert sr._mini_game_invite_get_state(LANLAN)['theater_selection'] == selected
-    summarizer.assert_awaited_once_with(selected, 'zh')
+    composer.assert_awaited_once()
+    assert composer.call_args.args == (selected, 'zh')
     assert 'share_id=42' in sr._apply_mini_game_invite_choice(LANLAN, 'accept', source='button')['game_url']
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reply,expected', [('你我在雨夜守护一盏灯，寻找失约旅人的线索。', True), ('长' * 81, False)])
-async def test_theater_synopsis_is_one_bounded_call_with_public_premise(monkeypatch, reply, expected):
+@pytest.mark.parametrize('reply,expected', [
+    ('雾港下雨了，失物招领室的灯还亮着……陪我去看看吗？', True),
+    ('长' * 81, False),
+    ('要不要和我一起演一场小剧场？', False),
+    ('', False),
+])
+async def test_theater_invite_line_is_one_bounded_in_voice_call(monkeypatch, reply, expected):
+    from config.prompts.prompts_theater import THEATER_INVITE_SYSTEM_PROMPT_WATERMARK
     from utils import config_manager, llm_client
     from utils.tokenize import count_tokens
     seen = []
+
     class Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
         async def ainvoke(self, messages):
             seen.extend(messages)
             return types.SimpleNamespace(content=reply)
+
     config = types.SimpleNamespace(aget_model_api_config=AsyncMock(return_value={
         'model': 'test', 'base_url': 'http://test.invalid', 'api_key': 'test'}))
     monkeypatch.setattr(config_manager, 'get_config_manager', lambda: config)
     factory = AsyncMock(return_value=Client())
     monkeypatch.setattr(llm_client, 'create_chat_llm_async', factory)
-    result = await sr._summarize_theater_invite({'title': '猫灯' * 300, 'background': '公开前情。' * 1000}, 'zh-CN')
+    result = await sr._compose_theater_invite_line(
+        {'title': '猫灯' * 300, 'background': '公开前情。' * 1000, 'invitation': '旧车站的灯还亮着。'},
+        'zh-CN', character_prompt='你是小葵，说话轻快。', master_name='阿八')
     assert result == (reply if expected else '')
-    assert len(result) <= 80
     factory.assert_awaited_once()
     assert factory.call_args.kwargs['max_retries'] == 0
-    assert '公开前情' in seen[1].content
-    assert '1-2 short plain-text sentences' in seen[0].content
-    assert 'Chinese characters' not in seen[0].content
-    public = json.loads(seen[1].content)
-    assert count_tokens(public['title']) <= 256
-    assert count_tokens(public['background']) <= 2048
+    system, human = seen[0].content, seen[1].content
+    # Persona first, then the instruction, then the watermark the free route requires.
+    assert system.startswith('你是小葵，说话轻快。')
+    assert 'Simplified Chinese' in system and '阿八' in system
+    assert system.endswith(THEATER_INVITE_SYSTEM_PROMPT_WATERMARK)
+    data = json.loads(human)
+    assert set(data) == {'background', 'author_invitation'}
+    assert count_tokens(data['background']) <= 2048
+    assert '猫灯' not in human
+
+
+@pytest.mark.asyncio
+async def test_theater_invite_line_skips_the_call_without_story_material(monkeypatch):
+    from utils import llm_client
+
+    factory = AsyncMock()
+    monkeypatch.setattr(llm_client, 'create_chat_llm_async', factory)
+    assert await sr._compose_theater_invite_line(
+        {'title': '猫灯'}, 'zh', character_prompt='', master_name='阿八') == ''
+    factory.assert_not_awaited()

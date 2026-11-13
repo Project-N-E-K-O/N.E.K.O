@@ -192,10 +192,13 @@ async def test_random_market_selection_includes_only_public_opening_for_synopsis
                 'id': 7, 'revision': 4, 'file_sha256': 'a' * 64, 'title': '猫灯', 'byte_size': 100,
                 'kind': 'theater', 'status': 'published', 'theater_compatible': True,
                 'description': 'Marketing text must not replace the public premise',
-                'preview': {'intro': {'background': '你在末班列车的月台遇见守灯人。'},
+                'preview': {'intro': {'background': '你在末班列车的月台遇见守灯人。',
+                                      'invitation': '末班车快到了，月台那盏灯还亮着，陪我去看看？',
+                                      'catgirl_identity': 'not part of the invitation'},
                             'nodes': [{'ending': 'hidden ending'}]}})
     monkeypatch.setattr(httpx, 'AsyncClient', lambda **_: Client())
     selected = await market_story()
     assert seen[0].endswith('/api/v1/shares/theater/random')
     assert selected['background'] == '你在末班列车的月台遇见守灯人。'
-    assert set(selected) == {'id', 'revision', 'file_sha256', 'title', 'byte_size', 'background'}
+    assert selected['invitation'] == '末班车快到了，月台那盏灯还亮着，陪我去看看？'
+    assert set(selected) == {'id', 'revision', 'file_sha256', 'title', 'byte_size', 'background', 'invitation'}

@@ -272,6 +272,7 @@ def _idea_outline(chapter_count: int = 4) -> dict:
             "rules": ["旧信中的信息必须通过现实证据交叉确认。"],
             "core_mystery": "当年的分别是否源于一场被隐瞒的误会。",
             "core_conflict": "两人都想知道真相，却害怕再次被对方抛下。",
+            "invitation": "雨还没停，旧站台那盏灯又亮了一下……要不要跟我过去看看？",
         },
         "story_protagonist": {
             "identity": "女主，守着花店和旧信的年轻女性。",
@@ -549,6 +550,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     }]
     assert story["nodes"][0]["route_gates"][0]["conditions"] == {"all": []}
     assert story["intro"]["background"] == "雨季小镇与保存旧信的花店。"
+    assert story["intro"]["invitation"] == "雨还没停，旧站台那盏灯又亮了一下……要不要跟我过去看看？"
     assert "世界规则：" not in story["intro"]["background"]
     assert "核心悬念：" not in story["intro"]["background"]
     assert "核心矛盾：" not in story["intro"]["background"]
