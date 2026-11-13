@@ -1100,6 +1100,8 @@ class TurnMixin:
         if not content_committed:
             logger.debug("[%s] handle_proactive_complete: no content committed, skipping completion flush", self.lanlan_name)
             return
+        speech_id_at_start = self.current_speech_id
+        engagement_at_start = getattr(self, "last_user_engagement_time", None)
         # Activity tracker flush: proactive speech counts too. Mirror _emit_turn_end
         # so seconds_since_ai_msg treats active/passive replies equally. Proactive text
         # passed send_lanlan_response via finish_proactive_delivery,
@@ -1110,7 +1112,14 @@ class TurnMixin:
                 await self._request_tts_done_for_turn("handle_proactive_complete")
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
-        turn_end_msg = self._queue_agent_callback_turn_end()
+        # The user may have begun a turn while the TTS signal was awaited.
+        # Its words and its tool calls are that turn's, which closes them
+        # itself when it ends (as in finish_proactive_delivery).
+        user_turn_began = (
+            self.current_speech_id != speech_id_at_start
+            or getattr(self, "last_user_engagement_time", None) != engagement_at_start
+        )
+        turn_end_msg = self._queue_agent_callback_turn_end(close_tool_state=not user_turn_began)
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 await self.websocket.send_json(turn_end_msg)
@@ -1174,13 +1183,17 @@ class TurnMixin:
         # starts herself (a report, a greeting) must not hand them on with a
         # task of its own.
         self._latest_user_utterance = ''
+        self._drop_tool_wait_bubble()
+        return acted
+
+    def _drop_tool_wait_bubble(self) -> None:
+        """Drop the "…" bubble a tool call lit, if it is still up."""
         if getattr(self, "_tool_wait_bubble", False):
             self._tool_wait_bubble = False
             try:
                 self._fire_task(self._push_focus_thinking(False))
             except Exception:
                 logger.debug("[%s] clearing the tool-wait bubble failed", self.lanlan_name, exc_info=True)
-        return acted
 
     def _session_end_message(self) -> dict:
         """Return the ``session end`` message for the sync queue.
@@ -1195,16 +1208,19 @@ class TurnMixin:
             message['acted_through_tools'] = True
         return message
 
-    def _queue_agent_callback_turn_end(self, request_id=None) -> dict:
+    def _queue_agent_callback_turn_end(self, request_id=None, *, close_tool_state: bool = True) -> dict:
         """Put a ``turn end agent_callback`` on the sync queue and return it.
 
         The one builder for the memory side of a proactive reply's turn end
         (``handle_proactive_complete``, the close of a taken-over proactive
         reply, a command's own turn), the counterpart of ``_queue_turn_end``:
         cross_server ends the assistant turn without an analyze request.
-        ``_send_turn_end_to_frontend`` sends its WebSocket copy."""
+        ``_send_turn_end_to_frontend`` sends its WebSocket copy.
+        ``close_tool_state=False`` leaves the turn state alone, for a caller
+        that saw a user turn begin in the meantime."""
         turn_end_msg: dict = {'type': 'system', 'data': 'turn end agent_callback'}
-        self._close_turn_tool_state()
+        if close_tool_state:
+            self._close_turn_tool_state()
         # The source identity stays tied to this speech ID rather than shared flags.
         proof = getattr(self, '_chat_original_turns', {}).get(str(self.current_speech_id or ''))
         if proof:
@@ -3382,9 +3398,23 @@ class TurnMixin:
             "request_id": request_id,
             "meta": metadata if isinstance(metadata, dict) else {},
         }
-        # A mirrored reply goes through send_lanlan_response as well and so
-        # counts as "has spoken"; that must not last into the next turn.
-        self._close_turn_tool_state()
+        from main_logic.mirror_meta import is_mirror_turn_end_meta
+
+        if is_mirror_turn_end_meta(turn_end_msg["meta"]):
+            # cross_server skips this turn end (the mirrored event keeps out
+            # of memory) and leaves the user's turn open: her own reply may
+            # still come and end it, and that turn end is the one checked.
+            # What she did through a tool and the user's words stay for it,
+            # or that reply would be checked and the task dispatched again.
+            # Only "has spoken" and the "…" bubble go: the mirrored reply was
+            # said, and "has spoken" must not last into the next turn.
+            self._turn_has_spoken = False
+            self._drop_tool_wait_bubble()
+        # Whether she acted through a tool travels on this turn end as on
+        # the others, or the turn would be checked and its task dispatched
+        # a second time.
+        elif self._close_turn_tool_state():
+            turn_end_msg["acted_through_tools"] = True
         self.sync_message_queue.put(turn_end_msg)
         try:
             if (

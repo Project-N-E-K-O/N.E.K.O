@@ -98,8 +98,10 @@ class StreamingMixin:
                 "code": "MEMORY_SERVER_COOLDOWN",
                 "details": {"wait_time": time_left}
             })))
-            self._close_turn_tool_state()
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            turn_end_msg = {'type': 'system', 'data': 'turn end'}
+            if self._close_turn_tool_state():
+                turn_end_msg['acted_through_tools'] = True
+            self.sync_message_queue.put(turn_end_msg)
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 self._fire_task(self.websocket.send_json({'type': 'system', 'data': 'turn end'}))
         return True

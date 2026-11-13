@@ -37,6 +37,7 @@ from tests.unit.nekoclaw.host_fakes import (
     pick_plugin,
     scripted_runtime,
     wait_status,
+    wait_until,
 )
 from tests.unit.nekoclaw.plugin_server_fake import FakePluginServer, entry, finish, plugin
 
@@ -516,6 +517,48 @@ async def test_a_long_command_gives_way_in_a_line_and_the_answers_stay(server, h
 
 
 @pytest.mark.parametrize("lang", LANGUAGES)
+def test_every_kind_of_permission_keeps_its_answers_in_a_line_of_full_length(lang):
+    """The longest title there can be, the status word of a waiting commission,
+    the longest words of every kind of permission and a command that does not
+    fit: only the command gives way, the answers on offer all stay.
+
+    It holds because a title is cut to ``COMMISSION_TITLE_MAX_TOKENS`` when
+    the commission is made (only top-level commissions are listed); a larger
+    cap, longer words or another answer to offer would show up here first.
+    """
+    from types import SimpleNamespace
+
+    from config.nekoclaw_settings import QUERY_PERMISSION_ROW_MAX_TOKENS
+    from config.prompts.prompts_nekoclaw_brain import (
+        PERMISSION_CATEGORY_TEXTS,
+        PERMISSION_OPTION_NAMES,
+        QUERY_TEXTS,
+    )
+    from nekoclaw.host.task_brain import status_word, waiting_row
+    from utils.tokenize import count_tokens
+
+    title = _full_length_title()
+    status = status_word("waiting_user", lang)
+    frame = QUERY_TEXTS[lang]["asked"]
+    # The line of a query and the line of a brief.
+    heads = (f"- {title} ({status})", f"- [{status}] {title}")
+    for category in PERMISSION_CATEGORY_TEXTS[lang]:
+        question = {
+            "kind": "permission",
+            "category": category,
+            "detail": {"command": _long_command()},
+            "options": ["always", "session", "once", "deny"],
+        }
+        commission = SimpleNamespace(question=lambda question=question: question)
+        for head in heads:
+            line = waiting_row(head, commission, frame, lang)
+            assert count_tokens(line) <= QUERY_PERMISSION_ROW_MAX_TOKENS, (category, head)
+            assert line.startswith(head), (category, head)
+            names = " / ".join(PERMISSION_OPTION_NAMES[lang].values())
+            assert line.endswith(f"({names})"), (category, head)
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
 async def test_a_query_answer_lists_whole_lines_and_says_how_many_it_left_out(server, hosts, tmp_path, lang):
     from config.nekoclaw_settings import QUERY_RESULT_MAX_TOKENS
     from config.prompts.prompts_nekoclaw_brain import PERMISSION_OPTION_NAMES, QUERY_TEXTS
@@ -920,8 +963,11 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     (report,) = await outbox(host, "task_result")
     assert (report.payload["status"], report.payload["success"]) == ("failed", False)
     assert report.payload["error_message"] == "the free daily quota of the agent model is used up"
-    # Counted before anything was started: not one request went to the model.
+    # Counted before the first prompt: not one request went to the model,
+    # and the session started for it is closed.
     assert llm.requests == []
+    await wait_until(lambda: not host.task_agents._runtime.core._sessions, what="the session being closed")
+    assert host.task_agents.running == []
 
 
 async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_request(hosts, tmp_path):
@@ -943,6 +989,32 @@ async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_requ
     # way when that was found may still have gone out, and nothing after it.
     assert left == []
     assert 3 <= len(llm.requests) <= 4
+
+
+async def test_a_task_agent_stopped_while_its_first_request_is_counted_gets_no_work(hosts, tmp_path, caplog):
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="nekoclaw.host.task_agents")
+    llm = ScriptedLLM([_report_ready("done")])
+    holder: dict[str, Any] = {}
+
+    async def meter(commission_id: str) -> bool:
+        # The user stops it while the quota file is being written.
+        await holder["host"].abort(commission_id)
+        return True
+
+    host = _task_agent_host(hosts, tmp_path, llm, task_agent_meter=meter)
+    holder["host"] = host
+
+    receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "cancelled")
+    await wait_until(lambda: not host.task_agents._runtime.core._sessions, what="the session being closed")
+    await host.task_agents.settle()
+
+    assert llm.requests == []
+    # The stop is seen before the prompt is sent, not as a prompt that fails
+    # on a session already closed.
+    assert not [record for record in caplog.records if "starting a task agent" in record.getMessage()]
 
 
 async def test_a_meter_that_cannot_count_does_not_stop_the_work(hosts, tmp_path):

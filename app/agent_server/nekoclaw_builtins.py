@@ -81,6 +81,9 @@ class BuiltinCapabilityProvider:
         # What a cancelled browser call left going when it stopped waiting:
         # the call itself, or the closing of the browser session it used.
         self._browser_leftovers: "set[asyncio.Future[Any]]" = set()
+        # The adapter those were left on. Once it is closed or replaced, a
+        # new call gets a session of its own, and they no longer matter.
+        self._browser_leftovers_adapter: Any = None
 
     # -- availability -----------------------------------------------------
 
@@ -196,7 +199,7 @@ class BuiltinCapabilityProvider:
             # A cancelled call may still be closing the browser session it
             # used. A call that started now would be given that same session
             # and have it closed under it.
-            if not await self._earlier_browser_call_is_over():
+            if not await self._earlier_browser_call_is_over(adapter):
                 return BuiltinOutcome(False, "browser control is still busy with an earlier call")
             # Building the adapter and that wait take a while; it may have been switched off meanwhile.
             ready, reason = self._state(BUILTIN_BROWSER)
@@ -252,6 +255,9 @@ class BuiltinCapabilityProvider:
         run.add_done_callback(_drop_outcome)
         going = {run} if closing is None else {run, closing}
         # Remembered before the wait: it may run out of time, or be cancelled once more.
+        if self._browser_leftovers_adapter is not adapter:
+            self._browser_leftovers = set()
+            self._browser_leftovers_adapter = adapter
         self._browser_leftovers |= going
         try:
             _done, going = await asyncio.shield(asyncio.wait(going, timeout=_BROWSER_STOP_WAIT_SECONDS))
@@ -264,12 +270,24 @@ class BuiltinCapabilityProvider:
                 _BROWSER_STOP_WAIT_SECONDS,
             )
 
-    async def _earlier_browser_call_is_over(self) -> bool:
-        """Wait, for a bounded time, for what a cancelled browser call left going; False if it still is."""
+    async def _earlier_browser_call_is_over(self, adapter: Any) -> bool:
+        """Wait, for a bounded time, for what a cancelled browser call left going on ``adapter``; False if it still is.
+
+        What was left on an adapter that has since been closed or replaced
+        is dropped: ``adapter`` is a new one with a session of its own, which
+        nothing left going can close. Without this, a call that never ends
+        would hold up every later one until a restart.
+        """
+        if self._browser_leftovers_adapter is not adapter:
+            self._browser_leftovers = set()
+            self._browser_leftovers_adapter = None
+            return True
         going = {item for item in self._browser_leftovers if not item.done()}
         if going:
             _done, going = await asyncio.wait(going, timeout=_BROWSER_STOP_WAIT_SECONDS)
         self._browser_leftovers = set(going)
+        if not going:
+            self._browser_leftovers_adapter = None
         return not going
 
 

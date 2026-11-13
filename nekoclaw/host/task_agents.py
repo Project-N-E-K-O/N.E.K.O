@@ -434,22 +434,6 @@ class TaskAgentManager:
             config = await self._model_config()
             if not config or not config.get("model"):
                 raise RuntimeError("no model is configured for task agents")
-            if self._meter is not None:
-                # The first request is counted before anything is started: with
-                # the quota used up, a new task agent sends nothing at all.
-                # (Later requests are counted as their usage is reported.)
-                try:
-                    allowed = await self._meter(commission_id)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
-                    logger.warning("counting a task agent's model request failed", exc_info=True)
-                else:
-                    if not allowed:
-                        self._discard(commission_id)
-                        await self._fail(commission_id, _QUOTA_REASON)
-                        return False
-                    session.prepaid_requests += 1
             from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
@@ -502,10 +486,28 @@ class TaskAgentManager:
             if notes:
                 text = "\n\n".join([text, *notes])
             await runtime.start(spec)
+
+            async def stopped_meanwhile() -> bool:
+                current = await self._ledger.get(commission.id)
+                return self._sessions.get(commission.id) is not session or current is None or current.status != "working"
+
             # Starting can take a while (the runtime process coming up). A stop
             # meanwhile found no session to close; this one must get no work.
-            current = await self._ledger.get(commission.id)
-            if self._sessions.get(commission.id) is not session or current is None or current.status != "working":
+            # The first request is paid for after that and before the prompt
+            # that makes it: with the quota used up, a task agent sends
+            # nothing at all, and a start that fails or is stopped costs
+            # nothing. (Later requests are counted as their usage is reported.)
+            # Counting takes a moment too, so a stop is looked for again.
+            if await stopped_meanwhile():
+                session.closing = True
+                await runtime.close(commission.id)
+                return False
+            if not await self._pay_first_request(session):
+                await self._fail(commission.id, _QUOTA_REASON)
+                session.closing = True
+                await runtime.close(commission.id)
+                return False
+            if await stopped_meanwhile():
                 session.closing = True
                 await runtime.close(commission.id)
                 return False
@@ -533,6 +535,24 @@ class TaskAgentManager:
             self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             return False
+
+    async def _pay_first_request(self, session: _Session) -> bool:
+        """Count a session's first model request before it is made; False when the quota is used up.
+
+        A meter that cannot count does not stop the work.
+        """
+        if self._meter is None:
+            return True
+        try:
+            allowed = await self._meter(session.commission_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
+            logger.warning("counting a task agent's model request failed", exc_info=True)
+            return True
+        if allowed:
+            session.prepaid_requests += 1
+        return bool(allowed)
 
     @staticmethod
     async def _send_text(runtime: Any, session: _Session, command: str, text: str) -> None:

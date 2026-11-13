@@ -211,7 +211,20 @@ async def test_task_agent_that_cannot_be_started_fails_the_commission(hosts, tmp
     def broken(on_event: Any, callbacks: Any) -> Any:
         raise RuntimeError("the runtime process could not be created")
 
-    host = make_host(tmp_path, None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=broken)
+    counted: list[str] = []
+
+    async def meter(commission_id: str) -> bool:
+        counted.append(commission_id)
+        return True
+
+    host = make_host(
+        tmp_path,
+        None,
+        task_agent_model=fake_model,
+        decision_llm=FakeDecisionLLM(),
+        runtime_factory=broken,
+        task_agent_meter=meter,
+    )
     hosts.append(host)
 
     receipt = await _dispatch(host, "sort the photos")
@@ -219,6 +232,8 @@ async def test_task_agent_that_cannot_be_started_fails_the_commission(hosts, tmp
     failed = await wait_status(host, receipt.commission_id, "failed")
     assert "could not be started" in failed.status_reason
     assert host.task_agents.running == []
+    # No request was made, so none of the free quota went on it.
+    assert counted == []
     (report,) = await outbox(host, "task_result")
     assert report.payload["status"] == "failed"
 
@@ -510,7 +525,20 @@ async def test_stopping_while_the_session_comes_up_gives_it_no_work(hosts, tmp_p
         def __getattr__(self, name: str) -> Any:
             return getattr(self.inner, name)
 
-    host = make_host(tmp_path, None, task_agent_model=fake_model, decision_llm=FakeDecisionLLM(), runtime_factory=SlowStart)
+    counted: list[str] = []
+
+    async def meter(commission_id: str) -> bool:
+        counted.append(commission_id)
+        return True
+
+    host = make_host(
+        tmp_path,
+        None,
+        task_agent_model=fake_model,
+        decision_llm=FakeDecisionLLM(),
+        runtime_factory=SlowStart,
+        task_agent_meter=meter,
+    )
     hosts.append(host)
     receipt = await _dispatch(host, "sort the photos")
     await asyncio.wait_for(starting.wait(), 5)
@@ -524,6 +552,8 @@ async def test_stopping_while_the_session_comes_up_gives_it_no_work(hosts, tmp_p
 
     assert llm.requests == []
     assert (await host.ledger.get(receipt.commission_id)).status == "cancelled"
+    # Stopped before its first request: none of the free quota went on it.
+    assert counted == []
 
 
 # ---------------------------------------------------------------------------

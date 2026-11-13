@@ -651,12 +651,125 @@ def test_a_mirrored_reply_does_not_count_as_having_spoken_in_the_next_turn():
     manager = _manager()
     manager.websocket = None
     manager._turn_has_spoken = True
+
+    asyncio.run(manager.emit_mirror_turn_end(metadata={"mirror": True}))
+
+    assert manager._turn_has_spoken is False
+    assert "acted_through_tools" not in manager.sync_message_queue.get_nowait()
+
+
+def test_a_mirrored_turn_end_says_whether_she_acted_through_a_tool():
+    # She called a tool that acts; a plugin's mirrored reply closes the turn.
+    # Without the mark the turn would be checked and its task dispatched again.
+    manager = _manager()
+    manager.websocket = None
     manager._turn_acted_through_tools = True
 
     asyncio.run(manager.emit_mirror_turn_end(metadata={"mirror": True}))
 
-    assert manager._turn_has_spoken is False and manager._turn_acted_through_tools is False
+    assert manager.sync_message_queue.get_nowait()["acted_through_tools"] is True
+    assert manager._turn_acted_through_tools is False
+
+
+def test_a_mirrored_turn_end_kept_out_of_memory_leaves_the_turn_to_her_own_reply():
+    # cross_server skips such a turn end and keeps the user's turn open: her
+    # own reply that follows ends it, and must say that she acted, with the
+    # user's words still there for a task she dispatches before it.
+    from main_logic.mirror_meta import is_mirror_turn_end_meta
+
+    metadata = {"mirror": {"event": {"memory_enabled": False}}}
+    assert is_mirror_turn_end_meta(metadata)
+    manager = _manager()
+    manager.websocket = None
+    manager._turn_acted_through_tools = True
+    manager._turn_has_spoken = True
+    manager._tool_wait_bubble = True
+    manager._latest_user_utterance = "帮我放点音乐"
+
+    asyncio.run(manager.emit_mirror_turn_end(metadata=metadata))
+
     assert "acted_through_tools" not in manager.sync_message_queue.get_nowait()
+    assert manager._turn_has_spoken is False and manager._tool_wait_bubble is False
+    assert manager._latest_user_utterance == "帮我放点音乐"
+    assert manager._queue_turn_end("req-1")["acted_through_tools"] is True
+
+
+def test_a_cooldown_turn_end_says_whether_she_acted_through_a_tool():
+    import time
+
+    from main_logic.core.streaming import StreamingMixin
+
+    manager = _manager()
+    manager.websocket = None
+    manager._memory_error_retry_after = time.time() + 30
+    manager._last_cooldown_turn_end_time = 0.0
+
+    async def send_status(_payload):
+        pass
+
+    manager.send_status = send_status
+    manager._turn_acted_through_tools = True
+
+    assert StreamingMixin._emit_cooldown_turn_end_if_needed(manager) is True
+
+    assert manager.sync_message_queue.get_nowait() == {
+        "type": "system",
+        "data": "turn end",
+        "acted_through_tools": True,
+    }
+
+
+def _proactive_manager() -> _Manager:
+    manager = _manager()
+    manager.websocket = None
+    manager.use_tts = True
+    manager.tts_thread = type("_Alive", (), {"is_alive": lambda self: True})()
+    manager._flush_ai_turn_text_to_tracker = lambda **_kwargs: None
+    manager.last_user_engagement_time = 100.0
+    return manager
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "speech_id, engaged_at",
+    # Either sign is enough: her reply may not have begun yet (same speech
+    # id), or the user's input time may not have moved (a new speech id).
+    [("speech-2", 101.0), ("speech-1", 101.0), ("speech-2", 100.0)],
+)
+async def test_a_user_turn_begun_while_a_report_finishes_keeps_its_words_and_tool_calls(speech_id, engaged_at):
+    manager = _proactive_manager()
+
+    async def tts_done(_where):
+        # While the end of her report is awaited, the user starts a turn and
+        # she calls a tool in it.
+        manager.current_speech_id = speech_id
+        manager.last_user_engagement_time = engaged_at
+        manager._latest_user_utterance = "帮我放点音乐"
+        manager._turn_acted_through_tools = True
+
+    manager._request_tts_done_for_turn = tts_done
+
+    await manager.handle_proactive_complete()
+
+    assert manager.sync_message_queue.get_nowait()["data"] == "turn end agent_callback"
+    # They are that turn's; it closes them itself when it ends.
+    assert manager._latest_user_utterance == "帮我放点音乐"
+    assert manager._turn_acted_through_tools is True
+
+
+@pytest.mark.asyncio
+async def test_a_report_that_finishes_undisturbed_closes_its_turn():
+    manager = _proactive_manager()
+    manager._turn_has_spoken = True
+
+    async def tts_done(_where):
+        pass
+
+    manager._request_tts_done_for_turn = tts_done
+
+    await manager.handle_proactive_complete()
+
+    assert manager._turn_has_spoken is False
 
 
 @pytest.mark.parametrize("kind", ["response", "agent_callback"])
@@ -693,6 +806,7 @@ def test_every_turn_end_put_on_the_queue_closes_what_the_turn_noted():
     sources = sorted((Path(__file__).resolve().parents[2] / "main_logic" / "core").glob("*.py"))
     assert {"turn.py", "proactive.py", "streaming.py"} <= {path.name for path in sources}
     offenders: list[str] = []
+    dropped: list[str] = []
     found: list[str] = []
     for path in sources:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -721,10 +835,33 @@ def test_every_turn_end_put_on_the_queue_closes_what_the_turn_noted():
             )
             if not closes:
                 offenders.append(f"{path.name}:{node.name}")
+            # A plain ``turn end`` is one cross_server may check the turn
+            # for, so it must also carry whether she acted: the close is
+            # called as the test of an ``if`` (that sets the mark).
+            plain = any(
+                isinstance(item, ast.Dict)
+                and any(
+                    isinstance(key, ast.Constant) and key.value == "data"
+                    and isinstance(value, ast.Constant) and value.value == "turn end"
+                    for key, value in zip(item.keys, item.values)
+                )
+                for item in ast.walk(node)
+            )
+            carries = any(
+                isinstance(item, ast.If)
+                and isinstance(item.test, ast.Call)
+                and isinstance(item.test.func, ast.Attribute)
+                and item.test.func.attr == "_close_turn_tool_state"
+                for item in ast.walk(node)
+            )
+            if plain and not carries:
+                dropped.append(f"{path.name}:{node.name}")
 
     # The search found what it is about; an empty one would pass for nothing.
     assert "turn.py:_queue_turn_end" in found and "proactive.py:finish_proactive_delivery" in found
+    assert "turn.py:emit_mirror_turn_end" in found and "streaming.py:_emit_cooldown_turn_end_if_needed" in found
     assert offenders == []
+    assert dropped == []
 
 
 def test_a_session_end_says_whether_she_acted_in_the_turn_it_cut_off():

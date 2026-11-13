@@ -477,6 +477,25 @@ async def test_a_restore_that_failed_is_tried_again(wiring, tmp_path, monkeypatc
     assert [task["id"] for task in wiring.mount_module.hud.active()] == [commission.id]
 
 
+async def test_the_pages_that_read_the_tasks_still_answer_when_the_host_cannot_be_built(wiring, tmp_path, monkeypatch):
+    await _left_by_an_earlier_process(tmp_path)
+
+    def broken() -> Any:
+        raise RuntimeError("cannot open the ledger")
+
+    monkeypatch.setattr(wiring.host_mount, "get_host", broken)
+
+    # They read what is in memory; before the host they would answer from
+    # memory alone, and a host that cannot be built must not make them fail.
+    assert (await wiring.routes.list_tasks())["tasks"] == []
+    assert (await wiring.routes.get_agent_state())["success"] is True
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as missing:
+        await wiring.runtime.get_task("nope")
+    assert missing.value.status_code == 404
+
+
 @pytest.mark.parametrize("nekoclaw_is_on", [True, False])
 async def test_stopping_everything_right_after_a_restart_stops_what_was_left_under_way(
     wiring, tmp_path, monkeypatch, nekoclaw_is_on
@@ -1310,6 +1329,36 @@ async def test_a_browser_call_that_never_lets_go_holds_the_lock_for_a_bounded_ti
         "builtin:browser", commission_id="c3", arguments={"instruction": "find the opening hours"}
     )
     assert outcome.success is True
+
+
+async def test_what_a_call_left_on_a_browser_that_was_replaced_holds_up_nothing(builtins, monkeypatch):
+    from app.agent_server import capabilities, nekoclaw_builtins
+
+    monkeypatch.setattr(nekoclaw_builtins, "_BROWSER_STOP_WAIT_SECONDS", 0.1)
+    browser = builtins.browser
+    browser.gate, browser.stuck, browser.hard_cancel_helps = asyncio.Event(), asyncio.Event(), False
+    running = asyncio.ensure_future(
+        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
+    )
+    await wait_until(lambda: browser.instructions, what="the adapter starting")
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, 5.0)
+    # The stuck call never lets go of that browser. It is closed and a new
+    # one built (the switch turned off and on, the model changed).
+    replacement = BrowserAdapter()
+
+    async def ensure_replacement() -> Any:
+        return replacement
+
+    monkeypatch.setattr(capabilities, "_ensure_browser_use_adapter", ensure_replacement)
+
+    outcome = await builtins.provider.run(
+        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
+    )
+
+    assert outcome.success is True and replacement.instructions == ["find the opening hours"]
+    browser.stuck.set()
 
 
 async def test_a_cancelled_browser_call_keeps_the_lock_until_its_session_is_closed(builtins):

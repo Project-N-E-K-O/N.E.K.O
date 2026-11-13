@@ -845,16 +845,20 @@ class ProactiveMixin:
                     # TTS done-signal is best-effort; the delivery itself already succeeded.
                     pass
 
+            turn_end_msg = {'type': 'system', 'data': 'turn end'}
             if (
                 self.current_speech_id == commit_sid
                 and getattr(self, "last_user_engagement_time", None) == engagement_at_commit
             ):
-                self._close_turn_tool_state()
+                # Carried as by every other turn end, though a turn she
+                # starts herself has no task tools to act through.
+                if self._close_turn_tool_state():
+                    turn_end_msg['acted_through_tools'] = True
             # Otherwise the user began a turn while this one was being
             # delivered (the sends and the TTS signal above are awaited).
             # Its words and its tool calls are that turn's, which closes
             # them itself when it ends.
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            self.sync_message_queue.put(turn_end_msg)
             try:
                 if (self.websocket
                         and hasattr(self.websocket, 'client_state')

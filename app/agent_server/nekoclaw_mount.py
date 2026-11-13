@@ -395,7 +395,12 @@ async def restore_hud() -> None:
         return
     if host is None and not await ledger_exists():
         return
-    await ready_host()
+    try:
+        await ready_host()
+    except Exception as exc:
+        # The pages that call this only read what is in memory; a host that
+        # cannot be built must not turn them into errors.
+        logger.warning("[Agent] building the host to restore the HUD failed (exc_type=%s)", type(exc).__name__)
 
 
 async def ledger_exists() -> bool:
