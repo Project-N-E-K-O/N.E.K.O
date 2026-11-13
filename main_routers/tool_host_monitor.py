@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 import psutil
@@ -14,6 +15,10 @@ from utils.internal_http_client import get_internal_http_client
 _PROBE_INTERVAL = 5.0
 _PROBE_TIMEOUT = 1.0
 _FAILURE_THRESHOLD = 3
+# How long a host that has never answered /health keeps its tools while its
+# process is alive. This covers a listener that has not bound yet; past it, a
+# host that never confirmed itself is treated like one whose listener stopped.
+_STARTUP_GRACE = 60.0
 
 
 @dataclass(frozen=True)
@@ -28,6 +33,7 @@ class ToolHost:
 class _ProbeState:
     failures: int = 0
     seen_healthy: bool = False
+    first_probed_at: float = field(default_factory=time.monotonic)
 
 
 def _process_exited(pid: int, started_at: float) -> bool:
@@ -101,8 +107,11 @@ class ToolHostMonitor:
         observations = dict(zip(origins, responses))
 
         # Before the first successful probe, a live process may still be
-        # starting. For an embedded host that has answered before, the HTTP
-        # listener can stop while its process continues running.
+        # starting, so it gets a bounded grace period. For an embedded host
+        # that has answered before (or never answered within the grace
+        # period), the HTTP listener can stop while its process continues
+        # running, so process liveness no longer protects it.
+        now = time.monotonic()
         failed_probes = []
         processes_to_check = set()
         for host in hosts:
@@ -112,7 +121,10 @@ class ToolHostMonitor:
                 state.seen_healthy = True
                 state.failures = 0
                 continue
-            listener_stopped = state.seen_healthy and bool(observed_id or connection_failed)
+            confirmed_or_overdue = (
+                state.seen_healthy or now - state.first_probed_at >= _STARTUP_GRACE
+            )
+            listener_stopped = confirmed_or_overdue and bool(observed_id or connection_failed)
             failed_probes.append((host, state, observed_id, listener_stopped))
             if not listener_stopped:
                 processes_to_check.add((host.pid, host.started_at))

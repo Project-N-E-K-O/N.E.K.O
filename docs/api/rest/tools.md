@@ -128,7 +128,7 @@ The plugin host includes three optional fields on registrations with a `plugin:`
 | `host_pid` | The local host process ID, a positive integer |
 | `host_process_started_at` | The process creation time in Unix seconds, a positive finite number |
 
-Providing all three enables proactive cleanup. The main server checks the callback origin's `GET /health` about every five seconds and compares the returned `host_instance_id`. It allows a live host to finish starting before its first successful check. Three consecutive checks indicating that the host is unreachable, or confirmation that the address belongs to a different instance, remove the old instance's tools from the character registries and replay ledger and schedule an active-session refresh. Registrations without this metadata retain the existing cleanup on callback connection failures.
+Providing all three enables proactive cleanup. The main server checks the callback origin's `GET /health` about every five seconds and compares the returned `host_instance_id`. It allows a live host up to about 60 seconds to finish starting before its first successful check; after that, the host is checked as if it had already answered. Three consecutive checks indicating that the host is unreachable, or confirmation that the address belongs to a different instance, remove the old instance's tools from the character registries and replay ledger and schedule an active-session refresh. Registrations without this metadata retain the existing cleanup on callback connection failures.
 
 On normal shutdown, the plugin host requests cleanup immediately:
 

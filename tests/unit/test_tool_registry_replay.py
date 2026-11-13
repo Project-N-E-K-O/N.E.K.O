@@ -183,6 +183,37 @@ async def test_host_that_has_not_bound_yet_keeps_startup_registrations(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_never_confirmed_host_is_reclaimed_after_startup_grace(monkeypatch):
+    # An embedded host that stopped before its first probe and failed to
+    # release leaves an instance that never answered /health while the shared
+    # process keeps running; once the grace period ends it must be reclaimed.
+    alpha = _Mgr("Alpha")
+    _use_managers(monkeypatch, alpha)
+    await _register("stale_only", host_id="stale")
+    await _register("fresh_only", host_id="fresh", port=9002)
+
+    def health(request):
+        if request.url.port == 9002:
+            return httpx.Response(200, json={"host_instance_id": "fresh"})
+        raise httpx.ConnectError("listener stopped", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(health)) as client:
+        monkeypatch.setattr(host_monitor, "get_internal_http_client", lambda: client)
+        monkeypatch.setattr(host_monitor, "_process_exited", lambda *_: False)
+        monitor = host_monitor.ToolHostMonitor(tr._registered_tool_hosts, tr._evict_tool_host)
+        for _ in range(host_monitor._FAILURE_THRESHOLD + 1):
+            await monitor.probe_once()
+        assert alpha.tool_registry.get("stale_only") is not None
+        for state in monitor._probes.values():
+            state.first_probed_at -= host_monitor._STARTUP_GRACE
+        for _ in range(host_monitor._FAILURE_THRESHOLD):
+            await monitor.probe_once()
+
+    assert alpha.tool_registry.names() == ["fresh_only"]
+    assert tr.replay_remote_tools(_rebuilt("Alpha"), "Alpha") == ["fresh_only"]
+
+
+@pytest.mark.asyncio
 async def test_rebuilt_manager_gets_global_remote_tool_back(monkeypatch):
     _use_managers(monkeypatch, _Mgr("Alpha"), _Mgr("Beta"))
     result = await _register("minecraft_task", description="act in game")
