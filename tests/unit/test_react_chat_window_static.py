@@ -2277,7 +2277,7 @@ def test_compact_minimize_does_not_replay_full_shell_collapse_animation():
         1,
     )[0]
     assert request_block.count(
-        "setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });"
+        "setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true, fromCompactMinimizeButton: true });"
     ) == 2
 
     set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(

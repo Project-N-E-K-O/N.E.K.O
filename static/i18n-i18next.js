@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 合并语音消息、剧场和 NekoClaw 的语言包更新，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-14-chat-audio-theater-nekoclaw-merge';
+    // 新增关闭录音预览的文案（八语言），刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-14-chat-audio-theater-nekoclaw-close-preview';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;
