@@ -507,3 +507,33 @@ async def test_stale_tool_invocation_does_not_capture(stale):
         invoking_session=object() if stale == 'session' else manager.session)
     assert result.is_error and result.output['reason'] == 'superseded'
     assert not calls
+
+
+@pytest.mark.parametrize("empty", [None, "", [], {}])
+async def test_optional_empty_screen_fields_do_not_block_capture(empty):
+    manager, calls = fixture()
+    first = await m.read_screen(manager, {
+        "snapshot_id": empty, "window_id": empty, "region": empty,
+    })
+    assert not first["is_error"]
+    sid = first["output"]["snapshot_id"]
+    window = await m.read_screen(manager, {
+        "snapshot_id": sid, "window_id": "window:9", "region": empty,
+    })
+    assert window["output"]["kind"] == "window"
+    crop = await m.read_screen(manager, {
+        "snapshot_id": sid, "window_id": empty, "region": [0, 0, 1, 1],
+    })
+    assert crop["output"]["kind"] == "region"
+    assert [call["operation"] for call in calls] == ["overview", "window", "validate"]
+
+
+async def test_nonempty_conflicting_screen_targets_remain_invalid():
+    manager, calls = fixture()
+    first = await m.read_screen(manager)
+    sid = first["output"]["snapshot_id"]
+    result = await m.read_screen(manager, {
+        "snapshot_id": sid, "window_id": "window:9", "region": [0, 0, 1, 1],
+    })
+    assert result["output"]["reason"] == "invalid_request"
+    assert len(calls) == 1
