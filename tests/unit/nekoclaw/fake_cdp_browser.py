@@ -967,8 +967,8 @@ class FakeBrowser:
             options = [child.name for child in target.children if child.kind == "option"]
             if value not in options:
                 return {"kind": "error", "message": f'it has no option "{value}"; its options are: {", ".join(options)}'}
-            wanted = next(child for child in target.children if child.kind == "option" and child.name == value)
-            if wanted.disabled:
+            named = [child for child in target.children if child.kind == "option" and child.name == value]
+            if all(child.disabled for child in named):
                 return {"kind": "error", "message": f'its option "{value}" is disabled'}
             target.value = value
             return {"kind": "done"}

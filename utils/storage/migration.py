@@ -1674,6 +1674,15 @@ def _entry_exists(path: Path) -> bool:
     return True
 
 
+def _is_empty_file(path: Path) -> bool:
+    """Whether ``path`` is a file of no bytes; a link is not followed."""
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(status.st_mode) and status.st_size == 0
+
+
 def _iter_existing_runtime_entries(
     root: Path, *, excluded: tuple[str, ...] = (),
 ) -> list[str]:
@@ -3030,8 +3039,15 @@ def run_pending_storage_migration(
                 # The target keeps its own (or there is none to copy): the
                 # source's companion stays behind with what it belongs to.
                 excluded_source_entries = (*excluded_source_entries, companion_entry)
-            elif companion_entry in target_entries_before_staging and (
-                use_existing_target or companion_entry not in source_entries_before_staging
+            elif (
+                companion_entry in target_entries_before_staging
+                and (use_existing_target or companion_entry not in source_entries_before_staging)
+                # One of no bytes holds nothing that could be replayed: it is
+                # left where it is, unless the source has one to put there.
+                and not (
+                    companion_entry not in source_entries_before_staging
+                    and _is_empty_file(target_root / companion_entry)
+                )
             ):
                 # What is copied would come to stand next to a companion the
                 # target left behind (a reused target keeps what it holds,

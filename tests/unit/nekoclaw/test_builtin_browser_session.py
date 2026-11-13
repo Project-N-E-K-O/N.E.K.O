@@ -2742,10 +2742,10 @@ def _letting_go_fails(session: BrowserSession, monkeypatch: Any, name: str) -> N
     """Make the release of one key fail, as on a page that no longer answers."""
     send = session._key_event
 
-    async def key_event(page: Any, kind: str, key: Any, mask: int) -> bool:
+    async def key_event(page: Any, kind: str, key: Any, mask: int, **options: Any) -> bool:
         if kind == "keyUp" and key.key.lower() == name:
             raise BrowserError("The page did not respond (timed out). It may be busy or frozen; try reloading it.")
-        return await send(page, kind, key, mask)
+        return await send(page, kind, key, mask, **options)
 
     monkeypatch.setattr(session, "_key_event", key_event)
 
@@ -2764,6 +2764,8 @@ async def test_the_modifiers_come_up_though_letting_go_of_the_key_fails_when_the
     # Stopped is what the call was, not what went wrong while the keys were let go of.
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(press, 5.0)
+    # The modifiers are sent all the same, and not waited for.
+    await _until(lambda: len(_key_events(world, sent)) == 5)
     assert _key_events(world, sent) == [
         ("rawKeyDown", "Control"),
         ("rawKeyDown", "Shift"),
@@ -2783,6 +2785,7 @@ async def test_the_other_modifiers_come_up_though_letting_go_of_one_fails_and_th
     with pytest.raises(BrowserError, match="The page did not respond"):
         await session.press_key(page, "Control+Shift+R")
 
+    await _until(lambda: _key_events(world, sent)[-1] == ("keyUp", "Control"))
     events = _key_events(world, sent)
     assert events[-1] == ("keyUp", "Control") and ("keyUp", "Shift") not in events
     assert [kind for kind, _key in events].count("keyUp") == 2
@@ -2821,6 +2824,15 @@ async def test_another_browser_is_driven_though_the_one_before_it_could_not_be_c
     # What went wrong with the old one is no reason not to reach the new one.
     assert session.connected and world.attached == [CHROME]
     world.close_error = None
+    tried = len(world.closed)
+
+    await session.close()
+
+    # It is not let go of for good: closing tries it again, and once it is closed, no more.
+    closed = [browser for browser, _connection in world.closed[tried:]]
+    assert [browser.owned for browser in closed] == [False, True] and closed[1] is world.closed[0][0]
+    await session.close()
+    assert len(world.closed) == tried + 2
 
 
 async def test_an_option_that_is_disabled_is_not_chosen_by_filling_in_its_select(
@@ -2853,3 +2865,31 @@ async def test_a_modifier_comes_up_when_the_call_is_stopped_before_its_going_dow
         await asyncio.wait_for(press, 5.0)
     # Sent, though not yet answered: what is done next on the page must not find Control held.
     assert _key_events(world, sent) == [("rawKeyDown", "Control"), ("keyUp", "Control")]
+
+
+async def test_a_page_that_no_longer_answers_is_waited_for_once_when_the_keys_are_let_go_of(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    assert session_module.KEY_RELEASE_WAIT_SECONDS == 5.0
+    monkeypatch.setattr(session_module, "KEY_RELEASE_WAIT_SECONDS", 1.0)
+    page, _fake, _snapshot = await open_page(session, world)
+    going_down = world.browser.hold("Input.dispatchKeyEvent", type="rawKeyDown", key="r")
+    # The page is frozen: no key that comes up is answered.
+    coming_up = world.browser.hold("Input.dispatchKeyEvent", type="keyUp")
+    sent = world.browser.mark()
+    press = asyncio.ensure_future(session.press_key(page, "Control+Shift+Alt+R"))
+    await asyncio.wait_for(going_down.reached.wait(), 5.0)
+    started = time.monotonic()
+    press.cancel()
+    going_down.release()
+
+    # Stopped after the one short wait, not after a wait for each of the four keys
+    # (nor after the half minute a page is given to answer an action).
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(press, 10.0)
+    assert 0.9 <= time.monotonic() - started < 2.5
+
+    # All four are sent all the same: the page lets go of them when it comes round.
+    await _until(lambda: [kind for kind, _key in _key_events(world, sent)].count("keyUp") == 4)
+    assert _key_events(world, sent)[-4:] == [("keyUp", "r"), ("keyUp", "Alt"), ("keyUp", "Shift"), ("keyUp", "Control")]
+    coming_up.release()

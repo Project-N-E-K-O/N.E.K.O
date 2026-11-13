@@ -66,6 +66,10 @@ logger = logging.getLogger(__name__)
 
 NAVIGATION_TIMEOUT_SECONDS = 20.0
 ACTION_NAVIGATION_TIMEOUT_SECONDS = 10.0
+# How long the release of a key is waited for when the call it belongs to has
+# been stopped or has failed: stopping must not take as long as a page takes
+# to be given up on.
+KEY_RELEASE_WAIT_SECONDS = 5.0
 WAIT_FOR_DEFAULT_SECONDS = 10.0
 SNAPSHOT_TIMEOUT_SECONDS = 10.0
 # Connecting to a browser the user is using waits for them to allow it there.
@@ -198,15 +202,15 @@ _PREPARE_FILL = """function(value) {
   if (el.disabled) return {kind: 'error', message: 'the element is disabled'};
   if (tag === 'SELECT') {
     const options = Array.from(el.options);
-    const wanted = options.find(o => o.value === value) || options.find(o => o.label === value)
-      || options.find(o => o.text.trim() === value.trim());
+    const named = among => among.find(o => o.value === value) || among.find(o => o.label === value)
+      || among.find(o => o.text.trim() === value.trim());
+    // Of several options by that name (one sold out, one not), the one a person could choose.
+    const wanted = named(options.filter(o => !o.disabled
+      && !(o.parentElement instanceof HTMLOptGroupElement && o.parentElement.disabled)));
     if (!wanted) {
+      if (named(options)) return {kind: 'error', message: 'its option "' + value + '" is disabled'};
       return {kind: 'error', message: 'it has no option "' + value + '"; its options are: '
         + options.map(o => o.text.trim()).slice(0, 30).join(', ')};
-    }
-    const group = wanted.parentElement;
-    if (wanted.disabled || (group instanceof HTMLOptGroupElement && group.disabled)) {
-      return {kind: 'error', message: 'its option "' + value + '" is disabled'};
     }
     if (el.value !== wanted.value) {
       el.value = wanted.value;
@@ -298,7 +302,7 @@ class BrowserSession:
         self._blocked_ports: frozenset[int] = frozenset()
         # True when the whole browser is kept from them, not only the pages worked on.
         self._blocked_everywhere = False
-        self._answers: set[asyncio.Future[None]] = set()
+        self._answers: set[asyncio.Future[Any]] = set()
         self._connection: CdpConnection | None = None
         self._browser: launcher.RunningBrowser | None = None
         self._pages: dict[str, Page] = {}  # by target id, in the order they appeared
@@ -319,6 +323,9 @@ class BrowserSession:
         # Closing a browser whose start was cancelled; the next start and
         # ``close`` wait for it.
         self._abandoned: asyncio.Future[None] | None = None
+        # Browsers of ours that could not be closed when another took their
+        # place; ``close`` tries again.
+        self._unclosed: list[launcher.RunningBrowser] = []
 
     # -- connection -------------------------------------------------------
 
@@ -385,6 +392,8 @@ class BrowserSession:
                 raise
             except Exception:  # noqa: BLE001 - the new one is driven all the same
                 logger.warning("closing the browser that was driven before failed", exc_info=True)
+                # Not let go of for good: ``close`` tries again.
+                self._unclosed.append(held)
             self._browser = None
         try:
             connection = await CdpConnection.connect(
@@ -550,6 +559,13 @@ class BrowserSession:
             # when it is asked for again.
             if self._browser is browser:
                 self._browser = None
+        for leftover in list(self._unclosed):
+            try:
+                await launcher.close(leftover)
+            except Exception:  # noqa: BLE001 - tried again the next time
+                logger.warning("closing a browser that was driven earlier failed again", exc_info=True)
+                continue
+            self._unclosed.remove(leftover)
         await self._drop_connection()
         self._window = None
 
@@ -1304,7 +1320,7 @@ class BrowserSession:
 
     # -- keyboard -------------------------------------------------------------
 
-    async def _key_event(self, page: Page, kind: str, key: KeyDefinition, mask: int) -> bool:
+    async def _key_event(self, page: Page, kind: str, key: KeyDefinition, mask: int, *, timeout: float = 30.0) -> bool:
         typed = typed_text(key, mask)
         text = typed if kind == "keyDown" else None
         # The same name going down and coming up ("A" with Shift held, both times).
@@ -1319,7 +1335,7 @@ class BrowserSession:
         if text:
             params["text"] = text
             params["unmodifiedText"] = key.text or text
-        return await self._send_unless_dialog(page, "Input.dispatchKeyEvent", params)
+        return await self._send_unless_dialog(page, "Input.dispatchKeyEvent", params, timeout=timeout)
 
     async def _press(self, page: Page, key: KeyDefinition, modifiers: list[KeyDefinition]) -> None:
         mask = 0
@@ -1347,17 +1363,30 @@ class BrowserSession:
             # on the way: the key itself when the call was stopped between
             # its going down and coming up, then the modifiers. A release
             # that fails (a page that no longer answers) or is stopped does
-            # not leave the rest held; it is raised once they are all up,
-            # unless the call is failing already.
+            # not leave the rest held: they are sent all the same, only not
+            # waited for any more, one wait for such a page being enough. The
+            # failure is raised once they are all sent, unless the call is
+            # failing already.
+            releases = ([(key, False)] if key_is_down else []) + [(item, True) for item in reversed(down)]
+            wait = KEY_RELEASE_WAIT_SECONDS if failed else 30.0
             late: BaseException | None = None
-            for released, is_modifier in [(key, False)] * key_is_down + [(item, True) for item in reversed(down)]:
+            answered = True
+            for released, is_modifier in releases:
                 if is_modifier:
                     mask &= ~modifier_mask([released])
-                try:
-                    await asyncio.shield(self._key_event(page, "keyUp", released, mask))
-                except BaseException as exc:  # noqa: BLE001 - raised below, once the rest is up
-                    if late is None or isinstance(exc, asyncio.CancelledError):
-                        late = exc
+                release = asyncio.ensure_future(self._key_event(page, "keyUp", released, mask, timeout=wait))
+                if answered:
+                    try:
+                        await asyncio.shield(release)
+                    except BaseException as exc:  # noqa: BLE001 - raised below, once the rest is sent
+                        answered = False
+                        if late is None or isinstance(exc, asyncio.CancelledError):
+                            late = exc
+                if not release.done():
+                    # Goes on by itself; kept so that it is not collected half way.
+                    self._answers.add(release)
+                    release.add_done_callback(self._answers.discard)
+                    release.add_done_callback(_drop_outcome)
             if late is not None and (not failed or isinstance(late, asyncio.CancelledError)):
                 raise late
 

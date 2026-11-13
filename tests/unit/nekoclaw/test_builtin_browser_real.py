@@ -57,9 +57,12 @@ FORM = """<!doctype html><html><head><title>Order form</title></head><body>
   <label>Email <input name="email" value="old@example.com"></label>
   <select name="product" aria-label="Product">
     <option value="brass">Brass Hinge</option>
+    <optgroup label="No longer made" disabled>
+      <option value="iron">Iron Nail</option>
+      <option value="steel-1998">Steel Bolt</option>
+    </optgroup>
     <option value="steel">Steel Bolt</option>
     <option value="zinc" disabled>Zinc Nut</option>
-    <optgroup label="No longer made" disabled><option value="iron">Iron Nail</option></optgroup>
   </select>
   <input type="checkbox" name="gift" id="gift"><label for="gift">Gift wrap</label>
   <button type="submit">Send order</button>
@@ -261,6 +264,7 @@ async def test_a_form_is_filled_in_sent_and_its_result_read(tools: BrowserTools,
         "Runtime.evaluate",
         {"expression": "document.querySelector('[name=product]').value", "returnByValue": True},
     )
+    # Of the two options by the name "Steel Bolt" the one that can be chosen was, not the first by that name.
     assert chosen["result"]["value"] == "steel"
 
     sent = await call(tools, "click", uid=uid_of(opened.text, "button", "Send order"))

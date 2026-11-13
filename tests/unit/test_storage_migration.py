@@ -5131,6 +5131,8 @@ def test_a_ledger_that_is_copied_takes_its_log_along(tmp_path, selection_source)
         # A log without its ledger in a reused target: the source's ledger would come to stand next to it.
         ("legacy", {_LEDGER: b"the source's ledger"}, {_LEDGER_LOG: b"commits of nobody knows what"}),
         ("legacy", {_LEDGER: b"the source's ledger", _LEDGER_LOG: b"commits of the source"}, {_LEDGER_LOG: b"commits of nobody knows what"}),
+        # Also one of no bytes, when the source has a log that would have to take its place and cannot.
+        ("legacy", {_LEDGER: b"the source's ledger", _LEDGER_LOG: b"commits of the source"}, {_LEDGER_LOG: b""}),
     ],
 )
 def test_a_ledger_is_not_put_next_to_a_log_the_target_left_behind(tmp_path, monkeypatch, selection_source, source, target):
@@ -5165,3 +5167,23 @@ def test_a_log_without_its_ledger_is_not_copied(tmp_path):
     assert _ledger_files(target_root) == {}
     assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "source"
     assert (source_root / _LEDGER_LOG).is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("selection_source", "target"),
+    [
+        ("custom", {_LEDGER: b"the target's ledger", _LEDGER_LOG: b""}),
+        ("legacy", {_LEDGER_LOG: b""}),
+    ],
+)
+def test_a_log_of_no_bytes_in_the_target_does_not_stop_the_migration(tmp_path, selection_source, target):
+    config_manager, _source_root, target_root = _ledger_roots(
+        tmp_path, source={_LEDGER: b"the source's ledger"}, target=target, selection_source=selection_source
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    # Nothing in it could be replayed into the ledger that comes to stand next to it.
+    assert result["completed"] is True, result
+    assert _ledger_files(target_root) == {_LEDGER: b"the source's ledger", _LEDGER_LOG: b""}
