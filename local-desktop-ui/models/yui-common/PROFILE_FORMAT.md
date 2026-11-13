@@ -7,8 +7,8 @@ parameters. Ordinary profiles without the fields keep the normal SDK path.
 | Field | Meaning |
 | --- | --- |
 | `NekoApplyAfterPhysics: true` | Select the manual-expression path even when native expression playback exists. Authored parameters are re-applied after motion/physics processing. |
-| `FadeInTime` | Seconds, used when the caller does not supply `fadeInDuration`. The manual path bounds a valid duration to 50–5000 ms; non-positive/invalid durations use 300 ms. |
-| `NekoBlinkScale` | Finite multiplier bounded to 0.8–1.5, blended with the fade weight after the runtime blink writer. A fully closed eye remains zero. |
+| `FadeInTime` | Seconds, used when the caller does not supply `fadeInDuration`. The manual path bounds a valid duration to 50–5000 ms; missing, non-positive or invalid durations use 300 ms. |
+| `NekoBlinkScale` | Finite multiplier bounded to 0.8–1.5, blended with the fade weight after the runtime blink writer. Only applies while automatic blinking is enabled and neither a motion nor another eye owner has suspended it. Authored eye values are preserved during takeover; scaling resumes when natural blinking resumes. A fully closed eye remains zero. |
 | `NekoMouthRest` | Finite resting opening bounded to 0–0.25. Only applied when lipsync and speech amplitude are inactive. |
 | `NekoPerformance` | Optional posture/hand motion and face accent, with the same resource lifetime as the manual expression. |
 
@@ -38,9 +38,15 @@ Example of the optional performance object:
 - `apply(core, weight, elapsedMs)` is called by the active expression's final
   runtime hook. `dispose()` removes the cue and stops future writes. Replacement,
   clearing and model teardown retain the existing expression ownership checks.
-- SVG accents update at most every 32 ms, follow the face rectangle, and have no
-  pointer hit area. Reduced-motion preference is sampled when creating the
-  resource and freezes motion and accents while preserving the pose.
+  Creation/application failures disable the optional performance without stopping
+  blink, lipsync, final pose overrides or observations.
+- SVG accents update at most every 32 ms; head geometry is cached for 300 ms
+  and refreshed early on model position/scale/rotation or renderer size changes.
+  Observations reuse the drawn SVG and never traverse model drawables. Accents
+  live inside the canvas container, inheriting its minimize, hover-fade and game
+  visibility even when rendering stops. They have no pointer hit area.
+  Reduced-motion preference is sampled when creating the resource and freezes
+  motion and accents while preserving the pose.
 
 Changing supported IDs requires checking the actual MOC/CDI and motions, plus
 final-render tests and desktop-size screenshots. Keep profile values and model

@@ -8,7 +8,7 @@
  */
 
 const LIVE2D_EMOTION_SOFT_RESET_MS = 220;
-const LIVE2D_EMOTION_SOFT_EXPRESSION_FADE_IN_MS = 220;
+const LIVE2D_MANUAL_EXPRESSION_FADE_IN_MS = 300;
 const LIVE2D_EMOTION_SOFT_SIMPLE_MOTION_RESET_MS = 200;
 const LIVE2D_EMOTION_IDLE_PRIORITY = 1;
 const live2dExpressionGuardedMotionStates = new WeakSet();
@@ -976,7 +976,7 @@ Live2DManager.prototype.softClearEmotionEffects = async function(options = {}) {
  * @param {Array} params - 表情参数数组 [{Id, Value}, ...]
  * @param {number} fadeInDuration - 淡入持续时间（毫秒），默认 300ms
  */
-Live2DManager.prototype._installManualExpressionOverride = function(params, fadeInDuration = 300, options = {}) {
+Live2DManager.prototype._installManualExpressionOverride = function(params, fadeInDuration = LIVE2D_MANUAL_EXPRESSION_FADE_IN_MS, options = {}) {
     if (!this.currentModel || !this.currentModel.internalModel?.coreModel || !Array.isArray(params) || params.length === 0) return false;
     if (typeof this.hasActiveActionMotion === 'function' && this.hasActiveActionMotion()) return false;
     this._pauseIdleMotionForExpression();
@@ -994,14 +994,19 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
 
     // 钳制 fadeInDuration：非法值回退到默认，范围 [50, 5000]
     if (!Number.isFinite(fadeInDuration) || fadeInDuration <= 0) {
-        fadeInDuration = 300;
+        fadeInDuration = LIVE2D_MANUAL_EXPRESSION_FADE_IN_MS;
     }
     fadeInDuration = Math.max(50, Math.min(fadeInDuration, 5000));
 
     const self = this;
     const startTime = performance.now();
     const resource = { emitter, listener: null, active: true, attempts: 0, timer: null };
-    resource.performance = window.nekoExpressionPerformance?.create(self, model, coreModel, options.performance);
+    try {
+        resource.performance = window.nekoExpressionPerformance?.create(self, model, coreModel, options.performance);
+    } catch (error) {
+        console.warn('[ManualExpression] Optional performance creation failed:', error);
+        resource.performance = null;
+    }
 
     const onBeforeUpdate = function() {
         if (!resource.active) return;
@@ -1038,8 +1043,10 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
             || model.internalModel !== emitter || core !== coreModel) return;
         const t = Math.min((performance.now() - startTime) / fadeInDuration, 1);
         const weight = t * t * (3 - 2 * t);
-        // Run after the application's own blink writer. Zero remains zero.
-        if (Number.isFinite(options.blinkScale)) {
+        // Scale only natural blinking; motions and temporary eye owners retain
+        // their authored values. A fully closed natural blink remains zero.
+        if (Number.isFinite(options.blinkScale) && self._autoEyeBlinkEnabled
+            && !self._suspendEyeBlinkOverride && !self._isEyeDrivenByMotion) {
             const scale = 1 + (Math.max(0.8, Math.min(1.5, options.blinkScale)) - 1) * weight;
             for (const id of ['ParamEyeLOpen', 'ParamEyeROpen']) {
                 const index = core.getParameterIndex(id);
@@ -1056,7 +1063,16 @@ Live2DManager.prototype._installManualExpressionOverride = function(params, fade
                 core.setParameterValueByIndex(index, current + (Math.max(0, Math.min(0.25, options.mouthRest)) - current) * weight);
             }
         }
-        resource.performance?.apply(core, weight, performance.now() - startTime);
+        try {
+            resource.performance?.apply(core, weight, performance.now() - startTime);
+        } catch (error) {
+            // Optional accents must not skip the final pose/observation or fail
+            // again on every frame, even if their cleanup also throws.
+            const failedPerformance = resource.performance;
+            resource.performance = null;
+            try { failedPerformance?.dispose(); } catch (_) {}
+            console.warn('[ManualExpression] Optional performance disabled after failure:', error);
+        }
         resource.appliedWeight = weight;
     };
     resource.observeRuntime = (core) => {
@@ -1398,7 +1414,7 @@ Live2DManager.prototype._playExpressionNow = async function(emotion, specifiedEx
             // 使用 _installManualExpressionOverride 在每帧中持续应用参数，并带有淡入效果
             if (this._installManualExpressionOverride(expressionData.Parameters,
                 options.fadeInDuration ?? (Number.isFinite(expressionData.FadeInTime)
-                    ? expressionData.FadeInTime * 1000 : LIVE2D_EMOTION_SOFT_EXPRESSION_FADE_IN_MS),
+                    ? expressionData.FadeInTime * 1000 : LIVE2D_MANUAL_EXPRESSION_FADE_IN_MS),
                 { generation, blinkScale: expressionData.NekoBlinkScale, mouthRest: expressionData.NekoMouthRest,
                     performance: expressionData.NekoPerformance }) !== true || !isCurrent()) return false;
             this.expressionApplied = true;

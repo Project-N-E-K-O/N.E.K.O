@@ -518,7 +518,7 @@ test(`real SDK timeout retires native until model reload and late ${lateResult} 
     await entered.promise;
     triggerTimeout();
     assert.equal(await task, true, 'existing manual fallback succeeds after native timeout');
-    advance(250);
+    advance(300);
     manager.currentModel.internalModel.emit('beforeModelUpdate');
     assert.ok(Math.abs(manager.currentModel.values[0] + 0.4) < 1e-12);
     assert.equal(native.reserveExpressionIndex, -1);

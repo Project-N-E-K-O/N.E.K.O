@@ -22,6 +22,7 @@
     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const MAX_MOTIONS = 12;
     const CUE_FRAME_INTERVAL_MS = 32;
+    const HEAD_RECT_INTERVAL_MS = 300;
 
     function resolveMotions(core, motion) {
         return (Array.isArray(motion) ? motion : [])
@@ -70,24 +71,50 @@
             const strength = Number.isFinite(config.strength) ? clamp(config.strength, 0.25, 1) : 1;
             const reduced = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
             const motions = resolveMotions(core, config.motion);
+            const canvas = manager.pixi_app?.view;
+            const container = canvas?.parentElement || document.getElementById('live2d-container');
+            let headRect = null, lastHeadRead = -Infinity, lastTransform = null;
             let svg = null,
                 drops = [],
                 mark = null,
                 disposed = false,
                 lastDraw = -Infinity,
                 lastAppliedAt = 0;
-            function visible() {
-                const rect = manager.getHeadScreenRectInfo?.()?.rect;
+            function modelVisible() {
                 return !disposed && manager.currentModel === model && !model.destroyed
                     && model.visible !== false && model.renderable !== false && model.worldAlpha > 0.1
-                    && document.visibilityState === 'visible' && rect && rect.width >= 4 && rect.height >= 4
-                    && rect.left + rect.width > 0 && rect.top + rect.height > 0
-                    && rect.left < window.innerWidth && rect.top < window.innerHeight;
+                    && document.visibilityState === 'visible';
+            }
+            function readHeadRect(elapsed) {
+                // Geometry walks every drawable. Animation and observations must not
+                // repeat it; only a new pose sample or a model transform invalidates it.
+                const transform = [model.x, model.y, model.scale?.x, model.scale?.y, model.rotation,
+                    model.pivot?.x, model.pivot?.y, model.anchor?.x, model.anchor?.y,
+                    manager.pixi_app?.renderer?.screen?.width, manager.pixi_app?.renderer?.screen?.height];
+                if (!lastTransform || transform.some((value, i) => value !== lastTransform[i])
+                    || elapsed - lastHeadRead >= HEAD_RECT_INTERVAL_MS) {
+                    lastHeadRead = elapsed;
+                    lastTransform = transform;
+                    const rect = manager.getHeadScreenRectInfo?.()?.rect;
+                    headRect = rect && [rect.left, rect.top, rect.width, rect.height].every(Number.isFinite)
+                        && rect.width >= 4 && rect.height >= 4 ? rect : null;
+                }
+                return headRect;
             }
             function visibleCue() {
-                if (!visible() || !svg?.isConnected || Date.now() - lastAppliedAt > 500) return null;
-                const style = window.getComputedStyle(svg);
-                if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) < 0.1) return null;
+                if (!modelVisible() || !svg?.isConnected || Date.now() - lastAppliedAt > 500) return null;
+                // Computed opacity is not inherited. Account for the container and
+                // ancestors, including CSS-only transitions while the ticker is stopped.
+                let opacity = 1;
+                for (let element = svg; element; element = element.parentElement) {
+                    const style = window.getComputedStyle(element);
+                    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return null;
+                    opacity *= Number(style.opacity);
+                }
+                if (opacity < 0.1) return null;
+                const rect = svg.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0 || rect.right <= 0 || rect.bottom <= 0
+                    || rect.left >= window.innerWidth || rect.top >= window.innerHeight) return null;
                 return cue === 'tears' && !drops.some(({ element }) => {
                     const rect = element.getBoundingClientRect();
                     return Number(element.getAttribute('opacity')) > 0.15 && rect.width > 0 && rect.height > 0
@@ -102,7 +129,7 @@
                     'data-neko-expression-cue': cue
                 });
                 Object.assign(svg.style, {
-                    position: 'fixed',
+                    position: 'absolute',
                     left: '0',
                     top: '0',
                     overflow: 'visible',
@@ -143,7 +170,7 @@
                     );
                     svg.appendChild(mark);
                 }
-                document.body.appendChild(svg);
+                container.appendChild(svg);
             }
             function dispose() {
                 disposed = true;
@@ -163,22 +190,21 @@
                     lastAppliedAt = Date.now();
                     if (!cue || elapsed - lastDraw < CUE_FRAME_INTERVAL_MS) return;
                     lastDraw = elapsed;
-                    const rect = manager.getHeadScreenRectInfo?.()?.rect;
-                    if (
-                        !rect ||
-                        ![rect.left, rect.top, rect.width, rect.height].every(Number.isFinite) ||
-                        rect.width < 4 ||
-                        rect.height < 4 ||
-                        model.visible === false ||
-                        model.renderable === false
-                    ) {
+                    const rect = modelVisible() && container?.isConnected ? readHeadRect(elapsed) : null;
+                    if (!rect) {
                         if (svg) svg.style.opacity = '0';
                         return;
                     }
                     if (!svg) mount();
-                    svg.style.transform = `translate(${rect.left}px, ${rect.top}px)`;
-                    svg.style.width = `${rect.width}px`;
-                    svg.style.height = `${rect.height}px`;
+                    // Head geometry is in PIXI renderer coordinates, not CSS viewport
+                    // coordinates. Use canvas layout sizes so container transforms apply
+                    // exactly once to both the canvas and its sibling accent.
+                    const screen = manager.pixi_app?.renderer?.screen;
+                    const sx = screen?.width > 0 && canvas?.clientWidth > 0 ? canvas.clientWidth / screen.width : 1;
+                    const sy = screen?.height > 0 && canvas?.clientHeight > 0 ? canvas.clientHeight / screen.height : 1;
+                    svg.style.transform = `translate(${(canvas?.offsetLeft || 0) + rect.left * sx}px, ${(canvas?.offsetTop || 0) + rect.top * sy}px)`;
+                    svg.style.width = `${rect.width * sx}px`;
+                    svg.style.height = `${rect.height * sy}px`;
                     svg.style.opacity = String(clamp(weight, 0, 1) * strength);
                     if (cue === 'tears') {
                         for (const { element, side, offset } of drops) {
