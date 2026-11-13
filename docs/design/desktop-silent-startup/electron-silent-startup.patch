@@ -1,7 +1,28 @@
 diff --git a/src/main.js b/src/main.js
 --- a/src/main.js
 +++ b/src/main.js
-@@ -9781,7 +9781,7 @@
+@@ -211,7 +211,12 @@
+       }
+       loadingWindow.show();
+       loadingWindow.focus();
++    } else {
++      revealSilentStartupProgress();
+     }
++  });
++  app.on('activate', () => {
++    revealSilentStartupProgress();
+   });
+ }
+
+@@ -1548,6 +1553,7 @@
+   getCaptureWindows: () => [windowManager.getPetWindow(), windowManager.getReactChatWindow(), windowManager.getFullChatWindow()],
+ });
+ let loadingWindow; // 加载窗口
++let isSilentStartupPending = false;
+ let exitRetentionWindow; // 退出挽留确认窗口
+ let exitRetentionConfirmPromise = null;
+ let loadingWindowCloseIsInternal = false;
+@@ -9781,7 +9787,7 @@
  }
 
  function getConfig() {
@@ -10,28 +31,75 @@ diff --git a/src/main.js b/src/main.js
    const userPath = getUserConfigPath();
    const bundledPath = getBundledConfigPath();
 
-@@ -9813,6 +9813,9 @@
-     }
+@@ -9814,6 +9820,9 @@
      return defaultConfig;
    }
-+
+
 +  // Missing or malformed values keep the existing startup experience.
 +  config.silentStartup = config.silentStartup === true;
-
++
    // 兼容旧配置
    if (typeof config.autoLaunch === 'undefined') {
-@@ -10727,6 +10730,11 @@
+     config.autoLaunch = false;
+@@ -10726,11 +10735,28 @@
+ }
 
  // 创建加载窗口
- function createLoadingWindow() {
-+  // Decide before allocating a BrowserWindow so no show/focus callback can flash it.
-+  if (appConfig && appConfig.silentStartup === true) {
-+    log('[LoadingWindow] skipped: silent startup enabled');
-+    return;
+-function createLoadingWindow() {
+-  loadingWindowStatus = {
+-    title: loadingText('loadingStartingTitle'),
+-    detail: loadingText('loadingStartingDetail'),
+-  };
++function revealSilentStartupProgress() {
++  if (!isSilentStartupPending || mainWindow || isAppQuitRequested()) return;
++  if (!isLoadingWindowLive(loadingWindow)) createLoadingWindow({ reveal: true });
++  if (!isLoadingWindowLive(loadingWindow)) return;
++  if (loadingWindow.isMinimized()) loadingWindow.restore();
++  loadingWindow.show();
++  loadingWindow.focus();
++}
++
++function createLoadingWindow({ reveal = false } = {}) {
++  if (!reveal) {
++    loadingWindowStatus = {
++      title: loadingText('loadingStartingTitle'),
++      detail: loadingText('loadingStartingDetail'),
++    };
++    isSilentStartupPending = !!(appConfig && appConfig.silentStartup === true);
++    // A repeat launch explicitly requests progress; ordinary startup stays silent.
++    if (isSilentStartupPending) {
++      log('[LoadingWindow] skipped: silent startup enabled');
++      return;
++    }
 +  }
-   loadingWindowStatus = {
-     title: loadingText('loadingStartingTitle'),
-     detail: loadingText('loadingStartingDetail'),
+   const { width, height } = screen.getPrimaryDisplay().workAreaSize;
+   const bannerSize = getLauncherBannerSize();
+   const baseWidth = bannerSize.width;
+@@ -10768,7 +10794,7 @@
+
+   const loadingWindowRef = loadingWindow;
+   // 身份检查沿用本函数既有口径：只有仍然是"当前"加载窗口时才继续操作它。
+-  // createLoadingWindow 目前只在 app.whenReady 里调用一次，所以不存在被取代的 splash。
++  // Repeat launches reuse the live splash; a silent start creates it lazily.
+   const isLoadingWindowRefLive = () => (
+     loadingWindow === loadingWindowRef && isLoadingWindowLive(loadingWindowRef)
+   );
+@@ -10905,6 +10931,7 @@
+ }
+
+ function closeLoadingWindow() {
++  isSilentStartupPending = false;
+   if (loadingWindow && !loadingWindow.isDestroyed()) {
+     loadingWindowCloseIsInternal = true;
+     loadingWindow.hide();
+@@ -14166,6 +14193,7 @@
+         .catch(async (err) => {
+           if (isAppQuitRequested()) return;
+           log('Backend startup failed:', err.message);
++          isSilentStartupPending = false;
+           if (loadingWindow && !loadingWindow.isDestroyed()) loadingWindow.hide();
+           try {
+             await loadFailureDialog.show({
 diff --git a/src/main/desktop-settings-actions.js b/src/main/desktop-settings-actions.js
 --- a/src/main/desktop-settings-actions.js
 +++ b/src/main/desktop-settings-actions.js
@@ -43,10 +111,11 @@ diff --git a/src/main/desktop-settings-actions.js b/src/main/desktop-settings-ac
        autoLaunch: {
          enabled: autostartStatus.enabled === true,
          supported: autostartStatus.supported !== false,
-@@ -1699,6 +1700,17 @@
+@@ -1698,7 +1699,18 @@
+         return true;
        case 'catResourceGroup':
          setCatResourceGroupFromTray(value);
-         return true;
++        return true;
 +      case 'silentStartup': {
 +        if (typeof value !== 'boolean') return false;
 +        const cfg = ensureAppConfig();
@@ -56,7 +125,7 @@ diff --git a/src/main/desktop-settings-actions.js b/src/main/desktop-settings-ac
 +        if (saveConfig(nextConfig, { logDetails: false }) === false) return false;
 +        cfg.silentStartup = value;
 +        notifyChanged();
-+        return true;
+         return true;
 +      }
        case 'autoLaunch':
          setAutoLaunchFromTray(!!value);
@@ -64,10 +133,13 @@ diff --git a/src/main/desktop-settings-actions.js b/src/main/desktop-settings-ac
 diff --git a/src/main/tray-settings-pet-locales.js b/src/main/tray-settings-pet-locales.js
 --- a/src/main/tray-settings-pet-locales.js
 +++ b/src/main/tray-settings-pet-locales.js
-@@ -1692,6 +1692,65 @@
-   },
- };
-
+@@ -1689,7 +1689,66 @@
+     settingsHideCommunityEntry: 'Ocultar acesso ao Universo Miau',
+     settingsHideCommunityEntryDesc: 'Oculta o botão do Universo Miau ao lado da personagem para um visual mais limpo.',
+     settingsHideCommunityEntryUnsupported: 'A página da personagem é antiga demais. Atualize o N.E.K.O.',
++  },
++};
++
 +const silentStartupCopy = {
 +  "zh-CN": {
 +    "settingsSilentStartup": "静默启动",
@@ -96,7 +168,7 @@ diff --git a/src/main/tray-settings-pet-locales.js b/src/main/tray-settings-pet-
 +    "settingsSilentStartupSaving": "保存中…",
 +    "settingsSilentStartupSaved": "保存しました。次回起動から有効です。",
 +    "settingsSilentStartupSaveFailed": "保存できませんでした。設定は変更されていません。再試行してください。"
-+  },
+   },
 +  "ko": {
 +    "settingsSilentStartup": "조용히 시작",
 +    "settingsSilentStartupDesc": "항상 위에 표시되는 로딩 창을 건너뛰고 준비되면 데스크톱 펫을 표시합니다. 수동 실행과 로그인 시 자동 실행 모두 다음 실행부터 적용됩니다.",
@@ -125,31 +197,30 @@ diff --git a/src/main/tray-settings-pet-locales.js b/src/main/tray-settings-pet-
 +    "settingsSilentStartupSaved": "Salvo. Será aplicado na próxima inicialização.",
 +    "settingsSilentStartupSaveFailed": "Não foi possível salvar. A opção não foi alterada. Tente novamente."
 +  }
-+};
-+
+ };
+
  const updateGuidanceCopy = {
-   'zh-CN': { settingsUpdateGuidance: '应用不再内置更新检查。Windows x64 Portable 和 Linux x64 AppImage 请通过 N.E.K.O.-Launcher 更新；macOS、Linux 目录版及其他发行类型请从 N.E.K.O. 的 GitHub Releases 手动下载新版。' },
-   'zh-TW': { settingsUpdateGuidance: '應用程式不再內建更新檢查。Windows x64 Portable 和 Linux x64 AppImage 請透過 N.E.K.O.-Launcher 更新；macOS、Linux 目錄版及其他發行類型請從 N.E.K.O. 的 GitHub Releases 手動下載新版。' },
 @@ -1709,6 +1768,7 @@
    Object.assign(petSettingsLocales[language], desktopAccountCopy[language] || desktopAccountCopy.en);
    Object.assign(petSettingsLocales[language], communityEntryCopy[language] || communityEntryCopy.en);
    Object.assign(petSettingsLocales[language], updateGuidanceCopy[language]);
-+  Object.assign(petSettingsLocales[language], silentStartupCopy[language]);
++  Object.assign(petSettingsLocales[language], silentStartupCopy[language] || silentStartupCopy.en);
  }
 
  module.exports = {
 diff --git a/src/renderer/settings/settings.js b/src/renderer/settings/settings.js
 --- a/src/renderer/settings/settings.js
 +++ b/src/renderer/settings/settings.js
-@@ -129,6 +129,8 @@
+@@ -129,7 +129,9 @@
  let confirmOpen = false;
  let backgroundOperation = null;
  let backgroundErrorKey = '';
 +let silentStartupActivity = '';
-+
 
++
  function t(key, fallback) {
    const texts = payload.texts || {};
+   return texts[key] || fallback || key;
 @@ -166,7 +168,7 @@
 
  function switchControl(key, checked, options = {}) {
@@ -159,10 +230,12 @@ diff --git a/src/renderer/settings/settings.js b/src/renderer/settings/settings.
      <span class="switch-ui" aria-hidden="true"></span>
    </label>`;
  }
-@@ -580,6 +582,42 @@
+@@ -578,6 +580,49 @@
+         )}
+       </div>
      </section>`;
- }
-
++}
++
 +function renderSilentStartupRow() {
 +  const activityKeys = {
 +    saving: 'settingsSilentStartupSaving',
@@ -185,24 +258,29 @@ diff --git a/src/renderer/settings/settings.js b/src/renderer/settings/settings.
 +
 +async function saveSilentStartup(value) {
 +  if (silentStartupActivity === 'saving') return;
-+  const previous = snapshot().silentStartup === true;
++  const restoreFocus = document.activeElement?.dataset.patch === 'silentStartup';
 +  silentStartupActivity = 'saving';
 +  renderSection();
 +  try {
 +    const result = await patch('silentStartup', value);
-+    if (result && result.snapshot) payload.snapshot = result.snapshot;
++    if (result && result.snapshot) {
++      payload.snapshot = result.snapshot;
++    } else if (result && result.ok === true) {
++      payload.snapshot = { ...snapshot(), silentStartup: value };
++    }
 +    silentStartupActivity = result && result.ok === true ? 'saved' : 'error';
 +  } catch (_) {
-+    payload.snapshot.silentStartup = previous;
 +    silentStartupActivity = 'error';
 +  }
++  const focusWasDropped = document.activeElement === document.body;
 +  renderSection();
-+}
-+
++  if (restoreFocus && focusWasDropped) {
++    document.querySelector('[data-patch="silentStartup"]')?.focus();
++  }
+ }
+
  function renderGeneral() {
-   const snap = snapshot();
-   const prefs = petPrefs();
-@@ -630,6 +668,7 @@
+@@ -630,6 +675,7 @@
        <h2 class="group-title">${escapeHtml(t('settingsGroupSystem'))}</h2>
        <div class="card">
          ${row(t('autoLaunch'), switchControl('autoLaunch', snap.autoLaunch && snap.autoLaunch.enabled, { disabled: snap.autoLaunch && snap.autoLaunch.supported === false }), t('settingsAutoLaunchDesc'))}
@@ -210,7 +288,7 @@ diff --git a/src/renderer/settings/settings.js b/src/renderer/settings/settings.
          ${row(t('preventSystemSleep'), switchControl('preventSystemSleep', snap.preventSystemSleep && snap.preventSystemSleep.active, { disabled: snap.preventSystemSleep && snap.preventSystemSleep.supported === false }), t('settingsPreventSleepDesc'))}
          ${row(t('globalAlwaysOnTop'), switchControl('globalAlwaysOnTop', snap.globalAlwaysOnTop === true), t('settingsAlwaysOnTopDesc'))}
          ${row(t('streamerMode'), switchControl('streamerMode', snap.streamerMode === true), t('settingsStreamerModeDesc'))}
-@@ -1181,7 +1220,11 @@
+@@ -1181,7 +1227,11 @@
  function bindCommonPatches(root) {
    root.querySelectorAll('input[type="checkbox"][data-patch]').forEach((input) => {
      input.addEventListener('change', () => {
@@ -230,7 +308,7 @@ diff --git a/src/renderer/settings/settings.css b/src/renderer/settings/settings
    flex: 0 0 auto;
  }
  .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
-+.switch input[data-patch="silentStartup"]:focus-visible + .switch-ui {
++.switch input:focus-visible + .switch-ui {
 +  outline: 2px solid var(--primary);
 +  outline-offset: 3px;
 +}

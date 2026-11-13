@@ -1,6 +1,6 @@
 # Desktop silent startup: Electron integration proposal
 
-Status: implementation and tests prepared against an installed 0.9.1 desktop
+**Proposal**: implementation and tests prepared against an installed 0.9.1 desktop
 package; integration into the Electron source repository is pending.
 
 N.E.K.O.'s loading window is always on top, independently of the character's
@@ -10,10 +10,10 @@ switch under **Settings → General → System**, immediately after Launch at St
 
 ## Repository boundary
 
-The public [desktop build workflow](../../.github/workflows/build-desktop.yml)
+The public [desktop build workflow](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/.github/workflows/build-desktop.yml)
 checks out `Project-N-E-K-O/N.E.K.O.-PC` for the Electron frontend. The public
 [Tauri README](https://github.com/Project-N-E-K-O/N.E.K.O.-Tauri#readme) also directs
-Electron-specific changes to that repository. On 2026-11-04, that repository
+Electron-specific changes to that repository. On 2026-11-13, that repository
 returned HTTP 404 to this contributor. The source paths below are from the
 installed desktop package, whose package metadata declares MIT; they are not
 Python backend or shared Web UI paths in this repository.
@@ -31,7 +31,8 @@ maintainer with access before shipping.
   existing startup experience. Both manual launches and sign-in launches use it.
 - When enabled, return from `createLoadingWindow()` **before allocating a
   BrowserWindow**. This prevents a brief visible/focused splash and avoids
-  delayed loading callbacks recreating it.
+  delayed loading callbacks recreating it. A repeat launch or macOS Dock
+  activation during startup explicitly reveals the current loading progress.
 - Continue backend discovery/startup and create the existing pet/chat windows
   when ready. Silent startup does not mean hiding the character after startup.
 - Keep the original error dialog, permission requests and recovery paths.
@@ -57,12 +58,40 @@ the authoritative snapshot and display a retry message. Existing settings search
 finds the option. All eight desktop locales are included: Simplified/Traditional
 Chinese, English, Japanese, Korean, Russian, Spanish and Portuguese.
 
+The production renderer's `patch()` returns `ipcRenderer.invoke(PATCH, ...)`
+unchanged. In `src/main/unified-settings-window.js`, `handlePatch()` validates
+that the sender is the settings window, catches action errors, and returns
+`{ ok, snapshot: desktopSettingsActions.getSnapshot() }` for both accepted and
+failed writes. Rejected senders receive `{ ok: false }` before any write.
+`saveSilentStartup()` consumes that authoritative snapshot. A successful reply
+without a snapshot merges the saved value into the existing snapshot; an IPC
+rejection leaves it unchanged, including when it is absent, and enables retry.
+
+## Startup feedback call sites
+
+The following paths were inspected in the recorded desktop source and the
+0.9.1 installation available on 2026-11-13:
+
+| Path | Feedback with silent startup enabled |
+| --- | --- |
+| `createLoadingWindow()` → `updateLoadingWindowStatus()` | Initialize status before skipping window allocation; subsequent progress remains in memory. |
+| `startPythonBackend()` in `backend-runtime.js` | Readiness waits and automatic retries publish progress. Terminal process, spawn, reported-failure and readiness-timeout errors reject to the main startup catch. |
+| `app.whenReady()` → `startPythonBackend().catch(...)` | Clear the pending-start flag, hide any revealed splash, and await `loadFailureDialog.show()` before quitting. The dialog is independent of the splash. |
+| `createLoadFailureDialog()` in `load-failure-dialog.js` | Show native `dialog.showMessageBox()`; if it rejects, use `dialog.showErrorBox()`. |
+| Remote `waitForServerReady()` rejection | Still call `startMainWindow()`; the pet lifecycle's `did-fail-load` handler invokes `showLoadFailure` for a failed main-frame load. |
+| `second-instance` / `activate` | The baseline only focused existing windows and had no activation handler. The patch calls `revealSilentStartupProgress()` to lazily create a splash while a silent start is pending, preserving its latest status. |
+| `startMainWindow()` → `closeLoadingWindow()` | Clear pending startup before window handoff; later activation cannot resurrect a splash. |
+
+Initial progress and automatic retry messages remain hidden by choice. Explicit
+repeat launches reveal progress; terminal backend errors use the independent
+native dialog. A settings change after startup does not create a loading window.
+
 ## Patch and source provenance
 
-- [Electron source patch](desktop-silent-startup/electron-silent-startup.patch)
-- [Source file hashes](desktop-silent-startup/source-manifest.json)
-- [Node regression tests](desktop-silent-startup/startup.test.cjs)
-- [Isolated Electron UI test](desktop-silent-startup/electron-ui.cjs)
+- Electron source patch: `desktop-silent-startup/electron-silent-startup.patch`
+- Source file hashes: `desktop-silent-startup/source-manifest.json`
+- Node regression tests: `desktop-silent-startup/startup.test.cjs`
+- Isolated Electron UI test: `desktop-silent-startup/electron-ui.cjs`
 
 Only five desktop files change: `src/main.js`,
 `src/main/desktop-settings-actions.js`, `src/main/tray-settings-pet-locales.js`,
@@ -80,8 +109,12 @@ NEKO_DESKTOP_SOURCE="$PWD" node --test /path/to/startup.test.cjs
 # With Electron 42.6.1 and an untouched source copy for the before screenshot:
 NEKO_DESKTOP_SOURCE="$PWD" \
   NEKO_DESKTOP_BASE_SOURCE=/path/to/untouched-desktop-source \
+  NEKO_STARTUP_TEST_OUTPUT=/path/to/external-test-output \
   electron /path/to/electron-ui.cjs
 ```
+
+The UI fixture requires an untouched before-source directory and defaults to a
+new system temporary output directory when no output path is provided.
 
 If the preflight fails, port the five small changes onto current source rather
 than forcing a patch or replacing whole files. The tests need the Electron
@@ -89,53 +122,38 @@ source modules; they are not runnable against this Python repository alone.
 
 ## Validation
 
-Ten Node tests passed against the patched desktop source, covering default and
-malformed values, persistence across action recreation, preservation of unrelated
-configuration, rejected/thrown writes, boolean validation, absent configuration,
-zero splash allocation, the original non-silent allocation path, null-window
-status/cleanup, and all eight locales.
+Validation refreshed on 2026-11-13:
 
-A Chromium fixture and then an isolated Electron 42.6.1 fixture rendered the
-actual before/after settings source and CSS,
-with an IPC adapter connected to the actual desktop settings action module and
-synthetic configuration. The Electron fixture used real ipcMain/ipcRenderer
-messages and its own user-data directory; it also verified rejected IPC
-rollback and disabled double clicks during a save. The fixtures verified default-off, pending-disabled, on/off saves,
-failed-write rollback, keyboard activation, reload hydration, search, all eight
-locales without horizontal overflow, and English dark mode. These fixtures are
-**not** a test of production Electron IPC sender validation or OS login items.
+- `git apply --check` passed against the hash-recorded baseline. All five
+  generated files match the manifest's after hashes.
+- The current installed 0.9.1 source already contains the original silent-startup
+  patch and additional local changes. In an extracted copy, reversing that
+  original patch and applying the revised patch both passed without forcing or
+  replacing files. The revised behavior tests also passed on that copy.
+  `source-manifest.json` records the inspected contract modules and the current
+  installation's compatibility hashes. Upstream `N.E.K.O.-PC` HEAD remains
+  inaccessible (HTTP 404), so maintainers must repeat this check there.
+- Twenty Node tests passed: persistence/recreation, rejected and thrown writes,
+  strict booleans, combined silent creation/status/cleanup, repeated launch and
+  activation, terminal failure callbacks, native-dialog fallback, missing
+  snapshots, rollback/retry, and eight-locale copy.
+- The isolated Electron 42.6.1 fixture runs the actual settings renderer, CSS,
+  `createUnifiedSettingsWindowController()`, and settings actions. It checks
+  production success/failure reply snapshots, rejected senders, pending/double
+  clicks, write exceptions, transport rejection, keyboard focus restoration,
+  reload hydration, and exact label/description/saving/saved/error text in all
+  eight locales, with overflow checks and English dark mode.
+- Startup tests execute the production event handlers and failure callback with
+  controlled window/dialog dependencies. Full packaged backend failure,
+  cross-platform startup and OS login behavior remain native acceptance items.
 
-A local macOS arm64 0.9.1 installation was updated with the five-file patch and
-restarted with silent startup enabled. The runtime logged
-`[LoadingWindow] skipped: silent startup enabled`, then confirmed the backend
-ready and created the normal desktop windows. The archive was checked file by
-file: 3,095 packed entries, with only the five intended source files changed;
-16 unpacked entries retained their original metadata and files. The original
-archive was backed up. Windows/Linux behavior, first-run permissions, injected
-startup failures and OS login launches still need native integration testing.
+The earlier 2026-11-04 macOS arm64 restart of the original patch logged
+`[LoadingWindow] skipped: silent startup enabled`, followed by backend readiness
+and normal desktop-window creation. The revised patch was validated in isolated
+source copies and Electron fixtures; the installed app was left unchanged.
 
-## UI evidence
-
-Screenshots are kept on the fork evidence branch, outside the proposed upstream
-source tree, following the repository screenshot-artifact policy.
-All screenshots use synthetic preferences and a signed-out placeholder account;
-no real conversations, credentials or user data are shown.
-
-Before:
-
-![Before: system settings without silent startup](https://raw.githubusercontent.com/lgw2023/N.E.K.O/ff2c702c17f3e7d7b7a4a6a6ba692e1f80f3a891/docs/design/desktop-silent-startup/before.png)
-
-After enabling:
-
-![After: silent startup enabled and saved](https://raw.githubusercontent.com/lgw2023/N.E.K.O/ff2c702c17f3e7d7b7a4a6a6ba692e1f80f3a891/docs/design/desktop-silent-startup/after-enabled.png)
-
-Rejected configuration write:
-
-![Failed save restores the previous switch state](https://raw.githubusercontent.com/lgw2023/N.E.K.O/ff2c702c17f3e7d7b7a4a6a6ba692e1f80f3a891/docs/design/desktop-silent-startup/save-error.png)
-
-English, dark appearance:
-
-![English dark appearance](https://raw.githubusercontent.com/lgw2023/N.E.K.O/ff2c702c17f3e7d7b7a4a6a6ba692e1f80f3a891/docs/design/desktop-silent-startup/locale-en.png)
+Synthetic before/after UI screenshots are available in
+[PR #3621](https://github.com/Project-N-E-K-O/N.E.K.O/pull/3621).
 
 ## Acceptance before an official release
 
