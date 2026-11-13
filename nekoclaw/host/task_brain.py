@@ -134,7 +134,8 @@ class TurnCheck:
     verdict: str
     # Why a turn was not checked: "disabled", "empty", "no_capability" or
     # "gate". Or why nothing followed its verdict: "stopped", when everything
-    # was stopped while the turn was being judged.
+    # was stopped while the turn was being judged; "looked_up", when what she
+    # says is done follows an answer to her question about her tasks.
     skipped: str = ""
     # What followed: "" (nothing), "corrected" (she was told and puts it right)
     # or "dispatched" (filed for her).
@@ -295,6 +296,10 @@ class TaskBrain:
         # Raised by ``drop_pending_dispatches``; a first round that began
         # before the raise files nothing.
         self._dispatch_generation = 0
+        # Character -> when her last question about what is under way was
+        # answered (ledger clock). What she then says is done comes from
+        # the record.
+        self._status_answered_at: dict[str, float] = {}
         # commission id -> its second round or direct plugin call.
         self._work: dict[str, asyncio.Task[Any]] = {}
         self._deferred_timers: dict[str, asyncio.TimerHandle] = {}
@@ -1005,6 +1010,7 @@ class TaskBrain:
             )
 
         now = self._ledger._clock()
+        self._status_answered_at[lanlan_name] = now
         active = await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
         recent = await self._ledger.select(
             lanlan_name=lanlan_name,
@@ -1138,7 +1144,16 @@ class TaskBrain:
                 await self._reporter.turn_notice(lanlan_name, reason="can_do", text=words["can_do"].format(task=task))
                 result.action = "corrected"
         elif verdict.kind == "claimed_done":
-            if not await self._has_record(lanlan_name, f"{task} {user_text}"):
+            from config.nekoclaw_settings import TURN_CHECK_STATUS_ANSWER_SECONDS
+
+            answered_at = self._status_answered_at.get(lanlan_name)
+            if answered_at is not None and self._ledger._clock() - answered_at <= TURN_CHECK_STATUS_ANSWER_SECONDS:
+                # She had just looked her tasks up: what she says is done
+                # was read from the record. Matching her summary against
+                # single tasks misses one that covers several, and a
+                # correction then has her dispatch finished work again.
+                result.skipped = "looked_up"
+            elif not await self._has_record(lanlan_name, f"{task} {user_text}"):
                 await self._reporter.turn_notice(
                     lanlan_name, reason="no_record", text=words["no_record"].format(task=task)
                 )

@@ -384,6 +384,68 @@ async def test_another_characters_task_is_no_record_for_her(server, hosts, tmp_p
     assert result.action == "corrected"
 
 
+
+async def _two_done(host: Any) -> None:
+    for title, summary in (("记个提醒：五分钟后喝水", "已记下"), ("把购物清单写进文件", "已写好")):
+        commission, _created = await host.ledger.create(
+            lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch"
+        )
+        await host.ledger.transition(commission.id, "working")
+        await host.ledger.transition(commission.id, "done", result_summary=summary)
+
+
+async def test_what_she_says_is_done_right_after_looking_her_tasks_up_is_not_corrected(server, hosts, tmp_path):
+    # Seen in the real app: she looked her tasks up and said both were done.
+    # Her one summary matched neither task alone, the correction told her it
+    # was not on record, and she dispatched both again.
+    _weather(server)
+    llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": "提醒和购物清单都办好了"}])
+    host = _host(hosts, tmp_path, server, llm)
+    await _two_done(host)
+
+    await host.query("刚才那两件事办得怎么样了", lanlan_name="Lan", lang="zh")
+    result = await _check(host, "刚才那两件事办得怎么样了", "两件都办好啦", external_intent=0.8)
+
+    assert (result.verdict, result.action, result.skipped) == ("claimed_done", "", "looked_up")
+    assert await outbox(host, "correction") == []
+    assert len(await host.ledger.select(lanlan_name="Lan")) == 2
+
+
+@pytest.mark.parametrize("how", ["no_query", "other_character", "long_ago", "capability_question"])
+async def test_what_she_says_is_done_is_still_checked_without_a_fresh_look_at_her_tasks(
+    server, hosts, tmp_path, monkeypatch, how
+):
+    _weather(server)
+    llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": "订去东京的机票"}])
+    host = _host(hosts, tmp_path, server, llm)
+    if how == "other_character":
+        await host.query("", lanlan_name="Mei", lang="zh")
+    elif how == "long_ago":
+        await host.query("", lanlan_name="Lan", lang="zh")
+        monkeypatch.setattr("config.nekoclaw_settings.TURN_CHECK_STATUS_ANSWER_SECONDS", -1.0)
+    elif how == "capability_question":
+        # Whether something can be done says nothing about what was done.
+        await host.query("能不能订机票", lanlan_name="Lan", lang="zh")
+
+    result = await _check(host, "机票订了吗", "订好啦，明早八点的", external_intent=0.8)
+
+    assert (result.verdict, result.action, result.skipped) == ("claimed_done", "corrected", "")
+
+
+async def test_a_promise_right_after_looking_her_tasks_up_is_still_dispatched(server, hosts, tmp_path):
+    _weather(server)
+    llm = FakeDecisionLLM(
+        turn=[{"verdict": "promised", "task": "查上海明天的天气"}],
+        fine=[pick_plugin("weather", "today", {"city": "Shanghai"})],
+    )
+    host = _host(hosts, tmp_path, server, llm)
+
+    await host.query("", lanlan_name="Lan", lang="zh")
+    result = await _check(host, "帮我查一下上海明天的天气", "好的，我这就去查", external_intent=0.8)
+
+    assert (result.verdict, result.action) == ("promised", "dispatched")
+
+
 @pytest.mark.parametrize("lang", LANGUAGES)
 async def test_what_she_is_told_is_in_the_sessions_language(server, hosts, tmp_path, lang):
     from config.prompts.prompts_nekoclaw_brain import TURN_CHECK_TEXTS

@@ -82,6 +82,12 @@ TURN_CHECK_OUTPUT_MAX_TOKENS = 120
 TURN_CHECK_TASK_MAX_TOKENS = 60
 """Cap on the task the turn check names, as quoted back to her."""
 
+TURN_CHECK_STATUS_ANSWER_SECONDS = 60.0
+"""How long after her question about what is under way was answered a turn in
+which she says something is done is taken as read from the record, and not
+corrected. The answer comes within the turn; the check follows its end within
+seconds."""
+
 QUESTION_TEXT_MAX_TOKENS = 300
 """Cap on a commission's question as it is put to her to pass on."""
 
