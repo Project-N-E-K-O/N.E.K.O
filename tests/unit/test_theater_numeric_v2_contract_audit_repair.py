@@ -57,7 +57,7 @@ async def test_bad_known_quotes_repair_same_audit_and_freeze_fact_approval(monke
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("second", ["violation", "uncertain", "player_uncertain", "bad_quote", "extra_facts", "json", "timeout"])
-async def test_second_audit_cannot_spend_another_review_or_approve_unresolved_body(monkeypatch, second):
+async def test_second_audit_keeps_protocol_errors_and_uncertainty_distinct_without_third_call(monkeypatch, second):
     engine, session = _frame()
     body, calls = _body(), []
 
@@ -81,16 +81,17 @@ async def test_second_audit_cannot_spend_another_review_or_approve_unresolved_bo
     calls = _install(monkeypatch, respond)
     sink = []
     if second in {"violation", "uncertain", "player_uncertain"}:
-        assert await _review(engine, session, body, _bound(engine, session, body), sink)
+        problems = await _review(engine, session, body, _bound(engine, session, body), sink)
+        assert bool(problems) is (second == "violation")
     else:
         with pytest.raises(ev.NumericV2EvaluatorError):
             await _review(engine, session, body, _bound(engine, session, body), sink)
-    assert len(calls) == 2 and not sink
+    assert len(calls) == 2 and sink == ([(0,)] if second in {"uncertain", "player_uncertain"} else [])
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("second", ["violation", "uncertain"])
-async def test_player_only_repair_returns_semantic_problems_without_third_confirmation(monkeypatch, second):
+async def test_player_only_repair_warns_or_rejects_without_third_confirmation(monkeypatch, second):
     engine, session = _frame()
     body, calls = _body(), []
 
@@ -106,8 +107,9 @@ async def test_player_only_repair_returns_semantic_problems_without_third_confir
 
     calls = _install(monkeypatch, respond)
     sink = []
-    assert ev._PLAYER_AUTHORITY_RULE in await _review(engine, session, body, _bound(engine, session, body), sink)
-    assert len(calls) == 2 and not sink
+    problems = await _review(engine, session, body, _bound(engine, session, body), sink)
+    assert (ev._PLAYER_AUTHORITY_RULE in problems) is (second == "violation")
+    assert len(calls) == 2 and sink == ([(0,)] if second == "uncertain" else [])
 
 
 @pytest.mark.asyncio

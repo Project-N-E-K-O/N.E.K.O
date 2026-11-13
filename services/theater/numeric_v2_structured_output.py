@@ -245,7 +245,15 @@ def contract_output_schema(*, grounded: bool = False, confirmation: bool = False
         }
         if check_player_authority:
             verdict["player_action_scope"] = {"type": "string", "enum": ["none", "present", "uncertain"]}
-        properties = {"verdicts": _array(_object(verdict))} if confirmation_many else verdict
+        verdict_schema = _object(verdict)
+        if check_player_authority and confirmation_many:
+            # Mixed findings keep strict object shapes without forcing a
+            # player-action classification onto unrelated authored rules.
+            verdict_schema = {"anyOf": [
+                _object({key: value for key, value in verdict.items() if key != "player_action_scope"}),
+                verdict_schema,
+            ]}
+        properties = {"verdicts": _array(verdict_schema)} if confirmation_many else verdict
         if check_departure and not check_departure_scope:
             properties["departure_clearance"] = {**_array(_object({
                 "reason": {"type": "string", "enum": ["current_scene", "prospective", "recap"]},

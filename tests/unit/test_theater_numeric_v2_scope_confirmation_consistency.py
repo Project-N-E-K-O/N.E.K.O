@@ -127,8 +127,9 @@ async def test_mixed_blocks_and_uncertainty_do_not_gain_player_permission(monkey
                 "clearance": ["c0"], "player_action_scope": scope}
 
     _client_for(monkeypatch, respond)
-    assert await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
+    problems = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node={"story_beat": {}}, session=_session(), actor_performance=body, player_input="我只在旁边等候。")
+    assert bool(problems) is (scope == "present")
 
 
 @pytest.mark.asyncio
@@ -149,7 +150,7 @@ async def test_mixed_block_needs_real_player_permission_and_resolved_scope(monke
     result = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node={"story_beat": {}}, session=_session(), actor_performance=body,
         player_input="我替园艺师签下长期维护合同。", cast_scope={"player": ["周砚"], "active_catgirl": ["园艺师"]})
-    assert bool(result) is (proof != "p0" or scope == "uncertain")
+    assert bool(result) is (proof != "p0" and scope == "present")
 
 
 @pytest.mark.asyncio

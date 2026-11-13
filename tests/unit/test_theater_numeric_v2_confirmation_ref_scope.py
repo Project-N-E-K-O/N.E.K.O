@@ -1,4 +1,4 @@
-"""Single-finding schemas exclude proof that the existing validator must reject."""
+"""Every supplied original remains selectable; program checks enforce order and phase."""
 
 import json
 from types import SimpleNamespace
@@ -54,17 +54,15 @@ async def test_source_finding_keeps_own_wording_but_excludes_later_target(monkey
             return contract_audit_payload({"violations": [{"rule_index": 0, "candidate_ref": "c1",
                 "quote": source, "prior_ref": ""}]}, messages)
         refs = kwargs["response_format"]["json_schema"]["schema"]["properties"]["clearance"]["items"]["enum"]
-        assert data["eligible_clearance_refs"] == refs
-        assert {"c0", "c1"} <= set(refs) and not {"c2", "c3"} & set(refs)
+        assert "eligible_clearance_refs" not in data
+        assert {"c0", "c1", "c2", "c3"} <= set(refs)
         assert [row["id"] for row in data["visible_order"]] == ["c0", "c1", "c2", "c3"]
-        assert "clearance只选择eligible_clearance_refs" in messages[0].content
-        answer = {"verdict": "clear", "reason": "该同意句尚未实际执行。", "clearance": [clearance],
-                  "player_action_scope": "uncertain"}
+        assert "clearance可选择visible_order或clearance_sources中的任一原文id" in messages[0].content
+        answer = {"verdict": "clear", "reason": "该同意句尚未实际执行。", "clearance": [clearance]}
         errors = list(Draft202012Validator(kwargs["response_format"]["json_schema"]["schema"]).iter_errors(answer))
-        assert bool(errors) is (clearance == "c2")
+        assert errors == []
         if source == "我已经启动展示。" and clearance == "c1":
-            return {"verdict": "violation", "reason": "来源段原文已宣告实际执行。", "clearance": [],
-                    "player_action_scope": "uncertain"}
+            return {"verdict": "violation", "reason": "来源段原文已宣告实际执行。", "clearance": []}
         return answer
 
     calls = _install(monkeypatch, respond)
@@ -84,7 +82,7 @@ async def test_later_same_phase_context_is_not_removed_from_single_finding(monke
         if "sources" in data:
             return contract_audit_payload({"violations": [{"rule_index": 0, "candidate_ref": "c0",
                 "quote": "点头", "prior_ref": ""}]}, messages)
-        refs = data["eligible_clearance_refs"]
+        refs = kwargs["response_format"]["json_schema"]["schema"]["properties"]["clearance"]["items"]["enum"]
         assert "c1" in refs and data["visible_order"][1]["phase"] == data["finding"]["candidate"]["phase"]
         return {"verdict": "clear", "reason": "后句明确是未来分工。", "clearance": ["c1"]}
 
@@ -106,8 +104,8 @@ async def test_fixed_cause_enum_excludes_effect_and_all_later_blocks(monkeypatch
                 "rule_index": next(row["rule_index"] for row in data["author_boundaries"]
                                    if row["text"] == ev._FIXED_ORIGINAL_CAUSE_RULE),
                 "candidate_ref": "c1", "quote": "录音传来老人的声音。", "prior_ref": ""}]}, messages)
-        refs = data["eligible_clearance_refs"]
-        assert "c0" in refs and not {"c1", "c2"} & set(refs)
+        refs = kwargs["response_format"]["json_schema"]["schema"]["properties"]["clearance"]["items"]["enum"]
+        assert {"c0", "c1", "c2"} <= set(refs)
         assert len(data["visible_order"]) == 3
         return {"verdict": "clear", "reason": "已按原文顺序核对直接触发。", "clearance": [clearance]}
 

@@ -69,7 +69,7 @@ async def test_repeat_confirmation_keeps_order_and_requires_evidence(monkeypatch
     before = session.to_dict()
     result = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node={"story_beat": {}}, session=session, actor_performance=body, player_input="继续讨论。")
-    assert len(calls) == 2 and bool(result) is (mode != "future_clear")
+    assert len(calls) == 2 and bool(result) is (mode not in {"future_clear", "uncertain"})
     assert session.to_dict() == before
 
 
@@ -320,7 +320,8 @@ async def test_other_findings_history_cannot_authorize_new_player_action_in_focu
         prior = next(row for row in data["clearance_sources"] if row["id"] == ("p0" if proof == "player_original" else "h0"))
         verdict = {"verdict": "clear", "reason": "引文提供同一事项的许可。", "clearance": [
             {"source_ref": "c0", "quote": "周砚检查接口。"}, {"source_ref": prior["id"], "quote": prior["text"]}]}
-        return {"verdicts": [verdict, verdict]}
+        return {"verdicts": [{**verdict, **({"player_action_scope": "present"}
+            if finding["rule"] == ev._PLAYER_AUTHORITY_RULE else {})} for finding in data["findings"]]}
 
     _client_for(monkeypatch, respond)
     result = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
@@ -378,11 +379,11 @@ async def test_requests_are_not_physical_execution_but_speech_bans_and_enactment
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["p0", "transition_contract", "transition_contract_as_authority", "transition_contract_as_fact", "unrelated_h"])
+@pytest.mark.parametrize("kind", ["p0", "transition_contract", "transition_contract_as_authority", "transition_contract_as_fact", "provided_h"])
 async def test_focused_counterevidence_does_not_require_duplicate_candidate_and_keeps_domains(monkeypatch, kind):
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(session_id="counterevidence-domains", catgirl_binding=_binding(), opening_performance=_opening())
-    session = replace(session, performance_history=({"revision": 1, "input_text": "先等。", "performance": "旧的无关记录。"},))
+    session = replace(session, performance_history=({"revision": 1, "input_text": "先等。", "performance": "保管员已明确许可角色拆封这一份材料。"},))
     player_rule = kind in {"p0", "transition_contract_as_authority"}
     factual_rule = kind == "transition_contract_as_fact"
     rule = ev._PLAYER_AUTHORITY_RULE if player_rule else "本幕不得拆封材料。"
@@ -397,11 +398,12 @@ async def test_focused_counterevidence_does_not_require_duplicate_candidate_and_
                     "candidate_ref": "c0", "quote": "角色打开材料。", "authorization_ref": "", "authorization_quote": ""}]}
             return payload
         if kind == "p0": ref, quote = "p0", "请你打开材料。"
-        elif kind == "unrelated_h":
-            # Registering another finding's h does not make it this finding's counterevidence.
-            ref, quote = "h0", "旧的无关记录。"
+        elif kind == "provided_h":
+            # A real supplied original need not be the first report's prior.
+            ref, quote = "h0", "保管员已明确许可角色拆封这一份材料。"
         else: ref, quote = "transition_contract", "材料已拆封。"
-        return {"verdict": "clear", "reason": "以该项真实原文反驳首报。", "clearance": [{"source_ref": ref, "quote": quote}]}
+        return {"verdict": "clear", "reason": "以该项真实原文反驳首报。", "clearance": [{"source_ref": ref, "quote": quote}],
+                **({"player_action_scope": "present"} if player_rule else {})}
 
     _client_for(monkeypatch, respond)
     result = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
@@ -409,7 +411,7 @@ async def test_focused_counterevidence_does_not_require_duplicate_candidate_and_
         transition_contract={"must_preserve": ["材料已拆封。"]}, session=session,
         actor_performance={"segments": [{"phase": "target_opening", "performance": "角色打开材料。"}]},
         player_input="请你打开材料。", include_all_segments=True)
-    assert bool(result) is (kind in {"transition_contract_as_authority", "transition_contract_as_fact", "unrelated_h"})
+    assert bool(result) is (kind in {"transition_contract_as_authority", "transition_contract_as_fact"})
 
 
 @pytest.mark.parametrize("author_only", [False, True])

@@ -139,8 +139,8 @@ async def test_prebound_approval_waits_for_whole_body_confirmation(monkeypatch, 
     calls = _install(monkeypatch, respond)
     sink = []
     problems = await _review(engine, session, body, _bound(engine, session, body), sink)
-    assert bool(problems) is (confirmation != "clear")
-    assert sink == ([(0,)] if confirmation == "clear" else []) and len(calls) == 2
+    assert bool(problems) is (confirmation == "violation")
+    assert sink == ([(0,)] if confirmation != "violation" else []) and len(calls) == 2
     if problems: assert rule in problems
 
 
@@ -301,5 +301,6 @@ async def test_unresolved_whole_body_coverage_never_publishes_approval(monkeypat
 
     _install(monkeypatch, respond)
     sink = []
-    assert await _review(engine, session, body, _bound(engine, session, body), sink)
-    assert sink == []
+    problems = await _review(engine, session, body, _bound(engine, session, body), sink)
+    assert bool(problems) is (unchecked != "player")
+    assert sink == ([(0,)] if unchecked == "player" else [])

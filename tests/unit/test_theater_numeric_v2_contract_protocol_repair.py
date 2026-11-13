@@ -51,7 +51,7 @@ async def test_wrong_source_quote_repairs_only_bad_block_and_freezes_fact_verdic
     {"c0": [{"quote": "请工作人员核对。", "authorization_ref": "p0"}]},
     {"c0": [{"quote": "工作人员", "authorization_ref": ""}]},
 ])
-async def test_invalid_or_semantic_nonclear_repair_never_publishes_facts(monkeypatch, repaired):
+async def test_invalid_repairs_stay_blocked_while_valid_uncertainty_warns(monkeypatch, repaired):
     engine, session = _frame()
     body = _body()
 
@@ -65,12 +65,14 @@ async def test_invalid_or_semantic_nonclear_repair_never_publishes_facts(monkeyp
 
     calls = _install(monkeypatch, respond)
     sink = []
-    if repaired in ({"c0": "uncertain"}, {"c0": [{"quote": "工作人员", "authorization_ref": ""}]}):
+    if repaired == {"c0": "uncertain"}:
+        assert await _review(engine, session, body, _bound(engine, session, body), sink) == ()
+    elif repaired == {"c0": [{"quote": "工作人员", "authorization_ref": ""}]}:
         assert ev._PLAYER_AUTHORITY_RULE in await _review(engine, session, body, _bound(engine, session, body), sink)
     else:
         with pytest.raises(ev.NumericV2EvaluatorOutputError):
             await _review(engine, session, body, _bound(engine, session, body), sink)
-    assert not sink and len(calls) == 2
+    assert sink == ([(0,)] if repaired == {"c0": "uncertain"} else []) and len(calls) == 2
 
 
 @pytest.mark.asyncio
@@ -235,9 +237,9 @@ async def test_confirmation_separates_rule_target_and_delivered_event(monkeypatc
             assert "reason分别说明原rule禁止的交付类型和正文实际交付的动作、发言或状态" in messages[0].content
             assert "对白正在交付受限行为或宣告其发生也算执行" not in messages[0].content
             assert set(kwargs["response_format"]["json_schema"]["schema"]["properties"]) == {
-                "verdict", "reason", "clearance", "player_action_scope"}
+                "verdict", "reason", "clearance"}
             return {"verdict": "clear", "reason": "禁的是实际按键，原句只表达同意和承诺。",
-                    "clearance": ["c1"], "player_action_scope": "uncertain"}
+                    "clearance": ["c1"]}
         payload = contract_audit_payload({"violations": [{"rule_index": 0, "candidate_ref": "c1",
             "quote": "可以，我就按给你看。", "prior_ref": ""}]}, messages)
         return payload

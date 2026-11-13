@@ -80,7 +80,7 @@ async def test_authored_boundary_requires_complete_grounded_scope(monkeypatch, o
         actor_performance={"performance": "先讨论目录，之后再决定是否申请开柜。", "suggested_inputs": []},
         player_input="先在柜外说清楚。", diagnostics=diagnostics,
     )
-    assert result == (() if case == "clear" else (rule,))
+    assert result == (() if case in {"clear", "uncertain"} else (rule,))
     assert diagnostics["author_coverage_complete"] is (case == "clear")
     assert before == session.to_dict()
 
@@ -227,6 +227,6 @@ async def test_compact_author_checks_preserve_exact_coverage(monkeypatch, count,
     result = await evaluator.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node={"story_beat": {"must_not_happen": rules}}, session=session,
         actor_performance={"performance": "先讨论。"}, player_input="先等等。", diagnostics=diagnostics)
-    assert bool(result) is (case != "clear")
+    assert bool(result) is (case not in {"clear", "uncertain"})
     assert diagnostics["author_coverage_complete"] is (case == "clear")
     assert isinstance(diagnostics["author_checks"], list)

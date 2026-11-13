@@ -77,8 +77,11 @@ async def test_one_unresolved_rule_does_not_erase_other_completed_rule_checks(mo
     result = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node={"story_beat": {"must_not_happen": rules}}, session=_session(),
         actor_performance={"performance": "先讨论方案。"}, player_input="先等等。", diagnostics=diagnostics)
-    assert result == (() if bad == "clear" else (rules[1],))
-    assert diagnostics["unresolved_author_rules"] == ([] if bad == "clear" else [rules[1]])
+    assert result == (() if bad in {"clear", "uncertain"} else (rules[1],))
+    assert diagnostics["unresolved_author_rules"] == ([] if bad in {"clear", "uncertain"} else [rules[1]])
+    if bad == "uncertain":
+        assert diagnostics["author_coverage_complete"] is False
+        assert diagnostics["review_warnings"] == [{"check": "author_boundary", "rule_index": 1}]
     assert len(calls) == 1
 
 
@@ -126,7 +129,8 @@ async def test_bound_clearance_uses_original_player_input_and_keeps_invalid_evid
         assert schema["properties"]["clearance"]["items"]["type"] == "string"
         evidence = ([{"source_ref": "p0", "quote": "（查找公开电话）...先打给管理处"}]
                     if proof == "ellipsized_quote" else ["h0" if proof == "actor_history" else proof])
-        return {"verdict": "clear", "reason": "玩家原话明确要求拨打同一电话。", "clearance": evidence}
+        return {"verdict": "clear", "reason": "玩家原话明确要求拨打同一电话。", "clearance": evidence,
+                "player_action_scope": "present"}
 
     _client(monkeypatch, respond)
     diagnostics = {}

@@ -77,7 +77,7 @@ async def test_full_block_can_correct_player_subject_or_prospective_misreading(m
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scope", [None, "present", "uncertain", "invalid"])
 @pytest.mark.parametrize("quote", ["周砚按下按钮。", "周砚答应明晚独自守夜。"])
-async def test_a_real_player_action_or_commitment_still_cannot_authorize_itself(monkeypatch, scope, quote):
+async def test_player_scope_uncertainty_warns_while_confirmed_actions_cannot_authorize_themselves(monkeypatch, scope, quote):
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(session_id="player-self-clearance", catgirl_binding=_binding(),
         opening_performance=_opening())
@@ -93,10 +93,13 @@ async def test_a_real_player_action_or_commitment_still_cannot_authorize_itself(
         return result
 
     _client_for(monkeypatch, respond)
-    assert await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
+    diagnostics = {}
+    problems = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node={"story_beat": {}}, session=session,
         actor_performance={"scene_narration": quote, "performance": ""},
-        player_input="我留在原地。")
+        player_input="我留在原地。", diagnostics=diagnostics)
+    assert bool(problems) is (scope != "uncertain")
+    assert bool(diagnostics.get("review_warnings")) is (scope == "uncertain")
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-"""Unresolved block permissions consume the existing audit/Actor repair budgets."""
+"""Semantic uncertainty warns while concrete findings retain bounded confirmation."""
 
 import pytest
 
@@ -26,12 +26,14 @@ def _confirmed(data, *, change=None):
 
 
 @pytest.mark.asyncio
-async def test_known_wrong_quote_repair_keeps_semantic_author_uncertainty_as_a_problem(monkeypatch):
+async def test_wrong_quote_repair_keeps_author_uncertainty_as_a_diagnostic(monkeypatch):
     engine, session = _frame()
     body = _body()
 
     def respond(messages, data, kwargs):
-        assert "player_authority_repair" not in data
+        if "player_authority_repair" in data:
+            assert data["player_authority_repair"] == {"candidate_refs": ["c0"]}
+            return {"player_authority": {"c0": "none"}}
         payload = contract_audit_payload({"violations": []}, messages)
         if len(calls) == 1:
             payload["player_authority"]["c0"] = [{"quote": "请工作人员核对。", "authorization_ref": "p0"}]
@@ -43,15 +45,16 @@ async def test_known_wrong_quote_repair_keeps_semantic_author_uncertainty_as_a_p
     calls = _install(monkeypatch, respond)
     sink, diagnostics = [], {}
     problems = await _review(engine, session, body, _bound(engine, session, body), sink, diagnostics=diagnostics)
-    assert ev._PLAYER_AUTHORITY_RULE not in problems
-    assert diagnostics["unresolved_author_rules"][0] in problems
-    assert not sink and len(calls) == 2
+    assert problems == () and diagnostics["unresolved_author_rules"] == []
+    assert diagnostics["author_coverage_complete"] is False
+    assert diagnostics["review_warnings"] == [{"check": "author_boundary", "rule_index": 0}]
+    assert sink == [(0,)] and len(calls) == 2
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("grounded", [False, True])
 @pytest.mark.parametrize("approved", [[], [0]])
-async def test_every_pending_block_shares_one_confirmation_with_grounded_findings(monkeypatch, grounded, approved):
+async def test_semantic_warnings_do_not_add_confirmation_to_grounded_findings(monkeypatch, grounded, approved):
     engine, session = _frame()
     body = _body()
     pending = ["c2"] if grounded else ["c0", "c2"]
@@ -62,10 +65,8 @@ async def test_every_pending_block_shares_one_confirmation_with_grounded_finding
         if "finding" in data or "findings" in data:
             findings = data.get("findings", [data.get("finding")])
             observed.extend(findings)
-            assert {finding["candidate"]["id"] for finding in findings
-                    if finding.get("review_status") == "uncertain"} == set(pending)
+            assert [finding["candidate"]["id"] for finding in findings] == ["c1"]
             assert all(finding["quote"] == finding["candidate"]["text"] for finding in findings)
-            assert "待核对" in messages[0].content
             return _confirmed(data)
         payload = contract_audit_payload({"violations": []}, messages)
         for ref in pending:
@@ -79,14 +80,16 @@ async def test_every_pending_block_shares_one_confirmation_with_grounded_finding
     calls = _install(monkeypatch, respond)
     sink, diagnostics = [], {}
     assert await _review(engine, session, body, _bound(engine, session, body), sink, diagnostics=diagnostics) == ()
-    assert len(observed) == 2 and len(calls) == 2 and sink == [tuple(approved)]
-    assert diagnostics["player_authority_complete"] is True
-    assert all(diagnostics["player_authority_blocks"][ref] == "none" for ref in pending)
+    assert len(observed) == int(grounded) and len(calls) == (2 if grounded else 1)
+    assert sink == [tuple(approved)]
+    assert diagnostics["player_authority_complete"] is False
+    assert all(diagnostics["player_authority_blocks"][ref] == "uncertain" for ref in pending)
+    assert {row["candidate_ref"] for row in diagnostics["review_warnings"]} == set(pending)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad", ["present", "uncertain", "missing_scope", "missing_verdict", "timeout"])
-async def test_nonclear_or_incomplete_pending_block_never_publishes_facts(monkeypatch, bad):
+async def test_concrete_player_finding_keeps_protocol_failures_separate_from_uncertainty(monkeypatch, bad):
     engine, session = _frame()
     body = _body()
 
@@ -105,7 +108,8 @@ async def test_nonclear_or_incomplete_pending_block_never_publishes_facts(monkey
             return _confirmed(data, change=change)
         payload = contract_audit_payload({"violations": []}, messages)
         payload["player_authority"]["c0"] = "uncertain"
-        payload["player_authority"]["c2"] = "uncertain"
+        current = next(row for row in data["sources"] if row["id"] == "c2")
+        payload["player_authority"]["c2"] = [{"quote": current["text"], "authorization_ref": ""}]
         payload["bound_completion_approved_indexes"] = [0]
         return payload
 
@@ -115,13 +119,14 @@ async def test_nonclear_or_incomplete_pending_block_never_publishes_facts(monkey
         with pytest.raises(ev.NumericV2EvaluatorError, match="timeout"):
             await _review(engine, session, body, _bound(engine, session, body), sink)
     else:
-        assert ev._PLAYER_AUTHORITY_RULE in await _review(engine, session, body, _bound(engine, session, body), sink)
-    assert not sink and len(calls) == 2
+        problems = await _review(engine, session, body, _bound(engine, session, body), sink)
+        assert (ev._PLAYER_AUTHORITY_RULE in problems) is (bad != "uncertain")
+    assert sink == ([(0,)] if bad == "uncertain" else []) and len(calls) == 2
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("proof", ["omitted", "player_input", "other_candidate", "partial_candidate"])
-async def test_pending_absence_scope_binds_its_own_whole_block_without_redundant_proof(monkeypatch, proof):
+async def test_confirmed_absence_scope_binds_its_own_whole_block_without_redundant_proof(monkeypatch, proof):
     engine, session = _frame()
     body = _body()
     observed = []
@@ -139,7 +144,8 @@ async def test_pending_absence_scope_binds_its_own_whole_block_without_redundant
             return _confirmed(data, change=change)
         payload = contract_audit_payload({"violations": []}, messages)
         payload["player_authority"]["c0"] = "uncertain"
-        payload["player_authority"]["c2"] = "uncertain"
+        current = next(row for row in data["sources"] if row["id"] == "c2")
+        payload["player_authority"]["c2"] = [{"quote": current["text"], "authorization_ref": ""}]
         payload["bound_completion_approved_indexes"] = [0]
         return payload
 
@@ -148,7 +154,8 @@ async def test_pending_absence_scope_binds_its_own_whole_block_without_redundant
     assert await _review(engine, session, body, _bound(engine, session, body), sink, diagnostics=diagnostics) == ()
     effective = next(row for row in diagnostics["confirmation_verdicts"] if row["candidate_ref"] == "c2")
     assert effective["clearance"] == [{"source_ref": "c2", "quote": observed[0]["text"]}]
-    assert diagnostics["player_authority_blocks"]["c2"] == "none"
+    assert diagnostics["player_authority_complete"] is False
+    assert diagnostics["player_authority_blocks"]["c0"] == "uncertain"
     assert sink == [(0,)] and len(calls) == 2
 
 
@@ -176,7 +183,7 @@ async def test_pending_authority_does_not_expand_protocol_repair_to_bad_refs(mon
 
 
 @pytest.mark.asyncio
-async def test_cleared_pending_authority_preserves_unresolved_fixed_original_cause(monkeypatch):
+async def test_authority_warning_preserves_missing_fixed_original_cause(monkeypatch):
     engine, session = _frame()
     body = _body()
     body["fixed_narrations"] = [{"position": "after", "text": "柜台灯亮了。"}]
@@ -194,12 +201,12 @@ async def test_cleared_pending_authority_preserves_unresolved_fixed_original_cau
     sink = []
     problems = await _review(engine, session, body, _bound(engine, session, body), sink)
     assert ev._FIXED_ORIGINAL_CAUSE_RULE in problems and ev._PLAYER_AUTHORITY_RULE not in problems
-    assert not sink and len(calls) == 2
+    assert not sink and len(calls) == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("author", ["uncertain", "violation"])
-async def test_cleared_pending_authority_never_clears_author_rules(monkeypatch, author):
+async def test_authority_warning_does_not_clear_a_confirmed_author_violation(monkeypatch, author):
     engine, session = _frame()
     body = _body()
 
@@ -220,5 +227,6 @@ async def test_cleared_pending_authority_never_clears_author_rules(monkeypatch, 
     calls = _install(monkeypatch, respond)
     sink = []
     problems = await _review(engine, session, body, _bound(engine, session, body), sink)
-    assert problems and ev._PLAYER_AUTHORITY_RULE not in problems
-    assert not sink and len(calls) == 2
+    assert bool(problems) is (author == "violation") and ev._PLAYER_AUTHORITY_RULE not in problems
+    assert sink == ([(0,)] if author == "uncertain" else [])
+    assert len(calls) == (1 if author == "uncertain" else 2)

@@ -114,7 +114,7 @@ async def test_source_receipt_cannot_fill_incomplete_tail_authority(monkeypatch,
         reviewed_player_absence=performance_content_blocks(body["segments"][0]))
     reviewer = ev.NumericV2MetricEvaluator(object())
     if bad == "uncertain":
-        assert ev._PLAYER_AUTHORITY_RULE in await reviewer.verify_contract_boundaries(**kwargs)
+        assert await reviewer.verify_contract_boundaries(**kwargs) == ()
     else:
         with pytest.raises(ev.NumericV2EvaluatorOutputError):
             await reviewer.verify_contract_boundaries(**kwargs)

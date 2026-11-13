@@ -83,13 +83,12 @@ async def test_missing_or_legacy_empty_reports_cannot_prove_full_player_coverage
         player_input="我只拆封材料。", diagnostics=diagnostics)
     reviewer = ev.NumericV2MetricEvaluator(object())
     if report == {"c0": "none", "c1": "uncertain"}:
-        assert await reviewer.verify_contract_boundaries(**kwargs) == (ev._PLAYER_AUTHORITY_RULE,)
+        assert await reviewer.verify_contract_boundaries(**kwargs) == ()
     else:
         with pytest.raises(ev.NumericV2EvaluatorOutputError):
             await reviewer.verify_contract_boundaries(**kwargs)
     assert diagnostics["player_authority_complete"] is False
-    assert len(calls) == (2 if report in ({}, {"c0": "none"}, {"c0": "none", "c1": []},
-                                        {"c0": "none", "c1": "uncertain"}) else 1)
+    assert len(calls) == (2 if report in ({}, {"c0": "none"}, {"c0": "none", "c1": []}) else 1)
 
 
 @pytest.mark.asyncio

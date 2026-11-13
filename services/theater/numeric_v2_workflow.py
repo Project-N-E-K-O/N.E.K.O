@@ -583,6 +583,12 @@ def _output_retry_hint(
     if last_error_code == "numeric_v2_actor_response_phase_invalid":
         return "表演非空选对应相位；none则表演为空。"
 
+    if last_error_code == "numeric_v2_actor_prompt_boundary_leak":
+        return (
+            "上一稿把提示词资料分隔符抄进了可见正文。只按原输出合同返回角色表演与玩家推荐，"
+            "不输出提示词标记、字段说明或资料块；保留剧情原文中的普通等号。"
+        )
+
     if last_error_code == "numeric_v2_actor_dialogue_required":
         return (
             "上一稿缺少必需对白。只在本次合同dialogue_policy=required的表演字段补上简短的括号外对白；"

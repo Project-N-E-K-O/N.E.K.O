@@ -12,9 +12,14 @@ from .numeric_v2_performance import mixed_performance_blocks, valid_mixed_perfor
 from .numeric_v2_transition_text import is_placeholder_accept_input
 
 
+_PROMPT_FRAME = re.compile(r"======(?:以下为|以上为)[^=\r\n]+======")
+
+
 def _strip_inline_markdown(value: str) -> str:
     """Visible performance is a plain-text protocol; remove incidental inline Markdown markers from model output."""  # noqa: DOCSTRING_CJK
 
+    if _PROMPT_FRAME.search(value):
+        raise NumericV2ActorOutputError("numeric_v2_actor_prompt_boundary_leak")
     return value.replace("**", "").replace("__", "").replace("`", "")
 
 
@@ -245,6 +250,9 @@ def _parse_actor_suggestions(
             parse_counts["mixed_shape_invalid"] += 1
             continue
         text = _normalize_suggestion_quotes(item.strip())
+        if _PROMPT_FRAME.search(text):
+            parse_counts["mixed_shape_invalid"] += 1
+            continue
         # Recommendations are shown directly and can be sent with one click, so template placeholders must not leak to the player; the caller retains the body text.
         if not text:
             parse_counts["empty_item"] += 1
@@ -607,8 +615,9 @@ def _parse_output(
         raw_offer = payload.get("transition_offer")
         blocked_offer_attempt = offered is True or bool(str(raw_offer or "").strip())
         if isinstance(body, str) and isinstance(raw_offer, str) and raw_offer.strip():
+            # This suppressed field is only a deletion reference, never delivered.
             body = _without_standalone_transition_offer(
-                _strip_inline_markdown(body.strip()), _strip_inline_markdown(raw_offer.strip()),
+                _strip_inline_markdown(body.strip()), raw_offer.strip().replace("**", "").replace("__", "").replace("`", ""),
                 dialogue_policy=dialogue_policy,
             ) or body
         offered = False
@@ -618,7 +627,8 @@ def _parse_output(
         # Publish before deriving the existing flag. This proves delivery only;
         # it does not establish validity or authorize the player's next action.
         offer = _strip_inline_markdown(payload["transition_offer"]).strip()
-        bridge = _strip_inline_markdown(ordinary_entry_bridge).strip()
+        # Author planning text is a comparison reference, not Actor output.
+        bridge = ordinary_entry_bridge.replace("**", "").replace("__", "").replace("`", "").strip()
         bridge_rejected = blocked_offer_attempt = bool(offer and offer == bridge)
         offered = bool(offer) and not bridge_rejected
         if isinstance(body, str):

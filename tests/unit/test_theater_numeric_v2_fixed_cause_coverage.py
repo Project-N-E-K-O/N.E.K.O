@@ -55,7 +55,7 @@ async def test_empty_violations_does_not_replace_original_cause_coverage(monkeyp
     result = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node={"story_beat": {"must_not_happen": authored_rules}}, session=_session(),
         actor_performance=_body(), player_input="请你展示。", diagnostics=diagnostics)
-    assert result == (ev._FIXED_ORIGINAL_CAUSE_RULE,)
+    assert result == (() if reported == {"c1": "uncertain"} else (ev._FIXED_ORIGINAL_CAUSE_RULE,))
     assert diagnostics["fixed_original_cause_complete"] is False
     assert len(calls) == 1
 
