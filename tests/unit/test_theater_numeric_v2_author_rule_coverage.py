@@ -139,7 +139,7 @@ async def test_role_forbidden_behaviors_are_individually_checked(monkeypatch, be
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             data = json.loads(messages[1].content.split("\n", 1)[1])
-            assert data["author_boundaries"][0]["text"] == "演出角色禁止行为：" + behavior
+            assert data["author_boundaries"][0]["text"] == "当前角色禁止行为：" + behavior
             assert data["author_checks_required"] == [{"rule_index": 0, "origin_node_id": "start",
                 "origin_phase": "turn", "check_phases": ["turn"]}]
             return SimpleNamespace(content=json.dumps({"author_checks": [{

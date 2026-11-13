@@ -103,7 +103,7 @@ def test_recommender_has_its_own_duty_and_preserves_visible_utterances(offered):
     for ambiguous in AMBIGUOUS_SUBJECTS:
         assert ambiguous not in system
     assert "玩家输入推荐补全器" in system
-    assert "当前演出角色的姓名是“小雨”" in system
+    assert "当前角色的姓名是“小雨”" in system
     assert "你只拟写玩家候选输入，不能替该角色说话或行动" in system
     assert "当前你" not in system
     assert "不能明写你" not in system
@@ -117,7 +117,7 @@ def test_workshop_state_extraction_names_both_owners_explicitly():
     assert "catgirl_state以cast_names.catgirl_name的完整姓名开头" in pipeline._STATE_PROMPT
     assert "player_state以cast_names.player_name的完整姓名开头" in pipeline._STATE_PROMPT
     assert "你负责摘录，不是剧中人物" in pipeline._STATE_PROMPT
-    assert "catgirl_name 是演出角色姓名" in pipeline._FRAME_PROMPT
+    assert "catgirl_name 是当前角色姓名" in pipeline._FRAME_PROMPT
     assert "catgirl/player 仅是协议槽位，不预设性别" in pipeline._FRAME_PROMPT
     assert "player_name 是玩家姓名" in pipeline._FRAME_PROMPT
 

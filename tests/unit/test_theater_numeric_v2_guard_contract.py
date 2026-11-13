@@ -36,7 +36,7 @@ def test_transition_deduplicates_only_complete_projected_target_boundaries():
     boundaries = target['hard_boundaries'] + target['author_entry_plan'].get('scene_boundaries', []) + target['acting_contract'].get('forbidden_behaviors', [])
     assert boundaries.count(short) == 1
     assert long in boundaries
-    assert all(f'演出角色禁止行为：{text}' in boundaries for text in extras)
+    assert all(f'当前角色禁止行为：{text}' in boundaries for text in extras)
     assert target['author_entry_plan']['catgirl_state'] == original['character_state']['catgirl_state']
     assert target['acting_contract']['allowed_behaviors'] == ['表达感谢']
     assert beat == original

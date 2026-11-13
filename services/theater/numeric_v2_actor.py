@@ -104,6 +104,7 @@ from .numeric_v2_runtime import (
     ScriptSessionV2,
     TurnOutcomeV2,
 )
+from config.prompts.prompts_theater import NUMERIC_V2_PENDING_OFFER_PROMPT_LABEL as _PENDING_OFFER_PROMPT_LABEL
 
 
 NUMERIC_V2_ACTOR_TIMEOUT_SECONDS = 35.0
@@ -114,7 +115,6 @@ NUMERIC_V2_ACTOR_SUGGESTION_FILL_MAX_OUTPUT_TOKENS = 260
 NUMERIC_V2_ACTOR_SLOW_CALL_SECONDS = 15.0
 NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_BLOCKS = 2
 NUMERIC_V2_PREVIOUS_SCENE_TAIL_MAX_TOKENS = 80
-_PENDING_OFFER_PROMPT_LABEL = "当前待确认提议原文（只证明此前说过，不证明安排正确）："
 _RESTRICTED_KNOWLEDGE_SCOPE = (
     "仅可读取 current_story_beat、recent_context、player_input 与 acting_context 明确允许的公开信息；"
     "其中人物陈述与可观察状态按各自来源核对，不把推测变成确定知识；"
@@ -2215,13 +2215,13 @@ def _suggestion_fill_messages(
         )
     system_prompt = (
         "你是 N.E.K.O Numeric v2 的玩家输入推荐补全器。"
-        f"当前演出角色的姓名是“{catgirl_name}”。你只拟写玩家候选输入，不能替该角色说话或行动。"
+        f"当前角色的姓名是“{catgirl_name}”。你只拟写玩家候选输入，不能替该角色说话或行动。"
         f"{_output_schema_instruction('transition_suggestion_fill' if transition_offered else 'suggestion_fill')}"
         "只根据已经生成的可见正文和玩家本轮输入，给出一至三条真实不同、可直接发送的玩家选择，不能为凑数量补造前提。"
         "不得把 player_input 原样或仅改空白后再次列为推荐；玩家已经做过的同一句不是下一步选择。"
         f"{_SUGGESTION_FORMAT_RULE}"
-        "有动作括号时由程序标记为玩家动作，不能把当前演出角色、NPC、环境或外部结果写成玩家动作的主体。"
-        "推荐是玩家对当前回应的下一步反应，不能把当前演出角色正在做的动作误写成玩家已在做；不混淆双方职责与物品持有者。"
+        "有动作括号时由程序标记为玩家动作，不能把当前角色、NPC、环境或外部结果写成玩家动作的主体。"
+        "推荐是玩家对当前回应的下一步反应，不能把当前角色正在做的动作误写成玩家已在做；不混淆双方职责与物品持有者。"
         "只能使用可见正文与玩家输入已经支持的玩家身份、地点、能力、物品和事实；"
         "不得保留方括号占位符。"
         f"{_SUGGESTION_PLAYER_FACT_RULE}"

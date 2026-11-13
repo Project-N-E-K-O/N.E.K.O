@@ -87,7 +87,7 @@ def test_ending_preview_keeps_active_boundaries_and_target_direction():
     assert context['ending_direction'] == target['narrative_summary']
     assert '不替玩家确认新的安排。' in context['source_boundaries']
     assert '玩家尚未提出方案。' not in context['source_boundaries']
-    assert {'已有双方明确的约定。', '演出角色禁止行为：不追加入住手续。'} <= set(context['ending_boundaries'])
+    assert {'已有双方明确的约定。', '当前角色禁止行为：不追加入住手续。'} <= set(context['ending_boundaries'])
 
 
 @pytest.mark.parametrize('reason', [None, '双方已达成约定。', '依据' * 1000])
@@ -266,7 +266,7 @@ async def test_review_target_direction_waits_until_after_nonterminal_opening(tmp
     assert context['acting_contract']['allowed_behaviors'] == target['acting_contract']['allowed_behaviors']
     assert context['acting_contract']['assertable_self_facts'] == target['acting_contract']['assertable_self_facts']
     assert {'入幕时后续操作尚未开始。', '不得改变玩家登记卡的持有者。',
-            '演出角色禁止行为：不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
+            '当前角色禁止行为：不得替玩家选择查阅内容。'} <= set(context['hard_boundaries'])
     assert data['player_input'] == message
     assert data['transition_contract'] == outcome.transition_contract
     assert data['transition_authorization']['transition_intent'] == intent

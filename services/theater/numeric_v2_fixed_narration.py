@@ -115,7 +115,7 @@ def render_text(text: str, bindings: Mapping[str, str]) -> str:
 
 
 def _bindings(binding: Mapping[str, Any], known: bool) -> dict[str, str]:
-    return {"catgirl_name": str(binding.get("catgirl_name") or "当前猫娘"),
+    return {"catgirl_name": str(binding.get("catgirl_name") or "当前角色"),
             "player_name": str(binding.get("player_address") or "你") if known else "你"}
 
 

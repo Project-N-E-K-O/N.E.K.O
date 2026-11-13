@@ -24,7 +24,7 @@ def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples(
         # Fact checking must not promote creative preferences into runtime prohibitions; revisions must preserve existing causality.
         assert "不因配角多少、关系升温或个人风格偏好报事实错误" in prompt
         assert "不删除因果必需的配角回应" in prompt
-        for rule in ("演出角色权限不授权玩家的新台词、操作或决定", "runtime.player_input是动态来源标记",
+        for rule in ("当前角色权限不授权玩家的新台词、操作或决定", "runtime.player_input是动态来源标记",
                      "普通出幕需玩家接受已经公开的同一安排", "拒绝、追问、暂缓可以留幕，不新增分支或确认锁",
                      "自动出幕只依据原completion_contract及route conditions，不把可选goals变门槛",
                      "未受保证的来源历史不能在桥段自证", "接受后正常移动、角色自主展示与环境当时变化可以首次发生",
@@ -44,7 +44,7 @@ def test_scoring_and_repair_share_runtime_rules_without_story_specific_examples(
     assert "一人示范不代替另一人的亲手操作" in SCORING_RUNTIME_RULES
     assert "一轮结果不能在出口或结局扩大为全员完成" in SCORING_RUNTIME_RULES
     assert "不据此新增逐人逐步确认" in SCORING_RUNTIME_RULES
-    assert "演出角色的演绎权限" in SCORING_RUNTIME_RULES
+    assert "当前角色的演绎权限" in SCORING_RUNTIME_RULES
     assert "明确要求玩家作新的选择或等待其回答" in SCORING_RUNTIME_RULES
     assert "不能把防止提前结束写成永远不得结束" in SCORING_RUNTIME_RULES
     assert "同一物件在同一时点只能有一份相容状态" in SCORING_RUNTIME_RULES

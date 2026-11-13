@@ -97,6 +97,15 @@ def test_binding_definition_scope_matches_current_scene_and_global_write_permiss
     assert "scene:previous:history" in context["fact_contract"]["facts"]
 
 
+def test_binding_request_accepts_unreferenced_fact_without_description():
+    context = _context()
+    context["fact_contract"]["facts"]["unused"] = {"value_type": "bool", "visibility": "public"}
+    request, _, _ = _request(context)
+    definitions = {row["key"]: row for row in request["fact_definitions"]}
+    assert definitions["unused"] == {"key": "unused", "value_type": "bool", "description": ""}
+    assert definitions["history"]["description"]["text"] == "玩家已经亲口陈述自己记得的经过。"
+
+
 @pytest.mark.parametrize("shared", [False, True])
 def test_catalog_preserves_prior_history_and_original_repair_locations(shared):
     context = _context()

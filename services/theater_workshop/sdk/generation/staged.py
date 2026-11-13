@@ -67,7 +67,7 @@ ordered_goals 用合同枚举和 1—6 项有限交付。previous_goal 只指本
 """ + COMPLETION_RESULT_RULE + SHARED_EXIT_SELECTION_RULE + """
 trigger_fact_ids 只选本幕必要结果。target_value 按字面匹配，不写 any_non_empty。普通出口的 entry_prerequisite_fact_ids 只填下一幕独立要求的硬前提。typed 事实不超过 remaining_typed_fact_keys，展示引用不占事实键。
 普通出口先确定是否仍需新的玩家决定。若本幕已做出的决定或已交付的结果自然引出下一幕，无新许可、承诺、去向或操作待选，填 advance_on_completion=true，player_decision、fallback_offer 和 accept_input 均为空，省略 silent_choice。proposal 写由既成结果引出的后果；目标开场从后果开始，不能再次要求完成触发事实。否则填 false，proposal 与 fallback_offer 邀请同一项新活动、地点和时段，accept_input 写明确接受原话。许可、交易和风险承诺须明确授权。需新授权且作者发声策略为 forbidden 时才省口头邀请并填写 silent_choice。邀约字段为至多30 tokens的单行。末幕沿用自然结局，advance_on_completion=false，两项邀约字段为空。
-关系和权限不随换幕重置，关系上限相邻最多变一级。known_player_facts、allowed_behaviors、forbidden_behaviors 各最多4项。known_player_facts 以玩家全名开头；progress_opportunity 以演出角色全名或“环境”开头，只写有限变化。首幕 address_state 不用 known_from_prior_scene。scene_boundaries 只写会破坏本幕因果、已确定状态或玩家权限的硬限制，以“不得”“禁止”或“不能”开头。区分在场配角当轮答复与无依据的事后转述。上幕局部限制结束，持续作者限制沿用。
+关系和权限不随换幕重置，关系上限相邻最多变一级。known_player_facts、allowed_behaviors、forbidden_behaviors 各最多4项。known_player_facts 以玩家全名开头；progress_opportunity 以当前角色全名或“环境”开头，只写有限变化。首幕 address_state 不用 known_from_prior_scene。scene_boundaries 只写会破坏本幕因果、已确定状态或玩家权限的硬限制，以“不得”“禁止”或“不能”开头。区分在场配角当轮答复与无依据的事后转述。上幕局部限制结束，持续作者限制沿用。
 按 length.scene_expected_turns_target 的非空目标估计 expected_turns。entry 固定原文可交付独立于玩家的关键证据或NPC自主事件，开场不复制原文。初始开场只建立原文前的环境；后续非 fixed_entry_only 入幕，原文尚缺且已获准、前因明确的角色或在场NPC非语言必要触发动作，可在原文前以明确主体交付一次，不代玩家行动，不编未知成败或额外操作；其余自身动作、对白与新反应放在原文之后。原文已完整承担角色开场时用 optional；只有确认下一幕由原文独立开场时才标 exit_plan.fixed_entry_only。仍需玩家参与的选择、谈判、操作和结果留在 turn；无独立原文时 fixed_narrations 写[]。
 narrative 和 opening_scene 各不超过384 tokens。关系和道具应简洁，为后续摘录状态与处境后合计384 tokens的字段留出余量。
 issues.path 是当前输出中的修订位置，source_path 是整稿定位。native_validation_issues 是本幕正式编译错误；只修当前返回对象，保留其它正文与事件，不修改已完成前幕、后幕或故事框架。只返回 JSON object。"""
@@ -81,7 +81,7 @@ _ENDING_PROMPT = AUTHOR_KNOWLEDGE_RULE + "\n\n" + TRANSITION_PHASE_RULE + """
 本轮只生成结局 ending 与 ending_stage，使用 output_contract。previous_scene.chapter.entry_prerequisites 是通往结局必经的结果，据此收束。completion_facts 是其余收束目标。除下列确定展示外，合法入路可能尚未完成它们，不写死未保证的细节。
 previous_scene.chapter.completion_originals 是前幕完成合同引用的入幕原文，other_entry_originals 是其余已展示的入幕原文。承接其中已公开的信息，不重放原文或增设完成条件。
 沿用 ending_identity 的 type、title 与收束方向。summary 是创作规划；与离幕保证冲突或依赖未确定选择的细节，不能当作已发生事实写进结局。
-previous_scene.character_state_stage只保留角色能力与权限，不含前幕临时scene_boundaries，也不是出幕状态；持续作者限制仍按author_content_boundaries遵守。结局聚焦已保证结果的演出角色反应，不从前幕入幕推定地点、陈设、姿态或持物，也不另安排换场。
+previous_scene.character_state_stage只保留角色能力与权限，不含前幕临时scene_boundaries，也不是出幕状态；持续作者限制仍按author_content_boundaries遵守。结局聚焦已保证结果的当前角色反应，不从前幕入幕推定地点、陈设、姿态或持物，也不另安排换场。
 交付、许可或活动尚未实际完成时，结局保留当前准备状态，不安排新互动、玩家动作或跨时段后果。
 同场自然收束不需要换场旁白，entry_bridge保持空字符串，不为填满字段写编写说明。
 结局没有普通回合，不留待玩家回答的新问题或新决定，不借收束替玩家承诺、离开或执行附加动作。
@@ -637,7 +637,7 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
                 "catgirl_state": f"以{(names or {}).get('catgirl_name', '女主')}开头的开场收笔状态",
                 "player_state": f"以{(names or {}).get('player_name', '男主')}开头的开场收笔状态",
                 "environment_state": "以环境开头的开场收笔状态",
-                **({"catgirl_situation": "开场明确的演出角色当前顾虑、立场或未决问题；未交代时说明未明确，不补剧情"} if scene_key == "chapter" else {}),
+                **({"catgirl_situation": "开场明确的当前角色当前顾虑、立场或未决问题；未交代时说明未明确，不补剧情"} if scene_key == "chapter" else {}),
                 "temporal_context": {"anchor": "有依据时逐字摘录当前时间短语，未交代则省略整个temporal_context",
                                      "relation_to_previous": "unspecified | same_day | next_day | after_interval"},
             }, {**({"opening_scene": opening_scene} if opening_scene else {}),
@@ -844,7 +844,7 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
                             "trigger": {"type": "entry"}}],
                         "exit_plan": {**_CONTRACT["mainline_chapters"][0]["exit_plan"],
                             "entry_prerequisite_fact_ids": []},
-                        "opening_scene": "首幕可使用作者初始设定；后续幕只写环境、NPC与演出角色，并承接已选出口的直接结果，不新增玩家手势、视线、站坐或持物变化，待玩家实施的动作留在turn"},
+                        "opening_scene": "首幕可使用作者初始设定；后续幕只写环境、NPC与当前角色，并承接已选出口的直接结果，不新增玩家手势、视线、站坐或持物变化，待玩家实施的动作留在turn"},
                     # The example is part of the model's input contract, so make its required subject explicit too.
                     "relationship_stage": {**_CONTRACT["relationship_arc"]["stages"][0],
                         "known_player_facts": [f"以{(names or {}).get('player_name', '男主')}开头，只列开场前已知或入路保证的事实，不把本幕turn目标中的玩家决定提前写成已知"],
@@ -1010,8 +1010,8 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
             if key not in ("catgirl_state", "player_state", "environment_state", "continuity_from_previous", "temporal_context", "scene_boundaries")}
         draft = resume_written_scene("ending") or phase(_ENDING_PROMPT + boundary_rule,
             {"ending": {**_CONTRACT["ending"],
-                "summary": "概括各合法入路共同保证的结果和演出角色对此的回应；不替泛指共识补出具体方案、许可或物品去向",
-                "opening_scene": "在当前位置以演出角色的简短反应收束；未保证的物品归属、交接和答复省略，不写玩家新行动",
+                "summary": "概括各合法入路共同保证的结果和当前角色对此的回应；不替泛指共识补出具体方案、许可或物品去向",
+                "opening_scene": "在当前位置以当前角色的简短反应收束；未保证的物品归属、交接和答复省略，不写玩家新行动",
                 "entry_bridge": "",
             }, "ending_stage": {
                 **{key: value for key, value in _CONTRACT["character_state_arc"]["ending_stage"].items()

@@ -77,7 +77,7 @@ def test_branch_prompt_preserves_diamond_prop_provenance_without_asserting_both_
         assert "与目标开场和状态一致" in system["content"]
     else:
         assert "summary、opening_scene 和三方状态核对同一时点" in system["content"]
-        assert "结局承接结果及演出角色对此的回应，不重演动作" in system["content"]
+        assert "结局承接结果及当前角色对此的回应，不重演动作" in system["content"]
         assert "fallback_offer" not in system["content"].split("# Role:", 1)[1]
 
 

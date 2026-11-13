@@ -40,9 +40,9 @@ def test_opening_identity_snapshot_retains_explicit_story_gender_and_unknown_use
 def test_missing_cast_name_is_only_a_role_reference_and_keeps_legacy_alias_projection():
     story = {"intro": {"catgirl_identity": "女主，观测员。", "player_identity": "男主，访客。"}}
     cast = NumericV2CastProjection.from_story(story, catgirl_name="", player_name="")
-    assert cast.catgirl_name == "演出角色" and cast.player_name == "你"
-    assert cast.text("女主与男主一起查看观测屏。") == "演出角色与你一起查看观测屏。"
-    assert cast.text("男女主保留各自决定。") == "你和演出角色保留各自决定。"
+    assert cast.catgirl_name == "当前角色" and cast.player_name == "你"
+    assert cast.text("女主与男主一起查看观测屏。") == "当前角色与你一起查看观测屏。"
+    assert cast.text("男女主保留各自决定。") == "你和当前角色保留各自决定。"
 
 
 @pytest.mark.parametrize("characters", [OSError("unavailable"), {}, {"当前猫娘": "失效名字", "猫娘": {}},
@@ -63,7 +63,7 @@ async def test_missing_actual_character_stops_opening_before_model_call(monkeypa
     assert calls == [] and writer.provider_call_count == 0
 
 
-@pytest.mark.parametrize("name", ["维恩", "澄", "演出角色"])
+@pytest.mark.parametrize("name", ["维恩", "澄", "当前角色"])
 def test_real_card_name_is_used_verbatim_without_gender_or_label_blacklists(name):
     manager = Manager({"当前猫娘": name, "猫娘": {name: {"性别": "非二元", "性格": "安静"}},
         "主人": {"昵称": "访客"}})

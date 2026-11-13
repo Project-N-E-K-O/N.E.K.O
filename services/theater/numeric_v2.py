@@ -681,7 +681,7 @@ class NumericV2Compiler:
                     c.add("intro_identity_name_mismatch", f"intro.{role}_identity",
                           "剧情身份必须以对应的完整姓名和中文逗号开头。")
             if _text(intro.get("player_name")) and intro.get("player_name") == intro.get("catgirl_name"):
-                c.add("intro_identity_names_conflict", "intro", "玩家与猫娘的作者姓名不能相同。")
+                c.add("intro_identity_names_conflict", "intro", "玩家与当前角色的作者姓名不能相同。")
             return
         for field in ("player_identity", "catgirl_identity"):
             identity = intro.get(field)
@@ -697,7 +697,7 @@ class NumericV2Compiler:
             c.add(
                 "intro_identity_names_conflict",
                 "intro",
-                "玩家与猫娘身份的首段名称不能相同。",
+                "玩家与当前角色身份的首段名称不能相同。",
             )
 
     @staticmethod
@@ -1111,7 +1111,7 @@ class NumericV2Compiler:
                     c.add(
                         "catgirl_action_anchor_third_person",
                         f"{evidence_path}.anchors[{index}]",
-                        "猫娘动作锚点必须直接写动作，不得以‘她/女主/猫娘’等第三人称主语开头。",
+                        "当前角色动作锚点必须直接写动作，不得以第三人称代词或角色称呼开头。",
                     )
         source_ids = c.array(delivery.get("source_ids", []), f"{path}.source_ids")
         if len(source_ids) > 8:

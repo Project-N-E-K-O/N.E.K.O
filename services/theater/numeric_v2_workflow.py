@@ -908,7 +908,7 @@ def _project_authored_transition_text(engine: NumericV2Engine, session: Any, tex
         engine.story,
         player_name=(str(session.catgirl_binding.get("player_address") or "你")
                      if session.player_address_known else "你"),
-        catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前猫娘"),
+        catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前角色"),
     ).text(text)
 
 
@@ -3273,7 +3273,7 @@ async def _execute_numeric_v2_turn(
         return await generate_actor_turn(outcome, departure_repair=True, retry_hint=(
             "从最近已提交的本幕状态和玩家本轮原话重新写。开头用本幕仍在场的对象或感官细节确定落点，"
             "承接原话中已经实施的合法幕内动作，别用玩家声称的离场结果开场。"
-            "直接演出角色能交付的一项本幕新变化；需要玩家行动或决定时把下一步交给玩家。"
+            "直接当前角色能交付的一项本幕新变化；需要玩家行动或决定时把下一步交给玩家。"
         ))
 
     def contract_key(candidate):
@@ -3354,7 +3354,7 @@ async def _execute_numeric_v2_turn(
             cast = NumericV2CastProjection.from_story(runtime.engine.story,
                 player_name=str(current.session.catgirl_binding.get("player_address") or "你")
                     if current.session.player_address_known else "你",
-                catgirl_name=str(current.session.catgirl_binding.get("catgirl_name") or "当前猫娘"))
+                catgirl_name=str(current.session.catgirl_binding.get("catgirl_name") or "当前角色"))
             target = runtime.engine.nodes[target_id] if changed else None
             mismatch = exit_mismatch_reason if not changed else ""
             departure_plan = None

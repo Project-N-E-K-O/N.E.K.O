@@ -1852,7 +1852,7 @@ class NumericV2Engine:
         cast = NumericV2CastProjection.from_story(self.story,
             player_name=(str(session.catgirl_binding.get("player_address") or "你")
                          if session.player_address_known else "你"),
-            catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前猫娘"))
+            catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前角色"))
         fallback = cast.text(str(((after or {}).get("transition_contract") or {}).get("fallback_offer") or "")).strip()
         body = str(origin.get("performance") or "").strip()
         visible_offer = recorded_transition_offer(origin) or body.split("\n")[-1]
@@ -1882,7 +1882,7 @@ class NumericV2Engine:
         cast = NumericV2CastProjection.from_story(self.story,
             player_name=(str(session.catgirl_binding.get("player_address") or "你")
                          if session.player_address_known else "你"),
-            catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前猫娘"))
+            catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前角色"))
         accept = cast.text(str(contract.get("accept_input") or "")).strip()
         offer = cast.text(str(contract.get("fallback_offer") or "")).strip()
         body = str(origin.get("performance") or "").strip()

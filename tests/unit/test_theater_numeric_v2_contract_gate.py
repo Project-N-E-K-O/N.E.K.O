@@ -25,13 +25,13 @@ async def test_legacy_auxiliary_metadata_is_ignored_without_rewriting_on_read(tm
     outcome = runtime.prepare_turn(current, TurnRequestV2("one", 0, "先等一下。"), (), scene_complete=False)
     current = await runtime.commit_turn(outcome, {"performance": "（点头）我在这里等。", "suggested_inputs": []})
     path = runtime.store._path(current.session.session_id)
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     payload["session"]["narrative_state"] = {"malformed_retired_data": True}
     payload["session"]["opening_performance"]["narrative_record"] = "retired"
     payload["session"]["performance_history"][0]["narrative_record"] = "retired"
     payload["session"]["performance_history"][0]["narrative_events"] = ["retired"]
     payload["ledger_events"][0].update(narrative_record="retired", narrative_pending={"old_job": True})
-    path.write_text(json.dumps(payload, ensure_ascii=False))
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     before = path.read_bytes()
     loaded = await runtime.restore_session(current.session.session_id)
     assert loaded == current
@@ -41,12 +41,12 @@ async def test_legacy_auxiliary_metadata_is_ignored_without_rewriting_on_read(tm
     assert fork.session.metrics == current.session.metrics
     outcome = runtime.prepare_turn(loaded, TurnRequestV2("two", 1, "继续等。"), (), scene_complete=False)
     await runtime.commit_turn(outcome, {"performance": "（望向门口）还没有消息。", "suggested_inputs": []})
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     for field in ("narrative_state", "narrative_record", "narrative_events", "narrative_pending"):
         assert field not in text
     corrupted = json.loads(text)
     corrupted["session"]["performance_history"][0] = "corrupted original record"
-    path.write_text(json.dumps(corrupted))
+    path.write_text(json.dumps(corrupted), encoding="utf-8")
     with pytest.raises(NumericV2StoreError, match="numeric_performance_record_invalid"):
         await runtime.restore_session(current.session.session_id)
 
