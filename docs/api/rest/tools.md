@@ -14,6 +14,7 @@ Registrations are runtime state. They are not persisted across a server restart 
 | `POST` | `/api/tools/register` | Register or replace a remote model-callable tool |
 | `POST` | `/api/tools/unregister` | Remove a tool by name |
 | `POST` | `/api/tools/clear` | Remove tools carrying a given `source` tag |
+| `POST` | `/api/tools/release-host` | Remove tools still owned by a plugin host instance |
 | `GET` | `/api/tools` | List current registrations |
 
 ## Register
@@ -91,7 +92,7 @@ To return a tool-level error without failing the HTTP exchange:
 
 The dispatcher treats HTTP `4xx`/`5xx` as tool errors. A non-JSON response is passed through as text output. A request timeout or connection failure also becomes a model-visible tool error.
 
-For sources beginning with `plugin:`, three consecutive connection-level failures to the same callback origin automatically evict only that origin's tools from all character registries. Read timeouts, HTTP error responses, and tool-level `is_error` responses do not count toward eviction.
+For sources beginning with `plugin:`, three consecutive connection-level failures evict the tools matching the source, callback origin, and host instance (if supplied) from all character registries. Read timeouts, HTTP error responses, and tool-level `is_error` responses do not count toward eviction.
 
 Callback payloads may contain model-generated arguments derived from user conversation. Keep callbacks local and apply the same privacy handling as the plugin's other user-data paths.
 
@@ -116,6 +117,29 @@ Content-Type: application/json
 ```
 
 Both endpoints can target one existing character with `role`. Their responses include `affected_roles` and `failed_roles`; `unregister` returns a boolean `removed`, while `clear` returns the number removed.
+
+## Plugin host cleanup
+
+The plugin host includes three optional fields on registrations with a `plugin:` source:
+
+| Field | Meaning |
+|---|---|
+| `host_instance_id` | A new ID for each host startup, 1–64 characters |
+| `host_pid` | The local host process ID, a positive integer |
+| `host_process_started_at` | The process creation time in Unix seconds, a positive finite number |
+
+Providing all three enables proactive cleanup. The main server checks the callback origin's `GET /health` about every five seconds and compares the returned `host_instance_id`. It allows a live host to finish starting before its first successful check. Three consecutive checks indicating that the host is unreachable, or confirmation that the address belongs to a different instance, remove the old instance's tools from the character registries and replay ledger and schedule an active-session refresh. Registrations without this metadata retain the existing cleanup on callback connection failures.
+
+On normal shutdown, the plugin host requests cleanup immediately:
+
+```http
+POST /api/tools/release-host
+Content-Type: application/json
+
+{"host_instance_id": "<instance ID>"}
+```
+
+The response is `{"ok": true, "removed": <count>}`, with a count of removals across character registries. Repeating the request is safe. A tool re-registered by a new instance belongs to that instance even if it uses the same name and port. An `unregister` request can also supply `expected_host_instance_id` to restrict removal to a specific instance.
 
 ## List
 

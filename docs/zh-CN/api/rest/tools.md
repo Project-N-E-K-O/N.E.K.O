@@ -14,6 +14,7 @@
 | `POST` | `/api/tools/register` | 注册或替换一个远程模型工具 |
 | `POST` | `/api/tools/unregister` | 按名称移除工具 |
 | `POST` | `/api/tools/clear` | 移除具有指定 `source` 标签的工具 |
+| `POST` | `/api/tools/release-host` | 移除仍归指定插件宿主实例所有的工具 |
 | `GET` | `/api/tools` | 列出当前注册项 |
 
 ## 注册
@@ -91,7 +92,7 @@ Content-Type: application/json
 
 调度器会把 HTTP `4xx`/`5xx` 视为工具错误；非 JSON 响应会作为文本输出。请求超时或连接失败也会转换为模型可见的工具错误。
 
-对于以 `plugin:` 开头的 source，同一回调 origin 连续发生三次连接级失败后，系统会从所有角色 registry 中自动移除该 origin 的工具，不会误删同一插件其他 origin 的工具。读取超时、HTTP 错误响应和工具级 `is_error` 不计入驱逐。
+对于以 `plugin:` 开头的来源，连续发生三次连接级失败后，系统会从所有角色的工具表中移除与该来源、回调地址和宿主实例（若注册时提供）相匹配的工具。读取超时、HTTP 错误响应和工具级 `is_error` 不计入回收。
 
 回调载荷可能包含由用户对话派生的模型参数。回调必须保持本地，并遵守插件其他用户数据通路的隐私处理要求。
 
@@ -116,6 +117,29 @@ Content-Type: application/json
 ```
 
 两个接口都可用 `role` 指定一个已存在角色。响应包含 `affected_roles` 和 `failed_roles`；`unregister` 的 `removed` 是布尔值，`clear` 的 `removed` 是移除数量。
+
+## 插件宿主回收
+
+插件宿主注册 `plugin:` 来源的工具时会附带以下三个可选字段：
+
+| 字段 | 含义 |
+|---|---|
+| `host_instance_id` | 每次宿主启动生成的实例 ID，长度为 1–64 个字符 |
+| `host_pid` | 本机宿主进程 ID，为正整数 |
+| `host_process_started_at` | 进程启动时间，以 Unix 秒表示，为正的有限数值 |
+
+三个字段齐全时，主服务启用主动回收。它约每五秒查询回调地址的 `GET /health`，并比对返回的 `host_instance_id`。首次成功探测前，只要原进程仍在运行，就允许宿主继续启动。连续三轮探测判定宿主不可达，或确认回调地址已由另一实例使用后，主服务会从各角色工具表和重放记录中移除旧实例的工具，并安排刷新当前会话。未提供这组字段的注册沿用原有的回调连接失败回收机制。
+
+宿主正常退出时会主动发起回收：
+
+```http
+POST /api/tools/release-host
+Content-Type: application/json
+
+{"host_instance_id": "<实例 ID>"}
+```
+
+响应为 `{"ok": true, "removed": <数量>}`，数量按各角色工具表中实际移除的条目累计。请求可重复发送。工具经新实例重新注册后，即使沿用相同名称和端口，也归新实例所有。发送 `unregister` 请求时，也可以提供 `expected_host_instance_id`，将注销范围限定在指定实例。
 
 ## 列表
 
