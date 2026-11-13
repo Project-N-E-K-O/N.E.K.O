@@ -497,19 +497,28 @@ class TaskAgentManager:
             # that makes it: with the quota used up, a task agent sends
             # nothing at all, and a start that fails or is stopped costs
             # nothing. (Later requests are counted as their usage is reported.)
-            # Counting takes a moment too, so a stop is looked for again.
+            # Counting takes a moment too, so a stop is looked for again; a
+            # stop that lands then has paid for a request it does not make.
             if await stopped_meanwhile():
                 session.closing = True
                 await runtime.close(commission.id)
                 return False
             if not await self._pay_first_request(session):
+                # Given up before its place is: what the user added before
+                # and while it was being set up stays for when it is taken up
+                # again, as it did when this failed before anything was
+                # started. The session's events then find no session and
+                # change nothing.
+                self._discard(commission.id)
+                if notes:
+                    self._notes[commission.id] = [*notes, *self._notes.get(commission.id, [])]
                 await self._fail(commission.id, _QUOTA_REASON)
                 session.closing = True
                 await runtime.close(commission.id)
                 return False
             if await stopped_meanwhile():
-                session.closing = True
-                await runtime.close(commission.id)
+                # The stop has closed the session already.
+                await self._close_session(session)
                 return False
             await self._send_text(runtime, session, "prompt", text)
             session.ready = True

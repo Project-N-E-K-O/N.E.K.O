@@ -75,6 +75,7 @@ class Wiring:
         monkeypatch.setattr(_shared.Modules, "analyzer_enabled", True)
         monkeypatch.setattr(_shared.Modules, "agent_flags", {"user_plugin_enabled": True})
         monkeypatch.setattr(nekoclaw_mount, "_filled_from", None)
+        monkeypatch.setattr(nekoclaw_mount, "_restore_failed_at", None)
         monkeypatch.setattr(nekoclaw_mount, "_updates", None)
         monkeypatch.setattr(nekoclaw_mount, "_updates_worker", None)
         nekoclaw_mount.hud.clear()
@@ -494,6 +495,29 @@ async def test_the_pages_that_read_the_tasks_still_answer_when_the_host_cannot_b
     with pytest.raises(HTTPException) as missing:
         await wiring.runtime.get_task("nope")
     assert missing.value.status_code == 404
+
+
+async def test_a_host_that_cannot_be_built_is_not_tried_again_on_every_poll(wiring, tmp_path, monkeypatch):
+    await _left_by_an_earlier_process(tmp_path)
+    tries: list[int] = []
+    now = [1000.0]
+
+    def broken() -> Any:
+        tries.append(1)
+        raise RuntimeError("cannot open the ledger")
+
+    monkeypatch.setattr(wiring.host_mount, "get_host", broken)
+    monkeypatch.setattr(wiring.mount_module, "_restore_clock", lambda: now[0])
+
+    # The task window polls every few seconds.
+    for _ in range(3):
+        await wiring.routes.list_tasks()
+        now[0] += 5
+    assert tries == [1]
+
+    now[0] += wiring.mount_module.RESTORE_RETRY_SECONDS
+    await wiring.routes.list_tasks()
+    assert tries == [1, 1]
 
 
 @pytest.mark.parametrize("nekoclaw_is_on", [True, False])

@@ -338,6 +338,12 @@ def mount_nekoclaw_host(change_token: Optional[Callable[[], Any]] = None) -> Non
 
 # The host whose commissions ``hud`` has been filled from.
 _filled_from: Any = None
+# When building the host for ``restore_hud`` last failed (monotonic seconds).
+_restore_failed_at: Optional[float] = None
+# How long ``restore_hud`` leaves the host unbuilt after that failed. The
+# task window asks every few seconds; each try would build the host again.
+RESTORE_RETRY_SECONDS = 30.0
+_restore_clock = time.monotonic
 
 
 def peek_host() -> Any:
@@ -393,14 +399,20 @@ async def restore_hud() -> None:
         return
     if not nekoclaw_on():
         return
+    global _restore_failed_at
+    if host is None and _restore_failed_at is not None and _restore_clock() - _restore_failed_at < RESTORE_RETRY_SECONDS:
+        return
     if host is None and not await ledger_exists():
         return
     try:
         await ready_host()
-    except Exception as exc:
+    except Exception:
         # The pages that call this only read what is in memory; a host that
         # cannot be built must not turn them into errors.
-        logger.warning("[Agent] building the host to restore the HUD failed (exc_type=%s)", type(exc).__name__)
+        _restore_failed_at = _restore_clock()
+        logger.warning("[Agent] building the host to restore the HUD failed", exc_info=True)
+    else:
+        _restore_failed_at = None
 
 
 async def ledger_exists() -> bool:

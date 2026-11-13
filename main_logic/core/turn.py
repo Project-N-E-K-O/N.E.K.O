@@ -1089,19 +1089,34 @@ class TurnMixin:
         """
         return self._close_taken_over_offline_reply(kind, displaced=True)
 
-    async def handle_proactive_complete(self, content_committed: bool = True):
+    async def handle_proactive_complete(
+        self,
+        content_committed: bool = True,
+        *,
+        expected_speech_id: Any = Ellipsis,
+        expected_user_engagement_time: Any = Ellipsis,
+    ):
         """Lightweight completion for proactive (agent callback) replies.
 
         Only flushes TTS and sends turn_end to the frontend so that the
         realistic-queue buffer is flushed.  Does NOT trigger hot-swap,
         analyze_request, or agent-callback re-delivery — those belong
         exclusively to user-initiated conversation turns.
+
+        ``expected_speech_id`` and ``expected_user_engagement_time`` are the
+        reply's turn as the caller saw it before sending it; left out, they
+        are read here. A user turn begun since keeps its words and its tool
+        calls.
         """
         if not content_committed:
             logger.debug("[%s] handle_proactive_complete: no content committed, skipping completion flush", self.lanlan_name)
             return
-        speech_id_at_start = self.current_speech_id
-        engagement_at_start = getattr(self, "last_user_engagement_time", None)
+        speech_id_at_start = self.current_speech_id if expected_speech_id is Ellipsis else expected_speech_id
+        engagement_at_start = (
+            getattr(self, "last_user_engagement_time", None)
+            if expected_user_engagement_time is Ellipsis
+            else expected_user_engagement_time
+        )
         # Activity tracker flush: proactive speech counts too. Mirror _emit_turn_end
         # so seconds_since_ai_msg treats active/passive replies equally. Proactive text
         # passed send_lanlan_response via finish_proactive_delivery,

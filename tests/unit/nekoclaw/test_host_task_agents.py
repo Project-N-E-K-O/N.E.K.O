@@ -917,6 +917,37 @@ async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(h
     assert sent[2][0] == "steer" and "drafts listed" in sent[2][1]
 
 
+async def test_what_the_user_added_while_it_was_queued_stays_when_the_quota_is_used_up(hosts, tmp_path):
+    release, wait = _gate()
+    allowed = {"sort the photos": True, "back up the notes": False}
+
+    def pick(spec: Any) -> ScriptedLLM:
+        return ScriptedLLM([[wait, say("done"), finish()]])
+
+    host = _host(hosts, tmp_path, pick, max_task_agents=1)
+
+    async def meter(commission_id: str) -> bool:
+        commission = await host.ledger.get(commission_id)
+        return allowed[commission.dispatch_text]
+
+    host.task_agents._meter = meter
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "working")
+    second = await _dispatch(host, "back up the notes")
+    # Queued behind the first: what is passed on now (a child's report, a
+    # note) waits for its start.
+    host.task_agents._notes.setdefault(second.commission_id, []).append("skip the drafts")
+    release.set()
+    await wait_status(host, first.commission_id, "done")
+
+    await wait_status(host, second.commission_id, "failed")
+    await host.task_agents.settle()
+
+    # Kept for when it is taken up again, as when the quota ran out before
+    # anything was started.
+    assert host.task_agents._notes.get(second.commission_id) == ["skip the drafts"]
+
+
 async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_it_goes_back(hosts, tmp_path):
     llm = ScriptedLLM(
         [

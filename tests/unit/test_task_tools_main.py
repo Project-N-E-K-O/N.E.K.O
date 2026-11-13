@@ -758,6 +758,24 @@ async def test_a_user_turn_begun_while_a_report_finishes_keeps_its_words_and_too
 
 
 @pytest.mark.asyncio
+async def test_a_user_turn_begun_while_the_reply_was_sent_keeps_its_words():
+    # The caller saw the reply's turn before sending it; the user began a
+    # turn during that send, before this is called.
+    manager = _proactive_manager()
+    manager.last_user_engagement_time = 101.0
+    manager._latest_user_utterance = "帮我放点音乐"
+
+    async def tts_done(_where):
+        pass
+
+    manager._request_tts_done_for_turn = tts_done
+
+    await manager.handle_proactive_complete(expected_speech_id="speech-1", expected_user_engagement_time=100.0)
+
+    assert manager._latest_user_utterance == "帮我放点音乐"
+
+
+@pytest.mark.asyncio
 async def test_a_report_that_finishes_undisturbed_closes_its_turn():
     manager = _proactive_manager()
     manager._turn_has_spoken = True

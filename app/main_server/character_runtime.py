@@ -1466,6 +1466,9 @@ async def _handle_agent_event(event: dict):
                         try:
                             await mgr.rotate_speech_id_for_response_done()
                             direct_reply_sid = mgr.current_speech_id
+                            # The reply's turn as it was before the send:
+                            # a user turn begun during it is not this one's.
+                            direct_reply_engaged = getattr(mgr, "last_user_engagement_time", None)
                             delivered = bool(
                                 await mgr.send_lanlan_response(detail_text, True, turn_id=direct_reply_sid,
                                                               expected_speech_id=direct_reply_sid)
@@ -1476,7 +1479,10 @@ async def _handle_agent_event(event: dict):
                             )
                     if delivered and hasattr(mgr, "handle_proactive_complete"):
                         try:
-                            await mgr.handle_proactive_complete()
+                            await mgr.handle_proactive_complete(
+                                expected_speech_id=direct_reply_sid,
+                                expected_user_engagement_time=direct_reply_engaged,
+                            )
                         except Exception as e:
                             logger.warning(
                                 "[EventBus] direct task_result turn_end failed: %s", e

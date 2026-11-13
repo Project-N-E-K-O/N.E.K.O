@@ -23,6 +23,7 @@ calls follow, as for any dispatch).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -998,7 +999,17 @@ async def test_a_task_agent_stopped_while_its_first_request_is_counted_gets_no_w
     llm = ScriptedLLM([_report_ready("done")])
     holder: dict[str, Any] = {}
 
+    closes: list[str] = []
+
     async def meter(commission_id: str) -> bool:
+        runtime = holder["host"].task_agents._runtime
+        close = runtime.close
+
+        async def counted_close(session_id: str) -> None:
+            closes.append(session_id)
+            await close(session_id)
+
+        runtime.close = counted_close
         # The user stops it while the quota file is being written.
         await holder["host"].abort(commission_id)
         return True
@@ -1015,6 +1026,33 @@ async def test_a_task_agent_stopped_while_its_first_request_is_counted_gets_no_w
     # The stop is seen before the prompt is sent, not as a prompt that fails
     # on a session already closed.
     assert not [record for record in caplog.records if "starting a task agent" in record.getMessage()]
+    # Nor is the session the stop closed closed a second time (a
+    # runtime in its own process answers that with an error).
+    assert closes == [receipt.commission_id]
+    events = await host.ledger.events(receipt.commission_id)
+    assert [event for event in events if event.type == "error"] == []
+
+
+async def test_what_the_user_added_while_a_task_agent_came_up_stays_when_the_quota_is_used_up(hosts, tmp_path):
+    holder: dict[str, Any] = {}
+
+    async def meter(commission_id: str) -> bool:
+        # The user adds to the task while its session is being set up.
+        assert await holder["host"].task_agents.tell(commission_id, "顺便把重复的删掉")
+        return False
+
+    llm = ScriptedLLM([_report_ready("done")])
+    host = _task_agent_host(hosts, tmp_path, llm, task_agent_meter=meter)
+    holder["host"] = host
+
+    receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "failed")
+    await wait_until(lambda: not host.task_agents._runtime.core._sessions, what="the session being closed")
+    await host.task_agents.settle()
+
+    # Kept for when it is taken up again, as when the quota ran out before
+    # anything was started.
+    assert host.task_agents._notes.get(receipt.commission_id) == ["顺便把重复的删掉"]
 
 
 async def test_a_meter_that_cannot_count_does_not_stop_the_work(hosts, tmp_path):
