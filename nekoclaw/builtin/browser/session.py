@@ -333,8 +333,8 @@ class BrowserSession:
         # Closing a browser whose start was cancelled; the next start and
         # ``close`` wait for it.
         self._abandoned: asyncio.Future[None] | None = None
-        # Browsers of ours that could not be closed when another took their
-        # place; ``close`` tries again.
+        # Browsers of ours that could not be closed, when another took their
+        # place or when closing was asked for; ``close`` tries again.
         self._unclosed: list[launcher.RunningBrowser] = []
 
     # -- connection -------------------------------------------------------
@@ -567,9 +567,11 @@ class BrowserSession:
                 await launcher.close(browser, connection)
             except Exception:  # noqa: BLE001 - the connection is dropped either way
                 logger.warning("closing the browser failed", exc_info=True)
-                if browser.owned and browser not in self._unclosed:
+                if browser not in self._unclosed:
                     # Not let go of for good: tried once more below, without
                     # the connection, and whenever closing is asked for again.
+                    # (Only a browser of ours can fail to close: nothing is
+                    # done to one that is the user's.)
                     self._unclosed.append(browser)
             # Let go of only now: a close that was cancelled half way (the
             # user stopping everything) still knows which browser to close
