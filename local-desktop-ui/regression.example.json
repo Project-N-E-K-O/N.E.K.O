@@ -3,19 +3,41 @@
   "suites": [
     {
       "name": "maintenance",
-      "command": ["uv", "run", "--no-sync", "python", "-m", "pytest", "-q", "tests/unit/test_local_maintenance.py"]
+      "command": [
+        "uv",
+        "run",
+        "--no-sync",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/unit/test_local_maintenance.py"
+      ]
     },
     {
       "name": "whitespace",
-      "command": ["git", "diff", "--check", "origin/main...HEAD"]
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "origin/main...HEAD"
+      ]
     },
     {
       "name": "whitespace-staged",
-      "command": ["git", "diff", "--cached", "--check"]
+      "command": [
+        "python",
+        "-c",
+        "import subprocess; p=subprocess.run(['git','rev-parse','-q','--verify','MERGE_HEAD'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); args=['git','diff','--cached','--check']+(['MERGE_HEAD'] if p.returncode==0 else []); raise SystemExit(subprocess.run(args).returncode)"
+      ]
     },
     {
       "name": "whitespace-working",
-      "command": ["git", "diff", "--check"]
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ]
     }
   ]
 }
