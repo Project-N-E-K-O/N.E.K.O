@@ -1194,13 +1194,14 @@ async def test_what_a_quota_failure_kept_survives_a_start_that_cannot_open_its_s
     assert await host.task_agents.tell(commission.id, "try again") is False
     await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the failed start being given up")
 
-    # Kept for the start after this one, as it was for this one.
-    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
+    # Kept for the start after this one with what this one was given, in
+    # the order they came.
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "try again"]
     runtime.start = start
     assert await host.task_agents.tell(commission.id, "once more") is True
     await wait_status(host, commission.id, "done", timeout=10)
     sent = " | ".join(str(message.get("content")) for message in llm.requests[0])
-    assert sent.index("the photos are on drive E:") < sent.index("once more")
+    assert sent.index("the photos are on drive E:") < sent.index("try again") < sent.index("once more")
 
 
 
@@ -1248,7 +1249,7 @@ async def test_kept_text_survives_a_start_the_runtime_gives_up_after_the_prompt_
     await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
     runtime.prompt = prompt
 
-    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "try again"]
 
 
 
@@ -1279,6 +1280,84 @@ async def test_kept_text_reaches_the_model_once_after_a_run_that_failed_on_its_f
     said = [message["content"] for message in llm.requests[-1] if message["role"] == "user"]
     assert sum("the photos are on drive E:" in text for text in said) == 1
     assert any("once more" in text for text in said)
+
+
+async def test_kept_text_survives_the_runtime_going_away_before_the_prompt_was_sent(hosts, tmp_path):
+    # The runtime process exits after the start was answered and before the
+    # prompt went out (here while the first request is being counted): the
+    # run ends with an error, and nothing reached the transcript.
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        if paid:
+            return paid.pop(0)
+        await host.task_agents._handle(
+            {"type": "ended", "session_id": commission_id, "reason": "error", "error": "the runtime process exited"}
+        )
+        return True
+
+    host.task_agents._meter = meter
+    commission = await _kept_after_a_quota_failure(host)
+
+    await host.task_agents.tell(commission.id, "try again")
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "try again"]
+
+
+async def test_kept_text_survives_a_prompt_the_runtime_refuses(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _kept_after_a_quota_failure(host)
+    runtime = host.task_agents._runtime
+    prompt = runtime.prompt
+
+    async def refused(session_id: str, text: str) -> None:
+        await host.task_agents._handle(
+            {"type": "error", "session_id": session_id, "command": "prompt", "message": "a run is under way"}
+        )
+
+    runtime.prompt = refused
+    await host.task_agents.tell(commission.id, "try again")
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    runtime.prompt = prompt
+
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "try again"]
+
+
+async def test_a_start_that_fails_after_its_commission_was_stopped_keeps_nothing(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _kept_after_a_quota_failure(host)
+    runtime = host.task_agents._runtime
+    start = runtime.start
+
+    async def stopped_then_failed(spec: Any) -> None:
+        await host.ledger.transition(spec.session_id, "cancelled", reason="test")
+        await host.task_agents.abort(spec.session_id)
+        await host.task_agents._handle(
+            {"type": "error", "session_id": spec.session_id, "command": "start", "message": "could not open"}
+        )
+
+    runtime.start = stopped_then_failed
+    await host.task_agents.tell(commission.id, "try again")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    runtime.start = start
+
+    assert commission.id not in host.task_agents._carried
 
 
 async def test_kept_text_is_not_kept_again_once_the_session_was_at_work_on_it(hosts, tmp_path):
