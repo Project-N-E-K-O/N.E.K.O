@@ -176,3 +176,21 @@ def test_maintenance_fence_blocks_recording_without_breaking_live_speech(tmp_pat
     mgr._config_manager.load_root_state = lambda: {'mode': 'maintenance_readonly'}
     asyncio.run(archive_event(mgr, 'audio', 's', data=b'\0\0'))
     assert not (tmp_path/'voice_archive').exists()
+
+
+def test_text_config_metadata_read_runs_off_event_loop(tmp_path):
+    async def run():
+        mgr = manager(tmp_path)
+        loop_thread = threading.get_ident()
+        seen_threads = []
+
+        def read_config():
+            seen_threads.append(threading.get_ident())
+            return {'TTS_MODEL': 'test-tts'}
+
+        mgr._config_manager.get_core_config = read_config
+        await archive_event(mgr, 'text', 'speech-a', text='hello', is_first=True)
+        assert seen_threads and seen_threads[0] != loop_thread
+        assert read(tmp_path/'voice_archive/archive.sqlite3', 'SELECT text FROM clips') == [('hello',)]
+    asyncio.run(run())
+
