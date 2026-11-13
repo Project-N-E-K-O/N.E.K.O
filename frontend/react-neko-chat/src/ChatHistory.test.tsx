@@ -155,3 +155,36 @@ it('restores the tool toggle when the original entry is disabled on close', asyn
   await waitFor(() => expect(document.activeElement).toBe(toggle));
   main.remove();
 });
+
+
+it('ignores a stale settings GET after a newer recording POST', async () => {
+  let resolveSlowGet!: (value: { ok: boolean; json: () => Promise<{enabled: boolean}> }) => void;
+  const slowGet = new Promise<{ ok: boolean; json: () => Promise<{enabled: boolean}> }>(
+    resolve => { resolveSlowGet = resolve; }
+  );
+  let gets = 0;
+  let posts = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+    if (url.includes('/voice-archive/settings')) {
+      if (options?.method === 'POST') {
+        posts++;
+        return { ok: posts > 1, json: async () => ({ enabled: true }) };
+      }
+      return ++gets === 1 ? { ok: true, json: async () => ({ enabled: false }) } : slowGet;
+    }
+    return { ok: true, json: async () => url.includes('characters')
+      ? { characters: ['Alice'] } : { messages: [], nextCursor: null, available: true } };
+  }));
+  render(<HistoryDialog close={vi.fn()} />);
+  const toggle = screen.getByLabelText('recordVoice');
+  await waitFor(() => expect(toggle).toBeEnabled());
+  fireEvent.click(toggle); // First POST fails, exposing Retry without changing the setting.
+  const retry = await screen.findByText('retry');
+  fireEvent.click(retry);
+  await waitFor(() => expect(gets).toBe(2));
+  fireEvent.click(toggle); // A newer POST succeeds while the retry GET is in flight.
+  await waitFor(() => expect(toggle).toBeChecked());
+  await act(async () => resolveSlowGet({ ok: true, json: async () => ({ enabled: false }) }));
+  expect(toggle).toBeChecked();
+});
+
