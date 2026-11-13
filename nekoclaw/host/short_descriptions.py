@@ -41,6 +41,12 @@ logger = logging.getLogger(__name__)
 _FILE_VERSION = 1
 
 
+def _failure_reset_seconds() -> float:
+    from config.nekoclaw_settings import PLUGIN_SHORT_DESCRIPTION_FAILURE_RESET_SECONDS
+
+    return PLUGIN_SHORT_DESCRIPTION_FAILURE_RESET_SECONDS
+
+
 def description_key(description: str) -> str:
     """Return what a written short description is kept under: a hash of the whole description."""
     return hashlib.sha256((description or "").encode("utf-8")).hexdigest()
@@ -71,6 +77,8 @@ class ShortDescriptions:
         self._long: dict[str, bool] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._closed = False
+        # When the file was last there but could not be read.
+        self._unreadable_at: float | None = None
 
     async def apply(self, plugins: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Return the plugins, each without a short description given the one written for it.
@@ -139,11 +147,21 @@ class ShortDescriptions:
             return True
         if self._loading is None:
             self._loading = asyncio.Lock()
+        from config.nekoclaw_settings import PLUGIN_SHORT_DESCRIPTION_REREAD_SECONDS
+
         async with self._loading:
             if self._written is None:
+                if (
+                    self._unreadable_at is not None
+                    and self._clock() - self._unreadable_at < PLUGIN_SHORT_DESCRIPTION_REREAD_SECONDS
+                ):
+                    # Not read again on every listing, nor warned about.
+                    return False
                 stored = await asyncio.to_thread(self._read)
                 if stored is None:
+                    self._unreadable_at = self._clock()
                     return False
+                self._unreadable_at = None
                 self._written, self._failed = stored
         return True
 
@@ -209,6 +227,7 @@ class ShortDescriptions:
 
     def _start_writing(self, missing: list[dict[str, Any]]) -> None:
         from config.nekoclaw_settings import (
+            PLUGIN_SHORT_DESCRIPTION_FAILURE_RESET_SECONDS,
             PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES,
             PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS,
         )
@@ -223,7 +242,10 @@ class ShortDescriptions:
             if plugin_id in self._in_flight:
                 continue
             if failed is not None and failed[0] == description_key(str(plugin.get("description") or "").strip()):
-                if failed[1] >= PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES:
+                if (
+                    failed[1] >= PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES
+                    and now - failed[2] < PLUGIN_SHORT_DESCRIPTION_FAILURE_RESET_SECONDS
+                ):
                     continue
                 if now - failed[2] < PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS:
                     continue
@@ -251,7 +273,13 @@ class ShortDescriptions:
                 key = description_key(description)
                 if not short:
                     before = self._failed.get(plugin_id)
-                    count = before[1] + 1 if before is not None and before[0] == key else 1
+                    count = (
+                        before[1] + 1
+                        if before is not None
+                        and before[0] == key
+                        and self._clock() - before[2] < _failure_reset_seconds()
+                        else 1
+                    )
                     self._failed[plugin_id] = (key, count, self._clock())
                     await self._keep()
                     continue

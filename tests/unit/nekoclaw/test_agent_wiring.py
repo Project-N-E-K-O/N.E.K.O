@@ -536,6 +536,17 @@ async def test_a_host_that_cannot_be_built_is_not_tried_again_on_every_poll(wiri
     assert tries == [1, 1]
 
 
+
+async def test_shutting_the_host_down_forgets_a_failed_restore(wiring, monkeypatch):
+    # A host built again after a shutdown is not left unfilled for the rest
+    # of the pause a failure before the shutdown started.
+    monkeypatch.setattr(wiring.mount_module, "_restore_failed_at", 123.0)
+    monkeypatch.setattr(wiring.mount_module, "_unsubscribe", None)
+
+    await wiring.mount_module.shutdown_nekoclaw_host()
+
+    assert wiring.mount_module._restore_failed_at is None
+
 async def test_a_ledger_that_cannot_be_read_is_not_tried_again_on_every_poll(wiring, tmp_path, monkeypatch):
     # The host is built, but reading what was left under way fails: that
     # waits as well, instead of one warning per poll.

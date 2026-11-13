@@ -694,6 +694,48 @@ async def test_an_answer_kept_for_a_wake_up_that_never_ran_survives_the_session_
     assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
 
 
+
+async def test_an_answer_held_by_a_closing_session_survives_its_runtime_going_away(hosts, tmp_path):
+    # As above, but the runtime process exits before the close comes back:
+    # the session ends as that close would have, and the answer it held is
+    # not lost. The waiting commission is not failed for it either.
+    from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
+
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    session = host.task_agents._sessions[receipt.commission_id]
+    session.run_ended = False
+    assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
+    assert session.held_answer == "the photos are in D:/Camera"
+    runtime = host.task_agents._runtime
+    close = runtime.close
+
+    async def unanswered_close(session_id: str) -> None:
+        pass
+
+    # Closing was asked for (an idle runtime closing the session, say) and
+    # the process went away before answering.
+    runtime.close = unanswered_close
+    session.closing = True
+    await host.task_agents._handle(
+        {"type": "ended", "session_id": receipt.commission_id, "reason": "error", "error": PROCESS_EXITED_ERROR}
+    )
+    runtime.close = close
+    # Gone from the runtime too, as with its process.
+    await close(receipt.commission_id)
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
+
 async def test_an_answer_sent_to_a_session_that_closes_before_taking_it_takes_it_up_again(hosts, tmp_path):
     llm = ScriptedLLM(
         [
@@ -961,7 +1003,7 @@ async def test_what_the_user_added_while_it_was_queued_stays_when_the_quota_is_u
 
     # Kept for when it is taken up again, as when the quota ran out before
     # anything was started.
-    assert host.task_agents._notes.get(second.commission_id) == ["skip the drafts"]
+    assert host.task_agents._carried.get(second.commission_id) == ["skip the drafts"]
 
 
 async def test_the_sentence_a_start_was_given_stays_when_the_quota_is_used_up(hosts, tmp_path):
@@ -984,12 +1026,13 @@ async def test_the_sentence_a_start_was_given_stays_when_the_quota_is_used_up(ho
     await wait_status(host, commission.id, "failed")
     await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
     await host.task_agents.settle()
-    assert host.task_agents._notes.get(commission.id) == ["the photos are on drive E:"]
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
 
     assert await host.task_agents.tell(commission.id, "try again") is True
     await wait_status(host, commission.id, "done", timeout=10)
     sent = " | ".join(str(message.get("content")) for message in llm.requests[0])
-    assert "the photos are on drive E:" in sent and "try again" in sent
+    # In the order they were said: the kept answer before the newer sentence.
+    assert sent.index("the photos are on drive E:") < sent.index("try again")
 
 
 async def test_a_start_given_up_for_the_quota_keeps_its_place_until_its_session_is_closed(hosts, tmp_path):

@@ -235,3 +235,14 @@ PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES = 3
 its description before it is not asked for again, until the description
 changes. Failures are kept on disk with the short descriptions, so a restart
 neither resets the count nor retries at once."""
+
+PLUGIN_SHORT_DESCRIPTION_FAILURE_RESET_SECONDS = 86400.0
+"""After this long since the last failure, a plugin's failures count from zero
+again: a model that was not configured, or a network that was down, gets
+another try the next day. At most ``PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES``
+requests per plugin and description in that time."""
+
+PLUGIN_SHORT_DESCRIPTION_REREAD_SECONDS = 60.0
+"""How long a short-descriptions file that exists but could not be read (held
+open by another program) is left alone before it is read again."""
+

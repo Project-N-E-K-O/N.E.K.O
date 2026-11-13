@@ -390,13 +390,17 @@ async def test_a_file_that_cannot_be_read_now_is_not_written_over(tmp_path, monk
     path.write_text(json.dumps(kept), encoding="utf-8")
     llm = FakeDecisionLLM()
     llm.short = ["Weather forecasts.", "spare"]
-    short = ShortDescriptions(lambda: path, llm)
+    now = [1000.0]
+    short = ShortDescriptions(lambda: path, llm, clock=lambda: now[0])
     held = {"on": True}
+    reads: list[int] = []
     real_open = Path.open
 
     def flaky_open(self, *args, **kwargs):
-        if held["on"] and self == path and "r" in (args[0] if args else kwargs.get("mode", "r")):
-            raise PermissionError("held open by another process")
+        if self == path and "r" in (args[0] if args else kwargs.get("mode", "r")):
+            reads.append(1)
+            if held["on"]:
+                raise PermissionError("held open by another process")
         return real_open(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", flaky_open)
@@ -405,10 +409,42 @@ async def test_a_file_that_cannot_be_read_now_is_not_written_over(tmp_path, monk
     await _written(short)
     # Nothing applied, nothing asked for, the file untouched.
     assert listed["short_description"] == "" and llm.short_calls == []
+    # Not read again on every listing, for a while.
+    await short.apply([_weather()])
+    assert reads == [1]
     held["on"] = False
-    assert json.loads(path.read_text(encoding="utf-8")) == kept
-
+    assert json.loads(real_open(path, encoding="utf-8").read()) == kept
+    now[0] += 61
     await short.apply([_weather()])
     await _written(short)
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert set(stored["entries"]) == {"memo", "weather"}
+
+
+async def test_failures_count_from_zero_again_after_a_day(tmp_path):
+    from config.nekoclaw_settings import (
+        PLUGIN_SHORT_DESCRIPTION_FAILURE_RESET_SECONDS,
+        PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES,
+        PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS,
+    )
+    from nekoclaw.host.short_descriptions import ShortDescriptions
+
+    # A model that was not configured, or a network that was down, gets
+    # another try the next day.
+    now = [1000.0]
+    llm = FakeDecisionLLM()
+    llm.short = [RuntimeError("no model")] * PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES + ["Weather forecasts."]
+    short = ShortDescriptions(lambda: tmp_path / "short.json", llm, clock=lambda: now[0])
+    for _ in range(PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES + 1):
+        await short.apply([_weather()])
+        await _written(short)
+        now[0] += PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS
+    assert len(llm.short_calls) == PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES
+
+    now[0] += PLUGIN_SHORT_DESCRIPTION_FAILURE_RESET_SECONDS
+    await short.apply([_weather()])
+    await _written(short)
+    (listed,) = await short.apply([_weather()])
+
+    assert len(llm.short_calls) == PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES + 1
+    assert listed["short_description"] == "Weather forecasts."

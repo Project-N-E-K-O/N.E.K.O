@@ -1079,7 +1079,7 @@ async def test_what_the_user_added_while_a_task_agent_came_up_stays_when_the_quo
 
     # Kept for when it is taken up again, as when the quota ran out before
     # anything was started.
-    assert host.task_agents._notes.get(receipt.commission_id) == ["顺便把重复的删掉"]
+    assert host.task_agents._carried.get(receipt.commission_id) == ["顺便把重复的删掉"]
 
 
 async def test_a_meter_that_cannot_count_does_not_stop_the_work(hosts, tmp_path):

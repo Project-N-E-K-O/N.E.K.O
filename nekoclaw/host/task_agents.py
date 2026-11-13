@@ -239,6 +239,9 @@ class TaskAgentManager:
         self._queue: deque[str] = deque()
         # Text passed on to a commission that has not started yet.
         self._notes: dict[str, list[str]] = {}
+        # What a start given up for the quota was to send, kept for the
+        # next start; it comes before what that start is told, being older.
+        self._carried: dict[str, list[str]] = {}
         # What a commission taken up again is told: an addition to a blocked or
         # failed one, or the answer to one whose waiting session was closed.
         self._resume: dict[str, str] = {}
@@ -485,9 +488,12 @@ class TaskAgentManager:
                 self._discard(commission.id)
                 return False
             notes = self._notes.pop(commission.id, [])
-            text = prompt if prompt is not None else commission.dispatch_text
-            if notes:
-                text = "\n\n".join([text, *notes])
+            carried = self._carried.pop(commission.id, [])
+            if prompt is not None:
+                parts = [*carried, prompt]
+            else:
+                parts = [commission.dispatch_text, *carried]
+            text = "\n\n".join([*parts, *notes])
             await runtime.start(spec)
 
             async def stopped_meanwhile() -> bool:
@@ -515,10 +521,12 @@ class TaskAgentManager:
                 # that would be released by it.
                 session.keep_notes = True
                 # The sentence this start was given (the user's answer when
-                # it was taken up again) is kept with them.
-                kept = ([prompt] if prompt is not None else []) + notes
+                # it was taken up again) is kept with them, in the order they
+                # came, ahead of whatever the next start is told.
+                kept = [*carried, *([prompt] if prompt is not None else []), *notes]
+                kept += self._notes.pop(commission.id, [])
                 if kept:
-                    self._notes[commission.id] = [*kept, *self._notes.get(commission.id, [])]
+                    self._carried[commission.id] = kept
                 await self._fail(commission.id, _QUOTA_REASON)
                 await self._close_session(session)
                 return False
@@ -753,8 +761,17 @@ class TaskAgentManager:
         )
 
     async def _on_ended(self, session: _Session, event: dict[str, Any]) -> None:
+        from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
+
         commission_id = session.commission_id
         reason = event.get("reason")
+        if session.closing and reason == "error" and event.get("error") == PROCESS_EXITED_ERROR:
+            # A close was asked for, and the runtime process went away
+            # before answering it: the close will not come back. It ends
+            # as that close would have, an answer it held included; the
+            # commission's status is the close's business, not an error's.
+            # Any other error while closing is followed by the close's own end.
+            reason = "closed"
         if reason == "closed":
             # An answer kept for a run that never came is not lost with the
             # session: it takes the commission up again from its transcript.
@@ -816,15 +833,6 @@ class TaskAgentManager:
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
             await self.abort(child.id)
-        from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
-
-        if session.closing and reason == "error" and event.get("error") == PROCESS_EXITED_ERROR:
-            # A close was asked for, and the runtime process went away
-            # before answering it: the close will not come back, so
-            # nothing else would release the session. Any other error
-            # while closing is followed by the close's own end.
-            await self._release(commission_id)
-            return
         await self._close_session(session)
 
     async def _on_usage(self, session: _Session) -> None:
@@ -1027,6 +1035,7 @@ class TaskAgentManager:
         if commission_id in self._queue:
             self._queue.remove(commission_id)
         self._notes.pop(commission_id, None)
+        self._carried.pop(commission_id, None)
         self._resume.pop(commission_id, None)
         session = self._sessions.get(commission_id)
         if session is None:

@@ -474,7 +474,7 @@ async def shutdown_nekoclaw_host() -> None:
     Waits ``HOST_SHUTDOWN_BUDGET_SECONDS`` at most. The host's steps go on
     after that until the process exits; see the setting for why that is safe.
     """
-    global _unsubscribe, _filled_from
+    global _unsubscribe, _filled_from, _restore_failed_at
     from config.nekoclaw_settings import HOST_SHUTDOWN_BUDGET_SECONDS
 
     unsubscribe, _unsubscribe = _unsubscribe, None
@@ -500,6 +500,7 @@ async def shutdown_nekoclaw_host() -> None:
     except Exception as e:
         logger.warning("[Agent] NekoClaw host shutdown error: %s", e)
     _filled_from = None
+    _restore_failed_at = None
     hud.clear()
 
 
