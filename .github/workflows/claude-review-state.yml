@@ -6,6 +6,11 @@ name: Claude review state
 #
 # pull_request_target is required so the job can edit labels on PRs from
 # forks. It is safe here: the job never checks out or runs PR code.
+#
+# A push that lands while a review round is still running skips this job
+# (the PR still carries claude-review). The review session therefore re-reads
+# the PR head before applying claude-converged and only converges when it
+# matches the commit it just reviewed, so such a push is never hidden.
 
 on:
   pull_request_target:
