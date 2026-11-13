@@ -22,7 +22,8 @@ from config.prompts.prompts_theater import (
     NUMERIC_V2_ACTOR_NARRATION_BREVITY_INSTRUCTION,
     NUMERIC_V2_ACTOR_OPENING_NARRATION_INSTRUCTION,
 )
-from utils.llm_client import HumanMessage, SystemMessage, _normalize_messages, create_chat_llm_async
+from utils.llm_client import HumanMessage, _normalize_messages, create_chat_llm_async
+from .numeric_v2_prompt_mark import theater_system_message
 from utils.token_tracker import set_call_type
 from .numeric_v2_usage import invoke_with_usage
 from .numeric_v2_structured_output import actor_output_schema, response_format_for
@@ -2240,7 +2241,7 @@ def _suggestion_fill_messages(
     }
     return _ensure_actor_messages_fit(
         [
-            SystemMessage(content=system_prompt),
+            theater_system_message(system_prompt),
             HumanMessage(content=json.dumps(data, ensure_ascii=False, separators=(",", ":"))),
         ],
         max_tokens=max_tokens,
@@ -2758,7 +2759,7 @@ def _prompt_token_counter(system_prompt: str) -> Callable[[str], int]:
     def total(human: str) -> int:
         nonlocal previous_human, previous_tokens
         if human != previous_human:
-            previous_tokens = _messages_tokens([SystemMessage(content=system_prompt), HumanMessage(content=human)])
+            previous_tokens = _messages_tokens([theater_system_message(system_prompt), HumanMessage(content=human)])
             previous_human = human
         return previous_tokens
 
@@ -3388,7 +3389,7 @@ def _opening_messages(
                 container.pop(field)
     return _ensure_actor_messages_fit(
         [
-            SystemMessage(content=system_prompt),
+            theater_system_message(system_prompt),
             HumanMessage(content=render_prompt_context(data)),
         ],
         max_tokens=max_tokens,
@@ -4019,7 +4020,7 @@ def _turn_messages(
         )))
         _log_prompt_diagnostics(session, packing_diagnostics)
         return [
-            SystemMessage(content=system_prompt),
+            theater_system_message(system_prompt),
             HumanMessage(content=human_prefix + render_prompt_context(data)),
         ]
 
@@ -4558,7 +4559,7 @@ def _turn_messages(
     )))
     _log_prompt_diagnostics(session, packing_diagnostics)
     return [
-        SystemMessage(content=system_prompt),
+        theater_system_message(system_prompt),
         HumanMessage(content=human_prefix + render_prompt_context(data)),
     ]
 

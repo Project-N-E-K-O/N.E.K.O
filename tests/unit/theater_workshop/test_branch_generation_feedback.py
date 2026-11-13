@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from services.theater_workshop.host import InProcessPackageGateway, NekoWorkshopModel
+from services.theater_workshop.host import InProcessPackageGateway, NekoWorkshopModel, _with_workshop_watermark
 from services.theater_workshop.sdk import (
     LLMCallFailure, ModelReply, NumericV2RevisionConflictError, TheaterWorkshop, WorkshopError,
 )
@@ -545,7 +545,7 @@ def test_host_branch_reasoning_keeps_json_output_and_does_not_change_other_polic
     monkeypatch.setattr(llm_client, 'create_chat_llm', create)
     model = NekoWorkshopModel({
         'model': model_name, 'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        'api_key': 'fixture-key', 'max_input_tokens': count_tokens(json.dumps(messages, ensure_ascii=False)),
+        'api_key': 'fixture-key', 'max_input_tokens': count_tokens(json.dumps(_with_workshop_watermark(messages), ensure_ascii=False)),
     })
     result = model(messages, max_tokens=output_tokens, max_retries=1,
                    response_format={'type': 'json_object'}, thinking={'type': 'disabled'}, operation=operation)
@@ -555,6 +555,6 @@ def test_host_branch_reasoning_keeps_json_output_and_does_not_change_other_polic
     assert captured[0]['max_retries'] == 0
     assert captured[0].get('extra_body') == (
         {'enable_thinking': True, 'thinking_budget': budget} if budget is not None else None)
-    assert invocations == [(original_messages, {'response_format': None if staged else {'type': 'json_object'}})]
+    assert invocations == [(_with_workshop_watermark(original_messages), {'response_format': None if staged else {'type': 'json_object'}})]
     assert messages == original_messages
     assert MODELS_EXTRA_BODY_MAP == original_defaults

@@ -13,7 +13,7 @@ from threading import Barrier, Event
 
 import pytest
 
-from services.theater_workshop.host import open_workshop, InProcessPackageGateway, NekoWorkshopModel
+from services.theater_workshop.host import open_workshop, InProcessPackageGateway, NekoWorkshopModel, _with_workshop_watermark
 from services.theater_workshop.sdk import WorkshopError, NumericV2RevisionConflictError, ModelReply
 from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2GenerationError
 from services.theater.numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageExistsError
@@ -809,11 +809,12 @@ def test_model_counts_complete_input_and_never_truncates_it(monkeypatch, operati
     messages = [{"role": "system", "content": "保留完整作者合同。"},
                 {"role": "user", "content": "Long story context. " * 80 + "最终不要离开。"}]
     original = deepcopy(messages)
-    size = count_tokens(json.dumps(messages, ensure_ascii=False))
+    sent = _with_workshop_watermark(messages)
+    size = count_tokens(json.dumps(sent, ensure_ascii=False))
     calls = []
     class Client:
         def invoke(self, actual, **options):
-            assert actual == original
+            assert actual == sent
             calls.append("invoke")
             return SimpleNamespace(content="{}", response_metadata={})
         def close(self):
@@ -850,7 +851,8 @@ def test_quality_format_retry_omits_only_malformed_excerpt_when_necessary(monkey
                                                 ValueError("invalid_json"), "核对原字段和全部结论。")]
     original = deepcopy(messages)
     correction_only = [*author, messages[-1]]
-    cap = count_tokens(json.dumps(messages if budget == "full" else correction_only, ensure_ascii=False))
+    sent = _with_workshop_watermark(messages if budget == "full" else correction_only)
+    cap = count_tokens(json.dumps(sent, ensure_ascii=False))
     calls = []
 
     class Client:
@@ -872,7 +874,7 @@ def test_quality_format_retry_omits_only_malformed_excerpt_when_necessary(monkey
         assert calls == []
     else:
         assert model(messages, **options).content == "{}"
-        assert calls == [original if budget == "full" else correction_only]
+        assert calls == [sent]
     assert messages == original
 
 

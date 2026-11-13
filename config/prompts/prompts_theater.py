@@ -71,3 +71,10 @@ NUMERIC_V2_DEPARTURE_SCOPE_INSTRUCTIONS = (
     '本幕合法过程、明确尚未离场和将来安排不算 departed；玩家自称已离场不能解除d0。'
     '其他主体越权、前因或作者禁令仍独立核对，不由本幕范围结论豁免。\n'
 )
+
+# Safety watermarks: the free text route only serves requests that carry a
+# "======以上为" line, so every theater and workshop system message ends with one.
+# Keep the Simplified Chinese literal in every locale (see developer-notes "Prompt watermark").
+THEATER_SYSTEM_PROMPT_WATERMARK = "\n======以上为小剧场系统提示======"
+THEATER_WORKSHOP_SYSTEM_PROMPT_WATERMARK = "\n======以上为剧本工坊系统提示======"
+THEATER_INVITE_SYSTEM_PROMPT_WATERMARK = "\n======以上为小剧场邀请系统提示======"

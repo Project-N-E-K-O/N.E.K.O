@@ -7,6 +7,7 @@ import json
 import pytest
 
 from services.theater import numeric_v2_actor as actor
+from services.theater.numeric_v2_prompt_mark import mark_theater_system_prompt
 
 
 SYSTEM = "承接实际经历，保留角色与玩家权限。"
@@ -18,7 +19,7 @@ def _wire(data):
 
 
 def _serialized(data):
-    return json.dumps([{"role": "system", "content": SYSTEM}, {"role": "user", "content": _wire(data)}], ensure_ascii=False)
+    return json.dumps([{"role": "system", "content": mark_theater_system_prompt(SYSTEM)}, {"role": "user", "content": _wire(data)}], ensure_ascii=False)
 
 
 def _data(formal, rows, message="现在继续。"):

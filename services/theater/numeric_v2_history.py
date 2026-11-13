@@ -6,7 +6,8 @@ import asyncio
 import json
 from typing import Any
 
-from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
+from utils.llm_client import HumanMessage, create_chat_llm_async
+from .numeric_v2_prompt_mark import theater_system_message
 from utils.token_tracker import set_call_type
 from utils.tokenize import count_tokens
 
@@ -28,7 +29,7 @@ _LOOKUP_TIMEOUT_SECONDS = 12.0
 
 
 def _messages(query: str, rows: list[dict[str, Any]]) -> list[Any]:
-    return [SystemMessage(content=_LOOKUP_SYSTEM), HumanMessage(content=(
+    return [theater_system_message(_LOOKUP_SYSTEM), HumanMessage(content=(
         prompt_data_block("历史对话", {"records": rows}) + "\n\n"
         + prompt_data_block("本次检索问题", {"question": query})
     ))]

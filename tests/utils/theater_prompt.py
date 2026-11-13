@@ -114,9 +114,13 @@ def pending_transition_text(data):
 
 
 def serialized_prompt_tokens(system, human):
-    """Count the complete two-message wire representation independently of Actor packing."""
+    """Count the complete two-message wire representation independently of Actor packing.
+
+    The system text is counted as sent, with the watermark every theater request ends with.
+    """
+    from services.theater.numeric_v2_prompt_mark import mark_theater_system_prompt
     from utils.tokenize import count_tokens
 
     return count_tokens(json.dumps([
-        {"role": "system", "content": system}, {"role": "user", "content": human},
+        {"role": "system", "content": mark_theater_system_prompt(system)}, {"role": "user", "content": human},
     ], ensure_ascii=False))

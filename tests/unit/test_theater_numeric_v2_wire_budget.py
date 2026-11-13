@@ -5,6 +5,7 @@ import json
 import pytest
 
 from services.theater import numeric_v2_actor as actor
+from services.theater.numeric_v2_prompt_mark import mark_theater_system_prompt
 from utils.llm_client import HumanMessage, SystemMessage, _normalize_messages
 
 
@@ -30,7 +31,7 @@ def test_wire_pressure_removes_only_the_old_complete_turn(formal):
         fit = lambda history, limit: actor._fit_simple_turn_prompt_data(
             system_prompt=system, human_prefix=prefix, data=base, history_rows=history, max_tokens=limit)
     expected = fit(rows[-1:], 10000)
-    wire = [{"role": "system", "content": system},
+    wire = [{"role": "system", "content": mark_theater_system_prompt(system)},
             {"role": "user", "content": prefix + actor.render_prompt_context(expected)}]
     limit = actor.count_tokens(json.dumps(wire, ensure_ascii=False))
     fitted = fit(rows, limit)

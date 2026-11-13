@@ -6,6 +6,7 @@ import json
 import pytest
 
 from services.theater import numeric_v2_actor as actor
+from services.theater.numeric_v2_prompt_mark import mark_theater_system_prompt
 from tests.unit.test_theater_numeric_v2_target_entry_plan import (
     _case as _entry_case,
     _messages as _entry_messages,
@@ -60,7 +61,7 @@ def _data(evidence):
 
 def _wire_tokens(data, *, system=SYSTEM, prefix=PREFIX):
     return actor.count_tokens(json.dumps([
-        {"role": "system", "content": system},
+        {"role": "system", "content": mark_theater_system_prompt(system)},
         {"role": "user", "content": prefix + actor.render_prompt_context(data)},
     ], ensure_ascii=False))
 

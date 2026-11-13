@@ -29,6 +29,23 @@ class InProcessPackageGateway:
         return self.compile(json.loads(json_bytes))
 
 
+def _with_workshop_watermark(messages):
+    """End the leading system message with the N.E.K.O prompt watermark.
+
+    The SDK cannot import config/, so the host adds it here, before the request
+    is counted against the author's input budget.
+    """
+    from config.prompts.prompts_theater import THEATER_WORKSHOP_SYSTEM_PROMPT_WATERMARK as mark
+
+    if not messages or not isinstance(messages[0], Mapping) or messages[0].get("role") != "system":
+        return messages
+    content = messages[0].get("content")
+    if not isinstance(content, str):
+        return messages
+    marked = content.replace(mark, "").rstrip() + mark
+    return [{**messages[0], "content": marked}, *messages[1:]]
+
+
 class NekoWorkshopModel:
     """User-selected workshop model, isolated from chat/actor configuration."""
 
@@ -89,6 +106,7 @@ class NekoWorkshopModel:
                 response_format = None
             budget = min(2048, max_tokens // 2) if staged_writing or branch_writing else 2048
             quality_options["extra_body"] = {**focus_extra_body(model), "thinking_budget": budget}
+        messages = _with_workshop_watermark(messages)
         # Count the exact request. A quality format retry can omit only its
         # malformed completion excerpt, retaining the author input and correction.
         input_tokens = count_tokens(json.dumps(messages, ensure_ascii=False))

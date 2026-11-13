@@ -441,7 +441,8 @@ def test_validated_historical_quote_is_shared_across_completion_route_and_retain
     history = [{"revision": 1, "player_input": "请核对封条。" * 70, "performance": quote},
                {"revision": 2, "performance": "我记下了。"}]
     fitted = actor._fit_simple_turn_prompt_data(
-        system_prompt="", human_prefix="", data=base, history_rows=history, max_tokens=180,
+        # 191 = the original 180 plus the 11 tokens of the request watermark.
+        system_prompt="", human_prefix="", data=base, history_rows=history, max_tokens=191,
         staged_history_quotes=(quote,),
     )
     assert quote not in fitted["story_so_far"]

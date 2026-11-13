@@ -558,7 +558,7 @@ def _list_story_summaries(
         cast = NumericV2CastProjection.from_story(
             projection_story,
             player_name=_surface_player_name(binding, known=False),
-            catgirl_name=binding.get("catgirl_name") or "当前猫娘",
+            catgirl_name=binding.get("catgirl_name") or "当前角色",
         )
         # Unused-metric warnings and the metric count hint at which hidden metrics
         # gate routes; they belong to import/author responses, not the player list.
