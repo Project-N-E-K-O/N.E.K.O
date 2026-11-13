@@ -64,9 +64,27 @@ def official_required(repo):
         raise ValueError(f"origin is not the configured official repository: {url}")
 
 
+
+def untracked_files(repo):
+    """Reject nested repositories that Git reports as a single directory entry."""
+    raw = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=repo
+    )
+    names = [os.fsdecode(name) for name in raw.split(b"\0") if name]
+    for name in names:
+        path = repo / name
+        if path.is_dir() and not path.is_symlink():
+            raise ValueError(
+                f"Untracked directory or nested Git repository cannot be backed up: {name}. "
+                "Ignore it or back it up separately."
+            )
+    return names
+
+
 def backup(repo, destination=None):
     if git(repo, "ls-files", "--unmerged", "-z"):
         raise ValueError("Resolve or abort merge conflicts before creating a backup.")
+    names = untracked_files(repo)
     root = Path(destination).resolve() if destination else state_dir(repo) / "backups"
     if destination and root.is_relative_to(repo.resolve()):
         raise ValueError("Keep external backups outside the working tree.")
@@ -90,10 +108,6 @@ def backup(repo, destination=None):
         ("working.patch", ["diff", "--binary"]),
     ):
         (folder / name).write_bytes(subprocess.check_output(["git", *args], cwd=repo))
-    raw = subprocess.check_output(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=repo
-    )
-    names = [os.fsdecode(name) for name in raw.split(b"\0") if name]
     with tarfile.open(folder / "untracked.tar.gz", "w:gz") as archive:
         for name in names:
             archive.add(repo / name, arcname=name, recursive=False)
@@ -201,18 +215,13 @@ def verification_suites(repo, policy_path):
 
 
 def source_snapshot(repo):
-    raw = subprocess.check_output(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=repo
-    )
     untracked = {}
-    for name in raw.split(b"\0"):
-        if not name:
-            continue
-        path = repo / os.fsdecode(name)
+    for name in untracked_files(repo):
+        path = repo / name
         if path.is_symlink():
-            untracked[os.fsdecode(name)] = {"symlink": os.readlink(path)}
+            untracked[name] = {"symlink": os.readlink(path)}
         else:
-            untracked[os.fsdecode(name)] = {
+            untracked[name] = {
                 "sha256": digest(path),
                 "mode": path.stat().st_mode,
             }
