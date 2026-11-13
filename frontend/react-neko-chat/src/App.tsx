@@ -1,3 +1,4 @@
+import { HistoryDialog } from './ChatHistory';
 import { ChatScreenVisibilityProvider, useChatScreenVisibility } from './ChatScreenVisibility';
 import {
   useState,
@@ -173,6 +174,7 @@ const COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER = [
   'import',
   'export',
   'galgame',
+  'history',
 ] as const;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = COMPACT_INPUT_TOOL_WHEEL_TOOL_ORDER.length;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 28;
@@ -987,6 +989,7 @@ function CompactChatApp({
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked
     || (theaterActive && theaterPresentation.phase !== 'awaiting_player');
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [avatarToolManagerOpen, setAvatarToolManagerOpen] = useState(false);
   const [avatarToolManagerAnchorRect, setAvatarToolManagerAnchorRect] = useState<AvatarToolManagerAnchorRect | null>(null);
@@ -5699,6 +5702,20 @@ function CompactChatApp({
         {renderCompactInputToolTooltip(jukeboxButtonLabel)}
       </button>
       <button
+        className="composer-tool-btn compact-input-tool-item compact-input-tool-item-history"
+        type="button"
+        aria-label={i18n('chatHistory.title', 'Chat history')}
+        disabled={isCompactToolWheelActionDisabled(7)}
+        tabIndex={getCompactToolWheelTabIndex(7)}
+        aria-hidden={getCompactToolWheelAriaHidden(7)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(7)}
+        data-compact-tool-pointer-hovered={getCompactToolWheelPointerHoveredValue(7)}
+        onClick={compactFanRunAction(() => setHistoryOpen(true))}
+      >
+        <img src="/static/icons/chat_history.svg" alt="" aria-hidden="true" />
+        {renderCompactInputToolTooltip(i18n('chatHistory.title', 'Chat history'))}
+      </button>
+      <button
         className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportControlsVisible ? ' is-active' : ''}`}
         type="button"
         aria-label={compactExportControlsButtonLabel}
@@ -6195,6 +6212,7 @@ function CompactChatApp({
       data-compact-tool-layer-open={isCompactSurface && compactInputToolFanOpen ? 'true' : 'false'}
       data-focus-active={focusActive ? 'true' : 'false'}
     >
+      {historyOpen && <HistoryDialog close={() => setHistoryOpen(false)} />}
       {focusActive ? (
         <div
           className="chat-surface-focus-indicator"

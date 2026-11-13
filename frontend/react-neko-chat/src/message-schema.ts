@@ -192,7 +192,7 @@ const compactHistoryOpenRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
-export const COMPACT_TOOL_WHEEL_POSITIONS = 7;
+export const COMPACT_TOOL_WHEEL_POSITIONS = 8;
 
 const compactToolWheelRotateRequestSchema = z.object({
   id: z.string().min(1),

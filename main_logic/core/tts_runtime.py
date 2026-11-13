@@ -2322,6 +2322,9 @@ class TtsRuntimeMixin:
     async def _write_audio_frame(self, websocket, header: dict, tts_audio) -> None:
         """Write one header/payload pair. The caller holds the frame lock."""
         async def write_frame():
+            from main_logic.voice_archive import archive_event
+            await archive_event(self, 'audio', header.get('speech_id'),
+                                data=tts_audio, gain=header.get('playback_gain', 1.0))
             try:
                 async with asyncio.timeout(TTS_FRAME_WRITE_TIMEOUT_SECONDS):
                     await websocket.send_json(header)
@@ -2423,6 +2426,8 @@ class TtsRuntimeMixin:
                     )
                     return audio_sent, False
                 await websocket.send_json(done_message)
+                from main_logic.voice_archive import archive_event
+                await archive_event(self, 'done', speech_id)
             return audio_sent, True
         except WebSocketDisconnect:
             logger.warning("⚠️ send_cached_speech_batch: WebSocket disconnected")
@@ -2521,6 +2526,8 @@ class TtsRuntimeMixin:
                         )
                         return False
                     await websocket.send_json(message)
+                    from main_logic.voice_archive import archive_event
+                    await archive_event(self, 'done', speech_id)
                 logger.debug(f"🔚 send_audio_done OK: speech_id={speech_id}")
                 return True
             else:
