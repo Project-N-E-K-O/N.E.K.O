@@ -145,7 +145,8 @@ class _Session:
     # passed on for that work is kept when the session is released.
     keep_notes: bool = False
     # What an earlier start given up for the quota kept and this start is
-    # to send; put back when this start fails before its prompt is sent.
+    # to send. Sending is not taking: it stays until an event shows the
+    # session at work on it, and is put back when the start fails first.
     carried: list[str] = field(default_factory=list)
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
@@ -169,6 +170,18 @@ def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
         inputs = event.get("inputs")
         return not isinstance(inputs, int) or inputs >= sent
     return True
+
+
+def _shows_run_at_work(event: dict[str, Any]) -> bool:
+    """Whether a session event shows a run at work on what it was given.
+
+    ``started`` does not: it answers the start, before any work is sent.
+    Nor does an error or an end other than a completed run.
+    """
+    kind = event.get("type")
+    if kind == "ended":
+        return event.get("reason") == "completed"
+    return kind in ("text", "tool_start", "tool_update", "tool_end", "report", "usage", "host_request")
 
 
 def default_runtime_factory(on_event: Callable[[dict[str, Any]], None], host: Any) -> Any:
@@ -546,7 +559,6 @@ class TaskAgentManager:
                 await self._close_session(session)
                 return False
             await self._send_text(runtime, session, "prompt", text)
-            session.carried = []
             session.ready = True
             # What was passed on while the session was being set up.
             for note in self._notes.pop(commission.id, []):
@@ -717,6 +729,8 @@ class TaskAgentManager:
             return
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
+        if session.carried and session.sent > 0 and _shows_run_at_work(event):
+            session.carried = []
         if kind == "text":
             delta = str(event.get("delta") or "")
             session.text.append(delta)
@@ -848,6 +862,8 @@ class TaskAgentManager:
         elif reason == "aborted":
             await self._end(commission_id, "cancelled", reason="the run was stopped", text="")
         elif reason == "error":
+            # Before it got to work on what it was given, that is kept.
+            self._put_back_carried(session)
             await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
