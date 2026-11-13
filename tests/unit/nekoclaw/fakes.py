@@ -17,8 +17,8 @@ from typing import Any
 
 from nekoclaw.runtime.host import HostBridge
 from nekoclaw.runtime.model import LLMClientProvider
-from nekoclaw.runtime.protocol import FamiliarSpec, ModelConfig
-from nekoclaw.runtime.session import FamiliarSession
+from nekoclaw.runtime.protocol import TaskAgentSpec, ModelConfig
+from nekoclaw.runtime.session import TaskAgentSession
 from utils.llm_client.messages import LLMStreamChunk
 
 Step = Any  # an LLMStreamChunk, an exception to raise, or an async callable to await
@@ -104,11 +104,11 @@ class ScriptedLLM:
         return self.requests[-1]
 
 
-def make_spec(tmp_path: Path, session_id: str = "s1", **overrides: Any) -> FamiliarSpec:
+def make_spec(tmp_path: Path, session_id: str = "s1", **overrides: Any) -> TaskAgentSpec:
     workdir = tmp_path / "work"
     workdir.mkdir(exist_ok=True)
     model = overrides.pop("model", None) or ModelConfig(model="fake-model", api_key="test-key")
-    return FamiliarSpec(
+    return TaskAgentSpec(
         session_id=session_id,
         workdir=str(workdir),
         session_dir=str(tmp_path / "sessions" / session_id),
@@ -173,11 +173,11 @@ class Recorder:
 
 
 async def open_session(
-    spec: FamiliarSpec,
+    spec: TaskAgentSpec,
     llm: ScriptedLLM,
     host: HostBridge | None = None,
     **kwargs: Any,
-) -> tuple[FamiliarSession, Recorder]:
+) -> tuple[TaskAgentSession, Recorder]:
     """Open a session whose model is ``llm``."""
     from nekoclaw.runtime.host import NoHost
 
@@ -187,7 +187,7 @@ async def open_session(
         return llm
 
     provider = LLMClientProvider(spec.model, client_factory=factory)
-    session = await FamiliarSession.open(
+    session = await TaskAgentSession.open(
         spec, host if host is not None else NoHost(), recorder, model=provider, **kwargs
     )
     return session, recorder

@@ -249,7 +249,13 @@ async def test_local_replacement_keeps_runtime_and_named_profiles(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("retained", [False, True])
-async def test_degraded_lock_creates_no_package_profile_and_reimport_succeeds(environment, retained):
+async def test_degraded_lock_creates_no_package_profile_and_reimport_succeeds(
+    environment, retained, monkeypatch
+):
+    from plugin.server.application.plugins import capability_analysis_service
+
+    # This test moves the directory directly instead of using the uninstall transaction.
+    monkeypatch.setattr(capability_analysis_service.analysis_service, "installed", lambda _root: None)
     env = environment
     package = env.packages / f"{PLUGIN_ID}.neko-plugin"
     build_plugin(_source(env.root / "source"), package)

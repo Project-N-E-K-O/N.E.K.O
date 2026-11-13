@@ -150,6 +150,33 @@ def test_layering_guard_rejects_a_runtime_import_of_another_subsystem() -> None:
         assert layering.find_violations([edge]) == ([], [])
 
 
+def test_layering_guard_keeps_the_host_from_the_analyzer_and_from_memory() -> None:
+    layering = _load("check_module_layering")
+    forbidden = {package for prefix, package, _why in layering.FORBIDDEN_EDGES if prefix == "nekoclaw/host/"}
+    own_layer = layering.PACKAGE_TO_LAYER["nekoclaw"]
+    reachable = {
+        package
+        for package, layer in layering.PACKAGE_TO_LAYER.items()
+        if layer <= own_layer and package != "nekoclaw"
+    }
+    # Everything its layer could reach, except config, utils and plugin (whose
+    # settings it reads; plugins themselves are called over HTTP).
+    assert forbidden == reachable - {"config", "utils", "plugin"}
+    path = PACKAGE / "host" / "task_brain.py"
+    for package, reason in (
+        ("brain", "replaces the analyzer"),
+        ("memory", "never read or write each other"),
+        ("main_logic", "through its outbox only"),
+    ):
+        edge = (path, 1, 0, "nekoclaw", package, f"import {package}")
+        found = layering.find_forbidden_edges([edge])
+        assert len(found) == 1 and reason in found[0][1]
+    for package in ("config", "utils", "plugin"):
+        edge = (path, 1, 0, "nekoclaw", package, f"import {package}")
+        assert layering.find_forbidden_edges([edge]) == []
+        assert layering.find_violations([edge]) == ([], [])
+
+
 def test_importing_the_package_starts_nothing_and_pulls_no_heavy_sdk() -> None:
     program = (
         "import sys, threading\n"

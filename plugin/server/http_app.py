@@ -43,6 +43,7 @@ from plugin.server.routes import (
     runs_router,
     websocket_router,
 )
+from plugin.server.application.plugins import capability_analysis_service
 from plugin.server.routes.frontend import mount_static_files
 from plugin.server.routes.security import router as security_router
 from plugin.server.routes.plugin_projects import router as plugin_projects_router
@@ -135,6 +136,8 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     # An incorrect default in this direction merely leaves standalone-server plugins stopped, visibly and harmlessly.
     manage_lifecycle = bool(getattr(app.state, "manage_plugin_lifecycle", False))
 
+    capability_analysis_service.analysis_service.start()
+
     if _can_register_faulthandler_signal():
         try:
             faulthandler.register(signal.SIGUSR1, all_threads=True)
@@ -224,6 +227,7 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         from plugin.core.model_gateway_access import model_gateway_access
 
+        await capability_analysis_service.analysis_service.close()
         model_gateway_access.revoke_all()
         from plugin.server.routes.model_gateway import close_model_executor
 
@@ -338,6 +342,11 @@ def build_plugin_server_app(
     app.include_router(health_router)
     app.include_router(documents_router)
     app.include_router(plugins_router)
+    from plugin.server.routes.plugin_consent import (
+        router as plugin_consent_router,
+    )
+
+    app.include_router(plugin_consent_router)
     app.include_router(runs_router)
     app.include_router(messages_router)
     app.include_router(metrics_router)

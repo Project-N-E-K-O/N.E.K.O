@@ -42,6 +42,7 @@ from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.domain.normalization import is_valid_plugin_id
+from plugin.server.application.plugins.consent_service import denied_plugin_ids
 from plugin.server.application.plugins.operation_lock import (
     bounded_operation_wait,
     _HeldPluginOperationLock,
@@ -1614,9 +1615,9 @@ class PluginLifecycleService:
         """Start independent plugins concurrently, then dependents in order.
 
         Each concurrent wave excludes external mutations until its active
-        starts finish, then yields the operation lock to queued callers. Child
-        tasks use the undecorated implementation inside that scope. Serial
-        starts use the public entry point's cancellation-safe per-plugin lock.
+        starts finish, then yields the operation lock to queued callers. Both
+        wave members and serial starts check consent and start within their
+        existing operation lock scope.
         """
         limit = (
             PLUGIN_AUTOSTART_CONCURRENCY if concurrency is None else int(concurrency)
@@ -1624,12 +1625,35 @@ class PluginLifecycleService:
         limit = max(1, limit)
         started: list[str] = []
         failed: list[str] = []
+        skipped_denied: list[str] = []
+
+        async def _skip_denied(plugin_id: str) -> bool:
+            try:
+                denied = await asyncio.to_thread(denied_plugin_ids, (plugin_id,))
+            except Exception as error:
+                logger.warning(
+                    "could not read plugin consent decision; autostart continues: err_type={}",
+                    type(error).__name__,
+                )
+                return False
+            if denied:
+                skipped_denied.append(plugin_id)
+            return bool(denied)
+
+        @serialized_plugin_operation
+        async def _start_serial(plugin_id: str) -> bool:
+            if await _skip_denied(plugin_id):
+                return False
+            await self._start_plugin_under_lock(plugin_id, refresh_registry=refresh_registry)
+            return True
 
         async def _start_one(
             plugin_id: str, *, operation_scope: _HeldPluginOperationLock | None = None
         ) -> None:
             try:
                 if operation_scope is not None:
+                    if await _skip_denied(plugin_id):
+                        return
                     # Drain every active start before releasing the wave lock.
                     # A spawned host must register or finish its cleanup.
                     operation = asyncio.create_task(
@@ -1640,12 +1664,8 @@ class PluginLifecycleService:
                         )
                     )
                     await await_cancellation_safe(operation)
-                else:
-                    # This primitive also cancels an unstarted lock waiter.
-                    # Shielding it again would prevent that cancellation.
-                    await self.start_plugin(
-                        plugin_id, refresh_registry=refresh_registry
-                    )
+                elif not await _start_serial(plugin_id):
+                    return
             except Exception as error:
                 failed.append(plugin_id)
                 logger.error(
@@ -1720,7 +1740,7 @@ class PluginLifecycleService:
             len(failed),
             limit,
         )
-        return {"started": started, "failed": failed}
+        return {"started": started, "failed": failed, **({"skipped_denied": sorted(skipped_denied)} if skipped_denied else {})}
 
     @serialized_plugin_operation
     async def stop_plugin(
@@ -2043,6 +2063,9 @@ class PluginLifecycleService:
                 _hot_reload_failed.add(plugin_id)
             raise
         _hot_reload_failed.discard(plugin_id)
+        from plugin.server.application.plugins.capability_analysis_service import schedule_analysis
+
+        await asyncio.to_thread(schedule_analysis, plugin_id)
         _emit_lifecycle_event(event_type="plugin_reloaded", plugin_id=plugin_id)
         return result
 

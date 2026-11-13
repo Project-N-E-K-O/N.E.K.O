@@ -113,7 +113,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # used by main_logic, main_routers and app. ``services/theater_workshop`` is
 # the source-only author host, separate from the theater runtime. ``launcher_core``
 # is launcher.py's bootstrap and imports app directly. ``nekoclaw`` is the
-# base that runs familiars and will take over from ``brain``; it sits beside
+# base that runs task agents and will take over from ``brain``; it sits beside
 # it at the top of the stack.
 
 LAYERS: List[Tuple[int, Set[str]]] = [
@@ -169,12 +169,12 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
     ("plugin/", "knowledge", "the plugin server goes through Main's proxy"),
     ("knowledge/", "memory", "knowledge never reads or writes memory data"),
     ("services/", "main_logic", "main_logic depends on services; services never imports it back"),
-    # The built-in familiar runtime is a harness without memory that runs in a
+    # The built-in agent runtime is a harness without memory that runs in a
     # child process of its own. Its layer would allow far more; these rows keep
     # it to config and utils, so the child stays small and never touches
     # another subsystem's data.
     *(
-        ("nekoclaw/runtime/", package, "the familiar runtime uses only config and utils")
+        ("nekoclaw/runtime/", package, "the agent runtime uses only config and utils")
         for package in (
             "steamworks",
             "knowledge",
@@ -182,9 +182,24 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "main_logic",
             "services",
             "main_routers",
-            "theater_workshop",
             "plugin",
             "brain",
+        )
+    ),
+    # The NekoClaw host (task brain, task agents, gateway) reaches plugins over
+    # HTTP and needs ``plugin.settings`` only. It takes over from the analyzer
+    # in ``brain`` and must not lean on it, and its task preferences stay apart
+    # from every memory: neither reads or writes the other.
+    *(
+        ("nekoclaw/host/", package, reason)
+        for package, reason in (
+            ("brain", "the task brain replaces the analyzer and never imports it"),
+            ("memory", "task preferences and persona memory never read or write each other"),
+            ("knowledge", "the NekoClaw host keeps apart from the knowledge subsystem"),
+            ("main_logic", "the NekoClaw host reaches the main dialogue through its outbox only"),
+            ("main_routers", "the NekoClaw host reaches the main dialogue through its outbox only"),
+            ("services", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
+            ("steamworks", "the NekoClaw host uses only config, utils, plugin.settings and its runtime"),
         )
     ),
 ]

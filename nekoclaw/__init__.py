@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""NekoClaw: the base that runs familiars (execution sessions).
+"""NekoClaw: the base that runs task agents (execution sessions).
 
 Design: ``docs/design/nekoclaw-rewrite.md``. This package currently holds only
 the built-in runtime (``nekoclaw.runtime``); nothing imports it at startup.

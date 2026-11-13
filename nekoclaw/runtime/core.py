@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The runtime itself: many familiar sessions on one event loop.
+"""The runtime itself: many task agent sessions on one event loop.
 
 ``RuntimeCore`` executes decoded commands. ``InProcessRuntime`` exposes it in
 the caller's own process; ``nekoclaw.runtime.process.SubprocessRuntime``
 exposes the same methods and the same events with the core running in a child
-process. Both satisfy ``FamiliarRuntime``, so a host can switch between them
+process. Both satisfy ``AgentRuntime``, so a host can switch between them
 without other changes.
 """
 
@@ -32,18 +32,18 @@ from typing import Any, Protocol
 from nekoclaw.runtime import protocol
 from nekoclaw.runtime.host import HostBridge, NoHost
 from nekoclaw.runtime.protocol import EventSink
-from nekoclaw.runtime.session import FamiliarSession, SessionError
+from nekoclaw.runtime.session import TaskAgentSession, SessionError
 
 logger = logging.getLogger(__name__)
 
-SessionOpener = Callable[[protocol.FamiliarSpec, HostBridge, EventSink], Awaitable[FamiliarSession]]
+SessionOpener = Callable[[protocol.TaskAgentSpec, HostBridge, EventSink], Awaitable[TaskAgentSession]]
 
 # How long the in-process runtime's shutdown waits for sessions that are being
 # created or closed, and for the closes it starts itself.
 SHUTDOWN_WAIT_SECONDS = 15.0
 
 
-class FamiliarRuntime(Protocol):
+class AgentRuntime(Protocol):
     """Driver-facing interface of a runtime, in-process or in a subprocess.
 
     Every method returns once the command was handed over; outcomes arrive as
@@ -51,7 +51,7 @@ class FamiliarRuntime(Protocol):
     ``error`` event rather than an exception.
     """
 
-    async def start(self, spec: protocol.FamiliarSpec) -> None:
+    async def start(self, spec: protocol.TaskAgentSpec) -> None:
         """Create a session, continuing its transcript if one exists."""
 
     async def prompt(self, session_id: str, text: str) -> None:
@@ -85,8 +85,8 @@ class RuntimeCore:
     ) -> None:
         self._host = host
         self._emit = emit
-        self._open_session: SessionOpener = open_session or FamiliarSession.open
-        self._sessions: dict[str, FamiliarSession] = {}
+        self._open_session: SessionOpener = open_session or TaskAgentSession.open
+        self._sessions: dict[str, TaskAgentSession] = {}
         # Sessions being created; each future is done once the attempt is over.
         self._starting: dict[str, asyncio.Future[None]] = {}
         # Sessions being closed; each future is done once the session is gone.
@@ -121,7 +121,7 @@ class RuntimeCore:
             )
         )
 
-    def _session(self, session_id: str, command: str) -> FamiliarSession | None:
+    def _session(self, session_id: str, command: str) -> TaskAgentSession | None:
         session = self._sessions.get(session_id)
         if session is None:
             self._reject(session_id, command, f'unknown session "{session_id}"')
@@ -157,7 +157,7 @@ class RuntimeCore:
         else:
             raise TypeError(f"not a session command: {type(command).__name__}")
 
-    async def start(self, spec: protocol.FamiliarSpec) -> None:
+    async def start(self, spec: protocol.TaskAgentSpec) -> None:
         session_id = spec.session_id
         if self._shutdowns:
             # It would be created behind the back of the shutdown and stay open.
@@ -239,7 +239,7 @@ class RuntimeCore:
             return
         await asyncio.shield(self._begin_close(session_id, session))
 
-    def _begin_close(self, session_id: str, session: FamiliarSession) -> asyncio.Future[None]:
+    def _begin_close(self, session_id: str, session: TaskAgentSession) -> asyncio.Future[None]:
         """Start closing a session that has left the table.
 
         The close runs as a task of its own and stays registered until the
@@ -308,7 +308,7 @@ class RuntimeCore:
 
 
 class InProcessRuntime:
-    """``FamiliarRuntime`` running in the caller's process, on the caller's loop."""
+    """``AgentRuntime`` running in the caller's process, on the caller's loop."""
 
     def __init__(
         self,
@@ -323,7 +323,7 @@ class InProcessRuntime:
     def core(self) -> RuntimeCore:
         return self._core
 
-    async def start(self, spec: protocol.FamiliarSpec) -> None:
+    async def start(self, spec: protocol.TaskAgentSpec) -> None:
         await self._core.handle(protocol.StartCommand(spec=spec))
 
     async def prompt(self, session_id: str, text: str) -> None:

@@ -17,6 +17,7 @@ vi.mock('@/stores/metrics', () => ({ useMetricsStore: () => ({ fetchAllMetrics: 
 vi.mock('@/stores/marketVersions', () => ({ useMarketVersionsStore: () => ({ ensureFresh: async () => {} }) }))
 vi.mock('@/stores/pluginUpdates', () => ({ usePluginUpdatesStore: () => ({ checking: false, candidates: [], openFromButton: vi.fn() }) }))
 vi.mock('@/composables/useMarketAuth', () => ({ useMarketAuth: () => ({ marketAuth: ref({ authenticated: false, auth_state: 'anonymous' }), marketAuthDisplayName: ref(''), loadMarketAuthStatus: async () => {} }) }))
+vi.mock('@/composables/pluginConsentNotices', () => ({ usePluginConsentNotices: () => {} }))
 vi.mock('@/composables/usePluginListContextActions', () => ({ usePluginListContextActions: () => ({ buildActions: vi.fn(), executeAction: vi.fn(), shouldUseHoldConfirm: vi.fn() }) }))
 vi.mock('@/components/plugin/PluginGridSection.vue', () => ({ default: defineComponent({ props: ['items'], setup: props => () => h('div', { 'data-testid': 'visible-plugins' }, props.items.map((item: { name: string }) => item.name).join(',')) }) }))
 vi.mock('@/components/plugin/PluginImportDialog.vue', () => ({ default: defineComponent({

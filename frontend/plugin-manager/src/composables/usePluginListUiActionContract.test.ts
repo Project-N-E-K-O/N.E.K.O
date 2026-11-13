@@ -17,6 +17,11 @@ vi.mock('vue-router', () => ({
   }),
 }))
 
+vi.mock('@/i18n', () => ({
+  i18n: { global: { t: (key: string) => key } },
+  localeLoadState: { pending: null },
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({
     locale: { value: 'zh-CN' },
@@ -39,6 +44,10 @@ vi.mock('@/stores/plugin', () => ({
     stop: vi.fn(),
     reload: vi.fn(),
   }),
+}))
+
+vi.mock('@/stores/pluginConsentState', () => ({
+  usePluginConsentState: () => ({ forget: vi.fn() }),
 }))
 
 vi.mock('@/api/plugins', () => ({ deletePlugin: vi.fn() }))

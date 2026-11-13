@@ -100,7 +100,7 @@ DEFAULT_PATHS = [
     "brain",
     # shared services (chat_sync / theater) running on the main server loop
     "services",
-    # familiar runtime: many sessions share one loop, in a child process or in
+    # agent runtime: many sessions share one loop, in a child process or in
     # the host's own
     "nekoclaw",
 ]
