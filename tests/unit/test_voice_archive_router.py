@@ -1,4 +1,5 @@
 import io
+from contextlib import closing
 from types import SimpleNamespace
 import wave
 
@@ -69,6 +70,6 @@ def test_corrupt_archive_not_played(client):
     c, archive = client
     save(archive, 'a', 'r')
     url = c.get('/api/voice-archive/message?character=YUI&record_id=r').json()['clips'][0]['url']
-    with sqlite3.connect(archive.path) as db:
+    with closing(sqlite3.connect(archive.path)) as db, db:
         db.execute("UPDATE chunks SET data=x'0000'")
     assert c.get(url).status_code == 409
