@@ -53,8 +53,10 @@ logger = logging.getLogger(__name__)
 TOOL_PREFIX = "browser_"
 # How many open pages the list of pages names.
 PAGES_LISTED = 12
-# Byte ceiling of one screenshot handed to a model.
-SCREENSHOT_MAX_BYTES = 300 * 1024
+# Byte ceiling of one screenshot handed to a model: the same as a screenshot
+# of the desktop (``nekoclaw.builtin.desktop.SCREENSHOT_MAX_BYTES``). Three
+# screenshots stay in a task agent's context, whichever tools took them.
+SCREENSHOT_MAX_BYTES = 200 * 1024
 
 
 def cap_lines(lines: list[str], max_tokens: int) -> tuple[str, int]:

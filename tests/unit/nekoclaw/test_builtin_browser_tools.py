@@ -645,7 +645,7 @@ async def test_a_large_screenshot_is_brought_under_the_byte_ceiling(tools: Brows
     outcome = await call(tools, "take_screenshot")
     (image,) = outcome.images
     encoded = base64.b64decode(image.data)
-    assert len(encoded) <= SCREENSHOT_MAX_BYTES == 300 * 1024
+    assert len(encoded) <= SCREENSHOT_MAX_BYTES == 200 * 1024
     with Image.open(BytesIO(encoded)) as picture:
         assert picture.format == "JPEG"
 
@@ -898,7 +898,7 @@ async def test_closing_closes_the_browser_and_a_later_call_starts_it_again(tools
 
 
 def test_the_tools_keep_to_the_screenshot_ceiling_and_the_prefix() -> None:
-    assert tools_module.SCREENSHOT_MAX_BYTES == 300 * 1024
+    assert tools_module.SCREENSHOT_MAX_BYTES == 200 * 1024
     assert tools_module.TOOL_PREFIX == "browser_"
 
 
@@ -1043,3 +1043,11 @@ async def test_a_call_whose_turn_comes_after_the_browser_was_switched_off_is_not
     # The browser was not started for it.
     assert world.launched == [] and world.connected == []
     assert (await tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}, refused=lambda: None)).success
+
+
+def test_a_screenshot_of_a_page_may_weigh_what_one_of_the_desktop_may() -> None:
+    from nekoclaw.builtin import desktop
+
+    # Three screenshots stay in a context, of the desktop and of pages together:
+    # the request stays as small as the loop this replaces kept it (600 KB of pictures).
+    assert SCREENSHOT_MAX_BYTES == desktop.SCREENSHOT_MAX_BYTES == 200 * 1024

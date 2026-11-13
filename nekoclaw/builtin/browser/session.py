@@ -1440,9 +1440,9 @@ class BrowserSession:
 
 def port_of(url: str) -> int | None:
     """Return the port an address goes to, as a browser reads the address; None when it cannot be told."""
-    # A browser drops tabs and line breaks from an address and reads a
-    # backslash as a slash.
-    cleaned = url.strip().replace("\t", "").replace("\r", "").replace("\n", "").replace("\\", "/")
+    # A browser reads a backslash as a slash. (It also drops tabs and line
+    # breaks from an address; ``urlsplit`` does that itself.)
+    cleaned = url.strip().replace("\\", "/")
     try:
         parts = urlsplit(cleaned)
         port = parts.port
