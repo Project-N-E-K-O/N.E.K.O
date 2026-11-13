@@ -1,4 +1,6 @@
 """Formatting recovery preserves findings, rather than malformed row counts."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
@@ -121,7 +123,7 @@ def test_exit_bad_location_reselects_once_and_cannot_erase_the_finding(location)
     def reply(messages,**options):
         calls.append(options['operation'])
         if len(calls)==1:return json.dumps(first,ensure_ascii=False)
-        detail=json.loads(messages[-1]['content'])
+        detail=prompt_payload(messages[-1]['content'])
         assert 'invalid_fact_repair_target' in detail['validation_error']
         assert '/completion_contract' in detail['repair_target_catalog']['source']
         corrected=deepcopy(first)
@@ -157,7 +159,7 @@ def test_one_exit_correction_reports_location_and_claim_errors_and_only_adds_rel
     def reply(messages,**options):
         calls.append(options['operation'])
         if len(calls)==1:return json.dumps(first,ensure_ascii=False)
-        detail=json.loads(messages[-1]['content'])
+        detail=prompt_payload(messages[-1]['content'])
         assert 'invalid_fact_repair_target' in detail['validation_error']
         assert 'exit_gap_requires_issue_claim' in detail['validation_error']
         needed=detail['required_issue_claims'][0]

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from tests.utils.theater_prompt import prompt_payload
 import time
 from types import SimpleNamespace
 
@@ -47,7 +48,7 @@ def _clients(monkeypatch, *, role=(), scene=(), fail=None, together=False, struc
             closed.append(self.task)
 
         async def ainvoke(self, messages, **kwargs):
-            is_role = messages[1].content.startswith('{')
+            is_role = prompt_payload(messages[1].content).get('review_task') == 'player_actions'
             self.task = 'role' if is_role else 'scene'
             seen.append((self.task, messages, kwargs, self.options))
             if len(seen) == 2:
@@ -61,7 +62,7 @@ def _clients(monkeypatch, *, role=(), scene=(), fail=None, together=False, struc
             else:
                 body = dict(offer_present=False, valid=False, body_violations=list(scene),
                             unsafe_suggestion_indexes=[], failure_reason='场景事实冲突。' if scene else '')
-                data = json.loads(messages[1].content[messages[1].content.index('{'):])
+                data = prompt_payload(messages[1].content)
                 if 'candidate_segments' in data:
                     body.update(delivery_matches_route='scene_boundary' not in scene,
                                 public_destination_quote=QUOTE, initiation_authorized=authorized)
@@ -96,7 +97,7 @@ async def test_short_review_excludes_future_buttons_and_author_templates_and_run
     assert len(seen) == len(closed) == 2
     role, = [row for row in seen if row[0] == 'role']
     scene, = [row for row in seen if row[0] == 'scene']
-    data = json.loads(role[1][1].content)
+    data = prompt_payload(role[1][1].content)
     assert data['review_task'] == 'player_actions'
     assert data['player_input'] == _case()['message']
     assert data['candidate_segments'] == _case()['actor_performance']['segments']
@@ -143,7 +144,7 @@ async def test_ordinary_narration_uses_short_agency_review_and_preserves_veto(mo
     assert result.body_violations == ('player_action',)
     assert len(seen) == len(closed) == 2
     role, = [row for row in seen if row[0] == 'role']
-    assert json.loads(role[1][1].content)['candidate_segments'][0]['scene_narration'] == '玩家自行取出了课本。'
+    assert prompt_payload(role[1][1].content)['candidate_segments'][0]['scene_narration'] == '玩家自行取出了课本。'
 
 
 @pytest.mark.asyncio

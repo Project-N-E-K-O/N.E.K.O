@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 from services.theater.numeric_v2_actor import _opening_messages, _suggestion_fill_messages, _turn_messages
 from services.theater.numeric_v2_evaluator import _build_messages, _build_transition_judge_messages
@@ -31,7 +32,7 @@ def test_formal_transition_keeps_stage_scope_and_actual_state_for_both_consumers
         assert '不得损坏样品' in ''.join(message.content for message in messages)
         assert '有阶段限定的来源禁令不延伸到目标段' in messages[0].content
     assert '工作台' not in actor[0].content  # General rules must not include props or locations specific to this counterexample.
-    data = json.loads(review[1].content.split('：', 1)[1])
+    data = prompt_payload(review[1].content)
     assert [f'禁止发生的剧情：{rule}' for rule in source['must_not_happen']] == data['current_scene']['hard_boundaries']
     assert [f'禁止发生的剧情：{rule}' for rule in target['must_not_happen']] == data['target_scene']['hard_boundaries']
 

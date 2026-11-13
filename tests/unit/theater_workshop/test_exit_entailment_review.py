@@ -3,6 +3,8 @@
 Real-model positive/negative trials establish whether the prompts detect these
 gaps; the review doubles below only exercise existing evidence and permissions.
 """
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 from dataclasses import replace
 import json
@@ -151,7 +153,7 @@ def test_only_unproven_exit_bindings_receive_special_review_without_automatic_ju
     seen, reviewed_refs = [], set()
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_exit_fact_binding":
             response = _binding_reply(request, missing)
             reviewed_refs.update(row["claim_ref"] for row in json.loads(response)["bindings"]
@@ -195,7 +197,7 @@ def test_foreign_scene_history_stays_visible_while_current_exit_receives_special
     bindings, specials, main_packets = [], [], []
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         operation = options["operation"]
         if operation == "numeric_v2_exit_fact_binding":
             assert request["source_node_id"] == source["id"]
@@ -245,7 +247,7 @@ def test_evidence_format_repair_lists_all_nested_targets_without_prejudging():
     def reply(messages, **options):
         operation = options["operation"]
         calls.append(operation)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_exit_fact_binding":
             return _binding_reply(request, missing)
         if operation == "numeric_v2_exit_fact_review":
@@ -274,7 +276,7 @@ def test_evidence_format_repair_lists_all_nested_targets_without_prejudging():
                 misplaced = [target for check in checks for target in check.pop("target_checks")]
                 return json.dumps({"checks": checks, "target_checks": misplaced}, ensure_ascii=False)
             assert request == evidence_inputs[-1]
-            correction = json.loads(messages[-1]["content"])
+            correction = prompt_payload(messages[-1]["content"])
             assert correction["required_checks"] == [{
                 "issue_id": issue["issue_id"], "target_checks": issue["repair_targets"],
             } for issue in request["proposed_issues"]]
@@ -304,7 +306,7 @@ def test_sequence_gap_uses_existing_evidence_verdict_without_rescoring_or_edit_a
     def reply(messages, **options):
         operation = options["operation"]
         calls.append(operation)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_exit_fact_binding":
             return _binding_reply(request, missing)
         if operation == "numeric_v2_exit_fact_review":
@@ -367,7 +369,7 @@ def test_exit_review_failure_preserves_the_saved_report(tmp_path, operation, fai
     def reply(messages, **options):
         current = options["operation"]
         calls.append(current)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if (not broken and current == "numeric_v2_fact_review"
                 and request["checked_node_ids"] == [story["start_node_id"]]
                 and request["audit_task"]["kind"] == "node"):
@@ -382,7 +384,8 @@ def test_exit_review_failure_preserves_the_saved_report(tmp_path, operation, fai
                 return _exit_review_reply(request, status="uncertain")
             if failure_kind in {"drop_issue_on_correction", "unseen_summary"}:
                 if failure_kind == "drop_issue_on_correction" and current.endswith("_format_repair"):
-                    assert messages[-2] == {"role": "assistant", "content": rejected_replies[0]}
+                    assert messages[-2]["role"] == "assistant"
+                    assert prompt_payload(messages[-2]["content"])["response"] == rejected_replies[0]
                     return _exit_review_reply(request)
                 candidate, = request["exit_candidates"]
                 foreign_ref = "not_a_visible_ref"
@@ -482,7 +485,7 @@ def test_exit_ref_directory_binds_each_route_to_visible_original_material(shared
     captured, binding_packets, exit_packets = [], [], []
 
     def capture(messages, **options):
-        packet = json.loads(messages[1]["content"])
+        packet = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_exit_fact_binding":
             binding_packets.append(packet)
             return _binding_reply(packet, missing)

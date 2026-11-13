@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from tests.utils.theater_prompt import prompt_payload
 from contextlib import nullcontext
 from services.theater_workshop.host import InProcessPackageGateway
 
@@ -668,7 +670,7 @@ def test_builtin_mainline_rejoin_request_keeps_native_constraints_under_10000(st
 
     def inspect_request(messages, **options):
         assert count_tokens(json.dumps(messages, ensure_ascii=False)) <= 10_000
-        wire = json.loads(messages[1]["content"])
+        wire = prompt_payload(messages[1]["content"])
         expected_gates = deepcopy(nodes[source_id]["route_gates"])
         for gate in expected_gates:
             contract = gate["transition_contract"]
@@ -737,7 +739,7 @@ def test_rejoin_carries_distinct_exact_anchors_from_matching_goal_descriptions()
     anchors = ["封签编号 QX-701", "封签编号 QX-929"]
 
     def model(messages, **_options):
-        wire = json.loads(messages[1]["content"])
+        wire = prompt_payload(messages[1]["content"])
         carried = [row for row in wire["continuity_items"] if row["text"] == first["description"]]
         assert [row["contract"]["anchors"] for row in carried] == [[anchor] for anchor in anchors]
         candidate = _path_result_from_context(wire)
@@ -788,7 +790,7 @@ def test_builtin_existing_ending_branch_fits_host_budget_without_losing_evidence
 
     class Client:
         def invoke(self, messages, **_options):
-            wire = json.loads(messages[1]["content"])
+            wire = prompt_payload(messages[1]["content"])
             seen.append(wire)
             assert count_tokens(json.dumps(messages, ensure_ascii=False)) <= 10_000
             assert wire["source"]["route_gates"] == nodes[source_id]["route_gates"]

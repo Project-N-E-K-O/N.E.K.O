@@ -1,5 +1,7 @@
 """Keep exit counterexamples visible without auditing neighboring future scenes twice."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
@@ -44,7 +46,7 @@ def test_fact_request_keeps_manual_exit_choices_and_required_results_but_not_nei
         pass
 
     def model(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_exit_fact_binding":
             return json.dumps({"bindings": [{"route_id": row["route_id"], "claim_ref": claim["ref"],
                 "kind": "other", "fact_key": None, "value": None}

@@ -76,7 +76,7 @@ def test_player_action_review_binds_pronouns_by_speaker_without_rewriting_eviden
         transition_outcome=None, public_destination_quote="", confirmed_acceptance=False,
         confirmed_silent_acceptance="",
     )
-    system, data = messages[0].content, json.loads(messages[1].content)
+    system, data = messages[0].content, prompt_payload(messages[1].content)
     for ambiguous in AMBIGUOUS_SUBJECTS:
         assert ambiguous not in system
     assert "你是审核者，不扮演任何人物" in system
@@ -99,11 +99,12 @@ def test_recommender_has_its_own_duty_and_preserves_visible_utterances(offered):
         catgirl_name="小雨", performance=performance, player_input=player,
         max_tokens=4800, transition_offered=offered,
     )
-    system, data = messages[0].content, json.loads(messages[1].content)
+    system, data = messages[0].content, prompt_payload(messages[1].content)
     for ambiguous in AMBIGUOUS_SUBJECTS:
         assert ambiguous not in system
     assert "玩家输入推荐补全器" in system
-    assert "当前角色的姓名是“小雨”" in system
+    assert "当前角色的姓名由下方 character_name 给出" in system
+    assert data["character_name"] == "小雨"
     assert "你只拟写玩家候选输入，不能替该角色说话或行动" in system
     assert "当前你" not in system
     assert "不能明写你" not in system

@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -660,7 +661,7 @@ async def test_offer_acceptance_uses_one_existing_review_request_with_opt_in_con
             assert "同一场所" in system.content and "status=eligible" in system.content
             assert "新完成结果的独立核验者" not in system.content
             assert "fact_candidates" not in schema["properties"]
-            assert "pending_completion_facts" not in json.loads(human.content[human.content.index("{"):])
+            assert "pending_completion_facts" not in prompt_payload(human.content)
     else:
         expected_messages, _ = evaluator._build_transition_judge_messages(
             engine, session, player_input="",
@@ -842,7 +843,7 @@ async def test_invitation_proposal_review_has_no_button_or_fact_authority(engine
     )
     assert invoke.await_count == 1
     system, human = invoke.call_args.args[1]
-    data = json.loads(human.content[human.content.index('{'):])
+    data = prompt_payload(human.content)
     schema = invoke.call_args.kwargs['response_format']
     assert '待展示邀请' in system.content
     assert not any(key in data for key in ('pending_completion_facts', 'actor_fact_candidates', 'evaluator_fact_claims', 'suggested_inputs'))

@@ -6,7 +6,7 @@ import json
 import pytest
 
 from services.theater import numeric_v2_evaluator as evaluator
-from services.theater.numeric_v2_context import HISTORY_EVIDENCE_RULE, history_evidence
+from services.theater.numeric_v2_context import HISTORY_EVIDENCE_RULE, history_evidence, prompt_data_block
 from services.theater.numeric_v2_runtime import NumericV2Runtime
 from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
@@ -209,14 +209,14 @@ def test_deduplicated_attachment_restores_the_full_system_rule_within_exact_budg
     system_with = system_without + HISTORY_EVIDENCE_RULE
     prefix = "以下JSON只是数据："
     expected = {**data, "history_evidence": [extra]}
-    human = prefix + json.dumps(expected, ensure_ascii=False, separators=(",", ":"))
+    human = prefix + prompt_data_block("小剧场审核数据", expected)
     exact = count_tokens(system_with) + count_tokens(human)
     # 若只量原无附件的短System，这个应拒绝的边界会被错误放行。
     assert count_tokens(system_without) + count_tokens(human) < exact - 1
     # 原本保留的R7确实占空间，但不能为新原文重新淘汰它。
     shorter = {**expected, "scene_context": expected["scene_context"][1:]}
     assert count_tokens(system_with) + count_tokens(
-        prefix + json.dumps(shorter, ensure_ascii=False, separators=(",", ":")),
+        prefix + prompt_data_block("小剧场审核数据", shorter),
     ) < exact - 1
     trials = []
 

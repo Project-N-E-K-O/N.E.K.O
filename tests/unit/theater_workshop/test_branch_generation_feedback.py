@@ -1,5 +1,7 @@
 """Public branch drafting corrects one candidate without changing its author inputs."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 import json
@@ -63,7 +65,7 @@ def workshop(tmp_path):
             return ModelReply(json.dumps(_ending_reply(), ensure_ascii=False), 'fixture-model')
         assert options['operation'] == 'numeric_v2_branch_path'
         assert options['max_retries'] == 1
-        context = json.loads(messages[1]['content'])
+        context = prompt_payload(messages[1]['content'])
         state.calls.append({'messages': deepcopy(messages), 'context': deepcopy(context)})
         assert state.path.read_bytes() == state.before_bytes
         reply = state.reply(context, len(state.calls))
@@ -458,7 +460,7 @@ def test_path_sends_ending_requirements_without_the_endpoint_performance_templat
 
     def model(messages, **options):
         assert options['operation'] == 'numeric_v2_branch_path'
-        captured.append(json.loads(messages[1]['content']))
+        captured.append(prompt_payload(messages[1]['content']))
         return ModelReply('{}', 'fixture-model')
 
     generator = NumericV2Generator(model)
@@ -502,7 +504,7 @@ def test_rejoin_and_ending_generation_keep_their_existing_endpoint_protocol(mode
 
     def model(messages, **options):
         assert options['operation'] == operation
-        captured.append(json.loads(messages[1]['content']))
+        captured.append(prompt_payload(messages[1]['content']))
         return ModelReply('{}', 'fixture-model')
 
     NumericV2Generator(model)._generate_branch_json(

@@ -1,4 +1,6 @@
 """Verify conditional review, complete reports, score deductions and preserved fields; mock models test deterministic boundaries only."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 import pytest
@@ -139,7 +141,7 @@ def test_neighbor_only_issue_is_not_repeated_and_evidence_review_stays_local(las
 
     def model(messages, **options):
         operation = options["operation"]
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_fact_review":
             focus, = request["checked_node_ids"]
             task = request["audit_task"]
@@ -220,7 +222,7 @@ def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdic
     story, authoring = _quality_story_context();before = deepcopy(story)
     assessor = NumericV2QualityAssessor();calls = []
     def reply(messages, **kwargs):
-        request = json.loads(messages[1]["content"]);calls.append(kwargs["operation"])
+        request = prompt_payload(messages[1]["content"]);calls.append(kwargs["operation"])
         assert kwargs["max_retries"] == 1
         if kwargs["operation"].startswith(("numeric_v2_fact_review", "numeric_v2_fact_evidence_review")):
             assert messages[0]["content"].count(ENTRY_STATE_TIMING_RULE) == 1
@@ -232,7 +234,7 @@ def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdic
             return "{" + "未闭合的长段答复。" * 700
         if kwargs["operation"] in {"numeric_v2_fact_evidence_review", "numeric_v2_fact_evidence_review_format_repair"}:
             if kwargs["operation"].endswith("_format_repair"):
-                assert count_tokens(messages[-2]["content"]) <= 512
+                assert count_tokens(prompt_payload(messages[-2]["content"])["response"]) <= 512
                 assert "省略中段" in messages[-2]["content"]
             return json.dumps(review_payload(request["proposed_issues"], verdict, keep=("/opening_scene",)), ensure_ascii=False)
         if kwargs["operation"] == "numeric_v2_repair_plan_review":
@@ -263,7 +265,7 @@ def test_conditional_review_keeps_originals_and_controls_score_and_repair(verdic
     assert issue["repairable"] is (verdict == "supported")
     # Even if the original plan still requests an opening change, preservation requirements from review must reach the actual revision request; return no candidate on scope violations.
     def patch(messages, **kwargs):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         assert request["accepted_suggestions"][0]["repair_targets"] == [{"node_id": "mainline_01", "field": "/character_state/catgirl"}]
         return json.dumps({"node_updates": [{"node_id": "mainline_01", "story_beat": {"opening_scene": "越界重写正确开场"}}]})
     assessor.call_llm = patch
@@ -285,7 +287,7 @@ def test_supported_fact_preservation_distinguishes_local_no_change(preserve_orig
     reviewed = []
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         operation = options["operation"]
         if operation == "numeric_v2_fact_review":
             checked = request["checked_node_ids"]
@@ -351,7 +353,7 @@ def test_unconfirmed_fact_issue_cannot_lock_an_independently_supported_repair(ve
     def model(messages, **options):
         operation = options["operation"]
         operations.append(operation)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_fact_review":
             checked = request["checked_node_ids"]
             if request["audit_task"]["kind"] != "node" or checked != [first]:

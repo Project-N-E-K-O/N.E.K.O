@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -77,7 +78,7 @@ def test_runtime_and_actor_agree_and_review_does_not_judge_display(entry, mixed)
     assert context['fixed_narrations'] == {'required': 1, 'displayed': int(entry)}
     assert len(context['all']) == int(mixed)
     messages, _ = _build_transition_judge_messages(engine, session, actor_performance=BODY, player_input='请打开。')
-    payload = json.loads(messages[1].content[messages[1].content.index('{'):])
+    payload = prompt_payload(messages[1].content)
     assert bool(payload.get('pending_completion_facts')) is mixed
     assert ('fact_candidates' in messages[0].content) is mixed
     actor = '\n'.join(m.content for m in _turn_messages(engine, session, outcome, '请打开。', '温和。', 'Lan', '你'))

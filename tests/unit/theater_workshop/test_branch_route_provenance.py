@@ -1,5 +1,7 @@
 """A reconverged branch receives alternative author plans, never a combined run log."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
@@ -66,14 +68,14 @@ def test_branch_prompt_preserves_diamond_prop_provenance_without_asserting_both_
     assert project == original
     assert len(calls) == 1
     system, user = calls[0]
-    assert json.loads(user["content"])["global"]["key_props"][0]["states"] == states
+    assert prompt_payload(user["content"])["global"]["key_props"][0]["states"] == states
     assert old_claim not in system["content"]
     assert "不是已提交的演绎日志" in system["content"]
     assert "互斥路线" in system["content"]
     assert "node_id" in system["content"]
     if operation == "generate_branch_path":
         assert "fallback_offer 与 accept_input 公开邀约、明确接受同一新安排" in system["content"]
-        assert "目标开场不重做触发动作" in system["content"]
+        assert "已完成动作无需重演" in system["content"]
         assert "与目标开场和状态一致" in system["content"]
     else:
         assert "summary、opening_scene 和三方状态核对同一时点" in system["content"]
@@ -105,7 +107,7 @@ def test_node_enhancement_keeps_alternative_and_current_prop_plans_as_plans():
     assert project == original
     assert len(calls) == 1
     system, user = calls[0]
-    assert json.loads(user["content"])["key_props"][0]["states"] == props[0]["states"]
+    assert prompt_payload(user["content"])["key_props"][0]["states"] == props[0]["states"]
     assert "必须保持已经成立的名称、用途、归属和状态" not in system["content"]
     assert "不是已提交的演绎日志" in system["content"]
     assert "互斥路线" in system["content"]

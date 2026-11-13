@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -590,7 +591,7 @@ async def test_ordinary_review_keeps_committed_history_watermark_with_projected_
             engine, snapshot, actor_performance=kwargs['actor_performance'], player_input=kwargs['message'],
             check_missed_initiation=kwargs.get('check_missed_initiation', False),
         )[0]
-        payload = json.loads(messages[1].content.split('：', 1)[1])
+        payload = prompt_payload(messages[1].content)
         assert payload['current_visit_history_complete'] is True
         assert payload['scene_context'][0]['phase'] == ('scene_entry' if entered else 'opening')
         assert payload['scene_context'][-1]['revision'] == current.session.revision

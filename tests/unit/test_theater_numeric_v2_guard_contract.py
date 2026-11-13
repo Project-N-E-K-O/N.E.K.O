@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -32,7 +33,7 @@ def test_transition_deduplicates_only_complete_projected_target_boundaries():
     session = engine.create_session(session_id='budget', catgirl_binding={'catgirl_name': '女主'}, opening_performance={'performance': '（点头）准备好了。'})
     outcome = engine.resolve_turn(session, TurnRequestV2('one', 0, '谢谢。'), (), scene_complete=True, natural_ending_ready=True)
     messages = _build_transition_judge_messages(engine, session, actor_performance={'segments': [], 'suggested_inputs': []}, player_input='谢谢。', transition_outcome=outcome)[0]
-    target = json.loads(messages[1].content.split('：', 1)[1])['target_scene']
+    target = prompt_payload(messages[1].content)['target_scene']
     boundaries = target['hard_boundaries'] + target['author_entry_plan'].get('scene_boundaries', []) + target['acting_contract'].get('forbidden_behaviors', [])
     assert boundaries.count(short) == 1
     assert long in boundaries
@@ -151,7 +152,7 @@ def test_guard_cannot_validate_absent_body_offer():
 
 def test_guard_uses_actual_entry_without_target_late_stage():
     messages = _messages(_BODY_OFFER_CANDIDATE)
-    payload = json.loads(messages[1].content.split("：", 1)[1])
+    payload = prompt_payload(messages[1].content)
     direction = payload["next_scene_direction"]
 
     assert "after_acceptance_direction" not in direction

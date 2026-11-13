@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -340,7 +341,7 @@ async def test_actor_completion_handoff_uses_only_this_drafts_reviewed_quote(tmp
             return False
 
         async def ainvoke(self, messages):
-            data = json.loads(messages[1].content[messages[1].content.index("{"):])
+            data = prompt_payload(messages[1].content)
             requests.append(data)
             if scenario == "timeout":
                 raise asyncio.TimeoutError

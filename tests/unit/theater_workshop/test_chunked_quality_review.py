@@ -1,4 +1,6 @@
 """Explicit task and citation coverage, not a proxy for model semantic accuracy."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
@@ -68,7 +70,7 @@ def test_tasks_cover_real_edges_two_endings_and_declared_distant_originals(genre
     fallback = _quality_reply(_quality_payload())
 
     def model(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         operation = options["operation"]
         if operation == "numeric_v2_exit_fact_binding":
             return json.dumps({"bindings": [{"route_id": route["route_id"], "claim_ref": claim["ref"],
@@ -112,7 +114,7 @@ def test_failed_literary_block_cannot_return_a_partial_score():
     fallback = _quality_reply(_quality_payload())
     scoring = []
     def model(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] in {"numeric_v2_literary_block", "numeric_v2_literary_block_format_repair"}:
             return json.dumps({"checked_node_ids": [], "issues": [], "node_notes": []})
         if options["operation"] == "numeric_v2_quality_assessment":
@@ -203,7 +205,7 @@ def test_skipped_real_edge_check_fails_the_whole_audit(genre):
     story, authoring, _ = _story(genre)
     fallback = _quality_reply(_quality_payload())
     def model(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] in {"numeric_v2_fact_review", "numeric_v2_fact_review_format_repair"}:
             response = _fact_review_payload(request)
             if request["audit_task"]["kind"] == "transition":
@@ -222,7 +224,7 @@ def test_global_score_retains_local_major_issue_and_its_exact_original_evidence(
     fallback = _quality_reply(payload)
     emitted = []
     def model(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_literary_block":
             response = _local_reply(request)
             if not emitted:

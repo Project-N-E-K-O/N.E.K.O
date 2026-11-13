@@ -1,5 +1,7 @@
 """Creative guidance reaches writing/review without becoming runtime conditions."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
@@ -29,7 +31,7 @@ def test_staged_writing_receives_design_guidance_once_and_preserves_the_existing
         calls.append(operation)
         assert messages[0]["content"].count(STORY_DESIGN_RULE) == (
             1 if operation == "numeric_v2_story_frame" else 0)
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if operation in {"numeric_v2_chapter_generation", "numeric_v2_ending_generation"}:
             assert data["author_brief"] == setup["brief"]
         else:

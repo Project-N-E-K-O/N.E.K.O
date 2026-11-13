@@ -1,6 +1,7 @@
 """Exact latest invitation references retain authorization under Review capacity pressure."""
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -29,7 +30,7 @@ def case(request, monkeypatch):
 def build(case):
     engine, session, kwargs = case
     messages, _ = evaluator._build_transition_judge_messages(engine, session, **kwargs)
-    return json.loads(messages[-1].content.split('：', 1)[1]), sum(evaluator.count_tokens(m.content) for m in messages)
+    return prompt_payload(messages[-1].content), sum(evaluator.count_tokens(m.content) for m in messages)
 
 
 def test_invitation_is_deduplicated_before_budget_check(monkeypatch, case):
@@ -46,7 +47,7 @@ def test_split_player_action_review_references_same_visible_invitation(case):
         transition_outcome=kwargs['transition_outcome'], public_destination_quote='',
         confirmed_acceptance=True, confirmed_silent_acceptance='',
     )
-    payload = json.loads(messages[-1].content)
+    payload = prompt_payload(messages[-1].content)
     assert payload['pending_invitation'].startswith('latest_public_context[0].content')
 
 

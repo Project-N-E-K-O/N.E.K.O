@@ -1,4 +1,6 @@
 """A bad location neither erases factual evidence nor authorizes guessed edits."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
@@ -20,7 +22,7 @@ def test_invalid_fact_location_gets_one_reselection_without_losing_the_issue(rep
     def reply(messages, **options):
         nonlocal first
         op = options["operation"]
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if op == "numeric_v2_fact_review" and data["audit_task"]["id"] == "node:mainline_01":
             node = data["story_outline"]["mainline"][0]
             first = _fact_review_payload(data, [{
@@ -33,7 +35,7 @@ def test_invalid_fact_location_gets_one_reselection_without_losing_the_issue(rep
             }])
             return json.dumps(first)
         if op == "numeric_v2_fact_review_format_repair":
-            correction = json.loads(messages[-1]["content"])
+            correction = prompt_payload(messages[-1]["content"])
             assert "invalid_fact_repair_target" in correction["validation_error"]
             assert "/completion_contract" in data["repair_target_catalog"]["mainline_01"]
             assert "/outgoing_routes/0/completion_contract/all" not in data["repair_target_catalog"]["mainline_01"]

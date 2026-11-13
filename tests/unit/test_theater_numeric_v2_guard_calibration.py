@@ -8,7 +8,7 @@ import pytest
 from services.theater import numeric_v2_evaluator as ev
 from services.theater.numeric_v2_runtime import TurnRequestV2
 from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
-from tests.utils.theater_prompt import without_public_destination_indexes
+from tests.utils.theater_prompt import without_public_destination_indexes, prompt_payload
 
 
 @pytest.mark.parametrize('text', [
@@ -148,7 +148,7 @@ async def test_formal_and_dispute_output_room_stays_independent_of_ordinary_floo
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
         async def ainvoke(self, messages):
-            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False,
                 body_violations=[], unsafe_suggestion_indexes=[], failure_reason='',

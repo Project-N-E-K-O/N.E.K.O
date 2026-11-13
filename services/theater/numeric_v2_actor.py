@@ -70,6 +70,7 @@ from .numeric_v2_context import (
     recorded_transition_offer,
     project_contract_boundaries,
     prompt_data_block,
+    prompt_data_block_payload,
     render_prompt_context,
     scene_narrative_focus,
     scene_narrative_summary,
@@ -2161,8 +2162,8 @@ def _hard_boundary_system_instruction(
             "玩家要求若与硬边界冲突，你必须在正文直接拒绝或提出符合边界的替代做法；"
             "不得顺从越界要求、交换玩家与你的行动职责，或把越界结果写成已发生。"
         )
-        + "\n- "
-        + "\n- ".join(normalized)
+        + "\n"
+        + prompt_data_block("本轮作者硬边界", {"boundaries": normalized})
         + "\n以上限制须逐条遵守，但无需逐条宣读；未被问及且无当场必要的禁令、能力和自我事实不必主动声明。"
     )
 
@@ -2216,7 +2217,7 @@ def _suggestion_fill_messages(
         )
     system_prompt = (
         "你是 N.E.K.O Numeric v2 的玩家输入推荐补全器。"
-        f"当前角色的姓名是“{catgirl_name}”。你只拟写玩家候选输入，不能替该角色说话或行动。"
+        "当前角色的姓名由下方 character_name 给出。你只拟写玩家候选输入，不能替该角色说话或行动。"
         f"{_output_schema_instruction('transition_suggestion_fill' if transition_offered else 'suggestion_fill')}"
         "只根据已经生成的可见正文和玩家本轮输入，给出一至三条真实不同、可直接发送的玩家选择，不能为凑数量补造前提。"
         "不得把 player_input 原样或仅改空白后再次列为推荐；玩家已经做过的同一句不是下一步选择。"
@@ -2234,6 +2235,7 @@ def _suggestion_fill_messages(
         "不要输出解释、purpose、goal_id、kind 或其他字段。"
     )
     data = {
+        "character_name": catgirl_name,
         "visible_performance": _suggestion_source_text(performance),
         # Source responses/bridges already consumed old input after formal transition; resending it pulls recommendations back to the old scene.
         "player_input": "" if after_scene_change else str(player_input or ""),
@@ -2242,7 +2244,7 @@ def _suggestion_fill_messages(
     return _ensure_actor_messages_fit(
         [
             theater_system_message(system_prompt),
-            HumanMessage(content=json.dumps(data, ensure_ascii=False, separators=(",", ":"))),
+            HumanMessage(content=prompt_data_block("玩家推荐补全数据", data)),
         ],
         max_tokens=max_tokens,
     )
@@ -3370,12 +3372,16 @@ def _opening_messages(
     if opening_context.get("capability_state"):
         system_prompt += "\n" + _CAPABILITY_LABEL_RULE
     if retry_hint:
-        system_prompt += f"\n本次公开开场必须改写：{retry_hint}"
+        system_prompt += "\n本次公开开场必须改写：\n" + prompt_data_block("开场重试反馈", {"retry_hint": retry_hint})
     fixed_note = actor_note(node, None, {"catgirl_name": catgirl_name, "player_address": player_address},
                             player_address_known, project_condition=cast.text,
                             condition_triggers_enabled=condition_narrations_enabled)
     if fixed_note:
         system_prompt += "\n" + fixed_note
+    opening_boundary_text = system_prompt
+    if "======以下为本轮作者硬边界======" in system_prompt:
+        opening_boundary_text += "\n- ".join(prompt_data_block_payload(
+            system_prompt, "本轮作者硬边界")["boundaries"])
     # The complete opening boundaries already live in System, as in formal turns.
     # Keep any author rule not actually rendered there; never trim its exceptions.
     for container, field in (
@@ -3384,7 +3390,7 @@ def _opening_messages(
         (data["acting_context"].get("character_state", {}), "scene_boundaries"),
     ):
         if field in container:
-            container[field] = [text for text in container[field] if text not in system_prompt]
+            container[field] = [text for text in container[field] if text not in opening_boundary_text]
             if not container[field]:
                 container.pop(field)
     return _ensure_actor_messages_fit(
@@ -3584,7 +3590,7 @@ def _turn_messages(
     player_action_note = (
         reference_player_action_input(projected_player_action, current_player_input)
         + "\n本轮玩家动作结果投影（仅为约束，不是新增剧情）："
-        + json.dumps(projected_player_action, ensure_ascii=False, separators=(",", ":"))
+        + prompt_data_block("本轮玩家动作结果投影", projected_player_action)
         + "。"
     )
     binding = {"catgirl_name": catgirl_name, "player_address": player_address}
@@ -3636,7 +3642,7 @@ def _turn_messages(
             "每个键为指标id，值只能含 strength（weak/normal/strong/decisive）、criterion_id（下列准则原id）。"
             "不能自行输出数值或根据自己编写的台词给玩家加减分。"
             "作者指标准则："
-            + json.dumps(metrics, ensure_ascii=False, separators=(",", ":"))
+            + prompt_data_block("作者指标准则", {"metrics": metrics})
             + "\n事实候选按证据来源分开，scene_complete 不替代事实。"
             "玩家本轮明确作出的选择（含路线）、同意或行动，只在 turn_evaluation.fact_candidates 中引用 player_input；"
             "已交付的本幕结果可在同一数组引用 story_so_far 的本幕演出原文。"
@@ -3971,24 +3977,28 @@ def _turn_messages(
         data["transition"] = final_transition
         final_transition["generation_scope"] = _generation_source_scope(
             data, player_name=cast.player_name, catgirl_name=catgirl_name)
+        phase_boundary_text = system_prompt
+        if "======以下为本轮作者硬边界======" in system_prompt:
+            phase_boundary_text += "\n- ".join(prompt_data_block_payload(
+                system_prompt, "本轮作者硬边界")["boundaries"])
         # Phase-labelled System boundaries are authoritative; omit only exact Human copies.
         for contract in (data["acting_context"].get("acting_contract", {}),
                          data["acting_context"].get("target_acting_contract", {})):
             if "forbidden_behaviors" in contract:
                 contract["forbidden_behaviors"] = [text for text in contract["forbidden_behaviors"]
-                                                  if text not in system_prompt]
+                                                  if text not in phase_boundary_text]
                 if not contract["forbidden_behaviors"]:
                     contract.pop("forbidden_behaviors")
         for state in (data["acting_context"].get("source_author_entry_state", {}),
                       (final_transition.get("target_scene") or {}).get("author_entry_plan", {})):
             if "scene_boundaries" in state:
-                state["scene_boundaries"] = [text for text in state["scene_boundaries"] if text not in system_prompt]
+                state["scene_boundaries"] = [text for text in state["scene_boundaries"] if text not in phase_boundary_text]
                 if not state["scene_boundaries"]:
                     state.pop("scene_boundaries")
         system_prompt += player_action_note
         if retry_hint:
             # Formal repairs, like ordinary ones, follow the complete contracts.
-            system_prompt += f"\n本轮是输出重试：{retry_hint}"
+            system_prompt += "\n本轮是输出重试：\n" + prompt_data_block("本轮重试反馈", {"retry_hint": retry_hint})
         data["character_name"] = catgirl_name
         packing_diagnostics: dict[str, Any] = {}
         data = _fit_turn_prompt_data(
@@ -4386,7 +4396,7 @@ def _turn_messages(
         )
     if retry_hint:
         # Place correction tasks after full contracts without extra progression pressure; author boundaries/current input remain effective.
-        system_prompt += f"\n本轮是输出重试：{retry_hint}"
+        system_prompt += "\n本轮是输出重试：\n" + prompt_data_block("本轮重试反馈", {"retry_hint": retry_hint})
         pacing_text = (
             f"当前是第 {int(soft_pacing['current_turn'])} 回合，本幕推荐 "
             f"{int(soft_pacing['recommended_turns'])} 回合。"

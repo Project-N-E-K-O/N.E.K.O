@@ -1,4 +1,6 @@
 """Choice reachability is distinct from proving a chosen exit's history."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 from dataclasses import replace
 import json
@@ -112,7 +114,7 @@ def test_sdk_generation_compilation_and_native_choice_match_the_audit_gate(tmp_p
 
     def model(messages, **options):
         nonlocal invalid_sent, corrected
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         operation = options["operation"]
         calls.append(operation)
         if settled_flag and operation == "numeric_v2_chapter_generation" and request["chapter_index"] == 2:

@@ -11,7 +11,7 @@ from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.test_theater_numeric_v2_shared_history_scheduling import agreement_engine
 from tests.unit.test_theater_numeric_v2_source_delivery_routing import KEY
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 
 @pytest.fixture(autouse=True)
@@ -99,7 +99,7 @@ async def _exercise(tmp_path, monkeypatch, *, mode="agree", topic="equipment", m
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             assert path.read_bytes() == original
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             requests.append(data)
             payload = contract_audit_payload({"violations": []}, messages)
             schema = kwargs["response_format"]["json_schema"]["schema"]["properties"]

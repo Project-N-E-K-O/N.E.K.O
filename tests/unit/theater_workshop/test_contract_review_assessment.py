@@ -1,4 +1,6 @@
 """Contract-review propagation; model doubles do not establish semantic accuracy."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
@@ -23,7 +25,7 @@ def test_every_hard_condition_is_reviewed_without_rescoring_literature(status, p
     fallback = _quality_reply(_quality_payload())
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         requests.append((options["operation"], request, options))
         if options["operation"] == "numeric_v2_fact_review":
             assert "contract_targets" in request
@@ -64,7 +66,7 @@ def test_missing_contract_coverage_cannot_return_a_partial_assessment():
 
     def reply(messages, **options):
         calls.append(options["operation"])
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         return json.dumps({"checked_node_ids": request["checked_node_ids"], "issues": []})
 
     assessor = NumericV2QualityAssessor()
@@ -82,7 +84,7 @@ def test_format_correction_identifies_missing_contract_field_without_filling_it(
     repaired = []
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_fact_review":
             payload = _contract_reply(request)
             if (request["checked_node_ids"] == [story["nodes"][0]["id"]]
@@ -90,7 +92,7 @@ def test_format_correction_identifies_missing_contract_field_without_filling_it(
                 del payload["contract_checks"][0]["status"]
             return json.dumps(payload, ensure_ascii=False)
         if options["operation"] == "numeric_v2_fact_review_format_repair":
-            correction = json.loads(messages[-1]["content"])
+            correction = prompt_payload(messages[-1]["content"])
             assert "missing=status" in correction["validation_error"]
             repaired.append(correction)
             return json.dumps(_contract_reply(request), ensure_ascii=False)
@@ -125,7 +127,7 @@ def test_shared_branch_requirement_uses_the_first_visible_definition_once(fixed)
     fallback = _quality_reply(_quality_payload())
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_fact_review":
             if request["checked_node_ids"] == ["shared_branch"]:
                 requests.append(request)
@@ -169,7 +171,7 @@ def test_contract_revision_uses_global_issue_ids_and_independent_evidence(verdic
     first_nodes = {node["id"] for node in story["nodes"][:2]}
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_fact_review":
             payload = _contract_reply(request)
             node_id, = request["checked_node_ids"]
@@ -218,7 +220,7 @@ def test_public_quality_preserves_contract_checks_and_failed_reassessment(tmp_pa
         if broken:
             return "invalid JSON"
         if operation == "numeric_v2_fact_review":
-            return json.dumps(_contract_reply(json.loads(messages[1]["content"]), "uncertain"), ensure_ascii=False)
+            return json.dumps(_contract_reply(prompt_payload(messages[1]["content"]), "uncertain"), ensure_ascii=False)
         return fallback(messages, **options)
 
     host = open_workshop(TestConfig(tmp_path), model_call=model)
@@ -258,7 +260,7 @@ def test_target_opening_issue_does_not_invalidate_a_clear_source_condition():
     fallback = _quality_reply(_quality_payload())
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_fact_review":
             payload = _contract_reply(request)
             if request["checked_node_ids"] == [ending["id"]] and request["audit_task"]["kind"] == "node":

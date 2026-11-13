@@ -10,7 +10,7 @@ from services.theater.numeric_v2_performance import performance_content_blocks
 from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_runtime import _binding
 from tests.unit.test_theater_numeric_v2_source_delivery_routing import _engine, KEY
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 
 @pytest.fixture(autouse=True)
@@ -128,7 +128,7 @@ async def test_source_fact_approval_is_bound_and_not_resampled(tmp_path, monkeyp
             async def __aenter__(self): return self
             async def __aexit__(self, *args): pass
             async def ainvoke(self, messages, **kwargs):
-                data = json.loads(messages[1].content.split('\n', 1)[1])
+                data = prompt_payload(messages[1].content)
                 transport_calls.append(data)
                 payload = contract_audit_payload({'violations': []}, messages)
                 properties = kwargs['response_format']['json_schema']['schema']['properties']

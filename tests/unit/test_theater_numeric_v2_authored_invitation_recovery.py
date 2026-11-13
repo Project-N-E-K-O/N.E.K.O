@@ -67,7 +67,11 @@ def _install_stay(monkeypatch, runtime, *, new_choice=False):
 
     async def contract(self, **kwargs):
         calls["contract"] += 1
-        return ("不得替玩家搬运。",) if kwargs.get("target_node") is None else ()
+        if "未审稿" in str(kwargs["actor_performance"]):
+            return ("不得替玩家搬运。",)
+        if kwargs.get("proposed_offer"):
+            kwargs["diagnostics"]["offer_actionable"] = True
+        return ()
 
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "evaluate", evaluate)
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "verify_contract_boundaries", contract)
@@ -108,7 +112,7 @@ async def test_failed_in_act_draft_recovers_a_real_control_then_continues(tmp_pa
     assert moved.stored.session.revision == current.session.revision + 2
     assert len([event for event in moved.stored.ledger_events if event["from_node_id"] != event["to_node_id"]]) == 1
     assert moved.stored.session.metrics["trust"] == result.stored.session.metrics["trust"]
-    assert calls == {"actor": 3, "contract": 2, "evaluator": 2}
+    assert calls == {"actor": 3, "contract": 3, "evaluator": 2}
 
 
 @pytest.mark.asyncio

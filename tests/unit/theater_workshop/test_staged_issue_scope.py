@@ -1,5 +1,7 @@
 """Saved diagnostics stay with their own writer phase across resumed work."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
@@ -36,7 +38,7 @@ def test_saved_sibling_diagnostics_are_scoped_deduplicated_and_preserved(continu
     seen, snapshots = [], []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_chapter_generation":
             index = data["chapter_index"]
             expected = second if index == 2 else third
@@ -65,7 +67,7 @@ def test_ending_consumes_only_ending_diagnostics_and_retains_unhandled_global_is
     snapshots = []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_ending_generation":
             assert data["issues"] == [{**ending, "source_path": "ending.summary"}]
         return staged_reply(messages, options["operation"], outline)
@@ -84,7 +86,7 @@ def test_frame_still_receives_saved_global_diagnostics():
 
     def model(messages, **options):
         if options["operation"] == "numeric_v2_story_frame":
-            data = json.loads(messages[1]["content"])
+            data = prompt_payload(messages[1]["content"])
             assert data["issues"] == [{**issue, "source_path": "tone"}]
             seen.append(True)
         return staged_reply(messages, options["operation"], outline)
@@ -108,7 +110,7 @@ def test_existing_frame_route_consumes_global_issue_before_preserved_scene_issue
     seen = []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_story_frame":
             assert data["issues"] == [{**global_issue, "source_path": path}]
             seen.append("frame")
@@ -155,7 +157,7 @@ def test_new_validator_cross_field_issue_is_not_filtered_with_saved_issues(monke
 
     def model(messages, **options):
         if options["operation"] == "numeric_v2_chapter_generation":
-            data = json.loads(messages[1]["content"])
+            data = prompt_payload(messages[1]["content"])
             assert {**issue, "source_path": "key_props"} in data["issues"]
             seen.append(True)
         return staged_reply(messages, options["operation"], outline)
@@ -177,7 +179,7 @@ def test_written_scene_fact_budget_fallback_preserves_later_saved_diagnostic():
 
     def model(messages, **options):
         if options["operation"] == "numeric_v2_chapter_generation":
-            data = json.loads(messages[1]["content"])
+            data = prompt_payload(messages[1]["content"])
             seen.append(data["chapter_index"])
             if data["chapter_index"] == 2:
                 assert len(data["current_candidate"]["chapter"]["completion_facts"]) == 9

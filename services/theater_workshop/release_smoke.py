@@ -10,6 +10,7 @@ import tempfile
 from .host import open_workshop
 from .sdk import LLMCallFailure, WorkshopError
 from .sdk.generation.numeric_v2 import NumericV2GenerationError
+from services.theater.prompt_data import prompt_data_block_payload
 
 
 def _require(condition, message):
@@ -47,7 +48,7 @@ async def run(fixture):
     resuming = False
     def model(messages, **options):
         calls.append(options["operation"])
-        context = json.loads(messages[1]["content"])
+        context = prompt_data_block_payload(messages[1]["content"], "剧本工坊输入数据")
         if options["operation"] == "numeric_v2_opening_state_extraction":
             index = next((i for i, chapter in enumerate(fixture["outline"]["mainline_chapters"])
                           if chapter["opening_scene"] == context["opening_scene"]), None)

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
 import pytest
-from tests.utils.theater_prompt import serialized_prompt_tokens
+from tests.utils.theater_prompt import serialized_prompt_tokens, prompt_payload
 
 from services.theater import numeric_v2_actor
 from services.theater.numeric_v2_prompt_mark import unmark_theater_system_prompt
@@ -114,7 +114,7 @@ def test_actor_keeps_per_turn_action_projection_after_system_rules(formal):
         assert system.count(marker) == 1
         prefix, projection = system.split(marker)
         assert projection.endswith("。")
-        resolved = json.loads(projection[:-1])
+        resolved = prompt_payload(projection[:-1])
         has_input_ref = False
         for row in (*resolved["confirmed_actions"], *resolved["future_references"]):
             if row.pop("evidence_ref", None) == "player_input":
@@ -713,7 +713,7 @@ def test_numeric_v2_retry_places_correction_last_without_progress_pressure():
         assert "当前是第 6 回合" in payload["pacing"]
         assert "本幕推荐 4 回合" in payload["pacing"]
         if hint:
-            assert unmark_theater_system_prompt(messages[0].content).endswith(retry_hint)
+            assert unmark_theater_system_prompt(messages[0].content).endswith(numeric_v2_actor.prompt_data_block("本轮重试反馈", {"retry_hint": retry_hint}))
             assert "本轮自然收束合同" not in messages[0].content
             assert "直接交付这个行动" not in payload["pacing"]
             assert "自然收束信号" not in payload["pacing"]
@@ -737,7 +737,7 @@ def test_formal_retry_keeps_correction_after_all_contracts():
     hint = "只修bridge_scene_narration，不把目标开场挪入桥段；原稿仍未提交。"
     messages = _turn_messages(engine, session, outcome, turn.message,
                              "温和。", "测试猫娘", "哥哥", retry_hint=hint)
-    assert unmark_theater_system_prompt(messages[0].content).endswith(hint)
+    assert unmark_theater_system_prompt(messages[0].content).endswith(numeric_v2_actor.prompt_data_block("本轮重试反馈", {"retry_hint": hint}))
     assert messages[0].content.count(hint) == 1
 
 
@@ -2448,7 +2448,7 @@ def test_numeric_v2_committed_completion_facts_prompt_next_turn_offer_without_au
     if retry_hint:
         assert "设置 transition_offered=true" not in messages[0].content
         assert "在交付直接结果后依据 next_scene 提出具体未来行动" not in messages[0].content
-        assert unmark_theater_system_prompt(messages[0].content).endswith(retry_hint)
+        assert unmark_theater_system_prompt(messages[0].content).endswith(numeric_v2_actor.prompt_data_block("本轮重试反馈", {"retry_hint": retry_hint}))
     else:
         assert "在 transition_offer 公开一个具体的未来跨阶段行动" in messages[0].content
         assert "不得写成玩家已接受" in messages[0].content

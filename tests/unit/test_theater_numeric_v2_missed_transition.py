@@ -1,6 +1,7 @@
 """Recover only the current uncommitted candidate, still requiring source verification, formal review and one atomic commit."""
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -58,7 +59,7 @@ def test_numbered_evidence_excludes_player_and_candidate(player_input):
         case["engine"], case["session"], player_input=player_input,
         actor_performance={"performance": "新秘密房间已经开放。", "suggested_inputs": []},
         check_missed_initiation=True)
-    data = json.loads(messages[1].content.split("：", 1)[1])
+    data = prompt_payload(messages[1].content)
     recovery_check = data["missed_initiation_check"]
     assert set(recovery_check) == {"public_destination_evidence"}
     assert data["player_input"] == player_input
@@ -86,7 +87,7 @@ def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparat
         actor_performance={"performance": "（点头）登记信息确认好了。", "suggested_inputs": []},
         check_missed_initiation=True,
     )
-    data = json.loads(messages[1].content.split("：", 1)[1])
+    data = prompt_payload(messages[1].content)
     required = data["next_scene_direction"]
     # Follow-up checks trigger expensive official enactment; first observe the location and phase actually reached after acceptance.
     assert required["direction"] == "一起确认登记信息后继续下一步。"
@@ -105,7 +106,7 @@ async def test_recovery_uses_sent_evidence_without_parsing_prompt_prefix(monkeyp
     def build_with_another_prefix(*args, **kwargs):
         messages, evidence = build_messages(*args, **kwargs)
         # The display prefix is outside the recovery protocol; obtain the ID from evidence packed in the same operation.
-        data = json.loads(messages[1].content.split("：", 1)[1])
+        data = prompt_payload(messages[1].content)
         assert evidence == tuple(data["missed_initiation_check"]["public_destination_evidence"])
         messages[1] = type(messages[1])(content="Review data\n" + json.dumps(data, ensure_ascii=False))
         sent_evidence.extend(evidence)

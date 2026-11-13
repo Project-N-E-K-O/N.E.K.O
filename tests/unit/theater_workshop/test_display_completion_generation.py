@@ -1,5 +1,7 @@
 """Author display references survive generation without becoming semantic facts."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
@@ -47,7 +49,7 @@ def test_continuation_keeps_display_shape_separate_from_performance():
         assert options['operation'] == 'numeric_v2_mainline_continuation'
         assert '只用 fixed_narration_id 引用该段' in messages[0]['content']
         assert '固定展示须省略 evidence_source' in messages[0]['content']
-        wire = json.loads(messages[1]['content'])
+        wire = prompt_payload(messages[1]['content'])
         assert wire['current_outline']['mainline_chapters'][0]['completion_facts'][1] == mixed_fact
         assert wire['requested_paths'] == [path]
         repair, = wire['requested_replacements']

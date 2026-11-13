@@ -7,6 +7,7 @@ from dataclasses import replace
 from copy import deepcopy
 import asyncio
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -32,7 +33,7 @@ def _long_history_session(engine, session, prose_repeats=20):
 
 
 def _payload(messages):
-    return json.loads(messages[1].content.split('：', 1)[1])
+    return prompt_payload(messages[1].content)
 
 
 def _judge_payload(engine, session, outcome, candidate, **kwargs):
@@ -102,7 +103,7 @@ async def test_judge_messages_are_built_before_client_and_deadline_covers_close(
             return False
 
         async def ainvoke(self, messages):
-            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps(dict(
                 offer_present=False, valid=False, body_violations=[],
@@ -150,7 +151,7 @@ async def test_review_call_accepts_remaining_budget_timeout(monkeypatch):
             return False
 
         async def ainvoke(self, _messages):
-            if json.loads(_messages[1].content[_messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(_messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps({
                 'offer_present': False,
@@ -230,7 +231,7 @@ async def test_workflow_review_pack_timeout_never_connects_or_commits(tmp_path, 
             return False
 
         async def ainvoke(self, _messages, **_kwargs):
-            if json.loads(_messages[1].content[_messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(_messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps({
                 'offer_present': False, 'offer_quote': '', 'valid': False,

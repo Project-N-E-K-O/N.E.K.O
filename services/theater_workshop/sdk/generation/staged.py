@@ -10,6 +10,7 @@ from typing import Mapping
 from services.theater.numeric_v2_fixed_narration import MAX_FIXED_NARRATION_TOKENS
 from utils.tokenize import count_tokens
 
+from services.theater.prompt_data import prompt_data_block
 from ..model import LLMCallFailure
 from ..numeric_v2 import NUMERIC_V2_MAX_FACT_KEYS, typed_completion_fact_count
 from ..numeric_v2_branch import NumericV2BranchError, validate_branch_fixed_narrations
@@ -468,11 +469,10 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
         def request(prompt, payload):
             if earlier_entries:
                 prompt += _EARLIER_ENTRY_RULE
-            separators = (",", ":") if scene_key else None
 
             def messages_for(data):
                 return [{"role": "system", "content": prompt},
-                        {"role": "user", "content": json.dumps(data, ensure_ascii=False, separators=separators)}]
+                        {"role": "user", "content": prompt_data_block("剧本工坊输入数据", data)}]
 
             def send(messages):
                 return generator.call_llm(

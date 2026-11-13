@@ -11,7 +11,7 @@ from services.theater import numeric_v2_evaluator as ev
 from services.theater.numeric_v2_runtime import NumericV2Engine
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 
 @pytest.fixture(autouse=True)
@@ -39,7 +39,7 @@ async def test_repeat_confirmation_keeps_order_and_requires_evidence(monkeypatch
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1]);calls.append(data)
+            data = prompt_payload(messages[1].content);calls.append(data)
             if len(calls) == 1:
                 rule = next(row for row in data["author_boundaries"] if "重做已完成" in row["text"])
                 candidate = next(row for row in data["sources"] if row["id"].startswith("c") and action in row["text"])
@@ -118,7 +118,7 @@ async def test_player_authority_is_mandatory_and_requires_player_original(monkey
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             if "finding" in data:
                 return SimpleNamespace(content=json.dumps({"verdict": "violation", "reason": "原稿补入玩家未授权的主动操作。", "clearance": []}))
             assert "player_authority" in messages[0].content
@@ -157,7 +157,7 @@ def _client_for(monkeypatch, respond, *, supported_schema=False):
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             return SimpleNamespace(content=json.dumps(respond(messages, data)))
 
     async def factory(*args, **kwargs): return Client()

@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -95,7 +96,7 @@ async def _capture(monkeypatch, *, mode=None, response=None, message=PLAYER,
     messages, options = requests[0]
     assert options["stage"] == "review"
     raw = messages[1].content
-    data = json.loads(raw[raw.index("{"):])
+    data = prompt_payload(raw)
     schema = options["response_format"]["json_schema"]["schema"]
     assert len(factories) == 1 + len(auxiliary)
     return result, data, schema, messages, factories[0]

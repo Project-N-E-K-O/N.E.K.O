@@ -1,4 +1,6 @@
 """Plan review may only disable execution, not rewrite original feedback, expand authorization or overwrite the previous report."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 import pytest
@@ -50,7 +52,7 @@ def test_review_preserves_report_and_never_adds_missing_fields_or_reopens_blocke
     agent, story, authoring, context, report = fixture();before = deepcopy(report)
     def reply(messages, **options):
         assert options["operation"] == "numeric_v2_repair_plan_review" and options["max_retries"] == 1
-        plans = json.loads(messages[1]["content"])["plans"]
+        plans = prompt_payload(messages[1]["content"])["plans"]
         assert "repair_node_ids" not in plans[0] and "repairable" not in plans[0]
         payload = ready_payload(plans);payload["checks"][0]["status"] = status
         if status == "blocked": payload["checks"][0]["missing_targets"] = [{"node_id": "mainline_01", "field": "/opening_scene"}]
@@ -82,7 +84,7 @@ def test_scoring_reviews_all_eligible_plans_once_or_skips(has_plan):
     def reply(messages, **options):
         calls.append(options["operation"])
         if options["operation"] == "numeric_v2_repair_plan_review":
-            plans = json.loads(messages[1]["content"])["plans"]
+            plans = prompt_payload(messages[1]["content"])["plans"]
             assert len(plans) == 2
             return json.dumps(ready_payload(plans))
         return original(messages, **options)
@@ -176,7 +178,7 @@ def test_plan_review_separates_original_accusation_from_repair_commands_without_
         for target in issue["repair_targets"]]}
     before = deepcopy(report);calls = []
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"]);calls.append(options)
+        request = prompt_payload(messages[1]["content"]);calls.append(options)
         plan = request["plans"][0]
         assert "problem" not in plan and "evidence" not in plan
         for key in ("modification_plan", "repair_targets", "preserve", "evidence_review"):
@@ -211,7 +213,7 @@ def test_plan_review_sends_each_eligible_plan_once_and_preserves_nonadjacent_con
         report["issues"].append(row)
     calls = []
     def reply(messages, **options):
-        body = json.loads(messages[1]["content"]);calls.append(options)
+        body = prompt_payload(messages[1]["content"]);calls.append(options)
         assert "pairs_to_compare" not in body
         assert [plan["issue_id"] for plan in body["plans"]] == [
             "quality_issue_01", "quality_issue_02", "quality_issue_03",
@@ -247,7 +249,7 @@ def test_plan_review_can_locate_a_named_but_unauthorized_route(reverse):
     def model(messages, **options):
         if options["operation"] != "numeric_v2_repair_plan_review":
             return fallback(messages, **options)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         scoped = request["story_outline"]["mainline"][0]
         assert scoped["outgoing_routes"] == [{key: route[key] for key in ("id", "target_node_id")}
                                              for route in node["route_gates"]]
@@ -294,7 +296,7 @@ def test_neon_summary_plans_share_one_request_below_host_cap(monkeypatch, count)
     class Client:
         def invoke(self, messages, **options):
             sent.append(messages)
-            body = json.loads(messages[1]["content"])
+            body = prompt_payload(messages[1]["content"])
             assert [plan["target_node_ids"][0] for plan in body["plans"]] == ids
             outline = body["story_outline"]
             selected = [row for row in [*outline["mainline"], *outline["endings"],

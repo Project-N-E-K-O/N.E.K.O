@@ -8,7 +8,7 @@ import pytest
 
 from services.theater import numeric_v2_evaluator as ev
 from tests.unit.test_theater_numeric_v2_review_protocol import _session
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +26,7 @@ def _install(monkeypatch, respond):
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             calls.append(data)
             answer = respond(messages, data, kwargs)
             return SimpleNamespace(content=json.dumps(answer, ensure_ascii=False))

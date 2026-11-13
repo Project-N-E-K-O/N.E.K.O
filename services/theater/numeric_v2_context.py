@@ -8,41 +8,13 @@ import re
 from collections import Counter
 from typing import Any, Callable, Mapping, Sequence
 
+from services.theater.prompt_data import prompt_data_block, prompt_data_block_payload
 from utils.tokenize import count_tokens, truncate_head_tail_tokens, truncate_to_tokens
 
 from .numeric_v2_actor_output import _sentence_units
 from .numeric_v2_budget import numeric_v2_actor_budget, NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE
 from .numeric_v2_cast import NumericV2CastProjection
 from .numeric_v2_performance import performance_content_blocks, scene_narration_text
-
-
-def prompt_data_block(label: str, data: Mapping[str, Any]) -> str:
-    """Fence lossless JSON data without allowing values to forge block delimiters."""
-
-    # Keep evidence and player input reversible; destructive sanitizers would
-    # change the original strings against which quote validation operates.
-    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    payload = payload.replace("=", r"\u003d").replace("<", r"\u003c").replace(">", r"\u003e")
-    return f"======以下为{label}======\n{payload}\n======以上为{label}======"
-
-
-def prompt_data_block_payload(text: str, label: str) -> dict[str, Any]:
-    """Read one block back out of prompt_data_block output, reversing its delimiter escaping."""
-
-    # Match the markers without their surrounding newlines so CRLF text reads
-    # back too; json.loads ignores the leading/trailing whitespace that leaves
-    # behind, and turns the renderer's escaped delimiter characters back into
-    # the originals.
-    opening = f"======以下为{label}======"
-    closing = f"======以上为{label}======"
-    start = text.find(opening)
-    if start < 0:
-        raise KeyError(label)
-    start += len(opening)
-    end = text.find(closing, start)
-    if end < 0:
-        raise KeyError(label)
-    return json.loads(text[start:end])
 
 
 def render_prompt_context(data: Mapping[str, Any]) -> str:

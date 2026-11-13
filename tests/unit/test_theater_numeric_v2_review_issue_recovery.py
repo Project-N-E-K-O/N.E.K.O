@@ -1,6 +1,7 @@
 """Preserve located review vetoes without turning incomplete summaries into repair authority."""
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -161,7 +162,7 @@ async def test_native_review_rewrites_a_located_rejection_before_commit(tmp_path
             return False
 
         async def ainvoke(self, messages):
-            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content='{"body_violations":[],"failure_reason":""}')
             counts["review"] += 1
             assert (unsafe if counts["review"] == 1 else safe) in messages[1].content

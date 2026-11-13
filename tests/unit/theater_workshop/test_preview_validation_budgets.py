@@ -1,5 +1,7 @@
 """Apply native text budgets before showing or saving AI-authored changes."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
@@ -66,7 +68,7 @@ def test_branch_preview_and_old_apply_recheck_combined_original_budget(opened, m
 
     def model(messages, **options):
         calls.append(options["operation"])
-        result = _path_result_from_context(json.loads(messages[1]["content"]))
+        result = _path_result_from_context(prompt_payload(messages[1]["content"]))
         result["scenes"][0]["fixed_narrations"] = pieces if len(calls) <= 2 else pieces[:1]
         result["scenes"][0]["completion_facts"] = [{"id": "log_displayed", "description": "日志已展示。",
             "value_type": "bool", "target_value": True, "visibility": "public", "fixed_narration_id": "record_a"}]
@@ -114,7 +116,7 @@ def test_fixed_entry_branch_preview_and_old_apply_validate_the_target(opened, mo
 
     def model(messages, **_options):
         assert "才可用 fixed_entry_only 独立展示原文" in messages[0]["content"]
-        result = _path_result_from_context(json.loads(messages[1]["content"]))
+        result = _path_result_from_context(prompt_payload(messages[1]["content"]))
         scene = result["scenes"][0]
         scene["fixed_narrations"] = pieces
         scene["character_state"]["acting_contract"]["dialogue_policy"] = "optional"
@@ -238,7 +240,7 @@ def test_node_enhancement_preserves_existing_exit_speech_contract(opened, monkey
     before = project_file.read_bytes()
 
     def model(messages, **_options):
-        route = json.loads(messages[1]["content"])["outgoing_routes"][0]
+        route = prompt_payload(messages[1]["content"])["outgoing_routes"][0]
         assert route["transition_contract"] == {key: contract[key] for key in (
             "fallback_offer", "silent_choice", "accept_input_confirmation_only",
         ) if key in contract}

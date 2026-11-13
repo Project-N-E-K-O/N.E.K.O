@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -466,7 +467,7 @@ def test_review_distinguishes_the_program_button_from_character_dialogue():
     messages, _ = _build_transition_judge_messages(engine, session, actor_performance=candidate,
         player_input="好，我们去入口。", transition_outcome=outcome,
         confirmed_acceptance=True, confirmed_silent_acceptance="好，我们去入口。")
-    data = json.loads(messages[1].content.split("：", 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data["transition_authorization"]["pending_invitation"]["kind"] == "silent_exit"
     assert "不是角色台词或已经完成的玩家行动" in messages[0].content
 

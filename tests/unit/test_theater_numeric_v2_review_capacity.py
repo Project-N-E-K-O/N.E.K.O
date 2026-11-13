@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
@@ -45,7 +46,7 @@ async def test_review_capacity_applies_before_fast_and_dispute_calls(monkeypatch
             return False
 
         async def ainvoke(self, messages):
-            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             calls.append(messages)
             payload = dict(offer_present=False, offer_quote="", valid=False,
@@ -91,7 +92,7 @@ async def test_review_capacity_applies_before_fast_and_dispute_calls(monkeypatch
         budget = NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy']
         assert budget['judge_input_max_tokens'] == budget['formal_judge_input_max_tokens'] == 10000
         assert 9500 < tokens <= 10000
-        data = json.loads(calls[0][1].content.split('：', 1)[1])
+        data = prompt_payload(calls[0][1].content)
         # Both official quick checks and dispute reviews must distinguish excerpts from complete evidence; missing fields cannot negate completed actions.
         assert 'excerpt_only' in calls[0][0].content
         if review_kind == 'formal':
@@ -122,4 +123,4 @@ def test_formal_budget_override_does_not_change_ordinary_packing(monkeypatch):
     assert [m.content for m in ordinary] == [m.content for m in ordinary_again]
     assert sum(evaluator.count_tokens(m.content) for m in ordinary) <= 10000
     assert sum(evaluator.count_tokens(m.content) for m in expanded) <= 10000
-    assert len(json.loads(expanded[1].content.split('：', 1)[1])['scene_context']) > len(json.loads(old_formal[1].content.split('：', 1)[1])['scene_context'])
+    assert len(prompt_payload(expanded[1].content)['scene_context']) > len(prompt_payload(old_formal[1].content)['scene_context'])

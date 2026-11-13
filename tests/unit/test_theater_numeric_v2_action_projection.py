@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -606,7 +607,7 @@ async def test_subject_attribution_reaches_prompts_and_survives_commit_restore_a
         actor_performance=performance, player_action_projection=projection,
     )
     review_text = review_messages[1].content
-    review_data = json.loads(review_text[review_text.index("{"):])
+    review_data = prompt_payload(review_text)
     assert review_data["player_input"] == message
     assert review_data["player_action_projection"] == expected_wire
     assert projection["confirmed_actions"][0]["evidence_quote"] == message

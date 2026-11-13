@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 import pytest
 
@@ -64,7 +64,7 @@ def _offline(monkeypatch, answer):
 
         async def ainvoke(self, messages, **kwargs):
             user = messages[1].content
-            data = json.loads(user if user.startswith("{") else user.split("\n", 1)[1])
+            data = prompt_payload(user)
             requests.append((messages, data, kwargs))
             return SimpleNamespace(content=json.dumps(contract_audit_payload(answer(len(requests), data), messages), ensure_ascii=False))
 
@@ -133,12 +133,12 @@ def test_future_plan_is_separate_from_program_and_committed_source_blocks():
                   player_input="我已经到检修间了。", source_blocks=sources, check_departure_scope=True)
     old_messages = evaluator._build_contract_check_messages(**kwargs)
     messages = evaluator._build_contract_check_messages(**kwargs, departure_plan=PLAN)
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
     assert data["departure_plan"] == PLAN and data["sources"] == sources
     assert all(value not in json.dumps(data["sources"], ensure_ascii=False) for value in PLAN.values())
     assert "不是已发生证据" in messages[0].content and "d0程序权限" in messages[0].content
     assert "departure_plan" not in old_messages[0].content
-    assert "departure_plan" not in json.loads(old_messages[1].content.split("\n", 1)[1])
+    assert "departure_plan" not in prompt_payload(old_messages[1].content)
     assert [message.content for message in old_messages] == [message.content for message in
         evaluator._build_contract_check_messages(**kwargs, departure_plan=None)]
 

@@ -1,4 +1,6 @@
 """Staged creation preserves completed scenes and the native v2.2 package contract."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
@@ -11,7 +13,7 @@ from .test_numeric_v2_generation import _idea_outline, _generation_setup
 
 
 def staged_reply(messages, operation, outline):
-    context = json.loads(messages[1]["content"])
+    context = prompt_payload(messages[1]["content"])
     if operation == "numeric_v2_opening_state_extraction":
         index = next((i for i, chapter in enumerate(outline["mainline_chapters"])
                       if chapter["opening_scene"] == context["opening_scene"]), None)
@@ -53,7 +55,7 @@ def test_invalid_fixed_entry_repairs_the_source_after_the_target_is_written(resu
 
     def model(messages, **options):
         op = options["operation"]
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         index = data.get("chapter_index")
         issues = [issue["path"] for issue in data.get("issues", ())]
         calls.append((op, index, issues))
@@ -100,7 +102,7 @@ def test_staged_repairs_author_exit_instructions_and_pseudo_fact_targets(resume)
     repaired = []
     def model(messages, **options):
         operation = options["operation"]
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_chapter_generation" and data["chapter_index"] == 1:
             if not data.get("issues"):
                 assert resume == "fresh"
@@ -161,7 +163,7 @@ def test_over_budget_chapter_retry_repairs_only_the_invalid_field(monkeypatch, r
 
     def model(messages, **options):
         operation = options["operation"]
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         size = count_tokens(json.dumps(messages, ensure_ascii=False))
         if size > budget:
             calls.append(("over_budget", size))
@@ -241,7 +243,7 @@ def test_staged_later_chapters_and_ending_receive_exact_entry_originals(resume):
     checked = []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         op = options["operation"]
         if (op == "numeric_v2_chapter_generation" and data.get("chapter_index") == 2) or op == "numeric_v2_ending_generation":
             index = 0 if op == "numeric_v2_chapter_generation" else 2
@@ -302,7 +304,7 @@ def test_staged_adjacent_author_originals_fit_host_budget_without_truncation(mon
         if count_tokens(json.dumps(messages, ensure_ascii=False)) > budget:
             return host(messages, **options)
         operation = options["operation"]
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_chapter_generation" and data["chapter_index"] == 2:
             assert data["previous_scene"]["chapter"]["other_entry_originals"] == {"author_original_1": originals[0]}
             assert [entry["text"] for entry in data["author_entry_narrations"]] == originals[1:]
@@ -343,7 +345,7 @@ def test_staged_frame_can_reference_explicit_author_originals_after_host_refusal
 
     def model(messages, **options):
         op = options["operation"]
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if op == "numeric_v2_story_frame":
             frames.append(data["core_idea"])
         if count_tokens(json.dumps(messages, ensure_ascii=False)) > 10_000:
@@ -436,7 +438,7 @@ def test_frame_keeps_each_marked_occurrence_of_identical_author_text():
         op = options["operation"]
         reply = json.loads(staged_reply(messages, op, outline))
         if op == "numeric_v2_story_frame":
-            request = json.loads(messages[1]["content"])
+            request = prompt_payload(messages[1]["content"])
             frame_calls.append([issue["code"] for issue in request["issues"]])
             reply["author_passages"] = rows[:len(frame_calls)]
         return json.dumps(reply, ensure_ascii=False)
@@ -458,7 +460,7 @@ def test_staged_ending_receives_the_frame_direction_and_cannot_rename_it():
         if op == "numeric_v2_story_frame":
             reply["ending"]["summary"] = direction
         if op == "numeric_v2_ending_generation":
-            request = json.loads(messages[1]["content"])
+            request = prompt_payload(messages[1]["content"])
             ending_requests.append(request)
             assert request["ending_identity"]["summary"] == direction
             if len(ending_requests) == 1:
@@ -490,7 +492,7 @@ def test_staged_scene_and_ending_receive_prerequisites_separately_from_completio
 
     def model(messages, **options):
         op = options["operation"]
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         if op == "numeric_v2_ending_generation" or op == "numeric_v2_chapter_generation" and context["chapter_index"] == 2:
             previous = context["previous_scene"]["chapter"]
             received.append(previous)
@@ -521,7 +523,7 @@ def test_staged_fact_capacity_repairs_only_affected_chapters_and_rechecks_writte
 
     def model(messages, **options):
         op = options["operation"]
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if op == "numeric_v2_chapter_generation":
             calls.append((request["chapter_index"], request["remaining_typed_fact_keys"],
                           [issue["code"] for issue in request["issues"]]))
@@ -565,7 +567,7 @@ def test_completed_legacy_checkpoint_repairs_condition_original_in_ending():
 
     def model(messages, **options):
         op = options["operation"]
-        calls.append((op, json.loads(messages[1]["content"])["issues"]))
+        calls.append((op, prompt_payload(messages[1]["content"])["issues"]))
         return staged_reply(messages, op, outline)
 
     generator = NumericV2Generator(model)
@@ -599,7 +601,7 @@ def test_frame_references_author_originals_once_and_only_sends_them_to_their_sce
     def model(messages, **options):
         op = options["operation"]
         request = messages[1]["content"]
-        data = json.loads(request)
+        data = prompt_payload(request)
         stages.append((op, data))
         reply = json.loads(staged_reply(messages, op, outline))
         if op == "numeric_v2_story_frame":
@@ -661,7 +663,7 @@ def test_staged_generation_compiles_and_passes_previous_scene_without_rewriting_
     checkpoints, calls = [], []
 
     def model(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         calls.append(options["operation"])
         assert "json" in "".join(message["content"] for message in messages).lower()
         if options["operation"] == "numeric_v2_chapter_generation":
@@ -757,7 +759,7 @@ def test_staged_writer_keeps_author_boundaries_after_the_frame():
 
     def model(messages, **options):
         operation = options["operation"]
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_story_frame":
             assert request["author_setup"]["content_boundaries"] == [boundary]
         if operation in writer_operations:
@@ -799,7 +801,7 @@ def test_staged_state_extractor_sees_the_opening_that_the_route_plays(ending, fi
 
     def model(messages, **options):
         operation = options["operation"]
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if operation != "numeric_v2_opening_state_extraction" or request.get("entry_narrations") != [original]:
             return staged_reply(messages, operation, outline)
         excerpts.append(request)
@@ -884,7 +886,7 @@ def test_staged_selected_performance_result_requires_an_explicit_exit_prerequisi
     calls = []
 
     def model(messages, **options):
-        context = json.loads(messages[1]['content'])
+        context = prompt_payload(messages[1]['content'])
         reply = json.loads(staged_reply(messages, options['operation'], outline))
         if options['operation'] == 'numeric_v2_chapter_generation':
             assert 'entry_prerequisite_fact_ids' in context['output_contract']['chapter']['exit_plan']
@@ -988,7 +990,7 @@ def test_staged_oversized_narrative_is_repaired_before_state_extraction():
     outline = _idea_outline(3)
     calls = []
     def model(messages, **options):
-        context = json.loads(messages[1]['content'])
+        context = prompt_payload(messages[1]['content'])
         reply = json.loads(staged_reply(messages, options['operation'], outline))
         if options['operation'] == 'numeric_v2_chapter_generation' and context['chapter_index'] == 2:
             calls.append(context['issues'])
@@ -1023,7 +1025,7 @@ def test_state_extraction_reads_actual_entry_pieces_without_future_condition_tex
     extracted = []
     rejected_conditions = []
     def model(messages, **options):
-        context = json.loads(messages[1]['content'])
+        context = prompt_payload(messages[1]['content'])
         reply = json.loads(staged_reply(messages, options['operation'], outline))
         if (not ending and options['operation'] == 'numeric_v2_chapter_generation'
                 and context['chapter_index'] == 1 and context['issues']):
@@ -1050,7 +1052,7 @@ def test_staged_bad_prerequisite_repair_receives_current_scene_allowed_ids():
     outline = _idea_outline(3)
     calls = []
     def model(messages, **options):
-        context = json.loads(messages[1]['content'])
+        context = prompt_payload(messages[1]['content'])
         reply = json.loads(staged_reply(messages, options['operation'], outline))
         if options['operation'] == 'numeric_v2_chapter_generation' and context['chapter_index'] == 3:
             calls.append(context['issues'])
@@ -1099,7 +1101,7 @@ def test_failed_scene_resume_keeps_frame_and_completed_scene_without_model_repla
 
     def fail_second(messages, **options):
         operation = options["operation"]
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_chapter_generation" and context["chapter_index"] == 2:
             original_frames.append(context["story_frame"])
             return LLMCallFailure("timeout", error_code="model_timeout", exception_type="TimeoutError")
@@ -1129,7 +1131,7 @@ def test_failed_scene_resume_keeps_frame_and_completed_scene_without_model_repla
     calls = []
 
     def resume(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         calls.append((options["operation"], context.get("chapter_index")))
         if options["operation"] == "numeric_v2_chapter_generation" and context["chapter_index"] == 2:
             expected_frame = deepcopy(original_frames[0])
@@ -1156,7 +1158,7 @@ def test_staged_current_scene_repair_does_not_change_prior_scene():
     calls = []
 
     def model(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         calls.append((options["operation"], context.get("chapter_index")))
         raw = staged_reply(messages, options["operation"], outline)
         if calls.count(("numeric_v2_chapter_generation", 2)) == 1 and context.get("chapter_index") == 2:
@@ -1184,7 +1186,7 @@ def test_failed_state_extraction_resumes_without_rewriting_the_written_scene(leg
     opening = outline["mainline_chapters"][1]["opening_scene"]
 
     def fail_state(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_opening_state_extraction":
             # The extractor sees the current opening, never prior-state or whole-plot anchors.
             assert set(context) == {"opening_scene", "entry_bridge", "cast_names", "output_contract", "current_candidate", "issues"}
@@ -1229,7 +1231,7 @@ def test_resuming_legacy_written_scene_repairs_unsupported_original_before_extra
     opening = second["opening_scene"]
 
     def fail_state(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_opening_state_extraction" and context["opening_scene"] == opening:
             return LLMCallFailure("timeout", error_code="model_timeout", exception_type="TimeoutError")
         return staged_reply(messages, options["operation"], outline)
@@ -1246,7 +1248,7 @@ def test_resuming_legacy_written_scene_repairs_unsupported_original_before_extra
     calls = []
 
     def resume(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         calls.append(options["operation"])
         if len(calls) == 1:
             assert context["chapter_index"] == 2
@@ -1269,7 +1271,7 @@ def test_invented_time_anchor_only_retries_the_current_excerpt():
     calls = []
 
     def model(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         calls.append(options["operation"])
         reply = json.loads(staged_reply(messages, options["operation"], outline))
         if options["operation"] == "numeric_v2_opening_state_extraction":
@@ -1294,7 +1296,7 @@ def test_opening_excerpt_replaces_writer_situation_and_carries_explicit_time(unk
     calls = []
 
     def model(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         calls.append(options["operation"])
         reply = json.loads(staged_reply(messages, options["operation"], outline))
         if options["operation"] == "numeric_v2_chapter_generation" and context["chapter_index"] == 1:
@@ -1342,7 +1344,7 @@ def test_extractor_unfixable_situation_budget_resumes_from_the_scene_writer():
     calls = []
 
     def resume(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         calls.append(options["operation"])
         if options["operation"] == "numeric_v2_chapter_generation" and context["chapter_index"] == 2:
             assert any(issue["code"] == "projected_prompt_field_too_large"
@@ -1364,7 +1366,7 @@ def test_next_scene_does_not_receive_previous_scene_local_boundaries():
     inspected = []
 
     def model(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         operation = options["operation"]
         if operation in {"numeric_v2_chapter_generation", "numeric_v2_ending_generation"}:
             assert context["author_content_boundaries"] == [persistent]

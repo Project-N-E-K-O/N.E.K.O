@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 import pytest
 
@@ -28,7 +28,7 @@ async def test_body_authority_and_causality_are_confirmed_together_without_hidin
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             calls.append(data)
             if len(calls) == 1:
                 return SimpleNamespace(content=json.dumps(contract_audit_payload({"violations": [
@@ -82,7 +82,7 @@ async def test_continuity_accepts_actual_predecessor_without_requiring_the_model
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1]); requests.append(data)
+            data = prompt_payload(messages[1].content); requests.append(data)
             if len(requests) == 1:
                 return SimpleNamespace(content=json.dumps(contract_audit_payload({"violations": [{"rule_index": 0,
                     "candidate_ref": current_ref, "quote": new_result, "prior_ref": prior_ref}]}, messages), ensure_ascii=False))
@@ -118,7 +118,7 @@ async def test_confirmation_checks_the_reported_proposal_instead_of_searching_fo
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1]); requests.append(data)
+            data = prompt_payload(messages[1].content); requests.append(data)
             if len(requests) == 1:
                 if focused_over_budget:
                     # Only the follow-up request exceeds the fixed 10k review capacity.
@@ -174,7 +174,7 @@ async def test_route_decision_restricts_execution_but_cannot_serve_as_historical
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1]); calls.append(data)
+            data = prompt_payload(messages[1].content); calls.append(data)
             if len(calls) == 1:
                 decision = next(row for row in data["sources"] if row["id"] == "d0")
                 assert decision["transition_authorized"] is False
@@ -252,7 +252,7 @@ async def test_contract_distinguishes_live_scene_speech_from_reported_history(mo
             pass
 
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             calls.append(data)
             if len(calls) == 1:
                 assert ("delivery" in data["sources"][0]) is ("刚才回答" not in scene)
@@ -296,7 +296,7 @@ async def test_scene_speaker_cannot_validate_unselected_approach(monkeypatch):
             pass
 
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             assert data["player_fact_evidence"] == choice
             calls.append(data)
             if len(calls) == 1:
@@ -351,7 +351,7 @@ async def test_explicit_prospective_assignment_does_not_trigger_a_rewrite_for_ex
         async def ainvoke(self, messages, **kwargs):
             calls.append(messages)
             if len(calls) == 1:
-                wire = json.loads(messages[1].content.split("\n", 1)[1])
+                wire = prompt_payload(messages[1].content)
                 boundaries = [entry["text"] for entry in wire["author_boundaries"]]
                 if author_boundaries_only:
                     assert len(boundaries) == 3 and boundaries[0] == rule
@@ -361,7 +361,7 @@ async def test_explicit_prospective_assignment_does_not_trigger_a_rewrite_for_ex
                 return SimpleNamespace(content=json.dumps(contract_audit_payload({"violations": [{
                     "rule_index": index, "candidate_ref": "c0", "quote": quote, "prior_ref": "",
                 }]}, messages)))
-            context = json.loads(messages[1].content.split("\n", 1)[1])
+            context = prompt_payload(messages[1].content)
             assert context["visible_order"] and context["latest_committed"]
             return SimpleNamespace(content=json.dumps(contract_audit_payload(json.loads('{"applicable":true,"confirmed":true}'), messages)))
 
@@ -397,7 +397,7 @@ async def test_confirmation_requires_both_applicable_scope_and_actual_violation(
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1]); calls.append(data)
+            data = prompt_payload(messages[1].content); calls.append(data)
             if len(calls) == 1:
                 return SimpleNamespace(content=json.dumps(contract_audit_payload({"violations": [{"rule_index": 0,
                     "candidate_ref": "c0", "quote": "拆开文书封口", "prior_ref": "h0"}]}, messages)))

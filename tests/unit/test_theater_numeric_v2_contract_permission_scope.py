@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 import pytest
 
@@ -51,7 +51,7 @@ async def test_native_audit_keeps_permission_and_stage_prohibitions_distinct(
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             requests.append(messages)
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             if len(requests) == 1:
                 assert "仅在原禁令明确附有许可条件时，玩家同意才满足该条件" in messages[0].content
                 assert "玩家主动行动或授权不解除没有此例外的作者阶段禁令" in messages[0].content
@@ -105,7 +105,7 @@ async def test_direct_author_finding_does_not_require_a_redundant_self_prior(
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             requests.append(messages)
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             if len(requests) == 1:
                 return SimpleNamespace(content=json.dumps(contract_audit_payload({"violations": [{
                     "rule_index": 0, "candidate_ref": "c0", "quote": body, "prior_ref": "c0",
@@ -193,7 +193,7 @@ async def test_one_cleared_author_finding_does_not_replace_other_rule_checks(
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             requests.append(messages)
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             if len(requests) == 1:
                 assert "每类最多报告一项" not in messages[0].content
                 assert "优先逐条核对作者明确禁令" in messages[0].content

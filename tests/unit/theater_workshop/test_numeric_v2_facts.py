@@ -1,4 +1,6 @@
 """Verify pre-save boundaries for factual evidence and two-stage assessment; mocked models do not replace semantic stress tests."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 import pytest
@@ -22,7 +24,7 @@ def test_fact_request_preserves_chronological_reading_order_and_all_original_fie
     assessor = NumericV2QualityAssessor()
     captured = []
     def capture(messages, **kwargs):
-        captured.append(json.loads(messages[1]["content"])["story_outline"])
+        captured.append(prompt_payload(messages[1]["content"])["story_outline"])
         raise RuntimeError("inspection_stop")
     assessor.call_llm = capture
     with pytest.raises(RuntimeError, match="inspection_stop"):
@@ -84,7 +86,7 @@ def test_fact_and_evidence_use_ingress_and_cite_the_legacy_opening_source(mode):
     fallback = _quality_reply(_quality_payload())
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         operation = options["operation"]
         if operation == "numeric_v2_fact_evidence_review" or (
                 operation == "numeric_v2_fact_review" and request["audit_task"]["kind"] == "node"
@@ -143,7 +145,7 @@ def test_fact_and_evidence_ignore_unexported_legacy_state_cache():
     calls = []
 
     def model(messages, **options):
-        body = json.loads(messages[1]["content"])
+        body = prompt_payload(messages[1]["content"])
         operation = options["operation"]
         assert stale["catgirl_state"] not in messages[1]["content"]
         if (operation == "numeric_v2_fact_review" and body["audit_task"]["kind"] == "node"
@@ -190,7 +192,7 @@ def test_node_fact_review_covers_all_nodes_and_reuses_original_evidence():
 
     def capture(messages, **kwargs):
         if kwargs["operation"] == "numeric_v2_fact_review":
-            request = json.loads(messages[1]["content"])
+            request = prompt_payload(messages[1]["content"])
             focus, = request["checked_node_ids"]
             task = request["audit_task"]
             captured.append(task)
@@ -381,7 +383,7 @@ def test_confirmed_fact_repair_receives_evidence_and_preserves_other_nodes():
     assessor = NumericV2QualityAssessor()
     def reply(messages, **kwargs):
         calls.append(kwargs["operation"])
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         suggestion = request["accepted_suggestions"][0]
         assert suggestion["source"] == "fact_check"
         assert suggestion["evidence"] == [{"path": evidence[0]["path"]}, *evidence[1:]]
@@ -441,11 +443,11 @@ def test_literature_cannot_erase_fact_issues_or_override_them_with_high_scores(c
     def reply(messages, **kwargs):
         calls.append(kwargs["operation"])
         if kwargs["operation"] == "numeric_v2_fact_review":
-            request = json.loads(messages[1]["content"])
+            request = prompt_payload(messages[1]["content"])
             return json.dumps(_fact_review_payload(request,
                 wire_fact["issues"] if request["audit_task"]["kind"] == "node"
                 and request["checked_node_ids"] == ["mainline_01"] else []), ensure_ascii=False)
-        received = json.loads(messages[1]["content"])
+        received = prompt_payload(messages[1]["content"])
         if kwargs["operation"] == "numeric_v2_fact_evidence_review":
             from .test_numeric_v2_evidence import review_payload
             return json.dumps(review_payload(received["proposed_issues"]))
@@ -480,7 +482,7 @@ def test_low_scores_can_share_fact_evidence_without_duplicate_repair_plans():
     before = deepcopy(wire)
     def reply(messages, **options):
         if options["operation"] == "numeric_v2_literary_block":
-            return json.dumps(_literary_block_payload(json.loads(messages[1]["content"])))
+            return json.dumps(_literary_block_payload(prompt_payload(messages[1]["content"])))
         return json.dumps(wire, ensure_ascii=False)
     assessor.call_llm = reply
     report = assessor._assess_literature(context, {"issues": [{"issue_id": "fact_issue_01"}]})
@@ -509,7 +511,7 @@ def test_grouped_literature_rejects_incomplete_or_fabricated_basis(case):
     elif case == "mixed_issues": wire["issues"] = []
     def reply(messages, **options):
         if options["operation"] == "numeric_v2_literary_block":
-            return json.dumps(_literary_block_payload(json.loads(messages[1]["content"])))
+            return json.dumps(_literary_block_payload(prompt_payload(messages[1]["content"])))
         return json.dumps(wire, ensure_ascii=False)
     assessor.call_llm = reply
     with pytest.raises(QualityAssessmentError):
@@ -528,12 +530,12 @@ def test_failed_stage_stops_assessment_and_preserves_story(phase):
         calls.append(kwargs["operation"])
         if phase == "evidence" and kwargs["operation"] == "numeric_v2_fact_review":
             from .test_numeric_v2_evidence import wire_fact
-            request = json.loads(messages[1]["content"])
+            request = prompt_payload(messages[1]["content"])
             return json.dumps(wire_fact(request) if request["audit_task"]["kind"] == "node"
                               and request["checked_node_ids"] == ["mainline_01"]
                               else _fact_review_payload(request))
         if kwargs["operation"] == "numeric_v2_fact_review":
-            request = json.loads(messages[1]["content"])
+            request = prompt_payload(messages[1]["content"])
             if phase == "literature" or phase == "facts_second" and request["audit_task"]["id"] != "node:mainline_02":
                 return json.dumps(_fact_review_payload(request))
         return "{}"
@@ -562,7 +564,7 @@ def test_only_failed_node_gets_one_format_correction_and_technical_errors_do_not
 
     def reply(messages, **options):
         operation = options["operation"]
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         checked = request.get("checked_node_ids")
         task_id = (request.get("audit_task") or {}).get("id")
         events.append((operation, checked, task_id))

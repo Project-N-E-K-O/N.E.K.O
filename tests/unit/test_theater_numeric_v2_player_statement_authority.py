@@ -58,8 +58,7 @@ def _evaluation(engine, session, message, quote):
 
 
 def _request_action_projection(messages):
-    encoded = messages[0].content.split("本轮玩家动作结果投影（仅为约束，不是新增剧情）：", 1)[1]
-    return json.JSONDecoder().raw_decode(encoded)[0]
+    return actor.prompt_data_block_payload(messages[0].content, "本轮玩家动作结果投影")
 
 
 @pytest.mark.parametrize("blocked", [False, True])
@@ -163,7 +162,8 @@ def test_unlocked_author_boundary_contract_keeps_its_existing_wording(phase):
         + ("开场不得通过新增玩家行为满足作者前提。" if phase == "opening" else
            "玩家要求若与硬边界冲突，你必须在正文直接拒绝或提出符合边界的替代做法；"
            "不得顺从越界要求、交换玩家与你的行动职责，或把越界结果写成已发生。")
-        + "\n- 不得销毁登记单。\n- 未获许可不得拆除封条。"
+        + "\n" + actor.prompt_data_block("本轮作者硬边界", {"boundaries": ["不得销毁登记单。", "未获许可不得拆除封条。"]})
+        +
         "\n以上限制须逐条遵守，但无需逐条宣读；未被问及且无当场必要的禁令、能力和自我事实不必主动声明。"
     )
     assert actor._hard_boundary_system_instruction(
@@ -183,7 +183,7 @@ def test_source_scene_keeps_hard_prohibitions_without_forcing_a_refusal_performa
     boundaries = ["不得销毁登记单。", "未获许可不得拆除封条。"]
     contract = actor._hard_boundary_system_instruction(boundaries, source_scene_locked=True)
     for boundary in boundaries:
-        assert "\n- " + boundary in contract
+        assert boundary in actor.prompt_data_block_payload(contract, "本轮作者硬边界")["boundaries"]
     assert "本轮正文、旁白与推荐均须逐条遵守。" in contract
 
 
@@ -569,7 +569,7 @@ async def test_evaluator_audits_every_plain_body_block_without_a_runtime_blocker
             return False
 
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             calls.append(data)
             sources = {row["id"]: row for row in data["sources"]}
             candidates = [row for row in data["sources"] if row["id"].startswith("c")]

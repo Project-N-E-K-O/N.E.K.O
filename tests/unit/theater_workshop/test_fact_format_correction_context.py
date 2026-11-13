@@ -1,4 +1,6 @@
 """A factual format correction receives complete input and precise constraints, never clipped JSON."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor
@@ -10,7 +12,7 @@ def test_fact_correction_omits_clipped_assistant_and_locates_the_bad_subject():
     fallback=_quality_reply(_quality_payload())
     corrected=[]
     def reply(messages,**options):
-        request=json.loads(messages[1]['content']);op=options['operation']
+        request=prompt_payload(messages[1]['content']);op=options['operation']
         if op=='numeric_v2_fact_review' and request['audit_task']['id']=='node:mainline_01':
             payload=_fact_review_payload(request)
             check=next(c for c in payload['contract_checks'] if 'ownership_checks' in c)
@@ -19,7 +21,7 @@ def test_fact_correction_omits_clipped_assistant_and_locates_the_bad_subject():
             return json.dumps(payload,ensure_ascii=False)
         if op=='numeric_v2_fact_review_format_repair':
             assert [m['role'] for m in messages]==['system','user','user']
-            detail=json.loads(messages[-1]['content'])
+            detail=prompt_payload(messages[-1]['content'])
             assert 'target_id=mainline_01:entry:opening' in detail['validation_error']
             assert 'unit_id=u0' in detail['validation_error'] and 'field=subject' in detail['validation_error']
             assert detail['required_target_ids']==[t['id'] for t in request['contract_targets']]

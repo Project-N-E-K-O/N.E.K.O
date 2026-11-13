@@ -1,4 +1,6 @@
 """Verify assessment inputs and output limits without widening node repair permissions."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
@@ -49,7 +51,7 @@ def test_exact_marked_original_is_local_and_other_author_instructions_remain_cit
 
     def model(messages, **options):
         operation = options["operation"]
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         intent = request["story_context" if operation == "numeric_v2_quality_assessment" else "story_outline"]["author_intent"]
         assert intent[1] == {"fixed_original_refs": [{"node_id": fourth, "fixed_narration_id": "author_archive"}]}
         assert missing in messages[1]["content"]
@@ -117,7 +119,7 @@ def test_single_node_optimization_merges_identical_commands_after_local_scope():
     original = deepcopy((report, story))
 
     def model(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         accepted, = request["accepted_suggestions"]
         assert accepted["repair_targets"] == [{"node_id": first, "field": "/summary"}]
         impact, = accepted["related_impacts"]
@@ -145,7 +147,7 @@ def test_assessment_receives_actual_relationship_effect_and_existing_missing_def
     original = _quality_reply(_quality_payload())
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         received.append((options["operation"], request.get("story_outline", request.get("story_context"))))
         return original(messages, **options)
 
@@ -177,7 +179,7 @@ def test_formal_background_is_citable_and_reaches_all_assessment_and_repair_stag
     def reply(messages, **options):
         operation = options["operation"]
         calls.append(operation)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         assert "HIDDEN_AUTHOR_RULE_DO_NOT_PROJECT" not in messages[1]["content"]
         if operation == "numeric_v2_quality_assessment":
             assert request["story_context"]["background"] == background
@@ -282,7 +284,7 @@ def test_actual_literature_request_declares_metric_count_limit():
     def reply(messages, **options):
         if options["operation"] == "numeric_v2_quality_assessment":
             seen.append(messages[0]["content"])
-            request = json.loads(messages[1]["content"])
+            request = prompt_payload(messages[1]["content"])
             assert request["allowed_target_node_ids"] == sorted(node["id"] for node in story["nodes"])
             assert "metrics 不是节点" in messages[0]["content"]
             assert "positive、negative、none" in messages[0]["content"]
@@ -325,7 +327,7 @@ def test_literary_request_for_builtin_neon_fits_32000_without_cutting_scene_pros
     def model(messages, **options):
         calls.append(options["operation"])
         assert count_tokens(json.dumps(messages, ensure_ascii=False)) < 32000
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_quality_assessment":
             assert "story_outline" not in request
             assert {node["id"] for node in request["story_graph"]["nodes"]} == set(source_nodes)

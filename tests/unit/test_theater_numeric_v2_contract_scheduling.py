@@ -5,7 +5,7 @@ from copy import deepcopy
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload, serialized_prompt_tokens
+from tests.utils.theater_prompt import contract_audit_payload, serialized_prompt_tokens, prompt_payload
 
 import pytest
 
@@ -40,7 +40,7 @@ async def test_first_review_does_not_consume_the_required_confirmation_wait(monk
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             requests.append(messages)
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             assert "transition_context" not in data and "transition_phases" not in data
             # Both requests fit their individual wait; their sum exceeds one wait.
             await asyncio.sleep(0.12)
@@ -123,7 +123,7 @@ async def test_bridge_review_keeps_rule_origin_and_distinguishes_source_stage_fr
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1]); requests.append(data)
+            data = prompt_payload(messages[1].content); requests.append(data)
             assert data["transition_phases"] == {
                 "source_response": "source_scene", "transition_bridge": "authorized_transition",
                 "target_opening": "target_scene"}

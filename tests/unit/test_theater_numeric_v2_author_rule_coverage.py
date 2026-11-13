@@ -1,6 +1,7 @@
 """An empty finding list does not prove every authored boundary was checked."""
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -54,7 +55,7 @@ async def test_authored_boundary_requires_complete_grounded_scope(monkeypatch, o
         async def ainvoke(self, messages, **kwargs):
             calls.append(messages)
             assert len(calls) == 1
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             assert data["author_checks_required"] == [{"rule_index": 0, "origin_node_id": "start",
                 "origin_phase": "turn", "check_phases": ["turn"]}]
             checks = [{"rule_index": 0, "status": "clear", "findings": []}]
@@ -100,7 +101,7 @@ async def test_source_boundary_cannot_be_cleared_by_only_checking_target(monkeyp
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             requests.append(messages)
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             assert data["author_checks_required"] == [{
                 "rule_index": 0, "origin_node_id": "start", "origin_phase": "source_response",
                 "check_phases": ["source_response", "transition_bridge", "target_opening"],
@@ -138,7 +139,7 @@ async def test_role_forbidden_behaviors_are_individually_checked(monkeypatch, be
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             assert data["author_boundaries"][0]["text"] == "当前角色禁止行为：" + behavior
             assert data["author_checks_required"] == [{"rule_index": 0, "origin_node_id": "start",
                 "origin_phase": "turn", "check_phases": ["turn"]}]
@@ -206,7 +207,7 @@ async def test_compact_author_checks_preserve_exact_coverage(monkeypatch, count,
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            wire = json.loads(messages[1].content.split("\n", 1)[1])
+            wire = prompt_payload(messages[1].content)
             checks = {"clear": list(range(count)), "uncertain": [], "violations": []}
             if case == "missing": checks["clear"].pop()
             if case == "duplicate": checks["clear"].append(0)

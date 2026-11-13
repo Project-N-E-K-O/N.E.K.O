@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -75,7 +76,7 @@ async def test_multiple_reinvitations_preserve_visit_and_model_history(tmp_path,
     assert all(row['player_input'] != '重新邀请' for row in archive['turns'])
     judge = _build_transition_judge_messages(runtime.engine, current.session,
         actor_performance={'performance': '继续聊。'}, player_input='继续聊。')[0]
-    payload = json.loads(judge[1].content.split('：', 1)[1])
+    payload = prompt_payload(judge[1].content)
     assert payload['current_visit_history_complete'] is True
 
 

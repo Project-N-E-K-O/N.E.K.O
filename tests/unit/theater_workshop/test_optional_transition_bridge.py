@@ -1,5 +1,7 @@
 """An explicit empty bridge contract preserves real source and target delivery."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
@@ -205,7 +207,7 @@ def test_quality_removes_exact_duplicate_optional_bridge_only_when_approved(auth
     fallback = _quality_reply(payload)
 
     def reply(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_repair_plan_review":
             assert request["removable_bridge_targets"] == ([field] if authorized else [])
         if options["operation"] == "numeric_v2_quality_single_node_optimization":

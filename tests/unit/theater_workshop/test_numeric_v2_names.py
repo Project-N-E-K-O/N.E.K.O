@@ -1,3 +1,5 @@
+
+from tests.utils.theater_prompt import prompt_payload
 from services.theater_workshop.host import InProcessPackageGateway
 import json
 from copy import deepcopy
@@ -20,7 +22,7 @@ def test_generate_receives_real_names_and_exports_explicit_binding():
     generator = NumericV2Generator()
     calls = []
     def reply(messages, **kwargs):
-        calls.append(json.loads(messages[1]["content"]))
+        calls.append(prompt_payload(messages[1]["content"]))
         return json.dumps(named_outline(), ensure_ascii=False)
     generator.call_llm = reply
     result = generator.generate(title="旧信", setup=_generation_setup(), cast_names=NAMES)
@@ -38,7 +40,7 @@ def test_wrong_model_names_request_targeted_continuation_with_same_cast():
     generator = NumericV2Generator()
     calls = []
     def reply(messages, **kwargs):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         calls.append(data)
         candidate = named_outline()
         if len(calls) == 1:
@@ -103,7 +105,7 @@ def test_enhancement_and_review_receive_existing_project_names():
     candidate = json.loads(json.dumps(candidate, ensure_ascii=False).replace("男主", NAMES["player_name"]).replace("女主", NAMES["catgirl_name"]))
     calls = []
     def reply(messages, **kwargs):
-        calls.append(json.loads(messages[1]["content"]))
+        calls.append(prompt_payload(messages[1]["content"]))
         return json.dumps(candidate, ensure_ascii=False)
     generator.call_llm = reply
     original = deepcopy(story)

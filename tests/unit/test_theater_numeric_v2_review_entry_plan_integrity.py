@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -122,7 +123,7 @@ def _fake_client(monkeypatch, requests, clients):
             return False
 
         async def ainvoke(self, messages):
-            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             requests.append(messages)
             payload = {

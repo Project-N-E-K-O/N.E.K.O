@@ -10,6 +10,7 @@ import re
 from typing import Any, Mapping
 
 
+from services.theater.prompt_data import prompt_data_block
 from ..model import ModelAgent, LLMCallFailure
 from ..numeric_v2_analysis import entry_route_scope
 
@@ -209,10 +210,12 @@ def _format_repair_messages(response: str, error: Exception, instruction: str, *
                      "按原输入和输出合同返回完整结果。") if include_excerpt else
                     " 按原输入和输出合同返回完整JSON，不得用省略标记或片段代替字段与目标。")
     return [
-        *([{"role": "assistant", "content": truncate_head_tail_tokens(response, 384, 128)}] if include_excerpt else []),
-        {"role": "user", "content": json.dumps({
+        *([{"role": "assistant", "content": prompt_data_block("剧本工坊待修复回复", {
+            "response": truncate_head_tail_tokens(response, 384, 128),
+        })}] if include_excerpt else []),
+        {"role": "user", "content": prompt_data_block("剧本工坊输入数据", {
             "validation_error": str(error.__cause__ or error), "instruction": instruction, **(details or {}),
-        }, ensure_ascii=False)},
+        })},
     ]
 
 
@@ -707,10 +710,10 @@ class NumericV2QualityAssessor(ModelAgent):
                 bind_contract_targets(targets, main_sources)
                 messages = [
                     {"role": "system", "content": REPAIR_PLAN_RULE + "\n" + OPENING_STATE_COMPARISON_RULE + entry_rule + direction_rule + shared_rule + original_rule + "\n\n" + fact_review_prompt(task)},
-                    {"role": "user", "content": json.dumps({"audit_task": task, "dependency_originals": dependency_originals, "contract_targets": targets,
+                    {"role": "user", "content": prompt_data_block("剧本工坊输入数据", {"audit_task": task, "dependency_originals": dependency_originals, "contract_targets": targets,
                         "repair_target_catalog": _fact_repair_catalog(context, scoped_ids),
                         "story_outline": main_outline, "checked_node_ids": [node_id], "start_node_id": story.get("start_node_id"),
-                        "terminal_node_ids": terminal_ids}, ensure_ascii=False, separators=(",", ":"))}]
+                        "terminal_node_ids": terminal_ids})}]
                 preserved_alternatives = []
                 preserved_issues = None
                 location_error = False
@@ -838,9 +841,9 @@ class NumericV2QualityAssessor(ModelAgent):
                 outline, shared_rule = _pack_shared_branches(outline)
                 messages = [
                     {"role": "system", "content": EVIDENCE_REVIEW_PROMPT + direction_rule + shared_rule + original_rule},
-                    {"role": "user", "content": json.dumps({"story_outline": outline, "proposed_issues": proposed,
+                    {"role": "user", "content": prompt_data_block("剧本工坊输入数据", {"story_outline": outline, "proposed_issues": proposed,
                                                            "start_node_id": story.get("start_node_id"),
-                                                           "terminal_node_ids": terminal_ids}, ensure_ascii=False)}]
+                                                           "terminal_node_ids": terminal_ids})}]
                 for attempt in range(2):
                     response = self.call_llm(messages, temperature=0.1, max_tokens=6000, max_retries=1,
                         response_format={"type": "json_object"}, thinking={"type": "disabled"},
@@ -856,12 +859,10 @@ class NumericV2QualityAssessor(ModelAgent):
                             "纠正证据复核的JSON及checks/target_checks合同。"
                             "所有原issue_id及其原repair_targets必须各覆盖一次，requires_change与preserve_original须为布尔值。"
                             "target_checks须放在对应issue_id的check内部，不能放顶层。"
-                            "正文引文用中文引号，只返回完整JSON。"))
-                        messages[-1]["content"] = json.dumps({
-                            **json.loads(messages[-1]["content"]),
-                            "required_checks": [{"issue_id": issue["issue_id"], "target_checks": review_targets(issue)}
-                                                for issue in batch],
-                        }, ensure_ascii=False)
+                            "正文引文用中文引号，只返回完整JSON。",
+                            details={"required_checks": [
+                                {"issue_id": issue["issue_id"], "target_checks": review_targets(issue)}
+                                for issue in batch]}))
                 facts["issues"].extend(reviewed)
             except QualityAssessmentError as error:
                 error.phase = "evidence"
@@ -912,7 +913,7 @@ class NumericV2QualityAssessor(ModelAgent):
         if not request["routes"]:
             return []
         messages = [{"role": "system", "content": EXIT_BINDING_PROMPT},
-                    {"role": "user", "content": json.dumps(request, ensure_ascii=False)}]
+                    {"role": "user", "content": prompt_data_block("剧本工坊输入数据", request)}]
         for attempt in range(2):
             response = self.call_llm(messages, temperature=0.1, max_tokens=3000, max_retries=1,
                 response_format={"type": "json_object"}, thinking={"type": "disabled"},
@@ -923,20 +924,20 @@ class NumericV2QualityAssessor(ModelAgent):
             except (QualityAssessmentError, ValueError) as error:
                 if attempt or isinstance(error, QualityAssessmentError) and error.code != "invalid_exit_bindings":
                     raise
-                messages.extend([{"role": "assistant", "content": response}, {"role": "user", "content": json.dumps({
+                messages.extend([{"role": "assistant", "content": prompt_data_block("剧本工坊待修复回复", {"response": response})}, {"role": "user", "content": prompt_data_block("剧本工坊输入数据", {
                     "validation_error": str(error.__cause__ or error),
                     "instruction": "只纠正绑定JSON合同，逐路线逐claim恰好覆盖一次。沿用原ref和已声明事实及精确值类型；"
                         "source_history的值不能为null，无法确定唯一原值时改用other且fact_key/value均为null。",
-                }, ensure_ascii=False)}])
+                })}])
 
     def _review_exit_candidates(self, context, request, candidates, node_ids, evidence_sources):
         if not candidates:
             return {"issues": []}, []
         messages = [{"role": "system", "content": EXIT_FACT_REVIEW_PROMPT},
-                    {"role": "user", "content": json.dumps({"exit_context": request,
+                    {"role": "user", "content": prompt_data_block("剧本工坊输入数据", {"exit_context": request,
                         "exit_candidates": [{key: value for key, value in candidate.items() if key != "evidence"}
                                             for candidate in candidates],
-                        "checked_node_ids": [request["source_node_id"]]}, ensure_ascii=False)}]
+                        "checked_node_ids": [request["source_node_id"]]})}]
         def findings(payload, *, location_change=False):
             """Only validated findings are immutable; malformed list slots are not findings."""
             valid_issues, gaps, claim_additions = {}, set(), {}
@@ -1029,7 +1030,7 @@ class NumericV2QualityAssessor(ModelAgent):
                         "required_claim_refs": candidate["claim_refs"], "related_issue_indexes": related})
                 # This compact specialist input leaves room for the complete
                 # rejected reply; formatting cannot silently clear a finding.
-                messages.extend([{"role": "assistant", "content": response}, {"role": "user", "content": json.dumps({
+                messages.extend([{"role": "assistant", "content": prompt_data_block("剧本工坊待修复回复", {"response": response})}, {"role": "user", "content": prompt_data_block("剧本工坊输入数据", {
                     "validation_error": str(error.__cause__ or error),
                     "required_issue_claims": required_claims,
                     **({"repair_target_catalog": _fact_repair_catalog(context, {request["source_node_id"]})}
@@ -1043,7 +1044,7 @@ class NumericV2QualityAssessor(ModelAgent):
                            "有效问题的描述、级别、主体、修法、预期、保留项和修订字段逐字保留；原已核实引用保留，只补缺失引用。") +
                         "candidate_checks逐项完整覆盖，保留原gap结论与每条有效独立问题。"
                         "不完整重复占位可合并补全，不能用新问题顶替有效问题；无法纠正则本轮失败。",
-                }, ensure_ascii=False)}])
+                })}])
 
     def _review_plans(self, context: Mapping[str, Any], report: Mapping[str, Any]) -> dict[str, Any]:
         """Review eligible candidates once as a group; request or format failures must not return a partially savable report."""
@@ -1077,10 +1078,9 @@ class NumericV2QualityAssessor(ModelAgent):
                 response = self.call_llm(
                     [{"role": "system", "content": PLAN_REVIEW_PROMPT + _story_direction_rule(context) + shared_rule
                       + (_AUTHOR_ORIGINAL_REF_RULE if author_parts is not None else "")},
-                     {"role": "user", "content": json.dumps({"plans": plans, "story_outline": outline,
+                     {"role": "user", "content": prompt_data_block("剧本工坊输入数据", {"plans": plans, "story_outline": outline,
                          "global_strengths_to_preserve": result.get("strengths") or [],
-                         "protected_repair_targets": protected, "removable_bridge_targets": removable_bridges},
-                          ensure_ascii=False, separators=(",", ":"))}],
+                         "protected_repair_targets": protected, "removable_bridge_targets": removable_bridges})}],
                     temperature=0.1, max_tokens=6000, max_retries=1,
                     response_format={"type": "json_object"}, thinking={"type": "disabled"},
                     operation="numeric_v2_repair_plan_review",
@@ -1148,7 +1148,7 @@ class NumericV2QualityAssessor(ModelAgent):
                        "story_outline": outline, "original_sources": originals, "fact_review": wire_facts}
             messages = [{"role": "system", "content": _LITERARY_BLOCK_PROMPT + "\n" + STORY_DESIGN_RULE + shared_rule
                          + (_AUTHOR_ORIGINAL_REF_RULE if author_parts is not None else "")},
-                        {"role": "user", "content": json.dumps(request, ensure_ascii=False, separators=(",", ":"))}]
+                        {"role": "user", "content": prompt_data_block("剧本工坊输入数据", request)}]
             for attempt in range(2):
                 response = self.call_llm(messages, temperature=0.1, max_tokens=6000, max_retries=1,
                     response_format={"type": "json_object"}, thinking={"type": "disabled"},
@@ -1228,7 +1228,7 @@ class NumericV2QualityAssessor(ModelAgent):
              "新问题编号从所给最大L编号之后开始。original_sources恢复局部意见所引原文及完整路径。"
              "其中text_path是本次请求内完整原文字段的JSON Pointer，与quote等价；原path仍是作者稿证据位置。"
              "局部意见仍不是运行时事实或最终演绎评分。" + (_AUTHOR_ORIGINAL_REF_RULE if author_parts is not None else "")},
-            {"role": "user", "content": json.dumps(request, ensure_ascii=False, separators=(",", ":"))}],
+            {"role": "user", "content": prompt_data_block("剧本工坊输入数据", request)}],
             temperature=0.1, max_tokens=6000, max_retries=1, response_format={"type": "json_object"},
             thinking={"type": "disabled"}, operation="numeric_v2_quality_assessment")
         payload = self._parse_response(response, "invalid_quality_assessment")
@@ -1429,19 +1429,14 @@ class NumericV2QualityAssessor(ModelAgent):
                  + (_AUTHOR_ORIGINAL_REF_RULE if author_parts is not None else "")},
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {
-                            "story_outline": outline,
-                            "start_node_id": story.get("start_node_id"),
-                            "target_node": target_node,
-                            "accepted_suggestions": suggestions,
-                            "global_strengths_to_preserve": assessment.get("strengths") or [],
-                            "protected_repair_targets": protected,
-                        },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
+                    "content": prompt_data_block("剧本工坊输入数据", {
+                        "story_outline": outline,
+                        "start_node_id": story.get("start_node_id"),
+                        "target_node": target_node,
+                        "accepted_suggestions": suggestions,
+                        "global_strengths_to_preserve": assessment.get("strengths") or [],
+                        "protected_repair_targets": protected,
+                    }),
                 },
             ],
             temperature=0.15,

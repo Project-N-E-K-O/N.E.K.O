@@ -77,6 +77,12 @@ def _install(monkeypatch, runtime, *, failure="numeric_v2_contract_check_timeout
         calls["contract"] += 1
         if kwargs.get("target_node") is None:
             return ()
+        candidate = kwargs["actor_performance"]
+        if (failure != "fixed_original" and not candidate.get("fact_candidates")
+                and not candidate.get("suggested_inputs") and "_authored_recovery" not in candidate):
+            # An author candidate still needs its own successful review; only
+            # the discarded Actor draft has the configured failure below.
+            return ()
         if failure in {"rejected", "fixed_original"}:
             if failure == "fixed_original":
                 kwargs["diagnostics"]["findings"] = [{"candidate": {"program_fixed_original": True}}]
@@ -112,7 +118,7 @@ async def test_author_entry_replaces_failed_draft_and_can_continue(tmp_path, mon
     assert result.performance["suggested_inputs"] == []
     assert "未审" not in str(result.performance)
     assert calls == {"actor": 2 if failure == "rejected" else 1,
-                     "contract": 1}
+                     "contract": 2}
     restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id)
     assert restored == result.stored
     next_result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=restored,
@@ -122,26 +128,27 @@ async def test_author_entry_replaces_failed_draft_and_can_continue(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_source_first_recovery_preserves_reviewed_delivery_and_its_fact(tmp_path, monkeypatch):
+async def test_failed_source_first_tail_cannot_add_a_third_author_review(tmp_path, monkeypatch):
     runtime, current = await _case(tmp_path, source_first=True)
-    _install(monkeypatch, runtime, source_first=True)
-    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
-        turn=TurnRequestV2("source-first", 0, INPUT), ensure_current_binding=lambda _: _binding())
-    assert result.performance["segments"][0]["performance"] == AGREED
-    assert result.stored.ledger_events[-1]["routing_fact_operations"][0]["key"] == KEY
-    assert result.stored.session.story_state["facts"][KEY]["value"] is True
+    calls = _install(monkeypatch, runtime, source_first=True)
+    before = runtime.store._path(current.session.session_id).read_bytes()
+    with pytest.raises(wf.NumericV2ActorOutputError, match="contract_check_failed"):
+        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            turn=TurnRequestV2("source-first", 0, INPUT), ensure_current_binding=lambda _: _binding())
+    assert calls == {"actor": 2, "contract": 2}
+    assert runtime.store._path(current.session.session_id).read_bytes() == before
 
 
 @pytest.mark.asyncio
-async def test_discarded_bad_tail_markers_do_not_reject_the_selected_author_entry(tmp_path, monkeypatch):
+async def test_bad_source_first_tail_cannot_skip_the_author_candidate_review(tmp_path, monkeypatch):
     runtime, current = await _case(tmp_path, source_first=True)
     calls = _install(monkeypatch, runtime, source_first=True, bad_tail=True)
-    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
-        turn=TurnRequestV2("bad-tail", 0, INPUT), ensure_current_binding=lambda _: _binding())
-    assert result.stored.session.current_node_id == "work"
-    assert result.performance["segments"][0]["performance"] == AGREED
-    assert result.performance["segments"][1]["scene_narration"] == "两人走到工作台另一侧。"
+    before = runtime.store._path(current.session.session_id).read_bytes()
+    with pytest.raises(wf.NumericV2ActorOutputError, match="contract_check_failed"):
+        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            turn=TurnRequestV2("bad-tail", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert calls == {"actor": 2, "contract": 2}
+    assert runtime.store._path(current.session.session_id).read_bytes() == before
 
 
 @pytest.mark.asyncio
@@ -154,7 +161,10 @@ async def test_actor_generation_failure_uses_the_same_author_receipt(tmp_path, m
         turn=TurnRequestV2("actor-failed", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert result.stored.session.current_node_id == "work"
     assert result.performance["segments"][0]["performance"] == (AGREED if source_first else "")
-    assert calls["contract"] == int(source_first)
+    assert calls["contract"] == 1 + int(source_first)
+    if source_first:
+        assert result.stored.ledger_events[-1]["routing_fact_operations"][0]["key"] == KEY
+        assert result.stored.session.story_state["facts"][KEY]["value"] is True
     assert result.diagnostics["authored_transition_recoveries"] == 1
 
 
@@ -164,13 +174,21 @@ async def test_contract_rejection_then_actor_rewrite_failure_keeps_author_delive
     runtime, current = await _case(tmp_path, source_first=source_first)
     calls = _install(monkeypatch, runtime, source_first=source_first, failure="rejected",
         generation_failure="numeric_v2_actor_timeout", generation_failure_after=1 + int(source_first))
+    if source_first:
+        before = runtime.store._path(current.session.session_id).read_bytes()
+        with pytest.raises(wf.NumericV2ActorError, match="actor_timeout"):
+            await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+                turn=TurnRequestV2("rewrite-failed", 0, INPUT), ensure_current_binding=lambda _: _binding())
+        assert calls == {"actor": 3, "contract": 2}
+        assert runtime.store._path(current.session.session_id).read_bytes() == before
+        return
     result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("rewrite-failed", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert result.stored.session.current_node_id == "work"
     assert result.performance["segments"][0]["performance"] == (AGREED if source_first else "")
     assert result.diagnostics["semantic_rewrite_attempts"] == 1
     assert result.diagnostics["authored_transition_recoveries"] == 1
-    assert calls == {"actor": 2 + int(source_first), "contract": 1 + int(source_first)}
+    assert calls == {"actor": 2, "contract": 2}
 
 
 @pytest.mark.asyncio
@@ -230,11 +248,11 @@ async def test_recovery_still_obeys_identity_and_write_fences(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["suggested_inputs", "fact_candidates", "_authored_recovery"])
-async def test_body_identical_with_new_metadata_cannot_reuse_the_private_receipt(tmp_path, monkeypatch, field):
+async def test_metadata_never_grants_state_or_skips_body_review(tmp_path, monkeypatch, field):
     runtime, current = await _case(tmp_path)
     calls = _install(monkeypatch, runtime)
-    before = runtime.store._path(current.session.session_id).read_bytes()
     finalize_original = runtime.engine.finalize_transition_offer_state
+    tampered = []
 
     def tamper(outcome, candidate, **kwargs):
         outcome, result = finalize_original(outcome, candidate, **kwargs)
@@ -242,14 +260,18 @@ async def test_body_identical_with_new_metadata_cannot_reuse_the_private_receipt
             result = deepcopy(result)
             result[field] = (["新按钮。"] if field == "suggested_inputs" else
                 [{"key": SPOOF, "value": True, "evidence_quote": "作者原文"}] if field == "fact_candidates" else True)
+            tampered.append(result[field])
         return outcome, result
 
     monkeypatch.setattr(runtime.engine, "finalize_transition_offer_state", tamper)
-    with pytest.raises(wf.NumericV2ActorOutputError, match="contract_check_failed"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
-            turn=TurnRequestV2("tamper", 0, INPUT), ensure_current_binding=lambda _: _binding())
+    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("tamper", 0, INPUT), ensure_current_binding=lambda _: _binding())
+    assert tampered
+    assert result.stored.session.current_node_id == "work"
+    assert result.stored.session.revision == 1
+    assert SPOOF not in result.stored.session.story_state["facts"]
     assert calls["contract"] == 2
-    assert runtime.store._path(current.session.session_id).read_bytes() == before
+    assert result.diagnostics["authored_transition_recoveries"] == 1
 
 
 @pytest.mark.asyncio

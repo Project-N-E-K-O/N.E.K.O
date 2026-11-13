@@ -13,7 +13,7 @@ from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_runtime import NumericV2Engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding
-from tests.utils.theater_prompt import contract_audit_payload, serialized_prompt_tokens
+from tests.utils.theater_prompt import contract_audit_payload, serialized_prompt_tokens, prompt_payload
 
 
 @pytest.fixture(autouse=True)
@@ -86,7 +86,7 @@ async def test_complete_builtin_transition_uses_formal_review_capacity(monkeypat
     budget = NUMERIC_V2_ACTOR_BUDGET_PROFILES[kwargs["session"].actor_budget_profile]
     tokens = serialized_prompt_tokens(*(message.content for message in messages))
     assert budget["evaluator_input_max_tokens"] < tokens <= budget["formal_judge_input_max_tokens"]
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
     rules = [*evaluator._explicit_author_boundaries(kwargs["node"]),
              *evaluator._explicit_author_boundaries(kwargs["target_node"])]
     assert [row["text"] for row in data["author_boundaries"][:len(rules)]] == rules

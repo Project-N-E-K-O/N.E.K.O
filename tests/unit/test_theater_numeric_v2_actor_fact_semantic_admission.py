@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -54,7 +55,7 @@ async def _run(tmp_path, monkeypatch, *, definition=PAPER, quote=PAPER_QUOTE, ap
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            payload = json.loads(messages[1].content)
+            payload = prompt_payload(messages[1].content)
             requests.append({"payload": payload, "system": messages[0].content})
             assert runtime.store._path(current.session.session_id).read_bytes() == before
             assert payload["claims"][0]["description"] == definition["description"]
@@ -180,7 +181,7 @@ async def test_reviewer_gets_author_anchor_instead_of_a_candidate_override(tmp_p
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content)
+            data = prompt_payload(messages[1].content)
             requests.append(data)
             row = data["claims"][0]
             assert row["description"] == PAPER["description"]

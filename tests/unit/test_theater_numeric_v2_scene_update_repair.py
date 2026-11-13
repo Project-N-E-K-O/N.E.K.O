@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -119,7 +120,7 @@ async def test_model_cannot_enable_crop_during_fact_review(monkeypatch, pending_
             return False
 
         async def ainvoke(self, messages):
-            if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
                 return SimpleNamespace(content='{"body_violations":["player_action"],"failure_reason":"未经授权。"}')
             assert ('"scene_update_removal_safe"' in messages[0].content) is not pending_facts
             return SimpleNamespace(content=json.dumps({

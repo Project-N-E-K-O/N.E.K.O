@@ -1,6 +1,7 @@
 """Terminal question checks preserve legitimate greetings when full review is disabled."""
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -283,7 +284,7 @@ def test_terminal_check_changes_only_its_system_contract_and_preserves_all_input
     assert "询问或未来计划的，不算已经发生" not in terminal[0].content
     assert "交互要求，一律不判违规" not in terminal[0].content
     assert "询问或未来计划的，不算已经发生" in legacy[0].content
-    payload = json.loads(terminal[1].content.split("\n", 1)[1])
+    payload = prompt_payload(terminal[1].content)
     assert payload == {"author_boundaries": kwargs["required"], "player_input": kwargs["player_input"],
                        "candidate_visible_text": candidate}
 

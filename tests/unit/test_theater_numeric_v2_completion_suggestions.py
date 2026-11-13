@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -91,7 +92,7 @@ async def _setup(tmp_path, monkeypatch, *, actor_flag=True, author_offer=False,
     async def invoke(client, messages, **kwargs):
         # 固定模型边界的原始响应，实际请求构造、schema 与 parser 均执行生产代码。
         raw = messages[1].content
-        data = json.loads(raw[raw.index("{"):])
+        data = prompt_payload(raw)
         state["payloads"].append(data)
         assert kwargs["stage"] == "review"
         assert data["suggested_inputs"] == CHOICES

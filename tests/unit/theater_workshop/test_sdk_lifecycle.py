@@ -1,6 +1,8 @@
 """SDK/real host boundaries; every project/package lives under tmp_path."""
 from __future__ import annotations
 
+from tests.utils.theater_prompt import prompt_payload
+
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -102,7 +104,7 @@ def test_native_generation_failure_preserves_story_and_repairs_only_rejected_sce
         return original_compile(story)
 
     def model(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         index = context.get("chapter_index")
         calls.append((options["operation"], index))
         if options["operation"] == "numeric_v2_chapter_generation" and context["native_validation_issues"]:
@@ -166,7 +168,7 @@ def test_native_frame_failure_resumes_frame_without_rewriting_completed_scenes(o
     calls = []
 
     def model(messages, **options):
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         calls.append(options["operation"])
         if len(calls) == 1 and context.get("native_validation_issues"):
             assert context["native_validation_issues"][0]["path"] == "catgirl_binding.role_overlay"
@@ -343,7 +345,7 @@ def test_native_enhancement_rebinds_only_the_previous_final_goal(opened, monkeyp
     calls = []
 
     def reply(messages, **options):
-        calls.append((json.loads(messages[1]["content"]), options))
+        calls.append((prompt_payload(messages[1]["content"]), options))
         return json.dumps(candidate, ensure_ascii=False)
 
     # Keep the real generator, response parser, validation and indexed goal projection in this SDK call.
@@ -413,7 +415,8 @@ old_import = builtins.__import__
 def guarded(name, globals=None, locals=None, fromlist=(), level=0):
     if level == 0 and (
         name.split('.')[0] in {'flask','flask_cors','config','base_agent','utils','theater_generator'}
-        or (name.startswith('services.') and name != 'services.theater_workshop'
+        # The shared watermark module imports only the standard library.
+        or (name.startswith('services.') and name not in {'services.theater_workshop', 'services.theater.prompt_data'}
             and not name.startswith('services.theater_workshop.'))
     ):
         raise AssertionError(name)
@@ -962,7 +965,7 @@ def test_public_branch_preview_explicit_application_and_idempotency(tmp_path, ne
     calls = []
     def model(messages, **options):
         calls.append(options["operation"])
-        context = json.loads(messages[1]["content"])
+        context = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_branch_ending":
             return json.dumps({"condition_key": context["condition_candidates"][0]["key"],
                 "title":"没有寄出的信", "summary":"两人公开误会的来源，并决定共同承担后果。",

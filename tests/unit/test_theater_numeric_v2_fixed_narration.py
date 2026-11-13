@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 from pathlib import Path
 
 import pytest
@@ -540,7 +541,7 @@ def test_prompt_hides_untriggered_text_and_preserves_delivered_text():
     engine.nodes['start']['story_beat']['fixed_narrations'][1]['trigger']['condition'] = '原来的姓名实际拿起铭牌。'
     renamed = replace(session, catgirl_binding={**session.catgirl_binding, 'catgirl_name': '新角色'})
     messages = _build_transition_judge_messages(engine, renamed, actor_performance={'performance': ACTION}, player_input='帮我接上。')[0]
-    payload = json.loads(messages[1].content.split('：', 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert payload['fixed_narration_candidates'][0]['condition'] == '新角色实际拿起铭牌。'
     opening = '\n'.join(m.content for m in _opening_messages(engine, '温和。', '新角色', '你', False, max_tokens=10000))
     assert '新角色实际拿起铭牌。' in opening
@@ -593,7 +594,7 @@ def test_fixed_dependencies_still_belong_to_review_and_delivery():
     session = engine.create_session(session_id='fixed-dependencies', catgirl_binding=_binding(), opening_performance=OPENING)
     assert [row['after'] for row in review_candidates(engine.nodes['start'], session)] == [[], ['report']]
     messages, _ = _build_transition_judge_messages(engine, session, actor_performance={'performance': ACTION}, player_input='帮我接上。')
-    payload = json.loads(messages[1].content.split('：', 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert [row['after'] for row in payload['fixed_narration_candidates']] == [[], ['0']]
     raw = {'performance': ACTION}
     assert apply_triggers(engine.nodes['start'], session, raw, _claims(), '帮我接上。', known=True) == raw

@@ -165,7 +165,9 @@ def actor_note(node: Mapping[str, Any], session: Any, binding: Mapping[str, Any]
             }))
         else:
             # Actor selects neither fragments nor settlement dependencies; supply only actual triggers to keep internal IDs out of visible narration.
-            lines.append(f"待展示原文的触发条件：{project_condition(item['trigger']['condition'])}。不得替玩家执行触发动作。")
+            lines.append("待展示原文的触发条件：\n" + prompt_data_block("固定旁白触发条件", {
+                "condition": project_condition(item["trigger"]["condition"]),
+            }) + "\n不得替玩家执行触发动作。")
             if "player_handoff_required" in item["trigger"]:
                 lines.append("此条件必须有玩家实际递交。" if item["trigger"]["player_handoff_required"] else
                              "此条件不要求玩家递交；这不授权改变物品持有者或替玩家行动。")

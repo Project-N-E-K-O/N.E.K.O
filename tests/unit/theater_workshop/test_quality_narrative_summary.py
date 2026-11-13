@@ -1,5 +1,7 @@
 """Assess the plot direction used by Runtime without granting new edit permissions."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
@@ -33,7 +35,7 @@ def test_ending_optimization_respects_single_summary_permission(change_heading):
     def model(messages, **options):
         if options["operation"] != "numeric_v2_quality_single_node_optimization":
             return reply(messages, **options)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         assert request["accepted_suggestions"][0]["repair_targets"] == [{"node_id": node_id, "field": "/summary"}]
         assert "只获准一处时保留另一处" in messages[0]["content"]
         assert "summary" not in request["target_node"]["story_beat"]
@@ -103,7 +105,7 @@ def test_state_optimization_uses_once_sent_prose_and_keeps_unapproved_situation(
     def model(messages, **options):
         if options["operation"] != "numeric_v2_quality_single_node_optimization":
             return reply(messages, **options)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         assert request["accepted_suggestions"][0]["repair_targets"] == fields
         assert "仅在 /relationship_state 也获准时同步修处境" in messages[0]["content"]
         target = request["target_node"]
@@ -142,7 +144,7 @@ def test_optimizer_reuses_goal_text_and_keeps_distinct_raw_fields(extra_goal_fie
     def model(messages, **options):
         if options["operation"] != "numeric_v2_quality_single_node_optimization":
             return fallback(messages, **options)
-        body = json.loads(messages[1]["content"])
+        body = prompt_payload(messages[1]["content"])
         projected = body["story_outline"]["mainline"][0]["goals"]
         assert [goal["description"] for goal in projected] == [goal["description"] for goal in goals]
         assert [goal["delivery_type"] for goal in projected] == [goal["delivery"]["type"] for goal in goals]
@@ -171,7 +173,7 @@ def test_real_assessment_and_revision_preserve_direction_evidence_and_permission
     def reply(messages, **options):
         operation = options["operation"]
         calls.append(operation)
-        body = json.loads(messages[1]["content"])
+        body = prompt_payload(messages[1]["content"])
         if operation == "numeric_v2_literary_block":
             payload = json.loads(fallback(messages, **options))
             for note in payload["node_notes"]:

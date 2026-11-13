@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from tests.utils.theater_prompt import prompt_payload
 from services.theater_workshop.host import InProcessPackageGateway
 
 from copy import deepcopy
@@ -242,10 +244,11 @@ def test_enhancement_request_keeps_authored_props_at_10000_tokens():
         pass
 
     def capture(messages, **_options):
-        payload = json.loads(messages[1]["content"])
+        payload = prompt_payload(messages[1]["content"])
         assert payload["key_props"] == props
         assert count_tokens(json.dumps(messages, ensure_ascii=False)) <= 10_000
-        assert messages[1]["content"] == json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        assert messages[1]["content"].startswith("======以下为剧本工坊输入数据======\n")
+        assert messages[1]["content"].endswith("\n======以上为剧本工坊输入数据======")
         raise Captured
 
     with pytest.raises(Captured):
@@ -434,7 +437,7 @@ def test_legacy_continuation_repairs_overflow_in_its_own_chapters():
         chapter["exit_plan"]["trigger_fact_ids"] = ["fact_0"]
 
     def model(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         assert options["operation"] == "numeric_v2_mainline_continuation"
         assert request["requested_paths"] == ["mainline_chapters[7]", "mainline_chapters[8]"]
         replacements = {}
@@ -514,7 +517,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert len(calls) == 1
     assert calls[0]["max_retries"] == 1
     assert calls[0]["operation"] == "numeric_v2_mainline_generation"
-    assert json.loads(calls[0]["messages"][1]["content"]) == {
+    assert prompt_payload(calls[0]["messages"][1]["content"]) == {
         "core_idea": setup["brief"],
             "length": {
                 "preset": "short",
@@ -1237,7 +1240,7 @@ def test_numeric_v2_generator_continues_only_invalid_paths_after_initial_outline
         calls.append({"messages": messages, **kwargs})
         if len(calls) == 1:
             return json.dumps(candidate, ensure_ascii=False)
-        model_input = json.loads(messages[1]["content"])
+        model_input = prompt_payload(messages[1]["content"])
         assert model_input["requested_paths"] == [
             "mainline_chapters[0].ordered_goals[0].owner",
             "mainline_chapters[0].ordered_goals[0].sources",
@@ -1330,7 +1333,7 @@ def test_mainline_reuses_continuation_for_projected_budget_without_dropping_cont
         calls.append(options)
         if len(calls) == 1:
             return json.dumps(candidate, ensure_ascii=False)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         paths = request["requested_paths"]
         assert "mainline_chapters[0].opening_scene" in paths
         assert "mainline_chapters[0].catgirl_situation" in paths
@@ -1502,7 +1505,7 @@ def test_mainline_repairs_independent_structure_and_capacity_in_same_continuatio
         calls.append(options)
         if len(calls) == 1:
             return json.dumps(candidate, ensure_ascii=False)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         assert "mainline_chapters[1].exit_plan.accept_input" in request["requested_paths"]
         assert "mainline_chapters[0].catgirl_situation" in request["requested_paths"]
         return json.dumps({"replacements": {path: _value_at_path(repaired, path)
@@ -1843,7 +1846,7 @@ def test_numeric_v2_generator_keeps_original_idea_and_returns_only_derived_setup
     assert calls[0]["max_retries"] == 1
     assert calls[0]["operation"] == "numeric_v2_mainline_generation"
     assert calls[0]["max_tokens"] == 16000
-    assert json.loads(calls[0]["messages"][1]["content"]) == {
+    assert prompt_payload(calls[0]["messages"][1]["content"]) == {
         "core_idea": idea,
             "length": {
                 "preset": "short",
@@ -1910,7 +1913,7 @@ def _quality_wire_payload(payload):
 
 def _plan_review_reply(messages):
     # Independent model doubles return each review without silently treating old reports as reviewed.
-    plans = json.loads(messages[1]["content"])["plans"]
+    plans = prompt_payload(messages[1]["content"])["plans"]
     return json.dumps({"conflicts": [], "checks": [{"issue_id": row["issue_id"], "status": "ready",
         "reason": "测试方案与字段一致", "missing_targets": []} for row in plans]})
 
@@ -2023,10 +2026,10 @@ def _quality_reply(payload):
     # Literature tests use valid empty fact reports, distinguishing first-stage structural failures from literary-validation failures.
     def reply(messages, **kwargs):
         if kwargs.get("operation") == "numeric_v2_fact_review":
-            context = json.loads(messages[1]["content"])
+            context = prompt_payload(messages[1]["content"])
             return json.dumps(_fact_review_payload(context))
         if kwargs.get("operation") in {"numeric_v2_literary_block", "numeric_v2_literary_block_format_repair"}:
-            return json.dumps(_literary_block_payload(json.loads(messages[1]["content"])), ensure_ascii=False)
+            return json.dumps(_literary_block_payload(prompt_payload(messages[1]["content"])), ensure_ascii=False)
         if kwargs.get("operation") == "numeric_v2_repair_plan_review":
             return _plan_review_reply(messages)
         return json.dumps(_quality_wire_payload(payload), ensure_ascii=False)
@@ -2092,7 +2095,7 @@ def test_numeric_v2_quality_assessor_runs_only_when_called_and_returns_node_plan
     assert assessment["relationship_advice"][0]["target_node_ids"] == ["mainline_01"]
     assert assessment["relationship_advice"][0]["repairable"] is True
     fact_calls = [call for call in calls if call["operation"] == "numeric_v2_fact_review"]
-    fact_requests = [json.loads(call["messages"][1]["content"]) for call in fact_calls]
+    fact_requests = [prompt_payload(call["messages"][1]["content"]) for call in fact_calls]
     expected_edges = {(node["id"], route["id"], route["target_node_id"])
                       for node in story["nodes"] for route in node.get("route_gates", [])}
     assert {request["audit_task"]["node_id"] for request in fact_requests
@@ -2101,14 +2104,14 @@ def test_numeric_v2_quality_assessor_runs_only_when_called_and_returns_node_plan
             for request in fact_requests if (task := request["audit_task"])["kind"] == "transition"} == expected_edges
     assert len(fact_calls) == len(story["nodes"]) + len(expected_edges)
     block_calls = [call for call in calls if call["operation"] == "numeric_v2_literary_block"]
-    blocks = [json.loads(call["messages"][1]["content"]) for call in block_calls]
+    blocks = [prompt_payload(call["messages"][1]["content"]) for call in block_calls]
     assert {(edge["source_node_id"], edge["route_id"], edge["target_node_id"])
             for block in blocks for edge in block["covered_edges"]} == expected_edges
     assert [call["operation"] for call in calls] == [*["numeric_v2_fact_review"] * len(fact_calls),
         *["numeric_v2_literary_block"] * len(block_calls), "numeric_v2_quality_assessment", "numeric_v2_repair_plan_review"]
     global_call = next(call for call in calls if call["operation"] == "numeric_v2_quality_assessment")
     assert "fact_review" in global_call["messages"][0]["content"]
-    model_input = json.loads(global_call["messages"][1]["content"])
+    model_input = prompt_payload(global_call["messages"][1]["content"])
     assert "story_outline" not in model_input
     assert model_input["story_context"]["background"] == story["intro"]["background"]
     assert model_input["story_context"]["key_props"][0]["id"] == "dated_old_letter"
@@ -2141,7 +2144,7 @@ def test_numeric_v2_quality_assessor_runs_only_when_called_and_returns_node_plan
         "narrative_focus", "must_not_happen", "acting_contract",
         "repair_field_set",
     }
-    fact_outline = json.loads(calls[0]["messages"][1]["content"])["story_outline"]
+    fact_outline = prompt_payload(calls[0]["messages"][1]["content"])["story_outline"]
     sent_rule, = fact_outline["mainline"][0]["completion_contract"]["all"]
     source_rule, = story["nodes"][0]["completion_contract"]["all"]
     assert {**sent_rule, "key": sent_rule["key"]["text"]} == source_rule
@@ -2222,7 +2225,7 @@ def test_numeric_v2_quality_assessor_optimizes_one_map_node_with_all_relevant_su
     )
 
     assert calls[0]["operation"] == "numeric_v2_quality_single_node_optimization"
-    model_input = json.loads(calls[0]["messages"][1]["content"])
+    model_input = prompt_payload(calls[0]["messages"][1]["content"])
     assert model_input["target_node"]["id"] == "mainline_02"
     assert {item["source"] for item in model_input["accepted_suggestions"]} == {
         "quality_issue",
@@ -2402,7 +2405,7 @@ def test_mainline_length_boundaries_generate_without_padding(preset, count, mini
     setup["length_preset"] = preset
     result = generator.generate(title="自然分幕", setup=setup)
     assert len(calls) == 1
-    length = json.loads(calls[0][1]["content"])["length"]
+    length = prompt_payload(calls[0][1]["content"])["length"]
     assert (length["mainline_chapter_min"], length["mainline_chapter_max"]) == (minimum, maximum)
     story = result["story"]
     assert sum(node["type"] != "ending" for node in story["nodes"]) == count
@@ -2423,7 +2426,7 @@ def test_numeric_v2_generator_continues_only_missing_transition_contract_fields(
         calls.append({"messages": messages, **kwargs})
         if len(calls) == 1:
             return json.dumps(candidate, ensure_ascii=False)
-        model_input = json.loads(messages[1]["content"])
+        model_input = prompt_payload(messages[1]["content"])
         assert set(model_input["requested_paths"]) == {
             "mainline_chapters[0].transition_goal",
             "mainline_chapters[0].exit_plan",
@@ -2590,7 +2593,7 @@ def test_numeric_v2_node_enhancement_sends_node_type_context_and_metrics_once(
     assert len(calls) == 1
     assert calls[0]["max_retries"] == 1
     assert calls[0]["operation"] == "numeric_v2_node_enhancement"
-    model_input = json.loads(calls[0]["messages"][1]["content"])
+    model_input = prompt_payload(calls[0]["messages"][1]["content"])
     assert model_input["node_type"] == "scene"
     assert model_input["existing_story_beat"] == {key: value for key, value in branch["story_beat"].items() if key != "summary"}
     assert [goal["delivery"]["timing"] for goal in
@@ -2671,7 +2674,7 @@ def test_node_enhancement_does_not_accumulate_existing_state_prefix(copies):
     observed = []
 
     def echo_context(messages, **_kwargs):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         context = request["existing_story_beat"]["catgirl_situation"]
         observed.append(context)
         return json.dumps({**candidate, "catgirl_situation": context}, ensure_ascii=False)
@@ -2787,7 +2790,7 @@ def test_enhancement_receives_direct_source_relationship_and_motivation_verbatim
     calls = []
 
     def capture(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         calls.append(options)
         upstream = next(row for row in data["upstream_nodes"] if row["id"] == source["id"])
         assert upstream["catgirl_situation"] == situation
@@ -2834,7 +2837,7 @@ def test_enhancement_transports_typed_gates_and_source_evidence_without_duplicat
 
     def capture(messages, **_options):
         serialized = messages[1]["content"]
-        data = json.loads(serialized)
+        data = prompt_payload(serialized)
         assert data["incoming_routes"] == [{**incoming, "source_node_id": source["id"]}]
         assert data["outgoing_routes"] == [{
             **{key: outgoing[key] for key in ("id", "target_node_id", "priority", "conditions")},
@@ -2867,7 +2870,7 @@ def test_enhancement_keeps_mutually_exclusive_upstream_situations_separate():
     calls = []
 
     def capture(messages, **_options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         calls.append(data)
         upstream = {row["id"]: row for row in data["upstream_nodes"]}
         incoming = {row["source_node_id"]: row for row in data["incoming_routes"]}
@@ -2896,7 +2899,7 @@ def test_missing_upstream_situation_remains_unknown_and_excludes_unrelated_futur
     calls = []
 
     def capture(messages, **_options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         calls.append(data)
         upstream = {row["id"]: row for row in data["upstream_nodes"]}
         assert set(upstream) == {source["id"]}
@@ -2954,7 +2957,7 @@ def test_native_enhancement_receives_distinct_original_upstream_entry_plans(targ
     calls = []
 
     def capture(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         calls.append((data, options))
         upstream = {node["id"]: node for node in data["upstream_nodes"]}
         assert set(upstream) == {source["id"] for source in sources}
@@ -2992,7 +2995,7 @@ def test_legacy_upstream_missing_entry_fields_remains_unknown_without_invented_s
     original = deepcopy(story)
 
     def capture(messages, **_options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         row = next(row for row in data["upstream_nodes"] if row["id"] == source["id"])
         assert row.get("opening_scene") is None
         assert row["character_state"] == {}
@@ -3054,7 +3057,7 @@ def _capture_upstream_enhancement_request(generator, story, candidate, target):
         "operation": "numeric_v2_node_enhancement",
     }
     assert "route_gates" not in result
-    data = json.loads(calls[0][0][1]["content"])
+    data = prompt_payload(calls[0][0][1]["content"])
     assert data["existing_story_beat"] == {key: value for key, value in target["story_beat"].items() if key != "summary"}
     system = calls[0][0][0]["content"]
     return data, system, result
@@ -3302,7 +3305,7 @@ def test_literature_reads_review_first_without_losing_story_or_suggestions():
     calls = [];blocks = []
 
     def reply(messages, **kwargs):
-        request = json.loads(messages[1]['content']);calls.append(kwargs)
+        request = prompt_payload(messages[1]['content']);calls.append(kwargs)
         assert request['fact_review'] == facts
         if kwargs['operation'] == 'numeric_v2_literary_block':
             assert 1 <= len(request['checked_node_ids']) <= 2
@@ -3373,7 +3376,7 @@ def test_single_node_request_limits_cross_node_quality_and_relationship_targets(
     original = deepcopy((report, story, authoring));calls = []
 
     def reply(messages, **kwargs):
-        request = json.loads(messages[1]['content']);calls.append(kwargs)
+        request = prompt_payload(messages[1]['content']);calls.append(kwargs)
         assert len(request['accepted_suggestions']) == 2
         for suggestion in request['accepted_suggestions']:
             assert suggestion['repair_targets'] == targets[:1]
@@ -3461,7 +3464,7 @@ def test_start_node_enhancement_allows_empty_prior_continuity_and_preserves_stor
     generator.call_llm = call
     result = generator.enhance_node(story=story, node_id=story["start_node_id"])
     assert len(calls) == 1
-    model_input = json.loads(calls[0][1]["content"])
+    model_input = prompt_payload(calls[0][1]["content"])
     assert model_input["node_type"] == "start"
     assert model_input["node_type_label"] == "幕节点"
     assert model_input["upstream_nodes"] == []
@@ -3522,7 +3525,7 @@ def test_mainline_generation_repairs_invalid_fixed_narrations_before_success():
         calls.append(kwargs["operation"])
         if len(calls) == 1:
             return json.dumps(candidate, ensure_ascii=False)
-        model_input = json.loads(messages[1]["content"])
+        model_input = prompt_payload(messages[1]["content"])
         assert model_input["requested_paths"] == ["ending.fixed_narrations"]
         return json.dumps({"replacements": {"ending.fixed_narrations": [_fixed_piece()]}},
                           ensure_ascii=False)

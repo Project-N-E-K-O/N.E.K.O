@@ -1,6 +1,7 @@
 """Pacing review selects current author material rather than inventing tasks."""
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -38,7 +39,7 @@ async def test_ordinary_progress_can_only_select_current_author_task_or_declared
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            requests.append(json.loads(messages[1].content))
+            requests.append(prompt_payload(messages[1].content))
             formats.append(kwargs.get("response_format"))
             return SimpleNamespace(content=json.dumps({"direction": choice}, ensure_ascii=False))
 
@@ -78,7 +79,7 @@ async def test_progress_without_author_work_or_offer_cannot_invent_a_fallback(mo
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            requests.append(json.loads(messages[1].content))
+            requests.append(prompt_payload(messages[1].content))
             return SimpleNamespace(content='{"direction":""}')
     async def factory(*args, **kwargs): return Client()
     monkeypatch.setattr(ev, "_model_config", config)
@@ -106,7 +107,7 @@ async def test_ordinary_legacy_fact_fallback_does_not_schedule_player_or_unknown
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            requests.append(json.loads(messages[1].content))
+            requests.append(prompt_payload(messages[1].content))
             return SimpleNamespace(content=json.dumps({"direction": key}))
     async def factory(*args, **kwargs): return Client()
     monkeypatch.setattr(ev, "_model_config", config)

@@ -45,7 +45,7 @@ async def test_batched_ending_review_binds_original_mixed_performance_and_exclud
             pass
 
         async def ainvoke(self, messages, **kwargs):
-            requests.append(json.loads(messages[1].content))
+            requests.append(prompt_payload(messages[1].content))
             return SimpleNamespace(content='{"source_ready":true,"target_ready":true,"approved_indexes":[0,1]}')
 
     async def factory(*args, **kwargs):
@@ -98,7 +98,7 @@ async def test_historical_quote_keeps_original_representation_through_fact_revie
             pass
 
         async def ainvoke(self, messages, **kwargs):
-            request = json.loads(messages[1].content)
+            request = prompt_payload(messages[1].content)
             assert request["scene_context"][-1]["content"] == (["仪表亮起。", original] if row["scene_narration"] else [original])
             assert request["claims"][0]["evidence"][0]["quote"] == quote
             return SimpleNamespace(content='{"approved_indexes":[0]}')
@@ -157,7 +157,7 @@ async def test_progress_review_receives_published_dialogue_and_returns_advice_wi
             pass
 
         async def ainvoke(self, messages, **kwargs):
-            requests.append(json.loads(messages[1].content))
+            requests.append(prompt_payload(messages[1].content))
             return SimpleNamespace(content=json.dumps({
                 "direction": reply_direction,
             }, ensure_ascii=False))
@@ -232,7 +232,7 @@ async def test_invitation_review_requires_evidence_from_the_correct_source(monke
             pass
 
         async def ainvoke(self, messages, **kwargs):
-            request = json.loads(messages[1].content)
+            request = prompt_payload(messages[1].content)
             assert request["pending_offer_revision"] == 14
             assert request["scene_context"][-1]["revision"] == 15
             return SimpleNamespace(content=json.dumps({"offer_decision": decision,
@@ -610,7 +610,7 @@ async def test_multi_turn_completion_preserves_each_reference_through_native_rev
             return False
 
         async def ainvoke(self, messages, **kwargs):
-            request = json.loads(messages[1].content)
+            request = prompt_payload(messages[1].content)
             requests.append(request)
             assert request["actor_evidence"] == ""
             assert request["claims"][0]["evidence"] == evidence

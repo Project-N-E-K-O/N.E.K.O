@@ -9,6 +9,7 @@ import json
 import re
 from typing import Any, Callable, Mapping
 
+from services.theater.prompt_data import prompt_data_block
 from ..model import ModelAgent, LLMCallFailure
 from ..numeric_v2_analysis import entry_route_scope
 
@@ -1066,7 +1067,7 @@ _BRANCH_PATH_PROMPT = STORY_DESIGN_RULE + "\n\n" + GOAL_METADATA_RULE + "\n\n" +
 2. condition_selection.mode 为 fixed 时使用唯一候选并省略 condition_key；为 recommend 时只能从 condition_candidates 返回一个原样 key。
 3. 不输出 metric ID、数值、阈值、比较符、priority、route、正式节点 ID、Choice、推荐输入、Session 或 Ledger。
 4. 每幕写唯一开场、一句叙事重心和 1—4 项目标。expected_turns 为 3—120 的普通回合软估计，事件不可合并才超过 8 回合。delivery_type 只用 catgirl_dialogue、catgirl_action、environment_fact、player_action、shared_agreement、semantic_state，并与 owner 职责对应。sources 引用本幕目标可依据的素材，不证明目标已经完成：只用 opening、player_input、previous_goal；previous_goal 仅指本幕排在前面的目标，不指来源幕任务，首项目标不得引用它。玩家目标必须 timing=turn 且 sources 包含 player_input，即使回应由前项目标引发，也不能只填 previous_goal。opening 目标限 catgirl 或 environment，共同目标用 turn，可引用 player_input 或 previous_goal。无未决选择则自然收束。若离幕仍需玩家确认或行动，末项目标由玩家完成并写出具体行动。
-5. transitions 共 scene_count + 1 条，从 source -> scene:0 到末幕 -> endpoint，填写 reason、bridge_scene_narration、must_preserve、tone。首条 source 入口不能自动推进：按新的支线活动重写非空桥段和明确接受方式，邀约按下述发声策略填写，不能照抄原出口或结局；同地也只写这次接受所保证的承接，不编造往返或复制目标开场。可发声的普通出口需新决定时，fallback_offer 与 accept_input 公开邀约、明确接受同一新安排，不能要求重做或用泛化同意。发声策略从 acting_contract.dialogue_policy 起，按 goals.delivery.state_effects.dialogue_policy（source）或 ordered_goals.dialogue_policy_after 更新，unchanged 不覆盖。最终 forbidden 时省略 fallback_offer 并填写 silent_choice，destination 和 arrangement 各为至多30 tokens的非空单行；程序生成按钮，accept_input 仍填写。支线内到普通目标幕、已完成事实直接引出后果且无需新决定时，才填 advance_on_completion=true，省略邀约、接受和静默选择。结局也省略这三项。目标开场不重做触发动作。
+5. transitions 共 scene_count + 1 条，从 source -> scene:0 到末幕 -> endpoint，填写 reason、bridge_scene_narration、must_preserve、tone。首条 source 入口不能自动推进：按新的支线活动重写非空桥段和明确接受方式，邀约按下述发声策略填写，不能照抄原出口或结局；同地也只写这次接受所保证的承接，不编造往返或复制目标开场。可发声的普通出口需新决定时，fallback_offer 与 accept_input 公开邀约、明确接受同一新安排，不能要求重做或用泛化同意。发声策略从 acting_contract.dialogue_policy 起，按 goals.delivery.state_effects.dialogue_policy（source）或 ordered_goals.dialogue_policy_after 更新，unchanged 不覆盖。最终 forbidden 时省略 fallback_offer 并填写 silent_choice，destination 和 arrangement 各为至多30 tokens的非空单行；程序生成按钮，accept_input 仍填写。支线内到普通目标幕、已完成事实直接引出后果且无需新决定时，才填 advance_on_completion=true，省略邀约、接受和静默选择。结局也省略这三项。
 6. continuity_handling 只使用 continuity_items 提供的键，每键一次。输入为空时返回 []。未标 optional 的条目用 carried。玩家事项或需补交 exact 锚点的事项放 scene:n，其余也可用 transition:n。
 7. 保留上游事实、内容边界与固定终点。作者知道不等于角色已知。开场、桥段和邀约只写可见正文，约束放在状态、边界或 must_preserve。双主角推进互动，保留配角的必要职责与直接答复，不追加任务或反复确认。
 8. 支线沿用 global.intro 中的明确姓名及角色归属，不另取名；没有明确姓名的旧工坊稿沿用其身份开头的原有称呼。不把当前设备的新名字混入既有作者项目。
@@ -1083,12 +1084,12 @@ source_completion_facts 解释来源幕完成条件的键，原出口合同见 s
 18. 每幕声明 1—8 项 completion_facts，id 为幕内唯一英文标识，value_type 为 bool/int/string 且匹配 target_value，visibility 为 public/story。不能从最后一个感谢、回应或 ordered_goal 反推先前步骤已完成；不把风格或下一幕结果设成完成锁。
 """ + COMPLETION_RESULT_RULE + """
 typed 事实合计不超过 author_intent.remaining_typed_fact_keys，展示记录不占事实键，不以原文代替普通结果。
-19. 从 scene:n 离开的 transition 以非空、无重复的 trigger_fact_ids 选择本幕完成事实，形成 completion_contract。source 保留原完成合同，入口邀约、接受和桥段按本次支线重新写。结局没有未决选择时自然收束，不新增确认。固定展示项填 bool、true、public，每段只引用一次。
+19. 从 scene:n 离开的 transition 以非空、无重复的 trigger_fact_ids 选择本幕完成事实，形成 completion_contract。source 保留原完成合同。固定展示项填 bool、true、public，每段只引用一次。
 只把不可跳过的许可、交付或决定列入出口 entry_prerequisite_fact_ids，引用同幕 typed 事实。source 入口不新增硬前提。需新决定的出口在条件成立后仍须玩家授权。
 只有目标幕存在 entry 固定原文且发声策略为 optional 或 forbidden 时，才可用 fixed_entry_only 独立展示原文。
 
 作者要求支线中间幕入幕时逐字展示的文本，必须在该幕使用 fixed_narrations，不能用 exact anchors 代替。
-没有独立固定原文时省略 fixed_narrations。引用 author_intent.direction 时用 text_source.start_after 与 end_before 标出原文外的唯一边界，首尾无边界可填空字符串；不要同时填写 text，也不把原文抄进开场或状态。程序按引用提取原文。不要重复 endpoint 已承担的原文。
+没有独立固定原文时省略 fixed_narrations。引用 author_intent.direction 时用 text_source.start_after 与 end_before 标出原文外的唯一边界，首尾无边界可填空字符串；不要同时填写 text，也不把原文抄进开场或状态。程序按引用提取原文。
 [原文起]和[原文止]标出的每处原文都要完整引用，分配到作者指定的支线幕。固定终点已包含的原文无需再写；作者在本次路径方向另行标明中间幕也要展示同文时，按本次独立原文位置引用。
 新写的固定原文只支持入幕展示，每幕最多八项，合计最多2000 tokens，超限不截断。普通玩家行动及其结果留在互动中；不把依赖玩家行动的作者原文改成入幕结果。
 
@@ -2662,21 +2663,17 @@ class NumericV2Generator(ModelAgent):
                 {"role": "system", "content": _MAINLINE_PROMPT},
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {
-                            "core_idea": normalized_idea,
-                            **({"cast_names": dict(cast_names)} if cast_names is not None else {}),
-                            "length": {
-                                "preset": length_preset,
-                                "mainline_chapter_min": minimum,
-                                "mainline_chapter_max": maximum,
-                                # Give models an adjustable act-level soft target, never a Runtime hard threshold.
-                                "scene_expected_turns_target": 8,
-                            },
+                    "content": prompt_data_block("剧本工坊输入数据", {
+                        "core_idea": normalized_idea,
+                        **({"cast_names": dict(cast_names)} if cast_names is not None else {}),
+                        "length": {
+                            "preset": length_preset,
+                            "mainline_chapter_min": minimum,
+                            "mainline_chapter_max": maximum,
+                            # Give models an adjustable act-level soft target, never a Runtime hard threshold.
+                            "scene_expected_turns_target": 8,
                         },
-                        ensure_ascii=False,
-                        sort_keys=True,
-                    ),
+                    }),
                 },
             ],
             temperature=0.35,
@@ -2736,7 +2733,7 @@ class NumericV2Generator(ModelAgent):
                 {"role": "system", "content": _MAINLINE_CONTINUATION_PROMPT},
                 {
                     "role": "user",
-                    "content": json.dumps(model_input, ensure_ascii=False, sort_keys=True),
+                    "content": prompt_data_block("剧本工坊输入数据", model_input),
                 },
             ],
             temperature=0.2,
@@ -2978,7 +2975,7 @@ class NumericV2Generator(ModelAgent):
         response = self.call_llm(
             [
                 {"role": "system", "content": _NODE_ENHANCEMENT_PROMPT + (ENTRY_ROUTE_SCOPE_RULE if shared_entry else "")},
-                {"role": "user", "content": json.dumps(model_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))},
+                {"role": "user", "content": prompt_data_block("剧本工坊输入数据", model_input)},
             ],
             temperature=0.3,
             max_tokens=4000,
@@ -3254,7 +3251,7 @@ class NumericV2Generator(ModelAgent):
         response = self.call_llm(
             [
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(model_context, ensure_ascii=False, sort_keys=True, separators=(",", ":"))},
+                {"role": "user", "content": prompt_data_block("剧本工坊输入数据", model_context)},
             ],
             temperature=0.3,
             max_tokens=max_tokens,

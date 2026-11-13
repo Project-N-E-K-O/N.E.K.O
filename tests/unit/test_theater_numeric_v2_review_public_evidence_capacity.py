@@ -1,6 +1,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 import pytest
 
 from services.theater import numeric_v2_evaluator as evaluator
@@ -29,7 +30,7 @@ def packed_case(monkeypatch, request):
 def build(case):
     engine, session, kwargs, _ = case
     messages, evidence = evaluator._build_transition_judge_messages(engine, session, **kwargs)
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     return messages, data, evidence, sum(evaluator.count_tokens(m.content) for m in messages)
 
 

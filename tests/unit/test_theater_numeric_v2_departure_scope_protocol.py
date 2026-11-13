@@ -3,7 +3,7 @@
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 import pytest
 
@@ -42,7 +42,7 @@ async def test_full_scope_confirmation_can_clear_false_departure_without_clearin
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             requests.append((data, kwargs["response_format"]["json_schema"]["schema"]))
             blocks = [row for row in data.get("sources", data.get("departure_sources", []))
                       if row["id"].startswith("c")]
@@ -98,7 +98,7 @@ async def test_incomplete_scope_never_becomes_clearance(monkeypatch, defect):
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             blocks = [row for row in data["sources"] if row["id"].startswith("c")]
             scope = [{"candidate_ref": row["id"], "scope": "current_scene", "quote": row["text"]}
                      for row in blocks]

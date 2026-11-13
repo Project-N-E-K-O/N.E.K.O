@@ -1,4 +1,6 @@
 """Verify suggestion scope, shared repair plans and actual modification boundaries separately from natural-language semantic stress tests."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 import pytest
@@ -83,7 +85,7 @@ def test_single_repair_call_receives_one_plan_with_all_impacts():
     second = deepcopy(report["issues"][0]);second.update(issue_id="quality_issue_02", problem="第二种影响")
     report["issues"].append(second)
     def reply(messages, **kwargs):
-        suggestions = json.loads(messages[1]["content"])["accepted_suggestions"]
+        suggestions = prompt_payload(messages[1]["content"])["accepted_suggestions"]
         assert len(suggestions) == 1
         assert suggestions[0]["related_impacts"][0]["problem"] == "第二种影响"
         return json.dumps({"node_updates": [{"node_id": "mainline_01", "story_beat": {
@@ -104,7 +106,7 @@ def test_single_repair_requires_changes_for_every_approved_field(partial):
     before = deepcopy(story)
 
     def reply(messages, **kwargs):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         assert {t["field"] for s in request["accepted_suggestions"] for t in s["repair_targets"]} == {
             "/character_state/catgirl", "/opening_scene",
         }

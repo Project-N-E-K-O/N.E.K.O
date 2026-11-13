@@ -1,5 +1,7 @@
 """Measure the native optimizer request and protect scoped author evidence."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -74,7 +76,7 @@ def test_neon_optimizer_scope_and_real_host_budget(monkeypatch, case):
 
     def fake(messages, **options):
         operation = options["operation"]
-        body = json.loads(messages[1]["content"])
+        body = prompt_payload(messages[1]["content"])
         assert operation == "numeric_v2_quality_single_node_optimization"
         outline = body["story_outline"]
         selected = next(row for row in outline["mainline"] if row["id"] == target)

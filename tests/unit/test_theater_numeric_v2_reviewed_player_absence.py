@@ -10,7 +10,7 @@ from services.theater import numeric_v2_evaluator as ev
 from services.theater.numeric_v2_performance import performance_content_blocks
 from services.theater.numeric_v2_structured_output import contract_output_schema
 from tests.unit.test_theater_numeric_v2_review_protocol import _session
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +27,7 @@ def _install(monkeypatch, respond):
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             return SimpleNamespace(content=json.dumps(respond(messages,
-                json.loads(messages[1].content.split("\n", 1)[1]), kwargs), ensure_ascii=False))
+                prompt_payload(messages[1].content), kwargs), ensure_ascii=False))
 
     async def factory(*args, **kwargs): return Client()
     monkeypatch.setattr(ev, "_model_config", config)

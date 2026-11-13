@@ -5,6 +5,8 @@ import json
 
 import pytest
 
+from tests.utils.theater_prompt import prompt_payload
+
 from services.theater.numeric_v2_actor import NumericV2Actor
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
 from tests.unit.test_theater_numeric_v2_entry_player_inputs import _ordinary_payload, _transition_payload
@@ -74,7 +76,7 @@ async def test_native_turn_refill_has_target_entry_limit_only_on_actual_entry(tm
     )
     assert len(calls) == 2 and instance.suggestion_fill_attempt_count == 1
     first_messages = calls[0][0]
-    data = json.loads(calls[1][0][1].content)
+    data = prompt_payload(calls[1][0][1].content)
     boundaries = data["hard_boundaries"]
     assert (TARGET_ENTRY in boundaries) is formal
     assert SOURCE_ENTRY not in boundaries

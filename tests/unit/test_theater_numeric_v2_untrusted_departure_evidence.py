@@ -5,7 +5,7 @@ from dataclasses import replace
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 import pytest
 
@@ -227,7 +227,7 @@ async def test_blocked_workflow_uses_actual_external_delivery_and_keeps_player_a
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             raw = messages[1].content
-            data = json.loads(raw if raw.startswith('{') else raw.split('\n', 1)[1])
+            data = prompt_payload(raw)
             properties = kwargs['response_format']['json_schema']['schema']['properties']
             if 'approved_indexes' in properties:
                 calls.append('proof_review')

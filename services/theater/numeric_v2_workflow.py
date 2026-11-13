@@ -72,6 +72,7 @@ from .numeric_v2_evaluator import (
     _pending_completion_facts,
     _scene_delivery_plan,
     _verified_body_issues,
+    _FIXED_ORIGINAL_CAUSE_RULE,
     _parse_output as _parse_evaluation_output,
     _committed_completion_evidence,
     _committed_player_route_evidence,
@@ -1045,6 +1046,75 @@ def _authored_offer_is_canonical_content(performance: Mapping[str, Any], offer: 
     authored = mixed_performance_blocks(offer)
     visible = performance_content_blocks(performance)
     return bool(authored) and visible == authored
+
+
+def _cited_dialogue_recovery(candidate, findings, *, author_rules, dialogue_policy):
+    """Remove only uniquely located, confirmed author-rule quotes for fresh review."""
+    raw = candidate.get("performance")
+    if not isinstance(raw, str) or not findings or candidate.get("segments") or candidate.get("fixed_narrations"):
+        return None
+    visible = performance_content_blocks(candidate)
+    spans = set()
+    for finding in findings:
+        block, quote = finding.get("candidate") or {}, finding.get("quote")
+        ref = str(block.get("id") or "")
+        source = visible[int(ref[1:])] if re.fullmatch(r"c\d+", ref) and int(ref[1:]) < len(visible) else {}
+        if (finding.get("rule") not in author_rules or block.get("type") != "dialogue"
+                or block.get("phase") != "turn" or block.get("program_fixed_original")
+                or source.get("type") != "dialogue" or source.get("text") != block.get("text")
+                or not isinstance(quote, str) or not quote or quote not in str(block.get("text") or "")
+                or str(block.get("text") or "") not in raw or raw.count(quote) != 1
+                or sum(row["text"].count(quote) for row in visible) != 1):
+            return None
+        start = raw.index(quote)
+        span = (start, start + len(quote))
+        if any(span != old and span[0] < old[1] and old[0] < span[1] for old in spans):
+            return None
+        spans.add(span)
+    for start, end in sorted(spans, reverse=True):
+        raw = raw[:start] + raw[end:]
+    recovered = {**candidate, "performance": raw.strip(), "suggested_inputs": [],
+                 "fact_candidates": [], "transition_offered": False}
+    for key in ("_published_transition_offer", "_transition_offer_provided", "transition_offer_presented"):
+        recovered.pop(key, None)
+    if (not valid_mixed_performance_policy(recovered, dialogue_policy)
+            or not any(block["type"] == "dialogue" for block in mixed_performance_blocks(raw))):
+        return None
+    return recovered
+
+
+def _unmarked_authored_offer(
+    runtime: NumericV2Runtime, current: NumericV2StoredSession,
+) -> str:
+    """Locate a latest public author offer for review, without issuing a receipt."""
+    session, engine = current.session, runtime.engine
+    if session.transition_offered or engine.completion_contract_satisfied(session) is False:
+        return ""
+    records, _ = current_scene_records(session)
+    latest = records[0] if records else {}
+    if (latest.get("revision") != session.revision
+            or latest.get("from_node_id") != latest.get("to_node_id")
+            or latest.get("transition_offer_invalidated") is True
+            or latest.get("input_source") in {"reinvite", "accept_invitation"}):
+        return ""
+    event = next((row for row in current.ledger_events
+                  if row.get("result_revision") == session.revision), {})
+    if event.get("scene_complete") is not True or event.get("transition_intent") == "reject":
+        return ""
+    route = engine.preview_route(session.current_node_id, session.metrics, facts=session.story_state["facts"])
+    if route is None or engine.route_departure_blocker(session, route,
+            condition_narrations_enabled=False) is not None:
+        return ""
+    target = engine.nodes[route["target_node_id"]]
+    contract = route["transition_contract"]
+    if target.get("type") == "ending" or target.get("terminal") is True or "silent_choice" in contract:
+        return ""
+    offer = _project_authored_transition_text(engine, session, str(contract.get("fallback_offer") or "")).strip()
+    visible = performance_content_blocks(latest)
+    # Do not revive an intermediate proposal followed by a withdrawal or a
+    # different arrangement in the same committed response.
+    return offer if (offer and visible and visible[-1].get("type") == "dialogue"
+        and _authored_offer_visible({"performance": visible[-1]["text"]}, offer)) else ""
 
 
 def _silent_choice_input(engine, session, contract: Mapping[str, Any]) -> str:
@@ -2156,7 +2226,11 @@ async def _execute_numeric_v2_turn(
         )
         pending_offer = ""
         pending_offer_revision = None
-        if narrow_review and not confirmed_route_id and (evaluation.transition_intent == "accept" or recover_offer):
+        unmarked_offer = ""
+        unmarked_reply = (evaluation.transition_intent == "unclear" and evaluation.needs_offer_review
+                          and not current.session.transition_offered)
+        if narrow_review and not confirmed_route_id and (
+                evaluation.transition_intent == "accept" or recover_offer or unmarked_reply):
             origin = pending_transition_record(current.session, ledger_events=current.ledger_events, include_withdrawn=True)
             pending_offer = pending_transition_performance(
                 current.session, ledger_events=current.ledger_events, include_withdrawn=True,
@@ -2167,6 +2241,13 @@ async def _execute_numeric_v2_turn(
                 if (recorded_silent_choice(origin, current.ledger_events) is not None
                         or _adds_unconfirmed_prerequisite(turn.message, pending_offer)):
                     pending_offer = ""
+            if (not pending_offer and (evaluation.transition_intent == "accept" or unmarked_reply) and evaluation.scene_complete
+                    and not evaluation.exit_mismatch_reason and not evaluation.wrong_exit_offer_quote
+                    and turn.input_source in {"freeform", "suggestion"}
+                    and not is_placeholder_accept_input(turn.message)
+                    and not is_explicit_transition_deferral(turn.message)):
+                unmarked_offer = _unmarked_authored_offer(runtime, current)
+                pending_offer = unmarked_offer
             if not pending_offer:
                 evaluation = replace(evaluation, transition_intent="unclear")
         ending_route = None
@@ -2286,7 +2367,9 @@ async def _execute_numeric_v2_turn(
                     if ending_route is not None:
                         ending_ready = ending_ready and review.offer_decision == "accept"
                     if review.offer_decision == "accept" and (ending_route is None or ending_ready):
-                        evaluation = replace(evaluation, transition_intent="accept",
+                        evaluation = replace(evaluation,
+                            transition_intent="initiate" if unmarked_offer else "accept",
+                            public_destination_quote=unmarked_offer or evaluation.public_destination_quote,
                             transition_reply_target="pending_transition", exit_mismatch_reason="")
                     elif review.offer_decision == "reject":
                         evaluation = replace(evaluation, transition_intent="reject", natural_ending_ready=False)
@@ -3190,6 +3273,7 @@ async def _execute_numeric_v2_turn(
     ] | None = None
     authored_recovery_receipt: tuple[TurnOutcomeV2, dict[str, Any]] | None = None
     authored_invitation_recovered = False
+    cited_dialogue_recovered = False
     recovery_author_original_conflict = False
 
     def is_authored_recovery(candidate: Mapping[str, Any]) -> bool:
@@ -3203,7 +3287,8 @@ async def _execute_numeric_v2_turn(
         nonlocal authored_recovery_receipt, final_fixed_review, actor_publishes_transition_offer
         nonlocal actor_draft_route, reviewed_transition_offered, outcome
         nonlocal authored_invitation_recovered, program_invitation_performance
-        if authored_recovery_receipt is not None or recovery_author_original_conflict:
+        if (authored_recovery_receipt is not None or recovery_author_original_conflict
+                or diagnostics.get("contract_check_calls", 0) >= 2):
             return None
         recovered = _authored_transition_recovery(runtime.engine, current, outcome,
             reviewed_source=reviewed_transition_source)
@@ -3261,6 +3346,7 @@ async def _execute_numeric_v2_turn(
             async with asyncio.timeout(remaining):
                 collect = (
                     discovery_collection_open and not numeric_v2_options.MODEL_REVIEWS_ENABLED
+                    and not cited_dialogue_recovered
                     and module_options.get("evaluator") and module_options.get("review_contract")
                     and not module_options.get("review") and kwargs.get("session") is current.session
                     and kwargs.get("target_node") is None and not kwargs.get("terminal_input_closed")
@@ -3489,8 +3575,6 @@ async def _execute_numeric_v2_turn(
         candidate: Mapping[str, Any], *, offer_text: str = "", offer_route=None, offer_accept_input: str = "",
     ) -> tuple[str, ...]:
         nonlocal recovery_author_original_conflict
-        if is_authored_recovery(candidate):
-            return ()
         target_id = str(outcome.ledger_event["to_node_id"])
         changed = target_id != str(outcome.ledger_event["from_node_id"])
         key = contract_key(candidate)
@@ -3538,6 +3622,8 @@ async def _execute_numeric_v2_turn(
         proposed = None
         offer_key = None
         offer_text = offer_text or str(candidate.get("_published_transition_offer") or "")
+        if is_authored_recovery(candidate) and authored_invitation_recovered:
+            offer_text = offer_text or str(program_invitation_performance or "")
         offer_route = offer_route or actor_draft_route
         if (not changed and not numeric_v2_options.MODEL_REVIEWS_ENABLED and offer_text and offer_route
                 and _authored_offer_visible(candidate, offer_text)):
@@ -3547,6 +3633,10 @@ async def _execute_numeric_v2_turn(
             offer_key = (key[1], offer_route["id"], offer_text, offer_accept_input)
         if key in contract_verdicts and (offer_key is None or offer_key in offer_verdicts):
             return contract_verdicts[key]
+        if (authored_recovery_receipt is not None or cited_dialogue_recovered) and diagnostics.get("contract_check_calls", 0) >= 2:
+            # Recovery shares the original draft/rewrite allowance. An edited
+            # recovery cannot inherit a cached approval or add a third audit.
+            raise NumericV2ActorOutputError("numeric_v2_contract_check_failed")
         problems: list[str] = []
         source = runtime.engine.nodes[str(outcome.ledger_event["from_node_id"])]
         blocked_route = outcome.blocked_departure_route if not changed else None
@@ -3641,9 +3731,16 @@ async def _execute_numeric_v2_turn(
                     offer_verdicts[offer_key] = (check_diagnostics.get("offer_actionable") is True
                                                  and not is_pressure_only_offer(offer_text))
                 findings = check_diagnostics.get("findings", [])
-                recovery_author_original_conflict = recovery_author_original_conflict or any(
+                uneditable = [finding for finding in findings if (
                     (finding.get("candidate") or {}).get("program_fixed_original") is True
-                    for finding in findings)
+                    and not (finding.get("rule") == _FIXED_ORIGINAL_CAUSE_RULE
+                        and str((finding.get("prior") or {}).get("id", "")).startswith("c")
+                        and (finding.get("prior") or {}).get("program_fixed_original") is not True
+                        and not (reviewed_transition_source is not None
+                            and (finding.get("prior") or {}).get("phase") == "source_response")))]
+                recovery_author_original_conflict = recovery_author_original_conflict or bool(problems and uneditable)
+                if problems and uneditable:
+                    diagnostics["uneditable_contract_conflicts"] = uneditable
                 if (not changed and unconfirmed_departure_quote and problems) or (
                         blocked_route is not None and (check_diagnostics.get("departure_scope") == "uncertain"
                         or check_diagnostics.get("local_delivery_missing") or any(
@@ -3688,14 +3785,20 @@ async def _execute_numeric_v2_turn(
             recovered = recover_authored_transition(str(exc.__cause__ or exc))
             if recovered is None:
                 raise
-            return recovered, ()
+            return recovered, await delivery_contract_problems(recovered)
 
     performance, problems = await checked_delivery(performance)
+    if problems and recovery_author_original_conflict:
+        # Actor cannot edit a program original. Retain the real conflict and
+        # stop before spending a rewrite that must reproduce the same source.
+        raise NumericV2ActorOutputError("numeric_v2_contract_violation")
     if problems and diagnostics["semantic_rewrite_attempts"]:
         recovered = recover_authored_transition("contract_rewrite_exhausted")
         if recovered is None:
             raise NumericV2ActorOutputError("numeric_v2_contract_violation")
-        performance, problems = recovered, ()
+        performance, problems = await checked_delivery(recovered)
+        if problems:
+            raise NumericV2ActorOutputError("numeric_v2_contract_violation")
     if problems:
         diagnostics["contract_violated"] = list(problems)
         diagnostics["semantic_rewrite_attempts"] += 1
@@ -3720,13 +3823,35 @@ async def _execute_numeric_v2_turn(
         await verify_later_transition_draft(performance, stage="contract_rewrite")
         performance, remaining_problems = await checked_delivery(performance)
         diagnostics["contract_violated_after_rewrite"] = list(remaining_problems)
+        if (remaining_problems and contract_key(performance) == key and not route_changed
+                and not module_options.get("review") and module_options.get("review_contract")
+                and diagnostics.get("contract_check_calls", 0) < 2
+                and authored_recovery_receipt is None and not current.session.transition_offered
+                and outcome.ledger_event.get("scene_complete") is not True
+                and not outcome.ledger_event.get("fact_operations") and not performance.get("fact_candidates")
+                and reviewed_transition_source is None and not deferred_delivery_claims
+                and not approved_delivery_claims and adopted_completion_facts is None):
+            findings = contract_findings.get(key, [])
+            if {row.get("rule") for row in findings} == set(remaining_problems):
+                recovered = _cited_dialogue_recovery(performance, findings,
+                    author_rules=contract_boundary_items(runtime.engine.nodes[current.session.current_node_id]),
+                    dialogue_policy=outcome.session.dialogue_policy)
+                if recovered is not None:
+                    # A changed body earns no prior approval. Spend only the
+                    # unused second audit; never send a third Actor draft.
+                    cited_dialogue_recovered = True
+                    actor_publishes_transition_offer = reviewed_transition_offered = False
+                    performance, remaining_problems = await checked_delivery(recovered)
+                    diagnostics["cited_dialogue_recoveries"] = int(not remaining_problems)
         if remaining_problems:
             recovered = recover_authored_transition("contract_rewrite_exhausted")
             if recovered is None:
                 raise NumericV2ActorOutputError("numeric_v2_contract_violation")
-            performance = recovered
+            performance, problems = await checked_delivery(recovered)
+            if problems:
+                raise NumericV2ActorOutputError("numeric_v2_contract_violation")
 
-    if not module_options.get("review") or is_authored_recovery(performance):
+    if not module_options.get("review"):
         # Review disabled: no review-model call, but deterministic zero-call scene boundaries still allow one Actor repair.
         diagnostics["review_skipped"] = True
         trace_event("review.skipped", phase="transition" if route_changed else "ordinary")
@@ -3963,7 +4088,7 @@ async def _execute_numeric_v2_turn(
         diagnostics["review_skipped"] = True
         trace_event("review.skipped", phase="transition")
         reviewed_transition_offered = performance.get("transition_offered") is True
-    elif route_changed and not is_authored_recovery(performance):
+    elif route_changed:
         # Review three parts + initial buttons together once; only explicit narrative conflict gets one rewrite, never static-narration replacement or forced ending.
         diagnostics["route_suggestion_reviews"] += int(bool(performance.get("suggested_inputs")))
         for rewrite_attempt in range(2):
@@ -4784,7 +4909,7 @@ async def _execute_numeric_v2_turn(
                 structural_problems = transition_bridge_leaks(performance)
                 terminal_problems = await review_terminal_question_markers(performance)
             if structural_problems or terminal_problems or problems:
-                if diagnostics["semantic_rewrite_attempts"]:
+                if diagnostics["semantic_rewrite_attempts"] or recovery_author_original_conflict:
                     raise NumericV2ActorOutputError("numeric_v2_contract_violation")
                 diagnostics["semantic_rewrite_attempts"] += 1
                 findings = contract_findings.get(contract_key(performance), [])
@@ -4799,7 +4924,9 @@ async def _execute_numeric_v2_turn(
                     recovered = recover_authored_transition("source_tail_rewrite_exhausted")
                     if recovered is None:
                         raise NumericV2ActorOutputError("numeric_v2_contract_violation")
-                    performance = recovered
+                    performance, problems = await checked_delivery(recovered)
+                    if problems:
+                        raise NumericV2ActorOutputError("numeric_v2_contract_violation")
     if outcome.session.status == "ended" and any(
         outcome.session.story_state["facts"].get(key, {}).get("value") is not True for key in required_handoff_keys
     ):

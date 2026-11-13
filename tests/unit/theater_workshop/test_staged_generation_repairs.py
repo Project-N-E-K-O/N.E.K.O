@@ -1,4 +1,6 @@
 """Bounded staged retries preserve valid fields while repairing located omissions."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
@@ -39,7 +41,7 @@ def test_missing_scene_text_is_repaired_without_rewriting_valid_values(resume):
     writes, snapshots = [], []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_chapter_generation" and data["chapter_index"] == 2:
             writes.append(data)
             if not resume and len(writes) == 1:
@@ -68,7 +70,7 @@ def test_unrequested_repair_output_is_rejected_without_consuming_the_candidate(i
     writes = []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_chapter_generation" and data["chapter_index"] == 2:
             writes.append(data)
             if len(writes) == 1:
@@ -102,7 +104,7 @@ def test_unrequested_repair_output_is_rejected_without_consuming_the_candidate(i
     resumed_writes = []
 
     def resume(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_chapter_generation" and data["chapter_index"] == 2:
             resumed_writes.append(data)
             assert data["current_candidate"] == broken
@@ -124,7 +126,7 @@ def test_malformed_local_replacement_keeps_the_same_scope_and_candidate():
     writes, snapshots = [], []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_chapter_generation" and data["chapter_index"] == 2:
             writes.append(data)
             if len(writes) == 1:
@@ -157,7 +159,7 @@ def test_json_parse_failure_is_reported_without_replaying_the_rejected_draft(fen
     writes = []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_chapter_generation" and data["chapter_index"] == 2:
             writes.append(data)
             if len(writes) == 1:
@@ -182,7 +184,7 @@ def test_repeated_json_parse_failures_stop_after_three_attempts_and_keep_prior_s
     writes = []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_chapter_generation" and data["chapter_index"] == 2:
             writes.append(data)
             if len(writes) > 1:
@@ -204,7 +206,7 @@ def test_ending_missing_text_is_repaired_without_rewriting_other_ending_fields()
     writes, snapshots = [], []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_ending_generation":
             writes.append(data)
             if len(writes) == 1:
@@ -234,7 +236,7 @@ def test_linked_exit_validation_keeps_full_scene_repair_for_related_fields(missi
     writes = []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_chapter_generation" and data["chapter_index"] == 2:
             writes.append(data)
             if len(writes) == 1:
@@ -253,7 +255,7 @@ def test_frame_text_validation_keeps_the_existing_full_frame_protocol():
     frames = []
 
     def model(messages, **options):
-        data = json.loads(messages[1]["content"])
+        data = prompt_payload(messages[1]["content"])
         if options["operation"] == "numeric_v2_story_frame":
             frames.append(data)
             assert "requested_replacements" not in data

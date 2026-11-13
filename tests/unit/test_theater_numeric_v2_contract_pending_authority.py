@@ -85,7 +85,7 @@ async def test_every_pending_block_shares_one_confirmation_with_grounded_finding
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad", ["present", "uncertain", "missing_scope", "missing_proof", "wrong_proof", "other_candidate", "partial_proof", "missing_verdict", "timeout"])
+@pytest.mark.parametrize("bad", ["present", "uncertain", "missing_scope", "missing_verdict", "timeout"])
 async def test_nonclear_or_incomplete_pending_block_never_publishes_facts(monkeypatch, bad):
     engine, session = _frame()
     body = _body()
@@ -102,10 +102,6 @@ async def test_nonclear_or_incomplete_pending_block_never_publishes_facts(monkey
                     return
                 if bad in {"present", "uncertain"}: row["player_action_scope"] = bad
                 elif bad == "missing_scope": row.pop("player_action_scope")
-                elif bad == "missing_proof": row["clearance"] = []
-                elif bad == "wrong_proof": row["clearance"] = ["p0"]
-                elif bad == "other_candidate": row["clearance"] = ["c0"]
-                elif bad == "partial_proof": row["clearance"] = [{"source_ref": "c2", "quote": finding["quote"][:2]}]
             return _confirmed(data, change=change)
         payload = contract_audit_payload({"violations": []}, messages)
         payload["player_authority"]["c0"] = "uncertain"
@@ -121,6 +117,39 @@ async def test_nonclear_or_incomplete_pending_block_never_publishes_facts(monkey
     else:
         assert ev._PLAYER_AUTHORITY_RULE in await _review(engine, session, body, _bound(engine, session, body), sink)
     assert not sink and len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("proof", ["omitted", "player_input", "other_candidate", "partial_candidate"])
+async def test_pending_absence_scope_binds_its_own_whole_block_without_redundant_proof(monkeypatch, proof):
+    engine, session = _frame()
+    body = _body()
+    observed = []
+
+    def respond(messages, data, kwargs):
+        if "finding" in data or "findings" in data:
+            def change(finding, row):
+                if finding["candidate"]["id"] != "c2":
+                    return
+                observed.append(finding["candidate"])
+                if proof == "omitted": row["clearance"] = []
+                elif proof == "player_input": row["clearance"] = ["p0"]
+                elif proof == "other_candidate": row["clearance"] = ["c0"]
+                else: row["clearance"] = [{"source_ref": "c2", "quote": finding["quote"][:2]}]
+            return _confirmed(data, change=change)
+        payload = contract_audit_payload({"violations": []}, messages)
+        payload["player_authority"]["c0"] = "uncertain"
+        payload["player_authority"]["c2"] = "uncertain"
+        payload["bound_completion_approved_indexes"] = [0]
+        return payload
+
+    calls = _install(monkeypatch, respond)
+    sink, diagnostics = [], {}
+    assert await _review(engine, session, body, _bound(engine, session, body), sink, diagnostics=diagnostics) == ()
+    effective = next(row for row in diagnostics["confirmation_verdicts"] if row["candidate_ref"] == "c2")
+    assert effective["clearance"] == [{"source_ref": "c2", "quote": observed[0]["text"]}]
+    assert diagnostics["player_authority_blocks"]["c2"] == "none"
+    assert sink == [(0,)] and len(calls) == 2
 
 
 @pytest.mark.asyncio

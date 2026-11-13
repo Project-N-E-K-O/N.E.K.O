@@ -248,7 +248,7 @@ async def test_completion_is_settled_at_the_stage_that_has_its_evidence(tmp_path
             system, human = messages
             assert "目标要求实际交付、执行或完整体验时" in system.content
             assert runtime.store._path(current.session.session_id).read_bytes() == original_bytes
-            wire = json.loads(human.content)
+            wire = prompt_payload(human.content)
             claim, = wire["claims"]
             evidence = claim["evidence"]
             if player_action:
@@ -414,7 +414,7 @@ async def test_pending_automatic_departure_only_requests_advice_for_a_repair(tmp
             return False
 
         async def ainvoke(self, messages, **kwargs):
-            wire = json.loads(messages[1].content.split("\n", 1)[1])
+            wire = prompt_payload(messages[1].content)
             if "finding" in wire:
                 contract_calls.append("confirmation")
                 assert draft_case == "generic_only"
@@ -597,7 +597,7 @@ async def test_blocked_departure_requires_scope_only_on_high_risk_turns(tmp_path
             return False
 
         async def ainvoke(self, messages, **kwargs):
-            wire = json.loads(messages[1].content.split("\n", 1)[1])
+            wire = prompt_payload(messages[1].content)
             if "finding" in wire and "departure_sources" not in wire:
                 assert case in {"author_confirmation", "no_delivery"}
                 assert "visible_order" in wire

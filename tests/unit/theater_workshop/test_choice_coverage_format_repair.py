@@ -4,6 +4,8 @@ The real replies used string ``true`` and ``key=true`` for bool requirements,
 then removed alternatives on one format correction. Doubles test the protocol,
 not whether the cited fiction semantically contains those alternatives.
 """
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
@@ -51,7 +53,7 @@ def _assess_correction(mutate_first, mutate_second, *, check_feedback=None):
     def model(messages, **options):
         nonlocal first
         operation = options["operation"]
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         if (operation in {"numeric_v2_fact_review", "numeric_v2_fact_review_format_repair"}
                 and request["checked_node_ids"] == [story["start_node_id"]]
                 and request["audit_task"]["kind"] == "node"):
@@ -64,7 +66,7 @@ def _assess_correction(mutate_first, mutate_second, *, check_feedback=None):
                 first["contract_checks"][0]["alternatives"] = [alternative]
                 mutate_first(first, request)
                 return json.dumps(first, ensure_ascii=False)
-            feedback = json.loads(messages[-1]["content"])
+            feedback = prompt_payload(messages[-1]["content"])
             if check_feedback:
                 check_feedback(feedback, request)
             corrected = deepcopy(first)
@@ -198,7 +200,7 @@ def test_handoff_format_repair_preserves_the_recorded_verdict_while_restoring_ci
     calls = []
 
     def model(messages, **options):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         operation = options["operation"]
         if (operation in {"numeric_v2_fact_review", "numeric_v2_fact_review_format_repair"}
                 and request["audit_task"]["kind"] == "transition"
@@ -212,7 +214,7 @@ def test_handoff_format_repair_preserves_the_recorded_verdict_while_restoring_ci
                 row.update(compatible=compatible, counterexample="玩家仅接受核实，未保证固定桥段中的额外行动。" if compatible is False else "")
                 row["downstream_refs"].pop()
             else:
-                feedback = json.loads(messages[-1]["content"])
+                feedback = prompt_payload(messages[-1]["content"])
                 assert any(row.get("compatible", "absent") is compatible
                            for row in feedback["required_alternatives"])
             # The format correction restores citations but also silently changes
@@ -239,7 +241,7 @@ def test_sent_review_example_value_satisfies_the_actual_bool_contract():
     def model(messages, **options):
         if options["operation"] not in {"numeric_v2_fact_review", "numeric_v2_fact_review_format_repair"}:
             return fallback(messages, **options)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         prompt = messages[0]["content"]
         start = prompt.index("每项为{", prompt.index("alternatives仅用于")) + len("每项为")
         example, _ = json.JSONDecoder().raw_decode(prompt[start:])

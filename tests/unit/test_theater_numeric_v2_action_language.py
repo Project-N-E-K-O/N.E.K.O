@@ -146,9 +146,7 @@ def test_unextracted_request_reaches_actor_evaluator_and_review_unchanged():
             actor_performance={"performance": "（打开箱盖）先看看这些。", "suggested_inputs": []})[0],
     ]
     assert all(prompt_payload(group[1].content)["player_input"] == message for group in groups)
-    actor_projection = json.JSONDecoder().raw_decode(groups[0][0].content.split(
-        "本轮玩家动作结果投影（仅为约束，不是新增剧情）：", 1,
-    )[1])[0]
+    actor_projection = prompt_payload(groups[0][0].content)
     assert actor_projection["confirmed_actions"] == []
     assert all(prompt_payload(group[1].content)["player_action_projection"]["confirmed_actions"] == []
                for group in groups[1:])
@@ -179,9 +177,7 @@ def test_player_input_evidence_references_keep_actions_and_future_agreements():
         assert sum(item.content.count('"evidence_ref":"player_input"') for item in group) == expected_refs
         assert "evidence_ref 取 player_input 原话。" in group[0].content
         assert prompt_payload(group[1].content)["player_input"] == message
-    actor_projection = json.JSONDecoder().raw_decode(groups[0][0].content.split(
-        "本轮玩家动作结果投影（仅为约束，不是新增剧情）：", 1,
-    )[1])[0]
+    actor_projection = prompt_payload(groups[0][0].content)
     assert actor_projection["confirmed_actions"] == []
     assert "player_left_current_scene" not in actor_projection
     assert actor_projection["future_references"] == [{

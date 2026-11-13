@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, prompt_payload
 
 import pytest
 
@@ -151,7 +151,7 @@ async def test_native_contract_request_binds_verdict_to_current_phase_and_exact_
         async def __aexit__(self, *args): pass
         async def ainvoke(self, messages, **kwargs):
             requests.append(messages)
-            data = json.loads(messages[1].content.split("\n", 1)[1])
+            data = prompt_payload(messages[1].content)
             payload = [finding] if finding else []
             if len(requests) > 1:
                 assert data["finding"]["quote"] == finding["quote"]
@@ -179,7 +179,7 @@ async def test_native_contract_request_binds_verdict_to_current_phase_and_exact_
     assert candidate == before
     assert len(requests) == 1 + int(expected_index is not None)
     wire = "\n".join(m.content for m in requests[0])
-    data = json.loads(requests[0][1].content.split("\n", 1)[1])
+    data = prompt_payload(requests[0][1].content)
     expected = (() if expected_index is None or expected_index == 0 or not confirms_violation
                 else (data["author_boundaries"][expected_index]["text"],))
     if finding and finding["rule_index"] < len(data["author_checks_required"]) and expected_index is None:

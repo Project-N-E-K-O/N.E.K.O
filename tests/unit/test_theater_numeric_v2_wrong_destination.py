@@ -1,5 +1,6 @@
 """Wrong destinations in initiation and acceptance share one stay-in-scene rewrite, without duplicate scoring or commits."""
 import json
+from tests.utils.theater_prompt import prompt_payload
 import pytest
 
 from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as workflow
@@ -318,7 +319,7 @@ async def test_real_acceptance_review_call_supplies_original_invitation_and_pars
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
         async def ainvoke(self, messages):
-                if json.loads(messages[1].content[messages[1].content.index("{"):]).get("review_task") == "player_actions":
+                if prompt_payload(messages[1].content).get("review_task") == "player_actions":
                     return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
                 calls.append(messages)
                 return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False, body_violations=[],
@@ -335,7 +336,7 @@ async def test_real_acceptance_review_call_supplies_original_invitation_and_pars
         message='好，走吧。', actor_performance=candidate, transition_outcome=outcome, dispute_review=disputed)
     assert review.acceptance_authorized is False and review.body_violations == ('player_action',)
     assert len(calls) == 1
-    data = json.loads(calls[0][1].content.split('：', 1)[1])
+    data = prompt_payload(calls[0][1].content)
     invitation = data['transition_authorization']['pending_invitation']
     assert invitation['revision'] == session.revision
     reference = invitation['content'].split('中的', 1)[0]
