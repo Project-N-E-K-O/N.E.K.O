@@ -1094,12 +1094,17 @@ async def test_a_closing_session_that_ends_with_an_ordinary_error_waits_for_its_
     runtime = host.task_agents._runtime
     close = runtime.close
 
+    close_requested = asyncio.Event()
+
     async def unanswered_close(session_id: str) -> None:
-        pass
+        close_requested.set()
 
     runtime.close = unanswered_close
     first = await _dispatch(host, "sort the photos")
     await wait_status(host, first.commission_id, "failed")
+    # Failed is written before the close is asked for; the session is
+    # closing only from then on.
+    await wait_until(close_requested.is_set, what="the close being asked for")
 
     await host.task_agents._handle(
         {"type": "ended", "session_id": first.commission_id, "reason": "error", "error": "the model failed"}
