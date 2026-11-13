@@ -169,11 +169,13 @@ async def _cancelled(call: Any) -> None:
 
 
 async def _until(holds: Any) -> None:
-    for _ in range(200):
-        if holds():
-            return
-        await asyncio.sleep(0)
-    raise AssertionError("it did not come to that")
+    # A start reads its settings and picks its browser in worker threads, so
+    # how soon it gets anywhere is a matter of time, not of turns of the loop.
+    deadline = time.monotonic() + 10.0
+    while not holds():
+        if time.monotonic() > deadline:
+            raise AssertionError("it did not come to that")
+        await asyncio.sleep(0.005)
 
 
 async def test_a_start_cancelled_while_the_browser_comes_up_closes_the_browser_once_it_is_there(
