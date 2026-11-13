@@ -85,6 +85,11 @@ async def make_session(world: BrowserWorld) -> Any:
         return made[-1]
 
     yield make
+    # A test that failed half way must not leave the closing below waiting
+    # for a start it held back.
+    for gate in (world.launch_gate, world.connect_gate):
+        if gate is not None:
+            gate.set()
     for item in made:
         await item.close()
     # What was left waiting on a closed connection ends now.
