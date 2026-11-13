@@ -448,3 +448,62 @@ def test_expiry_during_permission_validation_rejects_crop():
         assert result["output"]["reason"] == "stale_snapshot"
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('phase', ['decode_image', '_encode_preview'])
+@pytest.mark.parametrize('change', ['connection', 'revoke', 'revoke_enable'])
+async def test_image_processing_rechecks_connection_and_permission(phase, change, monkeypatch):
+    manager, _ = fixture()
+    original = m.asyncio.to_thread
+
+    async def intercept(fn, *args, **kwargs):
+        value = await original(fn, *args, **kwargs)
+        if fn.__name__ == phase:
+            if change == 'connection':
+                manager.websocket = SimpleNamespace(send_json=manager.websocket.send_json)
+            else:
+                manager._proactive_vision_revocation_epoch = 1
+                manager._proactive_vision_enabled = change == 'revoke_enable'
+        return value
+
+    monkeypatch.setattr(m.asyncio, 'to_thread', intercept)
+    result = await m.read_screen(manager)
+    assert result['is_error'] and not result['images']
+    assert result['output']['reason'] in ('disabled', 'superseded')
+    assert not m._state(manager)['images']
+
+
+async def test_cached_pixels_do_not_cross_connections():
+    manager, calls = fixture()
+    first = await m.read_screen(manager)
+    manager.websocket = SimpleNamespace(send_json=manager.websocket.send_json)
+    result = await m.read_screen(manager, {'snapshot_id': first['output']['snapshot_id'], 'region': [0, 0, 1, 1]})
+    assert result['output']['reason'] == 'stale_snapshot'
+    assert len(calls) == 1
+
+
+async def test_send_is_inside_capture_deadline(monkeypatch):
+    manager, _ = fixture()
+    async def stalled(message):
+        await asyncio.Future()
+    manager.websocket.send_json = stalled
+    monkeypatch.setattr(m, 'CAPTURE_TIMEOUT', .01)
+    result = await asyncio.wait_for(m.read_screen(manager), .5)
+    assert result['output']['reason'] == 'timeout'
+    assert manager._screen_inspection_pending is None
+
+
+@pytest.mark.parametrize('stale', ['session', 'reply'])
+async def test_stale_tool_invocation_does_not_capture(stale):
+    from main_logic.core.tool_calling import ToolCallingMixin
+    from main_logic.tool_calling import ToolCall, ToolRegistry
+    manager, calls = fixture()
+    manager.tool_registry = ToolRegistry()
+    manager.tool_registry.register(m.build_tools(manager)[0])
+    manager.session._active_reply_owner = object()
+    call = ToolCall(call_id='old', name='read_current_screen', arguments={},
+                    reply_owner=object() if stale == 'reply' else None)
+    result = await ToolCallingMixin._on_tool_call(manager, call,
+        invoking_session=object() if stale == 'session' else manager.session)
+    assert result.is_error and result.output['reason'] == 'superseded'
+    assert not calls

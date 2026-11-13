@@ -137,6 +137,16 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        if call.name == "read_current_screen":
+            if (invoking_session is not None and invoking_session is not self.session) or (
+                call.reply_owner is not None
+                and call.reply_owner != getattr(self.session, "_active_reply_owner", None)
+            ):
+                from main_logic.screen_inspection import failure
+
+                rejected = failure(self, "superseded")
+                return ToolResult(call_id=call.call_id, name=call.name,
+                                  output=rejected["output"], is_error=True)
         if call.reply_owner is not None:
             from main_logic.reply_tail import reply_tail_registry
 

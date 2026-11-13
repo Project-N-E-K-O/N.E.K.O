@@ -1515,7 +1515,7 @@ class _StreamingMixin:
 
                                 for idx, char in enumerate(truncated_content):
                                     # Visual titles/code can contain literal pipes.
-                                    if char == '|' and not _turn_tool_image_slots:
+                                    if char == '|' and not self._has_tool_image_slots(_turn_tool_image_slots):
                                         pipe_count += 1
                                         if pipe_count >= 2:
                                             truncated_content = truncated_content[:idx]
@@ -1734,7 +1734,7 @@ class _StreamingMixin:
                                 # fence + length guard
                                 for idx, char in enumerate(flush_text):
                                     # Visual titles/code can contain literal pipes.
-                                    if char == '|' and not _turn_tool_image_slots:
+                                    if char == '|' and not self._has_tool_image_slots(_turn_tool_image_slots):
                                         pipe_count += 1
                                         if pipe_count >= 2:
                                             flush_text = flush_text[:idx]

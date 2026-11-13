@@ -26,7 +26,8 @@ The description and result hints have all eight supported locales.
 There is no additional recurring screen system message after inspection. The
 per-image result states that pixels expire after the turn; the released image has
 a short restart receipt in its original history position. Titles stay in tool
-output; they are not copied into system messages. Evidence guidance is included
+output only during the owning turn; release removes the inventory and source
+metadata, and titles are never copied into system messages. Evidence guidance is included
 once in the result instead of being repeated in the image caption.
 
 ## Measured prompt size
@@ -40,8 +41,8 @@ not tokenizer estimates. Schema counts use the complete OpenAI tools array,
 | Visual tool count | 3 | 1 | — |
 | Chinese descriptions, total | 547 | 34 | 61 |
 | English descriptions, total | 1413 | 138 | 197 |
-| Chinese serialized visual tools | 1348 | 367 | — |
-| English serialized visual tools | 2214 | 471 | — |
+| Chinese serialized visual tools | 1348 | 338 | — |
+| English serialized visual tools | 2214 | 442 | — |
 
 ## Regression report
 
@@ -143,3 +144,94 @@ all 18 follow-up turns passed. Across the compact visual runs this is 125/126
 turns, with the original failure retained. Sanitized questions, answers, calls,
 timings and manual adjudication are in
 `tests/fixtures/screen_inspection/compact-evaluation.json`.
+
+## Review follow-up, 2026-11-13
+
+This follow-up starts from compact-tool commit `0de8dc7a`. The maintainer's
+November 12 comparison tested the earlier three-tool interface and specifically
+reported retained window inventories affecting subsequent ordinary chat. Those
+findings are checked against the current single-tool implementation here.
+
+### Fixes and regression risks
+
+- The Python frontend bridge test now imports its ESM suite from a CommonJS
+  entry through `tests.node_harness.run_node_script`. This preserves the shared
+  UTF-8 transport, startup-stall handling and watchdog, including Windows paths
+  encoded as file URLs. The Windows failure was the launcher contract assertion,
+  not a demonstrated native screenshot failure.
+- Screen tool result text, including window inventories, source titles and
+  snapshot metadata, is replaced by a localized release receipt at turn exit.
+  Tool name and call ID remain paired; other tools' output is preserved. Cleanup
+  covers normal completion, cancellation, provider failure and omitted images.
+  The next request also hides previous-turn inventories before an older turn's
+  cleanup completes. Same-turn selection still receives the inventory. User
+  messages and the assistant's visible answers are retained, so this does not
+  promise to erase screen facts already discussed in conversation.
+- Only actual tool image slots relax the pipe guard. A failed screen call's text
+  receipt does not. Ordinary attachments, proactive images and plugin attachments
+  retain their existing guard. There is still no recurring visual system notice.
+- Sending the capture request and receiving the response share one timeout.
+  Cache ownership includes connection identity and the vision revocation epoch;
+  consent is checked before capture and after preview encoding. Revoke/re-enable
+  and connection replacement during decode or encoding discard the old result.
+  Stale invoking sessions/reply owners are rejected before capture.
+- Frontend enumeration uses the shared portal-risk helper, including old Linux
+  bridges. Inspection checks remembered-window identity without remapping the
+  selected source, writing preferences or stopping its stream. A restricted
+  browser stream cannot be overridden by a stale monitor ID. Stream replacement
+  is checked during capture, and unnamed streams get distinct scope identities.
+  A known window stream can be reused only with its recorded source binding.
+  Native calls and video playback have a seven-second total deadline; temporary
+  video state is released on failure and late results are ignored. Inspection
+  no longer invokes the generic proactive screenshot fallback, which could
+  acquire a new stream or change the selected source.
+- The built-in schema omits `additionalProperties`, which the Gemini SDK schema
+  rejects; exact allowed argument combinations remain enforced by the handler.
+
+The intentional native whole-screen permission boundary remains: all enumerated
+windows are available, including windows on other monitors or obscured windows.
+Single-window/browser sharing is restricted and never falls back to the desktop.
+Native Windows/Linux/Tauri behavior is not established by browser doubles.
+
+### Legacy dedup failure diagnosis
+
+The failed Windows full-unit job ran merge commit
+`a6be7eea16bf9caec231f42cf24c4ac5cddd9f4c` (PR head `0de8dc7a` merged with
+upstream `d7fc3145`). Its second failure was
+`test_an_everyday_dedup_archive_after_an_interrupted_plan_is_not_claimed`.
+The legacy dedup module/test come from upstream and are absent from this PR head.
+
+`memory.legacy_dedup.owned()` falls back to the planned fact ID plus an archive
+timestamp in milliseconds when the archive reason differs. The test interrupts
+the cleanup after writing its plan, then immediately runs everyday dedup without
+ensuring a distinct timestamp. Two archives at `.123000` and `.123999` seconds
+both normalize to the same millisecond and the everyday archive is incorrectly
+claimed; `.124000` is correctly rejected. This was deterministically reproduced
+using the exact `owned()` and `timestamp()` code from the failed CI merge. A
+coarse clock or fast consecutive operations can expose the collision; this is
+not evidence of a screen-inspection regression. No live memory data was used.
+
+A deterministic test needs explicit different archive times for its distinct-time
+case and a separate collision case. Production ownership needs provenance that
+survives imports, rather than timestamp equality alone. This screen PR does not
+change upstream memory maintenance or claim that failure is fixed.
+
+### Validation scope of this follow-up
+
+The automated regression command covers screen capture, single-tool disclosure,
+OpenAI and Gemini tool loops, ordinary attachment/proactive/plugin pipe guards,
+other-tool history, cancellation, provider frame delivery, screenshot routes,
+shared Node launcher contracts, screen-history request projection and Chromium
+screen-source workflows. Provider responses and native capture bridges are test
+doubles; the screen-source suite runs in Chromium with synthetic DOM/provider
+fixtures. Live providers, real task dispatch and native OS capture were not rerun.
+
+The November 12 model/persona counts and installed macOS acceptance above remain
+historical results for the previous compact version. They are not fresh results
+for these privacy fixes. Windows CI results must be reported for the new pushed
+head separately; a local macOS pass is not a Windows pass.
+
+Final local result: **904 passed**, with four existing deprecation warnings, on
+macOS. Ruff and the repository's prompt hygiene, async blocking, module layering,
+LLM budget, core contract, i18n synchronization, Traditional Chinese coverage,
+docstring and documentation-path checks passed, as did `git diff --check`.

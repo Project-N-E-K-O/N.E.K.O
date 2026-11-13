@@ -1,8 +1,27 @@
+const streamIds = new WeakMap();
+let nextStreamId = 0;
+function streamKey(stream) {
+    if (!streamIds.has(stream)) streamIds.set(stream, ++nextStreamId);
+    return `stream:${streamIds.get(stream)}`;
+}
+
 // On-demand visual inspection. Native-resolution pixels go only to the owning turn.
 // Source selection is read-only: inspecting a window never changes screen sharing.
 export async function handleScreenInspection(request, state, socket) {
     const reply = {action: 'screen_inspection_response', request_id: request.request_id};
-    const provider = window.electronDesktopCapturer || window.tauriDesktopCapturer;
+    const provider = typeof window.getDesktopCaptureProvider === 'function'
+        ? window.getDesktopCaptureProvider() : window.tauriDesktopCapturer || window.electronDesktopCapturer;
+    const mayPrompt = provider && (typeof window.desktopSourceEnumerationMayPrompt === 'function'
+        ? window.desktopSourceEnumerationMayPrompt(provider) : provider.sourceEnumerationMayPrompt !== false);
+    const deadline = Date.now() + 7000;
+    const bounded = async (work) => {
+        let timer;
+        try {
+            return await Promise.race([Promise.resolve().then(work), new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('timeout')), Math.max(0, deadline - Date.now()));
+            })]);
+        } finally { clearTimeout(timer); }
+    };
     const blocked = () => (
         (typeof window.isNekoHomeTutorialProactiveSuppressed === 'function'
             && window.isNekoHomeTutorialProactiveSuppressed())
@@ -11,20 +30,25 @@ export async function handleScreenInspection(request, state, socket) {
     );
     const scopeNow = () => {
         const id = state.selectedScreenSourceId || '';
-        const stream = state.screenCaptureStream;
-        const track = stream && stream.active && stream.getVideoTracks()[0];
-        const displaySurface = track && track.getSettings().displaySurface;
-        if (id.startsWith('window:')) return {key: id, restricted: true, id};
-        if (displaySurface === 'window' || displaySurface === 'browser') {
-            return {key: 'stream:'+track.id, restricted: true, id, stream};
+        const candidate = state.screenCaptureStream;
+        const track = candidate && candidate.active && candidate.getVideoTracks()[0];
+        const stream = track && track.readyState !== 'ended' ? candidate : null;
+        const displaySurface = stream && track.getSettings().displaySurface;
+        const bound = stream && typeof window.getScreenCaptureStreamSourceId === 'function'
+            && window.getScreenCaptureStreamSourceId(stream) === id;
+        if (id.startsWith('window:')) {
+            return {key: id, restricted: true, id, stream: bound ? stream : null};
         }
-        return {key: id || 'desktop', restricted: false, id, stream};
+        if (displaySurface === 'window' || displaySurface === 'browser') {
+            return {key: streamKey(stream), restricted: true, id: '', stream};
+        }
+        return {key: id || (stream ? streamKey(stream) : 'desktop'), restricted: false, id, stream};
     };
     try {
         if (blocked()) throw new Error('disabled');
         let remembered = null;
         if (typeof window.prepareRememberedWindowCapture === 'function') {
-            remembered = await window.prepareRememberedWindowCapture();
+            remembered = await bounded(() => window.prepareRememberedWindowCapture({readOnly: true}));
             if (remembered && remembered.required && !remembered.allowed) {
                 throw new Error('scope_changed');
             }
@@ -35,7 +59,7 @@ export async function handleScreenInspection(request, state, socket) {
             throw new Error('scope_changed');
         }
         const check = () => {
-            if (blocked() || scopeNow().key !== scope.key
+            if (blocked() || scopeNow().key !== scope.key || scopeNow().stream !== scope.stream
                 || (remembered && remembered.required && typeof remembered.isCurrent === 'function' && !remembered.isCurrent())) {
                 throw new Error('scope_changed');
             }
@@ -47,9 +71,9 @@ export async function handleScreenInspection(request, state, socket) {
         } else {
             if (!['overview', 'window'].includes(request.operation)) throw new Error('invalid_request');
             let sources = [];
-            if (provider && typeof provider.getSources === 'function' && !provider.sourceEnumerationMayPrompt) {
-                sources = await provider.getSources({types: scope.restricted ? ['window'] : ['window', 'screen'],
-                    thumbnailSize: {width: 0, height: 0}});
+            if (provider && typeof provider.getSources === 'function' && !mayPrompt) {
+                sources = await bounded(() => provider.getSources({types: scope.restricted ? ['window'] : ['window', 'screen'],
+                    thumbnailSize: {width: 0, height: 0}}));
                 check();
             }
             if (!Array.isArray(sources)) sources = [];
@@ -64,9 +88,9 @@ export async function handleScreenInspection(request, state, socket) {
                 sourceId = (sources.find(s => s.id.startsWith('screen:')) || {}).id;
             }
             let dataUrl, captureType, title = '';
-            if (sourceId && provider && !provider.sourceEnumerationMayPrompt
+            if (sourceId && provider && !mayPrompt
                 && typeof provider.captureSourceAsDataUrl === 'function') {
-                const result = await provider.captureSourceAsDataUrl(sourceId);
+                const result = await bounded(() => provider.captureSourceAsDataUrl(sourceId));
                 check();
                 if (!result || !result.success || !result.dataUrl) throw new Error('capture_failed');
                 dataUrl = result.dataUrl;
@@ -77,7 +101,7 @@ export async function handleScreenInspection(request, state, socket) {
                 video.muted = true;
                 video.srcObject = scope.stream;
                 try {
-                    await video.play();
+                    await bounded(() => video.play());
                     check();
                     if (!video.videoWidth || !video.videoHeight) throw new Error('capture_failed');
                     const canvas = document.createElement('canvas');
@@ -88,12 +112,6 @@ export async function handleScreenInspection(request, state, socket) {
                     sourceId = scope.key;
                     title = scope.restricted ? 'Shared window' : 'Shared screen';
                 } finally { video.pause(); video.srcObject = null; }
-            } else if (request.operation === 'overview' && !scope.restricted && window.appProactive) {
-                const shot = await window.appProactive.captureProactiveChatScreenshotWithSource();
-                check();
-                if (!shot || shot.declined || !shot.dataUrl) throw new Error('capture_failed');
-                dataUrl = shot.dataUrl; captureType = shot.captureType;
-                title = 'Shared source (compatibility capture)';
             } else throw new Error('unsupported_capture');
             check();
             // Stay below the WebSocket transport ceiling, including the JSON envelope.

@@ -15,7 +15,7 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize("prefix_size", [0, 32])
-@pytest.mark.parametrize("visual", [False, True])
+@pytest.mark.parametrize("visual", ["none", "attachment", "proactive", "plugin"])
 def test_attachments_keep_existing_pipe_guard(
     prefix_size, visual, monkeypatch
 ):
@@ -26,9 +26,10 @@ def test_attachments_keep_existing_pipe_guard(
         c._conversation_history = [SystemMessage(content="sys")]
         b = io.BytesIO()
         Image.new("RGB", (32, 32), "white").save(b, "PNG")
-        c._pending_images = [base64.b64encode(b.getvalue()).decode()] if visual else []
-        c._pending_plugin_images = []
-        c._proactive_image_to_inject = None
+        pixels = base64.b64encode(b.getvalue()).decode()
+        c._pending_images = [pixels] if visual == "attachment" else []
+        c._pending_plugin_images = [pixels] if visual == "plugin" else []
+        c._proactive_image_to_inject = pixels if visual == "proactive" else None
         c._proactive_image_staged_at = c._proactive_image_history_len = 0
         c.master_name = "M"
         c.lanlan_name = "L"

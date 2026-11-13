@@ -9,7 +9,7 @@ function fixture() {
     const socket={readyState:1,send:s=>sent.push(JSON.parse(s))}; state.socket=socket;
     global.window={appProactive:{isProactiveVisionEnabledNow:()=>state.proactiveVisionEnabled},
         getAvatarScreenPosition:()=>({centerX:.9,centerY:.8,width:.1,height:.2}),
-        electronDesktopCapturer:{getSources:async()=>[
+        electronDesktopCapturer:{sourceEnumerationMayPrompt:false,getSources:async()=>[
             {id:'screen:1',name:'Screen'}, {id:'window:2',name:'Chrome'}, {id:'window:3',name:'Music'}],
             captureSourceAsDataUrl:async id=>{captures.push(id);return {success:true,dataUrl:'data:image/png;base64,test'};}}};
     return {state,socket,sent,captures};
@@ -99,7 +99,7 @@ function fixture() {
     const canvas={getContext:()=>({drawImage:()=>{drawn=true;}}),toDataURL:()=> 'data:image/png;base64,stream'};
     global.document={createElement:name=>name==='video'?video:canvas};
     await run({operation:'overview',request_id:'1'},f.state,f.socket);
-    assert.equal(f.sent[0].success,true);assert.equal(f.sent[0].scope,'stream:browser-tab');
+    assert.equal(f.sent[0].success,true);assert.match(f.sent[0].scope,/^stream:/);
     assert.equal(f.sent[0].avatar_position,null);assert.deepEqual(f.sent[0].windows,[]);
     assert.equal(canvas.width,2048);assert.equal(canvas.height,1200);assert.ok(paused&&drawn);assert.equal(video.srcObject,null);
     assert.equal(f.captures.length,0);
@@ -117,3 +117,82 @@ function fixture() {
     assert.equal(f.sent[0].error,'invalid_image');assert.equal(f.sent[0].data_url,undefined);
 }
 console.log('Frontend: 16 scenarios passed');
+// Legacy Linux bridges must use the shared portal-risk inference.
+{
+    const f=fixture(); delete window.electronDesktopCapturer.sourceEnumerationMayPrompt;
+    const helpers=await readFile(new URL('../../static/app/desktop-capture-provider.js',import.meta.url),'utf8');
+    const savedNavigator=Object.getOwnPropertyDescriptor(globalThis,'navigator');
+    Object.defineProperty(globalThis,'navigator',{configurable:true,value:{userAgent:'Linux'}});
+    try {
+        (0,eval)(helpers);
+        window.electronDesktopCapturer.getSources=async()=>assert.fail('legacy portal enumeration');
+        window.electronDesktopCapturer.captureSourceAsDataUrl=async()=>assert.fail('legacy portal capture');
+        window.appProactive.captureProactiveChatScreenshotWithSource=async()=>assert.fail('portal fallback');
+        await run({operation:'overview',request_id:'legacy-linux'},f.state,f.socket);
+        assert.equal(f.sent[0].success,false);
+    } finally {
+        if(savedNavigator) Object.defineProperty(globalThis,'navigator',savedNavigator);
+        else delete globalThis.navigator;
+    }
+}
+// A restricted browser stream must win over a stale selected monitor ID.
+{
+    const f=fixture(); f.state.selectedScreenSourceId='screen:1';
+    const track={id:'restricted',getSettings:()=>({displaySurface:'browser'})};
+    f.state.screenCaptureStream={active:true,getVideoTracks:()=>[track]};
+    const video={videoWidth:64,videoHeight:64,play:async()=>{},pause(){}};
+    global.document={createElement:name=>name==='video'?video:{getContext:()=>({drawImage(){}}),toDataURL:()=> 'stream-pixels'}};
+    await run({operation:'overview',request_id:'restricted'},f.state,f.socket);
+    assert.equal(f.sent[0].data_url,'stream-pixels');assert.deepEqual(f.captures,[]);
+    assert.deepEqual(f.sent[0].windows,[]);
+}
+// Unnamed monitor streams have different scopes, even when track IDs are reused.
+{
+    const f=fixture();
+    const track={id:'same',getSettings:()=>({displaySurface:'monitor'})};
+    const stream=()=>({active:true,getVideoTracks:()=>[track]});
+    f.state.screenCaptureStream=stream();
+    await run({operation:'validate',request_id:'before'},f.state,f.socket);
+    f.state.screenCaptureStream=stream();
+    await run({operation:'validate',request_id:'after',scope:f.sent[0].scope},f.state,f.socket);
+    assert.equal(f.sent[1].error,'scope_changed');
+}
+// Stream replacement during capture is rejected even with the same selected ID.
+{
+    const f=fixture(); f.state.selectedScreenSourceId='screen:1';
+    const track={id:'monitor',getSettings:()=>({displaySurface:'monitor'})};
+    f.state.screenCaptureStream={active:true,getVideoTracks:()=>[track]};
+    window.electronDesktopCapturer.captureSourceAsDataUrl=async()=>{
+        f.state.screenCaptureStream={active:true,getVideoTracks:()=>[track]};
+        return {success:true,dataUrl:'old-pixels'};
+    };
+    await run({operation:'overview',request_id:'replace-stream'},f.state,f.socket);
+    assert.equal(f.sent[0].error,'scope_changed');assert.equal(f.sent[0].data_url,undefined);
+}
+// A proven window stream can be reused without native capture or a new picker.
+for (const bound of [true,false]) {
+    const f=fixture(); f.state.selectedScreenSourceId='window:2';
+    window.electronDesktopCapturer.sourceEnumerationMayPrompt=true;
+    const track={id:'window',getSettings:()=>({displaySurface:'window'})};
+    f.state.screenCaptureStream={active:true,getVideoTracks:()=>[track]};
+    window.getScreenCaptureStreamSourceId=()=>bound?'window:2':undefined;
+    const video={videoWidth:64,videoHeight:64,play:async()=>{},pause(){}};
+    global.document={createElement:name=>name==='video'?video:{getContext:()=>({drawImage(){}}),toDataURL:()=> 'window-pixels'}};
+    await run({operation:'overview',request_id:'bound-stream'},f.state,f.socket);
+    assert.equal(f.sent[0].success,bound);assert.deepEqual(f.captures,[]);
+}
+// A blocked video play has a deadline, detaches the video, and ignores late completion.
+{
+    const f=fixture(); let resume, paused=false, drawn=false;
+    const track={id:'slow',getSettings:()=>({displaySurface:'browser'})};
+    f.state.screenCaptureStream={active:true,getVideoTracks:()=>[track]};
+    const video={videoWidth:64,videoHeight:64,play:()=>new Promise(resolve=>{resume=resolve;}),pause(){paused=true;}};
+    global.document={createElement:name=>name==='video'?video:{getContext:()=>({drawImage(){drawn=true;}})}};
+    const realSetTimeout=globalThis.setTimeout;
+    globalThis.setTimeout=(callback)=>realSetTimeout(callback,10);
+    try { await run({operation:'overview',request_id:'slow'},f.state,f.socket); }
+    finally { globalThis.setTimeout=realSetTimeout; }
+    assert.equal(f.sent[0].error,'timeout');assert.ok(paused);assert.equal(video.srcObject,null);
+    resume();await Promise.resolve();assert.equal(drawn,false);assert.equal(f.sent.length,1);
+}
+console.log('Frontend permission regression scenarios passed');

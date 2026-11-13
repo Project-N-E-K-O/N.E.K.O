@@ -26,6 +26,8 @@
     // 「记住窗口」时才写入，与 selectedScreenWindowTitle 受同一个开关约束。
     const SCREEN_SOURCE_LABEL_KEY = 'selectedScreenSourceLabel';
     const MAX_REMEMBERED_WINDOW_TITLE_LENGTH = 512;
+    const screenCaptureStreamSources = new WeakMap();
+    window.getScreenCaptureStreamSourceId = stream => screenCaptureStreamSources.get(stream);
     var screenSourceSelectionGeneration = 0;
     var explicitScreenSourceSelectionGeneration = null;
     // 来源列表里最近一次点击的令牌：所有列表（宠物窗口菜单、设置面板等）共用，
@@ -628,7 +630,7 @@
     }
     mod.reconcileRememberedWindowSource = reconcileRememberedWindowSource;
 
-    async function prepareRememberedWindowCapture() {
+    async function prepareRememberedWindowCapture(options) {
         var rememberedTitle = normalizeScreenSourceTitle(readRememberedWindowTitle());
         var titleMatchEnabled = isScreenSourceTitleMatchEnabled();
         var selectedWindowIsBounded = typeof S.selectedScreenSourceId === 'string'
@@ -690,6 +692,20 @@
                 || rememberedTitle !== normalizeScreenSourceTitle(readRememberedWindowTitle())
                 || !isScreenSourceTitleMatchEnabled()) {
                 return buildCaptureResult(false, 'superseded');
+            }
+
+            if (options && options.readOnly) {
+                var selected = sources.find(function (source) {
+                    return source.id === resolutionSourceId && source.id.startsWith('window:');
+                });
+                var matches = rememberedTitle ? sources.filter(function (source) {
+                    return source.id.startsWith('window:')
+                        && normalizeScreenSourceTitle(source.name) === rememberedTitle;
+                }) : [];
+                var allowed = !!selected && (rememberedTitle
+                    ? matches.length === 1 && matches[0].id === selected.id
+                    : isCurrentScreenSourceSelectionExplicit(selected));
+                return buildCaptureResult(allowed, allowed ? 'matched' : 'scope-changed');
             }
 
             var selectedBeforeReconcile = S.selectedScreenSourceId;
@@ -1221,6 +1237,7 @@
                             stream.getTracks().forEach(function (t) { t.stop(); });
                             return null;
                         }
+                        screenCaptureStreamSources.set(stream, captureSourceId);
                         return stream;
                     })(),
                     new Promise(function (_, reject) {

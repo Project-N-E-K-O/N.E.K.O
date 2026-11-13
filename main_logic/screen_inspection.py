@@ -64,7 +64,6 @@ def build_tools(manager):
                     },
                 },
                 "required": [],
-                "additionalProperties": False,
             },
             handler=partial(read_screen, manager),
             metadata={"source": "builtin"},
@@ -108,7 +107,17 @@ def failure(manager, code):
 
 
 def _owner(manager):
-    return (manager.session, manager.current_speech_id)
+    return (manager.session, manager.current_speech_id, id(manager.websocket), manager.websocket,
+            getattr(manager, "_proactive_vision_revocation_epoch", 0))
+
+
+async def _check_permission(manager, owner):
+    """Recheck consent after asynchronous image work, including revoke/re-enable."""
+    declined = getattr(manager, "_proactive_screenshot_declined", None)
+    if getattr(manager, "_proactive_vision_enabled", None) is False or (declined and await declined()):
+        raise InspectionError("disabled")
+    if owner != _owner(manager):
+        raise InspectionError("superseded")
 
 
 def _state(manager):
@@ -158,15 +167,16 @@ async def _request(manager, operation, **kwargs):
     }
     manager._screen_inspection_pending = pending
     try:
-        await websocket.send_json(
-            {
-                "type": "request_screen_inspection",
-                "request_id": pending["id"],
-                "operation": operation,
-                **kwargs,
-            }
-        )
-        reply = await asyncio.wait_for(pending["future"], CAPTURE_TIMEOUT)
+        async with asyncio.timeout(CAPTURE_TIMEOUT):
+            await websocket.send_json(
+                {
+                    "type": "request_screen_inspection",
+                    "request_id": pending["id"],
+                    "operation": operation,
+                    **kwargs,
+                }
+            )
+            reply = await pending["future"]
         if owner != _owner(manager) or manager.websocket is not websocket:
             raise InspectionError("superseded")
         if reply.get("success") is not True:
@@ -286,8 +296,7 @@ async def _publish(
 ):
     owner = _owner(manager)
     encoded, preview_size = await asyncio.to_thread(_encode_preview, image, kind)
-    if owner != _owner(manager):
-        raise InspectionError("superseded")
+    await _check_permission(manager, owner)
     images = _state(manager)["images"]
     pixels = image.width * image.height
     while images and (
@@ -377,6 +386,7 @@ async def inspect(manager, operation="overview", arguments=None):
     try:
         state = _state(manager)
         owner = _owner(manager)
+        await _check_permission(manager, owner)
         if operation == "overview":
             reply = await _request(manager, "overview")
             image = await asyncio.to_thread(decode_image, reply.get("data_url"))
