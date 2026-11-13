@@ -22,6 +22,7 @@ test.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -193,8 +194,11 @@ async def test_the_next_start_waits_until_the_browser_of_a_cancelled_start_has_b
     await _until(lambda: world.launched)
     await _cancelled(starting)
     again = asyncio.ensure_future(session.start())
-    for _ in range(20):
-        await asyncio.sleep(0)
+    # Time enough to get as far as starting a browser, were it not waiting
+    # (reading the settings and picking the browser happen in worker threads).
+    deadline = time.monotonic() + 0.3
+    while time.monotonic() < deadline and len(world.launched) == 1:
+        await asyncio.sleep(0.01)
     # Not two browsers coming up on the one profile at a time.
     assert len(world.launched) == 1 and not again.done()
     world.launch_gate.set()
