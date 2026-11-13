@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -170,15 +171,20 @@ def _linux_candidates() -> list[BrowserInstall]:
 
 
 # The file names of the browsers that can be driven, on any platform.
-_BROWSER_FILE_NAMES = frozenset(
-    {
-        "chrome.exe", "msedge.exe", "brave.exe", "chromium.exe",
-        "google chrome", "microsoft edge", "brave browser", "chromium",
-        "google-chrome", "google-chrome-stable", "google-chrome-beta", "chrome",
-        "microsoft-edge", "microsoft-edge-stable", "microsoft-edge-beta",
-        "brave-browser", "brave", "chromium-browser",
-    }
-)  # fmt: skip
+# The file names of Chrome, Edge, Brave and Chromium, every release channel
+# of them: on Windows all channels share one name, on macOS and Linux the
+# channel is part of it.
+_BROWSER_FILE_NAME = re.compile(
+    "|".join(
+        [
+            r"(?:chrome|msedge|brave|chromium)\.exe",
+            r"(?:google chrome|microsoft edge|brave browser)(?: (?:beta|dev|canary|nightly|for testing))?",
+            r"(?:google-chrome|microsoft-edge|brave-browser)(?:-(?:stable|beta|dev|unstable|canary|nightly))?",
+            r"chrome|msedge|brave|chromium|chromium-browser",
+        ]
+    ),
+    re.IGNORECASE,
+)
 
 
 def is_browser_executable(path: str | os.PathLike[str]) -> bool:
@@ -187,7 +193,7 @@ def is_browser_executable(path: str | os.PathLike[str]) -> bool:
     A path that comes from the settings is started with a debugging port and
     a profile directory: it must not be any program at all.
     """
-    return os.path.basename(os.fspath(path)).lower() in _BROWSER_FILE_NAMES
+    return _BROWSER_FILE_NAME.fullmatch(os.path.basename(os.fspath(path))) is not None
 
 
 def find_browsers(platform: str | None = None) -> list[BrowserInstall]:

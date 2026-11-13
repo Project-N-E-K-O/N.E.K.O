@@ -499,10 +499,46 @@ def test_text_beyond_ascii_goes_through_the_clipboard_and_is_pasted(
     # Pasted, and then what the user had on the clipboard is put back.
     assert no_real_desktop.clipboard.copied == ["你好, café", "what the user had copied"]
     assert no_real_desktop.clipboard.content == "what the user had copied"
-    # Not before the application had time to read the clipboard for the paste.
-    assert rig.log() == [("hotkey", (modifier, "v"), {}), ("sleep", (desktop.PASTE_SETTLE_SECONDS,), {}), SETTLE, CAPTURE]
+    # At the end of the action, and not before the application had time to
+    # read the clipboard for the paste: this desktop waits no time for the
+    # result of an action, so the time is waited here.
+    assert rig.log() == [("hotkey", (modifier, "v"), {}), SETTLE, CAPTURE, ("sleep", (desktop.PASTE_SETTLE_SECONDS,), {})]
     assert desktop.PASTE_SETTLE_SECONDS >= 0.2
     assert result.text == "Typed 8 character(s)." + AFTERWARDS
+
+
+def test_the_wait_for_the_result_of_typing_is_the_time_the_application_has_to_read_the_clipboard(
+    monkeypatch: Any, no_real_desktop: Any
+) -> None:
+    rig = Rig(monkeypatch, settle_seconds=desktop.SETTLE_SECONDS)
+    assert desktop.SETTLE_SECONDS >= desktop.PASTE_SETTLE_SECONDS
+    rig.act("type", {"text": "你好"})
+    # No wait on top of the one for the result; the clipboard is put back after the screenshot.
+    assert rig.log() == [("hotkey", ("ctrl", "v"), {}), ("sleep", (desktop.SETTLE_SECONDS,), {}), CAPTURE]
+    assert no_real_desktop.clipboard.copied == ["你好", "what the user had copied"]
+
+
+def test_what_the_user_copied_while_the_text_was_typed_is_left_on_the_clipboard(rig: Rig, no_real_desktop: Any) -> None:
+    def the_user_copies(*_args: Any, **_kwargs: Any) -> None:
+        no_real_desktop.clipboard.content = "copied by the user meanwhile"
+
+    rig.backend.hooks["hotkey"] = the_user_copies
+    rig.act("type", {"text": "你好"})
+    # Put back over it, what they copied last would be gone.
+    assert no_real_desktop.clipboard.content == "copied by the user meanwhile"
+    assert no_real_desktop.clipboard.copied == ["你好"]
+
+
+def test_typing_that_is_stopped_still_gives_the_application_time_before_the_clipboard_is_put_back(
+    rig: Rig, no_real_desktop: Any
+) -> None:
+    stop = threading.Event()
+    rig.backend.hooks["hotkey"] = lambda *args, **kwargs: stop.set()
+    with pytest.raises(DesktopStopped):
+        rig.act("type", {"text": "你好"}, stop)
+    # The keys were sent: put back at once, the application would paste what the user had copied.
+    assert rig.log() == [("hotkey", ("ctrl", "v"), {}), ("sleep", (desktop.PASTE_SETTLE_SECONDS,), {})]
+    assert no_real_desktop.clipboard.content == "what the user had copied"
 
 
 def test_the_clipboard_is_put_back_when_pasting_fails_and_left_alone_when_it_could_not_be_read(

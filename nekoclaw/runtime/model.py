@@ -156,23 +156,53 @@ _IMAGE_REFUSAL_PATTERNS = re.compile(
 _MENTIONS_PICTURES = re.compile(r"image|vision|multimodal|multi-modal|picture|图片|图像|视觉|多模态", re.IGNORECASE)
 
 # What makes a refusal one of *these* pictures and not of pictures as such:
-# their format, their size, how many there are, where they stand in the
-# request, that they could not be read. A model that takes pictures says such
-# things too, so nothing is concluded about the model from them.
+# their format, their size, that they could not be read. A model that takes
+# pictures says such things too, so nothing is concluded about the model from
+# them. These words are about pictures wherever in the error they stand.
 _ABOUT_THESE_PICTURES = re.compile(
     "|".join(
         [
             r"format|mime|media type|file type|extension",
             r"size|large|big|dimension|resolution|pixel|megabyte|\bMB\b|\bKB\b|bytes|payload|entity",
-            r"too many|multiple|more than|at most|maximum|\bmax\b|limit|exceed|count|number of",
-            r"system (?:message|prompt)|\brole\b|assistant message",
             r"decod|base64|corrupt|invalid image|malformed|could not (?:be )?process|unable to process|cannot (?:be )?process",
             r"download|fetch|\burl\b|expired|not found at",
-            r"格式|尺寸|过大|太大|大小|分辨率|像素|数量|多张|张数|超过|超出|上限|下载|解码|损坏|无法处理|系统消息",
+            r"格式|尺寸|过大|太大|大小|分辨率|像素|下载|解码|损坏|无法处理",
         ]
     ),
     re.IGNORECASE,
 )
+
+# The same of how many pictures there are and where they stand in the
+# request. Words like these turn up in what a gateway appends to every error
+# as well ("Max Retries: 2", a rate limit), so they only count in a sentence
+# that speaks of pictures.
+_LIMITS_ON_PICTURES = re.compile(
+    "|".join(
+        [
+            r"too many|multiple|more than|at most|maximum|\bmax\b|limit|exceed|count|number of",
+            r"system (?:message|prompt)|\brole\b|assistant message",
+            r"数量|多张|张数|超过|超出|上限|系统消息",
+        ]
+    ),
+    re.IGNORECASE,
+)
+_SENTENCE_END = re.compile(r"[.\n。；;!?！？]")
+
+# "At most 0 images" is no limit on pictures: it is a model that takes none
+# (what vLLM answers for a model without vision).
+_NO_PICTURE_ALLOWED = re.compile(
+    r"\b(?:at most|a maximum of|maximum(?: of)?|max(?: of)?|up to|limit(?:ed)? (?:of|to)) (?:0|zero|no) (?:image|picture)",
+    re.IGNORECASE,
+)
+
+
+def _about_these_pictures(text: str) -> bool:
+    if _ABOUT_THESE_PICTURES.search(text):
+        return True
+    return any(
+        _MENTIONS_PICTURES.search(sentence) and _LIMITS_ON_PICTURES.search(sentence)
+        for sentence in _SENTENCE_END.split(text)
+    )
 
 REFUSAL_OF_THE_MODEL = "model"
 REFUSAL_OF_THESE_PICTURES = "pictures"
@@ -191,6 +221,12 @@ def image_refusal(error: BaseException) -> str | None:
     them, and nothing follows for the model. None: not about pictures.
     Only asked of a request that carried pictures.
     """
+    if is_context_overflow(error):
+        # The input is too long, pictures or not ("... tokens (including
+        # image tokens)"): the loop makes the context shorter. Taken for a
+        # refusal of pictures, two of these would end the pictures of the
+        # session, and with them the tools that work from pictures.
+        return None
     status = getattr(error, "status_code", None)
     if status == 413:
         # Too large a request: the pictures are what weighs.
@@ -200,7 +236,9 @@ def image_refusal(error: BaseException) -> str | None:
     text = str(error)
     if not _MENTIONS_PICTURES.search(text):
         return None
-    if _IMAGE_REFUSAL_PATTERNS.search(text) and not _ABOUT_THESE_PICTURES.search(text):
+    if _NO_PICTURE_ALLOWED.search(text):
+        return REFUSAL_OF_THE_MODEL
+    if _IMAGE_REFUSAL_PATTERNS.search(text) and not _about_these_pictures(text):
         return REFUSAL_OF_THE_MODEL
     if status is None:
         # No status to go by: only what is plainly a refusal counts.

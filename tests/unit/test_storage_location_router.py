@@ -5153,3 +5153,57 @@ def test_storage_cleanup_leaves_the_root_while_entries_remain(tmp_path, monkeypa
     assert second.status_code == 200, second.json()
     assert not source_root.exists()
     assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"
+
+
+_LEDGER = "nekoclaw/ledger.db"
+_LEDGER_LOG = "nekoclaw/ledger.db-wal"
+
+
+def _v1_migration_that_left_a_ledger_behind(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "nekoclaw").mkdir()
+    (source_root / _LEDGER).write_bytes(b"the old root's ledger")
+    (source_root / _LEDGER_LOG).write_bytes(b"commits of the old root")
+    return source_root, target_root
+
+
+def _ledger_files(root) -> dict:
+    return {name: (root / name).read_bytes() for name in (_LEDGER, _LEDGER_LOG) if (root / name).exists()}
+
+
+@pytest.mark.unit
+def test_v1_catch_up_copies_a_ledger_together_with_its_log(tmp_path):
+    source_root, target_root = _v1_migration_that_left_a_ledger_behind(tmp_path)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert _ledger_files(target_root) == {_LEDGER: b"the old root's ledger", _LEDGER_LOG: b"commits of the old root"}
+    assert {_LEDGER, _LEDGER_LOG} <= set(load_storage_migration(reloaded_manager)["copied_entries"])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "new_root",
+    [
+        # Its own ledger, closed down in order: the old root's log is not put next to it.
+        {_LEDGER: b"made at the new root"},
+        # A log without its ledger: the old root's ledger is not put next to it.
+        {_LEDGER_LOG: b"commits of nobody knows what"},
+    ],
+)
+def test_v1_catch_up_never_pairs_a_ledger_with_the_log_of_the_other_root(tmp_path, new_root):
+    source_root, target_root = _v1_migration_that_left_a_ledger_behind(tmp_path)
+    (target_root / "nekoclaw").mkdir()
+    for name, content in new_root.items():
+        (target_root / name).write_bytes(content)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert _ledger_files(target_root) == new_root
+    copied = load_storage_migration(reloaded_manager).get("copied_entries") or {}
+    assert not {_LEDGER, _LEDGER_LOG} & set(copied)
+    # The rest of the catch-up went through, and the old root still has its pair.
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+    assert _ledger_files(source_root) == {_LEDGER: b"the old root's ledger", _LEDGER_LOG: b"commits of the old root"}

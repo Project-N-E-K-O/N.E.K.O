@@ -816,6 +816,14 @@ def test_a_complaint_about_these_pictures_says_nothing_about_the_model(message: 
         "The model `qwen-plus` doesn't support vision",
         "当前模型不支持图片输入",
         "No endpoints found that support image input",
+        # What a gateway appends to every error is not about the pictures.
+        "litellm.BadRequestError: Invalid content type. image_url is only supported by certain models. "
+        "Received Model Group=local-text\nAvailable Model Group Fallbacks=None LiteLLM Retried: 2 times, "
+        "LiteLLM Max Retries: 2",
+        "This model does not support image input. Rate limit: 60 requests per minute, request count: 3.",
+        # A limit of none is a model that takes none (vLLM, for a model without vision).
+        "At most 0 image(s) may be provided in one request.",
+        "A maximum of 0 images is allowed for this model",
     ],
 )
 def test_a_refusal_of_pictures_as_such_is_one_of_the_model(message: str) -> None:
@@ -831,6 +839,17 @@ def test_a_refusal_of_pictures_as_such_is_one_of_the_model(message: str) -> None
         (_Rejected("This model does not support image input.", 500), None),
         (_Rejected("Incorrect API key provided", 401), None),
         (_Rejected("This model's maximum context length is 128000 tokens", 400), None),
+        # An input that is too long is that, whatever it says of the pictures in it.
+        (
+            _Rejected(
+                "This model's maximum context length is 128000 tokens. However, your messages resulted in "
+                "130000 tokens (including image tokens).",
+                400,
+            ),
+            None,
+        ),
+        (_Rejected("Request too large for this model: reduce the images or the text", 413), None),
+        (_Rejected("At most 3 image(s) may be provided in one request.", 400), REFUSAL_OF_THESE_PICTURES),
         (RuntimeError("Connection reset by peer"), None),
         # Without a status only what is plainly a refusal counts.
         (RuntimeError("The image could not be processed, please try again"), None),
@@ -916,3 +935,26 @@ async def test_a_picture_the_user_gave_that_was_refused_is_left_out_as_well() ->
     assert [_pictures(request) for request in llm.requests] == [1, 0]
     assert llm.requests[1][-1]["content"] == "what is this?\n[image omitted: the provider refused this picture]"
     assert told == [] and provider.supports_images is True
+
+
+async def test_an_input_that_is_too_long_is_not_taken_for_a_refusal_of_its_pictures() -> None:
+    too_long = _Rejected(
+        "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens "
+        "(including image tokens).",
+        400,
+    )
+    assert is_context_overflow(too_long)
+    llm = ScriptedLLM([[too_long], [too_long], [say("A desktop."), finish()]])
+    provider, told = _seeing(llm)
+
+    for _ in range(PICTURE_REFUSALS_BEFORE_GOING_WITHOUT):
+        # The loop is told, and makes the context shorter; nothing is sent again here without the pictures.
+        with pytest.raises(ContextOverflowError):
+            await _events(provider, _with_screenshots("QUFB"))
+
+    assert [_pictures(request) for request in llm.requests] == [1, 1]
+    # As often as it takes to end the pictures of a session, had these been counted as refusals of them.
+    assert told == [] and provider.supports_images is True
+    events = await _events(provider, _with_screenshots("QUFB"))
+    assert events[-1].message.text == "A desktop."
+    assert [_pictures(request) for request in llm.requests] == [1, 1, 1]

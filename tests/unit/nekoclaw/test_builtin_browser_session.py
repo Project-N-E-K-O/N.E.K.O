@@ -2732,3 +2732,78 @@ async def test_a_page_that_goes_elsewhere_under_the_wait_for_it_to_settle_does_n
     assert page.url == THANKS and page.navigations == 2
     # Going somewhere is carried out too, and said to be.
     assert await session.navigate(page, "reload", None) == "Successfully reloaded the page."
+
+
+def _key_events(world: BrowserWorld, mark: int) -> list[tuple[str, str]]:
+    return [(command.params["type"], command.params["key"]) for command in world.browser.of("Input.dispatchKeyEvent", mark)]
+
+
+def _letting_go_fails(session: BrowserSession, monkeypatch: Any, name: str) -> None:
+    """Make the release of one key fail, as on a page that no longer answers."""
+    send = session._key_event
+
+    async def key_event(page: Any, kind: str, key: Any, mask: int) -> bool:
+        if kind == "keyUp" and key.key.lower() == name:
+            raise BrowserError("The page did not respond (timed out). It may be busy or frozen; try reloading it.")
+        return await send(page, kind, key, mask)
+
+    monkeypatch.setattr(session, "_key_event", key_event)
+
+
+async def test_the_modifiers_come_up_though_letting_go_of_the_key_fails_when_the_call_is_stopped(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    page, _fake, _snapshot = await open_page(session, world)
+    _letting_go_fails(session, monkeypatch, "r")
+    held = world.browser.hold("Input.dispatchKeyEvent", key="r")
+    sent = world.browser.mark()
+    press = asyncio.ensure_future(session.press_key(page, "Control+Shift+R"))
+    await asyncio.wait_for(held.reached.wait(), 5.0)
+    press.cancel()
+    held.release()
+    # Stopped is what the call was, not what went wrong while the keys were let go of.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(press, 5.0)
+    assert _key_events(world, sent) == [
+        ("rawKeyDown", "Control"),
+        ("rawKeyDown", "Shift"),
+        ("rawKeyDown", "r"),
+        ("keyUp", "Shift"),
+        ("keyUp", "Control"),
+    ]
+
+
+async def test_the_other_modifiers_come_up_though_letting_go_of_one_fails_and_the_failure_is_told(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    page, _fake, _snapshot = await open_page(session, world)
+    _letting_go_fails(session, monkeypatch, "shift")
+    sent = world.browser.mark()
+
+    with pytest.raises(BrowserError, match="The page did not respond"):
+        await session.press_key(page, "Control+Shift+R")
+
+    events = _key_events(world, sent)
+    assert events[-1] == ("keyUp", "Control") and ("keyUp", "Shift") not in events
+    assert [kind for kind, _key in events].count("keyUp") == 2
+
+
+async def test_a_start_stopped_while_the_browser_before_it_is_closed_leaves_neither_browser_to_itself(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    half_closed = await _closing_stopped_half_way(session, world)
+    world.settings(mode="attach")
+    world.close_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: len(world.closed) == 2)
+    # The user stops everything again, while the browser that was not closed to the end is being closed.
+    await _cancelled(starting)
+    world.close_gate.set()
+    await session.close()
+
+    closed = [browser for browser, _connection in world.closed]
+    # The one that was just attached to is let go of (it is the user's: nothing is closed there),
+    # and the one started for the work is still held and closed when asked again.
+    assert closed[:2] == [half_closed, half_closed]
+    assert [browser.owned for browser in closed[2:]] == [False, True] and closed[3] is half_closed
+    assert not session.connected and world.connected == [world.connected[0]]

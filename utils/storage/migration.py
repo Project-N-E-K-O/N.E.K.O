@@ -97,7 +97,8 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # and the profile of the browser the browser tools start (lock links on
     # macOS and Linux), and one link fails a whole migration. Those two stay
     # in the old root; see ``DELIBERATELY_UNMIGRATED`` in
-    # ``tests/unit/test_storage_runtime_entry_contract.py``.
+    # ``tests/unit/test_storage_runtime_entry_contract.py``. The ledger's
+    # write-ahead log is no entry of its own right: see ``_COMPANION_ENTRIES``.
     "nekoclaw/ledger.db",
     "nekoclaw/ledger.db-wal",
     "nekoclaw/permissions.json",
@@ -147,6 +148,14 @@ V1_MIGRATED_RUNTIME_ENTRY_NAMES = (
     "jukebox",
     "avatar_tools",
 )
+
+# Entries that are part of another one and go where that one goes, never
+# decided on their own. A SQLite database's write-ahead log holds its latest
+# commits and is replayed into whatever database file stands next to it:
+# beside a database from the other root it would corrupt that database. So
+# the log is copied only together with its database; where the target keeps
+# its own database, its own log (or none) stays with it.
+_COMPANION_ENTRIES = {"nekoclaw/ledger.db-wal": "nekoclaw/ledger.db"}
 
 # Completed migrations may already have different plugin approvals and code
 # at the target. Only move installed code as part of a full storage migration.
@@ -2322,6 +2331,15 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
         and entry_parents_are_real_directories(source_root, entry_name)
         and _entry_exists(source_root / entry_name)
     ]
+    for companion_entry, owner_entry in _COMPANION_ENTRIES.items():
+        target_has_owner = _entry_exists(target_root / owner_entry)
+        target_has_companion = _entry_exists(target_root / companion_entry)
+        if target_has_companion and not target_has_owner:
+            # What the new root holds is not a pair: neither half is added to.
+            candidates = [name for name in candidates if name not in (owner_entry, companion_entry)]
+        elif owner_entry not in candidates or target_has_owner:
+            # Only ever copied together with what it belongs to.
+            candidates = [name for name in candidates if name != companion_entry]
     copied: list[str] = []
     skipped: list[str] = []
     copied_source_fingerprints: dict[str, str] = {}
@@ -3004,6 +3022,25 @@ def run_pending_storage_migration(
         elif plugin_exec_entry in target_entries_before_staging and plugin_exec_entry not in source_entries_before_staging:
             # A target-only install tree keeps its own source records.
             excluded_source_entries = (plugin_lock_entry,)
+        for companion_entry, owner_entry in _COMPANION_ENTRIES.items():
+            owner_is_copied = owner_entry in source_entries_before_staging and not (
+                use_existing_target and owner_entry in target_entries_before_staging
+            )
+            if not owner_is_copied:
+                # The target keeps its own (or there is none to copy): the
+                # source's companion stays behind with what it belongs to.
+                excluded_source_entries = (*excluded_source_entries, companion_entry)
+            elif companion_entry in target_entries_before_staging and (
+                use_existing_target or companion_entry not in source_entries_before_staging
+            ):
+                # What is copied would come to stand next to a companion the
+                # target left behind (a reused target keeps what it holds,
+                # and nothing takes away an entry the source does not have).
+                raise StorageMigrationError(
+                    "companion_entry_conflict",
+                    "目标路径里留有任务账本上次没写完的日志，和要搬过去的账本不是一套，放在一起会损坏账本。"
+                    f"请选择空目录后重试: {companion_entry}",
+                )
         existing_entries = [name for name in source_entries_before_staging if name not in excluded_source_entries]
         uncopied_install_entries = set(_PLUGIN_INSTALLATION_ENTRIES) - set(existing_entries)
 

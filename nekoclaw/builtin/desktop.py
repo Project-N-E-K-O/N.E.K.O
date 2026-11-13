@@ -349,6 +349,9 @@ class ScaledInput:
         self._w = screen_w
         self._h = screen_h
         self._cancel_event = cancel_event
+        # What the clipboard held before text was typed through it, and that
+        # text: put back by ``restore_clipboard``.
+        self._clipboard_before: tuple[str, str] | None = None
 
     def ensure_not_stopped(self) -> None:
         if self._cancel_event is not None and self._cancel_event.is_set():
@@ -450,24 +453,42 @@ class ScaledInput:
     def _paste(self, text: str) -> None:
         import pyperclip
 
-        # What the user had on the clipboard is put back afterwards, as far
-        # as it was text (a picture or a file there cannot be read this way).
+        # What the user had on the clipboard is put back at the end of the
+        # action (``restore_clipboard``), as far as it was text (a picture or
+        # a file there cannot be read this way).
         try:
             before = pyperclip.paste()
         except Exception:  # noqa: BLE001 - then there is nothing to put back
             before = None
         pyperclip.copy(text)
+        if isinstance(before, str) and self._clipboard_before is None:
+            self._clipboard_before = (before, text)
+        self._backend.hotkey("command" if platform.system() == "Darwin" else "ctrl", "v")
+
+    def restore_clipboard(self, waited: float = 0.0) -> None:
+        """Put back what the clipboard held before text was typed through it; never raises.
+
+        ``waited`` is how long the action has waited since. An application
+        reads the clipboard when it gets round to the keys: put back sooner,
+        it would paste what was there before, which may be something of the
+        user's that was never meant for that window. So this comes at the end
+        of the action, after the wait for its result, and waits itself where
+        that wait was cut short. Not when the clipboard holds something else
+        by now: the user has copied that since.
+        """
+        pending, self._clipboard_before = self._clipboard_before, None
+        if pending is None:
+            return
+        before, typed = pending
         try:
-            self._backend.hotkey("command" if platform.system() == "Darwin" else "ctrl", "v")
-            # The application reads the clipboard when it gets round to the
-            # keys; put back sooner, it would paste what was there before.
-            time.sleep(PASTE_SETTLE_SECONDS)
-        finally:
-            if isinstance(before, str):
-                try:
-                    pyperclip.copy(before)
-                except Exception:  # noqa: BLE001 - the text was typed; the clipboard keeps it
-                    logger.debug("putting the clipboard back failed", exc_info=True)
+            import pyperclip
+
+            if waited < PASTE_SETTLE_SECONDS:
+                time.sleep(PASTE_SETTLE_SECONDS - waited)
+            if pyperclip.paste() == typed:
+                pyperclip.copy(before)
+        except Exception:  # noqa: BLE001 - the text was typed; the clipboard keeps it
+            logger.debug("putting the clipboard back failed", exc_info=True)
 
     def write(self, text: str) -> None:
         """Type text where the keyboard focus is; text beyond ASCII goes through the clipboard."""
@@ -695,6 +716,8 @@ class Desktop:
             raise DesktopActionError(f"unknown action {action!r}; the actions are: {', '.join(ACTIONS)}")
         if not EXECUTION_LOCK.acquire(blocking=False):
             raise DesktopActionError("the keyboard and the mouse are busy with an earlier call; try again in a moment")
+        gui: ScaledInput | None = None
+        waited = 0.0
         try:
             try:
                 gui = self._input(cancel_event)
@@ -703,6 +726,7 @@ class Desktop:
                 done = self._perform(gui, action, arguments)
                 if action != "screenshot":
                     gui.settle_for(self._settle_seconds)
+                    waited = self._settle_seconds
                 try:
                     encoded, (width, height) = self.screenshot(cancel_event)
                 except InterruptedError:
@@ -723,6 +747,8 @@ class Desktop:
             except InterruptedError as exc:
                 raise DesktopStopped("stopped") from exc
             finally:
+                if gui is not None:
+                    gui.restore_clipboard(waited)
                 if self._held_keys or self._held_buttons:
                     self._release_held()
         finally:

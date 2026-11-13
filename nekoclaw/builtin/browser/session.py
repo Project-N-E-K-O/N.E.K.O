@@ -372,7 +372,15 @@ class BrowserSession:
             # profile it would be that very browser, found running there by
             # the launcher, and is gone on with. This one would run on with
             # nobody to close it.
-            await launcher.close(held)
+            try:
+                await launcher.close(held)
+            except asyncio.CancelledError:
+                # The one that was just reached is held by nobody yet; the
+                # one before it stays held, and is closed when asked again.
+                self._abandoned = asyncio.ensure_future(self._close_unheld(browser))
+                raise
+            except Exception:  # noqa: BLE001 - the new one is driven all the same
+                logger.warning("closing the browser that was driven before failed", exc_info=True)
             self._browser = None
         try:
             connection = await CdpConnection.connect(
@@ -1313,6 +1321,7 @@ class BrowserSession:
         mask = 0
         down: list[KeyDefinition] = []
         key_is_down = False
+        failed = False
         try:
             for modifier in modifiers:
                 mask |= modifier_mask([modifier])
@@ -1324,14 +1333,27 @@ class BrowserSession:
             if await self._key_event(page, "keyDown", key, mask):
                 await self._key_event(page, "keyUp", key, mask)
             key_is_down = False
+        except BaseException:
+            failed = True
+            raise
         finally:
-            if key_is_down:
-                # Stopped between the key going down and coming up: the page
-                # is not left with a key that is held.
-                await asyncio.shield(self._key_event(page, "keyUp", key, mask))
-            for modifier in reversed(down):
-                mask &= ~modifier_mask([modifier])
-                await asyncio.shield(self._key_event(page, "keyUp", modifier, mask))
+            # Every key that is down comes up, whatever becomes of the others
+            # on the way: the key itself when the call was stopped between
+            # its going down and coming up, then the modifiers. A release
+            # that fails (a page that no longer answers) or is stopped does
+            # not leave the rest held; it is raised once they are all up,
+            # unless the call is failing already.
+            late: BaseException | None = None
+            for released, is_modifier in [(key, False)] * key_is_down + [(item, True) for item in reversed(down)]:
+                if is_modifier:
+                    mask &= ~modifier_mask([released])
+                try:
+                    await asyncio.shield(self._key_event(page, "keyUp", released, mask))
+                except BaseException as exc:  # noqa: BLE001 - raised below, once the rest is up
+                    if late is None or isinstance(exc, asyncio.CancelledError):
+                        late = exc
+            if late is not None and (not failed or isinstance(late, asyncio.CancelledError)):
+                raise late
 
     async def press_key(self, page: Page, combination: str) -> None:
         self.require_no_dialog(page)

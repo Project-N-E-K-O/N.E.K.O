@@ -5035,3 +5035,133 @@ def test_links_below_nekoclaw_do_not_stop_a_migration_and_its_plain_files_move(t
     assert not (moved / "task_agents").exists() and not (moved / "browser_profile").exists()
     assert (source_root / "nekoclaw" / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work" / "notes.txt").is_file()
     assert (source_root / "nekoclaw" / "browser_profile" / "Preferences").is_file()
+
+
+# ---------------------------------------------------------------------------
+# The ledger and its write-ahead log go together
+# ---------------------------------------------------------------------------
+
+_LEDGER = "nekoclaw/ledger.db"
+_LEDGER_LOG = "nekoclaw/ledger.db-wal"
+
+
+def _ledger_roots(tmp_path, *, source: dict, target: dict, selection_source: str):
+    """Two roots holding the given ``nekoclaw`` files, and a migration from one to the other pending."""
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("source", encoding="utf-8")
+    (target_root / "config").mkdir(parents=True)
+    (target_root / "config" / "characters.json").write_text("target", encoding="utf-8")
+    for root, files in ((source_root, source), (target_root, target)):
+        for name, content in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_bytes(content)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source=selection_source,
+        confirmed_existing_target_content=selection_source == "custom",
+    )
+    return config_manager, source_root, target_root
+
+
+def _ledger_files(root) -> dict:
+    return {name: (root / name).read_bytes() for name in (_LEDGER, _LEDGER_LOG) if (root / name).exists()}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("target_ledger", [b"the target's ledger", b"the source's ledger"])
+def test_a_target_that_keeps_its_ledger_is_not_given_the_log_of_the_sources(tmp_path, target_ledger):
+    # The target was used before and closed down in order; the source was killed and left its log.
+    source = {_LEDGER: b"the source's ledger", _LEDGER_LOG: b"commits of the source"}
+    config_manager, source_root, target_root = _ledger_roots(
+        tmp_path, source=source, target={_LEDGER: target_ledger}, selection_source="legacy"
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    # The log would be replayed into a database it was never written for: also one that
+    # happens to be the same file, whose own log (none) says where it stands.
+    assert _ledger_files(target_root) == {_LEDGER: target_ledger}
+    assert _LEDGER_LOG not in result["payload"]["copied_entries"]
+    assert _ledger_files(source_root) == source
+
+
+@pytest.mark.unit
+def test_a_target_that_keeps_its_ledger_keeps_its_own_log_with_it(tmp_path):
+    target = {_LEDGER: b"the target's ledger", _LEDGER_LOG: b"commits of the target"}
+    config_manager, _source_root, target_root = _ledger_roots(
+        tmp_path,
+        source={_LEDGER: b"the source's ledger", _LEDGER_LOG: b"commits of the source"},
+        target=target,
+        selection_source="legacy",
+    )
+
+    assert run_pending_storage_migration(config_manager)["completed"] is True
+    assert _ledger_files(target_root) == target
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("selection_source", ["legacy", "custom"])
+def test_a_ledger_that_is_copied_takes_its_log_along(tmp_path, selection_source):
+    source = {_LEDGER: b"the source's ledger", _LEDGER_LOG: b"commits of the source"}
+    # Confirmed for replacing, the target's pair makes way for the source's; reused, the target has no ledger yet.
+    target = {_LEDGER: b"the target's ledger", _LEDGER_LOG: b"commits of the target"} if selection_source == "custom" else {}
+    config_manager, _source_root, target_root = _ledger_roots(
+        tmp_path, source=source, target=target, selection_source=selection_source
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert _ledger_files(target_root) == source
+    assert {_LEDGER, _LEDGER_LOG} <= set(result["payload"]["copied_entries"])
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("selection_source", "source", "target"),
+    [
+        # Replacing the target's ledger would leave the target's log next to the source's ledger.
+        ("custom", {_LEDGER: b"the source's ledger"}, {_LEDGER: b"the target's ledger", _LEDGER_LOG: b"commits of the target"}),
+        # A log without its ledger in a reused target: the source's ledger would come to stand next to it.
+        ("legacy", {_LEDGER: b"the source's ledger"}, {_LEDGER_LOG: b"commits of nobody knows what"}),
+        ("legacy", {_LEDGER: b"the source's ledger", _LEDGER_LOG: b"commits of the source"}, {_LEDGER_LOG: b"commits of nobody knows what"}),
+    ],
+)
+def test_a_ledger_is_not_put_next_to_a_log_the_target_left_behind(tmp_path, monkeypatch, selection_source, source, target):
+    from utils import storage_migration as storage_migration_module
+
+    config_manager, source_root, target_root = _ledger_roots(
+        tmp_path, source=source, target=target, selection_source=selection_source
+    )
+
+    def unexpected_copy(*_args, **_kwargs):
+        pytest.fail("the conflict must stop the migration before anything is staged")
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", unexpected_copy)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "companion_entry_conflict"
+    assert _LEDGER_LOG in result["error_message"]
+    assert _ledger_files(target_root) == target and _ledger_files(source_root) == source
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "target"
+
+
+@pytest.mark.unit
+def test_a_log_without_its_ledger_is_not_copied(tmp_path):
+    config_manager, source_root, target_root = _ledger_roots(
+        tmp_path, source={_LEDGER_LOG: b"commits of nobody knows what"}, target={}, selection_source="custom"
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert _ledger_files(target_root) == {}
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "source"
+    assert (source_root / _LEDGER_LOG).is_file()
