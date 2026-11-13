@@ -7,6 +7,7 @@
  *
  * 本模块只负责「要不要弹 + 弹什么 + 用户选了之后改哪个设置」：
  *   - 对所有用户生效（原 A/B 实验组 vision_chat_default_off 的机制已合并进 main）；
+ *   - activityContextPromptEnabled 可持久关闭两类提示，不改变主动搭话或屏幕来源；
  *   - 每个 app 会话每类（play / work）最多弹一次（模块级标志，刷新页面即新会话）；
  *   - play（游戏/娱乐）→ 问要不要开启主动搭话里的「屏幕分享来源」；
  *   - work（专注工作）→ 问要不要关掉「屏幕分享来源」避嫌（不动搭话频率，尊重用户原设定）。
@@ -43,6 +44,7 @@
     // 本会话就再也看不到这次弹窗了。按类别存（而非单槽）避免决议前先后收到
     // play + work 时只剩最后一个、另一类被吞——与「每会话每类一次」语义保持一致。
     const _pendingContexts = new Set();
+    let _pendingGeneration = 0;
 
     // 读 flag 当前值：优先 window 镜像，回退 appState。
     function _flag(name) {
@@ -216,8 +218,26 @@
         }
     }
 
+    function _isEnabled() {
+        const value = typeof window.activityContextPromptEnabled !== 'undefined'
+            ? window.activityContextPromptEnabled : S.activityContextPromptEnabled;
+        return value !== false;
+    }
+
+    function syncSetting() {
+        if (_isEnabled()) return;
+        _pendingGeneration += 1;
+        _pendingContexts.clear();
+        if (!_activeContext) return;
+        _cancelActivePrompt = true;
+        if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
+            _activePromptOverlay.click();
+        }
+    }
+
     async function handle(context) {
         if (context !== 'play' && context !== 'work') return;
+        if (!_isEnabled()) { syncSetting(); return; }
         if (S.gameRouteActive) {
             _markShown(context);
             _pendingContexts.delete(context);
@@ -276,7 +296,7 @@
                 ],
                 onShown: function (modal) {
                     _activePromptOverlay = modal && modal.overlay ? modal.overlay : null;
-                    if (_cancelActivePrompt || S.gameRouteActive || _isGoodbyeActive()) {
+                    if (_cancelActivePrompt || !_isEnabled() || S.gameRouteActive || _isGoodbyeActive()) {
                         _cancelActivePrompt = true;
                         if (_activePromptOverlay && typeof _activePromptOverlay.click === 'function') {
                             _activePromptOverlay.click();
@@ -290,7 +310,7 @@
                     }
                 },
             });
-            if (decision === 'accept') {
+            if (decision === 'accept' && !_cancelActivePrompt && _isEnabled()) {
                 _apply(context);
             }
         } catch (e) {
@@ -313,10 +333,12 @@
     // （重放途中新攒的事件由当前弹窗 finally 再触发一次 drain 接住）。
     function _drainPending() {
         if (_pendingContexts.size === 0) return;
+        const generation = _pendingGeneration;
         const pend = Array.from(_pendingContexts);
         _pendingContexts.clear();
         (async function () {
             for (const ctx of pend) {
+                if (generation !== _pendingGeneration || !_isEnabled()) return;
                 // 按单个 ctx 隔离异常：play/work 是一次性事件，前一个意外抛错不能连累
                 // 后一个不被消费（否则那类本会话就丢了）。
                 try {
@@ -386,5 +408,5 @@
         }
     });
 
-    window.appContextPrompt = { handle };
+    window.appContextPrompt = { handle, syncSetting };
 })();

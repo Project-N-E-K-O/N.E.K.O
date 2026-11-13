@@ -431,12 +431,16 @@
                 acceptedSettings[key] = serverSettings[key];
             }
         }
+        let shouldReschedule = hasSharedSchedulingChanges(acceptedSettings);
         let changed = applySharedRuntimeSettings(acceptedSettings);
         // Preserve server-only conversation keys that are intentionally not in
         // the cross-window shared-settings list.
         for (const key of Object.keys(acceptedSettings)) {
             if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1 || key === 'userLanguage') continue;
-            if (S[key] !== acceptedSettings[key]) changed = true;
+            if (S[key] !== acceptedSettings[key]) {
+                changed = true;
+                shouldReschedule = true;
+            }
             S[key] = acceptedSettings[key];
             if (Object.prototype.hasOwnProperty.call(window, key)) {
                 window[key] = S[key];
@@ -463,7 +467,7 @@
                 (key) => _SHARED_SETTINGS_KEYS.indexOf(key) !== -1
             )
         });
-        if (changed) {
+        if (changed && shouldReschedule) {
             if (typeof window.appProactive !== 'undefined'
                 && window.appProactive.scheduleProactiveChat) {
                 window.appProactive.scheduleProactiveChat();
@@ -541,6 +545,7 @@
     const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_40s';
     const _PROACTIVE_INTERVAL_AB_VALUE = 40;
     const _SHARED_SETTINGS_KEYS = [
+        'activityContextPromptEnabled',
         'proactiveChatEnabled',
         'proactiveVisionEnabled',
         'proactiveVisionChatEnabled',
@@ -585,6 +590,7 @@
 
     function _defaultConversationSettingsForReset() {
         return {
+            activityContextPromptEnabled: true,
             proactiveChatEnabled: true,
             proactiveVisionEnabled: _isUserRegionChina(),
             proactiveVisionChatEnabled: true,
@@ -649,6 +655,7 @@
      */
     function getConversationSettings() {
         const settings = {
+            activityContextPromptEnabled: S.activityContextPromptEnabled,
             proactiveChatEnabled: S.proactiveChatEnabled,
             proactiveVisionEnabled: S.proactiveVisionEnabled,
             proactiveVisionChatEnabled: S.proactiveVisionChatEnabled,
@@ -1145,6 +1152,14 @@
         });
     }
 
+    // Preserve existing scheduling behavior except for the dialog-only preference.
+    function hasSharedSchedulingChanges(settings) {
+        return !!settings && _SHARED_SETTINGS_KEYS.some((key) =>
+            key !== 'activityContextPromptEnabled'
+            && Object.prototype.hasOwnProperty.call(settings, key)
+            && S[key] !== settings[key]);
+    }
+
     function applySharedRuntimeSettings(settings) {
         if (!settings || typeof settings !== 'object') return false;
         let changed = false;
@@ -1179,7 +1194,14 @@
         if (changed && S.renderQuality) {
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
         }
+        syncActivityContextPromptSetting();
         return changed;
+    }
+
+    function syncActivityContextPromptSetting() {
+        if (window.appContextPrompt && typeof window.appContextPrompt.syncSetting === 'function') {
+            window.appContextPrompt.syncSetting();
+        }
     }
 
     function isManualScreenShareActive() {
@@ -1631,6 +1653,9 @@
         const currentVision = typeof window.proactiveVisionEnabled !== 'undefined'
             ? window.proactiveVisionEnabled
             : S.proactiveVisionEnabled;
+        const currentContextPrompt = typeof window.activityContextPromptEnabled !== 'undefined'
+            ? window.activityContextPromptEnabled !== false
+            : S.activityContextPromptEnabled !== false;
         const currentVisionChat = typeof window.proactiveVisionChatEnabled !== 'undefined'
             ? window.proactiveVisionChatEnabled
             : S.proactiveVisionChatEnabled;
@@ -1739,6 +1764,7 @@
             : (subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null));
 
         const settings = {
+            activityContextPromptEnabled: currentContextPrompt,
             proactiveChatEnabled: currentProactive,
             proactiveVisionEnabled: currentVision,
             proactiveVisionChatEnabled: currentVisionChat,
@@ -1789,6 +1815,8 @@
         );
 
         // 同步回共享状态，保持一致性
+        S.activityContextPromptEnabled = currentContextPrompt;
+        syncActivityContextPromptSetting();
         S.proactiveChatEnabled = currentProactive;
         S.proactiveVisionEnabled = currentVision;
         S.proactiveVisionChatEnabled = currentVisionChat;
@@ -1977,6 +2005,7 @@
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
                 S.proactiveChatEnabled = settings.proactiveChatEnabled ?? true;
                 S.proactiveVisionEnabled = settings.proactiveVisionEnabled ?? false;
+                S.activityContextPromptEnabled = settings.activityContextPromptEnabled ?? true;
                 S.proactiveVisionChatEnabled = settings.proactiveVisionChatEnabled ?? true;
                 S.proactiveNewsChatEnabled = settings.proactiveNewsChatEnabled ?? false;
                 S.proactiveCommunityChatEnabled = settings.proactiveCommunityChatEnabled ?? false;
@@ -2097,6 +2126,7 @@
                 // 首次启动默认开启音乐/meme搭话 + mini-game 邀请
                 S.proactiveMusicEnabled = true;
                 S.proactiveMemeEnabled = true;
+                S.activityContextPromptEnabled = true;
                 S.proactiveMiniGameInviteEnabled = true;
                 // 首次启动默认 token 上限 300（tiktoken o200k_base）
                 S.textGuardMaxLength = 300;
@@ -2263,6 +2293,7 @@
                     });
                 }
                 let hasUpdate = false;
+                let shouldReschedule = false;
 
                 // 只要 server 给了 branch，本次首启决议就算完成，清掉 pending marker；下次
                 // 启动不再尝试。GET 失败则 marker 留着，下次在线启动重新决议。原本这里还会
@@ -2278,6 +2309,7 @@
                     // 若用户在 60s periodic 之前关掉 app，首启的本地默认值就永远到不了服务器。
                     // 这里 hasUpdate=true 让下方 saveSettings 走完整路径推一次
                     hasUpdate = true;
+                    shouldReschedule = true;
                 }
 
                 const acceptedSharedSettings = {};
@@ -2303,8 +2335,10 @@
                         } else if (S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
                             hasUpdate = true;
+                            shouldReschedule = true;
                         }
                     }
+                    shouldReschedule = shouldReschedule || hasSharedSchedulingChanges(acceptedSharedSettings);
                     if (applySharedRuntimeSettings(acceptedSharedSettings)) {
                         hasUpdate = true;
                     }
@@ -2336,6 +2370,7 @@
                     if (adoptedAsrDecision
                         || S.independentAsrEnabled !== previousAsr) {
                         hasUpdate = true;
+                        shouldReschedule = true;
                     }
                 }
 
@@ -2356,6 +2391,7 @@
                         && S.proactiveChatInterval === C.DEFAULT_PROACTIVE_CHAT_INTERVAL) {
                     S.proactiveChatInterval = _PROACTIVE_INTERVAL_AB_VALUE;
                     hasUpdate = true;
+                    shouldReschedule = true;
                     console.log('[app-settings] A/B 实验组', telemetryBranch, '：主动搭话间隔默认', _PROACTIVE_INTERVAL_AB_VALUE, '秒');
                 }
 
@@ -2369,6 +2405,7 @@
                     // 同步 window 镜像变量，防止 saveSettings() 回滚
                     window.proactiveChatEnabled = S.proactiveChatEnabled;
                     window.proactiveVisionEnabled = S.proactiveVisionEnabled;
+                    window.activityContextPromptEnabled = S.activityContextPromptEnabled;
                     window.proactiveVisionChatEnabled = S.proactiveVisionChatEnabled;
                     window.proactiveNewsChatEnabled = S.proactiveNewsChatEnabled;
                     window.proactiveCommunityChatEnabled = S.proactiveCommunityChatEnabled;
@@ -2396,10 +2433,12 @@
                         )
                     });
                     // 重新初始化主动搭话调度器（使用最新标志）
-                    if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
-                        window.appProactive.scheduleProactiveChat();
-                    } else if (typeof window.scheduleProactiveChat === 'function') {
-                        window.scheduleProactiveChat();
+                    if (shouldReschedule) {
+                        if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
+                            window.appProactive.scheduleProactiveChat();
+                        } else if (typeof window.scheduleProactiveChat === 'function') {
+                            window.scheduleProactiveChat();
+                        }
                     }
                 }
 
@@ -2756,6 +2795,7 @@
                 }
             }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
+            const shouldReschedule = hasSharedSchedulingChanges(incoming);
             const changed = applySharedRuntimeSettings(incoming);
             // Adopted = survived every stale / revision check and was applied.
             // Not this window's handshake authority, but an open voice panel
@@ -2906,7 +2946,7 @@
                 ));
             }
             stopVisionAfterPrivacyEnabled();
-            if (changed && typeof window.scheduleProactiveChat === 'function') {
+            if (changed && shouldReschedule && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();
             }
             if (pendingKeysToReassert.length > 0 && !(meta && meta.pendingRecovery)) {

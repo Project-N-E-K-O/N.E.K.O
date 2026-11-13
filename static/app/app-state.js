@@ -250,6 +250,7 @@
         videoSenderInterval: null,
 
         // --- 主动搭话 ---
+        activityContextPromptEnabled: true,
         proactiveChatEnabled: true,
         proactiveVisionEnabled: false,
         proactiveVisionChatEnabled: true,
@@ -607,6 +608,7 @@
     // ======================== 向后兼容的全局双向绑定 ========================
     // 使用 defineProperty 使 window.xxx 始终和 S.xxx 同步
     const proactiveKeys = [
+        'activityContextPromptEnabled',
         'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
         'proactiveNewsChatEnabled', 'proactiveCommunityChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
         'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',

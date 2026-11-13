@@ -371,6 +371,7 @@ window.createChatModeToggle = function(options) {
         if (typeof window.saveNEKOSettings === 'function') {
             window.saveNEKOSettings();
         }
+        if (options.affectsSchedule === false) return;
         if (checkbox.checked) {
             // 开启时，如果主动搭话已开启，重置并启动调度
             if (window.proactiveChatEnabled && typeof window.resetProactiveChatBackoff === 'function') {
@@ -491,6 +492,15 @@ window.createChatModeToggles = function(prefix) {
         gap: '1px',
         width: '100%'
     });
+
+    // A preference for the dialogs, not a proactive source or scheduler input.
+    container.appendChild(window.createChatModeToggle({
+        checkboxId: `${prefix}-activity-context-prompt`,
+        labelKey: 'settings.toggles.activityContextPrompt',
+        tooltipKey: 'settings.toggles.activityContextPromptTooltip',
+        globalVarName: 'activityContextPromptEnabled',
+        affectsSchedule: false
+    }));
 
     // 使用共享配置创建搭话方式选项
     window.CHAT_MODE_CONFIG.forEach(config => {
