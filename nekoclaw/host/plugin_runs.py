@@ -630,7 +630,10 @@ class PluginRunner:
         try:
             ctx = safe_args.get("_ctx")
             ctx = dict(ctx) if isinstance(ctx, dict) else {}
-            if lanlan_name and "lanlan_name" not in ctx:
+            # The host's character name wins over one the model wrote into
+            # the arguments: which character the call is for is the host's
+            # to say (owner, 2026-11-13).
+            if lanlan_name:
                 ctx["lanlan_name"] = lanlan_name
             if conversation_id:
                 ctx["conversation_id"] = conversation_id

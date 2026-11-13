@@ -25,7 +25,7 @@ Categories and their default (design section 10.1):
 category           what                                                    default
 =================  ======================================================  =======
 ``workdir_files``  reading or writing a path inside the working directory  allow
-``outside_read``   reading a path outside the working directory            allow
+``outside_read``   reading a path outside the working directory            ask
 ``outside_write``  writing a path outside the working directory            ask
 ``run_command``    running a shell command                                 ask
 ``other``          tools that touch neither files nor the shell            allow
@@ -145,7 +145,7 @@ def classify(tool: str, arguments: Mapping[str, Any], workdir: Path) -> Permissi
 
 def default_permission_decision(request: PermissionRequest) -> Decision:
     """Return the built-in decision for a request; see the module docstring."""
-    if request.category in ("outside_write", "run_command"):
+    if request.category in ("outside_read", "outside_write", "run_command"):
         return "ask"
     return "allow"
 

@@ -207,10 +207,11 @@ class NekoClawHost:
 
     def _on_commission_change(self, commission: Commission, previous: str | None) -> None:
         del previous
-        # "For this session" means one run of the commission's task agent.
-        # ``blocked`` and ``failed`` end that run even though the commission
-        # can be taken up again later; the run that follows asks again.
-        if commission.status in ENDED_STATUSES:
+        # "For this session" lasts the whole commission: it ends when the
+        # commission is done, has failed or is stopped. ``blocked`` does not
+        # end it: the commission is taken up again where it stopped, with
+        # what the user allowed (owner, 2026-11-13).
+        if commission.status in ENDED_STATUSES - {"blocked"}:
             self.permissions.end_session(commission.id)
 
     def _first_use(self) -> None:

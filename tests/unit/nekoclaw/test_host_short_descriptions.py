@@ -257,3 +257,40 @@ async def test_the_host_lists_plugins_with_the_short_description_written_for_the
         assert llm.calls == [] and len(llm.short_calls) == 1
     finally:
         await host.shutdown()
+
+
+async def test_a_changed_description_is_not_written_twice_while_the_old_one_is_being_kept(tmp_path):
+    import threading
+
+    llm = FakeDecisionLLM()
+    llm.short = ["Weather forecasts.", "Weather and air quality.", "spare"]
+    short = _short(llm, tmp_path / "short.json")
+    keeping = threading.Event()
+    write = short._write
+
+    def slow_write(written: Any) -> None:
+        keeping.wait(5)
+        write(written)
+
+    short._write = slow_write
+    changed = plugin("weather", LONG + "It also reports the air quality.")
+
+    await short.apply([_weather()])
+    await wait_until(lambda: len(llm.short_calls) == 1, what="the first one being asked for")
+    # While the first one is being kept, the description changes; listing
+    # then asks for nothing yet.
+    await short.apply([changed])
+    # Whatever it would start gets its turn to run.
+    await asyncio.sleep(0.05)
+    assert len(llm.short_calls) == 1
+    keeping.set()
+    await _written(short)
+
+    await short.apply([changed])
+    # Listed again while that one is being written: not asked for twice.
+    await short.apply([changed])
+    await _written(short)
+
+    assert len(llm.short_calls) == 2
+    (listed,) = await short.apply([changed])
+    assert listed["short_description"] == "Weather and air quality."

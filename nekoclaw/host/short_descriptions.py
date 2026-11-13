@@ -209,8 +209,6 @@ class ShortDescriptions:
                 except Exception as exc:  # noqa: BLE001 - the plugin is listed by its description meanwhile
                     logger.debug("writing a short description for %s failed (exc_type=%s)", plugin_id, type(exc).__name__)
                     short = ""
-                finally:
-                    self._in_flight.discard(plugin_id)
                 if not short:
                     self._failed_at[plugin_id] = self._clock()
                     continue
@@ -221,6 +219,10 @@ class ShortDescriptions:
                 # Never the text itself in the log: it is the model's.
                 logger.info("wrote a short description for plugin %s (%d chars)", plugin_id, len(short))
         finally:
+            # Only here, once the batch is done: a plugin let go earlier could
+            # be started again by a listing (its description changed) while
+            # this batch is still keeping the old one, and this would then
+            # let go of that new start's claim as well.
             for plugin in plugins:
                 self._in_flight.discard(str(plugin.get("id")))
 

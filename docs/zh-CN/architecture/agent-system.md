@@ -53,7 +53,7 @@
 - `mcp_adapter` 插件里配置的 MCP 服务的工具；
 - 键鼠、浏览器两项内置能力。各接受一条指令，由 `brain/computer_use.py`、`brain/browser_use_adapter.py` 里现有的循环执行；只有 task agent 能调用。
 
-权限存在 `<数据根>/nekoclaw/permissions.json`，每一类是 `first_ask`（首次询问）、`always_ask`（每次都问）、`allow`（放行）、`deny`（禁止）之一。默认放行插件入口和工作目录内的文件读写；跑命令、在工作目录外写文件、键鼠、浏览器、每个 MCP 服务默认首次询问。设成 `deny` 的插件或 MCP 服务，直达调用也不会用到。
+权限存在 `<数据根>/nekoclaw/permissions.json`，每一类是 `first_ask`（首次询问）、`always_ask`（每次都问）、`allow`（放行）、`deny`（禁止）之一。默认放行插件入口和工作目录内的文件读写；在工作目录外读写文件、跑命令、键鼠、浏览器、每个 MCP 服务默认首次询问。设成 `deny` 的插件或 MCP 服务，直达调用也不会用到。
 
 ## 汇报回流
 

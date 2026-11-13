@@ -53,7 +53,7 @@ Besides its own file and command tools, a task agent reaches everything through 
 - the tools of MCP servers configured in the `mcp_adapter` plugin;
 - two built-in capabilities, keyboard-and-mouse and browser control. Each takes one instruction and carries it out with the existing loop in `brain/computer_use.py` or `brain/browser_use_adapter.py`. Only task agents can call them.
 
-Permissions are stored in `<data root>/nekoclaw/permissions.json`. Each category is `first_ask`, `always_ask`, `allow`, or `deny`. By default, plugin entries and file access inside the working directory are allowed, while commands, writes outside the working directory, keyboard-and-mouse, the browser, and each MCP server ask on first use. `deny` also keeps a plugin or an MCP server out of direct calls.
+Permissions are stored in `<data root>/nekoclaw/permissions.json`. Each category is `first_ask`, `always_ask`, `allow`, or `deny`. By default, plugin entries and file access inside the working directory are allowed, while reading or writing outside the working directory, commands, keyboard-and-mouse, the browser, and each MCP server ask on first use. `deny` also keeps a plugin or an MCP server out of direct calls.
 
 ## Reports back to the conversation
 

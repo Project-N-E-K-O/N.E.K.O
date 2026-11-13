@@ -321,7 +321,7 @@ def store(tmp_path: Any) -> PermissionStore:
 async def test_defaults_of_the_design(store):
     assert DEFAULT_MODES == {
         "workdir_files": "allow",
-        "outside_read": "allow",
+        "outside_read": "first_ask",
         "outside_write": "first_ask",
         "run_command": "first_ask",
         "other": "allow",

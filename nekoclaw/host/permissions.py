@@ -18,7 +18,8 @@ The settings live in ``<data root>/nekoclaw/permissions.json``. Each category
 has one of four modes:
 
 * ``first_ask``  - ask the user; "always" turns the category into ``allow``,
-  "session" allows it until the asking commission ends.
+  "session" allows it until the asking commission is done, has failed or
+  is stopped (being stuck and taken up again does not end it).
 * ``always_ask`` - ask the user every time; only "once" and "deny" are offered.
 * ``allow``      - go ahead without asking.
 * ``deny``       - refuse without asking.
@@ -70,7 +71,7 @@ MCP_SERVER_CATEGORY = "mcp_server"
 DEFAULT_MODES: dict[str, str] = {
     # Built-in tools of the runtime (nekoclaw.runtime.permissions.CATEGORIES).
     "workdir_files": "allow",
-    "outside_read": "allow",
+    "outside_read": "first_ask",
     "outside_write": "first_ask",
     "run_command": "first_ask",
     "other": "allow",
@@ -298,7 +299,7 @@ class PermissionGate:
         self._parent_of = parent_of
 
     def end_session(self, commission_id: str) -> None:
-        """Forget what was allowed for a commission's session; call it when the commission ends."""
+        """Forget what was allowed for a commission's session; call it when the commission is done, has failed or is stopped."""
         self._session_grants.pop(commission_id, None)
 
     def session_grants(self, commission_id: str) -> frozenset[tuple[str, str | None]]:

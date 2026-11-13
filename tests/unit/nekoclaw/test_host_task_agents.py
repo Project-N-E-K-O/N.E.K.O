@@ -659,6 +659,16 @@ async def _waiting_and_closed(host: Any, text: str) -> str:
     return receipt.commission_id
 
 
+async def _waiting_and_closed_after_dispatch(host: Any, commission_id: str) -> str:
+    """Close the idle session of a commission already waiting, as an idle runtime does."""
+    await wait_until(lambda: _ended(host, commission_id), what="the asking run ending")
+    await host.task_agents._runtime.close(commission_id)
+    await host.task_agents.settle()
+    assert commission_id not in host.task_agents.running
+    assert (await host.ledger.get(commission_id)).status == "waiting_user"
+    return commission_id
+
+
 async def test_an_answer_kept_for_a_wake_up_that_never_ran_survives_the_session_closing(hosts, tmp_path):
     llm = ScriptedLLM(
         [
@@ -1062,6 +1072,37 @@ async def test_an_answer_after_the_idle_session_was_closed_takes_it_up_again(hos
     assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
     (_first, again) = await _events(host, commission_id, "started")
     assert again.payload["resumed"] is True
+
+
+async def test_a_session_answer_outlives_the_idle_session_being_closed(hosts, tmp_path):
+    # "For this session" lasts the whole commission (owner, 2026-11-13): the
+    # idle runtime closing the session and the commission being taken up
+    # again in a new one keeps what the user allowed.
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        return "session"
+
+    host.permissions.set_asker(asker)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    assert (await host.permissions.check(receipt.commission_id, "run_command")).allow
+    commission_id = await _waiting_and_closed_after_dispatch(host, receipt.commission_id)
+    assert host.permissions.session_grants(commission_id) == {("run_command", None)}
+
+    assert await host.answer(commission_id, "the photos are in D:/Camera") is True
+    await wait_until(lambda: commission_id in host.task_agents.running, what="the new session")
+    assert host.permissions.session_grants(commission_id) == {("run_command", None)}
+
+    await wait_status(host, commission_id, "done")
+    # Done: gone.
+    assert host.permissions.session_grants(commission_id) == frozenset()
 
 
 async def test_taking_up_again_outlives_a_caller_cancelled_meanwhile(hosts, tmp_path):

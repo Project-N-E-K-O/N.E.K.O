@@ -394,7 +394,7 @@ async def test_ctx_reaches_the_plugin_with_the_run_id_added(server, caller):
     assert received["run_id"] == server.runs()[0].run_id
 
 
-async def test_ctx_keeps_values_the_arguments_already_carry(server, caller):
+async def test_ctx_keeps_values_the_arguments_already_carry_but_not_the_character(server, caller):
     ctx = await _ctx_of_one_call(
         server,
         caller,
@@ -404,7 +404,8 @@ async def test_ctx_keeps_values_the_arguments_already_carry(server, caller):
         latest_user_request="new words",
     )
 
-    assert ctx["lanlan_name"] == "Other"
+    # Which character the call is for is the host's to say (owner, 2026-11-13).
+    assert ctx["lanlan_name"] == "Tian"
     assert ctx["latest_user_request"] == "original words"
     assert ctx["extra"] == 1
     # The conversation always is the one this call belongs to.

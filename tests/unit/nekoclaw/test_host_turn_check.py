@@ -886,7 +886,7 @@ async def test_a_stored_question_carries_its_sentence_in_the_commissions_languag
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("ended", ["done", "failed", "cancelled", "blocked"])
+@pytest.mark.parametrize("ended", ["done", "failed", "cancelled"])
 async def test_a_session_answer_is_forgotten_when_its_commission_ends(hosts, tmp_path, ended):
     host = make_host(tmp_path, None, decision_llm=FakeDecisionLLM())
     hosts.append(host)
@@ -910,6 +910,30 @@ async def test_a_session_answer_is_forgotten_when_its_commission_ends(hosts, tmp
     assert host.permissions.session_grants(ending.id) == frozenset()
     assert host.permissions.session_grants(other.id) == {("run_command", None)}
     assert asked == [ending.id, other.id]
+
+
+async def test_a_session_answer_lasts_while_its_commission_is_blocked(hosts, tmp_path):
+    # It lasts the whole commission (owner, 2026-11-13): taken up again after
+    # being stuck, its task agent is not asked again.
+    host = make_host(tmp_path, None, decision_llm=FakeDecisionLLM())
+    hosts.append(host)
+    asked: list[str] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        asked.append(commission_id)
+        return "session"
+
+    host.permissions.set_asker(asker)
+    commission, _ = await host.ledger.create(lanlan_name="Lan", title="a", dispatch_text="a", source="dispatch")
+    await host.ledger.transition(commission.id, "working", route="task_agent")
+    assert (await host.permissions.check(commission.id, "run_command")).allow
+
+    assert (await host.ledger.transition(commission.id, "blocked", reason="stuck")).applied
+    assert host.permissions.session_grants(commission.id) == {("run_command", None)}
+    assert (await host.ledger.transition(commission.id, "working", reason="taken up again")).applied
+
+    assert (await host.permissions.check(commission.id, "run_command")).allow
+    assert asked == [commission.id]
 
 
 # ---------------------------------------------------------------------------
