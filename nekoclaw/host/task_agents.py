@@ -575,6 +575,9 @@ class TaskAgentManager:
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("starting a task agent for %s failed: %s", commission_id, exc)
+            # Kept before the session is let go: the user's next words may
+            # take the commission up again while the failure is written.
+            self._keep_unsent(session)
             self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             self._keep_unsent(session)
@@ -871,14 +874,17 @@ class TaskAgentManager:
         elif reason == "error":
             if session.sent == 0:
                 # Ended before its prompt was sent (the runtime process
-                # went away meanwhile): what it was to send is kept.
+                # went away meanwhile): what it was to send is kept, and
+                # again once the failure is written, for what came meanwhile.
+                self._keep_unsent(session)
+                await self._fail(commission_id, str(event.get("error") or "the run failed"))
                 self._keep_unsent(session)
             else:
                 # A run takes its prompt into the session's transcript before
                 # its first model request, and the next start goes on from
                 # that transcript: what was kept is there, and is not sent again.
                 session.carried = []
-            await self._fail(commission_id, str(event.get("error") or "the run failed"))
+                await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
