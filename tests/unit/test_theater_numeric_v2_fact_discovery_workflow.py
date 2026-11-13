@@ -6,7 +6,7 @@ from copy import deepcopy
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, serialized_prompt_tokens
 import time
 
 import pytest
@@ -314,9 +314,9 @@ async def test_discovery_over_budget_falls_back_to_identical_contract_request(tm
         assert await reviewer.verify_contract_boundaries(**kwargs) == ()
         baseline = state.requests[-1]
         original = ev.numeric_v2_actor_budget
-        limit = sum(count_tokens(text) for text in baseline["messages"])
+        limit = serialized_prompt_tokens(*baseline["messages"])
         monkeypatch.setattr(ev, "numeric_v2_actor_budget", lambda profile: {
-            **original(profile), "evaluator_input_max_tokens": limit})
+            **original(profile), "judge_input_max_tokens": limit})
         packet = _packet(runtime.engine, current.session, state.drafts[0], "请核对。")
         sink = []
         assert await reviewer.verify_contract_boundaries(**kwargs, discovery_packet=packet, discovery_sink=sink) == ()

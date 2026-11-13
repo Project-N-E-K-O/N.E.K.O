@@ -4,6 +4,16 @@ import json
 import re
 
 
+def without_public_destination_indexes(value):
+    """Compare original evidence while ignoring request-local display labels."""
+    if isinstance(value, dict):
+        return {key: without_public_destination_indexes(child) for key, child in value.items()
+                if key != "public_destination_index"}
+    if isinstance(value, list):
+        return [without_public_destination_indexes(child) for child in value]
+    return value
+
+
 def contract_audit_payload(payload, messages):
     """Supply complete authored-rule coverage in an otherwise unchanged model fixture."""
     if not isinstance(payload, dict):

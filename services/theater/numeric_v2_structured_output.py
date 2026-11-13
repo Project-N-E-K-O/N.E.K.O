@@ -243,6 +243,8 @@ def contract_output_schema(*, grounded: bool = False, confirmation: bool = False
             "clearance": {**_array({"type": "string", "enum": clearance_refs} if clearance_refs is not None else
                 _object({"source_ref": {"type": "string"}, "quote": {"type": "string", "minLength": 1}})), "maxItems": 3},
         }
+        if check_player_authority:
+            verdict["player_action_scope"] = {"type": "string", "enum": ["none", "present", "uncertain"]}
         properties = {"verdicts": _array(_object(verdict))} if confirmation_many else verdict
         if check_departure and not check_departure_scope:
             properties["departure_clearance"] = {**_array(_object({

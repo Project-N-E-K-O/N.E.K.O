@@ -10,7 +10,7 @@ import pytest
 from services.theater import numeric_v2_evaluator as ev, numeric_v2_workflow as wf
 from services.theater.numeric_v2_options import default_options
 from services.theater.numeric_v2_runtime import NumericV2Engine, NumericV2Runtime, TurnRequestV2
-from tests.utils.theater_prompt import prompt_payload, prompt_reference
+from tests.utils.theater_prompt import prompt_payload, prompt_reference, without_public_destination_indexes
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_pending_offer import _commit
 from tests.unit.test_theater_numeric_v2_runtime import _binding
@@ -138,7 +138,7 @@ async def test_progress_review_receives_published_dialogue_and_returns_advice_wi
         engine.nodes[NODE]["story_beat"].pop("goals")
     session = _session(engine, "older_scene_entry")
     requests = []
-    reply_direction = "承接已经发生的动作，回应本轮请求。"
+    reply_direction = goals[0]["description"]
     if blocked_departure:
         reply_direction = selected
     if selected in {"legacy", "player_only_fact"}:
@@ -195,11 +195,11 @@ async def test_progress_review_receives_published_dialogue_and_returns_advice_wi
             goals[0]["description"] if selected == "show_reading" else "")
     else:
         assert request["player_input"] == MESSAGE
-        expected = "承接已经发生的动作，回应本轮请求。"
+        expected = goals[0]["description"]
     expected_task = None
-    if blocked_departure and reply_direction:
+    if reply_direction:
         expected_task = {
-            "selected_id": reply_direction, "direction": expected,
+            "selected_id": reply_direction if blocked_departure else goals[0]["id"], "direction": expected,
             "goals": request["progress"]["goals"],
             "allowed_behaviors": [permission],
             "pending_results": [row for row in request["progress"]["pending_results"] if row["required_this_scene"]],
@@ -973,7 +973,7 @@ def test_request_binds_retained_committed_rows_and_names_exact_sources(phase):
     messages = ev._build_messages(engine, session, MESSAGE, committed_evidence=bank)
     data = _data(messages)
     _assert_bound_sources(data, bank)
-    assert data["scene_context"][-1] == ev._fact_scene_context(session)[-1]
+    assert without_public_destination_indexes(data["scene_context"][-1]) == ev._fact_scene_context(session)[-1]
     assert "player_input" in messages[0].content and "runtime_fact" in messages[0].content
     assert "actor_performance" in messages[0].content and "而非本轮草稿" in messages[0].content
     assert "subject" in messages[0].content and "不自证" in messages[0].content
@@ -1022,7 +1022,7 @@ def test_packing_retrieves_earlier_entry_and_binds_only_retained_originals(revie
     assert any(QUOTE in source for source in bank)
     assert any(ref.startswith(f"scene_context[{len(data['scene_context']) - 1}].content[")
                for ref in data["committed_fact_evidence"]["content_refs"])
-    assert data["scene_context"][-1] == ev._fact_scene_context(session)[-1]
+    assert without_public_destination_indexes(data["scene_context"][-1]) == ev._fact_scene_context(session)[-1]
     assert all(row["revision"] != entry["revision"] for row in data["scene_context"])
     assert any(row["revision"] == entry["revision"] and row["current_visit"] is True
         and row["source"] == "performance" and QUOTE in row["text"]

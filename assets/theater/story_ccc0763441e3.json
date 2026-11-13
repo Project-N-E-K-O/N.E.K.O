@@ -7,11 +7,27 @@
   "endings": [
     {
       "id": "ending_normal",
-      "summary": "按照先前共同守护车站的决定，旧站逐渐成为失物招领、历史展览与旅客休憩的空间。女主把等待变成了照顾来往旅人的日常。对过去的纪念留在柜台上，今后的生活不再需要靠一个永远不会到来的班次证明意义。",
+      "summary": "旧站按照先前实际商定的用途重新运转，物件的保存与陈列方式承接当时的决定。女主把等待变成了照看这处空间的日常。对过去的记忆仍被珍惜，今后的生活不再需要靠一个永远不会到来的班次证明意义。",
       "terminal": true,
       "title": "雾散后的守望者"
     }
   ],
+  "fact_contract": {
+    "facts": {
+      "scene:mainline_06:station_use_accepted": {
+        "description": "玩家已明确赞同入幕公开的车站用途，或明确选定替代用途供双方采用；直接说“我愿意，就按你说的办”即可，不要求复述方案。只提出帮忙、询问可行性、尚未决定或暂缓不算；不要求承诺留下、恋爱或完成施工。",
+        "evidence_source": "player_input",
+        "value_type": "bool",
+        "visibility": "public"
+      },
+      "scene:mainline_06:station_use_acknowledged": {
+        "description": "在玩家明确接受用途后，女主已实际回应并确认采用的具体用途；可以确认入幕提案或同意玩家选定的替代方案。仅单方提出邀请、展望将来会回应、或玩家声称女主已同意不算完成；感谢本身不能替代确认用途。",
+        "evidence_source": "performance",
+        "value_type": "bool",
+        "visibility": "public"
+      }
+    }
+  },
   "initial_state": {
     "metrics": {
       "affection": 20
@@ -27,7 +43,7 @@
     "author": "NEKO_Numeric_drama",
     "contract_version": "v2.2",
     "language": "zh-CN",
-    "revision": "workshop-20261105-lamp-evidence-and-closure-v3",
+    "revision": "workshop-20261113-lamp-agreement-evidence-v4",
     "story_id": "story_ccc0763441e3",
     "title": "《月台尽头的猫灯》"
   },
@@ -1046,7 +1062,7 @@
               "timing": "turn",
               "type": "shared_agreement"
             },
-            "description": "双方就纪念与互助空间的用途形成明确共识；直接赞同已有提案即可，不要求另外提建议或承诺留下。",
+            "description": "双方就实际采用的车站用途形成明确共识，可以沿用纪念与互助提案或采用替代用途；直接赞同已有提案即可，不要求另外提建议或承诺留下。",
             "evidence": {
               "anchors": [],
               "mode": "semantic"
@@ -1106,6 +1122,14 @@
         "all": [
           {
             "fixed_narration_id": "memorial_proposal"
+          },
+          {
+            "key": "scene:mainline_06:station_use_accepted",
+            "equals": true
+          },
+          {
+            "key": "scene:mainline_06:station_use_acknowledged",
+            "equals": true
           }
         ]
       }
@@ -1131,7 +1155,7 @@
           "continuity_from_previous": [
             "两人决定共同守护车站的新用途"
           ],
-          "environment_state": "环境为一年后的雨夜，修缮后的候车室亮着暖灯，柜台上摞着旅客留下的感谢信。女主端来两杯热可可，将其中一杯放在熟悉的位置；展示柜里的旧怀表和日记被妥善保存，窗外的站台灯映着雨丝。",
+          "environment_state": "环境为一年后的雨夜，修缮后的候车室亮着暖灯。女主端来两杯热可可，将其中一杯放在桌边；日记与旧怀表被妥善保存，窗外的站台灯映着雨丝。",
           "player_state": "男主的行动、去留和关系只承接进入结局前已经提交的实际选择；此处不新增决定。",
           "scene_boundaries": [
             "不得推翻共同决定的事实",
@@ -1148,7 +1172,7 @@
               "timing": "opening",
               "type": "environment_fact"
             },
-            "description": "结局开场展示的结果：一年后的雨夜，修缮后的候车室亮着暖灯，柜台上摞着旅客留下的感谢信。女主端来两杯热可可，将其中一杯放在熟悉的位置；展示柜里的旧怀表和日记被妥善保存，窗外的站台灯映着雨丝。",
+            "description": "结局开场展示的结果：一年后的雨夜，修缮后的候车室亮着暖灯。女主端来两杯热可可，将其中一杯放在桌边；日记与旧怀表被妥善保存，窗外的站台灯映着雨丝。",
             "evidence": {
               "anchors": [],
               "mode": "semantic"
@@ -1164,9 +1188,9 @@
           "不得推翻共同决定的事实",
           "不得引入新的外部冲突"
         ],
-        "opening_scene": "一年后的雨夜，修缮后的候车室亮着暖灯，柜台上摞着旅客留下的感谢信。女主端来两杯热可可，将其中一杯放在熟悉的位置；展示柜里的旧怀表和日记被妥善保存，窗外的站台灯映着雨丝。",
+        "opening_scene": "一年后的雨夜，修缮后的候车室亮着暖灯。女主端来两杯热可可，将其中一杯放在桌边；日记与旧怀表被妥善保存，窗外的站台灯映着雨丝。",
         "relationship_ceiling": "intimate",
-        "summary": "按照先前共同守护车站的决定，旧站逐渐成为失物招领、历史展览与旅客休憩的空间。女主把等待变成了照顾来往旅人的日常。对过去的纪念留在柜台上，今后的生活不再需要靠一个永远不会到来的班次证明意义。",
+        "summary": "旧站按照先前实际商定的用途重新运转，物件的保存与陈列方式承接当时的决定。女主把等待变成了照看这处空间的日常。对过去的记忆仍被珍惜，今后的生活不再需要靠一个永远不会到来的班次证明意义。",
         "transition_goal": "温柔悬疑、生活流、微奇幻、怀旧、治愈"
       },
       "terminal": true,

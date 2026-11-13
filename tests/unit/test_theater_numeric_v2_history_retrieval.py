@@ -10,7 +10,7 @@ from services.theater import numeric_v2_evaluator as evaluator
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_context import history_evidence
 from services.theater.numeric_v2_runtime import NumericV2Engine, TurnRequestV2
-from tests.utils.theater_prompt import prompt_payload
+from tests.utils.theater_prompt import prompt_payload, without_public_destination_indexes
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_prompt_contract import _session
 from utils.tokenize import count_tokens
@@ -71,8 +71,9 @@ def test_packed_evidence_dedup_preserves_provenance_and_trimmed_history(monkeypa
         ))
     messages = build(session)
     data = prompt_payload(messages[1].content)
-    assert (duplicate in data.get('history_evidence', [])) is trim
-    assert all(item in data.get('history_evidence', []) for item in protected)
+    retained_evidence = without_public_destination_indexes(data.get('history_evidence', []))
+    assert (duplicate in retained_evidence) is trim
+    assert all(item in retained_evidence for item in protected)
     assert any(row['revision'] == 1 for row in data['scene_context']) is not trim
     assert fact in messages[1].content
 

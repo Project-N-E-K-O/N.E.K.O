@@ -120,6 +120,9 @@ async def test_confirmation_checks_the_reported_proposal_instead_of_searching_fo
         async def ainvoke(self, messages, **kwargs):
             data = json.loads(messages[1].content.split("\n", 1)[1]); requests.append(data)
             if len(requests) == 1:
+                if focused_over_budget:
+                    # Only the follow-up request exceeds the fixed 10k review capacity.
+                    monkeypatch.setattr(evaluator, "count_tokens", lambda text: 10001)
                 return SimpleNamespace(content=json.dumps(contract_audit_payload({"violations": [{"rule_index": 0,
                     "candidate_ref": "c0", "quote": "请先写下建议，我们再商量。", "prior_ref": ""}]}, messages)))
             assert data["finding"]["quote"] == "请先写下建议，我们再商量。"
@@ -129,9 +132,6 @@ async def test_confirmation_checks_the_reported_proposal_instead_of_searching_fo
     async def factory(*args, **kwargs): return Client()
     monkeypatch.setattr(evaluator, "_model_config", config)
     monkeypatch.setattr(evaluator, "create_chat_llm_async", factory)
-    if focused_over_budget:
-        original_count = evaluator.count_tokens
-        monkeypatch.setattr(evaluator, "count_tokens", lambda text: 7001 if '"finding":' in text else original_count(text))
     check = evaluator.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node={"story_beat": {"must_not_happen": ["未达成共识前不得执行分配。"]}},
         session=session, player_input="我愿意一起承担后果。",

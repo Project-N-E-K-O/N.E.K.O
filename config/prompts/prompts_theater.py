@@ -61,8 +61,9 @@ NUMERIC_V2_PENDING_OFFER_PROMPT_LABEL = "当前待确认提议原文（只证明
 
 NUMERIC_V2_DEPARTURE_SCOPE_INSTRUCTIONS = (
     'departure_scope是唯一离幕判定，d0对应指控不在其他字段重复报告。逐一检查每个 c 块的全文，包括动作之后的每句对白。'
-    '按列出的正文编号顺序各填一项，不跳过动作或对白'
-    '[{"scope":"current_scene","candidate_ref":"c0","quote":"该块支持其范围的短引文"}]。'
+    'departure_scope为数组，按列出的正文编号顺序各填一项，不跳过动作或对白；'
+    '每项包含scope、candidate_ref和quote，candidate_ref取该c编号，quote逐字摘自该块真实正文。'
+    'scope只取current_scene、prospective、departed或uncertain，不把字段说明当作引文。'
     '只有整块尚未实施的提议或准备才用 prospective；对白同时宣告结果已发生时，后面的未来安排不能覆盖该宣告。'
     '实际交付离场、下一时地或离幕后才成立的结果填 departed，quote摘实际交付该结果的原句；'
     '无法判明填 uncertain，仍须保留该块编号与原文引句，不能省略该块或用空数组代替整稿核对。'

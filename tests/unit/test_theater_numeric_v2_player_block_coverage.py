@@ -75,7 +75,8 @@ def test_player_schema_requires_every_candidate_block_without_an_aggregate_clear
     {"status": "clear", "checked_refs": ["c0", "c1"], "actions": []},
 ])
 async def test_missing_or_legacy_empty_reports_cannot_prove_full_player_coverage(monkeypatch, report):
-    calls = _client(monkeypatch, report)
+    calls = _client(monkeypatch, report, confirmation={
+        "verdict": "uncertain", "reason": "该完整块的玩家权限仍未判明。", "clearance": []})
     diagnostics = {}
     kwargs = dict(node={"story_beat": {}}, session=_session(), actor_performance={
         "scene_narration": "周砚检查接口。", "performance": "先听内容。"},
@@ -87,7 +88,8 @@ async def test_missing_or_legacy_empty_reports_cannot_prove_full_player_coverage
         with pytest.raises(ev.NumericV2EvaluatorOutputError):
             await reviewer.verify_contract_boundaries(**kwargs)
     assert diagnostics["player_authority_complete"] is False
-    assert len(calls) == (2 if report in ({}, {"c0": "none"}, {"c0": "none", "c1": []}) else 1)
+    assert len(calls) == (2 if report in ({}, {"c0": "none"}, {"c0": "none", "c1": []},
+                                        {"c0": "none", "c1": "uncertain"}) else 1)
 
 
 @pytest.mark.asyncio

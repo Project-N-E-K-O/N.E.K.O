@@ -112,9 +112,13 @@ async def test_incomplete_scope_never_becomes_clearance(monkeypatch, defect):
     async def factory(*args, **kwargs): return Client()
     monkeypatch.setattr(evaluator, "_model_config", config)
     monkeypatch.setattr(evaluator, "create_chat_llm_async", factory)
-    result = await _VERIFY(evaluator.NumericV2MetricEvaluator(object()),
+    review = _VERIFY(evaluator.NumericV2MetricEvaluator(object()),
         node={"story_beat": {}}, session=session,
         actor_performance={"scene_narration": "仪表还在桌上。", "performance": "再看一次读数。"},
         player_input="已经走了。", departure_attempt_observed=True,
         departure_blocker="completion_pending", exit_mismatch_reason="留幕。")
-    assert result
+    if defect == "ungrounded_quote":
+        with pytest.raises(evaluator.NumericV2EvaluatorOutputError):
+            await review
+    else:
+        assert await review

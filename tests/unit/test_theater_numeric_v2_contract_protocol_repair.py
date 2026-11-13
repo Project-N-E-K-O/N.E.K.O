@@ -51,7 +51,7 @@ async def test_wrong_source_quote_repairs_only_bad_block_and_freezes_fact_verdic
     {"c0": [{"quote": "请工作人员核对。", "authorization_ref": "p0"}]},
     {"c0": [{"quote": "工作人员", "authorization_ref": ""}]},
 ])
-async def test_invalid_or_semantic_nonclear_repair_is_protocol_failure_without_fact_publication(monkeypatch, repaired):
+async def test_invalid_or_semantic_nonclear_repair_never_publishes_facts(monkeypatch, repaired):
     engine, session = _frame()
     body = _body()
 
@@ -65,8 +65,11 @@ async def test_invalid_or_semantic_nonclear_repair_is_protocol_failure_without_f
 
     calls = _install(monkeypatch, respond)
     sink = []
-    with pytest.raises(ev.NumericV2EvaluatorOutputError):
-        await _review(engine, session, body, _bound(engine, session, body), sink)
+    if repaired in ({"c0": "uncertain"}, {"c0": [{"quote": "工作人员", "authorization_ref": ""}]}):
+        assert ev._PLAYER_AUTHORITY_RULE in await _review(engine, session, body, _bound(engine, session, body), sink)
+    else:
+        with pytest.raises(ev.NumericV2EvaluatorOutputError):
+            await _review(engine, session, body, _bound(engine, session, body), sink)
     assert not sink and len(calls) == 2
 
 
@@ -222,7 +225,7 @@ async def test_protocol_repair_preserves_first_discovery_without_resampling_reje
 
 
 @pytest.mark.asyncio
-async def test_confirmation_separates_rule_target_and_delivered_event_without_new_output_fields(monkeypatch):
+async def test_confirmation_separates_rule_target_and_delivered_event(monkeypatch):
     engine, session = _frame()
     body = {"performance": "（点头）可以，我就按给你看。"}
     node = {"id": "start", "story_beat": {"must_not_happen": ["本幕只商量，不实际按键。"]}}
@@ -231,8 +234,10 @@ async def test_confirmation_separates_rule_target_and_delivered_event_without_ne
         if "finding" in data:
             assert "reason分别说明原rule禁止的交付类型和正文实际交付的动作、发言或状态" in messages[0].content
             assert "对白正在交付受限行为或宣告其发生也算执行" not in messages[0].content
-            assert set(kwargs["response_format"]["json_schema"]["schema"]["properties"]) == {"verdict", "reason", "clearance"}
-            return {"verdict": "clear", "reason": "禁的是实际按键，原句只表达同意和承诺。", "clearance": ["c1"]}
+            assert set(kwargs["response_format"]["json_schema"]["schema"]["properties"]) == {
+                "verdict", "reason", "clearance", "player_action_scope"}
+            return {"verdict": "clear", "reason": "禁的是实际按键，原句只表达同意和承诺。",
+                    "clearance": ["c1"], "player_action_scope": "uncertain"}
         payload = contract_audit_payload({"violations": [{"rule_index": 0, "candidate_ref": "c1",
             "quote": "可以，我就按给你看。", "prior_ref": ""}]}, messages)
         return payload

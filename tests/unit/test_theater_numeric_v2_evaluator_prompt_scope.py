@@ -7,7 +7,7 @@ import pytest
 
 from services.theater.numeric_v2_evaluator import _build_messages, _parse_output
 from services.theater.numeric_v2_runtime import NumericV2Engine
-from tests.utils.theater_prompt import pending_transition_text, prompt_payload, prompt_reference
+from tests.utils.theater_prompt import pending_transition_text, prompt_payload, prompt_reference, without_public_destination_indexes
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
@@ -94,10 +94,10 @@ def test_evaluator_protocols_follow_available_metrics_and_invitation(
     else:
         assert "询问下一步安排不代表同意执行" in system
         assert "公开依据只能来自本次访问的实际演出" in system
-        assert "public_destination_quote只在initiate或纠正不符邀约时填写" in system
+        assert "public_destination_index只在initiate或纠正不符邀约时选择" in system
         assert "作者方向、程序进出场记录、推荐按钮" in system
         assert "不满足主动请求条件则 unclear，不能空口 accept" in system
-        assert "保持 unclear、exit_matches=false，public_destination_quote 逐字摘录该邀约供纠正。其他 unclear 留空" in system
+        assert "保持 unclear、exit_matches=false，public_destination_index选择该邀约供纠正。其他 unclear 填-1" in system
     assert "natural_ending_ready" in system
     assert "subject、action、object、result" in system
     assert "prop:letter" in data["current_story_beat"]["fact_contract"]["facts"]
@@ -109,7 +109,7 @@ def test_retrieved_entry_bridge_has_same_permission_in_both_prompt_rules(monkeyp
               "current_entry_bridge": True, "text": "两人停在轨道站的入口旁。"}
     monkeypatch.setattr("services.theater.numeric_v2_evaluator.history_evidence", lambda *args, **kwargs: [bridge])
     system, human = _build_messages(engine, session, "我们去刚才说的轨道站。")
-    assert prompt_payload(human.content)["history_evidence"] == [bridge]
+    assert without_public_destination_indexes(prompt_payload(human.content)["history_evidence"]) == [bridge]
     assert system.content.count("current_visit=true 或 current_entry_bridge=true") == 2
 
 

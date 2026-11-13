@@ -1085,7 +1085,19 @@ class NumericV2Engine:
                      and value == target["value"])
         ]
 
-    def blocked_player_handoffs(self, session: ScriptSessionV2, message: str) -> dict[str, list[str]]:
+    @staticmethod
+    def _displayed_suggestion(
+        session: ScriptSessionV2, message: str, *, revision: int, node_id: str,
+    ) -> bool:
+        origin = (session.opening_performance if revision == 0 else next((record
+            for record in reversed(session.performance_history)
+            if record.get("revision") == revision and record.get("to_node_id") == node_id), None))
+        suggestions = origin.get("suggested_inputs") if isinstance(origin, Mapping) else None
+        return isinstance(suggestions, list) and message in suggestions
+
+    def blocked_player_handoffs(
+        self, session: ScriptSessionV2, message: str, *, input_source: str = "freeform",
+    ) -> dict[str, list[str]]:
         """A guarded receipt requires player action, independent of the Actor's new draft."""
 
         pending = {
@@ -1096,13 +1108,18 @@ class NumericV2Engine:
         }
         if not pending:
             return {}
+        clicked_suggestion = input_source == "suggestion" and self._displayed_suggestion(
+            session, message, revision=session.revision, node_id=session.current_node_id)
         records, _ = current_scene_records(session)
         return {
             key: names for key, names in pending.items()
-            if not player_handoff_is_explicit(message, names)
+            if not player_handoff_is_explicit(message, names, allow_omitted_subject=clicked_suggestion)
             and not any(
                 record.get("from_node_id") == record.get("to_node_id") == session.current_node_id
-                and player_handoff_is_explicit(str(record.get("input_text") or ""), names)
+                and player_handoff_is_explicit(str(record.get("input_text") or ""), names,
+                    allow_omitted_subject=record.get("input_source") == "suggestion" and self._displayed_suggestion(
+                        session, str(record.get("input_text") or ""), revision=int(record["revision"]) - 1,
+                        node_id=session.current_node_id))
                 and performed_player_handoff("\n".join(
                     block["text"] for block in performance_content_blocks(record) if block["type"] != "dialogue"
                 ), names, receipt_only=True)
@@ -1164,7 +1181,8 @@ class NumericV2Engine:
         ):
             raise NumericV2RuntimeError("actor_fact_outcome_mismatch")
         existing_operations = tuple(event.get("fact_operations") or ())
-        blocked = self.blocked_player_handoffs(base_session, str(event["input_text"])) if operations else {}
+        blocked = self.blocked_player_handoffs(base_session, str(event["input_text"]),
+            input_source=str(event.get("input_source") or "freeform")) if operations else {}
         if any(operation.get("value") is True and operation["key"] in blocked for operation in operations):
             raise NumericV2RuntimeError("numeric_v2_player_handoff_required")
         existing_keys = {
@@ -1358,7 +1376,8 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("metric_change_duplicate")
         if transition_intent not in {"accept", "initiate", "reject", "unclear"}:
             raise NumericV2RuntimeError("transition_intent_invalid")
-        blocked = self.blocked_player_handoffs(session, request.message) if fact_operations else {}
+        blocked = self.blocked_player_handoffs(session, request.message,
+            input_source=request.input_source) if fact_operations else {}
         if any(operation.get("value") is True and operation["key"] in blocked for operation in fact_operations):
             raise NumericV2RuntimeError("numeric_v2_player_handoff_required")
         invitation_acceptance = request.input_source == "accept_invitation"
@@ -1588,6 +1607,11 @@ class NumericV2Engine:
             fact_operations=fact_operations,
         )
         event["transition_intent"] = effective_transition_intent
+        if request.input_source == "suggestion" and self._displayed_suggestion(
+                session, request.message, revision=session.revision, node_id=session.current_node_id):
+            # Persist the real click so fact settlement and cold replay use the
+            # same player-action permissions; this never asserts a receipt.
+            event["input_source"] = "suggestion"
         if reinvitation or invitation_acceptance:
             event["input_source"] = request.input_source
             event["input_text"] = ""
@@ -2363,7 +2387,7 @@ class NumericV2Runtime:
         record["player_action_projection"] = normalize_player_action_projection(
             outcome.ledger_event.get("player_action_projection")
         )
-        if outcome.ledger_event.get("input_source") in {"reinvite", "accept_invitation"}:
+        if outcome.ledger_event.get("input_source") in {"suggestion", "reinvite", "accept_invitation"}:
             record["input_source"] = outcome.ledger_event["input_source"]
         fact_projection = _fact_projection(outcome.ledger_event, record)
         record["fact_projection"] = fact_projection

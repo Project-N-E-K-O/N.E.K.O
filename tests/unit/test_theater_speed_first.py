@@ -269,8 +269,8 @@ async def test_post_draft_contract_checks_publication_without_removing_valid_bod
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "克制。")
     result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("publish", 0, "现在呢？"), ensure_current_binding=lambda _: _binding())
-    assert checks == ([text] if actionable else [text, ""])
-    assert result.performance["performance"] == ("先把眼前的话说完。\n" + text if actionable else "先把眼前的话说完。")
+    assert checks == [text]
+    assert result.performance["performance"] == "先把眼前的话说完。\n" + text
     assert bool(result.performance["suggested_inputs"]) is actionable
     assert result.stored.session.transition_offered is actionable
 
@@ -285,12 +285,13 @@ async def test_invalid_offer_recovers_only_the_offer_once_per_visit(speed_first,
     publishes = mode in {"publish", "same_turn_unlock"}
     if same_turn_unlock:
         route["conditions"] = {"all": [{"type": "fact_equals", "key": key, "value": True}]}
-        route["transition_contract"]["fallback_offer"] = "催促声迫使你立即行动。"
+        route["transition_contract"]["fallback_offer"] = "催促声迫使我立刻查看时间。"
     engine = NumericV2Engine.from_mapping(story)
     runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id="offer-repair", catgirl_binding=_binding(), opening_performance=_opening())
     original = "我们已经把材料理齐了。"
-    rejected = "催促声迫使你立即行动。"
+    rejected = "催促声迫使我立刻查看时间。"
+    assert workflow.is_pressure_only_offer(rejected)
     offer, accept = "现在一起去档案室核对记录吗？", "好，我和你去档案室核对记录。"
     if not same_turn_unlock:
         ready = runtime.prepare_turn(current, TurnRequestV2("ready", 0, "材料已经理齐。"), (),
@@ -312,7 +313,9 @@ async def test_invalid_offer_recovers_only_the_offer_once_per_visit(speed_first,
 
     async def contract(self, **kwargs):
         if proposed := kwargs.get("proposed_offer"):
-            kwargs["diagnostics"]["offer_actionable"] = True  # A pressure-only sentence still cannot be published.
+            # A role's own reaction to pressure remains valid prose, but a
+            # model's true flag cannot turn it into a player's invitation.
+            kwargs["diagnostics"]["offer_actionable"] = True
             if proposed["text"] == offer:
                 assert proposed["accept_input"] == accept
         return ()
@@ -333,7 +336,7 @@ async def test_invalid_offer_recovers_only_the_offer_once_per_visit(speed_first,
         turn=TurnRequestV2("respond", current.session.revision, "稍等，我想想。" if mode == "defer" else "接下来怎么安排？"),
         ensure_current_binding=lambda _: _binding())
     assert calls == ([] if mode == "defer" else [original])
-    assert result.performance["performance"] == (original + "\n" + offer if publishes else original)
+    assert result.performance["performance"] == original + "\n" + (offer if publishes else rejected)
     assert result.stored.session.transition_offered is publishes
     assert (accept in result.performance["suggested_inputs"]) is publishes
     restored = await runtime.restore_session("offer-repair")
@@ -358,7 +361,9 @@ async def test_invalid_offer_recovers_only_the_offer_once_per_visit(speed_first,
         result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=forked,
             turn=TurnRequestV2("again", 2, "我们接下来怎么安排？"), ensure_current_binding=lambda _: _binding())
         assert calls == [original]
-        assert result.performance["performance"] == original
+        assert result.performance["performance"] == original + "\n" + rejected
+        assert not result.stored.session.transition_offered
+        assert result.stored.ledger_events[-1].get("program_invitation") is None
 
 
 def test_completed_anchor_only_drops_an_explicit_redo():

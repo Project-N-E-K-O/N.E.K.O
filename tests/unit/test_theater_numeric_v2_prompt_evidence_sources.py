@@ -80,18 +80,19 @@ def _offline(monkeypatch, answer):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["goal", "fallback", "empty", "soft", "invalid"])
+@pytest.mark.parametrize("mode", ["goal", "fallback", "empty", "soft", "soft_freeform", "invalid"])
 async def test_selected_author_task_retains_its_exact_permissions_and_dependencies(monkeypatch, mode):
     engine, session = _frame(goals=mode != "fallback")
-    blocked = mode != "soft"
+    blocked = mode not in {"soft", "soft_freeform"}
     selected = {"goal": "explain_reading", "fallback": "scene:start:done", "empty": "",
-                "soft": "先核对当前接线读数。", "invalid": "unissued_task"}[mode]
+                "soft": "仪表显示当前接线读数。", "soft_freeform": "先核对当前接线读数。",
+                "invalid": "unissued_task"}[mode]
     requests = _offline(monkeypatch, lambda _, data: {"direction": selected})
     source_before = deepcopy(engine.nodes["start"]["story_beat"])
     call = _REVIEW(evaluator.NumericV2MetricEvaluator(object()), engine=engine, session=session,
                    message="我已经到检修间了。", claims=(), timeout_seconds=1,
                    review_progress=True, blocked_departure=blocked)
-    if mode == "invalid":
+    if mode in {"invalid", "soft_freeform"}:
         with pytest.raises(evaluator.NumericV2EvaluatorError):
             await call
         assert len(requests) == 1
@@ -101,14 +102,15 @@ async def test_selected_author_task_retains_its_exact_permissions_and_dependenci
     _, data, kwargs = requests[0]
     schema = kwargs["response_format"]["json_schema"]["schema"]
     assert set(schema["properties"]) == {"direction"}
-    if mode in {"empty", "soft"}:
+    if mode == "empty":
         assert result.direction == selected and result.current_scene_task is None
     else:
+        selected_id = "show_reading" if mode == "soft" else selected
         expected_direction = next(row["description"] for row in data["progress"][
-            "goals" if mode == "goal" else "pending_results"] if row.get("id", row.get("key")) == selected)
+            "goals" if mode in {"goal", "soft"} else "pending_results"] if row.get("id", row.get("key")) == selected_id)
         assert result.direction == expected_direction
         assert result.current_scene_task == {
-            "selected_id": selected, "direction": expected_direction,
+            "selected_id": selected_id, "direction": expected_direction,
             "goals": data["progress"]["goals"],
             "allowed_behaviors": data["progress"]["allowed_behaviors"],
             "pending_results": [row for row in data["progress"]["pending_results"] if row["required_this_scene"]],

@@ -6,7 +6,7 @@ import pytest
 
 from services.theater import numeric_v2_evaluator as e
 from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
-from tests.utils.theater_prompt import prompt_payload
+from tests.utils.theater_prompt import prompt_payload, without_public_destination_indexes
 from tests.unit.test_theater_numeric_v2_review_capacity import _fixture
 
 
@@ -63,7 +63,7 @@ def test_exact_boundary_keeps_all_quotes_and_content(inputs):
     after,packed,_=build()
     assert [m.content for m in after]==[m.content for m in messages]
     assert packed['player_input']==message
-    assert packed['scene_context']==[latest]
+    assert without_public_destination_indexes(packed['scene_context'])==[latest]
 
 def test_optional_retrieval_trims_minimum_and_does_not_reappear(inputs,monkeypatch):
     *_,build,limit=inputs
@@ -88,7 +88,9 @@ def test_history_trim_restores_evidence_from_removed_record(inputs,monkeypatch):
     monkeypatch.setattr(e,'_current_scene_context',lambda *a:deepcopy([older,latest]))
     monkeypatch.setattr(e,'history_evidence',lambda *a,**k:deepcopy(rows))
     messages,data,_=build();assert 'history_evidence' not in data
-    expected=deepcopy(data);expected['scene_context']=[latest];expected['history_evidence']=[rows[0]]
+    expected=deepcopy(data)
+    expected['scene_context']=[{**latest, 'content': [{**latest['content'][0], 'public_destination_index': 0}]}]
+    expected['history_evidence']=[{**rows[0], 'public_destination_index': 1}]
     prefix=messages[-1].content.split("======以下为", 1)[0]
     # Restoring evidence also restores the evidence protocol in the system.
     desired=e.count_tokens(messages[0].content+e.HISTORY_EVIDENCE_RULE)+e.count_tokens(prefix+e.render_prompt_context(expected))
@@ -124,7 +126,7 @@ def test_scored_input_is_sent_once_and_survives_history_eviction(inputs, monkeyp
     limit(tokens(messages) - 500)
     packed = build()
     data = data_from(packed)
-    assert data['scene_context'] == [latest]
+    assert without_public_destination_indexes(data['scene_context']) == [latest]
     assert packed[1].content.count(original) == 1
     event, = data['recent_metric_awards']
     if retrieve:
@@ -145,7 +147,7 @@ def test_still_over_budget_keeps_fixed_context_and_latest_record(inputs,monkeypa
     after,packed,diag=build()
     assert packed==expected and after[0].content==system
     assert diag['final_tokens']==minimum>diag['budget_tokens']
-    assert packed['player_input']==message and packed['scene_context']==[latest]
+    assert packed['player_input']==message and without_public_destination_indexes(packed['scene_context'])==[latest]
     again,repeated,_=build()
     assert repeated==packed and [m.content for m in again]==[m.content for m in after]
     # The native caller must still reject an irreducible prompt before invoke.
@@ -184,7 +186,7 @@ def test_old_lifecycle_projection_yields_to_current_public_evidence(inputs, monk
     assert diag['final_tokens'] <= diag['budget_tokens']
     assert summary['facts'] == [current] and summary['scope'] == 'current_visit'
     assert summary['truncated'] and summary['omitted_prior_scene_events'] == 23
-    assert packed['scene_context'] == [latest] and packed['player_input'] == message
+    assert without_public_destination_indexes(packed['scene_context']) == [latest] and packed['player_input'] == message
     assert packed['metrics'] == baseline['metrics'] and projection == original
 
 
@@ -241,10 +243,10 @@ def test_identical_author_opening_references_retained_playback_and_survives_evic
     assert packed["current_story_beat"]["scene_anchor"] == (
         "作者入幕规划，与 scene_context[0].content[0].text 同文。"
     )
-    assert packed["scene_context"][0] == opening
+    assert without_public_destination_indexes(packed["scene_context"][0]) == opening
 
     expected = deepcopy(packed)
-    expected["scene_context"] = [latest]
+    expected["scene_context"] = [{**latest, "content": [{**latest["content"][0], "public_destination_index": 0}]}]
     expected["current_story_beat"]["scene_anchor"] = original
     limit(count_data(messages, expected))
     _, packed, diagnostics = build()
@@ -291,5 +293,5 @@ def test_auxiliary_lifecycle_summary_can_yield_without_losing_current_result(inp
     limit(count_data(messages, expected))
     _, packed, diag = build()
     assert packed == expected and diag['final_tokens'] == diag['budget_tokens']
-    assert packed['player_input'] == message and packed['scene_context'] == [latest]
+    assert packed['player_input'] == message and without_public_destination_indexes(packed['scene_context']) == [latest]
     assert projection['facts'][0]['event'] == 'scene.entered'

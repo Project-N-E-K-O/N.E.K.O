@@ -5,7 +5,7 @@ from copy import deepcopy
 import json
 from types import SimpleNamespace
 
-from tests.utils.theater_prompt import contract_audit_payload
+from tests.utils.theater_prompt import contract_audit_payload, serialized_prompt_tokens
 
 import pytest
 
@@ -247,15 +247,23 @@ async def test_selected_transition_context_cannot_bypass_either_input_budget(mon
     async def factory(*args, **kwargs): return Client()
     monkeypatch.setattr(evaluator, "_model_config", config)
     monkeypatch.setattr(evaluator, "create_chat_llm_async", factory)
+    kwargs = dict(
+        node={"story_beat": {"must_not_happen": ["本幕不得移交设备。"]}},
+        target_node={"story_beat": {"opening_scene": "两人在交接台旁。"}}, transition_contract=contract,
+        actor_performance={"segments": [{"phase": "transition_bridge", "scene_narration":
+            "设备已经移交。" + ("交接台旁的指示灯亮着。" * 100 if over_budget_stage == "confirmation" else "")}]},
+        session=_session(), player_input="先检查。")
     if over_budget_stage == "confirmation":
-        count = evaluator.count_tokens
-        monkeypatch.setattr(evaluator, "count_tokens", lambda text: 100000
-            if '"finding":' in text and '"transition_context":' in text else count(text))
+        await evaluator.NumericV2MetricEvaluator(object()).verify_contract_boundaries(**kwargs)
+        assert len(requests) == 2
+        initial_tokens, confirmation_tokens = (
+            serialized_prompt_tokens(*(message.content for message in messages)) for messages in requests)
+        assert initial_tokens < confirmation_tokens
+        requests.clear()
+        budget = evaluator.numeric_v2_actor_budget
+        monkeypatch.setattr(evaluator, "numeric_v2_actor_budget", lambda profile: {
+            **budget(profile), "formal_judge_input_max_tokens": initial_tokens})
     with pytest.raises(evaluator.NumericV2EvaluatorError, match="contract_check_input_over_budget"):
-        await evaluator.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
-            node={"story_beat": {"must_not_happen": ["本幕不得移交设备。"]}},
-            target_node={"story_beat": {"opening_scene": "两人在交接台旁。"}}, transition_contract=contract,
-            actor_performance={"segments": [{"phase": "transition_bridge", "scene_narration": "设备已经移交。"}]},
-            session=_session(), player_input="先检查。")
+        await evaluator.NumericV2MetricEvaluator(object()).verify_contract_boundaries(**kwargs)
     assert len(requests) == int(over_budget_stage == "confirmation")
     assert contract == original

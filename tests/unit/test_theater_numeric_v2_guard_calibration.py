@@ -8,6 +8,7 @@ import pytest
 from services.theater import numeric_v2_evaluator as ev
 from services.theater.numeric_v2_runtime import TurnRequestV2
 from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
+from tests.utils.theater_prompt import without_public_destination_indexes
 
 
 @pytest.mark.parametrize('text', [
@@ -89,7 +90,7 @@ async def test_committed_entrance_bridge_supports_public_destination_without_com
     messages = ev._build_messages(engine, session, request,
         public_destination_evidence=sources, committed_evidence=completion)
     data = prompt_payload(messages[1].content)
-    assert data['scene_context'][0]['entry_bridge'] == [{"type": "narration", "text": quote}]
+    assert without_public_destination_indexes(data['scene_context'][0]['entry_bridge']) == [{"type": "narration", "text": quote}]
     assert messages[1].content.count(quote) == 1
     assert current_opening in '\n'.join(completion) and quote not in '\n'.join(completion)
     assert ev._has_public_transition_quote(quote, session)

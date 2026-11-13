@@ -122,13 +122,29 @@ async def test_first_tail_overlap_has_one_shared_repair_and_never_rewrites_sourc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('mode', ['crop_accepted', 'crop_rejected', 'unchanged'])
+@pytest.mark.parametrize('mode', ['retained_offer', 'postprocessed_accepted', 'postprocessed_rejected', 'unchanged'])
 async def test_partial_delivery_rechecks_real_postprocessed_source_and_rolls_back_on_rejection(
     tmp_path, monkeypatch, mode,
 ):
     runtime, current, original = await _start(tmp_path, partial=True)
     source = AGREED if mode == 'unchanged' else AGREED + '\n' + OFFER
-    approvals, offers = [], []
+    approvals, offers, body_checks, edits = [], [], [], []
+    postprocessed = mode.startswith('postprocessed_')
+
+    if postprocessed:
+        finalize = runtime.engine.finalize_transition_offer_state
+
+        def finalize_with_body_edit(outcome, performance, **kwargs):
+            outcome, performance = finalize(outcome, performance, **kwargs)
+            if approvals and performance.get('performance') == source:
+                # Exercise an actual late body edit, independently of an
+                # optional proposal's routing eligibility. Metadata alone
+                # must not trigger another completion approval.
+                edits.append(performance['performance'])
+                performance = {**performance, 'performance': AGREED}
+            return outcome, performance
+
+        monkeypatch.setattr(runtime.engine, 'finalize_transition_offer_state', finalize_with_body_edit)
 
     async def generate(self, **kwargs):
         assert kwargs['outcome'].route is None and not kwargs.get('transition_source')
@@ -148,29 +164,32 @@ async def test_partial_delivery_rechecks_real_postprocessed_source_and_rolls_bac
         evidence = kwargs['claims'][0]['evidence']
         assert any(row['source'] == 'actor_performance' and row['quote'] == body for row in evidence)
         assert all(OFFER not in row['quote'] for row in evidence if len(approvals) > 1)
-        approved = not (mode == 'crop_rejected' and len(approvals) == 2)
+        approved = not (mode == 'postprocessed_rejected' and len(approvals) == 2)
         return ev.NumericV2StoryEvidenceReview((0,) if approved else ())
 
     async def contract(self, **kwargs):
+        body_checks.append(kwargs['actor_performance']['performance'])
         if kwargs.get('proposed_offer'):
             offers.append(kwargs['proposed_offer']['text'])
             kwargs['diagnostics']['offer_actionable'] = False
         return ()
 
     _install(monkeypatch, generate, approve, contract)
-    if mode == 'crop_rejected':
+    if mode == 'postprocessed_rejected':
         with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_source_delivery_final_review_failed'):
             await _run(runtime, current)
         assert runtime.store._path(current.session.session_id).read_bytes() == original
         assert await runtime.restore_session(current.session.session_id) == current
     else:
         result = await _run(runtime, current)
-        assert result.performance['performance'] == AGREED
+        assert result.performance['performance'] == (AGREED if postprocessed else source)
         assert result.stored.session.current_node_id == 'start' and result.stored.session.revision == 1
         assert result.stored.session.metrics['trust'] == 22
         assert result.stored.session.story_state['facts'][KEY]['value'] is True
         assert runtime.engine.completion_contract_satisfied(result.stored.session) is False
         assert not result.performance.get('transition_offered')
         assert all(row['from_node_id'] == row['to_node_id'] for row in result.stored.ledger_events)
-    assert approvals == ([source] if mode == 'unchanged' else [source, AGREED])
+    assert approvals == ([source, AGREED] if postprocessed else [source])
+    assert body_checks == ([source, AGREED] if postprocessed else [source])
+    assert edits == ([source] if postprocessed else [])
     assert offers == ([] if mode == 'unchanged' else [OFFER])

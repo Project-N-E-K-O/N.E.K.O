@@ -146,12 +146,13 @@ def _clauses(text: str) -> list[str]:
     ]
 
 
-def _handoff_clauses(text: str) -> list[tuple[str, bool, str]]:
+def _handoff_clauses(text: str, *, allow_omitted_subject: bool = False) -> list[tuple[str, bool, str]]:
     clauses = []
     for sentence in re.findall(r"[^。！？!?；;\n]+[。！？!?；;]?", text):
         if sentence.lstrip(" （(").startswith(_HANDOFF_CONDITIONAL):
             continue
-        for part in _clauses(sentence):
+        parts = [sentence.rstrip("。；;")] if allow_omitted_subject and not re.search(r"[（）()]", sentence) else _clauses(sentence)
+        for part in parts:
             parenthetical = part.startswith(("（", "(")) and part.endswith(("）", ")"))
             previous = ""
             for clause in re.split(r"[，,：:]+", part[1:-1] if parenthetical else part):
@@ -184,21 +185,23 @@ def _handoff_action_prefixes(clause: str, item_names: Sequence[str], verbs: Sequ
     return prefixes
 
 
-def player_handoff_is_explicit(text: str, item_names: Sequence[str]) -> bool:
+def player_handoff_is_explicit(
+    text: str, item_names: Sequence[str], *, allow_omitted_subject: bool = False,
+) -> bool:
     """Find a current first-person or role-action handoff of a declared item in player input."""
-    clauses = _handoff_clauses(text)
+    clauses = _handoff_clauses(text, allow_omitted_subject=allow_omitted_subject)
     return any(
         not _HANDOFF_OBSERVING.search(prefix)
         and not _has_unambiguous_nonplayer_subject(clause, len(prefix))
-        and (_HANDOFF_SELF.match(prefix) or (parenthetical and (
+        and (_HANDOFF_SELF.match(prefix) or ((parenthetical or allow_omitted_subject) and (
             not prefix or prefix.startswith(("把", "将", "双手", "伸手", "单手", "捧起", "托起"))
         )))
         for clause, parenthetical, _ in clauses
         for prefix in _handoff_action_prefixes(clause, item_names, _HANDOFF_GIVE)
     ) or any(
         # The immediately preceding action can supply the object when both
-        # clauses belong to the same explicit player action in parentheses.
-        parenthetical
+        # clauses belong to the same explicit player action or verified click.
+        (parenthetical or allow_omitted_subject)
         and (holding := _HANDOFF_HOLDING.match(previous)) is not None
         and previous[holding.end():] in item_names
         and _HANDOFF_OMITTED_OBJECT.fullmatch(clause)

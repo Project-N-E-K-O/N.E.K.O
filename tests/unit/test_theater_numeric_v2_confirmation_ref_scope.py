@@ -58,11 +58,13 @@ async def test_source_finding_keeps_own_wording_but_excludes_later_target(monkey
         assert {"c0", "c1"} <= set(refs) and not {"c2", "c3"} & set(refs)
         assert [row["id"] for row in data["visible_order"]] == ["c0", "c1", "c2", "c3"]
         assert "clearance只选择eligible_clearance_refs" in messages[0].content
-        answer = {"verdict": "clear", "reason": "该同意句尚未实际执行。", "clearance": [clearance]}
+        answer = {"verdict": "clear", "reason": "该同意句尚未实际执行。", "clearance": [clearance],
+                  "player_action_scope": "uncertain"}
         errors = list(Draft202012Validator(kwargs["response_format"]["json_schema"]["schema"]).iter_errors(answer))
         assert bool(errors) is (clearance == "c2")
         if source == "我已经启动展示。" and clearance == "c1":
-            return {"verdict": "violation", "reason": "来源段原文已宣告实际执行。", "clearance": []}
+            return {"verdict": "violation", "reason": "来源段原文已宣告实际执行。", "clearance": [],
+                    "player_action_scope": "uncertain"}
         return answer
 
     calls = _install(monkeypatch, respond)

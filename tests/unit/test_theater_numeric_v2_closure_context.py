@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 from services.theater import numeric_v2_evaluator as ev
 from services.theater.numeric_v2_runtime import NumericV2Engine
-from tests.utils.theater_prompt import prompt_payload
+from tests.utils.theater_prompt import prompt_payload, without_public_destination_indexes
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 from tests.unit.test_theater_numeric_v2_prompt_contract import _session
 
@@ -49,7 +49,7 @@ def test_evaluator_keeps_full_closure_scope_and_route_reason(case):
     assert data['current_story_beat']['scene_direction'] == engine.nodes['start']['story_beat']['summary']
     assert ev.count_tokens(data['current_story_beat']['scene_direction']) > ev.NUMERIC_V2_EVALUATOR_FIELD_MAX_TOKENS
     assert data['transition_preview']['transition_direction'] == engine.nodes['start']['route_gates'][0]['transition_contract']['reason']
-    assert data['scene_context'][-1] == ev._current_scene_context(session)[-1]
+    assert without_public_destination_indexes(data['scene_context'][-1]) == ev._current_scene_context(session)[-1]
     assert sum(ev.count_tokens(m.content) for m in messages) <= ev.numeric_v2_actor_budget(case["session"].actor_budget_profile)["evaluator_input_max_tokens"]
 
 

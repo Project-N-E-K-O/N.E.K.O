@@ -290,6 +290,8 @@ async def test_unresolved_whole_body_coverage_never_publishes_approval(monkeypat
         body["fixed_narrations"] = [{"position": "after", "text": "柜台灯亮了。"}]
 
     def respond(messages, data, kwargs):
+        if "finding" in data or "findings" in data:
+            return {"verdict": "uncertain", "reason": "玩家权限仍未判明。", "clearance": []}
         payload = contract_audit_payload({"violations": []}, messages)
         if unchecked == "author": payload.pop("author_checks")
         elif unchecked == "player": payload["player_authority"]["c0"] = "uncertain"
