@@ -20,6 +20,7 @@ export function HistoryDialog({ close }: { close: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [recording, setRecording] = useState<boolean | null>(null);
   const [recordingBusy, setRecordingBusy] = useState(false);
+  const recordingRevision = useRef(0);
   const [recordingError, setRecordingError] = useState(false);
   const [names, setNames] = useState<string[]>([]);
   const [characterError, setCharacterError] = useState(false);
@@ -98,13 +99,15 @@ export function HistoryDialog({ close }: { close: () => void }) {
   }, [page, anchor]);
   useEffect(() => {
     const controller = new AbortController();
+    const revision = recordingRevision.current;
     fetch('/api/voice-archive/settings', { signal: controller.signal, cache: 'no-store' })
       .then(response => { if (!response.ok) throw new Error('settings'); return response.json(); })
-      .then(data => { if (!controller.signal.aborted) { setRecording(data.enabled === true); setRecordingError(false); } })
+      .then(data => { if (!controller.signal.aborted && revision === recordingRevision.current) { setRecording(data.enabled === true); setRecordingError(false); } })
       .catch(error => { if (error.name !== 'AbortError') setRecordingError(true); });
     return () => controller.abort();
   }, [retry]);
   const saveRecording = async (enabled: boolean) => {
+    recordingRevision.current += 1;
     setRecordingBusy(true); setRecordingError(false);
     try {
       const response = await fetch('/api/voice-archive/settings', {
