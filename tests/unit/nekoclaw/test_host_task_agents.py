@@ -887,6 +887,9 @@ async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(h
     host = _host(hosts, tmp_path, pick)
     warm = await _dispatch(host, "warm up")
     await wait_status(host, warm.commission_id, "done")
+    # Its session closed and released before the close is replaced: done is
+    # written before the close is asked for.
+    await wait_until(lambda: warm.commission_id not in host.task_agents._sessions, what="the warm-up session leaving")
     runtime = host.task_agents._runtime
     sent: list[tuple[str, str]] = []
     start, prompt, steer = runtime.start, runtime.prompt, runtime.steer
@@ -1003,6 +1006,9 @@ async def test_a_start_given_up_for_the_quota_keeps_its_place_until_its_session_
     host.task_agents._meter = meter
     warm = await _dispatch(host, "warm up")
     await wait_status(host, warm.commission_id, "done")
+    # Its session closed and released before the close is replaced: done is
+    # written before the close is asked for.
+    await wait_until(lambda: warm.commission_id not in host.task_agents._sessions, what="the warm-up session leaving")
     runtime = host.task_agents._runtime
     close = runtime.close
     release = asyncio.Event()
@@ -1036,6 +1042,9 @@ async def test_a_closing_session_whose_runtime_went_away_is_released(hosts, tmp_
     host.task_agents._meter = meter
     warm = await _dispatch(host, "warm up")
     await wait_status(host, warm.commission_id, "done")
+    # Its session closed and released before the close is replaced: done is
+    # written before the close is asked for.
+    await wait_until(lambda: warm.commission_id not in host.task_agents._sessions, what="the warm-up session leaving")
     runtime = host.task_agents._runtime
     close = runtime.close
     closes: list[str] = []
@@ -1079,6 +1088,9 @@ async def test_a_closing_session_that_ends_with_an_ordinary_error_waits_for_its_
     host.task_agents._meter = meter
     warm = await _dispatch(host, "warm up")
     await wait_status(host, warm.commission_id, "done")
+    # Its session closed and released before the close is replaced: done is
+    # written before the close is asked for.
+    await wait_until(lambda: warm.commission_id not in host.task_agents._sessions, what="the warm-up session leaving")
     runtime = host.task_agents._runtime
     close = runtime.close
 
