@@ -5,7 +5,9 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import subprocess
 import tarfile
 
@@ -15,7 +17,7 @@ BUILD_OUTPUTS = ("static/react/neko-chat", "frontend/plugin-manager/dist")
 
 
 def git(repo, *args):
-    return subprocess.check_output(["git", *args], cwd=repo).decode().strip()
+    return os.fsdecode(subprocess.check_output(["git", *args], cwd=repo)).rstrip("\n")
 
 
 def digest(path):
@@ -30,7 +32,10 @@ def state_dir(repo):
 
 
 def write_json(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    # Escape surrogate filenames so JSON remains UTF-8 and round-trips POSIX bytes.
+    path.write_text(
+        json.dumps(value, ensure_ascii=True, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def clean_required(repo):
@@ -53,12 +58,15 @@ def clean_required(repo):
 
 
 def official_required(repo):
-    url = git(repo, "remote", "get-url", "origin")
+    # Validate the configured identity before Git applies transport rewrites.
+    url = git(repo, "config", "--get", "remote.origin.url")
     if url.rstrip("/").removesuffix(".git") != OFFICIAL_URL.removesuffix(".git"):
         raise ValueError(f"origin is not the configured official repository: {url}")
 
 
 def backup(repo, destination=None):
+    if git(repo, "ls-files", "--unmerged", "-z"):
+        raise ValueError("Resolve or abort merge conflicts before creating a backup.")
     root = Path(destination).resolve() if destination else state_dir(repo) / "backups"
     if destination and root.is_relative_to(repo.resolve()):
         raise ValueError("Keep external backups outside the working tree.")
@@ -85,7 +93,7 @@ def backup(repo, destination=None):
     raw = subprocess.check_output(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=repo
     )
-    names = [name.decode() for name in raw.split(b"\0") if name]
+    names = [os.fsdecode(name) for name in raw.split(b"\0") if name]
     with tarfile.open(folder / "untracked.tar.gz", "w:gz") as archive:
         for name in names:
             archive.add(repo / name, arcname=name, recursive=False)
@@ -152,22 +160,98 @@ def build(repo):
     )
 
 
+def verification_suites(repo, policy_path):
+    policy = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+    suites = policy.get("suites") if isinstance(policy, dict) else None
+    if not isinstance(suites, list) or not suites:
+        raise ValueError("Regression manifest must contain a non-empty suites list.")
+    names = set()
+    for suite in suites:
+        if not isinstance(suite, dict):
+            raise ValueError("Each regression suite must be an object.")
+        name = suite.get("name")
+        if not isinstance(name, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]*", name
+        ):
+            raise ValueError(
+                "Suite name must be a non-empty filename using letters, digits, _, . or -."
+            )
+        if name in names:
+            raise ValueError(f"Duplicate suite name: {name}")
+        names.add(name)
+        command = suite.get("command")
+        if (
+            not isinstance(command, list)
+            or not command
+            or any(not isinstance(arg, str) or "\0" in arg for arg in command)
+            or not command[0].strip()
+        ):
+            raise ValueError(
+                f"Suite {name} command must be a non-empty list of string arguments."
+            )
+        cwd = suite.get("cwd", ".")
+        if (
+            not isinstance(cwd, str)
+            or not cwd
+            or "\0" in cwd
+            or not (repo / cwd).is_dir()
+        ):
+            raise ValueError(f"Suite {name} cwd must name an existing directory.")
+    return suites
+
+
+def source_snapshot(repo):
+    raw = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=repo
+    )
+    untracked = {}
+    for name in raw.split(b"\0"):
+        if not name:
+            continue
+        path = repo / os.fsdecode(name)
+        if path.is_symlink():
+            untracked[os.fsdecode(name)] = {"symlink": os.readlink(path)}
+        else:
+            untracked[os.fsdecode(name)] = {
+                "sha256": digest(path),
+                "mode": path.stat().st_mode,
+            }
+    return {
+        "commit": git(repo, "rev-parse", "HEAD"),
+        "index_sha256": hashlib.sha256(
+            subprocess.check_output(["git", "ls-files", "--stage", "-z"], cwd=repo)
+        ).hexdigest(),
+        "diff_sha256": hashlib.sha256(
+            subprocess.check_output(
+                ["git", "diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv"],
+                cwd=repo,
+            )
+        ).hexdigest(),
+        "untracked": untracked,
+    }
+
+
 def verify(repo, policy_path=None):
+    # A failed attempt must invalidate any previous successful verification.
+    verified = state_dir(repo) / "verified.json"
+    verified.unlink(missing_ok=True)
     if git(repo, "ls-files", "--unmerged"):
         raise ValueError("Resolve merge conflicts before verification.")
+    merge_head = Path(git(repo, "rev-parse", "--git-path", "MERGE_HEAD"))
+    if (repo / merge_head).exists() and git(repo, "diff", "--name-only"):
+        raise ValueError("Stage all tracked changes before verifying a pending merge.")
     if policy_path is None:
         policy_path = repo / "local-desktop-ui/regression.json"
         if not policy_path.is_file():
             policy_path = repo / "local-desktop-ui/regression.example.json"
-    policy = json.loads(Path(policy_path).read_text())
+    suites = verification_suites(repo, policy_path)
     report = state_dir(repo) / (
         "verify-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     )
     report.mkdir()
-    head = git(repo, "rev-parse", "HEAD")
-    before = subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=repo)
+    before = source_snapshot(repo)
     results = []
-    for suite in policy["suites"]:
+    for suite in suites:
         cwd = repo / suite.get("cwd", ".")
         log = report / (suite["name"] + ".log")
         print(f"Running {suite['name']} → {log}", flush=True)
@@ -178,18 +262,19 @@ def verify(repo, policy_path=None):
         results.append(
             {"suite": suite["name"], "returncode": result.returncode, "log": str(log)}
         )
-    after = subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=repo)
-    unchanged = head == git(repo, "rev-parse", "HEAD") and before == after
+    after = source_snapshot(repo)
+    unchanged = before == after
     receipt = {
-        "commit": head,
+        "commit": before["commit"],
         "source_unchanged": unchanged,
-        "diff_sha256": hashlib.sha256(after).hexdigest(),
+        "diff_sha256": after["diff_sha256"],
+        "source_snapshot": after,
         "results": results,
     }
     write_json(report / "receipt.json", receipt)
     if not unchanged or any(item["returncode"] for item in results):
         raise ValueError(f"Verification failed or source changed. Inspect {report}")
-    write_json(state_dir(repo) / "verified.json", receipt)
+    write_json(verified, receipt)
     print(f"All suites passed: {report}")
 
 
@@ -211,7 +296,7 @@ def status(repo):
         )
     except subprocess.CalledProcessError:
         result["upstream"] = "Fetch origin/main first."
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=True, indent=2))
 
 
 def upstream_review(repo):
@@ -230,7 +315,7 @@ def upstream_review(repo):
             ["git", "diff", "--name-only", "--no-renames", "-z", base, target, "--"],
             cwd=repo,
         )
-        return {name.decode() for name in raw.split(b"\0") if name}
+        return {os.fsdecode(name) for name in raw.split(b"\0") if name}
 
     local_paths = changed_paths(head)
     upstream_paths = changed_paths(upstream)
@@ -276,7 +361,7 @@ def main():
         if args.command == "status":
             status(repo)
         elif args.command == "review":
-            print(json.dumps(upstream_review(repo), ensure_ascii=False, indent=2))
+            print(json.dumps(upstream_review(repo), ensure_ascii=True, indent=2))
         elif args.command == "backup":
             print(backup(repo, args.backups))
         elif args.command == "fetch":

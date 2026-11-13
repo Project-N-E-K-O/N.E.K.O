@@ -3,7 +3,8 @@
 `scripts/maintain_local.py` keeps local commits and upstream history together
 without replacing the checkout, automatically stashing changes, or publishing
 anything. It has no user-specific paths or account settings. It requires Python
-3.11, Git, and the official HTTPS repository as `origin`; build/verify also use
+3.11, Git, and the official HTTPS repository configured as `origin` (Git transport
+rewrites such as `insteadOf` are supported); build/verify also use
 the existing Node and uv toolchains. Run it from a checkout, not an installed app.
 
 Use a persistent `local/…` branch for personal changes and explicit file lists
@@ -19,9 +20,13 @@ uv run --no-sync python scripts/maintain_local.py review
 ```
 
 The backup contains a verified HEAD bundle, separate index/working patches, and
-an untracked-file archive. Ignored files and unreferenced branches are not backed
-up. Store sensitive backups privately. `review` pins both tips and the common
-ancestor and lists changed, overlapping, and high-risk paths. It does not read
+an untracked-file archive. The bundle includes only commits reachable from HEAD;
+commits unique to other local branches are excluded even if those branches still
+have valid refs. Back up those branches and ignored files separately. Unresolved
+index conflicts are rejected before any backup is created. Backups preserve file
+and index contents, not in-progress merge/rebase metadata. Store sensitive backups
+privately. `review` pins both tips and the common ancestor and lists changed,
+overlapping, and high-risk paths. It does not read
 private file contents, change the index, or infer that nonoverlapping edits are
 behaviorally compatible. Renames are expanded to both paths.
 
@@ -35,12 +40,23 @@ there is no automatic ours/theirs resolution, reset, push, or deployment.
 and output hashes in Git metadata. `verify --regression path/to/policy.json`
 executes a trusted local manifest and records each result. Without the flag it
 uses `local-desktop-ui/regression.json`, then the tracked example. The example
-only checks the maintenance tool and whitespace; it is **not** a release gate
-for N.E.K.O. Add tests for changed upstream paths and local features. Verification
+checks the maintenance tool and committed, staged and unstaged whitespace; it is
+**not** a release gate for N.E.K.O. Add tests for changed upstream paths and local features. Verification
 does not substitute for real desktop, audio, or visual acceptance.
 
-To recover a backup, clone its `history.bundle` into a separate directory, apply
-`staged.patch` with `git apply --index`, apply `working.patch`, then unpack the
-untracked archive. Inspect the receipt first and preserve the current checkout.
+Manifests require a non-empty `suites` list. Each suite has a unique filename-safe
+`name`, a non-empty `command` array of string arguments, and an optional existing
+`cwd` (relative to the checkout by default). The whole manifest is validated before
+running commands. Verification compares HEAD, index entries, tracked differences,
+and untracked paths and contents, including symlink targets. Ignored artifacts are
+excluded. A pending merge requires tracked working files to match the index before
+testing; stage resolved changes first. Source changes during tests fail verification.
+Every attempt invalidates the previous `verified.json`; only a successful run
+publishes a new success receipt.
+
+To recover a backup, clone its `history.bundle` into a separate directory. Apply
+`staged.patch` with `git apply --index` only if it is non-empty, then apply
+`working.patch` only if it is non-empty. Finally unpack the untracked archive.
+Inspect the receipt first and preserve the current checkout.
 Application packaging and deployment remain the responsibility of the existing
 platform build workflows or a separately maintained local release process.

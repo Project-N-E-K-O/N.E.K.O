@@ -8,6 +8,14 @@
     {
       "name": "whitespace",
       "command": ["git", "diff", "--check", "origin/main...HEAD"]
+    },
+    {
+      "name": "whitespace-staged",
+      "command": ["git", "diff", "--cached", "--check"]
+    },
+    {
+      "name": "whitespace-working",
+      "command": ["git", "diff", "--check"]
     }
   ]
 }
