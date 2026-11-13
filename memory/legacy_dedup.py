@@ -124,14 +124,17 @@ def owned(row, ours, stamps):
 
     Its own reason says so until a snapshot import rewrites it; the archive time,
     which this cleanup chooses before archiving and an import keeps, says so after.
+    Only a row whose reason an import rewrote is matched by time: one still carrying
+    another reason (everyday dedup's own) was archived here by someone else, even
+    when it happened in the same millisecond as this cleanup's chosen time.
     """
     if not isinstance(row, dict) or not row.get('arbitration_archived_at'):
         return False
     if row.get('arbitration_reason') == ARCHIVE_REASON:
         return True
-    if row.get('id') not in ours:
+    from memory.long_term_sync import IMPORTED_ARCHIVE_REASON, timestamp
+    if row.get('id') not in ours or row.get('arbitration_reason') != IMPORTED_ARCHIVE_REASON:
         return False
-    from memory.long_term_sync import timestamp
     try:
         return timestamp(row['arbitration_archived_at']) in {timestamp(stamp) for stamp in stamps}
     except (TypeError, ValueError, OverflowError, OSError):
