@@ -89,12 +89,21 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # The database is derived but moves with the rest: migration runs with
     # every server stopped, exactly like memory's SQLite files.
     "knowledge",
-    # NekoClaw: the commission ledger, the permission settings, the task
-    # agents' session directories (transcripts and working directories) and
-    # the profile directory of the browser the browser tools start, which
-    # holds the sign-ins made there. The agent process and the browser it
-    # started are stopped during a migration like every other server.
-    "nekoclaw",
+    # NekoClaw: what it keeps as plain files, each on its own (the ledger of
+    # commissions with its write-ahead log, the permission settings, what
+    # was learned about plugins and models, the browser settings). Not the
+    # directory as a whole: below it are the task agents' working
+    # directories (virtual environments, ``node_modules``: full of links)
+    # and the profile of the browser the browser tools start (lock links on
+    # macOS and Linux), and one link fails a whole migration. Those two stay
+    # in the old root; see ``DELIBERATELY_UNMIGRATED`` in
+    # ``tests/unit/test_storage_runtime_entry_contract.py``.
+    "nekoclaw/ledger.db",
+    "nekoclaw/ledger.db-wal",
+    "nekoclaw/permissions.json",
+    "nekoclaw/plugin_short_descriptions.json",
+    "nekoclaw/model_capabilities.json",
+    "nekoclaw/browser.json",
     "plugins",
     # Installed code and its source records live outside the plugin state tree.
     *_PLUGIN_INSTALLATION_ENTRIES,

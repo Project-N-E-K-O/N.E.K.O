@@ -37,7 +37,6 @@ from nekoclaw.builtin.browser.session import (
     _FOCUS_FOR_TYPING,
     _PREPARE_FILL,
     _SELECT_OPTION,
-    MAX_TIMEOUT_SECONDS,
     BrowserError,
     BrowserSession,
     Dialog,
@@ -1703,13 +1702,17 @@ async def test_the_modifiers_are_released_even_when_the_call_is_cancelled_while_
     press = asyncio.ensure_future(session.press_key(page, "Control+Shift+R"))
     await asyncio.wait_for(held.reached.wait(), 5.0)
     press.cancel()
+    held.release()
     with pytest.raises(asyncio.CancelledError):
-        await press
+        await asyncio.wait_for(press, 5.0)
     events = [(command.params["type"], command.params["key"]) for command in world.browser.of("Input.dispatchKeyEvent", sent)]
+    # The key itself comes up too: its going down was sent, answered or not,
+    # and the page is not left with a key that is held.
     assert events == [
         ("rawKeyDown", "Control"),
         ("rawKeyDown", "Shift"),
         ("rawKeyDown", "r"),
+        ("keyUp", "r"),
         ("keyUp", "Shift"),
         ("keyUp", "Control"),
     ]
@@ -2419,6 +2422,20 @@ OWN = {48911, 48915}
         ("http://127.0.0.1:489\t11/", 48911),
         ("  http://127.0.0.1:48911/\n", 48911),
         ("http://user:secret@127.0.0.1:48911/", 48911),
+        # After http: a browser takes any number of slashes, none too, for the two the host comes after.
+        ("http:///127.0.0.1:48911/", 48911),
+        ("http://///127.0.0.1:48911/", 48911),
+        ("http://\\\\127.0.0.1:48911/", 48911),
+        ("HTTPS:/\\/127.0.0.1:48911/", 48911),
+        ("http:127.0.0.1:48911/", 48911),
+        ("ws:///127.0.0.1:48911/", 48911),
+        # A tab between the slashes does not hide the ones behind it.
+        ("http://\t/127.0.0.1:48911/", 48911),
+        ("http:/\n/\r/127.0.0.1:48911/", 48911),
+        ("\x00\x1f http:///127.0.0.1:48911/", 48911),
+        # The slashes of other addresses mean what they say.
+        ("file:///C:/notes.txt", None),
+        ("http:///example.com/", 80),
         ("about:blank", None),
         ("http://127.0.0.1:notaport/", None),
     ],
@@ -2435,6 +2452,29 @@ def test_an_address_on_a_port_of_this_application_is_refused_whatever_its_host(u
     with pytest.raises(BrowserError, match="that port belongs to this application's own services"):
         check_url(url, OWN)
     # With no such ports named it is an address like any other.
+    check_url(url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http:///127.0.0.1:48911/",
+        "http://\\\\127.0.0.1:48911/",
+        "http://\t/127.0.0.1:48911/",
+        "https://///localhost:48915/api",
+    ],
+)
+def test_more_slashes_than_two_do_not_get_an_address_past_the_ports_of_this_application(url: str) -> None:
+    # A browser opens these as it opens the address with two slashes.
+    with pytest.raises(BrowserError, match="that port belongs to this application's own services"):
+        check_url(url, OWN)
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:notaport/", "http://[::1/", "http://127.0.0.1:99999999/"])
+def test_an_address_whose_port_cannot_be_read_is_not_opened_while_ports_are_kept_from(url: str) -> None:
+    # What is read here and what a browser reads may differ: it is not left to chance.
+    with pytest.raises(BrowserError, match="it is not an address that can be read"):
+        check_url(url, OWN)
     check_url(url)
 
 
@@ -2574,19 +2614,6 @@ async def test_what_a_dialog_says_is_cut_and_quoted_as_the_pages_own_words(sessi
     )
 
 
-async def test_no_wait_for_a_page_is_longer_than_the_longest_allowed(
-    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
-) -> None:
-    assert MAX_TIMEOUT_SECONDS == 120.0
-    monkeypatch.setattr(session_module, "MAX_TIMEOUT_SECONDS", 0.01)
-    page, _fake, _snapshot = await open_page(session, world, THANKS)
-    # Asked for an hour; the calls behind this one would wait with it.
-    with pytest.raises(BrowserError, match="appeared within 0s"):
-        await asyncio.wait_for(session.wait_for(page, ["never there"], timeout=3600.0), 5.0)
-    said = await asyncio.wait_for(session.navigate(page, "url", SLOW, timeout=3600.0), 5.0)
-    assert "still loading after 0s" in said
-
-
 async def test_a_close_that_is_cancelled_half_way_can_be_done_again(session: BrowserSession, world: BrowserWorld) -> None:
     await session.start()
     world.close_gate = asyncio.Event()
@@ -2612,3 +2639,81 @@ async def test_in_the_users_browser_a_tab_of_theirs_is_not_closed(session: Brows
     extra = await session.new_page(TERMS)
     await session.close_page(extra.id)
     assert extra.target_id not in world.browser.pages
+
+
+async def test_a_tab_opened_for_the_work_is_the_same_page_once_it_is_back_on_the_web(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    mail = world.browser.add_page(MAIL, "Inbox")
+    await session.start()
+    extra = await session.new_page(TERMS)
+    fake = world.page_of(extra)
+
+    def goes_to(tab: Any, url: str) -> None:
+        tab.url = url
+        world.browser._emit("Target.targetInfoChanged", {"targetInfo": world.browser.info(tab)})
+
+    # The page shows something it made itself; that is not listed and not driven.
+    goes_to(fake, "blob:https://shop.test/5f4c")
+    assert extra.id not in [page.id for page in session.pages()] and not session.is_open(extra)
+    goes_to(fake, THANKS)
+    back = session.page_by_id(extra.id)
+    # The same number as before, and still a tab of the work: it can be gone on with and closed.
+    assert back.url == THANKS and back.own is True
+    await session.close_page(back.id)
+    assert fake.target_id not in world.browser.pages
+
+    # A tab of the user's that was away is theirs as before, under a number of its own.
+    listed = next(page for page in session.pages() if page.url == MAIL)
+    goes_to(mail, "chrome://settings/")
+    goes_to(mail, MAIL)
+    again = next(page for page in session.pages() if page.url == MAIL)
+    assert again.own is False and again.id != listed.id
+    await refused(world, session.close_page(again.id), f"Page {again.id} is a tab of the user's own")
+
+
+async def _closing_stopped_half_way(session: BrowserSession, world: BrowserWorld) -> Any:
+    """Start the browser, stop its closing half way, and lose the connection; return the browser."""
+    await session.start()
+    world.close_gate = asyncio.Event()
+    closing = asyncio.ensure_future(session.close())
+    await _until(lambda: world.closed)
+    # The user stops everything while the browser is being closed.
+    await _cancelled(closing)
+    world.close_gate = None
+    world.browser.disconnect()
+    assert not session.connected
+    ((half_closed, _connection),) = world.closed
+    return half_closed
+
+
+async def test_a_browser_that_was_not_closed_to_the_end_is_closed_when_another_one_is_driven_next(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    half_closed = await _closing_stopped_half_way(session, world)
+    # The settings are changed in between: the next browser is the one the user is using.
+    world.settings(mode="attach")
+
+    await session.start()
+
+    # The one started for the work is not left running with nobody to close it.
+    assert [browser for browser, _connection in world.closed] == [half_closed, half_closed]
+    assert world.attached == [CHROME] and session.connected
+    # The user's browser is not closed, and the other one not a third time.
+    await session.close()
+    assert len(world.closed) == 3 and world.closed[2][0].owned is False
+
+
+async def test_a_browser_that_was_not_closed_to_the_end_is_gone_on_with_on_the_same_profile(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    half_closed = await _closing_stopped_half_way(session, world)
+
+    await session.start()
+
+    # Found running on its profile again, pages and all: not closed and started over.
+    assert [browser for browser, _connection in world.closed] == [half_closed]
+    assert len(world.launched) == 2 and session.connected
+    await session.close()
+    assert len(world.closed) == 2

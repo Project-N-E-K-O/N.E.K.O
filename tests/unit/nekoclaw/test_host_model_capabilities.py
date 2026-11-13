@@ -185,3 +185,76 @@ async def test_the_file_is_read_on_first_use_and_only_once(path):
     assert await store.sees_images(URL, "vision-9") is True
 
     assert len(asked) == 1
+
+
+from nekoclaw.host import model_capabilities as capabilities_module  # noqa: E402
+from tests.fake_clock import patch_module_clock  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Why, since when, and until when
+# ---------------------------------------------------------------------------
+
+
+async def test_what_the_provider_said_is_kept_with_the_entry_and_can_be_shown(path, monkeypatch):
+    import config.nekoclaw_settings as settings
+
+    patch_module_clock(monkeypatch, capabilities_module, time=lambda: 1_800_000_000)
+    store = ModelCapabilityStore(path)
+    said = "Error code: 400 - This model does not support\n   image input. " + "x" * 600
+    assert await store.note_images_refused(URL, "text-only", said) is True
+
+    told = await store.describe(URL, "text-only")
+    assert told == {
+        "sees": False,
+        "source": "refused",
+        # One line, and no longer than is of use.
+        "reason": ("Error code: 400 - This model does not support image input. " + "x" * 600)[:300],
+        "noted_at": 1_800_000_000,
+        "lapses_at": 1_800_000_000 + settings.MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS,
+    }
+    assert await store.describe(URL, "vision-9") == {"sees": True}
+    # Read back from the file by a store started later.
+    assert await ModelCapabilityStore(path).describe(URL, "text-only") == told
+
+
+async def test_a_refusal_is_believed_for_a_while_and_then_the_model_is_tried_again(path, monkeypatch):
+    import config.nekoclaw_settings as settings
+
+    now = [1_800_000_000]
+    patch_module_clock(monkeypatch, capabilities_module, time=lambda: now[0])
+    store = ModelCapabilityStore(path)
+    await store.note_images_refused(URL, "text-only", "first refusal")
+    assert settings.MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS == 7 * 24 * 3600
+
+    now[0] += settings.MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS - 1
+    assert await store.sees_images(URL, "text-only") is False
+    # A second refusal within that time changes nothing.
+    assert await store.note_images_refused(URL, "text-only", "again") is False
+
+    now[0] += 2
+    # Misjudged, or able to see by now: it gets its picture tools back by itself.
+    assert await store.sees_images(URL, "text-only") is True
+    assert await store.describe(URL, "text-only") == {"sees": True}
+    # Still taking none, it is refused once more and written down anew.
+    assert await store.note_images_refused(URL, "text-only", "refused again") is True
+    assert (await store.describe(URL, "text-only"))["reason"] == "refused again"
+    assert (await store.describe(URL, "text-only"))["noted_at"] == now[0]
+
+
+async def test_what_a_hand_wrote_never_lapses(path, monkeypatch):
+    now = [1_800_000_000]
+    patch_module_clock(monkeypatch, capabilities_module, time=lambda: now[0])
+    _write(
+        path,
+        {
+            "version": 1,
+            "models": {model_key(URL, "text-only"): {"images": False}, model_key(URL, "vision-9"): {"images": True}},
+        },
+    )
+    store = ModelCapabilityStore(path)
+    now[0] += 10 * 365 * 24 * 3600
+
+    assert await store.sees_images(URL, "text-only") is False
+    assert await store.describe(URL, "text-only") == {"sees": False, "source": "set by hand"}
+    assert await store.describe(URL, "vision-9") == {"sees": True}
+    assert await store.note_images_refused(URL, "vision-9", "refused") is False

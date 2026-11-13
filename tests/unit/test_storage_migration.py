@@ -4978,3 +4978,60 @@ async def test_chat_sync_migrates_all_durable_work_with_the_same_device_witness(
             runtime.writer.check()
     finally:
         await reopened.close()
+
+
+def _nekoclaw_with_links(tmp_path):
+    """A data root whose NekoClaw directory holds what a task agent and a browser leave there."""
+    config_manager = _make_config_manager(tmp_path)
+    source_root = config_manager.app_docs_dir
+    target_root = tmp_path / "target-selected" / "N.E.K.O"
+    (source_root / "config").mkdir(parents=True)
+    (source_root / "config" / "characters.json").write_text("new", encoding="utf-8")
+    nekoclaw = source_root / "nekoclaw"
+    nekoclaw.mkdir()
+    (nekoclaw / "ledger.db").write_bytes(b"ledger")
+    (nekoclaw / "ledger.db-wal").write_bytes(b"not yet in the ledger file")
+    (nekoclaw / "permissions.json").write_text('{"browser": "always"}', encoding="utf-8")
+    (nekoclaw / "browser.json").write_text('{"mode": "own_profile"}', encoding="utf-8")
+    # A working directory with a virtual environment: links to an interpreter elsewhere.
+    work = nekoclaw / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work"
+    work.mkdir(parents=True)
+    (work / "notes.txt").write_text("half done", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    _link_directory(work / "venv", elsewhere)
+    # The profile of a browser that was killed: its lock is a link.
+    profile = nekoclaw / "browser_profile"
+    profile.mkdir()
+    (profile / "Preferences").write_text("{}", encoding="utf-8")
+    _link_directory(profile / "SingletonLock", elsewhere)
+    create_pending_storage_migration(
+        config_manager,
+        source_root=source_root,
+        target_root=target_root,
+        selection_source="custom",
+    )
+    return config_manager, source_root, target_root
+
+
+@pytest.mark.unit
+def test_links_below_nekoclaw_do_not_stop_a_migration_and_its_plain_files_move(tmp_path):
+    config_manager, source_root, target_root = _nekoclaw_with_links(tmp_path)
+
+    result = run_pending_storage_migration(config_manager)
+
+    # A link anywhere in a migrated entry stops the whole migration; these are in none.
+    assert result["completed"] is True, result
+    moved = target_root / "nekoclaw"
+    assert (moved / "ledger.db").read_bytes() == b"ledger"
+    assert (moved / "ledger.db-wal").read_bytes() == b"not yet in the ledger file"
+    assert (moved / "permissions.json").read_text(encoding="utf-8") == '{"browser": "always"}'
+    assert (moved / "browser.json").read_text(encoding="utf-8") == '{"mode": "own_profile"}'
+    copied = set(result["payload"]["copied_entries"])
+    assert {"nekoclaw/ledger.db", "nekoclaw/ledger.db-wal", "nekoclaw/permissions.json", "nekoclaw/browser.json"} <= copied
+    # A file that is not there (nothing was learned about a model yet) is no entry.
+    assert "nekoclaw/model_capabilities.json" not in copied
+    # The working directories and the browser profile stay in the old root, untouched.
+    assert not (moved / "task_agents").exists() and not (moved / "browser_profile").exists()
+    assert (source_root / "nekoclaw" / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work" / "notes.txt").is_file()
+    assert (source_root / "nekoclaw" / "browser_profile" / "Preferences").is_file()

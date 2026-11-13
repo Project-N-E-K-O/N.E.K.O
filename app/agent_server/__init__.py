@@ -33,6 +33,7 @@ from .api_shared import (  # noqa: F401
     _agent_flags_snapshot,
     _browser_dependency_status,
     _keyboard_mouse_availability,
+    _model_images_status,
     _bump_state_revision,
     _close_browser,
     _collect_agent_status_snapshot,

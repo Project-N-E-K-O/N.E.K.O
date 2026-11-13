@@ -34,6 +34,7 @@ from .api_shared import (  # noqa: F401
     _ensure_plugin_lifecycle_stopped,
     _fire_agent_llm_connectivity_check,
     _keyboard_mouse_availability,
+    _model_images_status,
     _set_capability,
     _try_refresh_model_probe,
     app,
@@ -846,6 +847,8 @@ async def computer_use_availability():
         Modules.agent_flags["computer_use_enabled"] = False
         Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
 
+    # The tool works from screenshots: whether the model is sent any, and why not.
+    status["model_images"] = await _model_images_status()
     return status
 
 

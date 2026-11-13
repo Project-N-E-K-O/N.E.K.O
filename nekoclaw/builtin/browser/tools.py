@@ -44,7 +44,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from nekoclaw.builtin.browser.cdp import CdpClosed, CdpError, CdpTimeout
-from nekoclaw.builtin.browser.session import MAX_TIMEOUT_SECONDS, BrowserError, BrowserSession, Page, bounded
+from nekoclaw.builtin.browser.session import BrowserError, BrowserSession, Page, bounded
 from nekoclaw.builtin.browser.snapshot import Snapshot, format_lines
 from nekoclaw.host.capabilities import BuiltinImage, BuiltinOutcome
 
@@ -84,11 +84,16 @@ def cap_lines(lines: list[str], max_tokens: int) -> tuple[str, int]:
     return f"{cut} [... {left} more characters of this line are not shown]", 1
 
 
+# The longest any call waits for a page, whatever ``timeout`` the model gave
+# it: the calls of a browser are carried out one after the other, and a wait
+# holds up the ones behind it.
+MAX_TIMEOUT_SECONDS = 120.0
+
+
 def _seconds(arguments: dict[str, Any]) -> float | None:
     value = arguments.get("timeout")
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         return None
-    # However long the model asks for: the calls behind this one wait with it.
     return min(float(value) / 1000.0, MAX_TIMEOUT_SECONDS)
 
 

@@ -1733,7 +1733,7 @@ async def test_changing_the_browser_settings_saves_them_and_closes_the_browser_t
 
 
 async def test_a_change_of_one_setting_keeps_the_others(browser_settings, tmp_path):
-    executable = tmp_path / "my-browser"
+    executable = tmp_path / "chrome.exe"
     executable.write_bytes(b"")
     await browser_settings.runtime.set_browser_settings(
         {"mode": "attach", "executable": str(executable), "headless": True}
@@ -1747,7 +1747,7 @@ async def test_a_change_of_one_setting_keeps_the_others(browser_settings, tmp_pa
 
 @pytest.mark.parametrize("blank", ["", "   ", None])
 async def test_a_blank_executable_goes_back_to_searching_for_a_browser(browser_settings, tmp_path, blank):
-    executable = tmp_path / "my-browser"
+    executable = tmp_path / "chrome.exe"
     executable.write_bytes(b"")
     await browser_settings.runtime.set_browser_settings({"executable": str(executable)})
 
@@ -1780,6 +1780,22 @@ async def test_a_setting_that_cannot_be_used_is_refused_and_nothing_is_saved_or_
         await browser_settings.runtime.set_browser_settings(payload)
 
     assert (raised.value.status_code, raised.value.detail) == (400, why)
+    assert not browser_settings.file.exists()
+    assert await browser_settings.closed() == []
+
+
+@pytest.mark.parametrize("name", ["powershell.exe", "my-browser", "chrome.exe.bat", "python"])
+async def test_a_file_that_is_no_browser_is_not_taken_for_the_browser(browser_settings, tmp_path, name):
+    from fastapi import HTTPException
+
+    other = tmp_path / name
+    other.write_bytes(b"")
+    # It would be started with a debugging port: not any program will do.
+    with pytest.raises(HTTPException) as raised:
+        await browser_settings.runtime.set_browser_settings({"executable": str(other)})
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail == "executable is not a browser the tools can drive (Chrome, Edge, Brave or Chromium)"
     assert not browser_settings.file.exists()
     assert await browser_settings.closed() == []
 

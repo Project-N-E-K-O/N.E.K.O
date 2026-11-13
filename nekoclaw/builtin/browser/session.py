@@ -43,6 +43,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -73,10 +74,6 @@ MAX_IFRAME_DEPTH = 3
 MAX_IFRAMES = 12
 FULL_PAGE_MAX_HEIGHT = 6000
 ALLOWED_URL_SCHEMES = ("http://", "https://")
-# The longest any call waits for a page, whatever ``timeout`` it was given:
-# the calls of a browser are carried out one after the other, and a wait
-# holds up the ones behind it.
-MAX_TIMEOUT_SECONDS = 120.0
 
 
 def is_web_page(url: str) -> bool:
@@ -301,6 +298,12 @@ class BrowserSession:
         self._connection: CdpConnection | None = None
         self._browser: launcher.RunningBrowser | None = None
         self._pages: dict[str, Page] = {}  # by target id, in the order they appeared
+        # The number of every tab opened for the work, by target id, for as
+        # long as the tab is open. A tab that goes somewhere that is not
+        # listed (a ``blob:`` address, a page of this application) is off the
+        # list of pages while it is there; back on a page of the web it is
+        # the same page to the model, and still one that may be closed.
+        self._own_pages: dict[str, int] = {}
         self._selected: str | None = None
         self._next_page_id = 1
         self._next_snapshot_id = 1
@@ -361,6 +364,16 @@ class BrowserSession:
                         raise
             except launcher.BrowserStartError as exc:
                 raise BrowserError(str(exc)) from exc
+        held = self._browser
+        if held is not None and held.owned and held.user_data_dir != browser.user_data_dir:
+            # A browser of ours is still held (its connection was lost, or its
+            # closing was stopped half way) and the one to drive now is
+            # another: the settings were changed in between. On the same
+            # profile it would be that very browser, found running there by
+            # the launcher, and is gone on with. This one would run on with
+            # nobody to close it.
+            await launcher.close(held)
+            self._browser = None
         try:
             connection = await CdpConnection.connect(
                 browser.endpoint,
@@ -505,6 +518,7 @@ class BrowserSession:
     async def _drop_connection(self) -> None:
         connection, self._connection = self._connection, None
         self._pages.clear()
+        self._own_pages.clear()
         self._selected = None
         if connection is not None:
             await connection.close()
@@ -551,12 +565,18 @@ class BrowserSession:
         page = self._pages.get(target_id)
         if page is None:
             opener = self._pages.get(str(info.get("openerId") or ""))
-            page = Page(id=self._next_page_id, target_id=target_id, own=own or (opener is not None and opener.own))
-            self._next_page_id += 1
+            number = self._own_pages.get(target_id)
+            own = own or number is not None or (opener is not None and opener.own)
+            if number is None:
+                number = self._next_page_id
+                self._next_page_id += 1
+            page = Page(id=number, target_id=target_id, own=own)
             self._pages[target_id] = page
         elif own:
             # The event about a tab can arrive before the answer that says it was opened for the work.
             page.own = True
+        if page.own:
+            self._own_pages[target_id] = page.id
         page.url = url
         page.title = str(info.get("title") or "")
 
@@ -595,6 +615,7 @@ class BrowserSession:
             self._note_target(params.get("targetInfo") or {})
             return
         if method == "Target.targetDestroyed":
+            self._own_pages.pop(str(params.get("targetId") or ""), None)
             self._forget_page(str(params.get("targetId") or ""))
             return
         if method == "Target.detachedFromTarget":
@@ -838,6 +859,7 @@ class BrowserSession:
         if self._user_browser and not page.own:
             raise BrowserError(f"Page {page.id} is a tab of the user's own, not one opened for this work: it is not closed.")
         await self._require_connection().send("Target.closeTarget", {"targetId": page.target_id})
+        self._own_pages.pop(page.target_id, None)
         self._forget_page(page.target_id)
 
     # -- navigation ---------------------------------------------------------
@@ -855,7 +877,7 @@ class BrowserSession:
 
     async def navigate(self, page: Page, kind: str, url: str | None, timeout: float | None = None) -> str:
         """Go to an address, back, forward, or reload; return a sentence about what happened."""
-        limit = min(timeout, MAX_TIMEOUT_SECONDS) if timeout and timeout > 0 else NAVIGATION_TIMEOUT_SECONDS
+        limit = timeout if timeout and timeout > 0 else NAVIGATION_TIMEOUT_SECONDS
         # A request that is refused leaves the page, and the uids of it, as they are.
         if kind == "url":
             if not url:
@@ -1286,15 +1308,23 @@ class BrowserSession:
     async def _press(self, page: Page, key: KeyDefinition, modifiers: list[KeyDefinition]) -> None:
         mask = 0
         down: list[KeyDefinition] = []
+        key_is_down = False
         try:
             for modifier in modifiers:
                 mask |= modifier_mask([modifier])
                 if not await self._key_event(page, "keyDown", modifier, mask):
                     return
                 down.append(modifier)
+            # Down from the moment the event is sent, answered or not.
+            key_is_down = True
             if await self._key_event(page, "keyDown", key, mask):
                 await self._key_event(page, "keyUp", key, mask)
+            key_is_down = False
         finally:
+            if key_is_down:
+                # Stopped between the key going down and coming up: the page
+                # is not left with a key that is held.
+                await asyncio.shield(self._key_event(page, "keyUp", key, mask))
             for modifier in reversed(down):
                 mask &= ~modifier_mask([modifier])
                 await asyncio.shield(self._key_event(page, "keyUp", modifier, mask))
@@ -1377,7 +1407,7 @@ class BrowserSession:
         import json
 
         self.require_no_dialog(page)
-        limit = min(timeout, MAX_TIMEOUT_SECONDS) if timeout and timeout > 0 else WAIT_FOR_DEFAULT_SECONDS
+        limit = timeout if timeout and timeout > 0 else WAIT_FOR_DEFAULT_SECONDS
         loop = asyncio.get_running_loop()
         deadline = loop.time() + limit
         expression = f"{_FIND_TEXT}({json.dumps(texts, ensure_ascii=False)})"
@@ -1438,11 +1468,23 @@ class BrowserSession:
         return dict(self._window) if self._window else None
 
 
+# What a browser takes off the ends of an address, and what it drops from
+# anywhere in it.
+_ENDS_OF_AN_ADDRESS = "".join(map(chr, range(0x21)))
+_DROPPED_FROM_AN_ADDRESS = {ord("\t"): None, ord("\n"): None, ord("\r"): None}
+_SLASHES_AFTER_SCHEME = re.compile(r"^(https?|wss?):/*", re.IGNORECASE)
+
+
 def port_of(url: str) -> int | None:
     """Return the port an address goes to, as a browser reads the address; None when it cannot be told."""
-    # A browser reads a backslash as a slash. (It also drops tabs and line
-    # breaks from an address; ``urlsplit`` does that itself.)
-    cleaned = url.strip().replace("\\", "/")
+    # A browser drops tabs and line breaks wherever they are, reads a
+    # backslash as a slash, and after ``http:`` and the like takes any number
+    # of slashes (none, too) for the two the host comes after:
+    # ``http:///host:1/`` goes to ``host:1``. ``urlsplit`` reads an empty
+    # host there, and with it the port every address has by default. The
+    # tabs go first: one between the slashes would hide those behind it.
+    cleaned = url.strip(_ENDS_OF_AN_ADDRESS).translate(_DROPPED_FROM_AN_ADDRESS).replace("\\", "/")
+    cleaned = _SLASHES_AFTER_SCHEME.sub(lambda found: f"{found.group(1)}://", cleaned)
     try:
         parts = urlsplit(cleaned)
         port = parts.port
@@ -1467,7 +1509,13 @@ def check_url(url: str, blocked_ports: Collection[int] = ()) -> None:
             f"{url!r} cannot be opened: only http:// and https:// addresses are. Local files are read with the "
             "file tools, not the browser."
         )
-    if blocked_ports and port_of(url) in blocked_ports:
+    if not blocked_ports:
+        return
+    port = port_of(url)
+    if port is None:
+        # Where it goes cannot be told here; a browser may read it all the same.
+        raise BrowserError(f"{url!r} cannot be opened: it is not an address that can be read.")
+    if port in blocked_ports:
         raise BrowserError(
             f"{url!r} cannot be opened: that port belongs to this application's own services, which the browser "
             "is kept away from."

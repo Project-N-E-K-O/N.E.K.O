@@ -91,6 +91,7 @@ from .plugin_host import (  # noqa: F401
 from .capabilities import (  # noqa: F401
     _browser_dependency_status,
     _keyboard_mouse_availability,
+    _model_images_status,
     _close_browser,
     _try_refresh_model_probe,
     _llm_check_lock,

@@ -717,7 +717,18 @@ def test_what_a_session_learned_about_its_model_is_an_event_of_the_protocol() ->
     event.seq = 7
     dumped = protocol.dump(event)
 
-    assert dumped == {"type": "model_capability", "session_id": "s1", "seq": 7, "supports_images": False}
+    assert dumped == {
+        "type": "model_capability",
+        "session_id": "s1",
+        "seq": 7,
+        "supports_images": False,
+        "reason": "",
+        "lasting": True,
+    }
+    told = protocol.ModelCapabilityEvent(
+        session_id="s1", supports_images=False, reason="This model does not support image input.", lasting=False
+    )
+    assert protocol.parse_event(protocol.dump(told)) == told
     assert protocol.parse_event(dumped) == event
     # It says what was learned, or it is not this event.
     with pytest.raises(ValidationError):

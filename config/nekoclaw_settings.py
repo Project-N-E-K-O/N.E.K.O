@@ -195,18 +195,29 @@ while another commission occupies it (``nekoclaw/host/leases.py``). After
 that the task agent is told who has it and decides how to go on."""
 
 TASK_AGENT_SCREENSHOTS_KEPT = 3
-"""How many of the most recent screenshots of each screenshot tool stay in a
-task agent's context; older ones are replaced with a placeholder. The old
-keyboard-and-mouse loop sent the current screenshot and the two before it."""
+"""How many of the most recent screenshots stay in a task agent's context,
+whichever tools they came from (the keyboard-and-mouse tool and the browser's
+screenshot tools are counted together); older ones are replaced with a
+placeholder. The old keyboard-and-mouse loop sent the current screenshot and
+the two before it."""
+
+MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS = 7 * 24 * 3600
+"""How long "this model takes no pictures", learned from a provider's refusal,
+is believed. After that the model is sent pictures again: if it still takes
+none, one request is refused and sent once more without them, and it is
+written down anew. A model that was misjudged, or has learned to see since,
+gets its picture tools back by itself."""
 
 BROWSER_SNAPSHOT_MAX_TOKENS = 3000
-# Text a page writes that goes into a tool result outside the snapshot: what
-# a dialog of the page says, and the address of a page in the list of pages.
-# Longer text is cut and the number of characters left out is told.
-BROWSER_DIALOG_TEXT_MAX_TOKENS = 200
-BROWSER_PAGE_URL_MAX_TOKENS = 40
 """Cap on one page snapshot handed to a task agent. A longer one is cut and
 ends with a line saying so and how to see the rest."""
+
+BROWSER_DIALOG_TEXT_MAX_TOKENS = 200
+BROWSER_PAGE_URL_MAX_TOKENS = 40
+"""Caps on text a page writes that goes into a tool result outside the
+snapshot: what a dialog of the page says, and the address of a page in the
+list of pages. Longer text is cut and the number of characters left out is
+told."""
 
 GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS = 200
 """Cap on a plugin's request for confirmation when the gateway puts it to the

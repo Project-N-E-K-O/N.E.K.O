@@ -914,6 +914,7 @@ async def set_browser_settings(payload: Dict[str, Any]):
     allow in that browser). The change applies to the next browser that is
     started: one that is open is closed, so the next call starts anew.
     """
+    from nekoclaw.builtin.browser.launcher import is_browser_executable
     from nekoclaw.builtin.browser.settings import MODES, BrowserSettings, BrowserSettingsStore
 
     payload = payload or {}
@@ -929,6 +930,9 @@ async def set_browser_settings(payload: Dict[str, Any]):
             executable = None
         if executable is not None and not os.path.isfile(executable):
             raise ValueError("executable not found")
+        if executable is not None and not is_browser_executable(executable):
+            # It is started with a debugging port: not any program will do.
+            raise ValueError("executable is not a browser the tools can drive (Chrome, Edge, Brave or Chromium)")
         headless = payload.get("headless", current.headless)
         store.save(BrowserSettings(mode=mode, executable=executable, headless=headless is True))
         return _browser_settings_view()

@@ -439,7 +439,15 @@ async def test_availability_of_the_keyboard_and_mouse_with_everything_in_place(s
     status = await switch.routes.computer_use_availability()
     await _settled()
 
-    assert status == {"enabled": True, "ready": True, "reasons": [], "provider": "nekoclaw", "model": "test-model"}
+    assert status == {
+        "enabled": True,
+        "ready": True,
+        "reasons": [],
+        "provider": "nekoclaw",
+        "model": "test-model",
+        # Nothing is known against the model: it is sent the screenshots the tool works from.
+        "model_images": {"sees": True},
+    }
     assert switch.modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
     # The model has answered: asking again does not probe it again.
     assert switch.checks == [] and len(setup.client.requests) == 1

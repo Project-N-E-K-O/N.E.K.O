@@ -27,6 +27,11 @@ DELIBERATELY_UNMIGRATED = {
     # checkpoint itself, so it can never move as a whole; what the code keeps
     # below it under the runtime root is checked one level down instead.
     "state",
+    # Holds the task agents' working directories (virtual environments,
+    # ``node_modules``) and the profile of the browser the browser tools
+    # start: both contain links, and the copier stops a whole migration at a
+    # link. Its plain files move one by one instead, which is checked below.
+    "nekoclaw",
 }
 
 # Files under state that belong to the anchor root and stay with it, with the
@@ -450,3 +455,34 @@ def test_conditional_runtime_root_alias_is_still_scanned(expression):
 
     assert _scan_module(tree) == {"new_top_level", "state"}
     assert _scan_state_children(tree) == {"new_child"}
+
+
+@pytest.mark.unit
+def test_the_plain_files_of_nekoclaw_move_one_by_one():
+    """nekoclaw does not move as a directory (the links below it would stop a
+    whole migration), so every file the host and the browser tools keep
+    directly in it has to be named among the migrated entries."""
+    from nekoclaw.builtin.browser.settings import BrowserSettingsStore
+    from nekoclaw.host.paths import HostPaths
+
+    root = Path("data-root") / "nekoclaw"
+    paths = HostPaths(root)
+    kept = {
+        getattr(paths, name)().name
+        for name in dir(paths)
+        if name.endswith(("_db", "_json")) and callable(getattr(paths, name))
+    }
+    kept.add(BrowserSettingsStore(root).path().name)
+    # The scan must see the files there are, or it proves nothing.
+    assert {"ledger.db", "permissions.json", "model_capabilities.json", "browser.json"} <= kept
+
+    migrated = {name.removeprefix("nekoclaw/") for name in MIGRATED_RUNTIME_ENTRY_NAMES if name.startswith("nekoclaw/")}
+    assert kept <= migrated, (
+        "A file kept directly in <data root>/nekoclaw is not migrated. Add it to "
+        "MIGRATED_RUNTIME_ENTRY_NAMES in utils/storage/migration.py as nekoclaw/<name>."
+    )
+    # What was committed to the ledger and not yet written into its file is in the write-ahead log.
+    assert "ledger.db-wal" in migrated
+    # Neither the directory as a whole nor the two directories with links in them.
+    assert "nekoclaw" not in MIGRATED_RUNTIME_ENTRY_NAMES
+    assert not {"task_agents", "browser_profile"} & migrated

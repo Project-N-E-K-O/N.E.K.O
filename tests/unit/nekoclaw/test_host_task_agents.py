@@ -2819,14 +2819,40 @@ async def test_the_spec_and_the_gateway_token_agree_on_pictures_and_screenshots_
     assert spec.model.supports_images is sees_pictures
     assert grant.supports_images is sees_pictures
     assert (spec.gateway.url, spec.gateway.token) == ("http://127.0.0.1:1/mcp", grant.token)
-    # Every tool that hands screenshots back and can be called now is kept
-    # that many of. A tool without pictures has no rule, nor has one that is
-    # switched off. The same tools called by name through the gateway's call
-    # tool hand their screenshots back as results of that tool: it has the
-    # rule too. All of them are counted together: that many screenshots stay
-    # in the context, whichever tools they came from.
-    assert spec.image_retention == {"computer": 5, "browser_take_screenshot": 5, "capability_call": 5}
+    # Every tool that hands screenshots back is kept that many of; a tool
+    # without pictures has no rule. One that is switched off right now has
+    # the rule all the same: switched on while the task agent works, it is
+    # reached through the gateway's call tool, whose results have the rule
+    # too. All of them are counted together: that many screenshots stay in
+    # the context, whichever tools they came from.
+    assert spec.image_retention == {
+        "computer": 5,
+        "browser_take_screenshot": 5,
+        "browser_record": 5,
+        "capability_call": 5,
+    }
     assert set(spec.image_pools) == set(spec.image_retention) and len(set(spec.image_pools.values())) == 1
+
+
+async def test_screenshots_are_limited_for_a_task_agent_that_started_before_any_picture_tool_could_be_called(
+    hosts, tmp_path
+):
+    class NothingReadyYet(_ScreenTools):
+        """The application has just started: the switches are still being checked."""
+
+        def available(self) -> list[Any]:
+            from dataclasses import replace
+
+            return [replace(item, available=False, unavailable_reason="not checked yet") for item in super().available()]
+
+    host, runtimes = _recording_host(hosts, tmp_path, builtins=NothingReadyYet())
+    _commission, runtime = await _started(host, runtimes)
+
+    (spec,) = runtime.specs
+    # Nothing could be called, so the task agent got no gateway at all; yet
+    # what it may be handed later (through the call tool, once a switch is
+    # on) is limited from the start.
+    assert spec.image_retention["capability_call"] == spec.image_retention["computer"] > 0
 
 
 def test_screenshots_fetched_through_the_call_tool_do_not_pile_up_in_the_context():
@@ -2911,6 +2937,36 @@ async def test_a_model_found_to_take_no_pictures_loses_the_picture_tools_in_the_
     assert refused["content"][0]["text"].startswith("computer works from pictures, and the model in use does not take pictures")
     # A commission that is not under way has no token to change.
     host.gateway.images_refused("no-such-commission")
+    # What the provider said is kept with what is remembered.
+    assert await host.model_capabilities.sees_images(None, "fake-model") is False
+
+
+async def test_pictures_refused_for_what_they_were_end_the_pictures_of_the_session_and_nothing_is_remembered(
+    hosts, tmp_path
+):
+    host, runtimes = _recording_host(hosts, tmp_path, builtins=_ScreenTools())
+
+    async def no_listener() -> str:
+        return "http://127.0.0.1:1/mcp"
+
+    host.gateway.start = no_listener
+    commission, runtime = await _started(host, runtimes)
+    grant = host.gateway._by_commission[commission.id]
+
+    runtime.say(
+        commission.id,
+        "model_capability",
+        supports_images=False,
+        reason="The image format image/bmp is not supported",
+        lasting=False,
+    )
+    await host.task_agents.settle()
+
+    # This session goes without pictures, so it loses the tools that work from them.
+    assert grant.supports_images is False
+    # The model is not written down: a format, a size, a number of pictures says nothing about it.
+    assert await host.model_capabilities.sees_images(None, "fake-model") is True
+    assert not (tmp_path / "nekoclaw" / "model_capabilities.json").exists()
 
 
 async def test_what_is_remembered_is_the_model_the_session_was_started_with(hosts, tmp_path):

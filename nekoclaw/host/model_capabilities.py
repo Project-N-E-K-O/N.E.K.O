@@ -22,13 +22,19 @@ is decided:
 * a model is taken to see pictures until its provider says otherwise. The
   agent model slot falls back to the vision model, and the keyboard-and-mouse
   loop this replaces sent screenshots to it without asking;
-* when a provider refuses a request because it carried a picture, the
-  runtime sends that request once more without pictures and reports it
-  (``model_capability`` event). The model is then written down here, by its
-  address and name, and task agents started later are not offered the tools
-  that need pictures;
+* when a provider says the model takes no pictures, the runtime sends that
+  request once more without them and reports it (``model_capability``
+  event). The model is then written down here, by its address and name,
+  with what the provider said and when, and task agents started later are
+  not offered the tools that need pictures. A provider that only would not
+  take *those* pictures (their format, their size, how many there were) is
+  not written down: that says nothing about the model;
+* what was learned that way is believed for a while
+  (``MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS``) and then tried again, so a
+  model that was misjudged gets its tools back by itself;
 * an entry can be set by hand: ``{"images": true}`` for a model keeps the
-  tools on whatever a provider answered, ``{"images": false}`` keeps them off.
+  tools on whatever a provider answered, ``{"images": false}`` keeps them
+  off for good (it has no ``noted_at``, so it never lapses).
 
 Stored in ``<data root>/nekoclaw/model_capabilities.json``. It is read once,
 on first use, and never at startup. A file that cannot be read counts as
@@ -96,18 +102,59 @@ class ModelCapabilityStore:
                     self._models = await asyncio.to_thread(self._read)
         return self._models
 
+    @staticmethod
+    def _lapses_at(entry: dict[str, Any]) -> int | None:
+        """Return when what was learned from a refusal stops being believed; None for what a hand wrote."""
+        from config.nekoclaw_settings import MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS
+
+        noted_at = entry.get("noted_at")
+        if entry.get("images") is not False or isinstance(noted_at, bool) or not isinstance(noted_at, (int, float)):
+            return None
+        return int(noted_at) + MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS
+
+    def _believed(self, entry: dict[str, Any] | None) -> bool:
+        """Whether an entry still says anything: there is one, and it has not lapsed."""
+        if entry is None or not isinstance(entry.get("images"), bool):
+            return False
+        lapses_at = self._lapses_at(entry)
+        return lapses_at is None or time.time() < lapses_at
+
     async def sees_images(self, base_url: Any, model: Any) -> bool:
         """Return whether pictures are sent to this model: yes, unless it is known not to take them."""
         entry = (await self._loaded()).get(model_key(base_url, model))
-        if entry is None:
+        if not self._believed(entry):
             return True
         return entry.get("images") is not False
 
-    async def note_images_refused(self, base_url: Any, model: Any) -> bool:
-        """Write down that this model's provider refused a picture; return whether that was new.
+    async def describe(self, base_url: Any, model: Any) -> dict[str, Any]:
+        """Return what is held about a model, for showing why it is taken to see pictures or not.
 
-        An entry set by hand to ``true`` stays: the user knows the model, and
-        one refusal may have had another cause.
+        ``sees``: whether pictures are sent to it. For a model taken not to
+        see them: ``source`` (``"refused"`` when a provider said so, else
+        ``"set by hand"``), and for a refusal ``reason`` (what the provider
+        said), ``noted_at`` and ``lapses_at`` (seconds since the epoch).
+        """
+        entry = (await self._loaded()).get(model_key(base_url, model))
+        if not self._believed(entry) or entry.get("images") is not False:
+            return {"sees": True}
+        lapses_at = self._lapses_at(entry)
+        if lapses_at is None:
+            return {"sees": False, "source": "set by hand"}
+        return {
+            "sees": False,
+            "source": "refused",
+            "reason": str(entry.get("reason") or ""),
+            "noted_at": int(entry["noted_at"]),
+            "lapses_at": lapses_at,
+        }
+
+    async def note_images_refused(self, base_url: Any, model: Any, reason: Any = "") -> bool:
+        """Write down that this model's provider said it takes no pictures; return whether that was new.
+
+        ``reason`` is what the provider said, kept (shortened) so that it can
+        be seen later why the model was judged this way. An entry set by hand
+        stays as it is: the user knows the model, and one refusal may have
+        had another cause.
         """
         from utils.asyncio_executor import to_thread_through_cancellation
 
@@ -115,10 +162,15 @@ class ModelCapabilityStore:
         key = model_key(base_url, model)
         async with self._lock:
             entry = models.get(key)
-            if entry is not None and isinstance(entry.get("images"), bool):
-                # Known already, or set by hand to true (only a hand writes true).
+            if self._believed(entry):
+                # Known already, or set by hand (only a hand writes true).
                 return False
-            models[key] = {"images": False, "source": "refused", "noted_at": int(time.time())}
+            models[key] = {
+                "images": False,
+                "source": "refused",
+                "noted_at": int(time.time()),
+                "reason": " ".join(str(reason or "").split())[:300],
+            }
             try:
                 await to_thread_through_cancellation(self._write, {name: dict(value) for name, value in models.items()})
             except asyncio.CancelledError:

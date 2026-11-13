@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import re
@@ -85,6 +86,7 @@ logger = logging.getLogger(__name__)
 WIRE_TEXT_PART_MAX_TOKENS = 64_000
 _CANCEL_POLL_SECONDS = 0.1
 _IMAGE_NOT_ACCEPTED = "[image omitted: the model does not accept images]"
+_IMAGE_WITHHELD = "[image omitted: the provider refused this picture]"
 # Marks thinking that arrived in the provider's ``reasoning_content`` field, the
 # only kind that is sent back. Reasoning a model wrote inside ``<think>`` tags
 # of its content is kept for the record but never replayed.
@@ -150,20 +152,79 @@ _IMAGE_REFUSAL_PATTERNS = re.compile(
 )
 
 
+# An error that speaks of pictures at all.
+_MENTIONS_PICTURES = re.compile(r"image|vision|multimodal|multi-modal|picture|图片|图像|视觉|多模态", re.IGNORECASE)
+
+# What makes a refusal one of *these* pictures and not of pictures as such:
+# their format, their size, how many there are, where they stand in the
+# request, that they could not be read. A model that takes pictures says such
+# things too, so nothing is concluded about the model from them.
+_ABOUT_THESE_PICTURES = re.compile(
+    "|".join(
+        [
+            r"format|mime|media type|file type|extension",
+            r"size|large|big|dimension|resolution|pixel|megabyte|\bMB\b|\bKB\b|bytes|payload|entity",
+            r"too many|multiple|more than|at most|maximum|\bmax\b|limit|exceed|count|number of",
+            r"system (?:message|prompt)|\brole\b|assistant message",
+            r"decod|base64|corrupt|invalid image|malformed|could not (?:be )?process|unable to process|cannot (?:be )?process",
+            r"download|fetch|\burl\b|expired|not found at",
+            r"格式|尺寸|过大|太大|大小|分辨率|像素|数量|多张|张数|超过|超出|上限|下载|解码|损坏|无法处理|系统消息",
+        ]
+    ),
+    re.IGNORECASE,
+)
+
+REFUSAL_OF_THE_MODEL = "model"
+REFUSAL_OF_THESE_PICTURES = "pictures"
+# A provider that has refused the pictures of this many requests of a session
+# is sent no more pictures in that session: each refusal costs a request, and
+# a tool that takes a screenshot at every step would pay it at every step.
+PICTURE_REFUSALS_BEFORE_GOING_WITHOUT = 2
+
+
+def image_refusal(error: BaseException) -> str | None:
+    """Say whether a provider's rejection is about the pictures a request carried, and of which kind.
+
+    ``REFUSAL_OF_THE_MODEL``: the model takes no pictures at all; worth
+    remembering. ``REFUSAL_OF_THESE_PICTURES``: it would not take these (a
+    format, a size, too many of them); the request can go once more without
+    them, and nothing follows for the model. None: not about pictures.
+    Only asked of a request that carried pictures.
+    """
+    status = getattr(error, "status_code", None)
+    if status == 413:
+        # Too large a request: the pictures are what weighs.
+        return REFUSAL_OF_THESE_PICTURES
+    if status is not None and status not in (400, 404, 415, 422):
+        return None
+    text = str(error)
+    if not _MENTIONS_PICTURES.search(text):
+        return None
+    if _IMAGE_REFUSAL_PATTERNS.search(text) and not _ABOUT_THESE_PICTURES.search(text):
+        return REFUSAL_OF_THE_MODEL
+    if status is None:
+        # No status to go by: only what is plainly a refusal counts.
+        return REFUSAL_OF_THESE_PICTURES if _IMAGE_REFUSAL_PATTERNS.search(text) else None
+    return REFUSAL_OF_THESE_PICTURES
+
+
 def is_image_refusal(error: BaseException) -> bool:
     """Recognize a provider's "this model takes no pictures" rejection from its message."""
-    status = getattr(error, "status_code", None)
-    if status is not None and status not in (400, 404, 415, 422):
-        return False
-    return bool(_IMAGE_REFUSAL_PATTERNS.search(str(error)))
+    return image_refusal(error) == REFUSAL_OF_THE_MODEL
 
 
-def _carries_images(messages: Sequence[AgentMessage]) -> bool:
+def _image_key(image: ImageContent) -> str:
+    """Return what a picture is known by, to leave it out of later requests."""
+    return hashlib.sha1(image.data.encode("ascii", errors="replace"), usedforsecurity=False).hexdigest()
+
+
+def _image_keys(messages: Sequence[AgentMessage]) -> set[str]:
+    keys: set[str] = set()
     for message in messages:
         content = getattr(message, "content", None)
-        if isinstance(content, list) and any(isinstance(block, ImageContent) for block in content):
-            return True
-    return False
+        if isinstance(content, list):
+            keys.update(_image_key(block) for block in content if isinstance(block, ImageContent))
+    return keys
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +253,7 @@ def _image_part(image: ImageContent) -> dict[str, Any]:
     }
 
 
-def _user_content(content: str | list[Any], *, supports_images: bool, cap: int) -> Any:
+def _user_content(content: str | list[Any], *, supports_images: bool, cap: int, withheld: frozenset[str]) -> Any:
     if isinstance(content, str):
         return _bounded(content, cap)
     parts: list[dict[str, Any]] = []
@@ -200,11 +261,12 @@ def _user_content(content: str | list[Any], *, supports_images: bool, cap: int) 
         if isinstance(block, TextContent):
             parts.append({"type": "text", "text": _bounded(block.text, cap)})
         elif isinstance(block, ImageContent):
-            parts.append(
-                _image_part(block)
-                if supports_images
-                else {"type": "text", "text": _IMAGE_NOT_ACCEPTED}
-            )
+            if not supports_images:
+                parts.append({"type": "text", "text": _IMAGE_NOT_ACCEPTED})
+            elif withheld and _image_key(block) in withheld:
+                parts.append({"type": "text", "text": _IMAGE_WITHHELD})
+            else:
+                parts.append(_image_part(block))
     if all(part["type"] == "text" for part in parts):
         return "\n".join(part["text"] for part in parts)
     return parts
@@ -244,13 +306,15 @@ def to_wire_messages(
     anthropic: bool,
     supports_images: bool,
     part_max_tokens: int,
+    withheld: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Convert a loop transcript into OpenAI-format message dicts.
 
     ``anthropic`` selects how tool results carry images: the Anthropic client
     accepts them inside the tool message, while OpenAI-compatible endpoints
     only take text there, so images follow in a user message placed after the
-    tool results of that turn.
+    tool results of that turn. ``withheld`` names pictures (``_image_key``)
+    the provider refused: a line of text stands in their place.
     """
     wire: list[dict[str, Any]] = []
     if system:
@@ -270,7 +334,7 @@ def to_wire_messages(
                 {
                     "role": "user",
                     "content": _user_content(
-                        message.content, supports_images=supports_images, cap=part_max_tokens
+                        message.content, supports_images=supports_images, cap=part_max_tokens, withheld=withheld
                     ),
                 }
             )
@@ -297,6 +361,12 @@ def to_wire_messages(
                 text = f"Error: {text}"
             images = [block for block in message.content if isinstance(block, ImageContent)]
             content: Any = text
+            if images and supports_images and withheld:
+                kept = [image for image in images if _image_key(image) not in withheld]
+                if len(kept) < len(images):
+                    text = f"{text}\n{_IMAGE_WITHHELD}"
+                    content = text
+                images = kept
             if images and not supports_images:
                 content = f"{text}\n{_IMAGE_NOT_ACCEPTED}"
             elif images and anthropic:
@@ -641,11 +711,18 @@ class LLMClientProvider:
     **overrides)`` async generator of ``LLMStreamChunk``-like objects.
 
     Whether the model can see pictures is what the configuration says until
-    the provider says otherwise: a request with pictures that is refused for
-    carrying them is sent once more with a placeholder in their place, every
-    later request of this provider goes without them, and
-    ``on_images_refused`` is called once so whoever configured the model can
-    remember it.
+    the provider says otherwise. A request with pictures that is refused for
+    carrying them is sent once more with a line of text in their place, and
+    then it depends on what the provider said (``image_refusal``):
+
+    * the model takes no pictures: every later request of this provider goes
+      without them, and ``on_images_refused`` is called once, with what the
+      provider said, so whoever configured the model can remember it;
+    * it would not take *these* pictures (their format, their size, how many
+      there are): they are not sent again, later pictures are. Should that
+      happen ``PICTURE_REFUSALS_BEFORE_GOING_WITHOUT`` times, the rest of the
+      session goes without pictures and ``on_images_refused`` is called with
+      ``about_model`` False: said for this session, not about the model.
     """
 
     def __init__(
@@ -653,7 +730,7 @@ class LLMClientProvider:
         config: ModelConfig,
         *,
         client_factory: ClientFactory | None = None,
-        on_images_refused: Callable[[], None] | None = None,
+        on_images_refused: Callable[[str, bool], None] | None = None,
     ) -> None:
         self._config = config
         self._client_factory = client_factory
@@ -661,6 +738,9 @@ class LLMClientProvider:
         self._client_lock = asyncio.Lock()
         self._supports_images = bool(config.supports_images)
         self.on_images_refused = on_images_refused
+        # Pictures the provider would not take, by ``_image_key``.
+        self._withheld: set[str] = set()
+        self._picture_refusals = 0
 
     @property
     def config(self) -> ModelConfig:
@@ -671,13 +751,13 @@ class LLMClientProvider:
         """Whether requests carry pictures: the configured value, until the provider refused one."""
         return self._supports_images
 
-    def _images_refused(self) -> None:
+    def _images_refused(self, said: str, *, about_model: bool) -> None:
         self._supports_images = False
         callback = self.on_images_refused
         if callback is None:
             return
         try:
-            callback()
+            callback(said, about_model)
         except Exception:  # noqa: BLE001 - remembering it is best effort
             logger.debug("reporting that the model takes no pictures failed", exc_info=True)
 
@@ -786,7 +866,13 @@ class LLMClientProvider:
             if max_tokens is not None:
                 overrides["max_completion_tokens"] = max_tokens
             while True:
-                with_images = self._supports_images and _carries_images(messages)
+                # The pictures this request carries, as far as they are sent at all.
+                carried = (
+                    await asyncio.to_thread(_image_keys, list(messages)) - self._withheld
+                    if self._supports_images
+                    else set()
+                )
+                with_images = bool(carried)
                 wire = await asyncio.to_thread(
                     to_wire_messages,
                     system,
@@ -794,6 +880,7 @@ class LLMClientProvider:
                     anthropic=anthropic,
                     supports_images=self._supports_images,
                     part_max_tokens=part_cap,
+                    withheld=frozenset(self._withheld),
                 )
                 if signal is not None and signal.is_cancelled():
                     raise _Aborted
@@ -819,12 +906,22 @@ class LLMClientProvider:
                             raise _Aborted
                     break
                 except Exception as exc:  # noqa: BLE001 - looked at here, raised again unless it is the one case
-                    if not (with_images and not builder.emitted_output and is_image_refusal(exc)):
+                    kind = image_refusal(exc) if with_images and not builder.emitted_output else None
+                    if kind is None:
                         raise
-                    # The model takes no pictures. Sent once more without
-                    # them, and without them from here on.
-                    logger.warning("the model refused a request for its pictures; sending it without them: %s", exc)
-                    self._images_refused()
+                    if kind == REFUSAL_OF_THE_MODEL:
+                        # The model takes no pictures. Sent once more without
+                        # them, and without them from here on.
+                        logger.warning("the model takes no pictures; sending the request without them: %s", exc)
+                        self._images_refused(str(exc), about_model=True)
+                    else:
+                        # It would not take these. Sent once more without
+                        # them; they are not sent again, later ones are.
+                        logger.warning("the provider refused the pictures of a request; sending it without them: %s", exc)
+                        self._withheld |= carried
+                        self._picture_refusals += 1
+                        if self._picture_refusals >= PICTURE_REFUSALS_BEFORE_GOING_WITHOUT:
+                            self._images_refused(str(exc), about_model=False)
                     close = getattr(iterator, "aclose", None)
                     iterator = None
                     if close is not None:

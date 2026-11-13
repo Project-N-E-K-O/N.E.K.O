@@ -494,10 +494,16 @@ async def test_the_browser_is_kept_from_the_ports_of_this_application(tmp_path: 
         assert not direct.success and "that port belongs to this application's own services" in direct.text
         other_name = await call(made, "new_page", url=f"http://localhost:{own.server_address[1]}/config")
         assert not other_name.success and "this application's own services" in other_name.text
+        # Nor with more slashes than two, or backslashes, after the scheme.
+        for written in ("http:///127.0.0.1:{port}/config", "http://\\\\127.0.0.1:{port}/config"):
+            more = await call(made, "navigate_page", url=written.format(port=own.server_address[1]))
+            assert not more.success and "this application's own services" in more.text, more.text
 
         # A page cannot reach it either: by a request of its own, by a picture,
-        # from a frame of another site, or by a link that is clicked.
-        opened = await call(made, "navigate_page", url=site + "/reaching")
+        # from a frame of another site, or by a link that is clicked. (The
+        # address is written with a slash too many: a browser opens it as it
+        # opens the one with two, which is why the check above reads it so.)
+        opened = await call(made, "navigate_page", url=site.replace("http://", "http:///") + "/reaching")
         assert opened.success, opened.text
         found = await call(made, "wait_for", text=["fetch failed", "fetch reached"], timeout=15000)
         assert found.success and "fetch failed" in found.text, found.text

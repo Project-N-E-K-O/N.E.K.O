@@ -307,8 +307,14 @@ class ModelCapabilityEvent(_SessionEvent):
     """What the session learned about its model while it ran."""
 
     type: Literal["model_capability"] = "model_capability"
-    # False: the provider refused a request because it carried pictures.
+    # False: the provider said the model takes no pictures.
     supports_images: bool
+    # What the provider said, shortened: kept with what is remembered, so
+    # that it can be seen why the model was taken not to see pictures.
+    reason: str = ""
+    # False: said of this session only (its pictures were refused more than
+    # once, for what they were); nothing is to be remembered about the model.
+    lasting: bool = True
 
 
 # ``EndedEvent.error`` of a session whose runtime process went away. Nothing

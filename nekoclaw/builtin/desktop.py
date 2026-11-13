@@ -58,6 +58,8 @@ SCREENSHOT_MAX_BYTES = 200 * 1024
 # How long letting go of held keys waits for a call that still has the
 # keyboard and the mouse.
 RELEASE_WAIT_SECONDS = 5.0
+# How long after the paste keys the clipboard is left alone.
+PASTE_SETTLE_SECONDS = 0.3
 # How long after an action the screenshot of its result is taken.
 SETTLE_SECONDS = 0.6
 WAIT_DEFAULT_SECONDS = 1.0
@@ -416,10 +418,16 @@ class ScaledInput:
             self.settle_for(0.1)
             self._backend.moveTo(ex, ey, duration=0.5)
             self.settle_for(0.1)
-        finally:
-            self._backend.mouseUp(ex, ey, button=button)
+        except BaseException:
+            # Stopped on the way: let go where the pointer is. Let go at the
+            # end point, the drag would be carried out after all.
+            self._backend.mouseUp(button=button)
             if button in self._held_buttons:
                 self._held_buttons.remove(button)
+            raise
+        self._backend.mouseUp(ex, ey, button=button)
+        if button in self._held_buttons:
+            self._held_buttons.remove(button)
         return sx, sy, ex, ey
 
     def scroll(self, direction: str, notches: int, x: float | None = None, y: float | None = None) -> None:
@@ -442,9 +450,24 @@ class ScaledInput:
     def _paste(self, text: str) -> None:
         import pyperclip
 
+        # What the user had on the clipboard is put back afterwards, as far
+        # as it was text (a picture or a file there cannot be read this way).
+        try:
+            before = pyperclip.paste()
+        except Exception:  # noqa: BLE001 - then there is nothing to put back
+            before = None
         pyperclip.copy(text)
-        self._backend.hotkey("command" if platform.system() == "Darwin" else "ctrl", "v")
-        time.sleep(0.05)
+        try:
+            self._backend.hotkey("command" if platform.system() == "Darwin" else "ctrl", "v")
+            # The application reads the clipboard when it gets round to the
+            # keys; put back sooner, it would paste what was there before.
+            time.sleep(PASTE_SETTLE_SECONDS)
+        finally:
+            if isinstance(before, str):
+                try:
+                    pyperclip.copy(before)
+                except Exception:  # noqa: BLE001 - the text was typed; the clipboard keeps it
+                    logger.debug("putting the clipboard back failed", exc_info=True)
 
     def write(self, text: str) -> None:
         """Type text where the keyboard focus is; text beyond ASCII goes through the clipboard."""
@@ -680,7 +703,23 @@ class Desktop:
                 done = self._perform(gui, action, arguments)
                 if action != "screenshot":
                     gui.settle_for(self._settle_seconds)
-                encoded, (width, height) = self.screenshot(cancel_event)
+                try:
+                    encoded, (width, height) = self.screenshot(cancel_event)
+                except InterruptedError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - told below by its type only
+                    if action == "screenshot":
+                        raise
+                    # The action was carried out; only the look at the screen
+                    # after it failed. Told as a failure, it would be done a
+                    # second time.
+                    logger.error("the screenshot after a keyboard-and-mouse action failed (exc_type=%s)", type(exc).__name__)
+                    return DesktopResult(
+                        text=(
+                            f"{done} The screenshot after it could not be taken ({type(exc).__name__}). The action "
+                            "was carried out: do not repeat it. Call computer with action screenshot to see the screen."
+                        )
+                    )
             except InterruptedError as exc:
                 raise DesktopStopped("stopped") from exc
             finally:

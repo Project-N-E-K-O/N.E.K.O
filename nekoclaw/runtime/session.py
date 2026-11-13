@@ -588,9 +588,13 @@ class TaskAgentSession(SessionInbox):
         except Exception:  # noqa: BLE001 - a broken sink must not break the session
             logger.exception("the event sink failed")
 
-    def _images_refused(self) -> None:
-        """The provider refused a request for its pictures; the session goes on without them."""
-        self._emit(protocol.ModelCapabilityEvent(session_id=self.session_id, supports_images=False))
+    def _images_refused(self, said: str = "", about_model: bool = True) -> None:
+        """The provider takes no pictures (at all, or not this session's); the session goes on without them."""
+        self._emit(
+            protocol.ModelCapabilityEvent(
+                session_id=self.session_id, supports_images=False, reason=str(said)[:300], lasting=bool(about_model)
+            )
+        )
 
     def _emit_report(self, payload: dict[str, Any]) -> None:
         self._emit(protocol.ReportEvent(session_id=self.session_id, **payload))

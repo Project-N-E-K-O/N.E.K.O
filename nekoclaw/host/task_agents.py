@@ -494,6 +494,11 @@ class TaskAgentManager:
             image_retention: dict[str, int] = {}
             image_pools: dict[str, str] = {}
             if self._gateway is not None:
+                # For every built-in tool that hands pictures back, whether it
+                # can be called right now or not: one that is switched on
+                # while the task agent works is reached through the
+                # gateway's call tool, and its screenshots are limited too.
+                image_retention, image_pools = self._image_retention(self._registry.builtins())
                 callable_now = await self._registry.callable_by_task_agents()
                 if callable_now:
                     url = await self._gateway.start()
@@ -503,7 +508,6 @@ class TaskAgentManager:
                         supports_images=model.supports_images,
                     )
                     gateway_spec = GatewaySpec(url=url, token=token)
-                    image_retention, image_pools = self._image_retention(callable_now)
 
             spec = TaskAgentSpec(
                 session_id=commission.id,
@@ -879,11 +883,12 @@ class TaskAgentManager:
             # For this session at once: its screenshots no longer reach the
             # model, so the tools that work from them are of no use to it.
             self._gateway.images_refused(session.commission_id)
-        if self._model_capabilities is None or session.model is None:
+        if event.get("lasting") is False or self._model_capabilities is None or session.model is None:
+            # Said of this session's pictures only: nothing about the model.
             return
         base_url, model = session.model
         try:
-            if await self._model_capabilities.note_images_refused(base_url, model):
+            if await self._model_capabilities.note_images_refused(base_url, model, event.get("reason")):
                 logger.info("task agent model %s takes no pictures; tools that need them are left out from now on", model)
         except asyncio.CancelledError:
             raise

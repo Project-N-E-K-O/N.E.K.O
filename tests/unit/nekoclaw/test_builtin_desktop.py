@@ -88,11 +88,20 @@ class FakeClipboard(types.ModuleType):
         super().__init__("pyperclip")
         self.copied: list[str] = []
         self.error: Exception | None = None
+        # What the user had on the clipboard.
+        self.content: Any = "what the user had copied"
+        self.read_error: Exception | None = None
 
     def copy(self, text: str) -> None:
         if self.error is not None:
             raise self.error
         self.copied.append(text)
+        self.content = text
+
+    def paste(self) -> Any:
+        if self.read_error is not None:
+            raise self.read_error
+        return self.content
 
 
 @pytest.fixture(autouse=True)
@@ -405,7 +414,8 @@ def test_drag_releases_the_button_even_when_the_move_raises(rig: Rig) -> None:
     rig.backend.hooks["moveTo"] = breaks_half_way
     with pytest.raises(RuntimeError, match="the pointer hit something"):
         rig.act("drag", {"x": 100, "y": 200, "to_x": 800, "to_y": 600})
-    assert rig.inputs()[-2:] == [("moveTo", (1537, 648), {"duration": 0.5}), ("mouseUp", (1537, 648), {"button": "left"})]
+    # Let go where the pointer is: let go at the end point, the drag would be carried out after all.
+    assert rig.inputs()[-2:] == [("moveTo", (1537, 648), {"duration": 0.5}), ("mouseUp", (), {"button": "left"})]
     assert rig.desktop._held_buttons == []
     # Nothing is left for a later release, and no screenshot of a half-done drag is handed out.
     assert "capture" not in rig.names()
@@ -486,9 +496,64 @@ def test_text_beyond_ascii_goes_through_the_clipboard_and_is_pasted(
 ) -> None:
     rig.system = system
     result = rig.act("type", {"text": "你好, café"})
-    assert no_real_desktop.clipboard.copied == ["你好, café"]
-    assert rig.log() == [("hotkey", (modifier, "v"), {}), ("sleep", (0.05,), {}), SETTLE, CAPTURE]
+    # Pasted, and then what the user had on the clipboard is put back.
+    assert no_real_desktop.clipboard.copied == ["你好, café", "what the user had copied"]
+    assert no_real_desktop.clipboard.content == "what the user had copied"
+    # Not before the application had time to read the clipboard for the paste.
+    assert rig.log() == [("hotkey", (modifier, "v"), {}), ("sleep", (desktop.PASTE_SETTLE_SECONDS,), {}), SETTLE, CAPTURE]
+    assert desktop.PASTE_SETTLE_SECONDS >= 0.2
     assert result.text == "Typed 8 character(s)." + AFTERWARDS
+
+
+def test_the_clipboard_is_put_back_when_pasting_fails_and_left_alone_when_it_could_not_be_read(
+    rig: Rig, no_real_desktop: Any
+) -> None:
+    def keys_fail(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("the keys could not be sent")
+
+    rig.backend.hooks["hotkey"] = keys_fail
+    rig.act("type", {"text": "你好"})
+    # Typed key by key instead; the clipboard is as the user left it.
+    assert no_real_desktop.clipboard.content == "what the user had copied"
+    assert ("write", ("你好",), {}) in rig.inputs()
+
+    rig.backend.hooks.pop("hotkey")
+    no_real_desktop.clipboard.copied.clear()
+    no_real_desktop.clipboard.read_error = RuntimeError("the clipboard holds a picture")
+    rig.act("type", {"text": "再见"})
+    # Nothing was read, so there is nothing to put back.
+    assert no_real_desktop.clipboard.copied == ["再见"]
+
+
+@pytest.mark.parametrize(
+    ("action", "arguments", "done"),
+    [
+        ("click", {"x": 500, "y": 500}, "Clicked"),
+        ("type", {"text": "hello"}, "Typed 5 character(s)."),
+        ("key", {"keys": "enter"}, "Pressed"),
+    ],
+)
+def test_an_action_that_was_carried_out_is_told_as_done_when_the_screenshot_after_it_fails(
+    rig: Rig, action: str, arguments: dict[str, Any], done: str
+) -> None:
+    rig.screen.error = RuntimeError("the screen could not be grabbed")
+    result = rig.act(action, arguments)
+    # Told as a failure, it would be done a second time: a second click, the text typed twice.
+    assert result.text.startswith(done)
+    assert result.text.endswith(
+        "The screenshot after it could not be taken (RuntimeError). The action was carried out: do not repeat it. "
+        "Call computer with action screenshot to see the screen."
+    )
+    assert result.screenshot is None
+    assert [name for name in rig.names() if name not in ("sleep", "capture")]
+    assert not EXECUTION_LOCK.locked()
+
+
+def test_a_screenshot_that_was_asked_for_and_fails_is_a_failure(rig: Rig) -> None:
+    rig.screen.error = RuntimeError("the screen could not be grabbed")
+    with pytest.raises(RuntimeError, match="the screen could not be grabbed"):
+        rig.act("screenshot", {})
+    assert not EXECUTION_LOCK.locked()
 
 
 def test_text_beyond_ascii_is_typed_key_by_key_when_the_clipboard_fails(rig: Rig, no_real_desktop: Any) -> None:
@@ -987,10 +1052,12 @@ def test_a_drag_stopped_with_the_button_down_releases_it(rig: Rig) -> None:
     rig.backend.hooks["mouseDown"] = lambda *args, **kwargs: stop.set()
     with pytest.raises(DesktopStopped):
         rig.act("drag", {"x": 100, "y": 200, "to_x": 800, "to_y": 600}, stop)
+    # The button comes up where the pointer is, not at the end point: the
+    # user stopped the drag, and it must not be carried out by being let go.
     assert rig.inputs() == [
         glide(192, 216),
         ("mouseDown", (192, 216), {"button": "left"}),
-        ("mouseUp", (1537, 648), {"button": "left"}),
+        ("mouseUp", (), {"button": "left"}),
     ]
     assert rig.desktop._held_buttons == []
     assert "capture" not in rig.names()

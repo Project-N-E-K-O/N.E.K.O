@@ -352,9 +352,44 @@ def test_the_executable_of_the_settings_picks_that_install_among_those_found(mac
 def test_an_executable_of_the_settings_that_was_not_found_by_the_search_is_used_as_it_is(machine: Machine) -> None:
     machine.windows()
     machine.install("PROGRAMFILES", *WINDOWS_CHROME)
-    vivaldi = os.path.join("D:", os.sep, "Apps", "vivaldi.exe")
-    machine.files.add(vivaldi)
-    assert launcher.pick_browser(vivaldi, platform="win32") == BrowserInstall("custom", "vivaldi.exe", vivaldi, None)
+    portable = os.path.join("D:", os.sep, "Apps", "PortableChrome", "chrome.exe")
+    machine.files.add(portable)
+    assert launcher.pick_browser(portable, platform="win32") == BrowserInstall("custom", "chrome.exe", portable, None)
+
+
+def test_an_executable_of_the_settings_that_is_no_browser_is_not_started(machine: Machine) -> None:
+    machine.windows()
+    chrome = machine.install("PROGRAMFILES", *WINDOWS_CHROME)
+    # It would be started with a debugging port and a profile directory, whatever it is.
+    for name in ("powershell.exe", "cmd.exe", "notepad.exe", "chrome.exe.bat", "vivaldi.exe"):
+        other = os.path.join("C:", os.sep, "Windows", "System32", name)
+        machine.files.add(other)
+        assert launcher.pick_browser(other, platform="win32").executable == chrome
+
+
+@pytest.mark.parametrize(
+    ("path", "is_one"),
+    [
+        (r"C:\Program Files\Google\Chrome\Application\chrome.exe", True),
+        (r"D:\Apps\Edge\MSEDGE.EXE", True),
+        ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", True),
+        ("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", True),
+        ("/usr/bin/chromium-browser", True),
+        ("/usr/bin/microsoft-edge-stable", True),
+        ("/usr/bin/python3", False),
+        (r"C:\Windows\System32\cmd.exe", False),
+        (r"C:\Tools\chrome.exe.cmd", False),
+        ("/tmp/chrome/run.sh", False),
+        ("", False),
+    ],
+)
+def test_a_browser_is_told_by_the_name_of_its_file(path: str, is_one: bool) -> None:
+    import ntpath
+    import posixpath
+
+    # Asked about paths of every platform, on whichever this runs.
+    name = ntpath.basename(path) if "\\" in path else posixpath.basename(path)
+    assert launcher.is_browser_executable(name) is is_one
 
 
 def test_an_executable_of_the_settings_that_does_not_exist_falls_back_to_the_search(machine: Machine) -> None:

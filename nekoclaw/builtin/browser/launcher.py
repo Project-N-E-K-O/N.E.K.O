@@ -169,6 +169,27 @@ def _linux_candidates() -> list[BrowserInstall]:
     return found
 
 
+# The file names of the browsers that can be driven, on any platform.
+_BROWSER_FILE_NAMES = frozenset(
+    {
+        "chrome.exe", "msedge.exe", "brave.exe", "chromium.exe",
+        "google chrome", "microsoft edge", "brave browser", "chromium",
+        "google-chrome", "google-chrome-stable", "google-chrome-beta", "chrome",
+        "microsoft-edge", "microsoft-edge-stable", "microsoft-edge-beta",
+        "brave-browser", "brave", "chromium-browser",
+    }
+)  # fmt: skip
+
+
+def is_browser_executable(path: str | os.PathLike[str]) -> bool:
+    """Whether a file is, going by its name, one of the browsers the tools can drive.
+
+    A path that comes from the settings is started with a debugging port and
+    a profile directory: it must not be any program at all.
+    """
+    return os.path.basename(os.fspath(path)).lower() in _BROWSER_FILE_NAMES
+
+
 def find_browsers(platform: str | None = None) -> list[BrowserInstall]:
     """Return the browsers that can be driven, the preferred one first. Blocking (file checks only)."""
     platform = platform or sys.platform
@@ -197,7 +218,7 @@ def pick_browser(executable: str | None = None, platform: str | None = None) -> 
         for install in installs:
             if os.path.normcase(os.path.abspath(install.executable)) == wanted:
                 return install
-        if os.path.isfile(executable):
+        if os.path.isfile(executable) and is_browser_executable(executable):
             return BrowserInstall("custom", os.path.basename(executable), executable)
     if not installs:
         raise NoBrowserError(

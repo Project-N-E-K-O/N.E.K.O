@@ -104,6 +104,35 @@ def _keyboard_mouse_availability() -> Dict[str, Any]:
     }
 
 
+async def _model_images_status() -> Dict[str, Any]:
+    """Return whether the agent model is sent pictures and, if it is not, why and until when.
+
+    The keyboard-and-mouse tool and the screenshot tools are only given to a
+    task agent whose model sees pictures. A model is taken not to when its
+    provider said so (``nekoclaw/host/model_capabilities.py``); without this
+    the tools would be missing with nothing to show for it.
+    """
+    probe = _shared.Modules.model_probe
+    if probe is None:
+        return {"sees": True}
+    try:
+        from nekoclaw.host import mount
+
+        config = await asyncio.to_thread(probe.model_config)
+        host = mount.peek_host()
+        if host is not None:
+            store = host.model_capabilities
+        else:
+            from nekoclaw.host.model_capabilities import ModelCapabilityStore
+            from nekoclaw.host.paths import HostPaths
+
+            store = ModelCapabilityStore(HostPaths().model_capabilities_json)
+        return await store.describe(config.get("base_url"), config.get("model"))
+    except Exception as exc:
+        logger.debug("[Agent] What the agent model can see is not known: %s", exc)
+        return {"sees": True}
+
+
 async def _set_closed_browser_capability(capability_reason: Optional[str], still_current: Callable[[], bool]) -> None:
     """Say what the browser tools can do now that the browser is closed.
 
