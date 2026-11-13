@@ -229,3 +229,9 @@ PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS = 600.0
 """How long a plugin whose short description could not be written waits before
 it is tried again. Without it a model that is not configured, or one that keeps
 failing, would be asked again every time the plugins are listed."""
+
+PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES = 3
+"""How many times a short description is asked for a plugin and one version of
+its description before it is not asked for again, until the description
+changes. Failures are kept on disk with the short descriptions, so a restart
+neither resets the count nor retries at once."""

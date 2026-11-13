@@ -514,8 +514,11 @@ class TaskAgentManager:
                 # does: a new session of the same commission started before
                 # that would be released by it.
                 session.keep_notes = True
-                if notes:
-                    self._notes[commission.id] = [*notes, *self._notes.get(commission.id, [])]
+                # The sentence this start was given (the user's answer when
+                # it was taken up again) is kept with them.
+                kept = ([prompt] if prompt is not None else []) + notes
+                if kept:
+                    self._notes[commission.id] = [*kept, *self._notes.get(commission.id, [])]
                 await self._fail(commission.id, _QUOTA_REASON)
                 await self._close_session(session)
                 return False
@@ -813,10 +816,13 @@ class TaskAgentManager:
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
             await self.abort(child.id)
-        if session.closing and reason == "error":
-            # A close was asked for, and the session ended with an error
-            # instead (its runtime process went away): the close will not
-            # come back, so nothing else would release it.
+        from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
+
+        if session.closing and reason == "error" and event.get("error") == PROCESS_EXITED_ERROR:
+            # A close was asked for, and the runtime process went away
+            # before answering it: the close will not come back, so
+            # nothing else would release the session. Any other error
+            # while closing is followed by the close's own end.
             await self._release(commission_id)
             return
         await self._close_session(session)

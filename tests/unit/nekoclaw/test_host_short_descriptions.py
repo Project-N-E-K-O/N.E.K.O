@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -147,8 +148,10 @@ async def test_a_failure_is_not_kept_and_tried_again_only_after_a_while(tmp_path
 
     (listed,) = await short.apply([_weather()])
     await _written(short)
-    # Listed by its description; nothing kept.
-    assert listed["short_description"] == "" and not path.exists()
+    # Listed by its description; no short description kept, only the failure.
+    assert listed["short_description"] == ""
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["entries"] == {} and stored["failed"]["weather"]["count"] == 1
 
     # Listing again soon after does not ask again.
     await short.apply([_weather()])
@@ -268,9 +271,9 @@ async def test_a_changed_description_is_not_written_twice_while_the_old_one_is_b
     keeping = threading.Event()
     write = short._write
 
-    def slow_write(written: Any) -> None:
+    def slow_write(written: Any, failed: Any) -> None:
         keeping.wait(5)
-        write(written)
+        write(written, failed)
 
     short._write = slow_write
     changed = plugin("weather", LONG + "It also reports the air quality.")
@@ -329,3 +332,83 @@ async def test_a_failed_plugin_whose_description_changed_is_tried_again_at_once(
 
     assert len(llm.short_calls) == 2
     assert listed["short_description"] == "Weather and air quality."
+
+
+async def test_a_plugin_is_asked_for_at_most_a_few_times_per_description_even_across_restarts(tmp_path):
+    from config.nekoclaw_settings import PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES, PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS
+    from nekoclaw.host.short_descriptions import ShortDescriptions
+
+    now = [1000.0]
+    path = tmp_path / "short.json"
+    llm = FakeDecisionLLM()
+    llm.short = [RuntimeError("down")] * 10
+
+    def process() -> Any:
+        # A new process reads the failures kept on disk.
+        return ShortDescriptions(lambda: path, llm, clock=lambda: now[0])
+
+    short = process()
+    for _ in range(PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES + 2):
+        await short.apply([_weather()])
+        await _written(short)
+        now[0] += PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS
+        short = process()
+
+    # A restart neither starts the count again nor tries at once.
+    assert len(llm.short_calls) == PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES
+    # A changed description is asked for again.
+    llm.short = ["Weather and air quality."]
+    await short.apply([plugin("weather", LONG + "It also reports the air quality.")])
+    await _written(short)
+    assert len(llm.short_calls) == PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES + 1
+
+
+async def test_a_restart_soon_after_a_failure_does_not_try_again_at_once(tmp_path):
+    from nekoclaw.host.short_descriptions import ShortDescriptions
+
+    now = [1000.0]
+    path = tmp_path / "short.json"
+    llm = FakeDecisionLLM()
+    llm.short = [RuntimeError("down"), "Weather forecasts."]
+    first = ShortDescriptions(lambda: path, llm, clock=lambda: now[0])
+    await first.apply([_weather()])
+    await _written(first)
+
+    now[0] += 5
+    again = ShortDescriptions(lambda: path, llm, clock=lambda: now[0])
+    await again.apply([_weather()])
+    await _written(again)
+
+    assert len(llm.short_calls) == 1
+
+
+async def test_a_file_that_cannot_be_read_now_is_not_written_over(tmp_path, monkeypatch):
+    from nekoclaw.host.short_descriptions import ShortDescriptions, description_key
+
+    path = tmp_path / "short.json"
+    kept = {"version": 1, "entries": {"memo": {"key": description_key("Keeps notes."), "short": "Notes."}}}
+    path.write_text(json.dumps(kept), encoding="utf-8")
+    llm = FakeDecisionLLM()
+    llm.short = ["Weather forecasts.", "spare"]
+    short = ShortDescriptions(lambda: path, llm)
+    held = {"on": True}
+    real_open = Path.open
+
+    def flaky_open(self, *args, **kwargs):
+        if held["on"] and self == path and "r" in (args[0] if args else kwargs.get("mode", "r")):
+            raise PermissionError("held open by another process")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+
+    (listed,) = await short.apply([_weather()])
+    await _written(short)
+    # Nothing applied, nothing asked for, the file untouched.
+    assert listed["short_description"] == "" and llm.short_calls == []
+    held["on"] = False
+    assert json.loads(path.read_text(encoding="utf-8")) == kept
+
+    await short.apply([_weather()])
+    await _written(short)
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert set(stored["entries"]) == {"memo", "weather"}

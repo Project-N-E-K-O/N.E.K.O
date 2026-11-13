@@ -494,7 +494,7 @@ owner 已拍板接受的增加：
 
 插件短描述（owner 11-13 定补回生成兜底）：
 
-- 宿主在列插件时套上已经写好的短描述（`nekoclaw/host/short_descriptions.py`）；没写 `short_description`、`description` 又超过 150 token 的插件，在后台让小模型写一份，按插件和完整描述的哈希存在 `<data root>/nekoclaw/plugin_short_descriptions.json`。不在启动链路上，列插件也不等它：写好之前、写失败时，照旧读 `description` 的开头。写失败的 10 分钟内不再试。提示词是旧执行器的原文（带免费档位认的那句开头）。
+- 宿主在列插件时套上已经写好的短描述（`nekoclaw/host/short_descriptions.py`）；没写 `short_description`、`description` 又超过 150 token 的插件，在后台让小模型写一份，按插件和完整描述的哈希存在 `<data root>/nekoclaw/plugin_short_descriptions.json`。不在启动链路上，列插件也不等它：写好之前、写失败时，照旧读 `description` 的开头。写失败的 10 分钟内不再试，同一版描述最多试 3 次（失败次数和时间存在同一个文件里，重启不清零、也不会一启动就重试），描述改了重新计；文件在但读不了（被占用之类）时这次什么都不套、不写，下次列插件再读。提示词是旧执行器的原文（带免费档位认的那句开头）。
 - 插件文档（三语）的 `plugin.toml` 说明和快速上手里提醒插件作者自己写。
 
 owner 已定（2026-11-13）：

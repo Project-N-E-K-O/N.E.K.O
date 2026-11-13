@@ -1072,6 +1072,9 @@ async def test_what_the_user_added_while_a_task_agent_came_up_stays_when_the_quo
     receipt = await host.dispatch("sort the photos", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "failed")
     await wait_until(lambda: not host.task_agents._runtime.core._sessions, what="the session being closed")
+    # Until its session has been released on the host as well: that is
+    # where the notes of a commission that is not queued would be dropped.
+    await wait_until(lambda: receipt.commission_id not in host.task_agents._sessions, what="the session being released")
     await host.task_agents.settle()
 
     # Kept for when it is taken up again, as when the quota ran out before

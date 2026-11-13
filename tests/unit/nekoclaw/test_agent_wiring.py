@@ -509,11 +509,27 @@ async def test_a_host_that_cannot_be_built_is_not_tried_again_on_every_poll(wiri
     monkeypatch.setattr(wiring.host_mount, "get_host", broken)
     monkeypatch.setattr(wiring.mount_module, "_restore_clock", lambda: now[0])
 
-    # The task window polls every few seconds.
-    for _ in range(3):
-        await wiring.routes.list_tasks()
-        now[0] += 5
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Collect(level=logging.WARNING)
+    wiring.mount_module.logger.addHandler(handler)
+    try:
+        # The task window polls every few seconds.
+        for _ in range(3):
+            await wiring.routes.list_tasks()
+            now[0] += 5
+    finally:
+        wiring.mount_module.logger.removeHandler(handler)
     assert tries == [1]
+    # Logged once, with what went wrong and where.
+    (logged,) = [record for record in records if "restore the HUD" in record.getMessage()]
+    assert logged.exc_info is not None and "cannot open the ledger" in str(logged.exc_info[1])
 
     now[0] += wiring.mount_module.RESTORE_RETRY_SECONDS
     await wiring.routes.list_tasks()

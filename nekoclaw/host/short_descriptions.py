@@ -54,7 +54,7 @@ class ShortDescriptions:
     reads configuration).
     """
 
-    def __init__(self, path: Callable[[], Path], llm: Any = None, *, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, path: Callable[[], Path], llm: Any = None, *, clock: Callable[[], float] = time.time) -> None:
         self._path = path
         self._llm = llm
         self._clock = clock
@@ -62,9 +62,10 @@ class ShortDescriptions:
         self._written: dict[str, tuple[str, str]] | None = None
         self._loading: asyncio.Lock | None = None
         self._writing_file: asyncio.Lock | None = None
-        # plugin id -> (description key, when it failed); tried again after a
-        # while, or at once for a description that has changed since.
-        self._failed_at: dict[str, tuple[str, float]] = {}
+        # plugin id -> (description key, failures, when it last failed, wall
+        # clock seconds). Kept on disk: tried again after a while, at most a
+        # few times per description, and at once for a changed description.
+        self._failed: dict[str, tuple[str, int, float]] = {}
         self._in_flight: set[str] = set()
         # description key -> whether it is longer than the coarse screen reads.
         self._long: dict[str, bool] = {}
@@ -78,7 +79,12 @@ class ShortDescriptions:
         plugins themselves are not changed: a plugin given a short
         description is a copy.
         """
-        written = await self._load()
+        if not await self._load():
+            # The file is there but could not be read (held open elsewhere,
+            # say): nothing is applied or written over now; the next
+            # listing reads it again.
+            return list(plugins)
+        written = self._written or {}
         result: list[dict[str, Any]] = []
         missing: list[dict[str, Any]] = []
         for plugin in plugins:
@@ -127,17 +133,28 @@ class ShortDescriptions:
 
     # -- keeping ------------------------------------------------------------
 
-    async def _load(self) -> dict[str, tuple[str, str]]:
+    async def _load(self) -> bool:
+        """Read the file once; False while it is there but cannot be read."""
         if self._written is not None:
-            return self._written
+            return True
         if self._loading is None:
             self._loading = asyncio.Lock()
         async with self._loading:
             if self._written is None:
-                self._written = await asyncio.to_thread(self._read)
-        return self._written
+                stored = await asyncio.to_thread(self._read)
+                if stored is None:
+                    return False
+                self._written, self._failed = stored
+        return True
 
-    def _read(self) -> dict[str, tuple[str, str]]:
+    def _read(self) -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, int, float]]] | None:
+        """Return what is kept; empty without a file, None when the file cannot be read.
+
+        Content that is not what this writes is taken as empty and written
+        over: it would stay unreadable. A file that cannot be read (held
+        open elsewhere, no permission) is left alone and read again later,
+        so a passing error does not throw away what it holds.
+        """
         import json
 
         try:
@@ -145,20 +162,32 @@ class ShortDescriptions:
             with path.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
         except FileNotFoundError:
-            return {}
-        except Exception as exc:  # noqa: BLE001 - an unreadable file is written anew
+            return {}, {}
+        except ValueError as exc:
+            logger.warning("the plugin short descriptions file is not readable as kept (exc_type=%s)", type(exc).__name__)
+            return {}, {}
+        except Exception as exc:  # noqa: BLE001 - read again on the next listing
             logger.warning("reading the plugin short descriptions failed (exc_type=%s)", type(exc).__name__)
-            return {}
-        entries = data.get("entries") if isinstance(data, dict) else None
+            return None
         written: dict[str, tuple[str, str]] = {}
-        for plugin_id, item in (entries or {}).items() if isinstance(entries, dict) else ():
+        failed: dict[str, tuple[str, int, float]] = {}
+        if not isinstance(data, dict):
+            return written, failed
+        entries = data.get("entries")
+        for plugin_id, item in entries.items() if isinstance(entries, dict) else ():
             if isinstance(plugin_id, str) and isinstance(item, dict):
                 key, short = item.get("key"), item.get("short")
                 if isinstance(key, str) and isinstance(short, str) and short:
                     written[plugin_id] = (key, short)
-        return written
+        failures = data.get("failed")
+        for plugin_id, item in failures.items() if isinstance(failures, dict) else ():
+            if isinstance(plugin_id, str) and isinstance(item, dict):
+                key, count, at = item.get("key"), item.get("count"), item.get("at")
+                if isinstance(key, str) and isinstance(count, int) and isinstance(at, (int, float)):
+                    failed[plugin_id] = (key, count, float(at))
+        return written, failed
 
-    def _write(self, written: dict[str, tuple[str, str]]) -> None:
+    def _write(self, written: dict[str, tuple[str, str]], failed: dict[str, tuple[str, int, float]]) -> None:
         from utils.file_utils import atomic_write_json
 
         path = self._path()
@@ -168,6 +197,9 @@ class ShortDescriptions:
             {
                 "version": _FILE_VERSION,
                 "entries": {plugin_id: {"key": key, "short": short} for plugin_id, (key, short) in written.items()},
+                "failed": {
+                    plugin_id: {"key": key, "count": count, "at": at} for plugin_id, (key, count, at) in failed.items()
+                },
             },
             ensure_ascii=False,
             indent=2,
@@ -176,7 +208,10 @@ class ShortDescriptions:
     # -- writing ------------------------------------------------------------
 
     def _start_writing(self, missing: list[dict[str, Any]]) -> None:
-        from config.nekoclaw_settings import PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS
+        from config.nekoclaw_settings import (
+            PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES,
+            PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS,
+        )
 
         if self._llm is None or self._closed or not missing:
             return
@@ -184,15 +219,14 @@ class ShortDescriptions:
         due = []
         for plugin in missing:
             plugin_id = str(plugin.get("id"))
-            failed = self._failed_at.get(plugin_id)
+            failed = self._failed.get(plugin_id)
             if plugin_id in self._in_flight:
                 continue
-            if (
-                failed is not None
-                and failed[0] == description_key(str(plugin.get("description") or "").strip())
-                and now - failed[1] < PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS
-            ):
-                continue
+            if failed is not None and failed[0] == description_key(str(plugin.get("description") or "").strip()):
+                if failed[1] >= PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES:
+                    continue
+                if now - failed[2] < PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS:
+                    continue
             due.append(plugin)
         if not due:
             return
@@ -214,13 +248,18 @@ class ShortDescriptions:
                 except Exception as exc:  # noqa: BLE001 - the plugin is listed by its description meanwhile
                     logger.debug("writing a short description for %s failed (exc_type=%s)", plugin_id, type(exc).__name__)
                     short = ""
+                key = description_key(description)
                 if not short:
-                    self._failed_at[plugin_id] = (description_key(description), self._clock())
+                    before = self._failed.get(plugin_id)
+                    count = before[1] + 1 if before is not None and before[0] == key else 1
+                    self._failed[plugin_id] = (key, count, self._clock())
+                    await self._keep()
                     continue
-                self._failed_at.pop(plugin_id, None)
-                written = await self._load()
-                written[plugin_id] = (description_key(description), short)
-                await self._keep(dict(written))
+                self._failed.pop(plugin_id, None)
+                if self._written is None:
+                    continue
+                self._written[plugin_id] = (key, short)
+                await self._keep()
                 # Never the text itself in the log: it is the model's.
                 logger.info("wrote a short description for plugin %s (%d chars)", plugin_id, len(short))
         finally:
@@ -259,13 +298,16 @@ class ShortDescriptions:
             text = truncate_to_tokens(text, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS).strip()
         return text
 
-    async def _keep(self, written: dict[str, tuple[str, str]]) -> None:
+    async def _keep(self) -> None:
+        if self._written is None:
+            return
+        written, failed = dict(self._written), dict(self._failed)
         if self._writing_file is None:
             self._writing_file = asyncio.Lock()
         async with self._writing_file:
             try:
                 # Shielded: a shutdown that cancels this must not lose what a model call paid for.
-                await asyncio.shield(asyncio.to_thread(self._write, written))
+                await asyncio.shield(asyncio.to_thread(self._write, written, failed))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - kept in memory; written again with the next one

@@ -1124,7 +1124,9 @@ class TurnMixin:
         self._flush_ai_turn_text_to_tracker(turn_type="proactive_reply")
         if self.use_tts and self.tts_thread and self.tts_thread.is_alive():
             try:
-                await self._request_tts_done_for_turn("handle_proactive_complete")
+                # Only for the reply's turn: a user turn begun meanwhile has its
+                # own speech, which this signal would cut off.
+                await self._request_tts_done_for_turn("handle_proactive_complete", expected_speech_id=speech_id_at_start)
             except Exception as e:
                 logger.warning(f"⚠️ 发送TTS结束信号失败 (proactive): {e}")
         # The user may have begun a turn while the TTS signal was awaited.
