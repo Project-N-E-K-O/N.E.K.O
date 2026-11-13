@@ -175,7 +175,8 @@ def test_identity_verifies_signature_and_required_claims(identity):
             verify_identity(sign(**invalid), "issued-1", "nonce", jwks)
     other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     forged = jwt.encode(
-        {"exp": time.time() + 60}, other, algorithm="RS256", headers={"kid": "test-key"}
+        {"iss": auth.ISSUER, "aud": "issued-1", "sub": "user-1", "nonce": "nonce", "exp": time.time() + 60},
+        other, algorithm="RS256", headers={"kid": "test-key"}
     )
     with pytest.raises(ChatGPTAuthError):
         verify_identity(forged, "issued-1", "nonce", jwks)

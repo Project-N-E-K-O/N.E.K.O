@@ -4914,10 +4914,14 @@ const ConnectivityManager = {
                 }
             }
 
+            if (result.providerType === 'chatgpt') {
+                result.model = result.model || (modelIdInput ? modelIdInput.value.trim() : '');
+            }
             omitMaskedSecretFromConnectivity(result);
             if (result.key || result.url || result.secretMasked) {
                 if (result.providerKey && result.providerScope) {
                     result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+                    if (result.providerType === 'chatgpt') result.cacheId += `|model:${result.model}`;
                 } else {
                     result.cacheId = buildCustomConnectivityCacheId(
                         result.providerType,
@@ -5040,6 +5044,7 @@ const ConnectivityManager = {
                     // Built-in provider mode
                     body.provider_key = provider_key;
                     body.provider_scope = provider_scope;
+                    if (provider_key === 'chatgpt') body.model = model || '';
                     if (provider_scope === 'assist' && provider_key === 'mimo' && isMimoTokenPlanUrl(overrideUrl)) {
                         body.url = overrideUrl;
                     }
@@ -5197,7 +5202,7 @@ const ConnectivityManager = {
                     else if (provider === 'follow_assist' && assistSelect && assistSelect.value === 'free') isFree = true;
                     // For custom provider, also pass model from the input
                     const modelInput = document.getElementById(`${mt}ModelId`);
-                    const model = modelInput ? modelInput.value.trim() : '';
+                    const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
@@ -5350,7 +5355,7 @@ const ConnectivityManager = {
                         isFree = true;
                     }
                     const modelInput = document.getElementById(`${mt}ModelId`);
-                    const model = modelInput ? modelInput.value.trim() : '';
+                    const model = customResult.model || (modelInput ? modelInput.value.trim() : '');
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,

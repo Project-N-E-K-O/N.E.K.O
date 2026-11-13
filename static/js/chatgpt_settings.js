@@ -7,7 +7,10 @@
     const login = document.getElementById('chatgpt-login');
     const add = document.getElementById('chatgpt-add');
     const logout = document.getElementById('chatgpt-logout');
+    const authorization = document.getElementById('chatgpt-authorization');
     let timer;
+    let suspended = false;
+    let refreshGeneration = 0;
     let busy = false;
     let pending = false;
     const t = (key, fallback) => {
@@ -29,7 +32,20 @@
     };
     async function refresh() {
         clearTimeout(timer);
-        const data = await api('status');
+        if (suspended) return;
+        const generation = ++refreshGeneration;
+        let data;
+        try {
+            data = await api('status');
+        } catch (error) {
+            if (suspended || generation !== refreshGeneration) return;
+            // A failed initial/post-login poll must recover too: the server may
+            // already have accepted a login even before we observed pending.
+            report(error);
+            timer = setTimeout(refresh, 1500);
+            return;
+        }
+        if (suspended || generation !== refreshGeneration) return;
         const previous = account.value;
         account.replaceChildren();
         for (const entry of data.accounts) {
@@ -46,6 +62,10 @@
         }
         account.value = data.active || (data.accounts.some(a => a.id === previous) ? previous : account.options[0].value);
         pending = data.login_status === 'pending';
+        if (!pending) {
+            authorization.hidden = true;
+            authorization.removeAttribute('href');
+        }
         login.disabled = add.disabled = account.disabled = pending || busy;
         logout.disabled = pending || busy || !account.value;
         status.textContent = data.error || (pending ? t('pending', 'Complete sign-in in your browser.') :
@@ -69,6 +89,9 @@
         }
     }
     const signIn = accountId => run(async () => {
+        if (pending) return;
+        ++refreshGeneration;
+        clearTimeout(timer);
         // Open synchronously on the click so popup blockers do not reject OAuth.
         const external = window.electronShell && window.electronShell.openExternal;
         const popup = external ? null : window.open('about:blank', '_blank');
@@ -77,12 +100,17 @@
             const data = await api('login', { account_id: accountId || null });
             const url = new URL(data.url);
             if (url.origin !== 'https://auth.openai.com' || url.pathname !== '/api/accounts/authorize') throw new Error(t('failed', 'ChatGPT connection failed.'));
+            pending = true;
+            // Keep a user-activated entry point even when automatic navigation
+            // is blocked or an Electron external-browser launch fails.
+            authorization.href = url.href;
+            authorization.hidden = false;
             if (external) await window.electronShell.openExternal(url.href);
             else if (popup) popup.location.replace(url.href);
-            else window.open(url.href, '_blank', 'noopener,noreferrer');
             await refresh();
         } catch (error) {
             if (popup) popup.close();
+            if (pending && !suspended) timer = setTimeout(refresh, 1500);
             throw error;
         }
     });
@@ -100,6 +128,14 @@
         if (!result.revocation_confirmed) status.textContent = t('revocationUnconfirmed', 'Signed out locally. Disconnect the app in ChatGPT Settings to confirm remote revocation.');
     }));
     window.addEventListener('localechange', () => refresh().catch(report));
-    window.addEventListener('pagehide', () => clearTimeout(timer));
+    window.addEventListener('pagehide', () => {
+        suspended = true;
+        ++refreshGeneration;
+        clearTimeout(timer);
+    });
+    window.addEventListener('pageshow', () => {
+        suspended = false;
+        refresh().catch(report);
+    });
     refresh().catch(report);
 })();

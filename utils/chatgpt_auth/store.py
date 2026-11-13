@@ -23,6 +23,10 @@ PLAN_SCOPE = "chatgpt.tokens.use.direct"
 class ChatGPTAuthError(RuntimeError):
     """Safe, actionable error text (never includes a token response)."""
 
+    def __init__(self, message, *, status_code=401):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def http_client():
     from utils.http_client import ensure_user_agent
@@ -44,7 +48,8 @@ def token_request(client, data):
         )
     if response.status_code != 200:
         raise ChatGPTAuthError(
-            "ChatGPT authorization is temporarily unavailable. Try again later."
+            "ChatGPT authorization is temporarily unavailable. Try again later.",
+            status_code=response.status_code,
         )
     try:
         value = response.json()

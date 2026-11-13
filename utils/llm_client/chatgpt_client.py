@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 from utils.chatgpt_auth import ChatGPTAuthError, get_store
@@ -16,6 +17,14 @@ from .openai_client import ChatOpenAI
 
 class ChatGPTResponseError(RuntimeError):
     """A terminal plan/inference failure; not eligible for automatic chat retries."""
+
+    def __init__(self, message, *, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class ChatGPTOutputLimitError(ChatGPTResponseError):
+    """The model consumed its budget without producing usable text."""
 
 
 def responses_input(messages):
@@ -91,18 +100,26 @@ class ResponseState:
         self.calls = []
         self.usage = {}
         self.id = ""
+        self.finish_reason = "stop"
 
     def feed(self, event):
         event = _dump(event)
         kind = event.get("type")
-        if kind in ("response.failed", "response.incomplete", "error"):
+        response = event.get("response") or {}
+        limited = (
+            kind == "response.incomplete"
+            and response.get("status") == "incomplete"
+            and (response.get("incomplete_details") or {}).get("reason") == "max_output_tokens"
+        )
+        if kind in ("response.failed", "response.incomplete", "error") and not limited:
             response = event.get("response") or {}
             error = response.get("error") or event.get("error") or {}
             code = str(error.get("code") or event.get("code") or kind)
             # Only known codes are exposed; upstream messages can contain input.
             if code.startswith("subscription_sharing_"):
                 raise ChatGPTResponseError(
-                    "ChatGPT plan usage is unavailable or its limit was reached. Check ChatGPT Settings → Usage."
+                    "ChatGPT plan usage is unavailable or its limit was reached. Check ChatGPT Settings → Usage.",
+                    status_code=429,
                 )
             raise ChatGPTResponseError(
                 "ChatGPT did not complete the response. Try again or check the selected model."
@@ -111,26 +128,40 @@ class ResponseState:
             delta = event.get("delta", "")
             self.text += delta
             return [LLMStreamChunk(content=delta)]
-        if kind != "response.completed":
+        if kind != "response.completed" and not limited:
             return []
         response = event["response"]
-        if response.get("status") != "completed":
+        if response.get("status") != "completed" and not limited:
             raise ChatGPTResponseError(
                 "ChatGPT returned an unsuccessful terminal response."
             )
-        self.completed = True
         self.id = response.get("id", "")
         usage = response.get("usage") or {}
         self.usage = {
             **usage,
             "prompt_tokens": usage.get("input_tokens", 0),
             "completion_tokens": usage.get("output_tokens", 0),
+            "prompt_tokens_details": usage.get("input_tokens_details"),
+            "completion_tokens_details": usage.get("output_tokens_details"),
             "total_tokens": usage.get(
                 "total_tokens",
                 usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
             ),
         }
         output = response.get("output") or []
+        # Terminal snapshots can contain text without preceding deltas. Never
+        # execute function calls from an incomplete response, even valid JSON.
+        terminal_text = "".join(
+            part.get("text", "")
+            for item in output if item.get("type") == "message"
+            for part in item.get("content", []) if part.get("type") == "output_text"
+        )
+        remaining_text = terminal_text[len(self.text):] if terminal_text.startswith(self.text) else ""
+        self.text += remaining_text
+        if limited and not self.text:
+            raise ChatGPTOutputLimitError(
+                "ChatGPT reached the output limit before producing text. Increase the output budget."
+            )
         reasoning = [
             item
             for item in output
@@ -149,13 +180,15 @@ class ResponseState:
                 ),
             }
             for index, item in enumerate(output)
-            if item.get("type") == "function_call"
+            if item.get("type") == "function_call" and not limited
         ]
+        self.finish_reason = "length" if limited else "tool_calls" if self.calls else "stop"
+        self.completed = True
         return [
             LLMStreamChunk(
-                content="",
+                content=remaining_text,
                 tool_call_deltas=self.calls or None,
-                finish_reason="tool_calls" if self.calls else "stop",
+                finish_reason=self.finish_reason,
                 usage_metadata=self.usage,
             )
         ]
@@ -179,7 +212,7 @@ class ResponseState:
                 "choices": [
                     {
                         "index": 0,
-                        "finish_reason": "tool_calls" if self.calls else "stop",
+                        "finish_reason": self.finish_reason,
                         "message": {
                             "role": "assistant",
                             "content": self.text,
@@ -204,6 +237,9 @@ class ChatChatGPT(ChatOpenAI):
                 "ChatGPT plan credentials can only be used at https://api.openai.com/v1."
             )
         self.credential_store = credential_store or get_store()
+        self._reasoning_defaults = self._reasoning_params(
+            {**((kwargs.get("model_kwargs") or {}).get("extra_body") or {}), **(kwargs.get("extra_body") or {})}
+        )
         for key in (
             "api_key",
             "max_retries",
@@ -224,7 +260,8 @@ class ChatChatGPT(ChatOpenAI):
     def _response_params(self, messages, **overrides):
         # Keep shared prompt processing (character placeholders, slop filter and
         # leak checks), then translate only the supported Responses fields.
-        for key in ("extra_body", "stream", "store", "extra_headers", "extra_query"):
+        reasoning = self._reasoning_params(overrides.pop("extra_body", None))
+        for key in ("stream", "store", "extra_headers", "extra_query"):
             overrides.pop(key, None)
         p = super()._params(messages, stream=True, **overrides)
         body = {
@@ -234,6 +271,9 @@ class ChatChatGPT(ChatOpenAI):
             "stream": True,
             "include": ["reasoning.encrypted_content"],
         }
+        effort = p.get("reasoning_effort") or reasoning or self._reasoning_defaults
+        if effort:
+            body["reasoning"] = {"effort": effort}
         limit = p.get("max_completion_tokens") or p.get("max_tokens")
         if limit:
             body["max_output_tokens"] = limit
@@ -251,6 +291,8 @@ class ChatChatGPT(ChatOpenAI):
                 choice = {"type": "function", "name": choice["function"]["name"]}
             if choice is not None:
                 body["tool_choice"] = choice
+            if "parallel_tool_calls" in p:
+                body["parallel_tool_calls"] = p["parallel_tool_calls"]
         response_format = p.get("response_format") or {}
         if response_format.get("type") == "json_object":
             body["text"] = {"format": response_format}
@@ -261,6 +303,23 @@ class ChatChatGPT(ChatOpenAI):
         if p.get("timeout") is not None:
             body["timeout"] = p["timeout"]
         return body
+
+    @staticmethod
+    def _reasoning_params(extra):
+        extra = extra if isinstance(extra, dict) else {}
+        reasoning = extra.get("reasoning") or {}
+        return extra.get("reasoning_effort") or (reasoning.get("effort") if isinstance(reasoning, dict) else None)
+
+    def _record_usage(self, state):
+        # Responses bypasses the Chat Completions SDK hook. Reuse its recorder
+        # once per request, including usage reported on an incomplete response.
+        from utils.token_tracker.hooks import _record_usage_from_response
+        from utils.token_tracker.call_context import _current_call_type
+        if state.usage:
+            _record_usage_from_response(
+                SimpleNamespace(model=self.model, usage=state.usage),
+                _current_call_type.get('unknown'),
+            )
 
     async def _events(self, messages, **overrides):
         token = await asyncio.to_thread(self.credential_store.access_token)
@@ -286,7 +345,8 @@ class ChatChatGPT(ChatOpenAI):
     def _raise_auth_or_limit(exc):
         if str(getattr(exc, "code", "") or "").startswith("subscription_sharing_"):
             raise ChatGPTResponseError(
-                "ChatGPT plan usage is unavailable or its limit was reached. Check ChatGPT Settings → Usage."
+                "ChatGPT plan usage is unavailable or its limit was reached. Check ChatGPT Settings → Usage.",
+                status_code=429,
             ) from None
         status = getattr(exc, "status_code", None) or getattr(
             getattr(exc, "response", None), "status_code", None
@@ -297,7 +357,8 @@ class ChatChatGPT(ChatOpenAI):
             ) from None
         if status == 429:
             raise ChatGPTResponseError(
-                "ChatGPT usage limit reached. Check ChatGPT Settings → Usage and retry later."
+                "ChatGPT usage limit reached. Check ChatGPT Settings → Usage and retry later.",
+                status_code=429,
             ) from None
 
     async def astream(self, messages: Any, **overrides):
@@ -310,6 +371,7 @@ class ChatChatGPT(ChatOpenAI):
             state.finish()
         finally:
             await events.aclose()
+            self._record_usage(state)
 
     async def ainvoke_raw(self, messages, **overrides):
         state = ResponseState()
@@ -320,6 +382,7 @@ class ChatChatGPT(ChatOpenAI):
             state.finish()
         finally:
             await events.aclose()
+            self._record_usage(state)
         return state.raw(self.model)
 
     def invoke_raw(self, messages, **overrides):
@@ -335,6 +398,8 @@ class ChatChatGPT(ChatOpenAI):
         except Exception as exc:
             self._raise_auth_or_limit(exc)
             raise
+        finally:
+            self._record_usage(state)
         state.finish()
         return state.raw(self.model)
 

@@ -61,8 +61,10 @@ async def test_translation_service_llm_client_creation_is_single_flight(
             }
 
     created_clients: list[object] = []
+    factory_kwargs: list[dict] = []
 
     async def fake_create_chat_llm_async(*_args: object, **_kwargs: object) -> object:
+        factory_kwargs.append(_kwargs)
         await asyncio.sleep(0)
         client = object()
         created_clients.append(client)
@@ -82,3 +84,4 @@ async def test_translation_service_llm_client_creation_is_single_flight(
 
     assert len(created_clients) == 1
     assert clients == [created_clients[0], created_clients[0]]
+    assert factory_kwargs[0]['provider_type'] == provider_type
