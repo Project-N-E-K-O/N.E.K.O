@@ -511,3 +511,42 @@ class MaintenanceTests(unittest.TestCase):
                 (self.repo / "app/main.py").write_text(f"clean {state}\n")
                 self.commit("clean whitespace")
                 self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def test_nested_untracked_repo_is_rejected_before_backup_or_verify(self):
+        nested = self.repo / "nested"
+        subprocess.run(["git", "init", "-q", str(nested)], check=True)
+        (nested / "private.txt").write_text("must not be silently lost")
+        destination = self.root / "backups"
+        with self.assertRaisesRegex(ValueError, "nested Git repository"):
+            maintain.backup(self.repo, destination)
+        self.assertFalse(destination.exists())
+        with self.assertRaisesRegex(ValueError, "nested Git repository"):
+            maintain.source_snapshot(self.repo)
+
+    def test_staged_whitespace_does_not_attribute_upstream_errors_to_local_merge(self):
+        policy = json.loads(
+            (_ROOT / "local-desktop-ui/regression.example.json").read_text()
+        )
+        command = next(
+            suite["command"] for suite in policy["suites"]
+            if suite["name"] == "whitespace-staged"
+        )
+        self.git("switch", "-c", "official")
+        (self.repo / "upstream.txt").write_text("existing upstream bad whitespace \n")
+        self.commit("upstream with whitespace")
+        self.git("switch", "local/test")
+        (self.repo / "app/main.py").write_text("local clean\n")
+        self.commit("local work")
+        result = subprocess.run(
+            ["git", "merge", "--no-ff", "--no-commit", "official"],
+            cwd=self.repo, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertNotEqual(
+            subprocess.run(["git", "diff", "--cached", "--check"],
+                           cwd=self.repo, capture_output=True).returncode, 0
+        )
+        self.assertEqual(
+            subprocess.run(command, cwd=self.repo, capture_output=True).returncode, 0
+        )
+
