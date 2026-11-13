@@ -340,6 +340,36 @@ def test_factory_routes_explicit_oauth_and_blocks_other_origins(store):
         ChatChatGPT(base_url="https://attacker.test/v1", credential_store=store)
 
 
+def test_factory_preserves_chatgpt_reasoning_settings(store, monkeypatch):
+    from utils.llm_client import create_chat_llm
+    from config import providers
+
+    monkeypatch.setattr(providers, "get_extra_body", lambda model, base_url: {"reasoning_effort": "none"})
+    client = create_chat_llm("gpt-5-nano", auth.RESOURCE, None,
+                             provider_type="chatgpt", credential_store=store)
+    try:
+        assert client._response_params("hello")["reasoning"] == {"effort": "none"}
+    finally:
+        client.close()
+
+    client = create_chat_llm("gpt-5-nano", auth.RESOURCE, None,
+                             provider_type="chatgpt", credential_store=store,
+                             extra_body={"reasoning_effort": "low"})
+    try:
+        assert client._response_params("hello")["reasoning"] == {"effort": "low"}
+    finally:
+        client.close()
+
+    client = create_chat_llm("gpt-5-nano", auth.RESOURCE, None,
+                             provider_type="chatgpt", credential_store=store,
+                             extra_body=None,
+                             model_kwargs={"extra_body": {"reasoning_effort": "minimal"}})
+    try:
+        assert client._response_params("hello")["reasoning"] == {"effort": "minimal"}
+    finally:
+        client.close()
+
+
 @pytest.mark.asyncio
 async def test_sdk_sse_stream_and_raw_calls_close_and_never_use_chat_completions(store):
     from openai import AsyncOpenAI
