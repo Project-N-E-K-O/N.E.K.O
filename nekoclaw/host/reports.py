@@ -352,7 +352,8 @@ class Reporter:
         """Report what the turn check found: something she said does not match what was done.
 
         ``reason`` is ``can_do`` (she said it cannot be done; it can),
-        ``no_record`` (she said it is done; no task says so), ``filed`` (she
+        ``no_record`` (she said it is done; no task says so), ``looked_up``
+        (the same, right after an answer told her what is done), ``filed`` (she
         agreed; it was dispatched for her) or ``promised_failed`` (she agreed;
         it could not be dispatched).
         """

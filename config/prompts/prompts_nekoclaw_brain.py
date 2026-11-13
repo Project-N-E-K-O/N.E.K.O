@@ -729,54 +729,64 @@ TURN_CHECK_VERDICTS = ("none", "unable", "promised", "claimed_done")
 TURN_CHECK_INPUT_TEMPLATE = "USER: {user_text}\nREPLY: {reply_text}"
 
 # What she is told after a turn check. ``can_do`` / ``no_record`` /
-# ``promised_failed`` wake her so she can put it right; ``filed`` comes along
-# with her next turn.
+# ``promised_failed`` wake her so she can put it right; ``filed`` and
+# ``looked_up`` come along with her next turn. ``looked_up`` replaces
+# ``no_record`` right after an answer told her which tasks are done: a summary
+# of those matches no single task, so it does not tell her to dispatch.
 TURN_CHECK_TEXTS = {
     'zh': {
         "can_do": "刚才你说「{task}」做不到，其实办得到。请自然地向用户更正，然后用任务派发工具去办。",
         "no_record": "刚才你说「{task}」已经办好了，但任务记录里没有这件事。请自然地向用户更正；真要办，就用任务派发工具。",
+        "looked_up": "刚才你说「{task}」已经办好了。要是说的就是刚才查到的那几件已办完的事，这条不用管，也不要重新派发；要是别的事，任务记录里没有，请自然地向用户更正。",
         "filed": "你刚才答应的事已经替你派发了。{receipt}",
         "promised_failed": "你刚才答应的事没能办成。{receipt} 请自然地向用户说明。",
     },
     'zh-TW': {
         "can_do": "剛才你說「{task}」做不到，其實辦得到。請自然地向使用者更正，然後用任務派發工具去辦。",
         "no_record": "剛才你說「{task}」已經辦好了，但任務記錄裡沒有這件事。請自然地向使用者更正；真要辦，就用任務派發工具。",
+        "looked_up": "剛才你說「{task}」已經辦好了。要是說的就是剛才查到的那幾件已辦完的事，這條不用管，也不要重新派發；要是別的事，任務記錄裡沒有，請自然地向使用者更正。",
         "filed": "你剛才答應的事已經替你派發了。{receipt}",
         "promised_failed": "你剛才答應的事沒能辦成。{receipt} 請自然地向使用者說明。",
     },
     'en': {
         "can_do": "You just said \"{task}\" cannot be done; it can. Correct that with the user in a natural way, then use the task dispatch tool to get it done.",
         "no_record": "You just said \"{task}\" was done, but there is no record of that task. Correct that with the user in a natural way; to really get it done, use the task dispatch tool.",
+        "looked_up": "You just said \"{task}\" was done. If you meant the finished tasks you just looked up, never mind this and do not dispatch them again; if it is something else, there is no record of it, so correct that with the user in a natural way.",
         "filed": "What you just agreed to do has been dispatched for you. {receipt}",
         "promised_failed": "What you just agreed to do could not be done. {receipt} Tell the user so in a natural way.",
     },
     'ja': {
         "can_do": "さきほど「{task}」はできないと言いましたが、実際にはできます。ユーザーに自然に訂正してから、タスク依頼ツールで進めてください。",
         "no_record": "さきほど「{task}」は済んだと言いましたが、タスクの記録にその用件はありません。ユーザーに自然に訂正してください。本当に進めるならタスク依頼ツールを使ってください。",
+        "looked_up": "さきほど「{task}」は済んだと言いました。さっき照会で見た、終わった用件のことなら、これは気にせず、もう一度依頼もしないでください。別の用件なら記録にないので、ユーザーに自然に訂正してください。",
         "filed": "さきほど引き受けた用件は、代わりに依頼しておきました。{receipt}",
         "promised_failed": "さきほど引き受けた用件は進められませんでした。{receipt} ユーザーに自然に伝えてください。",
     },
     'ko': {
         "can_do": "방금 \"{task}\"은(는) 할 수 없다고 했지만 실제로는 할 수 있습니다. 사용자에게 자연스럽게 정정한 뒤 작업 의뢰 도구로 처리하세요.",
         "no_record": "방금 \"{task}\"이(가) 끝났다고 했지만 작업 기록에 그 일이 없습니다. 사용자에게 자연스럽게 정정하세요. 정말 처리하려면 작업 의뢰 도구를 쓰세요.",
+        "looked_up": "방금 \"{task}\"이(가) 끝났다고 했습니다. 방금 조회에서 본 끝난 일들을 말한 것이라면 이 알림은 신경 쓰지 말고 다시 의뢰하지도 마세요. 다른 일이라면 기록에 없으니 사용자에게 자연스럽게 정정하세요.",
         "filed": "방금 하겠다고 한 일은 대신 의뢰해 두었습니다. {receipt}",
         "promised_failed": "방금 하겠다고 한 일은 처리하지 못했습니다. {receipt} 사용자에게 자연스럽게 알려 주세요.",
     },
     'ru': {
         "can_do": "Вы только что сказали, что «{task}» сделать нельзя, но это возможно. Естественно поправьте себя перед пользователем и поручите это через инструмент поручения задач.",
         "no_record": "Вы только что сказали, что «{task}» уже сделано, но в записях задач этого нет. Естественно поправьте себя перед пользователем; чтобы действительно сделать это, используйте инструмент поручения задач.",
+        "looked_up": "Вы только что сказали, что «{task}» уже сделано. Если речь о завершённых задачах, которые вы только что посмотрели, не обращайте на это внимания и не поручайте их снова; если о чём-то другом, в записях этого нет — естественно поправьте себя перед пользователем.",
         "filed": "То, что вы только что пообещали, уже поручено за вас. {receipt}",
         "promised_failed": "То, что вы только что пообещали, выполнить не удалось. {receipt} Естественно сообщите об этом пользователю.",
     },
     'es': {
         "can_do": "Acabas de decir que «{task}» no se puede hacer, pero sí se puede. Corrígelo con el usuario de forma natural y luego usa la herramienta de encargo de tareas para hacerlo.",
         "no_record": "Acabas de decir que «{task}» ya está hecho, pero no hay registro de esa tarea. Corrígelo con el usuario de forma natural; para hacerlo de verdad, usa la herramienta de encargo de tareas.",
+        "looked_up": "Acabas de decir que «{task}» ya está hecho. Si te referías a las tareas terminadas que acabas de consultar, no hagas caso de esto ni las vuelvas a encargar; si es otra cosa, no hay registro de ella, así que corrígelo con el usuario de forma natural.",
         "filed": "Lo que acabas de aceptar hacer ya se encargó por ti. {receipt}",
         "promised_failed": "Lo que acabas de aceptar hacer no se pudo hacer. {receipt} Díselo al usuario de forma natural.",
     },
     'pt': {
         "can_do": "Você acabou de dizer que «{task}» não dá para fazer, mas dá. Corrija isso com o usuário de forma natural e depois use a ferramenta de encargo de tarefas para fazer.",
         "no_record": "Você acabou de dizer que «{task}» já foi feito, mas não há registro dessa tarefa. Corrija isso com o usuário de forma natural; para fazer de verdade, use a ferramenta de encargo de tarefas.",
+        "looked_up": "Você acabou de dizer que «{task}» já foi feito. Se era sobre as tarefas concluídas que você acabou de consultar, ignore isto e não as encarregue de novo; se for outra coisa, não há registro dela, então corrija isso com o usuário de forma natural.",
         "filed": "O que você acabou de aceitar fazer já foi encarregado por você. {receipt}",
         "promised_failed": "O que você acabou de aceitar fazer não pôde ser feito. {receipt} Diga isso ao usuário de forma natural.",
     },

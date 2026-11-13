@@ -136,8 +136,10 @@ class TurnCheck:
     # "gate". Or why nothing followed its verdict: "stopped", when everything
     # was stopped while the turn was being judged.
     skipped: str = ""
-    # What followed: "" (nothing), "corrected" (she was told and puts it right)
-    # or "dispatched" (filed for her).
+    # What followed: "" (nothing), "corrected" (she was told and puts it right),
+    # "asked" (she said something is done right after being told what is:
+    # she is asked to put it right if she meant something else) or
+    # "dispatched" (filed for her).
     action: str = ""
     task: str = ""
     receipt: Receipt | None = None
@@ -295,6 +297,10 @@ class TaskBrain:
         # Raised by ``drop_pending_dispatches``; a first round that began
         # before the raise files nothing.
         self._dispatch_generation = 0
+        # Character -> when her question about her tasks was last answered
+        # with one that is done (ledger clock). Taken by the next turn check
+        # for her: what she says is done in that turn may be about those.
+        self._status_answered_at: dict[str, float] = {}
         # commission id -> its second round or direct plugin call.
         self._work: dict[str, asyncio.Task[Any]] = {}
         self._deferred_timers: dict[str, asyncio.TimerHandle] = {}
@@ -450,6 +456,9 @@ class TaskBrain:
         )
         from utils.tokenize import truncate_to_tokens
 
+        # A turn in which she dispatches is not checked: an answer she got
+        # in it must not carry over to the next turn's check.
+        self._status_answered_at.pop(lanlan_name, None)
         # Read before the first round is scheduled: it only starts when the
         # loop gets to it, and a stop in between must still reach it.
         if generation is None:
@@ -1041,9 +1050,13 @@ class TaskBrain:
         if active:
             lines.append(words["active"])
             lines.extend(line(item) for item in active)
+        done_lines: set[str] = set()
         if recent:
             lines.append(words["recent"])
-            lines.extend(line(item) for item in recent)
+            for item in recent:
+                lines.append(line(item))
+                if item.status == "done":
+                    done_lines.add(lines[-1])
         if not lines:
             # A question that finds no task at all is often one she should
             # have dispatched ("look up the weather"): the answer says what a
@@ -1052,6 +1065,11 @@ class TaskBrain:
         # Whole lines only. The cut that follows is a backstop and takes
         # nothing once the lines were made to fit.
         lines = whole_lines_within(lines, QUERY_RESULT_MAX_TOKENS, words["more"])
+        # Only a done task the answer still shows once cut to size.
+        if done_lines.intersection(lines):
+            self._status_answered_at[lanlan_name] = now
+        else:
+            self._status_answered_at.pop(lanlan_name, None)
         return QueryAnswer(
             text=truncate_to_tokens("\n".join(lines), QUERY_RESULT_MAX_TOKENS),
             commissions=[*active, *recent],
@@ -1112,6 +1130,8 @@ class TaskBrain:
         from utils.tokenize import truncate_to_tokens
 
         lang = prompt_language(lang)
+        # Only this turn's check may lean on an answer given in it.
+        answered_at = self._status_answered_at.pop(lanlan_name, None)
         if not TURN_CHECK_ENABLED or not self._is_enabled():
             return TurnCheck("skipped", skipped="disabled")
         # As of the turn that is being checked; see the "promised" verdict below.
@@ -1138,11 +1158,30 @@ class TaskBrain:
                 await self._reporter.turn_notice(lanlan_name, reason="can_do", text=words["can_do"].format(task=task))
                 result.action = "corrected"
         elif verdict.kind == "claimed_done":
+            from config.nekoclaw_settings import TURN_CHECK_STATUS_ANSWER_SECONDS
+
             if not await self._has_record(lanlan_name, f"{task} {user_text}"):
-                await self._reporter.turn_notice(
-                    lanlan_name, reason="no_record", text=words["no_record"].format(task=task)
+                # She had just looked her tasks up and was told of one that
+                # is done. A summary of several matches no single one, and
+                # "no record ... dispatch it" had her deny finished work or
+                # dispatch it again; nor can the words tell such a summary
+                # from a claim about something else. She is asked instead,
+                # with her next turn: woken for it, she only repeated that
+                # both were done; told with the user's next sentence, she
+                # answered that sentence alone, and a claim about something
+                # else was mostly put right then.
+                looked_up = (
+                    answered_at is not None
+                    and self._ledger._clock() - answered_at <= TURN_CHECK_STATUS_ANSWER_SECONDS
                 )
-                result.action = "corrected"
+                reason = "looked_up" if looked_up else "no_record"
+                await self._reporter.turn_notice(
+                    lanlan_name,
+                    reason=reason,
+                    text=words[reason].format(task=task),
+                    delivery_mode="passive" if looked_up else "proactive",
+                )
+                result.action = "asked" if looked_up else "corrected"
         elif verdict.kind == "promised":
             if generation != self._dispatch_generation:
                 # Everything was stopped while this turn was being judged. A
