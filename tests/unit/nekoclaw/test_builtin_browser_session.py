@@ -2717,3 +2717,18 @@ async def test_a_browser_that_was_not_closed_to_the_end_is_gone_on_with_on_the_s
     assert len(world.launched) == 2 and session.connected
     await session.close()
     assert len(world.closed) == 2
+
+
+async def test_a_page_that_goes_elsewhere_under_the_wait_for_it_to_settle_does_not_fail_what_was_carried_out(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, _fake, snapshot = await open_page(session, world)
+    # Where the click leads takes the script context with it in which the wait runs:
+    # the browser answers the wait with an error of its own.
+    world.browser.refuse("Runtime.evaluate", "Execution context was destroyed.")
+
+    await session.click(page, uid_of(snapshot, "Send"))
+
+    assert page.url == THANKS and page.navigations == 2
+    # Going somewhere is carried out too, and said to be.
+    assert await session.navigate(page, "reload", None) == "Successfully reloaded the page."

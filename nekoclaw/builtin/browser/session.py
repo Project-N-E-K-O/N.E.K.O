@@ -935,7 +935,11 @@ class BrowserSession:
             await self._send_unless_dialog(
                 page, "Runtime.evaluate", {"expression": _DOM_QUIET, "awaitPromise": True, "returnByValue": True}, timeout=4.0
             )
-        except BrowserError:
+        except (BrowserError, CdpError):
+            # Also what the browser itself answers when the page goes
+            # elsewhere under the wait and takes the script with it. The
+            # action before this wait was carried out: a wait that fails must
+            # not turn it into a failure, or it is done a second time.
             logger.debug("waiting for the page to settle failed", exc_info=True)
 
     async def after_action(self, page: Page, navigations_before: int) -> None:

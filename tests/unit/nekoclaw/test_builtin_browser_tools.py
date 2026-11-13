@@ -1051,3 +1051,16 @@ def test_a_screenshot_of_a_page_may_weigh_what_one_of_the_desktop_may() -> None:
     # Three screenshots stay in a context, of the desktop and of pages together:
     # the request stays as small as the loop this replaces kept it (600 KB of pictures).
     assert SCREENSHOT_MAX_BYTES == desktop.SCREENSHOT_MAX_BYTES == 200 * 1024
+
+
+async def test_a_click_is_told_as_done_when_the_wait_for_the_page_to_settle_fails(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.refuse("Runtime.evaluate", "Execution context was destroyed.")
+
+    outcome = await call(tools, "click", uid=uid_of("Gift wrap"))
+
+    # Told as failed, the model would click again: a form would be sent twice.
+    assert outcome == BuiltinOutcome(True, "Successfully clicked on the element")
+    assert world.browser.page("target-1").find("Gift wrap").checked is True
