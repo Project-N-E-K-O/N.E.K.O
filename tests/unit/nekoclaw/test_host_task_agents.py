@@ -721,8 +721,9 @@ async def test_an_answer_held_by_a_closing_session_survives_its_runtime_going_aw
     async def unanswered_close(session_id: str) -> None:
         pass
 
-    # Closing was asked for (an idle runtime closing the session, say) and
-    # the process went away before answering.
+    # The host asked for the close (a stop, say; an idle runtime closes with
+    # an ordinary closed event instead) and the process went away before
+    # answering.
     runtime.close = unanswered_close
     session.closing = True
     await host.task_agents._handle(
@@ -1158,6 +1159,67 @@ async def test_a_closing_session_that_ends_with_an_ordinary_error_waits_for_its_
     runtime.close = close
     await close(first.commission_id)
     await wait_until(lambda: first.commission_id not in host.task_agents._sessions, what="the close's own end")
+
+
+
+async def test_what_a_quota_failure_kept_survives_a_start_that_cannot_open_its_session(hosts, tmp_path):
+    llm = ScriptedLLM([[say("photos sorted"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _filed(host, "sort the photos")
+    await host.ledger.transition(commission.id, "working", reason="test")
+    await host.ledger.transition(commission.id, "blocked", reason="test")
+    assert await host.task_agents.tell(commission.id, "the photos are on drive E:") is False
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    runtime = host.task_agents._runtime
+    start = runtime.start
+
+    async def broken_start(spec: Any) -> None:
+        raise RuntimeError("the runtime process could not be created")
+
+    runtime.start = broken_start
+    assert await host.task_agents.tell(commission.id, "try again") is False
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the failed start being given up")
+
+    # Kept for the start after this one, as it was for this one.
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
+    runtime.start = start
+    assert await host.task_agents.tell(commission.id, "once more") is True
+    await wait_status(host, commission.id, "done", timeout=10)
+    sent = " | ".join(str(message.get("content")) for message in llm.requests[0])
+    assert sent.index("the photos are on drive E:") < sent.index("once more")
+
+
+async def test_what_is_passed_on_while_a_quota_failure_is_written_comes_before_the_next_sentence(hosts, tmp_path):
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
+
+    async def meter(commission_id: str) -> bool:
+        return False
+
+    host.task_agents._meter = meter
+    fail = host.task_agents._fail
+
+    async def fail_while_told(commission_id: str, reason: str) -> None:
+        # The user adds something while the failure is being written.
+        host.task_agents._notes.setdefault(commission_id, []).append("and skip the drafts")
+        await fail(commission_id, reason)
+
+    host.task_agents._fail = fail_while_told
+    commission = await _filed(host, "sort the photos")
+    await host.ledger.transition(commission.id, "working", reason="test")
+    await host.ledger.transition(commission.id, "blocked", reason="test")
+    assert await host.task_agents.tell(commission.id, "the photos are on drive E:") is False
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:", "and skip the drafts"]
+    assert not host.task_agents._notes.get(commission.id)
 
 
 async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_it_goes_back(hosts, tmp_path):

@@ -184,7 +184,7 @@ class ShortDescriptions:
         except ValueError as exc:
             logger.warning("the plugin short descriptions file is not readable as kept (exc_type=%s)", type(exc).__name__)
             return {}, {}
-        except Exception as exc:  # noqa: BLE001 - read again on the next listing
+        except Exception as exc:  # noqa: BLE001 - read again a while later
             logger.warning("reading the plugin short descriptions failed (exc_type=%s)", type(exc).__name__)
             return None
         written: dict[str, tuple[str, str]] = {}

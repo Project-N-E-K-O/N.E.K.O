@@ -442,6 +442,7 @@ class TaskAgentManager:
         session = self._sessions.get(commission_id)
         if session is None:
             return False
+        carried: list[str] = []
         try:
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
@@ -555,6 +556,11 @@ class TaskAgentManager:
                     self._carried[commission.id] = kept
                 await self._fail(commission.id, _QUOTA_REASON)
                 await self._close_session(session)
+                # What was passed on while the failure was being written
+                # came before whatever the next start will be told.
+                late = self._notes.pop(commission.id, [])
+                if late:
+                    self._carried[commission.id] = [*self._carried.get(commission.id, []), *late]
                 return False
             if await stopped_meanwhile():
                 # The stop has closed the session already.
@@ -581,6 +587,9 @@ class TaskAgentManager:
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("starting a task agent for %s failed: %s", commission_id, exc)
+            if carried:
+                # Kept for the start after this one, as it was for this one.
+                self._carried[commission_id] = [*carried, *self._carried.get(commission_id, [])]
             self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             return False
