@@ -1252,11 +1252,14 @@ async def test_kept_text_survives_a_start_the_runtime_gives_up_after_the_prompt_
 
 
 
-async def test_kept_text_survives_a_run_that_fails_before_doing_anything(hosts, tmp_path):
+async def test_kept_text_reaches_the_model_once_after_a_run_that_failed_on_its_first_request(hosts, tmp_path):
+    # The run takes its prompt into the transcript before the model fails
+    # (a 500, a 429, the network); the next start goes on from it.
     async def failing_model() -> None:
         raise RuntimeError("the model failed")
 
-    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[failing_model]]))
+    llm = ScriptedLLM([[failing_model], [say("done"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: llm)
     paid = [False]
 
     async def meter(commission_id: str) -> bool:
@@ -1268,8 +1271,15 @@ async def test_kept_text_survives_a_run_that_fails_before_doing_anything(hosts, 
     await host.task_agents.tell(commission.id, "try again")
     await wait_status(host, commission.id, "failed")
     await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    assert commission.id not in host.task_agents._carried
 
-    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
+    await host.task_agents.tell(commission.id, "once more")
+    await wait_until(lambda: len(llm.requests) == 2, what="the next run's model request")
+
+    said = [message["content"] for message in llm.requests[-1] if message["role"] == "user"]
+    assert sum("the photos are on drive E:" in text for text in said) == 1
+    assert any("once more" in text for text in said)
+
 
 async def test_kept_text_is_not_kept_again_once_the_session_was_at_work_on_it(hosts, tmp_path):
     async def failing_model() -> None:

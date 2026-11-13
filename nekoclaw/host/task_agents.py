@@ -862,8 +862,10 @@ class TaskAgentManager:
         elif reason == "aborted":
             await self._end(commission_id, "cancelled", reason="the run was stopped", text="")
         elif reason == "error":
-            # Before it got to work on what it was given, that is kept.
-            self._put_back_carried(session)
+            # A run takes its prompt into the session's transcript before
+            # its first model request, and the next start goes on from that
+            # transcript: what was kept is there already, and is not sent again.
+            session.carried = []
             await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
