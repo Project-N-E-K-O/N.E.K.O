@@ -84,9 +84,10 @@ TURN_CHECK_TASK_MAX_TOKENS = 60
 
 TURN_CHECK_STATUS_ANSWER_SECONDS = 60.0
 """How long after her question about her tasks was answered with one that is
-done what she says is done is taken as read from the record, and not
-corrected. Only the next check of her turns may use it; the answer comes
-within the turn, and the check follows its end within seconds."""
+done a claim that something is done, which no task matches, gets the softer
+notice (if she meant those, nothing to do; if something else, put it right)
+instead of "no record". Only the next check of her turns may use it; the
+answer comes within the turn, and the check follows its end within seconds."""
 
 QUESTION_TEXT_MAX_TOKENS = 300
 """Cap on a commission's question as it is put to her to pass on."""

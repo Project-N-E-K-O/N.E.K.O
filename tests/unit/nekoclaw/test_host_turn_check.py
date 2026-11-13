@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 import pytest
@@ -394,26 +395,94 @@ async def _two_done(host: Any) -> None:
         await host.ledger.transition(commission.id, "done", result_summary=summary)
 
 
-async def test_what_she_says_is_done_right_after_looking_her_tasks_up_is_not_corrected(server, hosts, tmp_path):
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "提醒和购物清单都办好了",
+        # Word for word what the turn check named in the real app.
+        "把清单写好存进目录，并定好喝水的提醒",
+        # Not one of them: the words cannot tell this from a summary, so it
+        # gets the same notice, which asks her to put it right if so.
+        "订去东京的机票",
+    ],
+)
+async def test_what_she_says_is_done_right_after_looking_her_tasks_up_gets_the_softer_notice(
+    server, hosts, tmp_path, claim
+):
     # Seen in the real app: she looked her tasks up and said both were done.
-    # Her one summary matched neither task alone, the correction told her it
-    # was not on record, and she dispatched both again.
+    # Her one summary matched neither task alone; "no record ... dispatch it"
+    # had her deny finished work or dispatch both again.
     _weather(server)
-    llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": "提醒和购物清单都办好了"}])
+    llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": claim}])
     host = _host(hosts, tmp_path, server, llm)
     await _two_done(host)
 
     await host.query("刚才那两件事办得怎么样了", lanlan_name="Lan", lang="zh")
     result = await _check(host, "刚才那两件事办得怎么样了", "两件都办好啦", external_intent=0.8)
 
-    assert (result.verdict, result.action, result.skipped) == ("claimed_done", "", "looked_up")
-    assert await outbox(host, "correction") == []
+    assert (result.verdict, result.action, result.skipped) == ("claimed_done", "asked", "")
+    assert await _notices(host) == [
+        (
+            "looked_up",
+            "proactive",
+            f"刚才你说「{claim}」已经办好了。要是说的就是刚才查到的那几件已办完的事，这条不用管，也不要重新派发；"
+            "要是别的事，任务记录里没有，请自然地向用户更正。",
+        )
+    ]
     assert len(await host.ledger.select(lanlan_name="Lan")) == 2
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
+def test_the_softer_notice_does_not_tell_her_to_dispatch(lang):
+    from config.prompts.prompts_nekoclaw_brain import TURN_CHECK_TEXTS
+    from config.prompts.prompts_task_tools import DISPATCH_TOOL_NAME
+
+    soft = TURN_CHECK_TEXTS[lang]["looked_up"]
+    assert "{task}" in soft
+    assert DISPATCH_TOOL_NAME not in soft
+    # The "no record" notice ends by pointing at the dispatch tool; this one
+    # shares nothing of that sentence.
+    tail = [part.strip() for part in re.split("[.;。；]", TURN_CHECK_TEXTS[lang]["no_record"]) if part.strip()][-1]
+    assert tail not in soft
+
+
+async def test_a_done_task_the_answer_left_out_to_fit_backs_nothing(server, hosts, tmp_path, monkeypatch):
+    from utils.tokenize import count_tokens
+
+    _weather(server)
+    llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": "提醒和购物清单都办好了"}])
+    host = _host(hosts, tmp_path, server, llm)
+    working, _created = await host.ledger.create(
+        lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"
+    )
+    await host.ledger.transition(working.id, "working")
+    await _two_done(host)
+    # Room for the task under way and the "more" line only.
+    kept = ["在办的事：", "- 查上海明天的天气 (进行中)", "还有 2 件没列出。"]
+    monkeypatch.setattr(
+        "config.nekoclaw_settings.QUERY_RESULT_MAX_TOKENS", sum(count_tokens(line) + 1 for line in kept) + 1
+    )
+
+    answer = await host.query("", lanlan_name="Lan", lang="zh")
+    result = await _check(host, "那两件事怎么样了", "都办好啦", external_intent=0.8)
+
+    assert "已完成" not in answer.text and "查上海明天的天气" in answer.text
+    assert (result.verdict, result.action) == ("claimed_done", "corrected")
+    assert [notice[0] for notice in await _notices(host)] == ["no_record"]
 
 
 @pytest.mark.parametrize(
     "how",
-    ["no_query", "other_character", "long_ago", "capability_question", "nothing_done", "next_turn", "dispatched"],
+    [
+        "no_query",
+        "other_character",
+        "long_ago",
+        "capability_question",
+        "nothing_done",
+        "only_failed",
+        "next_turn",
+        "dispatched",
+    ],
 )
 async def test_what_she_says_is_done_is_still_checked_without_a_fresh_look_at_her_tasks(
     server, hosts, tmp_path, monkeypatch, how
@@ -422,9 +491,17 @@ async def test_what_she_says_is_done_is_still_checked_without_a_fresh_look_at_he
     claim = {"verdict": "claimed_done", "task": "订去东京的机票"}
     llm = FakeDecisionLLM(turn=[{"verdict": "none"}, claim] if how == "next_turn" else [claim])
     host = _host(hosts, tmp_path, server, llm)
-    if how != "nothing_done":
+    if how not in ("nothing_done", "only_failed"):
         await _two_done(host)
-    if how == "nothing_done":
+    if how == "only_failed":
+        # A task that ended without being done backs no claim that something is.
+        failed, _created = await host.ledger.create(
+            lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"
+        )
+        await host.ledger.transition(failed.id, "working")
+        await host.ledger.transition(failed.id, "failed", status_reason="the weather plugin failed")
+        await host.query("", lanlan_name="Lan", lang="zh")
+    elif how == "nothing_done":
         # An answer that names nothing done backs no claim that something is.
         working, _created = await host.ledger.create(
             lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"
