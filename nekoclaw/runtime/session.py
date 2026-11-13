@@ -514,6 +514,9 @@ class TaskAgentSession(SessionInbox):
                     host=self._host,
                     session_id=self.session_id,
                     is_cancelled=lambda: self.harness.cancelled,
+                    # Reading back a result kept there is not reading
+                    # outside the working directory.
+                    readable=(spill.directory,),
                 ),
                 after_tool_call=self._after_tool_call,
                 finish_turn=self._finish_turn,

@@ -311,6 +311,11 @@ class ModelCapabilityEvent(_SessionEvent):
     supports_images: bool
 
 
+# ``EndedEvent.error`` of a session whose runtime process went away. Nothing
+# more comes for such a session, not even the end of a close asked for.
+PROCESS_EXITED_ERROR = "the runtime process exited"
+
+
 class EndedEvent(_SessionEvent):
     type: Literal["ended"] = "ended"
     reason: EndReason

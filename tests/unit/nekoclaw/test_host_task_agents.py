@@ -694,6 +694,48 @@ async def test_an_answer_kept_for_a_wake_up_that_never_ran_survives_the_session_
     assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
 
 
+
+async def test_an_answer_held_by_a_closing_session_survives_its_runtime_going_away(hosts, tmp_path):
+    # As above, but the runtime process exits before the close comes back:
+    # the session ends as that close would have, and the answer it held is
+    # not lost. The waiting commission is not failed for it either.
+    from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
+
+    llm = ScriptedLLM(
+        [
+            _report("waiting", "Which folder holds the photos?"),
+            _report("ready", "sorted D:/Camera"),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_status(host, receipt.commission_id, "waiting_user")
+    await wait_until(lambda: _ended(host, receipt.commission_id), what="the asking run ending")
+    session = host.task_agents._sessions[receipt.commission_id]
+    session.run_ended = False
+    assert await host.answer(receipt.commission_id, "the photos are in D:/Camera") is True
+    assert session.held_answer == "the photos are in D:/Camera"
+    runtime = host.task_agents._runtime
+    close = runtime.close
+
+    async def unanswered_close(session_id: str) -> None:
+        pass
+
+    # Closing was asked for (an idle runtime closing the session, say) and
+    # the process went away before answering.
+    runtime.close = unanswered_close
+    session.closing = True
+    await host.task_agents._handle(
+        {"type": "ended", "session_id": receipt.commission_id, "reason": "error", "error": PROCESS_EXITED_ERROR}
+    )
+    runtime.close = close
+    # Gone from the runtime too, as with its process.
+    await close(receipt.commission_id)
+
+    done = await wait_status(host, receipt.commission_id, "done")
+    assert done.result_summary == "sorted D:/Camera"
+    assert {"role": "user", "content": "the photos are in D:/Camera"} in llm.requests[1]
+
 async def test_an_answer_sent_to_a_session_that_closes_before_taking_it_takes_it_up_again(hosts, tmp_path):
     llm = ScriptedLLM(
         [
@@ -887,6 +929,9 @@ async def test_what_is_passed_on_while_a_session_starts_follows_its_first_work(h
     host = _host(hosts, tmp_path, pick)
     warm = await _dispatch(host, "warm up")
     await wait_status(host, warm.commission_id, "done")
+    # Its session closed and released before the close is replaced: done is
+    # written before the close is asked for.
+    await wait_until(lambda: warm.commission_id not in host.task_agents._sessions, what="the warm-up session leaving")
     runtime = host.task_agents._runtime
     sent: list[tuple[str, str]] = []
     start, prompt, steer = runtime.start, runtime.prompt, runtime.steer
@@ -951,11 +996,168 @@ async def test_what_the_user_added_while_it_was_queued_stays_when_the_quota_is_u
     await wait_status(host, first.commission_id, "done")
 
     await wait_status(host, second.commission_id, "failed")
+    # Until its session has been released on the host: that is where the
+    # notes of a commission that is not queued would be dropped.
+    await wait_until(lambda: second.commission_id not in host.task_agents._sessions, what="the session being released")
     await host.task_agents.settle()
 
     # Kept for when it is taken up again, as when the quota ran out before
     # anything was started.
-    assert host.task_agents._notes.get(second.commission_id) == ["skip the drafts"]
+    assert host.task_agents._carried.get(second.commission_id) == ["skip the drafts"]
+
+
+async def test_the_sentence_a_start_was_given_stays_when_the_quota_is_used_up(hosts, tmp_path):
+    # Taken up again with the user's answer, and the quota is used up: the
+    # answer is kept for the next time, not only recorded in the ledger.
+    llm = ScriptedLLM([[say("photos sorted"), finish()]])
+    host = _host(hosts, tmp_path, lambda spec: llm)
+    paid = [False, True]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _filed(host, "sort the photos")
+    await host.ledger.transition(commission.id, "working", reason="test")
+    await host.ledger.transition(commission.id, "blocked", reason="test")
+
+    # Not delivered: the start it took was given up.
+    assert await host.task_agents.tell(commission.id, "the photos are on drive E:") is False
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    await host.task_agents.settle()
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
+
+    assert await host.task_agents.tell(commission.id, "try again") is True
+    await wait_status(host, commission.id, "done", timeout=10)
+    sent = " | ".join(str(message.get("content")) for message in llm.requests[0])
+    # In the order they were said: the kept answer before the newer sentence.
+    assert sent.index("the photos are on drive E:") < sent.index("try again")
+
+
+async def test_a_start_given_up_for_the_quota_keeps_its_place_until_its_session_is_closed(hosts, tmp_path):
+    # The user takes the failed commission up again while its old session is
+    # still closing. The new session waits for the old one to go; the old
+    # one's close must not release it.
+    paid = [True, False, True]
+    pick = lambda spec: ScriptedLLM([[say("done"), finish()]])  # noqa: E731
+    host = _host(hosts, tmp_path, pick)
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    warm = await _dispatch(host, "warm up")
+    await wait_status(host, warm.commission_id, "done")
+    # Its session closed and released before the close is replaced: done is
+    # written before the close is asked for.
+    await wait_until(lambda: warm.commission_id not in host.task_agents._sessions, what="the warm-up session leaving")
+    runtime = host.task_agents._runtime
+    close = runtime.close
+    release = asyncio.Event()
+
+    async def slow_close(session_id: str) -> None:
+        await release.wait()
+        await close(session_id)
+
+    runtime.close = slow_close
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "failed")
+    # Taken up again while the old session is still closing.
+    told = asyncio.ensure_future(host.task_agents.tell(first.commission_id, "try again"))
+    await asyncio.sleep(0.05)
+    release.set()
+    assert await told is True
+
+    await wait_status(host, first.commission_id, "done", timeout=10)
+
+
+async def test_a_closing_session_whose_runtime_went_away_is_released(hosts, tmp_path):
+    # Given up for the quota, its session waits for its close; the runtime
+    # process exits before answering, which ends the session with an error.
+    paid = [True, False, True]
+    pick = lambda spec: ScriptedLLM([[say("done"), finish()]])  # noqa: E731
+    host = _host(hosts, tmp_path, pick)
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    warm = await _dispatch(host, "warm up")
+    await wait_status(host, warm.commission_id, "done")
+    # Its session closed and released before the close is replaced: done is
+    # written before the close is asked for.
+    await wait_until(lambda: warm.commission_id not in host.task_agents._sessions, what="the warm-up session leaving")
+    runtime = host.task_agents._runtime
+    close = runtime.close
+    closes: list[str] = []
+
+    async def unanswered_close(session_id: str) -> None:
+        closes.append(session_id)
+
+    runtime.close = unanswered_close
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "failed")
+    await wait_until(lambda: closes == [first.commission_id], what="the close being asked for")
+    host.task_agents._notes.setdefault(first.commission_id, []).append("skip the drafts")
+    assert first.commission_id in host.task_agents._sessions
+
+    await host.task_agents._handle(
+        {"type": "ended", "session_id": first.commission_id, "reason": "error", "error": "the runtime process exited"}
+    )
+
+    assert first.commission_id not in host.task_agents._sessions
+    assert host.task_agents._notes.get(first.commission_id) == ["skip the drafts"]
+    # Gone from the runtime as with its process (the in-process runtime
+    # stands in for it); what it says now finds no session.
+    runtime.close = close
+    await close(first.commission_id)
+    await host.task_agents.settle()
+    assert await host.task_agents.tell(first.commission_id, "try again") is True
+    await wait_status(host, first.commission_id, "done", timeout=10)
+
+
+async def test_a_closing_session_that_ends_with_an_ordinary_error_waits_for_its_close(hosts, tmp_path):
+    # A run can end with an error while its session is closing; the close's
+    # own end follows. Releasing on the error would let that end release a
+    # session the user started again meanwhile.
+    pick = lambda spec: ScriptedLLM([[say("done"), finish()]])  # noqa: E731
+    host = _host(hosts, tmp_path, pick)
+    paid = [True, False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    warm = await _dispatch(host, "warm up")
+    await wait_status(host, warm.commission_id, "done")
+    # Its session closed and released before the close is replaced: done is
+    # written before the close is asked for.
+    await wait_until(lambda: warm.commission_id not in host.task_agents._sessions, what="the warm-up session leaving")
+    runtime = host.task_agents._runtime
+    close = runtime.close
+
+    close_requested = asyncio.Event()
+
+    async def unanswered_close(session_id: str) -> None:
+        close_requested.set()
+
+    runtime.close = unanswered_close
+    first = await _dispatch(host, "sort the photos")
+    await wait_status(host, first.commission_id, "failed")
+    # Failed is written before the close is asked for; the session is
+    # closing only from then on.
+    await wait_until(close_requested.is_set, what="the close being asked for")
+
+    await host.task_agents._handle(
+        {"type": "ended", "session_id": first.commission_id, "reason": "error", "error": "the model failed"}
+    )
+
+    # Still waiting for its close.
+    assert first.commission_id in host.task_agents._sessions
+    runtime.close = close
+    await close(first.commission_id)
+    await wait_until(lambda: first.commission_id not in host.task_agents._sessions, what="the close's own end")
 
 
 async def test_an_untaken_answer_ends_as_failed_when_shutting_down_begins_while_it_goes_back(hosts, tmp_path):

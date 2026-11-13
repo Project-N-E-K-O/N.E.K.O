@@ -141,6 +141,9 @@ class _Session:
     # Model requests already counted against the quota before they were
     # sent; that many usage reports are not counted again.
     prepaid_requests: int = 0
+    # Set when the session is closed before its work was given: what was
+    # passed on for that work is kept when the session is released.
+    keep_notes: bool = False
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
     # ends, the earlier one's end is held here and decides nothing.
@@ -246,6 +249,9 @@ class TaskAgentManager:
         self._queue: deque[str] = deque()
         # Text passed on to a commission that has not started yet.
         self._notes: dict[str, list[str]] = {}
+        # What a start given up for the quota was to send, kept for the
+        # next start; it comes before what that start is told, being older.
+        self._carried: dict[str, list[str]] = {}
         # What a commission taken up again is told: an addition to a blocked or
         # failed one, or the answer to one whose waiting session was closed.
         self._resume: dict[str, str] = {}
@@ -508,9 +514,12 @@ class TaskAgentManager:
                 self._discard(commission.id)
                 return False
             notes = self._notes.pop(commission.id, [])
-            text = prompt if prompt is not None else commission.dispatch_text
-            if notes:
-                text = "\n\n".join([text, *notes])
+            carried = self._carried.pop(commission.id, [])
+            if prompt is not None:
+                parts = [*carried, prompt]
+            else:
+                parts = [commission.dispatch_text, *carried]
+            text = "\n\n".join([*parts, *notes])
             await runtime.start(spec)
 
             async def stopped_meanwhile() -> bool:
@@ -530,17 +539,22 @@ class TaskAgentManager:
                 await runtime.close(commission.id)
                 return False
             if not await self._pay_first_request(session):
-                # Given up before its place is: what the user added before
-                # and while it was being set up stays for when it is taken up
-                # again, as it did when this failed before anything was
-                # started. The session's events then find no session and
-                # change nothing.
-                self._discard(commission.id)
-                if notes:
-                    self._notes[commission.id] = [*notes, *self._notes.get(commission.id, [])]
+                # What the user added before and while it was being set up
+                # stays for when it is taken up again, as it did when this
+                # failed before anything was started. The session keeps its
+                # place until its own close comes back, as every other close
+                # does: a new session of the same commission started before
+                # that would be released by it.
+                session.keep_notes = True
+                # The sentence this start was given (the user's answer when
+                # it was taken up again) is kept with them, in the order they
+                # came, ahead of whatever the next start is told.
+                kept = [*carried, *([prompt] if prompt is not None else []), *notes]
+                kept += self._notes.pop(commission.id, [])
+                if kept:
+                    self._carried[commission.id] = kept
                 await self._fail(commission.id, _QUOTA_REASON)
-                session.closing = True
-                await runtime.close(commission.id)
+                await self._close_session(session)
                 return False
             if await stopped_meanwhile():
                 # The stop has closed the session already.
@@ -662,8 +676,10 @@ class TaskAgentManager:
             if self._gateway is not None:
                 self._gateway.revoke(commission_id)
         else:
+            session = self._sessions.get(commission_id)
             self._discard(commission_id)
-            self._notes.pop(commission_id, None)
+            if session is None or not session.keep_notes:
+                self._notes.pop(commission_id, None)
         if self._queue and not self._closed:
             self._spawn(self._start_next())
 
@@ -828,8 +844,17 @@ class TaskAgentManager:
             logger.warning("remembering that the task agent model takes no pictures failed", exc_info=True)
 
     async def _on_ended(self, session: _Session, event: dict[str, Any]) -> None:
+        from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
+
         commission_id = session.commission_id
         reason = event.get("reason")
+        if session.closing and reason == "error" and event.get("error") == PROCESS_EXITED_ERROR:
+            # A close was asked for, and the runtime process went away
+            # before answering it: the close will not come back. It ends
+            # as that close would have, an answer it held included; the
+            # commission's status is the close's business, not an error's.
+            # Any other error while closing is followed by the close's own end.
+            reason = "closed"
         inputs = event.get("inputs")
         # The end of a run that took fewer texts than were sent is followed
         # by another run, which may be under way already and using what this
@@ -1099,6 +1124,7 @@ class TaskAgentManager:
         if commission_id in self._queue:
             self._queue.remove(commission_id)
         self._notes.pop(commission_id, None)
+        self._carried.pop(commission_id, None)
         self._resume.pop(commission_id, None)
         session = self._sessions.get(commission_id)
         if session is None:

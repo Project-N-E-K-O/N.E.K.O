@@ -402,7 +402,7 @@ async def restore_hud() -> None:
     if not nekoclaw_on():
         return
     global _restore_failed_at
-    if host is None and _restore_failed_at is not None and _restore_clock() - _restore_failed_at < RESTORE_RETRY_SECONDS:
+    if _restore_failed_at is not None and _restore_clock() - _restore_failed_at < RESTORE_RETRY_SECONDS:
         return
     if host is None and not await ledger_exists():
         return
@@ -414,7 +414,9 @@ async def restore_hud() -> None:
         _restore_failed_at = _restore_clock()
         logger.warning("[Agent] building the host to restore the HUD failed", exc_info=True)
     else:
-        _restore_failed_at = None
+        # ``ready_host`` keeps a failure to read the ledger to itself and
+        # leaves the HUD unfilled; that waits as well.
+        _restore_failed_at = None if _filled_from is peek_host() else _restore_clock()
 
 
 async def ledger_exists() -> bool:
@@ -474,7 +476,7 @@ async def shutdown_nekoclaw_host() -> None:
     Waits ``HOST_SHUTDOWN_BUDGET_SECONDS`` at most. The host's steps go on
     after that until the process exits; see the setting for why that is safe.
     """
-    global _unsubscribe, _filled_from
+    global _unsubscribe, _filled_from, _restore_failed_at
     from config.nekoclaw_settings import HOST_SHUTDOWN_BUDGET_SECONDS
 
     unsubscribe, _unsubscribe = _unsubscribe, None
@@ -500,6 +502,7 @@ async def shutdown_nekoclaw_host() -> None:
     except Exception as e:
         logger.warning("[Agent] NekoClaw host shutdown error: %s", e)
     _filled_from = None
+    _restore_failed_at = None
     hud.clear()
 
 

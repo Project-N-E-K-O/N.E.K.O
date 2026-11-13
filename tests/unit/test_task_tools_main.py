@@ -739,7 +739,7 @@ def _proactive_manager() -> _Manager:
 async def test_a_user_turn_begun_while_a_report_finishes_keeps_its_words_and_tool_calls(speech_id, engaged_at):
     manager = _proactive_manager()
 
-    async def tts_done(_where):
+    async def tts_done(_where, expected_speech_id=None):
         # While the end of her report is awaited, the user starts a turn and
         # she calls a tool in it.
         manager.current_speech_id = speech_id
@@ -765,7 +765,7 @@ async def test_a_user_turn_begun_while_the_reply_was_sent_keeps_its_words():
     manager.last_user_engagement_time = 101.0
     manager._latest_user_utterance = "帮我放点音乐"
 
-    async def tts_done(_where):
+    async def tts_done(_where, expected_speech_id=None):
         pass
 
     manager._request_tts_done_for_turn = tts_done
@@ -780,7 +780,7 @@ async def test_a_report_that_finishes_undisturbed_closes_its_turn():
     manager = _proactive_manager()
     manager._turn_has_spoken = True
 
-    async def tts_done(_where):
+    async def tts_done(_where, expected_speech_id=None):
         pass
 
     manager._request_tts_done_for_turn = tts_done
@@ -1175,3 +1175,23 @@ async def test_only_text_that_was_published_counts_as_having_spoken(published):
 
     assert (result is None) is (not published)
     assert manager._turn_has_spoken is published
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("given", [None, "speech-0"])
+async def test_the_end_of_a_reports_speech_is_only_for_its_own_turn(given):
+    # A user turn begun meanwhile has its own speech, which an unchecked end
+    # signal would cut off.
+    manager = _proactive_manager()
+    asked: list[object] = []
+
+    async def tts_done(_where, expected_speech_id=None):
+        asked.append(expected_speech_id)
+
+    manager._request_tts_done_for_turn = tts_done
+    if given is None:
+        await manager.handle_proactive_complete()
+    else:
+        await manager.handle_proactive_complete(expected_speech_id=given, expected_user_engagement_time=100.0)
+
+    assert asked == ["speech-1" if given is None else given]

@@ -840,7 +840,9 @@ class ProactiveMixin:
                 # with outbound BM25 exemptions.
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
-                    await self._request_tts_done_for_turn("finish_proactive_delivery")
+                    # Only for this delivery's turn: a user turn begun meanwhile
+                    # has its own speech, which this signal would cut off.
+                    await self._request_tts_done_for_turn("finish_proactive_delivery", expected_speech_id=commit_sid)
                 except Exception:
                     # TTS done-signal is best-effort; the delivery itself already succeeded.
                     pass

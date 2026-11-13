@@ -509,15 +509,67 @@ async def test_a_host_that_cannot_be_built_is_not_tried_again_on_every_poll(wiri
     monkeypatch.setattr(wiring.host_mount, "get_host", broken)
     monkeypatch.setattr(wiring.mount_module, "_restore_clock", lambda: now[0])
 
-    # The task window polls every few seconds.
-    for _ in range(3):
-        await wiring.routes.list_tasks()
-        now[0] += 5
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Collect(level=logging.WARNING)
+    wiring.mount_module.logger.addHandler(handler)
+    try:
+        # The task window polls every few seconds.
+        for _ in range(3):
+            await wiring.routes.list_tasks()
+            now[0] += 5
+    finally:
+        wiring.mount_module.logger.removeHandler(handler)
     assert tries == [1]
+    # Logged once, with what went wrong and where.
+    (logged,) = [record for record in records if "restore the HUD" in record.getMessage()]
+    assert logged.exc_info is not None and "cannot open the ledger" in str(logged.exc_info[1])
 
     now[0] += wiring.mount_module.RESTORE_RETRY_SECONDS
     await wiring.routes.list_tasks()
     assert tries == [1, 1]
+
+
+
+async def test_shutting_the_host_down_forgets_a_failed_restore(wiring, monkeypatch):
+    # A host built again after a shutdown is not left unfilled for the rest
+    # of the pause a failure before the shutdown started.
+    monkeypatch.setattr(wiring.mount_module, "_restore_failed_at", 123.0)
+    monkeypatch.setattr(wiring.mount_module, "_unsubscribe", None)
+
+    await wiring.mount_module.shutdown_nekoclaw_host()
+
+    assert wiring.mount_module._restore_failed_at is None
+
+async def test_a_ledger_that_cannot_be_read_is_not_tried_again_on_every_poll(wiring, tmp_path, monkeypatch):
+    # The host is built, but reading what was left under way fails: that
+    # waits as well, instead of one warning per poll.
+    await _left_by_an_earlier_process(tmp_path)
+    host = wiring.host_mount.get_host()
+    reads: list[int] = []
+    now = [1000.0]
+
+    async def locked(*args: Any, **kwargs: Any) -> Any:
+        reads.append(1)
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(host.ledger, "select", locked)
+    monkeypatch.setattr(wiring.mount_module, "_restore_clock", lambda: now[0])
+
+    for _ in range(3):
+        await wiring.routes.list_tasks()
+        now[0] += 5
+    assert reads == [1]
+
+    now[0] += wiring.mount_module.RESTORE_RETRY_SECONDS
+    await wiring.routes.list_tasks()
+    assert reads == [1, 1]
 
 
 @pytest.mark.parametrize("nekoclaw_is_on", [True, False])

@@ -986,3 +986,19 @@ async def test_a_proactive_turn_end_after_the_user_began_a_turn_does_not_have_th
     assert mgr.sync_message_queue.get_nowait() == {"type": "system", "data": "turn end agent_callback"}
     # The new turn's marks are left for its own turn end.
     assert mgr._turn_acted_through_tools is True
+
+
+async def test_the_end_of_a_proactive_speech_is_only_for_its_own_turn():
+    # The user may begin a turn while the delivery is awaited; the end signal
+    # names this delivery's turn so it cannot cut that turn's speech off.
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s_proactive"
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._request_tts_done_for_turn = AsyncMock(return_value="queued")
+
+    await LLMSessionManager.finish_proactive_delivery(mgr, "搭话", expected_speech_id="s_proactive")
+
+    mgr._request_tts_done_for_turn.assert_awaited_once_with(
+        "finish_proactive_delivery", expected_speech_id="s_proactive"
+    )
