@@ -1,0 +1,28 @@
+name: Claude review state
+
+# Re-open the automated Claude review when a converged PR gets new commits.
+# Swaps the `claude-converged` label back to `claude-review`; the hourly
+# review dispatcher then runs another round on the new head.
+#
+# pull_request_target is required so the job can edit labels on PRs from
+# forks. It is safe here: the job never checks out or runs PR code.
+
+on:
+  pull_request_target:
+    types: [synchronize]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  reopen-review:
+    if: contains(github.event.pull_request.labels.*.name, 'claude-converged')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Swap claude-converged back to claude-review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: gh pr edit "$PR" --repo "$REPO" --remove-label claude-converged --add-label claude-review
