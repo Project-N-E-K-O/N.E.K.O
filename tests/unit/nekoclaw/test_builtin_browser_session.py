@@ -2821,3 +2821,35 @@ async def test_another_browser_is_driven_though_the_one_before_it_could_not_be_c
     # What went wrong with the old one is no reason not to reach the new one.
     assert session.connected and world.attached == [CHROME]
     world.close_error = None
+
+
+async def test_an_option_that_is_disabled_is_not_chosen_by_filling_in_its_select(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    fake.find("Steel Bolt").disabled = True
+    product = uid_of(snapshot, "Product")
+    sent = await refused(
+        world,
+        session.fill(page, product, "Steel Bolt"),
+        f'The element with uid {product} could not be filled in: its option "Steel Bolt" is disabled.',
+    )
+    # A person cannot choose it by hand; the page is not told of a change that cannot be made.
+    assert [command for command in sent if command.method.startswith("Input.")] == []
+    assert fake.find("Product").value == "Brass Hinge"
+
+
+async def test_a_modifier_comes_up_when_the_call_is_stopped_before_its_going_down_is_answered(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, _fake, _snapshot = await open_page(session, world)
+    held = world.browser.hold("Input.dispatchKeyEvent", key="Control")
+    sent = world.browser.mark()
+    press = asyncio.ensure_future(session.press_key(page, "Control+A"))
+    await asyncio.wait_for(held.reached.wait(), 5.0)
+    press.cancel()
+    held.release()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(press, 5.0)
+    # Sent, though not yet answered: what is done next on the page must not find Control held.
+    assert _key_events(world, sent) == [("rawKeyDown", "Control"), ("keyUp", "Control")]

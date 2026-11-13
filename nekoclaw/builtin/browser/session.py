@@ -204,6 +204,10 @@ _PREPARE_FILL = """function(value) {
       return {kind: 'error', message: 'it has no option "' + value + '"; its options are: '
         + options.map(o => o.text.trim()).slice(0, 30).join(', ')};
     }
+    const group = wanted.parentElement;
+    if (wanted.disabled || (group instanceof HTMLOptGroupElement && group.disabled)) {
+      return {kind: 'error', message: 'its option "' + value + '" is disabled'};
+    }
     if (el.value !== wanted.value) {
       el.value = wanted.value;
       el.dispatchEvent(new Event('input', {bubbles: true}));
@@ -1325,10 +1329,12 @@ class BrowserSession:
         try:
             for modifier in modifiers:
                 mask |= modifier_mask([modifier])
+                # Down from the moment the event is sent, answered or not:
+                # stopped before the answer, it still has to come up.
+                down.append(modifier)
                 if not await self._key_event(page, "keyDown", modifier, mask):
                     return
-                down.append(modifier)
-            # Down from the moment the event is sent, answered or not.
+            # The same for the key itself.
             key_is_down = True
             if await self._key_event(page, "keyDown", key, mask):
                 await self._key_event(page, "keyUp", key, mask)

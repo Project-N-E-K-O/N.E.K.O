@@ -58,6 +58,8 @@ FORM = """<!doctype html><html><head><title>Order form</title></head><body>
   <select name="product" aria-label="Product">
     <option value="brass">Brass Hinge</option>
     <option value="steel">Steel Bolt</option>
+    <option value="zinc" disabled>Zinc Nut</option>
+    <optgroup label="No longer made" disabled><option value="iron">Iron Nail</option></optgroup>
   </select>
   <input type="checkbox" name="gift" id="gift"><label for="gift">Gift wrap</label>
   <button type="submit">Send order</button>
@@ -249,6 +251,17 @@ async def test_a_form_is_filled_in_sent_and_its_result_read(tools: BrowserTools,
     assert f'uid={name} textbox "Your name"' in filled.text and 'value="Ada Lovelace"' in filled.text
     assert 'value="ada@example.com"' in filled.text and 'value="Steel Bolt"' in filled.text
     assert re.search(r'checkbox "Gift wrap".* checked', filled.text)
+
+    # An option that cannot be chosen by hand (disabled itself, or by its group) is not chosen by filling in either.
+    for unavailable in ("Zinc Nut", "Iron Nail"):
+        refused = await call(tools, "fill", uid=uid_of(opened.text, "combobox", "Product"), value=unavailable)
+        assert not refused.success and f'its option "{unavailable}" is disabled' in refused.text, refused.text
+    chosen = await tools._session._send(
+        tools._session.selected(),
+        "Runtime.evaluate",
+        {"expression": "document.querySelector('[name=product]').value", "returnByValue": True},
+    )
+    assert chosen["result"]["value"] == "steel"
 
     sent = await call(tools, "click", uid=uid_of(opened.text, "button", "Send order"))
     assert sent.success, sent.text
