@@ -296,9 +296,9 @@ class TaskBrain:
         # Raised by ``drop_pending_dispatches``; a first round that began
         # before the raise files nothing.
         self._dispatch_generation = 0
-        # Character -> when her last question about what is under way was
-        # answered (ledger clock). What she then says is done comes from
-        # the record.
+        # Character -> when her question about her tasks was last answered
+        # with one that is done (ledger clock). Taken by the next turn check
+        # for her: what she says is done in that turn comes from the record.
         self._status_answered_at: dict[str, float] = {}
         # commission id -> its second round or direct plugin call.
         self._work: dict[str, asyncio.Task[Any]] = {}
@@ -455,6 +455,9 @@ class TaskBrain:
         )
         from utils.tokenize import truncate_to_tokens
 
+        # A turn in which she dispatches is not checked: an answer she got
+        # in it must not carry over to the next turn's check.
+        self._status_answered_at.pop(lanlan_name, None)
         # Read before the first round is scheduled: it only starts when the
         # loop gets to it, and a stop in between must still reach it.
         if generation is None:
@@ -1010,7 +1013,6 @@ class TaskBrain:
             )
 
         now = self._ledger._clock()
-        self._status_answered_at[lanlan_name] = now
         active = await self._ledger.select(lanlan_name=lanlan_name, statuses=ACTIVE_STATUSES)
         recent = await self._ledger.select(
             lanlan_name=lanlan_name,
@@ -1031,6 +1033,10 @@ class TaskBrain:
                 recent = sorted(recent, key=relevance, reverse=True)
         active = active[:QUERY_LEDGER_ROWS]
         recent = recent[: QUERY_LEDGER_ROWS - len(active)]
+        if any(item.status == "done" for item in recent):
+            self._status_answered_at[lanlan_name] = now
+        else:
+            self._status_answered_at.pop(lanlan_name, None)
 
         def line(commission: Commission) -> str:
             parts = [f"- {commission.title} ({status_word(commission.status, lang)})"]
@@ -1118,6 +1124,8 @@ class TaskBrain:
         from utils.tokenize import truncate_to_tokens
 
         lang = prompt_language(lang)
+        # Only this turn's check may lean on an answer given in it.
+        answered_at = self._status_answered_at.pop(lanlan_name, None)
         if not TURN_CHECK_ENABLED or not self._is_enabled():
             return TurnCheck("skipped", skipped="disabled")
         # As of the turn that is being checked; see the "promised" verdict below.
@@ -1146,10 +1154,9 @@ class TaskBrain:
         elif verdict.kind == "claimed_done":
             from config.nekoclaw_settings import TURN_CHECK_STATUS_ANSWER_SECONDS
 
-            answered_at = self._status_answered_at.get(lanlan_name)
             if answered_at is not None and self._ledger._clock() - answered_at <= TURN_CHECK_STATUS_ANSWER_SECONDS:
-                # She had just looked her tasks up: what she says is done
-                # was read from the record. Matching her summary against
+                # She had just looked her tasks up and was told of one that
+                # is done: what she says is done was read from the record. Matching her summary against
                 # single tasks misses one that covers several, and a
                 # correction then has her dispatch finished work again.
                 result.skipped = "looked_up"

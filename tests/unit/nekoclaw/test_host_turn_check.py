@@ -411,14 +411,40 @@ async def test_what_she_says_is_done_right_after_looking_her_tasks_up_is_not_cor
     assert len(await host.ledger.select(lanlan_name="Lan")) == 2
 
 
-@pytest.mark.parametrize("how", ["no_query", "other_character", "long_ago", "capability_question"])
+@pytest.mark.parametrize(
+    "how",
+    ["no_query", "other_character", "long_ago", "capability_question", "nothing_done", "next_turn", "dispatched"],
+)
 async def test_what_she_says_is_done_is_still_checked_without_a_fresh_look_at_her_tasks(
     server, hosts, tmp_path, monkeypatch, how
 ):
     _weather(server)
-    llm = FakeDecisionLLM(turn=[{"verdict": "claimed_done", "task": "订去东京的机票"}])
+    claim = {"verdict": "claimed_done", "task": "订去东京的机票"}
+    llm = FakeDecisionLLM(turn=[{"verdict": "none"}, claim] if how == "next_turn" else [claim])
     host = _host(hosts, tmp_path, server, llm)
-    if how == "other_character":
+    if how != "nothing_done":
+        await _two_done(host)
+    if how == "nothing_done":
+        # An answer that names nothing done backs no claim that something is.
+        working, _created = await host.ledger.create(
+            lanlan_name="Lan", title="查上海明天的天气", dispatch_text="查上海明天的天气", source="dispatch"
+        )
+        await host.ledger.transition(working.id, "working")
+        await host.query("", lanlan_name="Lan", lang="zh")
+    elif how == "next_turn":
+        # The answer was given in an earlier turn, whose check took it.
+        await host.query("", lanlan_name="Lan", lang="zh")
+        await _check(host, "那两件事怎么样了", "都办好啦", external_intent=0.8)
+    elif how == "dispatched":
+        # A turn in which she dispatches is not checked; the next one is.
+        await host.query("", lanlan_name="Lan", lang="zh")
+        await host.dispatch("查上海明天的天气", lanlan_name="Lan", lang="zh")
+    elif how == "other_character":
+        hers, _created = await host.ledger.create(
+            lanlan_name="Mei", title="订去东京的机票", dispatch_text="订去东京的机票", source="dispatch"
+        )
+        await host.ledger.transition(hers.id, "working")
+        await host.ledger.transition(hers.id, "done", result_summary="订好了")
         await host.query("", lanlan_name="Mei", lang="zh")
     elif how == "long_ago":
         await host.query("", lanlan_name="Lan", lang="zh")
@@ -430,6 +456,9 @@ async def test_what_she_says_is_done_is_still_checked_without_a_fresh_look_at_he
     result = await _check(host, "机票订了吗", "订好啦，明早八点的", external_intent=0.8)
 
     assert (result.verdict, result.action, result.skipped) == ("claimed_done", "corrected", "")
+    assert [notice for notice in await _notices(host) if notice[0] == "no_record"] == [
+        ("no_record", "proactive", "刚才你说「订去东京的机票」已经办好了，但任务记录里没有这件事。请自然地向用户更正；真要办，就用任务派发工具。")
+    ]
 
 
 async def test_a_promise_right_after_looking_her_tasks_up_is_still_dispatched(server, hosts, tmp_path):
