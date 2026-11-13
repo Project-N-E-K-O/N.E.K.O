@@ -77,6 +77,38 @@ TERMS = """<!doctype html><html><head><title>Terms</title></head><body>
 <h1>Terms of sale</h1><p>Returns within 30 days.</p>
 </body></html>"""
 
+# A banner fixed over the top of the page, with a button under it; a select
+# that asks before it changes; a panel taller than the window; a button that
+# opens a window which closes itself.
+COVERED = """<!doctype html><html><head><title>Covered</title></head><body style="margin:0">
+<div id="banner" style="position:fixed;top:0;left:0;right:0;height:120px;background:#eee;z-index:10">
+  We use cookies. <button type="button" onclick="document.getElementById('banner').remove()">Dismiss</button>
+</div>
+<button type="button" style="position:absolute;top:40px;left:300px"
+  onclick="document.getElementById('out').textContent = 'Subscribed'">Subscribe</button>
+<div style="margin-top:140px">
+  <select aria-label="Product" onchange="if (!confirm('Change the product?')) this.value = 'brass'">
+    <option value="brass">Brass Hinge</option>
+    <option value="steel">Steel Bolt</option>
+  </select>
+  <button type="button" onclick="window.open('/popup')">Sign in</button>
+  <p id="out"></p>
+  <div role="button" tabindex="0" style="height:3000px;background:#ddf"
+    onclick="document.getElementById('out').textContent = 'Panel pressed'">Tall panel</div>
+</div>
+</body></html>"""
+
+POPUP = """<!doctype html><html><head><title>Sign in</title></head><body>
+<button type="button" onclick="window.close()">Allow</button>
+</body></html>"""
+
+DRAFT = """<!doctype html><html><head><title>Draft</title></head><body>
+<label>Message <input name="message"></label>
+<script>
+window.addEventListener('beforeunload', function (event) { event.preventDefault(); event.returnValue = ''; });
+</script>
+</body></html>"""
+
 
 class _Site(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - the name the base class calls
@@ -87,6 +119,12 @@ class _Site(http.server.BaseHTTPRequestHandler):
             body = CARD
         elif url.path == "/terms":
             body = TERMS
+        elif url.path == "/covered":
+            body = COVERED
+        elif url.path == "/popup":
+            body = POPUP
+        elif url.path == "/draft":
+            body = DRAFT
         elif url.path == "/submit":
             query = urllib.parse.parse_qs(url.query)
             name = (query.get("name") or [""])[0]
@@ -266,3 +304,68 @@ async def test_history_tabs_keys_and_an_embedded_document(tools: BrowserTools, s
     assert f"1: {site}/terms [selected]" in closed.text
     whole = await call(tools, "take_screenshot", fullPage=True)
     assert whole.success and len(whole.images) == 1
+
+
+async def test_what_lies_over_an_element_is_not_clicked_in_its_place(tools: BrowserTools, site: str) -> None:
+    opened = await call(tools, "navigate_page", url=site + "/covered")
+    assert opened.success, opened.text
+    subscribe = uid_of(opened.text, "button", "Subscribe")
+    covered = await call(tools, "click", uid=subscribe)
+    assert not covered.success
+    assert f"The element with uid {subscribe} is covered by div#banner" in covered.text, covered.text
+    # The banner did not get the click either: it is still there, and nothing was subscribed to.
+    still = await call(tools, "take_snapshot")
+    assert 'button "Dismiss"' in still.text and "Subscribed" not in still.text
+
+    assert (await call(tools, "click", uid=uid_of(opened.text, "button", "Dismiss"))).success
+    clicked = await call(tools, "click", uid=subscribe, includeSnapshot=True)
+    assert clicked.success, clicked.text
+    assert "Subscribed" in clicked.text and 'button "Dismiss"' not in clicked.text
+
+    # Taller than the window: the click goes to the part of it that can be seen.
+    pressed = await call(tools, "click", uid=uid_of(opened.text, "button", "Tall panel"), includeSnapshot=True)
+    assert pressed.success, pressed.text
+    assert "Panel pressed" in pressed.text
+
+
+async def test_a_select_that_asks_before_it_changes_and_a_window_that_closes_itself(tools: BrowserTools, site: str) -> None:
+    opened = await call(tools, "navigate_page", url=site + "/covered")
+    assert (await call(tools, "click", uid=uid_of(opened.text, "button", "Dismiss"))).success
+    started = time.monotonic()
+    filled = await call(tools, "fill", uid=uid_of(opened.text, "combobox", "Product"), value="Steel Bolt")
+    # Not after the thirty seconds a command to the page is given.
+    assert time.monotonic() - started < 10.0
+    assert filled.success, filled.text
+    assert filled.text.startswith("Successfully filled out the element\n# Open dialog\nconfirm: Change the product?\n")
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    shown = await call(tools, "take_snapshot")
+    assert re.search(r'combobox "Product".*value="Steel Bolt"', shown.text)
+
+    popped = await call(tools, "click", uid=uid_of(opened.text, "button", "Sign in"))
+    assert popped.success, popped.text
+    popup = re.search(rf"\n(\d+): {re.escape(site)}/popup", popped.text)
+    assert popup is not None, popped.text
+    inside = await call(tools, "select_page", pageId=int(popup.group(1)))
+    assert inside.success, inside.text
+    started = time.monotonic()
+    allowed = await call(tools, "click", uid=uid_of(inside.text, "button", "Allow"))
+    assert time.monotonic() - started < 10.0
+    assert allowed.success, allowed.text
+    assert allowed.text.startswith("Successfully clicked on the element\nThe page it was on has closed.\n## Pages\n")
+    assert "/popup" not in allowed.text and f"{site}/covered [selected]" in allowed.text
+
+
+async def test_a_page_that_asks_before_it_is_left_answers_at_once(tools: BrowserTools, site: str) -> None:
+    opened = await call(tools, "navigate_page", url=site + "/draft")
+    message = uid_of(opened.text, "textbox", "Message")
+    # The browser only asks once the user has done something on the page.
+    assert (await call(tools, "click", uid=message)).success
+    assert (await call(tools, "type_text", text="half a letter")).success
+    started = time.monotonic()
+    leaving = await call(tools, "navigate_page", url=site + "/terms")
+    assert time.monotonic() - started < 10.0
+    assert leaving.success, leaving.text
+    assert leaving.text.startswith(f"The page asks for confirmation before it is left; {site}/terms is not loaded yet.\n# Open dialog\nbeforeunload:")
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    found = await call(tools, "wait_for", text=["Returns within 30 days."], timeout=10000)
+    assert found.success and 'heading "Terms of sale"' in found.text

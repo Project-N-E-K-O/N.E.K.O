@@ -616,6 +616,7 @@ class TaskAgentManager:
         for the group as a whole and not once per tool.
         """
         from config.nekoclaw_settings import TASK_AGENT_SCREENSHOTS_KEPT
+        from nekoclaw.host.gateway import CALL_TOOL
 
         retention: dict[str, int] = {}
         pools: dict[str, str] = {}
@@ -623,6 +624,11 @@ class TaskAgentManager:
             if capability.needs_images and capability.group:
                 retention[capability.tool_name] = TASK_AGENT_SCREENSHOTS_KEPT
                 pools[capability.tool_name] = capability.group
+        if retention:
+            # The same tools can be called by name through the gateway's own
+            # call tool, and their screenshots then come back as results of
+            # that tool. Counted on their own, so they are limited as well.
+            retention[CALL_TOOL] = TASK_AGENT_SCREENSHOTS_KEPT
         return retention, pools
 
     async def _pay_first_request(self, session: _Session) -> bool:

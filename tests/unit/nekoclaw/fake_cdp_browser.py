@@ -57,6 +57,7 @@ from nekoclaw.builtin.browser.session import (
     _ELEMENT_OF_NODE,
     _FIND_TEXT,
     _PREPARE_FILL,
+    _REACHES,
     _SELECT_OPTION,
     BrowserSession,
 )
@@ -92,6 +93,7 @@ class Element:
         on_click: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_press: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_input: Callable[["FakeBrowser", "FakePage"], None] | None = None,
+        on_change: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         frame: "Document | None" = None,
         quad: list[float] | None = None,
         script_error: str | None = None,
@@ -110,6 +112,14 @@ class Element:
         # Called when the mouse button goes down on the element, before it is released.
         self.on_press = on_press
         self.on_input = on_input
+        # Called when a script sets the value of a select (the page's own ``change`` handler).
+        self.on_change = on_change
+        # What lies over the element (a banner, a dialog of the page), and
+        # where: None for all of it, else ``(left, top, right, bottom)``.
+        self.cover: Element | None = None
+        self.cover_box: tuple[float, float, float, float] | None = None
+        # The frame of the document the element is in.
+        self.frame_id = ""
         # For an ``Iframe`` element: the document inside it.
         self.frame = frame
         self.content_frame: Frame | None = None
@@ -130,8 +140,14 @@ class Element:
     def quad(self) -> list[float]:
         if self.fixed_quad is not None:
             return list(self.fixed_quad)
-        left, top = 10.0, 30.0 * self.backend_id
+        # Rows of twenty, column after column, so that every element is in the window.
+        column, row = divmod(self.backend_id - 1, 20)
+        left, top = 10.0 + 150.0 * column, 30.0 * (row + 1)
         return [left, top, left + 100.0, top, left + 100.0, top + 20.0, left, top + 20.0]
+
+    def box(self) -> tuple[float, float, float, float]:
+        quad = self.quad()
+        return min(quad[0::2]), min(quad[1::2]), max(quad[0::2]), max(quad[1::2])
 
     def point(self) -> tuple[float, float]:
         """Return the point a click on the element lands on."""
@@ -245,6 +261,8 @@ class FakePage:
         self.hovered: Element | None = None
         self.scroll_y = 0.0
         self.content_size = (1280.0, 2400.0)
+        # The size of the window's visible part.
+        self.viewport = (1280.0, 720.0)
         # What reached the page as input, in order.
         self.mouse: list[dict[str, Any]] = []
         self.keys: list[dict[str, Any]] = []
@@ -501,6 +519,7 @@ class FakeBrowser:
         children = itertools.count(1)
         for element in frame.document.root.walk():
             element.backend_id = next(counter)
+            element.frame_id = frame.frame_id
             page.elements[element.backend_id] = element
         for element in frame.document.root.walk():
             if element.role == "Iframe" and element.frame is not None:
@@ -753,8 +772,10 @@ class FakeBrowser:
 
     def _do_Page_getLayoutMetrics(self, command: Sent, page: FakePage) -> dict[str, Any]:
         width, height = page.content_size
+        seen_width, seen_height = page.viewport
         return {
-            "cssVisualViewport": {"pageX": 0, "pageY": page.scroll_y, "clientWidth": 1280, "clientHeight": 720},
+            "cssLayoutViewport": {"pageX": 0, "pageY": page.scroll_y, "clientWidth": seen_width, "clientHeight": seen_height},
+            "cssVisualViewport": {"pageX": 0, "pageY": page.scroll_y, "clientWidth": seen_width, "clientHeight": seen_height},
             "cssContentSize": {"x": 0, "y": 0, "width": width, "height": height},
         }
 
@@ -822,6 +843,14 @@ class FakeBrowser:
         page.scrolled_to.append(element)
         return {}
 
+    def _do_DOM_getNodeForLocation(self, command: Sent, page: FakePage) -> dict[str, Any]:
+        assert set(command.params) == {"x", "y"}, "pointer-events: none must keep its meaning"
+        assert isinstance(command.params["x"], int) and isinstance(command.params["y"], int)
+        element = self._at(page, command.params["x"], command.params["y"])
+        if element is None:
+            raise CdpError(command.method, -32000, "No node found at given location")
+        return {"backendNodeId": element.backend_id, "frameId": element.frame_id}
+
     def _do_DOM_getContentQuads(self, command: Sent, page: FakePage) -> dict[str, Any]:
         element = self._element_of(command, page)
         if not element.visible:
@@ -833,6 +862,16 @@ class FakeBrowser:
     def _do_Runtime_callFunctionOn(self, command: Sent, page: FakePage) -> dict[str, Any]:
         element = self._element_of(command, page)
         function = command.params.get("functionDeclaration")
+        if function == _REACHES:
+            assert command.params.get("returnByValue") is True
+            (argument,) = command.params.get("arguments") or ()
+            hit = page.objects.get(str(argument.get("objectId")))
+            if hit is None:
+                raise CdpError(command.method, -32000, "Could not find object with given id")
+            if hit.frame_id != element.frame_id:
+                raise CdpError(command.method, -32000, "Argument should belong to the same JavaScript world as target object")
+            related = hit in element.walk() or element in hit.walk()
+            return {"result": {"type": "boolean", "value": True} if related else {"type": "string", "value": f'{hit.role} "{hit.name}"'}}
         arguments = [item.get("value") for item in command.params.get("arguments") or ()]
         if function == _ELEMENT_OF_NODE:
             assert command.params.get("returnByValue") is False
@@ -845,13 +884,24 @@ class FakeBrowser:
                 "result": {"type": "object", "subtype": "error"},
                 "exceptionDetails": {"text": "Uncaught", "exception": {"description": element.script_error}},
             }
+        select = element.parent if element.kind == "option" else element
+        before = select.value if select is not None else None
         if function == _SELECT_OPTION:
             assert arguments == []
-            return {"result": {"type": "boolean", "value": self._select_option(element)}}
+            chosen = self._select_option(element)
+            self._changed(page, select, before)
+            return {"result": {"type": "boolean", "value": chosen}}
         if function == _PREPARE_FILL:
             assert len(arguments) == 1 and isinstance(arguments[0], str)
-            return {"result": {"type": "object", "value": self._prepare_fill(page, element, arguments[0])}}
+            plan = self._prepare_fill(page, element, arguments[0])
+            self._changed(page, select, before)
+            return {"result": {"type": "object", "value": plan}}
         raise AssertionError(f"the fake browser was sent a script it does not know: {str(function)[:60]!r}")
+
+    def _changed(self, page: FakePage, select: Element | None, before: Any) -> None:
+        """Run the ``change`` handler of a select whose value a script has just set."""
+        if select is not None and select.kind == "select" and select.value != before and select.on_change is not None:
+            select.on_change(self, page)
 
     @staticmethod
     def _select_option(element: Element) -> bool:
@@ -907,10 +957,21 @@ class FakeBrowser:
     # Input
 
     def _at(self, page: FakePage, x: Any, y: Any) -> Element | None:
+        """Return what is at a point: the smallest element whose box holds it, or what lies over that there."""
+        found: Element | None = None
+        smallest = float("inf")
         for element in page.elements.values():
-            if element.visible and element.connected and not element.removed and element.point() == (x, y):
-                return element
-        return None
+            if not (element.visible and element.connected and not element.removed) or element.role == "RootWebArea":
+                continue
+            left, top, right, bottom = element.box()
+            area = (right - left) * (bottom - top)
+            if left <= x <= right and top <= y <= bottom and area < smallest:
+                found, smallest = element, area
+        if found is not None and found.cover is not None:
+            left, top, right, bottom = found.cover_box or found.box()
+            if left <= x <= right and top <= y <= bottom:
+                return found.cover
+        return found
 
     def _do_Input_dispatchMouseEvent(self, command: Sent, page: FakePage) -> dict[str, Any]:
         event = command.params
@@ -1067,6 +1128,10 @@ class BrowserWorld:
     # The browser found on this computer; None for none.
     install: BrowserInstall | None = CHROME
     display: bool = True
+    # Set to keep the start of the browser, or the connection to it, from
+    # finishing until the test sets the event.
+    launch_gate: asyncio.Event | None = None
+    connect_gate: asyncio.Event | None = None
     launch_error: Exception | None = None
     attach_error: Exception | None = None
     connect_error: Exception | None = None
@@ -1113,6 +1178,8 @@ class BrowserWorld:
 
     async def _launch(self, install: BrowserInstall, user_data_dir: str, *, headless: bool = False, extra: tuple[str, ...] = ()) -> RunningBrowser:
         self.launched.append((install, user_data_dir, headless))
+        if self.launch_gate is not None:
+            await self.launch_gate.wait()
         if self.launch_error is not None:
             raise self.launch_error
         return RunningBrowser(install=install, endpoint=OWN_ENDPOINT, process=None, owned=True, user_data_dir=user_data_dir)
@@ -1130,6 +1197,8 @@ class BrowserWorld:
 
     async def _connect(self, url: str, *, open_timeout: float = 10.0) -> FakeConnection:
         self.connected.append((url, open_timeout))
+        if self.connect_gate is not None:
+            await self.connect_gate.wait()
         if self.connect_error is not None:
             raise self.connect_error
         connection = FakeConnection(self.browser, url, open_timeout)

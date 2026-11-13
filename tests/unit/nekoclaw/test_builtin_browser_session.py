@@ -156,6 +156,109 @@ async def test_before_it_is_started_a_session_is_not_connected(session: BrowserS
     assert world.launched == [] and world.connected == []
 
 
+async def _cancelled(call: Any) -> None:
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+
+async def _until(holds: Any) -> None:
+    for _ in range(200):
+        if holds():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("it did not come to that")
+
+
+async def test_a_start_cancelled_while_the_browser_comes_up_closes_the_browser_once_it_is_there(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.launch_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: world.launched)
+    # The user stops the work. The start of the browser goes on in its thread.
+    await _cancelled(starting)
+    assert world.closed == [] and world.connected == [] and not session.connected
+    world.launch_gate.set()
+    await session.close()
+    ((closed, connection),) = world.closed
+    assert (closed.endpoint, closed.owned, connection) == (OWN_ENDPOINT, True, None)
+
+
+async def test_the_next_start_waits_until_the_browser_of_a_cancelled_start_has_been_closed(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.launch_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: world.launched)
+    await _cancelled(starting)
+    again = asyncio.ensure_future(session.start())
+    for _ in range(20):
+        await asyncio.sleep(0)
+    # Not two browsers coming up on the one profile at a time.
+    assert len(world.launched) == 1 and not again.done()
+    world.launch_gate.set()
+    await again
+    assert len(world.launched) == 2 and len(world.closed) == 1 and session.connected
+    await session.close()
+    assert len(world.closed) == 2
+
+
+async def test_a_start_that_was_cancelled_and_then_fails_leaves_nothing_to_close(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.launch_gate = asyncio.Event()
+    world.launch_error = BrowserStartError("the browser exited at once")
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: world.launched)
+    await _cancelled(starting)
+    world.launch_gate.set()
+    await session.close()
+    assert world.closed == []
+
+
+async def test_a_start_cancelled_while_it_connects_closes_the_browser_it_started(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.connect_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: world.connected)
+    await _cancelled(starting)
+    await session.close()
+    ((closed, connection),) = world.closed
+    assert (closed.endpoint, connection) == (OWN_ENDPOINT, None)
+    assert not session.connected
+
+
+async def test_a_start_cancelled_while_it_looks_at_the_pages_keeps_the_browser_and_connects_anew_next_time(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    gate = world.browser.hold("Target.getTargets")
+    starting = asyncio.ensure_future(session.start())
+    await asyncio.wait_for(gate.reached.wait(), 1.0)
+    await _cancelled(starting)
+    # Half set up is not connected: the pages were never looked at.
+    assert not session.connected and world.connection.close_calls == 1 and world.closed == []
+    gate.release()
+    await session.start()
+    assert session.connected and len(world.connected) == 2
+    assert [page.url for page in session.pages()] == ["about:blank"]
+    await session.close()
+    assert [browser.endpoint for browser, _connection in world.closed] == [OWN_ENDPOINT]
+
+
+async def test_closing_after_a_cancelled_start_closes_the_browser_that_was_started(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    gate = world.browser.hold("Target.getTargets")
+    starting = asyncio.ensure_future(session.start())
+    await asyncio.wait_for(gate.reached.wait(), 1.0)
+    await _cancelled(starting)
+    await session.close()
+    ((closed, connection),) = world.closed
+    assert (closed.endpoint, closed.owned, connection) == (OWN_ENDPOINT, True, None)
+
+
 async def test_starting_launches_the_browser_on_its_own_profile_and_selects_its_first_page(
     session: BrowserSession, world: BrowserWorld
 ) -> None:
@@ -1036,6 +1139,171 @@ async def test_an_element_that_is_not_visible_cannot_be_clicked(session: Browser
     fake.find("Send").fixed_quad = [5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]
     await refused(world, session.click(page, uid_of(snapshot, "Send")), "is not visible, so it cannot be acted on.")
     assert fake.mouse == []
+
+
+async def test_the_mouse_goes_to_the_part_of_an_element_that_is_in_the_window(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    gift = fake.find("Gift wrap")
+    # Taller than the window and reaching out of it on the left: its middle cannot be seen.
+    gift.fixed_quad = [-100.0, 600.0, 300.0, 600.0, 300.0, 2000.0, -100.0, 2000.0]
+    await session.click(page, uid_of(snapshot, "Gift wrap"))
+    assert fake.mouse == click_events((150.0, 660.0))
+    assert gift.checked is True
+
+
+async def test_an_element_that_lies_wholly_outside_the_window_is_not_visible(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    fake.find("Gift wrap").fixed_quad = [100.0, 900.0, 200.0, 900.0, 200.0, 950.0, 100.0, 950.0]
+    uid = uid_of(snapshot, "Gift wrap")
+    await refused(world, session.click(page, uid), f"The element with uid {uid} is not visible, so it cannot be acted on.")
+    assert fake.mouse == []
+
+
+async def test_without_the_size_of_the_window_the_mouse_goes_to_the_middle_of_the_element(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    world.browser.refuse("Page.getLayoutMetrics")
+    gift = fake.find("Gift wrap")
+    gift.fixed_quad = [100.0, 600.0, 300.0, 600.0, 300.0, 2000.0, 100.0, 2000.0]
+    await session.click(page, uid_of(snapshot, "Gift wrap"))
+    assert fake.mouse == click_events((200.0, 1300.0))
+
+
+async def test_an_element_that_something_lies_over_is_not_clicked_and_what_covers_it_is_named(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    gift, banner = fake.find("Gift wrap"), fake.find("Save draft")
+    gift.cover = banner
+    uid = uid_of(snapshot, "Gift wrap")
+    sent = await refused(
+        world,
+        session.click(page, uid),
+        f'The element with uid {uid} is covered by button "Save draft" where the mouse would go, so nothing was sent to the page.',
+    )
+    # Not the banner either: it would have opened its dialog.
+    assert fake.mouse == [] and banner.clicks == 0 and gift.checked is False and page.dialog is None
+    # The middle and four points around it were looked at.
+    left, top, right, bottom = gift.box()
+    looked_at = [(command.params["x"], command.params["y"]) for command in sent if command.method == "DOM.getNodeForLocation"]
+    assert looked_at == [
+        (int(left + (right - left) * across), int(top + (bottom - top) * down))
+        for across, down in ((0.5, 0.5), (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75))
+    ]
+    for call in (session.hover(page, uid), session.fill(page, uid, "true")):
+        await refused(world, call, "is covered by")
+    assert fake.mouse == []
+
+
+async def test_the_mouse_goes_to_a_part_of_the_element_that_nothing_lies_over(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    gift, badge = fake.find("Gift wrap"), fake.find("Save draft")
+    left, top, right, bottom = gift.box()
+    # Over its middle and its left side; the right side is free.
+    gift.cover, gift.cover_box = badge, (left, top, left + (right - left) * 0.6, bottom)
+    await session.click(page, uid_of(snapshot, "Gift wrap"))
+    assert fake.mouse == click_events((left + (right - left) * 0.75, top + (bottom - top) * 0.25))
+    assert gift.checked is True and badge.clicks == 0
+
+
+async def test_what_is_inside_the_element_or_holds_it_does_not_count_as_lying_over_it(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    product, option = fake.find("Product"), fake.find("Steel Bolt")
+    # The browser finds the option at the point of the select, and the select at the point of the option.
+    product.cover, option.cover = option, product
+    await session.hover(page, uid_of(snapshot, "Product"))
+    await session.hover(page, uid_of(snapshot, "Steel Bolt"))
+    assert fake.mouse == [mouse("mouseMoved", product.point()), mouse("mouseMoved", option.point())]
+
+
+async def test_an_element_in_an_embedded_page_that_the_outer_page_lies_over_is_not_clicked(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, _snapshot = await open_page(session, world, CHECKOUT)
+    confirm = fake.find("Confirm card")
+    confirm.cover = fake.find("Pay")
+    await refused(
+        world,
+        session.click(page, "1_5"),
+        "The element with uid 1_5 is covered by something outside the embedded page the element is in",
+    )
+    assert fake.mouse == [] and fake.find("Pay").clicks == 0
+
+
+async def test_the_embedded_page_of_a_frame_is_the_frames_own(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world, CHECKOUT)
+    iframe = fake.find("", "Iframe")
+    # What the browser finds at the point of the frame is an element of the page inside it.
+    iframe.cover = fake.find("Card number")
+    (uid,) = [uid for uid, node in snapshot.by_uid.items() if node.role == "Iframe"]
+    await session.hover(page, uid)
+    assert fake.mouse == [mouse("mouseMoved", iframe.point())]
+
+
+@pytest.mark.parametrize("unknown", ["no node there", "another process", "no such check"])
+async def test_where_it_cannot_be_told_what_is_at_the_point_the_mouse_goes_there_as_before(
+    session: BrowserSession, world: BrowserWorld, unknown: str
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    gift, other = fake.find("Gift wrap"), fake.find("Save draft")
+    if unknown == "no node there":
+        world.browser.refuse("DOM.getNodeForLocation", "No node found at given location")
+    elif unknown == "another process":
+        # A frame this connection knows nothing of.
+        gift.cover, other.frame_id = other, "frame-of-another-process"
+    else:
+        gift.cover = other
+        world.browser.refuse("DOM.getNodeForLocation", "'DOM.getNodeForLocation' wasn't found", code=-32601)
+    await session.click(page, uid_of(snapshot, "Gift wrap"))
+    assert fake.mouse == click_events(gift.point())
+
+
+async def test_the_screenshot_of_an_element_is_taken_with_what_lies_over_it(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    gift = fake.find("Gift wrap")
+    gift.cover = fake.find("Save draft")
+    sent = world.browser.mark()
+    assert await session.screenshot(page, uid=uid_of(snapshot, "Gift wrap"))
+    assert fake.scrolled_to == [gift]
+    assert "DOM.getNodeForLocation" not in world.browser.methods(sent)
+
+
+async def test_choosing_an_option_whose_change_asks_first_returns_at_once_with_the_dialog_open(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    product = fake.find("Product")
+    product.on_change = lambda browser, target: browser.open_dialog(target, "confirm", "Change the product?")
+    # Not after the thirty seconds a command is given: the model has to handle the dialog first.
+    await asyncio.wait_for(session.click(page, uid_of(snapshot, "Steel Bolt")), 1.0)
+    assert product.value == "Steel Bolt"
+    assert page.dialog == Dialog("confirm", "Change the product?", "")
+    assert fake.mouse == []
+    assert await session.handle_dialog(page, True) == "Successfully accepted the dialog."
+
+
+async def test_filling_a_select_whose_change_asks_first_returns_at_once_and_what_comes_after_it_is_refused(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    product = fake.find("Product")
+    product.on_change = lambda browser, target: browser.open_dialog(target, "confirm", "Change the product?")
+    select, name = uid_of(snapshot, "Product"), uid_of(snapshot, "Your name")
+    with pytest.raises(BrowserError) as caught:
+        await asyncio.wait_for(session.fill_many(page, [(select, "Steel Bolt"), (name, "Ada")]), 1.0)
+    assert str(caught.value) == (
+        "# Open dialog\nconfirm: Change the product?\nCall browser_handle_dialog to handle it before continuing."
+        f" Filled in before it: {select}."
+    )
+    assert product.value == "Steel Bolt" and fake.inserted == []
+    await session.handle_dialog(page, False)
+    # Alone, it is filled in and the dialog is left for the answer to tell.
+    product.value = "Brass Hinge"
+    assert await asyncio.wait_for(session.fill_many(page, [(select, "Steel Bolt")]), 1.0) == [select]
+    assert page.dialog is not None
 
 
 async def test_a_click_that_sends_the_page_elsewhere_waits_for_the_new_page(session: BrowserSession, world: BrowserWorld) -> None:

@@ -96,6 +96,10 @@ class BrowserError(Exception):
     """An action that cannot be carried out; the text is for the model."""
 
 
+class _DialogOpened(Exception):
+    """A script run in the page opened a dialog before it returned; what it did up to there is done."""
+
+
 class PageClosed(BrowserError):
     """The page an action was meant for is no longer open."""
 
@@ -127,6 +131,8 @@ class Page:
     known_uids: dict[str, str] = field(default_factory=dict)
     # frame id -> the id of the document loaded in it right now.
     frame_loaders: dict[str, str] = field(default_factory=dict)
+    # frame id -> the frame it is embedded in.
+    frame_parents: dict[str, str] = field(default_factory=dict)
     main_frame_id: str = ""
     dialog: Dialog | None = None
     loading: bool = False
@@ -144,6 +150,28 @@ _ELEMENT_OF_NODE = """function() {
   }
   return node && node.isConnected ? node : null;
 }"""
+
+# Called on the element with what the browser finds at a point: true when a
+# click there reaches the element, else a few words on what is there instead.
+_REACHES = """function(hit) {
+  for (let node = hit; node; node = node.parentNode || node.host) {
+    if (node === this) return true;
+  }
+  // The element has no box of its own there (text inside a link): what holds it is hit.
+  for (let node = this; node; node = node.parentNode || node.host) {
+    if (node === hit) return true;
+  }
+  // A label passes the click on to its control.
+  const label = hit.closest ? hit.closest('label') : null;
+  if (label && label.control === this) return true;
+  const said = (hit.getAttribute && hit.getAttribute('aria-label')) || hit.textContent || '';
+  const name = said.trim().replace(/\\s+/g, ' ').slice(0, 40);
+  return (hit.nodeName || 'node').toLowerCase() + (hit.id ? '#' + hit.id : '') + (name ? ' "' + name + '"' : '');
+}"""
+
+# The points of an element's box that are tried, as fractions of its visible
+# part: the middle first.
+_POINTS_TRIED = ((0.5, 0.5), (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75))
 
 _SELECT_OPTION = """function() {
   if (!(this instanceof HTMLOptionElement)) return false;
@@ -258,6 +286,9 @@ class BrowserSession:
         # were not opened for the work are theirs.
         self._user_browser = False
         self._window: dict[str, Any] | None = None
+        # Closing a browser whose start was cancelled; the next start and
+        # ``close`` wait for it.
+        self._abandoned: asyncio.Future[None] | None = None
 
     # -- connection -------------------------------------------------------
 
@@ -274,6 +305,7 @@ class BrowserSession:
         """Connect to a browser, starting one when needed. Does nothing while connected."""
         if self.connected:
             return
+        await self._settle_abandoned()
         await self._drop_connection()
         settings = await asyncio.to_thread(self._settings.load)
         attach = settings.mode == MODE_ATTACH
@@ -295,7 +327,15 @@ class BrowserSession:
                     # Without a display a window cannot be shown; the browser
                     # is then started without one whatever the settings say.
                     headless = settings.headless or not launcher.display_available()
-                    browser = await launcher.launch(install, str(profile), headless=headless)
+                    starting = asyncio.ensure_future(launcher.launch(install, str(profile), headless=headless))
+                    try:
+                        browser = await asyncio.shield(starting)
+                    except asyncio.CancelledError:
+                        # The start goes on in its thread and cannot be
+                        # stopped. The browser it brings up would run on
+                        # with nobody to close it.
+                        self._abandoned = asyncio.ensure_future(self._close_once_started(starting))
+                        raise
             except launcher.BrowserStartError as exc:
                 raise BrowserError(str(exc)) from exc
         try:
@@ -303,6 +343,10 @@ class BrowserSession:
                 browser.endpoint,
                 open_timeout=ATTACH_CONNECT_TIMEOUT_SECONDS if attach else 10.0,
             )
+        except asyncio.CancelledError:
+            # Nothing holds the browser yet.
+            self._abandoned = asyncio.ensure_future(self._close_unheld(browser))
+            raise
         except Exception as exc:  # noqa: BLE001 - whatever went wrong, there is no browser to drive
             await launcher.close(browser)
             hint = " Allow the connection in the browser's prompt and try again." if attach else ""
@@ -327,6 +371,35 @@ class BrowserSession:
         except (CdpError, CdpClosed, CdpTimeout) as exc:
             await self._drop_connection()
             raise BrowserError(f"The browser did not answer ({exc}).") from exc
+        except asyncio.CancelledError:
+            # Half set up: the next call connects anew. The browser stays
+            # held, so ``close`` closes it.
+            await self._drop_connection()
+            raise
+
+    async def _close_once_started(self, starting: "asyncio.Future[launcher.RunningBrowser]") -> None:
+        """Close the browser a start brings up after its caller has gone; never raises."""
+        try:
+            browser = await starting
+        except Exception:  # noqa: BLE001 - it did not start: there is nothing to close
+            return
+        await self._close_unheld(browser)
+
+    async def _close_unheld(self, browser: launcher.RunningBrowser) -> None:
+        """Close a browser that was started and is held by nobody; never raises."""
+        try:
+            await launcher.close(browser)
+        except Exception:  # noqa: BLE001 - nothing more can be done about it
+            logger.warning("closing a browser whose start was cancelled failed", exc_info=True)
+
+    async def _settle_abandoned(self) -> None:
+        """Wait until a browser left by a start that was cancelled has been closed."""
+        abandoned = self._abandoned
+        if abandoned is None:
+            return
+        await asyncio.shield(abandoned)
+        if self._abandoned is abandoned:
+            self._abandoned = None
 
     async def _open_blank_page(self) -> None:
         if not self._can_create_tabs or self._connection is None:
@@ -352,6 +425,7 @@ class BrowserSession:
 
     async def close(self) -> None:
         """Drop the connection and close the browser if this process started it."""
+        await self._settle_abandoned()
         browser, self._browser = self._browser, None
         connection = self._connection
         if browser is not None:
@@ -455,12 +529,15 @@ class BrowserSession:
             frame_id = str(frame.get("id") or "")
             if frame_id:
                 page.frame_loaders[frame_id] = str(frame.get("loaderId") or "")
+                if frame.get("parentId"):
+                    page.frame_parents[frame_id] = str(frame["parentId"])
             if not frame.get("parentId"):
                 page.main_frame_id = frame_id
                 page.navigations += 1
                 page.url = str(frame.get("url") or page.url)
         elif method == "Page.frameDetached":
             page.frame_loaders.pop(str(params.get("frameId") or ""), None)
+            page.frame_parents.pop(str(params.get("frameId") or ""), None)
         elif method == "Page.frameStartedLoading":
             if str(params.get("frameId") or "") == page.main_frame_id or not page.main_frame_id:
                 page.loading = True
@@ -585,17 +662,22 @@ class BrowserSession:
     async def _refresh_frames(self, page: Page) -> None:
         tree = await self._send(page, "Page.getFrameTree")
         loaders: dict[str, str] = {}
+        parents: dict[str, str] = {}
 
-        def walk(item: dict[str, Any]) -> None:
+        def walk(item: dict[str, Any], parent: str) -> None:
             frame = item.get("frame") or {}
-            if frame.get("id"):
-                loaders[str(frame["id"])] = str(frame.get("loaderId") or "")
+            frame_id = str(frame.get("id") or "")
+            if frame_id:
+                loaders[frame_id] = str(frame.get("loaderId") or "")
+                if parent:
+                    parents[frame_id] = parent
             for child in item.get("childFrames") or ():
-                walk(child)
+                walk(child, frame_id)
 
         root = tree.get("frameTree") or {}
-        walk(root)
+        walk(root, "")
         page.frame_loaders = loaders
+        page.frame_parents = parents
         page.main_frame_id = str((root.get("frame") or {}).get("id") or "")
         page.url = str((root.get("frame") or {}).get("url") or page.url)
 
@@ -825,7 +907,14 @@ class BrowserSession:
         return node, str(element_id)
 
     async def _call(self, page: Page, object_id: str, function: str, *arguments: Any) -> Any:
-        answer = await self._send(
+        """Run one of the scripts above on an element and return what it returns.
+
+        Raises ``_DialogOpened`` when the script opened a dialog (a handler
+        of the page that asks before it goes on): the browser answers the
+        call only once the dialog is handled, which the model cannot do
+        while this call waits.
+        """
+        answer = await self._answer_unless_dialog(
             page,
             "Runtime.callFunctionOn",
             {
@@ -835,28 +924,113 @@ class BrowserSession:
                 "returnByValue": True,
             },
         )
+        if answer is None:
+            raise _DialogOpened()
         if answer.get("exceptionDetails"):
             detail = answer["exceptionDetails"]
             text = (detail.get("exception") or {}).get("description") or detail.get("text") or "script error"
             raise BrowserError(f"The page refused the action: {str(text)[:200]}")
         return (answer.get("result") or {}).get("value")
 
-    async def _point(self, page: Page, uid: str, object_id: str) -> tuple[float, float]:
-        """Return a point of the element inside the visible part of the page, scrolling it into view first."""
+    async def _scroll_into_view(self, page: Page, object_id: str) -> None:
         try:
             await self._send(page, "DOM.scrollIntoViewIfNeeded", {"objectId": object_id}, timeout=5.0)
         except CdpError:
             logger.debug("scrolling the element into view failed", exc_info=True)
+
+    async def _viewport(self, page: Page) -> tuple[float, float]:
+        """Return the width and height of the visible part of the page, in the units mouse events are sent in."""
+        try:
+            metrics = await self._send(page, "Page.getLayoutMetrics", timeout=5.0)
+        except CdpError:
+            return float("inf"), float("inf")
+        for name in ("cssLayoutViewport", "cssVisualViewport", "layoutViewport"):
+            viewport = metrics.get(name) or {}
+            width, height = viewport.get("clientWidth"), viewport.get("clientHeight")
+            if isinstance(width, (int, float)) and isinstance(height, (int, float)) and width > 0 and height > 0:
+                return float(width), float(height)
+        return float("inf"), float("inf")
+
+    def _frame_inside(self, page: Page, frame_id: str, outer: str) -> bool:
+        """Whether a frame is embedded, at any depth, in the frame ``outer``."""
+        seen: set[str] = set()
+        while frame_id and frame_id not in seen:
+            seen.add(frame_id)
+            frame_id = page.frame_parents.get(frame_id, "")
+            if frame_id == outer:
+                return True
+        return False
+
+    async def _reaches(self, page: Page, node: SnapshotNode, object_id: str, x: float, y: float) -> bool | str:
+        """Whether the mouse at a point reaches the element; else a few words on what is there instead."""
+        try:
+            hit = await self._send(page, "DOM.getNodeForLocation", {"x": int(x), "y": int(y)}, timeout=5.0)
+            hit_frame = str(hit.get("frameId") or "")
+            if node.frame_id and hit_frame and hit_frame != node.frame_id:
+                # Another document: one embedded in the element (the element
+                # is a frame, or holds one) is the element's own; any other
+                # lies over the frame the element is in.
+                if self._frame_inside(page, hit_frame, node.frame_id):
+                    return True
+                if hit_frame in page.frame_loaders:
+                    return "something outside the embedded page the element is in"
+                return True
+            resolved = await self._send(page, "DOM.resolveNode", {"backendNodeId": hit.get("backendNodeId")}, timeout=5.0)
+            answer = await self._send(
+                page,
+                "Runtime.callFunctionOn",
+                {
+                    "objectId": object_id,
+                    "functionDeclaration": _REACHES,
+                    "arguments": [{"objectId": (resolved.get("object") or {}).get("objectId")}],
+                    "returnByValue": True,
+                },
+                timeout=5.0,
+            )
+        except CdpError:
+            # The check cannot be made (nothing is found at the point, or the
+            # browser does not offer it): the mouse goes there as it would
+            # have without the check.
+            return True
+        value = (answer.get("result") or {}).get("value")
+        return value if isinstance(value, str) and value else True
+
+    async def _point(self, page: Page, uid: str, node: SnapshotNode, object_id: str) -> tuple[float, float]:
+        """Return the point of the element the mouse is sent to, scrolling the element into view first.
+
+        The point lies in the visible part of the page, and what the browser
+        finds there is the element (or something inside it). The middle of
+        an element taller than the window may be off the screen, and a
+        banner or a dialog may lie over it: the mouse would then go to
+        nothing, or to that.
+        """
+        await self._scroll_into_view(page, object_id)
         try:
             answer = await self._send(page, "DOM.getContentQuads", {"objectId": object_id}, timeout=5.0)
         except CdpError as exc:
             raise BrowserError(f"The element with uid {uid} is not visible, so it cannot be acted on.") from exc
+        width, height = await self._viewport(page)
+        covering = ""
         for quad in answer.get("quads") or ():
             if len(quad) != 8:
                 continue
-            xs, ys = quad[0::2], quad[1::2]
-            if (max(xs) - min(xs)) * (max(ys) - min(ys)) > 1:
-                return sum(xs) / 4, sum(ys) / 4
+            xs = [min(max(float(value), 0.0), width) for value in quad[0::2]]
+            ys = [min(max(float(value), 0.0), height) for value in quad[1::2]]
+            left, right, top, bottom = min(xs), max(xs), min(ys), max(ys)
+            if (right - left) * (bottom - top) <= 1:
+                continue
+            for across, down in _POINTS_TRIED:
+                x, y = left + (right - left) * across, top + (bottom - top) * down
+                reached = await self._reaches(page, node, object_id, x, y)
+                if reached is True:
+                    return x, y
+                covering = str(reached)
+            break
+        if covering:
+            raise BrowserError(
+                f"The element with uid {uid} is covered by {covering} where the mouse would go, so nothing was "
+                "sent to the page. Close or scroll away what covers it, or act on that instead; a new snapshot shows it."
+            )
         raise BrowserError(f"The element with uid {uid} is not visible, so it cannot be acted on.")
 
     async def _mouse(self, page: Page, kind: str, x: float, y: float, **extra: Any) -> bool:
@@ -879,31 +1053,42 @@ class BrowserSession:
 
     async def click(self, page: Page, uid: str, *, double: bool = False) -> None:
         self.require_no_dialog(page)
-        _node, object_id = await self.element(page, uid)
+        node, object_id = await self.element(page, uid)
         before = page.navigations
-        if not await self._call(page, object_id, _SELECT_OPTION):
-            x, y = await self._point(page, uid, object_id)
+        try:
+            chosen = await self._call(page, object_id, _SELECT_OPTION)
+        except _DialogOpened:
+            # The option was chosen, and what the page does on that change asks first.
+            chosen = True
+        if not chosen:
+            x, y = await self._point(page, uid, node, object_id)
             await self._click_at(page, x, y, count=2 if double else 1)
         await self.after_action(page, before)
 
     async def hover(self, page: Page, uid: str) -> None:
         self.require_no_dialog(page)
-        _node, object_id = await self.element(page, uid)
+        node, object_id = await self.element(page, uid)
         before = page.navigations
-        x, y = await self._point(page, uid, object_id)
+        x, y = await self._point(page, uid, node, object_id)
         await self._mouse(page, "mouseMoved", x, y)
         await self.after_action(page, before)
 
     async def fill(self, page: Page, uid: str, value: str) -> None:
         """Fill one element in; the page is not waited for (see ``fill_many``)."""
         self.require_no_dialog(page)
-        _node, object_id = await self.element(page, uid)
-        plan = await self._call(page, object_id, _PREPARE_FILL, value)
+        node, object_id = await self.element(page, uid)
+        try:
+            plan = await self._call(page, object_id, _PREPARE_FILL, value)
+        except _DialogOpened:
+            # The value was set, and what the page does on that change asks
+            # first. The dialog is told with the answer; an element after
+            # this one is refused until it is handled.
+            return
         kind = plan.get("kind") if isinstance(plan, dict) else None
         if kind == "error":
             raise BrowserError(f"The element with uid {uid} could not be filled in: {plan.get('message')}.")
         if kind == "click":
-            x, y = await self._point(page, uid, object_id)
+            x, y = await self._point(page, uid, node, object_id)
             await self._click_at(page, x, y)
         elif kind == "type":
             if value:
@@ -1005,8 +1190,11 @@ class BrowserSession:
         params: dict[str, Any] = {"format": "jpeg", "quality": 80}
         if uid:
             _node, object_id = await self.element(page, uid)
-            await self._point(page, uid, object_id)
-            quads = (await self._send(page, "DOM.getContentQuads", {"objectId": object_id})).get("quads") or []
+            await self._scroll_into_view(page, object_id)
+            try:
+                quads = (await self._send(page, "DOM.getContentQuads", {"objectId": object_id})).get("quads") or []
+            except CdpError as exc:
+                raise BrowserError(f"The element with uid {uid} is not visible, so it cannot be acted on.") from exc
             if not quads:
                 raise BrowserError(f"The element with uid {uid} is not visible, so there is nothing to take a screenshot of.")
             xs = [value for quad in quads for value in quad[0::2]]

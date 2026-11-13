@@ -406,6 +406,35 @@ async def test_typing_a_submit_key_that_loads_another_document_answers_with_its_
     assert 'RootWebArea "Thanks"' in outcome.text
 
 
+async def test_filling_a_select_whose_change_asks_first_answers_at_once_with_the_dialog(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    product = world.browser.page("target-1").find("Product")
+    product.on_change = lambda browser, page: browser.open_dialog(page, "confirm", "Change the product?")
+    outcome = await asyncio.wait_for(tools.call(TOOL_PREFIX + "fill", {"uid": uid_of("Product"), "value": "Steel Bolt"}), 1.0)
+    assert outcome == BuiltinOutcome(
+        True,
+        "Successfully filled out the element\n# Open dialog\nconfirm: Change the product?\n"
+        "Call browser_handle_dialog to handle it before continuing.",
+    )
+    assert product.value == "Steel Bolt"
+    handled = await call(tools, "handle_dialog", action="accept")
+    assert handled.success, handled.text
+
+
+async def test_a_click_on_an_element_that_something_lies_over_is_refused_with_what_covers_it(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+    fake.find("Gift wrap").cover = fake.find("Save draft")
+    outcome = await call(tools, "click", uid=uid_of("Gift wrap"))
+    assert not outcome.success
+    assert outcome.text.startswith(f'The element with uid {uid_of("Gift wrap")} is covered by button "Save draft"')
+    assert fake.mouse == []
+
+
 async def test_an_action_that_opens_a_tab_answers_with_the_page_list(tools: BrowserTools, world: BrowserWorld) -> None:
     await on_the_order_form(tools)
     outcome = await call(tools, "click", uid=uid_of("Terms"))

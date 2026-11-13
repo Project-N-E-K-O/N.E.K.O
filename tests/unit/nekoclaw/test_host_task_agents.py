@@ -2725,9 +2725,41 @@ async def test_the_spec_and_the_gateway_token_agree_on_pictures_and_screenshots_
     assert (spec.gateway.url, spec.gateway.token) == ("http://127.0.0.1:1/mcp", grant.token)
     # Every tool that hands screenshots back and can be called now is kept
     # that many of, counted by the group it belongs to. A tool without
-    # pictures has no rule, nor has one that is switched off.
-    assert spec.image_retention == {"computer": 5, "browser_take_screenshot": 5}
+    # pictures has no rule, nor has one that is switched off. The same
+    # tools called by name through the gateway's call tool hand their
+    # screenshots back as results of that tool: limited too, on its own.
+    assert spec.image_retention == {"computer": 5, "browser_take_screenshot": 5, "capability_call": 5}
     assert spec.image_pools == {"computer": "keyboard_mouse", "browser_take_screenshot": "browser"}
+
+
+def test_screenshots_fetched_through_the_call_tool_do_not_pile_up_in_the_context():
+    from nekoclaw.host.gateway import CALL_TOOL
+    from nekoclaw.host.task_agents import TaskAgentManager
+    from nekoclaw.runtime.context import Row, retain_recent_images
+    from nekoclaw.runtime.loop.messages import ImageContent, TextContent, ToolResultMessage
+
+    screen = SimpleNamespace(tool_name="computer", needs_images=True, group="keyboard_mouse")
+    plain = SimpleNamespace(tool_name="weather", needs_images=False, group=None)
+    retention, pools = TaskAgentManager._image_retention([screen, plain])
+    assert retention[CALL_TOOL] == retention["computer"] and CALL_TOOL not in pools
+
+    def shot(tool: str, number: int) -> Row:
+        message = ToolResultMessage(
+            tool_call_id=f"call-{number}",
+            tool_name=tool,
+            content=[TextContent(text=f"shot {number}"), ImageContent(data="aGk=", mime_type="image/jpeg")],
+        )
+        return Row(f"entry-{number}", "message", message)
+
+    # The model takes its screenshots through the call tool instead of calling ``computer``.
+    rows = [shot(CALL_TOOL, number) for number in range(retention[CALL_TOOL] + 2)] + [shot("computer", 99)]
+    kept = retain_recent_images(rows, retention, pools)
+    assert kept is not None
+    with_picture = [row.entry_id for row in kept if any(isinstance(block, ImageContent) for block in row.message.content)]
+    assert with_picture == [f"entry-{number}" for number in range(2, retention[CALL_TOOL] + 2)] + ["entry-99"]
+
+    # With no tool that hands pictures back there is nothing to limit.
+    assert TaskAgentManager._image_retention([plain]) == ({}, {})
 
 
 def test_three_screenshots_of_a_group_stay_in_a_task_agents_context():
