@@ -6,7 +6,7 @@ Project N.E.K.O. is an open-source AI companion platform with avatar rendering, 
 
 - Python 3.11 FastAPI/Uvicorn services under `app/`
 - Conversation and persistent-memory domains under `main_logic/` and `memory/`
-- Agent execution under `brain/` and the agent server
+- Agent execution (NekoClaw) under `nekoclaw/` and the agent server
 - Jinja/static pages plus one shared React chat implementation
 - Vue plugin manager under `frontend/plugin-manager/`
 - Electron desktop distribution built from N.E.K.O.-PC plus this packaged backend

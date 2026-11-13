@@ -39,7 +39,10 @@ def test_nekoclaw_is_registered_in_every_directory_list() -> None:
     assert "nekoclaw" in _load("check_startup_import_lazy").DEFAULT_PATHS
     assert "nekoclaw" in _load("check_no_temperature").DEFAULT_PATHS
     layering = _load("check_module_layering")
-    assert layering.PACKAGE_TO_LAYER["nekoclaw"] == layering.PACKAGE_TO_LAYER["brain"]
+    # At the top of the stack: above the plugins it calls, below the entry
+    # points that mount it.
+    layers = layering.PACKAGE_TO_LAYER
+    assert layers["plugin"] < layers["nekoclaw"] < layers["app"]
     forbidden = {package for prefix, package, _why in layering.FORBIDDEN_EDGES if prefix == "nekoclaw/runtime/"}
     # Everything registered at or below the runtime's own layer, except the two
     # packages it is allowed to use.
@@ -50,7 +53,7 @@ def test_nekoclaw_is_registered_in_every_directory_list() -> None:
         if layer <= own_layer and package != "nekoclaw"
     }
     assert forbidden == reachable - {"config", "utils"}
-    assert "steamworks" in forbidden and "brain" in forbidden
+    assert "steamworks" in forbidden and "plugin" in forbidden
 
 
 @pytest.mark.parametrize(
@@ -139,7 +142,7 @@ def test_async_blocking_guard_flags_a_blocking_queue_get_in_package_style_code(t
 def test_layering_guard_rejects_a_runtime_import_of_another_subsystem() -> None:
     layering = _load("check_module_layering")
     path = PACKAGE / "runtime" / "session.py"
-    for package in ("memory", "plugin", "main_logic", "brain"):
+    for package in ("memory", "plugin", "main_logic"):
         edge = (path, 1, 0, "nekoclaw", package, f"import {package}")
         found = layering.find_forbidden_edges([edge])
         assert len(found) == 1 and "uses only config and utils" in found[0][1]
@@ -150,7 +153,7 @@ def test_layering_guard_rejects_a_runtime_import_of_another_subsystem() -> None:
         assert layering.find_violations([edge]) == ([], [])
 
 
-def test_layering_guard_keeps_the_host_from_the_analyzer_and_from_memory() -> None:
+def test_layering_guard_keeps_the_host_from_memory_and_from_the_main_dialogue() -> None:
     layering = _load("check_module_layering")
     forbidden = {package for prefix, package, _why in layering.FORBIDDEN_EDGES if prefix == "nekoclaw/host/"}
     own_layer = layering.PACKAGE_TO_LAYER["nekoclaw"]
@@ -164,7 +167,6 @@ def test_layering_guard_keeps_the_host_from_the_analyzer_and_from_memory() -> No
     assert forbidden == reachable - {"config", "utils", "plugin"}
     path = PACKAGE / "host" / "task_brain.py"
     for package, reason in (
-        ("brain", "replaces the analyzer"),
         ("memory", "never read or write each other"),
         ("main_logic", "through its outbox only"),
     ):

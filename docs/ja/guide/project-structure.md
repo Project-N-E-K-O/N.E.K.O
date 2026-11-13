@@ -7,13 +7,12 @@ N.E.K.O/
 ├── app/                     # main/memory/agent services
 ├── launcher.py              # thin entrypoint
 ├── launcher_core/           # bootstrap/ports/lifecycle
-├── brain/                   # keyboard-and-mouse/browser control adapters
 ├── config/                  # defaults/prompts/provider/network
 ├── knowledge/               # public knowledge packs (Memory Server)
 ├── main_logic/              # conversation/clients/TTS/buses
 ├── main_routers/            # Main FastAPI routes
 ├── memory/                  # fact/recall/persona/reflection/event/outbox
-├── nekoclaw/                # task brain/host (host/), agent runtime (runtime/)
+├── nekoclaw/                # task brain/host (host/), agent runtime (runtime/), keyboard-and-mouse/browser tools (builtin/)
 ├── plugin/                  # SDK/host/built-ins/tools
 ├── services/                # domain services: chat sync/theater runtime
 ├── utils/config_manager/    # writable config/storage

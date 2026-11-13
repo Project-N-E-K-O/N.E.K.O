@@ -164,7 +164,7 @@ Playback boundary は proactive arbitration に重要です。Upstream generatio
 
 現在の UI integration event で、stable external contract ではありません。
 
-- Agent: `agent_notification`、`agent_task_update`、`agent_status_update`。
+- Agent: `agent_notification`、`agent_task_update`、`agent_status_update`、`agent_builtin_activity`（タスクがキーボード・マウスまたはブラウザーを使い始めた／使い終えた。[Agent API](/ja/api/rest/agent) を参照）。
 - Capture: `request_screenshot`、`capture_bridge_request`、`screen_share_error`。
 - Mini-game: `mini_game_invite_options`、`mini_game_invite_resolved`、`game_window_state_change`。
 - Music/tool: `music_play_url`、`music_allowlist_add`。

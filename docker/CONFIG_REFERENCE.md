@@ -157,13 +157,17 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 - `mimo` 被选为 `assistApi` 且 `useMimoTokenPlan` 为 `true` 时改用 Token Plan 地址（默认 `https://token-plan-cn.xiaomimimo.com/v1`；`resolvedProviderUrls` 里记有 sgp / ams 候选时用记下的那个），Key 取 `assistApiKeyMimoTokenPlan`。
 - `free` 的辅助地址 `https://www.lanlan.tech/text/v1` 同样按网络区域改写，Agent 槽位除外（见第 6 节）。
 
-### 6. Computer Use（键鼠控制）配置
+### 6. 键鼠控制与浏览器控制（Agent 模型）配置
 
-键鼠控制由 `brain/computer_use.py` 的 `ComputerUseAdapter` 实现：每一步把屏幕截图交给一次多模态模型调用，由模型直接给出思考、动作和要执行的 pyautogui 代码，元素定位也由这个模型完成，不再区分"规划模型"和"定位模型"。它和浏览器控制（`brain/browser_use_adapter.py`）共用 **Agent 模型**槽位，都通过 `get_model_api_config("agent")` 取模型、URL 和 API Key，所用模型需要能接收图片输入。
+键鼠控制和浏览器控制是猫爪（NekoClaw）的两组内置工具，代码在 `nekoclaw/builtin/`。使魔（代码里叫 task agent）在自己的循环里一步一步调用它们；工具本身不带循环，也不另外调用模型。键鼠是一个 `computer` 工具：每次做一个动作并返回动作之后的截图，坐标的横纵两个方向都是 0 到 999 的整数。浏览器是 15 个 `browser_*` 工具：把页面读成文字快照（页面的无障碍树，每个元素带一个 uid），再按 uid 操作元素。
+
+使魔用的是 **Agent 模型**槽位，通过 `get_model_api_config("agent")` 取模型、URL 和 API Key。键鼠工具和浏览器的截图工具要求模型能接收图片输入；模型不能看图时不提供这两个工具，浏览器的其余工具照常可用。
+
+浏览器控制操控的是机器上已经安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Chromium），走浏览器的调试协议。应用不随包附带浏览器，启动时也不下载；Playwright 只是测试依赖，`browser-use` 不在依赖里。找不到浏览器时，浏览器控制的可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。浏览器装在不常见的位置时，用环境变量 `NEKO_BROWSER_PATH` 指定可执行文件，或者写进 `<数据根>/nekoclaw/browser.json` 的 `executable`。
 
 > 旧版文档里的 `computerUseModel` / `computerUseModelUrl` / `computerUseModelApiKey` / `computerUseGroundModel` / `computerUseGroundUrl` / `computerUseGroundApiKey` 已没有任何代码读取，写进 `core_config.json` 不会生效。
 
-功能开关不在 `core_config.json` 里：Agent 总开关 `analyzer_enabled` 和键鼠控制子开关 `computer_use_enabled` 在界面上切换，最后一次的选择存在与 `core_config.json` 同一目录的 `agent_runtime_intent.json`，重启后自动恢复；设置环境变量 `NEKO_DISABLE_AGENT_AUTO_RESTORE=1`（Agent 服务直接读 `os.environ`）可跳过启动后的自动恢复。
+功能开关不在 `core_config.json` 里：Agent 总开关 `analyzer_enabled`、键鼠控制子开关 `computer_use_enabled` 和浏览器控制子开关 `browser_use_enabled` 在界面上切换，最后一次的选择存在与 `core_config.json` 同一目录的 `agent_runtime_intent.json`，重启后自动恢复；设置环境变量 `NEKO_DISABLE_AGENT_AUTO_RESTORE=1`（Agent 服务直接读 `os.environ`）可跳过启动后的自动恢复。
 
 #### 默认配置（跟随 `assistApi`）
 
@@ -231,7 +235,13 @@ Agent API Key 的取法：
 > - 手工打开 `enableCustomApi` 但不想改 Agent 时，请把 `agentModelProvider` 设为 `follow_assist`。不设置时，`agentModelApiKey`（默认是空串）会把默认的 Agent Key 覆盖掉，Agent 可用性检查会报「Agent API Key 未配置或不可用」。
 > - 选具体提供商时地址不会自动切换：`agentModelUrl` 留空时请求仍发往默认地址（`assistApi` 提供商的地址）。所选提供商与 `assistApi` 不同时，要把 `agentModelUrl` 填成所选提供商的地址，请求才会发往它，也才会取用它的 `assistApiKey*`。
 
-> **Docker 部署**：镜像（`docker/Dockerfile`、`docker/Dockerfile.full`）和 `docker/entrypoint.sh` 都不启动 X 显示服务，也不设置 `DISPLAY`，因此默认 Docker 部署下 pyautogui 无法导入，键鼠控制不可用（可用性检查返回未就绪，原因码 `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE`）。
+> **Docker 部署**：
+> - 键鼠控制：镜像（`docker/Dockerfile`、`docker/Dockerfile.full`）和 `docker/entrypoint.sh` 都不启动 X 显示服务，也不设置 `DISPLAY`，因此默认 Docker 部署下 pyautogui 无法导入，键鼠控制不可用（可用性检查返回未就绪，原因码 `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE`）。
+> - 浏览器控制：容器里没有用户自己的浏览器，应用自己也不下载浏览器。standard 镜像（`docker/Dockerfile`）不带浏览器，浏览器控制不可用，可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。full 镜像（`docker/Dockerfile.full`）装有 Debian 的 `chromium` 和 `chromium-sandbox`，浏览器工具按命令名 `chromium` 找到它。要让这个 Chromium 在容器里启动起来，还有两个条件（见 `docker/Dockerfile.full` 里「Browser for the browser tools」一段）：
+>   - 服务以 `neko` 用户运行，不是 root（官方 `docker/entrypoint.sh` 已经这样做）；
+>   - Chromium 的沙箱要创建命名空间，Docker 默认的 seccomp 配置和权限集不允许，需要给容器换一个允许用户命名空间的 seccomp 配置，或者加 `--cap-add=SYS_ADMIN`，否则 Chromium 一启动就退出，浏览器工具报告浏览器启动不了；
+>
+>   容器里没有显示器这一点不用处理：`DISPLAY` 和 `WAYLAND_DISPLAY` 都没设时，浏览器工具自己不开窗口启动浏览器，和 `browser.json` 里的 `headless` 怎么设无关。
 
 ### 7. 自定义模型配置（高级）
 

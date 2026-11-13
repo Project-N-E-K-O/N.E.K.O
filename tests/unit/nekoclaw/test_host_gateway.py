@@ -26,6 +26,13 @@ from typing import Any
 
 import pytest
 
+from nekoclaw.host.capabilities import (
+    BUILTIN_GROUP_BROWSER,
+    BUILTIN_GROUP_KEYBOARD_MOUSE,
+    BuiltinImage,
+    BuiltinOutcome,
+    builtin_tool,
+)
 from nekoclaw.host.gateway import CALL_TOOL, SEARCH_TOOL
 from tests.unit.nekoclaw.host_fakes import FakeDecisionLLM, make_host, wait_until
 from tests.unit.nekoclaw.plugin_server_fake import (
@@ -99,8 +106,9 @@ async def _commission(host: Any, **values: Any) -> Any:
     return commission
 
 
-def _grant(host: Any, commission: Any, *candidates: str) -> Any:
-    token = host.gateway.issue(commission.id, candidate_plugin_ids=candidates)
+def _grant(host: Any, commission: Any, *candidates: str, images: bool = False) -> Any:
+    """Issue a token for a commission; ``images`` says whether its model sees pictures."""
+    token = host.gateway.issue(commission.id, candidate_plugin_ids=candidates, supports_images=images)
     return host.gateway._grant(token)
 
 
@@ -820,43 +828,86 @@ async def test_the_question_put_to_the_user_is_capped_in_tokens(host, server):
 
 
 # ---------------------------------------------------------------------------
-# Built-in capabilities: keyboard and mouse, browser
+# Built-in tools: keyboard and mouse, browser
 # ---------------------------------------------------------------------------
+
+COMPUTER = {
+    "name": "computer",
+    "description": "Operate the desktop with the mouse and the keyboard, one action per call.",
+    "parameters": {
+        "type": "object",
+        "properties": {"action": {"type": "string", "enum": ["screenshot", "click"]}},
+        "required": ["action"],
+    },
+}
+NAVIGATE = {
+    "name": "browser_navigate_page",
+    "description": "Go to a URL. Returns a snapshot of the loaded page.",
+    "parameters": {"type": "object", "properties": {"url": {"type": "string"}}},
+}
+SCREENSHOT = {
+    "name": "browser_take_screenshot",
+    "description": "Take a screenshot of the page.",
+    "parameters": {"type": "object", "properties": {}},
+}
+BUILTIN_NAMES = ["computer", "browser_navigate_page", "browser_take_screenshot"]
 
 
 class Builtins:
-    """A provider of the two built-in capabilities whose calls are recorded."""
+    """A provider of three built-in tools whose calls are recorded.
 
-    def __init__(self, *, keyboard: bool = True, browser: bool = True) -> None:
-        self.ready = {"builtin:keyboard_mouse": keyboard, "builtin:browser": browser}
+    ``computer`` and ``browser_take_screenshot`` hand pictures back, so they
+    need a model that sees them; ``browser_navigate_page`` does not.
+    """
+
+    def __init__(self) -> None:
+        # name -> (group, definition, needs a model that sees pictures)
+        self.definitions: dict[str, tuple[str, dict[str, Any], bool]] = {
+            "computer": (BUILTIN_GROUP_KEYBOARD_MOUSE, COMPUTER, True),
+            "browser_navigate_page": (BUILTIN_GROUP_BROWSER, NAVIGATE, False),
+            "browser_take_screenshot": (BUILTIN_GROUP_BROWSER, SCREENSHOT, True),
+        }
+        self.switched_off: set[str] = set()
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
         self.started = asyncio.Event()
-        self.release: asyncio.Event | None = None
+        # Set to an event to keep a call going until the event is set.
+        self.hold: asyncio.Event | None = None
         self.cancelled: list[str] = []
+        # A ``BuiltinOutcome`` to return, or an exception to raise.
         self.outcome: Any = None
+        # Called at the start of every call; what it returns is kept in ``observed``.
+        self.observe: Any = None
+        self.observed: list[Any] = []
 
     def available(self) -> list[Any]:
-        from nekoclaw.host.capabilities import builtin_capability
-
         return [
-            builtin_capability(capability_id, available=ready, unavailable_reason="" if ready else "switched off")
-            for capability_id, ready in self.ready.items()
+            builtin_tool(
+                group,
+                definition,
+                available=name not in self.switched_off,
+                unavailable_reason="switched off" if name in self.switched_off else "",
+                needs_images=needs_images,
+            )
+            for name, (group, definition, needs_images) in self.definitions.items()
         ]
 
-    async def run(self, capability_id: str, *, commission_id: str, arguments: dict[str, Any]) -> Any:
-        from nekoclaw.host.capabilities import BuiltinOutcome
-
-        self.calls.append((capability_id, commission_id, dict(arguments)))
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> Any:
+        self.calls.append((capability.tool_name, commission_id, dict(arguments)))
+        if self.observe is not None:
+            self.observed.append(self.observe())
         self.started.set()
-        if self.release is not None:
+        if self.hold is not None:
             try:
-                await self.release.wait()
+                await self.hold.wait()
             except asyncio.CancelledError:
-                self.cancelled.append(capability_id)
+                self.cancelled.append(capability.tool_name)
                 raise
         if isinstance(self.outcome, BaseException):
             raise self.outcome
-        return self.outcome or BuiltinOutcome(True, f"did: {arguments.get('instruction')}")
+        return self.outcome or BuiltinOutcome(True, f"{capability.tool_name} done")
+
+    async def released(self, group: str, commission_id: str) -> None:
+        return None
 
 
 @pytest.fixture
@@ -868,125 +919,362 @@ async def builtin_host(server: FakePluginServer, tmp_path: Any) -> Any:
     await built.shutdown()
 
 
+@pytest.fixture
+def short_wait(monkeypatch: Any) -> None:
+    """A commission waits only a moment for a group another one occupies."""
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "BUILTIN_OCCUPIED_WAIT_SECONDS", 0.05)
+
+
 async def _tool_names(host: Any, grant: Any) -> list[str]:
     answer = await _rpc(host, grant, "tools/list")
     return [tool["name"] for tool in answer["result"]["tools"]]
 
 
+def _cost(definition: dict[str, Any]) -> int:
+    """The tokens one listed definition is counted as."""
+    from utils.tokenize import count_tokens
+
+    return count_tokens(json.dumps(definition, ensure_ascii=False))
+
+
+def _found(text: str) -> list[str]:
+    """The names of the definitions a search returned."""
+    return [json.loads(line)["name"] for line in text.splitlines() if line.startswith("{")]
+
+
+# -- what is listed ----------------------------------------------------------
+
+
 async def test_available_builtins_are_listed_up_front_without_being_candidates(builtin_host, server):
     _catalog(server)
-    grant = _grant(builtin_host, await _commission(builtin_host), "weather")
+    grant = _grant(builtin_host, await _commission(builtin_host), "weather", images=True)
 
     names = await _tool_names(builtin_host, grant)
 
-    assert names == ["builtin__keyboard_mouse", "builtin__browser", "plugin__weather__today", SEARCH_TOOL, CALL_TOOL]
+    assert names == [*BUILTIN_NAMES, "plugin__weather__today", SEARCH_TOOL, CALL_TOOL]
 
 
-async def test_candidate_plugins_that_fill_the_budget_do_not_push_the_builtins_off_the_list(
+async def test_builtin_definitions_are_served_as_written(builtin_host):
+    from config.nekoclaw_settings import GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    # Longer than the description of a plugin entry may be.
+    long_description = "Operate the desktop. " + " ".join(f"detail{n}" for n in range(150))
+    assert count_tokens(long_description) > GATEWAY_TOOL_DESCRIPTION_MAX_TOKENS
+    builtin_host.provider.definitions["computer"] = (
+        BUILTIN_GROUP_KEYBOARD_MOUSE,
+        {**COMPUTER, "description": long_description},
+        True,
+    )
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+
+    tools = (await _rpc(builtin_host, grant, "tools/list"))["result"]["tools"]
+
+    # Name, description and schema exactly as defined: nothing put in front, nothing cut.
+    assert tools == [
+        {"name": "computer", "description": long_description, "inputSchema": COMPUTER["parameters"]},
+        {
+            "name": "browser_navigate_page",
+            "description": NAVIGATE["description"],
+            "inputSchema": NAVIGATE["parameters"],
+        },
+        {
+            "name": "browser_take_screenshot",
+            "description": SCREENSHOT["description"],
+            "inputSchema": SCREENSHOT["parameters"],
+        },
+    ]
+
+
+async def test_a_long_list_of_plugin_entries_does_not_push_the_builtins_off_the_list(
+    builtin_host, server, monkeypatch
+):
+    import config.nekoclaw_settings as settings
+
+    entries = [entry(f"entry{n}", "does something " + "very specific " * 400) for n in range(60)]
+    server.add_plugin(plugin("big", "A plugin with many entries", entries))
+    grant = _grant(builtin_host, await _commission(builtin_host), "big", images=True)
+
+    names = await _tool_names(builtin_host, grant)
+
+    # More entries than their budget holds; the built-in tools are all there, in front.
+    listed_entries = [name for name in names if name.startswith("plugin__")]
+    assert 0 < len(listed_entries) < 60
+    assert names[: len(BUILTIN_NAMES)] == BUILTIN_NAMES
+    assert names[-2:] == [SEARCH_TOOL, CALL_TOOL]
+
+    # Even with no room at all for plugin entries.
+    monkeypatch.setattr(settings, "GATEWAY_TOOL_LIST_MAX_TOKENS", 1)
+    assert await _tool_names(builtin_host, grant) == [*BUILTIN_NAMES, SEARCH_TOOL, CALL_TOOL]
+
+
+async def test_builtins_take_nothing_from_the_budget_of_the_plugin_entries(builtin_host, server, monkeypatch):
+    import config.nekoclaw_settings as settings
+
+    _catalog(server)
+    grant = _grant(builtin_host, await _commission(builtin_host), "weather", "lamp", images=True)
+    definitions = {item["name"]: item for item in await builtin_host.gateway.tool_definitions(grant)}
+    # Exactly the room the two plugin entries need.
+    monkeypatch.setattr(
+        settings,
+        "GATEWAY_TOOL_LIST_MAX_TOKENS",
+        _cost(definitions["plugin__weather__today"]) + _cost(definitions["plugin__lamp__switch"]),
+    )
+
+    names = await _tool_names(builtin_host, grant)
+
+    assert names == [*BUILTIN_NAMES, "plugin__weather__today", "plugin__lamp__switch"]
+
+
+async def test_a_builtin_over_the_budget_of_the_builtins_is_left_out_and_no_plugin_entry_with_it(
     builtin_host, server, monkeypatch
 ):
     import config.nekoclaw_settings as settings
 
     _catalog(server)
-    grant = _grant(builtin_host, await _commission(builtin_host), "weather")
-    everything = await _tool_names(builtin_host, grant)
-    assert "plugin__weather__today" in everything
-    # Room for the two built-in capabilities and nothing more.
-    definitions = await builtin_host.gateway.tool_definitions(grant)
-    from utils.tokenize import count_tokens
-
-    builtin_cost = sum(
-        count_tokens(json.dumps(item, ensure_ascii=False)) for item in definitions if item["name"].startswith("builtin__")
+    builtin_host.permissions.set_asker(Asker("once"))
+    grant = _grant(builtin_host, await _commission(builtin_host), "weather", "lamp", images=True)
+    definitions = {item["name"]: item for item in await builtin_host.gateway.tool_definitions(grant)}
+    # Room for the first two built-in tools only.
+    monkeypatch.setattr(
+        settings,
+        "GATEWAY_BUILTIN_TOOL_LIST_MAX_TOKENS",
+        _cost(definitions["computer"]) + _cost(definitions["browser_navigate_page"]),
     )
-    monkeypatch.setattr(settings, "GATEWAY_TOOL_LIST_MAX_TOKENS", builtin_cost)
 
     names = await _tool_names(builtin_host, grant)
+    found = _found(_text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "screenshot of the page"})))
+    reached = await _call(builtin_host, grant, CALL_TOOL, {"name": "browser_take_screenshot"})
 
-    assert names == ["builtin__keyboard_mouse", "builtin__browser", SEARCH_TOOL, CALL_TOOL]
+    assert names == [
+        "computer",
+        "browser_navigate_page",
+        "plugin__weather__today",
+        "plugin__lamp__switch",
+        SEARCH_TOOL,
+        CALL_TOOL,
+    ]
+    # What did not fit is found and called like any capability that is not listed.
+    assert "browser_take_screenshot" in found
+    assert reached["isError"] is False
+    assert [name for name, _cid, _args in builtin_host.provider.calls] == ["browser_take_screenshot"]
 
 
 async def test_builtins_alone_are_enough_for_a_gateway(builtin_host):
-    grant = _grant(builtin_host, await _commission(builtin_host))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
 
-    assert await _tool_names(builtin_host, grant) == ["builtin__keyboard_mouse", "builtin__browser"]
+    assert await _tool_names(builtin_host, grant) == BUILTIN_NAMES
 
 
 async def test_a_builtin_that_is_switched_off_is_neither_listed_nor_callable(builtin_host):
-    builtin_host.provider.ready["builtin:keyboard_mouse"] = False
-    builtin_host.permissions.set_asker(Asker("once"))
-    grant = _grant(builtin_host, await _commission(builtin_host))
+    builtin_host.provider.switched_off.add("computer")
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
 
     names = await _tool_names(builtin_host, grant)
-    result = await _call(builtin_host, grant, "builtin__keyboard_mouse", {"instruction": "open the calculator"})
+    direct = await _call(builtin_host, grant, "computer", {"action": "screenshot"})
+    through = await _call(builtin_host, grant, CALL_TOOL, {"name": "computer", "arguments": {"action": "screenshot"}})
+    found = _found(_text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "operate the desktop with the mouse"})))
 
-    assert names == ["builtin__browser"]
+    assert names == ["browser_navigate_page", "browser_take_screenshot"]
+    assert direct["isError"] is True and "no capability named computer" in _text(direct)
+    assert through["isError"] is True
+    assert "computer" not in found
+    assert builtin_host.provider.calls == [] and asker.asked == []
+
+
+async def test_without_a_provider_there_are_no_builtin_tools(host):
+    grant = _grant(host, await _commission(host), images=True)
+
+    assert await _tool_names(host, grant) == []
+    assert host.registry.builtins() == []
+
+
+async def test_two_builtin_tools_of_one_name_are_served_for_neither(builtin_host):
+    builtin_host.provider.definitions["again"] = (BUILTIN_GROUP_BROWSER, dict(COMPUTER), False)
+    builtin_host.permissions.set_asker(Asker("once"))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+
+    names = await _tool_names(builtin_host, grant)
+    result = await _call(builtin_host, grant, "computer", {"action": "screenshot"})
+
+    # A call by that name could reach the desktop or the browser.
+    assert names == ["browser_navigate_page", "browser_take_screenshot"]
     assert result["isError"] is True
     assert builtin_host.provider.calls == []
 
 
-async def test_without_a_provider_no_builtin_is_served(host):
-    grant = _grant(host, await _commission(host))
+async def test_the_task_brain_never_routes_to_a_builtin_directly(builtin_host, server):
+    # Only task agents reach the built-in tools; the decision model is shown
+    # plugins and nothing else.
+    _catalog(server)
 
-    assert await _tool_names(host, grant) == []
-    assert [(item.id, item.available) for item in host.registry.builtins()] == [
-        ("builtin:keyboard_mouse", False),
-        ("builtin:browser", False),
-    ]
+    shown = await builtin_host.registry.plugins()
+
+    assert sorted(item["id"] for item in shown) == ["lamp", "weather"]
+    assert [item.tool_name for item in builtin_host.registry.builtins()] == BUILTIN_NAMES
+    assert all(not item.one_step for item in builtin_host.registry.builtins())
+
+
+# -- tools that need a model that sees pictures -------------------------------
+
+
+async def test_a_tool_that_needs_pictures_is_kept_from_a_model_that_cannot_see_them(builtin_host):
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    grant = _grant(builtin_host, await _commission(builtin_host), images=False)
+
+    names = await _tool_names(builtin_host, grant)
+    direct = await _call(builtin_host, grant, "computer", {"action": "screenshot"})
+    through = await _call(builtin_host, grant, CALL_TOOL, {"name": "browser_take_screenshot"})
+    found = _found(
+        _text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "screenshot of the page, operate the desktop"}))
+    )
+
+    # All it can use is listed, so it is not given the search tools either.
+    assert names == ["browser_navigate_page"]
+    assert direct["isError"] is True and "no capability named computer" in _text(direct)
+    assert through["isError"] is True and "no capability named browser_take_screenshot" in _text(through)
+    assert "computer" not in found and "browser_take_screenshot" not in found
+    assert builtin_host.provider.calls == [] and asker.asked == []
+
+
+async def test_a_tool_that_needs_pictures_is_offered_to_a_model_that_sees_them(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+
+    names = await _tool_names(builtin_host, grant)
+    direct = await _call(builtin_host, grant, "computer", {"action": "screenshot"})
+    through = await _call(builtin_host, grant, CALL_TOOL, {"name": "browser_take_screenshot"})
+    found = _found(_text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "screenshot of the page"})))
+
+    assert names == BUILTIN_NAMES
+    assert direct["isError"] is False and through["isError"] is False
+    assert "browser_take_screenshot" in found
+    assert [name for name, _cid, _args in builtin_host.provider.calls] == ["computer", "browser_take_screenshot"]
+
+
+async def test_a_new_token_for_the_commission_decides_anew_whether_its_model_sees_pictures(builtin_host):
+    commission = await _commission(builtin_host)
+
+    seeing = _grant(builtin_host, commission, images=True)
+    assert await _tool_names(builtin_host, seeing) == BUILTIN_NAMES
+    blind = _grant(builtin_host, commission, images=False)
+    assert await _tool_names(builtin_host, blind) == ["browser_navigate_page"]
+    # Without a word about it, a model is not taken to see pictures.
+    unsaid = builtin_host.gateway._grant(builtin_host.gateway.issue(commission.id))
+    assert await _tool_names(builtin_host, unsaid) == ["browser_navigate_page"]
+
+
+# -- calls ---------------------------------------------------------------------
 
 
 async def test_a_builtin_call_asks_first_and_then_runs_for_the_commission(builtin_host):
-    asker = Asker("once")
+    asked: list[Any] = []
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        # What had run and what was occupied when the user was asked.
+        asked.append((commission_id, ask, list(builtin_host.provider.calls), builtin_host.leases.occupied()))
+        return "once"
+
     builtin_host.permissions.set_asker(asker)
     commission = await _commission(builtin_host)
     grant = _grant(builtin_host, commission)
+    before = [event.type for event in await builtin_host.ledger.events(commission.id)]
 
-    result = await _call(builtin_host, grant, "builtin__browser", {"instruction": "find the opening hours"})
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
 
-    assert [(cid, ask.category, ask.key) for cid, ask in asker.asked] == [(commission.id, "browser", None)]
+    ((asked_for, ask, ran_before, occupied_before),) = asked
+    assert (asked_for, ask.category, ask.key) == (commission.id, "browser", None)
+    assert ask.detail == {
+        "tool": "browser_navigate_page",
+        "capability": "builtin:browser:browser_navigate_page",
+        "title": "browser_navigate_page",
+    }
+    assert ran_before == [] and occupied_before == {}
     assert builtin_host.provider.calls == [
-        ("builtin:browser", commission.id, {"instruction": "find the opening hours"})
+        ("browser_navigate_page", commission.id, {"url": "https://example.com"})
     ]
-    assert (result["isError"], _text(result)) == (False, "did: find the opening hours")
-    events = [(event.type, event.payload) for event in await builtin_host.ledger.events(commission.id)]
-    assert ("builtin_run", {"capability": "builtin:browser"}) in events
-    assert ("builtin_run_ended", {"capability": "builtin:browser", "result": "completed"}) in events
+    assert result == {"content": [{"type": "text", "text": "browser_navigate_page done"}], "isError": False}
+    # A step that went well adds no row to the ledger: the task agent's own
+    # tool events show it already, and a task is many such steps.
+    assert [event.type for event in await builtin_host.ledger.events(commission.id)] == before
 
 
 async def test_a_declined_builtin_is_not_run(builtin_host):
     builtin_host.permissions.set_asker(Asker("deny"))
-    grant = _grant(builtin_host, await _commission(builtin_host))
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
 
-    result = await _call(builtin_host, grant, "builtin__keyboard_mouse", {"instruction": "open the calculator"})
+    result = await _call(builtin_host, grant, "computer", {"action": "screenshot"})
 
-    assert result["isError"] is True
+    assert result["isError"] is True and "the user declined" in _text(result)
     assert builtin_host.provider.calls == []
+    # Declined before the desktop was occupied.
+    assert builtin_host.leases.occupied() == {}
+    denied = [
+        event.payload
+        for event in await builtin_host.ledger.events(commission.id)
+        if event.type == "capability_denied"
+    ]
+    assert denied == [
+        {"capability": "builtin:keyboard_mouse:computer", "reason": "permission denied: the user declined"}
+    ]
 
 
-async def test_keyboard_and_browser_are_asked_about_separately(builtin_host):
+async def test_the_desktop_and_the_browser_are_asked_about_separately(builtin_host):
     asker = Asker("session")
     builtin_host.permissions.set_asker(asker)
-    grant = _grant(builtin_host, await _commission(builtin_host))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
 
-    await _call(builtin_host, grant, "builtin__browser", {"instruction": "a"})
-    await _call(builtin_host, grant, "builtin__browser", {"instruction": "b"})
-    await _call(builtin_host, grant, "builtin__keyboard_mouse", {"instruction": "c"})
+    await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+    await _call(builtin_host, grant, "browser_take_screenshot")
+    await _call(builtin_host, grant, "computer", {"action": "screenshot"})
 
+    # Once for each group, not once for each tool.
     assert [ask.category for _cid, ask in asker.asked] == ["browser", "keyboard_mouse"]
+    assert len(builtin_host.provider.calls) == 3
+
+
+async def test_a_group_allowed_once_is_not_asked_about_again_until_the_run_is_over(builtin_host):
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+
+    for _step in range(3):
+        await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+    assert [ask.category for _cid, ask in asker.asked] == ["browser"]
+
+    builtin_host.permissions.end_run(commission.id)
+    await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    assert [ask.category for _cid, ask in asker.asked] == ["browser", "browser"]
+    assert len(builtin_host.provider.calls) == 4
 
 
 async def test_a_builtin_that_fails_is_an_error_result(builtin_host):
-    from nekoclaw.host.capabilities import BuiltinOutcome
-
     builtin_host.permissions.set_asker(Asker("once"))
     builtin_host.provider.outcome = BuiltinOutcome(False, "the page never loaded")
-    commission = await _commission(builtin_host)
-    grant = _grant(builtin_host, commission)
+    grant = _grant(builtin_host, await _commission(builtin_host))
 
-    result = await _call(builtin_host, grant, "builtin__browser", {"instruction": "open it"})
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
 
-    assert (result["isError"], _text(result)) == (True, "the page never loaded")
-    events = [(event.type, event.payload) for event in await builtin_host.ledger.events(commission.id)]
-    assert ("builtin_run_ended", {"capability": "builtin:browser", "result": "failed"}) in events
+    assert result == {"content": [{"type": "text", "text": "the page never loaded"}], "isError": True}
+
+
+@pytest.mark.parametrize(("success", "text"), [(True, "done"), (False, "failed")])
+async def test_an_outcome_without_text_still_says_how_it_ended(builtin_host, success, text):
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.outcome = BuiltinOutcome(success, "")
+    grant = _grant(builtin_host, await _commission(builtin_host))
+
+    result = await _call(builtin_host, grant, "browser_navigate_page")
+
+    assert result == {"content": [{"type": "text", "text": text}], "isError": not success}
 
 
 async def test_a_builtin_that_raises_is_an_error_result_without_its_text(builtin_host):
@@ -994,61 +1282,235 @@ async def test_a_builtin_that_raises_is_an_error_result_without_its_text(builtin
     builtin_host.provider.outcome = RuntimeError("secret screen contents")
     grant = _grant(builtin_host, await _commission(builtin_host))
 
-    result = await _call(builtin_host, grant, "builtin__browser", {"instruction": "open it"})
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
 
     assert result["isError"] is True
     assert "secret screen contents" not in _text(result)
-    assert "RuntimeError" in _text(result)
+    assert _text(result) == "browser_navigate_page failed: RuntimeError"
 
 
 async def test_stopping_the_commission_stops_a_builtin_call_under_way(builtin_host):
     builtin_host.permissions.set_asker(Asker("once"))
-    builtin_host.provider.release = asyncio.Event()
+    builtin_host.provider.hold = asyncio.Event()
     commission = await _commission(builtin_host)
-    grant = _grant(builtin_host, commission)
+    grant = _grant(builtin_host, commission, images=True)
 
-    call = asyncio.ensure_future(_call(builtin_host, grant, "builtin__keyboard_mouse", {"instruction": "type it"}))
+    call = asyncio.ensure_future(_call(builtin_host, grant, "computer", {"action": "click"}))
     grant.in_flight.add(call)
     await asyncio.wait_for(builtin_host.provider.started.wait(), 5)
     builtin_host.gateway.revoke(commission.id)
     with pytest.raises(asyncio.CancelledError):
         await call
 
-    assert builtin_host.provider.cancelled == ["builtin:keyboard_mouse"]
-    await wait_until(
-        lambda: _has_event(builtin_host, commission.id, "builtin_run_ended", "cancelled"),
-        what="the cancelled call being recorded",
-    )
-
-
-async def _has_event(host: Any, commission_id: str, kind: str, result: str) -> bool:
-    return any(
-        event.type == kind and event.payload.get("result") == result
-        for event in await host.ledger.events(commission_id)
-    )
+    assert builtin_host.provider.cancelled == ["computer"]
 
 
 async def test_builtin_result_text_is_capped_in_tokens(builtin_host):
     from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
-    from nekoclaw.host.capabilities import BuiltinOutcome
     from utils.tokenize import count_tokens
 
     builtin_host.permissions.set_asker(Asker("once"))
     builtin_host.provider.outcome = BuiltinOutcome(True, " ".join(f"line{n}" for n in range(20000)))
     grant = _grant(builtin_host, await _commission(builtin_host))
 
-    result = await _call(builtin_host, grant, "builtin__browser", {"instruction": "read it"})
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
 
-    assert count_tokens(_text(result)) <= GATEWAY_RESULT_MAX_TOKENS
+    assert GATEWAY_RESULT_MAX_TOKENS - 50 <= count_tokens(_text(result)) <= GATEWAY_RESULT_MAX_TOKENS
 
 
-async def test_the_task_brain_never_routes_to_a_builtin_directly(builtin_host, server):
-    # Only task agents reach the built-in capabilities; the decision model is
-    # shown plugins and nothing else.
-    _catalog(server)
+# -- pictures in a result --------------------------------------------------------
 
-    shown = await builtin_host.registry.plugins()
 
-    assert sorted(item["id"] for item in shown) == ["lamp", "weather"]
-    assert all(not item.one_step for item in builtin_host.registry.builtins())
+async def test_a_result_with_pictures_is_one_text_block_followed_by_image_blocks(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.outcome = BuiltinOutcome(
+        True, "clicked", images=(BuiltinImage("QUJD", "image/jpeg"), BuiltinImage("REVG", "image/png"))
+    )
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
 
+    result = await _call(builtin_host, grant, "computer", {"action": "click"})
+
+    assert result == {
+        "content": [
+            {"type": "text", "text": "clicked"},
+            {"type": "image", "data": "QUJD", "mimeType": "image/jpeg"},
+            {"type": "image", "data": "REVG", "mimeType": "image/png"},
+        ],
+        "isError": False,
+    }
+
+
+async def test_a_step_that_failed_still_hands_its_picture_back(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.outcome = BuiltinOutcome(
+        False, "nothing to click there", images=(BuiltinImage("QUJD", "image/jpeg"),)
+    )
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+
+    result = await _call(builtin_host, grant, "computer", {"action": "click"})
+
+    assert result == {
+        "content": [
+            {"type": "text", "text": "nothing to click there"},
+            {"type": "image", "data": "QUJD", "mimeType": "image/jpeg"},
+        ],
+        "isError": True,
+    }
+
+
+async def test_pictures_are_left_out_for_a_model_that_cannot_see_them_and_the_text_says_so(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    # A tool such a model is offered hands a picture back all the same.
+    builtin_host.provider.outcome = BuiltinOutcome(True, "loaded", images=(BuiltinImage("QUJD", "image/jpeg"),))
+    grant = _grant(builtin_host, await _commission(builtin_host), images=False)
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    assert result == {
+        "content": [
+            {"type": "text", "text": "loaded\n[A picture was returned, but this model cannot see pictures.]"}
+        ],
+        "isError": False,
+    }
+
+
+# -- one commission at a time on the desktop and in the browser -------------------
+
+
+async def test_a_builtin_call_occupies_its_group_before_it_runs_and_keeps_it(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.observe = builtin_host.leases.occupied
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+
+    await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    # Occupied by the time the tool ran, and still: the next step finds the
+    # page as this one left it.
+    assert builtin_host.provider.observed == [{"browser": commission.id}]
+    held = builtin_host.leases.holder("browser")
+    assert (held.team, held.title, held.members) == (commission.id, "plan the trip", {commission.id})
+    assert builtin_host.leases.holder("keyboard_mouse") is None
+
+    await _call(builtin_host, grant, "computer", {"action": "screenshot"})
+
+    assert builtin_host.leases.occupied() == {"browser": commission.id, "keyboard_mouse": commission.id}
+
+
+@pytest.mark.parametrize(
+    ("tool", "group", "what"),
+    [("browser_navigate_page", "browser", "browser"), ("computer", "keyboard_mouse", "desktop")],
+)
+async def test_a_group_another_task_occupies_is_left_alone_and_the_task_agent_is_told_who_has_it(
+    builtin_host, short_wait, tool, group, what
+):
+    builtin_host.permissions.set_asker(Asker("once"))
+    first = await _commission(builtin_host)
+    second = await _commission(builtin_host, title="book the hotel")
+    first_grant = _grant(builtin_host, first, images=True)
+    second_grant = _grant(builtin_host, second, images=True)
+    await _call(builtin_host, first_grant, tool)
+
+    result = await asyncio.wait_for(_call(builtin_host, second_grant, tool), 10)
+
+    assert result["isError"] is True
+    text = _text(result)
+    assert text.startswith(f"The {what} is in use by another task (plan the trip) and did not come free in time.")
+    assert "Nothing was done." in text
+    # Only the first commission's step ran, and it still has the group.
+    assert [(name, cid) for name, cid, _args in builtin_host.provider.calls] == [(tool, first.id)]
+    assert builtin_host.leases.occupied() == {group: first.id}
+    occupied = [
+        event.payload for event in await builtin_host.ledger.events(second.id) if event.type == "builtin_occupied"
+    ]
+    assert occupied == [{"capability": f"builtin:{group}:{tool}", "by": first.id}]
+
+
+async def test_the_browser_being_occupied_does_not_keep_another_task_from_the_desktop(builtin_host, short_wait):
+    builtin_host.permissions.set_asker(Asker("once"))
+    first = await _commission(builtin_host)
+    second = await _commission(builtin_host, title="book the hotel")
+    await _call(builtin_host, _grant(builtin_host, first, images=True), "browser_navigate_page")
+
+    result = await asyncio.wait_for(
+        _call(builtin_host, _grant(builtin_host, second, images=True), "computer", {"action": "screenshot"}), 10
+    )
+
+    assert result["isError"] is False
+    assert builtin_host.leases.occupied() == {"browser": first.id, "keyboard_mouse": second.id}
+
+
+async def test_a_commission_waiting_for_a_group_gets_it_when_the_other_commission_ends(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    first = await _commission(builtin_host)
+    second = await _commission(builtin_host, title="book the hotel")
+    await _call(builtin_host, _grant(builtin_host, first), "browser_navigate_page")
+
+    waiting = asyncio.ensure_future(_call(builtin_host, _grant(builtin_host, second), "browser_navigate_page"))
+    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the browser")
+    assert len(builtin_host.provider.calls) == 1
+    await builtin_host.ledger.transition(first.id, "done", reason="test")
+
+    result = await asyncio.wait_for(waiting, 10)
+    assert result["isError"] is False
+    assert [cid for _name, cid, _args in builtin_host.provider.calls] == [first.id, second.id]
+    assert builtin_host.leases.occupied() == {"browser": second.id}
+
+
+@pytest.mark.parametrize("status", ["cancelled", "waiting_user"])
+async def test_a_commission_that_stopped_working_while_it_waited_for_a_group_does_not_run_the_tool(
+    builtin_host, status
+):
+    builtin_host.permissions.set_asker(Asker("once"))
+    first = await _commission(builtin_host)
+    second = await _commission(builtin_host, title="book the hotel")
+    await _call(builtin_host, _grant(builtin_host, first), "browser_navigate_page")
+    waiting = asyncio.ensure_future(_call(builtin_host, _grant(builtin_host, second), "browser_navigate_page"))
+    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the browser")
+
+    # Stopped, or asking the user something, by the time its turn comes.
+    await builtin_host.ledger.transition(second.id, status, reason="test")
+    await builtin_host.ledger.transition(first.id, "done", reason="test")
+    result = await asyncio.wait_for(waiting, 10)
+
+    assert result["isError"] is True and "no longer under way" in _text(result)
+    assert [cid for _name, cid, _args in builtin_host.provider.calls] == [first.id]
+    # The browser it was handed is given straight back.
+    assert builtin_host.leases.occupied() == {}
+
+
+async def test_stopping_a_commission_stops_its_call_that_waits_for_a_group(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    first = await _commission(builtin_host)
+    second = await _commission(builtin_host, title="book the hotel")
+    await _call(builtin_host, _grant(builtin_host, first), "browser_navigate_page")
+    second_grant = _grant(builtin_host, second)
+    waiting = asyncio.ensure_future(_call(builtin_host, second_grant, "browser_navigate_page"))
+    second_grant.in_flight.add(waiting)
+    await wait_until(lambda: builtin_host.leases._waiters, what="the second commission waiting for the browser")
+
+    builtin_host.gateway.revoke(second.id)
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+
+    assert builtin_host.leases._waiters == set()
+    assert builtin_host.leases.occupied() == {"browser": first.id}
+    assert len(builtin_host.provider.calls) == 1
+
+
+async def test_a_task_agent_uses_the_group_the_commission_that_started_it_occupies(builtin_host, short_wait):
+    builtin_host.permissions.set_asker(Asker("once"))
+    lead = await _commission(builtin_host)
+    child = await _commission(
+        builtin_host, title="look up trains", parent_id=lead.id, name="agent-1", source="task_agent"
+    )
+    await _call(builtin_host, _grant(builtin_host, lead), "browser_navigate_page")
+
+    result = await asyncio.wait_for(
+        _call(builtin_host, _grant(builtin_host, child), "browser_navigate_page"), 10
+    )
+
+    assert result["isError"] is False
+    held = builtin_host.leases.holder("browser")
+    assert (held.team, held.members) == (lead.id, {lead.id, child.id})
+    assert [cid for _name, cid, _args in builtin_host.provider.calls] == [lead.id, child.id]

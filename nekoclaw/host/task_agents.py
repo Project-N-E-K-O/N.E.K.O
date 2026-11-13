@@ -146,6 +146,8 @@ class _Session:
     # ends, the earlier one's end is held here and decides nothing.
     sent: int = 0
     held_end: dict[str, Any] | None = None
+    # The address and the name of the model the session was started with.
+    model: tuple[Any, Any] | None = None
 
 
 def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
@@ -215,8 +217,16 @@ class TaskAgentManager:
         max_concurrent: int | None = None,
         lessons: LessonSink | None = None,
         meter: UsageMeter | None = None,
+        leases: Any = None,
+        model_capabilities: Any = None,
     ) -> None:
         self._meter = meter
+        # ``nekoclaw.host.leases.BuiltinLeases``: who occupies the desktop and
+        # the browser. A commission lets go of them when its run is over.
+        self._leases = leases
+        # ``nekoclaw.host.model_capabilities.ModelCapabilityStore``, or None:
+        # then every model is taken to see pictures.
+        self._model_capabilities = model_capabilities
         self._ledger = ledger
         self._preferences = preferences
         self._permissions = permissions
@@ -450,22 +460,38 @@ class TaskAgentManager:
 
             session_path, workdir = await asyncio.to_thread(prepare)
 
+            if "supports_images" not in config:
+                config = {**config, "supports_images": await self._sees_images(config)}
+            model = ModelConfig(**config)
+            session.model = (config.get("base_url"), config.get("model"))
+
             gateway_spec = None
-            if self._gateway is not None and await self._registry.callable_by_task_agents():
-                url = await self._gateway.start()
-                token = self._gateway.issue(commission.id, candidate_plugin_ids=self._candidates.get(commission.id, ()))
-                gateway_spec = GatewaySpec(url=url, token=token)
+            image_retention: dict[str, int] = {}
+            image_pools: dict[str, str] = {}
+            if self._gateway is not None:
+                callable_now = await self._registry.callable_by_task_agents()
+                if callable_now:
+                    url = await self._gateway.start()
+                    token = self._gateway.issue(
+                        commission.id,
+                        candidate_plugin_ids=self._candidates.get(commission.id, ()),
+                        supports_images=model.supports_images,
+                    )
+                    gateway_spec = GatewaySpec(url=url, token=token)
+                    image_retention, image_pools = self._image_retention(callable_now)
 
             spec = TaskAgentSpec(
                 session_id=commission.id,
                 workdir=workdir,
                 session_dir=session_path,
-                model=ModelConfig(**config),
+                model=model,
                 instructions=await self._brief(commission, with_gateway=gateway_spec is not None),
                 reply_language=_REPLY_LANGUAGES.get(commission.lang or "", None),
                 top_level=commission.parent_id is None,
                 # A task agent started by a task agent starts none itself.
                 disabled_tools=["subagent"] if commission.parent_id is not None else [],
+                image_retention=image_retention,
+                image_pools=image_pools,
                 gateway=gateway_spec,
             )
             runtime = await self._ensure_runtime()
@@ -544,6 +570,37 @@ class TaskAgentManager:
             self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             return False
+
+    async def _sees_images(self, config: dict[str, Any]) -> bool:
+        """Return whether the task agent model is sent pictures; see ``model_capabilities.py``."""
+        if self._model_capabilities is None:
+            return True
+        try:
+            return bool(await self._model_capabilities.sees_images(config.get("base_url"), config.get("model")))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not knowing is the same as not having learned otherwise
+            logger.warning("looking up what the task agent model can see failed", exc_info=True)
+            return True
+
+    @staticmethod
+    def _image_retention(capabilities: list[Any]) -> tuple[dict[str, int], dict[str, str]]:
+        """Return how many screenshots of the built-in tools stay in a task agent's context.
+
+        Every tool that needs a model that sees pictures hands screenshots
+        back. The first value gives the number for each such tool; the second
+        puts the tools of one group in one pool, so the number is counted
+        for the group as a whole and not once per tool.
+        """
+        from config.nekoclaw_settings import TASK_AGENT_SCREENSHOTS_KEPT
+
+        retention: dict[str, int] = {}
+        pools: dict[str, str] = {}
+        for capability in capabilities:
+            if capability.needs_images and capability.group:
+                retention[capability.tool_name] = TASK_AGENT_SCREENSHOTS_KEPT
+                pools[capability.tool_name] = capability.group
+        return retention, pools
 
     async def _pay_first_request(self, session: _Session) -> bool:
         """Count a session's first model request before it is made; False when the quota is used up.
@@ -703,6 +760,8 @@ class TaskAgentManager:
             await self._on_error(session, event)
         elif kind == "usage":
             await self._on_usage(session)
+        elif kind == "model_capability":
+            await self._on_model_capability(session, event)
 
     def _summary(self, text: str) -> str:
         from config.nekoclaw_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
@@ -744,9 +803,40 @@ class TaskAgentManager:
             result_summary=self._summary(text),
         )
 
+    def _run_over(self, commission_id: str) -> None:
+        """A commission's run is over: what lasted for the run ends with it.
+
+        That is the desktop and the browser it occupied (another commission
+        may have them now), and what the user allowed "once" for the
+        keyboard and mouse and for the browser.
+        """
+        self._permissions.end_run(commission_id)
+        if self._leases is not None:
+            self._leases.release(commission_id)
+
+    async def _on_model_capability(self, session: _Session, event: dict[str, Any]) -> None:
+        """Remember that the model of a session turned out to take no pictures."""
+        if event.get("supports_images") is not False or self._model_capabilities is None or session.model is None:
+            return
+        base_url, model = session.model
+        try:
+            if await self._model_capabilities.note_images_refused(base_url, model):
+                logger.info("task agent model %s takes no pictures; tools that need them are left out from now on", model)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - learned again from the next refusal
+            logger.warning("remembering that the task agent model takes no pictures failed", exc_info=True)
+
     async def _on_ended(self, session: _Session, event: dict[str, Any]) -> None:
         commission_id = session.commission_id
         reason = event.get("reason")
+        inputs = event.get("inputs")
+        # The end of a run that took fewer texts than were sent is followed
+        # by another run, which may be under way already and using what this
+        # one would let go of. Only an end that leaves the session idle, or
+        # gone, ends what lasted for the run.
+        if not (reason == "completed" and isinstance(inputs, int) and inputs < session.sent):
+            self._run_over(commission_id)
         if reason == "closed":
             # An answer kept for a run that never came is not lost with the
             # session: it takes the commission up again from its transcript.
@@ -773,7 +863,6 @@ class TaskAgentManager:
         if commission is None:
             return
         if reason == "completed":
-            inputs = event.get("inputs")
             if isinstance(inputs, int) and inputs < session.sent:
                 # Text sent after this run had finished (a result from a
                 # task agent it started, or something the user said) started

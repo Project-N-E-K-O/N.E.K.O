@@ -12,18 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The agent process around the host: routes, the task HUD's view, reports, built-in capabilities.
+"""The agent process around the host: routes, the task HUD's view, reports, built-in tools.
 
 The host is real, with its files under the test's own directory, a fake
 plugin server and a scripted decision model. Nothing here starts the agent
 server or opens a socket: the route functions are called as plain functions
-and what they would send to the main server is collected.
+and what they would send to the main server is collected. Nothing touches a
+desktop or a browser either.
 """
 
 from __future__ import annotations
 
 import asyncio
-import threading
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -686,10 +686,19 @@ async def test_cancel_stops_the_task_tells_the_plugin_and_reports_it(wiring, ser
 
 
 async def test_end_all_stops_every_task_under_way(wiring, server, monkeypatch):
+    from app.agent_server import nekoclaw_builtins
+
     task_id, gate = await _running_task(wiring, server)
     second = await wiring.runtime.nekoclaw_dispatch({"text": "查一下北京后天的天气", "lanlan_name": "Mei"})
-    monkeypatch.setattr(wiring.shared.Modules, "computer_use", None)
-    monkeypatch.setattr(wiring.shared.Modules, "browser_use", None)
+    closes: list[int] = []
+
+    async def close_browser() -> None:
+        closes.append(1)
+
+    # There is no browser and no desktop in a test run; that end_all turns to
+    # the browser is recorded.
+    monkeypatch.setattr(nekoclaw_builtins.provider, "close_browser", close_browser)
+    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", None)
 
     answer = await wiring.routes.admin_control({"action": "end_all"})
 
@@ -698,6 +707,8 @@ async def test_end_all_stops_every_task_under_way(wiring, server, monkeypatch):
     assert (await host.ledger.get(task_id)).status == "cancelled"
     assert (await host.ledger.get(second["commission_id"])).status == "cancelled"
     assert wiring.mount_module.hud.active() == []
+    # The browser the browser tools started does not outlive the tasks.
+    assert closes == [1]
     gate.set()
 
 
@@ -1063,445 +1074,672 @@ def test_an_unknown_language_falls_back_to_the_process_default(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Built-in capabilities
+# The built-in tools, as this process offers them
 # ---------------------------------------------------------------------------
+# The tools themselves and how a call is carried out are covered with the
+# package (test_builtin_*.py); here it is what only the agent process knows.
 
 
-class KeyboardAdapter:
+class Bridge:
+    """Stands in for the event bridge to the main server: keeps what it is handed."""
+
     def __init__(self) -> None:
-        self.instructions: list[str] = []
-        self.cancelled = 0
-        self.release = threading.Event()
-        self.release.set()
-        # Like the real adapter: "done" while nothing runs.
-        self.stopped = threading.Event()
-        self.stopped.set()
-        self.result: Any = {"success": True, "result": "typed it"}
+        self.events: list[dict[str, Any]] = []
 
-    def run_instruction(self, instruction: str) -> Any:
-        self.instructions.append(instruction)
-        self.stopped.clear()
-        self.release.wait(5)
-        self.stopped.set()
-        if isinstance(self.result, BaseException):
-            raise self.result
-        return self.result
-
-    def cancel_running(self) -> None:
-        self.cancelled += 1
-        self.release.set()
-
-    def wait_for_completion(self, timeout: float = 15.0) -> bool:
-        return self.stopped.wait(timeout)
-
-
-class BrowserAdapter:
-    def __init__(self) -> None:
-        self.instructions: list[str] = []
-        self.cancelled = 0
-        self.hard_cancels = 0
-        self.gate: asyncio.Event | None = None
-        # Set to make a cancelled call hang while it cleans up, as one does
-        # whose browser connection has stalled; the hard cancel releases it
-        # when ``hard_cancel_helps`` is true.
-        self.stuck: asyncio.Event | None = None
-        self.hard_cancel_helps = True
-        # Closing a browser session takes a moment.
-        self.hard_cancel_seconds = 0.0
-        self.unwound = 0
-        # Sessions closed, and how many had been when each call started.
-        self.closed = 0
-        self.closed_when_started: list[int] = []
-
-    async def run_instruction(self, instruction: str) -> Any:
-        self.instructions.append(instruction)
-        self.closed_when_started.append(self.closed)
-        try:
-            if self.gate is not None:
-                await self.gate.wait()
-        except asyncio.CancelledError:
-            if self.stuck is not None:
-                await self.stuck.wait()
-            self.unwound += 1
-            raise
-        return {"success": True, "result": "opening hours: 9 to 5"}
-
-    def cancel_running(self) -> None:
-        self.cancelled += 1
-
-    async def cancel(self) -> None:
-        self.hard_cancels += 1
-        await asyncio.sleep(self.hard_cancel_seconds)
-        self.closed += 1
-        if self.stuck is not None and self.hard_cancel_helps:
-            self.stuck.set()
+    async def emit_to_main(self, event: dict[str, Any]) -> bool:
+        self.events.append(event)
+        return True
 
 
 @pytest.fixture
 def builtins(monkeypatch: Any) -> Any:
-    from app.agent_server import _shared, capabilities, nekoclaw_builtins
+    from app.agent_server import _shared, nekoclaw_builtins, nekoclaw_mount
 
-    keyboard, browser = KeyboardAdapter(), BrowserAdapter()
-
-    async def ensure_browser() -> Any:
-        return browser
-
+    bridge = Bridge()
     monkeypatch.setattr(_shared.Modules, "analyzer_enabled", True)
     monkeypatch.setattr(
-        _shared.Modules, "agent_flags", {"computer_use_enabled": True, "browser_use_enabled": True}
+        _shared.Modules,
+        "agent_flags",
+        {"computer_use_enabled": True, "browser_use_enabled": True, "user_plugin_enabled": True},
     )
     monkeypatch.setattr(
         _shared.Modules,
         "capability_cache",
         {"computer_use": {"ready": True, "reason": ""}, "browser_use": {"ready": True, "reason": ""}},
     )
-    monkeypatch.setattr(_shared.Modules, "computer_use", keyboard)
-    monkeypatch.setattr(_shared.Modules, "browser_use_dispatch_lock", None)
-    monkeypatch.setattr(capabilities, "_ensure_browser_use_adapter", ensure_browser)
-    monkeypatch.setattr(nekoclaw_builtins, "parse_computer_use_result", lambda result: (True, str(result.get("result") or "")))
-    monkeypatch.setattr(nekoclaw_builtins, "parse_browser_use_result", lambda result: (True, str(result.get("result") or "")))
-    # Counting a call goes to the usage statistics; a test run must not add to them.
-    counted: list[str] = []
-    monkeypatch.setattr(nekoclaw_builtins, "_count", counted.append)
-    provider = nekoclaw_builtins.BuiltinCapabilityProvider()
-    return SimpleNamespace(
-        provider=provider, keyboard=keyboard, browser=browser, modules=_shared.Modules, counted=counted
+    monkeypatch.setattr(_shared.Modules, "agent_bridge", bridge)
+    monkeypatch.setattr(_shared.Modules, "_background_tasks", set())
+    monkeypatch.setattr(nekoclaw_builtins, "_in_use", {})
+    # Neither a desktop nor a browser exists in a test run.
+    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", None)
+    monkeypatch.setattr(nekoclaw_builtins.provider, "_browser", None)
+    # A use is counted in the usage statistics; a test run must not add to them.
+    counted: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr("utils.instrument.counter", lambda name, value=1, **dims: counted.append((name, dims)))
+
+    async def sent() -> list[dict[str, Any]]:
+        # The events go out from tasks, so that telling never holds a call up.
+        await asyncio.gather(*list(_shared.Modules._background_tasks))
+        return [event for event in bridge.events if event.get("event_type") == nekoclaw_builtins.ACTIVITY_EVENT]
+
+    yield SimpleNamespace(
+        module=nekoclaw_builtins,
+        provider=nekoclaw_builtins.provider,
+        modules=_shared.Modules,
+        hud=nekoclaw_mount.hud,
+        bridge=bridge,
+        counted=counted,
+        sent=sent,
+    )
+    nekoclaw_mount.hud.clear()
+
+
+KEYBOARD, BROWSER = "keyboard_mouse", "browser"
+
+
+def test_a_group_is_available_while_both_switches_are_on_and_its_check_passed(builtins):
+    assert builtins.module._state(KEYBOARD) == (True, "")
+    assert builtins.module._state(BROWSER) == (True, "")
+
+
+def test_the_master_switch_turns_both_groups_off(builtins, monkeypatch):
+    monkeypatch.setattr(builtins.modules, "analyzer_enabled", False)
+
+    assert builtins.module._state(KEYBOARD) == (False, "switched off")
+    assert builtins.module._state(BROWSER) == (False, "switched off")
+
+
+@pytest.mark.parametrize(
+    ("flags", "keyboard", "browser"),
+    [
+        ({"computer_use_enabled": False, "browser_use_enabled": True}, (False, "switched off"), (True, "")),
+        ({"computer_use_enabled": True, "browser_use_enabled": False}, (True, ""), (False, "switched off")),
+        # A switch that was never set is off.
+        ({"browser_use_enabled": True}, (False, "switched off"), (True, "")),
+        ({}, (False, "switched off"), (False, "switched off")),
+        (None, (False, "switched off"), (False, "switched off")),
+    ],
+)
+def test_each_group_follows_its_own_switch(builtins, monkeypatch, flags, keyboard, browser):
+    monkeypatch.setattr(builtins.modules, "agent_flags", flags)
+
+    assert builtins.module._state(KEYBOARD) == keyboard
+    assert builtins.module._state(BROWSER) == browser
+
+
+@pytest.mark.parametrize(
+    ("cache", "keyboard", "browser"),
+    [
+        (
+            {"computer_use": {"ready": True}, "browser_use": {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}},
+            (True, ""),
+            (False, "not ready (AGENT_LLM_UNREACHABLE)"),
+        ),
+        (
+            {"computer_use": {"ready": False, "reason": "AGENT_PYAUTOGUI_NOT_INSTALLED"}, "browser_use": {"ready": True}},
+            (False, "not ready (AGENT_PYAUTOGUI_NOT_INSTALLED)"),
+            (True, ""),
+        ),
+        # Never checked, or checked without a reason being kept.
+        ({"browser_use": {"ready": False, "reason": ""}}, (False, "not ready (unknown)"), (False, "not ready (unknown)")),
+        (None, (False, "not ready (unknown)"), (False, "not ready (unknown)")),
+    ],
+)
+def test_a_group_whose_last_check_did_not_pass_is_not_available_and_says_why(
+    builtins, monkeypatch, cache, keyboard, browser
+):
+    monkeypatch.setattr(builtins.modules, "capability_cache", cache)
+
+    assert builtins.module._state(KEYBOARD) == keyboard
+    assert builtins.module._state(BROWSER) == browser
+
+
+def test_a_switch_that_is_off_is_the_reason_given_before_a_failed_check(builtins, monkeypatch):
+    monkeypatch.setattr(builtins.modules, "agent_flags", {"computer_use_enabled": True, "browser_use_enabled": False})
+    monkeypatch.setattr(
+        builtins.modules, "capability_cache", {"browser_use": {"ready": False, "reason": "AGENT_BROWSER_NOT_FOUND"}}
     )
 
-
-def _availability(provider: Any) -> dict[str, tuple[bool, str]]:
-    return {item.id: (item.available, item.unavailable_reason) for item in provider.available()}
+    assert builtins.module._state(BROWSER) == (False, "switched off")
 
 
-def test_builtins_are_available_while_their_switches_are_on_and_their_check_passed(builtins, monkeypatch):
-    assert _availability(builtins.provider) == {
-        "builtin:keyboard_mouse": (True, ""),
-        "builtin:browser": (True, ""),
-    }
+def test_something_that_is_not_a_group_is_not_available(builtins):
+    assert builtins.module._state("plugin_entry") == (False, "unknown")
+    assert builtins.module._state("") == (False, "unknown")
 
+
+def test_the_provider_lists_the_computer_tool_and_the_fifteen_browser_tools(builtins):
+    from config.prompts.prompts_nekoclaw_builtin import BROWSER_TOOL_NAMES
+    from nekoclaw.builtin.provider import BuiltinToolProvider
+
+    assert isinstance(builtins.provider, BuiltinToolProvider)
+
+    listed = builtins.provider.available()
+
+    assert len(BROWSER_TOOL_NAMES) == 15 and all(name.startswith("browser_") for name in BROWSER_TOOL_NAMES)
+    assert [(item.id, item.group) for item in listed] == [("builtin:keyboard_mouse:computer", KEYBOARD)] + [
+        (f"builtin:browser:{name}", BROWSER) for name in BROWSER_TOOL_NAMES
+    ]
+    assert [item.tool_name for item in listed] == ["computer", *BROWSER_TOOL_NAMES]
+    assert all(item.available and item.unavailable_reason == "" for item in listed)
+    # The ones that work from a picture, for a model that can see it.
+    assert [item.tool_name for item in listed if item.needs_images] == ["computer", "browser_take_screenshot"]
+
+
+def test_the_listed_tools_carry_the_state_of_their_group_as_it_is_right_now(builtins, monkeypatch):
     monkeypatch.setattr(builtins.modules, "agent_flags", {"computer_use_enabled": False, "browser_use_enabled": True})
     monkeypatch.setattr(
         builtins.modules,
         "capability_cache",
-        {"computer_use": {"ready": True}, "browser_use": {"ready": False, "reason": "AGENT_LLM_UNREACHABLE"}},
+        {"computer_use": {"ready": True}, "browser_use": {"ready": False, "reason": "AGENT_BROWSER_NOT_FOUND"}},
     )
 
-    assert _availability(builtins.provider) == {
-        "builtin:keyboard_mouse": (False, "switched off"),
-        "builtin:browser": (False, "not ready (AGENT_LLM_UNREACHABLE)"),
+    by_group: dict[str, set[tuple[bool, str]]] = {}
+    for item in builtins.provider.available():
+        by_group.setdefault(item.group, set()).add((item.available, item.unavailable_reason))
+
+    assert by_group == {
+        KEYBOARD: {(False, "switched off")},
+        BROWSER: {(False, "not ready (AGENT_BROWSER_NOT_FOUND)")},
+    }
+
+    # Nothing is remembered: the next listing reads the switches again.
+    monkeypatch.setattr(builtins.modules, "agent_flags", {"computer_use_enabled": True, "browser_use_enabled": True})
+    assert {item.available for item in builtins.provider.available() if item.group == KEYBOARD} == {True}
+
+
+async def test_a_call_of_a_group_that_is_switched_off_is_refused_without_touching_anything(builtins, monkeypatch):
+    monkeypatch.setattr(builtins.modules, "agent_flags", {"computer_use_enabled": False, "browser_use_enabled": False})
+    by_name = {item.tool_name: item for item in builtins.provider.available()}
+
+    keyboard = await builtins.provider.run(by_name["computer"], commission_id="c1", arguments={"action": "screenshot"})
+    browser = await builtins.provider.run(by_name["browser_list_pages"], commission_id="c1", arguments={})
+
+    assert (keyboard.success, keyboard.text) == (False, "computer is not available: switched off")
+    assert (browser.success, browser.text) == (False, "browser_list_pages is not available: switched off")
+    # Neither a desktop nor a browser was made for it.
+    assert builtins.provider._desktop is None and builtins.provider._browser is None
+
+
+async def test_beginning_to_use_a_group_records_who_counts_once_and_tells_the_main_server(builtins):
+    builtins.hud.update(_commission(id="c1", lanlan_name="Lan"))
+
+    builtins.module.on_builtin_activity(KEYBOARD, "started", "c1")
+
+    assert builtins.module.occupant(KEYBOARD) == "c1"
+    assert builtins.module.group_in_use(KEYBOARD) is True and builtins.module.group_in_use() is True
+    assert builtins.module.occupant(BROWSER) is None and builtins.module.group_in_use(BROWSER) is False
+    assert builtins.counted == [("agent_invoked", {"agent_type": "cua"})]
+    assert await builtins.sent() == [
+        {
+            "event_type": "builtin_activity",
+            # The character whose task it is.
+            "lanlan_name": "Lan",
+            "activity": {"group": KEYBOARD, "state": "started", "commission_id": "c1", "window": None},
+        }
+    ]
+
+
+async def test_stopping_to_use_a_group_forgets_who_tells_the_main_server_and_counts_nothing(builtins):
+    builtins.module.on_builtin_activity(BROWSER, "started", "c1")
+    builtins.module.on_builtin_activity(BROWSER, "ended", "c1")
+
+    assert builtins.module.occupant(BROWSER) is None
+    assert builtins.module.group_in_use() is False
+    # One use, however many calls it made and although it has ended.
+    assert builtins.counted == [("agent_invoked", {"agent_type": "browser"})]
+    events = await builtins.sent()
+    assert [event["activity"] for event in events] == [
+        {"group": BROWSER, "state": "started", "commission_id": "c1", "window": None},
+        {"group": BROWSER, "state": "ended", "commission_id": "c1", "window": None},
+    ]
+    # A commission the task window does not know belongs to no character's page in particular.
+    assert {event["lanlan_name"] for event in events} == {None}
+
+
+async def test_an_end_that_arrives_late_does_not_forget_the_commission_that_has_the_group_now(builtins):
+    builtins.module.on_builtin_activity(KEYBOARD, "started", "c1")
+    # The next commission took the desktop over before the first one's end was told.
+    builtins.module.on_builtin_activity(KEYBOARD, "started", "c2")
+
+    builtins.module.on_builtin_activity(KEYBOARD, "ended", "c1")
+
+    assert builtins.module.occupant(KEYBOARD) == "c2"
+    assert builtins.module.group_in_use(KEYBOARD) is True
+    # The display is still told of every change.
+    assert [event["activity"]["state"] for event in await builtins.sent()] == ["started", "started", "ended"]
+
+    builtins.module.on_builtin_activity(KEYBOARD, "ended", "c2")
+    assert builtins.module.occupant(KEYBOARD) is None
+
+
+async def test_the_two_groups_are_occupied_independently(builtins):
+    builtins.module.on_builtin_activity(KEYBOARD, "started", "c1")
+    builtins.module.on_builtin_activity(BROWSER, "started", "c2")
+    builtins.module.on_builtin_activity(KEYBOARD, "ended", "c1")
+
+    assert (builtins.module.occupant(KEYBOARD), builtins.module.occupant(BROWSER)) == (None, "c2")
+    assert builtins.module.group_in_use() is True
+    assert [dims["agent_type"] for _name, dims in builtins.counted] == ["cua", "browser"]
+    await builtins.sent()
+
+
+async def test_the_event_for_the_browser_says_where_its_window_is_while_it_is_used(builtins, monkeypatch):
+    window = {"left": 40, "top": 60, "width": 1280, "height": 800}
+    monkeypatch.setattr(builtins.provider, "browser_window", lambda: dict(window))
+
+    builtins.module.on_builtin_activity(BROWSER, "started", "c1")
+    builtins.module.on_builtin_activity(BROWSER, "ended", "c1")
+    # For the keyboard and mouse the whole desktop is meant.
+    builtins.module.on_builtin_activity(KEYBOARD, "started", "c1")
+
+    assert [event["activity"]["window"] for event in await builtins.sent()] == [window, None, None]
+    assert builtins.module.activity_payload(BROWSER, "started", "c9") == {
+        "group": BROWSER,
+        "state": "started",
+        "commission_id": "c9",
+        "window": window,
     }
 
 
-def test_the_master_switch_turns_both_off(builtins, monkeypatch):
-    monkeypatch.setattr(builtins.modules, "analyzer_enabled", False)
+async def test_a_browser_window_that_becomes_known_or_moves_is_told_again_while_the_browser_is_used(
+    builtins, monkeypatch
+):
+    # The browser is only started by a commission's first call, after the
+    # "started" event went out: that event cannot say where the window is.
+    where: dict[str, Any] = {"window": None}
+    monkeypatch.setattr(builtins.provider, "browser_window", lambda: where["window"])
+    tell = builtins.provider.on_browser_window
+    assert tell is not None
 
-    assert [reason for _ready, reason in _availability(builtins.provider).values()] == ["switched off"] * 2
+    builtins.module.on_builtin_activity(BROWSER, "started", "c1")
+    where["window"] = {"left": 40, "top": 60, "width": 1280, "height": 800}
+    tell(where["window"])
+    where["window"] = {"left": 0, "top": 0, "width": 1920, "height": 1040}
+    tell(where["window"])
+
+    assert [(event["activity"]["state"], event["activity"]["commission_id"], event["activity"]["window"]) for event in await builtins.sent()] == [
+        ("started", "c1", None),
+        ("started", "c1", {"left": 40, "top": 60, "width": 1280, "height": 800}),
+        ("started", "c1", {"left": 0, "top": 0, "width": 1920, "height": 1040}),
+    ]
+    # Telling again is not another use of the tools.
+    assert len(builtins.counted) == 1
 
 
-async def test_a_keyboard_call_runs_the_adapter_off_the_event_loop(builtins):
-    outcome = await builtins.provider.run(
-        "builtin:keyboard_mouse", commission_id="c1", arguments={"instruction": "open the calculator"}
+async def test_a_browser_window_is_told_to_nobody_while_no_commission_uses_the_browser(builtins, monkeypatch):
+    window = {"left": 40, "top": 60, "width": 1280, "height": 800}
+    monkeypatch.setattr(builtins.provider, "browser_window", lambda: dict(window))
+    tell = builtins.provider.on_browser_window
+
+    # Left open by a commission that has finished, or only the keyboard is in use.
+    tell(window)
+    builtins.module.on_builtin_activity(KEYBOARD, "started", "c1")
+    tell(window)
+    builtins.module.on_builtin_activity(BROWSER, "started", "c2")
+    builtins.module.on_builtin_activity(BROWSER, "ended", "c2")
+    tell(window)
+
+    assert [(event["activity"]["group"], event["activity"]["state"]) for event in await builtins.sent()] == [
+        (KEYBOARD, "started"),
+        (BROWSER, "started"),
+        (BROWSER, "ended"),
+    ]
+
+
+async def test_a_missing_bridge_keeps_nothing_from_being_recorded(builtins, monkeypatch):
+    monkeypatch.setattr(builtins.modules, "agent_bridge", None)
+
+    builtins.module.on_builtin_activity(BROWSER, "started", "c1")
+    assert builtins.module.occupant(BROWSER) == "c1"
+    builtins.module.on_builtin_activity(BROWSER, "ended", "c1")
+    assert builtins.module.occupant(BROWSER) is None
+
+    assert await builtins.sent() == []
+
+
+async def test_a_failure_to_send_the_event_is_not_raised_to_the_host(builtins, monkeypatch):
+    from app.agent_server import results
+
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("no bridge to speak of")
+
+    monkeypatch.setattr(results, "_emit_main_event", broken)
+
+    # The host calls this in the middle of occupying a group; the banner is a display.
+    builtins.module.on_builtin_activity(KEYBOARD, "started", "c1")
+
+    assert builtins.module.occupant(KEYBOARD) == "c1"
+    assert len(builtins.counted) == 1
+
+
+async def test_the_host_is_given_the_tools_and_tells_this_process_who_uses_them(
+    wiring, server, builtins, tmp_path, monkeypatch
+):
+    from nekoclaw.host import mount
+    from plugin.core.state import state as plugin_state
+
+    monkeypatch.setattr(plugin_state.bus_change_hub, "subscribe", lambda bus, callback: lambda: None)
+    monkeypatch.setattr(wiring.mount_module, "_unsubscribe", None)
+    mount.reset_for_tests()
+
+    wiring.mount_module.mount_nekoclaw_host()
+
+    # Registering builds nothing. The host is then built with what was
+    # registered, in this test's own directory.
+    assert mount.peek_host() is None
+    registered = dict(mount._options)
+    mount.configure(
+        **registered, root=tmp_path / "nekoclaw", client_factory=server.client, decision_llm=wiring.llm
+    )
+    host = mount.get_host()
+    commission, _ = await host.ledger.create(lanlan_name="Lan", title="订票", dispatch_text="订票", source="dispatch")
+    await host.ledger.transition(commission.id, "working", route="task_agent")
+
+    # The tools the host offers task agents are this process's.
+    assert [item.tool_name for item in host.registry.builtins()] == [
+        item.tool_name for item in builtins.provider.available()
+    ]
+    assert len(host.registry.builtins()) == 16
+
+    # A commission that occupies a group is known here, and the banner is told.
+    assert await host.leases.acquire(BROWSER, commission.id, title="订票") is None
+    assert builtins.module.occupant(BROWSER) == commission.id
+    host.leases.release(commission.id)
+    await host.leases.settle()
+    assert builtins.module.occupant(BROWSER) is None
+
+    await asyncio.gather(*list(builtins.modules._background_tasks))
+    activity = [event for event in wiring.of("builtin_activity")]
+    assert [(event["lanlan_name"], event["activity"]["state"]) for event in activity] == [
+        ("Lan", "started"),
+        ("Lan", "ended"),
+    ]
+    assert {event["activity"]["commission_id"] for event in activity} == {commission.id}
+
+
+# ---------------------------------------------------------------------------
+# The banner's routes: who is using the tools, and stopping them with Esc
+# ---------------------------------------------------------------------------
+
+
+async def _working(host: Any, title: str) -> str:
+    commission, _ = await host.ledger.create(lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch")
+    await host.ledger.transition(commission.id, "working", route="task_agent")
+    return commission.id
+
+
+def _spy_on_abort(host: Any, monkeypatch: Any) -> list[tuple[str, str]]:
+    aborted: list[tuple[str, str]] = []
+    really_abort = host.abort
+
+    async def abort(commission_id: str, *, reason: str = "stopped") -> Any:
+        aborted.append((commission_id, reason))
+        return await really_abort(commission_id, reason=reason)
+
+    monkeypatch.setattr(host, "abort", abort)
+    return aborted
+
+
+async def test_the_activity_route_is_empty_while_nothing_uses_the_tools(wiring, builtins):
+    assert await wiring.runtime.builtin_activity() == {"activity": []}
+
+
+async def test_the_activity_route_has_one_entry_for_each_group_in_use(wiring, builtins, monkeypatch):
+    window = {"left": 0, "top": 0, "width": 1024, "height": 768}
+    monkeypatch.setattr(builtins.provider, "browser_window", lambda: dict(window))
+    builtins.module._in_use[BROWSER] = "c2"
+
+    assert await wiring.runtime.builtin_activity() == {
+        "activity": [{"group": BROWSER, "state": "started", "commission_id": "c2", "window": window}]
+    }
+
+    builtins.module._in_use[KEYBOARD] = "c1"
+
+    # What a banner that starts late is given is what the events carried.
+    assert await wiring.runtime.builtin_activity() == {
+        "activity": [
+            builtins.module.activity_payload(KEYBOARD, "started", "c1"),
+            builtins.module.activity_payload(BROWSER, "started", "c2"),
+        ]
+    }
+    assert (await wiring.runtime.builtin_activity())["activity"][0] == {
+        "group": KEYBOARD,
+        "state": "started",
+        "commission_id": "c1",
+        "window": None,
+    }
+
+
+@pytest.mark.parametrize("group", ["desktop", "", "builtin:browser", 3])
+async def test_stopping_a_group_that_does_not_exist_is_refused(wiring, builtins, monkeypatch, group):
+    from fastapi import HTTPException
+
+    host = wiring.host_mount.get_host()
+    task_id = await _working(host, "订票")
+    builtins.module._in_use[BROWSER] = task_id
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    with pytest.raises(HTTPException) as raised:
+        await wiring.runtime.stop_builtin({"group": group})
+
+    assert raised.value.status_code == 400
+    assert aborted == []
+    assert (await host.ledger.get(task_id)).status == "working"
+
+
+async def test_stopping_a_group_stops_the_commission_that_uses_it_and_no_other(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    typing, booking = await _working(host, "填表"), await _working(host, "订票")
+    builtins.module._in_use.update({KEYBOARD: typing, BROWSER: booking})
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    answer = await wiring.runtime.stop_builtin({"group": BROWSER})
+
+    assert answer == {"success": True, "stopped": [booking]}
+    assert aborted == [(booking, "Stopped with Esc")]
+    stopped = await host.ledger.get(booking)
+    assert (stopped.status, stopped.status_reason) == ("cancelled", "Stopped with Esc")
+    assert (await host.ledger.get(typing)).status == "working"
+    # The task window shows it as it shows a task stopped from there.
+    assert [task["status"] for task in wiring.mount_module.hud.all() if task["id"] == booking] == ["cancelled"]
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"group": None}])
+async def test_stopping_without_naming_a_group_stops_both(wiring, builtins, monkeypatch, payload):
+    host = wiring.host_mount.get_host()
+    typing, booking = await _working(host, "填表"), await _working(host, "订票")
+    builtins.module._in_use.update({BROWSER: booking, KEYBOARD: typing})
+
+    answer = await wiring.runtime.stop_builtin(payload)
+
+    assert answer == {"success": True, "stopped": [typing, booking]}
+    assert (await host.ledger.get(typing)).status == "cancelled"
+    assert (await host.ledger.get(booking)).status == "cancelled"
+
+
+async def test_a_commission_that_uses_both_groups_is_stopped_once(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    task_id = await _working(host, "订票")
+    builtins.module._in_use.update({KEYBOARD: task_id, BROWSER: task_id})
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    answer = await wiring.runtime.stop_builtin({})
+
+    assert answer == {"success": True, "stopped": [task_id]}
+    assert aborted == [(task_id, "Stopped with Esc")]
+
+
+async def test_stopping_while_nothing_uses_the_tools_stops_nothing_and_is_no_error(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    other = await _working(host, "整理照片")
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    assert await wiring.runtime.stop_builtin({}) == {"success": True, "stopped": []}
+    assert await wiring.runtime.stop_builtin({"group": KEYBOARD}) == {"success": True, "stopped": []}
+
+    # Esc on the banner is not "stop everything": a task that uses neither goes on.
+    assert aborted == []
+    assert (await host.ledger.get(other)).status == "working"
+
+
+async def test_stopping_before_the_host_exists_stops_nothing_and_builds_nothing(wiring, builtins):
+    builtins.module._in_use[BROWSER] = "left-over"
+
+    assert await wiring.runtime.stop_builtin({}) == {"success": True, "stopped": []}
+    assert wiring.host_mount.peek_host() is None
+
+
+async def test_a_commission_that_had_already_ended_is_not_reported_as_stopped(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    finished = await _working(host, "订票")
+    await host.ledger.transition(finished, "done")
+    # Its end has not been told yet; and one that the ledger never had.
+    builtins.module._in_use.update({BROWSER: finished, KEYBOARD: "no-such-commission"})
+
+    answer = await wiring.runtime.stop_builtin({})
+
+    assert answer == {"success": True, "stopped": []}
+    assert (await host.ledger.get(finished)).status == "done"
+
+
+# ---------------------------------------------------------------------------
+# Which browser the browser tools use: the settings routes
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def browser_settings(monkeypatch: Any, tmp_path: Any) -> Any:
+    from app.agent_server import _shared, api_runtime
+    from nekoclaw.builtin.browser import launcher, settings
+
+    root = tmp_path / "data" / "nekoclaw"
+    found = [
+        SimpleNamespace(kind="chrome", name="Google Chrome", executable="/opt/google/chrome", user_data_dir="/home/u/.config/chrome"),
+        SimpleNamespace(kind="edge", name="Microsoft Edge", executable="/opt/microsoft/edge", user_data_dir=None),
+    ]
+    closes: list[dict[str, Any]] = []
+
+    async def close_browser(**options: Any) -> None:
+        closes.append(options)
+
+    monkeypatch.setattr(settings, "_root", lambda: root)
+    monkeypatch.setattr(launcher, "find_browsers", lambda *args, **kwargs: list(found))
+    monkeypatch.setattr(api_runtime, "_close_browser", close_browser)
+    monkeypatch.setattr(_shared.Modules, "_background_tasks", set())
+
+    async def closed() -> list[dict[str, Any]]:
+        await asyncio.gather(*list(_shared.Modules._background_tasks))
+        return closes
+
+    return SimpleNamespace(
+        runtime=api_runtime,
+        file=root / "browser.json",
+        closed=closed,
+        modes=["own_profile", "attach"],
+        browsers=[
+            {"kind": "chrome", "name": "Google Chrome", "executable": "/opt/google/chrome"},
+            {"kind": "edge", "name": "Microsoft Edge", "executable": "/opt/microsoft/edge"},
+        ],
     )
 
-    assert (outcome.success, outcome.text) == (True, "typed it")
-    assert builtins.keyboard.instructions == ["open the calculator"]
-    assert builtins.provider.is_running() is False
-    assert builtins.counted == ["cua"]
+
+async def test_the_browser_settings_start_as_the_defaults_with_the_browsers_found(browser_settings):
+    view = await browser_settings.runtime.get_browser_settings()
+
+    assert view == {
+        "settings": {"mode": "own_profile", "executable": None, "headless": False},
+        "modes": browser_settings.modes,
+        "browsers": browser_settings.browsers,
+    }
+    # Reading writes nothing and closes nothing.
+    assert not browser_settings.file.exists()
+    assert await browser_settings.closed() == []
 
 
-async def test_a_browser_call_runs_the_adapter(builtins):
-    outcome = await builtins.provider.run(
-        "builtin:browser", commission_id="c1", arguments={"instruction": "find the opening hours"}
+async def test_changing_the_browser_settings_saves_them_and_closes_the_browser_that_is_open(browser_settings):
+    import json
+
+    answer = await browser_settings.runtime.set_browser_settings({"mode": "attach"})
+
+    assert answer == {
+        "success": True,
+        "settings": {"mode": "attach", "executable": None, "headless": False},
+        "modes": browser_settings.modes,
+        "browsers": browser_settings.browsers,
+    }
+    assert json.loads(browser_settings.file.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "mode": "attach",
+        "executable": None,
+        "headless": False,
+    }
+    assert (await browser_settings.runtime.get_browser_settings())["settings"]["mode"] == "attach"
+    # The next call starts a browser anew, with the new settings. What the
+    # switch shows is not touched.
+    assert await browser_settings.closed() == [{"update_capability": False}]
+
+
+async def test_a_change_of_one_setting_keeps_the_others(browser_settings, tmp_path):
+    executable = tmp_path / "my-browser"
+    executable.write_bytes(b"")
+    await browser_settings.runtime.set_browser_settings(
+        {"mode": "attach", "executable": str(executable), "headless": True}
     )
 
-    assert (outcome.success, outcome.text) == (True, "opening hours: 9 to 5")
-    assert builtins.browser.instructions == ["find the opening hours"]
-    assert builtins.counted == ["browser"]
-
+    answer = await browser_settings.runtime.set_browser_settings({"headless": False})
 
-@pytest.mark.parametrize("arguments", [{}, {"instruction": "   "}, {"instruction": None}])
-async def test_a_call_without_an_instruction_runs_nothing(builtins, arguments):
-    outcome = await builtins.provider.run("builtin:keyboard_mouse", commission_id="c1", arguments=arguments)
-
-    assert outcome.success is False
-    assert builtins.keyboard.instructions == []
-    assert builtins.counted == []
-
-
-async def test_a_capability_switched_off_while_a_call_waited_is_not_run(builtins, monkeypatch):
-    monkeypatch.setattr(builtins.modules, "agent_flags", {"computer_use_enabled": False, "browser_use_enabled": False})
-
-    keyboard = await builtins.provider.run("builtin:keyboard_mouse", commission_id="c1", arguments={"instruction": "x"})
-    browser = await builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "x"})
-
-    assert (keyboard.success, browser.success) == (False, False)
-    assert builtins.keyboard.instructions == [] and builtins.browser.instructions == []
-
-
-async def test_cancelling_a_keyboard_call_stops_the_adapter_and_waits_for_its_thread(builtins):
-    builtins.keyboard.release.clear()
-    running = asyncio.ensure_future(
-        builtins.provider.run("builtin:keyboard_mouse", commission_id="c1", arguments={"instruction": "type a letter"})
-    )
-    await wait_until(lambda: builtins.keyboard.instructions, what="the adapter starting")
-    assert builtins.provider.is_running("builtin:keyboard_mouse") is True
-
-    running.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await running
-
-    assert builtins.keyboard.cancelled == 1
-    # The worker thread had stopped before the call gave the desktop back.
-    assert builtins.keyboard.stopped.is_set()
-    assert builtins.provider.is_running() is False
-
-
-async def test_only_one_keyboard_call_runs_at_a_time(builtins):
-    builtins.keyboard.release.clear()
-    first = asyncio.ensure_future(
-        builtins.provider.run("builtin:keyboard_mouse", commission_id="c1", arguments={"instruction": "first"})
-    )
-    await wait_until(lambda: builtins.keyboard.instructions, what="the first call")
-    second = asyncio.ensure_future(
-        builtins.provider.run("builtin:keyboard_mouse", commission_id="c2", arguments={"instruction": "second"})
-    )
-    await asyncio.sleep(0.1)
-
-    assert builtins.keyboard.instructions == ["first"]
-    builtins.keyboard.release.set()
-    await asyncio.gather(first, second)
-
-    assert builtins.keyboard.instructions == ["first", "second"]
-
-
-async def test_cancelling_a_browser_call_flags_the_adapter(builtins):
-    builtins.browser.gate = asyncio.Event()
-    running = asyncio.ensure_future(
-        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
-    )
-    await wait_until(lambda: builtins.browser.instructions, what="the adapter starting")
-
-    running.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await running
-
-    assert builtins.browser.cancelled == 1
-    assert builtins.provider.is_running() is False
-    # The flag only works at the adapter's next step; the hard cancel is started too.
-    await wait_until(lambda: builtins.browser.hard_cancels == 1, what="the hard cancel")
-    assert builtins.browser.unwound == 1
-
-
-async def test_a_browser_call_stuck_in_the_browser_is_torn_down_and_frees_the_lock(builtins):
-    browser = builtins.browser
-    browser.gate, browser.stuck, browser.hard_cancel_seconds = asyncio.Event(), asyncio.Event(), 0.1
-    running = asyncio.ensure_future(
-        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
-    )
-    await wait_until(lambda: browser.instructions, what="the adapter starting")
-
-    running.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(running, 5.0)
-
-    # The hard cancel ran without waiting for the call to unwind, and is what
-    # let it unwind. The lock was kept until it had: the call is gone by now.
-    assert (browser.cancelled, browser.hard_cancels, browser.unwound) == (1, 1, 1)
-    assert builtins.modules.browser_use_dispatch_lock.locked() is False
-    browser.gate = None
-    outcome = await builtins.provider.run(
-        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
-    )
-    assert outcome.success is True
-
-
-async def test_a_browser_call_that_never_lets_go_holds_the_lock_for_a_bounded_time_only(builtins, monkeypatch):
-    from app.agent_server import nekoclaw_builtins
-
-    monkeypatch.setattr(nekoclaw_builtins, "_BROWSER_STOP_WAIT_SECONDS", 0.1)
-    browser = builtins.browser
-    browser.gate, browser.stuck, browser.hard_cancel_helps = asyncio.Event(), asyncio.Event(), False
-    running = asyncio.ensure_future(
-        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
-    )
-    await wait_until(lambda: browser.instructions, what="the adapter starting")
-
-    running.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(running, 5.0)
-
-    assert (browser.hard_cancels, browser.unwound) == (1, 0)
-    assert builtins.provider.is_running() is False
-    assert builtins.modules.browser_use_dispatch_lock.locked() is False
-    # The lock is free, yet the stuck call still has the browser: a call that
-    # comes now waits for it, for a bounded time as well, and does not start.
-    browser.gate = None
-    refused = await builtins.provider.run(
-        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
-    )
-    assert (refused.success, refused.text) == (False, "browser control is still busy with an earlier call")
-    # Having refused one call does not make it forget what is still going.
-    again = await builtins.provider.run(
-        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
-    )
-    assert again.success is False
-    assert browser.instructions == ["read the page"] and builtins.counted == ["browser"]
-    # Once the stuck call has let go, calls are taken again.
-    browser.stuck.set()
-    await wait_until(lambda: browser.unwound == 1, what="the stuck call unwinding")
-    outcome = await builtins.provider.run(
-        "builtin:browser", commission_id="c3", arguments={"instruction": "find the opening hours"}
-    )
-    assert outcome.success is True
-
-
-async def test_what_a_call_left_on_a_browser_that_was_replaced_holds_up_nothing(builtins, monkeypatch):
-    from app.agent_server import capabilities, nekoclaw_builtins
-
-    monkeypatch.setattr(nekoclaw_builtins, "_BROWSER_STOP_WAIT_SECONDS", 0.1)
-    browser = builtins.browser
-    browser.gate, browser.stuck, browser.hard_cancel_helps = asyncio.Event(), asyncio.Event(), False
-    running = asyncio.ensure_future(
-        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
-    )
-    await wait_until(lambda: browser.instructions, what="the adapter starting")
-    running.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(running, 5.0)
-    # The stuck call never lets go of that browser. It is closed and a new
-    # one built (the switch turned off and on, the model changed).
-    replacement = BrowserAdapter()
-
-    async def ensure_replacement() -> Any:
-        return replacement
-
-    monkeypatch.setattr(capabilities, "_ensure_browser_use_adapter", ensure_replacement)
-
-    outcome = await builtins.provider.run(
-        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
-    )
-
-    assert outcome.success is True and replacement.instructions == ["find the opening hours"]
-    browser.stuck.set()
-
-
-async def test_a_cancelled_browser_call_keeps_the_lock_until_its_session_is_closed(builtins):
-    browser = builtins.browser
-    browser.gate, browser.hard_cancel_seconds = asyncio.Event(), 0.2
-    running = asyncio.ensure_future(
-        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
-    )
-    await wait_until(lambda: browser.instructions, what="the adapter starting")
-
-    running.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(running, 5.0)
-
-    # The call itself unwound at once. Closing its session took longer, and
-    # the lock was kept for that too: the next call would have been given
-    # the session that was being closed.
-    assert (browser.unwound, browser.closed) == (1, 1)
-    assert builtins.modules.browser_use_dispatch_lock.locked() is False
-
-
-async def test_a_browser_call_waits_for_a_session_that_is_still_being_closed(builtins):
-    browser = builtins.browser
-    browser.gate, browser.hard_cancel_seconds = asyncio.Event(), 0.3
-    running = asyncio.ensure_future(
-        builtins.provider.run("builtin:browser", commission_id="c1", arguments={"instruction": "read the page"})
-    )
-    await wait_until(lambda: browser.instructions, what="the adapter starting")
-    running.cancel()
-    await wait_until(lambda: browser.hard_cancels == 1, what="the hard cancel starting")
-    # Cancelled once more while it waits for the session to close: it stops
-    # waiting and gives the lock back with the session still being closed.
-    running.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(running, 5.0)
-    assert browser.closed == 0 and builtins.modules.browser_use_dispatch_lock.locked() is False
-    browser.gate = None
-
-    outcome = await builtins.provider.run(
-        "builtin:browser", commission_id="c2", arguments={"instruction": "find the opening hours"}
-    )
-
-    assert outcome.success is True
-    # The second call started only once the session had been closed.
-    assert browser.closed_when_started == [0, 1]
-
-
-async def test_the_browser_switch_is_read_again_once_the_adapter_is_there(builtins, monkeypatch):
-    from app.agent_server import capabilities
-
-    async def slow_to_build() -> Any:
-        # Switched off while the adapter was being built.
-        builtins.modules.agent_flags = {"computer_use_enabled": True, "browser_use_enabled": False}
-        return builtins.browser
-
-    monkeypatch.setattr(capabilities, "_ensure_browser_use_adapter", slow_to_build)
-
-    outcome = await builtins.provider.run(
-        "builtin:browser", commission_id="c1", arguments={"instruction": "find the opening hours"}
-    )
-
-    assert (outcome.success, outcome.text) == (False, "browser control is switched off")
-    assert builtins.browser.instructions == [] and builtins.counted == []
-
-
-async def test_a_keyboard_call_does_not_start_while_an_earlier_worker_is_still_going(builtins, monkeypatch):
-    from app.agent_server import nekoclaw_builtins
-
-    monkeypatch.setattr(nekoclaw_builtins, "_KEYBOARD_STOP_WAIT_SECONDS", 0.05)
-    # A worker thread of a cancelled call that has not stopped: on record
-    # nothing runs, yet the mouse is still being driven.
-    builtins.keyboard.stopped.clear()
-
-    outcome = await builtins.provider.run(
-        "builtin:keyboard_mouse", commission_id="c1", arguments={"instruction": "open the calculator"}
-    )
-
-    assert outcome.success is False
-    assert outcome.text == "keyboard and mouse control is still busy with an earlier call"
-    assert builtins.keyboard.instructions == [] and builtins.counted == []
-    assert builtins.provider.is_running() is False
-
-
-async def test_a_keyboard_call_does_not_start_once_switched_off_while_it_waited_for_an_earlier_worker(builtins):
-    keyboard = builtins.keyboard
-    wait_for_the_worker = keyboard.wait_for_completion
-
-    def switched_off_meanwhile(timeout: float = 15.0) -> bool:
-        builtins.modules.agent_flags = {"computer_use_enabled": False, "browser_use_enabled": True}
-        return wait_for_the_worker(timeout)
-
-    keyboard.wait_for_completion = switched_off_meanwhile
-
-    outcome = await builtins.provider.run(
-        "builtin:keyboard_mouse", commission_id="c1", arguments={"instruction": "open the calculator"}
-    )
-
-    assert (outcome.success, outcome.text) == (False, "keyboard and mouse control is switched off")
-    assert keyboard.instructions == [] and builtins.counted == []
-
-
-async def test_a_browser_call_that_finishes_is_not_torn_down(builtins):
-    outcome = await builtins.provider.run(
-        "builtin:browser", commission_id="c1", arguments={"instruction": "find the opening hours"}
-    )
-
-    assert outcome.success is True
-    assert (builtins.browser.cancelled, builtins.browser.hard_cancels) == (0, 0)
-
-
-async def test_what_an_adapter_raises_is_not_passed_on_word_for_word(builtins):
-    builtins.keyboard.result = RuntimeError("the password field said hunter2")
-
-    outcome = await builtins.provider.run(
-        "builtin:keyboard_mouse", commission_id="c1", arguments={"instruction": "log in"}
-    )
-
-    assert outcome.success is False
-    assert "hunter2" not in outcome.text and "RuntimeError" in outcome.text
+    assert answer["settings"] == {"mode": "attach", "executable": str(executable), "headless": False}
+    await browser_settings.closed()
+
+
+@pytest.mark.parametrize("blank", ["", "   ", None])
+async def test_a_blank_executable_goes_back_to_searching_for_a_browser(browser_settings, tmp_path, blank):
+    executable = tmp_path / "my-browser"
+    executable.write_bytes(b"")
+    await browser_settings.runtime.set_browser_settings({"executable": str(executable)})
+
+    answer = await browser_settings.runtime.set_browser_settings({"executable": blank})
+
+    assert answer["settings"]["executable"] is None
+    await browser_settings.closed()
+
+
+@pytest.mark.parametrize("headless", ["yes", 1, None])
+async def test_only_a_plain_true_starts_the_browser_without_a_window(browser_settings, headless):
+    answer = await browser_settings.runtime.set_browser_settings({"headless": headless})
+
+    assert answer["settings"]["headless"] is False
+    await browser_settings.closed()
+
+
+@pytest.mark.parametrize(
+    ("payload", "why"),
+    [
+        ({"mode": "incognito"}, "unknown mode"),
+        ({"mode": None}, "unknown mode"),
+        ({"mode": "attach", "executable": "/nowhere/at/all/browser"}, "executable not found"),
+    ],
+)
+async def test_a_setting_that_cannot_be_used_is_refused_and_nothing_is_saved_or_closed(browser_settings, payload, why):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as raised:
+        await browser_settings.runtime.set_browser_settings(payload)
+
+    assert (raised.value.status_code, raised.value.detail) == (400, why)
+    assert not browser_settings.file.exists()
+    assert await browser_settings.closed() == []
+
+
+async def test_a_directory_is_not_an_executable(browser_settings, tmp_path):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as raised:
+        await browser_settings.runtime.set_browser_settings({"executable": str(tmp_path)})
+
+    assert raised.value.status_code == 400
+    assert not browser_settings.file.exists()
 
 
 # ---------------------------------------------------------------------------

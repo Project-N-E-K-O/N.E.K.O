@@ -27,7 +27,7 @@ stays acyclic). The hierarchy:
     L2  knowledge, memory, main_logic, services
     L3  main_routers, theater_workshop
     L4  plugin                                ← high-level extension surface
-    L5  brain, nekoclaw                       ← top-of-stack agent orchestration
+    L5  nekoclaw                              ← top-of-stack agent orchestration
     L6  app, local_server, launcher.py, launcher_core  ← entrypoints
 
 Violations are split into two categories, both forbidden:
@@ -113,8 +113,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # used by main_logic, main_routers and app. ``theater_workshop`` is the
 # author-side theater host (not shipped) built on services. ``launcher_core``
 # is launcher.py's bootstrap and imports app directly. ``nekoclaw`` is the
-# base that runs task agents and will take over from ``brain``; it sits beside
-# it at the top of the stack.
+# base that runs task agents (it took over from the former ``brain`` package)
+# and sits at the top of the stack.
 
 LAYERS: List[Tuple[int, Set[str]]] = [
     (0, {"config", "steamworks"}),
@@ -122,7 +122,7 @@ LAYERS: List[Tuple[int, Set[str]]] = [
     (2, {"knowledge", "memory", "main_logic", "services"}),
     (3, {"main_routers", "theater_workshop"}),
     (4, {"plugin"}),
-    (5, {"brain", "nekoclaw"}),
+    (5, {"nekoclaw"}),
     (6, {"app", "local_server", "launcher", "launcher_core"}),
 ]
 
@@ -184,17 +184,31 @@ FORBIDDEN_EDGES: List[Tuple[str, str, str]] = [
             "main_routers",
             "theater_workshop",
             "plugin",
-            "brain",
+        )
+    ),
+    # The built-in tools (keyboard and mouse, browser) drive the desktop and
+    # a browser and nothing of the application: like the runtime they stay
+    # with config and utils (plus the types of ``nekoclaw.host.capabilities``
+    # they are handed to the host in, which the layering allows).
+    *(
+        ("nekoclaw/builtin/", package, "the built-in tools use only config, utils and the host's capability types")
+        for package in (
+            "steamworks",
+            "knowledge",
+            "memory",
+            "main_logic",
+            "services",
+            "main_routers",
+            "theater_workshop",
+            "plugin",
         )
     ),
     # The NekoClaw host (task brain, task agents, gateway) reaches plugins over
-    # HTTP and needs ``plugin.settings`` only. It takes over from the analyzer
-    # in ``brain`` and must not lean on it, and its task preferences stay apart
+    # HTTP and needs ``plugin.settings`` only. Its task preferences stay apart
     # from every memory: neither reads or writes the other.
     *(
         ("nekoclaw/host/", package, reason)
         for package, reason in (
-            ("brain", "the task brain replaces the analyzer and never imports it"),
             ("memory", "task preferences and persona memory never read or write each other"),
             ("knowledge", "the NekoClaw host keeps apart from the knowledge subsystem"),
             ("main_logic", "the NekoClaw host reaches the main dialogue through its outbox only"),

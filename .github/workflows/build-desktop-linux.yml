@@ -164,22 +164,7 @@ jobs:
                 json.dump(data, f, ensure_ascii=False, indent=2)
               print(f'Created {path}')
           "
-          # Copy browser_use prompt .md templates from installed package
-          mkdir -p data/browser_use_prompts
-          .venv/bin/python -c "
-          import shutil
-          from pathlib import Path
-          import browser_use.agent.system_prompts as sp
-          src = Path(sp.__file__).parent
-          dst = Path('data/browser_use_prompts')
-          dst.mkdir(parents=True, exist_ok=True)
-          for md in src.glob('*.md'):
-              shutil.copy2(md, dst / md.name)
-              print(f'Copied {md.name}')
-          "
-          echo "=== browser_use_prompts ==="
-          ls -la data/browser_use_prompts/
-          echo "Default config files and directories ready."
+          echo "Default config files ready."
 
       # --- Platform-specific system dependencies ---
       - name: Install Linux system dependencies
@@ -197,15 +182,6 @@ jobs:
             portaudio19-dev \
             patchelf \
             ccache
-
-      # --- Pre-install Playwright Chromium for bundle ---
-      - name: Install Playwright Chromium
-        shell: bash
-        run: |
-          mkdir -p playwright_browsers
-          PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright_browsers" \
-            .venv/bin/python -m playwright install chromium || \
-            echo "[WARNING] Playwright Chromium install failed; will download on first run."
 
       # --- Prepare local embedding model assets ---
       # Mirrors the upstream Hugging Face repo at a pinned revision into the
@@ -305,7 +281,6 @@ jobs:
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
           # Plugin manager UI (vite dist; gitignored)
           if [ -d "frontend/plugin-manager/dist" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist"
@@ -314,7 +289,6 @@ jobs:
           fi
           # Built-in plugin data is installed from the filtered stage after
           # compilation. Nuitka intentionally refuses to treat .py as data.
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
           if [ -d "data/tiktoken_cache" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/tiktoken_cache=data/tiktoken_cache"
           fi
@@ -344,7 +318,6 @@ jobs:
           # The generated launcher carries selective --nofollow-import-to
           # directives derived from each plugin's [tool.neko.build] rules.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
@@ -353,9 +326,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=nekoclaw"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use_sdk"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=playwright"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
@@ -370,10 +340,6 @@ jobs:
           # Package data
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=pyrnnoise"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=browser_use"
-          # NOTE: do NOT use --include-package-data=playwright here,
-          # Nuitka's built-in playwright plugin handles driver/node automatically
-          # and adding package-data would conflict with the exe at the same path.
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=jinja2"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=certifi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
@@ -383,6 +349,9 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
+          # Playwright is a test dependency: plugin/tests/e2e imports it and the
+          # build environment installs it with the dev group. Keep it out of the bundle.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=playwright"
 
           # Plugin & CI flags
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"

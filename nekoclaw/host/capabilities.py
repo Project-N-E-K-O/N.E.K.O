@@ -32,11 +32,14 @@ What is in it:
   server, which is what permissions are asked for. The adapter's entries that
   call a tool of whatever server their arguments name (``call_tool``,
   ``gateway_invoke``) are not served to task agents;
-* built-in capabilities (keyboard and mouse, browser). The host does not
-  implement them: whoever embeds it passes a ``BuiltinCapabilities`` provider
-  that lists them with their current availability and carries a call out.
-  Without one they are listed as not available. Only task agents call them,
-  through the gateway; the task brain never routes to them directly.
+* built-in capabilities: two groups of small tools, one for the keyboard and
+  the mouse and one for the browser (design section 11). A task agent calls
+  them one step at a time from its own loop; none of them runs a loop of its
+  own. The host does not implement them: whoever embeds it passes a
+  ``BuiltinCapabilities`` provider that lists the tools with their current
+  availability and carries a call out. Without one there are none. Only task
+  agents call them, through the gateway; the task brain never routes to them
+  directly.
 
 For the task brain's own selection the MCP tools remain ordinary entries of
 the ``mcp_adapter`` plugin, exactly as the analyzer saw them.
@@ -97,101 +100,93 @@ class Capability:
     entry_id: str | None = None
     # The name a task agent calls it by through the gateway.
     tool_name: str = ""
+    # For a built-in tool: the group it belongs to. The group is also what a
+    # commission occupies while it uses the tool (``leases.py``).
+    group: str | None = None
+    # True for a tool that is of no use to a model that cannot see pictures
+    # (it works from screenshots, or hands one back). Such a tool is offered
+    # only to a task agent whose model can.
+    needs_images: bool = False
 
 
-BUILTIN_KEYBOARD_MOUSE = "builtin:keyboard_mouse"
-BUILTIN_BROWSER = "builtin:browser"
-
-_INSTRUCTION_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "instruction": {
-            "type": "string",
-            "description": (
-                "One self-contained instruction in natural language: what to achieve and where "
-                "(which application, site or page). It is carried out without further questions."
-            ),
-        }
-    },
-    "required": ["instruction"],
-}
+# The two groups of built-in tools. A group's name is also its permission
+# category and the thing one commission occupies at a time.
+BUILTIN_GROUP_KEYBOARD_MOUSE = "keyboard_mouse"
+BUILTIN_GROUP_BROWSER = "browser"
+BUILTIN_GROUPS: tuple[str, ...] = (BUILTIN_GROUP_KEYBOARD_MOUSE, BUILTIN_GROUP_BROWSER)
 
 
-def builtin_capability(capability_id: str, *, available: bool, unavailable_reason: str = "") -> Capability:
-    """Return one of the two built-in capabilities with the given availability.
+def builtin_tool(
+    group: str,
+    definition: dict[str, Any],
+    *,
+    available: bool = True,
+    unavailable_reason: str = "",
+    needs_images: bool = False,
+) -> Capability:
+    """Return one tool of a built-in group as a capability.
 
-    Each takes one instruction and carries it out with a loop of its own
-    (screenshots, clicks, typing), then returns what it did.
+    ``definition`` is the tool as the model is to see it: ``name``,
+    ``description`` and ``parameters`` (a JSON schema of type object). The
+    name is used as it is, so it must be one a model may call and must not
+    be the name of a tool the runtime has itself.
     """
-    if capability_id == BUILTIN_KEYBOARD_MOUSE:
-        return Capability(
-            id=BUILTIN_KEYBOARD_MOUSE,
-            kind=KIND_BUILTIN,
-            title="Keyboard and mouse",
-            description=(
-                "Operate the desktop of this computer with the keyboard and the mouse to carry out one "
-                "instruction. It looks at the screen, clicks and types on its own until the instruction is "
-                "done or it gives up, then returns what it did. What it did cannot be undone, and only one "
-                "runs at a time."
-            ),
-            input_schema=_INSTRUCTION_SCHEMA,
-            permission="keyboard_mouse",
-            permission_key=None,
-            one_step=False,
-            available=available,
-            unavailable_reason=unavailable_reason,
-            tool_name="builtin__keyboard_mouse",
-        )
-    if capability_id == BUILTIN_BROWSER:
-        return Capability(
-            id=BUILTIN_BROWSER,
-            kind=KIND_BUILTIN,
-            title="Browser",
-            description=(
-                "Carry out one instruction in a web browser: open pages, click, type, read what is shown. "
-                "It works on its own until the instruction is done or it gives up, then returns what it "
-                "found or did. Clicks and submissions already made cannot be undone, and only one runs at "
-                "a time."
-            ),
-            input_schema=_INSTRUCTION_SCHEMA,
-            permission="browser",
-            permission_key=None,
-            one_step=False,
-            available=available,
-            unavailable_reason=unavailable_reason,
-            tool_name="builtin__browser",
-        )
-    raise ValueError(f"unknown built-in capability {capability_id!r}")
+    if group not in BUILTIN_GROUPS:
+        raise ValueError(f"unknown built-in group {group!r}")
+    name = str(definition["name"])
+    parameters = definition.get("parameters")
+    return Capability(
+        id=f"builtin:{group}:{name}",
+        kind=KIND_BUILTIN,
+        title=name,
+        description=str(definition.get("description") or ""),
+        input_schema=parameters if isinstance(parameters, dict) else {"type": "object", "properties": {}},
+        permission=group,
+        permission_key=None,
+        one_step=False,
+        available=available,
+        unavailable_reason=unavailable_reason,
+        tool_name=name,
+        group=group,
+        needs_images=needs_images,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltinImage:
+    """A picture a built-in tool hands back, a screenshot as a rule."""
+
+    # Base64 of the encoded image.
+    data: str
+    mime_type: str
 
 
 @dataclass(frozen=True, slots=True)
 class BuiltinOutcome:
-    """How one call of a built-in capability ended."""
+    """How one call of a built-in tool ended."""
 
     success: bool
     # What it did or found, or why it failed; given to the task agent.
     text: str
+    # Pictures for the task agent's model, placed after the text.
+    images: tuple[BuiltinImage, ...] = ()
 
 
 class BuiltinCapabilities(Protocol):
-    """Lists the built-in capabilities and carries their calls out.
+    """Lists the built-in tools and carries their calls out.
 
     Implemented outside the host, next to the code that operates the keyboard,
     the mouse and the browser.
     """
 
     def available(self) -> list[Capability]:
-        """Return the built-in capabilities, each with its availability as of now. Must not block."""
+        """Return the built-in tools, each with its availability as of now. Must not block."""
 
-    async def run(self, capability_id: str, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def run(self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
         """Carry out one call. Cancelling it must stop what it started."""
 
-
-# Listed when the embedding process offers no built-in capabilities.
-BUILTIN_CAPABILITIES: tuple[Capability, ...] = (
-    builtin_capability(BUILTIN_KEYBOARD_MOUSE, available=False, unavailable_reason="not offered by this process"),
-    builtin_capability(BUILTIN_BROWSER, available=False, unavailable_reason="not offered by this process"),
-)
+    async def released(self, group: str, commission_id: str) -> None:
+        """A commission no longer occupies a group: drop what was kept for it."""
 
 
 def _safe(part: str) -> str:
@@ -437,22 +432,38 @@ class CapabilityRegistry:
         return items
 
     def builtins(self) -> list[Capability]:
-        """Return the built-in capabilities with their availability as of now."""
+        """Return the built-in tools with their availability as of now."""
         if self._builtins is None:
-            return list(BUILTIN_CAPABILITIES)
+            return []
         try:
-            return [item for item in self._builtins.available() if item.kind == KIND_BUILTIN]
+            return [
+                item
+                for item in self._builtins.available()
+                if item.kind == KIND_BUILTIN and item.group in BUILTIN_GROUPS
+            ]
         except Exception:  # noqa: BLE001 - an unreadable provider offers nothing
             logger.exception("listing the built-in capabilities failed")
-            return list(BUILTIN_CAPABILITIES)
+            return []
 
     async def run_builtin(
         self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]
     ) -> BuiltinOutcome:
-        """Carry out one call of a built-in capability through the provider."""
+        """Carry out one call of a built-in tool through the provider."""
         if self._builtins is None:
             return BuiltinOutcome(False, "this capability is not offered by this process")
-        return await self._builtins.run(capability.id, commission_id=commission_id, arguments=arguments)
+        return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
+
+    async def builtin_released(self, group: str, commission_id: str) -> None:
+        """Tell the provider that a commission no longer occupies a group."""
+        released = getattr(self._builtins, "released", None)
+        if released is None:
+            return
+        try:
+            await released(group, commission_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - what it kept is its own; the group is free either way
+            logger.warning("releasing the built-in group %s failed", group, exc_info=True)
 
     async def callable_by_task_agents(self) -> list[Capability]:
         """Return the capabilities the gateway can serve right now.

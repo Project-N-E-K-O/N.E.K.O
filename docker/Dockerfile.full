@@ -1,9 +1,10 @@
 # ============================================================================
-# N.E.K.O. Dockerfile - Full Version (with Chromium pre-installed)
+# N.E.K.O. Dockerfile - Full Version (with Chromium installed)
 # ============================================================================
-# This Dockerfile builds the "full" version of N.E.K.O with Chromium browser
-# pre-installed during build time (~2.5GB). Ready to use immediately without
-# downloading browsers at runtime.
+# This Dockerfile builds the "full" version of N.E.K.O (~2.5GB). It adds
+# Debian's Chromium, which the browser tools drive; the standard image has no
+# browser. See "Browser for the browser tools" below for what the container
+# needs before that Chromium can start.
 #
 # Build: docker build -f docker/Dockerfile.full -t neko:full .
 # Run:   docker run -d --name neko -p 48911:80 -p 48912:443 neko:full
@@ -71,7 +72,8 @@ RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free
 # N.E.K.O. 完整组件系统依赖清单
 # ============================================================================
 #
-# [1] Agent / Browser Automation (browser_use + Playwright)
+# [1] Agent / Browser tools (nekoclaw/builtin/browser, Debian chromium)
+#     - chromium, chromium-sandbox: the browser itself, see the note below
 #     - Chromium 浏览器运行时依赖
 #     - libx11-xcb1, libxcomposite1, libxcursor1, libxdamage1
 #     - libxext6, libxfixes3, libxi6, libxrandr2, libxrender1, libxtst6
@@ -111,6 +113,29 @@ RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free
 #     - python3.11-dev: Python 开发头文件
 #     - pkg-config: 库配置查询
 # ============================================================================
+#
+# Browser for the browser tools
+# -----------------------------
+# The application ships no browser. Its browser tools start a Chromium-based
+# browser found on PATH (nekoclaw/builtin/browser/launcher.py looks for
+# `chromium` among others) and talk to it over the debugging protocol. A
+# container has no browser of the user's, so this image installs Debian's
+# `chromium` package; apt resolves the libraries it depends on.
+# `chromium-sandbox` is only recommended by that package and is named here
+# because recommended packages are not installed.
+#
+# Installing it is not enough for it to start in a container:
+#   * Chromium refuses to run as root unless it is given --no-sandbox, and the
+#     browser tools do not pass that flag. This does not apply here: the
+#     entrypoint starts the services as the `neko` user (`runuser -u neko`).
+#   * As an unprivileged user, Chromium's sandbox needs to create namespaces,
+#     which Docker's default seccomp profile and capability set do not allow.
+#     Unless the container is run with a seccomp profile that allows user
+#     namespaces, or with --cap-add=SYS_ADMIN, Chromium exits at start and the
+#     browser tools report that the browser could not be started.
+#   * There is no display. Nothing has to be set for that: the browser tools
+#     start the browser without a window when neither DISPLAY nor
+#     WAYLAND_DISPLAY is set, whatever <data root>/nekoclaw/browser.json says.
 RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
     apt-get update && \
@@ -134,6 +159,8 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     fonts-wqy-zenhei \
     fonts-liberation \
     fonts-noto-color-emoji \
+    chromium \
+    chromium-sandbox \
     libx11-xcb1 \
     libxcomposite1 \
     libxcursor1 \
@@ -160,7 +187,7 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     portaudio19-dev \
     && rm -rf /var/lib/apt/lists/*
 
-#创建nginx用户和应用用户，以及Playwright缓存目录
+#创建nginx用户和应用用户
 #
 # neko 固定 uid/gid 1000（不用 `-r` 的系统号段）。/home/neko 是 bind mount 出去的
 # 持久化目录，容器给它的属主会原样出现在宿主机上；1000 是绝大多数 Linux 发行版第一个
@@ -180,8 +207,8 @@ RUN groupadd -r nginx && \
     chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
     groupadd -g 1000 neko && \
     useradd -u 1000 -g 1000 -d /home/neko -s /bin/bash neko && \
-    mkdir -p /home/neko /app/logs /app/N.E.K.O /home/neko/ssl /opt/ms-playwright && \
-    chown -R neko:neko /home/neko /app /opt/ms-playwright
+    mkdir -p /home/neko /app/logs /app/N.E.K.O /home/neko/ssl && \
+    chown -R neko:neko /home/neko /app
 
 # 3. 创建 Python 符号链接
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
@@ -288,13 +315,9 @@ RUN cd /app && \
 # 8c. Fix ownership after root operations (uv sync + model download create files as root)
 RUN chown -R neko:neko /app
 
-# 9. Set Playwright environment variable BEFORE installing browsers
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-
-# 10. Install Playwright Chromium browser during build (FULL version includes this)
-RUN uv run --no-sync python -m playwright install chromium --with-deps && \
-    chown -R neko:neko /opt/ms-playwright && \
-    chmod -R 755 /opt/ms-playwright
+# 9. The browser tools find the browser by its command name. Fail the build
+# here, not at the first browser task, if the package did not provide it.
+RUN command -v chromium && dpkg-query -W chromium
 
 # 11. Set remaining environment variables
 ENV PATH="/root/.cargo/bin:/usr/bin:/usr/local/bin:$PATH"
@@ -325,8 +348,7 @@ RUN echo "========================================" && \
     echo "Python version: $(python --version)" && \
     echo "UV version: $(uv --version)" && \
     echo "Nginx version: $(nginx -v 2>&1)" && \
-    echo "Playwright browsers:" && \
-    ls -la /opt/ms-playwright/ 2>/dev/null || echo "  (not found)" && \
+    echo "Browser: $(dpkg-query -W chromium 2>/dev/null || echo '(not found)')" && \
     echo "========================================"
 
 # 14. Set entrypoint

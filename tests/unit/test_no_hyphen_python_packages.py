@@ -65,8 +65,7 @@ _EXCLUDED_DIR_NAMES = frozenset(
         ".mypy_cache",
         ".ruff_cache",
         ".uv-cache",  # uv artifact cache; third-party extracted wheels, not project source
-        "playwright_browsers",
-        "data",  # data/browser_use_extensions and similar paths contain hyphenated extension IDs but no .py files.
+        "data",  # data/embedding_models and similar paths contain hyphenated profile IDs but no .py files.
         "site-packages",  # Virtual-environment site-packages always contains third-party code.
     }
 )

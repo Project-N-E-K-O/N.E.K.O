@@ -12,7 +12,7 @@ Commands assume an Ubuntu-family host and have not been verified on every cloud 
 
 Install as described in [Docker Deployment](./docker); the Compose file is `docker/docker-compose.yml`. On small hosts:
 
-- **Use the full image**: set `NEKO_IMAGE_VERSION=latest-full` in `docker/.env`. It ships Chromium, so first start does not download a browser inside the container, at the cost of about 1 GB more disk.
+- **Use the full image if you want browser control**: set `NEKO_IMAGE_VERSION=latest-full` in `docker/.env`. It includes Chromium, at the cost of about 1 GB more disk. The standard image has no browser and the application downloads none, so browser control there reports that no usable browser was found. Chromium needs one further container setting before it can start (user namespaces for its sandbox); it is described in `docker/README_Docker.md`.
 - **Pin a version**: `latest` and `latest-full` are rolling tags. Pin a verified tag or digest with `NEKO_IMAGE`, and confirm it includes instance authorization (#3289) and HTTP pairing (#3299).
 - **Own domain**: set these in `docker/.env`; the official Compose file passes them to the container:
 

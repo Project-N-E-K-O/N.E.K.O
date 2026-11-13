@@ -34,7 +34,7 @@ N.E.K.O. は、インストール後すぐに全機能をオフラインで使�
 | ASR、TTS、voice registration | Provider による | 多くの場合あり | 一部の local TTS や vLLM-Omni 経路がある。要件は経路ごとに異なる |
 | Steam、Workshop、Steam Cloud | Steam サービス | あり | オフラインでは利用できない |
 | Browser、Feed、Trend、オンラインコンテンツ | 外部ソース | あり | ネットワークなしでは最新の外部コンテンツを取得できない |
-| リモート Agent channel | Channel による | 多くの場合あり | Computer Use の操作はローカルでも、判断やモデル呼び出しはリモートの場合がある |
+| リモート Agent channel | Channel による | 多くの場合あり | キーボード・マウス操作とブラウザー操作はローカルマシン上で行われるが、各ステップを決めるモデル呼び出しはリモートの場合がある |
 
 ## 既定でローカルに残るもの
 

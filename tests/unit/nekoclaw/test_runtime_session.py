@@ -599,3 +599,107 @@ async def test_abort_cancels_a_pending_host_question(tmp_path: Path) -> None:
 
 async def test_allow_all_helper_is_a_valid_permission_callback() -> None:
     assert await allow_all()("s", {}) == {"allow": True}
+
+
+def _seeing_spec(tmp_path: Path, **overrides):  # noqa: ANN003, ANN202
+    """A spec whose model is configured to see pictures, with one picture in its working directory."""
+    from PIL import Image
+
+    from nekoclaw.runtime.protocol import ModelConfig
+
+    spec = make_spec(
+        tmp_path, model=ModelConfig(model="fake-model", api_key="test-key", supports_images=True), **overrides
+    )
+    Image.new("RGB", (4, 4), (200, 30, 30)).save(Path(spec.workdir) / "shot.png", format="PNG")
+    return spec
+
+
+def _picture_count(request: list[dict]) -> int:
+    return sum(
+        1
+        for message in request
+        if isinstance(message["content"], list)
+        for part in message["content"]
+        if part["type"] == "image_url"
+    )
+
+
+async def test_a_model_that_refuses_pictures_is_reported_once_and_the_run_goes_on_without_them(
+    tmp_path: Path,
+) -> None:
+    refusal = RuntimeError("Invalid content type. image_url is only supported by certain models.")
+    llm = ScriptedLLM(
+        [
+            [call("read_image", {"file_path": "shot.png"}), finish("tool_calls")],
+            # The request that carries the picture back is refused for it ...
+            [refusal],
+            # ... and answered when it comes again without.
+            [call("read_image", {"file_path": "shot.png"}, "c2"), finish("tool_calls")],
+            [say("Looked twice."), finish()],
+        ]
+    )
+    session, events = await open_session(_seeing_spec(tmp_path), llm)
+    try:
+        assert "read_image" in events.of("started")[0]["tools"]
+
+        session.prompt("look at shot.png, twice")
+        ended = await events.wait_ended()
+
+        assert (ended["reason"], ended["text"]) == ("completed", "Looked twice.")
+        # One event, though two results with a picture followed the refusal.
+        learned = events.of("model_capability")
+        assert [(event["session_id"], event["supports_images"]) for event in learned] == [("s1", False)]
+        assert [_picture_count(request) for request in llm.requests] == [0, 1, 0, 0]
+        # The refused request is not a failed response of the run.
+        assert events.of("error") == []
+        assert [event["is_error"] for event in events.of("tool_end")] == [False, False]
+        assert [event["seq"] for event in events.events] == list(range(1, len(events.events) + 1))
+    finally:
+        await session.close()
+
+
+async def test_a_model_that_takes_its_pictures_is_not_reported(tmp_path: Path) -> None:
+    llm = ScriptedLLM(
+        [[call("read_image", {"file_path": "shot.png"}), finish("tool_calls")], [say("A red square."), finish()]]
+    )
+    session, events = await open_session(_seeing_spec(tmp_path), llm)
+    try:
+        session.prompt("look at shot.png")
+        await events.wait_ended()
+
+        assert events.of("model_capability") == []
+        assert [_picture_count(request) for request in llm.requests] == [0, 1]
+    finally:
+        await session.close()
+
+
+def test_what_a_session_learned_about_its_model_is_an_event_of_the_protocol() -> None:
+    from pydantic import ValidationError
+
+    from nekoclaw.runtime import protocol
+
+    event = protocol.ModelCapabilityEvent(session_id="s1", supports_images=False)
+    event.seq = 7
+    dumped = protocol.dump(event)
+
+    assert dumped == {"type": "model_capability", "session_id": "s1", "seq": 7, "supports_images": False}
+    assert protocol.parse_event(dumped) == event
+    # It says what was learned, or it is not this event.
+    with pytest.raises(ValidationError):
+        protocol.parse_event({"type": "model_capability", "session_id": "s1", "seq": 7})
+
+
+async def test_the_image_pools_of_the_spec_reach_the_context_manager(tmp_path: Path) -> None:
+    retention = {"computer": 3, "browser_take_screenshot": 3}
+    pools = {"computer": "keyboard_mouse", "browser_take_screenshot": "browser"}
+
+    pooled, _events = await open_session(make_spec(tmp_path, image_retention=retention, image_pools=pools), ScriptedLLM())
+    plain, _events = await open_session(make_spec(tmp_path, "s2"), ScriptedLLM())
+    try:
+        assert (pooled.context.image_retention, pooled.context.image_pools) == (retention, pools)
+        # Copies: what the session trims by cannot be changed through the spec afterwards.
+        assert pooled.context.image_pools is not pooled.spec.image_pools
+        assert (plain.context.image_retention, plain.context.image_pools) == ({}, {})
+    finally:
+        await pooled.close()
+        await plain.close()

@@ -3,8 +3,10 @@
 
 Scope:
 1. ``app.agent_runtime_intent``: roundtrip / schema / cache isolation
-2. ``brain.computer_use.check_connectivity``: new (ok, reason_code) signature
-   + classification of permanent vs transient errors
+2. ``app.agent_server.model_probe``: classification of a failed probe of the
+   agent model into permanent vs transient reasons (the probe itself is
+   covered in ``test_agent_model_probe.py``), and the reason codes for input
+   that cannot be sent (``nekoclaw.builtin.desktop``)
 3. Master-switch semantics: ``set_agent_enabled(False)`` no longer wipes
    sub flags (issue: cycling the master gate used to forget user intent
    for every sub feature)
@@ -141,33 +143,33 @@ def test_intent_coerces_malformed_payload(
 
 
 # ---------------------------------------------------------------------------
-# 2. check_connectivity signature + classification
+# 2. Reason codes: a failed probe of the agent model, input that cannot be sent
 # ---------------------------------------------------------------------------
 
 
 def test_classify_connectivity_exception_buckets():
-    from brain.computer_use import _classify_connectivity_exception
+    from app.agent_server.model_probe import classify_connectivity_exception
 
     # Permanent reasons
-    assert _classify_connectivity_exception(Exception("Invalid API key: 401")) == "AGENT_API_KEY_INVALID"
-    assert _classify_connectivity_exception(Exception("403 Forbidden")) == "AGENT_API_KEY_INVALID"
-    assert _classify_connectivity_exception(Exception("authentication failed")) == "AGENT_API_KEY_INVALID"
-    assert _classify_connectivity_exception(Exception("Rate limit exceeded (429)")) == "AGENT_QUOTA_EXCEEDED"
-    assert _classify_connectivity_exception(Exception("insufficient_quota: please add billing")) == "AGENT_QUOTA_EXCEEDED"
-    assert _classify_connectivity_exception(Exception("nxdomain: no such host")) == "AGENT_DNS_NXDOMAIN"
-    assert _classify_connectivity_exception(Exception("getaddrinfo failed")) == "AGENT_DNS_NXDOMAIN"
+    assert classify_connectivity_exception(Exception("Invalid API key: 401")) == "AGENT_API_KEY_INVALID"
+    assert classify_connectivity_exception(Exception("403 Forbidden")) == "AGENT_API_KEY_INVALID"
+    assert classify_connectivity_exception(Exception("authentication failed")) == "AGENT_API_KEY_INVALID"
+    assert classify_connectivity_exception(Exception("Rate limit exceeded (429)")) == "AGENT_QUOTA_EXCEEDED"
+    assert classify_connectivity_exception(Exception("insufficient_quota: please add billing")) == "AGENT_QUOTA_EXCEEDED"
+    assert classify_connectivity_exception(Exception("nxdomain: no such host")) == "AGENT_DNS_NXDOMAIN"
+    assert classify_connectivity_exception(Exception("getaddrinfo failed")) == "AGENT_DNS_NXDOMAIN"
 
     # Transient (default bucket)
-    assert _classify_connectivity_exception(Exception("connection refused")) == "AGENT_LLM_UNREACHABLE"
-    assert _classify_connectivity_exception(Exception("Read timeout")) == "AGENT_LLM_UNREACHABLE"
-    assert _classify_connectivity_exception(Exception("500 internal server error")) == "AGENT_LLM_UNREACHABLE"
-    assert _classify_connectivity_exception(None) == "AGENT_LLM_UNREACHABLE"
+    assert classify_connectivity_exception(Exception("connection refused")) == "AGENT_LLM_UNREACHABLE"
+    assert classify_connectivity_exception(Exception("Read timeout")) == "AGENT_LLM_UNREACHABLE"
+    assert classify_connectivity_exception(Exception("500 internal server error")) == "AGENT_LLM_UNREACHABLE"
+    assert classify_connectivity_exception(None) == "AGENT_LLM_UNREACHABLE"
 
 
 def test_permanent_connectivity_reasons_set():
     """Restore path uses this frozenset to decide whether to bail early.
-    Lock the membership so an accidental rename in computer_use.py is caught."""
-    from brain.computer_use import PERMANENT_CONNECTIVITY_REASONS
+    Lock the membership so an accidental rename in model_probe.py is caught."""
+    from app.agent_server.model_probe import PERMANENT_CONNECTIVITY_REASONS
 
     assert "AGENT_API_KEY_INVALID" in PERMANENT_CONNECTIVITY_REASONS
     assert "AGENT_QUOTA_EXCEEDED" in PERMANENT_CONNECTIVITY_REASONS
@@ -177,48 +179,48 @@ def test_permanent_connectivity_reasons_set():
     assert "AGENT_LLM_UNREACHABLE" not in PERMANENT_CONNECTIVITY_REASONS
 
 
-def test_pyautogui_display_error_is_not_reported_as_missing(monkeypatch: pytest.MonkeyPatch):
-    from brain import computer_use as cu_module
+# The reason the keyboard-and-mouse switch is refused with when input cannot
+# be sent comes from ``nekoclaw.builtin.desktop``: pyautogui is imported on
+# first use and a failed import is classified.
 
-    monkeypatch.setattr(cu_module, "pyautogui", None)
-    monkeypatch.setattr(
-        cu_module,
-        "_PYAUTOGUI_IMPORT_ERROR",
+
+def _pyautogui_failed_to_import(monkeypatch: pytest.MonkeyPatch, error: Exception):
+    from nekoclaw.builtin import desktop
+
+    monkeypatch.setattr(desktop, "_pyautogui", None)
+    monkeypatch.setattr(desktop, "_import_error", error)
+    # Importing must not change this process's DPI awareness in a test run.
+    monkeypatch.setattr(desktop, "_dpi_awareness_set", True)
+    return desktop
+
+
+def test_pyautogui_display_error_is_not_reported_as_missing(monkeypatch: pytest.MonkeyPatch):
+    desktop = _pyautogui_failed_to_import(
+        monkeypatch,
         Exception("DisplayConnectionError: Authorization required, but no authorization protocol specified"),
     )
 
-    assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"
+    assert desktop.pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"
 
 
 def test_pyautogui_macos_pyobjc_error_has_dedicated_reason(monkeypatch: pytest.MonkeyPatch):
-    from brain import computer_use as cu_module
-
-    monkeypatch.setattr(cu_module, "pyautogui", None)
-    monkeypatch.setattr(
-        cu_module,
-        "_PYAUTOGUI_IMPORT_ERROR",
-        AssertionError("You must first install pyobjc-core and pyobjc"),
+    desktop = _pyautogui_failed_to_import(
+        monkeypatch, AssertionError("You must first install pyobjc-core and pyobjc")
     )
 
-    assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING"
+    assert desktop.pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_MACOS_PYOBJC_MISSING"
 
 
 def test_pyautogui_generic_import_failure_is_not_reported_as_missing(monkeypatch: pytest.MonkeyPatch):
-    from brain import computer_use as cu_module
-
-    monkeypatch.setattr(cu_module, "pyautogui", None)
-    monkeypatch.setattr(
-        cu_module,
-        "_PYAUTOGUI_IMPORT_ERROR",
-        RuntimeError("dlopen failed while importing pyautogui backend"),
+    desktop = _pyautogui_failed_to_import(
+        monkeypatch, RuntimeError("dlopen failed while importing pyautogui backend")
     )
 
-    assert cu_module._pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_IMPORT_FAILED"
+    assert desktop.pyautogui_unavailable_reason() == "AGENT_PYAUTOGUI_IMPORT_FAILED"
 
 
 def test_pyautogui_lazy_import_can_recover_after_initial_failure(monkeypatch: pytest.MonkeyPatch):
-    from brain import computer_use as cu_module
-
+    desktop = _pyautogui_failed_to_import(monkeypatch, Exception("previous display failure"))
     fake_pyautogui = SimpleNamespace(size=lambda: (3840, 2400))
     real_import = builtins.__import__
 
@@ -227,293 +229,52 @@ def test_pyautogui_lazy_import_can_recover_after_initial_failure(monkeypatch: py
             return fake_pyautogui
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(cu_module, "pyautogui", None)
-    monkeypatch.setattr(cu_module, "_PYAUTOGUI_IMPORT_ERROR", Exception("previous display failure"))
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    assert cu_module._load_pyautogui() is fake_pyautogui
-    assert cu_module._PYAUTOGUI_IMPORT_ERROR is None
+    assert desktop.load_pyautogui() is fake_pyautogui
+    assert desktop._import_error is None
+    assert desktop.Desktop().available() == (True, "")
 
 
-def test_scaled_pyautogui_accepts_normalized_float_coordinates():
-    from brain.computer_use import _ScaledPyAutoGUI
+def test_input_that_cannot_be_sent_is_reported_with_its_reason(monkeypatch: pytest.MonkeyPatch):
+    desktop = _pyautogui_failed_to_import(monkeypatch, Exception("not tried yet"))
+    real_import = builtins.__import__
 
-    class FakeBackend:
-        def __init__(self):
-            self.calls = []
+    def failing_import(name, *args, **kwargs):
+        if name == "pyautogui":
+            raise ModuleNotFoundError("No module named 'pyautogui'", name="pyautogui")
+        return real_import(name, *args, **kwargs)
 
-        def moveTo(self, *args, **kwargs):
-            self.calls.append(("moveTo", args, kwargs))
+    monkeypatch.setattr(builtins, "__import__", failing_import)
 
-        def click(self, *args, **kwargs):
-            self.calls.append(("click", args, kwargs))
-
-    backend = FakeBackend()
-    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
-
-    gui.click(0.097, 0.336)
-
-    assert backend.calls[-1] == ("click", (186, 363), {})
-    assert backend.calls[0][0] == "moveTo"
-    assert backend.calls[0][1][:2] == (186, 363)
+    assert desktop.Desktop().available() == (False, "AGENT_PYAUTOGUI_NOT_INSTALLED")
 
 
-def test_scaled_pyautogui_accepts_mixed_positional_keyword_coordinates():
-    from brain.computer_use import _ScaledPyAutoGUI
-
-    class FakeBackend:
-        def __init__(self):
-            self.calls = []
-
-        def moveTo(self, *args, **kwargs):
-            self.calls.append(("moveTo", args, kwargs))
-
-        def click(self, *args, **kwargs):
-            self.calls.append(("click", args, kwargs))
-
-    backend = FakeBackend()
-    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
-
-    gui.click(0.5, y=0.5)
-
-    assert backend.calls[0][0] == "moveTo"
-    assert backend.calls[0][1][:2] == (960, 540)
-    assert backend.calls[-1] == ("click", (960,), {"y": 540})
-
-
-def test_scaled_pyautogui_clamps_model_coordinates_away_from_failsafe_corner():
-    from brain.computer_use import _ScaledPyAutoGUI
+def test_points_on_the_model_scale_stay_away_from_the_failsafe_corners():
+    from nekoclaw.builtin.desktop import COORDINATE_MAX, ScaledInput
 
     class FakeBackend:
         def __init__(self):
             self.calls = []
 
         def click(self, *args, **kwargs):
-            self.calls.append(("click", args, kwargs))
+            self.calls.append(("click", args))
 
         def moveTo(self, *args, **kwargs):
-            self.calls.append(("moveTo", args, kwargs))
+            self.calls.append(("moveTo", args))
 
     backend = FakeBackend()
-    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
+    gui = ScaledInput(backend, 1920, 1080)
 
     gui.click(0, 0)
-    gui.click(999, 999)
+    gui.click(COORDINATE_MAX, COORDINATE_MAX)
 
-    assert backend.calls[1] == ("click", (4, 4), {})
-    assert backend.calls[3] == ("click", (1915, 1075), {})
-
-
-def test_scaled_pyautogui_does_not_treat_mixed_int_float_as_unit_coordinates():
-    from brain.computer_use import _ScaledPyAutoGUI
-
-    class FakeBackend:
-        def __init__(self):
-            self.calls = []
-
-        def click(self, *args, **kwargs):
-            self.calls.append(("click", args, kwargs))
-
-        def moveTo(self, *args, **kwargs):
-            self.calls.append(("moveTo", args, kwargs))
-
-    backend = FakeBackend()
-    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
-
-    gui.click(1, 0.5)
-
-    assert backend.calls[1] == ("click", (4, 4), {})
-
-
-def test_scaled_pyautogui_preserves_absolute_edge_pixels():
-    from brain.computer_use import _ScaledPyAutoGUI
-
-    class FakeBackend:
-        def __init__(self):
-            self.calls = []
-
-        def click(self, *args, **kwargs):
-            self.calls.append(("click", args, kwargs))
-
-        def moveTo(self, *args, **kwargs):
-            self.calls.append(("moveTo", args, kwargs))
-
-    backend = FakeBackend()
-    gui = _ScaledPyAutoGUI(backend, 1920, 1080)
-
-    gui.click(1919, 1079)
-
-    assert backend.calls[0][0] == "moveTo"
-    assert backend.calls[0][1][:2] == (1919, 1079)
-    assert backend.calls[1] == ("click", (1919, 1079), {})
-
-
-def test_check_connectivity_returns_tuple_on_missing_config(monkeypatch: pytest.MonkeyPatch):
-    """If base_url/model not configured, must return ``(False, 'AGENT_ENDPOINT_NOT_CONFIGURED')``
-    immediately without trying to construct an LLM client."""
-    from brain import computer_use as cu_module
-
-    # Build a minimal adapter instance avoiding the heavy __init__.
-    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
-    adapter._config_manager = MagicMock()
-    adapter._config_manager.get_model_api_config = MagicMock(return_value={
-        "api_key": "EMPTY",
-        "base_url": "",
-        "model": "",
-    })
-    adapter._llm_client = None
-    adapter._llm_client_sig = None
-    adapter.init_ok = True
-    adapter.last_error = None
-
-    ok, reason = adapter.check_connectivity()
-    assert ok is False
-    assert reason == "AGENT_ENDPOINT_NOT_CONFIGURED"
-    assert adapter.init_ok is False
-
-
-def test_check_connectivity_success_returns_empty_reason(monkeypatch: pytest.MonkeyPatch):
-    from brain import computer_use as cu_module
-
-    fake_llm = MagicMock()
-    fake_choice = MagicMock()
-    fake_choice.message = MagicMock(content="ok")
-    fake_resp = MagicMock(choices=[fake_choice])
-    fake_llm.invoke_raw = MagicMock(return_value=fake_resp)
-
-    monkeypatch.setattr(cu_module, "create_chat_llm", lambda **kwargs: fake_llm)
-
-    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
-    adapter._config_manager = MagicMock()
-    adapter._config_manager.get_model_api_config = MagicMock(return_value={
-        "api_key": "sk-test",
-        "base_url": "https://api.example.com",
-        "model": "test-model",
-    })
-    adapter._llm_client = None
-    adapter._llm_client_sig = None
-    adapter.init_ok = False
-    adapter.last_error = "stale"
-
-    ok, reason = adapter.check_connectivity(timeout_s=4.0)
-    assert ok is True
-    assert reason == ""
-    assert adapter.init_ok is True
-
-
-def test_check_connectivity_accepts_anthropic_raw_message(monkeypatch: pytest.MonkeyPatch):
-    from brain import computer_use as cu_module
-
-    class TextBlock:
-        type = "text"
-        text = "ok"
-
-    class AnthropicMessage:
-        content = [TextBlock()]
-
-    fake_llm = MagicMock()
-    fake_llm.invoke_raw = MagicMock(return_value=AnthropicMessage())
-
-    monkeypatch.setattr(cu_module, "create_chat_llm", lambda **kwargs: fake_llm)
-
-    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
-    adapter._config_manager = MagicMock()
-    adapter._config_manager.get_model_api_config = MagicMock(return_value={
-        "api_key": "sk-test",
-        "base_url": "https://api.kimi.com/coding",
-        "model": "kimi-for-coding",
-    })
-    adapter._llm_client = None
-    adapter._llm_client_sig = None
-    adapter.init_ok = False
-    adapter.last_error = "stale"
-
-    ok, reason = adapter.check_connectivity(timeout_s=4.0)
-    assert ok is True
-    assert reason == ""
-    assert adapter.init_ok is True
-
-
-def test_extract_raw_llm_text_reads_anthropic_thinking_blocks():
-    from brain.computer_use import _extract_raw_llm_text
-
-    class ThinkingBlock:
-        type = "thinking"
-        thinking = "inspect the screen"
-
-    class TextBlock:
-        type = "text"
-        text = "done"
-
-    class AnthropicMessage:
-        content = [ThinkingBlock(), TextBlock()]
-
-    text, reasoning = _extract_raw_llm_text(AnthropicMessage())
-    assert text == "done"
-    assert reasoning == "inspect the screen"
-
-
-def test_call_llm_parses_anthropic_raw_message(monkeypatch: pytest.MonkeyPatch):
-    from brain import computer_use as cu_module
-
-    class TextBlock:
-        type = "text"
-        text = """## Observation
-Ready.
-
-## Thought
-Use a special action.
-
-## Action
-Finish.
-
-## Code
-```python
-computer.terminate(status="success", answer="done")
-```"""
-
-    class AnthropicMessage:
-        content = [TextBlock()]
-
-    fake_llm = MagicMock()
-    fake_llm.invoke_raw = MagicMock(return_value=AnthropicMessage())
-
-    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
-    adapter._cancelled = False
-    adapter._llm_client = fake_llm
-    adapter._agent_model_cfg = {"model": "kimi-for-coding"}
-    adapter.max_completion_tokens = 128
-    adapter.thinking = False
-    adapter._config_manager = MagicMock()
-    adapter._config_manager.consume_agent_daily_quota = MagicMock(return_value=(True, {}))
-    adapter._interruptible_sleep = MagicMock()
-
-    parsed = adapter._call_llm([{"role": "user", "content": "finish"}])
-    assert parsed["action"] == "Finish."
-    assert parsed["code"] == 'computer.terminate(status="success", answer="done")'
-
-
-def test_scaled_pyautogui_write_accepts_keyword_aliases():
-    from brain.computer_use import _ScaledPyAutoGUI
-
-    class Backend:
-        def __init__(self):
-            self.calls = []
-
-        def write(self, *args, **kwargs):
-            self.calls.append((args, kwargs))
-
-    backend = Backend()
-    gui = _ScaledPyAutoGUI(backend, screen_w=1920, screen_h=1080)
-
-    gui.write(message="notepad", interval=0.01)
-    gui.typewrite(text="calc")
-    gui.write(string="cmd")
-
+    # pyautogui aborts everything once the pointer is in a corner of the screen.
     assert backend.calls == [
-        (("notepad",), {"interval": 0.01}),
-        (("calc",), {}),
-        (("cmd",), {}),
+        ("moveTo", (4, 4)),
+        ("click", (4, 4)),
+        ("moveTo", (1915, 1075)),
+        ("click", (1915, 1075)),
     ]
 
 
@@ -522,8 +283,30 @@ def test_scaled_pyautogui_write_accepts_keyword_aliases():
 # ---------------------------------------------------------------------------
 
 
+class _Desktop:
+    """Stands in for ``nekoclaw.builtin.desktop.Desktop``: says whether input can be sent."""
+
+    def __init__(self) -> None:
+        self.input_ready: tuple[bool, str] = (True, "")
+
+    def available(self) -> tuple[bool, str]:
+        return self.input_ready
+
+
 @pytest.fixture
-def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
+def desktop(monkeypatch: pytest.MonkeyPatch) -> _Desktop:
+    """Whether the keyboard and mouse can be used is the probe of the agent
+    model plus input that can be sent. The second half would import
+    pyautogui; this answers in its place."""
+    from app.agent_server import nekoclaw_builtins
+
+    fake = _Desktop()
+    monkeypatch.setattr(nekoclaw_builtins.provider, "_desktop", fake)
+    return fake
+
+
+@pytest.fixture
+def agent_state_isolation(monkeypatch: pytest.MonkeyPatch, desktop: _Desktop):
     """Snapshot/restore the relevant global state on app.agent_server.Modules
     so tests can mutate freely. Also stubs out the side-effectful calls
     inside set_agent_enabled/set_agent_flags that need full process state
@@ -534,10 +317,12 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     backup_analyzer_profile = dict(srv.Modules.analyzer_profile)
     backup_agent_flags = dict(srv.Modules.agent_flags)
     backup_user_plugin_lifecycle_seq = srv.Modules.user_plugin_lifecycle_seq
+    backup_browser_use_lifecycle_seq = srv.Modules.browser_use_lifecycle_seq
     backup_capability = {
         k: dict(v) for k, v in srv.Modules.capability_cache.items()
     }
     backup_notification = srv.Modules.notification
+    backup_model_probe = srv.Modules.model_probe
     srv.Modules.notification = None
 
     async def _noop_async(*args, **kwargs):
@@ -565,7 +350,7 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _plugin_lifecycle_started_ok)
     monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _user_plugin_registry_ready)
     monkeypatch.setattr(srv, "admin_control", _noop_admin)
-    monkeypatch.setattr(srv, "_try_refresh_computer_use_adapter", lambda force=False: False)
+    monkeypatch.setattr(srv, "_try_refresh_model_probe", lambda force=False: False)
     monkeypatch.setattr(srv, "_fire_agent_llm_connectivity_check", _noop_async)
     monkeypatch.setattr(srv, "_bump_state_revision", lambda: 0)
 
@@ -575,8 +360,10 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     srv.Modules.analyzer_profile = backup_analyzer_profile
     srv.Modules.agent_flags = backup_agent_flags
     srv.Modules.user_plugin_lifecycle_seq = backup_user_plugin_lifecycle_seq
+    srv.Modules.browser_use_lifecycle_seq = backup_browser_use_lifecycle_seq
     srv.Modules.capability_cache = backup_capability
     srv.Modules.notification = backup_notification
+    srv.Modules.model_probe = backup_model_probe
 
 
 @pytest.mark.asyncio
@@ -1212,14 +999,46 @@ async def test_capability_rejected_does_not_persist_true_intent(
 
     srv = agent_state_isolation
     srv.Modules.analyzer_enabled = True
-    # Force computer_use to be missing → handler will set flag=False
-    srv.Modules.computer_use = None
+    # Force the model probe to be missing → handler will set flag=False
+    srv.Modules.model_probe = None
 
     with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
         await srv.set_agent_flags({"computer_use_enabled": True})
 
     assert srv.Modules.agent_flags["computer_use_enabled"] is False
+    assert json.loads(srv.Modules.notification)["code"] == "AGENT_CU_MODULE_NOT_LOADED"
     # Intent not written because actual flag is False
+    assert ari.get_intent("computer_use_enabled") is None
+
+
+@pytest.mark.asyncio
+async def test_input_that_cannot_be_sent_rejects_the_switch_and_persists_no_intent(
+    agent_state_isolation, isolated_intent_store: Path, desktop
+):
+    """The agent model answers, yet the keyboard and mouse cannot be driven
+    here: the switch stays off, says why, and no True intent is written."""
+    from app import agent_runtime_intent as ari
+
+    srv = agent_state_isolation
+    srv.Modules.analyzer_enabled = True
+    probe = MagicMock()
+    probe.init_ok = True
+    probe.is_available = MagicMock(return_value={"ready": True, "reasons": [], "model": "m"})
+    srv.Modules.model_probe = probe
+    desktop.input_ready = (False, "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE")
+
+    with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
+        await srv.set_agent_flags({"computer_use_enabled": True})
+
+    assert srv.Modules.agent_flags["computer_use_enabled"] is False
+    assert json.loads(srv.Modules.notification) == {
+        "code": "AGENT_CU_UNAVAILABLE",
+        "details": {"reason_code": "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE"},
+    }
+    assert srv.Modules.capability_cache["computer_use"] == {
+        "ready": False,
+        "reason": "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE",
+    }
     assert ari.get_intent("computer_use_enabled") is None
 
 
@@ -1304,10 +1123,10 @@ async def test_restore_llm_dependent_all_retries_fail_clears_intent(
     ari.set_intent("computer_use_enabled", True)
     ari.set_intent("browser_use_enabled", True)
 
-    # Mock computer_use adapter on Modules; check_connectivity always fails.
-    fake_adapter = MagicMock()
-    fake_adapter.check_connectivity = MagicMock(return_value=(False, "AGENT_LLM_UNREACHABLE"))
-    srv_mod.Modules.computer_use = fake_adapter
+    # Mock the model probe on Modules; check_connectivity always fails.
+    fake_probe = MagicMock()
+    fake_probe.check_connectivity = MagicMock(return_value=(False, "AGENT_LLM_UNREACHABLE"))
+    srv_mod.Modules.model_probe = fake_probe
 
     # Shrink the retry window so the test is fast (3 attempts × 0.01s spacing).
     monkeypatch.setattr(srv_mod, "_RESTORE_PING_INTERVAL_S", 0.01)
@@ -1316,10 +1135,15 @@ async def test_restore_llm_dependent_all_retries_fail_clears_intent(
     await srv_mod._restore_llm_dependent_flags(intent)
 
     # All three attempts ran
-    assert fake_adapter.check_connectivity.call_count == srv_mod._RESTORE_PING_MAX_ATTEMPTS
+    assert fake_probe.check_connectivity.call_count == srv_mod._RESTORE_PING_MAX_ATTEMPTS
     # Intent cleared to False on both flags
     assert ari.get_intent("computer_use_enabled") is False
     assert ari.get_intent("browser_use_enabled") is False
+    # The user is told which switch went off and why.
+    assert json.loads(srv_mod.Modules.notification) == {
+        "code": "AGENT_AUTO_DISABLED_BROWSER",
+        "details": {"reason_code": "AGENT_LLM_UNREACHABLE"},
+    }
 
 
 @pytest.mark.asyncio
@@ -1333,9 +1157,9 @@ async def test_restore_llm_dependent_permanent_error_short_circuits(
 
     ari.set_intent("computer_use_enabled", True)
 
-    fake_adapter = MagicMock()
-    fake_adapter.check_connectivity = MagicMock(return_value=(False, "AGENT_API_KEY_INVALID"))
-    srv_mod.Modules.computer_use = fake_adapter
+    fake_probe = MagicMock()
+    fake_probe.check_connectivity = MagicMock(return_value=(False, "AGENT_API_KEY_INVALID"))
+    srv_mod.Modules.model_probe = fake_probe
 
     monkeypatch.setattr(srv_mod, "_RESTORE_PING_INTERVAL_S", 0.01)
 
@@ -1343,7 +1167,7 @@ async def test_restore_llm_dependent_permanent_error_short_circuits(
     await srv_mod._restore_llm_dependent_flags(intent)
 
     # Only ONE attempt — permanent reason short-circuits.
-    assert fake_adapter.check_connectivity.call_count == 1
+    assert fake_probe.check_connectivity.call_count == 1
     assert ari.get_intent("computer_use_enabled") is False
 
 
@@ -1358,20 +1182,28 @@ async def test_restore_llm_dependent_success_keeps_intent(
     from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("computer_use_enabled", True)
+    # Not a Wayland session: that one asks for the screen to be shared again
+    # instead of switching the flag back on (covered below).
+    monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
 
-    fake_adapter = MagicMock()
-    fake_adapter.check_connectivity = MagicMock(return_value=(True, ""))
-    fake_adapter.init_ok = True
-    fake_adapter.is_available = MagicMock(return_value={"ready": True, "reasons": []})
-    srv_mod.Modules.computer_use = fake_adapter
+    fake_probe = MagicMock()
+    fake_probe.check_connectivity = MagicMock(return_value=(True, ""))
+    fake_probe.init_ok = True
+    fake_probe.is_available = MagicMock(return_value={"ready": True, "reasons": []})
+    srv_mod.Modules.model_probe = fake_probe
 
     # Master gate ON so set_agent_flags doesn't bail
     srv_mod.Modules.analyzer_enabled = True
+    srv_mod.Modules.agent_flags["computer_use_enabled"] = False
 
     with patch.object(srv_mod, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
         intent = {"computer_use_enabled": True}
         await srv_mod._restore_llm_dependent_flags(intent)
 
+    # The switch is back on, through the same path a manual toggle takes.
+    assert srv_mod.Modules.agent_flags["computer_use_enabled"] is True
+    assert srv_mod.Modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
     # Intent preserved
     assert ari.get_intent("computer_use_enabled") is True
 
@@ -1386,38 +1218,42 @@ async def test_wayland_restore_requires_fresh_screen_authorization(
     monkeypatch.setattr(srv_mod.sys, "platform", "linux")
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     ari.set_intent("computer_use_enabled", True)
-    fake_adapter = MagicMock()
-    fake_adapter.check_connectivity = MagicMock(return_value=(True, ""))
-    fake_adapter.is_available = MagicMock(return_value={"ready": True, "reasons": []})
-    srv_mod.Modules.computer_use = fake_adapter
+    fake_probe = MagicMock()
+    fake_probe.check_connectivity = MagicMock(return_value=(True, ""))
+    fake_probe.is_available = MagicMock(return_value={"ready": True, "reasons": []})
+    srv_mod.Modules.model_probe = fake_probe
     srv_mod.Modules.analyzer_enabled = True
 
     await srv_mod._restore_llm_dependent_flags({"computer_use_enabled": True})
 
     assert srv_mod.Modules.agent_flags["computer_use_enabled"] is False
+    assert srv_mod.Modules.capability_cache["computer_use"] == {"ready": True, "reason": ""}
     assert json.loads(srv_mod.Modules.notification)["code"] == "AGENT_SCREEN_SHARE_REQUIRED"
     assert ari.get_intent("computer_use_enabled") is True
 
 
 @pytest.mark.asyncio
 async def test_wayland_restore_keeps_unavailable_computer_use_disabled(
-    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
+    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch, desktop
 ):
     from app.agent_server import api_routes as srv_mod
 
     monkeypatch.setattr(srv_mod.sys, "platform", "linux")
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
-    fake_adapter = MagicMock()
-    fake_adapter.check_connectivity = MagicMock(return_value=(True, ""))
-    fake_adapter.is_available = MagicMock(return_value={
-        "ready": False, "reasons": ["AGENT_PYAUTOGUI_UNAVAILABLE"]
-    })
-    srv_mod.Modules.computer_use = fake_adapter
+    fake_probe = MagicMock()
+    fake_probe.check_connectivity = MagicMock(return_value=(True, ""))
+    fake_probe.is_available = MagicMock(return_value={"ready": True, "reasons": []})
+    srv_mod.Modules.model_probe = fake_probe
     srv_mod.Modules.analyzer_enabled = True
+    # The model answers; it is input that cannot be sent on this display.
+    desktop.input_ready = (False, "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE")
 
     await srv_mod._restore_llm_dependent_flags({"computer_use_enabled": True})
 
-    assert srv_mod.Modules.capability_cache["computer_use"]["ready"] is False
+    assert srv_mod.Modules.capability_cache["computer_use"] == {
+        "ready": False,
+        "reason": "AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE",
+    }
     assert srv_mod.Modules.agent_flags["computer_use_enabled"] is False
     assert srv_mod.Modules.notification is None
 
@@ -1426,14 +1262,14 @@ async def test_wayland_restore_keeps_unavailable_computer_use_disabled(
 async def test_restore_llm_dependent_module_not_loaded_is_permanent(
     agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """If computer_use module is None (not loaded), restore should
+    """If the model probe is None (not loaded), restore should
     immediately clear intent — not retry, since the module won't appear."""
     from app import agent_runtime_intent as ari
     from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("computer_use_enabled", True)
     ari.set_intent("browser_use_enabled", True)
-    srv_mod.Modules.computer_use = None
+    srv_mod.Modules.model_probe = None
 
     intent = {"computer_use_enabled": True, "browser_use_enabled": True}
     await srv_mod._restore_llm_dependent_flags(intent)
@@ -1550,29 +1386,3 @@ async def test_restore_proceeds_when_master_intent_on(
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert user_plugin_calls == [True]
-
-
-def test_check_connectivity_failure_classifies_reason(monkeypatch: pytest.MonkeyPatch):
-    """When invoke_raw raises, the classification helper picks the bucket."""
-    from brain import computer_use as cu_module
-
-    fake_llm = MagicMock()
-    fake_llm.invoke_raw = MagicMock(side_effect=Exception("Rate limit exceeded: 429"))
-    monkeypatch.setattr(cu_module, "create_chat_llm", lambda **kwargs: fake_llm)
-
-    adapter = cu_module.ComputerUseAdapter.__new__(cu_module.ComputerUseAdapter)
-    adapter._config_manager = MagicMock()
-    adapter._config_manager.get_model_api_config = MagicMock(return_value={
-        "api_key": "sk-test",
-        "base_url": "https://api.example.com",
-        "model": "test-model",
-    })
-    adapter._llm_client = None
-    adapter._llm_client_sig = None
-    adapter.init_ok = True
-    adapter.last_error = None
-
-    ok, reason = adapter.check_connectivity(timeout_s=4.0)
-    assert ok is False
-    assert reason == "AGENT_QUOTA_EXCEEDED"
-    assert adapter.init_ok is False

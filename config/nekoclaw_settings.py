@@ -181,6 +181,28 @@ GATEWAY_SEARCH_RESULTS = 8
 GATEWAY_RESULT_MAX_TOKENS = 4000
 """Cap on the text of one tool result served by the gateway."""
 
+GATEWAY_BUILTIN_TOOL_LIST_MAX_TOKENS = 2400
+"""Budget for the definitions of the built-in tools (keyboard and mouse,
+browser). They are always listed up front and are counted apart from the
+plugin entries, so a long plugin list cannot push them out and they take
+nothing from ``GATEWAY_TOOL_LIST_MAX_TOKENS``. The definitions are ours
+(``config/prompts/prompts_nekoclaw_builtin.py``); a test keeps them inside
+this budget, so in practice none is ever left out."""
+
+BUILTIN_OCCUPIED_WAIT_SECONDS = 120.0
+"""How long a call of a built-in tool waits for the desktop or the browser
+while another commission occupies it (``nekoclaw/host/leases.py``). After
+that the task agent is told who has it and decides how to go on."""
+
+TASK_AGENT_SCREENSHOTS_KEPT = 3
+"""How many of the most recent screenshots of each screenshot tool stay in a
+task agent's context; older ones are replaced with a placeholder. The old
+keyboard-and-mouse loop sent the current screenshot and the two before it."""
+
+BROWSER_SNAPSHOT_MAX_TOKENS = 3000
+"""Cap on one page snapshot handed to a task agent. A longer one is cut and
+ends with a line saying so and how to see the rest."""
+
 GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS = 200
 """Cap on a plugin's request for confirmation when the gateway puts it to the
 user; it reaches the main dialogue model as part of a report."""

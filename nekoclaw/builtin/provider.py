@@ -1,0 +1,265 @@
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""The built-in tools as the host sees them: listed, and carried out one call at a time.
+
+``BuiltinToolProvider`` implements ``nekoclaw.host.capabilities.BuiltinCapabilities``.
+Whoever embeds it says, through ``state``, whether each group is switched on
+and ready right now; the provider adds what only it can know (whether input
+can be sent at all, whether a browser can be found).
+
+Which commission may use a group is decided by the host (it occupies the
+group, ``nekoclaw/host/leases.py``). Here only single calls are kept apart:
+the commissions of one team share an occupation, and two calls must never
+drive the mouse, or the same browser page, at the same time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+import threading
+from collections.abc import Callable
+from typing import Any
+
+from nekoclaw.host.capabilities import (
+    BUILTIN_GROUP_BROWSER,
+    BUILTIN_GROUP_KEYBOARD_MOUSE,
+    BuiltinImage,
+    BuiltinOutcome,
+    Capability,
+    builtin_tool,
+)
+
+logger = logging.getLogger(__name__)
+
+# Returns whether a group is switched on and ready, and if not, why.
+StateReader = Callable[[str], "tuple[bool, str]"]
+# Told where the browser window being driven is, whenever that changed.
+WindowListener = Callable[["dict[str, Any] | None"], None]
+
+# How long a stopped keyboard-and-mouse call waits for its worker thread to
+# let go of the mouse before the next call may start.
+_DESKTOP_STOP_WAIT_SECONDS = 15.0
+
+
+def _drop_outcome(future: "asyncio.Future[Any]") -> None:
+    """Take a stopped call's late result or failure, which is of no use to anyone by now."""
+    if not future.cancelled():
+        future.exception()
+
+
+class BuiltinToolProvider:
+    """Lists the keyboard-and-mouse and browser tools and carries their calls out."""
+
+    def __init__(
+        self,
+        *,
+        state: StateReader,
+        desktop: Any = None,
+        browser: Any = None,
+        on_browser_window: WindowListener | None = None,
+    ) -> None:
+        self._state = state
+        # Told when the window of the browser being driven is first known, or
+        # has moved: the browser is only started by the first call, after the
+        # commission began to occupy it.
+        self.on_browser_window = on_browser_window
+        self._last_window: dict[str, Any] | None = None
+        # ``nekoclaw.builtin.desktop.Desktop``; made on first use.
+        self._desktop = desktop
+        # ``nekoclaw.builtin.browser.tools.BrowserTools``; made on first use.
+        self._browser = browser
+        self._desktop_lock: asyncio.Lock | None = None
+        # group -> commission whose call is being carried out right now.
+        self._running: dict[str, str] = {}
+
+    # -- availability -----------------------------------------------------
+
+    def available(self) -> list[Capability]:
+        """Return every built-in tool with its availability as of now. Does not block."""
+        from config.prompts.prompts_nekoclaw_builtin import (
+            BROWSER_SCREENSHOT_TOOL_NAME,
+            BROWSER_TOOLS,
+            COMPUTER_TOOL,
+        )
+
+        items: list[Capability] = []
+        ready, reason = self._state(BUILTIN_GROUP_KEYBOARD_MOUSE)
+        # It works from screenshots: of no use to a model that cannot see them.
+        items.append(
+            builtin_tool(
+                BUILTIN_GROUP_KEYBOARD_MOUSE,
+                COMPUTER_TOOL,
+                available=ready,
+                unavailable_reason=reason,
+                needs_images=True,
+            )
+        )
+        ready, reason = self._state(BUILTIN_GROUP_BROWSER)
+        for definition in BROWSER_TOOLS:
+            items.append(
+                builtin_tool(
+                    BUILTIN_GROUP_BROWSER,
+                    definition,
+                    available=ready,
+                    unavailable_reason=reason,
+                    needs_images=definition["name"] == BROWSER_SCREENSHOT_TOOL_NAME,
+                )
+            )
+        return items
+
+    def is_running(self, group: str | None = None) -> bool:
+        """Whether a call is being carried out right now (of one group, or of any)."""
+        if group is None:
+            return bool(self._running)
+        return group in self._running
+
+    # -- the parts, made on first use --------------------------------------
+
+    def desktop(self) -> Any:
+        if self._desktop is None:
+            from nekoclaw.builtin.desktop import Desktop
+
+            self._desktop = Desktop()
+        return self._desktop
+
+    def browser(self) -> Any:
+        if self._browser is None:
+            from nekoclaw.builtin.browser.tools import BrowserTools
+
+            self._browser = BrowserTools()
+        return self._browser
+
+    # -- calls --------------------------------------------------------------
+
+    async def run(self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+        """Carry out one call. Cancelling it stops what it started."""
+        group = capability.group
+        ready, reason = self._state(group or "")
+        if not ready:
+            return BuiltinOutcome(False, f"{capability.tool_name} is not available: {reason or 'switched off'}")
+        if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
+            return await self._run_desktop(commission_id, dict(arguments or {}))
+        if group == BUILTIN_GROUP_BROWSER:
+            return await self._run_browser(capability.tool_name, commission_id, dict(arguments or {}))
+        return BuiltinOutcome(False, f"unknown tool {capability.tool_name}")
+
+    async def _run_desktop(self, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+        from nekoclaw.builtin.desktop import DesktopActionError, DesktopStopped
+
+        if self._desktop_lock is None:
+            self._desktop_lock = asyncio.Lock()
+        action = str(arguments.get("action") or "")
+        async with self._desktop_lock:
+            # Checked again: it may have been switched off while this waited its turn.
+            ready, reason = self._state(BUILTIN_GROUP_KEYBOARD_MOUSE)
+            if not ready:
+                return BuiltinOutcome(False, f"keyboard and mouse control is {reason or 'switched off'}")
+            loop = asyncio.get_running_loop()
+            stop = threading.Event()
+            self._running[BUILTIN_GROUP_KEYBOARD_MOUSE] = commission_id
+            # Sending input and grabbing the screen block; they run in a worker thread.
+            work = loop.run_in_executor(None, self.desktop().act, action, arguments, stop)
+            try:
+                result = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                stop.set()
+                work.add_done_callback(_drop_outcome)
+                # The worker thread may still have the mouse. The lock is kept
+                # until it has let go, for a bounded time: the next call must
+                # not start while it drives the pointer.
+                try:
+                    await asyncio.wait({work}, timeout=_DESKTOP_STOP_WAIT_SECONDS)
+                    if not work.done():
+                        logger.warning(
+                            "the keyboard-and-mouse worker did not stop within %.0fs", _DESKTOP_STOP_WAIT_SECONDS
+                        )
+                except asyncio.CancelledError:
+                    pass  # Cancelled again while waiting; the cancellation is raised just below.
+                raise
+            except DesktopActionError as exc:
+                return BuiltinOutcome(False, str(exc))
+            except DesktopStopped:
+                return BuiltinOutcome(False, "stopped")
+            except Exception as exc:  # noqa: BLE001 - told to the task agent by its type only
+                # What it raises can quote the screen; only its type is logged.
+                logger.error("keyboard and mouse call failed (exc_type=%s)", type(exc).__name__)
+                return BuiltinOutcome(False, f"the action failed: {type(exc).__name__}")
+            finally:
+                if self._running.get(BUILTIN_GROUP_KEYBOARD_MOUSE) == commission_id:
+                    del self._running[BUILTIN_GROUP_KEYBOARD_MOUSE]
+        images: tuple[BuiltinImage, ...] = ()
+        if result.screenshot:
+            images = (BuiltinImage(base64.b64encode(result.screenshot).decode("ascii"), result.mime_type),)
+        return BuiltinOutcome(True, result.text, images)
+
+    async def _run_browser(self, tool_name: str, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+        self._running[BUILTIN_GROUP_BROWSER] = commission_id
+        try:
+            outcome = await self.browser().call(tool_name, arguments)
+        finally:
+            if self._running.get(BUILTIN_GROUP_BROWSER) == commission_id:
+                del self._running[BUILTIN_GROUP_BROWSER]
+        self._tell_window()
+        return outcome
+
+    def _tell_window(self) -> None:
+        window = self.browser_window()
+        if window == self._last_window:
+            return
+        self._last_window = window
+        listener = self.on_browser_window
+        if listener is None:
+            return
+        try:
+            listener(window)
+        except Exception:  # noqa: BLE001 - a display that fails must not fail the call
+            logger.debug("telling where the browser window is failed", exc_info=True)
+
+    # -- letting go ----------------------------------------------------------
+
+    async def released(self, group: str, commission_id: str) -> None:
+        """A team no longer occupies a group: drop what was kept for it."""
+        del commission_id
+        if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
+            if self._desktop is not None:
+                # Keys or buttons a stopped call left held must not stay down.
+                await asyncio.to_thread(self._desktop.release_held)
+        elif group == BUILTIN_GROUP_BROWSER:
+            # The next commission is told about the window afresh.
+            self._last_window = None
+            if self._browser is not None:
+                await self._browser.released()
+
+    def browser_window(self) -> dict[str, Any] | None:
+        """Return what is known about the browser window being driven, for the banner."""
+        if self._browser is None:
+            return None
+        return self._browser.window()
+
+    async def close_browser(self) -> None:
+        """Close the browser this process started and drop the connection; for switching off."""
+        if self._browser is not None:
+            await self._browser.aclose()
+
+    async def aclose(self) -> None:
+        """Let go of everything; for shutting down."""
+        if self._desktop is not None:
+            try:
+                await asyncio.to_thread(self._desktop.release_held)
+            except Exception:  # noqa: BLE001 - shutting down goes on
+                logger.debug("releasing held keys failed", exc_info=True)
+        await self.close_browser()

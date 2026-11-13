@@ -487,6 +487,73 @@ async def proxy_task_cancel(task_id: str):
         return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
 
 
+@router.get('/builtin/activity')
+async def proxy_builtin_activity():
+    """Which commission is using the keyboard and mouse or the browser right now; for the banner."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    try:
+        client = _get_http_client()
+        r = await client.get(f"{TOOL_SERVER_BASE}/builtin/activity", timeout=1.5)
+        if not r.is_success:
+            return JSONResponse({"activity": [], "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return r.json()
+    except Exception as e:
+        return JSONResponse({"activity": [], "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.post('/builtin/stop')
+async def proxy_builtin_stop(payload: dict = Body(default={})):
+    """Stop the task that is using the keyboard and mouse or the browser: what Esc on the banner calls."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    try:
+        client = _get_http_client()
+        r = await client.post(f"{TOOL_SERVER_BASE}/builtin/stop", json=payload or {}, timeout=5.0)
+        if not r.is_success:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=r.status_code)
+        return r.json()
+    except httpx.ReadTimeout as e:
+        # The request reached the tool server; stopping took longer than this waits.
+        return JSONResponse({"success": False, "error": f"proxy timeout: {e}"}, status_code=504)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.get('/builtin/browser/settings')
+async def proxy_get_browser_settings():
+    """Which browser the browser tools use and how, with the browsers found on this computer."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    try:
+        client = _get_http_client()
+        r = await client.get(f"{TOOL_SERVER_BASE}/builtin/browser/settings", timeout=2.5)
+        if not r.is_success:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=502)
+        return r.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+
+
+@router.post('/builtin/browser/settings')
+async def proxy_set_browser_settings(payload: dict = Body(...)):
+    """Change which browser the browser tools use and how (own profile, or the browser in use)."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
+    try:
+        client = _get_http_client()
+        r = await client.post(f"{TOOL_SERVER_BASE}/builtin/browser/settings", json=payload, timeout=5.0)
+        if not r.is_success:
+            return JSONResponse({"success": False, "error": f"tool_server responded {r.status_code}"}, status_code=r.status_code)
+        return r.json()
+    except Exception as e:
+        return JSONResponse({"success": False, "error": f"proxy error: {e}"}, status_code=502)
+
+
 @router.post('/admin/control')
 async def proxy_admin_control(payload: dict = Body(...)):
     """Proxy admin control commands to tool server."""

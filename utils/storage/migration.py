@@ -89,6 +89,12 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # The database is derived but moves with the rest: migration runs with
     # every server stopped, exactly like memory's SQLite files.
     "knowledge",
+    # NekoClaw: the commission ledger, the permission settings, the task
+    # agents' session directories (transcripts and working directories) and
+    # the profile directory of the browser the browser tools start, which
+    # holds the sign-ins made there. The agent process and the browser it
+    # started are stopped during a migration like every other server.
+    "nekoclaw",
     "plugins",
     # Installed code and its source records live outside the plugin state tree.
     *_PLUGIN_INSTALLATION_ENTRIES,

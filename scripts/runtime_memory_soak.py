@@ -199,19 +199,24 @@ async def _ocr_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
 
 
 async def _browser_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]:
-    from brain.browser_use_adapter import BrowserUseAdapter
+    import tempfile
 
-    adapter = BrowserUseAdapter(headless=not args.headed)
-    if not adapter._ready_import:
-        raise FeatureUnavailable("browser_use_import_unavailable")
-    session = await adapter._get_browser_session()
+    from nekoclaw.builtin.browser.session import BrowserError, BrowserSession
+    from nekoclaw.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
+
+    # A browser installed on this machine, on a throwaway profile directory.
+    store = BrowserSettingsStore(Path(tempfile.mkdtemp(prefix="neko-browser-soak-")))
+    store.save(BrowserSettings(headless=not args.headed))
+    session = BrowserSession(settings=store)
     try:
-        await session.start()
-        adapter._session_ever_started = True
+        try:
+            await session.start()
+        except BrowserError as exc:
+            raise FeatureUnavailable("browser_unavailable") from exc
         active = _checkpoint(args, f"cycle_{cycle:04d}_browser_use_active")
     finally:
-        await adapter.close()
-    del session, adapter
+        await session.close()
+    del session
     released = await _released_checkpoint(
         args, f"cycle_{cycle:04d}_browser_use_released"
     )

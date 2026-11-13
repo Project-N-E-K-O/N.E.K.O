@@ -126,6 +126,46 @@ def is_context_overflow(error: BaseException) -> bool:
     return bool(_OVERFLOW_PATTERNS.search(str(error)))
 
 
+# What a provider says when a request carries a picture its model cannot take.
+# Each alternative names the picture and the refusal together, so an error
+# that merely mentions an image (a failed download, a size limit) is not
+# taken for one.
+_IMAGE_REFUSAL_PATTERNS = re.compile(
+    "|".join(
+        [
+            r"image_url[^.\n]{0,80}(?:only supported|not supported|unsupported|unknown variant|unexpected)",
+            r"unknown variant [`'\"]?image_url",
+            r"(?:does not|doesn't|do not|cannot|can't|not) support[^.\n]{0,40}(?:image|vision|multimodal|multi-modal)",
+            r"(?:image|vision|multimodal|multi-modal)[^.\n]{0,40}(?:is|are) not supported",
+            r"(?:image|vision)[^.\n]{0,20}input[^.\n]{0,40}(?:not supported|unsupported|not enabled|not available)",
+            # A router with no upstream that takes pictures for this model (HTTP 404).
+            r"no endpoints? found that supports?[^.\n]{0,20}(?:image|vision|multimodal|multi-modal)",
+            r"invalid content type[^.\n]{0,40}image",
+            r"expected [`'\"]?text[`'\"]?[^.\n]{0,40}image_url",
+            r"不支持[^。\n]{0,12}(?:图片|图像|视觉|多模态)",
+            r"(?:图片|图像|视觉|多模态)[^。\n]{0,12}不支持",
+        ]
+    ),
+    re.IGNORECASE,
+)
+
+
+def is_image_refusal(error: BaseException) -> bool:
+    """Recognize a provider's "this model takes no pictures" rejection from its message."""
+    status = getattr(error, "status_code", None)
+    if status is not None and status not in (400, 404, 415, 422):
+        return False
+    return bool(_IMAGE_REFUSAL_PATTERNS.search(str(error)))
+
+
+def _carries_images(messages: Sequence[AgentMessage]) -> bool:
+    for message in messages:
+        content = getattr(message, "content", None)
+        if isinstance(content, list) and any(isinstance(block, ImageContent) for block in content):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Loop messages -> OpenAI-format messages
 # ---------------------------------------------------------------------------
@@ -599,17 +639,47 @@ class LLMClientProvider:
     The client is created on first use. ``client_factory`` replaces the real
     client in tests; it must return an object with an ``astream(messages,
     **overrides)`` async generator of ``LLMStreamChunk``-like objects.
+
+    Whether the model can see pictures is what the configuration says until
+    the provider says otherwise: a request with pictures that is refused for
+    carrying them is sent once more with a placeholder in their place, every
+    later request of this provider goes without them, and
+    ``on_images_refused`` is called once so whoever configured the model can
+    remember it.
     """
 
-    def __init__(self, config: ModelConfig, *, client_factory: ClientFactory | None = None) -> None:
+    def __init__(
+        self,
+        config: ModelConfig,
+        *,
+        client_factory: ClientFactory | None = None,
+        on_images_refused: Callable[[], None] | None = None,
+    ) -> None:
         self._config = config
         self._client_factory = client_factory
         self._client: Any = None
         self._client_lock = asyncio.Lock()
+        self._supports_images = bool(config.supports_images)
+        self.on_images_refused = on_images_refused
 
     @property
     def config(self) -> ModelConfig:
         return self._config
+
+    @property
+    def supports_images(self) -> bool:
+        """Whether requests carry pictures: the configured value, until the provider refused one."""
+        return self._supports_images
+
+    def _images_refused(self) -> None:
+        self._supports_images = False
+        callback = self.on_images_refused
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - remembering it is best effort
+            logger.debug("reporting that the model takes no pictures failed", exc_info=True)
 
     async def _get_client(self) -> Any:
         async with self._client_lock:
@@ -712,38 +782,56 @@ class LLMClientProvider:
                 or type(client).__name__ == "ChatAnthropic"
             )
             part_cap = min(WIRE_TEXT_PART_MAX_TOKENS, max(1_000, config.context_window // 2))
-            wire = await asyncio.to_thread(
-                to_wire_messages,
-                system,
-                list(messages),
-                anthropic=anthropic,
-                supports_images=config.supports_images,
-                part_max_tokens=part_cap,
-            )
             overrides: dict[str, Any] = {"tools": to_wire_tools(tools) or None}
             if max_tokens is not None:
                 overrides["max_completion_tokens"] = max_tokens
-            if signal is not None and signal.is_cancelled():
-                raise _Aborted
-            iterator = client.astream(wire, **overrides).__aiter__()
             while True:
-                pending = asyncio.ensure_future(iterator.__anext__())
-                while True:
-                    done, _waiting = await asyncio.wait({pending}, timeout=_CANCEL_POLL_SECONDS)
-                    if done:
-                        break
-                    if signal is not None and signal.is_cancelled():
-                        raise _Aborted
-                try:
-                    chunk = pending.result()
-                except StopAsyncIteration:
-                    break
-                finally:
-                    pending = None
-                for event in builder.feed(chunk):
-                    yield event
+                with_images = self._supports_images and _carries_images(messages)
+                wire = await asyncio.to_thread(
+                    to_wire_messages,
+                    system,
+                    list(messages),
+                    anthropic=anthropic,
+                    supports_images=self._supports_images,
+                    part_max_tokens=part_cap,
+                )
                 if signal is not None and signal.is_cancelled():
                     raise _Aborted
+                iterator = client.astream(wire, **overrides).__aiter__()
+                try:
+                    while True:
+                        pending = asyncio.ensure_future(iterator.__anext__())
+                        while True:
+                            done, _waiting = await asyncio.wait({pending}, timeout=_CANCEL_POLL_SECONDS)
+                            if done:
+                                break
+                            if signal is not None and signal.is_cancelled():
+                                raise _Aborted
+                        try:
+                            chunk = pending.result()
+                        except StopAsyncIteration:
+                            break
+                        finally:
+                            pending = None
+                        for event in builder.feed(chunk):
+                            yield event
+                        if signal is not None and signal.is_cancelled():
+                            raise _Aborted
+                    break
+                except Exception as exc:  # noqa: BLE001 - looked at here, raised again unless it is the one case
+                    if not (with_images and not builder.emitted_output and is_image_refusal(exc)):
+                        raise
+                    # The model takes no pictures. Sent once more without
+                    # them, and without them from here on.
+                    logger.warning("the model refused a request for its pictures; sending it without them: %s", exc)
+                    self._images_refused()
+                    close = getattr(iterator, "aclose", None)
+                    iterator = None
+                    if close is not None:
+                        try:
+                            await close()
+                        except Exception:  # noqa: BLE001 - the refused request is over either way
+                            logger.debug("closing the refused model stream failed", exc_info=True)
             for event in builder.finish():
                 yield event
         except _Aborted:

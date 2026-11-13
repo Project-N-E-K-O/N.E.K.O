@@ -24,16 +24,19 @@ datas = []
 binaries = []
 hiddenimports = []
 hiddenimports += collect_submodules('plugin.sdk', on_error='raise')
+# nekoclaw.runtime resolves its public names through importlib on first use, so
+# following imports from launcher.py does not reach every module of the package.
+# Collect the whole tree, as --include-package=nekoclaw does in the Nuitka build.
+hiddenimports += collect_submodules('nekoclaw', on_error='raise')
 
 # 收集关键包的所有内容（根据实际 import 检查）
 critical_packages = [
     'dashscope',         # main_logic 使用
     'openai',            # langchain_openai 需要
-    'langchain',         # brain 和 memory 使用
+    'langchain',         # memory 使用
     'langchain_community',
     'langchain_core',
     'langchain_openai',
-    'browser_use',       # browser-use agent 需要 .md 模板文件
     'pyrnnoise',         # 音频降噪，含 rnnoise.dll native 库
     'bilibili_api',      # B站弹幕/视频，含 data/*.json 资源文件
     # memory-evidence-rfc §3.6.7: tiktoken ships per-encoding data files
@@ -186,7 +189,6 @@ def add_data(src, dest):
 add_data('static', 'static')
 add_data('assets', 'assets')
 add_data('templates', 'templates')
-add_data('data/browser_use_prompts', 'data/browser_use_prompts')
 # tiktoken o200k_base is fetched on first use into TIKTOKEN_CACHE_DIR.
 # launcher.py points TIKTOKEN_CACHE_DIR at data/tiktoken_cache when it
 # exists in the bundle (PR #929). The CI build warms this dir before
@@ -266,11 +268,10 @@ hiddenimports += [
     'dashscope',
     'httpx',
     
-    # 自动化相关（brain/computer_use.py）
+    # Keyboard, mouse and screenshots (nekoclaw/builtin/desktop.py)
     'PIL',
     'PIL.Image',
     'pyautogui',
-    'gui_agents',
     
     # 音频相关
     'librosa',
@@ -298,11 +299,7 @@ hiddenimports += [
     'config.prompts',
     'config.prompts.prompts_sys',
     'config.prompts.prompts_chara',
-    
-    # brain 子模块
-    'brain',
-    'brain.computer_use',
-    
+
     # main_logic 子模块
     'main_logic',
     'main_logic._module_state_proxy',

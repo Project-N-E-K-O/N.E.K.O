@@ -777,7 +777,7 @@ def test_only_packaged_config_and_data_entries_are_scanned(tmp_path: Path) -> No
     for rel in (
         f"config/characters/{CJK_NAME}.json",
         f"config/changelog/{CJK_NAME}.md",
-        f"data/browser_use_prompts/{CJK_NAME}.md",
+        f"data/tiktoken_cache/{CJK_NAME}.md",
         f"config/prompts/{CJK_NAME}.md",
         f"data/notes/{CJK_NAME}.md",
     ):
@@ -789,7 +789,7 @@ def test_only_packaged_config_and_data_entries_are_scanned(tmp_path: Path) -> No
     assert offenders == {
         f"config/characters/{CJK_NAME}.json",
         f"config/changelog/{CJK_NAME}.md",
-        f"data/browser_use_prompts/{CJK_NAME}.md",
+        f"data/tiktoken_cache/{CJK_NAME}.md",
     }
 
 
