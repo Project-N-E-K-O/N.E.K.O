@@ -121,7 +121,7 @@ self.report_status({
 
 #### `push_message(**kwargs) -> PushMessageResult`
 
-使用 v2 schema 向宿主系统推送消息。
+使用 v2 schema 向宿主系统推送消息：`visibility` 决定是否在用户的聊天窗口或 HUD 中显示，`ai_behavior` 独立决定模型是否读取消息或作出回应，`parts` 承载文字、图片和 `ui_action`。
 
 ```python
 result = self.push_message(
@@ -131,44 +131,9 @@ result = self.push_message(
     parts=[{"type": "text", "text": "任务已完成"}],
     priority=5,
 )
-
-if not result["submitted"]:
-    # 保留本地状态；重试和去重仍由插件自行决定。
-    self.logger.warning("消息提交失败：%s", result["reason"])
 ```
 
-`submitted=True` 只表示 SDK 的权威本地提交路径已接收 payload，并由 SDK 接管后续
-提交责任；它不表示宿主已经消费、模型已经生成或音频已经播放。
-拒绝结果使用稳定的 `backpressure`、`transport_error` 或
-`transport_unavailable` reason，且不会包含消息正文或原始异常文本。拒绝结果还会携带
-兼容旧调用方的 `ok=False`；新代码应以 `submitted` 为正式判据。
-
-v1 字段（`message_type`、`content`、`delivery`、`reply` 及其他旧别名）已经弃用，但当前源码仍会转换。请立即迁移；本文档不保证确切移除版本。参见[迁移指南](./migration-v0.9#push-message-v2)。
-
-#### 媒体消息片段
-
-- 宿主支持文字和图片片段。小图片可以直接内联发送：
-
-  ```python
-  parts=[{"type": "image", "data": image_bytes, "mime": "image/png"}]
-  ```
-
-- 对于不是很小的图片，先交给宿主临时上传，再发送返回的 part：
-
-  ```python
-  image_part = await self.ctx.images.upload(image_bytes, mime="image/png")
-  result = self.push_message(
-      source="my_feature",
-      visibility=["chat"],
-      ai_behavior="read",
-      parts=[image_part],
-  )
-  ```
-
-  模型投递不接受任意外部图片 URL，请使用这条宿主临时上传路径。内联图片与整条消息共享 message plane 的 payload 预算；上传后的 part 不会把图片字节塞进该消息包。生命周期处理器运行时，插件命令循环无法接收上传响应，因此不能调用 `ctx.images.upload()`；请在插件 entry、定时器、消息处理器或自定义事件处理器中调用。
-- `visibility` 决定是否在用户的聊天窗口或 HUD 中显示；`ai_behavior` 独立决定模型是否读取消息或作出回应。
-- 宿主目前不会投递音频和视频消息片段，插件不能把提交成功当作已经播放或显示。
-- Hosted UI 面板可以自行向用户播放音频或视频，但这不等于通过原生聊天或模型通道投递媒体。
+返回值只表示本地提交结果（`submitted` / `reason`）。两条轴的完整语义、`parts` 类型、payload 与图片大小限制、`ctx.images.upload()` 以及 v1 字段迁移见[消息推送与结果投递](./push-message)。
 
 #### `data_path(*parts) -> Path`
 
@@ -249,15 +214,17 @@ Hosted TSX 使用导出的 `ui` namespace 和 manifest surface，详见 [Hosted 
 
 ### 回复控制
 
-`finish()` 方法接受 `reply` 参数（默认 `True`），用于控制插件结果是否触发角色说话。
+`finish()` 通过 `delivery` 参数（`"proactive"` 默认 / `"passive"` / `"silent"`）控制插件结果是否进入主 AI 上下文、是否立即触发角色说话。`reply=True/False` 是已弃用的布尔别名。
 
 ```python
 # 正常：角色会播报结果
-return await self.finish(data={"summary": "完成"}, reply=True)
+return await self.finish(data={"summary": "完成"})
 
 # 静默：结果会记录但角色不说话
-return await self.finish(data={"summary": "完成"}, reply=False)
+return await self.finish(data={"summary": "完成"}, delivery="silent")
 ```
+
+三种模式的区别、`result_kind` 结果语义，以及 `{MASTER_NAME}` / `{LANLAN_NAME}` 角色占位符见[消息推送与结果投递](./push-message)。
 
 ### LLM 结果字段过滤
 

@@ -445,7 +445,7 @@ class SdkContext:
         right name itself — visibility filtering decides which session
         receives the text, so substitution has to happen host-side. Prefer
         the placeholders over hardcoded ``\"用户\"`` / ``\"master\"`` /
-        ``\"主人\"``. See PLUGIN_DEVELOPMENT_GUIDE.md (\"Writing role-aware
+        ``\"主人\"``. See docs/plugins/push-message.md (\"Role-aware
         text\") for details.
         """
         normalized_data = normalize_structured_data(data)
@@ -509,7 +509,7 @@ class SdkContext:
         the injection boundary. Plugin code can't pick the right name
         itself — visibility filtering happens host-side. Prefer the
         placeholders over hardcoded ``\"用户\"`` / ``\"master\"`` / ``\"主人\"``.
-        See PLUGIN_DEVELOPMENT_GUIDE.md (\"Writing role-aware text\") for
+        See docs/plugins/push-message.md (\"Role-aware text\") for
         details.
 
         All other parameters are deprecated and emit ``DeprecationWarning``;

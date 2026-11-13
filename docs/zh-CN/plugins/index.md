@@ -67,6 +67,7 @@ N.E.K.O. 插件系统是一个基于 Python 的插件框架，建立在**进程�
 - [发布插件](/zh-CN/plugins/cli) — 上传 GitHub、提交审核并持续发布新版本
 - [v0.9 迁移](./migration-v0.9) — 已删除接口与准确替代方案
 - [SDK 参考](./sdk-reference) — 基类、上下文 API、Result 类型
+- [消息推送与结果投递](./push-message) — `push_message` / `finish` 的投递语义、大小限制与角色占位符
 - [装饰器](./decorators) — 所有可用的装饰器
 - [Hosted UI](./hosted-ui) — 构建 TSX 面板和 Markdown 教程页
 - [示例](./examples) — 完整的可运行示例

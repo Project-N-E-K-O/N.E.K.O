@@ -1112,17 +1112,14 @@ def test_plugin_image_budget_constants_are_pinned() -> None:
 
 
 def test_model_image_budget_matches_the_documented_plugin_contract() -> None:
-    """PLUGIN_DEVELOPMENT_GUIDE.md advertises 8 images / 8 MiB to authors.
+    """docs/zh-CN/plugins/push-message.md advertises 8 images / 8 MiB to authors.
 
     The guide is the contract plugin authors code against, so a silent drift
     between it and the enforced budget is the actual defect this guards.
     """
-    from pathlib import Path
-
     from app.main_server import character_runtime
 
-    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
-    text = guide.read_text(encoding="utf-8")
+    text = _guide_text()
     assert "单条消息最多向模型注入 8 张、合计" in text
     assert "8 MiB 图片" in text
     assert character_runtime._PLUGIN_IMAGE_MAX_COUNT == 8
@@ -1137,12 +1134,9 @@ def test_staged_quotas_match_the_documented_plugin_contract() -> None:
     turn can carry several pushes' worth -- and the maintainer chose to keep
     the resulting nine rather than trim across sources.
     """
-    from pathlib import Path
-
     from main_logic import proactive_delivery as pd
 
-    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
-    text = guide.read_text(encoding="utf-8")
+    text = _guide_text()
 
     # The figures the guide prints, tied to the constants that enforce them, so
     # changing a quota without the doc (or the reverse) fails here.
@@ -1168,10 +1162,7 @@ def test_the_guide_does_not_promise_ordering_the_model_path_cannot_keep() -> Non
     so interleaved caption/image pairs do not survive. Rather than leave the
     promise standing, the guide now scopes it.
     """
-    from pathlib import Path
-
-    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
-    text = guide.read_text(encoding="utf-8")
+    text = _guide_text()
     assert "**进模型的那条路不保序**" in text
 
 
@@ -2871,7 +2862,7 @@ async def test_cancelled_budget_fitting_gives_both_image_queues_back():
 
 
 # ---------------------------------------------------------------------------
-# The numbers PLUGIN_DEVELOPMENT_GUIDE.md hands plugin authors.
+# The numbers docs/zh-CN/plugins/push-message.md hands plugin authors.
 #
 # Every ceiling below had zero tests: the inline payload cap, the four upload
 # ceilings, and the double-carry that makes the inline cap mean roughly half of
@@ -2886,7 +2877,8 @@ def _guide_text() -> str:
     from pathlib import Path
 
     guide = (
-        Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
+        Path(__file__).resolve().parents[2]
+        / "docs" / "zh-CN" / "plugins" / "push-message.md"
     )
     return guide.read_text(encoding="utf-8")
 
@@ -3141,8 +3133,7 @@ def test_an_inline_image_rides_the_wire_envelope_once(monkeypatch) -> None:
     # once, in a paragraph that says it used to be that way and names the
     # 2.34x double carry as the reason.
     assert text.count("110 KiB") == 1
-    # Blockquote paragraphs are separated by a bare "> " line, not a blank one.
-    history = next(p for p in text.split("\n>\n") if "110 KiB" in p)
+    history = next(p for p in text.split("\n\n") if "110 KiB" in p)
     assert "曾经" in history and "2.34" in history
     assert "384 KiB" not in history, (
         "the current ceiling must not be stated inside the historical paragraph"
