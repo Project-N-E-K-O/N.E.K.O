@@ -134,7 +134,7 @@ event fills the same speech-id row even when the provider emits audio first.
                 return
             event['data'] = bytes(event['data'])
         if kind == 'text':
-            cfg = cm.get_core_config()
+            cfg = await asyncio.to_thread(cm.get_core_config)
             event['metadata'] = {k: cfg.get(k) for k in ('ttsModelProvider', 'TTS_MODEL', 'TTS_VOICE_ID')}
             event['metadata']['character_voice_id'] = getattr(manager, 'voice_id', None)
         async with manager._owner_voice_archive_lock:
