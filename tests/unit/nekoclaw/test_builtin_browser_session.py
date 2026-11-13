@@ -2807,3 +2807,17 @@ async def test_a_start_stopped_while_the_browser_before_it_is_closed_leaves_neit
     assert closed[:2] == [half_closed, half_closed]
     assert [browser.owned for browser in closed[2:]] == [False, True] and closed[3] is half_closed
     assert not session.connected and world.connected == [world.connected[0]]
+
+
+async def test_another_browser_is_driven_though_the_one_before_it_could_not_be_closed(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await _closing_stopped_half_way(session, world)
+    world.settings(mode="attach")
+    world.close_error = RuntimeError("the process is not there any more")
+
+    await session.start()
+
+    # What went wrong with the old one is no reason not to reach the new one.
+    assert session.connected and world.attached == [CHROME]
+    world.close_error = None
