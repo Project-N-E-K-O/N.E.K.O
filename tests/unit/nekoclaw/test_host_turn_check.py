@@ -421,10 +421,11 @@ async def test_what_she_says_is_done_right_after_looking_her_tasks_up_gets_the_s
     result = await _check(host, "刚才那两件事办得怎么样了", "两件都办好啦", external_intent=0.8)
 
     assert (result.verdict, result.action, result.skipped) == ("claimed_done", "asked", "")
+    # With her next turn: she is not woken to say again what she just said.
     assert await _notices(host) == [
         (
             "looked_up",
-            "proactive",
+            "passive",
             f"刚才你说「{claim}」已经办好了。要是说的就是刚才查到的那几件已办完的事，这条不用管，也不要重新派发；"
             "要是别的事，任务记录里没有，请自然地向用户更正。",
         )

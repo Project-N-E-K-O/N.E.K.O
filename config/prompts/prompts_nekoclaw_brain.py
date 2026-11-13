@@ -729,8 +729,8 @@ TURN_CHECK_VERDICTS = ("none", "unable", "promised", "claimed_done")
 TURN_CHECK_INPUT_TEMPLATE = "USER: {user_text}\nREPLY: {reply_text}"
 
 # What she is told after a turn check. ``can_do`` / ``no_record`` /
-# ``looked_up`` / ``promised_failed`` wake her so she can put it right;
-# ``filed`` comes along with her next turn. ``looked_up`` replaces
+# ``promised_failed`` wake her so she can put it right; ``filed`` and
+# ``looked_up`` come along with her next turn. ``looked_up`` replaces
 # ``no_record`` right after an answer told her which tasks are done: a summary
 # of those matches no single task, so it does not tell her to dispatch.
 TURN_CHECK_TEXTS = {

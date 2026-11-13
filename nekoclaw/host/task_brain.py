@@ -1165,13 +1165,22 @@ class TaskBrain:
                 # is done. A summary of several matches no single one, and
                 # "no record ... dispatch it" had her deny finished work or
                 # dispatch it again; nor can the words tell such a summary
-                # from a claim about something else. She is asked instead.
+                # from a claim about something else. She is asked instead,
+                # with her next turn: woken for it, she only repeated that
+                # both were done; told with the user's next sentence, she
+                # answered that sentence alone, and a claim about something
+                # else was mostly put right then.
                 looked_up = (
                     answered_at is not None
                     and self._ledger._clock() - answered_at <= TURN_CHECK_STATUS_ANSWER_SECONDS
                 )
                 reason = "looked_up" if looked_up else "no_record"
-                await self._reporter.turn_notice(lanlan_name, reason=reason, text=words[reason].format(task=task))
+                await self._reporter.turn_notice(
+                    lanlan_name,
+                    reason=reason,
+                    text=words[reason].format(task=task),
+                    delivery_mode="passive" if looked_up else "proactive",
+                )
                 result.action = "asked" if looked_up else "corrected"
         elif verdict.kind == "promised":
             if generation != self._dispatch_generation:
