@@ -59,7 +59,7 @@ FORM = """<!doctype html><html><head><title>Order form</title></head><body>
     <option value="brass">Brass Hinge</option>
     <optgroup label="No longer made" disabled>
       <option value="iron">Iron Nail</option>
-      <option value="steel-1998">Steel Bolt</option>
+      <option value="steel">Steel Bolt</option>
     </optgroup>
     <option value="steel">Steel Bolt</option>
     <option value="zinc" disabled>Zinc Nut</option>
@@ -236,6 +236,23 @@ def uid_of(text: str, role: str, name: str) -> str:
     return found.group(1)
 
 
+async def _chosen_product(tools: BrowserTools) -> str:
+    """Say which option of the product select is chosen, and whether a person could have chosen it."""
+    answer = await tools._session._send(
+        tools._session.selected(),
+        "Runtime.evaluate",
+        {
+            "expression": (
+                "(() => { const option = document.querySelector('[name=product]').selectedOptions[0];"
+                " const off = option.disabled || option.parentElement.disabled;"
+                " return option.text.trim() + (off ? ', disabled' : ', can be chosen'); })()"
+            ),
+            "returnByValue": True,
+        },
+    )
+    return answer["result"]["value"]
+
+
 async def test_a_form_is_filled_in_sent_and_its_result_read(tools: BrowserTools, site: str) -> None:
     opened = await call(tools, "navigate_page", url=site + "/")
     assert opened.success, opened.text
@@ -259,13 +276,15 @@ async def test_a_form_is_filled_in_sent_and_its_result_read(tools: BrowserTools,
     for unavailable in ("Zinc Nut", "Iron Nail"):
         refused = await call(tools, "fill", uid=uid_of(opened.text, "combobox", "Product"), value=unavailable)
         assert not refused.success and f'its option "{unavailable}" is disabled' in refused.text, refused.text
-    chosen = await tools._session._send(
-        tools._session.selected(),
-        "Runtime.evaluate",
-        {"expression": "document.querySelector('[name=product]').value", "returnByValue": True},
-    )
-    # Of the two options by the name "Steel Bolt" the one that can be chosen was, not the first by that name.
-    assert chosen["result"]["value"] == "steel"
+    # Of the two options by the name "Steel Bolt", which also have the same value, the one that can be
+    # chosen was, not the first: that one is disabled, and a form sent with it leaves the field out.
+    assert await _chosen_product(tools) == "Steel Bolt, can be chosen"
+    # The same when the option itself is clicked.
+    assert (await call(tools, "fill", uid=uid_of(opened.text, "combobox", "Product"), value="Brass Hinge")).success
+    assert await _chosen_product(tools) == "Brass Hinge, can be chosen"
+    # (The snapshot lists the one that can be chosen; the options of the disabled group are not in it.)
+    assert (await call(tools, "click", uid=uid_of(filled.text, "option", "Steel Bolt"))).success
+    assert await _chosen_product(tools) == "Steel Bolt, can be chosen"
 
     sent = await call(tools, "click", uid=uid_of(opened.text, "button", "Send order"))
     assert sent.success, sent.text

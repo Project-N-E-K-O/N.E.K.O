@@ -185,8 +185,10 @@ _SELECT_OPTION = """function() {
   if (!select || select.multiple || select.disabled || this.disabled) return false;
   const group = this.parentElement;
   if (group instanceof HTMLOptGroupElement && group.disabled) return false;
-  if (select.value !== this.value) {
-    select.value = this.value;
+  // Chosen by its place, not by its value: assigning a value chooses the first
+  // option that has it, which may be another one, one that cannot be chosen.
+  if (select.selectedIndex !== this.index) {
+    select.selectedIndex = this.index;
     select.dispatchEvent(new Event('input', {bubbles: true}));
     select.dispatchEvent(new Event('change', {bubbles: true}));
   }
@@ -212,8 +214,9 @@ _PREPARE_FILL = """function(value) {
       return {kind: 'error', message: 'it has no option "' + value + '"; its options are: '
         + options.map(o => o.text.trim()).slice(0, 30).join(', ')};
     }
-    if (el.value !== wanted.value) {
-      el.value = wanted.value;
+    // By its place, as above: a disabled option before it may have the same value.
+    if (el.selectedIndex !== wanted.index) {
+      el.selectedIndex = wanted.index;
       el.dispatchEvent(new Event('input', {bubbles: true}));
       el.dispatchEvent(new Event('change', {bubbles: true}));
     }
