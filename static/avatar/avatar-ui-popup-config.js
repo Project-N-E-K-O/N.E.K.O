@@ -33,7 +33,11 @@ function createSettingsPopupShowSync(prefix) {
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-chat`), window.proactiveChatEnabled);
         // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), window.proactiveVisionEnabled, true);
-        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), window.mouseTrackingEnabled);
+        // MMD has per-model cursor-follow state; do not overwrite it with the global value.
+        const mouseTracking = prefix === 'mmd' && typeof this._getMouseTrackingState === 'function'
+            ? this._getMouseTrackingState()
+            : window.mouseTrackingEnabled;
+        syncCheckbox(popup.querySelector(`#${prefix}-mouse-tracking-toggle`), mouseTracking);
         const contextPrompt = document.querySelector(`#${prefix}-activity-context-prompt`);
         if (contextPrompt && typeof window.activityContextPromptEnabled !== 'undefined') {
             contextPrompt.checked = window.activityContextPromptEnabled !== false;
