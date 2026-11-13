@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 import pytest
 
-from main_logic.audio_message_payload import MAX_AUDIO_BYTES, decode_audio_message
+from main_logic.audio_message_payload import AudioMessageManualModeUnconfirmed, MAX_AUDIO_BYTES, decode_audio_message
 from main_logic.core.audio_message import AudioMessageMixin
 from main_logic.omni_realtime_client import OmniRealtimeClient, TurnDetectionMode
 from main_routers import websocket_router
@@ -654,9 +654,47 @@ async def test_manual_mode_rejected_by_provider_leaves_the_recording_unsent(sess
     try:
         await asyncio.sleep(0)
         client._observe_audio_message_event({"type": "session.updated", "session": session})
-        with pytest.raises(ConnectionError, match="did not confirm manual"):
+        with pytest.raises(AudioMessageManualModeUnconfirmed, match="did not confirm manual"):
             await asyncio.wait_for(task, 2)
         client.send_event.assert_not_called()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_ack", [False, True], ids=["timeout", "ambiguous-ack"])
+async def test_manual_confirmation_failure_releases_only_unsent_recording(isolated_history, monkeypatch, send_ack):
+    from main_logic.omni_realtime_client import _audio
+
+    monkeypatch.setattr(_audio, "_AUDIO_MANUAL_ACK_TIMEOUT_SECONDS", 0.1)
+    manager = Manager()
+    client = manager.client = OmniRealtimeClient(
+        "wss://example.invalid", "test", model="free-realtime", api_type="free",
+        turn_detection_mode=TurnDetectionMode.MANUAL,
+    )
+    client.send_event = AsyncMock()
+    payload = message()
+    socket = SimpleNamespace(send_json=AsyncMock())
+    task = asyncio.create_task(manager.submit_audio_message(payload, socket, is_current=lambda: True, save_local=True))
+    try:
+        if send_ack:
+            async with asyncio.timeout(1):
+                while getattr(client, "_audio_message_manual_ack", None) is None and not task.done():
+                    await asyncio.sleep(0)
+            client._observe_audio_message_event({"type": "session.updated", "session": {"id": "session-one"}})
+        await asyncio.wait_for(task, 2)
+        assert socket.send_json.await_args.args[0]["state"] == "rejected"
+        assert socket.send_json.await_args.args[0]["code"] == "manual_unavailable"
+        client.send_event.assert_not_awaited()
+        manager.request_end_session.assert_called_once_with(by_server=True)
+        assert isolated_history.receipt(payload["request_id"]) is None
+        assert payload["request_id"] not in manager._audio_message_records
+
+        manager.client = SimpleNamespace(submit_audio_message=AsyncMock(), _connection_generation=0)
+        await manager.submit_audio_message(payload, socket, is_current=lambda: True, save_local=True)
+        manager.client.submit_audio_message.assert_awaited_once()
+        assert socket.send_json.await_args.args[0]["state"] == "completed"
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

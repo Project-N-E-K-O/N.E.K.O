@@ -19,6 +19,7 @@ import soxr
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
+from main_logic.audio_message_payload import AudioMessageManualModeUnconfirmed
 from utils.asyncio_retirement import await_retirement
 
 from ._shared import TurnDetectionMode
@@ -33,6 +34,7 @@ from ._shared import (
 
 _AUDIO_TRANSCRIPT_GRACE_SECONDS = 0.75
 _AUDIO_TRANSCRIPT_RETRY_DELAYS = (0.1, 0.2)
+_AUDIO_MANUAL_ACK_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(slots=True, kw_only=True)
@@ -229,8 +231,10 @@ class _AudioMixin:
             waiter = asyncio.get_running_loop().create_future()
             self._audio_message_manual_ack = waiter
             try:
-                if not await asyncio.wait_for(waiter, timeout=5):
-                    raise ConnectionError("provider did not confirm manual audio turns")
+                if not await asyncio.wait_for(waiter, timeout=_AUDIO_MANUAL_ACK_TIMEOUT_SECONDS):
+                    raise AudioMessageManualModeUnconfirmed("provider did not confirm manual audio turns")
+            except TimeoutError as exc:
+                raise AudioMessageManualModeUnconfirmed("provider did not confirm manual audio turns") from exc
             finally:
                 self._audio_message_manual_ack = None
 

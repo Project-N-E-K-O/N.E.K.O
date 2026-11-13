@@ -144,7 +144,7 @@ describe('recording draft submission', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['busy', 'storage'])('keeps the same recording ID and disables retries while blocked after %s', async reason => {
+  it.each(['busy', 'storage', 'manual_unavailable'])('keeps the same recording ID and disables retries while blocked after %s', async reason => {
     const rejected = new Error(reason);
     rejected.name = 'AudioMessageRejected';
     let rejectSend!: (error: Error) => void;
@@ -158,6 +158,9 @@ describe('recording draft submission', () => {
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     view.rerender(<AudioMessageComposer {...props} disabled />);
     await act(async () => { rejectSend(rejected); });
+    if (reason === 'manual_unavailable') {
+      expect(screen.getByRole('alert')).toHaveTextContent('could not confirm recording support');
+    }
     expect(showStatusToast).toHaveBeenCalledWith(screen.getByRole('alert').textContent, expect.any(Number));
     const retry = screen.getByRole('button', { name: 'Send recording' });
     expect(retry).toBeDisabled();
