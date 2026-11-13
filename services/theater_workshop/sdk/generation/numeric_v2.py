@@ -3497,8 +3497,11 @@ class NumericV2Generator(ModelAgent):
                 **(dict(cast_names) if cast_names is not None else {}),
                 # World rules/suspense/conflicts support outlining, not direct player exposure; backgrounds retain natural recaps only.
                 "background": world["background"].strip(),
-                # Spoken when an in-voice invitation cannot be generated.
-                "invitation": world["invitation"].strip(),
+                # Spoken when an in-voice invitation cannot be generated. Checkpoints
+                # saved before the field existed export without it; the runtime then
+                # falls back to its localized invite.
+                **({"invitation": world["invitation"].strip()}
+                   if str(world.get("invitation") or "").strip() else {}),
                 "player_identity": self._join_profile_parts(player["identity"].strip()),
                 "catgirl_identity": self._join_profile_parts(
                     protagonist["identity"].strip(),

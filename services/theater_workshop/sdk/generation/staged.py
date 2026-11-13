@@ -374,12 +374,20 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
                 start, end = span
                 frame_idea = f"{frame_idea[:start]}〔原文编号 {number}〕{frame_idea[end:]}"
 
+    # Set once the checkpoint is read: a frame saved before world.invitation
+    # existed cannot gain it in a scene or ending phase, which only replace
+    # their own fields, so later phases do not ask for it.
+    legacy_invitation = False
+
     def outline_issues(candidate, *, pending_state_index=None, pending_chapter_index=None):
-        return _validate_idea_outline(candidate, minimum=minimum, maximum=maximum,
+        issues = _validate_idea_outline(candidate, minimum=minimum, maximum=maximum,
             scene_expected_turns_target=8 if preset == "short" else None,
             cast_names=names, token_counter=generator._token_counter,
             pending_state_index=pending_state_index,
             pending_chapter_index=pending_chapter_index)
+        if legacy_invitation:
+            issues = [issue for issue in issues if issue.get("path") != "world.invitation"]
+        return issues
 
     def persist():
         if save_checkpoint is not None:
@@ -662,6 +670,8 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
         return result
 
     candidate = state["candidate"]
+    legacy_invitation = (checkpoint is not None and state["stage"] != "frame"
+                         and "invitation" not in (candidate.get("world") or {}))
     if checkpoint is not None and state["completed_chapters"]:
         chapters = candidate["mainline_chapters"]
         completed = state["completed_chapters"]

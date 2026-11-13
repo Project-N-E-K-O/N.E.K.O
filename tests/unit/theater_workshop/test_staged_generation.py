@@ -1386,3 +1386,56 @@ def test_next_scene_does_not_receive_previous_scene_local_boundaries():
     for index, node in enumerate(result["story"]["nodes"][:3]):
         assert original["character_state_arc"]["stages"][index]["scene_boundaries"][0] in node["story_beat"]["must_not_happen"]
     NumericV2Compiler().compile_v2_2(result["story"])
+
+
+def _without_invitation(checkpoint):
+    """A checkpoint saved before world.invitation existed."""
+    legacy = deepcopy(checkpoint)
+    for holder in (legacy.get("candidate"), legacy.get("story_frame"), legacy.get("phase_candidate")):
+        if isinstance(holder, dict) and isinstance(holder.get("world"), dict):
+            holder["world"].pop("invitation", None)
+    return legacy
+
+
+@pytest.mark.parametrize("stage_index", [2, -1], ids=["mid_scenes", "complete"])
+def test_checkpoint_saved_before_invitation_resumes_and_exports_without_it(stage_index):
+    outline, checkpoints, calls = _idea_outline(3), [], []
+
+    def model(messages, **options):
+        op = options["operation"]
+        calls.append((op, prompt_payload(messages[1]["content"]).get("issues", [])))
+        return staged_reply(messages, op, outline)
+
+    generator = NumericV2Generator(model)
+    original = generator.generate_staged(title="旧存档", setup=_generation_setup(),
+                                         save_checkpoint=checkpoints.append)["story"]
+    legacy = _without_invitation(checkpoints[stage_index])
+    calls.clear()
+    story = generator.generate_staged(title="旧存档", setup=_generation_setup(), checkpoint=legacy)["story"]
+
+    NumericV2Compiler().compile_v2_2(story)
+    assert "invitation" not in story["intro"]
+    assert {key: value for key, value in original["intro"].items() if key != "invitation"} == story["intro"]
+    # Scene and ending phases cannot write world fields, so they are never asked to.
+    assert "numeric_v2_story_frame" not in [op for op, _ in calls]
+    assert not any(issue.get("path") == "world.invitation" for _, issues in calls for issue in issues)
+
+
+def test_new_frame_without_invitation_is_sent_back_for_it():
+    outline, issues_seen = _idea_outline(3), []
+    frames = []
+
+    def model(messages, **options):
+        op = options["operation"]
+        if op == "numeric_v2_story_frame":
+            frames.append(prompt_payload(messages[1]["content"]).get("issues", []))
+            reply = json.loads(staged_reply(messages, op, outline))
+            if len(frames) == 1:
+                reply["world"].pop("invitation")
+            return json.dumps(reply, ensure_ascii=False)
+        return staged_reply(messages, op, outline)
+
+    story = NumericV2Generator(model).generate_staged(title="新稿", setup=_generation_setup())["story"]
+    assert len(frames) == 2
+    assert any(issue.get("path") == "world.invitation" for issue in frames[1])
+    assert story["intro"]["invitation"] == outline["world"]["invitation"]
