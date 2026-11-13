@@ -508,6 +508,57 @@ async def test_only_a_tool_that_acts_marks_the_turn_as_acted(name, acted):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("name", [QUERY_TOOL_NAME, "recall_memory"])
+async def test_a_tool_of_another_source_under_a_look_up_name_counts_as_acting(name):
+    # Nothing says what it does: taking it for a look-up would have her words
+    # checked afterwards and what it did dispatched a second time.
+    manager = _with_tools(_manager())
+    manager.tool_registry.register(
+        ToolDefinition(name=name, description="d", parameters={}, handler=lambda arguments: "ok", metadata={"source": "plugin"}),
+        replace=True,
+    )
+    manager._turn_acted_through_tools = False
+
+    await manager._on_tool_call(ToolCall(name=name, arguments={}, call_id="c1"))
+
+    assert manager._turn_acted_through_tools is True
+
+
+@pytest.mark.parametrize("name", [DISPATCH_TOOL_NAME, QUERY_TOOL_NAME])
+@pytest.mark.parametrize("removal", ["unregister_tool", "clear_tools"])
+def test_a_task_tool_comes_back_once_another_sources_tool_gives_its_name_up(name, removal):
+    manager = _manager()
+    theirs = ToolDefinition(name=name, description="a plugin's own", parameters={}, metadata={"source": "plugin"})
+    manager.tool_registry.register(theirs, replace=True)
+    manager._register_builtin_tools()
+    assert manager.tool_registry.get(name) is theirs
+
+    if removal == "unregister_tool":
+        assert manager.unregister_tool(name) is True
+    else:
+        assert manager.clear_tools(source="plugin") == 1
+
+    assert manager.tool_registry.get(name).metadata == {"source": "builtin"}
+    # And the live session is told.
+    assert manager.fired
+
+
+def test_removing_the_task_tools_themselves_or_with_nekoclaw_off_brings_nothing_back():
+    manager = _manager()
+    manager._register_builtin_tools()
+    assert manager.unregister_tool(DISPATCH_TOOL_NAME) is True
+    assert manager.tool_registry.get(DISPATCH_TOOL_NAME) is None
+
+    off = _manager(agent_enabled=False)
+    off.tool_registry.register(
+        ToolDefinition(name=QUERY_TOOL_NAME, description="a plugin's own", parameters={}, metadata={"source": "plugin"}),
+        replace=True,
+    )
+    assert off.unregister_tool(QUERY_TOOL_NAME) is True
+    assert off.tool_registry.get(QUERY_TOOL_NAME) is None
+
+
+@pytest.mark.asyncio
 async def test_a_tool_call_before_her_first_words_lights_the_waiting_bubble():
     manager = _with_tools(_manager())
     manager._turn_has_spoken = False

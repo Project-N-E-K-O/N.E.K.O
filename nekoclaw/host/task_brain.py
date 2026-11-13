@@ -132,7 +132,9 @@ class TurnCheck:
     # "skipped" when the turn was not checked, else the verdict: "none",
     # "unable", "promised" or "claimed_done".
     verdict: str
-    # Why a turn was not checked: "disabled", "empty", "no_capability" or "gate".
+    # Why a turn was not checked: "disabled", "empty", "no_capability" or
+    # "gate". Or why nothing followed its verdict: "stopped", when everything
+    # was stopped while the turn was being judged.
     skipped: str = ""
     # What followed: "" (nothing), "corrected" (she was told and puts it right)
     # or "dispatched" (filed for her).
@@ -206,6 +208,34 @@ def waiting_row(head: str, commission: Commission, frame: str, lang: str) -> str
     room = QUERY_PERMISSION_ROW_MAX_TOKENS - count_tokens(f"{head} {frame.format(question='')}") - 2
     asked = describe_permission(question, lang, max_tokens=room)
     return truncate_to_tokens(f"{head} {frame.format(question=asked)}", QUERY_PERMISSION_ROW_MAX_TOKENS)
+
+
+def whole_lines_within(lines: list[str], max_tokens: int, more: str) -> list[str]:
+    """Return the lines that fit in ``max_tokens`` whole, then a line saying how many are not listed.
+
+    ``more`` is that last line, with ``{count}`` for the number of commission
+    lines (those that begin with ``- ``) left out. No line is cut short: half
+    a line could be a question without the answers on offer. Lines that all
+    fit come back as they are.
+    """
+    from utils.tokenize import count_tokens
+
+    if count_tokens("\n".join(lines)) <= max_tokens:
+        return lines
+    room = max_tokens - count_tokens(more.format(count=len(lines))) - 1
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        cost = count_tokens(line) + 1
+        if used + cost > room:
+            break
+        kept.append(line)
+        used += cost
+    left_out = sum(1 for line in lines[len(kept):] if line.startswith("- "))
+    while kept and not kept[-1].startswith("- "):
+        # A heading whose lines were all left out says nothing.
+        kept.pop()
+    return [*kept, more.format(count=left_out)]
 
 
 def render_receipt(receipt: Receipt, lang: str) -> str:
@@ -401,12 +431,17 @@ class TaskBrain:
         conversation_id: str | None = None,
         lang: str = "en",
         source: str = "dispatch",
+        generation: int | None = None,
     ) -> Receipt:
         """Take one sentence from her and return the receipt of the first round.
 
         ``source`` is ``dispatch`` when she called the tool herself and
         ``promised`` when the sentence is filed for her after she agreed to do
         something out loud.
+
+        ``generation`` is the count of "everything was stopped" the caller
+        saw when what led to this dispatch began; left out, it is read here.
+        A dispatch that began before a stop files nothing after it.
         """
         from config.nekoclaw_settings import (
             DISPATCH_FIRST_ROUND_SECONDS,
@@ -415,6 +450,10 @@ class TaskBrain:
         )
         from utils.tokenize import truncate_to_tokens
 
+        # Read before the first round is scheduled: it only starts when the
+        # loop gets to it, and a stop in between must still reach it.
+        if generation is None:
+            generation = self._dispatch_generation
         lang = prompt_language(lang)
         if not self._is_enabled():
             return Receipt(kind="no_capability", reason="disabled")
@@ -423,7 +462,9 @@ class TaskBrain:
         if not text:
             return Receipt(kind="nothing_active")
 
-        first = self._spawn(self._first_round(text, user_text, lanlan_name, conversation_id, lang, source))
+        first = self._spawn(
+            self._first_round(text, user_text, lanlan_name, conversation_id, lang, source, generation)
+        )
         done, _pending = await asyncio.wait({first}, timeout=DISPATCH_FIRST_ROUND_SECONDS)
         if done:
             return first.result()
@@ -462,11 +503,13 @@ class TaskBrain:
         conversation_id: str | None,
         lang: str,
         source: str,
+        generation: int | None = None,
     ) -> Receipt:
         from config.nekoclaw_settings import COMMISSION_TITLE_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        generation = self._dispatch_generation
+        if generation is None:
+            generation = self._dispatch_generation
         await self.expire_deferred()
         request = await self._request(text, user_text, lanlan_name, lang)
         triage = await self._decision.triage(request)
@@ -1006,6 +1049,9 @@ class TaskBrain:
             # have dispatched ("look up the weather"): the answer says what a
             # query is for, so she does not take "no record" for "there is none".
             lines.append(words["empty_asked"] if text else words["empty"])
+        # Whole lines only. The cut that follows is a backstop and takes
+        # nothing once the lines were made to fit.
+        lines = whole_lines_within(lines, QUERY_RESULT_MAX_TOKENS, words["more"])
         return QueryAnswer(
             text=truncate_to_tokens("\n".join(lines), QUERY_RESULT_MAX_TOKENS),
             commissions=[*active, *recent],
@@ -1068,6 +1114,8 @@ class TaskBrain:
         lang = prompt_language(lang)
         if not TURN_CHECK_ENABLED or not self._is_enabled():
             return TurnCheck("skipped", skipped="disabled")
+        # As of the turn that is being checked; see the "promised" verdict below.
+        generation = self._dispatch_generation
         user_text = truncate_to_tokens(" ".join(str(user_text or "").split()), TURN_CHECK_USER_TEXT_MAX_TOKENS)
         reply_text = truncate_to_tokens(" ".join(str(reply_text or "").split()), TURN_CHECK_REPLY_MAX_TOKENS)
         if not user_text or not reply_text:
@@ -1096,6 +1144,11 @@ class TaskBrain:
                 )
                 result.action = "corrected"
         elif verdict.kind == "promised":
+            if generation != self._dispatch_generation:
+                # Everything was stopped while this turn was being judged. A
+                # promise from before the stop is not made into work after it.
+                result.skipped = "stopped"
+                return result
             # Her word is what gives the order; it is filed in her name.
             receipt = await self.dispatch(
                 task,
@@ -1104,6 +1157,7 @@ class TaskBrain:
                 conversation_id=conversation_id,
                 lang=lang,
                 source="promised",
+                generation=generation,
             )
             result.receipt = receipt
             result.action = "dispatched"

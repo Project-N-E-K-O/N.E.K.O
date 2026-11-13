@@ -240,6 +240,56 @@ async def test_she_agreed_without_dispatching_so_it_is_dispatched_in_her_name(se
     assert await _notices(host) == [("filed", "passive", "你刚才答应的事已经替你派发了。已受理：查上海明天的天气")]
 
 
+async def test_a_promise_judged_while_everything_was_stopped_is_not_dispatched(server, hosts, tmp_path, monkeypatch):
+    _weather(server)
+    llm = FakeDecisionLLM(
+        turn=[{"verdict": "promised", "task": "查上海明天的天气"}],
+        fine=[pick_plugin("weather", "today", {"city": "Shanghai"})],
+    )
+    host = _host(hosts, tmp_path, server, llm)
+    judge = host.brain._decision.judge_turn
+
+    async def stopped_while_judging(*args, **kwargs):
+        verdict = await judge(*args, **kwargs)
+        # "Stop everything" comes in while the small model is still at it.
+        host.brain.drop_pending_dispatches()
+        return verdict
+
+    monkeypatch.setattr(host.brain._decision, "judge_turn", stopped_while_judging)
+
+    result = await _check(host, "帮我查一下上海明天的天气", "好的，我这就去查", external_intent=0.8)
+
+    # A promise from before the stop is not made into work after it.
+    assert (result.verdict, result.action, result.skipped, result.receipt) == ("promised", "", "stopped", None)
+    assert await host.ledger.select(lanlan_name="Lan") == []
+    assert await outbox(host) == []
+    assert llm.tiers() == ["turn_check"]
+    assert server.calls == []
+
+
+async def test_a_dispatch_stopped_before_its_first_round_got_going_files_nothing(server, hosts, tmp_path):
+    # The first round is a task of its own and starts when the loop gets to
+    # it; a stop that comes in between must still reach it.
+    _weather(server)
+    llm = FakeDecisionLLM(fine=[pick_plugin("weather", "today", {"city": "Shanghai"})])
+    host = _host(hosts, tmp_path, server, llm)
+    original_spawn = host.brain._spawn
+
+    def spawn_then_stop(coro, **kwargs):
+        task = original_spawn(coro, **kwargs)
+        if getattr(coro, "__name__", "") == "_first_round":
+            host.brain.drop_pending_dispatches()
+        return task
+
+    host.brain._spawn = spawn_then_stop
+
+    receipt = await host.dispatch("查一下上海明天的天气", lanlan_name="Lan", lang="zh")
+
+    assert (receipt.kind, receipt.reason) == ("no_capability", "stopped")
+    assert await host.ledger.select(lanlan_name="Lan") == []
+    assert server.calls == []
+
+
 async def test_a_promise_without_a_named_task_is_dispatched_in_the_users_words(server, hosts, tmp_path):
     _weather(server)
     llm = FakeDecisionLLM(turn=[{"verdict": "promised", "task": ""}], fine=[pick_plugin("weather", "today")])
@@ -463,6 +513,60 @@ async def test_a_long_command_gives_way_in_a_line_and_the_answers_stay(server, h
         for name in PERMISSION_OPTION_NAMES[lang].values():
             assert name in line
         assert line.rstrip().endswith(")")
+
+
+@pytest.mark.parametrize("lang", LANGUAGES)
+async def test_a_query_answer_lists_whole_lines_and_says_how_many_it_left_out(server, hosts, tmp_path, lang):
+    from config.nekoclaw_settings import QUERY_RESULT_MAX_TOKENS
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_OPTION_NAMES, QUERY_TEXTS
+    from utils.tokenize import count_tokens
+
+    host = _host(hosts, tmp_path, server, FakeDecisionLLM())
+    question = {
+        "kind": "permission",
+        "category": "run_command",
+        "detail": {"command": _long_command()},
+        "options": ["always", "session", "once", "deny"],
+    }
+    for number in range(6):
+        title = f"{_full_length_title()[:-2]}{number}"
+        waiting, _ = await host.ledger.create(lanlan_name="Lan", title=title, dispatch_text=title, source="dispatch")
+        await host.ledger.transition(waiting.id, "working")
+        await host.ledger.transition(waiting.id, "waiting_user", pending_question=json.dumps(question))
+
+    answer = await host.query("", lanlan_name="Lan", lang=lang)
+
+    lines = answer.text.splitlines()
+    rows = [line for line in lines if line.startswith("- ")]
+    assert count_tokens(answer.text) <= QUERY_RESULT_MAX_TOKENS
+    # Six lines of about 120 tokens do not fit in 400. Those that are listed
+    # are whole, each with every answer on offer; the rest are counted.
+    assert 1 <= len(rows) < 6
+    for row in rows:
+        for name in PERMISSION_OPTION_NAMES[lang].values():
+            assert name in row
+        assert row.rstrip().endswith(")")
+    assert lines[-1] == QUERY_TEXTS[lang]["more"].format(count=6 - len(rows))
+
+
+def test_lines_that_fit_are_left_as_they_are_and_a_heading_left_alone_is_dropped():
+    from config.prompts.prompts_nekoclaw_brain import QUERY_TEXTS
+    from nekoclaw.host.task_brain import whole_lines_within
+    from utils.tokenize import count_tokens
+
+    lines = ["Under way:", "- one", "Recently finished:", "- " + "word " * 300]
+
+    assert whole_lines_within(lines[:2], 400, "{count} more not listed.") == lines[:2]
+    # The long last line does not fit; its heading says nothing on its own.
+    assert whole_lines_within(lines, 50, "{count} more not listed.") == ["Under way:", "- one", "1 more not listed."]
+    # Whatever the budget, what comes back fits in it with the count line.
+    many = ["Under way:", *(f"- task number {n} " + "word " * (n % 7 + 30) for n in range(30))]
+    for budget in range(20, 260):
+        kept = whole_lines_within(many, budget, "{count} more not listed.")
+        assert count_tokens(chr(10).join(kept)) <= budget, budget
+        assert kept[-1].endswith("more not listed.")
+    # The line that says how many were left out exists in every language.
+    assert {lang for lang, words in QUERY_TEXTS.items() if "{count}" in words.get("more", "")} == set(LANGUAGES)
 
 
 async def test_a_line_of_another_kind_of_question_keeps_the_ordinary_cap(server, hosts, tmp_path):

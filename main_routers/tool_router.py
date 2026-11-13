@@ -328,15 +328,16 @@ def _evict_dead_callback_origin(source: str, origin: str) -> None:
             ]
             if not to_drop:
                 continue
-            holder_of = getattr(mgr, "_public_knowledge_holder", None)
-            holder = holder_of() if callable(holder_of) else None
+            holders_of = getattr(mgr, "_yielding_builtin_holders", None)
+            holders = holders_of() if callable(holders_of) else None
             for name in to_drop:
                 mgr.tool_registry.unregister(name)
-            # Evicted tools may shadow builtin query_public_knowledge;
-            # restore builtin after name becomes free.
+            # Evicted tools may shadow a builtin that yields its name
+            # (query_public_knowledge, the two task tools); restore the
+            # builtin after the name becomes free.
             refill = getattr(mgr, "_refill_vacated_builtins", None)
             if callable(refill):
-                refill(holder)
+                refill(holders)
             # Reuse manager fire-and-forget sync channel (same as register_tool /
             # clear_tools), sending fresh session.update onto wire.
             # Access ``_fire_task`` / ``_sync_tools_to_active_session`` directly because

@@ -59,16 +59,19 @@ from ._shared import logger
 class ToolCallingMixin:
     """Tool-calling surface methods (see module docstring)."""
 
-    @staticmethod
-    def _only_looks_up(tool_name: str) -> bool:
+    def _only_looks_up(self, tool_name: str) -> bool:
         """Whether a tool is one of the built-in ones that only look something up.
 
         A turn in which she called nothing but these has not acted, so what
         she said in it is still checked afterwards (see ``cross_server``); any
         other tool call is an action whose result is the one judgement of
-        that turn.
+        that turn. A tool of another source that holds one of these names is
+        not known to only look up.
         """
-        return tool_name in ("recall_memory", public_knowledge.TOOL_NAME, QUERY_TOOL_NAME)
+        if tool_name not in ("recall_memory", public_knowledge.TOOL_NAME, QUERY_TOOL_NAME):
+            return False
+        held = self.tool_registry.get(tool_name)
+        return held is None or held.metadata.get("source") == "builtin"
 
     # ------------------------------------------------------------------
     # Tool calling — public API for agent_server / plugins
@@ -111,18 +114,18 @@ class ToolCallingMixin:
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
     def unregister_tool(self, name: str) -> bool:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         existed = self.tool_registry.unregister(name)
         if existed:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             self._fire_task(self._sync_tools_to_active_session())
         return existed
 
     async def unregister_tool_and_sync(self, name: str) -> bool:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         existed = self.tool_registry.unregister(name)
         if existed:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return existed
 
@@ -130,18 +133,18 @@ class ToolCallingMixin:
         return self.tool_registry.names()
 
     def clear_tools(self, *, source: str | None = None) -> int:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             self._fire_task(self._sync_tools_to_active_session())
         return n
 
     async def clear_tools_and_sync(self, *, source: str | None = None) -> int:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return n
 
@@ -507,25 +510,39 @@ class ToolCallingMixin:
                 type(e).__name__,
             )
 
-    def _public_knowledge_holder(self) -> ToolDefinition | None:
-        """The tool holding the ``query_public_knowledge`` name, before a removal."""
-        return self.tool_registry.get(public_knowledge.TOOL_NAME)
+    def _yielding_builtin_holders(self) -> dict[str, ToolDefinition | None]:
+        """The tools holding the names of the builtins that yield to other sources, before a removal."""
+        return {
+            name: self.tool_registry.get(name)
+            for name in (public_knowledge.TOOL_NAME, DISPATCH_TOOL_NAME, QUERY_TOOL_NAME)
+        }
 
-    def _refill_vacated_builtins(self, previous_holder: ToolDefinition | None) -> None:
-        """Take the builtin's name back from another source's tool just removed.
+    def _refill_vacated_builtins(self, previous_holders: dict[str, ToolDefinition | None] | None) -> None:
+        """Take a builtin's name back from another source's tool just removed.
 
-        Only for optional builtins that yield to same-name tools of other
-        sources (``query_public_knowledge``): when such a tool goes away the
-        availability flag does not change, so no availability callback would
-        restore the builtin. Removing the builtin itself (e.g. clearing the
-        "builtin" source) is respected: nothing is put back.
+        Only for builtins that yield to same-name tools of other sources
+        (``query_public_knowledge`` and the two task tools): when such a tool
+        goes away neither the availability flag nor a switch changes, so
+        nothing else would restore the builtin. Removing the builtin itself
+        (e.g. clearing the "builtin" source) is respected: nothing is put back.
         """
         if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
             return
-        if previous_holder is None or public_knowledge.is_builtin_definition(previous_holder):
-            return
-        if self.tool_registry.get(public_knowledge.TOOL_NAME) is None and public_knowledge.tool_available():
+        previous_holders = previous_holders or {}
+
+        def vacated(name: str) -> bool:
+            held = previous_holders.get(name)
+            return (
+                held is not None
+                and (held.metadata or {}).get("source") != "builtin"
+                and self.tool_registry.get(name) is None
+            )
+
+        if vacated(public_knowledge.TOOL_NAME) and public_knowledge.tool_available():
             self._register_public_knowledge_tool()
+        if vacated(DISPATCH_TOOL_NAME) or vacated(QUERY_TOOL_NAME):
+            # Registers what the switches call for and leaves the rest alone.
+            self._register_task_tools()
 
     def _on_public_knowledge_availability(self) -> None:
         """Availability flipped: re-register and push to live sessions."""
