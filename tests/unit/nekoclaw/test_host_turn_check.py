@@ -992,7 +992,9 @@ async def test_a_task_agent_whose_quota_is_used_up_fails_and_she_is_told(hosts, 
     # and the session started for it is closed.
     assert llm.requests == []
     await wait_until(lambda: not host.task_agents._runtime.core._sessions, what="the session being closed")
-    assert host.task_agents.running == []
+    # Released on the host once its close comes back, a moment after the
+    # runtime has let it go.
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released on the host")
 
 
 async def test_the_quota_running_out_midway_stops_the_task_agent_after_that_request(hosts, tmp_path):
