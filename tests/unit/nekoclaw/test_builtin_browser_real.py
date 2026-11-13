@@ -65,6 +65,14 @@ FORM = """<!doctype html><html><head><title>Order form</title></head><body>
     <option value="zinc" disabled>Zinc Nut</option>
   </select>
   <input type="checkbox" name="gift" id="gift"><label for="gift">Gift wrap</label>
+  <fieldset disabled>
+    <legend>Orders of last year</legend>
+    <label>Archived note <input name="archived-note"></label>
+    <select name="archived-product" aria-label="Archived product">
+      <option value="copper">Copper Rivet</option>
+      <option value="tin">Tin Washer</option>
+    </select>
+  </fieldset>
   <button type="submit">Send order</button>
 </form>
 <button type="button" onclick="alert('Draft saved')">Save draft</button>
@@ -236,6 +244,15 @@ def uid_of(text: str, role: str, name: str) -> str:
     return found.group(1)
 
 
+async def _value_of(tools: BrowserTools, name: str) -> str:
+    answer = await tools._session._send(
+        tools._session.selected(),
+        "Runtime.evaluate",
+        {"expression": f"document.querySelector('[name={name}]').value", "returnByValue": True},
+    )
+    return answer["result"]["value"]
+
+
 async def _chosen_product(tools: BrowserTools) -> str:
     """Say which option of the product select is chosen, and whether a person could have chosen it."""
     answer = await tools._session._send(
@@ -276,14 +293,27 @@ async def test_a_form_is_filled_in_sent_and_its_result_read(tools: BrowserTools,
     for unavailable in ("Zinc Nut", "Iron Nail"):
         refused = await call(tools, "fill", uid=uid_of(opened.text, "combobox", "Product"), value=unavailable)
         assert not refused.success and f'its option "{unavailable}" is disabled' in refused.text, refused.text
+    # A control that a disabled fieldset around it switches off is not filled in either: its own
+    # "disabled" property says it is not, and a person cannot use it all the same.
+    for role, label, value in (("combobox", "Archived product", "Tin Washer"), ("textbox", "Archived note", "kept")):
+        refused = await call(tools, "fill", uid=uid_of(opened.text, role, label), value=value)
+        assert not refused.success and "the element is disabled" in refused.text, refused.text
+    # Nor is one of its options chosen by clicking it.
+    clicked = await call(tools, "click", uid=uid_of(opened.text, "option", "Tin Washer"))
+    assert not clicked.success, clicked.text
+    assert await _value_of(tools, "archived-product") == "copper"
+    assert await _value_of(tools, "archived-note") == ""
     # Of the two options by the name "Steel Bolt", which also have the same value, the one that can be
     # chosen was, not the first: that one is disabled, and a form sent with it leaves the field out.
     assert await _chosen_product(tools) == "Steel Bolt, can be chosen"
     # The same when the option itself is clicked.
     assert (await call(tools, "fill", uid=uid_of(opened.text, "combobox", "Product"), value="Brass Hinge")).success
     assert await _chosen_product(tools) == "Brass Hinge, can be chosen"
-    # (The snapshot lists the one that can be chosen; the options of the disabled group are not in it.)
-    assert (await call(tools, "click", uid=uid_of(filled.text, "option", "Steel Bolt"))).success
+    # (Whether a snapshot lists the options of a disabled group is the browser's business: the one
+    # clicked is the one by that name that is not marked disabled, wherever it stands.)
+    steel_bolts = re.findall(r'uid=(\S+) option "Steel Bolt"([^\n]*)', filled.text)
+    (can_be_chosen,) = [uid for uid, rest in steel_bolts if "disabled" not in rest]
+    assert (await call(tools, "click", uid=can_be_chosen)).success
     assert await _chosen_product(tools) == "Steel Bolt, can be chosen"
 
     sent = await call(tools, "click", uid=uid_of(opened.text, "button", "Send order"))

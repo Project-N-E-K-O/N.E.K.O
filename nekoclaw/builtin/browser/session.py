@@ -131,6 +131,10 @@ class Page:
     url: str = ""
     title: str = ""
     session_id: str | None = None
+    # The session is set up: events are on and, where pages are kept from
+    # this application's ports one by one, this one is. Known and not yet
+    # set up is what a call leaves behind that was stopped half way.
+    prepared: bool = False
     snapshot: Snapshot | None = None
     # node (``<loader id>_<backend node id>``) -> the uid it was given.
     known_uids: dict[str, str] = field(default_factory=dict)
@@ -182,7 +186,8 @@ _POINTS_TRIED = ((0.5, 0.5), (0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.
 _SELECT_OPTION = """function() {
   if (!(this instanceof HTMLOptionElement)) return false;
   const select = this.closest('select');
-  if (!select || select.multiple || select.disabled || this.disabled) return false;
+  // ``:disabled`` and not the property: a disabled fieldset around a control switches it off too.
+  if (!select || select.multiple || select.matches(':disabled') || this.disabled) return false;
   const group = this.parentElement;
   if (group instanceof HTMLOptGroupElement && group.disabled) return false;
   // Chosen by its place, not by its value: assigning a value chooses the first
@@ -201,7 +206,9 @@ _PREPARE_FILL = """function(value) {
   const tag = el.tagName;
   const type = (el.getAttribute('type') || '').toLowerCase();
   const role = el.getAttribute('role');
-  if (el.disabled) return {kind: 'error', message: 'the element is disabled'};
+  // What the browser makes of it, not the property alone: a control inside a
+  // disabled fieldset says it is not disabled, and a person cannot use it.
+  if (el.matches(':disabled')) return {kind: 'error', message: 'the element is disabled'};
   if (tag === 'SELECT') {
     const options = Array.from(el.options);
     const named = among => among.find(o => o.value === value) || among.find(o => o.label === value)
@@ -560,6 +567,10 @@ class BrowserSession:
                 await launcher.close(browser, connection)
             except Exception:  # noqa: BLE001 - the connection is dropped either way
                 logger.warning("closing the browser failed", exc_info=True)
+                if browser.owned and browser not in self._unclosed:
+                    # Not let go of for good: tried once more below, without
+                    # the connection, and whenever closing is asked for again.
+                    self._unclosed.append(browser)
             # Let go of only now: a close that was cancelled half way (the
             # user stopping everything) still knows which browser to close
             # when it is asked for again.
@@ -737,25 +748,33 @@ class BrowserSession:
         raise BrowserError(f"There is no page {page_id}. Call browser_list_pages to see the open pages.")
 
     async def _attached(self, page: Page) -> str:
-        """Return the session of a page, attaching to it on first use."""
-        if page.session_id is not None:
+        """Return the session of a page, attaching to it and setting it up on first use."""
+        if page.session_id is not None and page.prepared:
             return page.session_id
         connection = self._require_connection()
-        attached = await connection.send("Target.attachToTarget", {"targetId": page.target_id, "flatten": True})
-        page.session_id = str(attached["sessionId"])
-        await connection.send("Page.enable", session_id=page.session_id)
+        if page.session_id is None:
+            attached = await connection.send("Target.attachToTarget", {"targetId": page.target_id, "flatten": True})
+            page.session_id = str(attached["sessionId"])
+            page.prepared = False
+        session_id = page.session_id
+        # A call that is stopped in here leaves the session known and not
+        # set up; the next call goes through these steps again (each may be
+        # repeated). Taken for ready because its session is known, the page
+        # would be driven without being kept from this application's ports.
+        await connection.send("Page.enable", session_id=session_id)
         if self._blocked_ports and not self._blocked_everywhere:
             try:
-                await connection.send("Fetch.enable", {"patterns": self._block_patterns()}, session_id=page.session_id)
+                await connection.send("Fetch.enable", {"patterns": self._block_patterns()}, session_id=session_id)
             except CdpError:
                 logger.warning("a page cannot be kept from this application's own ports", exc_info=True)
         try:
             # A window nobody looks at still behaves as the focused one.
-            await connection.send("Emulation.setFocusEmulationEnabled", {"enabled": True}, session_id=page.session_id)
+            await connection.send("Emulation.setFocusEmulationEnabled", {"enabled": True}, session_id=session_id)
         except CdpError:
             logger.debug("focus emulation is not available", exc_info=True)
+        page.prepared = True
         await self._refresh_frames(page)
-        return page.session_id
+        return session_id
 
     def _require_connection(self) -> CdpConnection:
         if self._connection is None or self._connection.closed:

@@ -2980,3 +2980,49 @@ async def test_closing_that_is_stopped_while_an_earlier_browser_is_tried_again_h
     tried = len(world.closed)
     await session.close()
     assert [browser for browser, _connection in world.closed[tried:]] == [half_closed]
+
+
+async def test_a_browser_that_could_not_be_closed_is_tried_again_when_closing_is_asked_for_again(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await session.start()
+    world.close_error = RuntimeError("the process would not die")
+
+    await session.close()
+
+    # Asked through its connection, then once more without it; neither went through.
+    assert not session.connected
+    (started, connection), (again, without) = world.closed
+    assert again is started and connection is not None and without is None
+    world.close_error = None
+    await session.close()
+    # It was not let go of for good; and once it is closed, it is not closed again.
+    assert len(world.closed) == 3 and world.closed[2][0] is started
+    await session.close()
+    assert len(world.closed) == 3
+
+
+async def test_a_page_whose_setting_up_was_stopped_half_way_is_set_up_by_the_next_call(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.settings(mode="attach")
+    session = make_session(own_ports=lambda: OWN)
+    await session.start()
+    work = session.selected()
+    gate = world.browser.hold("Page.enable")
+    try:
+        first = asyncio.ensure_future(session.navigate(work, "url", ORDER))
+        await asyncio.wait_for(gate.reached.wait(), 5.0)
+        # The user stops the call while the page is being set up: attached to, and not yet kept from the ports.
+        await _cancelled(first)
+    finally:
+        gate.release()
+    assert work.session_id is not None and world.browser.fetch_enabled == []
+
+    await session.navigate(work, "url", ORDER)
+
+    # Its session is known, and it is not taken for set up on that account.
+    assert world.browser.fetch_enabled == [(work.target_id, ["*://*:48911/*", "*://*:48915/*"])]
+    # Set up once: the calls after that go straight to the page.
+    await session.take_snapshot(work)
+    assert len(world.browser.fetch_enabled) == 1 and len(world.browser.of("Target.attachToTarget")) == 1
