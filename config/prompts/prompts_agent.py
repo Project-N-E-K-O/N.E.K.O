@@ -365,7 +365,7 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 - 如果 has_task/can_execute 为 true 时 entry_id 缺失或为 null，响应将被视为不可执行。
 - 严格匹配：plugin_id 和 entry_id 是代码标识符。你必须从上面的可用插件列表中原样复制它们（区分大小写、逐字符匹配）。不要发明、缩写或改写它们。如果找不到完全匹配，设置 can_execute=false。
 - 如果入口有 args(...) 信息，在 plugin_args 中使用那些字段名。只包含 schema 中列出的字段。
-- 当入口 schema 需要用户文本字段（例如 command/message/query/objective）时，必须复制用户最新消息原文；不要翻译、摘要、改写或补全。
+- 仅当入口 schema 要求传递用户原话（例如原始 command/message/objective）时才逐字复制，不翻译或改写。搜索 query 等结构化参数按 schema 的含义生成，结合当前请求与近期对话解析指代；不要把催问或工具名称当作搜索主题。
 - 如果用户的意图与任何插件的描述功能不明确匹配，设置 has_task=false。
 - 标注了 [KEYWORD MATCH] 的插件已通过关键词预筛，优先考虑这些插件是否匹配用户意图。
 只返回 JSON 对象，不含其他内容。""",
@@ -409,7 +409,7 @@ USER_PLUGIN_SYSTEM_PROMPT = {
 - 如果 has_task/can_execute 為 true 但 entry_id 缺漏或為 null，這個回應會被視為不可執行。
 - 嚴格比對：plugin_id 和 entry_id 是程式識別碼。你必須從上面的可用外掛清單原樣複製（區分大小寫、逐字元比對）。不要發明、縮寫或改寫它們。如果找不到完全相符的，就設定 can_execute=false。
 - 如果入口有 args(...) 資訊，plugin_args 就用那些欄位名。只包含 schema 裡列出的欄位。
-- 當入口 schema 需要使用者文字欄位（例如 command/message/query/objective）時，必須照抄使用者最新訊息的原文；不要翻譯、摘要、改寫或自行補齊。
+- 僅當入口 schema 要求傳遞使用者原話（例如原始 command/message/objective）時才逐字複製，不翻譯或改寫。搜尋 query 等結構化參數應依 schema 語意產生，結合目前請求與近期對話解析指代；不要把催問或工具名稱當成搜尋主題。
 - 如果使用者的意圖跟任何外掛描述的功能都對不太上，就設定 has_task=false。
 - 標了 [KEYWORD MATCH] 的外掛已經通過關鍵字預篩，優先考慮這些外掛符不符合使用者的意圖。
 只回傳 JSON 物件，不含其他內容。""",
@@ -453,7 +453,7 @@ VERY IMPORTANT:
 - If entry_id is missing or null when has_task/can_execute are true, the response will be treated as non-executable.
 - STRICT MATCHING: plugin_id and entry_id are code identifiers. You MUST copy them EXACTLY (case-sensitive, character-for-character) from the AVAILABLE PLUGINS list above. Do NOT invent, abbreviate, or paraphrase them. If you cannot find an exact match, set can_execute=false.
 - If an entry has args(...) info, use those field names in plugin_args. Only include fields listed in the schema.
-- When an entry schema needs a user text field (for example command/message/query/objective), copy the user's latest message verbatim; do not translate, summarize, rewrite, or complete it.
+- Copy text verbatim, without translating or rewriting, only when the entry schema requires the original user wording (for example raw command/message/objective). Derive search query and other structured parameters according to their schema, resolving references from the current request and recent dialogue; reminders and tool names are not search subjects.
 - If the user's intent does not clearly match any plugin's described functionality, set has_task=false.
 - Plugins marked with [KEYWORD MATCH] have passed keyword pre-screening; prioritize checking these plugins for intent match.
 Return only the JSON object, nothing else.""",
@@ -497,7 +497,7 @@ Return only the JSON object, nothing else.""",
 - has_task/can_execute が true なのに entry_id が欠落または null の場合、レスポンスは実行不可として扱われます。
 - 厳密マッチング：plugin_id と entry_id はコード識別子です。上記の利用可能プラグインリストからそのまま（大文字小文字区別、文字ごと）コピーしてください。発明、省略、言い換えをしないでください。完全一致が見つからない場合は can_execute=false を設定してください。
 - エントリに args(...) 情報がある場合、plugin_args でそのフィールド名を使用してください。schema にリストされたフィールドのみ含めてください。
-- エントリの schema にユーザーテキストフィールド（例: command/message/query/objective）が必要な場合、ユーザーの最新メッセージを逐語的にコピーしてください。翻訳・要約・書き換え・補完は行わないでください。
+- schema がユーザーの原文（例: 生の command/message/objective）を要求する場合のみ、翻訳や書き換えをせず逐語的にコピーしてください。検索 query などの構造化引数は schema の意味に従い、現在の依頼と最近の会話から指示対象を解決してください。催促やツール名を検索対象にしないでください。
 - ユーザーの意図がどのプラグインの機能とも明確に一致しない場合、has_task=false を設定してください。
 - [KEYWORD MATCH] とマークされたプラグインはキーワード事前選別を通過しています。これらのプラグインが意図に一致するか優先的に確認してください。
 JSONオブジェクトのみ返してください。""",
@@ -541,7 +541,7 @@ JSONオブジェクトのみ返してください。""",
 - has_task/can_execute가 true인데 entry_id가 누락되거나 null이면 응답은 실행 불가능으로 처리됩니다.
 - 엄격한 매칭: plugin_id와 entry_id는 코드 식별자입니다. 위의 사용 가능한 플러그인 목록에서 정확히(대소문자 구분, 문자 단위) 복사해야 합니다. 만들거나 축약하거나 바꿔 말하지 마세요. 정확한 일치를 찾을 수 없으면 can_execute=false로 설정하세요.
 - 엔트리에 args(...) 정보가 있으면 plugin_args에서 해당 필드 이름을 사용하세요. schema에 나열된 필드만 포함하세요.
-- 엔트리 schema에 사용자 텍스트 필드(예: command/message/query/objective)가 필요한 경우, 사용자의 최신 메시지를 그대로 복사하세요. 번역, 요약, 다시 쓰기, 보완하지 마세요.
+- schema가 사용자 원문(예: 원시 command/message/objective)을 요구할 때만 번역하거나 바꾸지 말고 그대로 복사하세요. 검색 query 등 구조화된 인수는 schema 의미에 따라 현재 요청과 최근 대화의 지시 대상을 해석하여 작성하세요. 재촉이나 도구 이름을 검색 주제로 삼지 마세요.
 - 사용자의 의도가 어떤 플러그인의 설명된 기능과 명확히 일치하지 않으면 has_task=false로 설정하세요.
 - [KEYWORD MATCH]로 표시된 플러그인은 키워드 사전 선별을 통과했습니다. 이러한 플러그인이 의도와 일치하는지 우선적으로 확인하세요.
 JSON 객체만 반환하세요.""",
@@ -585,7 +585,7 @@ JSON 객체만 반환하세요.""",
 - Если entry_id отсутствует или равен null при has_task/can_execute=true, ответ будет считаться невыполнимым.
 - СТРОГОЕ СООТВЕТСТВИЕ: plugin_id и entry_id — это кодовые идентификаторы. Вы ДОЛЖНЫ скопировать их ТОЧНО (с учётом регистра, посимвольно) из списка доступных плагинов выше. НЕ придумывайте, не сокращайте и не перефразируйте. Если точное совпадение не найдено, установите can_execute=false.
 - Если у точки входа есть информация args(...), используйте эти имена полей в plugin_args. Включайте только поля, указанные в схеме.
-- Если в схеме точки входа есть текстовое поле пользователя (например, command/message/query/objective), скопируйте последнее сообщение пользователя дословно; не переводите, не резюмируйте, не перефразируйте и не дополняйте.
+- Копируйте текст дословно без перевода и изменений, только если схема требует исходные слова пользователя (например, raw command/message/objective). Формируйте поисковый query и другие структурированные параметры по смыслу схемы, раскрывая ссылки из текущего запроса и недавнего диалога; напоминания и имена инструментов не являются темой поиска.
 - Если намерение пользователя явно не соответствует описанной функциональности ни одного плагина, установите has_task=false.
 - Плагины с пометкой [KEYWORD MATCH] прошли предварительную фильтрацию по ключевым словам. Приоритетно проверьте, соответствуют ли они намерению.
 Верните только объект JSON, ничего больше.""",
@@ -629,7 +629,7 @@ MUY IMPORTANTE:
 - Si entry_id falta o es null cuando has_task/can_execute son true, la respuesta se tratará como no ejecutable.
 - COINCIDENCIA ESTRICTA: plugin_id y entry_id son identificadores de código. Cópialos EXACTAMENTE de la lista de PLUGINS DISPONIBLES (sensible a mayúsculas, carácter por carácter). No los inventes, abrevies ni parafrasees. Si no hay coincidencia exacta, establece can_execute=false.
 - Si una entrada tiene información args(...), usa esos nombres de campo en plugin_args. Incluye solo campos listados en el schema.
-- Cuando el schema necesite un campo de texto del usuario (por ejemplo command/message/query/objective), copia el último mensaje del usuario literalmente; no traduzcas, resumas, reescribas ni completes.
+- Copia sin traducir ni reescribir solo cuando el schema requiera las palabras originales del usuario (por ejemplo command/message/objective sin procesar). Genera query y otros parámetros estructurados según su significado, resolviendo referencias con la petición actual y el diálogo reciente; los recordatorios y nombres de herramientas no son temas de búsqueda.
 - Si la intención del usuario no coincide claramente con la funcionalidad descrita de ningún plugin, establece has_task=false.
 - Los plugins marcados con [KEYWORD MATCH] pasaron prefiltrado por palabras clave; prioriza comprobar si coinciden con la intención.
 Devuelve solo el objeto JSON, nada más.""",
@@ -673,7 +673,7 @@ MUITO IMPORTANTE:
 - Se entry_id estiver ausente ou null quando has_task/can_execute forem true, a resposta será tratada como não executável.
 - CORRESPONDÊNCIA ESTRITA: plugin_id e entry_id são identificadores de código. Copie-os EXATAMENTE da lista de PLUGINS DISPONÍVEIS (sensível a maiúsculas, caractere por caractere). Não invente, abrevie ou parafraseie. Se não encontrar correspondência exata, defina can_execute=false.
 - Se uma entrada tiver informação args(...), use esses nomes de campo em plugin_args. Inclua apenas campos listados no schema.
-- Quando o schema exigir um campo de texto do usuário (por exemplo command/message/query/objective), copie literalmente a última mensagem do usuário; não traduza, resuma, reescreva ou complete.
+- Copie sem traduzir nem reescrever apenas quando o schema exigir as palavras originais do usuário (por exemplo command/message/objective bruto). Gere query e outros parâmetros estruturados conforme seu significado, resolvendo referências pelo pedido atual e diálogo recente; lembretes e nomes de ferramentas não são temas de busca.
 - Se a intenção do usuário não corresponder claramente à funcionalidade descrita de nenhum plugin, defina has_task=false.
 - Plugins marcados com [KEYWORD MATCH] passaram pela pré-triagem por palavras-chave; priorize verificar se eles correspondem à intenção.
 Retorne apenas o objeto JSON, nada mais.""",
