@@ -88,6 +88,13 @@ done what she says is done is taken as read from the record, and not
 corrected. Only the next check of her turns may use it; the answer comes
 within the turn, and the check follows its end within seconds."""
 
+TURN_CHECK_STATUS_ANSWER_MIN_COVERAGE = 0.2
+"""Least share of the words of what she says is done that must occur in the
+words of the done tasks the answer told her of, for it to be taken as read
+from the record. One sentence summing up several of them is measured against
+all of them. In the real app, "把清单写好存进目录，并定好喝水的提醒" against its
+two tasks was 0.27; a claim about another task shares nothing."""
+
 QUESTION_TEXT_MAX_TOKENS = 300
 """Cap on a commission's question as it is put to her to pass on."""
 
