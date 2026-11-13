@@ -1204,7 +1204,22 @@ async def test_what_a_quota_failure_kept_survives_a_start_that_cannot_open_its_s
 
 
 
-async def test_what_was_sent_with_the_first_work_is_not_kept_again_when_a_later_step_fails(hosts, tmp_path):
+
+async def _kept_after_a_quota_failure(host: Any) -> Any:
+    """File a blocked commission, take it up with the user's answer, and let the quota fail it."""
+    commission = await _filed(host, "sort the photos")
+    await host.ledger.transition(commission.id, "working", reason="test")
+    await host.ledger.transition(commission.id, "blocked", reason="test")
+    assert await host.task_agents.tell(commission.id, "the photos are on drive E:") is False
+    await wait_status(host, commission.id, "failed")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
+    return commission
+
+
+async def test_kept_text_survives_a_start_the_runtime_gives_up_after_the_prompt_was_written(hosts, tmp_path):
+    # Writing the prompt is not the session taking it: the runtime process can
+    # still answer the start with an error (it went away before confirming).
     host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("done"), finish()]]))
     paid = [False]
 
@@ -1212,30 +1227,69 @@ async def test_what_was_sent_with_the_first_work_is_not_kept_again_when_a_later_
         return paid.pop(0) if paid else True
 
     host.task_agents._meter = meter
-    commission = await _filed(host, "sort the photos")
-    await host.ledger.transition(commission.id, "working", reason="test")
-    await host.ledger.transition(commission.id, "blocked", reason="test")
-    assert await host.task_agents.tell(commission.id, "the photos are on drive E:") is False
+    commission = await _kept_after_a_quota_failure(host)
+    runtime = host.task_agents._runtime
+    prompt = runtime.prompt
+
+    async def prompt_then_gone(session_id: str, text: str) -> None:
+        async def later() -> None:
+            # After the prompt was written: the start's own answer, then the
+            # process going away before the start was confirmed.
+            await asyncio.sleep(0.01)
+            await host.task_agents._handle({"type": "started", "session_id": session_id})
+            await host.task_agents._handle(
+                {"type": "error", "session_id": session_id, "command": "start", "message": "the runtime process exited"}
+            )
+
+        asyncio.get_running_loop().create_task(later())
+
+    runtime.prompt = prompt_then_gone
+    await host.task_agents.tell(commission.id, "try again")
+    await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
+    runtime.prompt = prompt
+
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
+
+
+
+async def test_kept_text_survives_a_run_that_fails_before_doing_anything(hosts, tmp_path):
+    async def failing_model() -> None:
+        raise RuntimeError("the model failed")
+
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[failing_model]]))
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _kept_after_a_quota_failure(host)
+
+    await host.task_agents.tell(commission.id, "try again")
     await wait_status(host, commission.id, "failed")
     await wait_until(lambda: commission.id not in host.task_agents._sessions, what="the session being released")
-    runtime = host.task_agents._runtime
-    start, steer = runtime.start, runtime.steer
 
-    async def start_while_told(spec: Any) -> None:
-        # Passed on while the session comes up: sent after the first work.
-        host.task_agents._notes.setdefault(spec.session_id, []).append("and skip the drafts")
-        await start(spec)
+    assert host.task_agents._carried.get(commission.id) == ["the photos are on drive E:"]
 
-    async def broken_steer(session_id: str, text: str) -> None:
-        raise RuntimeError("the pipe broke")
+async def test_kept_text_is_not_kept_again_once_the_session_was_at_work_on_it(hosts, tmp_path):
+    async def failing_model() -> None:
+        raise RuntimeError("the model failed")
 
-    runtime.start, runtime.steer = start_while_told, broken_steer
+    # The run says something, then fails: what it was given had been taken.
+    host = _host(hosts, tmp_path, lambda spec: ScriptedLLM([[say("looking"), failing_model]]))
+    paid = [False]
+
+    async def meter(commission_id: str) -> bool:
+        return paid.pop(0) if paid else True
+
+    host.task_agents._meter = meter
+    commission = await _kept_after_a_quota_failure(host)
+
     await host.task_agents.tell(commission.id, "try again")
+    await wait_status(host, commission.id, "failed")
     await host.task_agents.settle()
 
-    # The kept answer went out with the first work; it is not kept again.
     assert "the photos are on drive E:" not in host.task_agents._carried.get(commission.id, [])
-    runtime.start, runtime.steer = start, steer
 
 
 async def test_what_is_passed_on_while_a_quota_failure_is_written_comes_before_the_next_sentence(hosts, tmp_path):
