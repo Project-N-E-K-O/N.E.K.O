@@ -416,7 +416,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
 
     @property
     def supports_card_messages(self) -> bool:
-        """图文卡片 (``msg_type=8``): what ``send_group_ark_card`` now translates into."""
+        """Image-text card (``msg_type=8``): what ``send_group_ark_card`` now builds."""
         return True
 
     @property
@@ -1140,7 +1140,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     async def send_group_ark_card(
         self, group_id: str, ark_obj: dict[str, Any], **_: Any
     ) -> bool:
-        """Send a group card. v2 has no ark on the send side, so this builds 图文卡片.
+        """Send a group card. v2 has no ark on the send side, so this builds an image-text card.
 
         ``supports_ark_cards`` is therefore False while ``supports_card_messages`` is
         True: callers that check the first flag alone would drop a card they can
@@ -1520,7 +1520,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         return message_id or None
 
     def _card_message_payload(self, obj: dict) -> dict:
-        """Build a 图文卡片 body from either the ark-kv shape or a plain dict."""
+        """Build an image-text card body from either the ark-kv shape or a plain dict."""
         kv = obj.get("ark", {}).get("kv") if isinstance(obj.get("ark"), dict) else None
         if isinstance(kv, list):
             fields = {
