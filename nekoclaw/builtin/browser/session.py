@@ -413,6 +413,9 @@ class BrowserSession:
             raise BrowserError(f"The browser could not be reached ({type(exc).__name__}).{hint}") from exc
         self._connection = connection
         self._browser = browser
+        # One that could not be closed earlier and is driven again (found
+        # running on its profile) is this one now, and closed as this one.
+        self._unclosed = [left for left in self._unclosed if left.user_data_dir != browser.user_data_dir]
         # What the browser before this one could not do says nothing about this one.
         self._can_create_tabs = True
         self._user_browser = attach
@@ -562,6 +565,10 @@ class BrowserSession:
             # when it is asked for again.
             if self._browser is browser:
                 self._browser = None
+        await self._drop_connection()
+        self._window = None
+        # After the connection is dropped: stopped in here, nothing of the
+        # browser that was just closed is left behind.
         for leftover in list(self._unclosed):
             try:
                 await launcher.close(leftover)
@@ -569,8 +576,6 @@ class BrowserSession:
                 logger.warning("closing a browser that was driven earlier failed again", exc_info=True)
                 continue
             self._unclosed.remove(leftover)
-        await self._drop_connection()
-        self._window = None
 
     def forget_snapshots(self) -> None:
         """Make every uid handed out so far invalid; for when another commission takes over."""
@@ -1382,7 +1387,10 @@ class BrowserSession:
                     try:
                         await asyncio.shield(release)
                     except BaseException as exc:  # noqa: BLE001 - raised below, once the rest is sent
-                        answered = False
+                        # An error the browser itself answered with came back
+                        # at once: the page still answers, and the rest is
+                        # waited for as before.
+                        answered = isinstance(exc, CdpError)
                         if late is None or isinstance(exc, asyncio.CancelledError):
                             late = exc
                 if not release.done():

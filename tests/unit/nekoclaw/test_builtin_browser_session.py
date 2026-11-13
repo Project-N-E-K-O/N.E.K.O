@@ -2871,25 +2871,109 @@ async def test_a_page_that_no_longer_answers_is_waited_for_once_when_the_keys_ar
     session: BrowserSession, world: BrowserWorld, monkeypatch: Any
 ) -> None:
     assert session_module.KEY_RELEASE_WAIT_SECONDS == 5.0
-    monkeypatch.setattr(session_module, "KEY_RELEASE_WAIT_SECONDS", 1.0)
+    monkeypatch.setattr(session_module, "KEY_RELEASE_WAIT_SECONDS", 0.2)
     page, _fake, _snapshot = await open_page(session, world)
     going_down = world.browser.hold("Input.dispatchKeyEvent", type="rawKeyDown", key="r")
     # The page is frozen: no key that comes up is answered.
     coming_up = world.browser.hold("Input.dispatchKeyEvent", type="keyUp")
+    try:
+        sent = world.browser.mark()
+        press = asyncio.ensure_future(session.press_key(page, "Control+Shift+Alt+R"))
+        await asyncio.wait_for(going_down.reached.wait(), 5.0)
+        press.cancel()
+        going_down.release()
+
+        # Stopped after the short wait, not after the half minute a page is given to answer an action.
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(press, 10.0)
+        # And after one such wait, not one for each of the four keys: the other three were
+        # sent and are still unanswered when the call is over (told by that, not by the clock).
+        assert len(session._answers) == 3
+
+        # All four are sent all the same: the page lets go of them when it comes round.
+        await _until(lambda: [kind for kind, _key in _key_events(world, sent)].count("keyUp") == 4)
+        assert _key_events(world, sent)[-4:] == [
+            ("keyUp", "r"),
+            ("keyUp", "Alt"),
+            ("keyUp", "Shift"),
+            ("keyUp", "Control"),
+        ]
+    finally:
+        # Whatever went wrong above, nothing is left waiting for the page.
+        coming_up.release()
+    await _until(lambda: not session._answers)
+
+
+async def test_an_error_the_browser_answers_with_at_once_does_not_end_the_waiting_for_the_other_keys(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    page, _fake, _snapshot = await open_page(session, world)
+    send = session._key_event
+
+    async def key_event(page_: Any, kind: str, key: Any, mask: int, **options: Any) -> bool:
+        if kind == "keyUp" and key.key == "Shift":
+            raise CdpError("Input.dispatchKeyEvent", -32602, "Invalid parameters")
+        return await send(page_, kind, key, mask, **options)
+
+    monkeypatch.setattr(session, "_key_event", key_event)
     sent = world.browser.mark()
-    press = asyncio.ensure_future(session.press_key(page, "Control+Shift+Alt+R"))
-    await asyncio.wait_for(going_down.reached.wait(), 5.0)
-    started = time.monotonic()
-    press.cancel()
-    going_down.release()
 
-    # Stopped after the one short wait, not after a wait for each of the four keys
-    # (nor after the half minute a page is given to answer an action).
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(press, 10.0)
-    assert 0.9 <= time.monotonic() - started < 2.5
+    with pytest.raises(CdpError, match="Invalid parameters"):
+        await session.press_key(page, "Control+Shift+R")
 
-    # All four are sent all the same: the page lets go of them when it comes round.
-    await _until(lambda: [kind for kind, _key in _key_events(world, sent)].count("keyUp") == 4)
-    assert _key_events(world, sent)[-4:] == [("keyUp", "r"), ("keyUp", "Alt"), ("keyUp", "Shift"), ("keyUp", "Control")]
-    coming_up.release()
+    # The page still answers: Control was let go of, and waited for, before the call was over.
+    assert _key_events(world, sent)[-1] == ("keyUp", "Control")
+    assert not session._answers
+
+
+async def test_a_browser_that_could_not_be_closed_and_is_driven_again_is_closed_once(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    await _closing_stopped_half_way(session, world)
+    world.settings(mode="attach")
+    world.close_error = RuntimeError("the process is not there any more")
+    await session.start()
+    world.close_error = None
+    # The settings go back to the browser of the work, which is found running on its profile.
+    world.browser.disconnect()
+    world.settings(mode="own_profile")
+    await session.start()
+    assert session.connected and len(world.launched) == 2
+    tried = len(world.closed)
+
+    await session.close()
+
+    # As the browser it is now; not a second time as the one that could not be closed.
+    assert [browser.owned for browser, _connection in world.closed[tried:]] == [True]
+
+
+async def test_closing_that_is_stopped_while_an_earlier_browser_is_tried_again_has_dropped_the_connection(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    half_closed = await _closing_stopped_half_way(session, world)
+    world.settings(mode="attach")
+    world.close_error = RuntimeError("the process is not there any more")
+    await session.start()
+    world.close_error = None
+    assert session.connected and session.pages()
+    close = session_module.launcher.close
+    reached, gate = asyncio.Event(), asyncio.Event()
+
+    async def held_for_the_earlier_one(browser: Any, connection: Any = None) -> None:
+        if browser is half_closed:
+            reached.set()
+            await gate.wait()
+        await close(browser, connection)
+
+    monkeypatch.setattr(session_module.launcher, "close", held_for_the_earlier_one)
+    closing = asyncio.ensure_future(session.close())
+    await asyncio.wait_for(reached.wait(), 5.0)
+    # The user stops everything while the browser of earlier is tried again.
+    await _cancelled(closing)
+
+    # What was being driven is let go of altogether; only the earlier one is still to be closed.
+    assert not session.connected and session.pages() == []
+    gate.set()
+    tried = len(world.closed)
+    await session.close()
+    assert [browser for browser, _connection in world.closed[tried:]] == [half_closed]
