@@ -226,7 +226,7 @@ def test_formal_author_prohibitions_are_sent_once_with_their_phase():
     outcome = engine.resolve_turn(session, TurnRequestV2('dedup', 0, '就到这里吧。'), (),
                                   scene_complete=True, natural_ending_ready=True)
     messages = actor._turn_messages(engine, session, outcome, '就到这里吧。', '温和', '猫娘', '玩家')
-    assert '来源幕：演出角色禁止行为：' + rule in messages[0].content
+    assert '来源幕：当前角色禁止行为：' + rule in messages[0].content
     assert rule not in json.dumps(_data(messages), ensure_ascii=False)
 
 

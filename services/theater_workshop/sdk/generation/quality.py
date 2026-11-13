@@ -49,10 +49,11 @@ _AUTHOR_ORIGINAL_REF_RULE = (
     "保留原处的作者要求；对应幕未提供正文时只作定位，不据此认定原文缺失或推测其内容。"
 )
 
+# The workshop SDK must stay importable without config/ (see test_sdk_lifecycle), and theater prompts are zh-only for now.
 _LITERARY_BLOCK_PROMPT = """你只检查本块最多两幕的文学表现，不打分、不改原稿、不复核事实报告。按作者意图检查人物选择、局部因果、文字、节奏和情感；相邻幕是实际路线，不把其他入路的保证合并。保留用户关系距离、配角职责与玩家选择，不强加升温或新任务。
 story_outline使用原文{ref,text}，original_sources只定位这些原字段；省略外部独立正文不代表原稿缺失。fact_review是已独立核实的问题，不重新判断或换个文学理由重复报告。目标和台账是规划，不能声称已检查最终运行时对白或玩家体验。
 checked_node_ids必须原样返回；node_notes对每个本块节点恰好一项，assessment以一两句说明该幕的选择、变化、铺垫或回收，最多200 tokens。每个note的evidence_refs至少一个该节点原文ref，不凭空概括。issues只列本块原文支持的独立文学问题，evidence_refs至少一个本块实际原文ref；不能把事实缺陷当成文学新问题。修改字段必须真实且在对应节点，text_repair_fields之外仍标structure，不能扩权。没有问题填[]。不返回scores、metric_advice或relationship_advice。
-只输出JSON：{"checked_node_ids":["原ID"],"node_notes":[{"node_id":"本块节点ID","assessment":"基于原文的局部观察","evidence_refs":["E1"]}],"issues":[{"dimension":"characterization|plot|theme|prose_style|pacing|emotional_resonance","severity":"minor|major|blocking","target_node_ids":["本块节点ID"],"problem":"原文支持的问题","modification_plan":"最小修法","expected_result":"修后效果","preserve":["保留项"],"repair_scope":"text|structure","repair_targets":[{"node_id":"实际节点ID","field":"节点内原字段路径"}],"evidence_refs":["实际原文ref"]}]}"""
+只输出JSON：{"checked_node_ids":["原ID"],"node_notes":[{"node_id":"本块节点ID","assessment":"基于原文的局部观察","evidence_refs":["E1"]}],"issues":[{"dimension":"characterization|plot|theme|prose_style|pacing|emotional_resonance","severity":"minor|major|blocking","target_node_ids":["本块节点ID"],"problem":"原文支持的问题","modification_plan":"最小修法","expected_result":"修后效果","preserve":["保留项"],"repair_scope":"text|structure","repair_targets":[{"node_id":"实际节点ID","field":"节点内原字段路径"}],"evidence_refs":["实际原文ref"]}]}"""  # noqa: INLINE_PROMPT_NON_EN
 
 # Literary review preserves author boundaries and links only verified facts; drafting/node revision still use the complete shared generation contract.
 _ASSESSMENT_PROMPT = STORY_DESIGN_RULE + "\n\n" + """# Role: N.E.K.O 互动剧情质量评估编辑
@@ -152,11 +153,11 @@ must_deliver 可显式为 []；这不会删除原有旁白。删除获准的重�
     "chapter": "可选的新标题",
     "story_beat": {
       "summary": "可选的完整替换值",
-      "opening_scene": "可选的完整替换值；只写环境、演出角色行动和已确定结果，不得替玩家执行自主行动",
+      "opening_scene": "可选的完整替换值；只写环境、当前角色行动和已确定结果，不得替玩家执行自主行动",
       "must_not_happen": ["可选的完整替换数组"],
       "catgirl_situation": "可选的完整替换值",
       "transition_goal": "可选的完整替换值",
-      "character_state": {"catgirl_state": "可选，仅修既有演出角色状态描述", "player_state": "可选，仅修既有玩家状态描述", "environment_state": "可选，仅修既有环境状态描述"}
+      "character_state": {"catgirl_state": "可选，仅修既有当前角色状态描述", "player_state": "可选，仅修既有玩家状态描述", "environment_state": "可选，仅修既有环境状态描述"}
     },
     "routes": [{
       "route_id": "目标节点的已有出口 ID",

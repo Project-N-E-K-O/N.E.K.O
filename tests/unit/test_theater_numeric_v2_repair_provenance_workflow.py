@@ -121,7 +121,7 @@ async def test_tail_rewrite_receives_wire_fields_and_keeps_storage_canonical(tmp
     assert calls == ["source", "tail", "target_review", "tail", "target_review"]
     assert result.stored.session.revision == 1 and result.stored.session.current_node_id == "work"
     assert result.performance["segments"][0]["performance"] == source
-    assert "entry_fields" not in path.read_text() and "target_entry_trigger" not in path.read_text()
+    assert "entry_fields" not in path.read_text(encoding="utf-8") and "target_entry_trigger" not in path.read_text(encoding="utf-8")
     assert "target_entry_trigger" not in json.dumps(result.performance, ensure_ascii=False)
 
 

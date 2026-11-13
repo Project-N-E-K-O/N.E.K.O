@@ -329,11 +329,10 @@ def test_numeric_v2_turn_prompt_keeps_six_fields_in_partition_order():
     assert "作者明确分阶段或禁止当前公开时不可合并" in messages[0].content
     assert "未发生内容不作知识、环境事实或完成结果" in messages[0].content
     assert "current_scene是作者规划" in messages[0].content
-    assert "不把悬念、边缘追问变成新任务" in messages[0].content
-    assert "核心结果成立后承接态度与已有出口" in messages[0].content
+    assert "别把临时细节变成必须办理的手续" in messages[0].content
+    assert "普通行动完成只让出口成熟，不自动换场" in messages[0].content
     assert "前提须由指定主体公开成立" in messages[0].content
     assert "不从检查、猜测或问句补造线索、技术、未知路径或成败" in messages[0].content
-    assert "pacing只作软节奏" in messages[0].content
     assert "停在玩家可撤回、下一阶段尚未发生的位置" in messages[0].content
 
 
@@ -683,7 +682,7 @@ def test_numeric_v2_suggestion_prompts_preserve_current_action_roles(suggestions
         )
         assert "物品归属与位置承接实际交接，注视不能重置持有者" in system_prompt
 
-    assert ("不能把当前演出角色正在做的动作误写成玩家已在做" in system_prompt
+    assert ("不能把当前角色正在做的动作误写成玩家已在做" in system_prompt
             if suggestions_only else "不把你的动作、职责或所持物转给玩家" in system_prompt)
     assert "不能接管你正在做的动作" not in system_prompt
 
@@ -1260,8 +1259,8 @@ def test_numeric_v2_overdue_pacing_requires_new_result_and_concrete_exit():
 
     assert pacing["phase"] == "overdue"
     assert "核心因果发生一次可见变化" in pacing["instruction"]
-    assert "已获授权、没有新风险或真实选择的连续过程" in pacing["instruction"]
-    assert "本轮概括剩余过程并交付结果" in pacing["instruction"]
+    assert "已获授权且没有新风险或选择的连续过程" in pacing["instruction"]
+    assert "概括过去并交付结果" in pacing["instruction"]
     assert "不得新增支线或补齐可选内容来延长" in pacing["instruction"]
     assert "自然出口成熟" in pacing["instruction"]
     assert "基于已发生事实" in pacing["instruction"]
@@ -3173,12 +3172,12 @@ def test_numeric_v2_suggestion_fill_boundaries_come_from_authored_scene():
     assert boundaries == [
         "不要主动发起肢体接触。",
         "不得在玩家选择前离开花店。",
-        "演出角色禁止行为：不得主动拥抱。",
+        "当前角色禁止行为：不得主动拥抱。",
         "禁止发生的剧情：不得把旧信交给猫娘。",
     ]
     assert numeric_v2_actor._beat_for_actor(cast, beat)["boundaries"] == [
         "不得在玩家选择前离开花店。",
-        "演出角色禁止行为：不得主动拥抱。",
+        "当前角色禁止行为：不得主动拥抱。",
         "禁止发生的剧情：不得把旧信交给猫娘。",
     ]
     assert "围绕仍未拆开的旧信" in numeric_v2_actor._beat_for_actor(
@@ -3633,7 +3632,7 @@ def test_numeric_v2_actor_does_not_force_transition_offer_when_route_is_unresolv
     ))
 
     assert "必须在正文中提出一个基于当前已知事实的离开当前幕的具体下一步" not in payload["pacing"]
-    assert "已获授权、没有新风险或真实选择的连续过程" in payload["pacing"]
+    assert "已获授权且没有新风险或选择的连续过程" in payload["pacing"]
     assert "已有结果时自然收住本幕互动" in payload["pacing"]
     assert "提出基于已发生事实的具体未来行动" not in payload["pacing"]
 

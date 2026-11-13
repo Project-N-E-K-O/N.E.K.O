@@ -15,7 +15,7 @@ global_strengths_to_preserve是整份报告要求保留的优点，同样不能�
 
 字段职责（来自当前作者稿投影，不能互相代替）：
 - opening_scene：当幕唯一开场的演出文字。
-- character_state/catgirl：开场演完后的演出角色状态记录。
+- character_state/catgirl：开场演完后的当前角色状态记录。
 - character_state/player：开场演完后的玩家状态记录。
 - character_state/environment：开场演完后的环境与物件状态记录。
 - summary：当幕剧情概览；结局节点为结局摘要，scene_summary另指结局节点正文摘要。

@@ -25,8 +25,8 @@ def test_public_projection_labels_prohibition_source_without_rewriting_text(rule
         "acting_contract": {"forbidden_behaviors": ["接受经济援助", "不得请求安慰"]},
     }
     assert project_contract_boundaries(beat, explicit_prohibitions=True) == (
-        "演出角色禁止行为：接受经济援助",
-        "演出角色禁止行为：不得请求安慰",
+        "当前角色禁止行为：接受经济援助",
+        "当前角色禁止行为：不得请求安慰",
         f"禁止发生的剧情：{rule}",
     )
 
@@ -43,10 +43,10 @@ def test_cross_source_duplicate_retains_first_position_and_prohibition_polarity(
         beat, include_opening_only=True, explicit_prohibitions=True,
     ) == (
         "不得透露秘密",
-        "演出角色禁止行为：重复条款",
+        "当前角色禁止行为：重复条款",
         "禁止发生的剧情：场景先出现的条款",
         "场景独有条款",
-        "演出角色禁止行为：行为独有条款",
+        "当前角色禁止行为：行为独有条款",
         "禁止发生的剧情：剧情独有条款",
     )
     assert beat == before
@@ -90,7 +90,7 @@ def test_actor_and_evaluator_share_explicit_public_projection(include_opening):
         "content_boundaries": engine.nodes["start"]["story_beat"]["content_boundaries"],
     }
     expected = (["不得提前公开秘密"] if include_opening else []) + [
-        neutral_rule, "演出角色禁止行为：接受经济援助", "禁止发生的剧情：玩家帮助寻找新店面",
+        neutral_rule, "当前角色禁止行为：接受经济援助", "禁止发生的剧情：玩家帮助寻找新店面",
     ]
     assert actor._suggestion_hard_boundaries(cast, beat, include_opening_only=include_opening) == expected
     assert evaluator._actor_fact_boundaries(beat, include_opening_only=include_opening) == expected
@@ -124,7 +124,7 @@ def test_ordinary_formal_and_fill_prompts_preserve_explicit_prohibitions(formal)
         assert "boundaries" not in data["transition"]["source_scene"]
         assert "boundaries" not in data["transition"]["target_scene"]
         assert "shared_boundaries" not in data["transition"]
-        assert "演出角色禁止行为：接受经济援助" in messages[0].content
+        assert "当前角色禁止行为：接受经济援助" in messages[0].content
         current_beat = target
     else:
         assert "transition" not in data
@@ -160,7 +160,7 @@ def test_formal_review_deduplicates_raw_role_boundaries_after_explicit_projectio
     )
     data = _data(messages)["target_scene"]
     assert data["hard_boundaries"] == [
-        "不得移动晶片", f"演出角色禁止行为：{rule}", "禁止发生的剧情：玩家帮助寻找新店面",
+        "不得移动晶片", f"当前角色禁止行为：{rule}", "禁止发生的剧情：玩家帮助寻找新店面",
     ]
     assert "scene_boundaries" not in data["author_entry_plan"]
     assert "forbidden_behaviors" not in data["acting_contract"]

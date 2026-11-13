@@ -8,12 +8,14 @@ from typing import Any, Mapping
 from .facts import _resolve_pointer
 
 
+# The workshop SDK must stay importable without config/ (see test_sdk_lifecycle), and theater prompts are zh-only for now.
 EXIT_BINDING_PROMPT = """你只做原文语义绑定，不审核对错、不判断条件充分性、不提出修法或新剧情。fact_definitions是本次可绑定的事实定义，其他既有历史不在本次绑定范围；conditions和completion_contract是原始程序条件，不表示事实已经发生。
 对每条路线claims中的每个ref恰好返回一条绑定。结合source_context、transition_context、target_entry辨认该句时点与主体：source_history指目标入口之前已完成的来源行动、经历、体验或玩家陈述；entry_delivery指转场或目标开场本次才实际交付的内容，不能把首次展示当作此前已经体验；其余、不确定或找不到对应声明事实时用other。summary/goals规划不能证明已完成，来源开场也不等于离幕时点。
 只有source_history填写与原句同一主体、动作和完成范围的已声明fact_key及其值，不用相近目标替代，不造key。entry_delivery/other的fact_key和value均为null。value必须严格符合定义value_type：bool为JSON布尔、int为整数、string为字符串；不把准备、请求或提出等同已交付/亲自完成。
-只输出JSON：{"bindings":[{"route_id":"原路线ID","claim_ref":"原ref","kind":"source_history|entry_delivery|other","fact_key":null,"value":null}]}。每个(route_id,claim_ref)恰好一次，不遗漏、不重复、不新增字段。"""
+只输出JSON：{"bindings":[{"route_id":"原路线ID","claim_ref":"原ref","kind":"source_history|entry_delivery|other","fact_key":null,"value":null}]}。每个(route_id,claim_ref)恰好一次，不遗漏、不重复、不新增字段。"""  # noqa: INLINE_PROMPT_NON_EN
 
 
+# The workshop SDK must stay importable without config/ (see test_sdk_lifecycle), and theater prompts are zh-only for now.
 EXIT_FACT_REVIEW_PROMPT = """你只复核exit_candidates是否确有来源历史承接缺口。exit_context给出原事实定义、实际路线条件、完成合同和两端入口；checked_node_ids指定来源幕。候选仅表示程序未能充分证明，不是已确认错误，不得照单报错或新增事实。
 本范围均为自动推进：最少回合等通用条件满足后，completion_contract.all和该路线conditions满足即可离幕。must_preserve、目标continuity和source_ids只写作者期望，不是额外程序门槛，不会自动执行或登记其内容，不能用这些已然断言反过来证明自己。玩家可以只做实际条件要求的动作；其他独立动作不会随之自动完成，演员也不能在转场中替玩家补做新动作或发言。background/author_intent中明确已发生的前情也可能构成保证，未来规划则不算。
 这是静态合同审核，不要求已经观察到一次坏演出。能构造满足实际出幕条件却未发生该来源结果的合法反例，就说明保证关系有缺口，应判gap；不能因“也可能正常完成”或“尚未实演”改判uncertain。uncertain仅用于无法确定主体、时点或是否另有真实保证的情况。
@@ -22,7 +24,7 @@ EXIT_FACT_REVIEW_PROMPT = """你只复核exit_candidates是否确有来源历史
 仅原文及合法反例共同确认时输出issue，problem写明反例及下游过度承诺。只修错误原字段，可收窄承诺或对齐已有条件，不一律加锁、不编新剧情。跳过已声明的核心交付、体验或玩家发言/决定才按其实际影响评major或blocking，旁枝不自动升格；同因合并。issue的evidence_refs至少两个不同原字段的真实ref；repair_targets只列须改字段。completion_contract是来源节点根字段，route_field定位原出口；text_repair_fields之外或改条件写structure。结构问题若不能准确定位真实原字段，repair_targets填[]交人工处理，不能把claims、ref/text等审核目录当成剧本字段。
 每个候选(route_id,fact_key,value及其精确类型)必须在candidate_checks恰回答一次，reason非空。gap须有issues至少一条引用其claim和另一原字段，检查项可引用证明反例的条件定义，无须重复issue的同一引文；每条issue也须对应至少一条gap的claim。clear须有明确正面原文：source_opening只引来源opening_scene/opening_fallback；source_original只引required_before_exit或完成合同指定的来源fixed原文及其after依赖；background引顶层background/author_intent中已发生前情；entry_delivery只引目标opening_scene/opening_fallback或bridge_scene_narration实际正文；binding_mismatch同时引用候选claim和definition证明绑定不符。reason解释该原文为何保证同一结果或证明绑定不符，不能以must_preserve/continuity、事实定义或路线定位自证已完成。不能举证则uncertain，可空evidence_refs，clear_basis填null；gap的clear_basis也为null。空issues不能代替逐项回答。
 evidence_refs只填本次原文的E编号，如["E1","E2"]，绝不填JSON Pointer或路径；只有repair_targets.field填节点内原字段JSON Pointer。只输出以下JSON，原样返回checked_node_ids，正常稿允许空issues，不输出contract_checks或额外字段；示例value须换为候选原值并保持精确类型：
-{"checked_node_ids":["原来源节点ID"],"issues":[{"category":"state|ownership|sequence","severity":"minor|major|blocking","target_node_ids":["原来源节点ID"],"problem":"已确认缺口及具体合法反例","evidence_refs":["E1","E2"],"modification_plan":"最小修法","expected_result":"修后相容事实","preserve":["保留的正确事实"],"repair_scope":"text|structure","repair_targets":[{"node_id":"须改节点ID","field":"节点内原字段JSON Pointer"}]}],"candidate_checks":[{"route_id":"原路线ID","fact_key":"原候选key","value":true,"status":"gap|clear|uncertain","reason":"原文支持的结论或无法确认的原因","evidence_refs":["E1","E2"],"clear_basis":null}]}"""
+{"checked_node_ids":["原来源节点ID"],"issues":[{"category":"state|ownership|sequence","severity":"minor|major|blocking","target_node_ids":["原来源节点ID"],"problem":"已确认缺口及具体合法反例","evidence_refs":["E1","E2"],"modification_plan":"最小修法","expected_result":"修后相容事实","preserve":["保留的正确事实"],"repair_scope":"text|structure","repair_targets":[{"node_id":"须改节点ID","field":"节点内原字段JSON Pointer"}]}],"candidate_checks":[{"route_id":"原路线ID","fact_key":"原候选key","value":true,"status":"gap|clear|uncertain","reason":"原文支持的结论或无法确认的原因","evidence_refs":["E1","E2"],"clear_basis":null}]}"""  # noqa: INLINE_PROMPT_NON_EN
 
 
 def _nodes(context: Mapping[str, Any]) -> dict[str, Any]:
@@ -51,8 +53,10 @@ def build_exit_binding_request(
     """Reuse the fact review's annotated projection, including canonical shared-node references."""
     marked_nodes, raw_nodes = _nodes(scoped), _nodes(context)
     source, raw_source = marked_nodes[node_id], raw_nodes[node_id]
+    scoped_facts = (scoped.get("fact_contract") or {}).get("facts") or {}
+    # description is optional for facts that no condition or route references.
     definitions = [{"key": key, "value_type": definition["value_type"],
-                    "description": deepcopy(scoped["fact_contract"]["facts"][key]["description"])}
+                    "description": deepcopy((scoped_facts.get(key) or {}).get("description", ""))}
                    for key, definition in (context.get("fact_contract") or {}).get("facts", {}).items()
                    # Match the Evaluator's actual write scope. Earlier scene
                    # facts stay in the main review instead of becoming new work.

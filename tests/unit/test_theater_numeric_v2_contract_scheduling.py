@@ -133,7 +133,7 @@ async def test_bridge_review_keeps_rule_origin_and_distinguishes_source_stage_fr
             assert context["target_entry"] == {
                 "opening_situation": target["story_beat"]["opening_scene"],
                 "story_direction": target["story_beat"]["summary"],
-                "hard_boundaries": ["演出角色禁止行为：不得宣称本轮已获检验通过。", "禁止发生的剧情：不得替玩家确认最终结果。"],
+                "hard_boundaries": ["当前角色禁止行为：不得宣称本轮已获检验通过。", "禁止发生的剧情：不得替玩家确认最终结果。"],
             }
             assert "不是已播证据" in messages[0].content
             if len(requests) == 1:

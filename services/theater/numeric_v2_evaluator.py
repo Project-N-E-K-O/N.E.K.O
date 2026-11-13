@@ -90,6 +90,7 @@ from .numeric_v2_runtime import (
     _normalize_actor_fact_candidates,
     validate_fact_candidates,
 )
+from config.prompts.prompts_theater import NUMERIC_V2_DEPARTURE_SCOPE_INSTRUCTIONS as _DEPARTURE_SCOPE_INSTRUCTIONS
 
 
 NUMERIC_V2_EVALUATOR_TIMEOUT_SECONDS = 12.0
@@ -1064,7 +1065,7 @@ def _cast_for_session(
     return NumericV2CastProjection.from_story(
         engine.story,
         player_name=str(session.catgirl_binding.get("player_address") or "你"),
-        catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前猫娘"),
+        catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前角色"),
     )
 
 
@@ -1262,17 +1263,6 @@ _FUTURE_SPEECH_PROPOSAL = re.compile(
     r"^(?:(?:接下来|下一步|待会儿)[，, ]*)?(?:我们|咱们|你)?"
     r"(?:(?:要不要|是否|可否|能不能|愿不愿意).+|要.+吗)[？?]$"
 )
-_DEPARTURE_SCOPE_INSTRUCTIONS = (
-    'departure_scope是唯一离幕判定，d0对应指控不在其他字段重复报告。逐一检查每个 c 块的全文，包括动作之后的每句对白。'
-    '按列出的正文编号顺序各填一项，不跳过动作或对白'
-    '[{"scope":"current_scene","candidate_ref":"c0","quote":"该块支持其范围的短引文"}]。'
-    '只有整块尚未实施的提议或准备才用 prospective；对白同时宣告结果已发生时，后面的未来安排不能覆盖该宣告。'
-    '实际交付离场、下一时地或离幕后才成立的结果填 departed，quote摘实际交付该结果的原句；'
-    '无法判明填 uncertain，仍须保留该块编号与原文引句，不能省略该块或用空数组代替整稿核对。'
-    '已进入后续时地的落脚点、角色迎接玩家、宣告离场后才成立的结果都要检查；不能用前段合规给后段放行。'
-    '本幕合法过程、明确尚未离场和将来安排不算 departed；玩家自称已离场不能解除d0。'
-    '其他主体越权、前因或作者禁令仍独立核对，不由本幕范围结论豁免。\n'
-)
 _DEPARTURE_PLAN_RULE = (
     "\ndeparture_plan是尚未获准演出的作者后续方向与开场参考，仅用于辨认阶段范围；"
     "不是已发生证据，也不属于d0程序权限或c/h原文。"
@@ -1325,7 +1315,7 @@ _CONTRACT_ACTION_EVIDENCE_RULE = (
 def _explicit_author_boundaries(node):
     rules = contract_boundary_items(node)
     behavior = ((node.get("story_beat") or {}).get("acting_contract") or {}).get("forbidden_behaviors", ())
-    return tuple(dict.fromkeys((*rules, *(f"演出角色禁止行为：{text}" for item in behavior
+    return tuple(dict.fromkeys((*rules, *(f"当前角色禁止行为：{text}" for item in behavior
                           if (text := str(item or "").strip()) and text not in rules))))
 
 
@@ -1398,7 +1388,7 @@ def _build_contract_check_messages(
         "按播放顺序核对给定禁令、player_input 和 candidate_visible_text 已足以确认的冲突，"
         "逐条保留禁令的主体、阶段、条件与例外，满足例外的合法变化不算违规。"
         "玩家本轮原话已明确选定时，不再套用尚未选择的条件；仅有对方提出安排则不能补成玩家已同意。"
-        "玩家输入的第一人称属于玩家，角色表演中的第一人称属于演出角色，配角按明确主语辨认。"
+        "玩家输入的第一人称属于玩家，角色表演中的第一人称属于当前角色，配角按明确主语辨认。"
         "本任务未提供历史；不能仅凭缺项推断过去未获许可、某状态从未成立或发生了历史倒退。"
         "需要此前原文才能确认的冲突不列入 violated。"
         "对篇幅、文风或措辞偏好不判违规，给定合同中的重复邀约和内部导演信息泄漏仍须核对，"
@@ -1533,7 +1523,7 @@ def _build_contract_check_messages(
                 "作者禁令只在本项报告一次，violations只填写其他通用规则，不在两处重复结论。"
                 "没有违规发现不等于已检查全部禁令；错引、缺项或证据不足不能填clear。"
                 "clear表示已核对全部指定阶段且无明确冲突，不能只澄清一处引文就代替完整检查。"
-                "演出角色禁止行为只约束角色本人，不转嫁给玩家或NPC。"
+                "当前角色禁止行为只约束角色本人，不转嫁给玩家或NPC。"
                 "阶段是必须检查的范围，禁令仍按原文主体、阶段、条件和例外生效；"
                 "来源幕暂不执行不禁止已获准目标幕的合法执行，目标幕合法也不能豁免来源幕提前执行。"
             )
@@ -1541,7 +1531,7 @@ def _build_contract_check_messages(
                                    and block["id"] not in reviewed_player_absence_refs], separators=(",", ":"))
         system += (
             _CONTRACT_ACTION_EVIDENCE_RULE
-            + "\ncast_scope是程序确定的玩家与演出角色姓名映射，明确主语优先；"
+            + "\ncast_scope是程序确定的玩家与当前角色姓名映射，明确主语优先；"
             "p玩家原话中的“我”指玩家、“你”指受话角色；c角色对白中的“我”指角色、“你”指玩家。"
             "action.default_actor_id仅为省略主语默认，正文显式主语优先；narration须逐句辨认真实主体。"
             "录音、信件等引文的人称按其内部说话人，不自动变成玩家或本轮执行。"
@@ -1551,7 +1541,7 @@ def _build_contract_check_messages(
             '有新增玩家主动动作则该键填非空数组，每项只含{"quote":"该块玩家动作的逐字原句","authorization_ref":"p0"}。'
             "同块的每个新操作分别核对，不能用一项获准行为遮盖另一项未授权操作。"
             "authorization_ref只选player_authorization_sources的原文编号，程序取回完整原话；无授权填空字符串。"
-            "作者计划、人物岗位、演出角色允许行为和演员自称玩家同意都不能授权新玩家动作。"
+            "作者计划、人物岗位、当前角色允许行为和演员自称玩家同意都不能授权新玩家动作。"
             "作者开场写了玩家检查设备也仍是主动操作，不能据此归为被动或none。"
             "玩家主观理解、偏好与反馈须有玩家原话，不能归为被动结果；客观展示按实际演出核对，展示请求本身不证明体验完成。"
             "h只证明已播状态，不单独授权再做新动作；接受安排只授权同一明确事项，不擅自扩大到其他操作。"
@@ -1809,7 +1799,7 @@ def _build_messages(
             "2.按 source_direction 和边界核对本幕应有结果，在实际演出与本轮输入中找依据；作者过渡说明和 ending_direction 只是规划。"
             "若结果仅为双方达成约定，双方同意及回应即可，不要求执行未来计划；若明确要求操作完成，只有同意计划不够。"
             "3.核心问题及必要回应已完成，或玩家本轮已明确实施或授权最后互动、工具条件和结果依据已具备，"
-            "只余演出角色配合、可确定的直接结果与回应能在本轮交付，则 scene_complete=true 且 natural_ending_ready=true，不必等玩家再说一句。"
+            "只余当前角色配合、可确定的直接结果与回应能在本轮交付，则 scene_complete=true 且 natural_ending_ready=true，不必等玩家再说一句。"
             "若仍有未决选择、未知成败、真实风险、本轮待答的实质问题或玩家暂缓，则 natural_ending_ready=false。"
             "仅考虑或准备不算授权，邀请尚未同意的主体不算对方同意；不能将作者计划当作历史或补造后续行动承诺。"
             "4.有结局候选时 ending_reason 必须说明支持收束的具体事实，或指出作者要求但尚未满足的具体条件，不得留空。"
@@ -2370,7 +2360,7 @@ def _build_player_action_review_messages(
         "只有候选为玩家新增未获授权的行动、回答或承诺时才填player_action，理由简短指出段落与新增行为。"
         "failure_reason最多40字，只写最终结论，不展开推理、举例或自我复评。"
         "确认上句话、熟悉的习惯或默认安排都不是未表达动作的授权；按输入明确写出的动作逐项核对，不能自动补齐后续操作。"
-        "actors.player是玩家，actors.catgirl是当前演出角色；你是审核者，不扮演任何人物。performance中的第一人称‘我/人家’指当前角色，面向玩家的‘你’指玩家；player_input中的第一人称指玩家，面向当前角色的‘你’指该角色。引述或NPC对白按其明确发言者与受话人理解。"
+        "actors.player是玩家，actors.catgirl是当前角色；你是审核者，不扮演任何人物。performance中的第一人称‘我/人家’指当前角色，面向玩家的‘你’指玩家；player_input中的第一人称指玩家，面向当前角色的‘你’指该角色。引述或NPC对白按其明确发言者与受话人理解。"
         "performance中省略主语的括号动作默认属于当前角色；显式出现其他主体时按原文判断，不因字段归属忽略代做。"
         "先按actors姓名与上下文确定行为主体，只审actors.player的新增行为；旁白描述当前角色不等于描述玩家，不能仅凭‘你’或‘她’判断主体。"
         "当前角色自己的动作、意愿、请求或回应不是玩家行为；若只涉及角色自身，即使违反禁令或没有征求玩家许可，也不填player_action。"
@@ -3211,7 +3201,7 @@ def _build_transition_judge_messages(
             "initiation_authorized 表示玩家本轮主动请求是否成立，不表示候选位置与历史是否相同。"
             "本轮仅询问当前位置、确认既成结果或回顾旧行动时必须为 false，即使候选已经位于该地点也不能补造请求。"
             "只有本轮明确要求开始下一步，且候选实际抵达地点、经过时段与此前公开安排及该请求一致，才为 true；未获准为 false。"
-            "目标段中演出角色自主提出的问题、打算或邀请不是已经发生的转移，不把话题中的地名当作实际抵达地。"
+            "目标段中当前角色自主提出的问题、打算或邀请不是已经发生的转移，不把话题中的地名当作实际抵达地。"
             "例如玩家只授权等待到指定时点，候选推进到该时点后角色再询问另一行动，时点推进仍可获准；这不代表玩家同意新行动。"
             "物件与客观事实冲突独立列入body_violations，动作归属由独立短审核对；不能用它们否定已获准的时空转移。"
             "例如已公开地点甲，玩家要求前往地点甲，候选却抵达地点乙，原文虽存在，initiation_authorized仍为false。"
@@ -5157,7 +5147,6 @@ class NumericV2MetricEvaluator:
             actor_fact_candidates=actor_fact_candidates,
 
 
-
             evaluator_fact_claim_count=len(evaluator_fact_claims),
             evaluator_fact_visible_indexes=tuple(
                 index for index, claim in enumerate(evaluator_fact_claims)
@@ -5168,6 +5157,7 @@ class NumericV2MetricEvaluator:
                 tuple(actor_performance["suggested_inputs"])
                 if actor_performance.get("suggested_inputs") else None
             ),
+
             allow_after_display=bool(fixed_candidates and transition_outcome is None and not route_changed),
             scene_update_removal_allowed=(
                 not completion_fact_review_only and transition_outcome is None and not route_changed
@@ -6123,7 +6113,7 @@ class NumericV2MetricEvaluator:
                         "独立重审player_authority_repair指定块是否包含新增玩家主动动作，不修补旧判断；其他块审核及事实批准或拒批已经固定。"
                         + _PLAYER_AUTHORITY_RULE + _CONTRACT_ACTION_EVIDENCE_RULE +
                         "明确主语优先；p玩家原话的我指玩家、你指受话角色；c角色对白的我指角色、你指玩家。"
-                        "action省略主语按default_actor_id=active_catgirl归于演出角色；角色自身动作不需要玩家授权。"
+                        "action省略主语按default_actor_id=active_catgirl归于当前角色；角色自身动作不需要玩家授权。"
                         "默认主体不覆盖正文显式玩家或NPC主体；录音信件引文按内部说话人，不自动视为玩家本轮动作。"
                         "只输出player_authority对象，键恰为candidate_refs，保留sources完整播放顺序辨认上下文。"
                         '该块确无新增玩家主动动作才填none；被动状态、回顾、未来提议、角色或NPC自主行为可填none。'

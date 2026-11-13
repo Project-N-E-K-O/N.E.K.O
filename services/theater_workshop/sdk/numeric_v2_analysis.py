@@ -91,7 +91,7 @@ def _fixed_narration_witness_warnings(ordered_nodes: list[Mapping[str, Any]]) ->
                 code="fixed_narration_condition_actor_witnessed",
                 path=f"nodes[{node_index}].story_beat.fixed_narrations[{position}].trigger.condition",
                 message=(
-                    f"固定旁白 {item.get('id')!r} 的条件由猫娘的自身动作满足。运行时可用证据包含演员本轮写下的正文，"
+                    f"固定旁白 {item.get('id')!r} 的条件由当前角色的自身动作满足。运行时可用证据包含演员本轮写下的正文，"
                     "因此存在“演员先写下条件成立、再被该句自证触发”的风险；引文核验只证明该句出现在某个来源里，不区分该来源是否为尚未提交的候选。"
                     "建议改用 entry 触发，或把条件绑定到玩家输入可验证的动作。"
                 ),

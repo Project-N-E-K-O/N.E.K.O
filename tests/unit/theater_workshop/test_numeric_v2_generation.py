@@ -61,7 +61,7 @@ def test_concrete_process_rule_covers_whole_outline_generation_and_continuation(
     assert prompt.count(_SCENE_PROCESS_AUTHORING_RULE) == 1
     assert prompt.endswith(_SCENE_PROCESS_AUTHORING_RULE)
     # Two-person enactment orientation applies to continuation, branches, and revision, not just the first mainline draft.
-    assert "主线、支线及结局的关键互动优先由玩家与演出角色推进" in prompt
+    assert "主线、支线及结局的关键互动优先由玩家与当前角色推进" in prompt
     assert "不默认把配角的连续问答、实际操作、评价或认可作为推进和收束的必要条件" in prompt
     assert "玩家的选择、行动和台词仍由玩家输入决定" in prompt
     assert "配角被直接询问时仍可简短回答、拒绝或说明未知" in prompt
@@ -95,7 +95,7 @@ def test_concrete_process_rule_covers_whole_outline_generation_and_continuation(
     assert "必要角色反应写清该角色回应哪项选择或结果，以及为什么在意" in prompt
     assert "不把示例台词固定为必说原文" in prompt
     # Every generation/review entry preserves causal/stage differences in reactions, without requiring every interaction to intensify relationships.
-    assert "演出角色原先在意的具体事" in prompt
+    assert "当前角色原先在意的具体事" in prompt
     assert "不能把本幕尚待发生的反应提前写成入幕事实" in prompt
     assert "不要求每幕改变立场" in prompt
     assert "ending.summary 承接变化的原因" in prompt
@@ -616,8 +616,8 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert "只生成一个 normal 结局" in prompt
     assert "不预设性别" in prompt
     assert "剧情主角必须是女性" not in prompt and "玩家角色必须是男性" not in prompt
-    assert "story_protagonist.identity 必须以“女主，”开头" in prompt
-    assert "player_role.identity 必须以“男主，”开头" in prompt
+    assert "两种身份沿用程序校验提示的固定角色槽位开头" in prompt
+    assert "女主" not in prompt and "男主" not in prompt
     assert "只把会影响剧情的关键道具写入 key_props" in prompt
     assert "world.background 是直接展示给玩家的“前情提要”" in prompt
     assert "凡是在这段可见正文中指代玩家，一律使用第二人称“你”" in prompt
@@ -666,14 +666,14 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert "exact anchors 指代玩家时必须使用最终可见的第二人称“你”" in _BRANCH_PATH_PROMPT
     assert "多个必须全部成立的条件、数量、期限或范围" in _BRANCH_PATH_PROMPT
     assert "不新增未经授权的玩家身体行动" in _BRANCH_PATH_PROMPT
-    assert "每一幕只能推进一小级" in _BRANCH_PATH_PROMPT
-    assert "不得仅因进入支线就从警惕或疏离跳到粘人" in _BRANCH_PATH_PROMPT
-    assert "不得把 source 或 scene 的预期目标写成已经完成" in _BRANCH_PATH_PROMPT
+    assert "触发状态只在上限内改变距离" in _BRANCH_PATH_PROMPT
+    assert "回接时遵守目标的关系上限和认知范围" in _BRANCH_PATH_PROMPT
+    assert "不证明目标已经完成" in _BRANCH_PATH_PROMPT
     assert "不能要求重做或用泛化同意" in _BRANCH_PATH_PROMPT
     assert '"fallback_offer": "需新授权的普通路线的具体角色邀请' in _BRANCH_PATH_PROMPT
     assert '"accept_input": "需新授权时玩家明确接受同一具体安排的一句话' in _BRANCH_PATH_PROMPT
     assert "不得只给抽象结论" in _BRANCH_PATH_PROMPT
-    assert "expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计" in _BRANCH_PATH_PROMPT
+    assert "expected_turns 为 3—120 的普通回合软估计" in _BRANCH_PATH_PROMPT
     # The author confirmed facts before literature: move timing checks into the fact stage, whose report feeds literature.
     assert "按路线的实际 source/target" in FACT_REVIEW_PROMPT
     assert "fact_review 是完整事实报告" in _ASSESSMENT_PROMPT

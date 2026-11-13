@@ -56,7 +56,7 @@ class NumericV2CastProjection:
             source_catgirl_name=str(intro["catgirl_name"]) if "catgirl_name" in intro else _identity_name(intro.get("catgirl_identity")),
             player_name=str(player_name or "你").strip() or "你",
             # Missing names are role references only; Actor generation requires a real card name.
-            catgirl_name=str(catgirl_name or "演出角色").strip() or "演出角色",
+            catgirl_name=str(catgirl_name or "当前角色").strip() or "当前角色",
         )
 
     def text(self, value: Any) -> str:

@@ -1,4 +1,4 @@
-"""Prompt roles do not override author gender or the legacy slot protocol."""
+"""Prompt roles do not override author gender; legacy slot markers stay readable but are not spelled out in prompts."""
 
 import json
 
@@ -24,7 +24,7 @@ def test_generation_keeps_legacy_markers_but_preserves_explicit_author_gender():
     outline["story_protagonist"]["identity"] = "女主，作者明确为男性的修复师。"
     outline["player_role"]["identity"] = "男主，作者明确为女性的来访者。"
     setup = _generation_setup()
-    setup["brief"] += "演出角色明确为男性，玩家明确为女性，保留这些作者设定。"
+    setup["brief"] += "当前角色明确为男性，玩家明确为女性，保留这些作者设定。"
     calls = []
 
     def model(messages, **options):
@@ -39,6 +39,8 @@ def test_generation_keeps_legacy_markers_but_preserves_explicit_author_gender():
     assert not _validate_idea_outline(outline, minimum=3, maximum=6, scene_expected_turns_target=8)
     contract = json.loads(generation._MAINLINE_OUTPUT_CONTRACT)
     assert "cast_names.catgirl_name" in contract["story_protagonist"]["identity"]
-    assert "‘女主，’" in contract["story_protagonist"]["identity"]
+    assert "女主" not in contract["story_protagonist"]["identity"]
+    assert "沿用其身份开头的原有称呼" in contract["story_protagonist"]["identity"]
     assert "cast_names.player_name" in contract["player_role"]["identity"]
-    assert "‘男主，’" in contract["player_role"]["identity"]
+    assert "男主" not in contract["player_role"]["identity"]
+    assert "沿用其身份开头的原有称呼" in contract["player_role"]["identity"]
