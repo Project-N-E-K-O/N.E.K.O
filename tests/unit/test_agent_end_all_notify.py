@@ -372,24 +372,33 @@ def test_end_all_asks_the_browser_to_close_without_waiting_for_the_keys(srv, mon
             order.append("keys released")
             return True
 
+    browser_asked = asyncio.Event()
+
     async def _close() -> None:
         order.append("browser asked")
         # The keys are still being let go of: the browser was not kept waiting for them.
         assert "keys released" not in order
-        let_go.set()
+        browser_asked.set()
 
     monkeypatch.setattr(srv.builtin_provider, "_desktop", _SlowDesktop())
     monkeypatch.setattr(srv.builtin_provider, "close_browser", _close)
 
-    try:
-        result = asyncio.run(asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0))
-    finally:
-        let_go.set()
+    async def _scenario() -> dict:
+        stopping = asyncio.ensure_future(srv.admin_control({"action": "end_all"}))
+        try:
+            await asyncio.wait_for(browser_asked.wait(), 10.0)
+            # The browser is dealt with; the keys are not. Answered now, the page would say
+            # everything was stopped with a key still held down.
+            await asyncio.sleep(0.1)
+            assert not stopping.done() and "keys released" not in order
+        finally:
+            let_go.set()
+        return await asyncio.wait_for(stopping, 10.0)
+
+    result = asyncio.run(_scenario())
 
     assert result["success"] is True
-    # And the answer waits for the keys all the same. (Which of the two is asked first is a
-    # matter of when the worker thread gets going; that the browser is asked before the
-    # keys are done is what must hold.)
+    # (Which of the two is asked first is a matter of when the worker thread gets going.)
     assert sorted(order) == ["browser asked", "keys asked", "keys released"]
     assert order.index("browser asked") < order.index("keys released")
 
