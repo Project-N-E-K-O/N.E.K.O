@@ -47,6 +47,7 @@ from ._infra import (
     _enqueue_error,
     _ws_is_open,
     log_configured_tts_failure,
+    configured_tts_unavailable_worker,
     SentenceBuffer,
     _AudioQueueProxy,
     _non_bistream_tts_main_loop,
@@ -610,7 +611,7 @@ def selected_realtime_output_tts_provider_key(core_config, cm, voice_id):
 
 
 def realtime_output_tts_provider_ready(core_config, cm, voice_id, provider_key):
-    """Whether ``provider_key`` resolves to a real worker rather than the silent dummy."""
+    """Whether ``provider_key`` resolves to a worker that can actually speak."""
     provider = _tts_providers.get(provider_key)
     if provider is None:
         return False
@@ -632,7 +633,9 @@ def realtime_output_tts_provider_ready(core_config, cm, voice_id, provider_key):
         # The exception may echo credentials or signed URLs; log only the stage.
         log_configured_tts_failure(provider_key, "realtime_output")
         return False
-    return resolved_key is not None and worker is not dummy_tts_worker
+    # Both placeholders fail at once (configured_tts_unavailable_worker covers an
+    # invalid endpoint), so taking over would only trade the realtime voice away.
+    return resolved_key is not None and worker not in (dummy_tts_worker, configured_tts_unavailable_worker)
 
 
 # Cloned-voice providers (hosted SaaS, selected by voice_meta.provider). Priority 30/40/50

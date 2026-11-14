@@ -130,6 +130,16 @@ def test_doubao_without_any_voice_keeps_realtime_voice(manager):
     assert tts_client.realtime_output_tts_provider_ready(config, manager, "zh_female_demo", "doubao_tts")
 
 
+def test_custom_with_invalid_endpoint_keeps_realtime_voice(manager):
+    # An invalid URL resolves to a placeholder that fails at once; keep the realtime voice.
+    config = {**CUSTOM, "ttsModelUrl": "ws://localhost:8000", "ttsVoiceId": "af_heart"}
+    manager.set_config(config)
+    assert tts_client.selected_realtime_output_tts_provider_key(config, manager, "") == "custom"
+    assert tts_client.get_tts_worker("qwen", False, "")[0] is tts_client.configured_tts_unavailable_worker
+    assert tts_client.realtime_output_tts_provider_ready(config, manager, "", "custom") is False
+    assert _session(manager)._resolve_session_use_tts("audio", {}, config) is False
+
+
 def test_failing_resolve_counts_as_unavailable(manager, monkeypatch):
     config = {"ttsModelProvider": "mimo", "TTS_PROVIDER": "mimo", "ASSIST_API_KEY_MIMO": "mimo-key"}
     manager.set_config(config)
