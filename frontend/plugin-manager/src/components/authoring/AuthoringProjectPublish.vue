@@ -419,9 +419,11 @@ async function loadMarketListing() {
   marketListed.value = versions ? versions.some((item) => item.version === tag) : null
   const receipts = await receiptsRequest
   if (disposed || read !== marketReads) return
-  // Owner and repository names ignore case on GitHub; the tag does not.
-  const receipt = repository && Array.isArray(receipts) && receipts.find(item =>
-    isReleaseUrlOf(item.release_url, repository, tag)
+  // The task's own receipt is picked by its request id; the Release URL is
+  // only the fallback for a receipt the task did not record.
+  const receipt = repository && Array.isArray(receipts) && (
+    (requestId ? receipts.find(item => item.id === requestId) : undefined) ??
+    receipts.find(item => isReleaseUrlOf(item.release_url, repository, tag))
   )
   if (receipt && isMarketPublicationStatus(receipt.status)) marketReceipt.value = receipt.status
 }

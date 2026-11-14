@@ -6,7 +6,7 @@ import {
   type Toolchain,
 } from '@/api/pluginProjects'
 import type { SubmissionPanelState } from '@/api/marketSubmissions'
-import { publishFlow, type PublishFlowFacts, type PublishStepId } from './publishFlow'
+import { isReleaseUrlOf, publishFlow, type PublishFlowFacts, type PublishStepId } from './publishFlow'
 
 const HEAD = 'a'.repeat(40)
 const APPROVED = 'b'.repeat(40)
@@ -260,6 +260,30 @@ describe('publishFlow', () => {
       }),
     })
     expect(step(flow, 'market').detail?.key).toBe('marketVersionPendingReview')
+  })
+
+  describe('isReleaseUrlOf', () => {
+    const repo = 'Owner/Hello_World'
+    it.each([
+      ['plain', 'https://github.com/owner/hello_world/releases/tag/v0.2.0', 'v0.2.0', true],
+      ['owner and repository case', 'https://GitHub.com/OWNER/HELLO_WORLD/releases/tag/v0.2.0', 'v0.2.0', true],
+      ['tag case', 'https://github.com/owner/hello_world/releases/tag/V0.2.0', 'v0.2.0', false],
+      ['encoded dots', 'https://github.com/owner/hello_world/releases/tag/v2%2E0%2E0', 'v2.0.0', true],
+      ['upper-case escape', 'https://github.com/owner/hello_world/releases/tag/v1%2Fpreview', 'v1/preview', true],
+      ['lower-case escape', 'https://github.com/owner/hello_world/releases/tag/v1%2fpreview', 'v1/preview', true],
+      ['raw slash in the tag', 'https://github.com/owner/hello_world/releases/tag/v1/preview', 'v1/preview', true],
+      ['only a prefix of the tag', 'https://github.com/owner/hello_world/releases/tag/v1', 'v1/preview', false],
+      ['trailing slash', 'https://github.com/owner/hello_world/releases/tag/v0.2.0/', 'v0.2.0', true],
+      ['query and fragment', 'https://github.com/owner/hello_world/releases/tag/v0.2.0?x=1#notes', 'v0.2.0', true],
+      ['legacy numeric Release ID', 'https://github.com/owner/hello_world/releases/123456', 'v0.2.0', false],
+      ['another repository', 'https://github.com/owner/other/releases/tag/v0.2.0', 'v0.2.0', false],
+      ['another host', 'https://github.example/owner/hello_world/releases/tag/v0.2.0', 'v0.2.0', false],
+      ['plain http', 'http://github.com/owner/hello_world/releases/tag/v0.2.0', 'v0.2.0', false],
+      ['broken escape', 'https://github.com/owner/hello_world/releases/tag/v0.2.0%E0', 'v0.2.0', false],
+      ['not a URL', 'releases/tag/v0.2.0', 'v0.2.0', false],
+    ] as const)('%s', (_, url, tag, expected) => {
+      expect(isReleaseUrlOf(url, repo, tag)).toBe(expected)
+    })
   })
 
   it('reads a listed version from the Market when no task survived', () => {

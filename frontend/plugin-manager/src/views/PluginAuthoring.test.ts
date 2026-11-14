@@ -651,6 +651,34 @@ describe('authoring workbench backed by the server project list', () => {
     expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
   })
 
+  it('picks the task receipt by its request id before matching the Release URL', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0',
+        market_request_id: 55,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 54, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0', status: 'rejected' },
+      // An old receipt names the Release by its numeric ID; its request id still identifies it.
+      { id: 55, release_url: 'https://github.com/owner/hello_world/releases/123456', status: 'platform_attention' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.marketVersionPlatformAttention)
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
   it('reads no request id from a task of another Release, nor a receipt of another tag', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
