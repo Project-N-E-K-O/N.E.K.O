@@ -110,6 +110,26 @@ def test_stored_custom_voice_keeps_established_routing(manager):
     assert _session(manager, "my-clone")._resolve_session_use_tts("audio", {}, config) is True
 
 
+def test_saved_voice_named_like_catalog_voice_keeps_its_route(manager):
+    # A saved clone may share a MiMo catalog name while belonging to another provider.
+    config = {"ttsModelProvider": "follow_assist", "assistApi": "mimo"}
+    manager.set_config(config)
+    manager.voice_id_exists_in_any_storage.return_value = True
+    assert tts_client.selected_realtime_output_tts_provider_key(config, manager, "冰糖") is None
+    assert _session(manager, "冰糖")._resolve_session_use_tts("audio", {}, config) is True
+
+
+def test_doubao_without_any_voice_keeps_realtime_voice(manager):
+    # The Doubao worker rejects an empty voice, so taking over would go silent.
+    config = {"ttsModelProvider": "doubao_tts", "assistApiKeyDoubaoTts": "doubao-key"}
+    manager.set_config(config)
+    assert tts_client.selected_realtime_output_tts_provider_key(config, manager, "") == "doubao_tts"
+    assert tts_client.realtime_output_tts_provider_ready(config, manager, "", "doubao_tts") is False
+    assert _session(manager)._resolve_session_use_tts("audio", {}, config) is False
+    # A character voice alone is enough for the worker.
+    assert tts_client.realtime_output_tts_provider_ready(config, manager, "zh_female_demo", "doubao_tts")
+
+
 def test_failing_resolve_counts_as_unavailable(manager, monkeypatch):
     config = {"ttsModelProvider": "mimo", "TTS_PROVIDER": "mimo", "ASSIST_API_KEY_MIMO": "mimo-key"}
     manager.set_config(config)

@@ -598,11 +598,13 @@ def selected_realtime_output_tts_provider_key(core_config, cm, voice_id):
     )
     if not provider or not provider.realtime_output_override:
         return None
+    # Checked first: this lookup carries no voice metadata, so a saved voice
+    # sharing a catalog name may belong to another provider.
+    if voice_id and cm.voice_id_exists_in_any_storage(voice_id):
+        return None
     if provider.preset_catalog and _is_canonical_catalog_voice(provider.preset_catalog, voice_id):
         return provider.key
     if not _tts_provider_is_explicit_choice(provider.key, core_config):
-        return None
-    if voice_id and cm.voice_id_exists_in_any_storage(voice_id):
         return None
     return provider.key
 
@@ -611,6 +613,16 @@ def realtime_output_tts_provider_ready(core_config, cm, voice_id, provider_key):
     """Whether ``provider_key`` resolves to a real worker rather than the silent dummy."""
     provider = _tts_providers.get(provider_key)
     if provider is None:
+        return False
+    if (
+        provider.uses_configured_default_voice
+        and not provider.preset_catalog
+        and not provider.default_voice
+        and not str(voice_id or "").strip()
+        and not str(core_config.get(provider.voice_field) or "").strip()
+    ):
+        # No character voice, no fallback voice and no built-in default: the
+        # worker would reject every request, so keep the realtime voice.
         return False
     try:
         worker, _, resolved_key = provider.resolve(_tts_providers.DispatchContext(
