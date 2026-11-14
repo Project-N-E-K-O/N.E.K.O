@@ -900,6 +900,7 @@ async def _proxy_market_submission(
     query: tuple[str, ...] = (),
     forward_body: bool = False,
     requires_verified_email: bool = False,
+    api_path: str = "/api/v1/review/submissions",
 ) -> Response:
     """Proxy one authenticated review-submission call to the Market.
 
@@ -929,7 +930,7 @@ async def _proxy_market_submission(
         )
 
     body = await request.body() if forward_body else None
-    upstream_url = f"{base_url}/api/v1/review/submissions{upstream_path}"
+    upstream_url = f"{base_url}{api_path}{upstream_path}"
     forwarded_query = [
         (name, value) for name, value in request.query_params.multi_items() if name in query
     ]
@@ -1059,6 +1060,17 @@ async def _proxy_market_submission(
 async def market_submission_mine(request: Request) -> Response:
     return await _proxy_market_submission(
         request, method="GET", upstream_path="/mine", query=_SUBMISSION_MINE_QUERY_PARAMS
+    )
+
+
+@router.get("/publication-requests/{plugin_id}")
+async def market_publication_requests(request: Request, plugin_id: int) -> Response:
+    if plugin_id < 1 or plugin_id >= 2**31:
+        raise HTTPException(422, "Invalid Market plugin ID")
+    return await _proxy_market_submission(
+        request, method="GET", api_path="/api/v1/plugins",
+        upstream_path=f"/{plugin_id}/versions/publication-requests",
+        query=("request_id",), requires_verified_email=True,
     )
 
 

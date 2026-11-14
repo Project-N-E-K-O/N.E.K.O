@@ -12,6 +12,7 @@
 import {
   RELEASE_WORKFLOW_PATH,
   type PublishMode,
+  type MarketPublicationStatus,
   type PublishRemoteState,
   type PublishStatus,
   type PublishTask,
@@ -45,6 +46,7 @@ export interface PublishFlowFacts {
   task: PublishTask | null
   /** Whether the Market's public version list has this Release's tag; null when it was not read. */
   marketListed: boolean | null
+  marketReceipt?: MarketPublicationStatus | null
   /** The publishing tools of this machine; null or absent when they were not read. */
   toolchain?: Toolchain | null
 }
@@ -234,26 +236,69 @@ function releaseStep(facts: PublishFlowFacts, releaseReady: boolean): Omit<Publi
   }
 }
 
+function decodeTag(value: string): string | null {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether `url` is the GitHub Release page of `tag` in `repository`.
+ *
+ * Only `https://github.com/<owner>/<repo>/releases/tag/<tag>` counts; query,
+ * fragment and a trailing slash are ignored. GitHub owner and repository names
+ * ignore case; tags do not, so the URL's tag is percent-decoded (the Market
+ * re-encodes tags, and not always the same way: `v1%2Fpreview`, `v2%2E0%2E0`)
+ * and compared exactly with `tag`. `tag` is the literal Git tag, never URL
+ * text, so it is not decoded: a tag may itself contain `%`. Old receipts may
+ * name a Release by its numeric ID (`/releases/<id>`), which says nothing
+ * about the tag, so they never match.
+ */
+export function isReleaseUrlOf(url: string, repository: string, tag: string): boolean {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return false
+  }
+  if (parsed.protocol !== 'https:' || parsed.host.toLowerCase() !== 'github.com') return false
+  const match = /^\/([^/]+\/[^/]+)\/releases\/tag\/(.+?)\/?$/.exec(parsed.pathname)
+  if (!match || match[1]!.toLowerCase() !== repository.toLowerCase()) return false
+  return decodeTag(match[2]!) === tag
+}
+
 /** The Market's answer to the latest task's release notification, when it carries one. */
 function marketAnswer(task: PublishTask | null, repository: string | null, tag: string): Omit<PublishStep, 'id' | 'warning'> | null {
   if (!task?.market_status || !repository) return null
-  const suffix = [tag, encodeURIComponent(tag)]
-    .map(value => `/releases/tag/${value}`)
-    .find(value => task.release_url.endsWith(value))
-  if (!suffix) return null
-  if (task.release_url.slice(0, -suffix.length).toLowerCase() !== `https://github.com/${repository}`.toLowerCase()) return null
-  const candidate = task.market_candidate_id ?? ''
-  switch (task.market_status) {
+  if (!isReleaseUrlOf(task.release_url, repository, tag)) return null
+  return marketPublicationAnswer(task.market_status, task.market_candidate_id)
+}
+
+function marketPublicationAnswer(status: MarketPublicationStatus, candidate?: number | null): Omit<PublishStep, 'id' | 'warning'> {
+  switch (status) {
     case 'published':
     case 'already_published':
     case 'approved':
       return { state: 'done', detail: message('marketVersionListed') }
     case 'pending_review':
-      return { state: 'waiting', detail: message('marketVersionPendingReview', { candidate }) }
+      return { state: 'waiting', detail: candidate
+        ? message('marketVersionPendingReview', { candidate })
+        : message('marketVersionAwaitingReview') }
+    case 'accepted':
+    case 'waiting_build':
+    case 'verifying':
+    case 'retry_wait':
+      return { state: 'waiting', detail: message('marketVersionVerifying') }
+    case 'platform_attention':
+      return { state: 'waiting', detail: message('marketVersionPlatformAttention') }
     case 'superseded':
       return { state: 'waiting', detail: message('marketVersionSuperseded') }
     case 'rejected':
-      return { state: 'todo', detail: message('marketVersionRejected', { candidate }) }
+      return { state: 'todo', detail: candidate
+        ? message('marketVersionRejected', { candidate })
+        : message('marketVersionRejectedReceipt') }
   }
 }
 
@@ -452,7 +497,9 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
   const releaseReady = remote?.release.ready === true
   const approved = submission.phase === 'approved'
   const submissionState = submission.phase ? SUBMISSION_STATES[submission.phase] : 'todo'
-  const answer = marketAnswer(facts.task, repo.github_repository, repo.tag)
+  const answer = facts.marketReceipt
+    ? marketPublicationAnswer(facts.marketReceipt)
+    : marketAnswer(facts.task, repo.github_repository, repo.tag)
   const steps: PublishStep[] = [
     { id: 'repository', warning: null, ...repositoryStep(status) },
     { id: 'verify', warning: null, ...verifyStep(remote) },

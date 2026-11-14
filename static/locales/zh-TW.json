@@ -1538,6 +1538,7 @@
         "ttsModelExamplePlaceholder": "如：tts-1、speech-01-turbo",
         "ttsApiKeyPlaceholder": "請輸入TTS模型的API Key",
         "ttsVoiceExamplePlaceholder": "如：中文女、alloy",
+        "ttsDeepSeekVoiceExamplePlaceholder": "如：stella / tide",
         "mcpRouterNoteBefore": "當前版本請自行下載並配置",
         "mcpRouterNoteAfter": "，後續版本會優化。",
         "apiKeyChangeWarning": {

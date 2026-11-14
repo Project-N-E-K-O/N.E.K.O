@@ -1434,16 +1434,17 @@ def test_explicit_mimo_provider_ignores_assist_token_plan(mock_page: Page, runni
 
 
 @pytest.mark.frontend
-def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str):
-    """Saving explicit MiMo TTS must preserve ttsProvider so runtime dispatch selects MiMo."""
+@pytest.mark.parametrize("provider_key", ["mimo", "deepseek"])
+def test_explicit_hosted_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str, provider_key):
+    """Saving an explicit hosted TTS choice must preserve its runtime routing."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
-    mock_page.wait_for_selector("#ttsModelProvider option[value='mimo']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#ttsModelProvider option[value='{provider_key}']", state="attached", timeout=10000)
 
     payload = mock_page.evaluate("""
-        async () => {
+        async (providerKey) => {
             document.getElementById('enableCustomApi').checked = true;
             toggleCustomApi();
 
@@ -1452,7 +1453,7 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
             assist.dispatchEvent(new Event('change', { bubbles: true }));
 
             const provider = document.getElementById('ttsModelProvider');
-            provider.value = 'mimo';
+            provider.value = providerKey;
             provider.dispatchEvent(new Event('change', { bubbles: true }));
 
             window.__capturedSavePayload = null;
@@ -1468,11 +1469,94 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
             await save_button_down({ preventDefault() {} });
             return window.__capturedSavePayload;
         }
-    """)
+    """, provider_key)
 
     assert payload["assistApi"] == "qwen"
-    assert payload["ttsModelProvider"] == "mimo"
-    assert payload["ttsProvider"] == "mimo"
+    assert payload["ttsModelProvider"] == provider_key
+    assert payload["ttsProvider"] == provider_key
+    if provider_key == "deepseek":
+        assert "ttsModelApiKey" not in payload
+        assert "ttsModelId" not in payload
+        assert "ttsModelUrl" not in payload
+        expect(mock_page.locator("#ttsModelUrl")).to_have_value("wss://api.deepseek.com/v1/tools/tts")
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("intermediate_provider", [None, "gptsovits"])
+def test_deepseek_tts_preserves_saved_custom_slot_in_ui(
+    mock_page: Page, running_server: str, intermediate_provider,
+):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    custom_url = "https://custom.example.com/v1/audio/speech"
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            ttsModelProvider="deepseek",
+            ttsProvider="deepseek",
+            ttsModelUrl=custom_url,
+            ttsModelId="custom-voice-model",
+            ttsModelApiKey="__NEKO_SECRET_MASKED__",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    url = mock_page.locator("#ttsModelUrl")
+    model = mock_page.locator("#ttsModelId")
+    expect(provider).to_have_value("deepseek")
+    expect(url).to_have_value("wss://api.deepseek.com/v1/tools/tts")
+    provider.select_option("custom", force=True, timeout=5000)
+    expect(url).to_have_value(custom_url)
+    expect(model).to_have_value("custom-voice-model")
+    assert mock_page.evaluate("getRealKey(document.getElementById('ttsModelApiKey'))") == "__NEKO_SECRET_MASKED__"
+
+    draft_url = "https://draft.example.com/v1/audio/speech"
+    url.evaluate("(input, value) => { input.value = value; }", draft_url)
+    model.evaluate("(input) => { input.value = 'draft-model'; }")
+    mock_page.evaluate("setMaskedInput(document.getElementById('ttsModelApiKey'), 'draft-key')")
+    provider.select_option("deepseek", force=True, timeout=5000)
+    if intermediate_provider:
+        provider.select_option(intermediate_provider, force=True, timeout=5000)
+    provider.select_option("custom", force=True, timeout=5000)
+
+    payload = mock_page.evaluate("""async () => {
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload;
+    }""")
+    assert payload["ttsModelProvider"] == "custom"
+    assert payload["ttsModelUrl"] == draft_url
+    assert payload["ttsModelId"] == "draft-model"
+    assert payload["ttsModelApiKey"] == "draft-key"
+
+
+@pytest.mark.frontend
+def test_deepseek_tts_voice_placeholder_follows_provider_and_locale(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    voice = mock_page.locator("#ttsVoiceId")
+    provider.select_option("deepseek", force=True, timeout=5000)
+    expect(voice).to_have_attribute("placeholder", "如：stella / tide")
+    voice.evaluate("(input) => { input.value = 'tide'; }")
+
+    mock_page.evaluate("window.changeLanguage('en')")
+    expect(voice).to_have_attribute("placeholder", "e.g., stella / tide")
+    expect(provider).to_have_value("deepseek")
+    expect(voice).to_have_value("tide")
+
+    provider.select_option("follow_assist", force=True, timeout=5000)
+    expect(voice).to_have_attribute("placeholder", "e.g., Chinese Female, alloy")
+    expect(voice).to_have_value("tide")
 
 
 @pytest.mark.frontend
@@ -1896,7 +1980,7 @@ def test_capability_dropdowns_hide_providers_with_no_implementation(
     """)
 
     # Text-only LLM providers have no TTS workers and must not appear in the TTS dropdown.
-    for pk in ('deepseek', 'kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
+    for pk in ('kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
         assert pk not in options['tts'], f"TTS 下拉仍暴露无 TTS 能力的 {pk}"
 
     # The realtime omni dropdown offers no named providers. This slot becomes the process-wide
@@ -1909,6 +1993,7 @@ def test_capability_dropdowns_hide_providers_with_no_implementation(
         assert pk not in options['omni'], f"实时全模态下拉不该暴露具名服务商 {pk}"
 
     # Negative assertion: retain genuinely capable choices, preventing removal of everything from passing the checks above.
+    assert 'deepseek' in options['tts'], "DeepSeek 被误过滤"
     assert 'gptsovits' in options['tts'], "GPT-SoVITS 被误过滤"
     assert 'vllm_omni' in options['tts'], "vLLM-Omni 被误过滤"
     assert 'custom' in options['tts'], "自定义 TTS 被误过滤"
@@ -1939,9 +2024,9 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
         data['enableCustomApi'] = True
         # Legacy state: TTS / omni each select a provider with no backend implementation,
         # automatically filling that provider's LLM endpoint and credentials too.
-        data['ttsModelProvider'] = 'deepseek'
-        data['ttsModelUrl'] = 'https://api.deepseek.com/v1'
-        data['ttsModelApiKey'] = 'sk-stale-deepseek'
+        data['ttsModelProvider'] = 'kimi'
+        data['ttsModelUrl'] = 'https://api.moonshot.cn/v1'
+        data['ttsModelApiKey'] = 'sk-stale-kimi'
         data['omniModelProvider'] = 'claude'
         data['omniModelUrl'] = 'https://api.anthropic.com/v1'
         data['omniModelApiKey'] = 'sk-stale-claude'
@@ -1977,10 +2062,10 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
     )
     # Never fall back to 'custom', which would legitimize an LLM endpoint as a configured TTS/realtime endpoint.
     assert state['ttsProvider'] != 'custom' and state['omniProvider'] != 'custom'
-    assert 'deepseek' not in (state['ttsUrl'] or ''), (
+    assert 'moonshot' not in (state['ttsUrl'] or ''), (
         f"残留的 LLM 端点应被跟随方的值覆盖，实际 ttsUrl={state['ttsUrl']!r}"
     )
-    assert 'sk-stale-deepseek' not in (state['ttsKey'] or ''), (
+    assert 'sk-stale-kimi' not in (state['ttsKey'] or ''), (
         f"残留凭证应被覆盖，实际 ttsKey={state['ttsKey']!r}"
     )
     assert 'anthropic' not in (state['omniUrl'] or ''), (

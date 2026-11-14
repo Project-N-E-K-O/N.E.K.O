@@ -1538,6 +1538,7 @@
         "ttsModelExamplePlaceholder": "예: tts-1, speech-01-turbo",
         "ttsApiKeyPlaceholder": "TTS API 키 입력",
         "ttsVoiceExamplePlaceholder": "예: 중국 여성, 합금",
+        "ttsDeepSeekVoiceExamplePlaceholder": "예: stella / tide",
         "mcpRouterNoteBefore": "현재 버전의 경우 설정하세요.",
         "mcpRouterNoteAfter": "스스로. 이는 향후 버전에서 개선될 예정입니다.",
         "apiKeyChangeWarning": {

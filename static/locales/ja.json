@@ -1538,6 +1538,7 @@
         "ttsModelExamplePlaceholder": "例: tts-1, speech-01-turbo",
         "ttsApiKeyPlaceholder": "TTS APIキーを入力",
         "ttsVoiceExamplePlaceholder": "例: Chinese Female, alloy",
+        "ttsDeepSeekVoiceExamplePlaceholder": "例: stella / tide",
         "mcpRouterNoteBefore": "現バージョンでは",
         "mcpRouterNoteAfter": "を各自構築してください。将来的に改善予定です。",
         "apiKeyChangeWarning": {

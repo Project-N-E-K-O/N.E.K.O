@@ -1538,6 +1538,7 @@
         "ttsModelExamplePlaceholder": "por exemplo, tts-1, discurso-01-turbo",
         "ttsApiKeyPlaceholder": "Insira a chave da API TTS",
         "ttsVoiceExamplePlaceholder": "por exemplo, fêmea chinesa, liga",
+        "ttsDeepSeekVoiceExamplePlaceholder": "por exemplo, stella / tide",
         "mcpRouterNoteBefore": "Para a versão atual, configure",
         "mcpRouterNoteAfter": "por conta própria. Isso será melhorado em versões futuras.",
         "apiKeyChangeWarning": {

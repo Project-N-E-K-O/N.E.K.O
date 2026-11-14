@@ -68,6 +68,7 @@ from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
 from config import DEFAULT_CONFIG_DATA, GEOIP_FORCE_NON_MAINLAND
+from utils.dashscope_region import dashscope_http_url_from_base
 from utils.gptsovits_config import normalize_gsv_api_url
 from utils.steam_state import get_steamworks
 
@@ -1466,6 +1467,20 @@ class CoreConfigMixin:
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
+                if prefix == 'tts' and provider == 'deepseek':
+                    # The hosted worker uses the DeepSeek key book and fixed endpoint.
+                    # Retain a saved DashScope slot for existing CosyVoice clones,
+                    # without sending another provider's saved key to DashScope.
+                    saved_url = str(core_cfg.get('ttsModelUrl') or '').strip()
+                    dashscope_http_url = dashscope_http_url_from_base(saved_url)
+                    if dashscope_http_url:
+                        # Cloud clones must not land in the local WebSocket voice bucket.
+                        config[url_key] = (
+                            dashscope_http_url if saved_url.lower().startswith(('ws://', 'wss://')) else saved_url
+                        )
+                        config[model_key] = str(core_cfg.get('ttsModelId') or '').strip()
+                        config[apikey_key] = str(core_cfg.get('ttsModelApiKey') or '').strip()
+                    continue
                 # follow_core / follow_assist URLs are readonly frontend-linked hints autofilled by
                 # static/js/api_key_settings.js: onCustomModelProviderChange, not evidence
                 # of user-selected custom deployments. Only omni/tts are affected:
