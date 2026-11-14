@@ -2851,13 +2851,16 @@ async def test_replacement_normalizes_character_slot(tmp_path):
 
 
 @pytest.mark.parametrize('mode', ['terminate', 'race'])
-def test_numeric_v2_exclusive_publication_is_atomic_across_processes(tmp_path, mode):
+def test_numeric_v2_exclusive_publication_is_atomic_across_processes(tmp_path, tmp_path_factory, mode):
     """A killed writer exposes no final file; racing writers never overwrite a winner."""
     from pathlib import Path
     import subprocess
     import sys
     import time
 
+    from tests.process_isolation import child_process_env
+
+    child_env = child_process_env(tmp_path_factory.mktemp('child-runtime-root'))
     worker = r'''
 import json, os, sys
 from pathlib import Path
@@ -2915,7 +2918,7 @@ except NumericV2SessionExistsError:
             # verbose child before publication. Files impose no pipe capacity.
             process = subprocess.Popen([sys.executable, '-c', worker, str(tmp_path), mode, str(marker), str(i)],
                 cwd=Path(__file__).resolve().parents[2], stdin=subprocess.PIPE,
-                stdout=stdout_log, stderr=stderr_log, text=True)
+                stdout=stdout_log, stderr=stderr_log, text=True, env=child_env)
             processes.append(process)
             # Cold imports may exceed 10 seconds on a fully loaded Windows
             # xdist runner; the publication/termination assertions stay exact.
