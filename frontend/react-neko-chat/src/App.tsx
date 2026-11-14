@@ -898,7 +898,7 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
   const audioGuideLocked = useGuideChatButtonLock();
   const target = !props.catLocalTextOnly && !props.theaterPresentation?.active ? props.audioMessageTarget : undefined;
   const fullChat = props.chatSurfaceMode === 'full';
-  const { messages: audioHistory, submit, onLoadOlder } = useChatAudioHistory(
+  const { messages: audioHistory, submit, onLoadOlder, loadOlderStatus } = useChatAudioHistory(
     target, props.userName || 'You', !fullChat,
   );
   const send = props.onComposerAudioMessage;
@@ -932,7 +932,8 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
   return (
     <ChatScreenVisibilityProvider messages={messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
-        ? <FullChatSurface {...surfaceProps} onLoadOlderRecordings={onLoadOlder} />
+        ? <FullChatSurface {...surfaceProps}
+          onLoadOlderRecordings={onLoadOlder} loadOlderRecordingsStatus={loadOlderStatus} />
         : <CompactChatApp {...surfaceProps} />}
       <NekoTooltipLayer />
     </ChatScreenVisibilityProvider>

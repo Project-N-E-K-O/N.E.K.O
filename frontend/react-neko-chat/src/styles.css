@@ -981,6 +981,14 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   cursor: pointer;
 }
 
+.message-list-load-older:disabled {
+  cursor: wait;
+}
+
+.message-list-load-older-error {
+  align-self: center;
+}
+
 .message-list::-webkit-scrollbar {
   width: 0;
   height: 0;

@@ -303,8 +303,8 @@ describe('App', () => {
     });
     vi.stubGlobal('fetch', fetchHistory);
     const messages = Array.from({ length: 51 }, (_, index) => parseChatMessage({
-      id: 'text-' + index, role: 'assistant', author: 'Neko', time: '12:00', createdAt: 200 + index,
-      blocks: [{ type: 'text', text: 'Reply ' + index }],
+      id: 'text-' + index, role: 'user', author: 'You', time: '12:00', createdAt: 200 + index,
+      blocks: [{ type: 'text', text: 'Message ' + index }],
     }));
     try {
       const { container } = render(<App chatSurfaceMode="full" audioMessageTarget="Yui" messages={messages} />);
@@ -313,14 +313,73 @@ describe('App', () => {
 
       await waitFor(() => expect(olderButton()).toBeInTheDocument());
       expect(playButtons()).toHaveLength(50);
-      expect(screen.queryByText('Reply 0')).not.toBeInTheDocument();
-      expect(screen.getByText('Reply 50')).toBeInTheDocument();
+      expect(screen.queryByText('Message 0')).not.toBeInTheDocument();
+      expect(screen.getByText('Message 50')).toBeInTheDocument();
+      expect(container.querySelector('[data-message-id="text-1"] .message-meta')).toBeInTheDocument();
+      expect(container.querySelector('[data-message-id="text-2"] .message-meta')).not.toBeInTheDocument();
 
       fireEvent.click(olderButton()!);
       await waitFor(() => expect(playButtons()).toHaveLength(100));
       fireEvent.click(olderButton()!);
       await waitFor(() => expect(playButtons()).toHaveLength(150));
       expect(olderButton()).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps a recording page request through a concurrent refresh and allows retry', async () => {
+    const row = (id: string, time: number) => ({
+      request_id: id, created_at: time, duration_ms: 500, state: 'sent', transcript: '',
+    });
+    let nextPageCalls = 0;
+    const fetchHistory = vi.fn(async (url: string, options: RequestInit) => {
+      if (!url.includes('&before=')) return Response.json({ messages: [row('latest', 2)], next_before: 2 });
+      nextPageCalls++;
+      if (nextPageCalls === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
+        });
+      }
+      if (nextPageCalls === 2) return new Response(null, { status: 503 });
+      return Response.json({ messages: [row('older', 1)], next_before: null });
+    });
+    vi.stubGlobal('fetch', fetchHistory);
+    const socket = new EventTarget();
+    try {
+      const { container } = render(<App chatSurfaceMode="full" audioMessageTarget="Yui" />);
+      const olderButton = () => screen.getByRole('button', { name: 'Load older recordings' });
+      await waitFor(() => expect(olderButton()).toBeEnabled());
+      act(() => { window.dispatchEvent(new CustomEvent('voice-input-socket-open', { detail: { socket } })); });
+      fireEvent.click(olderButton());
+      await waitFor(() => expect(nextPageCalls).toBe(1));
+      expect(screen.getByRole('button', { name: 'Loading...' })).toBeDisabled();
+      act(() => {
+        socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({
+          type: 'chat_audio_changed', character: 'Yui',
+        }) }));
+      });
+      expect(await screen.findByText('Load failed')).toHaveAttribute('role', 'alert');
+      expect(olderButton()).toBeEnabled();
+      fireEvent.click(olderButton());
+      await waitFor(() => expect(container.querySelector('[data-message-id="audio-message:older"]')).toBeInTheDocument());
+      expect(nextPageCalls).toBe(3);
+      expect(screen.queryByText('Load failed')).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('hides the recording pagination entry when the full chat screen is cleared', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      messages: [{ request_id: 'latest', created_at: 10, duration_ms: 500, state: 'sent', transcript: '' }],
+      next_before: 2,
+    })));
+    try {
+      render(<App chatSurfaceMode="full" audioMessageTarget="Yui" />);
+      await screen.findByRole('button', { name: 'Load older recordings' });
+      fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+      expect(screen.queryByRole('button', { name: 'Load older recordings' })).not.toBeInTheDocument();
     } finally {
       vi.unstubAllGlobals();
     }

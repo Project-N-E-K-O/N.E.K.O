@@ -4,6 +4,7 @@ import MessageBubble from './MessageBubble';
 import ScreenObservationExposure, { getScreenObservationAnchorIds } from './ScreenObservationExposure';
 import ThinkingDots from './ThinkingDots';
 import { i18n } from './i18n';
+import type { OlderRecordingsStatus } from './useChatAudioHistory';
 import { hasVisibleMessageContent, type ChatMessage, type MessageAction } from './message-schema';
 
 const MAX_DISPLAY_MESSAGES = 50;
@@ -15,6 +16,7 @@ type MessageListProps = {
   thinking?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
   onLoadOlderRecordings?: () => void;
+  loadOlderRecordingsStatus?: OlderRecordingsStatus;
   footer?: ReactNode;
   footerKey?: string;
 };
@@ -39,6 +41,7 @@ export default function MessageList({
   thinking = false,
   onAction,
   onLoadOlderRecordings,
+  loadOlderRecordingsStatus,
   footer,
   footerKey,
 }: MessageListProps) {
@@ -53,13 +56,19 @@ export default function MessageList({
     scrollable: false,
   });
 
-  const displayMessages = useMemo(() => {
+  const { displayMessages, previousVisibleMessage } = useMemo(() => {
     const visible = messages.filter(message => !isMessageHidden(message) && hasVisibleMessageContent(message));
     // Recording history is paginated separately and every loaded recording must remain reachable.
     const isRecording = (message: ChatMessage) => message.blocks.some(block => block.type === 'audio_message');
     const recent = new Set(visible.filter(message => !isRecording(message)).slice(-MAX_DISPLAY_MESSAGES));
-    return visible.filter(message => recent.has(message) || isRecording(message));
+    return {
+      displayMessages: visible.filter(message => recent.has(message) || isRecording(message)),
+      previousVisibleMessage: new Map(visible.map((message, index) => [message, visible[index - 1]])),
+    };
   }, [messages, isMessageHidden]);
+
+  const showLoadOlder = Boolean(onLoadOlderRecordings) && displayMessages.length > 0;
+  const loadingOlder = loadOlderRecordingsStatus === 'loading';
 
   const exposureAnchorIds = useMemo(
     () => getScreenObservationAnchorIds(displayMessages, messages),
@@ -147,7 +156,7 @@ export default function MessageList({
     }
 
     return () => observer.disconnect();
-  }, [observedMessageKey, footerKey, Boolean(onLoadOlderRecordings)]);
+  }, [observedMessageKey, footerKey, showLoadOlder]);
 
   useEffect(() => {
     updateFloatingScrollbar(false);
@@ -172,7 +181,7 @@ export default function MessageList({
     transform: `translateY(${scrollbarState.top}px)`,
   };
 
-  if (displayMessages.length === 0 && !thinking && !footer && !onLoadOlderRecordings) {
+  if (displayMessages.length === 0 && !thinking && !footer) {
     return (
       <div className="message-list-shell">
         <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
@@ -192,16 +201,23 @@ export default function MessageList({
   return (
     <div className="message-list-shell">
       <div className="message-list" ref={containerRef} aria-label={ariaLabel} onScroll={handleScroll}>
-        {onLoadOlderRecordings && (
-          <button type="button" className="message-list-load-older" onClick={onLoadOlderRecordings}>
-            {i18n('chat.audioHistoryOlder', 'Load older recordings')}
-          </button>
+        {showLoadOlder && (
+          <>
+            <button type="button" className="message-list-load-older" onClick={onLoadOlderRecordings}
+              disabled={loadingOlder} aria-busy={loadingOlder}>
+              {loadingOlder ? i18n('common.loading', 'Loading...') : i18n('chat.audioHistoryOlder', 'Load older recordings')}
+            </button>
+            {loadOlderRecordingsStatus === 'failed' && (
+              <span role="alert" className="message-list-load-older-error">{i18n('common.loadFailed', 'Load failed')}</span>
+            )}
+          </>
         )}
         {displayMessages.map((message, index) => (
           <MessageBubble
             key={message.id}
             message={message}
-            isGroupedWithPrevious={shouldGroupWithPrevious(message, displayMessages[index - 1])}
+            isGroupedWithPrevious={previousVisibleMessage.get(message) === displayMessages[index - 1]
+              && shouldGroupWithPrevious(message, displayMessages[index - 1])}
             failedStatusLabel={failedStatusLabel}
             onAction={onAction}
             exposure={exposureAnchorIds.has(message.id)
