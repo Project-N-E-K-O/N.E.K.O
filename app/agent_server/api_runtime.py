@@ -1003,7 +1003,8 @@ async def set_browser_settings(payload: Dict[str, Any]):
     # still say it answered) nothing is said for it, as in
     # ``/browser_use/availability``.
     probe = Modules.model_probe
-    configured = _check_agent_api_gate().get("ready") is True
+    # In a worker thread: it reads the configuration from the disk.
+    configured = (await asyncio.to_thread(_check_agent_api_gate)).get("ready") is True
     if configured and probe is not None and getattr(probe, "init_ok", False):
         dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
         _set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)

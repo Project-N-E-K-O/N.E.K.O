@@ -1029,6 +1029,9 @@ async def test_shutdown_kills_the_browser_though_an_earlier_step_takes_all_the_t
         # process about now), and the browser is killed all the same, off the event loop.
         assert browser.closes == 0 and not shutting_down.done()
         assert len(killed_in) == 1 and killed_in[0] is not threading.current_thread()
+        # Well past that time by the clock the shutdown reads as well: it moves in steps
+        # (of 15 ms on Windows) and may lag the timer that just fired by a few thousandths.
+        await asyncio.sleep(0.1)
     finally:
         stuck.set()
     await asyncio.wait_for(shutting_down, 10.0)
@@ -1235,3 +1238,31 @@ async def test_saving_the_browser_settings_does_not_speak_for_a_model_that_is_no
     told = await _save_browser_settings(monkeypatch, {"executable": str(portable)}, gate=GATE_NOT_CONFIGURED)
 
     assert modules.capability_cache["browser_use"] == not_configured and told == []
+
+
+async def test_saving_the_browser_settings_reads_the_configuration_off_the_event_loop(modules, search, tmp_path, monkeypatch):
+    import threading
+
+    asked_in: list[threading.Thread] = []
+
+    def gate() -> dict[str, Any]:
+        asked_in.append(threading.current_thread())
+        return dict(GATE_READY)
+
+    async def close_browser(**options: Any) -> None:
+        return None
+
+    async def status_update(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(api_runtime, "_check_agent_api_gate", gate)
+    monkeypatch.setattr(api_runtime, "_close_browser", close_browser)
+    monkeypatch.setattr(api_runtime, "_emit_agent_status_update", status_update)
+    monkeypatch.setattr(capabilities._shared.Modules, "_background_tasks", set())
+    modules.model_probe = Probe(init_ok=True)
+
+    await api_runtime.set_browser_settings({"headless": True})
+    await asyncio.gather(*list(capabilities._shared.Modules._background_tasks))
+
+    # It reads files: on the event loop, a slow disk would hold up every other request meanwhile.
+    assert len(asked_in) == 1 and asked_in[0] is not threading.current_thread()
