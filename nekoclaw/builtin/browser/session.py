@@ -341,6 +341,12 @@ class BrowserSession:
         # Closing a browser whose start was cancelled; the next start and
         # ``close`` wait for it.
         self._abandoned: asyncio.Future[None] | None = None
+        # A browser a start has brought up and does not drive yet, and the
+        # ones a start that was stopped left for a task to close. Nothing
+        # else knows of them, and ``kill`` must: a shutdown has no time to
+        # wait for either.
+        self._reached: launcher.RunningBrowser | None = None
+        self._unheld: list[launcher.RunningBrowser] = []
         # The pages (by target id) on which handles on elements were taken
         # and not let go of yet.
         self._handles: set[str] = set()
@@ -409,6 +415,19 @@ class BrowserSession:
                     finally:
                         if self._starting_stop is stop:
                             self._starting_stop = None
+                    # Known to ``kill`` from here on, and only then asked
+                    # whether the start was told to stop meanwhile: in that
+                    # order, a stop that comes at this very moment finds the
+                    # browser one way or the other.
+                    self._reached = browser
+                    if stop.is_set():
+                        # It was up before the start heard of the stop. A
+                        # start that was stopped does not end with a browser.
+                        try:
+                            await asyncio.to_thread(launcher.kill, browser)
+                        finally:
+                            self._reached = None
+                        raise launcher.BrowserStartError(f"{install.name} was not started: the start was stopped")
             except launcher.BrowserStartError as exc:
                 raise BrowserError(str(exc)) from exc
         held = self._browser
@@ -424,7 +443,7 @@ class BrowserSession:
             except asyncio.CancelledError:
                 # The one that was just reached is held by nobody yet; the
                 # one before it stays held, and is closed when asked again.
-                self._abandoned = asyncio.ensure_future(self._close_unheld(browser))
+                self._abandon(browser)
                 raise
             except Exception:  # noqa: BLE001 - the new one is driven all the same
                 logger.warning("closing the browser that was driven before failed", exc_info=True)
@@ -438,14 +457,18 @@ class BrowserSession:
             )
         except asyncio.CancelledError:
             # Nothing holds the browser yet.
-            self._abandoned = asyncio.ensure_future(self._close_unheld(browser))
+            self._abandon(browser)
             raise
         except Exception as exc:  # noqa: BLE001 - whatever went wrong, there is no browser to drive
-            await launcher.close(browser)
+            try:
+                await launcher.close(browser)
+            finally:
+                self._reached = None
             hint = " Allow the connection in the browser's prompt and try again." if attach else ""
             raise BrowserError(f"The browser could not be reached ({type(exc).__name__}).{hint}") from exc
         self._connection = connection
         self._browser = browser
+        self._reached = None
         # One that could not be closed earlier and is driven again (found
         # running on its profile) is this one now, and closed as this one.
         self._unclosed = [left for left in self._unclosed if left.user_data_dir != browser.user_data_dir]
@@ -542,14 +565,26 @@ class BrowserSession:
             browser = await starting
         except Exception:  # noqa: BLE001 - it did not start: there is nothing to close
             return
+        self._unheld.append(browser)
         await self._close_unheld(browser)
 
+    def _abandon(self, browser: launcher.RunningBrowser) -> None:
+        """Leave a browser that is held by nobody to a task that closes it."""
+        # Before the task has its first turn: ``kill`` knows of it all along.
+        self._unheld.append(browser)
+        if self._reached is browser:
+            self._reached = None
+        self._abandoned = asyncio.ensure_future(self._close_unheld(browser))
+
     async def _close_unheld(self, browser: launcher.RunningBrowser) -> None:
-        """Close a browser that was started and is held by nobody; never raises."""
+        """Close a browser that was started and is held by nobody (one of ``_unheld``); never raises."""
         try:
             await launcher.close(browser)
         except Exception:  # noqa: BLE001 - nothing more can be done about it
             logger.warning("closing a browser whose start was cancelled failed", exc_info=True)
+        finally:
+            if browser in self._unheld:
+                self._unheld.remove(browser)
 
     async def _settle_abandoned(self) -> None:
         """Wait until a browser left by a start that was cancelled has been closed."""
@@ -670,9 +705,11 @@ class BrowserSession:
         is asked to close and takes its time would outlive the process.
         """
         self.stop_starting()
-        for browser in [self._browser, *self._unclosed]:
-            if browser is None:
+        seen: list[launcher.RunningBrowser] = []
+        for browser in [self._browser, self._reached, *self._unclosed, *self._unheld]:
+            if browser is None or any(browser is other for other in seen):
                 continue
+            seen.append(browser)
             try:
                 launcher.kill(browser)
             except Exception:  # noqa: BLE001 - nothing more can be done about it

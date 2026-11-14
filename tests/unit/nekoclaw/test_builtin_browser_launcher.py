@@ -1167,9 +1167,9 @@ def test_a_start_that_is_told_to_stop_gives_up_at_once_and_takes_what_it_started
     with pytest.raises(BrowserStartError, match="Google Chrome was not started: the start was stopped"):
         launcher._start(CHROME, str(starter.profile), False, (), stop)
     assert len(starter.started) == 1
-    # The child is alive, so it is the browser: killed, without a look at every process for
-    # one on the profile; and none of the wait a browser is given.
-    assert starter.killed == [4321]
+    # The child is killed, and whatever runs on the profile as well: stopped at any moment of
+    # the coming up, the child may just have handed over. None of the wait a browser is given.
+    assert starter.killed == [4321, 8765]
     assert starter.clock.sleeps == []
 
 
@@ -1285,3 +1285,28 @@ def test_a_profile_directory_that_cannot_be_made_is_a_start_that_failed(starter:
     with pytest.raises(BrowserStartError, match="Google Chrome could not be started: its profile directory cannot be made"):
         launcher._start(CHROME, str(starter.profile), False, ())
     assert starter.started == []
+
+
+def test_a_start_told_to_stop_takes_along_whoever_the_started_process_handed_over_to(starter: Starter) -> None:
+    import threading
+
+    stop = threading.Event()
+    # The process that was started has handed over to another one (as Edge does) and has not exited yet.
+    starter.process_on_profile = 7002
+    starter.clock.on_sleep.append(lambda count: stop.set() if count == 2 else None)
+
+    with pytest.raises(BrowserStartError, match="was not started: the start was stopped"):
+        launcher._start(CHROME, str(starter.profile), False, (), stop)
+
+    # The one it handed over to is not among what it started: left alone, it would run on with nobody to close it.
+    assert starter.killed == [4321, 7002]
+
+
+def test_a_start_that_ran_out_of_time_does_not_look_at_every_process_while_the_started_one_runs(starter: Starter) -> None:
+    starter.process_on_profile = 7002
+
+    with pytest.raises(BrowserStartError):
+        launcher._start(CHROME, str(starter.profile), False, ())
+
+    # Long past the moment of handing over: what was started is the browser.
+    assert starter.killed == [4321]

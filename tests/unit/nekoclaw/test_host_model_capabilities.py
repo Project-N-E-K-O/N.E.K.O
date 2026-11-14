@@ -270,3 +270,13 @@ def test_the_case_of_the_scheme_and_the_host_is_dropped_and_that_of_the_path_is_
     # An address without a scheme, or none at all.
     assert model_key("LocalHost:11434/Api", "m") == "localhost:11434/Api|m"
     assert model_key(None, None) == "|" and model_key("  ", " m ") == "|m"
+
+
+def test_an_address_within_an_address_does_not_move_where_the_scheme_ends() -> None:
+    # What follows the path is part of the address as written, upper case included.
+    key = model_key("HTTPS://Gateway.Example.com/Route?Upstream=HTTPS://API.Example.com/V1", "m")
+    assert key == "https://gateway.example.com/Route?Upstream=HTTPS://API.Example.com/V1|m"
+    # Without a scheme of its own, one further on is not taken for it.
+    assert model_key("Gateway.Example.com/Route?Upstream=https://API.Example.com", "m") == (
+        "gateway.example.com/Route?Upstream=https://API.Example.com|m"
+    )

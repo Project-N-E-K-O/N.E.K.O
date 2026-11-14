@@ -63,7 +63,11 @@ def model_key(base_url: Any, model: Any) -> str:
     is not, and two paths that differ by case may be two services.
     """
     address = str(base_url or "").strip().rstrip("/")
-    scheme, separator, rest = address.rpartition("://")
+    # The first "://": a later one belongs to the path or to what follows it.
+    scheme, separator, rest = address.partition("://")
+    if not separator or "/" in scheme:
+        # No scheme: the address begins with the host.
+        scheme, separator, rest = "", "", address
     authority, slash, path = rest.partition("/")
     # Before the "@", if there is one: a name and a password, kept as written.
     credentials, at, host = authority.rpartition("@")

@@ -390,7 +390,7 @@ def _start(
     deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if stop is not None and stop.is_set():
-            _kill_started(process, user_data_dir)
+            _kill_started(process, user_data_dir, handed_over_too=True)
             raise BrowserStartError(f"{install.name} was not started: the start was stopped")
         active = read_active_port(user_data_dir)
         if active is not None and _port_open(active[0]):
@@ -412,17 +412,24 @@ def _start(
     )
 
 
-def _kill_started(process: Any, user_data_dir: str) -> None:
+def _kill_started(process: Any, user_data_dir: str, *, handed_over_too: bool = False) -> None:
     """Take away what a start brought up that will not be used. Blocking.
 
     Whatever was started on the profile must not stay behind: the process
     that was started, or, when that one has exited (some browsers hand over
     to another process), whatever runs on the profile now. The profile is
     only searched then: finding it means looking at every process.
+
+    ``handed_over_too`` is for a start that was told to stop, which may be at
+    any moment of the coming up: the process that was started may have handed
+    over already and not have exited yet, and the one it handed over to is
+    not among what it started. Both are taken then. (A start that ran out of
+    its time is long past that moment.)
     """
-    if process.poll() is None:
+    started_runs = process.poll() is None
+    if started_runs:
         kill_tree(process.pid)
-    else:
+    if handed_over_too or not started_runs:
         kill_tree(browser_process_on(user_data_dir))
 
 

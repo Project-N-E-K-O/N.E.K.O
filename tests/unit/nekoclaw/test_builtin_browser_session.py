@@ -3331,3 +3331,98 @@ async def test_a_call_stopped_while_one_modifier_comes_up_still_lets_the_other_c
         held.release()
         world.browser.gates.remove(held)
     assert _key_events(world, sent)[-2:] == [("keyUp", "Shift"), ("keyUp", "Control")]
+
+
+# ---------------------------------------------------------------------------
+# killing reaches a browser that is not driven yet, or was left to be closed
+# ---------------------------------------------------------------------------
+
+
+async def test_killing_takes_a_browser_that_has_come_up_and_is_not_driven_yet(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    # The browser is up; the session is still reaching it.
+    world.connect_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    try:
+        await _until(lambda: world.connected)
+        assert session._browser is None and not starting.done()
+
+        session.kill()
+
+        # A shutdown has no time to wait for the start to get as far as driving it.
+        assert killed == [8765]
+    finally:
+        world.connect_gate.set()
+    await asyncio.wait_for(starting, 5.0)
+    assert session._reached is None
+
+
+async def test_a_start_that_was_told_to_stop_as_the_browser_came_up_does_not_end_with_a_browser(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    # The browser was up before its start heard of the stop, and is handed back all the same.
+    world.launch_gate = asyncio.Event()
+    world.launch_ignores_stop = True
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: world.launched)
+    session.stop_starting()
+    world.launch_gate.set()
+
+    with pytest.raises(BrowserError, match="was not started: the start was stopped"):
+        await asyncio.wait_for(starting, 5.0)
+
+    # Taken away as the start itself would have, and not connected to.
+    assert killed == [8765] and world.connected == []
+    assert not session.connected and session._reached is None and session.holds_a_browser is False
+
+
+async def test_killing_takes_a_browser_a_stopped_start_left_to_be_closed(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    world.connect_gate = asyncio.Event()
+    # Closing it takes its time: longer than a shutdown has.
+    world.close_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    try:
+        await _until(lambda: world.connected)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(starting, 5.0)
+        # Held by nobody, and being closed by a task of its own.
+        assert session._browser is None and len(session._unheld) == 1
+
+        session.kill()
+
+        assert killed == [8765]
+    finally:
+        world.connect_gate.set()
+        world.close_gate.set()
+    await _until(lambda: session._unheld == [])
+    # Closed for good, it is not killed again.
+    killed.clear()
+    session.kill()
+    assert killed == []
+
+
+async def test_a_browser_is_killed_once_however_many_ways_it_is_known(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    await session.start()
+    session._unclosed.append(session._browser)
+
+    session.kill()
+
+    assert killed == [8765]

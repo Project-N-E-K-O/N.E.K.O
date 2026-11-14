@@ -1140,8 +1140,11 @@ def test_a_probe_has_lost_a_race_only_when_it_failed_and_a_task_is_using_the_too
 # ---------------------------------------------------------------------------
 
 
-async def _save_browser_settings(monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> list[str]:
+async def _save_browser_settings(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any], *, gate: dict[str, Any] = GATE_READY
+) -> list[str]:
     told: list[str] = []
+    monkeypatch.setattr(api_runtime, "_check_agent_api_gate", lambda: dict(gate))
 
     async def close_browser(**options: Any) -> None:
         return None
@@ -1215,3 +1218,20 @@ async def test_shutdown_kills_a_browser_that_was_asked_in_time_and_could_not_be_
 
     assert browser.closes == 1 and killed == [1]
     assert process[-1] == "status"
+
+
+async def test_saving_the_browser_settings_does_not_speak_for_a_model_that_is_no_longer_configured(
+    modules, search, tmp_path, monkeypatch
+):
+    portable = tmp_path / "portable" / "chrome.exe"
+    portable.parent.mkdir()
+    portable.write_bytes(b"")
+    search.found = []
+    # The address of the model was taken away; the probe of the one before still says it answered.
+    modules.model_probe = Probe(init_ok=True)
+    not_configured = {"ready": False, "reason": "AGENT_ENDPOINT_NOT_CONFIGURED"}
+    modules.capability_cache["browser_use"] = dict(not_configured)
+
+    told = await _save_browser_settings(monkeypatch, {"executable": str(portable)}, gate=GATE_NOT_CONFIGURED)
+
+    assert modules.capability_cache["browser_use"] == not_configured and told == []

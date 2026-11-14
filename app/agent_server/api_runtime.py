@@ -998,9 +998,13 @@ async def set_browser_settings(payload: Dict[str, Any]):
     # the browser tools depend on, and that may just have changed: said at
     # once. Left as it was (no browser found, from before one was named
     # here), the tools would stay refused until something asked again. With
-    # a model that has not answered, the check that follows its answer says.
+    # a model that has not answered, the check that follows its answer says;
+    # and with none configured any more (the probe of the one before may
+    # still say it answered) nothing is said for it, as in
+    # ``/browser_use/availability``.
     probe = Modules.model_probe
-    if probe is not None and getattr(probe, "init_ok", False):
+    configured = _check_agent_api_gate().get("ready") is True
+    if configured and probe is not None and getattr(probe, "init_ok", False):
         dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
         _set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)
         _bump_state_revision()
