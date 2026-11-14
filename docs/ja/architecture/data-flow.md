@@ -60,6 +60,7 @@ Client                         Main Server                    LLM client
 | `status` | 構造化 status/error |
 | `expression`、`focus_state`、`focus_charge` | キャラクター表示状態 |
 | `agent_status_update`、`agent_task_update`、`agent_notification` | Agent 状態とタスク配信 |
+| `agent_builtin_activity` | タスクがキーボード・マウスまたはブラウザーを使い始めた／使い終えた |
 | `request_screenshot`、`capture_bridge_request` | クライアント capture 要求 |
 | `session_ended_by_server`、`reload_page`、`catgirl_switched` | 復旧やキャラクター変更 |
 | `pong` | heartbeat response |

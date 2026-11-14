@@ -271,7 +271,7 @@ jobs:
         # Top-level packages have a strict ordering — only higher layers may
         # depend on lower ones (config/steamworks → utils →
         # knowledge/memory/main_logic/services → main_routers
-        # → plugin → brain/nekoclaw → app/launcher_core). The walker descends into
+        # → plugin → nekoclaw → app/launcher_core). The walker descends into
         # function bodies and string-form dynamic imports
         # (importlib.import_module / __import__), so deferred / conditional
         # imports cannot smuggle in a layer inversion or cycle. FORBIDDEN_EDGES

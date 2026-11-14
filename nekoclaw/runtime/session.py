@@ -380,6 +380,10 @@ class TaskAgentSession(SessionInbox):
         self._host = host
         self._emit_sink = emit
         self._model = model if model is not None else LLMClientProvider(spec.model)
+        if isinstance(self._model, LLMClientProvider):
+            # The provider may turn out to take no pictures; the host is told
+            # so it can remember that for the sessions it starts later.
+            self._model.on_images_refused = self._images_refused
         self._platform = platform if platform is not None else sys.platform
         self._clock = clock if clock is not None else (lambda: datetime.now().astimezone())
         self._seq = 0
@@ -541,6 +545,7 @@ class TaskAgentSession(SessionInbox):
             new_entry_id=new_entry_id,
             fixed_tokens=await acount_tokens(fixed_text),
             image_retention=dict(spec.image_retention),
+            image_pools=dict(spec.image_pools),
         )
         if spec.goal is not None and self.goals.current is None:
             self.goals.create(spec.goal.objective, spec.goal.max_rounds)
@@ -582,6 +587,14 @@ class TaskAgentSession(SessionInbox):
             self._emit_sink(protocol.dump(event))
         except Exception:  # noqa: BLE001 - a broken sink must not break the session
             logger.exception("the event sink failed")
+
+    def _images_refused(self, said: str = "", about_model: bool = True) -> None:
+        """The provider takes no pictures (at all, or not this session's); the session goes on without them."""
+        self._emit(
+            protocol.ModelCapabilityEvent(
+                session_id=self.session_id, supports_images=False, reason=str(said)[:300], lasting=bool(about_model)
+            )
+        )
 
     def _emit_report(self, payload: dict[str, Any]) -> None:
         self._emit(protocol.ReportEvent(session_id=self.session_id, **payload))

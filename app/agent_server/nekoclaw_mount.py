@@ -24,8 +24,9 @@ happens on the first dispatch.
 What this process gives the host:
 
 * the switches (master switch, plugin switch);
-* the built-in capabilities, keyboard-and-mouse and browser control
-  (``nekoclaw_builtins``);
+* the built-in tools, keyboard-and-mouse and browser control
+  (``nekoclaw_builtins``), and a listener told when a commission begins and
+  stops using them;
 * ``send_report``: every report the host has stored in its outbox goes to the
   main server over the event bridge. How a commission ended keeps the shape of
   a ``task_result`` event. A question for the user, a correction and a late
@@ -312,13 +313,14 @@ def mount_nekoclaw_host(change_token: Optional[Callable[[], Any]] = None) -> Non
     try:
         from nekoclaw.host import mount
 
-        from .nekoclaw_builtins import provider
+        from .nekoclaw_builtins import on_builtin_activity, provider
 
         mount.configure(
             enabled=nekoclaw_on,
             plugins_enabled=_plugins_enabled,
             change_token=change_token,
             builtins=provider,
+            on_builtin_activity=on_builtin_activity,
             send_report=send_report,
             on_progress=_on_progress,
             on_commission=_on_commission_change,

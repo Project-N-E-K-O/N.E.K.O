@@ -22,6 +22,7 @@
     ├─ plugin_short_descriptions.json
     │                            short descriptions written for plugins
     │                            whose manifest has none
+    ├─ model_capabilities.json   models known not to take pictures
     └─ task_agents/projects/_daily/sessions/<commission id>/
         ├─ transcript.jsonl      written by the runtime
         ├─ outputs/              large tool output, written by the runtime
@@ -41,6 +42,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 DEFAULT_PROJECT = "_daily"
+
+# What was said in a session, in its directory. The runtime writes it and
+# names it (``nekoclaw.runtime.session.TRANSCRIPT_FILE``); the host only
+# looks whether it is there, and a test keeps the two names the same.
+TRANSCRIPT_NAME = "transcript.jsonl"
 
 # Separators, drive and stream colons, characters Windows forbids in a name,
 # and control characters.
@@ -106,6 +112,9 @@ class HostPaths:
 
     def short_descriptions_json(self) -> Path:
         return self.root() / "plugin_short_descriptions.json"
+
+    def model_capabilities_json(self) -> Path:
+        return self.root() / "model_capabilities.json"
 
     def session_dir(self, commission_id: str, project: str | None = None) -> Path:
         """Return a commission's session directory; raises ValueError for an unsafe name."""

@@ -34,7 +34,7 @@ The internal name `OmniOfflineClient` refers to the **non-realtime text Chat Com
 | ASR, TTS, and voice registration | Depends on provider | Often | Selected local TTS or vLLM-Omni paths exist; requirements differ |
 | Steam, Workshop, and Steam Cloud | Steam services | Yes | Unavailable offline |
 | Browser, feeds, trends, and online content | External sources | Yes | The feature cannot fetch current external content without network access |
-| Remote Agent channels | Channel-specific services | Often | Computer Use may act locally, but assessment and model calls can still be remote |
+| Remote Agent channels | Channel-specific services | Often | Keyboard-and-mouse and browser control act on the local machine, but every step is decided by a model call that can still be remote |
 
 ## What remains local by default
 
@@ -55,6 +55,7 @@ Local storage does not by itself determine where model processing occurs.
 - free API requests forwarded through the current N.E.K.O service path;
 - speech samples or text sent to a selected cloud ASR, TTS, or voice service;
 - user-triggered Steam Cloud or Workshop content;
+- screenshots of the desktop and the content of web pages, which the keyboard-and-mouse and browser tools return to the Agent model while a task uses them;
 - online feeds, browser requests, and remote Agent work.
 
 See [Where does N.E.K.O send conversations and memory?](./data-and-privacy) for the data-flow view.

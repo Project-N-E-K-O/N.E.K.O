@@ -176,6 +176,48 @@ def test_the_prompt_has_no_unrendered_placeholders_and_no_banned_words() -> None
             assert banned not in text
 
 
+def test_the_desktop_and_browser_paragraphs_match_the_snapshot_and_appear_only_with_their_tools() -> None:
+    # The keyboard-and-mouse tool and the browser tools are not tools of the
+    # runtime: the host's gateway offers them, by these names.
+    from config.prompts.prompts_nekoclaw_builtin import (
+        BROWSER_SNAPSHOT_TOOL_NAME,
+        BROWSER_TOOL_NAMES,
+        COMPUTER_TOOL_NAME,
+    )
+
+    variant = dict(VARIANTS["win32-full"])
+    platform, workdir = variant.pop("platform"), variant.pop("workdir")
+    tools, without, _schemas = _build(platform, workdir, variant.pop("capabilities"), **variant)
+    own = [tool.name for tool in tools]
+    del variant["images"]
+
+    def prompt(*offered_by_the_gateway: str) -> str:
+        return build_system_prompt(
+            tool_names=[*own, *offered_by_the_gateway], workdir=workdir, platform=platform, **variant
+        )
+
+    with_both = prompt(COMPUTER_TOOL_NAME, *BROWSER_TOOL_NAMES)
+    _check(SNAPSHOTS / "system-prompt.win32-builtin-tools.expected.md", with_both + "\n")
+
+    paragraphs = {name: text for name, _triggers, text in texts.TOOL_GUIDANCE_SECTIONS}
+    computer, browser = "\n\n" + paragraphs["computer"], "\n\n" + paragraphs["browser"]
+    assert prompt() == without
+    # Two paragraphs more than without the tools, each there once and nothing else changed.
+    assert with_both.count(computer) == 1 and with_both.count(browser) == 1
+    assert with_both.replace(computer, "").replace(browser, "") == without
+    # Each comes with its own tool, whatever else is offered.
+    assert prompt(COMPUTER_TOOL_NAME) == with_both.replace(browser, "")
+    assert prompt(BROWSER_SNAPSHOT_TOOL_NAME) == with_both.replace(computer, "")
+    assert prompt(*BROWSER_TOOL_NAMES) == with_both.replace(computer, "")
+    # Only the tool a paragraph is tied to brings it: other browser tools on
+    # their own do not, nor do names that merely look alike.
+    for name in ("browser_take_screenshot", "browser_click", "browser", "computer_use", "plugin__computer__run"):
+        assert prompt(name) == without
+    # Without a single tool of the runtime's own they still follow theirs.
+    bare = build_system_prompt(tool_names=[COMPUTER_TOOL_NAME, BROWSER_SNAPSHOT_TOOL_NAME], workdir="/w", platform="linux")
+    assert computer in bare and browser in bare
+
+
 def test_dsh_paragraph_variants_follow_the_offered_tools() -> None:
     def prompt(*names: str) -> str:
         return build_system_prompt(tool_names=names, workdir="/w", platform="linux")

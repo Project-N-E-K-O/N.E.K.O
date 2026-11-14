@@ -87,12 +87,6 @@ AGENT_PLUGIN_FULL_MAX_TOKENS = 500
 - Purpose: return plugin_id + plugin_args + reason.
 - Upstream: LLM output."""
 
-# ---- Agent: ComputerUse ----
-COMPUTER_USE_MAX_TOKENS = 6000
-"""max_completion_tokens for the main ComputerUse call.
-- Purpose: cap VLM thought + action + code output.
-- Upstream: LLM output."""
-
 LLM_PING_MAX_TOKENS = 5
 """max_completion_tokens for LLM health checks.
 - Purpose: connectivity pings need only return "ok".

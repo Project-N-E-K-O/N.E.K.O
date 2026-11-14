@@ -175,6 +175,10 @@ def test_main_agent_router_expected_proxy_endpoints_exist():
         "/computer_use/availability",
         "/browser_use/availability",
         "/user_plugin/availability",
+        # The banner over the desktop or the browser window, and the browser settings.
+        "/builtin/activity",
+        "/builtin/stop",
+        "/builtin/browser/settings",
     }:
         assert expected in paths
 
@@ -354,6 +358,9 @@ def test_agent_server_expected_event_driven_endpoints_exist():
         "/nekoclaw/dispatch",
         "/nekoclaw/query",
         "/nekoclaw/brief",
+        "/builtin/activity",
+        "/builtin/stop",
+        "/builtin/browser/settings",
     }:
         assert expected in paths
 
@@ -2370,10 +2377,10 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
 
     assert 'command == "set_agent_enabled"' in func_src
     assert "gate = _check_agent_api_gate()" in func_src
-    assert "adapter_refreshed = _try_refresh_computer_use_adapter(force=True)" in func_src
-    assert "if not adapter_refreshed and Modules.computer_use is not None:" in func_src
-    assert "falling back to existing adapter" in func_src
-    assert "if Modules.computer_use is not None:" in func_src
+    assert "adapter_refreshed = _try_refresh_model_probe(force=True)" in func_src
+    assert "if not adapter_refreshed and Modules.model_probe is not None:" in func_src
+    assert "falling back to the existing one" in func_src
+    assert "if Modules.model_probe is not None:" in func_src
     assert '_fire_agent_llm_connectivity_check(queue=True)' in func_src
     assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
     assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
@@ -2384,7 +2391,7 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
     assert '"agent_api_gate": gate' in func_src
 
 
-def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
+def test_agent_llm_check_settles_browser_use_instead_of_leaving_it_pending():
     source, func = _find_agent_server_function(
         "_fire_agent_llm_connectivity_check", ast.AsyncFunctionDef
     )
@@ -2392,13 +2399,18 @@ def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
 
     # capabilities.py accesses the state bag as ``_shared.Modules.<attr>``
     # (single-owner rule of the package split).
-    assert "adapter = _shared.Modules.computer_use" in func_src
-    assert "if adapter is None:" in func_src
+    assert "probe = _shared.Modules.model_probe" in func_src
+    assert "if probe is None:" in func_src
     assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
     assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    assert "bu = _shared.Modules.browser_use" in func_src
-    assert "if bu is None:" in func_src
-    assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
+    # Once the model answers, the browser tools are as ready as a browser can
+    # be found on this computer; nothing has to be loaded for them.
+    assert "await asyncio.to_thread(_browser_dependency_status)" in func_src
+    assert (
+        '_set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)'
+        in func_src
+    )
+    assert "AGENT_BU_MODULE_NOT_LOADED" not in func_src
 
 
 def test_agent_ui_v2_free_warning_accepts_command_gate_shape():

@@ -275,37 +275,7 @@ jobs:
                 json.dump(data, f, ensure_ascii=False, indent=2)
               print(f'Created {path}')
           "
-          # Copy browser_use prompt .md templates from installed package
-          mkdir -p data/browser_use_prompts
-          VENV_PYTHON=".venv/bin/python"
-          if [ -f ".venv/Scripts/python.exe" ]; then
-            VENV_PYTHON=".venv/Scripts/python.exe"
-          fi
-          $VENV_PYTHON -c "
-          import shutil
-          from pathlib import Path
-          import browser_use.agent.system_prompts as sp
-          src = Path(sp.__file__).parent
-          dst = Path('data/browser_use_prompts')
-          dst.mkdir(parents=True, exist_ok=True)
-          bad = [md.name for md in src.glob('*.md') if not md.name.isascii()]
-          if bad:
-              # Non-ASCII basenames under Contents/MacOS/ make codesign emit a
-              # hex-literal identifier and the whole bundle then fails to seal.
-              # scripts/check_no_nonascii_asset_names.py cannot see this one:
-              # data/ is gitignored and the analyze job installs no dependencies,
-              # so the names only exist here, right after generation.
-              raise SystemExit(
-                  'non-ASCII browser_use prompt template name(s), which break '
-                  f'macOS signing: {bad}'
-              )
-          for md in src.glob('*.md'):
-              shutil.copy2(md, dst / md.name)
-              print(f'Copied {md.name}')
-          "
-          echo "=== browser_use_prompts ==="
-          ls -la data/browser_use_prompts/
-          echo "Default config files and directories ready."
+          echo "Default config files ready."
 
       # --- Platform-specific system dependencies ---
       - name: Install Linux system dependencies
@@ -338,27 +308,6 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install ccache portaudio || true
-
-      # --- Pre-install Playwright Chromium for bundle ---
-      - name: Install Playwright Chromium (Unix)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          mkdir -p playwright_browsers
-          PLAYWRIGHT_BROWSERS_PATH="$(pwd)/playwright_browsers" \
-            .venv/bin/python -m playwright install chromium || \
-            echo "[WARNING] Playwright Chromium install failed; will download on first run."
-
-      - name: Install Playwright Chromium (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "playwright_browsers")) { New-Item -ItemType Directory -Path "playwright_browsers" }
-          $env:PLAYWRIGHT_BROWSERS_PATH = "${{ github.workspace }}\playwright_browsers"
-          .venv\Scripts\python.exe -m playwright install chromium
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Playwright Chromium install failed; will download on first run."
-          }
 
       # --- Prepare local embedding model assets (cross-platform) ---
       # Mirrors the upstream Hugging Face repo at a pinned revision into the
@@ -508,7 +457,6 @@ jobs:
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/browser_use_prompts=data/browser_use_prompts"
           # Plugin manager UI (vite dist; gitignored)
           if [ -d "frontend/plugin-manager/dist" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist"
@@ -517,11 +465,6 @@ jobs:
           fi
           # Built-in plugin data is installed from the filtered stage after
           # compilation. Nuitka intentionally refuses to treat .py as data.
-          # macOS: skip bundling playwright_browsers (Chromium .app path has spaces
-          # that break Nuitka's xattr call; browser will download on first run)
-          if [[ "$RUNNER_OS" != "macOS" ]]; then
-            NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=playwright_browsers=playwright_browsers"
-          fi
           if [ -d "data/tiktoken_cache" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/tiktoken_cache=data/tiktoken_cache"
           fi
@@ -552,7 +495,6 @@ jobs:
           # The generated launcher carries selective --nofollow-import-to
           # directives derived from each plugin's [tool.neko.build] rules.
           NUITKA_OPTS="$NUITKA_OPTS --include-package=plugin"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=brain"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_logic"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=main_routers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=services"
@@ -562,9 +504,6 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=nekoclaw"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=utils"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=steamworks"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=browser_use_sdk"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package=playwright"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
@@ -600,10 +539,6 @@ jobs:
           # Package data
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=audiolab"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=pyrnnoise"
-          NUITKA_OPTS="$NUITKA_OPTS --include-package-data=browser_use"
-          # NOTE: do NOT use --include-package-data=playwright here,
-          # Nuitka's built-in playwright plugin handles driver/node automatically
-          # and adding package-data would conflict with the exe at the same path.
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=jinja2"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=certifi"
           NUITKA_OPTS="$NUITKA_OPTS --include-package-data=bilibili_api"
@@ -613,6 +548,9 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pyrnnoise"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=matplotlib"
           NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=pytest"
+          # Playwright is a test dependency: plugin/tests/e2e imports it and the
+          # build environment installs it with the dev group. Keep it out of the bundle.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=playwright"
 
           # Plugin & CI flags
           NUITKA_OPTS="$NUITKA_OPTS --enable-plugin=dill-compat"
@@ -683,11 +621,9 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/surveys=config/surveys
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/browser_use_prompts=data/browser_use_prompts
           if not exist "frontend\plugin-manager\dist" echo [WARNING] frontend\plugin-manager\dist missing; /ui will be empty in bundle.
           if exist "frontend\plugin-manager\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist
           rem Built-in plugin payload is copied from the filtered stage after Nuitka.
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
           if exist "data\tiktoken_cache" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/tiktoken_cache=data/tiktoken_cache
           if exist "data\embedding_models" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/embedding_models=data/embedding_models
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=main_logic/asr_client/endpointing/models=main_logic/asr_client/endpointing/models
@@ -709,7 +645,6 @@ jobs:
           rem plugin's [tool.neko.build] rules while --include-package compiles
           rem the remaining dynamically imported built-in modules.
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=plugin
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=brain
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_logic
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=main_routers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=services
@@ -735,11 +670,6 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pyrnnoise
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=audiolab
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=pyrnnoise
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=browser_use
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=browser_use
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=browser_use_sdk
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package=playwright
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=playwright
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken_ext
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=onnxruntime
@@ -773,6 +703,8 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --enable-plugin=dill-compat
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=matplotlib
           set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=pytest
+          rem Playwright is a test dependency installed with the dev group. Keep it out of the bundle.
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=playwright
           set NUITKA_OPTS=%NUITKA_OPTS% --windows-console-mode=force
           set NUITKA_OPTS=%NUITKA_OPTS% --assume-yes-for-downloads
 
@@ -800,24 +732,6 @@ jobs:
             exit 1
           fi
           echo "NEKO_NUITKA_RUNTIME_DIR=$RUNTIME_DIR" >> "$GITHUB_ENV"
-          # macOS: playwright_browsers was excluded from Nuitka (xattr bug with
-          # spaces in .app paths), copy it manually into the output directory
-          if [[ "$RUNNER_OS" == "macOS" && -d "playwright_browsers" ]]; then
-            # This tree lands under Contents/MacOS/, where codesign treats every
-            # file as nested code; a non-ASCII basename becomes a hex-literal
-            # identifier and the whole bundle then fails to seal. The payload is
-            # downloaded, so scripts/check_no_nonascii_asset_names.py structurally
-            # cannot see it — the only place to look is right here, before the copy.
-            # Files only: a CJK *directory* holding ASCII files seals fine
-            # (verified against a real Developer ID cert; see the checker's
-            # module docstring), and failing on it would block the build for nothing.
-            # One physical line on purpose: `python -c` rejects a first line that
-            # starts with whitespace, and a YAML block scalar cannot carry the
-            # column-0 lines a multi-line form would need.
-            .venv/bin/python -c "import sys; from pathlib import Path; bad = [str(p) for p in Path('playwright_browsers').rglob('*') if p.is_file() and not p.name.isascii()]; sys.exit('non-ASCII name(s) in playwright_browsers, which break macOS signing: ' + repr(bad[:10])) if bad else None"
-            cp -R playwright_browsers "$RUNTIME_DIR/playwright_browsers"
-            echo "Copied playwright_browsers into $RUNTIME_DIR/"
-          fi
           VENV_PYTHON=".venv/bin/python"
           if [ -f ".venv/Scripts/python.exe" ]; then
             VENV_PYTHON=".venv/Scripts/python.exe"
@@ -994,9 +908,9 @@ jobs:
 
       # 产物架构闸门（#2898）。`macos-15` 是 Apple Silicon 镜像，mac-x64 那条腿曾经在
       # 它上面构建，`actions/setup-python` 的 architecture: x64 只让 Python 走 Rosetta，
-      # Nuitka 照样吐 arm64，Playwright 也按宿主架构下成了 chrome-mac-arm64 —— 整整几个
-      # 月的 Intel Mac 版都启动不了，而流水线全绿。runner 已换成 macos-15-intel，这一步
-      # 是防它（以及任何一条腿）再无声地跑偏：不匹配就直接红，不上传。
+      # Nuitka 照样吐 arm64 —— 整整几个月的 Intel Mac 版都启动不了，而流水线全绿。
+      # runner 已换成 macos-15-intel，这一步是防它（以及任何一条腿）再无声地跑偏：
+      # 不匹配就直接红，不上传。
       - name: Verify dist CPU architecture
         shell: bash
         run: |
@@ -1010,24 +924,18 @@ jobs:
           fi
 
       # Nuitka signs macOS app bundles when it creates them. The steps above
-      # then add Playwright and plugin payloads inside the bundle, invalidating
-      # that seal. Restore a valid ad-hoc signature for the backend artifact;
+      # then add plugin payloads inside the bundle, invalidating that seal.
+      # Restore a valid ad-hoc signature for the backend artifact;
       # electron-builder applies the configured distribution identity later.
       - name: Re-sign macOS backend after post-processing
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          # Playwright uses .links only for browser-cache install/GC bookkeeping.
-          # codesign --deep otherwise mistakes it for a nested bundle.
-          rm -rf -- "$NEKO_NUITKA_RUNTIME_DIR/playwright_browsers/.links"
           codesign --force --deep --sign - dist/Xiao8/projectneko_server.app
           codesign --verify --deep --strict dist/Xiao8/projectneko_server.app
 
       # actions/upload-artifact 打包时会把符号链接展开成实体文件、丢掉可执行位。
-      # macOS 上 Playwright 的 Chrome for Testing.app 里，Framework.framework 顶层和
-      # Versions/Current 两层符号链接都指向同一份 ~370MB 的框架，展开后同一份存了三遍，
-      # mac 包因此超过 GitHub release 单文件 2 GiB 上限（10-28/29 nightly 上传失败）。
       # Unix 腿先打成 tar 再上传，build-electron / nightly 解开后符号链接和权限原样还原。
       # COPYFILE_DISABLE：别让 macOS bsdtar 把扩展属性写成 ._* 文件混进包里。
       - name: Pack Python backend (Unix)

@@ -31,6 +31,8 @@ Whoever embeds the host supplies what it cannot know by itself, all optional:
   quota of its model, and says when none is left;
 * ``on_commission`` - told whenever a commission is filed or changes its
   status (a ``Ledger.subscribe`` listener), for a display of the tasks;
+* ``on_builtin_activity`` - told when a commission begins and stops occupying
+  the desktop or the browser (``leases.py``), for the banner that shows it;
 * ``send_report`` - delivers an outbox row to the main server. Without it
   reports are stored and wait. Reports an earlier run left unsent go out
   from the first call that does work.
@@ -57,7 +59,9 @@ from nekoclaw.host.task_agents import (
     default_runtime_factory,
 )
 from nekoclaw.host.gateway import CapabilityGateway
+from nekoclaw.host.leases import ActivityListener, BuiltinLeases
 from nekoclaw.host.ledger import ENDED_STATUSES, Commission, Ledger, Listener
+from nekoclaw.host.model_capabilities import ModelCapabilityStore
 from nekoclaw.host.outbox import OutboxSender, SendReport
 from nekoclaw.host.paths import HostPaths
 from nekoclaw.host.permissions import PermissionGate, PermissionStore
@@ -112,6 +116,7 @@ class NekoClawHost:
         on_progress: ProgressListener | None = None,
         task_agent_meter: UsageMeter | None = None,
         on_commission: Listener | None = None,
+        on_builtin_activity: ActivityListener | None = None,
     ) -> None:
         self.paths = HostPaths(root)
         self.ledger = Ledger(self.paths.ledger_db, reconcile_report=self._restart_report)
@@ -136,8 +141,19 @@ class NekoClawHost:
         )
         self.outbox = OutboxSender(self.ledger, send_report)
         self.reporter = Reporter(self.ledger, self.outbox)
+        # Which commission is using the desktop, and which the browser.
+        self.leases = BuiltinLeases(
+            root_of=self._root_of,
+            on_activity=on_builtin_activity,
+            on_released=self.registry.builtin_released,
+        )
+        self.model_capabilities = ModelCapabilityStore(self.paths.model_capabilities_json)
         self.gateway = CapabilityGateway(
-            registry=self.registry, runner=self.runner, permissions=self.permissions, ledger=self.ledger
+            registry=self.registry,
+            runner=self.runner,
+            permissions=self.permissions,
+            ledger=self.ledger,
+            leases=self.leases,
         )
         self.task_agents = TaskAgentManager(
             ledger=self.ledger,
@@ -154,6 +170,8 @@ class NekoClawHost:
             max_concurrent=max_task_agents,
             lessons=lessons,
             meter=task_agent_meter,
+            leases=self.leases,
+            model_capabilities=self.model_capabilities,
         )
         # A plugin's request for confirmation is put to the user by the
         # gateway, through the same waiting the task agents' own questions use.
@@ -213,6 +231,23 @@ class NekoClawHost:
         # what the user allowed (owner, 2026-11-13).
         if commission.status in ENDED_STATUSES - {"blocked"}:
             self.permissions.end_session(commission.id)
+        # The desktop and the browser are given back as soon as a commission
+        # is over or waits for the user: the user needs the desktop to
+        # answer, and another commission may be waiting for its turn.
+        if commission.status in ENDED_STATUSES or commission.status == "waiting_user":
+            self.leases.release(commission.id)
+
+    async def _root_of(self, commission_id: str) -> str:
+        """Return the commission a team is named after: the one no task agent started."""
+        current = commission_id
+        seen = {current}
+        while True:
+            commission = await self.ledger.get(current)
+            parent = commission.parent_id if commission is not None else None
+            if not parent or parent in seen:
+                return current
+            seen.add(parent)
+            current = parent
 
     def _first_use(self) -> None:
         """Start sending reports left unsent by an earlier run of the host.
@@ -302,10 +337,16 @@ class NekoClawHost:
             self._shutdown_task = asyncio.ensure_future(self._shutdown_steps())
         await asyncio.shield(self._shutdown_task)
 
+    async def _release_builtins(self) -> None:
+        """Give the desktop and the browser back and let the provider clean up after them."""
+        self.leases.release_all()
+        await self.leases.settle()
+
     async def _shutdown_steps(self) -> None:
         steps = (
             ("task brain", self.brain.close),
             ("task_agents", self.task_agents.shutdown),
+            ("built-in tools", self._release_builtins),
             ("gateway", self.gateway.stop),
             ("plugin runs", self.runner.aclose),
             ("short descriptions", self.short_descriptions.aclose),

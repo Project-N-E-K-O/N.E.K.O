@@ -202,8 +202,6 @@ latest_report.json
 sendText.js
 tmp/
 output/
-data/browser_use_prompts/*.md
-data/browser_use_extensions/
 .coverage
 .VSCodeCounter
 

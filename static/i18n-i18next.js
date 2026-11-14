@@ -29,8 +29,9 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // Theater handoff feedback and NekoClaw task HUD keys merged together.
-    const LOCALE_VERSION = '2026-11-14-theater-handoff-nekoclaw-merge';
+    // 剧场交接反馈、猫爪任务悬浮窗的文案，加上「找不到可用浏览器」的提示和删掉的
+    // OpenClaw、MCP 开关文案（八语言）合在一起，刷新客户端缓存。
+    const LOCALE_VERSION = '2026-11-14-nekoclaw-browser-theater-market-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

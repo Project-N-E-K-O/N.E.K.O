@@ -25,7 +25,16 @@ from typing import Any
 import httpx
 import pytest
 
-from nekoclaw.runtime.tools.gateway import GatewayClient, GatewayError
+from config.prompts import prompts_nekoclaw as texts
+from nekoclaw.host.capabilities import (
+    BUILTIN_GROUP_BROWSER,
+    BUILTIN_GROUP_KEYBOARD_MOUSE,
+    BuiltinImage,
+    BuiltinOutcome,
+    builtin_tool,
+)
+from nekoclaw.runtime.loop.messages import ImageContent
+from nekoclaw.runtime.tools.gateway import GatewayClient, GatewayError, GatewayResult
 from tests.unit.nekoclaw.fakes import ScriptedLLM, call, finish
 from tests.unit.nekoclaw.host_fakes import (
     FakeDecisionLLM,
@@ -105,6 +114,8 @@ async def test_listener_starts_on_first_use_on_the_loopback_address(server, host
 
     assert url.startswith("http://127.0.0.1:") and url.endswith("/mcp")
     assert await host.gateway.start() == url
+    # The port it picked, for whoever has to know it (the browser is kept away from it).
+    assert host.gateway.port == int(url.split(":")[2].split("/")[0])
     await host.gateway.stop()
     assert not host.gateway.started
     with pytest.raises(httpx.HTTPError):
@@ -157,12 +168,81 @@ async def test_runtime_client_lists_and_calls_tools(server, hosts, tmp_path):
     client = GatewayClient(url, host.gateway.issue(commission.id, candidate_plugin_ids=["weather"]))
 
     definitions = await client.connect()
-    text, is_error = await client.call("plugin__weather__today", {"city": "Lyon"})
+    result = await client.call("plugin__weather__today", {"city": "Lyon"})
 
     assert [definition["name"] for definition in definitions] == ["plugin__weather__today"]
-    assert (text, is_error) == ("sunny in Lyon", False)
+    assert (result.text, result.images, result.is_error) == ("sunny in Lyon", (), False)
     assert server.run_requests[0]["task_id"] == commission.id
     assert server.run_requests[0]["args"]["_ctx"]["latest_user_request"] == "plan my trip"
+
+
+class Desk:
+    """A provider of two built-in tools: one that hands a screenshot back, one that answers in text."""
+
+    COMPUTER = {
+        "name": "computer",
+        "description": "Operate the desktop, one action per call.",
+        "parameters": {"type": "object", "properties": {"action": {"type": "string"}}, "required": ["action"]},
+    }
+    SNAPSHOT = {
+        "name": "browser_take_snapshot",
+        "description": "Read the page as text.",
+        "parameters": {"type": "object", "properties": {}},
+    }
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.released_groups: list[tuple[str, str]] = []
+        # Called at the start of every call; what it returns is kept in ``observed``.
+        self.observe: Any = None
+        self.observed: list[Any] = []
+
+    def available(self) -> list[Any]:
+        return [
+            builtin_tool(BUILTIN_GROUP_KEYBOARD_MOUSE, self.COMPUTER, needs_images=True),
+            builtin_tool(BUILTIN_GROUP_BROWSER, self.SNAPSHOT),
+        ]
+
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+        self.calls.append((capability.tool_name, commission_id, dict(arguments)))
+        if self.observe is not None:
+            self.observed.append(self.observe())
+        if capability.tool_name == "computer":
+            return BuiltinOutcome(True, f"did {arguments.get('action')}", images=(BuiltinImage("QUJD", "image/jpeg"),))
+        return BuiltinOutcome(True, "heading: Opening hours")
+
+    async def released(self, group: str, commission_id: str) -> None:
+        self.released_groups.append((group, commission_id))
+
+
+async def _allow_once(commission_id: str, ask: Any) -> str:
+    return "once"
+
+
+@pytest.mark.parametrize("sees_pictures", [True, False])
+async def test_runtime_client_gets_the_pictures_of_a_builtin_tool_only_if_its_model_sees_them(
+    server, hosts, tmp_path, sees_pictures
+):
+    host = make_host(tmp_path, server, builtins=Desk())
+    hosts.append(host)
+    host.permissions.set_asker(_allow_once)
+    url = await host.gateway.start()
+    commission = await _working_commission(host)
+    client = GatewayClient(url, host.gateway.issue(commission.id, supports_images=sees_pictures))
+
+    definitions = await client.connect()
+    names = [definition["name"] for definition in definitions]
+
+    if sees_pictures:
+        assert names == ["computer", "browser_take_snapshot"]
+        result = await client.call("computer", {"action": "click"})
+        # The picture arrives as the runtime hands it to its model.
+        assert result == GatewayResult("did click", (ImageContent(data="QUJD", mime_type="image/jpeg"),), False)
+    else:
+        assert names == ["browser_take_snapshot"]
+        result = await client.call("computer", {"action": "click"})
+        assert result.is_error and result.text.startswith("computer works from pictures")
+        assert result.images == ()
 
 
 async def test_revoked_token_stops_working(server, hosts, tmp_path):
@@ -319,3 +399,119 @@ async def test_mcp_tool_asks_the_user_through_the_commission(server, hosts, tmp_
     await wait_status(host, receipt.commission_id, "done")
     assert llm.requests[1][-1]["content"] == "3 notes about Lyon"
     assert await host.permission_store.mode("mcp_server", "notes") == "allow"
+
+
+# ---------------------------------------------------------------------------
+# A task agent using the built-in tools
+# ---------------------------------------------------------------------------
+
+
+def _guidance(name: str) -> str:
+    """The paragraph of the system prompt that goes with a group of built-in tools."""
+    return next(text for section, _triggers, text in texts.TOOL_GUIDANCE_SECTIONS if section == name)
+
+
+def _pictures(request: list[dict[str, Any]]) -> list[str]:
+    """The pictures one model request carries, as their data URLs."""
+    return [
+        part["image_url"]["url"]
+        for message in request
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    ]
+
+
+async def test_task_agent_works_the_desktop_step_by_step_and_lets_go_of_it_when_its_run_is_over(
+    server, hosts, tmp_path, monkeypatch
+):
+    import config.nekoclaw_settings as settings
+
+    # One screenshot stays in the conversation, so the second step shows the first one going.
+    monkeypatch.setattr(settings, "TASK_AGENT_SCREENSHOTS_KEPT", 1)
+    llm = ScriptedLLM(
+        [
+            [call("computer", {"action": "screenshot"}), finish("tool_calls")],
+            [call("computer", {"action": "click"}, "c2"), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "pressed the button"}, "c3"), finish("tool_calls")],
+        ]
+    )
+    desk = Desk()
+    heard: list[tuple[str, str, str]] = []
+    host = _task_agent_host(
+        hosts, tmp_path, server, llm, builtins=desk, on_builtin_activity=lambda *event: heard.append(event)
+    )
+    desk.observe = host.leases.occupied
+
+    receipt = await host.dispatch("press the big button on the screen", lanlan_name="Lan", lang="en")
+    commission_id = receipt.commission_id
+
+    # Asked before the first step, with nothing touched and nothing occupied yet.
+    waiting = await wait_status(host, commission_id, "waiting_user")
+    question = waiting.question()
+    assert (question["kind"], question["category"], question["detail"]["tool"]) == (
+        "permission",
+        "keyboard_mouse",
+        "computer",
+    )
+    assert desk.calls == [] and host.leases.occupied() == {} and heard == []
+
+    assert (await host.dispatch("yes, go ahead", lanlan_name="Lan", lang="en")).kind == "answered"
+    await wait_status(host, commission_id, "done")
+
+    # Both steps ran for the commission with the desktop occupied by it, and
+    # the second one without the user being asked again.
+    assert desk.calls == [
+        ("computer", commission_id, {"action": "screenshot"}),
+        ("computer", commission_id, {"action": "click"}),
+    ]
+    assert desk.observed == [{"keyboard_mouse": commission_id}, {"keyboard_mouse": commission_id}]
+    statuses = [event.payload["to"] for event in await host.ledger.events(commission_id) if event.type == "status"]
+    assert statuses == ["working", "waiting_user", "working", "done"]
+    # The model was offered the tools by their own names, with the paragraphs written for them.
+    offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
+    assert {"computer", "browser_take_snapshot"} <= set(offered)
+    system = llm.requests[0][0]["content"]
+    assert _guidance("computer") in system and _guidance("browser") in system
+    # It saw each step's screenshot after the step's text, and only the newest one stayed.
+    assert llm.requests[1][-2] == {"role": "tool", "tool_call_id": "call-1", "content": "did screenshot"}
+    assert _pictures(llm.requests[1]) == ["data:image/jpeg;base64,QUJD"]
+    assert len(_pictures(llm.requests[2])) == 1
+    earlier = next(message for message in llm.requests[2] if message.get("tool_call_id") == "call-1")
+    assert earlier["content"] == f"did screenshot{texts.IMAGE_OMITTED_PLACEHOLDER}"
+    # With the run over the desktop is free, the provider was told, and the
+    # next run has to be allowed again.
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    await host.leases.settle()
+    assert host.leases.occupied() == {}
+    assert heard == [("keyboard_mouse", "started", commission_id), ("keyboard_mouse", "ended", commission_id)]
+    assert desk.released_groups == [("keyboard_mouse", commission_id)]
+    assert host.permissions.run_grants(commission_id) == frozenset()
+
+
+async def test_task_agent_whose_model_takes_no_pictures_gets_the_browser_but_not_the_desktop(
+    server, hosts, tmp_path
+):
+    llm = ScriptedLLM(
+        [
+            [call("browser_take_snapshot", {}), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "open nine to five"}, "c2"), finish("tool_calls")],
+        ]
+    )
+    desk = Desk()
+    host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
+    # What an earlier task agent's refused screenshot left behind.
+    await host.model_capabilities.note_images_refused(None, "fake-model")
+    await host.permission_store.set_mode("browser", "allow")
+
+    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "done")
+
+    offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
+    assert "browser_take_snapshot" in offered
+    # Neither the tool that works from screenshots nor the runtime's own picture tool.
+    assert "computer" not in offered and "read_image" not in offered
+    system = llm.requests[0][0]["content"]
+    assert _guidance("browser") in system and _guidance("computer") not in system
+    assert desk.calls == [("browser_take_snapshot", receipt.commission_id, {})]
+    assert llm.requests[1][-1] == {"role": "tool", "tool_call_id": "call-1", "content": "heading: Opening hours"}

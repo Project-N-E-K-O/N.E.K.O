@@ -5153,3 +5153,57 @@ def test_storage_cleanup_leaves_the_root_while_entries_remain(tmp_path, monkeypa
     assert second.status_code == 200, second.json()
     assert not source_root.exists()
     assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"
+
+
+_LEDGER = "nekoclaw/ledger.db"
+_LEDGER_LOG = "nekoclaw/ledger.db-wal"
+
+
+def _v1_migration_that_left_a_ledger_behind(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "nekoclaw").mkdir()
+    (source_root / _LEDGER).write_bytes(b"the old root's ledger")
+    (source_root / _LEDGER_LOG).write_bytes(b"commits of the old root")
+    return source_root, target_root
+
+
+def _ledger_files(root) -> dict:
+    return {name: (root / name).read_bytes() for name in (_LEDGER, _LEDGER_LOG) if (root / name).exists()}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "new_root",
+    [
+        # No ledger yet: half a pair, should the catch-up be stopped between the two, would be
+        # taken for the new root's own ledger the next time, and the log never follow.
+        {},
+        # Its own ledger, closed down in order: the old root's log is not put next to it.
+        {_LEDGER: b"made at the new root"},
+        # A log without its ledger: the old root's ledger is not put next to it.
+        {_LEDGER_LOG: b"commits of nobody knows what"},
+    ],
+)
+def test_v1_catch_up_leaves_a_ledger_and_its_log_in_the_old_root(tmp_path, new_root):
+    source_root, target_root = _v1_migration_that_left_a_ledger_behind(tmp_path)
+    (source_root / "nekoclaw" / "permissions.json").write_text('{"browser": "always"}', encoding="utf-8")
+    for name, content in new_root.items():
+        (target_root / name).parent.mkdir(exist_ok=True)
+        (target_root / name).write_bytes(content)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert _ledger_files(target_root) == new_root
+    copied = load_storage_migration(reloaded_manager).get("copied_entries") or {}
+    assert not {_LEDGER, _LEDGER_LOG} & set(copied)
+    # What stands on its own is caught up as before.
+    assert (target_root / "nekoclaw" / "permissions.json").read_text(encoding="utf-8") == '{"browser": "always"}'
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+    # The pair is still whole in the old root, and cleanup names it instead of taking it away.
+    pair = {_LEDGER: b"the old root's ledger", _LEDGER_LOG: b"commits of the old root"}
+    assert _ledger_files(source_root) == pair
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert {_LEDGER, _LEDGER_LOG} <= set(response.json()["remaining_entries"])
+    assert _ledger_files(source_root) == pair

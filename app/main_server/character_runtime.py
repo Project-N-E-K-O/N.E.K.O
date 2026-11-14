@@ -935,6 +935,18 @@ async def _handle_agent_event(event: dict):
             )
             return
 
+        # A task agent began or stopped using the keyboard and mouse or the
+        # browser. The banner that shows it is drawn over the desktop or the
+        # browser window, whichever character's page is open, so every
+        # connected session is told (docs/design/nekoclaw-rewrite.md, 11.8).
+        if event_type == "builtin_activity":
+            activity = event.get("activity")
+            if isinstance(activity, dict):
+                await _broadcast_to_all_connected(
+                    {"type": "agent_builtin_activity", "activity": activity}
+                )
+            return
+
         # Agent status updates may be broadcast (lanlan_name omitted).
         if event_type == "agent_status_update":
             snapshot = event.get("snapshot", {})

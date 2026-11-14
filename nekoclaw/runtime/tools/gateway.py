@@ -18,7 +18,8 @@ The host runs an MCP service on the loopback address and gives every session
 its own token (``TaskAgentSpec.gateway``). When a session starts, the runtime
 asks the gateway for its tool list and offers those tools next to the built-in
 ones; a call is forwarded to the gateway and its text comes back as the tool
-result. Plugin entries, MCP tools and, later, the keyboard, mouse and browser
+result, followed by the pictures it carries (a screenshot of the desktop or
+of a page). Plugin entries, MCP tools and the keyboard, mouse and browser
 tools reach a task agent this way, so they are implemented once for every
 runtime.
 
@@ -34,9 +35,11 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
-from nekoclaw.runtime.loop.tools import AgentTool
+from nekoclaw.runtime.loop.messages import ImageContent, TextContent
+from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
 
 logger = logging.getLogger(__name__)
@@ -48,8 +51,24 @@ CONNECT_TIMEOUT_SECONDS = 5.0
 _EMPTY_SCHEMA: dict[str, Any] = {"type": "object", "properties": {}}
 
 
+MAX_IMAGES_PER_RESULT = 4
+# About 6 MB of image; a screenshot is a few hundred kilobytes.
+MAX_IMAGE_BASE64_CHARS = 8 * 1024 * 1024
+ACCEPTED_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+
 class GatewayError(Exception):
     """The gateway could not be reached or answered with an error."""
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayResult:
+    """What one tool call came back with."""
+
+    text: str
+    # Pictures the tool handed back (screenshots), in the order it gave them.
+    images: tuple[ImageContent, ...]
+    is_error: bool
 
 
 class GatewayClient:
@@ -129,17 +148,37 @@ class GatewayClient:
         tools = listed.get("tools") if isinstance(listed, dict) else None
         return [tool for tool in tools or [] if isinstance(tool, dict) and tool.get("name")]
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-        """Call one tool. Returns ``(text, is_error)``; waits as long as the tool takes."""
+    async def call(self, name: str, arguments: dict[str, Any]) -> GatewayResult:
+        """Call one tool and return its text and pictures; waits as long as the tool takes."""
         result = await self.request("tools/call", {"name": name, "arguments": arguments}, read_timeout=None)
         if not isinstance(result, dict):
-            return "", False
-        parts = [
-            str(item.get("text", ""))
-            for item in result.get("content") or []
-            if isinstance(item, dict) and item.get("type") == "text"
-        ]
-        return "\n".join(part for part in parts if part), bool(result.get("isError"))
+            return GatewayResult("", (), False)
+        parts: list[str] = []
+        images: list[ImageContent] = []
+        dropped = 0
+        for item in result.get("content") or []:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            if kind == "text":
+                parts.append(str(item.get("text", "")))
+            elif kind == "image":
+                data = item.get("data")
+                mime = item.get("mimeType")
+                if (
+                    isinstance(data, str)
+                    and data
+                    and len(data) <= MAX_IMAGE_BASE64_CHARS
+                    and mime in ACCEPTED_IMAGE_TYPES
+                    and len(images) < MAX_IMAGES_PER_RESULT
+                ):
+                    images.append(ImageContent(data=data, mime_type=mime))
+                else:
+                    dropped += 1
+        if dropped:
+            # Said rather than silently lost: the model may be waiting for a picture.
+            parts.append(f"[{dropped} picture(s) of this result could not be passed on.]")
+        return GatewayResult("\n".join(part for part in parts if part), tuple(images), bool(result.get("isError")))
 
     async def aclose(self) -> None:
         """Nothing to release: every request uses a connection of its own."""
@@ -199,15 +238,20 @@ def build_gateway_tools(
 
 
 def _forwarder(client: GatewayClient, name: str) -> Any:
-    async def forward(args: dict[str, Any], call: ToolCallInfo) -> str:
+    async def forward(args: dict[str, Any], call: ToolCallInfo) -> str | AgentToolResult:
         try:
             # Aborting the run drops the request; the gateway then stops the work.
-            text, is_error = await run_cancellable(client.call(name, args), call)
+            result = await run_cancellable(client.call(name, args), call)
         except GatewayError as exc:
             raise ToolError(f"{name} failed: {exc}") from exc
-        if is_error:
-            raise ToolError(text or f"{name} failed")
-        return text or "(no output)"
+        if result.is_error:
+            raise ToolError(result.text or f"{name} failed")
+        text = result.text or "(no output)"
+        if not result.images:
+            return text
+        # The model adapter decides how the pictures travel (or leaves a
+        # placeholder for a model that cannot see them).
+        return AgentToolResult(content=[TextContent(text=text), *result.images])
 
     return forward
 

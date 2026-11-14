@@ -30,11 +30,16 @@ from nekoclaw.runtime.loop.provider_events import (
     ToolCallStartEvent,
 )
 from nekoclaw.runtime.model import (
+    PICTURE_REFUSALS_BEFORE_GOING_WITHOUT,
+    REFUSAL_OF_THE_MODEL,
+    REFUSAL_OF_THESE_PICTURES,
+    image_refusal,
     REASONING_FIELD_SIGNATURE,
     ContextOverflowError,
     LLMClientProvider,
     ModelRequestError,
     is_context_overflow,
+    is_image_refusal,
     to_wire_messages,
     usage_from_metadata,
 )
@@ -364,6 +369,318 @@ def test_other_errors_are_not_mistaken_for_overflow() -> None:
     assert not is_context_overflow(Unavailable("context window service unavailable"))
 
 
+# ---------------------------------------------------------------------------
+# A model that turns out to take no pictures
+# ---------------------------------------------------------------------------
+
+
+class _Rejected(RuntimeError):
+    """A provider error that carries the HTTP status it came with."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+IMAGE_REFUSAL = "Invalid content type. image_url is only supported by certain models."
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        IMAGE_REFUSAL,
+        "Error code: 400 - {'error': {'message': 'Invalid content type: image_url', 'type': 'invalid_request_error'}}",
+        "Failed to deserialize the JSON body into the target type: messages[2]: unknown variant `image_url`, "
+        "expected `text` at line 1 column 3181",
+        "messages[2].content[1]: expected 'text', found 'image_url'",
+        "This model does not support image input.",
+        "The model `qwen-plus` doesn't support vision",
+        "Model cannot support multimodal messages",
+        "Image input is not supported for this model",
+        "Vision inputs are not supported by the selected deployment",
+        "image input for this model is not enabled",
+        "Multi-modal content is not supported",
+        "No endpoints found that support image input",
+        "当前模型不支持图片输入",
+        "该模型暂不支持多模态输入，请更换模型",
+        "图像输入暂不支持",
+    ],
+)
+def test_refusals_of_pictures_by_several_providers_are_recognized(message: str) -> None:
+    assert is_image_refusal(RuntimeError(message))
+    assert is_image_refusal(_Rejected(message, 400))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Failed to download image from the given URL: connection timed out",
+        "Image size exceeds the limit of 20 MB",
+        "Invalid image data: the base64 string could not be decoded",
+        "You uploaded an unsupported image. Please make sure your image has of one the following formats: "
+        "['png', 'jpeg', 'gif', 'webp'].",
+        "image_url must be a valid URL or a data URL",
+        "The image could not be processed, please try again",
+        "Too many images in the request: at most 20 are allowed",
+        "No endpoints found that support tool use",
+        "No endpoints found matching your data policy",
+        "图片下载失败，请稍后重试",
+        "Rate limit reached for requests",
+        "This model's maximum context length is 128000 tokens",
+        "Incorrect API key provided",
+    ],
+)
+def test_errors_that_merely_mention_a_picture_are_not_taken_for_a_refusal(message: str) -> None:
+    assert not is_image_refusal(RuntimeError(message))
+    assert not is_image_refusal(_Rejected(message, 400))
+
+
+@pytest.mark.parametrize(("status", "expected"), [(400, True), (404, True), (415, True), (422, True), (401, False), (429, False), (500, False), (503, False)])
+def test_a_refusal_of_pictures_comes_with_a_status_that_blames_the_request(status: int, expected: bool) -> None:
+    assert is_image_refusal(_Rejected(IMAGE_REFUSAL, status)) is expected
+
+
+def _with_a_screenshot() -> list:
+    """A conversation whose last tool result carries a picture."""
+    return [
+        UserMessage(content="what is on the screen"),
+        AssistantMessage(content=[ToolCall(id="c1", name="computer", arguments={"action": "screenshot"})]),
+        ToolResultMessage(
+            tool_call_id="c1",
+            tool_name="computer",
+            content=[TextContent(text="the desktop"), ImageContent(data="QUJD", mime_type="image/jpeg")],
+        ),
+    ]
+
+
+def _pictures(request: list[dict]) -> int:
+    """How many pictures one request carries."""
+    return sum(
+        1
+        for message in request
+        if isinstance(message["content"], list)
+        for part in message["content"]
+        if part["type"] == "image_url"
+    )
+
+
+def _seeing(llm: ScriptedLLM) -> tuple[LLMClientProvider, list[str]]:
+    """A provider for a model configured to see pictures, and the list its refusal callback writes to."""
+    told: list[str] = []
+    provider = _provider(llm, supports_images=True)
+    provider.on_images_refused = lambda said, about_model: told.append("refused" if about_model else "this session only")
+    return provider, told
+
+
+async def test_a_request_refused_for_its_pictures_is_sent_once_more_without_them() -> None:
+    llm = ScriptedLLM(
+        [[_Rejected(IMAGE_REFUSAL, 400)], [say("A desktop."), finish(), usage(90, 4)], [say("Still a desktop."), finish()]]
+    )
+    provider, told = _seeing(llm)
+    assert provider.supports_images is True
+
+    events = await _events(provider, _with_a_screenshot())
+
+    # The loop gets the answer to the second request and nothing of the first.
+    assert [type(event).__name__ for event in events if isinstance(event, (AssistantStartEvent, AssistantErrorEvent))] == [
+        "AssistantStartEvent"
+    ]
+    done = events[-1]
+    assert isinstance(done, AssistantDoneEvent) and done.message.text == "A desktop."
+    assert done.message.usage.input == 90
+    # Sent twice: with the picture, then with a placeholder in its place and all else the same.
+    assert [_pictures(request) for request in llm.requests] == [1, 0]
+    assert llm.requests[0][:3] == llm.requests[1][:3]
+    assert llm.requests[1][-1] == {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": "the desktop\n[image omitted: the model does not accept images]",
+    }
+    assert llm.overrides[0] == llm.overrides[1]
+    # The refused stream was closed, and whoever configured the model was told once.
+    assert llm.closed_streams == 2
+    assert told == ["refused"]
+    assert provider.supports_images is False
+
+    later = await _events(provider, _with_a_screenshot())
+
+    # From here on no request carries a picture, and nobody is told again.
+    assert later[-1].message.text == "Still a desktop."
+    assert [_pictures(request) for request in llm.requests] == [1, 0, 0]
+    assert told == ["refused"]
+
+
+class _Stream:
+    """One response of ``_Streams``: a plain iterator, so that closing it can be seen."""
+
+    def __init__(self, owner: "_Streams", number: int, steps: list) -> None:
+        self._owner = owner
+        self._number = number
+        self._steps = steps
+
+    def __aiter__(self) -> "_Stream":
+        return self
+
+    async def __anext__(self):  # noqa: ANN204
+        if not self._steps:
+            raise StopAsyncIteration
+        step = self._steps.pop(0)
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+    async def aclose(self) -> None:
+        self._owner.log.append(f"stream {self._number} closed")
+
+
+class _Streams:
+    """A client that writes down, in order, each request it gets and each stream that is closed."""
+
+    def __init__(self, turns: list[list]) -> None:
+        self._turns = list(turns)
+        self.log: list[str] = []
+
+    def astream(self, messages: list[dict], **overrides) -> _Stream:  # noqa: ANN003
+        del messages, overrides
+        number = sum(1 for line in self.log if line.endswith("requested")) + 1
+        self.log.append(f"stream {number} requested")
+        return _Stream(self, number, self._turns.pop(0))
+
+
+async def test_the_refused_stream_is_closed_before_the_request_is_sent_again() -> None:
+    client = _Streams([[RuntimeError(IMAGE_REFUSAL)], [say("A desktop."), finish()]])
+
+    async def factory() -> _Streams:
+        return client
+
+    provider = LLMClientProvider(ModelConfig(model="fake-model", supports_images=True), client_factory=factory)
+
+    events = await _events(provider, _with_a_screenshot())
+
+    assert events[-1].message.text == "A desktop."
+    # The connection of the refused request is not left open behind the second one.
+    assert client.log == ["stream 1 requested", "stream 1 closed", "stream 2 requested", "stream 2 closed"]
+
+
+async def test_a_one_shot_request_refused_for_its_pictures_is_sent_again_too() -> None:
+    llm = ScriptedLLM([[RuntimeError(IMAGE_REFUSAL)], [say("summary text"), finish()]])
+    provider, told = _seeing(llm)
+
+    reply = await provider.complete(system="S", messages=_with_a_screenshot(), tools=[], max_tokens=64)
+
+    assert reply.text == "summary text"
+    assert [_pictures(request) for request in llm.requests] == [1, 0]
+    assert told == ["refused"]
+
+
+async def test_a_refusal_is_an_ordinary_failure_when_the_request_carried_no_picture() -> None:
+    llm = ScriptedLLM([[RuntimeError(IMAGE_REFUSAL)], [say("never sent")]])
+    provider, told = _seeing(llm)
+
+    events = await _events(provider, [UserMessage(content="hi")])
+
+    assert isinstance(events[-1], AssistantErrorEvent)
+    assert events[-1].error.error_message == f"RuntimeError: {IMAGE_REFUSAL}"
+    assert len(llm.requests) == 1
+    assert told == [] and provider.supports_images is True
+
+
+async def test_a_model_configured_without_pictures_is_never_sent_one_and_never_asked_again() -> None:
+    llm = ScriptedLLM([[RuntimeError(IMAGE_REFUSAL)], [say("never sent")]])
+    told: list[str] = []
+    provider = _provider(llm)
+    provider.on_images_refused = lambda said, about_model: told.append("refused")
+    assert provider.supports_images is False
+
+    events = await _events(provider, _with_a_screenshot())
+
+    # The picture was a placeholder already, so the error has another cause.
+    assert isinstance(events[-1], AssistantErrorEvent)
+    assert [_pictures(request) for request in llm.requests] == [0]
+    assert told == []
+
+
+async def test_a_refusal_after_output_began_is_not_sent_again() -> None:
+    llm = ScriptedLLM([[say("I see "), RuntimeError(IMAGE_REFUSAL)], [say("never sent")]])
+    provider, told = _seeing(llm)
+
+    events = await _events(provider, _with_a_screenshot())
+
+    # What was said cannot be taken back, so the response fails as it stands.
+    assert isinstance(events[-1], AssistantErrorEvent) and events[-1].error.text == "I see "
+    assert len(llm.requests) == 1
+    assert told == [] and provider.supports_images is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("connection reset by peer"),
+        _Rejected("Rate limit reached for requests", 429),
+        # The words of a refusal, with a status that says the provider is at fault.
+        _Rejected(IMAGE_REFUSAL, 503),
+        RuntimeError("Failed to download image from the given URL"),
+    ],
+)
+async def test_a_failure_of_another_kind_is_not_sent_again_and_pictures_stay(error: Exception) -> None:
+    llm = ScriptedLLM([[error], [say("A desktop."), finish()]])
+    provider, told = _seeing(llm)
+
+    events = await _events(provider, _with_a_screenshot())
+
+    assert isinstance(events[-1], AssistantErrorEvent)
+    assert len(llm.requests) == 1
+    assert told == [] and provider.supports_images is True
+    # The next request carries its pictures as before.
+    again = await _events(provider, _with_a_screenshot())
+    assert again[-1].message.text == "A desktop."
+    assert _pictures(llm.requests[1]) == 1
+
+
+async def test_a_request_refused_again_without_its_pictures_fails_and_is_not_sent_a_third_time() -> None:
+    llm = ScriptedLLM([[RuntimeError(IMAGE_REFUSAL)], [RuntimeError(IMAGE_REFUSAL)], [say("never sent")]])
+    provider, told = _seeing(llm)
+
+    events = await _events(provider, _with_a_screenshot())
+
+    assert isinstance(events[-1], AssistantErrorEvent)
+    assert [_pictures(request) for request in llm.requests] == [1, 0]
+    assert told == ["refused"]
+
+
+async def test_nobody_to_tell_and_a_teller_that_fails_do_not_stop_the_second_request() -> None:
+    def broken(said: str, about_model: bool) -> None:
+        raise RuntimeError("the host is gone")
+
+    for callback in (None, broken):
+        llm = ScriptedLLM([[RuntimeError(IMAGE_REFUSAL)], [say("A desktop."), finish()]])
+        provider = _provider(llm, supports_images=True)
+        provider.on_images_refused = callback
+
+        events = await _events(provider, _with_a_screenshot())
+
+        assert isinstance(events[-1], AssistantDoneEvent) and events[-1].message.text == "A desktop."
+        assert provider.supports_images is False
+
+
+def test_the_refusal_callback_can_be_given_when_the_provider_is_built() -> None:
+    told: list[str] = []
+
+    async def factory() -> ScriptedLLM:
+        return ScriptedLLM()
+
+    provider = LLMClientProvider(
+        ModelConfig(model="fake-model", supports_images=True),
+        client_factory=factory,
+        on_images_refused=lambda said, about_model: told.append(f"{said} / {about_model}"),
+    )
+
+    provider._images_refused("this model takes no pictures", about_model=True)
+
+    # Told what the provider said, so that it can be kept with what is remembered.
+    assert told == ["this model takes no pictures / True"] and provider.supports_images is False
+
+
 async def test_complete_returns_the_message_or_raises() -> None:
     provider = _provider(ScriptedLLM([[say("summary text"), finish(), usage(10, 5)], [RuntimeError("boom")]]))
     reply = await provider.complete(system="S", messages=[UserMessage(content="x")], tools=[], max_tokens=321)
@@ -458,3 +775,186 @@ async def test_real_client_round_trip_over_plain_http(monkeypatch: pytest.Monkey
         assert replayed["tool_calls"][0]["extra_content"] == signature
         assert replayed["tool_calls"][0]["function"]["arguments"] == '{"file_path": "a.txt"}'
         assert server.requests[1]["messages"][3] == {"role": "tool", "tool_call_id": "call_9", "content": "hello"}
+
+
+# ---------------------------------------------------------------------------
+# A refusal of these pictures is not a refusal of pictures
+# ---------------------------------------------------------------------------
+
+THESE_PICTURES = [
+    "The image format image/bmp is not supported",
+    "This model does not support multiple images in one request",
+    "The model does not support images larger than 20 MB",
+    "Images in system messages are not supported",
+    "不支持的图片格式",
+    "图片尺寸过大，暂不支持",
+    "图片数量超过上限，暂不支持多张图片",
+    "Image size exceeds the limit of 20 MB",
+    "Invalid image data: the base64 string could not be decoded",
+    "You uploaded an unsupported image. Please make sure your image has of one the following formats: "
+    "['png', 'jpeg', 'gif', 'webp'].",
+    "Too many images in the request: at most 20 are allowed",
+    "Image dimensions exceed the maximum resolution of 8000x8000 pixels",
+    "Failed to download image from the given URL: connection timed out",
+    "The image could not be processed, please try again",
+]
+
+
+@pytest.mark.parametrize("message", THESE_PICTURES)
+def test_a_complaint_about_these_pictures_says_nothing_about_the_model(message: str) -> None:
+    # A model that sees pictures says these too: of a format, a size, a number, a place in the request.
+    assert image_refusal(_Rejected(message, 400)) == REFUSAL_OF_THESE_PICTURES
+    assert not is_image_refusal(_Rejected(message, 400))
+    assert not is_image_refusal(RuntimeError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        IMAGE_REFUSAL,
+        "This model does not support image input.",
+        "The model `qwen-plus` doesn't support vision",
+        "当前模型不支持图片输入",
+        "No endpoints found that support image input",
+        # What a gateway appends to every error is not about the pictures.
+        "litellm.BadRequestError: Invalid content type. image_url is only supported by certain models. "
+        "Received Model Group=local-text\nAvailable Model Group Fallbacks=None LiteLLM Retried: 2 times, "
+        "LiteLLM Max Retries: 2",
+        "This model does not support image input. Rate limit: 60 requests per minute, request count: 3.",
+        # A limit of none is a model that takes none (vLLM, for a model without vision).
+        "At most 0 image(s) may be provided in one request.",
+        "A maximum of 0 images is allowed for this model",
+    ],
+)
+def test_a_refusal_of_pictures_as_such_is_one_of_the_model(message: str) -> None:
+    assert image_refusal(_Rejected(message, 400)) == REFUSAL_OF_THE_MODEL
+    assert image_refusal(RuntimeError(message)) == REFUSAL_OF_THE_MODEL
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        (_Rejected("Request Entity Too Large", 413), REFUSAL_OF_THESE_PICTURES),
+        (_Rejected("Rate limit reached for requests", 429), None),
+        (_Rejected("This model does not support image input.", 500), None),
+        (_Rejected("Incorrect API key provided", 401), None),
+        (_Rejected("This model's maximum context length is 128000 tokens", 400), None),
+        # An input that is too long is that, whatever it says of the pictures in it.
+        (
+            _Rejected(
+                "This model's maximum context length is 128000 tokens. However, your messages resulted in "
+                "130000 tokens (including image tokens).",
+                400,
+            ),
+            None,
+        ),
+        (_Rejected("Request too large for this model: reduce the images or the text", 413), None),
+        (_Rejected("At most 3 image(s) may be provided in one request.", 400), REFUSAL_OF_THESE_PICTURES),
+        (RuntimeError("Connection reset by peer"), None),
+        # Without a status only what is plainly a refusal counts.
+        (RuntimeError("The image could not be processed, please try again"), None),
+        (RuntimeError("The image format image/bmp is not supported"), REFUSAL_OF_THESE_PICTURES),
+    ],
+)
+def test_what_is_not_about_the_pictures_of_a_request_is_no_refusal_of_either_kind(error: Exception, kind: str | None) -> None:
+    assert image_refusal(error) == kind
+
+
+def _with_screenshots(*data: str) -> list:
+    """A turn with one tool result per picture, each a different picture."""
+    messages: list = [UserMessage(content="what is on the screen?")]
+    for number, picture in enumerate(data, 1):
+        messages.append(
+            AssistantMessage(content=[ToolCall(id=f"c{number}", name="computer", arguments={"action": "screenshot"})])
+        )
+        messages.append(
+            ToolResultMessage(
+                tool_call_id=f"c{number}",
+                tool_name="computer",
+                content=[TextContent(text=f"shot {number}"), ImageContent(data=picture, mime_type="image/bmp")],
+            )
+        )
+    return messages
+
+
+async def test_pictures_the_provider_would_not_take_are_left_out_and_nothing_is_said_about_the_model() -> None:
+    llm = ScriptedLLM(
+        [
+            [_Rejected("The image format image/bmp is not supported", 400)],
+            [say("I cannot see it."), finish()],
+            [say("Now I see the second."), finish()],
+        ]
+    )
+    provider, told = _seeing(llm)
+
+    events = await _events(provider, _with_screenshots("QUFB"))
+
+    assert isinstance(events[-1], AssistantDoneEvent) and events[-1].message.text == "I cannot see it."
+    assert [_pictures(request) for request in llm.requests] == [1, 0]
+    assert llm.requests[1][-1]["content"] == "shot 1\n[image omitted: the provider refused this picture]"
+    # The model still sees pictures as far as anyone knows: nobody is told, nothing is remembered.
+    assert told == [] and provider.supports_images is True
+
+    # The refused picture is not sent again; a new one is.
+    events = await _events(provider, _with_screenshots("QUFB", "QkJC"))
+    assert events[-1].message.text == "Now I see the second."
+    assert [_pictures(request) for request in llm.requests] == [1, 0, 1]
+    sent = [part for message in llm.requests[2] if isinstance(message["content"], list) for part in message["content"]]
+    assert [part["image_url"]["url"] for part in sent if part["type"] == "image_url"] == ["data:image/bmp;base64,QkJC"]
+
+
+async def test_a_provider_that_keeps_refusing_the_pictures_of_a_session_is_sent_no_more_in_it() -> None:
+    assert PICTURE_REFUSALS_BEFORE_GOING_WITHOUT == 2
+    refusal = _Rejected("The image format image/bmp is not supported", 400)
+    llm = ScriptedLLM(
+        [[refusal], [say("one"), finish()], [refusal], [say("two"), finish()], [say("three"), finish()]]
+    )
+    provider, told = _seeing(llm)
+
+    await _events(provider, _with_screenshots("QUFB"))
+    assert told == [] and provider.supports_images is True
+    await _events(provider, _with_screenshots("QUFB", "QkJC"))
+    # Each refusal cost a request; a tool that takes a screenshot at every step would pay it at every step.
+    assert told == ["this session only"] and provider.supports_images is False
+    await _events(provider, _with_screenshots("QUFB", "QkJC", "Q0ND"))
+    assert [_pictures(request) for request in llm.requests] == [1, 0, 1, 0, 0]
+
+
+async def test_a_picture_the_user_gave_that_was_refused_is_left_out_as_well() -> None:
+    llm = ScriptedLLM(
+        [[_Rejected("The image format image/bmp is not supported", 400)], [say("I cannot see it."), finish()]]
+    )
+    provider, told = _seeing(llm)
+    messages = [
+        UserMessage(content=[TextContent(text="what is this?"), ImageContent(data="QUFB", mime_type="image/bmp")])
+    ]
+
+    events = await _events(provider, messages)
+
+    assert events[-1].message.text == "I cannot see it."
+    assert [_pictures(request) for request in llm.requests] == [1, 0]
+    assert llm.requests[1][-1]["content"] == "what is this?\n[image omitted: the provider refused this picture]"
+    assert told == [] and provider.supports_images is True
+
+
+async def test_an_input_that_is_too_long_is_not_taken_for_a_refusal_of_its_pictures() -> None:
+    too_long = _Rejected(
+        "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens "
+        "(including image tokens).",
+        400,
+    )
+    assert is_context_overflow(too_long)
+    llm = ScriptedLLM([[too_long], [too_long], [say("A desktop."), finish()]])
+    provider, told = _seeing(llm)
+
+    for _ in range(PICTURE_REFUSALS_BEFORE_GOING_WITHOUT):
+        # The loop is told, and makes the context shorter; nothing is sent again here without the pictures.
+        with pytest.raises(ContextOverflowError):
+            await _events(provider, _with_screenshots("QUFB"))
+
+    assert [_pictures(request) for request in llm.requests] == [1, 1]
+    # As often as it takes to end the pictures of a session, had these been counted as refusals of them.
+    assert told == [] and provider.supports_images is True
+    events = await _events(provider, _with_screenshots("QUFB"))
+    assert events[-1].message.text == "A desktop."
+    assert [_pictures(request) for request in llm.requests] == [1, 1, 1]

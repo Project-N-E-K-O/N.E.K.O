@@ -5159,6 +5159,32 @@
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
 
+                // -------- agent_builtin_activity --------
+                // 使魔开始 / 停止使用键鼠或浏览器。页面自己不画横幅：只把事件原样
+                // 交出去，桌面壳（N.E.K.O.-PC）据此盖横幅、接 Esc 叫停。
+                // 契约见 docs/design/nekoclaw-rewrite.md 11.8 节。
+                } else if (response.type === 'agent_builtin_activity') {
+                    try {
+                        var activity = response.activity || {};
+                        if (!window._agentBuiltinActivity) window._agentBuiltinActivity = {};
+                        if (activity.group) {
+                            if (activity.state === 'started') {
+                                window._agentBuiltinActivity[activity.group] = activity;
+                            } else {
+                                // 上一个任务的「结束」可能比下一个任务的「开始」晚到：
+                                // 只清它自己那条，别把正在用这一组的任务清掉。
+                                var keptActivity = window._agentBuiltinActivity[activity.group];
+                                if (!keptActivity || activity.commission_id == null
+                                    || keptActivity.commission_id === activity.commission_id) {
+                                    delete window._agentBuiltinActivity[activity.group];
+                                }
+                            }
+                        }
+                        window.dispatchEvent(new CustomEvent('neko-agent-builtin-activity', { detail: activity }));
+                    } catch (e) {
+                        console.warn('[App] 处理 agent_builtin_activity 失败:', e);
+                    }
+
                 // -------- capture_bridge_computer_use_request (full desktop) --------
                 } else if (response.type === 'capture_bridge_computer_use_request') {
                     (async function () {

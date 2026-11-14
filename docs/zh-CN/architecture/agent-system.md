@@ -51,9 +51,26 @@
 
 - 对筛选可见的插件入口，每个入口一个工具，和直达调用走同一段 `/runs` 代码；
 - `mcp_adapter` 插件里配置的 MCP 服务的工具；
-- 键鼠、浏览器两项内置能力。各接受一条指令，由 `brain/computer_use.py`、`brain/browser_use_adapter.py` 里现有的循环执行；只有 task agent 能调用。
+- 键鼠、浏览器两组内置工具，见下一节；只有 task agent 能调用。
 
-权限存在 `<数据根>/nekoclaw/permissions.json`，每一类是 `first_ask`（首次询问）、`always_ask`（每次都问）、`allow`（放行）、`deny`（禁止）之一。默认放行插件入口和工作目录内的文件读写；在工作目录外读写文件、跑命令、键鼠、浏览器、每个 MCP 服务默认首次询问。设成 `deny` 的插件或 MCP 服务，直达调用也不会用到。
+权限存在 `<数据根>/nekoclaw/permissions.json`，每一类是 `first_ask`（首次询问）、`always_ask`（每次都问）、`allow`（放行）、`deny`（禁止）之一。默认放行插件入口和工作目录内的文件读写；在工作目录外读写文件、跑命令、键鼠、浏览器、每个 MCP 服务默认首次询问。设成 `deny` 的插件或 MCP 服务，直达调用也不会用到。键鼠和浏览器这两类的工具是一次点击、一次按键这样的小步，所以用户只批准「这一次」时，放行到 task agent 这一轮跑完为止。
+
+### 内置工具：键鼠与浏览器
+
+键鼠操控和浏览器操控是猫爪的两组内置工具（`nekoclaw/builtin/`，在智能体进程里）。task agent 在自己的循环里一步一步调用它们，和自带的文件、命令工具并列，每一步都先看到上一步的结果再决定下一步。两组工具都不带自己的循环，调用它们也不会另外请求模型。给模型看的工具定义在 `config/prompts/prompts_nekoclaw_builtin.py`；网关列工具时给它们单独留了 2400 token 的预算，不和插件入口挤在一起。
+
+- **键鼠。** 只有一个工具 `computer`，用 `action` 参数区分动作：`screenshot`、`click`、`move`、`drag`、`scroll`、`type`、`key`、`wait`。它靠截图工作：坐标的横纵两个方向都是 0 到 999 的整数，和屏幕大小无关；每次调用都返回动作之后的一张截图。超出范围的坐标会被拒绝。
+- **浏览器。** 15 个 `browser_*` 工具：打开网址、取页面快照、点击、悬停、填输入框、一次填多项、输入文字、按键、截图、列出／切换／新开／关闭标签页、等某段文字出现、处理弹框。页面以文字快照的形式读取，内容是页面的无障碍树，每个元素带一个 uid，操作时用 uid 指明元素。uid 不在最新快照里时拒绝执行。快照最长 3000 token，超出就截断，并写明从哪里接着读。只能打开 `http://` 和 `https://` 地址。
+
+浏览器用的是用户自己装的那个：Chrome、Edge、Brave、Chromium，按这个顺序找；在 Windows 上，系统默认浏览器是其中之一时排在最前。操控走浏览器的调试协议（Chrome DevTools Protocol，一条 WebSocket），不经任何浏览器自动化库。默认给它一份独立的资料目录 `<数据根>/nekoclaw/browser_profile`：在里面登录过的网站会一直保持登录，用户平时的登录状态不在里面。也可以改成直接操控用户正在用的浏览器，这要求 Chrome 144 以上，用户自己在 `chrome://inspect/#remote-debugging` 打开远程调试，每次连接浏览器都会弹窗要用户点允许。选择存在 `<数据根>/nekoclaw/browser.json`；浏览器装在不常见的位置时，在这个文件的 `executable` 里写明路径，或者用环境变量 `NEKO_BROWSER_PATH` 指定。
+
+应用不随包附带浏览器，启动时也不下载浏览器。Playwright 只是测试依赖，`browser-use` 不在依赖里。本机找不到可用的浏览器时，浏览器操控不就绪，原因码是 `AGENT_BROWSER_NOT_FOUND`。
+
+`computer` 和 `browser_take_screenshot` 返回的是图片，所以只提供给模型能看图的 task agent。模型默认按能看图处理；厂商因为请求里带图片而拒绝时，这次请求去掉图片重发一遍，并把这个模型记到 `<数据根>/nekoclaw/model_capabilities.json`。task agent 的上下文里，这些工具的截图合在一起只保留最近 3 张。
+
+桌面只有一个，浏览器也只有一个。一件委托从第一次调用起占用一组工具，直到 task agent 这一轮跑完、委托进入等用户回话，或者委托结束。一件委托和它开的 task agent 共用一次占用。别的委托要用这一组时最多等 120 秒，等不到就被告知是哪件委托占着。
+
+委托开始占用、放手时，智能体进程发出 `builtin_activity` 事件，主服务器把它作为 `agent_builtin_activity` WebSocket 消息转给每个已连接的页面。页面只把它再作为 `neko-agent-builtin-activity` DOM 事件交出去，自己不画任何东西。`GET /api/agent/builtin/activity` 返回当前的占用情况，`POST /api/agent/builtin/stop` 叫停占着的那件委托，见[智能体 REST API](/zh-CN/api/rest/agent)。
 
 ## 汇报回流
 
@@ -104,16 +121,16 @@ HTTP 负责控制和查询，监听 `127.0.0.1:48915`；内嵌插件服务监听
 | 状态 | 含义 |
 |---|---|
 | `analyzer_enabled` / UI `agent_enabled` | 总开关 |
-| `computer_use_enabled` | 给 task agent 用的键鼠能力 |
-| `browser_use_enabled` | 给 task agent 用的浏览器能力 |
+| `computer_use_enabled` | 给 task agent 用的键鼠工具 |
+| `browser_use_enabled` | 给 task agent 用的浏览器工具 |
 | `user_plugin_enabled` | 插件入口，直达调用和经网关调用都受它控制 |
 
-Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `greeting_check` 后会恢复持久化的运行时意图，因此“构造时关闭”不表示每次刷新页面都会重置用户选择。键鼠和浏览器还要求 agent 模型的连通性检查通过。
+Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `greeting_check` 后会恢复持久化的运行时意图，因此“构造时关闭”不表示每次刷新页面都会重置用户选择。键鼠和浏览器还要求 agent 模型的连通性检查通过（`app/agent_server/model_probe.py`）。此外，键鼠要求本机能发出键鼠输入，浏览器要求本机装有可用的浏览器。
 
 ## 叫停、上限与重启
 
 - 叫停时先把状态写成 `cancelled`，再取消插件的 Run（调用插件服务的 `POST /runs/{run_id}/cancel`）或关掉 task agent 的会话。`POST /admin/control` 的 `end_all` 和关闭总开关会叫停全部在办的委托。
-- 键鼠、浏览器各自同一时间只执行一次调用。
+- 桌面和浏览器同一时间各只归一件委托用（见「内置工具」一节）；同一次占用里的调用一个做完才做下一个。叫停一件委托会取消正在做的调用，并放开它占着的桌面或浏览器；已经发出的点击和跳转撤不回。
 - 插件可以返回 `deferred: true`。委托保持 `working`，直到 `/api/agent/tasks/{task_id}/complete` 被调用；一小时没等到就标成 `failed`。
 - 宿主重启后，上一个进程留下的 `queued`、`working`、`waiting_user` 委托标成 `failed`，随她的下一轮汇报；deferred 的委托保留到期限为止。
 - 智能体进程给 HUD 用的任务视图会把已结束的任务保留五分钟。
@@ -130,8 +147,10 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 台账、outbox、汇报 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
 | task agent 和 agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
 | 能力清单、网关、权限 | `nekoclaw/host/capabilities.py`、`gateway.py`、`permissions.py` |
+| 键鼠和浏览器工具 | `nekoclaw/builtin/`、`config/prompts/prompts_nekoclaw_builtin.py` |
+| 桌面和浏览器的占用；哪些模型能看图 | `nekoclaw/host/leases.py`、`model_capabilities.py` |
 | 调用插件入口（`/runs`） | `nekoclaw/host/plugin_runs.py` |
-| 挂载宿主、HUD 视图、内置能力 | `app/agent_server/nekoclaw_mount.py`、`nekoclaw_builtins.py` |
+| 挂载宿主、HUD 视图、内置工具的开关和事件、agent 模型探测 | `app/agent_server/nekoclaw_mount.py`、`nekoclaw_builtins.py`、`model_probe.py` |
 | Agent 生命周期和 HTTP API | `app/agent_server/api_runtime.py`、`api_routes.py` |
 | 结果投递到聊天 | `main_logic/core/proactive.py` |
 

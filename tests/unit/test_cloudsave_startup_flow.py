@@ -104,7 +104,6 @@ def test_launcher_disables_cloudsave_when_local_state_directory_fails(monkeypatc
         "report_startup_failure",
         lambda message, show_dialog=True: reported_failures.append((message, show_dialog)),
     )
-    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
     monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: False)
     monkeypatch.setattr(launcher, "SERVERS", [{"name": "Main Server", "process": None}])
     monkeypatch.setattr(launcher, "start_server", lambda server: True)
@@ -1333,7 +1332,6 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
     monkeypatch.setattr(launcher, "setup_job_object", lambda: None)
     monkeypatch.setattr(launcher, "_resolve_storage_layout_for_launch", lambda: {})
     monkeypatch.setattr(launcher, "_prepare_cloudsave_runtime_for_launch", lambda: {})
-    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
     monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: False)
     monkeypatch.setattr(launcher, "emit_frontend_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(

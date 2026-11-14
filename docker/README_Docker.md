@@ -24,13 +24,15 @@
 ```
 docker/
 ├── Dockerfile              # Docker 镜像构建文件（标准版）
-├── Dockerfile.full         # 完整版镜像（内置 Chromium）
+├── Dockerfile.full         # 完整版镜像（装有发行版的 Chromium）
 ├── docker-compose.yml      # Docker Compose 配置
 ├── entrypoint.sh           # 容器入口：证书、配置、服务与 Nginx 编排
 ├── env.template            # 环境变量模板（复制为 docker/.env）
 ├── preflight.sh            # 可选宿主侧预检：挂载源符号链接与属主
 ├── backup.sh               # 可选宿主侧备份：主副本清单 + 校验和（见「备份与恢复」）
 ├── compose.limits.example.yaml  # 可选的资源上限覆盖示例（数值必须实测）
+├── compose.browser.yaml    # full 镜像用的覆盖文件：给容器换上 seccomp/chromium.json
+├── seccomp/                # 浏览器控制用的 seccomp 配置，它的来源、代价和实测脚本
 ├── nginx/                  # 反向代理配置分层模板（见「反向代理配置」一节）
 ├── watchdog/               # 可选宿主机自愈看门狗（见下文「低配云服务器」）
 └── config/                # 配置示例（运行时不挂载此目录）
@@ -150,7 +152,18 @@ N.E.K.O. 镜像发布到两个 registry：
 | `pr-{N}-ci-standard` / `-full` | （当前 PR 触发已关，仅在 workflow_dispatch 中可手动产） | 仅 GHCR | reviewer 拉下来手验产物 |
 | `pr-ci-standard` / `-full` | 同上，且**任意** PR 触发都会被覆盖 | 仅 GHCR | 不要用，会被随便哪个 PR 顶掉 |
 
-`standard`（~1.5GB）首次启动时下载 Chromium；`full`（~2.5GB）构建时已包含，开箱即用。
+`standard`（~1.5GB）不带浏览器，浏览器控制不可用；`full`（~2.5GB）装有 Debian 的 Chromium，供浏览器控制使用。应用自己不再下载浏览器。
+
+**用 full 镜像要连同 `compose.browser.yaml` 一起起。** Chromium 靠自己的沙箱隔离网页，沙箱要创建用户命名空间；Docker 默认的 seccomp 配置不允许，Chromium 会一启动就退出，浏览器工具报告浏览器启动不了。这个覆盖文件给容器换上 `seccomp/chromium.json`：Docker 的默认配置，只多一条允许创建命名空间的规则（它放开了什么、代价是什么、怎么在自己的宿主机上确认，见 [seccomp/README.md](seccomp/README.md)）；另外把 `/dev/shm` 的上限从 Docker 默认的 64MB 放到 1GB，页面大的时候标签页才不会崩溃。在 `docker/.env` 里写上这两项，之后所有不带 `-f` 的 `docker compose` 命令都会带上它：
+
+```dotenv
+NEKO_IMAGE_VERSION=latest-full
+COMPOSE_FILE=docker-compose.yml:compose.browser.yaml
+```
+
+Windows 宿主把 `COMPOSE_FILE` 里的冒号换成分号；已经在用别的覆盖文件（比如 `compose.gateway.yaml`）时，把 `compose.browser.yaml` 接在后面。不写 `COMPOSE_FILE` 也可以，但每条 `docker compose` 命令都要带 `-f docker-compose.yml -f compose.browser.yaml`，漏掉一次容器就会不带这份配置重建。standard 镜像不要加这个覆盖文件。
+
+另外两个条件不用处理：服务以 `neko` 用户运行（不是 root，入口脚本已经这样做）；容器里没有显示器，浏览器工具发现没有显示器时自己不开窗口启动浏览器。背景写在 `docker/Dockerfile.full` 的「Browser for the browser tools」一段里。
 
 > 📦 **GHCR 自动清理**：[docker-cleanup.yml](../.github/workflows/docker-cleanup.yml) 每周清理一次，保留最近 30 个版本 + 上述浮动别名 + 所有 release 版本。`ci-{hash}-*` 和 `pr-{N}-ci-*` 这些一次性 tag 会被陆续回收。
 
@@ -160,7 +173,7 @@ N.E.K.O. 镜像发布到两个 registry：
 # 99% 的用户：跟最新 release（standard 版）
 docker pull docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
 
-# 要预装 Chromium 的 full 版
+# 要用浏览器控制的 full 版（装有 Chromium；启动时要带 compose.browser.yaml，见上）
 docker pull docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest-full
 
 # 钉死某个 release（生产环境推荐）
@@ -376,7 +389,7 @@ docker inspect --format '{{.State.Health.Status}}' "${NEKO_CONTAINER_NAME:-neko}
 **可见性**（`docker ps`、外部监控、将来 sidecar 的 `depends_on: service_healthy`）。真要"卡死自动救活"，
 请装可选宿主看门狗 `docker/watchdog/`，两者互补。
 
-启动期较长（三个服务各 5s + 15s 健康检查 + nginx 3s，standard 镜像首次还会下载 Chromium），
+启动期较长（三个服务各 5s + 15s 健康检查 + nginx 3s，还不含 uv sync），
 所以 `start_period` 放宽到 5 分钟；这段时间显示 `starting` 是正常的。
 
 ### 内存与 CPU 上限

@@ -66,6 +66,8 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-13-nekoclaw-browser-not-found",
+        "2026-11-14-theater-handoff-nekoclaw-merge",
         "2026-11-13-theater-safe-delivery",
         "2026-11-14-theater-handoff-feedback",
         "2026-11-14-theater-nekoclaw-main-merge",
@@ -574,7 +576,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "2816ad47b5dda4cdc664c40b3ca37beb36fd9feae050280a568e70b7788f06a0"
+LOCALE_KEY_SIGNATURE = "4eafb5265981c41f7aec22afaeb73a0e9e20d0294f4db0a61b1f597ba631cafa"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

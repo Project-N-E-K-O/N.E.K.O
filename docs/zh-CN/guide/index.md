@@ -2,7 +2,7 @@
 
 Project N.E.K.O. 是包含形象渲染、实时/文本交互、持久记忆、Agent 执行与插件的开源 AI 伴侣平台。本站面向当前仓库的贡献者和集成者，不是价格、额度或 Provider 能力宣传页。
 
-主要边界包括 `app/` 的 Python 3.11 服务、`main_logic/` 与 `memory/`、`brain/`、Jinja/static + 共享 React 聊天、Vue plugin manager、N.E.K.O.-PC Electron shell，以及 `docker/`。
+主要边界包括 `app/` 的 Python 3.11 服务、`main_logic/` 与 `memory/`、`nekoclaw/`（Agent 执行）、Jinja/static + 共享 React 聊天、Vue plugin manager、N.E.K.O.-PC Electron shell，以及 `docker/`。
 
 ## 使用前评估 N.E.K.O
 

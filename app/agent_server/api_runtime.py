@@ -23,12 +23,12 @@ the HUD uses.
 """
 
 import math
+import threading
 from collections import OrderedDict
 
 from .api_shared import (  # noqa: F401
     AgentServerEventBridge,
     Any,
-    ComputerUseAdapter,
     Dict,
     HTTPException,
     HUD_ACTIVE,
@@ -38,7 +38,7 @@ from .api_shared import (  # noqa: F401
     ThrottledLogger,
     USER_PLUGIN_SERVER_PORT,
     _bump_state_revision,
-    _close_browser_use_adapter,
+    _close_browser,
     _create_tracked_task,
     _emit_agent_status_update,
     _emit_main_event,
@@ -557,7 +557,9 @@ async def startup():
     # so that site covers all lazy modules; do not start another warmup here and compete for the startup GIL.
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
-    Modules.computer_use = ComputerUseAdapter()
+    from .model_probe import AgentModelProbe
+
+    Modules.model_probe = AgentModelProbe()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _region_task = asyncio.create_task(_settle_region())
     Modules._persistent_tasks.add(_region_task)
@@ -567,11 +569,12 @@ async def startup():
         await _start_embedded_user_plugin_server()
     except Exception as e:
         logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
-    # BrowserUse stays unloaded until its toggle, availability endpoint, or
-    # a task agent's call asks for it.
+    # No browser is found or started here: that happens when a task agent
+    # first calls a browser tool.
 
-    # Both CUA and BrowserUse share the agent LLM — default to "not connected"
-    # and probe in background.  The single check updates both capability caches.
+    # The keyboard-and-mouse and browser tools are driven by task agents on
+    # the agent LLM — default to "not connected" and probe in background.
+    # The single check updates both capability caches.
     _set_capability("computer_use", False, "connectivity check pending")
     _set_capability("browser_use", False, "connectivity check pending")
     # Plugin capability = ready (embedded HTTP server is always up), but lifecycle
@@ -615,11 +618,35 @@ async def startup():
     _bump_state_revision()
 
 
+def _kill_browser_at_last() -> None:
+    """Kill the browser the tools started: the last resort of a shutdown; never raises. Runs on a thread of its own."""
+    try:
+        builtin_provider.kill_browser()
+    except Exception as e:
+        logger.warning(f"[Agent] Killing the browser failed: {e}")
+
+
 @app.on_event("shutdown")
 async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     global _loop_stall_watchdog
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
+    from config.nekoclaw_settings import BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, BROWSER_KILL_AT_SHUTDOWN_SECONDS
+
+    # Set first: whatever the steps below take, and whether or not the event
+    # loop gets round to them, the browser the tools started does not outlive
+    # this process (see ``BROWSER_KILL_AT_SHUTDOWN_SECONDS``). Cancelled once
+    # the browser has been closed.
+    browser_killed_at = asyncio.get_running_loop().time() + BROWSER_KILL_AT_SHUTDOWN_SECONDS
+    browser_last_resort = threading.Timer(BROWSER_KILL_AT_SHUTDOWN_SECONDS, _kill_browser_at_last)
+    browser_last_resort.daemon = True
+    browser_last_resort.start()
+    # And no call of the built-in tools is carried out from here on. The
+    # browser is closed (or killed) once, further down; a task agent whose
+    # runtime is not stopped by then (the host is only waited for for a few
+    # seconds) would have its next browser call start another, with nobody
+    # left to close it.
+    builtin_provider.shut_down()
     # Release first so the synchronous cleanup below is not reported as stalls.
     if _loop_stall_watchdog is not None:
         try:
@@ -638,14 +665,6 @@ async def shutdown():
     # bridge it reports through are still up. Bounded: see
     # HOST_SHUTDOWN_BUDGET_SECONDS. A no-op when nothing ever built the host.
     await shutdown_nekoclaw_host()
-
-    if Modules.computer_use:
-        Modules.computer_use.cancel_running()
-    if Modules.browser_use:
-        try:
-            Modules.browser_use.cancel_running()
-        except Exception:
-            pass
 
     for t in list(Modules._persistent_tasks):
         if not t.done():
@@ -685,20 +704,42 @@ async def shutdown():
     Modules._persistent_tasks.clear()
     Modules._background_tasks.clear()
 
-    # BrowserSession.keep_alive keeps Chromium running between tasks; closing
-    # the adapter is therefore required at service shutdown, not just task
-    # cancellation, to reap the browser subprocess tree.
-    await _close_browser_use_adapter()
-
-    cu = Modules.computer_use
-    # Waited for whether or not a call is on record as running: a cancelled
-    # call is taken off the record after a bounded wait even if its worker
-    # thread has not stopped. An idle adapter returns at once.
-    if cu is not None and hasattr(cu, "wait_for_completion"):
-        loop = asyncio.get_running_loop()
-        finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
-        if not finished:
-            logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
+    # The browser the tools started stays open between tasks; it is closed
+    # at service shutdown, along with keys a stopped call left held. The
+    # host's shutdown above has cancelled every call that was under way.
+    # The launcher ends this process a few seconds after it began to shut
+    # down, and a browser that is still closing then would run on with
+    # nobody to close it. It is asked to close within what is left before
+    # the time it is killed at, and killed when it has not; with nothing
+    # left (the steps above took it all) it is not asked at all.
+    left = min(BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, browser_killed_at - asyncio.get_running_loop().time())
+    closed_in_time = False
+    if left > 0:
+        try:
+            await asyncio.wait_for(_close_browser(), timeout=left)
+            closed_in_time = True
+        except asyncio.TimeoutError:
+            pass  # Killed just below, like one there was no time left to ask.
+    if not closed_in_time:
+        logger.warning("[Agent] The browser did not close in time; killing it")
+    elif builtin_provider.browser_unclosed():
+        # It was asked in time and closing it failed. The browser is then
+        # kept to be closed the next time, and at a shutdown there is none.
+        closed_in_time = False
+        logger.warning("[Agent] The browser could not be closed; killing it")
+    if not closed_in_time:
+        try:
+            await asyncio.to_thread(builtin_provider.kill_browser)
+        except Exception as e:
+            logger.warning(f"[Agent] Killing the browser failed: {e}")
+    browser_last_resort.cancel()
+    # Only the keys now. The browser has been dealt with: asked to close once
+    # more (as ``aclose`` would), a browser that was just killed would be
+    # waited for all over again.
+    try:
+        await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
+    except Exception as e:
+        logger.warning(f"[Agent] Built-in tools cleanup error: {e}")
 
     logger.info("[Agent] Shutdown cleanup complete")
     await _emit_agent_status_update()
@@ -845,6 +886,137 @@ async def cancel_task(task_id: str):
         return {"success": False, "error": "task is not active", "status": current.get("status")}
     logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task.get("type"))
     return {"success": True, "task_id": task_id, "status": "cancelled"}
+
+
+@app.get("/builtin/activity")
+async def builtin_activity():
+    """Return which commission is using the keyboard and mouse, and which the browser, right now.
+
+    The same payloads the ``builtin_activity`` events carry, for a display
+    that starts late and missed them.
+    """
+    from nekoclaw.host.capabilities import BUILTIN_GROUPS
+
+    from .nekoclaw_builtins import activity_payload, occupant
+
+    items = []
+    for group in BUILTIN_GROUPS:
+        commission_id = occupant(group)
+        if commission_id:
+            items.append(activity_payload(group, "started", commission_id))
+    return {"activity": items}
+
+
+@app.post("/builtin/stop")
+async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
+    """Stop the commission that is using the keyboard and mouse or the browser.
+
+    What the Esc key of the banner calls. ``group`` names one of the two;
+    without it both are stopped. Stopping is what cancelling the task from
+    the task window does: the status is written first, the call under way is
+    cancelled, and the desktop or the browser is given back.
+    """
+    from nekoclaw.host.capabilities import BUILTIN_GROUPS
+
+    from .nekoclaw_builtins import occupant
+
+    group = (payload or {}).get("group")
+    if group is not None and group not in BUILTIN_GROUPS:
+        raise HTTPException(400, "unknown group")
+    host = peek_host()
+    stopped = []
+    for name in ([group] if group else list(BUILTIN_GROUPS)):
+        commission_id = occupant(name)
+        if not commission_id or commission_id in stopped or host is None:
+            continue
+        commission = await host.abort(commission_id, reason="Stopped with Esc")
+        if commission is not None and commission.status == "cancelled":
+            stopped.append(commission_id)
+            logger.info("[Agent] Task %s stopped with Esc (%s)", commission_id, name)
+    return {"success": True, "stopped": stopped}
+
+
+def _browser_settings_view() -> Dict[str, Any]:
+    """Return the browser settings with the browsers found on this computer. Blocking (file checks)."""
+    from nekoclaw.builtin.browser.launcher import find_browsers
+    from nekoclaw.builtin.browser.settings import MODES, BrowserSettingsStore
+
+    store = BrowserSettingsStore()
+    return {
+        "settings": store.load().to_json(),
+        "modes": list(MODES),
+        "browsers": [
+            {"kind": install.kind, "name": install.name, "executable": install.executable}
+            for install in find_browsers()
+        ],
+    }
+
+
+@app.get("/builtin/browser/settings")
+async def get_browser_settings():
+    """Return which browser the browser tools use and how; for the settings page of the console."""
+    return await asyncio.to_thread(_browser_settings_view)
+
+
+@app.post("/builtin/browser/settings")
+async def set_browser_settings(payload: Dict[str, Any]):
+    """Change which browser the browser tools use and how.
+
+    ``mode`` is ``own_profile`` (the user's browser with a profile directory
+    of its own) or ``attach`` (the browser the user is using, which they
+    allow in that browser). The change applies to the next browser that is
+    started: one that is open is closed, so the next call starts anew.
+    """
+    from nekoclaw.builtin.browser.launcher import is_browser_executable
+    from nekoclaw.builtin.browser.settings import MODES, BrowserSettings, BrowserSettingsStore
+
+    payload = payload or {}
+
+    def apply() -> Dict[str, Any]:
+        store = BrowserSettingsStore()
+        current = store.load()
+        mode = payload.get("mode", current.mode)
+        if mode not in MODES:
+            raise ValueError("unknown mode")
+        executable = payload.get("executable", current.executable)
+        if executable is not None and (not isinstance(executable, str) or not executable.strip()):
+            executable = None
+        if executable is not None and not os.path.isfile(executable):
+            raise ValueError("executable not found")
+        if executable is not None and not is_browser_executable(executable):
+            # It is started with a debugging port: not any program will do.
+            raise ValueError("executable is not a browser the tools can drive (Chrome, Edge, Brave or Chromium)")
+        headless = payload.get("headless", current.headless)
+        store.save(BrowserSettings(mode=mode, executable=executable, headless=headless is True))
+        return _browser_settings_view()
+
+    try:
+        view = await asyncio.to_thread(apply)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    # A browser named in the settings may be one the search does not find,
+    # or the one it found may have been set aside: looked for afresh.
+    from .capabilities import _browser_dependency_status, _forget_browser_search
+
+    _forget_browser_search()
+    _create_tracked_task(_close_browser(update_capability=False))
+    # With a model that answers, whether there is a browser to drive is all
+    # the browser tools depend on, and that may just have changed: said at
+    # once. Left as it was (no browser found, from before one was named
+    # here), the tools would stay refused until something asked again. With
+    # a model that has not answered, the check that follows its answer says;
+    # and with none configured any more (the probe of the one before may
+    # still say it answered) nothing is said for it, as in
+    # ``/browser_use/availability``.
+    probe = Modules.model_probe
+    # In a worker thread: it reads the configuration from the disk.
+    configured = (await asyncio.to_thread(_check_agent_api_gate)).get("ready") is True
+    if configured and probe is not None and getattr(probe, "init_ok", False):
+        dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
+        _set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)
+        _bump_state_revision()
+        await _emit_agent_status_update()
+    return {"success": True, **view}
 
 
 @app.post("/api/agent/tasks/{task_id}/complete")
