@@ -776,6 +776,18 @@ def test_ownership_compares_instants_not_wall_clock_text():
     assert not legacy_dedup.owned({**row, 'arbitration_archived_at': '2026-11-11T10:00:01'}, {'b'}, [planned])
 
 
+def test_an_everyday_dedup_archive_in_the_planned_millisecond_is_not_claimed():
+    """Only a reason an import rewrote is matched by time; everyday dedup's own reason never is."""
+    from memory.long_term_sync import timestamp
+    planned = timestamp('2026-11-11T10:00:00.123+08:00')
+    # Everyday dedup stamps its own "now" with microseconds, here inside the planned millisecond.
+    everyday = {'id': 'b', 'arbitration_archived_at': '2026-11-11T10:00:00.123938+08:00',
+                'arbitration_reason': 'fact_dedup_merge', 'superseded_by': 'a'}
+    assert timestamp(everyday['arbitration_archived_at']) == planned
+    assert not legacy_dedup.owned(everyday, {'b'}, [planned])
+    assert legacy_dedup.owned({**everyday, 'arbitration_reason': 'dedup_arbitration'}, {'b'}, [planned])
+
+
 @pytest.mark.asyncio
 async def test_the_archive_time_written_by_the_cleanup_carries_its_offset(memory):
     directory, facts = memory
