@@ -81,7 +81,9 @@ inline の `data: bytes` は SDK が base64 エンコードして送ります。
 
 ### 現在の実装上の制限
 
-- `ai_behavior in ("respond","read")` のとき、inline の `image` parts と `ctx.images.upload()` が返すローカル一時 URL はどちらも LLM コンテキストに入ります（最終的に `session.stream_image(base64)`）。任意の外部 URL は拒否され、リモート取得を agent event 配信経路に持ち込みません。1 メッセージでモデルに注入されるのは最大 8 枚・合計 8 MiB までです。超えた image parts は `visibility` に従って表示はされますが、モデルコンテキストには入りません。
+- `ai_behavior in ("respond","read")` のとき、inline の `image` parts と `ctx.images.upload()` が返すローカル一時 URL はどちらも LLM コンテキストに入ります（最終的に `session.stream_image(base64)`）。任意の外部 URL は拒否され、リモート取得を agent event 配信経路に持ち込みません。1 メッセージでモデルに注入されるのは最大 8 枚・合計 8 MiB までです。超えた image parts はモデルコンテキストには入りません。
+- チャット表示（`visibility=["chat"]`）には別枠の 1 push あたりの上限があります。最大 8 枚で、inline 画像は合計 8 MiB まで（`ctx.images.upload()` が返す URL 画像はバイト数に数えません）。それを超えた画像はチャットの吹き出しからも落とされるため、1 回の push の 9 枚目はどこにも表示されません。
+- `respond` の画像は返答ターンに乗るため、どのプロバイダにも届きます。`read` の画像は**現在の**セッションへのベストエフォート入力で、現在のセッションがない場合や、ネイティブビジョン非対応のリアルタイムプロバイダでは破棄されます。そうしたプロバイダに画像を確実に届けたい場合は `ai_behavior="respond"` を使ってください。
 - 8 枚 / 8 MiB は **1 回の push** の上限です。text mode の `ai_behavior="read"` の画像はすぐには送られず、ユーザーの次の発話まで保留されるため、**1 つの turn** に複数回の push 分が溜まることがあります。保留は送信元ごとに別枠で、互いの枠を侵食しません：
 
   | 送信元 | 枚数 | バイト |
@@ -197,13 +199,20 @@ N.E.K.O は既定で `music.163.com` などの既知の安全なドメインか�
 ```python
 from urllib.parse import urlparse
 
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry
+
 MUSIC_HOST = "music.my-cdn.com"
 
 @plugin_entry(id="play_external")
 async def play_external(self, url: str, **_):
     # 許可リストには自分の固定ソースだけを入れ、呼び出し側が渡した url は入れないこと。
     # url は LLM が選んだものかもしれず、そのまま入れると許可リスト自体を迂回できてしまう。
-    if urlparse(url).hostname != MUSIC_HOST:
+    # https も必須：フロントエンドは http については許可リストと完全一致する URL しか通さない。
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return Err(SdkError("invalid music url"))
+    if parsed.scheme != "https" or parsed.hostname != MUSIC_HOST:
         return Err(SdkError("unsupported music source"))
     result = self.push_message(
         ai_behavior="blind",
@@ -212,12 +221,15 @@ async def play_external(self, url: str, **_):
     if not result["submitted"]:
         # 許可リストに入らなければ、フロントエンドは結局再生を止める
         return Err(SdkError(f"allowlist push failed: {result.get('reason')}"))
-    self.push_message(
+    result = self.push_message(
         visibility=["chat"],
         ai_behavior="blind",
         parts=[{"type": "ui_action", "action": "media_play_url", "url": url, "media_type": "audio"}],
     )
-    return Ok({"status": "playing", "url": url})
+    if not result["submitted"]:
+        return Err(SdkError(f"play push failed: {result.get('reason')}"))
+    # submitted は要求を引き渡したという意味だけで、再生が始まったことは保証しない
+    return Ok({"status": "play_requested", "url": url})
 ```
 
 旧 SDK helper の `self.register_music_domains(...)` は削除されました。

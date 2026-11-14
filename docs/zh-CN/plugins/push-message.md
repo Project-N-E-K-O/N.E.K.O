@@ -81,7 +81,9 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。需要�
 
 ### 当前实现限制
 
-- `ai_behavior in ("respond","read")` 时，inline `image` parts 和 `ctx.images.upload()` 返回的本地临时 URL 都能进入 LLM 上下文（最终走 `session.stream_image(base64)`）。任意外部 URL 仍会被拒绝，避免把远端抓取引入 agent event 投递路径。单条消息最多向模型注入 8 张、合计 8 MiB 图片；超出的 image parts 仍可按 `visibility` 显示，但不会进入模型上下文。
+- `ai_behavior in ("respond","read")` 时，inline `image` parts 和 `ctx.images.upload()` 返回的本地临时 URL 都能进入 LLM 上下文（最终走 `session.stream_image(base64)`）。任意外部 URL 仍会被拒绝，避免把远端抓取引入 agent event 投递路径。单条消息最多向模型注入 8 张、合计 8 MiB 图片；超出的 image parts 不会进入模型上下文。
+- 聊天显示（`visibility=["chat"]`）有自己独立的单次 push 上限：最多 8 张，其中 inline 图片合计不超过 8 MiB（`ctx.images.upload()` 返回的 URL 图不计字节）。超出的图在聊天气泡里同样会被丢掉，所以一次 push 里的第 9 张图哪里都不会出现。
+- `respond` 的图随回复轮次送出，任何服务商都能收到；`read` 的图只是尽力投给**当前**会话：没有当前会话时会被丢弃，实时服务商不支持原生视觉时也会被丢弃。图片必须送达这类服务商时请用 `ai_behavior="respond"`。
 - 上面的 8 张 / 8 MiB 是**单次 push** 的上限。文字模式下 `ai_behavior="read"` 的图不是立刻发给模型，而是先暂存、等用户下次开口时一起送出，所以**一个回合**里可能攒着好几次 push 的图。暂存按来源分开计额，互不侵蚀：
 
   | 来源 | 张数 | 字节 |
@@ -197,13 +199,20 @@ N.E.K.O 默认只允许来自 `music.163.com` 等已知安全域名的音频播�
 ```python
 from urllib.parse import urlparse
 
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry
+
 MUSIC_HOST = "music.my-cdn.com"
 
 @plugin_entry(id="play_external")
 async def play_external(self, url: str, **_):
     # 白名单里只放你自己固定的音源，不要直接放调用方传进来的 url：
     # url 可能是 LLM 选的，原样加进去等于绕过了白名单本身。
-    if urlparse(url).hostname != MUSIC_HOST:
+    # 同时要求 https：前端对 http 只放行白名单里精确匹配的 URL。
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return Err(SdkError("invalid music url"))
+    if parsed.scheme != "https" or parsed.hostname != MUSIC_HOST:
         return Err(SdkError("unsupported music source"))
     result = self.push_message(
         ai_behavior="blind",
@@ -212,12 +221,15 @@ async def play_external(self, url: str, **_):
     if not result["submitted"]:
         # 白名单没加上，前端照样会拦下播放
         return Err(SdkError(f"allowlist push failed: {result.get('reason')}"))
-    self.push_message(
+    result = self.push_message(
         visibility=["chat"],
         ai_behavior="blind",
         parts=[{"type": "ui_action", "action": "media_play_url", "url": url, "media_type": "audio"}],
     )
-    return Ok({"status": "playing", "url": url})
+    if not result["submitted"]:
+        return Err(SdkError(f"play push failed: {result.get('reason')}"))
+    # submitted 只表示请求已交出去，不代表已经在播放
+    return Ok({"status": "play_requested", "url": url})
 ```
 
 旧 SDK helper `self.register_music_domains(...)` 已删除。

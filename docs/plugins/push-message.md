@@ -81,7 +81,9 @@ Inline `data: bytes` is base64-encoded by the SDK. To extend push_message, add a
 
 ### Current limitations
 
-- With `ai_behavior in ("respond","read")`, inline `image` parts and the local temporary URLs returned by `ctx.images.upload()` both reach the LLM context (ultimately via `session.stream_image(base64)`). Arbitrary external URLs are rejected so remote fetching stays out of the agent event delivery path. At most 8 images totaling 8 MiB are injected into the model per message; extra image parts can still be displayed according to `visibility`, but do not enter model context.
+- With `ai_behavior in ("respond","read")`, inline `image` parts and the local temporary URLs returned by `ctx.images.upload()` both reach the LLM context (ultimately via `session.stream_image(base64)`). Arbitrary external URLs are rejected so remote fetching stays out of the agent event delivery path. At most 8 images totaling 8 MiB are injected into the model per message; extra image parts do not enter model context.
+- Chat display (`visibility=["chat"]`) has its own, separate per-push budget: at most 8 images, with inline images totaling at most 8 MiB (URL images from `ctx.images.upload()` do not count toward the bytes). Images past that budget are dropped from the chat bubble as well, so a 9th image in one push is shown nowhere.
+- `respond` images ride the reply turn and reach any provider. `read` images are best-effort input to the **current** session only: they are dropped when there is no current session, and on a realtime provider without native vision. Use `ai_behavior="respond"` when the image must reach such a provider.
 - The 8 images / 8 MiB figure is a **per-push** ceiling. In text mode, `ai_behavior="read"` images are staged until the user's next turn rather than sent immediately, so **one turn** can carry several pushes' worth. Staging is budgeted per source, and sources never eat each other's quota:
 
   | Source | Images | Bytes |
@@ -197,13 +199,20 @@ Push a `ui_action: media_allowlist_add`, then start playback:
 ```python
 from urllib.parse import urlparse
 
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry
+
 MUSIC_HOST = "music.my-cdn.com"
 
 @plugin_entry(id="play_external")
 async def play_external(self, url: str, **_):
     # Allowlist your own fixed source, never the caller-supplied url: the url
     # may be chosen by an LLM, and allowlisting it would bypass the allowlist.
-    if urlparse(url).hostname != MUSIC_HOST:
+    # Require https too: the frontend only lets exact allowlisted http URLs through.
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return Err(SdkError("invalid music url"))
+    if parsed.scheme != "https" or parsed.hostname != MUSIC_HOST:
         return Err(SdkError("unsupported music source"))
     result = self.push_message(
         ai_behavior="blind",
@@ -212,12 +221,15 @@ async def play_external(self, url: str, **_):
     if not result["submitted"]:
         # Without the allowlist entry the frontend would block playback anyway.
         return Err(SdkError(f"allowlist push failed: {result.get('reason')}"))
-    self.push_message(
+    result = self.push_message(
         visibility=["chat"],
         ai_behavior="blind",
         parts=[{"type": "ui_action", "action": "media_play_url", "url": url, "media_type": "audio"}],
     )
-    return Ok({"status": "playing", "url": url})
+    if not result["submitted"]:
+        return Err(SdkError(f"play push failed: {result.get('reason')}"))
+    # submitted only means the request was handed off -- not that audio is playing.
+    return Ok({"status": "play_requested", "url": url})
 ```
 
 The old SDK helper `self.register_music_domains(...)` has been removed.

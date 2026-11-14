@@ -2899,6 +2899,10 @@ _HEADROOM_ANCHORS = {
     "zh-CN": "{n} 字节",
     "ja": "{n} バイト",
 }
+# How many times each locale prints the headroom figure. A plain ``in`` check
+# passes as long as ONE mention is current; counting makes a partial update
+# (one sentence edited, the others left stale) fail.
+_HEADROOM_MENTIONS = {"en": 3, "zh-CN": 4, "ja": 4}
 
 
 @pytest.mark.parametrize("locale", _GUIDE_LOCALES)
@@ -2926,12 +2930,16 @@ def test_every_locale_of_the_guide_prints_the_same_numbers(locale: str) -> None:
 
     # Per-push model image budget (prose, so anchored per locale).
     count = character_runtime._PLUGIN_IMAGE_MAX_COUNT
+    # The guide prints a whole number of MiB; a fractional budget would make
+    # the floor-divided figure below match a now-wrong page.
+    assert character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES % (1024 * 1024) == 0
     mib = character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES // (1024 * 1024)
     for anchor in _PER_PUSH_IMAGE_BUDGET_ANCHORS[locale]:
         assert anchor.format(count=count, mib=mib) in text
     # The local payload_too_large gate holds back the host headroom; the
     # guide prints that byte count, so tie it to the constant.
     assert _HEADROOM_ANCHORS[locale].format(n=_HOST_ENVELOPE_HEADROOM_BYTES) in text
+    assert text.count(str(_HOST_ENVELOPE_HEADROOM_BYTES)) == _HEADROOM_MENTIONS[locale]
 
     assert (
         f"`MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = {MESSAGE_PLANE_PAYLOAD_MAX_BYTES}"
