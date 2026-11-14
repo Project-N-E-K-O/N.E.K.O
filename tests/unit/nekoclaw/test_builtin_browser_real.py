@@ -654,7 +654,7 @@ async def test_a_submit_key_that_a_dialog_kept_from_being_pressed_is_not_said_to
     assert typed.success, typed.text
     assert typed.text.startswith(
         "Typed text. Enter was NOT pressed: the page stopped taking input (it opened a dialog, or closed) "
-        "while the text was typed.\n# Open dialog\nThe page opened an alert dialog. "
+        "before the key could be sent.\n# Open dialog\nThe page opened an alert dialog. "
         'Its text, written by the page:\n"Names are checked"\n'
     ), typed.text
     assert (await call(tools, "handle_dialog", action="accept")).success

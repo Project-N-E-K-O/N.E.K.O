@@ -409,7 +409,7 @@ async def test_typing_a_submit_key_that_loads_another_document_answers_with_its_
     assert 'RootWebArea "Thanks"' in outcome.text
 
 
-STOPPED = "the page stopped taking input (it opened a dialog, or closed)"
+NOT_PRESSED = "was NOT pressed: the page stopped taking input (it opened a dialog, or closed) before the key could be sent."
 
 
 async def test_typing_that_opens_a_dialog_says_the_submit_key_was_not_pressed(tools: BrowserTools, world: BrowserWorld) -> None:
@@ -419,7 +419,7 @@ async def test_typing_that_opens_a_dialog_says_the_submit_key_was_not_pressed(to
     fake.find("Your name").on_input = lambda browser, page: browser.open_dialog(page, "alert", "Draft saved")
     outcome = await call(tools, "type_text", text=" Lovelace", submitKey="Enter")
     # Not "Typed text + Enter": the form was typed into, not sent, and the answer has to say which.
-    assert outcome == BuiltinOutcome(True, f"Typed text. Enter was NOT pressed: {STOPPED} while the text was typed.\n{NOTICE}")
+    assert outcome == BuiltinOutcome(True, f"Typed text. Enter {NOT_PRESSED}\n{NOTICE}")
     assert fake.find("Your name").value == "Ada Lovelace" and fake.keys == []
 
 
@@ -433,10 +433,12 @@ async def test_a_key_whose_modifier_opens_a_dialog_is_not_said_to_have_been_pres
 
     fake.on_key = refuse_shortcuts
     outcome = await call(tools, "press_key", key="Control+Enter")
-    assert outcome == BuiltinOutcome(
-        True, f"Control+Enter was NOT pressed: {STOPPED} when its modifier keys went down.\n{NOTICE}"
-    )
+    assert outcome == BuiltinOutcome(True, f"Control+Enter {NOT_PRESSED}\n{NOTICE}")
     assert [event["key"] for event in fake.keys] == ["Control"]
+    # The same key after typed text: the text went in whole, and the answer does not blame the typing for the dialog.
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    outcome = await call(tools, "type_text", text="x", submitKey="Control+Enter")
+    assert outcome == BuiltinOutcome(True, f"Typed text. Control+Enter {NOT_PRESSED}\n{NOTICE}")
 
 
 async def test_filling_a_select_whose_change_asks_first_answers_at_once_with_the_dialog(

@@ -89,9 +89,11 @@ def cap_lines(lines: list[str], max_tokens: int) -> tuple[str, int]:
 # holds up the ones behind it.
 MAX_TIMEOUT_SECONDS = 120.0
 
-# Why a key that was asked for was not pressed. What stopped it (the dialog
-# and its text, or that the page closed) follows in the same answer.
-_STOPPED_TAKING_INPUT = "the page stopped taking input (it opened a dialog, or closed)"
+# Said of a key that was asked for and not pressed. When that came about is
+# not said (while text was typed before it, when one of its modifiers went
+# down, in between): what stopped it follows in the same answer, the dialog
+# with its text or that the page has closed.
+_NOT_PRESSED = "was NOT pressed: the page stopped taking input (it opened a dialog, or closed) before the key could be sent."
 
 
 def _seconds(arguments: dict[str, Any]) -> float | None:
@@ -392,7 +394,7 @@ class BrowserTools:
         else:
             # Said outright: read as "typed and sent", a form that was only
             # typed into would be taken for one that was submitted.
-            done = f"Typed text. {wanted} was NOT pressed: {_STOPPED_TAKING_INPUT} while the text was typed."
+            done = f"Typed text. {wanted} {_NOT_PRESSED}"
         return await self._after(page, done, arguments, before, pages)
 
     async def _press_key(self, arguments: dict[str, Any]) -> BuiltinOutcome:
@@ -402,7 +404,7 @@ class BrowserTools:
         if await self._session.press_key(page, key):
             done = f"Successfully pressed key: {key}"
         else:
-            done = f"{key} was NOT pressed: {_STOPPED_TAKING_INPUT} when its modifier keys went down."
+            done = f"{key} {_NOT_PRESSED}"
         return await self._after(page, done, arguments, before, pages)
 
     async def _take_screenshot(self, arguments: dict[str, Any]) -> BuiltinOutcome:
