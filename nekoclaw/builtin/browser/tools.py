@@ -173,6 +173,10 @@ class BrowserTools:
         async with self._lock:
             await self._session.close()
 
+    def kill(self) -> None:
+        """Kill the browser outright, whatever call is under way. Blocking; see ``BrowserSession.kill``."""
+        self._session.kill()
+
     # -- building answers --------------------------------------------------
 
     def _pages_section(self) -> str:

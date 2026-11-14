@@ -954,3 +954,32 @@ def test_the_ports_the_browser_is_kept_from_are_those_of_every_service_of_this_a
     assert nekoclaw_builtins._own_ports() == services
     # They are what the provider of this process hands to the browser it starts.
     assert nekoclaw_builtins.provider._own_ports is nekoclaw_builtins._own_ports
+
+
+async def test_shutdown_kills_a_browser_that_does_not_close_in_the_time_it_has(
+    modules, process, search, browser, monkeypatch
+):
+    import threading
+
+    killed_in: list[threading.Thread] = []
+    monkeypatch.setattr(api_runtime, "BROWSER_SHUTDOWN_SECONDS", 0.05)
+    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
+    # The browser is asked to close and takes its time: longer than the process has left.
+    browser.hold = asyncio.Event()
+
+    await asyncio.wait_for(api_runtime.shutdown(), 10.0)
+
+    # Killed, and not on the event loop (killing looks for processes and waits for them).
+    assert len(killed_in) == 1 and killed_in[0] is not threading.current_thread()
+    assert process[-1] == "status"
+    browser.hold.set()
+
+
+async def test_shutdown_does_not_kill_a_browser_that_closes_in_time(modules, process, search, browser, monkeypatch):
+    killed: list[int] = []
+    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed.append(1))
+    assert api_runtime.BROWSER_SHUTDOWN_SECONDS == 4.0
+
+    await api_runtime.shutdown()
+
+    assert browser.closes >= 1 and killed == []

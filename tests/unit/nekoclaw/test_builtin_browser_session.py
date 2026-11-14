@@ -184,13 +184,32 @@ async def _until(holds: Any) -> None:
         await asyncio.sleep(0.005)
 
 
-async def test_a_start_cancelled_while_the_browser_comes_up_closes_the_browser_once_it_is_there(
+async def test_a_start_cancelled_while_the_browser_comes_up_tells_the_start_to_stop(
     session: BrowserSession, world: BrowserWorld
 ) -> None:
     world.launch_gate = asyncio.Event()
     starting = asyncio.ensure_future(session.start())
     await _until(lambda: world.launched)
-    # The user stops the work. The start of the browser goes on in its thread.
+    (stop,) = world.launch_stops
+    assert not stop.is_set()
+    # The user stops the work. The start of the browser goes on in its thread:
+    # it is told to give up, which it does at once, taking what it started with it.
+    await _cancelled(starting)
+    assert stop.is_set()
+    assert world.closed == [] and world.connected == [] and not session.connected
+    world.launch_gate.set()
+    await session.close()
+    # Nothing came up, so there is nothing to close; and closing did not have to wait for a browser to come up.
+    assert world.closed == []
+
+
+async def test_a_browser_that_was_up_before_its_start_heard_of_the_stop_is_closed(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.launch_gate = asyncio.Event()
+    world.launch_ignores_stop = True
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: world.launched)
     await _cancelled(starting)
     assert world.closed == [] and world.connected == [] and not session.connected
     world.launch_gate.set()
@@ -216,9 +235,11 @@ async def test_the_next_start_waits_until_the_browser_of_a_cancelled_start_has_b
     assert len(world.launched) == 1 and not again.done()
     world.launch_gate.set()
     await again
-    assert len(world.launched) == 2 and len(world.closed) == 1 and session.connected
+    # The first start gave up as it was told; the second brought the browser up.
+    assert len(world.launched) == 2 and world.closed == [] and session.connected
+    assert world.launch_stops[0].is_set() and not world.launch_stops[1].is_set()
     await session.close()
-    assert len(world.closed) == 2
+    assert len(world.closed) == 1
 
 
 async def test_a_start_that_was_cancelled_and_then_fails_leaves_nothing_to_close(
@@ -3026,3 +3047,65 @@ async def test_a_page_whose_setting_up_was_stopped_half_way_is_set_up_by_the_nex
     # Set up once: the calls after that go straight to the page.
     await session.take_snapshot(work)
     assert len(world.browser.fetch_enabled) == 1 and len(world.browser.of("Target.attachToTarget")) == 1
+
+
+async def test_killing_takes_the_browsers_this_process_started_and_no_other(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    killed: list[Any] = []
+    looked_up: list[Any] = []
+
+    def on_profile(profile: Any) -> int:
+        looked_up.append(profile)
+        return 8765
+
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", on_profile)
+    # Nothing is driven: nothing is killed.
+    session.kill()
+    assert killed == []
+
+    await session.start()
+    session.kill()
+    # Not our child (it handed over): found by the profile it runs on.
+    assert looked_up == [str(world.store.profile_dir())] and killed == [8765]
+
+    # The browser the user is using is never killed.
+    await session.close()
+    killed.clear()
+    world.settings(mode="attach")
+    await session.start()
+    session.kill()
+    assert killed == []
+
+
+async def test_killing_goes_on_when_a_browser_cannot_be_killed(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    def cannot(pid: Any) -> None:
+        raise OSError("access denied")
+
+    monkeypatch.setattr(launcher, "kill_tree", cannot)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    await session.start()
+    # For a shutdown: it must not be what stops the shutdown.
+    session.kill()
+
+
+async def test_killing_also_takes_a_browser_that_could_not_be_closed_earlier(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    from types import SimpleNamespace
+
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    earlier = launcher.RunningBrowser(
+        install=CHROME, endpoint=OWN_ENDPOINT, process=SimpleNamespace(pid=4321), owned=True, user_data_dir="/earlier"
+    )
+    session._unclosed.append(earlier)
+
+    session.kill()
+
+    # Our child: killed by the process we hold, not looked up by its profile.
+    assert killed == [4321]

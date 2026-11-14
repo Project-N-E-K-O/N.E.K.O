@@ -715,3 +715,21 @@ def test_the_browser_the_tools_drive_is_told_which_ports_are_this_applications_o
     session = provider.browser().session
     assert session._own_ports is ports
     assert BuiltinToolProvider(state=Switches()).browser().session._own_ports is None
+
+
+async def test_killing_the_browser_is_passed_on_and_does_nothing_where_no_browser_tools_were_made() -> None:
+    bare = BuiltinToolProvider(state=Switches())
+    bare.kill_browser()
+    assert bare._browser is None
+
+    class Killable:
+        def __init__(self) -> None:
+            self.kills = 0
+
+        def kill(self) -> None:
+            self.kills += 1
+
+    tools = Killable()
+    bare._browser = tools  # type: ignore[assignment]
+    bare.kill_browser()
+    assert tools.kills == 1

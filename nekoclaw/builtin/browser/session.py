@@ -44,6 +44,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -374,13 +375,21 @@ class BrowserSession:
                     # Without a display a window cannot be shown; the browser
                     # is then started without one whatever the settings say.
                     headless = settings.headless or not launcher.display_available()
-                    starting = asyncio.ensure_future(launcher.launch(install, str(profile), headless=headless))
+                    stop = threading.Event()
+                    starting = asyncio.ensure_future(
+                        launcher.launch(install, str(profile), headless=headless, stop=stop)
+                    )
                     try:
                         browser = await asyncio.shield(starting)
                     except asyncio.CancelledError:
-                        # The start goes on in its thread and cannot be
-                        # stopped. The browser it brings up would run on
-                        # with nobody to close it.
+                        # The start goes on in its thread. Told to stop, it
+                        # gives up within a moment and takes what it started
+                        # with it; not told, it would go on for as long as a
+                        # browser is given to come up, and whoever closes
+                        # this session (a shutdown with seconds to spare)
+                        # would have to wait that long. A browser that was
+                        # up before the start heard of it is closed here.
+                        stop.set()
                         self._abandoned = asyncio.ensure_future(self._close_once_started(starting))
                         raise
             except launcher.BrowserStartError as exc:
@@ -589,6 +598,23 @@ class BrowserSession:
                 logger.warning("closing a browser that was driven earlier failed again", exc_info=True)
                 continue
             self._unclosed.remove(leftover)
+
+    def kill(self) -> None:
+        """Kill the browsers this process started, without asking them to close. Blocking; never raises.
+
+        For a shutdown that has run out of the time it has: a browser that
+        is asked to close and takes its time would outlive the process.
+        """
+        for browser in [self._browser, *self._unclosed]:
+            if browser is None or not browser.owned:
+                continue
+            try:
+                pid = browser.pid
+                if pid is None and browser.user_data_dir:
+                    pid = launcher.browser_process_on(browser.user_data_dir)
+                launcher.kill_tree(pid)
+            except Exception:  # noqa: BLE001 - nothing more can be done about it
+                logger.warning("killing the browser failed", exc_info=True)
 
     def forget_snapshots(self) -> None:
         """Make every uid handed out so far invalid; for when another commission takes over."""

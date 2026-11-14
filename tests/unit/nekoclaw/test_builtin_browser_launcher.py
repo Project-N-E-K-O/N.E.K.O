@@ -765,9 +765,11 @@ async def test_launch_starts_in_a_worker_thread_with_what_it_was_given(monkeypat
         return made
 
     monkeypatch.setattr(launcher, "_start", start)
-    assert await launcher.launch(CHROME, "/profile", headless=True, extra=("--lang=en",)) is made
+    stop = threading.Event()
+    assert await launcher.launch(CHROME, "/profile", headless=True, extra=("--lang=en",), stop=stop) is made
     assert await launcher.launch(CHROME, "/profile") is made
-    assert calls == [(CHROME, "/profile", True, ("--lang=en",), False), (CHROME, "/profile", False, (), False)]
+    # What it is told to stop with goes along to the thread.
+    assert calls == [(CHROME, "/profile", True, ("--lang=en",), stop, False), (CHROME, "/profile", False, (), None, False)]
 
 
 # ---------------------------------------------------------------------------
@@ -1147,3 +1149,56 @@ def test_without_psutil_other_systems_kill_the_process_group_or_else_the_process
     group_error.append(ProcessLookupError())
     launcher.kill_tree(4321)
     assert log == [("killpg", 5321, signal.SIGKILL), ("kill", 4321, signal.SIGKILL)]
+
+
+# ---------------------------------------------------------------------------
+# A start that is told to stop
+# ---------------------------------------------------------------------------
+
+
+def test_a_start_that_is_told_to_stop_gives_up_at_once_and_takes_what_it_started_with_it(starter: Starter) -> None:
+    import threading
+
+    stop = threading.Event()
+    # Whoever asked for the browser goes away just as it has been started.
+    starter.on_start.append(stop.set)
+    starter.process_on_profile = 8765
+    with pytest.raises(BrowserStartError, match="Google Chrome was not started: the start was stopped"):
+        launcher._start(CHROME, str(starter.profile), False, (), stop)
+    assert len(starter.started) == 1
+    # The child, and whatever it handed over to on the profile; and none of the wait a browser is given.
+    assert starter.killed == [4321, 8765]
+    assert starter.clock.sleeps == []
+
+
+def test_a_start_told_to_stop_while_it_waits_gives_up_then(starter: Starter) -> None:
+    import threading
+
+    stop = threading.Event()
+    # The child has handed over and gone; the stop comes after a few looks for the port.
+    starter.on_start.append(lambda: setattr(starter.child, "returncode", 0))
+    starter.process_on_profile = 8765
+    starter.clock.on_sleep.append(lambda slept: stop.set() if slept == 3 else None)
+    with pytest.raises(BrowserStartError, match="the start was stopped"):
+        launcher._start(CHROME, str(starter.profile), False, (), stop)
+    assert len(starter.clock.sleeps) == 3
+    # The child is gone already: only what runs on the profile is killed.
+    assert starter.killed == [8765]
+
+
+def test_a_start_that_is_stopped_before_it_began_starts_nothing(starter: Starter) -> None:
+    import threading
+
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(BrowserStartError, match="the start was stopped"):
+        launcher._start(CHROME, str(starter.profile), False, (), stop)
+    assert starter.started == [] and starter.killed == []
+
+
+def test_a_start_that_is_never_told_to_stop_goes_on_as_before(starter: Starter) -> None:
+    import threading
+
+    starter.on_start.append(lambda: starter.browser_listens(9555))
+    browser = launcher._start(CHROME, str(starter.profile), False, (), threading.Event())
+    assert browser.endpoint == "ws://127.0.0.1:9555/devtools/browser/new" and starter.killed == []

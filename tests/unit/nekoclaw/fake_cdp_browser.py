@@ -1180,11 +1180,15 @@ class BrowserWorld:
     connect_gate: asyncio.Event | None = None
     close_gate: asyncio.Event | None = None
     launch_error: Exception | None = None
+    # The browser was up before its start heard that it was to stop.
+    launch_ignores_stop: bool = False
     attach_error: Exception | None = None
     connect_error: Exception | None = None
     close_error: Exception | None = None
     picked: list[Any] = field(default_factory=list)
     launched: list[tuple[BrowserInstall, str, bool]] = field(default_factory=list)
+    # What each start was given to be told to stop with.
+    launch_stops: list[Any] = field(default_factory=list)
     attached: list[BrowserInstall] = field(default_factory=list)
     closed: list[tuple[RunningBrowser, Any]] = field(default_factory=list)
     connected: list[tuple[str, float]] = field(default_factory=list)
@@ -1223,12 +1227,24 @@ class BrowserWorld:
             raise launcher.NoBrowserError("no Chromium-based browser (Chrome, Edge, Brave, Chromium) was found on this computer")
         return self.install
 
-    async def _launch(self, install: BrowserInstall, user_data_dir: str, *, headless: bool = False, extra: tuple[str, ...] = ()) -> RunningBrowser:
+    async def _launch(
+        self,
+        install: BrowserInstall,
+        user_data_dir: str,
+        *,
+        headless: bool = False,
+        extra: tuple[str, ...] = (),
+        stop: Any = None,
+    ) -> RunningBrowser:
         self.launched.append((install, user_data_dir, headless))
+        self.launch_stops.append(stop)
         if self.launch_gate is not None:
             await self.launch_gate.wait()
         if self.launch_error is not None:
             raise self.launch_error
+        if stop is not None and stop.is_set() and not self.launch_ignores_stop:
+            # As the launcher does: it gives up and takes what it started with it.
+            raise launcher.BrowserStartError("Google Chrome was not started: the start was stopped")
         return RunningBrowser(install=install, endpoint=OWN_ENDPOINT, process=None, owned=True, user_data_dir=user_data_dir)
 
     async def _attach(self, install: BrowserInstall) -> RunningBrowser:

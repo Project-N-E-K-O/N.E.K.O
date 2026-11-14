@@ -1064,3 +1064,14 @@ async def test_a_click_is_told_as_done_when_the_wait_for_the_page_to_settle_fail
     # Told as failed, the model would click again: a form would be sent twice.
     assert outcome == BuiltinOutcome(True, "Successfully clicked on the element")
     assert world.browser.page("target-1").find("Gift wrap").checked is True
+
+
+async def test_killing_is_passed_on_to_the_session_without_waiting_for_a_call_under_way(
+    tools: BrowserTools, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    killed: list[int] = []
+    monkeypatch.setattr(tools._session, "kill", lambda: killed.append(1))
+    # A call holds the tools (a browser that does not answer): killing does not wait its turn.
+    async with tools._lock:
+        tools.kill()
+    assert killed == [1]

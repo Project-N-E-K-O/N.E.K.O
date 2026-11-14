@@ -48,6 +48,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -329,8 +330,20 @@ def launch_arguments(executable: str, user_data_dir: str, *, headless: bool = Fa
     return arguments
 
 
-def _start(install: BrowserInstall, user_data_dir: str, headless: bool, extra: tuple[str, ...]) -> RunningBrowser:
-    """Start the browser on a profile and wait for its endpoint. Blocking."""
+def _start(
+    install: BrowserInstall,
+    user_data_dir: str,
+    headless: bool,
+    extra: tuple[str, ...],
+    stop: threading.Event | None = None,
+) -> RunningBrowser:
+    """Start the browser on a profile and wait for its endpoint. Blocking.
+
+    ``stop`` is set by whoever asked for the browser when they no longer
+    wait for it (the call was stopped, the process is shutting down): the
+    start gives up at once and takes what it started with it, so that a
+    browser nobody will ever close is not left behind.
+    """
     os.makedirs(user_data_dir, exist_ok=True)
     # A browser left running on this profile (by an earlier run of the
     # application) is used as it is: starting another on the same profile
@@ -347,6 +360,9 @@ def _start(install: BrowserInstall, user_data_dir: str, headless: bool, extra: t
     if sys.platform != "win32":
         # A group of its own, so a signal meant for us does not reach it first.
         options["start_new_session"] = True
+    stopped = BrowserStartError(f"{install.name} was not started: the start was stopped")
+    if stop is not None and stop.is_set():
+        raise stopped
     try:
         process = subprocess.Popen(  # noqa: S603 - the executable is a browser found on this computer
             launch_arguments(install.executable, user_data_dir, headless=headless, extra=extra), **options
@@ -355,6 +371,12 @@ def _start(install: BrowserInstall, user_data_dir: str, headless: bool, extra: t
         raise BrowserStartError(f"{install.name} could not be started: {exc}") from exc
     deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
+        if stop is not None and stop.is_set():
+            # The process that was started, and the one it may have handed over to.
+            if process.poll() is None:
+                kill_tree(process.pid)
+            kill_tree(browser_process_on(user_data_dir))
+            raise stopped
         active = read_active_port(user_data_dir)
         if active is not None and _port_open(active[0]):
             # Some browsers (Edge) hand over to another process and let the
@@ -378,10 +400,19 @@ def _start(install: BrowserInstall, user_data_dir: str, headless: bool, extra: t
 
 
 async def launch(
-    install: BrowserInstall, user_data_dir: str, *, headless: bool = False, extra: tuple[str, ...] = ()
+    install: BrowserInstall,
+    user_data_dir: str,
+    *,
+    headless: bool = False,
+    extra: tuple[str, ...] = (),
+    stop: threading.Event | None = None,
 ) -> RunningBrowser:
-    """Start ``install`` on ``user_data_dir`` (or find it running there) and return how to reach it."""
-    return await asyncio.to_thread(_start, install, user_data_dir, headless, extra)
+    """Start ``install`` on ``user_data_dir`` (or find it running there) and return how to reach it.
+
+    The start runs in a worker thread and goes on when this call is
+    cancelled; set ``stop`` to make it give up (see ``_start``).
+    """
+    return await asyncio.to_thread(_start, install, user_data_dir, headless, extra, stop)
 
 
 async def attach(install: BrowserInstall) -> RunningBrowser:

@@ -617,6 +617,11 @@ async def startup():
     _bump_state_revision()
 
 
+# How long the browser is given to close when this process shuts down, before
+# it is killed. Well within what the launcher gives the process itself.
+BROWSER_SHUTDOWN_SECONDS = 4.0
+
+
 @app.on_event("shutdown")
 async def shutdown():
     """Gracefully stop running tasks and release async resources."""
@@ -682,7 +687,19 @@ async def shutdown():
     # The browser the tools started stays open between tasks; it is closed
     # at service shutdown, along with keys a stopped call left held. The
     # host's shutdown above has cancelled every call that was under way.
-    await _close_browser()
+    # The launcher gives this process a few seconds to shut down in and then
+    # ends it (``graceful_shutdown_timeout`` in ``launcher_core/runtime.py``),
+    # and a browser that is still closing then would run on with nobody to
+    # close it: asked to close within part of that time, it is killed when it
+    # has not.
+    try:
+        await asyncio.wait_for(_close_browser(), timeout=BROWSER_SHUTDOWN_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("[Agent] The browser did not close in time; killing it")
+        try:
+            await asyncio.to_thread(builtin_provider.kill_browser)
+        except Exception as e:
+            logger.warning(f"[Agent] Killing the browser failed: {e}")
     try:
         await asyncio.wait_for(builtin_provider.aclose(), timeout=8.0)
     except Exception as e:

@@ -266,6 +266,15 @@ class BuiltinToolProvider:
         if self._browser is not None:
             await self._browser.aclose()
 
+    def kill_browser(self) -> None:
+        """Kill the browser this process started without waiting for anything. Blocking.
+
+        For when ``close_browser`` did not finish within the time a
+        shutdown has.
+        """
+        if self._browser is not None:
+            self._browser.kill()
+
     async def aclose(self) -> None:
         """Let go of everything; for shutting down."""
         if self._desktop is not None:
