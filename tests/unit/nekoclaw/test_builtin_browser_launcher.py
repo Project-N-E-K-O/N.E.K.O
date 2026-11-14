@@ -618,6 +618,7 @@ class Starter:
         # Not the processes of the computer the tests run on.
         monkeypatch.setattr(launcher, "_a_browser_cannot_be_looked_at", lambda: self.unreadable_browser)
         monkeypatch.setattr(launcher, "_created", lambda pid: 1000.0 + pid)
+        monkeypatch.setattr(launcher, "_runs_on", lambda pid, directory: True)
 
     def _popen(self, arguments: list[str], **options: Any) -> FakeChild:
         self.started.append((list(arguments), options))
@@ -1471,9 +1472,6 @@ def test_a_number_that_went_to_another_process_is_not_taken_for_the_child(monkey
     browser = RunningBrowser(
         install=CHROME, endpoint="ws://127.0.0.1:9222/devtools/browser/x", process=child, owned=True, user_data_dir=profile, started=500.0
     )
-    assert launcher._pid_of(browser) == 4321
-
-    # Read the same: the command line is not asked for.
     asked: list[tuple[int, str]] = []
     on_the_profile = True
 
@@ -1482,20 +1480,20 @@ def test_a_number_that_went_to_another_process_is_not_taken_for_the_child(monkey
         return on_the_profile
 
     monkeypatch.setattr(launcher, "_runs_on", runs_on)
-    created[4321] = 500.004
-    assert launcher._pid_of(browser) == 4321 and asked == []
-
-    # A clock that was set meanwhile moves the time by a little. It is the child all the same, when the
-    # process is the browser of the profile by its command line.
+    # Created when the child was, and the browser of the profile by its command line: the child.
+    assert launcher._pid_of(browser) == 4321
+    # A clock that was set meanwhile moves the time by a little; it is the child all the same.
     created[4321] = 500.6
     assert launcher._pid_of(browser) == 4321
     created[4321] = 499.2
     assert launcher._pid_of(browser) == 4321
-    assert asked == [(4321, profile), (4321, profile)]
+    assert asked == [(4321, profile)] * 3
 
-    # Created within the same second, and something else by its command line: another program that got
-    # the number of a child that had run for less than a second.
+    # Something else by its command line, created within the same second or at the very same time:
+    # another program that got the number of a child that had run for less than a second.
     on_the_profile = False
+    assert launcher._pid_of(browser) == 7004
+    created[4321] = 500.0
     assert launcher._pid_of(browser) == 7004
 
     # The number is another program's now: it was created at another time. Its command line is not asked for.

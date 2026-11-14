@@ -544,9 +544,8 @@ def kill_tree(pid: int | None) -> None:
         logger.warning("the browser process %s could not be killed: %s", pid, type(exc).__name__)
 
 
-# Two readings of when a process was created: this close, they are of the
-# same process; up to this far apart they may be (see ``_is_the_child``).
-_SAME_READING_SECONDS = 0.01
+# How far apart two readings of when a process was created may be for it to
+# be the same process (see ``_is_the_child``).
 _SAME_PROCESS_SECONDS = 1.0
 
 
@@ -568,23 +567,23 @@ def _is_the_child(pid: int, started: float | None, user_data_dir: str | None) ->
     that was given to another program meanwhile shows by when its process
     was created. True when that was not known at the start.
 
-    Read the same both times, it is the child. Read up to a second apart, it
-    may be: on Linux the time is worked out from when the system was started,
-    which is itself worked out from the clock of now, and a clock that was
-    set meanwhile moves it. It may as well be another program that got the
-    number of a child that ran for less than a second, so the time alone
-    does not settle it: the process has to be the browser of the profile by
-    its command line too.
+    The two times may be up to a second apart: on Linux the time is worked
+    out from when the system was started, which is itself worked out from
+    the clock of now, and a clock that was set meanwhile moves it. The time
+    does not settle it alone, however close: another program may have got
+    the number of a child that ran for less than a second. The process has
+    to be the browser of the profile by its command line too.
+
+    With no time on record (it could not be asked for when the child was
+    started, and the command line could not be now), ``poll`` is all there
+    is.
     """
     if started is None:
         return True
     now = _created(pid)
-    if now is None:
+    if now is None or abs(now - started) >= _SAME_PROCESS_SECONDS:
         return False
-    apart = abs(now - started)
-    if apart < _SAME_READING_SECONDS:
-        return True
-    return apart < _SAME_PROCESS_SECONDS and user_data_dir is not None and _runs_on(pid, user_data_dir)
+    return user_data_dir is not None and _runs_on(pid, user_data_dir)
 
 
 def _wait_gone(process: Any, seconds: float) -> bool:
