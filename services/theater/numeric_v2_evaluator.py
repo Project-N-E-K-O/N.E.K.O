@@ -4867,6 +4867,7 @@ class NumericV2MetricEvaluator:
             direction = payload.get("direction", "")
             if not isinstance(direction, str):
                 raise ValueError("invalid progress direction")
+            direction = direction.strip()
             current_scene_task = None
             if review_progress:
                 # Older providers may echo an existing author description;
@@ -4875,7 +4876,13 @@ class NumericV2MetricEvaluator:
                     matches = [key for key, value in direction_options.items() if value == direction]
                     direction = matches[0] if len(matches) == 1 else direction
                 if direction and direction not in direction_options:
-                    raise ValueError("invalid authored direction")
+                    # A blocked departure's task is the output itself. Elsewhere
+                    # the direction is an optional hint: drop an unknown one
+                    # instead of discarding this review's fact and offer decisions.
+                    if blocked_departure:
+                        raise ValueError("invalid authored direction")
+                    trace_event("story_evidence.direction_dropped")
+                    direction = ""
                 selected_id = direction
                 direction = direction_options.get(direction, "")
                 if selected_id and selected_id != exit_direction_id:

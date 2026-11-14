@@ -18,9 +18,12 @@ _PROMPT_FRAME = re.compile(r"======(?:以下为|以上为)[^=\r\n]+======")
 def _strip_inline_markdown(value: str) -> str:
     """Visible performance is a plain-text protocol; remove incidental inline Markdown markers from model output."""  # noqa: DOCSTRING_CJK
 
+    # Check the cleaned text: removing markers can complete a frame such as
+    # ======**以下为角色设定**======.
+    value = value.replace("**", "").replace("__", "").replace("`", "")
     if _PROMPT_FRAME.search(value):
         raise NumericV2ActorOutputError("numeric_v2_actor_prompt_boundary_leak")
-    return value.replace("**", "").replace("__", "").replace("`", "")
+    return value
 
 
 def _without_standalone_transition_offer(body: str, offer: str, *, dialogue_policy: str) -> str | None:

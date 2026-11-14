@@ -92,12 +92,18 @@ async def test_selected_author_task_retains_its_exact_permissions_and_dependenci
     call = _REVIEW(evaluator.NumericV2MetricEvaluator(object()), engine=engine, session=session,
                    message="我已经到检修间了。", claims=(), timeout_seconds=1,
                    review_progress=True, blocked_departure=blocked)
-    if mode in {"invalid", "soft_freeform"}:
+    if mode == "invalid":
+        # A blocked departure's task is the output itself, so it stays strict.
         with pytest.raises(evaluator.NumericV2EvaluatorError):
             await call
         assert len(requests) == 1
         return
     result = await call
+    if mode == "soft_freeform":
+        # Ordinary progress drops an unknown hint instead of failing the review.
+        assert len(requests) == 1
+        assert result.direction == "" and result.current_scene_task is None
+        return
     assert len(requests) == 1
     _, data, kwargs = requests[0]
     schema = kwargs["response_format"]["json_schema"]["schema"]
