@@ -44,6 +44,24 @@ def normalize_plugin_entry_point(
     return f"plugins.{suffix}:{class_name}"
 
 
+def plugin_package_matches_directory(package: str, directory_name: str) -> bool:
+    """Return whether ``package`` may name ``directory_name`` in a plugin tree.
+
+    Cloned plugin projects are conventionally named in kebab-case
+    (``my-cool-plugin``), while a Python package cannot contain ``-`` and the
+    package named by ``plugin.entry`` therefore uses ``_``. Treating those two
+    spellings as equivalent makes a freshly cloned directory loadable as-is;
+    nothing else is interchangeable, so a genuine mismatch is still reported.
+
+    The equivalence is deliberately one-way: ``package`` is what Python actually
+    imports, so it has to be the snake-case side. Only the directory may carry a
+    ``-``, which is exactly what a ``git clone`` of a kebab-case repository
+    produces.
+    """
+
+    return package == directory_name or package == directory_name.replace("-", "_")
+
+
 def describe_plugin_entry_directory_mismatch(entry_point: str, *, config_path: Path) -> str | None:
     """Return an error message when a ``plugins.<name>`` entry targets another directory.
 
@@ -52,6 +70,9 @@ def describe_plugin_entry_directory_mismatch(entry_point: str, *, config_path: P
     ``some_id``, the normal namespace import cannot resolve the plugin package.
     Treat that as a packaging/config error instead of silently loading a
     different directory.
+
+    A directory may use ``-`` where the package uses ``_``: see
+    :func:`plugin_package_matches_directory`.
     """
 
     if ":" not in entry_point:
@@ -64,11 +85,13 @@ def describe_plugin_entry_directory_mismatch(entry_point: str, *, config_path: P
 
     entry_package = parts[1]
     plugin_dir_name = config_path.parent.name
-    if entry_package == plugin_dir_name:
+    if plugin_package_matches_directory(entry_package, plugin_dir_name):
         return None
 
     return (
         f"Plugin entry '{entry_point}' targets package 'plugins.{entry_package}', "
         f"but plugin.toml is located in directory '{plugin_dir_name}'. "
-        f"Rename the directory to '{entry_package}' or update [plugin].entry to match the directory."
+        f"A directory name may use '-' where the package uses '_' "
+        f"(for example '{entry_package.replace('_', '-')}'), otherwise rename the "
+        f"directory to '{entry_package}' or update [plugin].entry to match the directory."
     )

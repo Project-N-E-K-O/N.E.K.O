@@ -153,6 +153,41 @@ def test_projects_cannot_live_inside_managed_plugin_roots(isolated):
         project_sources.inspect_source_directory(inside)
 
 
+def test_a_cloned_kebab_directory_loads_its_snake_package(tmp_path):
+    """`git clone` keeps `my-cool-plugin/`; `plugin.entry` cannot contain '-'. (#3724)"""
+    source = scaffold(tmp_path, "cloned_plugin")
+    kebab = source.with_name("cloned-plugin")
+    source.rename(kebab)
+    manifest = kebab / "plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'id = "cloned_plugin"', 'id = "cloned-plugin"'
+        ),
+        encoding="utf-8",
+    )
+
+    metadata = project_sources.inspect_source_directory(kebab.resolve())
+
+    assert metadata.plugin_id == "cloned-plugin"
+    assert metadata.entry.startswith("plugins.cloned_plugin:")
+
+
+def test_a_project_directory_still_must_name_its_entry_package(tmp_path):
+    source = scaffold(tmp_path, "cloned_plugin")
+    renamed = source.with_name("something_else")
+    source.rename(renamed)
+    manifest = renamed / "plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'id = "cloned_plugin"', 'id = "something_else"'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="targets package"):
+        project_sources.inspect_source_directory(renamed.resolve())
+
+
 @pytest.mark.asyncio
 async def test_discovery_publishes_projects_and_installed_ids_win(isolated, tmp_path):
     scaffold(isolated, "taken")
