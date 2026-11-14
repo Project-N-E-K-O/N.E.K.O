@@ -46,6 +46,7 @@ For exe-packaged applications, supporting:
 import os
 import sys
 import logging
+import threading
 from collections.abc import Mapping
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -261,8 +262,12 @@ class RobustLoggerConfig:
                 if not dir_path.exists():
                     dir_path.mkdir(exist_ok=True)
             
-            # Try creating a test file.
-            test_file = directory / ".write_test"
+            # Try creating a test file. The name is per process and thread: plugin
+            # processes start concurrently against one log directory, and with a
+            # shared name one probe's unlink races another's write. The loser
+            # read the directory as unwritable and fell back to the next
+            # candidate (Documents/N.E.K.O/logs), even with a selected root set.
+            test_file = directory / f".write_test.{os.getpid()}.{threading.get_ident()}"
             test_file.write_text("test", encoding="utf-8")
             test_file.unlink()
             return True

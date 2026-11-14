@@ -105,3 +105,36 @@ def test_system_log_directory_preserves_empty_xdg_and_lazy_home(tmp_path, monkey
     expected = (tmp_path / "configured" if xdg else tmp_path / "home/.local/share") / "N.E.K.O/logs"
     assert system == expected
     assert bool(calls) == (not bool(xdg))
+
+
+@pytest.mark.unit
+def test_concurrent_writability_probes_on_one_directory_all_succeed(tmp_path):
+    # Plugin processes start concurrently against one log directory. With a
+    # shared probe file name, one probe's unlink raced another's write and the
+    # loser fell back to Documents/N.E.K.O/logs despite a selected root
+    # (measured: 8 processes x 20 probes, 12-15 false per process).
+    import threading
+
+    from utils.logger_config import RobustLoggerConfig
+
+    directory = tmp_path / "logs"
+    workers = 8
+    barrier = threading.Barrier(workers)
+    results: list[bool] = []
+    lock = threading.Lock()
+
+    def probe():
+        barrier.wait()
+        outcomes = [RobustLoggerConfig._test_directory_writable(None, directory) for _ in range(30)]
+        with lock:
+            results.extend(outcomes)
+
+    threads = [threading.Thread(target=probe) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert len(results) == workers * 30
+    assert all(results), f"{results.count(False)} of {len(results)} probes reported unwritable"
+    assert list(directory.iterdir()) == []
