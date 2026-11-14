@@ -272,6 +272,10 @@ class TTSProvider:
     # User-configured providers can expose the single value stored in
     # ``voice_field`` as a preset voice without maintaining a static catalog.
     configured_preset_voice: bool = False
+    # Use the external worker for speech output even in a realtime input session.
+    realtime_output_override: bool = False
+    # Whether the worker uses the configured TTS Voice ID for an unrecognized or empty character voice.
+    uses_configured_default_voice: bool = False
     # User-pointed endpoints may fall back to the unchanged downstream dispatch
     # order after configuration, startup, or synthesis failures.
     # When a user-configured endpoint fails, exclude only that provider and retain the established dispatch order.
