@@ -272,6 +272,10 @@ describe('publishFlow', () => {
       ['upper-case escape', 'https://github.com/owner/hello_world/releases/tag/v1%2Fpreview', 'v1/preview', true],
       ['lower-case escape', 'https://github.com/owner/hello_world/releases/tag/v1%2fpreview', 'v1/preview', true],
       ['raw slash in the tag', 'https://github.com/owner/hello_world/releases/tag/v1/preview', 'v1/preview', true],
+      // A Git tag may contain "%"; it is literal, so only the URL side is decoded.
+      ['literal percent in the tag', 'https://github.com/owner/hello_world/releases/tag/v1.2.0%252E1', 'v1.2.0%2E1', true],
+      ['literal percent, URL of another tag', 'https://github.com/owner/hello_world/releases/tag/v1.2.0.1', 'v1.2.0%2E1', false],
+      ['literal %2F, URL of a slash tag', 'https://github.com/owner/hello_world/releases/tag/v1%2Fpreview', 'v1%2Fpreview', false],
       ['only a prefix of the tag', 'https://github.com/owner/hello_world/releases/tag/v1', 'v1/preview', false],
       ['trailing slash', 'https://github.com/owner/hello_world/releases/tag/v0.2.0/', 'v0.2.0', true],
       ['query and fragment', 'https://github.com/owner/hello_world/releases/tag/v0.2.0?x=1#notes', 'v0.2.0', true],

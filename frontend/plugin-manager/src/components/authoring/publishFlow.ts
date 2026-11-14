@@ -249,10 +249,12 @@ function decodeTag(value: string): string | null {
  *
  * Only `https://github.com/<owner>/<repo>/releases/tag/<tag>` counts; query,
  * fragment and a trailing slash are ignored. GitHub owner and repository names
- * ignore case; tags do not, so the tag is compared exactly once both sides are
- * percent-decoded (the Market re-encodes tags, and not always the same way:
- * `v1%2Fpreview`, `v2%2E0%2E0`). Old receipts may name a Release by its numeric
- * ID (`/releases/<id>`), which says nothing about the tag, so they never match.
+ * ignore case; tags do not, so the URL's tag is percent-decoded (the Market
+ * re-encodes tags, and not always the same way: `v1%2Fpreview`, `v2%2E0%2E0`)
+ * and compared exactly with `tag`. `tag` is the literal Git tag, never URL
+ * text, so it is not decoded: a tag may itself contain `%`. Old receipts may
+ * name a Release by its numeric ID (`/releases/<id>`), which says nothing
+ * about the tag, so they never match.
  */
 export function isReleaseUrlOf(url: string, repository: string, tag: string): boolean {
   let parsed: URL
@@ -264,8 +266,7 @@ export function isReleaseUrlOf(url: string, repository: string, tag: string): bo
   if (parsed.protocol !== 'https:' || parsed.host.toLowerCase() !== 'github.com') return false
   const match = /^\/([^/]+\/[^/]+)\/releases\/tag\/(.+?)\/?$/.exec(parsed.pathname)
   if (!match || match[1]!.toLowerCase() !== repository.toLowerCase()) return false
-  const releaseTag = decodeTag(match[2]!)
-  return releaseTag !== null && releaseTag === (decodeTag(tag) ?? tag)
+  return decodeTag(match[2]!) === tag
 }
 
 /** The Market's answer to the latest task's release notification, when it carries one. */
