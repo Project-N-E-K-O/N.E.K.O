@@ -43,7 +43,7 @@ if not result["submitted"]:
 
 `submitted=True` は、SDK が payload を正規のローカル送信経路に渡し、以後の送信責任を引き受けたことだけを示します。ホストでの消費、AI の返信生成、音声の再生完了を意味しません。
 
-`submitted=False` には安定した `reason` が付きます：`backpressure`、`transport_error`、`transport_unavailable`、`payload_too_large`。最初の 3 つはその時点の転送状況（混雑 / 送信失敗 / 利用可能な経路なし）を表すため、時間をおいて同じ内容を再送する意味があります。`payload_too_large` は別種で、SDK が**送信前に**ローカルで計測します。パック後の payload 全体が `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` を超えた（判定は下の[サイズ制限](#サイズ制限)）ので、同じ内容の再試行は必ず同じ結果になります。push を小さくするしかありません。inline 画像は `ctx.images.upload()` で URL part に置き換えてください。`audio` / `video` には今のところ対応するアップロード API がないため、自分で小さくする（短いクリップ、低いビットレートや解像度）か、自前でホストして `data=` の代わりに `url=` を使ってください。
+`submitted=False` には安定した `reason` が付きます：`backpressure`、`transport_error`、`transport_unavailable`、`payload_too_large`。最初の 3 つはその時点の転送状況（混雑 / 送信失敗 / 利用可能な経路なし）を表すため、時間をおいて同じ内容を再送する意味があります。`payload_too_large` は別種で、SDK が**送信前に**ローカルで計測します。パック後の payload 全体が `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` からホスト用予備 227 バイトを引いた値を超えた（判定は下の[サイズ制限](#サイズ制限)）ので、同じ内容の再試行は必ず同じ結果になります。push を小さくするしかありません。inline 画像は `ctx.images.upload()` で URL part に置き換えてください。`audio` / `video` には今のところ対応するアップロード API がないため、自分で小さくする（短いクリップ、低いビットレートや解像度）か、自前でホストして `data=` の代わりに `url=` を使ってください。
 
 結果は内部 transport 名を公開せず、メッセージ本文や例外内容も返しません。拒否結果には従来の呼び出し元向けに `ok=False` も含まれますが、新しいコードでは `submitted` を正式な判定基準にしてください。再試行と重複排除はプラグイン側の方針です。
 
@@ -97,7 +97,7 @@ inline の `data: bytes` は SDK が base64 エンコードして送ります。
 
 ### サイズ制限
 
-inline part は message plane 経由で ZMQ を通り、payload 全体の上限は `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288（512 **KiB** = 512×1024。十進の 512 KB ではありません）です。これは出荷時の既定値で、環境変数 `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` で上書きできます。以下の数値はすべて既定値を前提にしています。計測対象は**パック後**の envelope で、元画像のバイト数ではありません。inline 画像は `parts[].binary_base64` に base64 で入り、元のバイト数の 4/3（+33%）になります。したがって inline 画像 1 枚の元バイト上限は 512 KiB × 3/4 ≈ **384 KiB** で、そこから数百バイトの envelope と同じメッセージ内の text part を引いた値です。実測では、256 KiB の画像と短い文をパックすると 341.8 KiB で、上限まで約 170 KiB の余裕があります。524288 バイトの上限ちょうどに収まる元画像サイズは 383.6 KiB です。ローカルチェック（下記）はさらに 227 バイトの余裕を確保するため、同じ形のメッセージが実際に止められる位置は約 0.2 KiB 低くなります。小数点以下まで詰めず、およそ 383 KiB を目安にしてください。
+inline part は message plane 経由で ZMQ を通り、payload 全体の上限は `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288（512 **KiB** = 512×1024。十進の 512 KB ではありません）です。これは出荷時の既定値で、環境変数 `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` で上書きできます。以下の数値はすべて既定値を前提にしています。計測対象は**パック後**の envelope で、元画像のバイト数ではありません。inline 画像は `parts[].binary_base64` に base64 で入り、元のバイト数の 4/3（+33%）になります。したがって inline 画像 1 枚の元バイト上限は 512 KiB × 3/4 ≈ **384 KiB** で、そこから数百バイトの envelope と同じメッセージ内の text part を引いた値です。実測では、256 KiB の画像と短い文をパックすると 341.8 KiB で、上限まで約 170 KiB の余裕があります。524288 バイトの上限ちょうどに収まる元画像サイズは約 383.6 KiB です。ローカルチェック（下記）はさらに 227 バイトの余裕を確保するため、同じ形のメッセージが実際に止められる位置は約 0.2 KiB 低くなります。小数点以下まで詰めず、およそ 383 KiB を目安にしてください。
 
 この実効上限はかつてずっと低いものでした。v2 へ未移行の下流コンシューマーのため、wire envelope は以前 inline 画像を**2 回**運んでいました。`parts[].binary_base64` の base64 と、legacy の `binary_data` フィールドの生バイトで、合計は元画像の約 2.34 倍です。そのため当時の 256 KiB 上限に実際に収まるのは約 110 KiB の画像まででした。現在 `_build_wire_payload`（`plugin/core/context.py`）が legacy フィールドを埋めるのは、呼び出し側が `parts=` と `binary_data=` を両方渡したときだけで、通常の inline 画像は base64 で 1 回だけ運ばれます。重複の除去と上限の 512 KiB への引き上げが揃って、256 KiB の画像が通るようになりました。
 

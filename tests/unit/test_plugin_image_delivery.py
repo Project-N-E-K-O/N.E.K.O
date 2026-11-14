@@ -3177,8 +3177,35 @@ def test_an_inline_image_rides_the_wire_envelope_once(monkeypatch) -> None:
     # Asserting the refusal is also the stronger claim. The bracket exists to
     # pin the ceiling the guide prints, and what a plugin author actually meets
     # at 385 KiB is a rejection, not a byte count they cannot observe.
-    _, under = _push_one_inline_image(monkeypatch, 383 * 1024)
-    assert len(ormsgpack.packb(under)) <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+    under_result, under = _push_one_inline_image(monkeypatch, 383 * 1024)
+    # A refused push returns no envelope, and packb(None) is one byte -- so the
+    # size check below would pass on a rejection too. Pin the verdict first.
+    assert under_result["submitted"] is True
+    assert under is not None
+    packed_under = len(ormsgpack.packb(under))
+    assert packed_under <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    # 383.6 KiB is the raw size that exactly fills the cap. Past this point
+    # every extra 3 raw bytes cost exactly 4 packed bytes (base64), so derive
+    # it from the 383 KiB measurement instead of trusting the prose.
+    from plugin.core.context import _HOST_ENVELOPE_HEADROOM_BYTES
+
+    fill_raw = 383 * 1024 + (MESSAGE_PLANE_PAYLOAD_MAX_BYTES - packed_under) * 3 // 4
+    assert abs(fill_raw / 1024 - 383.6) < 0.1
+    # The SDK refuses earlier than that: it holds back the host headroom, and
+    # the guide says the practical cutoff sits about 0.2 KiB lower. Pin both
+    # the gap and the verdict on either side of the real cutoff -- the
+    # rejected side is still under the full cap, i.e. inside the headroom.
+    cut_raw = 383 * 1024 + (
+        MESSAGE_PLANE_PAYLOAD_MAX_BYTES - _HOST_ENVELOPE_HEADROOM_BYTES - packed_under
+    ) * 3 // 4
+    assert 0.1 < (fill_raw - cut_raw) / 1024 < 0.25
+    below_result, _ = _push_one_inline_image(monkeypatch, cut_raw - 16)
+    assert below_result["submitted"] is True
+    inside_result, _ = _push_one_inline_image(monkeypatch, cut_raw + 16)
+    assert cut_raw + 16 < fill_raw
+    assert inside_result["reason"] == "payload_too_large"
+
     over_result, over = _push_one_inline_image(monkeypatch, 385 * 1024)
     assert over is None
     assert over_result == {

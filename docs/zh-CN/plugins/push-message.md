@@ -43,7 +43,7 @@ if not result["submitted"]:
 
 `submitted=True` 只表示 SDK 已把 payload 交给权威本地提交路径，并接管后续提交责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
 
-`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`、`transport_unavailable` 或 `payload_too_large`。前三个描述的是传输当时的状况（拥塞 / 发送失败 / 没有可用通道），换个时机原样重发是有意义的。`payload_too_large` 是另一类：它由 SDK 在**发送之前**本地量出来——整条 payload 打包后超过了 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（判据见下面的[大小限制](#大小限制)），所以原样重试必然还是同一个结果，唯一的出路是把这条 push 变小：inline 图片改用 `ctx.images.upload()` 换成 URL part；`audio` / `video` 目前没有对应的上传接口，只能自己压小（更短的片段、更低的码率或分辨率），或者自己托管后用 `url=` 代替 `data=`。
+`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`、`transport_unavailable` 或 `payload_too_large`。前三个描述的是传输当时的状况（拥塞 / 发送失败 / 没有可用通道），换个时机原样重发是有意义的。`payload_too_large` 是另一类：它由 SDK 在**发送之前**本地量出来——整条 payload 打包后超过了 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` 减去 227 字节 host 预留后的阈值（判据见下面的[大小限制](#大小限制)），所以原样重试必然还是同一个结果，唯一的出路是把这条 push 变小：inline 图片改用 `ctx.images.upload()` 换成 URL part；`audio` / `video` 目前没有对应的上传接口，只能自己压小（更短的片段、更低的码率或分辨率），或者自己托管后用 `url=` 代替 `data=`。
 
 结果不会暴露内部 transport 名称，也不会回显消息正文或异常内容。拒绝结果还会携带兼容旧调用方的 `ok=False`；新代码应以 `submitted` 为正式判据。调用方可以保留本地状态，但重试和去重仍由具体插件决定。
 
@@ -97,7 +97,7 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。需要�
 
 ### 大小限制
 
-inline part 通过 message_plane 走 ZMQ，整条 payload 上限是 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288（512 **KiB** = 512*1024，不是十进制的 512 KB）。这是出厂默认值，部署方可以用环境变量 `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` 覆盖，下文所有数字都按默认值算。这个数字量的是**打包后**的信封，不是原图字节数——inline 图片以 base64 放在 `parts[].binary_base64` 里，是原始字节的 4/3（+33%）。所以一张 inline 图的原始字节上限是 512 KiB × 3/4 = **约 384 KiB**，再减掉几百字节的信封开销和同一条消息里的 text part。实测：一张 256 KiB 的图加一句短文字打包出来是 341.8 KiB，离上限还有约 170 KiB 余量；恰好卡满 524288 字节的原始图片大小是 383.6 KiB。本地检查（见下）还会再预留 227 字节余量，所以同样形状的消息实际在本地被拦的位置要再低约 0.2 KiB——按大约 383 KiB 留量，不要压着最后一位小数。
+inline part 通过 message_plane 走 ZMQ，整条 payload 上限是 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288（512 **KiB** = 512*1024，不是十进制的 512 KB）。这是出厂默认值，部署方可以用环境变量 `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` 覆盖，下文所有数字都按默认值算。这个数字量的是**打包后**的信封，不是原图字节数——inline 图片以 base64 放在 `parts[].binary_base64` 里，是原始字节的 4/3（+33%）。所以一张 inline 图的原始字节上限是 512 KiB × 3/4 = **约 384 KiB**，再减掉几百字节的信封开销和同一条消息里的 text part。实测：一张 256 KiB 的图加一句短文字打包出来是 341.8 KiB，离上限还有约 170 KiB 余量；恰好卡满 524288 字节的原始图片大小约为 383.6 KiB。本地检查（见下）还会再预留 227 字节余量，所以同样形状的消息实际在本地被拦的位置要再低约 0.2 KiB——按大约 383 KiB 留量，不要压着最后一位小数。
 
 这个「实际上限」曾经低得多。wire envelope 以前为了照顾还没迁到 v2 的下游消费者，把同一张 inline 图带**两遍**：一份 base64 在 `parts[].binary_base64`，一份原始 bytes 在 legacy 的 `binary_data` 字段，加起来约是原图的 2.34 倍，于是当时 256 KiB 的上限实际只兜得住约 110 KiB 的图。现在 `_build_wire_payload`（`plugin/core/context.py`）只在「调用方同时传了 `parts=` 和 `binary_data=`」这一种形状下才填 legacy 字段，普通的 inline 图片只走 base64 那一遍；双份去掉、上限又提到 512 KiB，两件事合起来才让 256 KiB 的图能过。
 
