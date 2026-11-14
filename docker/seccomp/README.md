@@ -45,7 +45,7 @@ docker run -d --name neko -p 48911:80 -p 48912:443 \
 
 - `kernel.unprivileged_userns_clone` 不能是 0（Debian 11 起默认是 1，别的发行版一般没有这个开关）。
 - `user.max_user_namespaces` 不能是 0。
-- Ubuntu 23.10 起还有一道 AppArmor 的限制，`kernel.apparmor_restrict_unprivileged_userns`，默认是 1。CI 用的 GitHub Ubuntu 26.04 运行机上，容器里的进程（Docker 默认的 AppArmor 配置下）不受它影响，Chromium 起得来。别的宿主机没有试过；带着这份配置仍然建不了用户命名空间时，先看这个开关。
+- Ubuntu 23.10 起还有一道 AppArmor 的限制，`kernel.apparmor_restrict_unprivileged_userns`，默认是 1。CI 用的 GitHub Ubuntu 运行机（写这段时是 26.04）上，带着这份配置 Chromium 起得来；那台机器上这个开关是什么值，在 CI 日志里实测脚本打出的 `note - host` 几行里。别的宿主机没有试过；带着这份配置仍然建不了用户命名空间时，先看这个开关。
 
 下面的脚本会把这三个开关在宿主机上的值打出来。
 

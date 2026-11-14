@@ -65,10 +65,15 @@ in_container() {
 
 # What the host says about user namespaces for unprivileged processes, for
 # whoever reads the output of a run that failed (or of one that passed, on a
-# host where one of these is set against them). Not every host has every one.
-for knob in kernel.unprivileged_userns_clone user.max_user_namespaces kernel.apparmor_restrict_unprivileged_userns; do
-    if value=$(sysctl -n "$knob" 2> /dev/null); then
-        echo "note - host: $knob=$value"
+# host where one of these is set against them). Read where the kernel keeps
+# them: `sysctl` is not on the PATH of an ordinary user everywhere (Debian
+# has it in /usr/sbin). Not every host has every one, and that is said too.
+for knob in kernel/unprivileged_userns_clone user/max_user_namespaces kernel/apparmor_restrict_unprivileged_userns; do
+    name=$(echo "$knob" | tr / .)
+    if [[ -r /proc/sys/$knob ]]; then
+        echo "note - host: $name=$(cat "/proc/sys/$knob")"
+    else
+        echo "note - host: $name is not a setting of this host"
     fi
 done
 host_hint='the host may not allow user namespaces to unprivileged processes: see the "note - host" lines above'

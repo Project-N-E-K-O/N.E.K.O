@@ -55,9 +55,11 @@ jobs:
           printf '%s\n' "$merged" | grep -qE 'mem_limit: ?"?(2g|2147483648)"?' \
             || { echo "资源上限覆盖文件未生效："; printf '%s\n' "$merged" | head -40; exit 1; }
 
-          # 浏览器覆盖文件：合并结果里 seccomp 指向的必须是仓库里那份配置（写成
-          # unconfined、指到别的文件都不算），/dev/shm 的上限也在。它在真容器里
-          # 起不起作用由下面的 browser-seccomp 任务试。
+          # 浏览器覆盖文件：防手滑用的。合并结果里有且只有一条 seccomp，路径以
+          # seccomp/chromium.json 结尾（写成 unconfined、换了文件名都不算；只认结尾，
+          # 是因为 compose 以后把它展开成绝对路径也该通过）；shm_size 只看有没有，
+          # 数值是部署的人可以改的。它在真容器里起不起作用由下面的 browser-seccomp
+          # 任务试。
           merged=$(docker compose -f docker/docker-compose.yml -f docker/compose.browser.yaml config)
           printf '%s\n' "$merged" | grep -qE '^ +- seccomp[=:][^ ]*seccomp/chromium\.json$' \
             || { echo "浏览器覆盖文件的 seccomp 没有指向 seccomp/chromium.json："; printf '%s\n' "$merged" | head -60; exit 1; }
