@@ -184,8 +184,9 @@ class AudioJitterBuffer:
     new utterance / interrupt and flush() on response.done. The buffer never owns
     those boundaries because only the worker sees them.
     """
-    def __init__(self, response_queue, initial_buffer_bytes: int, steady_buffer_bytes: int):
+    def __init__(self, response_queue, initial_buffer_bytes: int, steady_buffer_bytes: int, *, speech_id=None):
         self._response_queue = response_queue
+        self._speech_id = speech_id
         self._initial_buffer_bytes = initial_buffer_bytes
         self._steady_buffer_bytes = steady_buffer_bytes
         self.buffer = bytearray()
@@ -224,7 +225,8 @@ class AudioJitterBuffer:
     def _flush(self):
         if not self.buffer:
             return
-        self._response_queue.put(bytes(self.buffer))
+        audio = bytes(self.buffer)
+        self._response_queue.put(audio if self._speech_id is None else ("__audio__", self._speech_id, audio))
         self.buffer.clear()
         # Passing the gate means this turn has started: if a short sentence is first released by the terminal flush because it is below the initial threshold,
         # any later stray upstream delta should use steady-state handling instead of restarting head-start and being discarded by reset.
@@ -232,7 +234,8 @@ class AudioJitterBuffer:
 
 def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
                              steady_ms_default: float = 200,
-                             legacy_env_prefix: str | None = None) -> AudioJitterBuffer:
+                             legacy_env_prefix: str | None = None,
+                             *, speech_id=None) -> AudioJitterBuffer:
     """Build an :class:`AudioJitterBuffer` from the generic NEKO_TTS_JITTER_* env knobs.
 
     ``legacy_env_prefix`` (e.g. "NEKO_QWEN_TTS") keeps honoring a provider's
@@ -252,7 +255,7 @@ def make_audio_jitter_buffer(response_queue, initial_ms_default: float = 400,
     steady_ms = _resolve_ms("NEKO_TTS_JITTER_STEADY_MS", "STEADY_BUFFER_MS", steady_ms_default)
     initial_bytes = int(initial_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
     steady_bytes = int(steady_ms / 1000 * _TTS_OUTPUT_BYTES_PER_SECOND)
-    return AudioJitterBuffer(response_queue, initial_bytes, steady_bytes)
+    return AudioJitterBuffer(response_queue, initial_bytes, steady_bytes, speech_id=speech_id)
 
 # Close codes that mean "the server refused this request" rather than "the
 # connection went away". Everything else stays on the reconnect path: 1000 /

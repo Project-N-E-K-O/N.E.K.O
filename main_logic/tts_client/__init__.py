@@ -31,6 +31,7 @@ import websockets
 
 from utils.config_manager import get_config_manager
 from utils.tts.native_voice_registry import get_native_tts_worker
+from utils.tts.providers.deepseek import DEEPSEEK_PRESET_CATALOG, DEEPSEEK_TTS_URL
 from utils.tts.providers.mimo import MIMO_PRESET_CATALOG
 from utils.tts import provider_registry as _tts_providers
 from utils.logger_config import get_module_logger
@@ -97,6 +98,7 @@ from .workers.vllm_omni import (
     _vllm_omni_clone_is_selected,
     _vllm_omni_clone_resolve,
 )
+from .workers.deepseek import deepseek_tts_worker, _deepseek_is_selected, _deepseek_resolve
 from .workers.mimo import (
     mimo_tts_worker,
     _get_mimo_chat_completions_url,
@@ -161,7 +163,7 @@ __all__ = [
     "step_realtime_tts_worker", "free_realtime_tts_worker",
     "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
-    "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
+    "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker", "deepseek_tts_worker",
     "doubao_tts_worker",
     "gptsovits_tts_worker", "minimax_tts_worker", "elevenlabs_tts_worker",
     "local_cosyvoice_worker", "dummy_tts_worker",
@@ -187,7 +189,7 @@ __all__ = [
     "_gptsovits_is_selected", "_gptsovits_resolve",
     "_custom_openai_tts_is_selected", "_custom_openai_tts_resolve",
     "tts_provider_falls_back_on_failure", "tts_provider_uses_configured_preset_voice",
-    "selected_configured_tts_preset_provider_key",
+    "selected_configured_tts_preset_provider_key", "selected_realtime_output_tts_provider_key",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
@@ -564,6 +566,14 @@ def selected_configured_tts_preset_provider_key(core_config, cm, voice_id):
         return None
 
 
+def selected_realtime_output_tts_provider_key(core_config, cm, voice_id):
+    """Return a selected provider that handles realtime sessions' speech output."""
+    provider = _tts_providers.selected_provider(
+        _tts_providers.DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id or "")
+    )
+    return provider.key if provider and provider.realtime_output_override else None
+
+
 # Cloned-voice providers (hosted SaaS, selected by voice_meta.provider). Priority 30/40/50
 # preserves original get_tts_worker clone order: after vllm(20), before mimo/native. capabilities
 # also declares supported clone/design sources; both route to the same worker by voice_meta after saving.
@@ -644,6 +654,22 @@ _tts_providers.register(_tts_providers.TTSProvider(
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,
     tts_dropdown_only=False,
+))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='deepseek',
+    kind='hosted',
+    # A selected DeepSeek voice or explicit TTS choice takes precedence over MiMo's assist default.
+    priority=59,
+    capabilities=frozenset({'preset'}),
+    is_selected=_deepseek_is_selected,
+    resolve=_deepseek_resolve,
+    preset_catalog=DEEPSEEK_PRESET_CATALOG,
+    realtime_output_override=True,
+    tts_dropdown_only=False,
+    default_url=DEEPSEEK_TTS_URL,
+    default_voice=DEEPSEEK_PRESET_CATALOG.default_voice,
+    api_key_field='assistApiKeyDeepseek',
 ))
 
 _tts_providers.register(_tts_providers.TTSProvider(

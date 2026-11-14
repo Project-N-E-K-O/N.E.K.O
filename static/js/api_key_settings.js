@@ -1636,6 +1636,13 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
             setKeyReadonly(keyInput, '');
         }
         applyFixedModelProviderUi(modelType, provider);
+    } else if (modelType === 'tts' && provider === 'deepseek') {
+        if (urlInput) {
+            urlInput.value = getTtsProviderMeta(provider)?.default_url || '';
+            urlInput.setAttribute('readonly', 'readonly');
+        }
+        setModelIdFieldHidden(modelType, true);
+        setKeyReadonly(keyInput, getEffectiveAssistKey(provider), provider);
     } else if (modelType === 'tts' && getTtsProviderMeta(provider) && getTtsProviderMeta(provider).editable_endpoint) {
         // 特异 TTS provider（端点可编辑，如 vLLM-Omni）：URL/Key/ModelId/Voice 全部
         // 可编辑可保存（类似 custom，但 dropdown 里有自己的名字与默认值）。分支条件由
@@ -1643,6 +1650,7 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         // 结构信号兜底）；预填默认值优先取 api_providers.json，缺失时回退注册表 default_*。
         const _spMeta = getTtsProviderMeta(provider);
         const pInfo = getProviderInfo(provider);
+        setModelIdFieldHidden(modelType, false);
         if (urlInput) {
             // 切换到该 provider 时：
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
@@ -1712,6 +1720,15 @@ function updateTtsProviderFieldVisibility(provider) {
     if (standardFields) standardFields.style.display = isGsv ? 'none' : '';
     if (gsvFields) gsvFields.style.display = isGsv ? 'block' : 'none';
     if (isGsv) updateGptSovitsTutorialLink();
+    const voiceInput = document.getElementById('ttsVoiceId');
+    if (voiceInput) {
+        const isDeepSeek = provider === 'deepseek';
+        const key = isDeepSeek ? 'api.ttsDeepSeekVoiceExamplePlaceholder' : 'api.ttsVoiceExamplePlaceholder';
+        const fallback = isDeepSeek ? 'stella / tide' : 'e.g., Chinese Female, alloy';
+        const translated = window.t?.(key);
+        voiceInput.dataset.i18nPlaceholder = key;
+        voiceInput.placeholder = translated && translated !== key ? translated : fallback;
+    }
     updateTtsProtocolHint(provider);
 }
 
@@ -3681,8 +3698,13 @@ async function save_button_down(e) {
     };
     if (gptsovitsEnabled) {
         payload.ttsProvider = 'gptsovits';
-    } else if (selectedTtsProvider === 'mimo') {
+    } else if (selectedTtsProvider === 'mimo' || selectedTtsProvider === 'deepseek') {
         payload.ttsProvider = selectedTtsProvider;
+        if (selectedTtsProvider === 'deepseek') {
+            // DeepSeek uses a fixed endpoint and the key book, with no model ID.
+            delete payload.ttsModelApiKey;
+            delete payload.ttsModelId;
+        }
     } else if (_loadedGptSovitsState !== 'none') {
         payload.ttsProvider = '';
     } else if (selectedTtsProvider) {
@@ -3761,7 +3783,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
         visited.add(visitKey);
         if (modelType === 'tts') {
             const ttsMeta = getTtsProviderMeta(providerMode);
-            if (ttsMeta && ttsMeta.editable_endpoint) return '';
+            if (providerMode === 'deepseek' || (ttsMeta && ttsMeta.editable_endpoint)) return '';
         }
 
         if (providerMode === 'follow_conversation') {

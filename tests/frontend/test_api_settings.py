@@ -1434,16 +1434,17 @@ def test_explicit_mimo_provider_ignores_assist_token_plan(mock_page: Page, runni
 
 
 @pytest.mark.frontend
-def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str):
-    """Saving explicit MiMo TTS must preserve ttsProvider so runtime dispatch selects MiMo."""
+@pytest.mark.parametrize("provider_key", ["mimo", "deepseek"])
+def test_explicit_hosted_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str, provider_key):
+    """Saving an explicit hosted TTS choice must preserve its runtime routing."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
-    mock_page.wait_for_selector("#ttsModelProvider option[value='mimo']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#ttsModelProvider option[value='{provider_key}']", state="attached", timeout=10000)
 
     payload = mock_page.evaluate("""
-        async () => {
+        async (providerKey) => {
             document.getElementById('enableCustomApi').checked = true;
             toggleCustomApi();
 
@@ -1452,7 +1453,7 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
             assist.dispatchEvent(new Event('change', { bubbles: true }));
 
             const provider = document.getElementById('ttsModelProvider');
-            provider.value = 'mimo';
+            provider.value = providerKey;
             provider.dispatchEvent(new Event('change', { bubbles: true }));
 
             window.__capturedSavePayload = null;
@@ -1468,11 +1469,37 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
             await save_button_down({ preventDefault() {} });
             return window.__capturedSavePayload;
         }
-    """)
+    """, provider_key)
 
     assert payload["assistApi"] == "qwen"
-    assert payload["ttsModelProvider"] == "mimo"
-    assert payload["ttsProvider"] == "mimo"
+    assert payload["ttsModelProvider"] == provider_key
+    assert payload["ttsProvider"] == provider_key
+    if provider_key == "deepseek":
+        assert "ttsModelApiKey" not in payload
+        assert "ttsModelId" not in payload
+        assert payload["ttsModelUrl"] == "wss://api.deepseek.com/v1/tools/tts"
+
+
+@pytest.mark.frontend
+def test_deepseek_tts_voice_placeholder_follows_provider_and_locale(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    voice = mock_page.locator("#ttsVoiceId")
+    provider.select_option("deepseek", force=True, timeout=5000)
+    expect(voice).to_have_attribute("placeholder", "如：stella / tide")
+    voice.evaluate("(input) => { input.value = 'tide'; }")
+
+    mock_page.evaluate("window.changeLanguage('en')")
+    expect(voice).to_have_attribute("placeholder", "e.g., stella / tide")
+    expect(provider).to_have_value("deepseek")
+    expect(voice).to_have_value("tide")
+
+    provider.select_option("follow_assist", force=True, timeout=5000)
+    expect(voice).to_have_attribute("placeholder", "e.g., Chinese Female, alloy")
+    expect(voice).to_have_value("tide")
 
 
 @pytest.mark.frontend

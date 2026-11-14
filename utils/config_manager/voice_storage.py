@@ -135,14 +135,16 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
         - minimax:   ASSIST_API_KEY_MINIMAX → MINIMAX_API_KEY fallback
         - minimax_intl: ASSIST_API_KEY_MINIMAX_INTL → MINIMAX_INTL_API_KEY fallback
         - mimo: ASSIST_API_KEY_MIMO
+        - deepseek: ASSIST_API_KEY_DEEPSEEK
         - doubao_tts: ttsModelApiKey only when the active TTS provider is doubao_tts,
           then the dedicated Doubao Speech keybook entry
         - glm_tts: ASSIST_API_KEY_GLM (assist GLM keybook entry; core/assist=glm
           falls back to coreApiKey via the core_config snapshot)
         """
-        if provider == 'glm_tts':
+        if provider in ('glm_tts', 'deepseek'):
             core_config = self.get_core_config()
-            key = (core_config.get('ASSIST_API_KEY_GLM') or '').strip()
+            field = 'ASSIST_API_KEY_GLM' if provider == 'glm_tts' else 'ASSIST_API_KEY_DEEPSEEK'
+            key = str(core_config.get(field) or '').strip()
             if '***' in key:
                 return None
             return key or None
