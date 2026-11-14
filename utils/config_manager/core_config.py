@@ -68,6 +68,7 @@ from copy import deepcopy
 from urllib.parse import urlparse, urlunparse
 
 from config import DEFAULT_CONFIG_DATA, GEOIP_FORCE_NON_MAINLAND
+from utils.dashscope_region import dashscope_http_url_from_base
 from utils.gptsovits_config import normalize_gsv_api_url
 from utils.steam_state import get_steamworks
 
@@ -1468,7 +1469,13 @@ class CoreConfigMixin:
                 provider = config.get(f'{prefix}ModelProvider', '')
                 if prefix == 'tts' and provider == 'deepseek':
                     # The hosted worker uses the DeepSeek key book and fixed endpoint.
-                    # Keep the generic TTS slot available to existing clone workers.
+                    # Retain a saved DashScope slot for existing CosyVoice clones,
+                    # without sending another provider's saved key to DashScope.
+                    saved_url = str(core_cfg.get('ttsModelUrl') or '').strip()
+                    if dashscope_http_url_from_base(saved_url):
+                        config[url_key] = saved_url
+                        config[model_key] = str(core_cfg.get('ttsModelId') or '').strip()
+                        config[apikey_key] = str(core_cfg.get('ttsModelApiKey') or '').strip()
                     continue
                 # follow_core / follow_assist URLs are readonly frontend-linked hints autofilled by
                 # static/js/api_key_settings.js: onCustomModelProviderChange, not evidence

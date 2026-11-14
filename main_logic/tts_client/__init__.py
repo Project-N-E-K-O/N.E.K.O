@@ -666,6 +666,7 @@ _tts_providers.register(_tts_providers.TTSProvider(
     resolve=_deepseek_resolve,
     preset_catalog=DEEPSEEK_PRESET_CATALOG,
     realtime_output_override=True,
+    uses_configured_default_voice=True,
     tts_dropdown_only=False,
     default_url=DEEPSEEK_TTS_URL,
     default_voice=DEEPSEEK_PRESET_CATALOG.default_voice,

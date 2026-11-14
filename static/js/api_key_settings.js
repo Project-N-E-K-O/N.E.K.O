@@ -84,6 +84,7 @@ const MODEL_PROVIDER_FIELD_BY_TYPE = {
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
+let _customTtsDraft = null;
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
@@ -1520,6 +1521,13 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         && previousProvider !== provider) {
         modelIdInput.value = '';
     }
+    if (modelType === 'tts' && provider === 'deepseek' && previousProvider === 'custom' && userInitiated) {
+        _customTtsDraft = {
+            url: urlInput.value,
+            model: modelIdInput.value,
+            key: getRealKey(keyInput),
+        };
+    }
     // Also remember follow modes that return early below.
     sel.dataset.currentProvider = provider;
 
@@ -1650,7 +1658,6 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         // 结构信号兜底）；预填默认值优先取 api_providers.json，缺失时回退注册表 default_*。
         const _spMeta = getTtsProviderMeta(provider);
         const pInfo = getProviderInfo(provider);
-        setModelIdFieldHidden(modelType, false);
         if (urlInput) {
             // 切换到该 provider 时：
             // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
@@ -1681,7 +1688,6 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
         if (modelIdInput) modelIdInput.removeAttribute('readonly');
-        setModelIdFieldHidden(modelType, false);
         setKeyEditable(keyInput);
     } else {
         // Specific provider
@@ -1704,6 +1710,11 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         setKeyReadonly(keyInput, bookKey, provider);
     }
     if (modelType === 'tts') {
+        if (provider === 'custom' && previousProvider === 'deepseek' && !_isLoadingSavedConfig) {
+            urlInput.value = _customTtsDraft?.url || '';
+            modelIdInput.value = _customTtsDraft?.model || '';
+            setMaskedInput(keyInput, _customTtsDraft?.key || '');
+        }
         updateTtsProviderFieldVisibility(provider);
     }
 }
@@ -2645,6 +2656,7 @@ async function loadCurrentApiKey() {
     const assistApiSelect = document.getElementById('assistApiSelect');
     const assistApiKeyInput = document.getElementById('assistApiKeyInput');
     _ttsConfigDirty = false;
+    _customTtsDraft = null;
 
     if (apiKeyInput) {
         setMaskedInput(apiKeyInput, '');
@@ -2862,6 +2874,13 @@ async function loadCurrentApiKey() {
             setInputValue('ttsModelUrl', data.ttsModelUrl);
             setInputValue('ttsModelId', data.ttsModelId);
             setSecretInputValue('ttsModelApiKey', data.ttsModelApiKey);
+            if (data.ttsModelProvider === 'deepseek') {
+                const savedUrl = (data.ttsModelUrl || '').trim();
+                // Earlier builds saved a DeepSeek endpoint into the shared custom TTS slot.
+                if (savedUrl && !/^\w+:\/\/api\.deepseek\.com(?:[/:?#]|$)/i.test(savedUrl)) {
+                    _customTtsDraft = { url: savedUrl, model: data.ttsModelId, key: data.ttsModelApiKey };
+                }
+            }
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
             // 加载 GPT-SoVITS 配置：启用状态以 ttsModelProvider 下拉为准，
@@ -3345,6 +3364,7 @@ function confirmClearCustomApi() {
         onImageProviderChange();
     }
 
+    _customTtsDraft = null;
     // 清空 TTS Voice ID
     const ttsVoiceIdEl = document.getElementById('ttsVoiceId');
     if (ttsVoiceIdEl) ttsVoiceIdEl.value = '';
@@ -3701,7 +3721,8 @@ async function save_button_down(e) {
     } else if (selectedTtsProvider === 'mimo' || selectedTtsProvider === 'deepseek') {
         payload.ttsProvider = selectedTtsProvider;
         if (selectedTtsProvider === 'deepseek') {
-            // DeepSeek uses a fixed endpoint and the key book, with no model ID.
+            // The fixed DeepSeek endpoint and Key Book entry are outside the shared TTS slot.
+            delete payload.ttsModelUrl;
             delete payload.ttsModelApiKey;
             delete payload.ttsModelId;
         }

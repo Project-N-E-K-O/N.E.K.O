@@ -731,7 +731,7 @@ class TtsRuntimeMixin:
             provider = provider_registry.get(provider_key)
             hosted_default_voice = (
                 core_config.get('TTS_VOICE_ID', '')
-                if provider and provider.realtime_output_override and provider.preset_catalog
+                if provider and provider.uses_configured_default_voice and provider.preset_catalog
                 and not provider.preset_catalog.is_voice(route_voice_id)
                 else ''
             )
@@ -2138,7 +2138,11 @@ class TtsRuntimeMixin:
             core_config_snapshot, self._config_manager, self.voice_id,
         )
         if hosted_provider:
-            return True
+            if self._config_manager.get_tts_api_key(hosted_provider):
+                logger.info("%s🔊 语音模式：使用外部 TTS provider=%s", log_prefix, hosted_provider)
+                return True
+            logger.info("%s🔊 语音模式：TTS provider=%s 缺少 API Key，使用原生语音", log_prefix, hosted_provider)
+            return False
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
             return True

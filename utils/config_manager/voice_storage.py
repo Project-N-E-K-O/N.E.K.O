@@ -145,7 +145,7 @@ class VoiceStorageMixin(ImportedVoiceStorageMixin):
             core_config = self.get_core_config()
             field = 'ASSIST_API_KEY_GLM' if provider == 'glm_tts' else 'ASSIST_API_KEY_DEEPSEEK'
             key = str(core_config.get(field) or '').strip()
-            if '***' in key:
+            if '***' in key or key == '__NEKO_SECRET_MASKED__' or (key and set(key) == {'•'}):
                 return None
             return key or None
         if provider == 'cosyvoice':

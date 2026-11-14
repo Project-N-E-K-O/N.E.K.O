@@ -51,7 +51,14 @@ def test_assist_only_does_not_route_to_deepseek(manager):
     assert (worker, provider) == (tts_client.qwen_realtime_tts_worker, "qwen")
 
 
-def test_config_manager_resolves_key_and_saves_the_preset(clean_user_data_dir, tmp_path, monkeypatch):
+@pytest.mark.parametrize(("saved_url", "expected_key"), [
+    ("https://dashscope.aliyuncs.com/api/v1", "legacy-tts-key"),
+    ("https://example.com/v1/audio/speech", "qwen-key"),
+    ("wss://api.deepseek.com/v1/tools/tts", "qwen-key"),
+])
+def test_config_manager_resolves_key_and_saves_the_preset(
+    clean_user_data_dir, tmp_path, monkeypatch, saved_url, expected_key,
+):
     cm = get_config_manager("N.E.K.O")
     config = {
         "coreApi": "qwen",
@@ -61,9 +68,9 @@ def test_config_manager_resolves_key_and_saves_the_preset(clean_user_data_dir, t
         "enableCustomApi": True,
         "ttsModelProvider": "deepseek",
         "ttsProvider": "deepseek",
-        "ttsModelUrl": "wss://api.deepseek.com/v1/tools/tts",
-        "ttsModelId": "stale-model",
-        "ttsModelApiKey": "stale-key",
+        "ttsModelUrl": saved_url,
+        "ttsModelId": "cosyvoice-v3.5-plus",
+        "ttsModelApiKey": "legacy-tts-key",
         "ttsVoiceId": "tide",
     }
     config_path = tmp_path / "core_config.json"
@@ -76,7 +83,11 @@ def test_config_manager_resolves_key_and_saves_the_preset(clean_user_data_dir, t
     assert cm.get_tts_api_key("deepseek") == "ds-key"
     assert cm.get_core_config()["TTS_VOICE_ID"] == "tide"
     assert provider_registry.selected_provider_key(cm.get_core_config(), cm) == "deepseek"
-    assert cm.get_model_api_config("tts_custom")["api_key"] == "qwen-key"
+    tts_config = cm.get_model_api_config("tts_custom")
+    assert tts_config["api_key"] == expected_key
+    assert cm.get_tts_api_key("cosyvoice") == expected_key
+    if expected_key == "legacy-tts-key":
+        assert tts_config["base_url"] == saved_url
     assert cm.validate_voice_id("tide")
     assert cm.voice_id_to_storage_value("tide") == {"source": "preset", "provider": "deepseek", "ref": "tide"}
 
@@ -113,12 +124,22 @@ def test_explicit_other_hosted_provider_keeps_priority(manager):
     assert (key, provider) == ("mimo-key", "mimo")
 
 
-@pytest.mark.parametrize("deepseek_key", [None, "   ", "***MASKED***"])
-def test_selected_without_deepseek_key_uses_dummy(manager, deepseek_key):
-    manager.get_core_config.return_value = {
-        "TTS_PROVIDER": "deepseek", "ASSIST_API_KEY_DEEPSEEK": deepseek_key, "CORE_API_KEY": "qwen-key",
+@pytest.mark.parametrize("deepseek_key", [None, "   ", "***MASKED***", "__NEKO_SECRET_MASKED__", "••••"])
+@pytest.mark.parametrize(("provider", "voice"), [("deepseek", ""), ("", "stella"), ("", "tide")])
+def test_selected_without_deepseek_key_uses_native_realtime_output(manager, deepseek_key, provider, voice):
+    config = {
+        "TTS_PROVIDER": provider, "ASSIST_API_KEY_DEEPSEEK": deepseek_key, "CORE_API_KEY": "qwen-key",
     }
-    assert tts_client.get_tts_worker("qwen") == (tts_client.dummy_tts_worker, None, None)
+    manager.get_core_config.return_value = config
+    session = object.__new__(LLMSessionManager)
+    session._config_manager = manager
+    session.core_api_type = "qwen"
+    session.voice_id = voice
+    session._is_free_preset_voice = False
+
+    assert not session._resolve_session_use_tts("audio", {}, config)
+    assert session._resolve_session_use_tts("text", {}, config)
+    assert tts_client.get_tts_worker("qwen", bool(voice), voice) == (tts_client.dummy_tts_worker, None, None)
 
 
 @pytest.mark.parametrize("in_current_bucket", [True, False])
@@ -194,7 +215,12 @@ def worker(monkeypatch):
 
 def test_streams_text_and_finishes_after_all_48khz_audio(worker):
     pcm = b"\x10\x00" * 240
-    worker.script.put([pcm[:101], pcm[101:], '{"event":"finish","code":"success"}'])
+    worker.script.put([
+        '{"event":"audio_info","sample_rate":24000}',
+        pcm[:101],
+        pcm[101:],
+        '{"event":"finish","code":"success"}',
+    ])
     worker.requests.put(("speech", "你好"))
     socket, url, kwargs = worker.connections.get(timeout=3)
     parsed = urlsplit(url)
@@ -214,6 +240,8 @@ def test_streams_text_and_finishes_after_all_48khz_audio(worker):
 
 @pytest.mark.parametrize("reply, code, detail", [
     ('{"event":"finish","code":"content_filter","message":"Rejected"}', "API_POLICY_VIOLATION", "Rejected"),
+    ('{"event":"error","code":"service_error","message":"Busy"}', "UPSTREAM_SERVER_BUSY", "Busy"),
+    ('{"code":"success"}', "TTS_CONNECTION_FAILED", "Unexpected DeepSeek TTS WebSocket message"),
     (None, "TTS_CONNECTION_FAILED", "closed before sending a finish event"),
 ])
 def test_failure_reports_the_speech_and_next_speech_can_succeed(worker, reply, code, detail):

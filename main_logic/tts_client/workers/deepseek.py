@@ -102,12 +102,16 @@ async def _synthesize_speech(
                 jitter.append(_resample_audio(pcm, 24_000, 48_000, resampler))
                 continue
             event = json.loads(message)
-            if not isinstance(event, dict) or event.get("event") != "finish":
+            event_type = event.get("event") if isinstance(event, dict) else None
+            if not isinstance(event_type, str) or not event_type:
                 raise _SynthesisError("Unexpected DeepSeek TTS WebSocket message")
+            if event_type not in ("finish", "error"):
+                logger.debug("Ignoring DeepSeek TTS notification event: %r", event_type)
+                continue
             code = str(event.get("code") or "")
-            if code != "success":
+            if event_type == "error" or code != "success":
                 raise _SynthesisError(
-                    f"DeepSeek TTS finish ({code}): {event.get('message', '')}",
+                    f"DeepSeek TTS {event_type} ({code}): {event.get('message', '')}",
                     _FINISH_ERROR_CODES.get(code, "TTS_CONNECTION_FAILED"),
                 )
             if not text_finished:
@@ -227,9 +231,9 @@ def _deepseek_is_selected(ctx: DispatchContext) -> bool:
         return False
     if not provider and not (recognized and voice_id.casefold() == voice.casefold()):
         return False
-    if voice_id and (ctx.voice_meta or ctx.cm.voice_id_exists_in_any_storage(voice_id)):
+    if ctx.has_custom_voice and voice_id and not recognized:
         return False
-    return not ctx.has_custom_voice or not voice_id or recognized
+    return not (voice_id and (ctx.voice_meta or ctx.cm.voice_id_exists_in_any_storage(voice_id)))
 
 
 def _deepseek_resolve(ctx: DispatchContext):
