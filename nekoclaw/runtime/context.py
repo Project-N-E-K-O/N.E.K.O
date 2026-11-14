@@ -333,25 +333,34 @@ def prune_rows(rows: Sequence[Row], policy: ContextPolicy, *, include_latest: bo
 # ---------------------------------------------------------------------------
 
 
-def retain_recent_images(rows: Sequence[Row], retention: dict[str, int]) -> list[Row] | None:
+def retain_recent_images(
+    rows: Sequence[Row], retention: dict[str, int], pools: dict[str, str] | None = None
+) -> list[Row] | None:
     """Keep only the newest image results of the listed tools.
 
     ``retention`` maps a tool name to how many of its results keep their
-    images. Older ones get a text placeholder. Returns ``None`` if unchanged.
+    images. Older ones get a text placeholder. ``pools`` maps a tool name to
+    a pool; the tools of one pool are counted together, and the pool keeps
+    the largest number given for any of them. Returns ``None`` if unchanged.
     """
     if not retention:
         return None
-    remaining = dict(retention)
+    pools = pools or {}
+    remaining: dict[str, int] = {}
+    for name, count in retention.items():
+        counter = pools.get(name, name)
+        remaining[counter] = max(remaining.get(counter, 0), count)
     changed = False
     out: list[Row] = list(rows)
     for index in range(len(out) - 1, -1, -1):
         message = out[index].message
-        if not isinstance(message, ToolResultMessage) or message.tool_name not in remaining:
+        if not isinstance(message, ToolResultMessage) or message.tool_name not in retention:
             continue
         if not any(isinstance(block, ImageContent) for block in message.content):
             continue
-        if remaining[message.tool_name] > 0:
-            remaining[message.tool_name] -= 1
+        counter = pools.get(message.tool_name, message.tool_name)
+        if remaining[counter] > 0:
+            remaining[counter] -= 1
             continue
         content = [
             block if isinstance(block, TextContent) else TextContent(text=texts.IMAGE_OMITTED_PLACEHOLDER)
@@ -453,6 +462,8 @@ class ContextManager:
     # Tokens of the system prompt and tool definitions, estimated once.
     fixed_tokens: int = 0
     image_retention: dict[str, int] = field(default_factory=dict)
+    # Tool name -> pool; see ``retain_recent_images``.
+    image_pools: dict[str, str] = field(default_factory=dict)
     _anchor_tokens: int | None = None
     _anchor_count: int = 0
 
@@ -525,7 +536,7 @@ class ContextManager:
         before its first request, like before every request.
         """
         rows = transcript.rows()
-        trimmed = retain_recent_images(rows, self.image_retention)
+        trimmed = retain_recent_images(rows, self.image_retention, self.image_pools)
         if trimmed is not None:
             transcript.rewrite(trimmed)
             self.invalidate()

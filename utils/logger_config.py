@@ -517,7 +517,7 @@ def setup_logging(app_name=None, service_name=None, log_level=None, silent=False
         log_subdir=log_subdir,
     )
     # Use namespaced logger names (e.g. N.E.K.O.Agent)
-    # to avoid collisions with third-party loggers (browser_use internally has an "Agent" logger).
+    # to avoid collisions with third-party loggers (a library may well have an "Agent" logger of its own).
     base_logger = config.setup_logger()
     
     # Attach handlers to the APP_NAME parent logger so cross-service shared modules (utils, config, etc.)

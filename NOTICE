@@ -25,6 +25,17 @@ codex-rs/apply-patch/src/seek_sequence.rs from OpenAI Codex
 (https://github.com/openai/codex, commit 87b7bdb), Copyright 2025 OpenAI,
 Apache License 2.0.
 
+config/prompts/prompts_nekoclaw_builtin.py (the browser tool definitions) and
+nekoclaw/builtin/browser/ (snapshot.py, keys.py, tools.py) follow Chrome
+DevTools MCP (https://github.com/ChromeDevTools/chrome-devtools-mcp, commit
+ec6fd2cf), Copyright 2025 Google LLC, Apache License 2.0: the split into
+tools, the parameter names and description wording, the text format of a page
+snapshot and the way element uids are given. nekoclaw/builtin/browser/snapshot.py
+also reimplements the accessibility-tree filtering of Puppeteer
+(https://github.com/puppeteer/puppeteer,
+packages/puppeteer-core/src/cdp/Accessibility.ts), Copyright 2018 Google Inc.,
+Apache License 2.0. Both are ports to Python; no file of either is included.
+
 ------------------------------------------------------------
 
 我们种下了人与猫娘幸福共生的种子，我们的征途是星辰大海。

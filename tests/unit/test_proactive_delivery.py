@@ -1483,8 +1483,8 @@ def test_model_image_profile_constants_are_pinned() -> None:
 def test_compress_screenshot_bounds_width_only_when_asked() -> None:
     """``max_w`` is opt-in, so existing callers keep their exact old output.
 
-    brain/computer_use.py asks for target_h=1080 deliberately; making the width
-    bound a new floor everyone inherits would have changed what it produces.
+    nekoclaw/builtin/desktop.py asks for target_h=1080 deliberately; making the
+    width bound a new floor everyone inherits would have changed what it produces.
     """
     from PIL import Image
 

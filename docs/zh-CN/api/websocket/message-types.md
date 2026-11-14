@@ -164,7 +164,7 @@
 
 以下是当前 UI 集成事件，不属于稳定外部契约：
 
-- Agent：`agent_notification`、`agent_task_update`、`agent_status_update`。
+- Agent：`agent_notification`、`agent_task_update`、`agent_status_update`、`agent_builtin_activity`（某个任务开始或停止使用键鼠、浏览器，见 [Agent API](/zh-CN/api/rest/agent)）。
 - 截图：`request_screenshot`、`capture_bridge_request`、`screen_share_error`。
 - 小游戏：`mini_game_invite_options`、`mini_game_invite_resolved`、`game_window_state_change`。
 - 音乐/工具：`music_play_url`、`music_allowlist_add`。

@@ -94,7 +94,7 @@ ROUTES: tuple[str, ...] = ("plugin", "task_agent")
 # Why a commission left unfinished by an earlier host process failed.
 HOST_ENDED_REASON = "the host process ended before this finished"
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _BUSY_TIMEOUT_SECONDS = 5.0
 
 _SCHEMA = """
@@ -125,7 +125,8 @@ CREATE TABLE IF NOT EXISTS commissions (
     entry_id TEXT,
     name TEXT,
     deferred_until REAL,
-    host_instance TEXT
+    host_instance TEXT,
+    session_dir TEXT
 );
 CREATE INDEX IF NOT EXISTS commissions_by_owner ON commissions (lanlan_name, status);
 CREATE INDEX IF NOT EXISTS commissions_by_parent ON commissions (parent_id);
@@ -204,6 +205,11 @@ class Commission:
     # Until when a deferred plugin result may still arrive.
     deferred_until: float | None
     host_instance: str | None
+    # Where its task agent's session (the conversation so far) is kept, as
+    # ``workdir`` says where it works: written when it is first taken up.
+    # The data root may be moved later; the ledger goes along and the
+    # sessions stay, so the place is on record and not worked out anew.
+    session_dir: str | None = None
 
     @property
     def active(self) -> bool:
@@ -221,6 +227,10 @@ class Commission:
 
 
 _COMMISSION_COLUMNS: tuple[str, ...] = tuple(item.name for item in fields(Commission))
+# Columns of ``commissions`` that the first schema did not have, with their
+# types: added to a ledger that was made before them when it is opened. Its
+# rows read as NULL there.
+_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (("session_dir", "TEXT"),)
 # Columns ``update`` may write. The status is not among them.
 _UPDATABLE: frozenset[str] = frozenset(_COMMISSION_COLUMNS) - {"id", "status", "created_at", "host_instance"}
 
@@ -363,6 +373,7 @@ class Ledger:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.executescript(_SCHEMA)
+            self._add_columns(conn)
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             self._reconcile(conn)
         except BaseException:
@@ -371,6 +382,14 @@ class Ledger:
             raise
         self.path = path
         self._conn = conn
+
+    @staticmethod
+    def _add_columns(conn: sqlite3.Connection) -> None:
+        """Give a ledger made by an earlier build the columns added since (``_ADDED_COLUMNS``)."""
+        present = {row["name"] for row in conn.execute("PRAGMA table_info(commissions)")}
+        for name, kind in _ADDED_COLUMNS:
+            if name not in present:
+                conn.execute(f"ALTER TABLE commissions ADD COLUMN {name} {kind}")
 
     def _reconcile(self, conn: sqlite3.Connection) -> None:
         """Fail what a previous host process left unfinished.

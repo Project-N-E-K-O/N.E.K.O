@@ -8,7 +8,7 @@ uv sync
 uv run playwright install chromium
 ```
 
-ルートの `tests/conftest.py` も Chromium がない場合にインストールを試みますが、明示的な準備のほうが予測可能です。`tests/api_keys.json` は commit しません。外部サービスを実際に呼ぶテストでのみ template から作成します。
+ルートの `tests/conftest.py` も Chromium がない場合にインストールを試みますが、明示的な準備のほうが予測可能です。Playwright とこの Chromium は frontend／e2e テスト専用です。Playwright は開発用の依存関係であり、アプリケーション自身のブラウザー操作は、マシンにインストールされたブラウザーを直接操作するため、Playwright を使いません。`tests/api_keys.json` は commit しません。外部サービスを実際に呼ぶテストでのみ template から作成します。
 
 ## よく使うコマンド
 

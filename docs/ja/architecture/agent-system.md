@@ -51,9 +51,26 @@ task agent は、自前のファイル・コマンド系ツール以外の機能
 
 - 選択の対象になるプラグインエントリ。エントリごとにツール一つで、直接呼び出しと同じ `/runs` のコードを通ります。
 - `mcp_adapter` プラグインで設定した MCP サーバーのツール。
-- キーボード・マウス操作とブラウザー操作の二つの組み込み機能。どちらも指示を一つ受け取り、`brain/computer_use.py`、`brain/browser_use_adapter.py` にある既存のループで実行します。呼び出せるのは task agent だけです。
+- キーボード・マウス操作とブラウザー操作の二組の組み込みツール。次の節で説明します。呼び出せるのは task agent だけです。
 
-権限は `<データルート>/nekoclaw/permissions.json` に保存します。カテゴリごとに `first_ask`（初回に確認）、`always_ask`（毎回確認）、`allow`（許可）、`deny`（禁止）のいずれかです。既定では、プラグインエントリと作業ディレクトリ内のファイル操作は許可、作業ディレクトリ外の読み書き、コマンド実行、キーボード・マウス、ブラウザー、各 MCP サーバーは初回に確認します。`deny` にしたプラグインや MCP サーバーは、直接呼び出しでも使われません。
+権限は `<データルート>/nekoclaw/permissions.json` に保存します。カテゴリごとに `first_ask`（初回に確認）、`always_ask`（毎回確認）、`allow`（許可）、`deny`（禁止）のいずれかです。既定では、プラグインエントリと作業ディレクトリ内のファイル操作は許可、作業ディレクトリ外の読み書き、コマンド実行、キーボード・マウス、ブラウザー、各 MCP サーバーは初回に確認します。`deny` にしたプラグインや MCP サーバーは、直接呼び出しでも使われません。キーボード・マウスとブラウザーのツールは、クリック 1 回、キー入力 1 回といった細かい単位です。そのため、ユーザーが「今回だけ」許可した場合、その許可は task agent の現在の実行が終わるまで続きます。
+
+### 組み込みツール：キーボード・マウスとブラウザー
+
+キーボード・マウス操作とブラウザー操作は、NekoClaw の二組の組み込みツールです（`nekoclaw/builtin/`、Agent プロセス内）。task agent は、自前のファイル・コマンド系ツールと同じように、自分のループの中からこれらを一歩ずつ呼び出し、各ステップの結果を見てから次の一手を決めます。どちらの組も独自のループを持たず、呼び出しのたびに別のモデルを呼ぶこともありません。モデルに見せるツール定義は `config/prompts/prompts_nekoclaw_builtin.py` にあります。ゲートウェイは、プラグインエントリとは別枠の予算（2400 token）でこれらを一覧に載せます。
+
+- **キーボード・マウス。** ツールは `computer` の一つだけで、`action` 引数で操作を指定します（`screenshot`、`click`、`move`、`drag`、`scroll`、`type`、`key`、`wait`）。スクリーンショットをもとに動きます。座標は画面サイズに関係なく、縦横とも 0 から 999 の整数です。呼び出すたびに、操作後のスクリーンショットが返ります。範囲外の座標は拒否されます。
+- **ブラウザー。** `browser_*` という名前のツールが 15 個あります。URL を開く、スナップショットを取る、クリック、ホバー、入力欄への入力、複数項目の一括入力、文字入力、キー入力、スクリーンショット、ページの一覧・切り替え・新規作成・クローズ、文字列の出現待ち、ダイアログの処理です。ページは、アクセシビリティツリーをテキストにしたスナップショットとして読みます。各要素に uid が付き、操作では uid で要素を指定します。最新のスナップショットにない uid は拒否されます。スナップショットは 3000 token で切り詰められ、続きをどこから読むかが末尾に書かれます。開けるのは `http://` と `https://` のアドレスだけです。
+
+使うのは、ユーザーがインストールしているブラウザーです。Chrome、Edge、Brave、Chromium の順に探し、Windows では、システムの既定ブラウザーがこのいずれかであればそれを優先します。操作はブラウザーのデバッグプロトコル（Chrome DevTools Protocol、WebSocket 接続）で行い、ブラウザー自動化ライブラリは使いません。既定では、専用のプロファイルディレクトリ `<データルート>/nekoclaw/browser_profile` で起動します。そこでログインしたサイトはログインしたままになりますが、ユーザーが普段使っているログイン状態は使えません。代わりに、ユーザーが今使っているブラウザーをそのまま操作する設定にもできます。これには Chrome 144 以降が必要で、ユーザー自身が `chrome://inspect/#remote-debugging` でリモートデバッグをオンにし、接続のたびにブラウザー側で許可します。この選択は `<データルート>/nekoclaw/browser.json` に保存されます。ブラウザーが通常と違う場所にインストールされている場合は、このファイルの `executable` にパスを書くか、環境変数 `NEKO_BROWSER_PATH` で指定します。
+
+アプリケーションにブラウザーは同梱されず、起動時にダウンロードもしません。Playwright はテスト用の依存関係でしかなく、`browser-use` は依存関係に含まれません。使えるブラウザーが見つからない場合、ブラウザー操作は準備完了にならず、理由コード `AGENT_BROWSER_NOT_FOUND` を返します。
+
+`computer` と `browser_take_screenshot` は画像を返すため、画像を扱えるモデルを使う task agent にだけ提供されます。モデルは、まず画像を扱えるものとみなします。画像が含まれていることを理由にプロバイダーがリクエストを拒否した場合に限り、そのリクエストを画像なしで一度だけ送り直し、そのモデルを `<データルート>/nekoclaw/model_capabilities.json` に記録します。task agent のコンテキストには、これらのツールのスクリーンショットを合わせて直近 3 枚だけが残ります。
+
+デスクトップは一つ、ブラウザーも一つです。依頼は、最初の呼び出しからその組を占有し、task agent の実行が終わる、依頼がユーザーの回答待ちになる、依頼が終わる、のいずれかで手放します。依頼と、その依頼が起動した task agent は、一つの占有を共有します。同じ組を使いたい別の依頼は最大 120 秒待ち、それでも空かなければ、どの依頼が占有しているかを知らされます。
+
+依頼が占有を始めたときと手放したとき、Agent プロセスは `builtin_activity` イベントを送り、Main Server がそれを `agent_builtin_activity` WebSocket メッセージとして、接続中のすべてのページへ転送します。ページはそれを `neko-agent-builtin-activity` DOM イベントとして渡すだけで、自分では何も描画しません。`GET /api/agent/builtin/activity` は現在の占有状況を返し、`POST /api/agent/builtin/stop` は占有している依頼を中止します。詳細は [Agent REST API](/ja/api/rest/agent) を参照してください。
 
 ## 会話への報告
 
@@ -104,16 +121,16 @@ Main Server は報告を該当する `LLMSessionManager` のキューに入れ�
 | 状態 | 意味 |
 |---|---|
 | `analyzer_enabled` / UI `agent_enabled` | マスタースイッチ |
-| `computer_use_enabled` | task agent が使うキーボード・マウス機能 |
-| `browser_use_enabled` | task agent が使うブラウザー機能 |
+| `computer_use_enabled` | task agent が使うキーボード・マウスのツール |
+| `browser_use_enabled` | task agent が使うブラウザーのツール |
 | `user_plugin_enabled` | プラグインエントリ。直接呼び出しとゲートウェイ経由の両方に効く |
 
-Manager と Agent Server は構築時にすべてオフです。ただし最初の実ユーザー `greeting_check` の後に、永続化された runtime intent が復元されるため、ページを更新するたびに設定がリセットされるわけではありません。キーボード・マウスとブラウザーは、さらに agent モデルの接続確認が通っている必要があります。
+Manager と Agent Server は構築時にすべてオフです。ただし最初の実ユーザー `greeting_check` の後に、永続化された runtime intent が復元されるため、ページを更新するたびに設定がリセットされるわけではありません。キーボード・マウスとブラウザーは、さらに agent モデルの接続確認（`app/agent_server/model_probe.py`）が通っている必要があります。加えて、キーボード・マウスはこのマシンで入力を送れること、ブラウザーは使えるブラウザーがインストールされていることが条件です。
 
 ## 中止・上限・再起動
 
 - 中止では、先に状態を `cancelled` と書き、その後プラグインの Run を取り消す（プラグインサービスの `POST /runs/{run_id}/cancel`）か、task agent のセッションを閉じます。`POST /admin/control` の `end_all` と、マスタースイッチをオフにする操作は、進行中の依頼をすべて中止します。
-- キーボード・マウスとブラウザーは、それぞれ同時に 1 件の呼び出しだけを実行します。
+- デスクトップとブラウザーは、それぞれ同時に一件の依頼だけが占有します（「組み込みツール」の節を参照）。一つの占有の中では、呼び出しを一つずつ順に実行します。依頼を中止すると、実行中の呼び出しが取り消され、占有していたデスクトップやブラウザーが解放されます。すでに送られたクリックやページ移動は取り消せません。
 - プラグインは `deferred: true` を返せます。依頼は `/api/agent/tasks/{task_id}/complete` が呼ばれるまで `working` のままで、1 時間たっても呼ばれなければ `failed` になります。
 - 再起動後にホストが起動すると、前のプロセスが `queued`、`working`、`waiting_user` のまま残した依頼は `failed` になり、キャラクターの次のターンで報告されます。deferred の依頼は期限まで残ります。
 - Agent プロセスは、HUD 用のタスク一覧に、終了したタスクを 5 分間残します。
@@ -130,8 +147,10 @@ Manager と Agent Server は構築時にすべてオフです。ただし最初�
 | 台帳、outbox、報告 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
 | task agent と agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
 | 能力一覧、ゲートウェイ、権限 | `nekoclaw/host/capabilities.py`、`gateway.py`、`permissions.py` |
+| キーボード・マウスとブラウザーのツール | `nekoclaw/builtin/`、`config/prompts/prompts_nekoclaw_builtin.py` |
+| デスクトップとブラウザーの占有、画像を扱えるモデルの記録 | `nekoclaw/host/leases.py`、`model_capabilities.py` |
 | プラグインエントリの呼び出し（`/runs`） | `nekoclaw/host/plugin_runs.py` |
-| ホストのマウント、HUD 用の一覧、組み込み機能 | `app/agent_server/nekoclaw_mount.py`、`nekoclaw_builtins.py` |
+| ホストのマウント、HUD 用の一覧、組み込みツールのスイッチとイベント、agent モデルの接続確認 | `app/agent_server/nekoclaw_mount.py`、`nekoclaw_builtins.py`、`model_probe.py` |
 | Agent lifecycle / HTTP API | `app/agent_server/api_runtime.py`、`api_routes.py` |
 | チャットへの結果配信 | `main_logic/core/proactive.py` |
 

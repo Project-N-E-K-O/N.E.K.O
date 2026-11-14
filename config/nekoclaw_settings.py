@@ -188,6 +188,44 @@ GATEWAY_SEARCH_RESULTS = 8
 GATEWAY_RESULT_MAX_TOKENS = 4000
 """Cap on the text of one tool result served by the gateway."""
 
+GATEWAY_BUILTIN_TOOL_LIST_MAX_TOKENS = 2400
+"""Budget for the definitions of the built-in tools (keyboard and mouse,
+browser). They are always listed up front and are counted apart from the
+plugin entries, so a long plugin list cannot push them out and they take
+nothing from ``GATEWAY_TOOL_LIST_MAX_TOKENS``. The definitions are ours
+(``config/prompts/prompts_nekoclaw_builtin.py``); a test keeps them inside
+this budget, so in practice none is ever left out."""
+
+BUILTIN_OCCUPIED_WAIT_SECONDS = 120.0
+"""How long a call of a built-in tool waits for the desktop or the browser
+while another commission occupies it (``nekoclaw/host/leases.py``). After
+that the task agent is told who has it and decides how to go on."""
+
+TASK_AGENT_SCREENSHOTS_KEPT = 3
+"""How many of the most recent screenshots stay in a task agent's context,
+whichever tools they came from (the keyboard-and-mouse tool and the browser's
+screenshot tools are counted together); older ones are replaced with a
+placeholder. The old keyboard-and-mouse loop sent the current screenshot and
+the two before it."""
+
+MODEL_IMAGE_REFUSAL_REMEMBERED_SECONDS = 7 * 24 * 3600
+"""How long "this model takes no pictures", learned from a provider's refusal,
+is believed. After that the model is sent pictures again: if it still takes
+none, one request is refused and sent once more without them, and it is
+written down anew. A model that was misjudged, or has learned to see since,
+gets its picture tools back by itself."""
+
+BROWSER_SNAPSHOT_MAX_TOKENS = 3000
+"""Cap on one page snapshot handed to a task agent. A longer one is cut and
+ends with a line saying so and how to see the rest."""
+
+BROWSER_DIALOG_TEXT_MAX_TOKENS = 200
+BROWSER_PAGE_URL_MAX_TOKENS = 40
+"""Caps on text a page writes that goes into a tool result outside the
+snapshot: what a dialog of the page says, and the address of a page in the
+list of pages. Longer text is cut and the number of characters left out is
+told."""
+
 GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS = 200
 """Cap on a plugin's request for confirmation when the gateway puts it to the
 user; it reaches the main dialogue model as part of a report."""
@@ -206,6 +244,26 @@ HOST_SHUTDOWN_BUDGET_SECONDS = 4.0
 on with the rest of its own shutdown. The host's steps keep running after
 that until the process exits; nothing is lost by it, because every status is
 already in the ledger and unsent reports go out with the next start."""
+
+BROWSER_KILL_AT_SHUTDOWN_SECONDS = 5.0
+"""How long after the agent process began to shut down the browser the
+browser tools started is killed, whatever the shutdown has got to by then.
+The launcher gives the process 8 seconds and then ends it, without what it
+started (``graceful_shutdown_timeout`` in ``launcher_core/runtime.py``). The
+steps of the shutdown have bounds of their own (the host's above, the
+background tasks', and some have none) that add up to more than that, so the
+step that closes the browser is reached late or not at all: this does not
+depend on it being reached."""
+
+BROWSER_CLOSE_AT_SHUTDOWN_SECONDS = 4.0
+"""How long the browser is given to close by itself once the shutdown gets to
+it; less when less than that is left before it is killed (above)."""
+
+BROWSER_CLOSE_AT_END_ALL_SECONDS = 4.0
+"""How long the browser the tools started is given to close when the user
+stops every task (``end_all``); killed after that. Asking it to close has
+several steps that each have a time of their own and add up to more than the
+page waits for an answer to that request (5 seconds)."""
 
 HOST_CLOSE_STOP_WAIT_SECONDS = 1.5
 """How long closing the task brain waits for stops that are under way.

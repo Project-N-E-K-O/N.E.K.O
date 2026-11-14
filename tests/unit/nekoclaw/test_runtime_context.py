@@ -199,6 +199,128 @@ def test_only_the_newest_images_of_a_tool_stay_in_context() -> None:
     assert retain_recent_images(rows, {}) is None
 
 
+def _shot(tool: str, index: int, *, image: bool = True) -> ToolResultMessage:
+    """One result of ``tool``; with a screenshot unless ``image`` is False."""
+    content: list = [TextContent(text=f"{tool} {index}")]
+    if image:
+        content.append(ImageContent(data="AAAA", mime_type="image/jpeg"))
+    return ToolResultMessage(tool_call_id=f"{tool}-{index}", tool_name=tool, content=content)
+
+
+def _has_image(row: Row) -> bool:
+    return any(isinstance(block, ImageContent) for block in row.message.content)
+
+
+def test_tools_of_one_pool_are_counted_together() -> None:
+    rows = _rows(
+        [
+            _shot("browser_take_screenshot", 1),
+            _shot("browser_click", 2),
+            _shot("computer", 3),
+            _shot("browser_take_screenshot", 4),
+            # A result without a picture uses up nothing.
+            _shot("browser_click", 5, image=False),
+            _shot("browser_click", 6),
+        ]
+    )
+    retention = {"browser_take_screenshot": 2, "browser_click": 2, "computer": 2}
+    pools = {"browser_take_screenshot": "browser", "browser_click": "browser", "computer": "keyboard_mouse"}
+
+    kept = retain_recent_images(rows, retention, pools)
+
+    # The two newest of the browser as a whole, whichever of its tools took
+    # them; the desktop is a pool of its own.
+    assert kept is not None
+    assert [_has_image(row) for row in kept] == [False, False, True, True, False, True]
+    assert [block.text for block in kept[0].message.content] == [
+        "browser_take_screenshot 1",
+        texts.IMAGE_OMITTED_PLACEHOLDER,
+    ]
+    # Rows that keep their pictures, and rows that never had one, are the same objects.
+    assert [kept[index] is rows[index] for index in range(6)] == [False, False, True, True, True, True]
+    assert retain_recent_images(kept, retention, pools) is None
+    # Counted one by one, every tool is within its own two.
+    assert retain_recent_images(rows, retention) is None
+    assert retain_recent_images(rows, retention, {}) is None
+
+
+def test_a_tool_outside_every_pool_keeps_its_own_count() -> None:
+    rows = _rows(
+        [
+            _shot("browser_click", 1),
+            _shot("read_image", 2),
+            _shot("browser_take_screenshot", 3),
+            _shot("read_image", 4),
+            _shot("browser_click", 5),
+        ]
+    )
+    retention = {"browser_click": 1, "browser_take_screenshot": 1, "read_image": 1}
+    pools = {"browser_click": "browser", "browser_take_screenshot": "browser"}
+
+    kept = retain_recent_images(rows, retention, pools)
+
+    # One for the browser pool, and one for the tool that is in no pool.
+    assert kept is not None
+    assert [_has_image(row) for row in kept] == [False, False, False, True, True]
+
+
+@pytest.mark.parametrize(
+    "retention",
+    [{"browser_click": 1, "browser_take_screenshot": 3}, {"browser_take_screenshot": 3, "browser_click": 1}],
+)
+def test_a_pool_keeps_the_largest_number_given_for_any_of_its_tools(retention: dict) -> None:
+    rows = _rows([_shot("browser_click", index) for index in range(1, 6)])
+    pools = {"browser_click": "browser", "browser_take_screenshot": "browser"}
+
+    kept = retain_recent_images(rows, retention, pools)
+
+    # Three, though the tool that took them all was given one.
+    assert kept is not None
+    assert [_has_image(row) for row in kept] == [False, False, True, True, True]
+
+
+def test_results_of_tools_that_are_not_listed_are_never_touched() -> None:
+    rows = _rows(
+        [
+            _shot("browser_hover", 1),
+            _shot("read_image", 2),
+            _shot("browser_click", 3),
+            _shot("browser_hover", 4),
+            _shot("browser_click", 5),
+        ]
+    )
+    # ``browser_hover`` is put in the pool but given no number; ``read_image`` is not mentioned at all.
+    pools = {"browser_click": "browser", "browser_hover": "browser"}
+
+    kept = retain_recent_images(rows, {"browser_click": 1}, pools)
+
+    assert kept is not None
+    assert [_has_image(row) for row in kept] == [True, True, False, True, True]
+    # Their pictures do not count against the pool either: the newest of the listed tool stays.
+    assert [kept[index] is rows[index] for index in range(5)] == [True, True, False, True, True]
+    assert retain_recent_images(rows, {}, pools) is None
+
+
+async def test_before_a_request_old_screenshots_are_dropped_by_pool(tmp_path: Path) -> None:
+    manager = _manager(tmp_path, ContextPolicy(window=128_000, max_output=8_000), [])
+    manager.image_retention = {"browser_click": 1, "browser_take_screenshot": 1}
+    manager.image_pools = {"browser_click": "browser", "browser_take_screenshot": "browser"}
+    messages = [
+        UserMessage(content="click, then look"),
+        _shot("browser_click", 1),
+        _shot("browser_take_screenshot", 2),
+    ]
+    transcript = Transcript(messages, _counter())
+    for index, message in enumerate(messages):
+        transcript.register(message, f"e{index}", kind_of(message))
+
+    assert await manager.fit(transcript) == []
+
+    assert [_has_image(row) for row in transcript.rows()[1:]] == [False, True]
+    # Nothing but the picture changed, and the row is still the entry it was.
+    assert [row.entry_id for row in transcript.rows()] == ["e0", "e1", "e2"]
+
+
 # ---------------------------------------------------------------------------
 # Layer 3: summary
 # ---------------------------------------------------------------------------

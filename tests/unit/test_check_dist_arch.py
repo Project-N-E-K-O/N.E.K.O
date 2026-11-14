@@ -135,59 +135,6 @@ def test_universal_binary_containing_the_expected_arch_passes(tmp_path: Path) ->
     assert check_dist_arch.check_dist_arch(root, "arm64", "mac") == []
 
 
-def test_vendored_browser_directory_with_opposite_arch_token_is_rejected(tmp_path: Path) -> None:
-    """#2898 also shipped chromium-1208/chrome-mac-arm64 inside the x64 bundle."""
-    root = tmp_path / "Xiao8"
-    write(root / "projectneko_server", macho("x64"))
-    (root / "playwright_browsers" / "chromium-1208" / "chrome-mac-arm64").mkdir(parents=True)
-    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
-    assert any("vendored browser tree" in issue for issue in issues)
-
-
-def test_vendored_browser_directory_matching_the_build_passes(tmp_path: Path) -> None:
-    root = tmp_path / "Xiao8"
-    write(root / "projectneko_server", macho("x64"))
-    (root / "playwright_browsers" / "chromium-1208" / "chrome-mac-x64").mkdir(parents=True)
-    assert check_dist_arch.check_dist_arch(root, "x64", "mac") == []
-
-
-def test_tokenless_browser_directory_with_wrong_arch_binary_is_rejected(tmp_path: Path) -> None:
-    """Playwright also uses tokenless names like `chrome-mac`.
-
-    Directory-name matching alone would let a wrong-arch Chromium through, so
-    the browser tree is header-scanned as well.
-    """
-    root = tmp_path / "Xiao8"
-    write(root / "projectneko_server", macho("x64"))
-    browser = root / "playwright_browsers" / "chromium-1208" / "chrome-mac"
-    write(browser / "libEGL.dylib", macho("arm64"))
-    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
-    assert any("vendored browser tree contains" in issue for issue in issues)
-
-
-def test_suffixless_browser_executable_is_scanned(tmp_path: Path) -> None:
-    """Chromium's own executable has no filename suffix; dispatch on magic."""
-    root = tmp_path / "Xiao8"
-    write(root / "projectneko_server", macho("arm64"))
-    browser = (
-        root / "playwright_browsers" / "chromium-1208" / "chrome-mac"
-        / "Chromium.app" / "Contents" / "MacOS"
-    )
-    write(browser / "Chromium", macho("x64"))
-    issues = check_dist_arch.check_dist_arch(root, "arm64", "mac")
-    assert any("vendored browser tree contains" in issue for issue in issues)
-
-
-def test_matching_browser_tree_passes(tmp_path: Path) -> None:
-    root = tmp_path / "Xiao8"
-    write(root / "projectneko_server", macho("x64"))
-    browser = root / "playwright_browsers" / "chromium-1208" / "chrome-mac"
-    write(browser / "libEGL.dylib", macho("x64"))
-    write(browser / "Chromium.app" / "Contents" / "MacOS" / "Chromium", macho("x64"))
-    write(browser / "icudtl.dat", b"binary blob, not an executable\n")
-    assert check_dist_arch.check_dist_arch(root, "x64", "mac") == []
-
-
 @pytest.mark.parametrize(
     ("payload", "platform", "suffix"),
     [(elf, "linux", ".so"), (pe, "win", ".dll")],
@@ -273,20 +220,20 @@ def test_versioned_elf_soname_is_scanned(tmp_path: Path) -> None:
 
 
 def test_extensionless_helper_executable_is_scanned(tmp_path: Path) -> None:
-    """Nuitka's Playwright plugin packages a bare `playwright/driver/node`."""
+    """Helper programs ship without a filename suffix on Linux and macOS."""
     root = tmp_path / "Xiao8"
     write(root / "projectneko_server", elf("x64"))
-    write(root / "playwright" / "driver" / "node", elf("arm64"))
+    write(root / "tools" / "bin" / "helper", elf("arm64"))
     issues = check_dist_arch.check_dist_arch(root, "x64", "linux")
-    assert any("node" in issue for issue in issues)
+    assert any("helper" in issue for issue in issues)
 
 
 def test_windows_helper_exe_is_scanned(tmp_path: Path) -> None:
     root = tmp_path / "Xiao8"
     write(root / "projectneko_server.exe", pe("x64"))
-    write(root / "playwright" / "driver" / "node.exe", pe("arm64"))
+    write(root / "tools" / "bin" / "helper.exe", pe("arm64"))
     issues = check_dist_arch.check_dist_arch(root, "x64", "win")
-    assert any("node.exe" in issue for issue in issues)
+    assert any("helper.exe" in issue for issue in issues)
 
 
 def test_foreign_container_format_is_rejected_even_when_the_arch_matches(tmp_path: Path) -> None:
@@ -305,38 +252,17 @@ def test_entry_binary_of_the_wrong_container_format_is_rejected(tmp_path: Path) 
     assert any("must be pe" in issue for issue in issues)
 
 
-def test_workspace_path_containing_an_arch_token_does_not_trip_the_gate(tmp_path: Path) -> None:
-    """Only paths below the dist root may be matched against arch tokens.
-
-    A CI workspace directory named e.g. `runner-arm64-workspace` must not make a
-    correct x64 bundle fail.
-    """
-    root = tmp_path / "runner-arm64-workspace" / "Xiao8"
-    write(root / "projectneko_server", macho("x64"))
-    (root / "playwright_browsers" / "chromium-1208" / "chrome-mac-x64").mkdir(parents=True)
-    assert check_dist_arch.check_dist_arch(root, "x64", "mac") == []
-
-
-def test_vendored_browser_exclusion_is_relative_to_the_dist_root(tmp_path: Path) -> None:
-    """An ancestor named playwright_browsers must not hide the whole dist from the scan."""
-    root = tmp_path / "playwright_browsers" / "Xiao8"
-    write(root / "projectneko_server", elf("x64"))
-    write(root / "native.so", elf("arm64"))
-    issues = check_dist_arch.check_dist_arch(root, "x64", "linux")
-    assert any("native.so" in issue for issue in issues)
-
-
 def test_short_mz_file_does_not_crash_the_gate(tmp_path: Path) -> None:
     """A 20..63 byte data file starting with `MZ` used to raise struct.error.
 
-    The browser scan feeds every ordinary file to the header reader, so a data
-    blob that merely begins with those two bytes must be shrugged off, not
-    allowed to take the whole build down.
+    The scan feeds every suffixless file to the header reader, so a data blob
+    that merely begins with those two bytes must be shrugged off, not allowed
+    to take the whole build down.
     """
     root = tmp_path / "Xiao8"
     write(root / "projectneko_server", macho("x64"))
-    write(root / "playwright_browsers" / "chrome-mac" / "blob.dat", b"MZ" + b"\x00" * 30)
-    assert check_dist_arch.read_binary(root / "playwright_browsers" / "chrome-mac" / "blob.dat") is None
+    write(root / "resources" / "blob", b"MZ" + b"\x00" * 30)
+    assert check_dist_arch.read_binary(root / "resources" / "blob") is None
     assert check_dist_arch.check_dist_arch(root, "x64", "mac") == []
 
 
@@ -367,73 +293,14 @@ def test_forged_pe_offset_is_not_followed(tmp_path: Path, monkeypatch) -> None:
     )
 
 
-def test_browser_scan_honours_its_file_cap(tmp_path: Path, monkeypatch) -> None:
-    """The cap must bound the walk itself, not just the reporting."""
-    root = tmp_path / "Xiao8"
-    write(root / "projectneko_server", macho("x64"))
-    browser = root / "playwright_browsers" / "chrome-mac"
-    for index in range(12):
-        write(browser / f"lib{index}.dylib", macho("arm64"))
-
-    seen: list[Path] = []
-    real_read_binary = check_dist_arch.read_binary
-
-    def counting_read_binary(path: Path):
-        seen.append(path)
-        return real_read_binary(path)
-
-    monkeypatch.setattr(check_dist_arch, "read_binary", counting_read_binary)
-    monkeypatch.setattr(check_dist_arch, "_BROWSER_SCAN_FILE_LIMIT", 3)
-    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
-    browser_reads = [p for p in seen if "playwright_browsers" in p.parts]
-    assert len(browser_reads) <= 3
-    # Truncation means verification is incomplete and must fail closed, or wrong-architecture binaries past the limit would pass silently.
-    assert any("could not be fully verified" in issue for issue in issues)
-
-
-def test_browser_tree_with_wrong_container_format_is_rejected(tmp_path: Path) -> None:
-    """A Windows browser build inside a macOS bundle is PE x64: the arch test passes it.
-
-    `_iter_native_binaries()` skips `playwright_browsers`, so nothing else would
-    look at this file either.
-    """
-    root = tmp_path / "Xiao8"
-    write(root / "projectneko_server", macho("x64"))
-    write(root / "playwright_browsers" / "chromium-1208" / "chrome-mac" / "chrome.dll", pe("x64"))
-    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
-    assert any("wrong platform" in issue and "chrome.dll" in issue for issue in issues)
-
-
-def test_directory_token_walk_is_capped_too(tmp_path: Path, monkeypatch) -> None:
-    """The cap must bound the directory-name pass as well as the byte pass.
-
-    Two separate walks would leave this one unbounded, which makes the cap --
-    and the fail-closed message that goes with it -- theatre.
-    """
-    root = tmp_path / "Xiao8"
-    write(root / "projectneko_server", macho("x64"))
-    browsers = root / "playwright_browsers"
-    for index in range(40):
-        (browsers / f"chrome-mac-arm64-{index}").mkdir(parents=True)
-
-    monkeypatch.setattr(check_dist_arch, "_BROWSER_SCAN_FILE_LIMIT", 3)
-    issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
-    assert any("could not be fully verified" in issue for issue in issues)
-    reported = [issue for issue in issues if "non-x64 directories" in issue]
-    # With a limit of 3, all 40 invalid directories cannot be visited; seeing them all means traversal was unbounded.
-    assert not reported or reported[0].count("chrome-mac-arm64-") <= 3
-
-
-def test_browser_binary_of_a_third_architecture_is_rejected(tmp_path: Path) -> None:
+def test_binary_of_a_third_architecture_is_rejected(tmp_path: Path) -> None:
     """Neither the expected arch nor its opposite: an x86 helper in an x64 bundle.
 
-    The browser tree used to run a denylist ("only the opposite arch fails"),
-    which let this through. It now uses the same strict rule as the rest of the
-    dist: not carrying the expected architecture is enough to fail.
+    A denylist ("only the opposite arch fails") would let this through. Not
+    carrying the expected architecture is enough to fail.
     """
     root = tmp_path / "Xiao8"
     write(root / "projectneko_server", macho("x64"))
-    browser = root / "playwright_browsers" / "chromium-1208" / "chrome-mac"
-    write(browser / "helper", macho("x86"))
+    write(root / "tools" / "bin" / "helper", macho("x86"))
     issues = check_dist_arch.check_dist_arch(root, "x64", "mac")
-    assert any("non-x64" in issue and "helper" in issue for issue in issues)
+    assert any("not x64" in issue and "helper is x86" in issue for issue in issues)

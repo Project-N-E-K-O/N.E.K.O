@@ -110,7 +110,7 @@ def compress_screenshot(
 
     Pass ``max_w`` and the result is inside BOTH bounds, which is what a caller
     handing the image to a model wants (see ``normalize_image_for_model``). The
-    default stays None on purpose: brain/computer_use.py asks for target_h=1080
+    default stays None on purpose: nekoclaw/builtin/desktop.py asks for target_h=1080
     deliberately and every existing caller must keep coming out byte-identical,
     so the new bound has to be opt-in rather than a new floor everyone silently
     inherits.

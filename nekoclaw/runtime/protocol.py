@@ -38,6 +38,9 @@ per-session ``seq`` that increases by one:
   arrive while the tool is still running.
 * ``report``      - a structured report made through the ``report`` tool.
 * ``usage``       - token usage of one model request and the context size.
+* ``model_capability`` - something the session learned about its model: the
+  provider refused a request for the pictures in it, so the session goes on
+  without pictures. Sent once per session at most.
 * ``ended``       - a run finished and the session is idle (``completed``,
   ``aborted``, ``error``), or the session is gone (``closed``). A finished
   run states ``inputs``: how many texts (``prompt``, ``steer``,
@@ -148,6 +151,9 @@ class TaskAgentSpec(_Strict):
     disabled_tools: list[str] = Field(default_factory=list)
     # Tool name -> how many of its most recent image results stay in context.
     image_retention: dict[str, int] = Field(default_factory=dict)
+    # Tool name -> pool. Tools of one pool are counted together: the pool as a
+    # whole keeps that many image results (the largest number among its tools).
+    image_pools: dict[str, str] = Field(default_factory=dict)
     # The host's capability gateway. Its tools are offered next to the
     # built-in ones; without it the session has the built-in tools only.
     gateway: GatewaySpec | None = None
@@ -297,6 +303,20 @@ class UsageEvent(_SessionEvent):
     context_window: int = 0
 
 
+class ModelCapabilityEvent(_SessionEvent):
+    """What the session learned about its model while it ran."""
+
+    type: Literal["model_capability"] = "model_capability"
+    # False: the provider said the model takes no pictures.
+    supports_images: bool
+    # What the provider said, shortened: kept with what is remembered, so
+    # that it can be seen why the model was taken not to see pictures.
+    reason: str = ""
+    # False: said of this session only (its pictures were refused more than
+    # once, for what they were); nothing is to be remembered about the model.
+    lasting: bool = True
+
+
 # ``EndedEvent.error`` of a session whose runtime process went away. Nothing
 # more comes for such a session, not even the end of a close asked for.
 PROCESS_EXITED_ERROR = "the runtime process exited"
@@ -364,6 +384,7 @@ SessionEvent = Union[
     ToolEndEvent,
     ReportEvent,
     UsageEvent,
+    ModelCapabilityEvent,
     EndedEvent,
     ErrorEvent,
 ]
@@ -377,6 +398,7 @@ RuntimeEvent = Annotated[
         ToolEndEvent,
         ReportEvent,
         UsageEvent,
+        ModelCapabilityEvent,
         EndedEvent,
         ErrorEvent,
         HostRequestEvent,

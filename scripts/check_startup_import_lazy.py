@@ -96,7 +96,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # being wired into the agent server so it can never grow a heavy module-scope import.
 DEFAULT_PATHS: list[str] = [
     "app",
-    "brain",
     "config",
     "knowledge",
     "main_logic",

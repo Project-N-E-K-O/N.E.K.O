@@ -26,11 +26,16 @@ from typing import Any
 import pytest
 
 from nekoclaw.host.capabilities import (
+    BUILTIN_GROUP_BROWSER,
+    BUILTIN_GROUP_KEYBOARD_MOUSE,
     KIND_BUILTIN,
     KIND_MCP_TOOL,
     KIND_PLUGIN_ENTRY,
     TOOL_NAME_MAX_LENGTH,
+    BuiltinImage,
+    BuiltinOutcome,
     CapabilityRegistry,
+    builtin_tool,
     capabilities_of_plugin,
     gateway_tool_name,
 )
@@ -81,9 +86,35 @@ def _mixed(server: FakePluginServer) -> None:
     )
 
 
-async def test_list_has_plugin_entries_mcp_tools_and_builtin_placeholders(server):
+class _Builtins:
+    """A provider that lists the tools it is given, or raises the exception it is given."""
+
+    def __init__(self, tools: Any) -> None:
+        self.tools = tools
+
+    def available(self) -> list[Any]:
+        if isinstance(self.tools, BaseException):
+            raise self.tools
+        return list(self.tools)
+
+
+_COMPUTER = {
+    "name": "computer",
+    "description": "Operate the desktop.",
+    "parameters": {"type": "object", "properties": {"action": {"type": "string"}}, "required": ["action"]},
+}
+_PAGES = {"name": "browser_list_pages", "description": "List the open pages."}
+
+
+async def test_list_has_plugin_entries_mcp_tools_and_the_builtin_tools_of_the_provider(server):
     _mixed(server)
-    registry = CapabilityRegistry(PluginCatalog(client_factory=server.client))
+    builtins = _Builtins(
+        [
+            builtin_tool(BUILTIN_GROUP_KEYBOARD_MOUSE, _COMPUTER, needs_images=True),
+            builtin_tool(BUILTIN_GROUP_BROWSER, _PAGES, available=False, unavailable_reason="no browser is installed"),
+        ]
+    )
+    registry = CapabilityRegistry(PluginCatalog(client_factory=server.client), builtins=builtins)
 
     listed = {item.id: item for item in await registry.list()}
 
@@ -92,9 +123,29 @@ async def test_list_has_plugin_entries_mcp_tools_and_builtin_placeholders(server
         "mcp:my_notes:search_notes",
         "plugin:mcp_adapter:connect_server",
         "plugin:mcp_adapter:mcp_status",
-        "builtin:keyboard_mouse",
-        "builtin:browser",
+        "builtin:keyboard_mouse:computer",
+        "builtin:browser:browser_list_pages",
     }
+    computer = listed["builtin:keyboard_mouse:computer"]
+    # Called by its own name, guarded by its group's permission, and never
+    # something one call gets a task done with.
+    assert (computer.kind, computer.tool_name, computer.title, computer.description) == (
+        KIND_BUILTIN,
+        "computer",
+        "computer",
+        "Operate the desktop.",
+    )
+    assert (computer.group, computer.permission, computer.permission_key) == ("keyboard_mouse", "keyboard_mouse", None)
+    assert (computer.one_step, computer.available, computer.needs_images) == (False, True, True)
+    assert computer.input_schema == _COMPUTER["parameters"]
+    pages = listed["builtin:browser:browser_list_pages"]
+    assert (pages.group, pages.permission, pages.needs_images) == ("browser", "browser", False)
+    assert (pages.available, pages.unavailable_reason) == (False, "no browser is installed")
+    # A definition without parameters takes none.
+    assert pages.input_schema == {"type": "object", "properties": {}}
+    # What is not available is listed, and not served.
+    served = [item.id for item in await registry.callable_by_task_agents()]
+    assert "builtin:keyboard_mouse:computer" in served and "builtin:browser:browser_list_pages" not in served
     today = listed["plugin:weather:today"]
     assert (today.kind, today.title, today.permission, today.one_step, today.available) == (
         KIND_PLUGIN_ENTRY,
@@ -118,9 +169,75 @@ async def test_list_has_plugin_entries_mcp_tools_and_builtin_placeholders(server
         "mcp_my_notes_search_notes",
         "mcp__my_notes__search_notes",
     )
-    for name in ("builtin:keyboard_mouse", "builtin:browser"):
-        assert (listed[name].kind, listed[name].available) == (KIND_BUILTIN, False)
-        assert listed[name].unavailable_reason
+
+
+async def test_without_a_provider_there_are_no_builtin_tools(server):
+    _mixed(server)
+    registry = CapabilityRegistry(PluginCatalog(client_factory=server.client))
+
+    assert registry.builtins() == []
+    assert [item.kind for item in await registry.list() if item.kind == KIND_BUILTIN] == []
+    # Nothing to carry a call out, and nobody to tell that a group came free.
+    outcome = await registry.run_builtin(
+        builtin_tool(BUILTIN_GROUP_BROWSER, _PAGES), commission_id="c1", arguments={}
+    )
+    assert (outcome.success, outcome.images) == (False, ())
+    assert await registry.builtin_released(BUILTIN_GROUP_BROWSER, "c1") is None
+
+
+def test_a_builtin_tool_belongs_to_one_of_the_two_groups():
+    with pytest.raises(ValueError, match="unknown built-in group"):
+        builtin_tool("printer", _PAGES)
+
+
+async def test_only_builtin_tools_of_the_two_groups_are_taken_from_the_provider(server):
+    import dataclasses
+
+    good = builtin_tool(BUILTIN_GROUP_BROWSER, _PAGES)
+    elsewhere = dataclasses.replace(good, id="builtin:printer:print", tool_name="print", group="printer")
+    not_builtin = dataclasses.replace(good, id="plugin:x:y", tool_name="plugin__x__y", kind=KIND_PLUGIN_ENTRY)
+    registry = CapabilityRegistry(
+        PluginCatalog(client_factory=server.client), builtins=_Builtins([good, elsewhere, not_builtin])
+    )
+
+    assert registry.builtins() == [good]
+
+
+async def test_a_provider_that_cannot_be_listed_offers_nothing(server):
+    _mixed(server)
+    registry = CapabilityRegistry(
+        PluginCatalog(client_factory=server.client), builtins=_Builtins(RuntimeError("the display is gone"))
+    )
+
+    assert registry.builtins() == []
+    # The plugins are served as without it.
+    assert "plugin:weather:today" in [item.id for item in await registry.callable_by_task_agents()]
+
+
+async def test_the_provider_carries_a_call_out_and_hears_when_a_group_comes_free(server):
+    calls: list[Any] = []
+
+    class Provider(_Builtins):
+        async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> Any:
+            calls.append(("run", capability.id, commission_id, arguments))
+            return BuiltinOutcome(True, "2 pages", images=(BuiltinImage("QUJD", "image/jpeg"),))
+
+        async def released(self, group: str, commission_id: str) -> None:
+            calls.append(("released", group, commission_id))
+            raise RuntimeError("the browser would not close")
+
+    tool = builtin_tool(BUILTIN_GROUP_BROWSER, _PAGES)
+    registry = CapabilityRegistry(PluginCatalog(client_factory=server.client), builtins=Provider([tool]))
+
+    outcome = await registry.run_builtin(tool, commission_id="c1", arguments={"verbose": True})
+    # What the provider kept is its own business: a cleanup that fails is not raised.
+    await registry.builtin_released(BUILTIN_GROUP_BROWSER, "c1")
+
+    assert (outcome.success, outcome.text, outcome.images) == (True, "2 pages", (BuiltinImage("QUJD", "image/jpeg"),))
+    assert calls == [
+        ("run", "builtin:browser:browser_list_pages", "c1", {"verbose": True}),
+        ("released", "browser", "c1"),
+    ]
 
 
 async def test_only_what_is_available_is_served_to_task_agents(server):
@@ -187,7 +304,7 @@ async def test_plugin_switch_off_empties_the_list_of_plugins(server):
     registry = CapabilityRegistry(PluginCatalog(client_factory=server.client), plugins_enabled=lambda: False)
 
     assert await registry.plugins() == []
-    assert [item.kind for item in await registry.list()] == [KIND_BUILTIN, KIND_BUILTIN]
+    assert await registry.list() == []
     summary = await registry.summary()
     assert (summary.installed, summary.running, summary.routable, summary.enabled) == (4, 3, 2, False)
 

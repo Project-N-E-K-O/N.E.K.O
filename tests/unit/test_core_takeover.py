@@ -133,7 +133,7 @@ def test_only_the_takeover_mixin_writes_the_takeover_attributes():
         _REPO_ROOT / "main_logic" / "core" / "manager.py",
     }
     watched = set(_TAKEOVER_ATTRS) | {"_takeover_token", "_callback_hold_sink", "_callback_hold_token"}
-    for root in ("main_logic", "main_routers", "app", "utils", "plugin", "brain"):
+    for root in ("main_logic", "main_routers", "app", "utils", "plugin"):
         for path in (_REPO_ROOT / root).rglob("*.py"):
             if path in allowed or "node_modules" in path.parts:
                 continue

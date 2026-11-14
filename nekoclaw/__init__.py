@@ -14,8 +14,10 @@
 
 """NekoClaw: the base that runs task agents (execution sessions).
 
-Design: ``docs/design/nekoclaw-rewrite.md``. This package currently holds only
-the built-in runtime (``nekoclaw.runtime``); nothing imports it at startup.
+Design: ``docs/design/nekoclaw-rewrite.md``. Three parts: the built-in runtime
+a task agent runs in (``nekoclaw.runtime``), the host around it (``nekoclaw.host``:
+task brain, ledger, gateway, permissions) and the built-in tools the host
+offers task agents (``nekoclaw.builtin``: keyboard and mouse, browser).
 Importing any module here starts no process, opens no connection and touches
 no data directory.
 """

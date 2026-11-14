@@ -51,9 +51,26 @@ Besides its own file and command tools, a task agent reaches everything through 
 
 - plugin entries that are visible to routing, one tool each, called through the same `/runs` code as a direct call;
 - the tools of MCP servers configured in the `mcp_adapter` plugin;
-- two built-in capabilities, keyboard-and-mouse and browser control. Each takes one instruction and carries it out with the existing loop in `brain/computer_use.py` or `brain/browser_use_adapter.py`. Only task agents can call them.
+- the built-in tools for keyboard-and-mouse control and for browser control, described in the next section. Only task agents can call them.
 
-Permissions are stored in `<data root>/nekoclaw/permissions.json`. Each category is `first_ask`, `always_ask`, `allow`, or `deny`. By default, plugin entries and file access inside the working directory are allowed, while reading or writing outside the working directory, commands, keyboard-and-mouse, the browser, and each MCP server ask on first use. `deny` also keeps a plugin or an MCP server out of direct calls.
+Permissions are stored in `<data root>/nekoclaw/permissions.json`. Each category is `first_ask`, `always_ask`, `allow`, or `deny`. By default, plugin entries and file access inside the working directory are allowed, while reading or writing outside the working directory, commands, keyboard-and-mouse, the browser, and each MCP server ask on first use. `deny` also keeps a plugin or an MCP server out of direct calls. For keyboard-and-mouse and the browser, an approval given for a single request lasts until the task agent's current run is over, because their tools are single clicks and key presses.
+
+### Built-in tools: keyboard and mouse, browser
+
+Keyboard-and-mouse control and browser control are two groups of built-in tools (`nekoclaw/builtin/`, in the Agent process). A task agent calls them one step at a time from its own loop, next to its file and command tools, and sees the result of each step before it decides the next. Neither group runs a loop of its own, and no call to them asks a model. The definitions the model sees are in `config/prompts/prompts_nekoclaw_builtin.py`; the gateway lists them within a budget of their own (2400 tokens), apart from the plugin entries.
+
+- **Keyboard and mouse.** One tool, `computer`, whose `action` argument is `screenshot`, `click`, `move`, `drag`, `scroll`, `type`, `key`, or `wait`. It works from screenshots: coordinates are integers from 0 to 999 on both axes whatever the size of the screen, and every call returns a screenshot taken after the action. A coordinate outside that range is refused.
+- **Browser.** Fifteen tools named `browser_*`: navigate, take a snapshot, click, hover, fill a field, fill a form, type text, press a key, take a screenshot, list, select, open and close pages, wait for text, and handle a dialog. A page is read as a text snapshot of its accessibility tree in which every element carries a uid, and an action names its element by that uid. A uid that is not in the latest snapshot is refused. A snapshot is cut at 3000 tokens and says where to read on from. Only `http://` and `https://` addresses can be opened.
+
+The browser is one the user has installed: Chrome, Edge, Brave, or Chromium, in that order; on Windows the system's default browser comes first when it is one of them. It is driven over its debugging protocol (the Chrome DevTools Protocol on a WebSocket), without a browser automation library. By default it is started with a profile directory of its own, `<data root>/nekoclaw/browser_profile`: a site logged into there stays logged in, and the user's everyday logins are not available. The user can instead have the tools drive the browser they are already using. That needs Chrome 144 or later, the user switches remote debugging on at `chrome://inspect/#remote-debugging`, and the browser asks for approval at each connection. The choice is kept in `<data root>/nekoclaw/browser.json`; a browser installed in an unusual place is named there as `executable`, or with the `NEKO_BROWSER_PATH` environment variable.
+
+No browser is shipped with the application and none is downloaded at start. Playwright is a test dependency only, and `browser-use` is not a dependency. When no usable browser is installed, browser control is not ready and reports that none was found (`AGENT_BROWSER_NOT_FOUND`).
+
+`computer` and `browser_take_screenshot` return pictures, so they are offered only to a task agent whose model can see pictures. A model counts as able to until its provider refuses a request because it carried a picture; that request is sent once more without pictures, and the model is recorded in `<data root>/nekoclaw/model_capabilities.json`. A task agent's context keeps the three most recent screenshots, counted across all of these tools together.
+
+There is one desktop and one browser. A commission occupies a group from its first call until its task agent's run ends, it starts waiting for the user, or it ends. A commission and the task agents it started share one occupation. Another commission that needs the group waits up to 120 seconds and is then told which commission has it.
+
+When a commission begins or stops occupying a group, the Agent process sends a `builtin_activity` event, and the Main Server forwards it to every connected page as an `agent_builtin_activity` WebSocket message. The pages pass it on as a `neko-agent-builtin-activity` DOM event and draw nothing themselves. `GET /api/agent/builtin/activity` returns the current occupations, and `POST /api/agent/builtin/stop` stops the commission that holds one; both are described in [Agent REST API](/api/rest/agent).
 
 ## Reports back to the conversation
 
@@ -104,16 +121,16 @@ The authoritative state is exposed through Main Server proxies under `/api/agent
 | State | Meaning |
 |---|---|
 | `analyzer_enabled` / UI `agent_enabled` | Master switch |
-| `computer_use_enabled` | Keyboard-and-mouse capability for task agents |
-| `browser_use_enabled` | Browser capability for task agents |
+| `computer_use_enabled` | Keyboard-and-mouse tools for task agents |
+| `browser_use_enabled` | Browser tools for task agents |
 | `user_plugin_enabled` | Plugin entries, for direct calls and through the gateway |
 
-Managers and the Agent Server initialize these switches off. Persisted runtime intent is restored after the first real `greeting_check`, so "off at construction" does not reset the user's choice on every page load. Keyboard-and-mouse and browser control additionally require the agent model's connectivity check to pass.
+Managers and the Agent Server initialize these switches off. Persisted runtime intent is restored after the first real `greeting_check`, so "off at construction" does not reset the user's choice on every page load. Keyboard-and-mouse and browser control additionally require the agent model's connectivity check to pass (`app/agent_server/model_probe.py`). Keyboard-and-mouse also requires that input can be sent on this machine, and browser control that a usable browser is installed.
 
 ## Stopping, limits, and restarts
 
 - Stopping writes `cancelled` first, then cancels the plugin run (`POST /runs/{run_id}/cancel` on the plugin service) or closes the task agent's session. `POST /admin/control` with `end_all`, and turning the master switch off, stop every commission under way.
-- Keyboard-and-mouse and the browser each carry out one call at a time.
+- The desktop and the browser are each occupied by one commission at a time, as described under the built-in tools; within an occupation, calls are carried out one after the other. Stopping a commission cancels the call under way and frees what it occupied. A click or a navigation that was already sent is not undone.
 - A plugin may return `deferred: true`. The commission stays `working` until `/api/agent/tasks/{task_id}/complete` is called, or fails after one hour.
 - When a host starts after a restart, commissions the previous process left `queued`, `working`, or `waiting_user` are marked `failed` and reported with the character's next turn. Deferred commissions are kept until their deadline.
 - The Agent process keeps ended tasks in its HUD view for five minutes.
@@ -130,8 +147,10 @@ Managers and the Agent Server initialize these switches off. Persisted runtime i
 | Ledger, outbox, reports | `nekoclaw/host/ledger.py`, `outbox.py`, `reports.py` |
 | Task agents and the agent runtime | `nekoclaw/host/task_agents.py`, `nekoclaw/runtime/` |
 | Capability list, gateway, permissions | `nekoclaw/host/capabilities.py`, `gateway.py`, `permissions.py` |
+| Keyboard-and-mouse and browser tools | `nekoclaw/builtin/`, `config/prompts/prompts_nekoclaw_builtin.py` |
+| Occupation of the desktop and the browser; which models see pictures | `nekoclaw/host/leases.py`, `model_capabilities.py` |
 | Calls to plugin entries (`/runs`) | `nekoclaw/host/plugin_runs.py` |
-| Host mounting, HUD view, built-in capabilities | `app/agent_server/nekoclaw_mount.py`, `nekoclaw_builtins.py` |
+| Host mounting, HUD view, switches and events of the built-in tools, agent model probe | `app/agent_server/nekoclaw_mount.py`, `nekoclaw_builtins.py`, `model_probe.py` |
 | Agent lifecycle and HTTP API | `app/agent_server/api_runtime.py`, `api_routes.py` |
 | Result delivery to chat | `main_logic/core/proactive.py` |
 

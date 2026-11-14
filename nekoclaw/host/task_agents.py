@@ -44,7 +44,7 @@ from typing import Any, Protocol
 
 from nekoclaw.host.capabilities import CapabilityRegistry
 from nekoclaw.host.ledger import ACTIVE_STATUSES, Commission, Ledger
-from nekoclaw.host.paths import HostPaths
+from nekoclaw.host.paths import TRANSCRIPT_NAME, HostPaths
 from nekoclaw.host.permissions import CHOICES, PermissionAsk, PermissionGate
 from nekoclaw.host.plugin_runs import PluginRunner
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
@@ -67,6 +67,8 @@ _NO_PLACE_REASON = "no task agent place was free"
 # Children that can still produce a result their parent should wait for.
 _STILL_WORKING = frozenset({"queued", "working", "waiting_user"})
 _REPORT_TO_STATUS = {"ready": "done", "blocked": "blocked", "failed": "failed"}
+# The pool the screenshots of every built-in tool are counted in (``TaskAgentSpec.image_pools``).
+SCREENSHOT_POOL = "builtin_screenshots"
 _STATUS_TO_REPORT = {"done": "completed", "blocked": "blocked", "failed": "failed", "cancelled": "cancelled"}
 _REPLY_LANGUAGES = {
     "zh": "Simplified Chinese",
@@ -155,6 +157,8 @@ class _Session:
     # ends, the earlier one's end is held here and decides nothing.
     sent: int = 0
     held_end: dict[str, Any] | None = None
+    # The address and the name of the model the session was started with.
+    model: tuple[Any, Any] | None = None
 
 
 def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
@@ -184,6 +188,14 @@ def _shows_run_at_work(event: dict[str, Any]) -> bool:
     if kind == "ended":
         return event.get("reason") == "completed"
     return kind in ("text", "tool_start", "tool_update", "tool_end", "report", "usage", "host_request")
+
+
+def _has_transcript(session_dir: Any) -> bool:
+    """Whether something was ever said in a session directory. Blocking."""
+    try:
+        return (session_dir / TRANSCRIPT_NAME).stat().st_size > 0
+    except OSError:
+        return False
 
 
 def default_runtime_factory(on_event: Callable[[dict[str, Any]], None], host: Any) -> Any:
@@ -236,8 +248,16 @@ class TaskAgentManager:
         max_concurrent: int | None = None,
         lessons: LessonSink | None = None,
         meter: UsageMeter | None = None,
+        leases: Any = None,
+        model_capabilities: Any = None,
     ) -> None:
         self._meter = meter
+        # ``nekoclaw.host.leases.BuiltinLeases``: who occupies the desktop and
+        # the browser. A commission lets go of them when its run is over.
+        self._leases = leases
+        # ``nekoclaw.host.model_capabilities.ModelCapabilityStore``, or None:
+        # then every model is taken to see pictures.
+        self._model_capabilities = model_capabilities
         self._ledger = ledger
         self._preferences = preferences
         self._permissions = permissions
@@ -465,35 +485,52 @@ class TaskAgentManager:
             from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
-            session_dir = self._paths.session_dir(commission.id, commission.project)
-            workdir_text = commission.workdir
-
             def prepare() -> tuple[str, str]:
+                # In here: where the session is kept is told by what is on the disk.
+                session_dir = self._session_dir_of(commission)
                 session_dir.mkdir(parents=True, exist_ok=True)
-                from pathlib import Path
-
-                workdir = Path(workdir_text) if workdir_text else self._paths.work_dir(commission.id, commission.project)
+                workdir = self._workdir_of(commission, session_dir)
                 workdir.mkdir(parents=True, exist_ok=True)
                 return str(session_dir), str(workdir)
 
             session_path, workdir = await asyncio.to_thread(prepare)
 
+            if "supports_images" not in config:
+                config = {**config, "supports_images": await self._sees_images(config)}
+            model = ModelConfig(**config)
+            session.model = (config.get("base_url"), config.get("model"))
+
             gateway_spec = None
-            if self._gateway is not None and await self._registry.callable_by_task_agents():
-                url = await self._gateway.start()
-                token = self._gateway.issue(commission.id, candidate_plugin_ids=self._candidates.get(commission.id, ()))
-                gateway_spec = GatewaySpec(url=url, token=token)
+            image_retention: dict[str, int] = {}
+            image_pools: dict[str, str] = {}
+            if self._gateway is not None:
+                # For every built-in tool that hands pictures back, whether it
+                # can be called right now or not: one that is switched on
+                # while the task agent works is reached through the
+                # gateway's call tool, and its screenshots are limited too.
+                image_retention, image_pools = self._image_retention(self._registry.builtins())
+                callable_now = await self._registry.callable_by_task_agents()
+                if callable_now:
+                    url = await self._gateway.start()
+                    token = self._gateway.issue(
+                        commission.id,
+                        candidate_plugin_ids=self._candidates.get(commission.id, ()),
+                        supports_images=model.supports_images,
+                    )
+                    gateway_spec = GatewaySpec(url=url, token=token)
 
             spec = TaskAgentSpec(
                 session_id=commission.id,
                 workdir=workdir,
                 session_dir=session_path,
-                model=ModelConfig(**config),
+                model=model,
                 instructions=await self._brief(commission, with_gateway=gateway_spec is not None),
                 reply_language=_REPLY_LANGUAGES.get(commission.lang or "", None),
                 top_level=commission.parent_id is None,
                 # A task agent started by a task agent starts none itself.
                 disabled_tools=["subagent"] if commission.parent_id is not None else [],
+                image_retention=image_retention,
+                image_pools=image_pools,
                 gateway=gateway_spec,
             )
             runtime = await self._ensure_runtime()
@@ -504,6 +541,7 @@ class TaskAgentManager:
                 runtime=RUNTIME_BUILTIN,
                 route="task_agent",
                 workdir=workdir,
+                session_dir=session_path,
             )
             if not moved.applied:
                 # Stopped while it was being prepared.
@@ -582,6 +620,42 @@ class TaskAgentManager:
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
             self._keep_unsent(session)
             return False
+
+    async def _sees_images(self, config: dict[str, Any]) -> bool:
+        """Return whether the task agent model is sent pictures; see ``model_capabilities.py``."""
+        if self._model_capabilities is None:
+            return True
+        try:
+            return bool(await self._model_capabilities.sees_images(config.get("base_url"), config.get("model")))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - not knowing is the same as not having learned otherwise
+            logger.warning("looking up what the task agent model can see failed", exc_info=True)
+            return True
+
+    @staticmethod
+    def _image_retention(capabilities: list[Any]) -> tuple[dict[str, int], dict[str, str]]:
+        """Return how many screenshots of the built-in tools stay in a task agent's context.
+
+        Every tool that needs a model that sees pictures hands screenshots
+        back. The first value gives the number for each such tool; the second
+        puts them all in one pool, so the number is the most that stay in
+        the context at all, whichever tools they came from: what one
+        screenshot may weigh is set for that many (``SCREENSHOT_MAX_BYTES``).
+        """
+        from config.nekoclaw_settings import TASK_AGENT_SCREENSHOTS_KEPT
+        from nekoclaw.host.gateway import CALL_TOOL
+
+        retention: dict[str, int] = {}
+        for capability in capabilities:
+            if capability.needs_images and capability.group:
+                retention[capability.tool_name] = TASK_AGENT_SCREENSHOTS_KEPT
+        if retention:
+            # The same tools can be called by name through the gateway's own
+            # call tool, and their screenshots then come back as results of
+            # that tool: counted along.
+            retention[CALL_TOOL] = TASK_AGENT_SCREENSHOTS_KEPT
+        return retention, {name: SCREENSHOT_POOL for name in retention}
 
     async def _pay_first_request(self, session: _Session) -> bool:
         """Count a session's first model request before it is made; False when the quota is used up.
@@ -763,6 +837,8 @@ class TaskAgentManager:
             await self._on_error(session, event)
         elif kind == "usage":
             await self._on_usage(session)
+        elif kind == "model_capability":
+            await self._on_model_capability(session, event)
 
     def _summary(self, text: str) -> str:
         from config.nekoclaw_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
@@ -804,6 +880,37 @@ class TaskAgentManager:
             result_summary=self._summary(text),
         )
 
+    def _run_over(self, commission_id: str) -> None:
+        """A commission's run is over: what lasted for the run ends with it.
+
+        That is the desktop and the browser it occupied (another commission
+        may have them now), and what the user allowed "once" for the
+        keyboard and mouse and for the browser.
+        """
+        self._permissions.end_run(commission_id)
+        if self._leases is not None:
+            self._leases.release(commission_id)
+
+    async def _on_model_capability(self, session: _Session, event: dict[str, Any]) -> None:
+        """Remember that the model of a session turned out to take no pictures."""
+        if event.get("supports_images") is not False:
+            return
+        if self._gateway is not None:
+            # For this session at once: its screenshots no longer reach the
+            # model, so the tools that work from them are of no use to it.
+            self._gateway.images_refused(session.commission_id)
+        if event.get("lasting") is False or self._model_capabilities is None or session.model is None:
+            # Said of this session's pictures only: nothing about the model.
+            return
+        base_url, model = session.model
+        try:
+            if await self._model_capabilities.note_images_refused(base_url, model, event.get("reason")):
+                logger.info("task agent model %s takes no pictures; tools that need them are left out from now on", model)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - learned again from the next refusal
+            logger.warning("remembering that the task agent model takes no pictures failed", exc_info=True)
+
     async def _on_ended(self, session: _Session, event: dict[str, Any]) -> None:
         from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
 
@@ -816,6 +923,13 @@ class TaskAgentManager:
             # commission's status is the close's business, not an error's.
             # Any other error while closing is followed by the close's own end.
             reason = "closed"
+        inputs = event.get("inputs")
+        # The end of a run that took fewer texts than were sent is followed
+        # by another run, which may be under way already and using what this
+        # one would let go of. Only an end that leaves the session idle, or
+        # gone, ends what lasted for the run.
+        if not (reason == "completed" and isinstance(inputs, int) and inputs < session.sent):
+            self._run_over(commission_id)
         if reason == "closed":
             # An answer kept for a run that never came is not lost with the
             # session: it takes the commission up again from its transcript.
@@ -842,7 +956,6 @@ class TaskAgentManager:
         if commission is None:
             return
         if reason == "completed":
-            inputs = event.get("inputs")
             if isinstance(inputs, int) and inputs < session.sent:
                 # Text sent after this run had finished (a result from a
                 # task agent it started, or something the user said) started
@@ -1498,6 +1611,71 @@ class TaskAgentManager:
         if not await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False):
             raise RuntimeError(f"{_NO_PLACE_REASON}; do this part yourself")
         return {"name": name}
+
+    def _session_dir_of(self, commission: Commission) -> Any:
+        """Return where a commission's session is kept. Blocking: it looks at files.
+
+        Where it was when the commission was first taken up, when that is on
+        record: the data root may have been moved since through the storage
+        settings, and the sessions do not move with it. Worked out from the
+        root of now, a commission taken up again after such a move would
+        find an empty directory and start from nothing instead of going on.
+
+        Unless nothing was ever said there, and something was below the root
+        of now: the user moved the whole data folder by hand and pointed the
+        application at it. The sessions came along then; the place on record
+        is where they used to be, and would be made anew, empty.
+        """
+        current = self._paths.session_dir(commission.id, commission.project)
+        recorded = self._recorded_session_dir(commission)
+        if recorded is None:
+            return current
+        if not _has_transcript(recorded) and _has_transcript(current):
+            return current
+        return recorded
+
+    @staticmethod
+    def _recorded_session_dir(commission: Commission) -> Any:
+        """Return where the ledger has a commission's session, or None when it does not say."""
+        from pathlib import Path
+
+        if commission.session_dir:
+            return Path(commission.session_dir)
+        if commission.workdir:
+            # Taken up by a build from before the place was recorded: its
+            # working directory was, and is by default the ``work`` directory
+            # of its session.
+            workdir = Path(commission.workdir)
+            if workdir.name == "work" and workdir.parent.name == commission.id:
+                return workdir.parent
+        return None
+
+    def _workdir_of(self, commission: Commission, session_dir: Any) -> Any:
+        """Return a commission's working directory, its session being kept in ``session_dir``.
+
+        The one on record. When the sessions are no longer where the record
+        has them (``_session_dir_of``: the data folder was moved by hand), a
+        working directory that was among them went along with them: the
+        ``work`` directory of its own session, or a directory inside that of
+        the commission it was started by. It is that directory where the
+        sessions are now; at the place on record there would be an empty one,
+        made anew, and none of what the task agent had written. A directory
+        elsewhere (a project of the user's) is where it was.
+        """
+        from pathlib import Path
+
+        if not commission.workdir:
+            return self._paths.work_dir(commission.id, commission.project)
+        workdir = Path(commission.workdir)
+        recorded = self._recorded_session_dir(commission)
+        if recorded is None:
+            return workdir
+        try:
+            among = workdir.relative_to(recorded.parent)
+        except ValueError:
+            return workdir
+        # (The directory it was, when the session is where the record has it.)
+        return session_dir.parent / among
 
     async def _child_workdir(self, parent: Commission, cwd: Any) -> str | None:
         """Return the working directory of a task agent the parent starts.

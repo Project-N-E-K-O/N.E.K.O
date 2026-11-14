@@ -16,10 +16,9 @@
 """Shared runtime state for the ``app.agent_server`` package.
 
 Owns the service logger (``setup_logging`` runs here before any other
-project import so import-time failures are persisted), the guarded brain
-adapter imports, the ``Modules`` singleton state bag, cross-module numeric
-constants, and the state primitives (``_bump_state_revision`` /
-``_set_capability`` / background-task bookkeeping).
+project import so import-time failures are persisted), the ``Modules``
+singleton state bag, cross-module numeric constants, and the state primitives
+(``_bump_state_revision`` / ``_set_capability`` / background-task bookkeeping).
 
 Tasks are not kept here. Every task is a commission in the NekoClaw host's
 ledger (``nekoclaw/host``); ``nekoclaw_mount`` connects this process to it.
@@ -43,17 +42,12 @@ from utils.logger_config import setup_logging, ThrottledLogger
 logger, log_config = setup_logging(service_name="Agent", log_level=logging.INFO)
 
 from main_logic.agent_event_bus import AgentServerEventBridge
-try:
-    from brain.computer_use import ComputerUseAdapter
-    from brain.browser_use_adapter import BrowserUseAdapter
-except Exception as e:
-    logger.exception(f"[Agent] Module import failed during startup: {e}")
-    raise
 
 
 class Modules:
-    computer_use: ComputerUseAdapter | None = None
-    browser_use: BrowserUseAdapter | None = None
+    # ``model_probe.AgentModelProbe``: whether the agent model can be reached.
+    # The keyboard-and-mouse and browser switches only stay on while it can.
+    model_probe: Any = None
     user_plugin_app: FastAPI | None = None
     user_plugin_http_server: Any = None
     user_plugin_http_task: Any = None  # threading.Thread (imported after class def)
@@ -68,16 +62,9 @@ class Modules:
     # status snapshot use; nothing is "analyzed" any more.
     analyzer_enabled: bool = False
     analyzer_profile: Dict[str, Any] = {}
-    # Browser-use exclusivity: the adapter is a singleton whose cancel flag
-    # and browser session are shared state, so calls must not overlap.
-    # Lazily created on the running event loop.
-    browser_use_dispatch_lock: Optional[asyncio.Lock] = None
-    # BrowserUse imports a sizeable dependency graph and may own a Chromium
-    # subprocess.  Keep construction/teardown serialized so on-demand callers
-    # cannot create duplicate adapters or race a disable/shutdown close.
-    browser_use_init_lock: Optional[asyncio.Lock] = None
-    # Monotonic intent generation. A background close may finish after a quick
-    # re-enable, but must not overwrite the newer ready capability state.
+    # Monotonic intent generation of the browser switch. A background close
+    # may finish after a quick re-enable, but must not overwrite the newer
+    # ready capability state.
     browser_use_lifecycle_seq: int = 0
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {
@@ -144,8 +131,8 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
             return "AGENT_ENDPOINT_NOT_CONFIGURED"
         if "pyautogui" in lower and ("not installed" in lower or "未安装" in text):
             return "AGENT_PYAUTOGUI_NOT_INSTALLED"
-        if "browser-use" in lower and ("not installed" in lower or "未安装" in text):
-            return "AGENT_BROWSER_USE_NOT_INSTALLED"
+        if "no" in lower and "browser" in lower and "found" in lower:
+            return "AGENT_BROWSER_NOT_FOUND"
         if "not initialized" in lower or "初始化失败" in text:
             return "AGENT_NOT_INITIALIZED"
         if "未发现可用插件" in text or "no plugins" in lower:

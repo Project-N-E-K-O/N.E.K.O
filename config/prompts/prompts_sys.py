@@ -97,27 +97,10 @@ RESULT_PARSER_ERROR_SUBSTRINGS = {
         'ja': 'タイムアウト', 'ko': '시간 초과', 'ru': 'Превышено время ожидания',
         'es': 'Tiempo agotado', 'pt': 'Tempo esgotado',
     },
-    'Browser disconnected': {
-        'zh': '浏览器窗口被关闭', 'zh-TW': '瀏覽器視窗被關閉', 'en': 'Browser window closed',
-        'ja': 'ブラウザが切断されました', 'ko': '브라우저 연결 끊김', 'ru': 'Браузер отключён',
-        'es': 'Ventana del navegador cerrada', 'pt': 'Janela do navegador fechada',
-    },
     'CONTENT_FILTER': {
         'zh': '内容安全过滤', 'zh-TW': '內容安全過濾', 'en': 'Content filtered',
         'ja': 'コンテンツフィルター', 'ko': '콘텐츠 필터링', 'ru': 'Фильтр контента',
         'es': 'Contenido filtrado', 'pt': 'Conteúdo filtrado',
-    },
-    'browser-use execution failed': {
-        'zh': '浏览器执行失败', 'zh-TW': '瀏覽器執行失敗', 'en': 'Browser execution failed',
-        'ja': 'ブラウザ実行失敗', 'ko': '브라우저 실행 실패', 'ru': 'Ошибка выполнения браузера',
-        'es': 'Falló la ejecución del navegador', 'pt': 'Falha na execução do navegador',
-    },
-    '未找到 Chrome': {
-        'zh': '未找到 Chrome 浏览器', 'zh-TW': '找不到 Chrome 瀏覽器', 'en': 'Chrome browser not found',
-        'ja': 'Chrome ブラウザが見つかりません', 'ko': 'Chrome 브라우저를 찾을 수 없음',
-        'ru': 'Браузер Chrome не найден',
-        'es': 'No se encontró el navegador Chrome',
-        'pt': 'Navegador Chrome não encontrado',
     },
 }
 

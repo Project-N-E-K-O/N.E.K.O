@@ -42,7 +42,10 @@ Asking means the commission waits for the user, who answers one of:
 * "session" - allow for the rest of this commission's task agent session. Kept
   in memory only: it ends with the commission and with the host process.
   Task agents the commission starts are covered by it as well.
-* "once"    - allow the one request that asked.
+* "once"    - allow the one request that asked. For the keyboard and mouse
+  and for the browser (``RUN_SCOPED_CATEGORIES``) it lasts until the task
+  agent's current run is over: their tools are single clicks and keys, and
+  an approval that covered one click would be asked for again at the next.
 * "deny"    - refuse this request; the settings stay as they are.
 
 Task preferences are never read here: guidance for a model cannot open a
@@ -81,6 +84,10 @@ DEFAULT_MODES: dict[str, str] = {
     "plugin_entry": "allow",
     MCP_SERVER_CATEGORY: "first_ask",
 }
+
+# Categories whose tools are single small steps. "once" covers the rest of
+# the run that asked instead of one call, in both asking modes.
+RUN_SCOPED_CATEGORIES: frozenset[str] = frozenset({"keyboard_mouse", "browser"})
 
 DENIED_BY_SETTINGS = "permission denied: the permission settings forbid this"
 DENIED_BY_USER = "permission denied: the user declined"
@@ -291,6 +298,9 @@ class PermissionGate:
         self._parent_of = parent_of
         # commission id -> what the user allowed for that commission's session.
         self._session_grants: dict[str, set[tuple[str, str | None]]] = {}
+        # commission id -> what the user allowed "once" for the run under way
+        # (``RUN_SCOPED_CATEGORIES`` only).
+        self._run_grants: dict[str, set[tuple[str, str | None]]] = {}
 
     def set_asker(self, asker: Asker | None) -> None:
         self._asker = asker
@@ -301,6 +311,15 @@ class PermissionGate:
     def end_session(self, commission_id: str) -> None:
         """Forget what was allowed for a commission's session; call it when the commission is done, has failed or is stopped."""
         self._session_grants.pop(commission_id, None)
+        self._run_grants.pop(commission_id, None)
+
+    def end_run(self, commission_id: str) -> None:
+        """Forget what was allowed "once" for a commission's run; call it when that run is over."""
+        self._run_grants.pop(commission_id, None)
+
+    def run_grants(self, commission_id: str) -> frozenset[tuple[str, str | None]]:
+        """Return what the user allowed "once" for this commission's run under way."""
+        return frozenset(self._run_grants.get(commission_id, ()))
 
     def session_grants(self, commission_id: str) -> frozenset[tuple[str, str | None]]:
         """Return what the user allowed for this commission's own session."""
@@ -356,6 +375,11 @@ class PermissionGate:
             # that started this one. A category that asks every time has no
             # such answer and keeps asking.
             return PermissionDecision(True)
+        run_scoped = category in RUN_SCOPED_CATEGORIES
+        if run_scoped and slot in self._run_grants.get(commission_id, ()):
+            # Allowed "once" earlier in this run. Only the commission that
+            # asked is covered: a task agent it started has runs of its own.
+            return PermissionDecision(True)
         if self._asker is None:
             return PermissionDecision(False, DENIED_NO_ANSWER)
         options = CHOICES if mode == "first_ask" else CHOICES_ALWAYS_ASK
@@ -363,8 +387,10 @@ class PermissionGate:
         # The session this question is asked in. A "session" answer goes
         # into this very set. ``end_session`` drops it, so an answer that
         # comes in after the commission ended is kept for nobody, instead of
-        # starting a new session for a commission that is over.
+        # starting a new session for a commission that is over. The same
+        # holds for a "once" answer and the run it is asked in.
         session = self._session_grants.setdefault(commission_id, set())
+        run = self._run_grants.setdefault(commission_id, set()) if run_scoped else None
         try:
             choice = await self._asker(commission_id, ask)
         except asyncio.CancelledError:
@@ -385,6 +411,8 @@ class PermissionGate:
                 return await self._decide_again(category, key)
         elif choice == "session":
             session.add(slot)
+        elif run is not None:
+            run.add(slot)
         return PermissionDecision(True)
 
     async def _decide_again(self, category: str, key: str | None) -> PermissionDecision:

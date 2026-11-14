@@ -35,8 +35,8 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 | メソッド | パス | 応答境界 |
 |---|---|---|
 | `GET` | `/api/agent/health` | `{"status":"ok","tool":{...}}`。Agent Server 不可用は `502` と `status: "down"` |
-| `GET` | `/api/agent/computer_use/availability` | Agent Server の準備状態と理由 |
-| `GET` | `/api/agent/browser_use/availability` | ブラウザー依存関係/モデルの準備状態 |
+| `GET` | `/api/agent/computer_use/availability` | Agent Server が返すキーボード・マウスの準備状態と理由。agent モデルに接続でき、このマシンで入力を送れることが条件 |
+| `GET` | `/api/agent/browser_use/availability` | ブラウザーの準備状態と理由。使えるブラウザーがインストールされていて、agent モデルに接続できることが条件。ブラウザーが見つからない場合の理由コードは `AGENT_BROWSER_NOT_FOUND` |
 | `GET` | `/api/agent/user_plugin/availability` | プラグインサービス到達性。不可用は `502` |
 
 ## タスクと管理
@@ -64,6 +64,64 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 | `progress`、`stage`、`message`、`step`、`step_total` | 直接呼び出したプラグインエントリが報告する進捗（任意） |
 
 `waiting_user` は、ユーザーの回答または承認を待っている状態で、進行中として数えます。`blocked` は、ほかの条件が整わないと続けられず、結果が出ないまま止まった状態です。フィールドは今後追加されることがあります。
+
+## キーボード・マウスとブラウザーのツール
+
+キーボード・マウス操作とブラウザー操作は二組の組み込みツールで、task agent（画面上では「使い魔」）が一歩ずつ呼び出します。[Agent System](/ja/architecture/agent-system) を参照してください。ブラウザー操作には、このマシンにインストールされている Chromium 系ブラウザー（Chrome、Edge、Brave、Chromium）を使います。アプリケーションにブラウザーは同梱されず、起動時にダウンロードもしません。
+
+| メソッド | パス | 用途 |
+|---|---|---|
+| `GET` | `/api/agent/builtin/activity` | いま、どのタスクがキーボード・マウスを、どのタスクがブラウザーを使っているか |
+| `POST` | `/api/agent/builtin/stop` | キーボード・マウスまたはブラウザーを使っているタスクを中止 |
+| `GET` | `/api/agent/builtin/browser/settings` | ブラウザーツールがどのブラウザーをどう使うかの設定と、このマシンで見つかったブラウザー |
+| `POST` | `/api/agent/builtin/browser/settings` | 上記の設定を変更 |
+
+リモート配備では、この四つはいずれも `501` を返します。
+
+### `GET /api/agent/builtin/activity`
+
+`{"activity":[...]}` を返します。使用中の組ごとに 1 件が入り、どちらも使われていなければ空のリストです。
+
+```json
+{"group": "browser", "state": "started", "commission_id": "...", "window": null}
+```
+
+| フィールド | 意味 |
+|---|---|
+| `group` | `keyboard_mouse`（デスクトップ全体）または `browser` |
+| `state` | このレスポンスでは常に `started`。後述の WebSocket メッセージでは `started` または `ended` |
+| `commission_id` | その組を占有しているタスク。タスクオブジェクトの `id` と同じ値 |
+| `window` | ブラウザーの場合、操作対象のウィンドウが分かった後は `{"browser","pid","window_id","bounds"}`、それまでは `null`。キーボード・マウスでは常に `null` |
+
+プロキシ障害は `502` で、空の `activity` と `error` を返します。
+
+タスクがある組を使い始めたとき、または使い終えたとき、メインサーバーは同じオブジェクトを WebSocket メッセージ `{"type":"agent_builtin_activity","activity":{...}}` として、接続中のすべてのページへ送ります。一回の使用で `started` が複数回届くことがあります。ブラウザーはタスクの最初の呼び出しで起動するため、ウィンドウが初めて分かったときと、ウィンドウが動いたときに、もう一度送られます。`ended` が送られるのは、task agent の実行が終わったとき、タスクが終了または失敗したとき、ユーザーの回答待ちになったとき、中止されたときです。ページは最新のオブジェクトを `window._agentBuiltinActivity[group]` に保持し、`detail` にそのオブジェクトを入れた `neko-agent-builtin-activity` DOM イベントを発行します。ページ自身は何も描画しません。
+
+### `POST /api/agent/builtin/stop`
+
+ボディ: 任意で `{"group":"keyboard_mouse"}` または `{"group":"browser"}`。`group` を省くと両方を中止します。レスポンスは `{"success":true,"stopped":["<タスク ID>", ...]}` で、何も使われていなければリストは空です。処理の内容は、その組を占有しているタスクに対する `POST /api/agent/tasks/{task_id}/cancel` と同じです。不明な group は `400`、リクエスト到達後の応答タイムアウトは `504` です。
+
+### `GET /api/agent/builtin/browser/settings`
+
+```json
+{
+  "settings": {"mode": "own_profile", "executable": null, "headless": false},
+  "modes": ["own_profile", "attach"],
+  "browsers": [{"kind": "chrome", "name": "Google Chrome", "executable": "..."}]
+}
+```
+
+`browsers` はこのマシンで見つかったブラウザーで、優先して使うものが先頭です。`kind` は `chrome`、`edge`、`brave`、`chromium`、`custom` のいずれかです。
+
+| 設定 | 意味 |
+|---|---|
+| `mode` | `own_profile`（既定）: ユーザーのブラウザーを、データルート配下の専用プロファイルディレクトリ（`nekoclaw/browser_profile`）で起動する。使うサイトには、そこで一度ログインすればよい。`attach`: ユーザーが今使っているブラウザーを操作する。Chrome 144 以降が必要で、ユーザー自身が `chrome://inspect/#remote-debugging` でリモートデバッグをオンにし、接続のたびにブラウザー側で許可する |
+| `executable` | 自動で見つけたものの代わりに使うブラウザーのパス。`null` なら自動で探す |
+| `headless` | ウィンドウを出さずにブラウザーを起動する。`own_profile` のときだけ有効 |
+
+### `POST /api/agent/builtin/browser/settings`
+
+ボディ: `mode`、`executable`、`headless` のうち変更したいもの。省いたフィールドは現在の値のままです。レスポンスは上のオブジェクトに `"success":true` を加えたものです。不明な `mode`、または存在しないファイルを指す `executable` は `400` です。変更は次に起動するブラウザーから有効になり、ブラウザーツールが起動していたブラウザーは閉じられます。
 
 ## UI ヘルパールート
 

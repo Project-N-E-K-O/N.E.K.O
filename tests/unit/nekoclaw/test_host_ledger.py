@@ -748,3 +748,75 @@ async def test_no_report_is_stored_when_the_hook_gives_none(tmp_path):
     finally:
         await second.close()
 
+
+# ---------------------------------------------------------------------------
+# Columns added after the first schema
+# ---------------------------------------------------------------------------
+
+
+_FIRST_SCHEMA_COLUMNS = (
+    "id TEXT PRIMARY KEY, lanlan_name TEXT NOT NULL, title TEXT NOT NULL, dispatch_text TEXT NOT NULL, "
+    "user_text TEXT NOT NULL DEFAULT '', source TEXT NOT NULL, route TEXT, project TEXT, workdir TEXT, "
+    "status TEXT NOT NULL, status_reason TEXT NOT NULL DEFAULT '', runtime TEXT, created_at REAL NOT NULL, "
+    "updated_at REAL NOT NULL, started_at REAL, ended_at REAL, result_summary TEXT, pending_question TEXT, "
+    "delivery TEXT, parent_id TEXT, conversation_id TEXT, lang TEXT, plugin_id TEXT, entry_id TEXT, name TEXT, "
+    "deferred_until REAL, host_instance TEXT"
+)
+
+
+async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_opened(tmp_path):
+    from nekoclaw.host.ledger import Ledger
+
+    path = tmp_path / "ledger.db"
+    # As a build from before the session directory was recorded left it.
+    conn = sqlite3.connect(path)
+    conn.execute(f"CREATE TABLE commissions ({_FIRST_SCHEMA_COLUMNS})")
+    conn.execute(
+        "INSERT INTO commissions (id, lanlan_name, title, dispatch_text, source, status, created_at, updated_at, workdir) "
+        "VALUES ('c1', 'Lan', 'sort the photos', 'sort the photos', 'dispatch', 'blocked', 1.0, 2.0, 'D:/old/work')"
+    )
+    conn.execute("PRAGMA user_version=1")
+    conn.commit()
+    conn.close()
+
+    ledger = Ledger(path)
+    try:
+        await ledger.open()
+        kept = await ledger.get("c1")
+        # What it held is all there, and the new column reads as nothing known.
+        assert (kept.title, kept.status, kept.workdir, kept.session_dir) == ("sort the photos", "blocked", "D:/old/work", None)
+        updated = await ledger.update("c1", session_dir="D:/old/sessions/c1")
+        assert updated.session_dir == "D:/old/sessions/c1"
+    finally:
+        await ledger.close()
+
+    with sqlite3.connect(path) as conn:
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(commissions)")]
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    conn.close()
+    assert columns.count("session_dir") == 1 and version == 2
+    # It has every column a new ledger has. A column put into the table and the commission but left out of
+    # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
+    from nekoclaw.host.ledger import _COMMISSION_COLUMNS
+
+    assert set(columns) == set(_COMMISSION_COLUMNS)
+
+    # Opened again, nothing is added a second time.
+    again = Ledger(path)
+    try:
+        await again.open()
+        assert (await again.get("c1")).session_dir == "D:/old/sessions/c1"
+    finally:
+        await again.close()
+
+
+async def test_a_new_ledger_has_the_added_columns_from_the_start(ledger):
+    from nekoclaw.host.ledger import _ADDED_COLUMNS, _COMMISSION_COLUMNS
+
+    await ledger.open()
+    with sqlite3.connect(ledger.path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(commissions)")}
+    conn.close()
+    # Every field of a commission is a column, the ones added later included.
+    assert set(_COMMISSION_COLUMNS) == columns
+    assert {name for name, _kind in _ADDED_COLUMNS} <= columns

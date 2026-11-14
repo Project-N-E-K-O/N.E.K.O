@@ -60,6 +60,7 @@ Important JSON message types include:
 | `status` | Structured status or error payload |
 | `expression`, `focus_state`, `focus_charge` | Character presentation state |
 | `agent_status_update`, `agent_task_update`, `agent_notification` | Agent state and task delivery |
+| `agent_builtin_activity` | A task began or stopped using the keyboard and mouse or the browser |
 | `request_screenshot`, `capture_bridge_request` | Client capture requests |
 | `session_ended_by_server`, `reload_page`, `catgirl_switched` | Lifecycle recovery or character changes |
 | `pong` | Heartbeat response |
