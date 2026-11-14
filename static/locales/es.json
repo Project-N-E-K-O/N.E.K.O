@@ -1583,6 +1583,7 @@
         "ttsProtocolHintOpenAI": "Compatible con OpenAI: HTTP(S) POST /v1/audio/speech con texto completo y respuesta de audio en streaming.",
         "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream con transmisión bidireccional de texto y audio.",
         "ttsVoiceIdHint": "(Opcional, voz alternativa cuando el personaje no tiene ninguna)",
+        "ttsCustomVoiceFallbackHint": "Si Voice ID está vacío, los personajes sin voz propia usan la voz integrada de la API principal.",
         "ttsVoiceIdPlaceholder": "por ejemplo, mujer china, aleación",
         "agentModelUrlPlaceholder": "Déjelo en blanco para seguir la URL del modelo de visión de Assist API",
         "agentModelIdPlaceholder": "Déjelo en blanco para seguir el ID del modelo de visión de Assist API",
