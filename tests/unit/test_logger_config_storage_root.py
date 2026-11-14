@@ -141,14 +141,14 @@ def test_concurrent_writability_probes_on_one_directory_all_succeed(tmp_path):
 
 
 _PROBE_PROCESS = """
-import sys, time
+import sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from utils.logger_config import RobustLoggerConfig
-directory, start = Path(sys.argv[2]), float(sys.argv[3])
-while time.time() < start:
-    time.sleep(0.001)
-print(sum(not RobustLoggerConfig._test_directory_writable(None, directory) for _ in range(20)))
+directory = Path(sys.argv[2])
+print("ready", flush=True)
+sys.stdin.readline()
+print(sum(not RobustLoggerConfig._test_directory_writable(None, directory) for _ in range(20)), flush=True)
 """
 
 
@@ -159,22 +159,29 @@ def test_concurrent_writability_probes_from_separate_processes_all_succeed(tmp_p
     # per-process part of the probe name as well.
     import subprocess
     import sys
-    import time
 
     from tests.process_isolation import child_process_env
 
     repo_root = Path(__file__).resolve().parents[2]
     directory = tmp_path / "logs"
     env = child_process_env(tmp_path_factory.mktemp("child-runtime-root"))
-    # Children start together after their (slow, cold) imports.
-    start = time.time() + 8
     processes = [
         subprocess.Popen(
-            [sys.executable, "-c", _PROBE_PROCESS, str(repo_root), str(directory), str(start)],
-            cwd=str(repo_root), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            [sys.executable, "-c", _PROBE_PROCESS, str(repo_root), str(directory)],
+            cwd=str(repo_root), env=env, text=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         for _ in range(8)
     ]
+    # Handshake rather than a fixed delay: every child finishes its cold
+    # imports and reports ready before any of them is told to probe, so the
+    # probes overlap however slow the imports are.
+    for process in processes:
+        ready = process.stdout.readline().strip()
+        assert ready == "ready", process.stderr.read()
+    for process in processes:
+        process.stdin.write("go" + chr(10))
+        process.stdin.flush()
     outputs = [process.communicate(timeout=120) for process in processes]
 
     for process, (stdout, stderr) in zip(processes, outputs):
