@@ -574,13 +574,22 @@ def browser_process_on(user_data_dir: str | os.PathLike[str]) -> int | None:
 
 
 def _pid_of(browser: RunningBrowser) -> int | None:
-    """Return the process of a browser this process owns, or None when it cannot be found. Blocking."""
-    pid = browser.pid
-    if pid is None and browser.user_data_dir:
-        # Not our child (found running on the profile, or handed over to by
-        # the process we started): it is looked up by the profile it runs on.
-        pid = browser_process_on(browser.user_data_dir)
-    return pid
+    """Return the process of a browser this process owns, or None when it cannot be found. Blocking.
+
+    The number of the child that was started is used only while that child
+    runs. Once it has exited (the user closed the browser, or it handed over
+    to another process and went), the system may give its number to any
+    other program: killed by that number, it would be that program, with
+    whatever it had not saved.
+    """
+    child = browser.process
+    if child is not None and child.poll() is None:
+        return child.pid
+    if browser.user_data_dir:
+        # Not our child (found running on the profile), or no longer running:
+        # the browser is looked up by the profile it runs on.
+        return browser_process_on(browser.user_data_dir)
+    return None
 
 
 def kill(browser: RunningBrowser) -> None:

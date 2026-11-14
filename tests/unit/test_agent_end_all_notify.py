@@ -392,3 +392,38 @@ def test_end_all_asks_the_browser_to_close_without_waiting_for_the_keys(srv, mon
     # keys are done is what must hold.)
     assert sorted(order) == ["browser asked", "keys asked", "keys released"]
     assert order.index("browser asked") < order.index("keys released")
+
+
+def test_end_all_kills_a_browser_that_answered_in_time_but_could_not_be_closed(
+    srv, browser_closes, monkeypatch: pytest.MonkeyPatch
+):
+    import threading
+
+    killed = threading.Event()
+    # Closing it failed: it is kept to be closed some other time, and runs on meanwhile.
+    monkeypatch.setattr(srv.builtin_provider, "browser_unclosed", lambda: True)
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", killed.set)
+    monkeypatch.setattr(srv.builtin_provider, "_killing", set())
+
+    async def _scenario() -> None:
+        result = await asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0)
+        assert result["success"] is True
+        assert browser_closes == [True]
+        assert await asyncio.to_thread(killed.wait, 5.0)
+
+    asyncio.run(_scenario())
+
+
+def test_end_all_kills_nothing_when_the_browser_was_closed(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):
+    killed: list[int] = []
+    monkeypatch.setattr(srv.builtin_provider, "browser_unclosed", lambda: False)
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", lambda: killed.append(1))
+
+    async def _scenario() -> None:
+        result = await asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0)
+        assert result["success"] is True
+        await asyncio.sleep(0.1)
+
+    asyncio.run(_scenario())
+
+    assert browser_closes == [True] and killed == []

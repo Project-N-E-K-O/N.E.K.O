@@ -1229,7 +1229,7 @@ def test_killing_takes_our_child_by_its_number_and_a_browser_that_is_not_our_chi
 
     monkeypatch.setattr(launcher, "kill_tree", killed.append)
     monkeypatch.setattr(launcher, "browser_process_on", on_profile)
-    child = RunningBrowser(install=CHROME, endpoint="ws://x", process=SimpleNamespace(pid=4321), owned=True, user_data_dir="/profile")
+    child = RunningBrowser(install=CHROME, endpoint="ws://x", process=SimpleNamespace(pid=4321, poll=lambda: None), owned=True, user_data_dir="/profile")
     launcher.kill(child)
     assert killed == [4321] and looked_up == []
 
@@ -1248,7 +1248,7 @@ def test_a_browser_that_was_attached_to_is_never_killed(monkeypatch: Any) -> Non
     killed: list[Any] = []
     monkeypatch.setattr(launcher, "kill_tree", killed.append)
     monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
-    theirs = RunningBrowser(install=CHROME, endpoint="ws://x", process=SimpleNamespace(pid=4321), owned=False, user_data_dir="/theirs")
+    theirs = RunningBrowser(install=CHROME, endpoint="ws://x", process=SimpleNamespace(pid=4321, poll=lambda: None), owned=False, user_data_dir="/theirs")
     launcher.kill(theirs)
     assert killed == []
 
@@ -1364,3 +1364,43 @@ def test_a_port_file_counts_as_left_behind_only_when_no_browser_can_be_on_the_pr
     # The processes cannot be listed at all.
     monkeypatch.setitem(sys.modules, "psutil", None)
     assert launcher._left_by_a_browser_that_is_gone(profile) is False
+
+
+def test_the_number_of_a_child_that_has_exited_is_not_used_to_find_the_browser(monkeypatch: Any, tmp_path: Path) -> None:
+    profile = str(tmp_path / "browser_profile")
+    looked_up: list[Any] = []
+
+    def on_profile(directory: Any) -> int | None:
+        looked_up.append(directory)
+        return 7003
+
+    monkeypatch.setattr(launcher, "browser_process_on", on_profile)
+    child = FakeChild()
+    browser = RunningBrowser(install=CHROME, endpoint="ws://127.0.0.1:9222/devtools/browser/x", process=child, owned=True, user_data_dir=profile)
+
+    # While the child runs, it is the browser.
+    assert launcher._pid_of(browser) == 4321 and looked_up == []
+
+    # It has exited (the user closed the browser, or it handed over): its number may be another program's by now.
+    child.returncode = 0
+    assert launcher._pid_of(browser) == 7003 and looked_up == [profile]
+
+    # With no profile to look on, nothing is found rather than the old number.
+    nowhere = RunningBrowser(install=CHROME, endpoint="ws://127.0.0.1:9222/devtools/browser/x", process=child, owned=True, user_data_dir=None)
+    assert launcher._pid_of(nowhere) is None
+
+
+def test_killing_a_browser_whose_child_has_exited_does_not_kill_by_the_old_number(monkeypatch: Any, tmp_path: Path) -> None:
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda directory: None)
+    child = FakeChild()
+    child.returncode = 0
+    browser = RunningBrowser(
+        install=CHROME, endpoint="ws://127.0.0.1:9222/devtools/browser/x", process=child, owned=True, user_data_dir=str(tmp_path)
+    )
+
+    launcher.kill(browser)
+
+    # Nothing runs on the profile any more: nothing is killed, least of all whoever has number 4321 now.
+    assert killed == [None]

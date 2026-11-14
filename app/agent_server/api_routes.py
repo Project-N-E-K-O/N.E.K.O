@@ -986,10 +986,19 @@ async def admin_control(payload: Dict[str, Any]):
         # this request.
         from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
 
+        closed_in_time = True
         try:
             await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
         except asyncio.TimeoutError:
+            closed_in_time = False
             logger.warning("[Agent] end_all: the browser did not close in time; killing it")
+        if closed_in_time and builtin_provider.browser_unclosed():
+            # Asked in time, and closing it failed: it would be kept to be
+            # closed some other time, and run on meanwhile although the user
+            # stopped everything.
+            closed_in_time = False
+            logger.warning("[Agent] end_all: the browser could not be closed; killing it")
+        if not closed_in_time:
             # Not waited for: killing waits for the processes to be gone,
             # which takes seconds more, and the answer to this request does
             # not depend on it. A browser call that comes meanwhile waits

@@ -3108,7 +3108,7 @@ async def test_killing_also_takes_a_browser_that_could_not_be_closed_earlier(
     monkeypatch.setattr(launcher, "kill_tree", killed.append)
     monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
     earlier = launcher.RunningBrowser(
-        install=CHROME, endpoint=OWN_ENDPOINT, process=SimpleNamespace(pid=4321), owned=True, user_data_dir="/earlier"
+        install=CHROME, endpoint=OWN_ENDPOINT, process=SimpleNamespace(pid=4321, poll=lambda: None), owned=True, user_data_dir="/earlier"
     )
     session._unclosed.append(earlier)
 
