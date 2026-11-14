@@ -15,6 +15,7 @@ from plugin._types.plugin_types import (
     format_plugin_type_choice_error,
     format_removed_plugin_host,
 )
+from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.sdk.shared.core.push_message_schema import (
     LEGACY_PUSH_MESSAGE_FIELD_MIGRATIONS,
     LEGACY_PUSH_MESSAGE_POSITIONAL_FIELDS,
@@ -68,7 +69,9 @@ def validate_plugin_dir(
         return issues
     plugin_table = source.plugin_table
     _check_plugin_toml_schema(plugin_dir, source.plugin_toml, source.plugin_id, issues)
-    if require_matching_directory_name and source.plugin_id != plugin_dir.name:
+    if require_matching_directory_name and not plugin_package_matches_directory(
+        source.plugin_id, plugin_dir.name
+    ):
         issues.append(
             (
                 "warning",

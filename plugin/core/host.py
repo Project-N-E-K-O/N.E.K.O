@@ -530,7 +530,7 @@ def _evict_cached_plugin_source(module_path: str, config_path: Path, logger: Any
     except OSError as exc:
         logger.debug("[Plugin Process] Failed to resolve plugin directory for cache eviction: {}", exc)
         return
-    if plugin_id != plugin_dir.name:
+    if not plugin_package_matches_directory(plugin_id, plugin_dir.name):
         return
 
     package_prefixes = (f"plugins.{plugin_id}", f"plugin.plugins.{plugin_id}")
@@ -567,7 +567,7 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
         logger.debug("[Plugin Process] Failed to resolve plugin directory for import fallback: {}", exc)
         return None
 
-    if parts[1] != plugin_dir.name:
+    if not plugin_package_matches_directory(parts[1], plugin_dir.name):
         logger.debug(
             "[Plugin Process] Import fallback skipped because module '{}' does not match plugin dir '{}'",
             module_path,

@@ -136,6 +136,64 @@ def test_import_current_plugin_loads_package_from_config(_isolate_plugins_namesp
     assert getattr(mod, "MyPlugin", None) is not None
 
 
+def _make_kebab_plugin(root: Path) -> Path:
+    """A plugin cloned from a kebab-case repository directory (#3724)."""
+    plugin_dir = root / "kebab-probe"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "__init__.py").write_text(
+        "class KebabPlugin:\n    pass\nVALUE = 'kebab'\n", encoding="utf-8"
+    )
+    (plugin_dir / "child.py").write_text("VALUE = 'child'\n", encoding="utf-8")
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text(
+        "[plugin]\nid='kebab-probe'\nentry='plugin.plugins.kebab_probe:KebabPlugin'\n",
+        encoding="utf-8",
+    )
+    return config_path
+
+
+@pytest.mark.plugin_unit
+def test_default_mode_imports_a_kebab_case_directory(
+    _isolate_plugins_namespace, tmp_path: Path
+) -> None:
+    """The ordinary (non source-only) load path must accept `kebab-probe` -> `kebab_probe`."""
+    config_path = _make_kebab_plugin(tmp_path / "managed" / "plugins")
+
+    module = host_module._import_plugin_module("plugins.kebab_probe", config_path, _StubLogger())
+
+    assert module is not None
+    assert module.VALUE == "kebab"
+    assert Path(module.__file__).resolve() == (config_path.parent / "__init__.py").resolve()
+    assert sys.modules["plugins.kebab_probe"] is module
+    assert getattr(sys.modules["plugins"], "kebab_probe") is module
+    child = importlib.import_module("plugins.kebab_probe.child")
+    assert child.VALUE == "child"
+
+
+@pytest.mark.plugin_unit
+def test_default_mode_evicts_a_cached_kebab_package_from_another_directory(
+    _isolate_plugins_namespace, tmp_path: Path
+) -> None:
+    """A same-name package cached from elsewhere must not shadow the cloned directory."""
+    config_path = _make_kebab_plugin(tmp_path / "managed" / "plugins")
+    stale_dir = tmp_path / "stale" / "kebab_probe"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "__init__.py").write_text("VALUE = 'stale'\n", encoding="utf-8")
+    stale = ModuleType("plugins.kebab_probe")
+    stale.__file__ = str(stale_dir / "__init__.py")
+    stale.__path__ = [str(stale_dir)]
+    sys.modules["plugins.kebab_probe"] = stale
+
+    host_module._evict_cached_plugin_source("plugins.kebab_probe", config_path, _StubLogger())
+
+    assert "plugins.kebab_probe" not in sys.modules
+
+    module = host_module._import_plugin_module("plugins.kebab_probe", config_path, _StubLogger())
+
+    assert module is not stale
+    assert module.VALUE == "kebab"
+
+
 @pytest.mark.plugin_unit
 def test_import_current_plugin_does_not_mask_missing_submodule(
     _isolate_plugins_namespace, tmp_path: Path
