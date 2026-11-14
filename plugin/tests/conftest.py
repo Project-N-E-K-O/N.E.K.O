@@ -15,9 +15,25 @@ _REPO_ROOT = str(_Path(__file__).resolve().parents[2])
 if _sys.path[:1] != [_REPO_ROOT]:
     _sys.path.insert(0, _REPO_ROOT)
 
-# pytest discovers hooks by name in the conftest namespace, so this import has no explicit call site;
-# it is not dead code: deleting it disables the entire process-wide clock guard.
+# Before ANY product module is imported (this file's own imports below build the
+# ConfigManager singleton during collection): telemetry opt-out, inherited storage-root
+# variables dropped, logs redirected, ConfigManager root resolution pointed at a
+# throwaway root. Same call as tests/conftest.py; see tests/process_isolation.py.
+from tests.process_isolation import isolate_test_process as _isolate_test_process  # noqa: E402
+
+_isolate_test_process()
+
+# pytest discovers hooks by name in the conftest namespace, so these imports have no explicit call site;
+# they are not dead code: deleting one disables that process-wide guard.
 from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
+# Storage-root environment guard (tests/storage_root_env_guard.py): a test that leaves
+# NEKO_STORAGE_ANCHOR_ROOT / NEKO_STORAGE_CLOUDSAVE_ROOT behind (the autouse fixture below
+# only resets SELECTED) would steer every later ConfigManager toward the real root.
+from tests.storage_root_env_guard import (  # noqa: E402
+    pytest_runtest_setup,  # noqa: F401
+    pytest_runtest_teardown,  # noqa: F401
+    pytest_sessionstart,  # noqa: F401
+)
 
 import asyncio.events as _events
 from collections.abc import AsyncIterator
