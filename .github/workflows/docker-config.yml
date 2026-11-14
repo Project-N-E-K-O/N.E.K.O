@@ -55,11 +55,16 @@ jobs:
           printf '%s\n' "$merged" | grep -qE 'mem_limit: ?"?(2g|2147483648)"?' \
             || { echo "资源上限覆盖文件未生效："; printf '%s\n' "$merged" | head -40; exit 1; }
 
-          # 浏览器覆盖文件：这里只看合并结果里有 seccomp 这一项；它在真容器里
+          # 浏览器覆盖文件：合并结果里 seccomp 指向的必须是仓库里那份配置（写成
+          # unconfined、指到别的文件都不算），/dev/shm 的上限也在。它在真容器里
           # 起不起作用由下面的 browser-seccomp 任务试。
           merged=$(docker compose -f docker/docker-compose.yml -f docker/compose.browser.yaml config)
-          printf '%s\n' "$merged" | grep -q 'seccomp' \
-            || { echo "浏览器覆盖文件未生效："; printf '%s\n' "$merged" | head -40; exit 1; }
+          printf '%s\n' "$merged" | grep -qE '^ +- seccomp[=:][^ ]*seccomp/chromium\.json$' \
+            || { echo "浏览器覆盖文件的 seccomp 没有指向 seccomp/chromium.json："; printf '%s\n' "$merged" | head -60; exit 1; }
+          [ "$(printf '%s\n' "$merged" | grep -cE 'seccomp[=:]')" = 1 ] \
+            || { echo "合并结果里不止一条 seccomp："; printf '%s\n' "$merged" | grep -nE 'seccomp[=:]'; exit 1; }
+          printf '%s\n' "$merged" | grep -qE '^ +shm_size: ' \
+            || { echo "浏览器覆盖文件的 shm_size 未生效："; printf '%s\n' "$merged" | head -60; exit 1; }
 
       - name: Nginx 配置分层（渲染 + 分层不变量）
         run: sudo bash docker/nginx/test-render.sh

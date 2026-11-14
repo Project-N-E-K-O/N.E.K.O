@@ -63,6 +63,16 @@ in_container() {
     docker run "${options[@]}" "$base_image" "$@" > "$work/out" 2>&1
 }
 
+# What the host says about user namespaces for unprivileged processes, for
+# whoever reads the output of a run that failed (or of one that passed, on a
+# host where one of these is set against them). Not every host has every one.
+for knob in kernel.unprivileged_userns_clone user.max_user_namespaces kernel.apparmor_restrict_unprivileged_userns; do
+    if value=$(sysctl -n "$knob" 2> /dev/null); then
+        echo "note - host: $knob=$value"
+    fi
+done
+host_hint='the host may not allow user namespaces to unprivileged processes: see the "note - host" lines above'
+
 docker pull -q "$base_image" > /dev/null || die "$base_image could not be pulled"
 
 # --- What the profile is there for --------------------------------------------
@@ -79,7 +89,7 @@ else
 fi
 
 in_container profile unshare --user true \
-    || die 'with the profile, an unprivileged user cannot create a user namespace'
+    || die "with the profile, an unprivileged user cannot create a user namespace ($host_hint)"
 ok 'with the profile, an unprivileged user creates a user namespace'
 
 # The process is root inside the namespaces it made, and the kernel lets such a

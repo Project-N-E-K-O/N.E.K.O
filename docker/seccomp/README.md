@@ -36,10 +36,18 @@ docker compose -f docker-compose.yml -f compose.browser.yaml up -d
 
 ```bash
 docker run -d --name neko -p 48911:80 -p 48912:443 \
-  --security-opt seccomp=docker/seccomp/chromium.json neko:full
+  --security-opt seccomp=docker/seccomp/chromium.json --shm-size=1g neko:full
 ```
 
-宿主机要允许非特权用户命名空间：`kernel.unprivileged_userns_clone` 不能是 0（Debian 11 起默认是 1，别的发行版一般没有这个开关），`user.max_user_namespaces` 不能是 0。
+`--shm-size=1g`（覆盖文件里是 `shm_size`）和 seccomp 无关，是 Chromium 在容器里的另一件事：它把页面用的共享内存放在 `/dev/shm`，Docker 默认只给 64MB，页面大的时候标签页会崩溃。1GB 是在容器里跑 Chromium 时通常用的数，没有在本项目里实测过；它是上限，不是预留。
+
+宿主机要允许非特权用户命名空间：
+
+- `kernel.unprivileged_userns_clone` 不能是 0（Debian 11 起默认是 1，别的发行版一般没有这个开关）。
+- `user.max_user_namespaces` 不能是 0。
+- Ubuntu 23.10 起还有一道 AppArmor 的限制，`kernel.apparmor_restrict_unprivileged_userns`，默认是 1。CI 用的 GitHub Ubuntu 26.04 运行机上，容器里的进程（Docker 默认的 AppArmor 配置下）不受它影响，Chromium 起得来。别的宿主机没有试过；带着这份配置仍然建不了用户命名空间时，先看这个开关。
+
+下面的脚本会把这三个开关在宿主机上的值打出来。
 
 ## 在自己的宿主机上确认
 

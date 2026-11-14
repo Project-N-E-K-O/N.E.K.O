@@ -154,7 +154,7 @@ N.E.K.O. 镜像发布到两个 registry：
 
 `standard`（~1.5GB）不带浏览器，浏览器控制不可用；`full`（~2.5GB）装有 Debian 的 Chromium，供浏览器控制使用。应用自己不再下载浏览器。
 
-**用 full 镜像要连同 `compose.browser.yaml` 一起起。** Chromium 靠自己的沙箱隔离网页，沙箱要创建用户命名空间；Docker 默认的 seccomp 配置不允许，Chromium 会一启动就退出，浏览器工具报告浏览器启动不了。这个覆盖文件给容器换上 `seccomp/chromium.json`：Docker 的默认配置，只多一条允许创建命名空间的规则（它放开了什么、代价是什么、怎么在自己的宿主机上确认，见 [seccomp/README.md](seccomp/README.md)）。在 `docker/.env` 里写上这两项，之后所有不带 `-f` 的 `docker compose` 命令都会带上它：
+**用 full 镜像要连同 `compose.browser.yaml` 一起起。** Chromium 靠自己的沙箱隔离网页，沙箱要创建用户命名空间；Docker 默认的 seccomp 配置不允许，Chromium 会一启动就退出，浏览器工具报告浏览器启动不了。这个覆盖文件给容器换上 `seccomp/chromium.json`：Docker 的默认配置，只多一条允许创建命名空间的规则（它放开了什么、代价是什么、怎么在自己的宿主机上确认，见 [seccomp/README.md](seccomp/README.md)）；另外把 `/dev/shm` 的上限从 Docker 默认的 64MB 放到 1GB，页面大的时候标签页才不会崩溃。在 `docker/.env` 里写上这两项，之后所有不带 `-f` 的 `docker compose` 命令都会带上它：
 
 ```dotenv
 NEKO_IMAGE_VERSION=latest-full

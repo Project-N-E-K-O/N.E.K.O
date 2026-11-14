@@ -8,7 +8,7 @@
 #
 # Build: docker build -f docker/Dockerfile.full -t neko:full .
 # Run:   docker run -d --name neko -p 48911:80 -p 48912:443 \
-#          --security-opt seccomp=docker/seccomp/chromium.json neko:full
+#          --security-opt seccomp=docker/seccomp/chromium.json --shm-size=1g neko:full
 #
 # Usage with Compose (in docker/):
 #   NEKO_IMAGE_VERSION=latest-full \
