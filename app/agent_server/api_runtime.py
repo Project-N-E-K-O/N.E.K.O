@@ -13,150 +13,63 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Analyzer, lifecycle, and task endpoints for the agent server."""
+"""Lifecycle, session events, and task endpoints for the agent server.
+
+Tasks are commissions of the NekoClaw host (``nekoclaw/host``). This module
+connects the host to the rest of the process: the two requests the main
+dialogue's task tools make (dispatch, query), the list a new session is told,
+the check of a turn in which she called no task tool, and the task endpoints
+the HUD uses.
+"""
 
 import math
-import uuid
+from collections import OrderedDict
 
 from .api_shared import (  # noqa: F401
-    AGENT_HISTORY_TURNS,
-    AGENT_PROACTIVE_ANALYZE_ENABLED,
-    AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION,
     AgentServerEventBridge,
-    AgentTaskTracker,
     Any,
-    BaseModel,
-    BrowserUseAdapter,
     ComputerUseAdapter,
-    DEFERRED_TASK_TIMEOUT,
     Dict,
-    DirectTaskExecutor,
-    ERROR_MESSAGE_MAX_CHARS,
-    EXCEPTION_TEXT_MAX_CHARS,
-    FastAPI,
-    Field,
     HTTPException,
-    JSONResponse,
+    HUD_ACTIVE,
     List,
     Modules,
-    OPENCLAW_ENABLE_CHECK_ATTEMPTS,
-    OPENCLAW_ENABLE_CHECK_INTERVAL,
-    OpenClawAdapter,
     Optional,
-    PLUGIN_NAME_CACHE_TTL,
-    REDACTED_USER_TURN_MARKER,
-    TASK_DETAIL_MAX_TOKENS,
-    TASK_ERROR_MAX_TOKENS,
-    TASK_REGISTRY_CLEANUP_TTL,
-    TASK_TRACKER_DETAIL_MAX_CHARS,
-    TASK_TRACKER_INJECT_DETAIL_MAX_CHARS,
-    TASK_TRACKER_MAX_RECORDS,
-    TASK_TRACKER_TTL,
-    TOOL_SERVER_PORT,
-    TaskDeduper,
     ThrottledLogger,
-    USER_NOTIFICATION_ERROR_MAX_CHARS,
-    USER_NOTIFICATION_REASON_MAX_CHARS,
     USER_PLUGIN_SERVER_PORT,
-    _LEGACY_CORRECTION_PUBLIC_KEYS,
-    _agent_flags_snapshot,
-    _bind_deferred_task,
-    _build_analyze_event_fingerprint,
-    _build_assistant_turn_fingerprint,
-    _build_user_turn_fingerprint,
     _bump_state_revision,
-    _cancel_openclaw_enable_probe,
-    _cancel_openclaw_tasks_for_stop,
-    _cleanup_task_registry,
-    _collect_active_openclaw_task_ids,
-    _collect_agent_status_snapshot,
-    _collect_existing_task_descriptions,
     _close_browser_use_adapter,
-    _computer_use_scheduler_loop,
     _create_tracked_task,
-    _default_openclaw_task_description,
     _emit_agent_status_update,
     _emit_main_event,
-    _emit_task_result,
-    _ensure_browser_use_adapter,
     _ensure_plugin_lifecycle_started,
     _ensure_plugin_lifecycle_stopped,
     _fire_agent_llm_connectivity_check,
-    _fire_user_plugin_capability_check,
-    _get_internal_correction_context,
-    _get_plugin_display_id,
-    _get_plugin_friendly_name,
-    _get_throttled_logger,
-    _install_runtime_bindings,
-    _is_duplicate_task,
-    _is_reply_suppressed,
-    _last_user_message_signature,
-    _llm_check_lock,
-    _lookup_llm_result_fields,
-    _normalize_lanlan_key,
-    _now_iso,
-    _openclaw_first_reason,
-    _openclaw_notification,
-    _openclaw_pending,
-    _openclaw_reason_code,
-    _openclaw_reason_text,
-    _plugin_name_cache_lock,
-    _plugin_terminal_status,
-    _public_task_info,
-    _redact_cancelled_user_turns,
-    _repo_root,
-    _resolve_delivery_mode,
-    _resolve_plugin_result_contract,
-    _resolve_openclaw_sender_id,
-    _rewire_computer_use_dependents,
-    _rp_lang,
-    _rp_phrase,
-    _run_computer_use_task,
-    _run_openclaw_enable_probe,
     _set_capability,
-    _set_internal_correction_context,
-    _spawn_background_cancel,
-    _spawn_task,
     _start_embedded_user_plugin_server,
-    _start_openclaw_enable_probe,
     _stop_embedded_user_plugin_server,
-    _task_tracker,
-    _track_background_task,
-    _tracker_desc_for_task_info,
-    _try_refresh_computer_use_adapter,
-    _tt,
-    _user_message_payload_text,
-    _user_message_sender_id,
-    _user_message_signature,
     app,
     asyncio,
-    channels,
-    datetime,
+    builtin_provider,
     get_config_manager,
     httpx,
-    json,
-    log_config,
+    hud,
+    ledger_exists,
     logger,
-    mimetypes,
+    mount_nekoclaw_host,
+    nekoclaw_on,
     os,
-    parse_browser_use_result,
-    parse_computer_use_result,
-    parse_plugin_result,
-    setup_logging,
-    sys,
+    peek_host,
+    ready_host,
+    restore_hud,
+    shutdown_nekoclaw_host,
     time,
-    timezone,
     uuid,
 )
 
-class ToolCorrectionPayload(BaseModel):
-    correct_tool: str = Field(min_length=1)
-    correct_instruction: str = Field(min_length=1)
-    user_note: str = ""
-
 
 def _plugin_list_change_token() -> tuple:
-    """Cheap in-process change signal for the analyze-turn plugin list cache.
+    """Cheap in-process change signal for the host's cached plugin list.
 
     The plugin server is embedded in this process. Its lifecycle bus revision
     is bumped on every start/stop/reload/delete/load event, but a plugin
@@ -167,7 +80,7 @@ def _plugin_list_change_token() -> tuple:
     Called synchronously on the event loop, so it must never wait on the
     plugin-hosts read/write lock: the snapshot is taken without blocking and,
     when no snapshot is available at all, the token is reported unreadable
-    (the executor then refetches ``/plugins`` asynchronously).
+    (the host then refetches ``/plugins`` asynchronously).
 
     A live process whose plugin ``GET /plugins`` would no longer report as
     ``running`` (``runtime_source_missing`` / ``runtime_load_state == "failed"``,
@@ -284,8 +197,8 @@ def _forward_provider_frame(event: Dict[str, Any]) -> bool:
     Gated on user plugins being enabled because ``frames`` exists for plugins
     and nothing else: with them off there is no reader, and copying the user's
     screen into a resident deque would be retention that buys nothing. Not
-    gated on the analyzer master switch -- that governs the analyzer, and the
-    frames bus is not part of it.
+    gated on the master switch -- that governs task dispatch, and the frames
+    bus is not part of it.
 
     Synchronous on purpose. ``publish_frame`` only packs the record and does a
     ``put_nowait``; a task per frame would cost more than the work it defers.
@@ -485,79 +398,81 @@ def _forward_conversation_fact(event: Dict[str, Any]) -> bool:
         return False
 
 
-def _resolve_analyze_lang(session_language: Optional[str]) -> str:
-    """Language for the analyzer's prompts: session locale first, process global as fallback.
+def _resolve_session_language(session_language: Optional[str]) -> str:
+    """Language for what the host writes for her: session locale first, process global as fallback.
 
-    ``session_language`` rides the analyze_request event (see
-    ``main_logic/agent_event_bus.publish_analyze_request_reliably``) and carries the
+    ``session_language`` rides the request from main_server and carries the
     frontend i18n truth as a full code (``zh-CN`` / ``zh-TW`` / ``ja`` …). It wins
     because this process cannot see it any other way: agent_server talks to
-    main_server over ZeroMQ and its own ``get_global_language()`` only derives
-    NEKO_LANGUAGE / Steam / system locale, which is simply wrong whenever the user's
-    UI language differs from the machine's.
+    main_server over ZeroMQ and HTTP, and its own ``get_global_language()`` only
+    derives NEKO_LANGUAGE / Steam / system locale, which is simply wrong whenever
+    the user's UI language differs from the machine's.
 
-    Unvalidated input is fenced out first: ``normalize_language_code`` silently maps
-    anything unrecognized to ``'en'``, so a garbage value would look like a
-    deliberate English choice and beat the (correct) fallback.
+    Unvalidated input is fenced out first: the normalizers silently map anything
+    unrecognized to ``'en'``, so a garbage value would look like a deliberate
+    English choice and beat the (correct) fallback.
 
-    Returns a SHORT code. Every agent prompt dict in ``config/prompts/prompts_agent.py``
-    is keyed by ``zh / en / ja / ko / ru / es / pt`` plus ``zh-TW``; a full ``zh-CN``
-    has no key there and would take ``_loc``'s fallback path with a warning. Traditional
-    Chinese therefore resolves to ``zh`` here, matching every other subsystem that reads
-    ``get_global_language()`` — switching the agent prompts to full codes belongs to the
-    zh-TW migration (issue #2500).
+    Returns the code as given (the host maps it to a prompt-table key itself,
+    keeping Traditional Chinese apart), or the process global's short code.
     """
     if session_language:
         try:
-            from utils.language_utils import is_supported_language_code, normalize_language_code
+            from utils.language_utils import is_supported_language_code
             if is_supported_language_code(session_language):
-                return normalize_language_code(str(session_language), format='short')
-            logger.debug("[AgentAnalyze] ignoring unsupported session language: %r", session_language)
+                return str(session_language)
+            logger.debug("[NekoClaw] ignoring unsupported session language: %r", session_language)
         except Exception:
-            logger.debug("[AgentAnalyze] session language normalize failed", exc_info=True)
-    return _rp_lang(None)
+            logger.debug("[NekoClaw] session language check failed", exc_info=True)
+    from utils.result_parser import _get_lang
+    return _get_lang(None)
 
 
-def _handle_proactive_analyze(messages, lanlan_name, lanlan_key, conversation_id, session_language=None) -> None:
-    """Throttled proactive-analyze path controlled by AGENT_PROACTIVE_ANALYZE_ENABLED.
+# Turn-check requests already taken, by event id. The main server sends one
+# again when its acknowledgement was slow; the check must not run twice.
+_TURN_CHECKS_REMEMBERED = 256
+_turn_checks_seen: "OrderedDict[str, None]" = OrderedDict()
 
-    A proactive turn has no new user input, so the ordinary user-turn dedupe
-    would drop it. Instead we let lanlan's self-initiated utterance trigger one
-    analyzer pass, bounded by three gates so it can never fire frequently:
-      * the master enable switch (off → never run);
-      * an assistant-text fingerprint (dedupe identical proactive utterances —
-        a re-sent proactive turn must not re-analyze);
-      * a per-session count cap (AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION), reset
-        on greeting_check. This is the anti-cheap-layer / cost ceiling: it counts
-        analyzer RUNS (incl. ones that dispatch no tool), so a session can spend
-        at most N proactive analyzer calls regardless of how chatty lanlan is.
+
+async def _handle_turn_check_request(event: Dict[str, Any]) -> None:
+    """Check a finished turn in which she called no task tool (design section 6.4).
+
+    The host decides whether the turn is worth a model call at all, and what
+    follows from the verdict. Nothing she or the user said is written to the log.
     """
-    if not bool(AGENT_PROACTIVE_ANALYZE_ENABLED):
-        logger.info("[AgentAnalyze] skip proactive: disabled (lanlan=%s)", lanlan_name)
+    lanlan_name = event.get("lanlan_name")
+    event_id = str(event.get("event_id") or "")
+    if event_id:
+        _create_tracked_task(_emit_main_event("turn_check_ack", lanlan_name, event_id=event_id))
+        if event_id in _turn_checks_seen:
+            return
+        _turn_checks_seen[event_id] = None
+        while len(_turn_checks_seen) > _TURN_CHECKS_REMEMBERED:
+            _turn_checks_seen.popitem(last=False)
+    if not nekoclaw_on() or not lanlan_name:
         return
-    # fp is None ⟺ no assistant utterance to analyze (the executor pulls the
-    # actual proactive intent text from the same assistant turn downstream).
-    fp = _build_assistant_turn_fingerprint(messages)
-    if fp is None:
-        logger.info("[AgentAnalyze] skip proactive: no assistant utterance (lanlan=%s)", lanlan_name)
+    user_text = event.get("user_text")
+    reply_text = event.get("reply_text")
+    if not isinstance(user_text, str) or not isinstance(reply_text, str):
         return
-    if Modules.last_proactive_assistant_fingerprint.get(lanlan_key) == fp:
-        logger.info("[AgentAnalyze] skip proactive: duplicate proactive utterance (lanlan=%s)", lanlan_name)
-        return
-    cap = max(0, int(AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION))
-    used = int(Modules.proactive_analyze_count.get(lanlan_key, 0))
-    if used >= cap:
-        logger.info("[AgentAnalyze] skip proactive: per-session cap reached (%d/%d, lanlan=%s)", used, cap, lanlan_name)
-        return
-    # Reserve the slot + dedupe fp BEFORE dispatch so concurrent proactive events
-    # can't both pass the cap check.
-    Modules.proactive_analyze_count[lanlan_key] = used + 1
-    Modules.last_proactive_assistant_fingerprint[lanlan_key] = fp
-    logger.info("[AgentAnalyze] proactive analyze accepted (%d/%d, lanlan=%s)", used + 1, cap, lanlan_name)
-    _create_tracked_task(_background_analyze_and_plan(
-        messages, lanlan_name, conversation_id=conversation_id,
-        external_intent=None, proactive=True, session_language=session_language,
-    ))
+    external_intent = event.get("external_intent")
+    if isinstance(external_intent, bool) or not isinstance(external_intent, (int, float)):
+        external_intent = None
+    try:
+        host = await ready_host()
+        result = await host.check_turn(
+            lanlan_name=str(lanlan_name),
+            user_text=user_text,
+            reply_text=reply_text,
+            conversation_id=event.get("conversation_id"),
+            lang=_resolve_session_language(event.get("language")),
+            external_intent=external_intent,
+        )
+        logger.info(
+            "[TurnCheck] lanlan=%s verdict=%s skipped=%s action=%s model_calls=%d",
+            lanlan_name, result.verdict, result.skipped or "-", result.action or "-", result.model_calls,
+        )
+    except Exception as e:
+        logger.warning("[TurnCheck] failed (exc_type=%s)", type(e).__name__)
 
 
 async def _on_session_event(event: Dict[str, Any]) -> None:
@@ -570,19 +485,6 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # and plugin lifecycle startup during the cold-start window
         # before the user actually opens a session. The restore helper
         # has its own once-flag, so this is safe to spam.
-        # Reset the per-session proactive-analyze budget ONLY on a genuine new
-        # session (character switch or a real gap) — never on a refresh/reconnect
-        # or a concurrent second window, which also fire greeting_check. Otherwise
-        # a user could refresh/parallel-open to farm a fresh cap mid-conversation,
-        # defeating the per-session bound. ``new_session`` is decided by
-        # websocket_router (is_switch or >15s gap, AND sole active connection).
-        # Done BEFORE the restore await so a restore failure can't leave a genuine
-        # new session stuck on the old cap / fingerprint.
-        if (event or {}).get("new_session"):
-            _key = _normalize_lanlan_key((event or {}).get("lanlan_name"))
-            if _key:
-                Modules.proactive_analyze_count.pop(_key, None)
-                Modules.last_proactive_assistant_fingerprint.pop(_key, None)
         # Late import avoids the runtime -> routes initialization cycle while
         # preserving the original call point and shared restore-state owner.
         from .api_routes import _maybe_restore_agent_intent
@@ -601,224 +503,24 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
     if event_type == "conversation_fact_observed":
         _forward_conversation_fact(event)
         return
-    if event_type == "analyze_request":
-        messages = event.get("messages", [])
-        lanlan_name = event.get("lanlan_name")
-        event_id = event.get("event_id")
-        logger.info("[AgentAnalyze] analyze_request received: trigger=%s lanlan=%s messages=%d", event.get("trigger"), lanlan_name, len(messages) if isinstance(messages, list) else 0)
-        if event_id:
-            _create_tracked_task(_emit_main_event("analyze_ack", lanlan_name, event_id=event_id))
-        if not _agent_master_enabled():
-            logger.info("[AgentAnalyze] skip: analyzer disabled (master switch off)")
-            return
-        if isinstance(messages, list) and messages:
-            lanlan_key = _normalize_lanlan_key(lanlan_name)
-            conversation_id = event.get("conversation_id")
-            # Live session locale from main_server (full code, e.g. 'zh-TW').
-            # Absent → _resolve_analyze_lang falls back to this process's global.
-            session_language = event.get("language")
-            # Proactive (self-initiated, no fresh user input) turn: opt-in,
-            # separate throttled path. The ordinary user-turn dedupe below would
-            # always drop these (the latest user message is a stale prior turn,
-            # so its fingerprint matches), so proactive routing is mandatory, not
-            # an optimization.
-            if event.get("proactive"):
-                _handle_proactive_analyze(
-                    messages, lanlan_name, lanlan_key, conversation_id,
-                    session_language=session_language,
-                )
-                return
-            # Consume only new user turn. Assistant turn_end without new user input should be ignored.
-            fp = _build_analyze_event_fingerprint(event)
-            if fp is None:
-                logger.info("[AgentAnalyze] skip analyze: no user message found (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
-                return
-            if Modules.last_user_turn_fingerprint.get(lanlan_key) == fp:
-                logger.info("[AgentAnalyze] skip analyze: no new user turn (trigger=%s lanlan=%s)", event.get("trigger"), lanlan_name)
-                return
-            # Fingerprint changed → genuinely new user content; always allow.
-            # Re-dispatch prevention is handled by:
-            # - _is_duplicate_task() checking recently completed tasks
-            # - Cancelled tasks not emitting task_result callbacks
-            # - Voice-mode hot-swap sending 'turn end agent_callback'
-            Modules.last_user_turn_fingerprint[lanlan_key] = fp
-            # Cheap pre-gate hint from the input-time master-emotion call (rides
-            # the analyze_request payload). Absent → None → the gate fails open.
-            external_intent = event.get("external_intent")
-            _create_tracked_task(_background_analyze_and_plan(
-                messages, lanlan_name, conversation_id=conversation_id,
-                external_intent=external_intent, session_language=session_language,
-            ))
+    if event_type == "turn_check_request":
+        _create_tracked_task(_handle_turn_check_request(event))
 
 
-async def _background_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False, session_language: Optional[str] = None):
+async def _settle_region() -> None:
+    """Let the region check finish in the background.
+
+    The decision model and task agents read their endpoints from the
+    configuration each time they are used, so nothing here has to wait for
+    the region before it is built. A standalone agent_server does not get
+    main_server's warmup, so it is started here; it must not hold up startup.
     """
-    [Simplified] Uses DirectTaskExecutor to do everything in one step: analyze the conversation + decide the execution method + execute the task
-
-    Simplified chain:
-    - old: Analyzer(LLM#1) → Planner(LLM#2) → subprocess Processor(LLM#3) → MCP call
-    - new: DirectTaskExecutor(LLM#1) → MCP call
-
-    Args:
-        messages: conversation message list
-        lanlan_name: character name
-        conversation_id: conversation ID, used to associate the trigger event with the conversation context
-
-    Uses analyze_lock to serialize concurrent calls.  Without this, two
-    near-simultaneous analyze_request events can both pass the dedup
-    check before either spawns a task, resulting in duplicate execution.
-    """
-    if not Modules.task_executor:
-        logger.warning("[TaskExecutor] task_executor not initialized, skipping")
-        return
-
-    # Lazy-init the lock (must happen inside the event loop)
-    if Modules.analyze_lock is None:
-        Modules.analyze_lock = asyncio.Lock()
-
-    async with Modules.analyze_lock:
-        await _do_analyze_and_plan(messages, lanlan_name, conversation_id=conversation_id, external_intent=external_intent, proactive=proactive, session_language=session_language)
-
-
-async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Optional[str], conversation_id: Optional[str] = None, external_intent: Optional[float] = None, proactive: bool = False, session_language: Optional[str] = None):
-    """Inner implementation, always called under analyze_lock."""
     try:
-        if not Modules.analyzer_enabled:
-            logger.info("[TaskExecutor] Skipping analysis: analyzer disabled (master switch off)")
-            return
-        if Modules.agent_flags.get("browser_use_enabled", False):
-            browser_use = await _ensure_browser_use_adapter()
-            if browser_use is None or not getattr(browser_use, "_ready_import", False):
-                Modules.agent_flags["browser_use_enabled"] = False
-                reason = str(getattr(browser_use, "last_error", "") or "AGENT_BU_MODULE_NOT_LOADED")
-                _set_capability("browser_use", False, reason)
-                Modules.notification = json.dumps(
-                    {"code": "AGENT_BU_NOT_INSTALLED", "details": {"error": reason}}
-                )
-                _bump_state_revision()
-                await _emit_agent_status_update(lanlan_name=lanlan_name)
-        logger.info("[AgentAnalyze] background analyze start: lanlan=%s messages=%d flags=%s analyzer_enabled=%s",
-                    lanlan_name, len(messages), Modules.agent_flags, Modules.analyzer_enabled)
-        # Before injection, redact the entire user turn cancelled through UI, hiding the request completely from analyzer;
-        # injection also skips every record for cancelled tasks.
-        redacted_messages = _redact_cancelled_user_turns(messages, lanlan_name, preserve_trailing_assistant=proactive)
-        # Single-user-message signature: stored in task info during dispatch. Read from redacted_messages
-        # rather than raw; the latest user message actually seen by analyzer is the task's real trigger.
-        # Normally raw-latest bypasses first-time redaction, so both signatures
-        # match; they differ only when raw-latest was already redacted.
-        # Proactive turns have no triggering user message; never bind them to an old user signature in the window,
-        # or cancelling a proactive task incorrectly marks that old user turn cancelled and redacts it
-        # next round. Proactive → no user-trigger signature binding.
-        trigger_user_msg_sig = None if proactive else _last_user_message_signature(redacted_messages)
-        enriched_messages = _task_tracker.inject(redacted_messages, lanlan_name)
-
-        # Complete analysis + execution in one step
-        #
-        # Pass lang explicitly: analyzer channel descriptions and system prompts all use _loc(..., lang)
-        # (_assess_unified_channels / _assess_user_plugin /
-        # _stage1_llm_coarse_screen in task_executor). Omitting it uses analyze_and_execute's default
-        # "en", giving Japanese/Korean/Russian/Spanish/Portuguese/Chinese users English prompts.
-        # Prefer session locale, the authoritative frontend i18n value carried by analyze_request from main_server;
-        # only fall back to this process's global value when unavailable. See _resolve_analyze_lang.
-        result = await Modules.task_executor.analyze_and_execute(
-            messages=enriched_messages,
-            lanlan_name=lanlan_name,
-            agent_flags=Modules.agent_flags,
-            conversation_id=conversation_id,
-            lang=_resolve_analyze_lang(session_language),
-            external_intent=external_intent,
-            proactive=proactive,
-        )
-
-        if result is None:
-            return
-
-        if not result.has_task:
-            reason = getattr(result, "reason", "") or ""
-            if "error" in reason.lower() or "timed out" in reason.lower() or "failed" in reason.lower():
-                logger.warning("[TaskExecutor] Assessment failed: %s", reason)
-                await _emit_main_event(
-                    "agent_notification", lanlan_name,
-                    text=f"⚠️ Agent评估失败: {reason[:USER_NOTIFICATION_REASON_MAX_CHARS]}",
-                    source="brain",
-                    status="error",
-                    error_message=reason[:USER_NOTIFICATION_ERROR_MAX_CHARS],
-                )
-            else:
-                logger.debug("[TaskExecutor] No actionable task found")
-            return
-
-        if not Modules.analyzer_enabled:
-            logger.info("[TaskExecutor] Skipping dispatch: analyzer disabled during analysis")
-            return
-
-        logger.info(
-            "[TaskExecutor] Task: desc='%s', method=%s, tool=%s, entry=%s, reason=%s",
-            (result.task_description or "")[:80],
-            result.execution_method,
-            getattr(result, "tool_name", None),
-            getattr(result, "entry_id", None),
-            (getattr(result, "reason", "") or "")[:120],
-        )
-
-        # Per-channel dispatch: one symmetric channels/<method>.py::dispatch()
-        # per execution_method, preserving the elif order of the old monolith.
-        if result.execution_method == 'mcp':
-            await channels.mcp.dispatch(
-                result,
-                messages=messages,
-                lanlan_name=lanlan_name,
-                conversation_id=conversation_id,
-                trigger_user_msg_sig=trigger_user_msg_sig,
-            )
-        elif result.execution_method == 'computer_use':
-            await channels.computer_use.dispatch(
-                result,
-                messages=messages,
-                lanlan_name=lanlan_name,
-                conversation_id=conversation_id,
-                trigger_user_msg_sig=trigger_user_msg_sig,
-            )
-        elif result.execution_method == 'user_plugin':
-            await channels.user_plugin.dispatch(
-                result,
-                messages=messages,
-                lanlan_name=lanlan_name,
-                conversation_id=conversation_id,
-                trigger_user_msg_sig=trigger_user_msg_sig,
-            )
-        elif result.execution_method == 'openclaw':
-            await channels.openclaw.dispatch(
-                result,
-                messages=messages,
-                lanlan_name=lanlan_name,
-                conversation_id=conversation_id,
-                trigger_user_msg_sig=trigger_user_msg_sig,
-                proactive=proactive,
-            )
-        elif result.execution_method == 'browser_use':
-            await channels.browser_use.dispatch(
-                result,
-                messages=messages,
-                lanlan_name=lanlan_name,
-                conversation_id=conversation_id,
-                trigger_user_msg_sig=trigger_user_msg_sig,
-            )
-        else:
-            logger.info(f"[TaskExecutor] No suitable execution method: {result.reason}")
-
+        if not await get_config_manager().awarmup_region_check():
+            logger.warning("[GeoIP] Agent 进程启动后区域判定仍未落定，暂按大陆线路")
     except Exception as e:
-        logger.error(f"[TaskExecutor] Background task error: {e}", exc_info=True)
-        try:
-            await _emit_main_event(
-                "agent_notification", lanlan_name,
-                text=f"💥 Agent后台任务异常: {type(e).__name__}: {e}",
-                source="brain",
-                status="error",
-                error_message=str(e)[:USER_NOTIFICATION_ERROR_MAX_CHARS],
-            )
-        except Exception:
-            logger.debug("[TaskExecutor] emit notification failed", exc_info=True)
+        logger.warning(f"[GeoIP] Agent 进程区域判定失败，按当前配置继续: {e}")
+
 
 # Stall watchdog for this process's event loop. In merged mode the loop is
 # shared with main_server, which has usually started it already; the start
@@ -856,36 +558,17 @@ async def startup():
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()
-    Modules.openclaw = OpenClawAdapter()
-    Modules.task_executor = DirectTaskExecutor(
-        computer_use=Modules.computer_use,
-        browser_use=None,
-        openclaw=Modules.openclaw,
-    )
-    # TaskDeduper fixes summary base_url and caches its client in __init__, never reconsidering them throughout the
-    # process lifetime. Standalone agent_server skips main_server's GeoIP warmup,
-    # pinning overseas users to the temporary mainland fallback, while summary is region-sensitive routing
-    # unlike agent-specific URLs deliberately exempted from rewriting. Settle the region before construction.
-    try:
-        from utils.config_manager import get_config_manager as _get_cm
-        # Use startup warmup rather than session-level aensure: ComputerUseAdapter construction above already read
-        # configuration and started probing, which may fail quickly before network readiness and enter 30s backoff. aensure neither kicks
-        # nor bypasses backoff (its 1.5s is shorter than one 3s request), so it gives up; awarmup wakes backoff
-        # and waits with a startup-sized window, symmetric with main_server/memory_server startup.
-        if not await _get_cm().awarmup_region_check():
-            logger.warning("[GeoIP] Agent 去重器构造前区域判定仍未落定，本进程按大陆线路构造")
-    except Exception as e:
-        logger.warning(f"[GeoIP] Agent 去重器构造前区域落定失败，按当前配置继续: {e}")
-    Modules.deduper = TaskDeduper()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
-    _rewire_computer_use_dependents()
+    _region_task = asyncio.create_task(_settle_region())
+    Modules._persistent_tasks.add(_region_task)
+    _region_task.add_done_callback(Modules._persistent_tasks.discard)
 
     try:
         await _start_embedded_user_plugin_server()
     except Exception as e:
         logger.warning(f"[Agent] Failed to start embedded user plugin server: {e}")
     # BrowserUse stays unloaded until its toggle, availability endpoint, or
-    # direct run is requested.
+    # a task agent's call asks for it.
 
     # Both CUA and BrowserUse share the agent LLM — default to "not connected"
     # and probe in background.  The single check updates both capability caches.
@@ -899,107 +582,11 @@ async def startup():
     Modules._persistent_tasks.add(_llm_probe_task)
     _llm_probe_task.add_done_callback(Modules._persistent_tasks.discard)
 
-    try:
-        async def _http_plugin_provider(force_refresh: bool = False):
-            # Returns the running plugin list on success (may be empty when no
-            # plugin is running), or None when the fetch failed / timed out /
-            # returned a bad payload, so the caller keeps its last good cache.
-            # force_refresh only bypasses the caller-side cache: GET /plugins
-            # reads no refresh parameter (only ``locale``), so none is sent.
-            url = f"http://127.0.0.1:{USER_PLUGIN_SERVER_PORT}/plugins"
-            try:
-                async with httpx.AsyncClient(timeout=1.0, proxy=None, trust_env=False) as client:
-                    r = await client.get(url)
-                    if r.status_code == 200:
-                        try:
-                            data = r.json()
-                        except Exception as parse_err:
-                            logger.debug(f"[Agent] plugin_list_provider parse error: {parse_err}")
-                            return None
-                        raw = data.get("plugins") if isinstance(data, dict) else None
-                        if not isinstance(raw, list):
-                            logger.debug("[Agent] plugin_list_provider got malformed payload")
-                            return None
-                        # ISOLATION BOUNDARY: only expose RUNNING plugins to the
-                        # analyzer / plugin LLM. Without this filter, every plugin
-                        # the host knows about (including disabled, stopped,
-                        # load-failed, source-missing, and extension plugins in
-                        # 'pending' state) flows into the LLM's candidate set.
-                        # The LLM then wastes tokens evaluating capabilities the
-                        # user explicitly didn't enable, and worse — picks a
-                        # plugin that has no live process to receive the dispatch,
-                        # surfacing fake "available capability" to the user. See
-                        # _resolve_plugin_status() in
-                        # plugin/server/application/plugins/query_service.py for
-                        # the full status taxonomy; "running" is the only state
-                        # where the plugin's process is alive and responsive.
-                        running = [
-                            p for p in raw
-                            if isinstance(p, dict) and p.get("status") == "running"
-                        ]
-                        if len(running) != len(raw):
-                            dropped = [
-                                (p.get("id"), p.get("status"))
-                                for p in raw
-                                if isinstance(p, dict) and p.get("status") != "running"
-                            ]
-                            logger.debug(
-                                "[Agent] plugin_list_provider filtered out %d non-running plugins: %s",
-                                len(dropped), dropped,
-                            )
-                        # AUDIENCE BOUNDARY: ``@llm_tool``-registered methods
-                        # also surface as plugin entries with id prefix
-                        # ``__llm_tool__<name>`` (see plugin SDK collect_entries).
-                        # Those tools are *also* exposed to the dialog LLM via
-                        # ``LLMSessionManager.tool_registry`` — letting the
-                        # analyzer/plugin LLM dispatch them too means the same
-                        # tool can be triggered by both LLMs, with the
-                        # analyzer path's ~10s decision latency racing against
-                        # the dialog LLM's direct call. The dialog LLM is the
-                        # canonical caller for ``@llm_tool`` (it gets the
-                        # tool's full schema, can pass typed args, and runs
-                        # synchronously); the analyzer should only see
-                        # ``@plugin_entry`` registered entries (queries /
-                        # status / config). Strip ``__llm_tool__`` entries
-                        # from the analyzer's view here.
-                        for p in running:
-                            entries = p.get("entries")
-                            if isinstance(entries, list):
-                                p["entries"] = [
-                                    e for e in entries
-                                    if not (
-                                        isinstance(e, dict)
-                                        and isinstance(e.get("id"), str)
-                                        and e["id"].startswith("__llm_tool__")
-                                    )
-                                ]
-                        return running
-                    logger.debug(f"[Agent] plugin_list_provider http status {r.status_code}")
-            except Exception as e:
-                logger.debug(f"[Agent] plugin_list_provider http fetch failed: {e}")
-            return None
-
-        # inject http-based provider so DirectTaskExecutor can pick up user_plugin_server plugins
-        try:
-            Modules.task_executor.set_plugin_list_provider(_http_plugin_provider)
-            logger.debug("[Agent] Registered http plugin_list_provider for task_executor")
-            Modules.task_executor.set_plugin_list_change_token(_plugin_list_change_token)
-        except Exception as e:
-            logger.warning(f"[Agent] Failed to inject plugin_list_provider into task_executor: {e}")
-    except Exception as e:
-        logger.warning(f"[Agent] Failed to set http plugin_list_provider: {e}")
-
     # NekoClaw host (task brain, task agents, capability gateway). This only tells
-    # it how to read this process's switches; it is built on the first dispatch
-    # and nothing dispatches to it yet. Must stay free of I/O: see the startup
-    # path rules.
-    from .nekoclaw_mount import mount_nekoclaw_host
+    # it how to read this process's switches and what to call back; it is built
+    # on the first dispatch. Must stay free of I/O: see the startup path rules.
     mount_nekoclaw_host(_plugin_list_change_token)
 
-    # Start computer-use scheduler
-    sch_task = asyncio.create_task(_computer_use_scheduler_loop())
-    Modules._persistent_tasks.add(sch_task)
-    sch_task.add_done_callback(Modules._persistent_tasks.discard)
     # Start ZeroMQ bridge for main_server events
     try:
         Modules.agent_bridge = AgentServerEventBridge(on_session_event=_on_session_event)
@@ -1047,6 +634,11 @@ async def shutdown():
     except Exception:
         pass
 
+    # The host first, while the plugin server it cancels runs on and the
+    # bridge it reports through are still up. Bounded: see
+    # HOST_SHUTDOWN_BUDGET_SECONDS. A no-op when nothing ever built the host.
+    await shutdown_nekoclaw_host()
+
     if Modules.computer_use:
         Modules.computer_use.cancel_running()
     if Modules.browser_use:
@@ -1058,8 +650,6 @@ async def shutdown():
     for t in list(Modules._persistent_tasks):
         if not t.done():
             t.cancel()
-    if Modules.active_computer_use_async_task and not Modules.active_computer_use_async_task.done():
-        Modules.active_computer_use_async_task.cancel()
 
     try:
         await _ensure_plugin_lifecycle_stopped()
@@ -1070,41 +660,6 @@ async def shutdown():
         await _stop_embedded_user_plugin_server()
     except Exception as e:
         logger.warning(f"[Agent] Embedded user plugin server cleanup error: {e}")
-
-    logger.info("[Agent] 正在清理 AsyncClient 资源...")
-
-    async def _close_router(name: str, module, attr: str):
-        if module and hasattr(module, attr):
-            try:
-                router = getattr(module, attr)
-                await asyncio.wait_for(router.aclose(), timeout=3.0)
-                logger.debug(f"[Agent] ✅ {name}.{attr} 已清理")
-            except asyncio.TimeoutError:
-                logger.warning(f"[Agent] ⚠️ {name}.{attr} 清理超时，强制跳过")
-            except asyncio.CancelledError:
-                logger.debug(f"[Agent] {name}.{attr} 清理时被取消（正常关闭）")
-            except RuntimeError as e:
-                logger.debug(f"[Agent] {name}.{attr} 清理时遇到 RuntimeError（可能是正常关闭）: {e}")
-            except Exception as e:
-                logger.warning(f"[Agent] ⚠️ 清理 {name}.{attr} 时出现意外错误: {e}")
-
-    try:
-        _shutdown_coros = []
-        for _name, _attr_name in [("DirectTaskExecutor", "task_executor")]:
-            _mod = getattr(Modules, _attr_name, None)
-            if _mod is not None:
-                _shutdown_coros.append(_close_router(_name, _mod, "router"))
-        if _shutdown_coros:
-            await asyncio.wait_for(
-                asyncio.gather(*_shutdown_coros, return_exceptions=True),
-                timeout=5.0,
-            )
-    except asyncio.TimeoutError:
-        logger.warning("[Agent] ⚠️ 整体清理过程超时，强制完成关闭")
-
-    # Stops the NekoClaw host if anything ever started it; a no-op otherwise.
-    from .nekoclaw_mount import shutdown_nekoclaw_host
-    await shutdown_nekoclaw_host()
 
     bridge = Modules.agent_bridge
     if bridge is not None:
@@ -1136,13 +691,15 @@ async def shutdown():
     await _close_browser_use_adapter()
 
     cu = Modules.computer_use
+    # Waited for whether or not a call is on record as running: a cancelled
+    # call is taken off the record after a bounded wait even if its worker
+    # thread has not stopped. An idle adapter returns at once.
     if cu is not None and hasattr(cu, "wait_for_completion"):
         loop = asyncio.get_running_loop()
         finished = await loop.run_in_executor(None, cu.wait_for_completion, 8.0)
         if not finished:
             logger.warning("[Agent] CUA thread did not stop within 8s at shutdown")
 
-    logger.info("[Agent] ✅ AsyncClient 资源清理完成")
     logger.info("[Agent] Shutdown cleanup complete")
     await _emit_agent_status_update()
 
@@ -1158,494 +715,167 @@ async def health():
     )
 
 
-# Direct plugin-trigger route at top level, outside all other functions
-@app.post("/plugin/execute")
-async def plugin_execute_direct(payload: Dict[str, Any]):
-    """
-    New endpoint: trigger a plugin_entry directly.
-    The request body may contain:
-      - plugin_id: str (required)
-      - entry_id: str (optional)
-      - args: dict (optional)
-      - lanlan_name: str (optional, for logging/notifications)
-    This endpoint calls Modules.task_executor.execute_user_plugin_direct to run the plugin trigger.
-    """
-    if not Modules.task_executor:
-        raise HTTPException(503, "Task executor not ready")
-    # Master gate first: with the new semantics where set_agent_enabled(False)
-    # no longer wipes sub-flag state, ``user_plugin_enabled`` can legitimately
-    # stay True after the master is turned off. Without this check, requests
-    # would slip through to a plugin lifecycle that ``_ensure_plugin_lifecycle
-    # _stopped`` has already torn down, producing confusing failures.
-    if not Modules.analyzer_enabled:
-        raise HTTPException(403, "Agent master switch is off")
-    # Reject calls when the backend explicitly disables user plugins, preventing bypass of the frontend switch
-    if not Modules.agent_flags.get("user_plugin_enabled", False):
-        raise HTTPException(403, "User plugin is disabled")
-    plugin_id = (payload or {}).get("plugin_id")
-    entry_id = (payload or {}).get("entry_id")
-    raw_args = (payload or {}).get("args", {}) or {}
-    if not isinstance(raw_args, dict):
-        raise HTTPException(400, "args must be a JSON object")
-    args = raw_args
-    lanlan_name = (payload or {}).get("lanlan_name")
-    conversation_id = (payload or {}).get("conversation_id")
-    if not plugin_id or not isinstance(plugin_id, str):
-        raise HTTPException(400, "plugin_id required")
+# ---------------------------------------------------------------------------
+# The main dialogue's task tools
+# ---------------------------------------------------------------------------
+# main_server and this server are separate event loops (separate processes in
+# a source run), so her two tools reach the host through these routes.
 
-    # Dedup is not applied for direct plugin calls; client should dedupe if needed
-    task_id = str(uuid.uuid4())
-    # Log request
-    logger.info(f"[Plugin] Direct execute request: plugin_id={plugin_id}, entry_id={entry_id}, lanlan={lanlan_name}")
 
-    # Get the plugin's friendly name for HUD display
-    plugin_name = await _get_plugin_friendly_name(plugin_id)
-    task_params = {"plugin_id": plugin_id, "entry_id": entry_id, "args": args}
-    if plugin_name:
-        task_params["plugin_name"] = plugin_name
+def _disabled_receipt(lang: str) -> Dict[str, Any]:
+    from nekoclaw.host.task_brain import Receipt
 
-    # Ensure task registry entry for tracking
-    info = {
-        "id": task_id,
-        "type": "plugin_direct",
-        "status": "running",
-        "start_time": _now_iso(),
-        "params": task_params,
-        "lanlan_name": lanlan_name,
-        "result": None,
-        "error": None,
+    receipt = Receipt(kind="no_capability", reason="disabled")
+    return {
+        "success": True,
+        "kind": receipt.kind,
+        "reason": receipt.reason,
+        "text": receipt.text(lang),
+        "commission_id": None,
+        "model_calls": 0,
     }
-    Modules.task_registry[task_id] = info
 
-    # Execute via task_executor.execute_user_plugin_direct in background
-    async def _run_plugin():
-        try:
-            await _emit_main_event(
-                "task_update", lanlan_name,
-                task={
-                    "id": task_id,
-                    "status": "running",
-                    "type": "plugin_direct",
-                    "start_time": info["start_time"],
-                    "params": task_params,
-                },
-            )
-        except Exception as emit_err:
-            logger.debug("[Plugin] emit task_update(running) failed: task_id=%s error=%s", task_id, emit_err)
 
-        async def _on_plugin_progress(
-            *, progress=None, stage=None, message=None, step=None, step_total=None,
-        ):
-            # If cancel_task already flipped the registry to a terminal state,
-            # swallow the progress callback — otherwise it would clobber
-            # "cancelled" with a fresh "running" update on the HUD.
-            _reg = Modules.task_registry.get(task_id)
-            if _reg and _reg.get("status") != "running":
-                return
-            task_payload: Dict[str, Any] = {
-                "id": task_id,
-                "status": "running",
-                "type": "plugin_direct",
-                "start_time": info["start_time"],
-                "params": task_params,
-            }
-            if progress is not None:
-                task_payload["progress"] = progress
-            if stage is not None:
-                task_payload["stage"] = stage
-            if message is not None:
-                task_payload["message"] = message
-            if step is not None:
-                task_payload["step"] = step
-            if step_total is not None:
-                task_payload["step_total"] = step_total
-            await _emit_main_event("task_update", lanlan_name, task=task_payload)
+@app.post("/nekoclaw/dispatch")
+async def nekoclaw_dispatch(payload: Dict[str, Any]):
+    """Hand one sentence of hers to the task brain and return the receipt of its first round."""
+    text = (payload or {}).get("text")
+    lanlan_name = (payload or {}).get("lanlan_name")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(400, "text required")
+    if not isinstance(lanlan_name, str) or not lanlan_name:
+        raise HTTPException(400, "lanlan_name required")
+    lang = _resolve_session_language((payload or {}).get("language"))
+    if not nekoclaw_on():
+        # Nothing is built for a switch that is off.
+        return _disabled_receipt(lang)
+    user_text = (payload or {}).get("user_text")
+    conversation_id = (payload or {}).get("conversation_id")
+    host = await ready_host()
+    receipt = await host.dispatch(
+        text,
+        lanlan_name=lanlan_name,
+        user_text=user_text if isinstance(user_text, str) else "",
+        conversation_id=conversation_id if isinstance(conversation_id, str) and conversation_id else None,
+        lang=lang,
+        source="dispatch",
+    )
+    logger.info(
+        "[NekoClaw] dispatch: lanlan=%s kind=%s reason=%s model_calls=%d",
+        lanlan_name, receipt.kind, receipt.reason or "-", receipt.model_calls,
+    )
+    return {
+        "success": True,
+        "kind": receipt.kind,
+        "reason": receipt.reason,
+        "text": receipt.text(lang),
+        "commission_id": receipt.commission_id,
+        "model_calls": receipt.model_calls,
+    }
 
-        # Default delivery mode; overridden after the plugin result is parsed
-        # below. Cancel / exception branches read this so they honor whatever
-        # the plugin already declared, not a hard-coded "proactive".
-        _delivery_mode = "proactive"
-        try:
-            res = await Modules.task_executor.execute_user_plugin_direct(
-                task_id=task_id,
-                plugin_id=plugin_id,
-                plugin_args=args,
-                entry_id=entry_id,
-                lanlan_name=lanlan_name,
-                conversation_id=conversation_id,
-                on_progress=_on_plugin_progress,
-            )
-            if info.get("status") == "cancelled":
-                # cancel_task pre-marked cancelled; skip terminal clobber + emits.
-                return
-            info["result"] = res.result
-            info["end_time"] = _now_iso()
-            # Set a fallback terminal state first: if detail/delivery_mode parsing in the inner try below raises,
-            # except swallows it with debug logging only. Without this assignment, info["status"]
-            # remains "running" forever, and finally's task_update can only broadcast running,
-            # leaving the HUD card spinning indefinitely. _plugin_terminal_status later overwrites this
-            # with the precise terminal state.
-            info["status"] = "completed" if res.success else "failed"
-            try:
-                run_data = res.result.get("run_data") if isinstance(res.result, dict) else None
-                run_error = res.result.get("run_error") if isinstance(res.result, dict) else None
-                _llm_fields = _lookup_llm_result_fields(plugin_id, res.entry_id)
-                _plugin_msg = str(res.result.get("message") or "") if isinstance(res.result, dict) else ""
-                _error_to_pass = (run_error or res.error) if not res.success else None
-                detail = parse_plugin_result(
-                    run_data,
-                    llm_result_fields=_llm_fields,
-                    plugin_message=_plugin_msg,
-                    error=_error_to_pass,
-                )
-                _delivery_mode = _resolve_delivery_mode(res.result if isinstance(res.result, dict) else None)
-                _result_kind, _expires_in_s = _resolve_plugin_result_contract(
-                    plugin_id,
-                    res.entry_id,
-                    res.result if isinstance(res.result, dict) else None,
-                )
-                _suppress_reply = _delivery_mode == "silent"
-                _terminal_status = _plugin_terminal_status(res.success, run_data)
-                info["status"] = _terminal_status
-                _completed = _terminal_status == "completed"
-                if not _suppress_reply:
-                    if not _completed:
-                        info["error"] = _tt((detail or str(res.error or "")), TASK_ERROR_MAX_TOKENS)
-                    display_id = await _get_plugin_display_id(plugin_id)
-                    # summary = plain detail; status/source rendering handled in main_logic.
-                    # Explicitly pass status="failed" on failure so _emit_task_result does not default
-                    # success=False with nonempty detail to "partial" ('partially complete').
-                    if _completed:
-                        _summary_text = detail
-                        _detail_text = detail
-                        _err_text = ""
-                        _explicit_status = None
-                    elif res.success:
-                        _summary_text = detail
-                        _detail_text = detail
-                        _err_text = ""
-                        _explicit_status = _terminal_status
-                    else:
-                        _err_text = (detail or str(res.error or "")).strip()
-                        _summary_text = _err_text
-                        _detail_text = _err_text
-                        _explicit_status = "failed"
-                    await _emit_task_result(
-                        lanlan_name,
-                        channel="user_plugin",
-                        task_id=task_id,
-                        success=_completed,
-                        summary=_summary_text,
-                        detail=_detail_text,
-                        error_message=_err_text,
-                        direct_reply=False,
-                        status=_explicit_status,
-                        source_kind="plugin",
-                        source_name=display_id,
-                        delivery_mode=_delivery_mode,
-                        result_kind=_result_kind if _completed else "task_result",
-                        expires_in_s=_expires_in_s if _completed else None,
-                    )
-                elif not _completed:
-                    info["error"] = _tt((detail or str(res.error or "")), TASK_ERROR_MAX_TOKENS)
-            except Exception as emit_err:
-                logger.debug("[Plugin] emit task_result failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
-        except asyncio.CancelledError:
-            info["status"] = "cancelled"
-            if not info.get("error"):
-                info["error"] = "Cancelled by shutdown"
-            # Honor plugin's resolved delivery mode if it had a chance to
-            # run before cancel; default to "proactive" otherwise. silent
-            # plugins stay silent.
-            if _delivery_mode != "silent":
-                try:
-                    display_id = await _get_plugin_display_id(plugin_id)
-                    await _emit_task_result(
-                        lanlan_name,
-                        channel="user_plugin",
-                        task_id=task_id,
-                        success=False,
-                        summary="cancelled",
-                        detail="cancelled",
-                        error_message="cancelled",
-                        status="cancelled",
-                        source_kind="plugin",
-                        source_name=display_id,
-                        delivery_mode=_delivery_mode,
-                    )
-                except Exception as emit_err:
-                    logger.debug("[Plugin] emit task_result(cancelled) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
-            raise
-        except Exception as e:
-            if info.get("status") == "cancelled":
-                return
-            info["status"] = "failed"
-            info["end_time"] = _now_iso()
-            info["error"] = _tt(str(e), TASK_ERROR_MAX_TOKENS)
-            # Exception strings may contain original provider/plugin text or user input; logger
-            # records only metadata, while raw text + traceback fall back to print.
-            import traceback as _tb
-            logger.error(
-                "[Plugin] Direct execute failed: task_id=%s plugin_id=%s exc_type=%s",
-                task_id, plugin_id, type(e).__name__,
-            )
-            print(f"[Plugin] Direct execute raw error (task_id={task_id}, plugin_id={plugin_id}):\n{_tb.format_exc()}")
-            # Honor plugin's resolved delivery mode (if any); silent plugins
-            # stay silent even on dispatch exception.
-            if _delivery_mode != "silent":
-                try:
-                    display_id = await _get_plugin_display_id(plugin_id)
-                    _exc_text = str(e)[:EXCEPTION_TEXT_MAX_CHARS]
-                    await _emit_task_result(
-                        lanlan_name,
-                        channel="user_plugin",
-                        task_id=task_id,
-                        success=False,
-                        summary=_exc_text,
-                        detail=_exc_text,
-                        error_message=_exc_text,
-                        status="failed",
-                        source_kind="plugin",
-                        source_name=display_id,
-                        delivery_mode=_delivery_mode,
-                    )
-                except Exception as emit_err:
-                    logger.debug("[Plugin] emit task_result(exception) failed: task_id=%s plugin_id=%s error=%s", task_id, plugin_id, emit_err)
-        finally:
-            try:
-                await _emit_main_event(
-                    "task_update", lanlan_name,
-                    task={
-                        "id": task_id,
-                        "status": info.get("status"),
-                        "type": "plugin_direct",
-                        "start_time": info.get("start_time"),
-                        "end_time": _now_iso(),
-                        "params": info.get("params", {}),
-                        "error": info.get("error"),
-                    },
-                )
-            except Exception as emit_err:
-                logger.debug("[Plugin] emit task_update(terminal) failed: task_id=%s error=%s", task_id, emit_err)
 
-    plugin_task = asyncio.create_task(_run_plugin())
-    Modules.task_async_handles[task_id] = plugin_task
-    Modules._background_tasks.add(plugin_task)
-    def _cleanup_plugin_task(_t, _tid=task_id):
-        Modules._background_tasks.discard(_t)
-        Modules.task_async_handles.pop(_tid, None)
-    plugin_task.add_done_callback(_cleanup_plugin_task)
-    return {"success": True, "task_id": task_id, "status": info["status"], "start_time": info["start_time"]}
+@app.post("/nekoclaw/query")
+async def nekoclaw_query(payload: Dict[str, Any]):
+    """Answer what is going on, or whether something can be done. No model is asked."""
+    lanlan_name = (payload or {}).get("lanlan_name")
+    if not isinstance(lanlan_name, str) or not lanlan_name:
+        raise HTTPException(400, "lanlan_name required")
+    text = (payload or {}).get("text")
+    lang = _resolve_session_language((payload or {}).get("language"))
+    if not nekoclaw_on():
+        return {"success": True, "text": _disabled_receipt(lang)["text"], "can_do": False}
+    host = await ready_host()
+    answer = await host.query(text if isinstance(text, str) else "", lanlan_name=lanlan_name, lang=lang)
+    return {"success": True, "text": answer.text, "can_do": answer.can_do}
 
+
+@app.get("/nekoclaw/brief")
+async def nekoclaw_brief(lanlan_name: str, language: Optional[str] = None):
+    """Return what is under way, one line each, for a new session's opening prompt.
+
+    Called whenever a session starts, so it stays cheap: with the switch off,
+    or with no ledger file and no host built yet, nothing is built and nothing
+    is opened.
+    """
+    if not nekoclaw_on() or not lanlan_name:
+        return {"success": True, "lines": []}
+    if peek_host() is None and not await ledger_exists():
+        return {"success": True, "lines": []}
+    host = await ready_host()
+    lines = await host.brief(lanlan_name=lanlan_name, lang=_resolve_session_language(language))
+    return {"success": True, "lines": lines}
+
+
+# ---------------------------------------------------------------------------
+# Tasks, as the HUD sees them
+# ---------------------------------------------------------------------------
 
 
 @app.get("/tasks/{task_id}")
 async def get_task(task_id: str):
-    info = Modules.task_registry.get(task_id)
-    if info:
-        return _public_task_info(info)
+    await restore_hud()
+    task = hud.get(task_id)
+    if task is not None:
+        return task
     raise HTTPException(404, "task not found")
 
 
 @app.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str):
-    """Cancel a specific running task.
+    """Stop one task.
 
-    Cancellation is a two-phase operation:
-      1. Mark the task "cancelled" in the registry and cancel the wrapping
-         asyncio task synchronously. This is what the dispatch coroutines
-         observe first, so they take the cancelled code path.
-      2. Fire-and-forget the provider-specific teardown (browser process tree
-         kill, remote /stop HTTP, etc.) so this endpoint returns to the
-         frontend immediately instead of blocking on a slow remote.
+    The status is written first, so nothing that is still running can change
+    it afterwards; then the plugin run is cancelled on the plugin server or
+    the task agent's session is closed. She is told that it was stopped.
     """
-    info = Modules.task_registry.get(task_id)
-    if not info:
+    await restore_hud()
+    host = peek_host()
+    task = hud.get(task_id)
+    if host is None or task is None:
         raise HTTPException(404, "task not found")
-    if info.get("status") not in ("queued", "running"):
+    if task.get("status") not in HUD_ACTIVE:
         # Include the real terminal status so the HUD's local fallback can
         # mirror it instead of mislabeling the card "cancelled".
-        return {"success": False, "error": "task is not active", "status": info.get("status")}
-
-    task_type = info.get("type")
-    # Mark cancelled up front so any late terminal writes from the dispatch
-    # coroutine can see it and skip clobbering the status (see _run_*_dispatch
-    # terminal guards).
-    info["status"] = "cancelled"
-    info["error"] = "Cancelled by user"
-    lanlan_name = info.get("lanlan_name")
-    _task_tracker.record_completed(
-        lanlan_name,
-        task_id=task_id,
-        method=str(task_type or ""),
-        desc=_tracker_desc_for_task_info(info),
-        detail="Cancelled by user",
-        success=False,
-        cancelled=True,
-        trigger_user_fingerprint=info.get("_trigger_user_fingerprint"),
-    )
-
-    bg = Modules.task_async_handles.get(task_id)
-    if bg and not bg.done():
-        bg.cancel()
-
-    if task_type == "computer_use":
-        if Modules.computer_use:
-            Modules.computer_use.cancel_running()
-        if Modules.active_computer_use_task_id == task_id and Modules.active_computer_use_async_task:
-            Modules.active_computer_use_async_task.cancel()
-    elif task_type == "browser_use":
-        # Tear down the shared browser only for the task that owns the slot.
-        # A queued task's dispatch coroutine dies at the lock via bg.cancel()
-        # above; ripping the browser for it would kill the unrelated running
-        # task that is actually using it.
-        if Modules.active_browser_use_task_id == task_id:
-            if Modules.browser_use:
-                _spawn_background_cancel(
-                    Modules.browser_use.cancel(), label=f"browser_use:{task_id}"
-                )
-            Modules.active_browser_use_task_id = None
-    elif task_type == "openclaw":
-        if Modules.openclaw:
-            _spawn_background_cancel(
-                Modules.openclaw.stop_running(
-                    sender_id=info.get("sender_id"),
-                    session_id=info.get("session_id"),
-                    role_name=info.get("lanlan_name"),
-                    task_id=task_id,
-                ),
-                label=f"openclaw:{task_id}",
-            )
-
-    try:
-        await _emit_main_event(
-            "task_update", lanlan_name,
-            task={"id": task_id, "status": "cancelled", "type": task_type,
-                  "end_time": _now_iso(), "params": info.get("params", {}),
-                  "error": "Cancelled by user"},
-        )
-    except Exception:
-        pass
-    logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task_type)
+        return {"success": False, "error": "task is not active", "status": task.get("status")}
+    commission = await host.abort(task_id, reason="Cancelled by user")
+    if commission is None:
+        raise HTTPException(404, "task not found")
+    current = hud.get(task_id) or task
+    if commission.status != "cancelled":
+        return {"success": False, "error": "task is not active", "status": current.get("status")}
+    logger.info("[Agent] Task %s (%s) cancelled by user", task_id, task.get("type"))
     return {"success": True, "task_id": task_id, "status": "cancelled"}
-
-
-@app.post("/api/agent/tasks/{task_id}/correction")
-async def submit_task_correction(task_id: str, body: ToolCorrectionPayload):
-    info = Modules.task_registry.get(task_id)
-    if not info:
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    task_type = str(info.get("type") or "").strip()
-    if task_type not in {"computer_use", "browser_use"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Only computer_use/browser_use tasks support tool correction",
-        )
-    if Modules.task_executor is None:
-        raise HTTPException(status_code=503, detail="Task executor not ready")
-
-    correct_tool = str(body.correct_tool or "").strip()
-    if correct_tool not in {"computer_use", "browser_use"}:
-        raise HTTPException(
-            status_code=400,
-            detail="correct_tool must be computer_use or browser_use",
-        )
-    if correct_tool == task_type:
-        raise HTTPException(
-            status_code=400,
-            detail="correct_tool must be different from the current task type",
-        )
-
-    instr = str(body.correct_instruction or "").strip()
-    if not instr:
-        raise HTTPException(
-            status_code=400,
-            detail="correct_instruction cannot be blank",
-        )
-
-    correction_info = _get_internal_correction_context(info)
-    if correction_info is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Task correction context is unavailable for this task",
-        )
-    task_status = str(info.get("status") or info.get("state") or "").strip().lower()
-    if task_status not in {"completed", "failed", "cancelled"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Task correction is only allowed after the task reaches a terminal state",
-        )
-
-    try:
-        event = Modules.task_executor.record_tool_correction(
-            {
-                **correction_info,
-                "task_id": task_id,
-                "type": task_type,
-            },
-            correct_tool=correct_tool,
-            correct_instruction=instr,
-            user_note=body.user_note,
-        )
-    except Exception as exc:
-        logger.exception("[CorrectionMemory] Failed to record correction for %s: %s", task_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to record correction") from exc
-
-    logger.info(
-        "[CorrectionMemory] Recorded correction: task_id=%s chosen=%s correct=%s",
-        task_id,
-        task_type,
-        correct_tool,
-    )
-    return {"success": True, "task_id": task_id}
 
 
 @app.post("/api/agent/tasks/{task_id}/complete")
 async def complete_deferred_task(task_id: str):
-    """Callback for the plugin daemon: mark a deferred task as completed and notify the frontend HUD."""
-    info = Modules.task_registry.get(task_id)
-    if not info:
+    """Callback for a plugin: its deferred work for this task is done.
+
+    ``task_id`` is the ``agent_task_id`` the plugin was given through its
+    ``bind_task`` entry.
+    """
+    if peek_host() is None and not await ledger_exists():
         raise HTTPException(status_code=404, detail="Task not found")
-    if info.get("status") != "running":
-        # Already terminal: return idempotently
-        return {"ok": True, "skipped": True, "status": info.get("status")}
-
-    # Verify a deferred task: only user_plugin tasks with deferred_timeout may complete through this endpoint
-    if info.get("type") != "user_plugin":
-        raise HTTPException(status_code=403, detail="Only user_plugin tasks can be completed via this endpoint")
-    if not info.get("deferred_timeout"):
+    host = await ready_host()
+    commission = await host.ledger.get(task_id)
+    if commission is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if commission.status != "working":
+        # Already ended: return idempotently
+        return {"ok": True, "skipped": True, "status": (hud_status(commission.status))}
+    if commission.route != "plugin":
+        raise HTTPException(status_code=403, detail="Only plugin tasks can be completed via this endpoint")
+    if commission.deferred_until is None:
         raise HTTPException(status_code=400, detail="Not a deferred task - use normal completion flow")
-
-    info["status"] = "completed"
-    info["end_time"] = _now_iso()
-    lanlan_name = info.get("lanlan_name")
-    params = info.get("params", {})
-    plugin_id = params.get("plugin_id", "")
-    entry_id = params.get("entry_id", "")
-    desc = params.get("description", "")
-
-    # Close the tracker record; deferred tasks previously had assigned but no completed record
-    _task_tracker.record_completed(
-        lanlan_name, task_id=task_id, method="user_plugin",
-        desc=f"{plugin_id}.{entry_id}: {desc}" if plugin_id else desc,
-        detail="deferred callback completed", success=True,
-    )
-
-    try:
-        await _emit_main_event(
-            "task_update", lanlan_name,
-            task={
-                "id": task_id,
-                "status": "completed",
-                "type": info.get("type"),
-                "start_time": info.get("start_time"),
-                "end_time": info["end_time"],
-                "params": params,
-            },
-        )
-    except Exception as e:
-        logger.warning("[Deferred] emit task_update(complete) failed: task_id=%s error=%s", task_id, e)
-
+    if not await host.complete_deferred(task_id):
+        latest = await host.ledger.get(task_id)
+        return {"ok": True, "skipped": True, "status": hud_status(latest.status if latest else "failed")}
     logger.info("[Deferred] Task %s marked completed via callback", task_id)
     return {"ok": True}
+
+
+def hud_status(status: str) -> str:
+    """Return a commission's status in the words the task endpoints have always used."""
+    from .nekoclaw_mount import _HUD_STATUS
+
+    return _HUD_STATUS.get(status, status)

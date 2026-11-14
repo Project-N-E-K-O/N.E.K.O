@@ -64,13 +64,13 @@ See [Memory System](/architecture/memory-system) for the complete lifecycle and 
 
 ## Agent Server (`app/agent_server/`, ports 48915 and 48916)
 
-`app/agent_server/__main__.py` starts the package's Tool Server FastAPI app on `127.0.0.1:48915`. The implementation is split across `api_runtime.py`, `api_routes.py`, `capabilities.py`, `registry.py`, `tracker.py`, `results.py`, `plugin_host.py`, and `channels/`.
+`app/agent_server/__main__.py` starts the package's Tool Server FastAPI app on `127.0.0.1:48915`. The implementation is split across `api_runtime.py`, `api_routes.py`, `capabilities.py`, `results.py`, `plugin_host.py`, `nekoclaw_mount.py`, and `nekoclaw_builtins.py`. The NekoClaw host that keeps and carries out tasks lives in `nekoclaw/host/`.
 
-During Agent startup, the process initializes capability state, `DirectTaskExecutor`, the Agent-side ZeroMQ bridge, channel probes, and background schedulers. `plugin_host.py` starts the embedded user-plugin FastAPI listener on `127.0.0.1:48916` in an isolated thread. User-plugin execution remains gated by its feature flag and plugin lifecycle even though the listener is part of the same process.
+During Agent startup, the process initializes capability state, the Agent-side ZeroMQ bridge, and the agent-model connectivity check, and registers the NekoClaw host. Registering builds nothing: the host's ledger, the agent runtime, and the capability gateway are created on first use. `plugin_host.py` starts the embedded user-plugin FastAPI listener on `127.0.0.1:48916` in an isolated thread. User-plugin execution remains gated by its feature flag and plugin lifecycle even though the listener is part of the same process.
 
 ### HTTP ownership
 
-- **`:48915` Tool Server** — Agent flags/capabilities, task submission and inspection, cancellation, health, proactive triggers, and internal channel control.
+- **`:48915` Tool Server** — Agent flags/capabilities, the internal dispatch and query routes behind the main dialogue's task tools, task inspection, cancellation, health, and the deferred-completion callback.
 - **`:48916` embedded user-plugin service** — installed plugin discovery, run lifecycle, market bridge targets, and deferred plugin completion support.
 
 The Main Server proxies the public `/api/agent/*` surface to these internal services. Browser code should treat the Main Server response as authoritative rather than calling process-local objects.
@@ -80,20 +80,20 @@ The Main Server proxies the public `/api/agent/*` surface to these internal serv
 | Default address | Pattern | Bind owner | Direction | Purpose |
 |---|---|---|---|---|
 | `tcp://127.0.0.1:48961` | PUB / SUB | Main | Main → Agent | Session and lifecycle events |
-| `tcp://127.0.0.1:48963` | PUSH / PULL | Main | Main → Agent | Reliable `analyze_request` queue |
-| `tcp://127.0.0.1:48962` | PUSH / PULL | Main (`PULL`) | Agent → Main | ACKs, status, task updates, and results |
+| `tcp://127.0.0.1:48963` | PUSH / PULL | Main | Main → Agent | Reliable `turn_check_request` queue |
+| `tcp://127.0.0.1:48962` | PUSH / PULL | Main (`PULL`) | Agent → Main | ACKs, status, task updates, and reports |
 
-The Agent connects its SUB/PULL/PUSH mirror sockets. The bridge uses background receive threads around synchronous ZeroMQ sockets. Agent → Main delivery has no HTTP fallback.
+The Agent connects its SUB/PULL/PUSH mirror sockets. The bridge uses background receive threads around synchronous ZeroMQ sockets. Agent → Main delivery has no HTTP fallback; reports about a task wait in the host's outbox and are retried until the bridge takes them.
 
 ### Task execution path
 
-1. `main_logic/cross_server.py` publishes a bounded conversation view as an `analyze_request`; the Main bridge waits for an ACK and retries once on timeout.
-2. The Agent applies master/capability gates, cancellation redaction, and deduplication.
-3. `DirectTaskExecutor` in `brain/task_executor.py` assesses enabled channels. The retired Analyzer/Planner/Processor classes are not part of the live pipeline.
-4. Non-plugin work selects the first executable channel by priority; user plugins use deterministic candidate filtering followed by validated LLM entry selection.
-5. The selected adapter under `app/agent_server/channels/` registers the task, emits updates, performs or delegates the work, and records a terminal result.
-6. ACKs, `task_update`, `task_result`, and proactive events return over `:48962`. The Main bridge updates the browser and queues model-visible results on the matching `LLMSessionManager`.
+1. The main dialogue model calls its `dispatch_task` tool. `main_logic/core/tool_calling.py` posts the sentence to `/nekoclaw/dispatch` on `:48915` and returns the receipt to the model.
+2. The task brain (`nekoclaw/host/task_brain.py`) files a commission in its ledger. The first round is local and answered within about a second; the second round runs in the background.
+3. The decision model selects a plugin entry and calls it directly through the plugin service's `/runs` protocol. When no entry fits or the task needs several steps, the commission goes to a task agent (shown to the user as a familiar).
+4. A task agent runs in the agent runtime (`nekoclaw/runtime/`) and reaches plugin entries, MCP tools, keyboard-and-mouse, and the browser through the capability gateway.
+5. Every status change is sent as `task_update`. Results, questions, and corrections are written to the outbox and sent over `:48962`; the Main bridge updates the browser and queues model-visible reports on the matching `LLMSessionManager`.
+6. When a turn the user started ends without a tool call that acts, `main_logic/cross_server.py` sends a `turn_check_request` over `:48963`; the Main bridge waits for an ACK and retries once on timeout.
 
-Cancellation marks registry state before provider-specific teardown so late provider output cannot overwrite a terminal task. Deferred user-plugin tasks stay running until their completion endpoint or timeout resolves them.
+Stopping writes `cancelled` to the ledger before the plugin run is cancelled or the task agent's session is closed, so late output cannot overwrite a stopped commission. A deferred plugin result keeps its commission `working` until the completion endpoint is called or the timeout fails it.
 
-See [Agent System](/architecture/agent-system) for channel routing, flags, retention, and delivery semantics.
+See [Agent System](/architecture/agent-system) for dispatch, the turn check, flags, and delivery semantics.

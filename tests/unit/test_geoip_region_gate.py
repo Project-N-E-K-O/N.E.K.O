@@ -1728,13 +1728,13 @@ def test_paths_that_pick_a_voice_and_build_a_tts_url_settle_first():
 
 
 @pytest.mark.unit
-def test_agent_deduper_is_built_after_the_region_settles():
-    """``TaskDeduper`` freezes the ``summary`` base URL in ``__init__`` forever.
+def test_agent_startup_settles_the_region_in_the_background():
+    """agent_server running as its own process never sees the main server's warmup.
 
-    It caches the built client on ``self.llm``, so a transient mainland answer
-    pins every later duplicate check for the whole process. agent_server running
-    as its own process never sees the main server's warmup. Distinct from the
-    Agent proxy, which is deliberately exempt from the region rewrite.
+    Nothing built at startup freezes a region-dependent endpoint any more: the
+    decision model and the task agents read their endpoint from the configuration
+    each time they are used. So startup no longer waits for the verdict, but it
+    still has to start the warmup itself -- and must not be held up by it.
     """
     import ast
     import pathlib
@@ -1743,65 +1743,35 @@ def test_agent_deduper_is_built_after_the_region_settles():
               / 'app' / 'agent_server' / 'api_runtime.py')
     tree = ast.parse(source.read_text(encoding='utf-8'))
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.AsyncFunctionDef) or node.name != 'startup':
+    functions = {
+        node.name: node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    startup = functions.get('startup')
+    settle = functions.get('_settle_region')
+    assert startup is not None, '未找到 agent_server startup，断言失效'
+    assert settle is not None, '未找到 _settle_region，断言失效'
+
+    # Require the startup warmup primitive; session-level aensure is insufficient. Upstream ComputerUseAdapter
+    # construction already starts probing; failed early networking enters 30s backoff. aensure neither
+    # kicks nor bypasses backoff, leaving this process on the mainland fallback.
+    warmups = [c for c in ast.walk(settle)
+               if isinstance(c, ast.Call)
+               and getattr(c.func, 'attr', None) == 'awarmup_region_check']
+    assert warmups, '_settle_region 未落定区域判定'
+
+    scheduled = [c for c in ast.walk(startup)
+                 if isinstance(c, ast.Call) and getattr(c.func, 'id', None) == '_settle_region']
+    assert scheduled, 'agent_server 启动未发起区域判定'
+
+    # Startup must not wait on the verdict: neither helper may be awaited inline.
+    for node in ast.walk(startup):
+        if not isinstance(node, ast.Await) or not isinstance(node.value, ast.Call):
             continue
-        # Require the startup warmup primitive; session-level aensure is insufficient. Upstream ComputerUseAdapter
-        # construction already starts probing; failed early networking enters 30s backoff. aensure neither
-        # kicks nor bypasses backoff, leaving this process's deduper built with mainland fallback.
-        settles = [c.lineno for c in ast.walk(node)
-                   if isinstance(c, ast.Call)
-                   and getattr(c.func, 'attr', None) == 'awarmup_region_check']
-        builds = [c.lineno for c in ast.walk(node)
-                  if isinstance(c, ast.Call) and getattr(c.func, 'id', None) == 'TaskDeduper']
-        assert builds, '未找到 TaskDeduper 构造，断言失效'
-        assert settles, 'agent_server 启动未落定区域判定'
-        assert min(settles) < min(builds), \
-            f'落定(line {min(settles)}) 必须早于 TaskDeduper 构造(line {min(builds)})'
-        break
-    else:
-        pytest.fail('未找到 agent_server startup，断言失效')
-
-
-@pytest.mark.unit
-def test_deduper_rebuilds_its_client_when_the_route_changes(monkeypatch):
-    """The ``summary`` route can change after construction — the client must follow.
-
-    A Steam answer is deliberately usable-but-not-latched, so the authoritative
-    IP probe can overturn it seconds after ``agent_server`` starts. Freezing the
-    client in ``__init__`` pinned every later dedup call to whichever endpoint
-    happened to win that instant, for the whole process lifetime. Waiting longer
-    at startup cannot fix that — only rechecking the route on use can.
-    """
-    from brain import deduper as deduper_mod
-
-    cfg = {'model': 'm', 'base_url': 'https://www.lanlan.tech/text/v1', 'api_key': 'k'}
-
-    class _CM:
-        def get_model_api_config(self, kind):
-            assert kind == 'summary'
-            return dict(cfg)
-
-    monkeypatch.setattr(deduper_mod, 'get_config_manager', lambda *a, **kw: _CM())
-
-    built = []
-
-    def _fake_create(model, base_url, api_key, **kwargs):
-        built.append(base_url)
-        return object()
-
-    monkeypatch.setattr(deduper_mod, 'create_chat_llm', _fake_create)
-
-    d = deduper_mod.TaskDeduper()
-    assert built == ['https://www.lanlan.tech/text/v1']
-
-    d._get_llm()
-    assert len(built) == 1, '路由没变不该重建'
-
-    cfg['base_url'] = 'https://www.lanlan.app/text/v1'
-    d._get_llm()
-    assert built[-1] == 'https://www.lanlan.app/text/v1', \
-        'IP 结论推翻 Steam 兜底后，去重器必须跟着换端点'
+        func = node.value.func
+        awaited = getattr(func, 'id', None) or getattr(func, 'attr', None)
+        assert awaited not in {'_settle_region', 'awarmup_region_check'}, \
+            f'startup 在 line {node.lineno} 等待区域判定，会拖住启动'
 
 
 # ---------------------------------------------------------------------------
@@ -1966,148 +1936,6 @@ def test_warmup_recognises_the_rewritten_free_snapshot_as_unsettled():
 
     assert ConfigManager._ip_probe_thread is None, '前置条件：没有探测在跑'
     assert asyncio.run(probe.awarmup_region_check(timeout=0.3)) is False
-
-
-@pytest.mark.unit
-def test_deduper_concurrent_refresh_never_mismatches_route_and_client(monkeypatch):
-    """Behavioural smoke: the cached (route, client) pair stays coherent under load.
-
-    Four threads hammer refreshes through 200 route flips with a shrunk GIL
-    switch interval, asserting every observed cache pair is self-consistent.
-    The mismatch window of a split-write implementation is microseconds wide,
-    so this hammer alone cannot reliably catch one — the atomicity guarantee
-    itself is pinned structurally by
-    ``test_deduper_cache_is_published_atomically``; this test covers the read
-    side (lookup and return path never hand out a client that contradicts the
-    published route) under real concurrency.
-    """
-    from brain import deduper as deduper_mod
-
-    route_holder = {'url': 'https://www.lanlan.tech/text/v1'}
-
-    class _CM:
-        def get_model_api_config(self, kind):
-            return {'model': 'm', 'base_url': route_holder['url'], 'api_key': 'k'}
-
-    monkeypatch.setattr(deduper_mod, 'get_config_manager', lambda *a, **kw: _CM())
-
-    class _Client:
-        def __init__(self, base_url):
-            self.built_for = base_url
-
-    def _fake_create(model, base_url, api_key, **kwargs):
-        real_time.sleep(0.0005)      # Widen the build window to make concurrent refreshes overlap.
-        return _Client(base_url)
-
-    monkeypatch.setattr(deduper_mod, 'create_chat_llm', _fake_create)
-    d = deduper_mod.TaskDeduper()
-
-    old_interval = sys.getswitchinterval()
-    sys.setswitchinterval(1e-6)      # Increase preemption opportunities between adjacent property assignments.
-    stop = threading.Event()
-    seen_mismatch = []
-    worker_errors = []
-
-    def _hammer():
-        # Collect exceptions: silently failed workers leave seen_mismatch empty, while __init__'s initial
-        # publication satisfies final-state assertions, falsely passing.
-        try:
-            while not stop.is_set():
-                d._get_llm()
-                cached = d._llm_cache
-                # Invariant: every observed cache pair is coherent, with client built for route.
-                # Separate assignments necessarily expose an inconsistent window; frequent reads can catch it.
-                if cached is not None and cached[1].built_for != cached[0][0]:
-                    seen_mismatch.append((cached[1].built_for, cached[0][0]))
-        except Exception as e:      # noqa: BLE001
-            worker_errors.append(repr(e))
-
-    workers = [threading.Thread(target=_hammer, daemon=True) for _ in range(4)]
-    try:
-        for w in workers:
-            w.start()
-        urls = ('https://www.lanlan.app/text/v1', 'https://www.lanlan.tech/text/v1')
-        for i in range(200):
-            route_holder['url'] = urls[i % 2]
-            real_time.sleep(0.001)
-    finally:
-        stop.set()
-        for w in workers:
-            w.join(5)
-        sys.setswitchinterval(old_interval)
-
-    assert not worker_errors, f'压测线程异常退出（压测未真正执行）: {worker_errors[:3]}'
-    assert not seen_mismatch, f'缓存出现过 route/client 错配: {seen_mismatch[:3]}'
-    route, client = d._llm_cache
-    assert client.built_for == route[0], \
-        f'终态错配：client 按 {client.built_for} 构建，route 标记是 {route[0]}'
-
-
-@pytest.mark.unit
-def test_deduper_cache_is_published_atomically():
-    """The deduper's (route, client) cache must be one tuple, published whole.
-
-    Split ``_llm`` / ``_llm_route`` attributes — or a tuple write that reuses a
-    component of the previous cache — reintroduce the interleaving where an old
-    client ends up tagged with the new route fingerprint and every later call
-    trusts it as current. The mismatch window is microseconds wide, far below
-    what a probabilistic hammer can reliably hit, so the atomicity is pinned
-    structurally: one cache attribute, and every publish is a self-contained
-    two-tuple (or the None initializer).
-    """
-    import ast
-    import pathlib
-
-    source = pathlib.Path(__file__).resolve().parents[2] / 'brain' / 'deduper.py'
-    tree = ast.parse(source.read_text(encoding='utf-8'))
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == 'TaskDeduper':
-            cls = node
-            break
-    else:
-        pytest.fail('未找到 TaskDeduper，断言失效')
-
-    assigns = {}
-    for n in ast.walk(cls):
-        # Include AnnAssign (self.x: T = ...): separate properties can use annotated assignments,
-        # missed by traversing ast.Assign alone.
-        if isinstance(n, ast.Assign):
-            targets = n.targets
-        elif isinstance(n, ast.AnnAssign):
-            targets = [n.target]
-        else:
-            continue
-        for t in targets:
-            if (isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name)
-                    and t.value.id == 'self'):
-                assigns.setdefault(t.attr, []).append(n)
-
-    banned = {'_llm', '_llm_route'} & assigns.keys()
-    assert not banned, \
-        f'route 与 client 必须收在一个元组属性里原子发布，发现分离属性: {sorted(banned)}'
-
-    # AnnAssign permits valueless declarations (self.x:T), which publish nothing; publication-shape checks
-    # inspect valued assignments only, while banned checks above still reject separated-property declarations.
-    cache_writes = [n for n in assigns.get('_llm_cache', []) if n.value is not None]
-    assert cache_writes, '未找到 _llm_cache 发布点，断言失效'
-    for n in cache_writes:
-        v = n.value
-        # Only two publication forms are legal: None initialization or a pair of bare local names
-        # (route,llm). Stricter than excluding self.xxx: stale cache components could first enter a local
-        # cached=self._llm_cache, then leak through cached[1] / cached[1].x expressions.
-        # Attribute checks cannot stop this; a bare-Name whitelist rejects subscripts, attributes, calls, and conditional
-        # expressions. This heuristic does not deeply analyze Name data flow (x=cached[1]
-        # then publishing x still bypasses it); review covers that. Guard every direct shape here.
-        whole = (isinstance(v, ast.Constant) and v.value is None) or (
-            isinstance(v, ast.Tuple) and len(v.elts) == 2
-            and all(isinstance(e, ast.Name) for e in v.elts)
-        )
-        assert whole, (
-            f'deduper.py:{n.lineno}: _llm_cache 的发布必须是「两个裸局部名的'
-            '二元组」或 None 初始化——任何引用旧缓存分量的表达式都会重新引入'
-            '交错错配'
-        )
 
 
 @pytest.mark.unit

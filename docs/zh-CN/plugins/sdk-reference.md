@@ -249,7 +249,7 @@ Hosted TSX 使用导出的 `ui` namespace 和 manifest surface，详见 [Hosted 
 
 ### 回复控制
 
-`finish()` 方法接受 `reply` 参数（默认 `True`），用于控制插件结果是否触发角色说话。
+`finish()` 方法接受 `reply` 参数（默认 `True`），用于控制插件结果是否触发角色说话。它在 Agent 直达调用入口时生效。入口由 task agent 调用时，结果回给 task agent，怎么告诉用户按那件事自己的设置。
 
 ```python
 # 正常：角色会播报结果
@@ -261,7 +261,7 @@ return await self.finish(data={"summary": "完成"}, reply=False)
 
 ### LLM 结果字段过滤
 
-通过 `@plugin_entry` 装饰器（静态入口）或 `register_dynamic_entry()`（动态入口）的 `llm_result_fields` 参数，控制主 LLM 能看到结果中的哪些字段。未列出的字段不会出现在 LLM 提示中，但仍保存在任务注册表中。
+通过 `@plugin_entry` 装饰器（静态入口）或 `register_dynamic_entry()`（动态入口）的 `llm_result_fields` 参数，控制模型能看到结果中的哪些字段：直达调用时是主 LLM，由 task agent 调用时是那个 task agent。未列出的字段不会出现在提示中，但仍保留在 Run 的结果里。入口没有声明字段时模型看到什么，见[入口与参数](./entries)的「Agent 怎么调用入口」一节。
 
 ```python
 # 静态入口

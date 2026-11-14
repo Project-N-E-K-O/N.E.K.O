@@ -114,8 +114,6 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
     ("static/plugin-ui-sdk", "display.js"),
-    # In-app OpenClaw guide and images, served by agent_router through /api/agent/openclaw/guide/*; data-only directory.
-    ("docs/zh-CN/guide", None),
 )
 
 # Every subdirectory in the bundled plugins directory must contain plugin.toml; catches cases where the entire ``plugin/plugins``

@@ -11,9 +11,34 @@ from brain.browser_use_adapter import BrowserUseAdapter
 
 capabilities = importlib.import_module("app.agent_server.capabilities")
 api_routes = importlib.import_module("app.agent_server.api_routes")
+nekoclaw_builtins = importlib.import_module("app.agent_server.nekoclaw_builtins")
 
 
 pytestmark = pytest.mark.unit
+
+
+def _record_adapter_constructions(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Make every way of building the BrowserUse adapter leave a record.
+
+    The routes no longer hold a reference to the initializer (only a browser
+    call from a task agent builds the adapter), so the guard sits on the two
+    things any construction has to go through: the shared initializer and the
+    adapter class it instantiates.
+    """
+    constructed: list = []
+
+    async def _recording_init():
+        constructed.append("initializer")
+        return None
+
+    class _RecordingAdapter:
+        def __init__(self, *_args, **_kwargs) -> None:
+            constructed.append("adapter")
+            self._ready_import = False
+
+    monkeypatch.setattr(capabilities, "_ensure_browser_use_adapter", _recording_init)
+    monkeypatch.setattr(capabilities, "BrowserUseAdapter", _RecordingAdapter)
+    return constructed
 
 
 @pytest.mark.asyncio
@@ -22,22 +47,24 @@ async def test_browser_use_availability_does_not_construct_adapter(
 ) -> None:
     modules = capabilities._shared.Modules
     original_computer_use = modules.computer_use
+    original_browser_use = modules.browser_use
     original_capability = dict(modules.capability_cache["browser_use"])
-
-    async def _unexpected_init():
-        raise AssertionError("availability polling must not construct BrowserUseAdapter")
 
     monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: {"ready": True})
     monkeypatch.setattr(api_routes, "_browser_use_dependency_status", lambda: (True, ""))
-    monkeypatch.setattr(api_routes, "_ensure_browser_use_adapter", _unexpected_init)
+    constructed = _record_adapter_constructions(monkeypatch)
     modules.computer_use = SimpleNamespace(init_ok=True, last_error=None)
+    modules.browser_use = None
     try:
         status = await api_routes.browser_use_availability()
 
         assert status["ready"] is True
         assert status["provider"] == "browser-use"
+        assert constructed == [], "availability polling must not construct BrowserUseAdapter"
+        assert modules.browser_use is None
     finally:
         modules.computer_use = original_computer_use
+        modules.browser_use = original_browser_use
         modules.capability_cache["browser_use"] = original_capability
 
 
@@ -47,21 +74,20 @@ async def test_browser_use_enable_returns_without_constructing_adapter(
 ) -> None:
     modules = capabilities._shared.Modules
     original_computer_use = modules.computer_use
+    original_browser_use = modules.browser_use
     original_flags = dict(modules.agent_flags)
     original_notification = modules.notification
     original_capability = dict(modules.capability_cache["browser_use"])
-
-    async def _unexpected_init():
-        raise AssertionError("the short flag request must not construct BrowserUseAdapter")
 
     async def _ignore_status_update(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(api_routes, "_check_agent_api_gate", lambda: {"ready": True})
     monkeypatch.setattr(api_routes, "_browser_use_dependency_status", lambda: (True, ""))
-    monkeypatch.setattr(api_routes, "_ensure_browser_use_adapter", _unexpected_init)
+    constructed = _record_adapter_constructions(monkeypatch)
     monkeypatch.setattr(api_routes, "_emit_agent_status_update", _ignore_status_update)
     modules.computer_use = SimpleNamespace(init_ok=True, last_error=None)
+    modules.browser_use = None
     modules.agent_flags["browser_use_enabled"] = False
     try:
         result = await api_routes.set_agent_flags(
@@ -70,7 +96,10 @@ async def test_browser_use_enable_returns_without_constructing_adapter(
 
         assert result["success"] is True
         assert modules.agent_flags["browser_use_enabled"] is True
+        assert constructed == [], "the short flag request must not construct BrowserUseAdapter"
+        assert modules.browser_use is None
     finally:
+        modules.browser_use = original_browser_use
         modules.computer_use = original_computer_use
         modules.agent_flags.clear()
         modules.agent_flags.update(original_flags)
@@ -111,9 +140,11 @@ async def test_llm_probe_keeps_unloaded_browser_use_ready_when_dependencies_exis
 
 
 @pytest.mark.asyncio
-async def test_direct_browser_run_keeps_adapter_returned_by_initializer(
+async def test_browser_call_keeps_adapter_returned_by_initializer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from nekoclaw.host.capabilities import BUILTIN_BROWSER
+
     modules = capabilities._shared.Modules
     original_adapter = modules.browser_use
     original_lock = modules.browser_use_dispatch_lock
@@ -128,17 +159,25 @@ async def test_direct_browser_run_keeps_adapter_returned_by_initializer(
 
     async def _ensure_adapter():
         # Simulate an asynchronous disable clearing the process singleton
-        # after initialization but before the dispatch coroutine runs.
+        # after initialization but before the call itself runs.
         modules.browser_use = None
         return adapter
 
-    monkeypatch.setattr(api_routes, "_ensure_browser_use_adapter", _ensure_adapter)
+    # The call reaches the initializer through ``capabilities`` at call time.
+    monkeypatch.setattr(capabilities, "_ensure_browser_use_adapter", _ensure_adapter)
+    monkeypatch.setattr(modules, "analyzer_enabled", True)
+    monkeypatch.setitem(modules.agent_flags, "browser_use_enabled", True)
+    monkeypatch.setitem(modules.capability_cache, "browser_use", {"ready": True, "reason": ""})
     modules.browser_use_dispatch_lock = None
+    provider = nekoclaw_builtins.BuiltinCapabilityProvider()
     try:
-        result = await api_routes.browser_use_run({"instruction": "open example"})
+        outcome = await provider.run(
+            BUILTIN_BROWSER, commission_id="c1", arguments={"instruction": "open example"}
+        )
 
-        assert result["success"] is True
+        assert outcome.success is True
         assert calls == ["open example"]
+        assert provider.is_running() is False
     finally:
         modules.browser_use = original_adapter
         modules.browser_use_dispatch_lock = original_lock
@@ -338,7 +377,6 @@ async def test_browser_use_adapter_is_single_flight_and_explicitly_closed(
 ) -> None:
     modules = capabilities._shared.Modules
     original_adapter = modules.browser_use
-    original_executor = modules.task_executor
     original_lock = modules.browser_use_init_lock
     original_capability = dict(modules.capability_cache["browser_use"])
     created = []
@@ -355,7 +393,6 @@ async def test_browser_use_adapter_is_single_flight_and_explicitly_closed(
     monkeypatch.setattr(capabilities, "BrowserUseAdapter", _FakeAdapter)
     modules.browser_use = None
     modules.browser_use_init_lock = None
-    modules.task_executor = SimpleNamespace(browser_use=None)
     try:
         first, second = await asyncio.gather(
             capabilities._ensure_browser_use_adapter(),
@@ -364,17 +401,15 @@ async def test_browser_use_adapter_is_single_flight_and_explicitly_closed(
 
         assert first is second
         assert created == [first]
-        assert modules.task_executor.browser_use is first
+        assert modules.browser_use is first
 
         await capabilities._close_browser_use_adapter()
         await capabilities._close_browser_use_adapter()
 
         assert first.close_calls == 1
         assert modules.browser_use is None
-        assert modules.task_executor.browser_use is None
     finally:
         modules.browser_use = original_adapter
-        modules.task_executor = original_executor
         modules.browser_use_init_lock = original_lock
         modules.capability_cache["browser_use"] = original_capability
 

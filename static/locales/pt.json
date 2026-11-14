@@ -670,11 +670,6 @@
         "TTS_GPT_SOVITS_URL_REQUIRED": "O URL da API GPT-SoVITS é obrigatório",
         "TTS_GPT_SOVITS_URL_INVALID": "URL da API GPT-SoVITS inválido",
         "AGENT_NO_PLUGINS_FOUND": "Nenhum plugin de usuário encontrado",
-        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw indisponível: {{reason}}",
-        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw ativado, aguardando o serviço de conexão ficar pronto...",
-        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Não foi possível ativar OpenClaw: módulo não carregado",
-        "AGENT_OPENCLAW_UNAVAILABLE": "Não foi possível ativar OpenClaw: {{reason}}",
-        "OPENCLAW_COMMAND_DISPATCH_FAILED": "⚠️ Não foi possível entregar esse comando ao OpenClaw. Tente de novo.",
         "AGENT_PLUGIN_SERVER_ERROR": "Falha ao iniciar o servidor de plugins de usuário",
         "CURRENT_CATGIRL_IN_USE": "Não é possível executar esta ação no personagem ativo \"{{character_name}}\". Mude para outro personagem primeiro",
         "DIRECT_LINK_INACCESSIBLE": "Link direto inacessível",
@@ -4008,7 +4003,6 @@
             "userPlugin": "Plug-in do usuário",
             "pluginConfigPage": "Configuração",
             "pluginManagementPanel": "Painel de gerenciamento",
-            "mcpTools": "Ferramentas MCP",
             "browserUse": "Controle do navegador",
             "focusMode": "Permitir interrupção",
             "unavailable": "{{name}} Indisponível",
@@ -4017,13 +4011,10 @@
             "serverOffline": "Servidor NekoClaw offline",
             "masterRequired": "Por favor, habilite o NekoClaw Master Switch primeiro",
             "capabilityNotReady": "{{name}} não está pronto, clique para tentar ativar",
-            "openclawUnavailableReason": "{{name}} está indisponível: {{reason}}. Verifique se o serviço OpenClaw está em execução e escutando em 127.0.0.1:8088.",
             "enabled": "{{name}} Habilitado",
             "disabled": "{{name}} Desativado",
             "enableFailed": "{{name}} Falha na ativação",
             "userPluginAdapting": "Plug-in do usuário (desenvolvimento)",
-            "openclawConnect": "OpenClaw",
-            "openclawGuide": "Guia de configuração do OpenClaw",
             "chatSettings": "Configurações de bate-papo",
             "animationSettings": "Configurações de animação",
             "renderQuality": "Qualidade",
@@ -4050,17 +4041,6 @@
             "textGuardHighWarning": "Configuração muito alta pode causar confusão de memória e idioma, recomendado dentro de 1000 tokens",
             "textGuardNote": "Aplica-se apenas a respostas de texto e não afeta sessões de voz"
         }
-    },
-    "openclawGuide": {
-        "windowTitle": "Guia de configuração do OpenClaw - N.E.K.O.",
-        "pageTitle": "Guia de configuração do OpenClaw",
-        "pageSubtitle": "Conecte a instalação do QwenPaw, configuração do modelo, arquivos de substituição e configuração do N.E.K.O em um caminho claro.",
-        "sourceLabel": "Fonte do guia",
-        "contentLanguageNotice": "O corpo do guia muda com o idioma selecionado.",
-        "languageLabel": "Linguagem",
-        "tocTitle": "Conteúdo",
-        "tocEmpty": "Sem índice ainda",
-        "guideUnavailable": "O conteúdo do guia está vazio."
     },
     "subtitle": {
         "title": "Legendas em tempo real",
@@ -4153,6 +4133,8 @@
             "statusCompleted": "Concluído",
             "statusFailed": "Fracassado",
             "statusCancelled": "Cancelar",
+            "statusWaitingUser": "Aguardando sua resposta",
+            "statusBlocked": "Travado",
             "minimize": "Recolher/Expandir",
             "cancelAll": "Cancelar todas as tarefas",
             "cancelTask": "Cancelar tarefa",
@@ -4160,7 +4142,8 @@
             "typeUserPlugin": "Plug-in do usuário",
             "typeComputerUse": "Uso do computador",
             "typeBrowserUse": "Controle do navegador",
-            "typeMCP": "Ferramenta MCP"
+            "typeTaskAgent": "Familiar",
+            "typeTask": "Encargo"
         }
     },
     "vrm": {

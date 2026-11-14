@@ -1933,7 +1933,7 @@ function createSidePanelContainer(manager, prefix, options = {}) {
     container.setAttribute('data-neko-sidepanel', '');
     const getInteractionGuardDelay = () => {
         const sidePanelType = container.getAttribute('data-neko-sidepanel-type') || '';
-        if (sidePanelType === 'agent-user-plugin-actions' || sidePanelType === 'agent-openclaw-actions') {
+        if (sidePanelType === 'agent-user-plugin-actions') {
             return 220;
         }
         return 0;
@@ -2154,7 +2154,6 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
 
         return [
             'agent-user-plugin-actions',
-            'agent-openclaw-actions',
             'chat-settings',
             'animation-settings',
             'cat-settings',

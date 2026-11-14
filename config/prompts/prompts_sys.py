@@ -139,155 +139,37 @@ RESULT_PARSER_PHRASES = {
     # Outer SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE expresses completed/failed/canceled status;
     # inner items need only optional detail labels.
     'detail_result':      {'zh': '详细结果：', 'zh-TW': '詳細結果：', 'en': 'Detailed result: ', 'ja': '詳細結果：', 'ko': '상세 결과：', 'ru': 'Подробный результат: ', 'es': 'Resultado detallado: ', 'pt': 'Resultado detalhado: '},
-    'cu_task_done':       {'zh': '你的任务"{desc}"{status}：{detail}', 'zh-TW': '你的任務「{desc}」{status}：{detail}', 'en': 'Your task "{desc}" {status}: {detail}', 'ja': 'タスク「{desc}」{status}：{detail}', 'ko': '작업 "{desc}" {status}: {detail}', 'ru': 'Ваша задача «{desc}» {status}: {detail}', 'es': 'Tu tarea "{desc}" {status}: {detail}', 'pt': 'Sua tarefa "{desc}" {status}: {detail}'},
-    'cu_task_done_no_desc': {'zh': '你的任务{status}：{detail}', 'zh-TW': '你的任務{status}：{detail}', 'en': 'Your task {status}: {detail}', 'ja': 'タスク{status}：{detail}', 'ko': '작업 {status}: {detail}', 'ru': 'Ваша задача {status}: {detail}', 'es': 'Tu tarea {status}: {detail}', 'pt': 'Sua tarefa {status}: {detail}'},
-    'cu_task_desc_only':  {'zh': '你的任务"{desc}"{status}', 'zh-TW': '你的任務「{desc}」{status}', 'en': 'Your task "{desc}" {status}', 'ja': 'タスク「{desc}」{status}', 'ko': '작업 "{desc}" {status}', 'ru': 'Ваша задача «{desc}» {status}', 'es': 'Tu tarea "{desc}" {status}', 'pt': 'Sua tarefa "{desc}" {status}'},
-    'cu_done':            {'zh': '任务已完成', 'zh-TW': '任務已完成', 'en': 'Task completed', 'ja': 'タスク完了', 'ko': '작업 완료', 'ru': 'Задача выполнена', 'es': 'Tarea completada', 'pt': 'Tarefa concluída'},
-    'cu_fail':            {'zh': '任务执行失败', 'zh-TW': '任務執行失敗', 'en': 'Task failed', 'ja': 'タスク失敗', 'ko': '작업 실패', 'ru': 'Задача не выполнена', 'es': 'La tarea falló', 'pt': 'A tarefa falhou'},
-    'cu_status_done':     {'zh': '已完成', 'zh-TW': '已完成', 'en': 'completed', 'ja': '完了', 'ko': '완료', 'ru': 'выполнена', 'es': 'completada', 'pt': 'concluída'},
-    'cu_status_ended':    {'zh': '已结束', 'zh-TW': '已結束', 'en': 'ended', 'ja': '終了', 'ko': '종료', 'ru': 'завершена', 'es': 'terminó', 'pt': 'terminou'},
-    'openclaw_try':       {'zh': '我试试', 'zh-TW': '我試試', 'en': "I'll try", 'ja': 'やってみるね', 'ko': '해볼게', 'ru': 'Я попробую', 'es': 'Lo intentaré', 'pt': 'Vou tentar'},
-    'openclaw_processing': {'zh': 'OpenClaw(QwenPaw) 处理中...', 'zh-TW': 'OpenClaw(QwenPaw) 處理中...', 'en': 'OpenClaw (QwenPaw) is processing...', 'ja': 'OpenClaw(QwenPaw) 処理中...', 'ko': 'OpenClaw(QwenPaw) 처리 중...', 'ru': 'OpenClaw (QwenPaw) обрабатывает...', 'es': 'OpenClaw (QwenPaw) está procesando...', 'pt': 'OpenClaw (QwenPaw) está processando...'},
-    'openclaw_done':       {'zh': 'OpenClaw(QwenPaw) 执行完成', 'zh-TW': 'OpenClaw(QwenPaw) 執行完成', 'en': 'OpenClaw (QwenPaw) execution completed', 'ja': 'OpenClaw(QwenPaw) 実行完了', 'ko': 'OpenClaw(QwenPaw) 실행 완료', 'ru': 'OpenClaw (QwenPaw) выполнено', 'es': 'Ejecución de OpenClaw (QwenPaw) completada', 'pt': 'Execução do OpenClaw (QwenPaw) concluída'},
-    'openclaw_failed':     {'zh': 'OpenClaw(QwenPaw) 执行失败', 'zh-TW': 'OpenClaw(QwenPaw) 執行失敗', 'en': 'OpenClaw (QwenPaw) execution failed', 'ja': 'OpenClaw(QwenPaw) 実行失敗', 'ko': 'OpenClaw(QwenPaw) 실행 실패', 'ru': 'OpenClaw (QwenPaw) не выполнено', 'es': 'Falló la ejecución de OpenClaw (QwenPaw)', 'pt': 'Falha na execução do OpenClaw (QwenPaw)'},
-    'openclaw_cancelled':  {'zh': 'OpenClaw(QwenPaw) 任务已取消', 'zh-TW': 'OpenClaw(QwenPaw) 任務已取消', 'en': 'OpenClaw (QwenPaw) task cancelled', 'ja': 'OpenClaw(QwenPaw) タスクがキャンセルされました', 'ko': 'OpenClaw(QwenPaw) 작업 취소됨', 'ru': 'Задача OpenClaw (QwenPaw) отменена', 'es': 'Tarea de OpenClaw (QwenPaw) cancelada', 'pt': 'Tarefa do OpenClaw (QwenPaw) cancelada'},
-    'openclaw_dispatch_failed': {'zh': 'OpenClaw(QwenPaw) 任务分发失败', 'zh-TW': 'OpenClaw(QwenPaw) 任務派送失敗', 'en': 'OpenClaw (QwenPaw) task dispatch failed', 'ja': 'OpenClaw(QwenPaw) タスク配信失敗', 'ko': 'OpenClaw(QwenPaw) 작업 전달 실패', 'ru': 'Ошибка отправки задачи OpenClaw (QwenPaw)', 'es': 'Falló el envío de la tarea de OpenClaw (QwenPaw)', 'pt': 'Falha ao despachar a tarefa do OpenClaw (QwenPaw)'},
-    'bu_cancelled':        {'zh': '你的任务"{desc}"已取消', 'zh-TW': '你的任務「{desc}」已取消', 'en': 'Your task "{desc}" cancelled', 'ja': 'タスク「{desc}」がキャンセルされました', 'ko': '작업 "{desc}" 취소됨', 'ru': 'Ваша задача «{desc}» отменена', 'es': 'Tu tarea "{desc}" fue cancelada', 'pt': 'Sua tarefa "{desc}" foi cancelada'},
 }
 
 # -- Initial voice-session prompt --
+# The last sentence asks her to say a word before any tool call (recall,
+# knowledge lookup, the task tools, plugin tools), so a call never leaves the
+# user facing silence. It is in both openings: the recall tool exists in a
+# session without NekoClaw as well.
 SESSION_INIT_PROMPT = {
-    'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。',
-    'zh-TW': '你是一個角色扮演大師。請照要求扮演以下角色（{name}）。',
-    'en': 'You are a role-playing expert. Please play the following character ({name}) as instructed.',
-    'ja': 'あなたはロールプレイの達人です。指示に従い、以下のキャラクター（{name}）を演じてください。',
-    'ko': '당신은 롤플레이 전문가입니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요.',
-    'ru': 'Вы мастер ролевых игр. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям.',
-    'es': 'Eres un experto en roleplay. Interpreta al siguiente personaje ({name}) según las instrucciones.',
-    'pt': 'Você é especialista em roleplay. Interprete o seguinte personagem ({name}) conforme as instruções.',
+    'zh': '你是一个角色扮演大师。请按要求扮演以下角色（{name}）。调用任何工具前，先自然地说一声。',
+    'zh-TW': '你是一個角色扮演大師。請照要求扮演以下角色（{name}）。呼叫任何工具前，先自然地說一聲。',
+    'en': 'You are a role-playing expert. Please play the following character ({name}) as instructed. Before calling any tool, say a brief natural word first.',
+    'ja': 'あなたはロールプレイの達人です。指示に従い、以下のキャラクター（{name}）を演じてください。ツールを呼ぶ前に、まず自然にひとこと添えてください。',
+    'ko': '당신은 롤플레이 전문가입니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 도구를 호출하기 전에 먼저 자연스럽게 한마디 하세요.',
+    'ru': 'Вы мастер ролевых игр. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Перед вызовом любого инструмента сначала естественно скажите об этом пару слов.',
+    'es': 'Eres un experto en roleplay. Interpreta al siguiente personaje ({name}) según las instrucciones. Antes de llamar a cualquier herramienta, di primero unas palabras de forma natural.',
+    'pt': 'Você é especialista em roleplay. Interprete o seguinte personagem ({name}) conforme as instruções. Antes de chamar qualquer ferramenta, diga primeiro uma palavra de forma natural.',
 }
 
+# The opening of a session with NekoClaw switched on. Real actions go through
+# the two task tools (``config/prompts/prompts_task_tools.py``) and she speaks
+# by what they answer. No list of capabilities is given here on purpose: what
+# can be done is answered by the tools' receipts, not by this sentence.
 SESSION_INIT_PROMPT_AGENT = {
-    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。当用户要求你执行对话外的实际操作（例如控制游戏、插件、设备、浏览器或电脑）时，除非本轮上下文已经给出系统/工具执行结果，否则只能简短说明会尝试处理，绝对不要声称已经开始、已经完成，或自行编造执行结果。',
-    'zh-TW': '你是一個角色扮演大師，而且精通電腦操作。請照要求扮演以下角色（{name}）。當使用者要求你執行對話以外的實際操作（例如控制遊戲、外掛、裝置、瀏覽器或電腦）時，除非這一輪的上下文已經給出系統／工具的執行結果，否則只能簡短說明會試著處理，絕對不要宣稱已經開始、已經完成，或自己編造執行結果。',
-    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. When the user asks you to perform a real action outside the conversation, such as controlling a game, plugin, device, browser, or computer, unless this turn already contains a system/tool execution result, only briefly say you will attempt it. Never claim it has started or completed, and never fabricate execution results.',
-    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーが会話外の実操作（ゲーム、プラグイン、デバイス、ブラウザ、PC操作など）を求めた場合、このターンの文脈にシステム/ツールの実行結果が既にない限り、対応を試みると簡潔に伝えてください。開始済み・完了済みと主張したり、実行結果を捏造したりしてはいけません。',
-    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 사용자가 게임, 플러그인, 기기, 브라우저, 컴퓨터 제어처럼 대화 밖의 실제 작업을 요청할 때, 이번 턴의 문맥에 시스템/도구 실행 결과가 이미 있지 않다면 처리해 보겠다고 짧게 말하세요. 이미 시작했거나 완료했다고 말하지 말고 실행 결과를 지어내지 마세요.',
-    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда пользователь просит выполнить реальное действие вне диалога — например управлять игрой, плагином, устройством, браузером или компьютером — если в текущем контексте ещё нет результата системы/инструмента, только кратко скажите, что попытаетесь это сделать. Никогда не утверждайте, что действие уже начато или завершено, и не выдумывайте результаты.',
-    'es': 'Eres un experto en roleplay y hábil con operaciones de computadora. Interpreta al siguiente personaje ({name}) según las instrucciones. Cuando el usuario te pida realizar una acción real fuera de la conversación, como controlar un juego, plugin, dispositivo, navegador o computadora, salvo que este turno ya contenga un resultado del sistema/herramienta, di solo brevemente que intentarás hacerlo. Nunca afirmes que ya empezó o terminó, y nunca inventes resultados de ejecución.',
-    'pt': 'Você é especialista em roleplay e tem habilidade com operações de computador. Interprete o seguinte personagem ({name}) conforme as instruções. Quando o usuário pedir uma ação real fora da conversa, como controlar um jogo, plugin, dispositivo, navegador ou computador, a menos que este turno já contenha um resultado do sistema/ferramenta, diga apenas brevemente que vai tentar. Nunca afirme que já começou ou terminou, e nunca invente resultados de execução.',
-}
-
-SESSION_INIT_PROMPT_AGENT_DYNAMIC = {
-    'zh': '你是一个角色扮演大师，并且能够{capabilities}。请按要求扮演以下角色（{name}）。当用户要求你执行对话外的实际操作（例如控制游戏、插件、设备、浏览器或电脑）时，除非本轮上下文已经给出系统/工具执行结果，否则只能简短说明会尝试处理，绝对不要声称已经开始、已经完成，或自行编造执行结果。',
-    'zh-TW': '你是一個角色扮演大師，而且能夠{capabilities}。請照要求扮演以下角色（{name}）。當使用者要求你執行對話以外的實際操作（例如控制遊戲、外掛、裝置、瀏覽器或電腦）時，除非這一輪的上下文已經給出系統／工具的執行結果，否則只能簡短說明會試著處理，絕對不要宣稱已經開始、已經完成，或自己編造執行結果。',
-    'en': 'You are a role-playing expert and can {capabilities}. Please play the following character ({name}) as instructed. When the user asks you to perform a real action outside the conversation, such as controlling a game, plugin, device, browser, or computer, unless this turn already contains a system/tool execution result, only briefly say you will attempt it. Never claim it has started or completed, and never fabricate execution results.',
-    'ja': 'あなたはロールプレイの達人で、{capabilities}ことができます。指示に従い、以下のキャラクター（{name}）を演じてください。ユーザーが会話外の実操作（ゲーム、プラグイン、デバイス、ブラウザ、PC操作など）を求めた場合、このターンの文脈にシステム/ツールの実行結果が既にない限り、対応を試みると簡潔に伝えてください。開始済み・完了済みと主張したり、実行結果を捏造したりしてはいけません。',
-    'ko': '당신은 롤플레이 전문가이며 {capabilities} 수 있습니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 사용자가 게임, 플러그인, 기기, 브라우저, 컴퓨터 제어처럼 대화 밖의 실제 작업을 요청할 때, 이번 턴의 문맥에 시스템/도구 실행 결과가 이미 있지 않다면 처리해 보겠다고 짧게 말하세요. 이미 시작했거나 완료했다고 말하지 말고 실행 결과를 지어내지 마세요.',
-    'ru': 'Вы мастер ролевых игр и можете {capabilities}. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Когда пользователь просит выполнить реальное действие вне диалога — например управлять игрой, плагином, устройством, браузером или компьютером — если в текущем контексте ещё нет результата системы/инструмента, только кратко скажите, что попытаетесь это сделать. Никогда не утверждайте, что действие уже начато или завершено, и не выдумывайте результаты.',
-    'es': 'Eres un experto en roleplay y puedes {capabilities}. Interpreta al siguiente personaje ({name}) según las instrucciones. Cuando el usuario te pida realizar una acción real fuera de la conversación, como controlar un juego, plugin, dispositivo, navegador o computadora, salvo que este turno ya contenga un resultado del sistema/herramienta, di solo brevemente que intentarás hacerlo. Nunca afirmes que ya empezó o terminó, y nunca inventes resultados de ejecución.',
-    'pt': 'Você é especialista em roleplay e pode {capabilities}. Interprete o seguinte personagem ({name}) conforme as instruções. Quando o usuário pedir uma ação real fora da conversa, como controlar um jogo, plugin, dispositivo, navegador ou computador, a menos que este turno já contenha um resultado do sistema/ferramenta, diga apenas brevemente que vai tentar. Nunca afirme que já começou ou terminou, e nunca invente resultados de execução.',
-}
-
-AGENT_CAPABILITY_COMPUTER_USE = {
-    'zh': '操纵电脑（键鼠控制、打开应用等）',
-    'zh-TW': '操控電腦（鍵鼠控制、開啟應用程式等）',
-    'en': 'operate a computer (mouse/keyboard control, opening apps, etc.)',
-    'ja': 'コンピュータを操作する（マウス・キーボード操作、アプリ起動など）',
-    'ko': '컴퓨터를 조작하는 것(키보드/마우스 제어, 앱 실행 등)',
-    'ru': 'управлять компьютером (клавиатура/мышь, запуск приложений и т.д.)',
-    'es': 'operar una computadora (control de mouse/teclado, abrir apps, etc.)',
-    'pt': 'operar um computador (controle de mouse/teclado, abrir apps etc.)',
-}
-
-AGENT_CAPABILITY_BROWSER_USE = {
-    'zh': '浏览器自动化（网页搜索、填写表单等）',
-    'zh-TW': '瀏覽器自動化（網頁搜尋、填寫表單等）',
-    'en': 'perform browser automation (web search, form filling, etc.)',
-    'ja': 'ブラウザ自動化を行う（Web検索、フォーム入力など）',
-    'ko': '브라우저 자동화를 수행하는 것(웹 검색, 폼 입력 등)',
-    'ru': 'выполнять автоматизацию в браузере (поиск в сети, заполнение форм и т.д.)',
-    'es': 'realizar automatización del navegador (búsqueda web, completar formularios, etc.)',
-    'pt': 'realizar automação no navegador (busca na web, preenchimento de formulários etc.)',
-}
-
-AGENT_CAPABILITY_USER_PLUGIN_USE = {
-    'zh': '调用已安装的插件来完成特定任务',
-    'zh-TW': '呼叫已安裝的外掛來完成特定任務',
-    'en': 'use installed plugins to complete specific tasks',
-    'ja': 'インストール済みプラグインを使って特定のタスクを実行する',
-    'ko': '설치된 플러그인을 사용해 특정 작업을 수행하는 것',
-    'ru': 'использовать установленные плагины для выполнения конкретных задач',
-    'es': 'usar plugins instalados para completar tareas específicas',
-    'pt': 'usar plugins instalados para concluir tarefas específicas',
-}
-
-AGENT_CAPABILITY_GENERIC = {
-    'zh': '执行各种操作',
-    'zh-TW': '執行各種操作',
-    'en': 'perform various operations',
-    'ja': 'さまざまな操作を実行する',
-    'ko': '다양한 작업을 수행하는 것',
-    'ru': 'выполнять различные операции',
-    'es': 'realizar varias operaciones',
-    'pt': 'realizar várias operações',
-}
-
-AGENT_CAPABILITY_SEPARATOR = {
-    'zh': '、',
-    'zh-TW': '、',
-    'en': ', ',
-    'ja': '、',
-    'ko': ', ',
-    'ru': ', ',
-    'es': ', ',
-    'pt': ', ',
-}
-
-# -- Agent task-status labels --
-AGENT_TASK_STATUS_RUNNING = {
-    'zh': '进行中',
-    'zh-TW': '進行中',
-    'en': 'Running',
-    'ja': '実行中',
-    'ko': '진행 중',
-    'ru': 'Выполняется',
-    'es': 'En ejecución',
-    'pt': 'Em execução',
-}
-
-AGENT_TASK_STATUS_QUEUED = {
-    'zh': '排队中',
-    'zh-TW': '排隊中',
-    'en': 'Queued',
-    'ja': '待機中',
-    'ko': '대기 중',
-    'ru': 'В очереди',
-    'es': 'En cola',
-    'pt': 'Na fila',
-}
-
-# -- Agent plugin summaries --
-AGENT_PLUGINS_HEADER = {
-    'zh': '\n【已安装的插件】\n',
-    'zh-TW': '\n【已安裝的外掛】\n',
-    'en': '\n[Installed Plugins]\n',
-    'ja': '\n[インストール済みプラグイン]\n',
-    'ko': '\n[설치된 플러그인]\n',
-    'ru': '\n[Установленные плагины]\n',
-    'es': '\n[Plugins instalados]\n',
-    'pt': '\n[Plugins instalados]\n',
-}
-
-AGENT_PLUGINS_COUNT = {
-    'zh': '\n【已安装的插件】共 {count} 个插件可用。\n',
-    'zh-TW': '\n【已安裝的外掛】共有 {count} 個外掛可用。\n',
-    'en': '\n[Installed Plugins] {count} plugins are available.\n',
-    'ja': '\n[インストール済みプラグイン] 利用可能なプラグインは {count} 個です。\n',
-    'ko': '\n[설치된 플러그인] 사용 가능한 플러그인이 {count}개 있습니다.\n',
-    'ru': '\n[Установленные плагины] Доступно плагинов: {count}.\n',
-    'es': '\n[Plugins instalados] Hay {count} plugins disponibles.\n',
-    'pt': '\n[Plugins instalados] Há {count} plugins disponíveis.\n',
+    'zh': '你是一个角色扮演大师，并且精通电脑操作。请按要求扮演以下角色（{name}）。对话之外要动手的事只能通过任务工具去办，按回执说话；没有工具结果时不声称已经开始或完成。调用任何工具前，先自然地说一声。',
+    'zh-TW': '你是一個角色扮演大師，而且精通電腦操作。請照要求扮演以下角色（{name}）。對話以外要動手的事只能透過任務工具去辦，照回執說話；沒有工具結果時不宣稱已經開始或完成。呼叫任何工具前，先自然地說一聲。',
+    'en': 'You are a role-playing expert and skilled at computer operations. Please play the following character ({name}) as instructed. Anything to be done outside the conversation can only be done through the task tools; speak by what they answer, and without a tool result never claim it has started or completed. Before calling any tool, say a brief natural word first.',
+    'ja': 'あなたはロールプレイの達人で、コンピュータ操作も得意です。指示に従い、以下のキャラクター（{name}）を演じてください。会話の外で実際に手を動かす用件はタスクツールを通してのみ行い、その返答に沿って話してください。ツールの結果がないときは、開始した・完了したと言ってはいけません。ツールを呼ぶ前に、まず自然にひとこと添えてください。',
+    'ko': '당신은 롤플레이 전문가이며 컴퓨터 조작에도 능숙합니다. 지시에 따라 다음 캐릭터（{name}）를 연기하세요. 대화 밖에서 실제로 해야 하는 일은 작업 도구를 통해서만 처리하고, 그 답에 따라 말하세요. 도구 결과가 없을 때는 이미 시작했거나 완료했다고 말하지 마세요. 도구를 호출하기 전에 먼저 자연스럽게 한마디 하세요.',
+    'ru': 'Вы мастер ролевых игр и хорошо разбираетесь в управлении компьютером. Пожалуйста, играйте следующего персонажа ({name}) согласно инструкциям. Всё, что нужно сделать вне диалога, выполняется только через инструменты задач; говорите в соответствии с их ответом, а без результата инструмента не утверждайте, что действие начато или завершено. Перед вызовом любого инструмента сначала естественно скажите об этом пару слов.',
+    'es': 'Eres un experto en roleplay y hábil con operaciones de computadora. Interpreta al siguiente personaje ({name}) según las instrucciones. Lo que haya que hacer fuera de la conversación solo se hace mediante las herramientas de tareas; habla según lo que respondan y, sin un resultado de herramienta, nunca afirmes que ya empezó o terminó. Antes de llamar a cualquier herramienta, di primero unas palabras de forma natural.',
+    'pt': 'Você é especialista em roleplay e tem habilidade com operações de computador. Interprete o seguinte personagem ({name}) conforme as instruções. O que precisar ser feito fora da conversa só se faz pelas ferramentas de tarefas; fale conforme o que elas responderem e, sem um resultado de ferramenta, nunca afirme que já começou ou terminou. Antes de chamar qualquer ferramenta, diga primeiro uma palavra de forma natural.',
 }
 
 AGENT_TASKS_HEADER = {
@@ -394,6 +276,12 @@ SOURCE_DESCRIPTORS = {
         'zh': '系统', 'zh-TW': '系統', 'en': 'the system',
         'ja': 'システム', 'ko': '시스템', 'ru': 'системы',
         'es': 'el sistema', 'pt': 'o sistema',
+    },
+    'task_agent': {
+        'zh': '使魔委托「{name}」', 'zh-TW': '使魔委託「{name}」', 'en': 'the familiar task "{name}"',
+        'ja': '使い魔への依頼「{name}」', 'ko': '사역마 의뢰 "{name}"',
+        'ru': 'поручения фамильяру «{name}»',
+        'es': 'el encargo al familiar "{name}"', 'pt': 'o encargo ao familiar "{name}"',
     },
     'cu': {
         'zh': '电脑操作任务', 'zh-TW': '電腦操作任務', 'en': 'computer use',

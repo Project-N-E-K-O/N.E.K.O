@@ -453,7 +453,7 @@
         async runShowAgentSidePanelAction(scene, operation) {
             const director = this.director;
             const parts = operation.split(':');
-            const toggleId = parts[1] === 'openclaw' ? 'agent-openclaw' : 'agent-user-plugin';
+            const toggleId = 'agent-user-plugin';
             const actionId = parts[2] || '';
             if (actionId) {
                 const hadPluginDashboard = toggleId === 'agent-user-plugin' && actionId === 'management-panel'
