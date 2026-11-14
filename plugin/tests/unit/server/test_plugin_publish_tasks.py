@@ -384,17 +384,19 @@ async def test_market_notify_verifies_the_release_before_asking(
 
 
 @pytest.mark.parametrize(
-    ("lines", "returncode", "status", "market_status", "candidate"),
+    ("lines", "returncode", "status", "market_status", "candidate", "request_id"),
     [
-        (["[OK] GitHub Release ready", "[MARKET] status=published"], 0, "succeeded", "published", None),
-        (["[MARKET] status=pending_review candidate=17"], 0, "succeeded", "pending_review", 17),
-        (["[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
-        (["[OK] GitHub Release ready: https://github.com/owner/repo/releases/tag/v0.1.0", "[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9),
-        (["[OK] done"], 0, "succeeded", None, None),
+        (["[OK] GitHub Release ready", "[MARKET] status=published"], 0, "succeeded", "published", None, None),
+        (["[MARKET] status=pending_review candidate=17"], 0, "succeeded", "pending_review", 17, None),
+        (["[MARKET] status=pending_review candidate=7"], 0, "succeeded", "pending_review", 7, None),
+        (["[MARKET] status=verifying request=12"], 0, "succeeded", "verifying", None, 12),
+        (["[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9, None),
+        (["[OK] GitHub Release ready: https://github.com/owner/repo/releases/tag/v0.1.0", "[MARKET] status=rejected candidate=9"], 1, "failed", "rejected", 9, None),
+        (["[OK] done"], 0, "succeeded", None, None, None),
     ],
 )
 async def test_the_task_reports_the_market_status_line(
-    app, tmp_path, monkeypatch, no_psutil, lines, returncode, status, market_status, candidate
+    app, tmp_path, monkeypatch, no_psutil, lines, returncode, status, market_status, candidate, request_id
 ):
     record = store.add_record(tmp_path)
     _ready_gate(monkeypatch, tmp_path)
@@ -408,6 +410,7 @@ async def test_the_task_reports_the_market_status_line(
     assert latest["status"] == status
     assert latest["market_status"] == market_status
     assert latest["market_candidate_id"] == candidate
+    assert latest["market_request_id"] == request_id
     if any("https://github.com/owner/repo/releases/tag/v0.1.0" in line for line in lines):
         assert latest["release_url"] == "https://github.com/owner/repo/releases/tag/v0.1.0"
     if returncode:

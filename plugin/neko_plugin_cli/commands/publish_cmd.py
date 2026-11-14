@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
@@ -47,6 +48,40 @@ _MARKET_NETWORK_RETRY_SECONDS = 5.0
 _MARKET_REVIEW_STATUSES = frozenset(
     {"pending_review", "approved", "superseded", "rejected"}
 )
+_MARKET_RECEIPT_STATUSES = _MARKET_REVIEW_STATUSES | {
+    "accepted", "waiting_build", "verifying", "retry_wait", "platform_attention"
+}
+
+
+@dataclass(frozen=True)
+class MarketPublication:
+    status: str
+    candidate_id: int | None
+    request_id: int | None
+    version: str | None
+
+
+def parse_market_publication(status_code: int, payload: dict) -> MarketPublication | None:
+    status = payload.get("status")
+    if not isinstance(status, str):
+        return None
+    version = payload.get("version")
+    version_name = version.get("version") if isinstance(version, dict) else None
+    candidate = payload.get("candidate")
+    candidate_id = candidate.get("id") if isinstance(candidate, dict) else None
+    receipt = payload.get("publication_request")
+    request_id = receipt.get("id") if isinstance(receipt, dict) else None
+    candidate_id = candidate_id if type(candidate_id) is int and candidate_id > 0 else None
+    request_id = request_id if type(request_id) is int and request_id > 0 else None
+    if status_code == 202:
+        if (status in _MARKET_RECEIPT_STATUSES and request_id is not None) or (
+            status in _MARKET_REVIEW_STATUSES and candidate_id is not None
+        ):
+            return MarketPublication(status, candidate_id, request_id, None)
+    elif (status_code, status) in {(201, "published"), (200, "already_published")}:
+        if isinstance(version_name, str) and version_name:
+            return MarketPublication(status, candidate_id, request_id, version_name)
+    return None
 
 
 def _tri(english: str, chinese: str, japanese: str) -> str:
@@ -294,24 +329,8 @@ def _report_market_response(status_code: int, payload: dict) -> int:
         )
         return 1
 
-    status = payload.get("status")
-    version = payload.get("version")
-    version_name = version.get("version") if isinstance(version, dict) else None
-    candidate = payload.get("candidate")
-    candidate_id = candidate.get("id") if isinstance(candidate, dict) else None
-    if status_code == 202:
-        expected = (
-            status in _MARKET_REVIEW_STATUSES
-            and isinstance(candidate_id, int)
-            and not isinstance(candidate_id, bool)
-        )
-    else:
-        expected = (
-            (status_code, status) in {(201, "published"), (200, "already_published")}
-            and isinstance(version_name, str)
-            and bool(version_name)
-        )
-    if not expected:
+    publication = parse_market_publication(status_code, payload)
+    if publication is None:
         print(
             "[FAIL] "
             + _tri(
@@ -323,7 +342,11 @@ def _report_market_response(status_code: int, payload: dict) -> int:
         )
         return 1
 
-    print(f"[MARKET] status={status}" + (f" candidate={candidate_id}" if status_code == 202 else ""))
+    status = publication.status
+    version_name = publication.version
+    candidate = f" candidate={publication.candidate_id}" if publication.candidate_id is not None else ""
+    receipt = f" request={publication.request_id}" if publication.request_id is not None else ""
+    print(f"[MARKET] status={status}{candidate}{receipt}")
     if status == "published":
         print(
             f"[OK] Market published v{version_name} / "
@@ -363,7 +386,7 @@ def _report_market_response(status_code: int, payload: dict) -> int:
                 "Market のレビュアーはこの Release を承認済みです",
             )
         )
-    else:
+    elif status == "superseded":
         print(
             "[OK] "
             + _tri(
@@ -372,6 +395,8 @@ def _report_market_response(status_code: int, payload: dict) -> int:
                 "このバージョンの新しい Release が Market の審査でこれを置き換えました",
             )
         )
+    else:
+        print(f"[OK] Market accepted the notification / Market 已受理通知 / Market が通知を受理しました ({status})")
     return 0
 
 

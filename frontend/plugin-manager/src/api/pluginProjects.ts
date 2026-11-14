@@ -253,6 +253,18 @@ export type MarketPublicationStatus =
   | 'approved'
   | 'superseded'
   | 'rejected'
+  | 'accepted'
+  | 'waiting_build'
+  | 'verifying'
+  | 'retry_wait'
+  | 'platform_attention'
+
+export function isMarketPublicationStatus(status: string): status is MarketPublicationStatus {
+  return [
+    'published', 'already_published', 'pending_review', 'approved', 'superseded', 'rejected',
+    'accepted', 'waiting_build', 'verifying', 'retry_wait', 'platform_attention',
+  ].includes(status)
+}
 
 export interface PublishTask {
   task_id: string
@@ -265,6 +277,8 @@ export interface PublishTask {
   market_status: MarketPublicationStatus | null
   /** The Market's release review candidate, when it answered with one. */
   market_candidate_id: number | null
+  /** The Market's publication receipt, when it answered with one. */
+  market_request_id: number | null
   /** Bounded tail of the CLI output. */
   log: string[]
   started_at: number | null

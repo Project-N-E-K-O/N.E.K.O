@@ -275,6 +275,17 @@ function jsonInit(method: string, payload: unknown): RequestInit {
 const submissionPath = (id: number, action: string) =>
   `/market/submissions/${encodeURIComponent(String(id))}/${action}`
 
+export interface MarketPublicationReceipt {
+  id: number
+  release_url: string
+  status: string
+}
+
+export function listMarketPublicationReceipts(pluginId: number, requestId?: number) {
+  const query = requestId ? `?request_id=${requestId}` : ''
+  return call<MarketPublicationReceipt[]>(`/market/publication-requests/${pluginId}${query}`)
+}
+
 /**
  * List the signed-in account's submissions whose repository URL contains
  * `repository` (`owner/repo`); the Market matches `q` against `repo_url`.
