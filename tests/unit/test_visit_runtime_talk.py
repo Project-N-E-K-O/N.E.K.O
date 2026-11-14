@@ -2202,6 +2202,9 @@ async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeyp
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "卡住的一句", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)
+        # A header still being written makes the call hand the seal to the
+        # background without the timed wait; this test is about the seal path.
+        await wait_for(lambda: rt._journal_opening is not None and rt._journal_opening.done())
         assert await asyncio.wait_for(rt.seal_and_finalize("peer_left"), 5) is False
         assert set(budgets) == {"family", "seal"}, budgets
         # Combined waits must not exceed one _SEAL_MAX_S; the slack covers an
