@@ -741,3 +741,21 @@ async def test_the_keys_can_be_let_go_of_without_closing_the_browser(rig: Rig) -
     assert len(rig.desktop.release_threads) == 1 and rig.browser.closed == 0
     await rig.provider.aclose()
     assert len(rig.desktop.release_threads) == 2 and rig.browser.closed == 1
+
+
+async def test_a_browser_counts_as_unclosed_only_while_the_browser_tools_still_hold_one() -> None:
+    bare = BuiltinToolProvider(state=Switches())
+    # No browser tools were made: nothing can have been left unclosed.
+    assert bare.browser_unclosed() is False and bare._browser is None
+
+    class Holding:
+        held = True
+
+        def holds_a_browser(self) -> bool:
+            return self.held
+
+    tools = Holding()
+    bare._browser = tools  # type: ignore[assignment]
+    assert bare.browser_unclosed() is True
+    tools.held = False
+    assert bare.browser_unclosed() is False

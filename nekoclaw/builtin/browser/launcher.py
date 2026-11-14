@@ -280,6 +280,22 @@ def _port_open(port: int, timeout: float = 0.5) -> bool:
         return False
 
 
+def _left_by_a_browser_that_is_gone(user_data_dir: str | os.PathLike[str]) -> bool:
+    """Return whether the port file of a profile of ours names a port no browser of that profile listens on. Blocking.
+
+    A browser that was killed leaves its port file behind, and the port may
+    since have gone to another program: that the port answers does not show
+    the browser to be there. Taken for running, such a file would fail every
+    start for as long as the other program runs. False when the processes
+    cannot be listed, so that a browser that does run is never taken for gone.
+    """
+    try:
+        import psutil  # noqa: F401 - only whether the processes can be listed at all
+    except ImportError:
+        return False
+    return browser_process_on(user_data_dir) is None
+
+
 def running_endpoint(user_data_dir: str | os.PathLike[str]) -> str | None:
     """Return the debugging endpoint of a browser already running on this profile, or None. Blocking."""
     active = read_active_port(user_data_dir)
@@ -344,12 +360,15 @@ def _start(
     start gives up at once and takes what it started with it, so that a
     browser nobody will ever close is not left behind.
     """
-    os.makedirs(user_data_dir, exist_ok=True)
+    try:
+        os.makedirs(user_data_dir, exist_ok=True)
+    except OSError as exc:
+        raise BrowserStartError(f"{install.name} could not be started: its profile directory cannot be made ({exc})") from exc
     # A browser left running on this profile (by an earlier run of the
     # application) is used as it is: starting another on the same profile
     # would only open a window in that one and exit.
     existing = running_endpoint(user_data_dir)
-    if existing is not None:
+    if existing is not None and not _left_by_a_browser_that_is_gone(user_data_dir):
         return RunningBrowser(install=install, endpoint=existing, process=None, owned=True, user_data_dir=user_data_dir)
     stale = Path(user_data_dir, ACTIVE_PORT_FILE)
     try:

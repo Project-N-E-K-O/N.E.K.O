@@ -185,6 +185,10 @@ class BrowserTools:
         """Kill the browser outright, whatever call is under way. Blocking; see ``BrowserSession.kill``."""
         self._session.kill()
 
+    def holds_a_browser(self) -> bool:
+        """Whether a browser is still held: after ``aclose``, one that could not be closed."""
+        return self._session.holds_a_browser
+
     # -- building answers --------------------------------------------------
 
     def _pages_section(self) -> str:

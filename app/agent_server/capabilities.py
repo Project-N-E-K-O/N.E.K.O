@@ -199,6 +199,30 @@ def _try_refresh_model_probe(force: bool = False) -> bool:
 _llm_check_lock = asyncio.Lock()
 
 
+def _tool_group_in_use(kind: str) -> bool:
+    """Whether a commission is using the tools of ``computer_use`` or ``browser_use`` right now."""
+    from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, BUILTIN_GROUP_KEYBOARD_MOUSE
+
+    from .nekoclaw_builtins import group_in_use
+
+    return group_in_use(BUILTIN_GROUP_KEYBOARD_MOUSE if kind == "computer_use" else BUILTIN_GROUP_BROWSER)
+
+
+def _probe_lost_a_race() -> bool:
+    """Whether the probe says the agent model is unreachable while a commission is being answered by it.
+
+    A probe that failed leaves its word on the probe (``init_ok``) whatever
+    ``_fire_agent_llm_connectivity_check`` then made of it. Whoever reads
+    that word to switch a tool off or to mark it lost asks this first, so
+    that the one rule holds everywhere: nothing is taken from a task that is
+    under way because a probe lost a race against it.
+    """
+    probe = _shared.Modules.model_probe
+    if probe is None or getattr(probe, "init_ok", False):
+        return False
+    return _tool_group_in_use("computer_use") or _tool_group_in_use("browser_use")
+
+
 async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
     """Probe the shared Agent-LLM endpoint in a background thread.
 
@@ -237,12 +261,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
         # now, the LLM is demonstrably reachable — the probe lost a race (rate
         # limit / transient timeout) and we must not flip flags off or post a
         # bogus "猫爪预检失败 / 已自动关闭" toast on top of a working task.
-        def _has_running(kind: str) -> bool:
-            from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, BUILTIN_GROUP_KEYBOARD_MOUSE
-
-            from .nekoclaw_builtins import group_in_use
-
-            return group_in_use(BUILTIN_GROUP_KEYBOARD_MOUSE if kind == "computer_use" else BUILTIN_GROUP_BROWSER)
+        _has_running = _tool_group_in_use
 
         try:
             probe_result = await asyncio.get_event_loop().run_in_executor(None, _probe)

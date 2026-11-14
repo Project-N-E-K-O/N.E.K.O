@@ -5187,3 +5187,89 @@ def test_a_log_of_no_bytes_in_the_target_does_not_stop_the_migration(tmp_path, s
     # Nothing in it could be replayed into the ledger that comes to stand next to it.
     assert result["completed"] is True, result
     assert _ledger_files(target_root) == {_LEDGER: b"the source's ledger", _LEDGER_LOG: b""}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source_log", "is_evidence"),
+    [
+        # The log holds commits the identical ledger file in the target does not have.
+        (b"commits of the source", False),
+        # Nothing in one of no bytes, and nothing where there is none.
+        (b"", True),
+        (None, True),
+    ],
+)
+def test_a_ledger_the_target_already_has_is_no_proof_of_a_copy_while_its_log_stays_behind(tmp_path, source_log, is_evidence):
+    source = {_LEDGER: b"the same ledger"}
+    if source_log is not None:
+        source[_LEDGER_LOG] = source_log
+    config_manager, source_root, target_root = _ledger_roots(
+        tmp_path, source=source, target={_LEDGER: b"the same ledger"}, selection_source="legacy"
+    )
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["completed"] is True, result
+    assert _ledger_files(target_root) == {_LEDGER: b"the same ledger"}
+    assert _ledger_files(source_root) == source
+    # Taken for copied, cleanup would delete the source's ledger and leave its log with nothing to be replayed into.
+    assert (_LEDGER in result["payload"]["copied_entries"]) is is_evidence
+    assert _LEDGER_LOG not in result["payload"]["copied_entries"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("target_before", [{}, {_LEDGER_LOG: b""}], ids=["no log", "a log of no bytes"])
+def test_a_log_that_comes_to_be_in_the_target_while_the_source_is_staged_stops_the_migration(
+    tmp_path, monkeypatch, target_before
+):
+    from utils import storage_migration as storage_migration_module
+
+    source = {_LEDGER: b"the source's ledger"}
+    config_manager, source_root, target_root = _ledger_roots(
+        tmp_path, source=source, target=target_before, selection_source="custom"
+    )
+    original_copy = storage_migration_module._copy_and_verify_entry
+
+    def _copy_then_a_log_is_put_back(source_entry, staged_entry, **kwargs):
+        copied = original_copy(source_entry, staged_entry, **kwargs)
+        # A sync client restores the log the target had some time ago.
+        (target_root / _LEDGER_LOG).parent.mkdir(parents=True, exist_ok=True)
+        (target_root / _LEDGER_LOG).write_bytes(b"commits of nobody knows what")
+        return copied
+
+    monkeypatch.setattr(storage_migration_module, "_copy_and_verify_entry", _copy_then_a_log_is_put_back)
+
+    result = run_pending_storage_migration(config_manager)
+
+    # Stopped before anything is published: the source's ledger never stands next to that log.
+    assert result["error_code"] == "companion_entry_conflict", result
+    assert _LEDGER_LOG in result["error_message"]
+    assert _LEDGER not in _ledger_files(target_root)
+    assert (target_root / _LEDGER_LOG).read_bytes() == b"commits of nobody knows what"
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "target"
+    assert _ledger_files(source_root) == source
+
+
+@pytest.mark.unit
+def test_a_log_that_comes_to_be_in_the_target_while_the_entries_are_published_is_rolled_back(tmp_path, monkeypatch):
+    from utils import storage_migration as storage_migration_module
+
+    source = {_LEDGER: b"the source's ledger"}
+    config_manager, source_root, target_root = _ledger_roots(tmp_path, source=source, target={}, selection_source="custom")
+    original_publish = storage_migration_module._publish_without_overwrite
+
+    def _publish_then_a_log_is_put_back(staged, target, **kwargs):
+        original_publish(staged, target, **kwargs)
+        (target_root / _LEDGER_LOG).parent.mkdir(parents=True, exist_ok=True)
+        (target_root / _LEDGER_LOG).write_bytes(b"commits of nobody knows what")
+
+    monkeypatch.setattr(storage_migration_module, "_publish_without_overwrite", _publish_then_a_log_is_put_back)
+
+    result = run_pending_storage_migration(config_manager)
+
+    assert result["error_code"] == "companion_entry_conflict", result
+    # What was published is taken back; the roots are not switched to a ledger with a log that is not its own.
+    assert _LEDGER not in _ledger_files(target_root)
+    assert (target_root / "config" / "characters.json").read_text(encoding="utf-8") == "target"
+    assert _ledger_files(source_root) == source

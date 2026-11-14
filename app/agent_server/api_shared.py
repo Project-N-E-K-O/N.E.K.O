@@ -92,6 +92,7 @@ from .capabilities import (  # noqa: F401
     _browser_dependency_status,
     _keyboard_mouse_availability,
     _model_images_status,
+    _probe_lost_a_race,
     _close_browser,
     _try_refresh_model_probe,
     _llm_check_lock,

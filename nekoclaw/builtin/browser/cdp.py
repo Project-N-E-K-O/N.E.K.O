@@ -144,14 +144,27 @@ class CdpConnection:
         self._pending[command_id] = future
         if session_id:
             self._pending_sessions[command_id] = session_id
+        # One time for the whole command. Sending waits while the socket's
+        # buffer is full, which it stays for as long as the browser reads
+        # nothing: that wait counts, or a browser that has stopped would be
+        # waited for without end.
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        sending = asyncio.timeout(timeout)
         try:
             try:
-                await self._socket.send(json.dumps(message, ensure_ascii=False))
+                async with sending:
+                    await self._socket.send(json.dumps(message, ensure_ascii=False))
             except Exception as exc:  # noqa: BLE001 - whatever the socket raises, the connection is unusable
+                if sending.expired():
+                    # What was written stays in the buffer and reaches the
+                    # browser once it reads again, like a command it was
+                    # sent and did not answer in time.
+                    raise CdpTimeout(f"{method} could not be sent within {timeout:.0f}s") from exc
                 self._gone()
                 raise CdpClosed(f"the connection to the browser broke: {type(exc).__name__}") from exc
             try:
-                answer = await asyncio.wait_for(future, timeout)
+                answer = await asyncio.wait_for(future, None if deadline is None else max(0.0, deadline - loop.time()))
             except asyncio.TimeoutError as exc:
                 raise CdpTimeout(f"{method} got no answer within {timeout:.0f}s") from exc
         finally:

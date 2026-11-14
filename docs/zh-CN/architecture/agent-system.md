@@ -66,7 +66,7 @@
 
 应用不随包附带浏览器，启动时也不下载浏览器。Playwright 只是测试依赖，`browser-use` 不在依赖里。本机找不到可用的浏览器时，浏览器操控不就绪，原因码是 `AGENT_BROWSER_NOT_FOUND`。
 
-`computer` 和 `browser_take_screenshot` 返回的是图片，所以只提供给模型能看图的 task agent。模型默认按能看图处理；厂商因为请求里带图片而拒绝时，这次请求去掉图片重发一遍，并把这个模型记到 `<数据根>/nekoclaw/model_capabilities.json`。task agent 的上下文里，每组工具只保留最近 3 张截图。
+`computer` 和 `browser_take_screenshot` 返回的是图片，所以只提供给模型能看图的 task agent。模型默认按能看图处理；厂商因为请求里带图片而拒绝时，这次请求去掉图片重发一遍，并把这个模型记到 `<数据根>/nekoclaw/model_capabilities.json`。task agent 的上下文里，这些工具的截图合在一起只保留最近 3 张。
 
 桌面只有一个，浏览器也只有一个。一件委托从第一次调用起占用一组工具，直到 task agent 这一轮跑完、委托进入等用户回话，或者委托结束。一件委托和它开的 task agent 共用一次占用。别的委托要用这一组时最多等 120 秒，等不到就被告知是哪件委托占着。
 

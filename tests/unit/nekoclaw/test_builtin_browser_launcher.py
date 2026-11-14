@@ -643,6 +643,7 @@ def starter(monkeypatch: Any, tmp_path: Path) -> Starter:
 
 def test_a_browser_already_running_on_the_profile_is_used_and_nothing_is_started(starter: Starter) -> None:
     starter.browser_listens(9555, "/devtools/browser/left-running")
+    starter.process_on_profile = 7001
     browser = launcher._start(CHROME, str(starter.profile), False, ())
     assert browser == RunningBrowser(
         install=CHROME,
@@ -1246,3 +1247,41 @@ def test_a_browser_that_was_attached_to_is_never_killed(monkeypatch: Any) -> Non
     theirs = RunningBrowser(install=CHROME, endpoint="ws://x", process=SimpleNamespace(pid=4321), owned=False, user_data_dir="/theirs")
     launcher.kill(theirs)
     assert killed == []
+
+
+def test_a_port_file_whose_port_went_to_another_program_is_not_taken_for_a_running_browser(starter: Starter) -> None:
+    # The browser was killed and left its port file; the port answers, but it is another program's now.
+    starter.browser_listens(9555, "/devtools/browser/killed")
+    assert starter.process_on_profile is None
+    seen_at_start: list[bool] = []
+    starter.on_start.append(lambda: seen_at_start.append((starter.profile / ACTIVE_PORT_FILE).exists()))
+    starter.clock.on_sleep.append(lambda count: starter.browser_listens(9666) if count == 2 else None)
+
+    browser = launcher._start(CHROME, str(starter.profile), False, ())
+
+    # Taken for the browser, it would fail this start and every one after it.
+    assert len(starter.started) == 1 and seen_at_start == [False]
+    assert browser.endpoint == "ws://127.0.0.1:9666/devtools/browser/new" and browser.process is starter.child
+
+
+def test_a_browser_is_not_taken_for_gone_when_the_processes_cannot_be_listed(starter: Starter, monkeypatch: Any) -> None:
+    starter.browser_listens(9555, "/devtools/browser/left-running")
+    monkeypatch.setitem(sys.modules, "psutil", None)
+
+    browser = launcher._start(CHROME, str(starter.profile), False, ())
+
+    # Starting another on its profile would only open a window in it, and its port file would be gone.
+    assert starter.started == [] and browser.endpoint == "ws://127.0.0.1:9555/devtools/browser/left-running"
+    assert (starter.profile / ACTIVE_PORT_FILE).exists()
+
+
+def test_a_profile_directory_that_cannot_be_made_is_a_start_that_failed(starter: Starter, monkeypatch: Any) -> None:
+    def refuse(path: Any, exist_ok: bool = False) -> None:
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(launcher.os, "makedirs", refuse)
+
+    # Any other error would leave the tool call without an answer the model can read.
+    with pytest.raises(BrowserStartError, match="Google Chrome could not be started: its profile directory cannot be made"):
+        launcher._start(CHROME, str(starter.profile), False, ())
+    assert starter.started == []

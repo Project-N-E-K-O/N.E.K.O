@@ -256,6 +256,11 @@ step that closes the browser is reached late or not at all: this does not
 depend on it being reached."""
 
 BROWSER_CLOSE_AT_SHUTDOWN_SECONDS = 4.0
+# How long the browser the tools started is given to close when the user
+# stops every task (``end_all``); killed after that. Asking it to close has
+# several steps that each have a time of their own and add up to more than
+# the page waits for an answer.
+BROWSER_CLOSE_AT_END_ALL_SECONDS = 4.0
 """How long the browser is given to close by itself once the shutdown gets to
 it; less when less than that is left before it is killed (above)."""
 

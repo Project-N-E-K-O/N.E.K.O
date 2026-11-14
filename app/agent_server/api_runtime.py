@@ -716,6 +716,12 @@ async def shutdown():
             pass  # Killed just below, like one there was no time left to ask.
     if not closed_in_time:
         logger.warning("[Agent] The browser did not close in time; killing it")
+    elif builtin_provider.browser_unclosed():
+        # It was asked in time and closing it failed. The browser is then
+        # kept to be closed the next time, and at a shutdown there is none.
+        closed_in_time = False
+        logger.warning("[Agent] The browser could not be closed; killing it")
+    if not closed_in_time:
         try:
             await asyncio.to_thread(builtin_provider.kill_browser)
         except Exception as e:
@@ -984,10 +990,21 @@ async def set_browser_settings(payload: Dict[str, Any]):
         raise HTTPException(400, str(exc))
     # A browser named in the settings may be one the search does not find,
     # or the one it found may have been set aside: looked for afresh.
-    from .capabilities import _forget_browser_search
+    from .capabilities import _browser_dependency_status, _forget_browser_search
 
     _forget_browser_search()
     _create_tracked_task(_close_browser(update_capability=False))
+    # With a model that answers, whether there is a browser to drive is all
+    # the browser tools depend on, and that may just have changed: said at
+    # once. Left as it was (no browser found, from before one was named
+    # here), the tools would stay refused until something asked again. With
+    # a model that has not answered, the check that follows its answer says.
+    probe = Modules.model_probe
+    if probe is not None and getattr(probe, "init_ok", False):
+        dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
+        _set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)
+        _bump_state_revision()
+        await _emit_agent_status_update()
     return {"success": True, **view}
 
 

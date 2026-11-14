@@ -617,6 +617,11 @@ class BrowserSession:
                 continue
             self._unclosed.remove(leftover)
 
+    @property
+    def holds_a_browser(self) -> bool:
+        """Whether a browser is driven, or one that could not be closed is still to be closed."""
+        return self._browser is not None or bool(self._unclosed)
+
     async def release_handles(self) -> None:
         """Let go of the handles on elements taken so far (``OBJECT_GROUP``).
 

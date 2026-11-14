@@ -187,6 +187,7 @@ def test_the_page_branch_names_the_event_and_the_record_the_desktop_shell_reads(
     assert "window._agentBuiltinActivity[activity.group] = activity;" in body
     assert "delete window._agentBuiltinActivity[activity.group];" in body
     assert "activity.state === 'started'" in body
+    assert "keptActivity.commission_id === activity.commission_id" in body
 
 
 def _run_branch(scenario: str) -> dict[str, Any]:
@@ -498,3 +499,32 @@ def test_on_a_remote_backend_none_of_these_routes_reaches_the_agent_process(
     assert response.status_code == 501
     assert "NEKO_ACTIVITY_TRACKER_REMOTE" in response.json()["error"]
     assert agent.requests == []
+
+
+def test_an_end_that_comes_late_does_not_clear_the_task_that_has_the_group_now():
+    first = {"group": "keyboard_mouse", "state": "started", "commission_id": "c1", "window": None}
+    second = {"group": "keyboard_mouse", "state": "started", "commission_id": "c2", "window": None}
+    out = _run_branch(
+        f"""
+        const first = {json.dumps(first)};
+        const second = {json.dumps(second)};
+        tell(first);
+        // The next task took the desktop over before the end of the first one was told.
+        tell(second);
+        tell(Object.assign({{}}, first, {{ state: 'ended' }}));
+        out.afterTheLateEnd = kept();
+        tell(Object.assign({{}}, second, {{ state: 'ended' }}));
+        out.afterItsOwnEnd = kept();
+        // An end that does not say whose it is clears the group, as before.
+        tell(first);
+        tell({{ group: 'keyboard_mouse', state: 'ended' }});
+        out.afterAnEndOfNobody = kept();
+        """
+    )
+
+    assert out["afterTheLateEnd"] == {"keyboard_mouse": second}
+    assert out["afterItsOwnEnd"] == {}
+    assert out["afterAnEndOfNobody"] == {}
+    # The window is told of every one of them all the same.
+    assert [event["detail"]["state"] for event in out["events"]] == ["started", "started", "ended", "ended", "started", "ended"]
+    assert out["warnings"] == []

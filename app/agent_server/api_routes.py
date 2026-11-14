@@ -35,6 +35,7 @@ from .api_shared import (  # noqa: F401
     _fire_agent_llm_connectivity_check,
     _keyboard_mouse_availability,
     _model_images_status,
+    _probe_lost_a_race,
     _set_capability,
     _try_refresh_model_probe,
     app,
@@ -839,13 +840,19 @@ async def computer_use_availability():
 
     status = await asyncio.to_thread(_keyboard_mouse_availability)
     reasons = status.get("reasons", []) if isinstance(status, dict) else []
-    _set_capability("computer_use", bool(status.get("ready")) if isinstance(status, dict) else False, reasons[0] if reasons else "")
+    ready = bool(status.get("ready")) if isinstance(status, dict) else False
+    if not ready and _probe_lost_a_race():
+        # What was found is still answered, but nothing is taken from the
+        # task that is under way: see ``_probe_lost_a_race``.
+        logger.info("[Agent] Computer Use reads as not ready while a task is using the tools; left as it is")
+    else:
+        _set_capability("computer_use", ready, reasons[0] if reasons else "")
 
-    # Auto-update flag if capability lost
-    if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
-        logger.info("[Agent] Computer Use capability lost, disabling flag")
-        Modules.agent_flags["computer_use_enabled"] = False
-        Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
+        # Auto-update flag if capability lost
+        if not status.get("ready") and Modules.agent_flags.get("computer_use_enabled"):
+            logger.info("[Agent] Computer Use capability lost, disabling flag")
+            Modules.agent_flags["computer_use_enabled"] = False
+            Modules.notification = json.dumps({"code": "AGENT_CU_CAPABILITY_LOST", "details": {"reason_code": status.get('reasons', [])[0] if status.get('reasons') else 'unknown'}})
 
     # The tool works from screenshots: whether the model is sent any, and why not.
     status["model_images"] = await _model_images_status()
@@ -899,7 +906,10 @@ async def browser_use_availability():
     if not llm_ok:
         reasons.append(probe.last_error if probe and probe.last_error else "Agent LLM not connected")
     ready = llm_ok and dependency_ready
-    _set_capability("browser_use", ready, reasons[0] if reasons else "")
+    # A model that reads as unreachable while a task is using the tools
+    # takes nothing from that task: see ``_probe_lost_a_race``.
+    if ready or not _probe_lost_a_race():
+        _set_capability("browser_use", ready, reasons[0] if reasons else "")
     return {"enabled": True, "ready": ready, "reasons": reasons, "provider": "nekoclaw"}
 
 
@@ -960,7 +970,18 @@ async def admin_control(payload: Dict[str, Any]):
         # (a disable-triggered close is itself tracked above and may have
         # been cancelled by this drain). Keys a stopped call left held are
         # let go of.
-        await _close_browser(update_capability=False)
+        # Within a time of its own: its steps add up to more than the page
+        # waits for this request, and the keys below would wait with it.
+        from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
+
+        try:
+            await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("[Agent] end_all: the browser did not close in time; killing it")
+            try:
+                await asyncio.to_thread(builtin_provider.kill_browser)
+            except Exception as e:
+                logger.warning(f"[Agent] end_all: killing the browser failed: {e}")
         try:
             from nekoclaw.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
 

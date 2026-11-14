@@ -5171,7 +5171,13 @@
                             if (activity.state === 'started') {
                                 window._agentBuiltinActivity[activity.group] = activity;
                             } else {
-                                delete window._agentBuiltinActivity[activity.group];
+                                // 上一个任务的「结束」可能比下一个任务的「开始」晚到：
+                                // 只清它自己那条，别把正在用这一组的任务清掉。
+                                var keptActivity = window._agentBuiltinActivity[activity.group];
+                                if (!keptActivity || activity.commission_id == null
+                                    || keptActivity.commission_id === activity.commission_id) {
+                                    delete window._agentBuiltinActivity[activity.group];
+                                }
                             }
                         }
                         window.dispatchEvent(new CustomEvent('neko-agent-builtin-activity', { detail: activity }));

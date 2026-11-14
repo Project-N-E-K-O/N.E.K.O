@@ -202,3 +202,65 @@ def test_the_last_browser_close_comes_after_the_tracked_teardown_was_cancelled(s
     asyncio.run(_scenario())
 
     assert order == ["teardown cancelled", "close_browser"]
+
+
+def test_end_all_kills_a_browser_that_does_not_close_in_the_time_it_has(srv, monkeypatch: pytest.MonkeyPatch):
+    import threading
+
+    import config.nekoclaw_settings as settings
+
+    # Shorter than the page waits for this request (5 seconds).
+    assert settings.BROWSER_CLOSE_AT_END_ALL_SECONDS == 4.0
+    monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_END_ALL_SECONDS", 0.05)
+    desktop = _Desktop()
+    monkeypatch.setattr(srv.builtin_provider, "_desktop", desktop)
+    killed_in: list[threading.Thread] = []
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
+    closing: list[str] = []
+
+    async def _slow_close() -> None:
+        closing.append("asked")
+        try:
+            await asyncio.sleep(3600)
+        finally:
+            closing.append("given up")
+
+    monkeypatch.setattr(srv.builtin_provider, "close_browser", _slow_close)
+
+    async def _scenario() -> None:
+        result = await asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0)
+        assert result["success"] is True
+        # Killed, off the event loop; and the keys did not wait for the browser.
+        assert len(killed_in) == 1 and killed_in[0] is not threading.current_thread()
+        assert closing == ["asked", "given up"] and desktop.released == 1
+
+    asyncio.run(_scenario())
+
+
+def test_end_all_does_not_kill_a_browser_that_closes_in_time(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):
+    killed: list[int] = []
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", lambda: killed.append(1))
+
+    result = asyncio.run(srv.admin_control({"action": "end_all"}))
+
+    assert result["success"] is True
+    assert browser_closes == [True] and killed == []
+
+
+def test_end_all_finishes_when_the_browser_can_be_neither_closed_nor_killed(srv, monkeypatch: pytest.MonkeyPatch):
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_END_ALL_SECONDS", 0.05)
+
+    async def _slow_close() -> None:
+        await asyncio.sleep(3600)
+
+    def _cannot_kill() -> None:
+        raise RuntimeError("the process list cannot be read")
+
+    monkeypatch.setattr(srv.builtin_provider, "close_browser", _slow_close)
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", _cannot_kill)
+
+    result = asyncio.run(asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0))
+
+    assert result == {"success": True, "message": "all tasks terminated and cleared"}

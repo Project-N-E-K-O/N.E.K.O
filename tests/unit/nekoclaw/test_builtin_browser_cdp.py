@@ -445,3 +445,67 @@ async def test_a_socket_that_fails_on_sending_ends_the_connection() -> None:
         await connection.send("Page.enable")
     await connection.close()
     assert socket.closed
+
+
+class _FullSocket:
+    """A socket whose other end reads nothing: sending waits for as long as it is let, or as long as told."""
+
+    def __init__(self, sending_takes: float | None = None) -> None:
+        self.sending_takes = sending_takes
+        self.sent: list[str] = []
+
+    def __aiter__(self) -> "_FullSocket":
+        return self
+
+    async def __anext__(self) -> str:
+        await asyncio.Event().wait()
+        raise StopAsyncIteration
+
+    async def send(self, text: str) -> None:
+        if self.sending_takes is None:
+            await asyncio.Event().wait()
+        await asyncio.sleep(self.sending_takes or 0.0)
+        self.sent.append(text)
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_a_browser_that_reads_nothing_is_waited_for_no_longer_than_one_that_does_not_answer() -> None:
+    connection = CdpConnection(_FullSocket())
+    try:
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(CdpTimeout, match="Page.enable could not be sent within 0s"):
+            await asyncio.wait_for(connection.send("Page.enable", timeout=0.2), 5.0)
+        assert asyncio.get_running_loop().time() - started < 3.0
+        # Nothing waits for an answer to it, and the connection is as usable as after any command that timed out.
+        assert connection._pending == {} and not connection.closed
+    finally:
+        await connection.close()
+
+
+async def test_the_time_sending_took_is_not_given_to_the_answer_once_more() -> None:
+    socket = _FullSocket(sending_takes=1.0)
+    connection = CdpConnection(socket)
+    try:
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(CdpTimeout, match="Page.enable got no answer within 1s"):
+            await asyncio.wait_for(connection.send("Page.enable", timeout=1.4), 10.0)
+        took = asyncio.get_running_loop().time() - started
+        # Sent after 1.0s, it is waited for 0.4s more: 2.4s would be the time of the command twice over.
+        assert len(socket.sent) == 1 and 1.3 < took < 2.1, took
+    finally:
+        await connection.close()
+
+
+class _TimedOutSocket(_BrokenSocket):
+    async def send(self, text: str) -> None:
+        # What the system raises for a connection that went dead: not the time of the command running out.
+        raise TimeoutError(110, "Connection timed out")
+
+
+async def test_a_socket_the_system_gave_up_on_is_a_connection_that_broke_and_not_a_command_out_of_time() -> None:
+    connection = CdpConnection(_TimedOutSocket())
+    with pytest.raises(CdpClosed, match="the connection to the browser broke: TimeoutError"):
+        await connection.send("Page.enable", timeout=30.0)
+    assert connection.closed

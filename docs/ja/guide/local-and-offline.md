@@ -55,6 +55,7 @@ N.E.K.O. は、インストール後すぐに全機能をオフラインで使�
 - 現在の N.E.K.O. サービス経路を通る無料 API request
 - 選択した cloud ASR、TTS、voice service へ送る音声 sample または text
 - ユーザーが明示的に実行する Steam Cloud / Workshop content
+- タスクがキーボード・マウス操作やブラウザー操作のツールを使っている間に、これらのツールが Agent のモデルへ返すデスクトップのスクリーンショットと Web ページの内容
 - Online feed、Browser request、リモート Agent work
 
 データフローの詳細は、[N.E.K.O. は会話やメモリをどこへ送信しますか？](./data-and-privacy)を参照してください。

@@ -270,10 +270,14 @@ class BuiltinToolProvider:
         """Kill the browser this process started without waiting for anything. Blocking.
 
         For when ``close_browser`` did not finish within the time a
-        shutdown has.
+        shutdown has, or finished without the browser being closed.
         """
         if self._browser is not None:
             self._browser.kill()
+
+    def browser_unclosed(self) -> bool:
+        """Whether a browser is still held after ``close_browser``: closing it failed, and it is kept to be closed later."""
+        return self._browser is not None and self._browser.holds_a_browser()
 
     async def release_keys(self) -> None:
         """Let go of keys and buttons a stopped call left held; never raises."""

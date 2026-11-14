@@ -57,8 +57,17 @@ _FILE_VERSION = 1
 
 
 def model_key(base_url: Any, model: Any) -> str:
-    """Return the key a model is remembered by: its address and its name."""
-    return f"{str(base_url or '').strip().rstrip('/').lower()}|{str(model or '').strip()}"
+    """Return the key a model is remembered by: its address and its name.
+
+    The scheme and the host of an address are written in any case; its path
+    is not, and two paths that differ by case may be two services.
+    """
+    address = str(base_url or "").strip().rstrip("/")
+    scheme, separator, rest = address.rpartition("://")
+    authority, slash, path = rest.partition("/")
+    # Before the "@", if there is one: a name and a password, kept as written.
+    credentials, at, host = authority.rpartition("@")
+    return f"{scheme.lower()}{separator}{credentials}{at}{host.lower()}{slash}{path}|{str(model or '').strip()}"
 
 
 class ModelCapabilityStore:

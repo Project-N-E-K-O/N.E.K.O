@@ -3283,3 +3283,29 @@ async def test_a_letting_go_that_was_stopped_half_way_is_made_up_for_the_next_ti
     await session.release_handles()
     assert [command.method for command in world.browser.since(mark)] == ["Runtime.releaseObjectGroup"]
     assert fake.objects == {} and session._handles == set()
+
+
+async def test_a_browser_is_held_from_its_start_until_it_was_closed_for_good(session: BrowserSession, world: BrowserWorld) -> None:
+    assert session.holds_a_browser is False
+    await session.start()
+    assert session.holds_a_browser is True
+
+    world.close_error = RuntimeError("the process would not die")
+    await session.close()
+    # Not driven any more, but not closed either: whoever has no later (a shutdown) kills it.
+    assert not session.connected and session.holds_a_browser is True
+
+    world.close_error = None
+    await session.close()
+    assert session.holds_a_browser is False
+
+
+async def test_the_tools_say_whether_their_session_still_holds_a_browser(session: BrowserSession, world: BrowserWorld) -> None:
+    from nekoclaw.builtin.browser.tools import BrowserTools
+
+    tools = BrowserTools(session)
+    assert tools.holds_a_browser() is False
+    await session.start()
+    assert tools.holds_a_browser() is True
+    await tools.aclose()
+    assert tools.holds_a_browser() is False

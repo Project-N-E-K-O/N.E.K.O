@@ -55,6 +55,7 @@ Local storage does not by itself determine where model processing occurs.
 - free API requests forwarded through the current N.E.K.O service path;
 - speech samples or text sent to a selected cloud ASR, TTS, or voice service;
 - user-triggered Steam Cloud or Workshop content;
+- screenshots of the desktop and the content of web pages, which the keyboard-and-mouse and browser tools return to the Agent model while a task uses them;
 - online feeds, browser requests, and remote Agent work.
 
 See [Where does N.E.K.O send conversations and memory?](./data-and-privacy) for the data-flow view.

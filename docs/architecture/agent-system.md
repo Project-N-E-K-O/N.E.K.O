@@ -66,7 +66,7 @@ The browser is one the user has installed: Chrome, Edge, Brave, or Chromium, in 
 
 No browser is shipped with the application and none is downloaded at start. Playwright is a test dependency only, and `browser-use` is not a dependency. When no usable browser is installed, browser control is not ready and reports that none was found (`AGENT_BROWSER_NOT_FOUND`).
 
-`computer` and `browser_take_screenshot` return pictures, so they are offered only to a task agent whose model can see pictures. A model counts as able to until its provider refuses a request because it carried a picture; that request is sent once more without pictures, and the model is recorded in `<data root>/nekoclaw/model_capabilities.json`. A task agent's context keeps the three most recent screenshots of each group.
+`computer` and `browser_take_screenshot` return pictures, so they are offered only to a task agent whose model can see pictures. A model counts as able to until its provider refuses a request because it carried a picture; that request is sent once more without pictures, and the model is recorded in `<data root>/nekoclaw/model_capabilities.json`. A task agent's context keeps the three most recent screenshots, counted across all of these tools together.
 
 There is one desktop and one browser. A commission occupies a group from its first call until its task agent's run ends, it starts waiting for the user, or it ends. A commission and the task agents it started share one occupation. Another commission that needs the group waits up to 120 seconds and is then told which commission has it.
 

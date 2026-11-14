@@ -258,3 +258,15 @@ async def test_what_a_hand_wrote_never_lapses(path, monkeypatch):
     assert await store.describe(URL, "text-only") == {"sees": False, "source": "set by hand"}
     assert await store.describe(URL, "vision-9") == {"sees": True}
     assert await store.note_images_refused(URL, "vision-9", "refused") is False
+
+
+def test_the_case_of_the_scheme_and_the_host_is_dropped_and_that_of_the_path_is_kept() -> None:
+    assert model_key("HTTPS://API.Example.COM/v1/", "Vision-1") == "https://api.example.com/v1|Vision-1"
+    # Two paths that differ by case may be two services: what one refused says nothing of the other.
+    assert model_key("https://gateway.example.com/TeamA/v1", "m") != model_key("https://gateway.example.com/teama/v1", "m")
+    assert model_key("https://gateway.example.com/TeamA/v1", "m") == "https://gateway.example.com/TeamA/v1|m"
+    # A name and a password in the address are kept as written; the port goes with the host.
+    assert model_key("http://Ada:SeCret@LocalHost:8080/V1", "m") == "http://Ada:SeCret@localhost:8080/V1|m"
+    # An address without a scheme, or none at all.
+    assert model_key("LocalHost:11434/Api", "m") == "localhost:11434/Api|m"
+    assert model_key(None, None) == "|" and model_key("  ", " m ") == "|m"

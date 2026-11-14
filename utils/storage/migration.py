@@ -3031,6 +3031,14 @@ def run_pending_storage_migration(
         elif plugin_exec_entry in target_entries_before_staging and plugin_exec_entry not in source_entries_before_staging:
             # A target-only install tree keeps its own source records.
             excluded_source_entries = (plugin_lock_entry,)
+
+        def _companion_conflict(companion_entry: str) -> StorageMigrationError:
+            return StorageMigrationError(
+                "companion_entry_conflict",
+                "目标路径里留有任务账本上次没写完的日志，和要搬过去的账本不是一套，放在一起会损坏账本。"
+                f"请选择空目录后重试: {companion_entry}",
+            )
+
         for companion_entry, owner_entry in _COMPANION_ENTRIES.items():
             owner_is_copied = owner_entry in source_entries_before_staging and not (
                 use_existing_target and owner_entry in target_entries_before_staging
@@ -3052,11 +3060,7 @@ def run_pending_storage_migration(
                 # What is copied would come to stand next to a companion the
                 # target left behind (a reused target keeps what it holds,
                 # and nothing takes away an entry the source does not have).
-                raise StorageMigrationError(
-                    "companion_entry_conflict",
-                    "目标路径里留有任务账本上次没写完的日志，和要搬过去的账本不是一套，放在一起会损坏账本。"
-                    f"请选择空目录后重试: {companion_entry}",
-                )
+                raise _companion_conflict(companion_entry)
         existing_entries = [name for name in source_entries_before_staging if name not in excluded_source_entries]
         uncopied_install_entries = set(_PLUGIN_INSTALLATION_ENTRIES) - set(existing_entries)
 
@@ -3225,10 +3229,27 @@ def run_pending_storage_migration(
                     f"迁移目标的条目在挪进事务备份前后被改动，已停止迁移并放回原处: {entry_name}",
                 )
 
+        def _require_no_companion_left_by_the_target() -> None:
+            # The look before staging was at what the target held then. While
+            # the entries were copied a companion may have come to be there
+            # (a sync client putting a log back), or one of no bytes may have
+            # been written into: the owner that is published would stand next
+            # to it all the same.
+            for companion_entry, owner_entry in _COMPANION_ENTRIES.items():
+                if owner_entry not in entries_to_publish or companion_entry in entries_to_publish:
+                    # The target keeps its own pair, or gets the whole of the source's.
+                    continue
+                if not _entry_exists(target_root / companion_entry):
+                    continue
+                if companion_entry not in source_entries_before_staging and _is_empty_file(target_root / companion_entry):
+                    continue
+                raise _companion_conflict(companion_entry)
+
         def _require_sources_unchanged(published: Collection[str] = ()) -> None:
             for entry_name, expected in moved_backup_fingerprints.items():
                 _require_backup_unchanged(entry_name, expected)
             _require_no_unpaired_target_installation()
+            _require_no_companion_left_by_the_target()
             if use_existing_target:
                 kept_install_entries = reused_target_entries.difference(identical_entries).intersection(
                     _PLUGIN_INSTALLATION_ENTRIES
@@ -3359,8 +3380,19 @@ def run_pending_storage_migration(
                 config_root=target_root / "config",
                 source_root=source_root,
             )
+        # Nor where a companion of the entry stays behind in the source: the
+        # identical file in the target is then not the whole of what the
+        # source holds (a ledger's log has commits its database file lacks),
+        # and cleanup would take the owner from under its companion.
+        owners_of_companions_left_behind = {
+            owner_entry
+            for companion_entry, owner_entry in _COMPANION_ENTRIES.items()
+            if companion_entry in excluded_source_entries
+            and companion_entry in source_entries_before_staging
+            and not _is_empty_file(source_root / companion_entry)
+        }
         for entry_name, proof in identical_entries.items():
-            if entry_name not in referenced_by_kept_config:
+            if entry_name not in referenced_by_kept_config and entry_name not in owners_of_companions_left_behind:
                 copied_entries[entry_name] = proof
 
         # Reusing an existing target only makes sense if it still holds runtime

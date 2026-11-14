@@ -204,19 +204,23 @@ async def _browser_cycle(args: argparse.Namespace, cycle: int) -> dict[str, Any]
     from nekoclaw.builtin.browser.session import BrowserError, BrowserSession
     from nekoclaw.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
 
-    # A browser installed on this machine, on a throwaway profile directory.
-    store = BrowserSettingsStore(Path(tempfile.mkdtemp(prefix="neko-browser-soak-")))
-    store.save(BrowserSettings(headless=not args.headed))
-    session = BrowserSession(settings=store)
-    try:
+    # A browser installed on this machine, on a throwaway profile directory
+    # that is removed once the browser is closed, whether it started or not:
+    # a soak of many cycles would otherwise fill the disk with profiles.
+    # (What the browser still holds open for a moment on Windows is left.)
+    with tempfile.TemporaryDirectory(prefix="neko-browser-soak-", ignore_cleanup_errors=True) as root:
+        store = BrowserSettingsStore(Path(root))
+        store.save(BrowserSettings(headless=not args.headed))
+        session = BrowserSession(settings=store)
         try:
-            await session.start()
-        except BrowserError as exc:
-            raise FeatureUnavailable("browser_unavailable") from exc
-        active = _checkpoint(args, f"cycle_{cycle:04d}_browser_use_active")
-    finally:
-        await session.close()
-    del session
+            try:
+                await session.start()
+            except BrowserError as exc:
+                raise FeatureUnavailable("browser_unavailable") from exc
+            active = _checkpoint(args, f"cycle_{cycle:04d}_browser_use_active")
+        finally:
+            await session.close()
+        del session
     released = await _released_checkpoint(
         args, f"cycle_{cycle:04d}_browser_use_released"
     )
