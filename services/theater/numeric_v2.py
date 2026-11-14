@@ -720,8 +720,16 @@ class NumericV2Compiler:
         if used:
             c.add("intro_invitation_meta_term", "intro.invitation",
                   f"邀请句要从故事开场的情境出发，不能出现“{'”“'.join(used)}”这类点明这是一场演出的词。")
-        names = [str(intro.get(f"{role}_name") or "").strip() for role in ("player", "catgirl")]
-        if any(name and name in invitation for name in names):
+        names = []
+        for role in ("player", "catgirl"):
+            explicit = intro.get(f"{role}_name")
+            identity = intro.get(f"{role}_identity")
+            if isinstance(explicit, str) and explicit.strip():
+                names.append(explicit.strip())
+            elif isinstance(identity, str):
+                names.append(_identity_source_name(identity))
+        # Single-character names overlap with ordinary words and pronouns.
+        if any(len(name) > 1 and name in invitation for name in names):
             c.add("intro_invitation_author_name", "intro.invitation",
                   "邀请句由用户自己的角色说给用户听，用“你”“我”指代两人，不写作者设定的姓名。")
 
