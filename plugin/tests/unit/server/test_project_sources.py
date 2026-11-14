@@ -9,6 +9,7 @@ import pytest
 from plugin import settings
 from plugin.core.state import state
 from plugin.neko_plugin_cli.core import project as creator
+from plugin.server.application import plugin_projects
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugin_cli.source_resolver import PluginSourceResolver
 from plugin.server.application.plugins import lifecycle_service, project_sources, registry_service
@@ -154,22 +155,64 @@ def test_projects_cannot_live_inside_managed_plugin_roots(isolated):
 
 
 def test_a_cloned_kebab_directory_loads_its_snake_package(tmp_path):
-    """`git clone` keeps `my-cool-plugin/`; `plugin.entry` cannot contain '-'. (#3724)"""
+    """`git clone` keeps `my-cool-plugin/`; the id and entry stay snake_case. (#3724)"""
     source = scaffold(tmp_path, "cloned_plugin")
     kebab = source.with_name("cloned-plugin")
+    source.rename(kebab)
+
+    metadata = project_sources.inspect_source_directory(kebab.resolve())
+
+    assert metadata.plugin_id == "cloned_plugin"
+    assert metadata.entry.startswith("plugins.cloned_plugin:")
+
+
+def test_a_kebab_case_plugin_id_is_rejected(tmp_path):
+    """The id is also the package/cache key, so it may not carry a dash. (#3724)"""
+    source = scaffold(tmp_path, "foo_bar")
+    kebab = source.with_name("foo-bar")
+    source.rename(kebab)
+    manifest = kebab / "plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace('id = "foo_bar"', 'id = "foo-bar"'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="snake_case Python identifier"):
+        project_sources.inspect_source_directory(kebab.resolve())
+
+
+def test_entry_package_must_equal_the_plugin_id(tmp_path):
+    """A dash may name the directory, never the package named by plugin.entry. (#3724)"""
+    source = scaffold(tmp_path, "bar_baz")
+    kebab = source.with_name("bar-baz")
     source.rename(kebab)
     manifest = kebab / "plugin.toml"
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            'id = "cloned_plugin"', 'id = "cloned-plugin"'
+            "plugin.plugins.bar_baz", "plugin.plugins.bar-baz"
         ),
         encoding="utf-8",
     )
 
-    metadata = project_sources.inspect_source_directory(kebab.resolve())
+    with pytest.raises(ValueError, match="identical to plugin.id"):
+        project_sources.inspect_source_directory(kebab.resolve())
 
-    assert metadata.plugin_id == "cloned-plugin"
-    assert metadata.entry.startswith("plugins.cloned_plugin:")
+
+def test_the_same_id_cannot_be_registered_from_kebab_and_snake_directories(
+    isolated, tmp_path
+):
+    """One id has one owner: `foo-bar/` and `foo_bar/` are the same plugin. (#3724)"""
+    first = scaffold(tmp_path / "projects", "dup_plugin")
+    kebab = first.with_name("dup-plugin")
+    first.rename(kebab)
+    second = scaffold(tmp_path / "projects", "dup_plugin")
+
+    plugin_projects._add_sync(str(kebab.resolve()))
+
+    with pytest.raises(ServerDomainError) as caught:
+        plugin_projects._add_sync(str(second.resolve()))
+    assert caught.value.code == "PROJECT_PLUGIN_ID_CONFLICT"
+    assert caught.value.status_code == 409
 
 
 def test_a_project_directory_still_must_name_its_entry_package(tmp_path):

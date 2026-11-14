@@ -27,6 +27,7 @@ from plugin.neko_plugin_cli.core.project import (
     prepare_project,
 )
 from plugin import settings
+from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugin_project_commands import project_operation, run_cli
@@ -454,8 +455,11 @@ async def update_project_metadata(project_id: str, metadata: ProjectMetadata) ->
 
 def _require_available_plugin_id(plugin_id: str, source_dir: Path) -> None:
     """A plugin ID has one owner: an installed/built-in plugin or one project."""
+    # An installed tree may be named after its ID, or carry the kebab-case spelling
+    # a cloned repository has: both belong to the same plugin (issue #3724).
+    installed_dirs = {plugin_id, plugin_id.replace("_", "-")}
     for root in settings.PLUGIN_CONFIG_ROOTS:
-        if (Path(root) / plugin_id / "plugin.toml").is_file():
+        if any((Path(root) / name / "plugin.toml").is_file() for name in installed_dirs):
             raise project_error(
                 Code.PROJECT_PLUGIN_ID_CONFLICT,
                 f"Plugin ID '{plugin_id}' is already used by an installed plugin",
@@ -469,9 +473,12 @@ def _require_available_plugin_id(plugin_id: str, source_dir: Path) -> None:
             f"Plugin ID '{plugin_id}' is already used by an installed plugin",
             409,
         )
+    # Directory names are compared through the same rule the loader uses, so the
+    # same ID cannot be registered twice via `foo-bar/` and `foo_bar/` (#3724).
     owner = next(
         (item for item in store.list_records()
-         if item.source_dir.name == plugin_id and item.source_dir != source_dir),
+         if item.source_dir != source_dir
+         and plugin_package_matches_directory(plugin_id, item.source_dir.name)),
         None,
     )
     if owner is not None:
