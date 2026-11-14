@@ -1088,8 +1088,11 @@ async def test_closing_does_not_wait_for_a_browser_that_a_call_is_still_bringing
         await asyncio.sleep(0.005)
     assert world.launched and not calling.done()
 
-    await asyncio.wait_for(tools.aclose(), 5.0)
-
-    outcome = await asyncio.wait_for(calling, 5.0)
+    try:
+        await asyncio.wait_for(tools.aclose(), 5.0)
+        outcome = await asyncio.wait_for(calling, 5.0)
+    finally:
+        # Whatever went wrong above, the call is not left holding the tools behind this test.
+        world.launch_gate.set()
     assert not outcome.success and "the start was stopped" in outcome.text
     assert world.launch_stops[0].is_set() and world.closed == []

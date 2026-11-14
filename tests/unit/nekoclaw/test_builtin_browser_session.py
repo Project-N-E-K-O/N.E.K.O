@@ -3123,8 +3123,11 @@ async def test_a_start_that_is_under_way_can_be_told_to_stop_by_whoever_closes(
     # Not cancelled: the browser is switched off while a call is still bringing it up.
     session.stop_starting()
 
-    with pytest.raises(BrowserError, match="was not started: the start was stopped"):
-        await asyncio.wait_for(starting, 5.0)
+    try:
+        with pytest.raises(BrowserError, match="was not started: the start was stopped"):
+            await asyncio.wait_for(starting, 5.0)
+    finally:
+        world.launch_gate.set()
 
     assert world.closed == [] and not session.connected
     # Nothing is told to stop when nothing is being started.
@@ -3143,6 +3146,9 @@ async def test_killing_tells_a_start_that_is_under_way_to_stop(
     session.kill()
 
     # What the start had brought up is taken away by the start itself.
-    assert world.launch_stops[0].is_set()
-    with pytest.raises(BrowserError, match="the start was stopped"):
-        await asyncio.wait_for(starting, 5.0)
+    try:
+        assert world.launch_stops[0].is_set()
+        with pytest.raises(BrowserError, match="the start was stopped"):
+            await asyncio.wait_for(starting, 5.0)
+    finally:
+        world.launch_gate.set()
