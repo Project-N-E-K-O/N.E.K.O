@@ -13,6 +13,7 @@ from services.theater.numeric_v2 import (
     MAX_INVITATION_CHARS,
     NumericV2CompileError,
     NumericV2Compiler,
+    _Collector,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +59,26 @@ def test_invitation_uses_you_and_me_rather_than_author_names():
     assert "intro_invitation_author_name" in _codes(story)
     story["intro"]["invitation"] = "旧车站的灯还亮着，你要不要进来看看？"
     assert "intro_invitation_author_name" not in _codes(story)
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_single_character_name_allows_pronouns_in_invitation(explicit):
+    story = _story()
+    intro = story["intro"]
+    intro["player_identity"] = "我，归乡人"
+    intro["catgirl_identity"] = "小葵，守灯人"
+    intro["invitation"] = "要不要和我一起去看看？"
+    if explicit:
+        intro.update(player_name="我", catgirl_name="小葵")
+    else:
+        intro.pop("player_name", None)
+        intro.pop("catgirl_name", None)
+    collector = _Collector()
+    NumericV2Compiler._validate_intro(collector, intro)
+    assert collector.issues == []
+    intro["invitation"] = "小葵，要不要和我一起去看看？"
+    NumericV2Compiler._validate_intro(collector, intro)
+    assert [issue.code for issue in collector.issues] == ["intro_invitation_author_name"]
 
 
 @pytest.mark.parametrize("path", BUNDLED, ids=lambda path: path.stem)
