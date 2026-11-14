@@ -215,6 +215,39 @@ def test_the_same_id_cannot_be_registered_from_kebab_and_snake_directories(
     assert caught.value.status_code == 409
 
 
+@pytest.mark.parametrize("directory_name", ["foo_bar_baz", "foo-bar_baz", "foo_bar-baz"])
+def test_an_installed_directory_owning_the_id_blocks_it(
+    isolated, tmp_path, directory_name
+):
+    """Mixed '-'/'_' spellings are found by scanning the install root, not by guessing. (#3724)"""
+    installed_dir = isolated / directory_name
+    installed_dir.mkdir()
+    (installed_dir / "plugin.toml").write_text(
+        "[plugin]\nid = 'foo_bar_baz'\n", encoding="utf-8"
+    )
+    project = scaffold(tmp_path / "projects", "foo_bar_baz")
+
+    with pytest.raises(ServerDomainError) as caught:
+        plugin_projects._add_sync(str(project.resolve()))
+    assert caught.value.code == "PROJECT_PLUGIN_ID_CONFLICT"
+    assert caught.value.status_code == 409
+
+
+def test_an_installed_directory_for_another_id_does_not_block(isolated, tmp_path):
+    """The manifest decides: a directory that declares another id reserves nothing. (#3724)"""
+    installed_dir = isolated / "foo-bar_baz"
+    installed_dir.mkdir()
+    (installed_dir / "plugin.toml").write_text(
+        "[plugin]\nid = 'another_plugin'\n", encoding="utf-8"
+    )
+    project = scaffold(tmp_path / "projects", "foo_bar_baz")
+
+    record, plugin_id = plugin_projects._add_sync(str(project.resolve()))
+
+    assert plugin_id == "foo_bar_baz"
+    assert record.source_dir == project.resolve()
+
+
 def test_a_project_directory_still_must_name_its_entry_package(tmp_path):
     source = scaffold(tmp_path, "cloned_plugin")
     renamed = source.with_name("something_else")
