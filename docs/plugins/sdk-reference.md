@@ -113,7 +113,7 @@ self.report_status({
 
 #### `push_message(**kwargs) -> PushMessageResult`
 
-Push a message to the host system with the v2 schema.
+Push a message to the host system with the v2 schema: `visibility` controls rendering in the user's chat or HUD, `ai_behavior` independently controls whether the model reads the message or responds, and `parts` carries text, images, and `ui_action`s.
 
 ```python
 result = self.push_message(
@@ -123,46 +123,11 @@ result = self.push_message(
     parts=[{"type": "text", "text": "Task complete"}],
     priority=5,
 )
-
 if not result["submitted"]:
-    # Keep local state; retry and deduplication remain plugin policy.
-    self.logger.warning("message submission failed: %s", result["reason"])
+    self.logger.warning("push failed: %s", result.get("reason"))
 ```
 
-`submitted=True` means only that the SDK's authoritative local submission path
-accepted responsibility for the payload. It does not acknowledge host
-consumption, model generation, or playback. Rejections use the stable reasons
-`backpressure`, `transport_error`, or `transport_unavailable`; the result never
-contains the message body or raw exception text. Rejected results also carry
-`ok=False` for compatibility with legacy callers; new code should use
-`submitted` as the authoritative discriminator.
-
-The v1 fields (`message_type`, `content`, `delivery`, `reply`, and the other legacy aliases) are deprecated but still translated in current source. Migrate now; this documentation does not guarantee an exact removal release. See the [migration guide](./migration-v0.9#push-message-v2).
-
-#### Media parts
-
-- Text and image parts are supported. A small image can be sent inline:
-
-  ```python
-  parts=[{"type": "image", "data": image_bytes, "mime": "image/png"}]
-  ```
-
-- For a non-trivial image, upload it through the host and send the returned part instead:
-
-  ```python
-  image_part = await self.ctx.images.upload(image_bytes, mime="image/png")
-  result = self.push_message(
-      source="my_feature",
-      visibility=["chat"],
-      ai_behavior="read",
-      parts=[image_part],
-  )
-  ```
-
-  Arbitrary external image URLs are not accepted for model delivery; use this temporary host upload. Inline images share the message-plane payload budget, while the uploaded part keeps the image bytes out of that envelope. `ctx.images.upload()` is unavailable in lifecycle handlers because the plugin command loop cannot service the upload response there; call it from a plugin entry, timer, message, or custom event handler.
-- `visibility` controls rendering in the user's chat or HUD; `ai_behavior` independently controls whether the model reads the message or responds.
-- Audio and video message parts are not currently delivered by the host. Do not report them as successfully played or shown.
-- A Hosted UI panel can render user-facing audio or video itself, but that does not deliver media through the native chat or model channel.
+The return value reports only local submission (`submitted` / `reason`). For the full axis semantics, `parts` types, payload and image size limits, `ctx.images.upload()`, and v1 field migration, see [Message Delivery](./push-message).
 
 #### `data_path(*parts) -> Path`
 
@@ -243,15 +208,17 @@ Signal task completion to the host.
 
 ### Reply Control
 
-The `finish()` method accepts a `reply` parameter (default `True`) that controls whether the plugin result triggers the main character to speak. It takes effect when the Agent calls the entry directly. When a task agent calls the entry, the result goes back to the task agent, and how the user is told follows the task's own setting.
+`finish()` takes a `delivery` argument (`"proactive"` by default, `"passive"`, or `"silent"`) that controls whether the result enters the main AI's context and whether the character speaks immediately. `reply=True/False` is the deprecated boolean alias. `delivery` takes effect when the Agent calls the entry directly. When a task agent calls the entry, the result goes back to the task agent, and how the user is told follows the task's own setting.
 
 ```python
 # Normal: character will announce the result
-return await self.finish(data={"summary": "Done"}, reply=True)
+return await self.finish(data={"summary": "Done"})
 
 # Silent: result is recorded but character stays quiet
-return await self.finish(data={"summary": "Done"}, reply=False)
+return await self.finish(data={"summary": "Done"}, delivery="silent")
 ```
+
+For the three modes, `result_kind` result semantics, and the `{MASTER_NAME}` / `{LANLAN_NAME}` role placeholders, see [Message Delivery](./push-message).
 
 ### LLM Result Field Filtering
 

@@ -108,7 +108,7 @@ self.report_status({
 
 #### `push_message(**kwargs) -> PushMessageResult`
 
-v2 schema でホストシステムにメッセージをプッシュします。
+v2 schema でホストシステムにメッセージをプッシュします。`visibility` はユーザーのチャットまたは HUD への表示を決め、`ai_behavior` はモデルがメッセージを読むか応答するかを独立して決め、`parts` がテキスト・画像・`ui_action` を運びます。
 
 ```python
 result = self.push_message(
@@ -118,45 +118,11 @@ result = self.push_message(
     parts=[{"type": "text", "text": "タスクが完了しました"}],
     priority=5,
 )
-
 if not result["submitted"]:
-    # ローカル状態を保持します。再試行と重複排除はプラグイン側の方針です。
-    self.logger.warning("message submission failed: %s", result["reason"])
+    self.logger.warning("push failed: %s", result.get("reason"))
 ```
 
-`submitted=True` は、SDK の正規ローカル送信経路が payload の送信責任を
-引き受けたことだけを示します。ホストでの消費、モデル生成、再生完了の
-確認ではありません。拒否理由は `backpressure`、`transport_error`、
-`transport_unavailable` のいずれかで、メッセージ本文や生の例外テキストは含みません。
-拒否結果には従来の呼び出し元との互換性のため `ok=False` も含まれます。新しいコードでは
-`submitted` を正式な判定基準として使用してください。
-
-v1 field（`message_type`、`content`、`delivery`、`reply` および他の legacy alias）は deprecated ですが current source では変換されます。今すぐ移行し、この文書から正確な removal release を保証しないでください。[移行ガイド](./migration-v0.9#push-message-v2)を参照してください。
-
-#### メディアパート
-
-- テキストと画像のパートはホストで処理されます。小さな画像は inline で送れます：
-
-  ```python
-  parts=[{"type": "image", "data": image_bytes, "mime": "image/png"}]
-  ```
-
-- 小さくない画像は host に一時 upload し、返された part を送信してください：
-
-  ```python
-  image_part = await self.ctx.images.upload(image_bytes, mime="image/png")
-  result = self.push_message(
-      source="my_feature",
-      visibility=["chat"],
-      ai_behavior="read",
-      parts=[image_part],
-  )
-  ```
-
-  model への配信では任意の外部画像 URL は受け付けません。この host の一時 upload を使ってください。inline 画像は message plane payload の予算を message 全体と共有しますが、upload 後の part は画像 bytes をその envelope に含めません。lifecycle handler の実行中は plugin command loop が upload response を処理できないため、`ctx.images.upload()` は使用できません。plugin entry、timer、message handler、または custom event handler から呼び出してください。
-- `visibility` はユーザーのチャットまたは HUD への表示を決め、`ai_behavior` はモデルがメッセージを読むか応答するかを独立して決めます。
-- 音声と動画のメッセージパートは現在ホストから配信されません。送信成功を再生・表示の成功として扱わないでください。
-- Hosted UI パネル内ではユーザー向けの音声や動画を再生できますが、ネイティブのチャットまたはモデル経路へのメディア配信ではありません。
+戻り値はローカル送信の結果（`submitted` / `reason`）だけを示します。2 つの軸の完全なセマンティクス、`parts` の種類、payload と画像のサイズ制限、`ctx.images.upload()`、v1 フィールドの移行は[メッセージ配信](./push-message)を参照してください。
 
 #### `data_path(*parts) -> Path`
 
@@ -237,15 +203,17 @@ Hosted TSX は exported `ui` namespace と manifest surface を使います。�
 
 ### 返信制御
 
-`finish()` メソッドは `reply` パラメータ（デフォルト `True`）を受け付け、プラグインの結果がメインキャラクターの発話をトリガーするかどうかを制御します。これが効くのは、Agent がエントリを直接呼んだ場合です。task agent がエントリを呼んだ場合、結果は task agent に返り、ユーザーへの伝え方はその用件自体の設定に従います。
+`finish()` は `delivery` パラメータ（`"proactive"`（既定）/ `"passive"` / `"silent"`）で、結果をメイン AI のコンテキストに入れるか、キャラクターにすぐ話させるかを制御します。`reply=True/False` は非推奨のブール別名です。`delivery` が効くのは、Agent がエントリを直接呼んだ場合です。task agent がエントリを呼んだ場合、結果は task agent に返り、ユーザーへの伝え方はその用件自体の設定に従います。
 
 ```python
 # 通常：キャラクターが結果を報告する
-return await self.finish(data={"summary": "完了"}, reply=True)
+return await self.finish(data={"summary": "完了"})
 
 # サイレント：結果は記録されるがキャラクターは話さない
-return await self.finish(data={"summary": "完了"}, reply=False)
+return await self.finish(data={"summary": "完了"}, delivery="silent")
 ```
+
+3 つのモードの違い、`result_kind` による結果セマンティクス、`{MASTER_NAME}` / `{LANLAN_NAME}` ロールプレースホルダーは[メッセージ配信](./push-message)を参照してください。
 
 ### LLM 結果フィールドフィルタリング
 

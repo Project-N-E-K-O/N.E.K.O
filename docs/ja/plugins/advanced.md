@@ -76,6 +76,20 @@ class MyProtocolAdapter(NekoAdapterPlugin):
 - カスタム Serializer（`MCPResponseSerializer`）
 - カスタム Transport（`MCPTransportAdapter`）
 
+### Adapter SDK のエクスポート
+
+`plugin.sdk.adapter` からインポートします：
+
+| カテゴリ | エクスポート |
+|------|------|
+| **ベース** | `AdapterBase`, `AdapterConfig`, `AdapterContext`, `AdapterMode` |
+| **プラグインベース** | `NekoAdapterPlugin` |
+| **ゲートウェイ** | `AdapterGatewayCore`, `DefaultPolicyEngine`, `DefaultRouteEngine`, `DefaultRequestNormalizer`, `DefaultResponseSerializer`, `CallablePluginInvoker` |
+| **データモデル** | `ExternalRequest`, `GatewayRequest`, `GatewayResponse`, `GatewayAction`, `GatewayError`, `RouteDecision`, `RouteMode` |
+| **プロトコル** | `TransportAdapter`, `RequestNormalizer`, `PolicyEngine`, `RouteEngine`, `PluginInvoker`, `ResponseSerializer` |
+| **デコレーター** | `on_adapter_startup`, `on_adapter_shutdown`, `on_adapter_event`, `on_mcp_tool`, `on_mcp_resource`, `on_nonebot_message` |
+| **型** | `Protocol`, `RouteTarget`, `AdapterMessage`, `AdapterResponse`, `RouteRule` |
+
 ## 非同期プログラミング
 
 実行時エントリーは `async def` で定義する必要があります。同期ヘルパーも利用できますが、外部には非同期エントリーを通して公開してください：

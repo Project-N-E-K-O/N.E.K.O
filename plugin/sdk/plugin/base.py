@@ -177,8 +177,8 @@ class NekoPluginBase(_SharedNekoPluginBase):
         Use this for character-aware text like
         ``\"Immediately describe the latest screen to {MASTER_NAME}...\"`` instead of hardcoded
         ``\"user\"`` / ``\"master\"`` / ``\"owner\"``, which feel generic and
-        misbehave on multi-character setups. See PLUGIN_DEVELOPMENT_GUIDE.md
-        ("Writing role-aware text") for details.
+        misbehave on multi-character setups. See docs/plugins/push-message.md
+        ("Role-aware text") for details.
         """
         return await self.ctx.finish(**kwargs)
 
@@ -189,7 +189,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         any text in ``parts``) MAY contain ``{MASTER_NAME}`` /
         ``{LANLAN_NAME}`` placeholders; the host substitutes them at the
         injection boundary, per session. See :meth:`finish` for the rationale
-        and PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware text") for the
+        and docs/plugins/push-message.md ("Role-aware text") for the
         full guide.
 
         The returned receipt only reports immediate local submission.  It is
