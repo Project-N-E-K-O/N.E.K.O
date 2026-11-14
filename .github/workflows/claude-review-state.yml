@@ -14,7 +14,8 @@ name: Claude review state
 # the head exists, the label is swapped back to `claude-review`; the
 # dispatcher then asks Codex to review. Accepted Codex evidence for the head:
 #   - a PR review by chatgpt-codex-connector on that commit,
-#   - a Codex receipt comment naming that commit ("Reviewed commit: `<sha>`"),
+#   - a Codex code-review receipt naming that commit (a "Codex Review" heading
+#     plus "Reviewed commit: `<sha>`"; security-review receipts do not count),
 #   - a Codex review-state comment whose code_review is completed on that commit.
 #
 # pull_request_target is required so the jobs can edit labels on PRs from
@@ -79,7 +80,8 @@ jobs:
                  --jq '.[] | select(.user.login == env.CODEX) | .commit_id') ||
              ! comments=$(fetch gh api "repos/$REPO/issues/$PR/comments" --paginate \
                  --jq '.[] | select(.user.login == env.CODEX) | .body
-                       | ((capture("Reviewed commit:[*` ]*(?<s>[0-9a-f]{7,40})") | .s) // empty),
+                       | ((select(test("(?m)^\\s*(Codex Review:|#+\\s*\\S*\\s*Codex Review\\s*$)"))
+                           | capture("Reviewed commit:[*` ]*(?<s>[0-9a-f]{7,40})") | .s) // empty),
                          ((capture("codex-review-state:v1 (?<j>\\{.*?\\}\\})") | .j | fromjson
                            | .code_review | select(.status == "completed") | .commit_sha) // empty)'); then
             echo "::error::Could not read the PR or its Codex reviews; reverting claude-converged to be safe."
