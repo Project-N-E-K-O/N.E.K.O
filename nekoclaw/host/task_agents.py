@@ -1668,12 +1668,13 @@ class TaskAgentManager:
             return self._paths.work_dir(commission.id, commission.project)
         workdir = Path(commission.workdir)
         recorded = self._recorded_session_dir(commission)
-        if recorded is None or recorded == session_dir:
+        if recorded is None:
             return workdir
         try:
             among = workdir.relative_to(recorded.parent)
         except ValueError:
             return workdir
+        # (The directory it was, when the session is where the record has it.)
         return session_dir.parent / among
 
     async def _child_workdir(self, parent: Commission, cwd: Any) -> str | None:
