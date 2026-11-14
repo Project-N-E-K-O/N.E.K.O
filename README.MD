@@ -192,6 +192,8 @@ Requirements:
 - [uv](https://docs.astral.sh/uv/);
 - Node.js `^22.12.0 || >=24.0.0` (needed to build the frontends).
 
+> **Windows 7**: official Python 3.11, uv and Node.js do not support it. There is an experimental path with an unofficial Windows 7 build of Python 3.11 and `setup_win7.bat` (plain pip, no uv or Node.js); the frontend bundles must be built on another machine and copied over. See the [Windows 7 guide](docs/zh-CN/guide/windows-7.md) (Chinese).
+
 ```bash
 # Partial clone: the history holds large retired binaries (~390 MB .git), so fetch blobs on demand
 git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git
