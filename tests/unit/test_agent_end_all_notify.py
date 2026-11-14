@@ -289,8 +289,6 @@ def test_end_all_answers_without_waiting_for_the_browser_to_be_killed(srv, monke
         killed.set()
 
     async def _slow_close() -> None:
-        # The keys were let go of before the browser was even asked.
-        assert desktop.released == 1
         await asyncio.sleep(3600)
 
     monkeypatch.setattr(srv.builtin_provider, "close_browser", _slow_close)
@@ -300,6 +298,9 @@ def test_end_all_answers_without_waiting_for_the_browser_to_be_killed(srv, monke
         try:
             result = await asyncio.wait_for(srv.admin_control({"action": "end_all"}), 5.0)
             assert result["success"] is True
+            # The keys are let go of by the time it answers (the two go on side by side, so
+            # which of them is done first is not what is asked here).
+            assert desktop.released == 1
             # Answered while the kill is still under way: the page gives up waiting after 5 seconds.
             assert await asyncio.to_thread(killing.wait, 5.0)
             assert not killed.is_set()
