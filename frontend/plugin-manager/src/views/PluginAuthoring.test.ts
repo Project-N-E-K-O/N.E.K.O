@@ -821,6 +821,25 @@ describe('authoring workbench backed by the server project list', () => {
     expect(buttons(en.toolEnvironmentPrepare)).toHaveLength(0)
   })
 
+  it('keeps polling after a failed toolchain read instead of trusting the stale state', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginToolchain
+      .mockResolvedValueOnce(readyToolchain({ tool_environment: 'missing' }))
+      .mockRejectedValueOnce(new Error('temporarily unavailable'))
+      .mockResolvedValue(readyToolchain({ tool_environment: 'ready' }))
+    api.preparePluginToolEnvironment.mockResolvedValue({ state: 'preparing', error: null })
+    const container = await mount()
+    await openPublish(container)
+    const tools = page('toolchain')
+    await click(en.toolEnvironmentPrepare)
+    await new Promise((resolve) => setTimeout(resolve, 4_300))
+    await settle()
+    expect(api.getPluginToolchain.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(tools.textContent).toContain(en.toolEnvironmentReady)
+  }, 10_000)
+
   it('polls the toolchain when it loads while the environment is preparing', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])

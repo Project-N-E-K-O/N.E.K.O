@@ -336,7 +336,8 @@ function guideOpen(id: PublishPageId) {
 const toolchain = ref<Toolchain | null>(null)
 const toolchainFailure = useLocalizedError(describeError, 'toolchainLoadFailed')
 const toolchainError = toolchainFailure.message
-async function loadToolchain() {
+/** Resolves to whether the toolchain was read; a failed read keeps the previous state. */
+async function loadToolchain(): Promise<boolean> {
   toolchainFailure.clear()
   try {
     const next = await getPluginToolchain(props.projectId)
@@ -344,8 +345,10 @@ async function loadToolchain() {
       toolchain.value = next
       if (next.tool_environment === 'preparing') pollToolEnvironment()
     }
+    return true
   } catch (error) {
     if (!disposed) toolchainFailure.set(error)
+    return false
   }
 }
 
@@ -359,13 +362,21 @@ const TOOL_ENV_LABELS: Record<Toolchain['tool_environment'], string> = {
 }
 const preparingEnvironment = ref(false)
 let environmentPoll: Promise<void> | null = null
+const MAX_FAILED_ENVIRONMENT_READS = 5
 /** One shared poll loop: started by the prepare button and by any load that finds the environment preparing. */
 function pollToolEnvironment() {
   if (environmentPoll) return
   environmentPoll = (async () => {
+    // A failed read keeps the old state (e.g. `missing` right after the
+    // prepare request), so only a state actually read may end the loop.
+    let failedReads = 0
     while (!disposed) {
       await new Promise((resolve) => setTimeout(resolve, 2_000))
-      await loadToolchain()
+      if (!(await loadToolchain())) {
+        if (++failedReads >= MAX_FAILED_ENVIRONMENT_READS) return
+        continue
+      }
+      failedReads = 0
       if (disposed || toolchain.value?.tool_environment !== 'preparing') return
     }
   })().finally(() => {

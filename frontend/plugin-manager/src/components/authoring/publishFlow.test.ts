@@ -477,6 +477,9 @@ describe('publishFlow step 0 (toolchain)', () => {
     for (const blockers of [flow.blockers.github, flow.blockers.github_and_market, flow.blockers.market_notify]) {
       expect(blockers).toContainEqual({ severity: 'hard', step: 'toolchain', reason: { key } })
     }
+    // The step bar sends the user to the tools page instead of a later step.
+    expect(flow.toolchain.state).toBe('todo')
+    expect(flow.currentStepId).toBe('toolchain')
   })
 
   it('hard-blocks with the stored error when the tool environment failed', () => {

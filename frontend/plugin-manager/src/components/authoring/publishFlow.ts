@@ -405,9 +405,11 @@ function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
     check('gh', gh?.installed, gh?.version, false),
     check('githubAccount', gh ? gh.authenticated : undefined, gh?.login, false),
   ]
+  // Packaged builds also need the prepared tool environment before any CLI runs.
+  const environmentReady = toolchain ? toolEnvironmentBlocker(toolchain) === null : false
   const state: PublishStepState = !toolchain
     ? 'unknown'
-    : tools.some((tool) => tool.required && tool.state === 'missing')
+    : !environmentReady || tools.some((tool) => tool.required && tool.state === 'missing')
       ? 'todo'
       : 'done'
   return { state, tools }

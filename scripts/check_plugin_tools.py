@@ -113,8 +113,20 @@ def _check_desktop_runtime(backend: Path, root: Path) -> None:
             )
             report.raise_for_status()
             result = report.json()
-            if "passed" not in result or not result.get("stages"):
-                raise RuntimeError(f"Packaged runtime precheck did not complete: {result}")
+            # A fresh scaffold must clear every gate. A failed stage skips the
+            # later ones, so require each of them to have run and passed.
+            from plugin.neko_plugin_cli.commands.precheck_cmd import (
+                STAGE_LINT,
+                STAGE_RELEASE_CHECK,
+                STAGE_SYNC,
+            )
+
+            passed_stages = {
+                stage.get("name") for stage in result.get("stages") or [] if stage.get("passed") is True
+            }
+            required = {STAGE_LINT, STAGE_SYNC, STAGE_RELEASE_CHECK}
+            if result.get("passed") is not True or not required <= passed_stages:
+                raise RuntimeError(f"Packaged runtime precheck failed: {json.dumps(result, ensure_ascii=False)}")
             print(f"Packaged desktop prepared plugin tools and ran precheck: {json.dumps(result)[:400]}", flush=True)
         except Exception:
             print("\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]), file=sys.stderr)
