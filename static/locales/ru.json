@@ -1583,6 +1583,7 @@
         "ttsProtocolHintOpenAI": "OpenAI-совместимый API: HTTP(S) POST /v1/audio/speech с полной текстовой фразой и потоковым аудиоответом.",
         "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream с двунаправленной потоковой передачей текста и аудио.",
         "ttsVoiceIdHint": "(Необязательно, запасной голос)",
+        "ttsCustomVoiceFallbackHint": "Если Voice ID не указан, персонажи без собственного голоса используют встроенный голос основного API.",
         "ttsVoiceIdPlaceholder": "например, Chinese Female, alloy",
         "agentModelUrlPlaceholder": "Оставьте пустым для URL модели вспомогательного API",
         "agentModelIdPlaceholder": "Оставьте пустым для ID модели вспомогательного API",

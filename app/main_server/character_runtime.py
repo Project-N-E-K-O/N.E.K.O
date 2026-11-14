@@ -66,9 +66,10 @@ _PLUGIN_IMAGE_FETCH_BATCH_SIZE = 2
 # event handler blocks on fetches (ceil(count / batch) x the 2s per-fetch
 # timeout). Budgets are in DECODED bytes, matching _PLUGIN_IMAGE_MAX_BYTES.
 #
-# The 8 images / 8 MiB figures are the contract PLUGIN_DEVELOPMENT_GUIDE.md
-# already advertises to plugin authors ("at most 8 images per message, totaling
-# 8 MiB, injected into the model"). One push is one turn's worth, so share the constants with the
+# The 8 images / 8 MiB figures are the contract docs/plugins/push-message.md
+# (and its zh-CN / ja translations) already advertises to plugin authors ("At
+# most 8 images totaling 8 MiB are injected into the model per message"); all
+# three locales are pinned by tests/unit/test_plugin_image_delivery.py. One push is one turn's worth, so share the constants with the
 # per-turn budget in proactive_delivery rather than keeping a second spelling.
 _PLUGIN_IMAGE_MAX_COUNT = CALLBACK_IMAGE_MAX_COUNT
 _PLUGIN_IMAGE_TOTAL_MAX_BYTES = CALLBACK_IMAGE_MAX_TOTAL_BYTES

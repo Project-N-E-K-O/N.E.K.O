@@ -73,7 +73,11 @@ async def test_inbox_leaves_non_plugin_proactive_cues_behind_the_gate(source_kin
 
 
 @pytest.mark.asyncio
-async def test_inbox_drops_expired_and_aged_cues_and_close_hands_back_recent_ones():
+async def test_inbox_drops_expired_and_aged_cues_and_close_hands_back_recent_ones(monkeypatch):
+    # close() turns the remaining window into a monotonic deadline; pin that
+    # clock so a stalled runner between close() and the check cannot eat it.
+    handed_back_at = 1000.0
+    monkeypatch.setattr(live, 'time', SimpleNamespace(monotonic=lambda: handed_back_at))
     now = [0.0]
     inbox = live.LiveInbox(max_age=300, clock=lambda: now[0])
     aged = _cue('aged')
@@ -91,9 +95,8 @@ async def test_inbox_drops_expired_and_aged_cues_and_close_hands_back_recent_one
     now[0] = 395
     assert inbox.close() == [recent], 'only cues recent enough for ordinary delivery are handed back'
     assert _ack(older) is False and _ack(recent) is None
-    remaining = recent[CALLBACK_EXPIRES_AT_KEY] - time.monotonic()
-    assert live.HANDOFF_MAX_AGE_SECONDS - 5 - 2 < remaining <= live.HANDOFF_MAX_AGE_SECONDS - 5, \
-        'the handed-back cue keeps its remaining delivery window'
+    remaining = recent[CALLBACK_EXPIRES_AT_KEY] - handed_back_at
+    assert remaining == live.HANDOFF_MAX_AGE_SECONDS - 5, 'the handed-back cue keeps its remaining delivery window'
     assert not inbox.accept(_cue('after close'))
     assert inbox.pending == 0
 

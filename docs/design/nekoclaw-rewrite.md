@@ -1002,7 +1002,7 @@ Claude Code 和 dsh 也是这个形态：Claude Code 的键鼠、浏览器各是
 
 - 插件工作台：建项目并登记、发布前检查。登记的项目当源码插件加载，不自动启动。
 - `neko-plugin` 命令行：能把第三方库收进插件自己的目录。
-- `plugin/PLUGIN_DEVELOPMENT_GUIDE.md`，以及插件的启动、重载、删除接口。
+- `docs/zh-CN/plugins/` 下的插件开发文档，以及插件的启动、重载、删除接口。
 
 要补的：
 

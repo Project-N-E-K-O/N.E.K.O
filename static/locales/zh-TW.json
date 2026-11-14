@@ -1583,6 +1583,7 @@
         "ttsProtocolHintOpenAI": "OpenAI 相容：HTTP(S) POST /v1/audio/speech，完整文字請求、串流音訊回應。",
         "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream，文字與音訊雙向串流傳輸。",
         "ttsVoiceIdHint": "（可選，角色未設置時的回退音色）",
+        "ttsCustomVoiceFallbackHint": "Voice ID 未填寫時，沒有設置音色的角色將使用核心 API 自帶的聲音。",
         "ttsVoiceIdPlaceholder": "如：中文女、alloy",
         "agentModelUrlPlaceholder": "留空則跟隨輔助 API 視覺模型 URL",
         "agentModelIdPlaceholder": "留空則跟隨輔助 API 視覺模型 ID",
