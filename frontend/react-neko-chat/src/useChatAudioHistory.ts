@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { AudioMessagePayload } from './audioRecording';
 import type { ChatMessage } from './message-schema';
 
@@ -15,6 +15,7 @@ type PendingAudio = { target: string; row: AudioRow; saveLocal: boolean };
 
 type HistoryAvailability = boolean | undefined;
 export type OlderRecordingsStatus = 'idle' | 'loading' | 'failed';
+export const OlderRecordingsStatusContext = createContext<OlderRecordingsStatus | undefined>(undefined);
 const HISTORY_TIMEOUT_MS = 5000;
 
 export function chatAudioUrl(character: string, id?: string) {
@@ -38,7 +39,7 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
     const character = target;
     let pages = 1;
     let canLoadOlder = false;
-    let loadingOlder = false;
+    let olderStatus: OlderRecordingsStatus = 'idle';
     let controller: AbortController;
     let socket: EventTarget | undefined;
     let disposed = false;
@@ -47,7 +48,11 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
     let latest: Promise<HistoryAvailability>;
 
     function refresh(): Promise<HistoryAvailability> {
-      const requestedPages = pages + Number(loadingOlder);
+      const requestedPages = pages + Number(olderStatus !== 'idle');
+      if (olderStatus === 'failed') {
+        olderStatus = 'loading';
+        setPagination({ target: character, status: olderStatus });
+      }
       controller?.abort();
       const request = new AbortController();
       controller = request;
@@ -77,6 +82,10 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
         const ids = new Set(rows.map(row => row.request_id));
         const visibleRows = rows.filter(row => row.created_at > clearedAt);
         pages = requestedPages;
+        if (olderStatus === 'loading') {
+          olderStatus = 'idle';
+          setPagination({ target: character, status: olderStatus });
+        }
         canLoadOlder = before !== null && visibleRows.length === rows.length;
         setLoaded({ target: character, rows: visibleRows, more: canLoadOlder });
         // Once history has shown a row, only history can display it again.
@@ -85,9 +94,9 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
         return available;
       })().catch(() => undefined).then(result => {
         // A replacement refresh inherits the requested page and owns its result.
-        if (controller === request && !disposed && loadingOlder) {
-          loadingOlder = false;
-          setPagination({ target: character, status: result === undefined ? 'failed' : 'idle' });
+        if (controller === request && !disposed && olderStatus === 'loading') {
+          olderStatus = result === undefined ? 'failed' : 'idle';
+          setPagination({ target: character, status: olderStatus });
         }
         return result;
       }).finally(() => clearTimeout(timeout));
@@ -115,9 +124,9 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
     }
 
     function loadOlder() {
-      if (disposed || !canLoadOlder || loadingOlder) return;
-      loadingOlder = true;
-      setPagination({ target: character, status: 'loading' });
+      if (disposed || !canLoadOlder || olderStatus === 'loading') return;
+      olderStatus = 'loading';
+      setPagination({ target: character, status: olderStatus });
       void refresh();
     }
 
@@ -142,7 +151,7 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
       clearedAt = Date.now();
       pages = 1;
       canLoadOlder = false;
-      loadingOlder = false;
+      olderStatus = 'idle';
       setPagination(undefined);
       controller.abort();
       setLoaded({ target: character, rows: [], more: false });

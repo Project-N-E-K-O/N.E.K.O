@@ -16,7 +16,6 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import MessageList from './MessageList';
-import type { OlderRecordingsStatus } from './useChatAudioHistory';
 import MiniGameInvitePrompt from './MiniGameInvitePrompt';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
@@ -70,7 +69,6 @@ type ChatWindowProps = ChatWindowSchemaProps & {
   audioMessageControl?: import('react').ReactNode;
   audioMessageActive?: boolean;
   onLoadOlderRecordings?: () => void;
-  loadOlderRecordingsStatus?: OlderRecordingsStatus;
   onMessageAction?: (message: ChatMessage, action: MessageAction) => void;
   onComposerImportImage?: () => void;
   onComposerScreenshot?: () => void;
@@ -447,7 +445,6 @@ export default function FullChatSurface({
   audioMessageControl,
   audioMessageActive = false,
   onLoadOlderRecordings,
-  loadOlderRecordingsStatus,
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
@@ -3122,7 +3119,6 @@ export default function FullChatSurface({
       thinking={focusThinking}
       onAction={onMessageAction}
       onLoadOlderRecordings={onLoadOlderRecordings}
-      loadOlderRecordingsStatus={loadOlderRecordingsStatus}
       footerKey={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? choicePrompt.sessionId || 'mini-game-invite' : undefined}
       footer={choicePromptHasOptions && choicePrompt.source === 'mini_game_invite' ? (
         <MiniGameInvitePrompt key={choicePrompt.sessionId} prompt={choicePrompt} presentation="card"

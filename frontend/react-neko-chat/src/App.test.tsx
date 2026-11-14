@@ -328,7 +328,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps a recording page request through a concurrent refresh and allows retry', async () => {
+  it.each(['full', 'compact'] as const)('recovers a failed recording page on refresh in the %s chat', async mode => {
     const row = (id: string, time: number) => ({
       request_id: id, created_at: time, duration_ms: 500, state: 'sent', transcript: '',
     });
@@ -347,7 +347,8 @@ describe('App', () => {
     vi.stubGlobal('fetch', fetchHistory);
     const socket = new EventTarget();
     try {
-      const { container } = render(<App chatSurfaceMode="full" audioMessageTarget="Yui" />);
+      if (mode === 'compact') localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
+      const { container } = render(<App chatSurfaceMode={mode} audioMessageTarget="Yui" />);
       const olderButton = () => screen.getByRole('button', { name: 'Load older recordings' });
       await waitFor(() => expect(olderButton()).toBeEnabled());
       act(() => { window.dispatchEvent(new CustomEvent('voice-input-socket-open', { detail: { socket } })); });
@@ -361,8 +362,13 @@ describe('App', () => {
       });
       expect(await screen.findByText('Load failed')).toHaveAttribute('role', 'alert');
       expect(olderButton()).toBeEnabled();
-      fireEvent.click(olderButton());
-      await waitFor(() => expect(container.querySelector('[data-message-id="audio-message:older"]')).toBeInTheDocument());
+      act(() => {
+        socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({
+          type: 'chat_audio_changed', character: 'Yui',
+        }) }));
+      });
+      await waitFor(() => expect(nextPageCalls).toBe(3));
+      await waitFor(() => expect(container.querySelectorAll('.message-audio-play')).toHaveLength(2));
       expect(nextPageCalls).toBe(3);
       expect(screen.queryByText('Load failed')).not.toBeInTheDocument();
     } finally {
@@ -370,16 +376,34 @@ describe('App', () => {
     }
   });
 
-  it('hides the recording pagination entry when the full chat screen is cleared', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
-      messages: [{ request_id: 'latest', created_at: 10, duration_ms: 500, state: 'sent', transcript: '' }],
-      next_before: 2,
-    })));
+  it('keeps recordings hidden when an older page arrives after a visual clear', async () => {
+    const row = (id: string, created_at: number) => ({
+      request_id: id, created_at, duration_ms: 500, state: 'sent', transcript: '',
+    });
+    let finishPage: (response: Response) => void = () => {};
+    const pendingPage = new Promise<Response>(resolve => { finishPage = resolve; });
+    const fetchHistory = vi.fn(async (url: string) => url.includes('&before=')
+      ? pendingPage
+      : Response.json({ messages: [row('latest', 10)], next_before: 2 }));
+    vi.stubGlobal('fetch', fetchHistory);
     try {
-      render(<App chatSurfaceMode="full" audioMessageTarget="Yui" />);
-      await screen.findByRole('button', { name: 'Load older recordings' });
+      const props = { chatSurfaceMode: 'full', audioMessageTarget: 'Yui' } as const;
+      const { container, rerender } = render(<App {...props} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Load older recordings' }));
+      await waitFor(() => expect(fetchHistory).toHaveBeenCalledTimes(3));
       fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+      const fresh = parseChatMessage({ id: 'fresh', role: 'user', author: 'You', time: '12:00',
+        blocks: [{ type: 'text', text: 'New message after clear' }] });
+      rerender(<App {...props} messages={[fresh]} />);
+      await act(async () => { finishPage(Response.json({ messages: [row('older', 5)], next_before: 1 })); });
+
+      expect(screen.getByText('New message after clear')).toBeVisible();
+      expect(container.querySelectorAll('.message-audio-play')).toHaveLength(0);
       expect(screen.queryByRole('button', { name: 'Load older recordings' })).not.toBeInTheDocument();
+
+      act(() => { window.dispatchEvent(new Event('react-chat-window:set-messages')); });
+      expect(container.querySelectorAll('.message-audio-play')).toHaveLength(2);
+      expect(screen.getByRole('button', { name: 'Load older recordings' })).toBeEnabled();
     } finally {
       vi.unstubAllGlobals();
     }

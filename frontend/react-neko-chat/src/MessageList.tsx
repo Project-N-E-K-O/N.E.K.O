@@ -1,10 +1,10 @@
 import { useChatScreenVisibility } from './ChatScreenVisibility';
-import { useRef, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useContext, useRef, useEffect, useMemo, useState, type ReactNode } from 'react';
 import MessageBubble from './MessageBubble';
 import ScreenObservationExposure, { getScreenObservationAnchorIds } from './ScreenObservationExposure';
 import ThinkingDots from './ThinkingDots';
 import { i18n } from './i18n';
-import type { OlderRecordingsStatus } from './useChatAudioHistory';
+import { OlderRecordingsStatusContext } from './useChatAudioHistory';
 import { hasVisibleMessageContent, type ChatMessage, type MessageAction } from './message-schema';
 
 const MAX_DISPLAY_MESSAGES = 50;
@@ -16,7 +16,6 @@ type MessageListProps = {
   thinking?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
   onLoadOlderRecordings?: () => void;
-  loadOlderRecordingsStatus?: OlderRecordingsStatus;
   footer?: ReactNode;
   footerKey?: string;
 };
@@ -41,11 +40,11 @@ export default function MessageList({
   thinking = false,
   onAction,
   onLoadOlderRecordings,
-  loadOlderRecordingsStatus,
   footer,
   footerKey,
 }: MessageListProps) {
-  const { isMessageHidden } = useChatScreenVisibility();
+  const { isMessageHidden, audioHistoryScreenCleared } = useChatScreenVisibility();
+  const loadOlderRecordingsStatus = useContext(OlderRecordingsStatusContext);
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldScrollRef = useRef(true);
   const scrollbarTimerRef = useRef<number | null>(null);
@@ -67,7 +66,7 @@ export default function MessageList({
     };
   }, [messages, isMessageHidden]);
 
-  const showLoadOlder = Boolean(onLoadOlderRecordings) && displayMessages.length > 0;
+  const showLoadOlder = Boolean(onLoadOlderRecordings) && !audioHistoryScreenCleared && displayMessages.length > 0;
   const loadingOlder = loadOlderRecordingsStatus === 'loading';
 
   const exposureAnchorIds = useMemo(

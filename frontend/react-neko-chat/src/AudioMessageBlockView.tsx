@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { i18n } from './i18n';
 import type { MessageBlock } from './message-schema';
-import { chatAudioUrl } from './useChatAudioHistory';
+import { useChatScreenVisibility } from './ChatScreenVisibility';
+import { chatAudioUrl, OlderRecordingsStatusContext } from './useChatAudioHistory';
 
 type Props = {
   block: Extract<MessageBlock, { type: 'audio_message' }>;
@@ -9,6 +10,9 @@ type Props = {
 };
 
 export default function AudioMessageBlockView({ block, interactive }: Props) {
+  const { audioHistoryScreenCleared } = useChatScreenVisibility();
+  const olderStatus = useContext(OlderRecordingsStatusContext);
+  const loadingOlder = olderStatus === 'loading';
   const audio = useRef<HTMLAudioElement>(null);
   const moreButton = useRef<HTMLButtonElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -130,11 +134,14 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
       {block.state === 'unconfirmed' && <span className="message-audio-status">
         {i18n('chat.audioHistoryUnconfirmed', 'Delivery unconfirmed')}
       </span>}
-      {block.canLoadOlder && <button type="button" onClick={() => window.dispatchEvent(
-        new CustomEvent('chat-audio-load-older', { detail: block.character }),
-      )}>
-        {i18n('chat.audioHistoryOlder', 'Load older recordings')}
-      </button>}
+      {block.canLoadOlder && !audioHistoryScreenCleared && <>
+        <button type="button" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => window.dispatchEvent(
+          new CustomEvent('chat-audio-load-older', { detail: block.character }),
+        )}>
+          {loadingOlder ? i18n('common.loading', 'Loading...') : i18n('chat.audioHistoryOlder', 'Load older recordings')}
+        </button>
+        {olderStatus === 'failed' && <span role="alert">{i18n('common.loadFailed', 'Load failed')}</span>}
+      </>}
       {error && <span role="alert">{error}</span>}
     </div>
   );

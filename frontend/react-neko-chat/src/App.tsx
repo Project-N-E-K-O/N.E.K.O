@@ -24,7 +24,7 @@ import AvatarToolItemManager, {
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
 import AudioMessageComposer, { useAudioMessageComposer } from './AudioMessageComposer';
-import { useChatAudioHistory } from './useChatAudioHistory';
+import { OlderRecordingsStatusContext, useChatAudioHistory } from './useChatAudioHistory';
 import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
@@ -930,11 +930,12 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
     props.chatSurfaceMode === 'full',
   );
   return (
-    <ChatScreenVisibilityProvider messages={messages || defaultMessages}>
-      {props.chatSurfaceMode === 'full'
-        ? <FullChatSurface {...surfaceProps}
-          onLoadOlderRecordings={onLoadOlder} loadOlderRecordingsStatus={loadOlderStatus} />
-        : <CompactChatApp {...surfaceProps} />}
+    <ChatScreenVisibilityProvider messages={messages || defaultMessages} audioHistoryTarget={target}>
+      <OlderRecordingsStatusContext.Provider value={loadOlderStatus}>
+        {props.chatSurfaceMode === 'full'
+          ? <FullChatSurface {...surfaceProps} onLoadOlderRecordings={onLoadOlder} />
+          : <CompactChatApp {...surfaceProps} />}
+      </OlderRecordingsStatusContext.Provider>
       <NekoTooltipLayer />
     </ChatScreenVisibilityProvider>
   );
