@@ -1482,7 +1482,10 @@ def test_explicit_hosted_tts_provider_is_saved_for_runtime_routing(mock_page: Pa
 
 
 @pytest.mark.frontend
-def test_deepseek_tts_preserves_saved_custom_slot_in_ui(mock_page: Page, running_server: str):
+@pytest.mark.parametrize("intermediate_provider", [None, "gptsovits"])
+def test_deepseek_tts_preserves_saved_custom_slot_in_ui(
+    mock_page: Page, running_server: str, intermediate_provider,
+):
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     custom_url = "https://custom.example.com/v1/audio/speech"
 
@@ -1513,10 +1516,25 @@ def test_deepseek_tts_preserves_saved_custom_slot_in_ui(mock_page: Page, running
     expect(model).to_have_value("custom-voice-model")
     assert mock_page.evaluate("getRealKey(document.getElementById('ttsModelApiKey'))") == "__NEKO_SECRET_MASKED__"
 
-    url.evaluate("(input) => { input.value = 'https://draft.example.com/v1/audio/speech'; }")
+    draft_url = "https://draft.example.com/v1/audio/speech"
+    url.evaluate("(input, value) => { input.value = value; }", draft_url)
+    model.evaluate("(input) => { input.value = 'draft-model'; }")
+    mock_page.evaluate("setMaskedInput(document.getElementById('ttsModelApiKey'), 'draft-key')")
     provider.select_option("deepseek", force=True, timeout=5000)
+    if intermediate_provider:
+        provider.select_option(intermediate_provider, force=True, timeout=5000)
     provider.select_option("custom", force=True, timeout=5000)
-    expect(url).to_have_value("https://draft.example.com/v1/audio/speech")
+
+    payload = mock_page.evaluate("""async () => {
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload;
+    }""")
+    assert payload["ttsModelProvider"] == "custom"
+    assert payload["ttsModelUrl"] == draft_url
+    assert payload["ttsModelId"] == "draft-model"
+    assert payload["ttsModelApiKey"] == "draft-key"
 
 
 @pytest.mark.frontend

@@ -1472,8 +1472,12 @@ class CoreConfigMixin:
                     # Retain a saved DashScope slot for existing CosyVoice clones,
                     # without sending another provider's saved key to DashScope.
                     saved_url = str(core_cfg.get('ttsModelUrl') or '').strip()
-                    if dashscope_http_url_from_base(saved_url):
-                        config[url_key] = saved_url
+                    dashscope_http_url = dashscope_http_url_from_base(saved_url)
+                    if dashscope_http_url:
+                        # Cloud clones must not land in the local WebSocket voice bucket.
+                        config[url_key] = (
+                            dashscope_http_url if saved_url.lower().startswith(('ws://', 'wss://')) else saved_url
+                        )
                         config[model_key] = str(core_cfg.get('ttsModelId') or '').strip()
                         config[apikey_key] = str(core_cfg.get('ttsModelApiKey') or '').strip()
                     continue

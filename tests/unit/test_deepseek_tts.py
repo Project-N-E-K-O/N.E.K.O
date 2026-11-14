@@ -51,13 +51,18 @@ def test_assist_only_does_not_route_to_deepseek(manager):
     assert (worker, provider) == (tts_client.qwen_realtime_tts_worker, "qwen")
 
 
-@pytest.mark.parametrize(("saved_url", "expected_key"), [
-    ("https://dashscope.aliyuncs.com/api/v1", "legacy-tts-key"),
-    ("https://example.com/v1/audio/speech", "qwen-key"),
-    ("wss://api.deepseek.com/v1/tools/tts", "qwen-key"),
+@pytest.mark.parametrize(("saved_url", "expected_key", "expected_url"), [
+    ("https://dashscope.aliyuncs.com/compatible-mode/v1", "legacy-tts-key",
+     "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    ("wss://dashscope.aliyuncs.com/api-ws/v1/inference", "legacy-tts-key",
+     "https://dashscope.aliyuncs.com/api/v1"),
+    ("wss://dashscope-intl.aliyuncs.com/api-ws/v1/inference", "legacy-tts-key",
+     "https://dashscope-intl.aliyuncs.com/api/v1"),
+    ("https://example.com/v1/audio/speech", "qwen-key", None),
+    ("wss://api.deepseek.com/v1/tools/tts", "qwen-key", None),
 ])
 def test_config_manager_resolves_key_and_saves_the_preset(
-    clean_user_data_dir, tmp_path, monkeypatch, saved_url, expected_key,
+    clean_user_data_dir, tmp_path, monkeypatch, saved_url, expected_key, expected_url,
 ):
     cm = get_config_manager("N.E.K.O")
     config = {
@@ -86,8 +91,11 @@ def test_config_manager_resolves_key_and_saves_the_preset(
     tts_config = cm.get_model_api_config("tts_custom")
     assert tts_config["api_key"] == expected_key
     assert cm.get_tts_api_key("cosyvoice") == expected_key
-    if expected_key == "legacy-tts-key":
-        assert tts_config["base_url"] == saved_url
+    if expected_url:
+        assert cm._current_voice_storage_key() == expected_key
+        assert tts_config["base_url"] == expected_url
+        assert cm.get_core_config()["ttsModelUrl"] == saved_url
+        assert json.loads(config_path.read_text(encoding="utf-8")) == config
     assert cm.validate_voice_id("tide")
     assert cm.voice_id_to_storage_value("tide") == {"source": "preset", "provider": "deepseek", "ref": "tide"}
 

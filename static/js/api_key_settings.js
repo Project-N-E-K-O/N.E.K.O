@@ -1521,7 +1521,8 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         && previousProvider !== provider) {
         modelIdInput.value = '';
     }
-    if (modelType === 'tts' && provider === 'deepseek' && previousProvider === 'custom' && userInitiated) {
+    if (modelType === 'tts' && previousProvider === 'custom' && provider !== 'custom'
+        && userInitiated && !_isLoadingSavedConfig) {
         _customTtsDraft = {
             url: urlInput.value,
             model: modelIdInput.value,
@@ -1645,6 +1646,8 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         }
         applyFixedModelProviderUi(modelType, provider);
     } else if (modelType === 'tts' && provider === 'deepseek') {
+        // Keep the display-only endpoint out of the next custom configuration.
+        _customTtsDraft ??= { url: '', model: '', key: '' };
         if (urlInput) {
             urlInput.value = getTtsProviderMeta(provider)?.default_url || '';
             urlInput.setAttribute('readonly', 'readonly');
@@ -1710,10 +1713,11 @@ function onCustomModelProviderChange(modelType, userInitiated = false) {
         setKeyReadonly(keyInput, bookKey, provider);
     }
     if (modelType === 'tts') {
-        if (provider === 'custom' && previousProvider === 'deepseek' && !_isLoadingSavedConfig) {
-            urlInput.value = _customTtsDraft?.url || '';
-            modelIdInput.value = _customTtsDraft?.model || '';
-            setMaskedInput(keyInput, _customTtsDraft?.key || '');
+        if (provider === 'custom' && _customTtsDraft && !_isLoadingSavedConfig) {
+            urlInput.value = _customTtsDraft.url;
+            modelIdInput.value = _customTtsDraft.model;
+            setMaskedInput(keyInput, _customTtsDraft.key);
+            _customTtsDraft = null;
         }
         updateTtsProviderFieldVisibility(provider);
     }
@@ -2878,7 +2882,7 @@ async function loadCurrentApiKey() {
                 const savedUrl = (data.ttsModelUrl || '').trim();
                 // Earlier builds saved a DeepSeek endpoint into the shared custom TTS slot.
                 if (savedUrl && !/^\w+:\/\/api\.deepseek\.com(?:[/:?#]|$)/i.test(savedUrl)) {
-                    _customTtsDraft = { url: savedUrl, model: data.ttsModelId, key: data.ttsModelApiKey };
+                    _customTtsDraft = { url: savedUrl, model: data.ttsModelId || '', key: data.ttsModelApiKey || '' };
                 }
             }
             setInputValue('ttsVoiceId', data.ttsVoiceId);
