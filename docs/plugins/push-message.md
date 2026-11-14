@@ -82,8 +82,8 @@ Inline `data: bytes` is base64-encoded by the SDK. To extend push_message, add a
 ### Current limitations
 
 - With `ai_behavior in ("respond","read")`, inline `image` parts and the local temporary URLs returned by `ctx.images.upload()` both reach the LLM context (ultimately via `session.stream_image(base64)`). Arbitrary external URLs are rejected so remote fetching stays out of the agent event delivery path. At most 8 images totaling 8 MiB are injected into the model per message; extra image parts do not enter model context.
-- Chat display (`visibility=["chat"]`) has its own, separate per-push budget: at most 8 images that pass its filters, with inline images totaling at most 8 MiB (URL images from `ctx.images.upload()` do not count toward the bytes). Images that are skipped (e.g. arbitrary external URLs) do not use up that count, while further accepted images past the budget are dropped. The two paths therefore count differently: the model path takes the first 8 image parts before resolving them and does not backfill one that fails, whereas the chat path counts only images it actually renders. Do not assume the user sees exactly the images the model got — keep each push to at most 8 valid images.
-- `respond` images ride the reply turn and reach any provider. `read` images are best-effort input to the **current** session only: they are dropped when there is no current session, and on a realtime provider without native vision. Use `ai_behavior="respond"` when the image must reach such a provider.
+- Chat display (`visibility=["chat"]`) has its own, separate per-push budget: at most 8 images that pass its filters, with inline images totaling at most 8 MiB (URL images from `ctx.images.upload()` do not count toward the bytes; under the default config the 512 KiB payload cap below is hit long before 8 MiB of inline images, so that byte budget only matters if `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` is raised). Images that are skipped (e.g. arbitrary external URLs) do not use up that count, while further accepted images past the budget are dropped. The two paths therefore count differently: the model path takes the first 8 image parts before resolving them and does not backfill one that fails, whereas the chat path counts only images it actually renders. Keep each push to at most 8 valid images, and even then do not assume the user sees exactly the images the model got: the model path can still drop an image (fetch timeout, expired upload, the 8 MiB budget) that chat displays.
+- `respond` images ride the reply turn. On a realtime provider without native vision they are not passed through as images: a separate vision model (`VISION_MODEL`) turns each one into a text description first, and an image is dropped if that analysis produces nothing. `read` images are best-effort input to the **current** session only: they are dropped when there is no current session, and on a realtime provider without native vision. Use `ai_behavior="respond"` when the model on such a provider needs at least a description of the image.
 - The 8 images / 8 MiB figure is a **per-push** ceiling. In text mode, `ai_behavior="read"` images are staged until the user's next turn rather than sent immediately, so **one turn** can carry several pushes' worth. Staging is budgeted per source, and sources never eat each other's quota:
 
   | Source | Images | Bytes |
@@ -212,7 +212,14 @@ async def play_external(self, url: str, **_):
         parsed = urlparse(url)
     except ValueError:
         return Err(SdkError("invalid music url"))
-    if parsed.scheme != "https" or parsed.hostname != MUSIC_HOST:
+    # Reject userinfo and backslashes: browsers treat "\" as a path separator,
+    # so "https://evil.com\@music.my-cdn.com/" passes urlparse but loads evil.com.
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != MUSIC_HOST
+        or parsed.username is not None
+        or "\\" in url
+    ):
         return Err(SdkError("unsupported music source"))
     result = self.push_message(
         ai_behavior="blind",

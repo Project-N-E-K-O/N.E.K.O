@@ -82,8 +82,8 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。需要�
 ### 当前实现限制
 
 - `ai_behavior in ("respond","read")` 时，inline `image` parts 和 `ctx.images.upload()` 返回的本地临时 URL 都能进入 LLM 上下文（最终走 `session.stream_image(base64)`）。任意外部 URL 仍会被拒绝，避免把远端抓取引入 agent event 投递路径。单条消息最多向模型注入 8 张、合计 8 MiB 图片；超出的 image parts 不会进入模型上下文。
-- 聊天显示（`visibility=["chat"]`）有自己独立的单次 push 上限：最多显示 8 张通过筛选的图，其中 inline 图片合计不超过 8 MiB（`ctx.images.upload()` 返回的 URL 图不计字节）。被跳过的图（比如任意外部 URL）不占名额，通过筛选但超出上限的图会被丢掉。两条路径计数方式不同：模型路径在解析之前就截取前 8 个 image part，其中某张送达失败也不会补位；聊天路径只数真正渲染出来的图。所以不要假设用户看到的图和模型收到的完全一致——每次 push 最多放 8 张有效图片。
-- `respond` 的图随回复轮次送出，任何服务商都能收到；`read` 的图只是尽力投给**当前**会话：没有当前会话时会被丢弃，实时服务商不支持原生视觉时也会被丢弃。图片必须送达这类服务商时请用 `ai_behavior="respond"`。
+- 聊天显示（`visibility=["chat"]`）有自己独立的单次 push 上限：最多显示 8 张通过筛选的图，其中 inline 图片合计不超过 8 MiB（`ctx.images.upload()` 返回的 URL 图不计字节；默认配置下整条 payload 先撞上下文的 512 KiB 上限，远到不了 8 MiB，这个字节上限只有调高 `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` 后才有意义）。被跳过的图（比如任意外部 URL）不占名额，通过筛选但超出上限的图会被丢掉。两条路径计数方式不同：模型路径在解析之前就截取前 8 个 image part，其中某张送达失败也不会补位；聊天路径只数真正渲染出来的图。每次 push 尽量最多放 8 张有效图片；即便如此也不要假设用户看到的图和模型收到的完全一致——模型路径仍可能因取图超时、上传过期或 8 MiB 预算丢图，而聊天照样显示。
+- `respond` 的图随回复轮次送出。实时服务商不支持原生视觉时，图本身不会交给模型：先由单独的视觉模型（`VISION_MODEL`）把每张图转成文字描述，分析最终没有产出描述的图会被丢掉。`read` 的图只是尽力投给**当前**会话：没有当前会话时会被丢弃，实时服务商不支持原生视觉时也会被丢弃。在这类服务商上需要模型至少拿到图片内容的描述时，请用 `ai_behavior="respond"`。
 - 上面的 8 张 / 8 MiB 是**单次 push** 的上限。文字模式下 `ai_behavior="read"` 的图不是立刻发给模型，而是先暂存、等用户下次开口时一起送出，所以**一个回合**里可能攒着好几次 push 的图。暂存按来源分开计额，互不侵蚀：
 
   | 来源 | 张数 | 字节 |
@@ -212,7 +212,14 @@ async def play_external(self, url: str, **_):
         parsed = urlparse(url)
     except ValueError:
         return Err(SdkError("invalid music url"))
-    if parsed.scheme != "https" or parsed.hostname != MUSIC_HOST:
+    # 拒绝 userinfo 和反斜杠：浏览器把 "\" 当路径分隔符，
+    # "https://evil.com\@music.my-cdn.com/" 能骗过 urlparse，实际却加载 evil.com。
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != MUSIC_HOST
+        or parsed.username is not None
+        or "\\" in url
+    ):
         return Err(SdkError("unsupported music source"))
     result = self.push_message(
         ai_behavior="blind",

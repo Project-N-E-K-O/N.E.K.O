@@ -2939,7 +2939,12 @@ def test_every_locale_of_the_guide_prints_the_same_numbers(locale: str) -> None:
     # The local payload_too_large gate holds back the host headroom; the
     # guide prints that byte count, so tie it to the constant.
     assert _HEADROOM_ANCHORS[locale].format(n=_HOST_ENVELOPE_HEADROOM_BYTES) in text
-    assert text.count(str(_HOST_ENVELOPE_HEADROOM_BYTES)) == _HEADROOM_MENTIONS[locale]
+    import re
+
+    # Whole-number matches only, so "1227 bytes" or "227.4 KiB" elsewhere in
+    # the page cannot inflate the count.
+    headroom_re = rf"(?<![\d.]){_HOST_ENVELOPE_HEADROOM_BYTES}(?![\d.])"
+    assert len(re.findall(headroom_re, text)) == _HEADROOM_MENTIONS[locale]
 
     assert (
         f"`MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = {MESSAGE_PLANE_PAYLOAD_MAX_BYTES}"
