@@ -6304,7 +6304,10 @@ class NumericV2MetricEvaluator:
                             "candidate_ref": finding["candidate"]["id"], "quote": finding["quote"],
                             "rule": finding["rule"]}
                         semantic_warnings.append(warning)
-                        logger.warning("Theater contract nonblocking finding: %s", warning)
+                        # The quote is visible story text that can repeat private
+                        # player input; it stays in request diagnostics only.
+                        logger.warning("Theater contract nonblocking finding: rule_index=%s candidate_ref=%s",
+                                       warning["rule_index"], warning["candidate_ref"])
                     findings = [finding for finding in findings if finding["rule"] in blocking]
                     if diagnostics is not None:
                         diagnostics["review_warnings"] = list(semantic_warnings)

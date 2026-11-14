@@ -64,7 +64,7 @@ async def test_final_audit_uses_one_http_even_when_it_reports_a_problem(monkeypa
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("redline", [None, "player", "spoiler"])
-async def test_author_warnings_never_clear_an_independent_redline(monkeypatch, redline):
+async def test_author_warnings_never_clear_an_independent_redline(monkeypatch, caplog, redline):
     engine, session = _frame()
     body = _body()
     def respond(messages, data, kwargs):
@@ -82,7 +82,10 @@ async def test_author_warnings_never_clear_an_independent_redline(monkeypatch, r
     problems = await _review(engine, session, body, _bound(engine, session, body), [],
                              diagnostics=diagnostics, single_pass=True)
     assert bool(problems) is bool(redline)
-    assert any(row["check"] == "nonblocking_rule" for row in diagnostics["review_warnings"])
+    warning = next(row for row in diagnostics["review_warnings"] if row["check"] == "nonblocking_rule")
+    # The quote stays in request diagnostics; the ordinary log carries ids only.
+    assert warning["quote"] and warning["quote"] not in caplog.text
+    assert "Theater contract nonblocking finding" in caplog.text
 
 
 def test_action_and_narration_only_repetition_uses_the_same_ngram_guard():
