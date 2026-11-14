@@ -66,12 +66,13 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-15-chat-audio-main-rebase-3",
+        "2026-11-14-chat-audio-theater-nekoclaw-merge",
         "2026-11-15-chat-audio-main-rebase-2",
         "2026-11-14-chat-audio-theater-nekoclaw-manual-unavailable",
         "2026-11-15-chat-audio-main-rebase-1",
         "2026-11-14-chat-audio-theater-nekoclaw-close-preview",
         "2026-11-15-nekoclaw-browser-custom-tts-merge",
-        "2026-11-14-chat-audio-theater-nekoclaw-merge",
         "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
         "2026-11-15-custom-tts-voice-fallback-hint",
         "2026-11-14-nekoclaw-browser-theater-market-merge",
@@ -85,12 +86,10 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-13-theater-invite-card",
         "2026-11-13-theater-main-merge",
         "2026-11-11-theater-sync-evidence-merge",
-        "2026-11-11-atlascloud-assist-provider-main-merge",
         "2026-11-03-theater-market-community-invite-merge",
         "2026-11-11-sync-evidence-notices",
         "2026-11-03-theater-market-news-overseas-merge",
         "2026-11-03-theater-market-systray-labels-merge",
-        "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-theater-market-chat-sync-merge",
         "2026-11-11-chat-audio-messages",
         "2026-11-11-chat-audio-main-merge",
@@ -576,6 +575,8 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-12-chat-audio-atlascloud-main-merge",
         "2026-11-14-chat-audio-manual-unavailable",
         "2026-11-13-chat-audio-close-preview",
+        "2026-11-11-atlascloud-assist-provider-main-merge",
+        "2026-11-03-news-overseas-systray-labels-main-merge",
     }
 )
 

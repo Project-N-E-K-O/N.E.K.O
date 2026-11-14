@@ -1400,12 +1400,12 @@ async def run_sync_connector(
         await _complete_session_end_memory_barrier(message, lanlan_name)
 
     def _discard_local_memory_buffers():
-        nonlocal turn_checked_history_len, memory_write_index, user_input_cache, user_input_proof
+        nonlocal memory_write_index, turn_checked_history_len, user_input_cache, user_input_proof
         nonlocal text_output_cache, text_output_request_id, text_output_proof
         nonlocal current_turn, had_user_input_this_turn, current_turn_start_index, pending_user_images
         chat_history.clear()
-        turn_checked_history_len = 0
         memory_write_index = 0
+        turn_checked_history_len = 0
         user_input_cache = ''
         user_input_proof = None
         user_input_sources.clear()

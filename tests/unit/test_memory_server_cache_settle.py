@@ -125,7 +125,7 @@ async def test_connector_retries_only_a_confirmed_pre_write_rejection(monkeypatc
     monkeypatch.setattr(routes, "_resolve_foreground_memory_language", AsyncMock(return_value="en"))
     monkeypatch.setattr(cross_server, "_try_send_json", AsyncMock(return_value=True))
     analyze = AsyncMock(return_value=True)
-    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", analyze)
+    monkeypatch.setattr(cross_server, "_publish_turn_check_with_fallback", analyze)
 
     app = FastAPI()
     app.middleware("http")(runtime.storage_limited_mode_guard)
