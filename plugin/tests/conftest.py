@@ -74,9 +74,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def _isolate_plugin_runtime_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> None:
+):
+    from tests.storage_root_env_guard import restore_storage_root_env, snapshot_storage_root_env
+
+    before = snapshot_storage_root_env()
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
     monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+    yield
+    # Starting a plugin process makes the host export its whole storage layout
+    # into os.environ for the child (plugin/core/host.py:
+    # _refresh_child_storage_layout_env). monkeypatch only undoes keys it saw,
+    # so ANCHOR / CLOUDSAVE stayed set for the rest of the session -- and before
+    # the ConfigManager singleton was isolated they named the real root.
+    restore_storage_root_env(before)
 
 
 @pytest.fixture(autouse=True)

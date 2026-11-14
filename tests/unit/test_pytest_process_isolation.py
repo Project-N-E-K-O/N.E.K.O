@@ -106,3 +106,38 @@ def test_a_fresh_interpreter_inheriting_a_real_root_and_no_opt_out_is_isolated(t
     assert Path(seen["app_docs_dir"]).is_relative_to(Path(seen["stand_in"]))
     assert seen["log_documents"] == seen["test_log_root"]
     assert not inherited_root.exists()
+
+
+_CHILD_PROBE = """
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from utils.logging_layout import resolve_log_directory  # pure: resolves, writes nothing
+from utils.token_tracker import reporting
+print(json.dumps({"log_dir": str(resolve_log_directory()), "do_not_track": reporting._DO_NOT_TRACK}))
+"""
+
+
+def test_a_child_process_given_child_process_env_logs_under_the_test_root(tmp_path):
+    # Children run no conftest; without this environment a child that imports
+    # a product module logs into the real Documents/N.E.K.O/logs.
+    root = tmp_path / "child-runtime-root"
+    base = dict(os.environ)
+    base.pop("NEKO_DO_NOT_TRACK", None)
+    base.pop("DO_NOT_TRACK", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", _CHILD_PROBE, str(_REPO_ROOT)],
+        cwd=str(_REPO_ROOT),
+        env=process_isolation.child_process_env(root, base),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    seen = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert Path(seen["log_dir"]).is_relative_to(root)
+    assert seen["do_not_track"] is True
+    for key in ("NEKO_STORAGE_SELECTED_ROOT", "NEKO_STORAGE_ANCHOR_ROOT"):
+        assert key not in os.environ, "child_process_env must not touch the test process"

@@ -20,6 +20,8 @@ from services.theater.numeric_v2_registry import NumericV2PackageRegistry, Numer
 from services.theater.numeric_v2_store import numeric_v2_story_session_guard
 from utils.cloudsave_runtime import MaintenanceModeError
 
+from tests.process_isolation import child_process_env
+
 from .numeric_v2_fixture import numeric_v2_story
 from .test_numeric_v2_generation import _generation_setup, _quality_payload, _quality_reply
 from .test_numeric_v2_names import NAMES, named_outline
@@ -350,7 +352,7 @@ def test_reopen_interrupts_running_without_losing_checkpoint(opened):
         reopened.sdk.close()
 
 
-def test_second_process_rejected_before_data_or_model_and_can_reopen(opened):
+def test_second_process_rejected_before_data_or_model_and_can_reopen(opened, tmp_path_factory):
     host, config = opened
     project = setup_project(host.sdk)
     before = (host.sdk.root / f'{project["project_id"]}.json').read_bytes()
@@ -367,9 +369,10 @@ else:
     print('opened')
     h.sdk.close()
 """
+    child_env = child_process_env(tmp_path_factory.mktemp("child-runtime-root"))
     def probe():
         return subprocess.run([sys.executable, "-c", script, str(config.app_docs_dir.parent)],
-                              capture_output=True, text=True, timeout=20)
+                              capture_output=True, text=True, timeout=20, env=child_env)
     blocked = probe()
     assert blocked.returncode == 0, blocked.stderr
     assert "workshop_root_in_use" in blocked.stdout
@@ -798,7 +801,7 @@ def test_close_waits_for_inflight_generation_before_releasing_writer(tmp_path):
         host.sdk.close()
 
 
-def test_process_exit_releases_writer_without_clean_close(tmp_path):
+def test_process_exit_releases_writer_without_clean_close(tmp_path, tmp_path_factory):
     script = """
 import json, os, sys
 from tests.unit.theater_workshop.test_sdk_lifecycle import TestConfig, fixed_model, setup_project
@@ -810,7 +813,8 @@ print(json.dumps({'project_id': p['project_id']}), flush=True)
 os._exit(0)
 """
     result = subprocess.run([sys.executable, "-c", script, str(tmp_path)],
-                            capture_output=True, text=True, timeout=20)
+                            capture_output=True, text=True, timeout=20,
+                            env=child_process_env(tmp_path_factory.mktemp("child-runtime-root")))
     assert result.returncode == 0, result.stderr
     project_id = json.loads(result.stdout.splitlines()[-1])["project_id"]
     host = open_workshop(TestConfig(tmp_path), model_call=fixed_model)

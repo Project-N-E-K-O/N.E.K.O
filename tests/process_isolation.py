@@ -121,3 +121,23 @@ def isolate_test_process() -> None:
     from tests import real_root_isolation
 
     real_root_isolation.install(ConfigManager)
+
+
+def child_process_env(runtime_root: Path, base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a Python child process a test spawns.
+
+    A child runs no conftest, so the only isolation it inherits is
+    ``NEKO_DO_NOT_TRACK``; importing a product module there builds loggers on
+    the real ``Documents/N.E.K.O/logs`` (measured: theater workshop and
+    numeric-v2 store probes). Pointing the storage-root variables at a
+    per-test directory redirects those loggers and any ConfigManager the
+    child builds. Set them in the child's environment only -- the test
+    process itself must not carry them (tests/storage_root_env_guard.py).
+    """
+    from utils.storage.layout import NEKO_STORAGE_ANCHOR_ROOT_ENV, NEKO_STORAGE_SELECTED_ROOT_ENV
+
+    env = dict(os.environ if base is None else base)
+    env[NEKO_STORAGE_SELECTED_ROOT_ENV] = str(runtime_root)
+    env[NEKO_STORAGE_ANCHOR_ROOT_ENV] = str(runtime_root)
+    env[TELEMETRY_OPT_OUT_ENV] = "1"
+    return env
