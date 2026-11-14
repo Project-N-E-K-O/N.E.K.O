@@ -898,7 +898,7 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
   const audioGuideLocked = useGuideChatButtonLock();
   const target = !props.catLocalTextOnly && !props.theaterPresentation?.active ? props.audioMessageTarget : undefined;
   const fullChat = props.chatSurfaceMode === 'full';
-  const { messages: audioHistory, submit, onLoadOlder, loadOlderStatus } = useChatAudioHistory(
+  const { messages: audioHistory, submit, onLoadOlder, loadOlderStatus, oldestRecordingTime } = useChatAudioHistory(
     target, props.userName || 'You', !fullChat,
   );
   const send = props.onComposerAudioMessage;
@@ -930,7 +930,8 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
     props.chatSurfaceMode === 'full',
   );
   return (
-    <ChatScreenVisibilityProvider messages={messages || defaultMessages} audioHistoryTarget={target}>
+    <ChatScreenVisibilityProvider messages={messages || defaultMessages}
+      audioHistoryTarget={target} oldestRecordingTime={oldestRecordingTime}>
       <OlderRecordingsStatusContext.Provider value={loadOlderStatus}>
         {props.chatSurfaceMode === 'full'
           ? <FullChatSurface {...surfaceProps} onLoadOlderRecordings={onLoadOlder} />

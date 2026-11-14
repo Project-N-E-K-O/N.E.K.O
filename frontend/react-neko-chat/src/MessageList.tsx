@@ -43,7 +43,7 @@ export default function MessageList({
   footer,
   footerKey,
 }: MessageListProps) {
-  const { isMessageHidden, audioHistoryScreenCleared } = useChatScreenVisibility();
+  const { isMessageHidden, audioHistoryPaginationBlocked } = useChatScreenVisibility();
   const loadOlderRecordingsStatus = useContext(OlderRecordingsStatusContext);
   const containerRef = useRef<HTMLDivElement>(null);
   const shouldScrollRef = useRef(true);
@@ -66,7 +66,7 @@ export default function MessageList({
     };
   }, [messages, isMessageHidden]);
 
-  const showLoadOlder = Boolean(onLoadOlderRecordings) && !audioHistoryScreenCleared && displayMessages.length > 0;
+  const showLoadOlder = Boolean(onLoadOlderRecordings) && !audioHistoryPaginationBlocked && displayMessages.length > 0;
   const loadingOlder = loadOlderRecordingsStatus === 'loading';
 
   const exposureAnchorIds = useMemo(

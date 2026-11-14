@@ -409,6 +409,43 @@ describe('App', () => {
     }
   });
 
+  it.each(['full', 'compact'] as const)('pages through new recordings after clearing the %s chat', async mode => {
+    const row = (id: number, createdAt: number) => ({
+      request_id: String(id), created_at: createdAt, duration_ms: 500, state: 'sent', transcript: '',
+    });
+    const now = Date.now();
+    const old = Array.from({ length: 52 }, (_, offset) => row(52 - offset, now - 2000 - offset));
+    const fresh = Array.from({ length: 51 }, (_, offset) => row(103 - offset, now + 60_000 - offset));
+    let recordings = old;
+    const fetchHistory = vi.fn(async (url: string) => {
+      const before = new URL(url, 'http://localhost').searchParams.get('before');
+      const remaining = before === null ? recordings : recordings.filter(item => Number(item.request_id) < Number(before));
+      const messages = remaining.slice(0, 50);
+      return Response.json({ messages, next_before: remaining.length > 50 ? Number(messages[49].request_id) : null });
+    });
+    vi.stubGlobal('fetch', fetchHistory);
+    try {
+      if (mode === 'compact') localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
+      const { container } = render(<App chatSurfaceMode={mode} audioMessageTarget="Yui" />);
+      const playButtons = () => container.querySelectorAll('.message-audio-play');
+      const olderButton = () => screen.queryByRole('button', { name: 'Load older recordings' });
+      await waitFor(() => expect(playButtons()).toHaveLength(50));
+      fireEvent.click(screen.getByRole('button', { name: 'Clear screen' }));
+      expect(playButtons()).toHaveLength(0);
+      expect(olderButton()).not.toBeInTheDocument();
+
+      recordings = [...fresh, ...old];
+      act(() => { window.dispatchEvent(new Event('voice-input-socket-open')); });
+      await waitFor(() => expect(playButtons()).toHaveLength(50));
+      const button = await screen.findByRole('button', { name: 'Load older recordings' });
+      fireEvent.click(button);
+      await waitFor(() => expect(playButtons()).toHaveLength(51));
+      expect(olderButton()).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('hides the full composer and tools when composerHidden is true', () => {
     const message = parseChatMessage({
       id: 'm-full-hidden',

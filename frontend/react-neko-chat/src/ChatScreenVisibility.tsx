@@ -7,7 +7,7 @@ const ChatScreenVisibilityContext = createContext({
   hiddenMessageIds: EMPTY_HIDDEN_IDS,
   isMessageHidden: (_message: ChatMessage): boolean => false,
   canClearScreen: false,
-  audioHistoryScreenCleared: false,
+  audioHistoryPaginationBlocked: false,
   clearScreen: () => {},
 });
 
@@ -26,9 +26,10 @@ const isHiddenMessage = (
   || (message.role === 'assistant' && !!message.turnId && hiddenTurnIds.has(message.turnId)
     && !isRecommendationMessage(message));
 
-export function ChatScreenVisibilityProvider({ messages, audioHistoryTarget, children }: {
+export function ChatScreenVisibilityProvider({ messages, audioHistoryTarget, oldestRecordingTime, children }: {
   messages: ChatMessage[];
   audioHistoryTarget?: string;
+  oldestRecordingTime?: number;
   children: ReactNode;
 }) {
   const captionTurnRef = useRef('');
@@ -74,10 +75,14 @@ export function ChatScreenVisibilityProvider({ messages, audioHistoryTarget, chi
     },
     [audioHistoryClearedAt, hiddenMessageIds, hiddenTurnIds],
   );
+  const clearedAt = audioHistoryTarget ? audioHistoryClearedAt.get(audioHistoryTarget) : undefined;
+  const audioHistoryPaginationBlocked = clearedAt !== undefined
+    && (oldestRecordingTime === undefined || oldestRecordingTime <= clearedAt);
+
   const value = useMemo(() => ({
     hiddenMessageIds,
     isMessageHidden,
-    audioHistoryScreenCleared: !!audioHistoryTarget && audioHistoryClearedAt.has(audioHistoryTarget),
+    audioHistoryPaginationBlocked,
     canClearScreen: messages.some(message => !isMessageHidden(message) && hasVisibleMessageContent(message)),
     // Keep host messages intact, including streaming IDs and export metadata.
     clearScreen: () => {
@@ -97,7 +102,7 @@ export function ChatScreenVisibilityProvider({ messages, audioHistoryTarget, chi
         ...(captionTurnId ? [captionTurnId] : []),
       ]));
     },
-  }), [audioHistoryClearedAt, audioHistoryTarget, hiddenMessageIds, isMessageHidden, messages]);
+  }), [audioHistoryPaginationBlocked, audioHistoryTarget, hiddenMessageIds, isMessageHidden, messages]);
   return <ChatScreenVisibilityContext.Provider value={value}>{children}</ChatScreenVisibilityContext.Provider>;
 }
 

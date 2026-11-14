@@ -256,5 +256,8 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
     ? active.current?.loadOlder
     : undefined;
   const loadOlderStatus = pagination?.target === target ? pagination?.status : undefined;
-  return { messages, submit, onLoadOlder, loadOlderStatus };
+  const loadedRows = loaded?.target === target ? loaded?.rows : undefined;
+  // The final row is the boundary for the next cursor page.
+  const oldestRecordingTime = loadedRows?.[loadedRows.length - 1]?.created_at;
+  return { messages, submit, onLoadOlder, loadOlderStatus, oldestRecordingTime };
 }

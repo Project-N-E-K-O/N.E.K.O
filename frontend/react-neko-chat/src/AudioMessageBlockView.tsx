@@ -10,7 +10,7 @@ type Props = {
 };
 
 export default function AudioMessageBlockView({ block, interactive }: Props) {
-  const { audioHistoryScreenCleared } = useChatScreenVisibility();
+  const { audioHistoryPaginationBlocked } = useChatScreenVisibility();
   const olderStatus = useContext(OlderRecordingsStatusContext);
   const loadingOlder = olderStatus === 'loading';
   const audio = useRef<HTMLAudioElement>(null);
@@ -134,7 +134,7 @@ export default function AudioMessageBlockView({ block, interactive }: Props) {
       {block.state === 'unconfirmed' && <span className="message-audio-status">
         {i18n('chat.audioHistoryUnconfirmed', 'Delivery unconfirmed')}
       </span>}
-      {block.canLoadOlder && !audioHistoryScreenCleared && <>
+      {block.canLoadOlder && !audioHistoryPaginationBlocked && <>
         <button type="button" disabled={loadingOlder} aria-busy={loadingOlder} onClick={() => window.dispatchEvent(
           new CustomEvent('chat-audio-load-older', { detail: block.character }),
         )}>
