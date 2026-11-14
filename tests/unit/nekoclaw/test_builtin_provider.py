@@ -759,3 +759,23 @@ async def test_a_browser_counts_as_unclosed_only_while_the_browser_tools_still_h
     assert bare.browser_unclosed() is True
     tools.held = False
     assert bare.browser_unclosed() is False
+
+
+async def test_browser_calls_that_overlap_are_reported_until_the_last_of_them_is_over(rig: Rig) -> None:
+    rig.browser.gate = asyncio.Event()
+    # Two calls of one commission, as a task agent makes them side by side.
+    first = asyncio.ensure_future(rig.browse("browser_click", uid="1_1"))
+    second = asyncio.ensure_future(rig.browse("browser_hover", uid="1_2"))
+    await until(lambda: len(rig.browser.calls) == 2, "both calls reaching the browser tools")
+    assert rig.provider.is_running(BUILTIN_GROUP_BROWSER)
+
+    # One of them is stopped; the other is still at it.
+    second.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(second, 10.0)
+    assert rig.provider.is_running(BUILTIN_GROUP_BROWSER) and rig.provider.is_running()
+
+    rig.browser.gate.set()
+    assert (await asyncio.wait_for(first, 10.0)).success
+    assert not rig.provider.is_running(BUILTIN_GROUP_BROWSER) and not rig.provider.is_running()
+    assert rig.provider._running == {}

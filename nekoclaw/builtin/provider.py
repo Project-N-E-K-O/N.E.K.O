@@ -87,8 +87,11 @@ class BuiltinToolProvider:
         # ``nekoclaw.builtin.browser.tools.BrowserTools``; made on first use.
         self._browser = browser
         self._desktop_lock: asyncio.Lock | None = None
-        # group -> commission whose call is being carried out right now.
-        self._running: dict[str, str] = {}
+        # group -> how many of its calls are under way right now, those that
+        # wait their turn included. Counted, not marked: the calls of one
+        # group overlap (the browser tools queue them), and one that ends or
+        # is stopped must not hide the ones still at it.
+        self._running: dict[str, int] = {}
 
     # -- availability -----------------------------------------------------
 
@@ -126,10 +129,20 @@ class BuiltinToolProvider:
         return items
 
     def is_running(self, group: str | None = None) -> bool:
-        """Whether a call is being carried out right now (of one group, or of any)."""
+        """Whether a call is under way right now (of one group, or of any)."""
         if group is None:
             return bool(self._running)
         return group in self._running
+
+    def _begin(self, group: str) -> None:
+        self._running[group] = self._running.get(group, 0) + 1
+
+    def _end(self, group: str) -> None:
+        left = self._running.get(group, 0) - 1
+        if left > 0:
+            self._running[group] = left
+        else:
+            self._running.pop(group, None)
 
     # -- the parts, made on first use --------------------------------------
 
@@ -157,12 +170,12 @@ class BuiltinToolProvider:
         if not ready:
             return BuiltinOutcome(False, f"{capability.tool_name} is not available: {reason or 'switched off'}")
         if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
-            return await self._run_desktop(commission_id, dict(arguments or {}))
+            return await self._run_desktop(dict(arguments or {}))
         if group == BUILTIN_GROUP_BROWSER:
-            return await self._run_browser(capability.tool_name, commission_id, dict(arguments or {}))
+            return await self._run_browser(capability.tool_name, dict(arguments or {}))
         return BuiltinOutcome(False, f"unknown tool {capability.tool_name}")
 
-    async def _run_desktop(self, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _run_desktop(self, arguments: dict[str, Any]) -> BuiltinOutcome:
         from nekoclaw.builtin.desktop import DesktopActionError, DesktopStopped
 
         if self._desktop_lock is None:
@@ -175,9 +188,9 @@ class BuiltinToolProvider:
                 return BuiltinOutcome(False, f"keyboard and mouse control is {reason or 'switched off'}")
             loop = asyncio.get_running_loop()
             stop = threading.Event()
-            self._running[BUILTIN_GROUP_KEYBOARD_MOUSE] = commission_id
             # Sending input and grabbing the screen block; they run in a worker thread.
             work = loop.run_in_executor(None, self.desktop().act, action, arguments, stop)
+            self._begin(BUILTIN_GROUP_KEYBOARD_MOUSE)
             try:
                 result = await asyncio.shield(work)
             except asyncio.CancelledError:
@@ -204,26 +217,24 @@ class BuiltinToolProvider:
                 logger.error("keyboard and mouse call failed (exc_type=%s)", type(exc).__name__)
                 return BuiltinOutcome(False, f"the action failed: {type(exc).__name__}")
             finally:
-                if self._running.get(BUILTIN_GROUP_KEYBOARD_MOUSE) == commission_id:
-                    del self._running[BUILTIN_GROUP_KEYBOARD_MOUSE]
+                self._end(BUILTIN_GROUP_KEYBOARD_MOUSE)
         images: tuple[BuiltinImage, ...] = ()
         if result.screenshot:
             images = (BuiltinImage(base64.b64encode(result.screenshot).decode("ascii"), result.mime_type),)
         return BuiltinOutcome(True, result.text, images)
 
-    async def _run_browser(self, tool_name: str, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _run_browser(self, tool_name: str, arguments: dict[str, Any]) -> BuiltinOutcome:
         def still_on() -> str | None:
             # Asked when the call's turn has come: the browser may have been
             # switched off while it waited, and must not be started again.
             ready, reason = self._state(BUILTIN_GROUP_BROWSER)
             return None if ready else f"browser control is {reason or 'switched off'}"
 
-        self._running[BUILTIN_GROUP_BROWSER] = commission_id
+        self._begin(BUILTIN_GROUP_BROWSER)
         try:
             outcome = await self.browser().call(tool_name, arguments, refused=still_on)
         finally:
-            if self._running.get(BUILTIN_GROUP_BROWSER) == commission_id:
-                del self._running[BUILTIN_GROUP_BROWSER]
+            self._end(BUILTIN_GROUP_BROWSER)
         self._tell_window()
         return outcome
 

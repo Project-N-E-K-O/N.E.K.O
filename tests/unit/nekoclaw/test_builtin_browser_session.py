@@ -3309,3 +3309,25 @@ async def test_the_tools_say_whether_their_session_still_holds_a_browser(session
     assert tools.holds_a_browser() is True
     await tools.aclose()
     assert tools.holds_a_browser() is False
+
+
+async def test_a_call_stopped_while_one_modifier_comes_up_still_lets_the_other_come_up(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, _fake, _snapshot = await open_page(session, world)
+    # The key went down and came up; Shift is on its way up and the page does not answer.
+    held = world.browser.hold("Input.dispatchKeyEvent", type="keyUp", key="Shift")
+    sent = world.browser.mark()
+    press = asyncio.ensure_future(session.press_key(page, "Control+Shift+R"))
+    try:
+        await asyncio.wait_for(held.reached.wait(), 5.0)
+        assert ("keyUp", "Control") not in _key_events(world, sent)
+        press.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(press, 5.0)
+        # Control is sent all the same: left down, every key the user pressed next would be a shortcut.
+        await _until(lambda: ("keyUp", "Control") in _key_events(world, sent))
+    finally:
+        held.release()
+        world.browser.gates.remove(held)
+    assert _key_events(world, sent)[-2:] == [("keyUp", "Shift"), ("keyUp", "Control")]
