@@ -34,9 +34,12 @@ pytestmark = pytest.mark.unit
 LANGUAGES = ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"]
 
 # Opening sentence of a session with NekoClaw on, plus both tool definitions
-# as they go out (compact JSON). 221 for Chinese is the limit of the design;
-# the others are today's measure with two tokens to spare.
-ON_LIMIT = {"zh": 221, "zh-TW": 240, "en": 221, "ja": 297, "ko": 256, "ru": 238, "es": 230, "pt": 231}
+# as they go out (compact JSON). For Chinese: the design's 221, plus the 15
+# of the clause the dispatch description gained ("looking something up or
+# checking a state counts; what you already know, answer yourself"), which
+# the owner allowed up to 20 for and approved on 2026-11-14 after it was
+# measured. The others are today's measure with two tokens to spare.
+ON_LIMIT = {"zh": 236, "zh-TW": 259, "en": 236, "ja": 317, "ko": 273, "ru": 257, "es": 250, "pt": 250}
 # Opening sentence of a session without NekoClaw: it carries the one sentence
 # about speaking before a tool call and nothing else of this.
 OFF_LIMIT = {"zh": 34, "zh-TW": 36, "en": 30, "ja": 52, "ko": 43, "ru": 40, "es": 36, "pt": 34}
@@ -67,7 +70,7 @@ def test_opening_sentence_and_both_tool_definitions_stay_within_the_limit(lang):
 
 
 def test_the_chinese_limit_is_the_one_the_design_set():
-    assert ON_LIMIT["zh"] == 221
+    assert ON_LIMIT["zh"] == 221 + 15
 
 
 @pytest.mark.parametrize("lang", LANGUAGES)
