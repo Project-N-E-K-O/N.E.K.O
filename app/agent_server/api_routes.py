@@ -56,6 +56,7 @@ from .api_runtime import (  # noqa: F401
     _agent_master_enabled,
     _check_agent_api_gate,
     _handle_voice_transcript_request,
+    _kill_browser_at_last,
     _on_session_event,
     _user_plugins_enabled,
     _voice_transcript_plugin_gate_reason,
@@ -965,29 +966,31 @@ async def admin_control(payload: Dict[str, Any]):
         Modules._background_tasks.clear()
 
         # Stopping a commission cancels its calls of the built-in tools and
-        # gives the desktop and the browser back. The browser the tools
-        # started is closed as well, so nothing they opened outlives end_all
-        # (a disable-triggered close is itself tracked above and may have
-        # been cancelled by this drain). Keys a stopped call left held are
-        # let go of.
-        # Within a time of its own: its steps add up to more than the page
-        # waits for this request, and the keys below would wait with it.
-        from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
-
-        try:
-            await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
-        except asyncio.TimeoutError:
-            logger.warning("[Agent] end_all: the browser did not close in time; killing it")
-            try:
-                await asyncio.to_thread(builtin_provider.kill_browser)
-            except Exception as e:
-                logger.warning(f"[Agent] end_all: killing the browser failed: {e}")
+        # gives the desktop and the browser back. Keys a stopped call left
+        # held are let go of, and first: a key that stays down is in the
+        # user's way at once, and has nothing to wait for in the browser.
         try:
             from nekoclaw.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
 
             await builtin_provider.released(BUILTIN_GROUP_KEYBOARD_MOUSE, "")
         except Exception as e:
             logger.warning(f"[Agent] Error releasing held keys during end_all: {e}")
+        # The browser the tools started is closed as well, so nothing they
+        # opened outlives end_all (a disable-triggered close is itself
+        # tracked above and may have been cancelled by this drain). Within a
+        # time of its own: its steps add up to more than the page waits for
+        # this request.
+        from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
+
+        try:
+            await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("[Agent] end_all: the browser did not close in time; killing it")
+            # Not waited for: killing waits for the processes to be gone,
+            # which takes seconds more, and the answer to this request does
+            # not depend on it. Which browser is killed is settled as the
+            # kill begins, so one that is started after this is not touched.
+            asyncio.get_running_loop().run_in_executor(None, _kill_browser_at_last)
         return {"success": True, "message": "all tasks terminated and cleared"}
     elif action == "enable_analyzer":
         Modules.analyzer_enabled = True

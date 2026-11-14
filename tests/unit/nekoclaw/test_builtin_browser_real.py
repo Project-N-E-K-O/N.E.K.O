@@ -632,3 +632,23 @@ async def test_an_element_the_page_took_out_is_not_kept_alive_by_the_call_that_c
     # click left behind would: on a page that is never loaded anew, every
     # element ever acted on would stay in the memory of the browser.
     assert await _collected(tools, "window.gone"), "the removed button is still held by something"
+
+
+async def test_a_port_file_left_by_a_browser_that_was_killed_does_not_keep_the_next_one_from_starting(
+    tools: BrowserTools, site: str, tmp_path: Path
+) -> None:
+    if await asyncio.to_thread(launcher._a_browser_cannot_be_looked_at):
+        pytest.skip("a browser on this computer keeps its command line from being read: whether one runs on the profile cannot be told")
+    # As a browser that was killed leaves it, and its port has since gone to another program: the site of this test.
+    profile = Path(BrowserSettingsStore(tmp_path / "nekoclaw").profile_dir())
+    profile.mkdir(parents=True, exist_ok=True)
+    port = urllib.parse.urlsplit(site).port
+    left_behind = "\n".join([str(port), "/devtools/browser/left-behind", ""])
+    (profile / launcher.ACTIVE_PORT_FILE).write_text(left_behind, encoding="utf-8")
+    assert launcher.running_endpoint(profile) == f"ws://127.0.0.1:{port}/devtools/browser/left-behind"
+
+    opened = await call(tools, "navigate_page", url=site + "/terms")
+
+    # Taken for a running browser, the port would be connected to, and this start and every later one would fail.
+    assert opened.success, opened.text
+    assert 'heading "Terms of sale"' in opened.text

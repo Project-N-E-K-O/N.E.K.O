@@ -286,14 +286,41 @@ def _left_by_a_browser_that_is_gone(user_data_dir: str | os.PathLike[str]) -> bo
     A browser that was killed leaves its port file behind, and the port may
     since have gone to another program: that the port answers does not show
     the browser to be there. Taken for running, such a file would fail every
-    start for as long as the other program runs. False when the processes
-    cannot be listed, so that a browser that does run is never taken for gone.
+    start for as long as the other program runs.
+
+    False whenever it cannot be told: a browser that does run must never be
+    taken for gone, or its port file is removed and another browser is
+    started on its profile, which only opens a window in the first and exits.
+    """
+    if browser_process_on(user_data_dir) is not None:
+        return False
+    # None was found on the profile. One that was passed over because its
+    # command line cannot be read may still be the one.
+    return not _a_browser_cannot_be_looked_at()
+
+
+def _a_browser_cannot_be_looked_at() -> bool:
+    """Return whether some process that is a browser by its name keeps its command line from being read. Blocking.
+
+    ``browser_process_on`` tells the browser of a profile by its command
+    line and passes such a process over (one started with other rights than
+    this process has, say). True as well when the processes cannot be listed
+    at all.
     """
     try:
-        import psutil  # noqa: F401 - only whether the processes can be listed at all
+        import psutil
     except ImportError:
-        return False
-    return browser_process_on(user_data_dir) is None
+        return True
+    for process in psutil.process_iter(["name", "cmdline"]):
+        try:
+            info = process.info
+            unreadable = info.get("cmdline") is None
+            name = str(info.get("name") or "")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        if unreadable and _BROWSER_FILE_NAME.fullmatch(name):
+            return True
+    return False
 
 
 def running_endpoint(user_data_dir: str | os.PathLike[str]) -> str | None:

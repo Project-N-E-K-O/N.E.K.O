@@ -607,12 +607,16 @@ class Starter:
         self.killed: list[Any] = []
         self.on_start: list[Any] = []
         self.process_on_profile: int | None = None
+        # Whether some browser on this computer keeps its command line to itself.
+        self.unreadable_browser = False
         patch_module_clock(monkeypatch, launcher, monotonic=self.clock.monotonic, sleep=self.clock.sleep)
         monkeypatch.setattr(launcher, "LAUNCH_TIMEOUT_SECONDS", 1.0)
         monkeypatch.setattr(launcher, "subprocess", _subprocess(Popen=self._popen))
         monkeypatch.setattr(launcher, "_port_open", self._port_open)
         monkeypatch.setattr(launcher, "kill_tree", self.killed.append)
         monkeypatch.setattr(launcher, "browser_process_on", self._browser_process_on)
+        # Not the processes of the computer the tests run on.
+        monkeypatch.setattr(launcher, "_a_browser_cannot_be_looked_at", lambda: self.unreadable_browser)
 
     def _popen(self, arguments: list[str], **options: Any) -> FakeChild:
         self.started.append((list(arguments), options))
@@ -1264,9 +1268,11 @@ def test_a_port_file_whose_port_went_to_another_program_is_not_taken_for_a_runni
     assert browser.endpoint == "ws://127.0.0.1:9666/devtools/browser/new" and browser.process is starter.child
 
 
-def test_a_browser_is_not_taken_for_gone_when_the_processes_cannot_be_listed(starter: Starter, monkeypatch: Any) -> None:
+def test_a_browser_is_not_taken_for_gone_when_one_that_cannot_be_looked_at_may_be_it(starter: Starter) -> None:
     starter.browser_listens(9555, "/devtools/browser/left-running")
-    monkeypatch.setitem(sys.modules, "psutil", None)
+    # No process shows this profile on its command line, but one browser does not show its command line at all.
+    assert starter.process_on_profile is None
+    starter.unreadable_browser = True
 
     browser = launcher._start(CHROME, str(starter.profile), False, ())
 
@@ -1310,3 +1316,51 @@ def test_a_start_that_ran_out_of_time_does_not_look_at_every_process_while_the_s
 
     # Long past the moment of handing over: what was started is the browser.
     assert starter.killed == [4321]
+
+
+def _named(name: str, *cmdline: str, unreadable: bool = False) -> Any:
+    return SimpleNamespace(info={"name": name, "cmdline": None if unreadable else list(cmdline)})
+
+
+def test_only_a_browser_that_keeps_its_command_line_to_itself_leaves_it_open_whether_one_runs(monkeypatch: Any) -> None:
+    module = _fake_psutil(
+        monkeypatch,
+        [
+            _named("chrome.exe", "--user-data-dir=C:/somewhere"),
+            # Programs of the system never show theirs; they are no browsers.
+            _named("System", unreadable=True),
+            _named("csrss.exe", unreadable=True),
+            _named("chrome_proxy.exe", unreadable=True),
+            SimpleNamespace(info={}),
+        ],
+    )
+    assert launcher._a_browser_cannot_be_looked_at() is False
+    assert module.asked_for == [["name", "cmdline"]]
+
+    for name in ("chrome.exe", "msedge.exe", "Google Chrome", "chromium", "MSEDGE.EXE"):
+        _fake_psutil(monkeypatch, [_named("python.exe", "serve.py"), _named(name, unreadable=True)])
+        assert launcher._a_browser_cannot_be_looked_at() is True, name
+
+
+def test_without_psutil_it_cannot_be_told_whether_a_browser_runs(monkeypatch: Any) -> None:
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    assert launcher._a_browser_cannot_be_looked_at() is True
+
+
+def test_a_port_file_counts_as_left_behind_only_when_no_browser_can_be_on_the_profile(tmp_path: Path, monkeypatch: Any) -> None:
+    profile = str(tmp_path / "browser_profile")
+    # A browser runs on the profile.
+    _fake_psutil(monkeypatch, [SimpleNamespace(info={"pid": 15, "name": "chrome.exe", "cmdline": [f"--user-data-dir={profile}"]})])
+    assert launcher._left_by_a_browser_that_is_gone(profile) is False
+    # None does, and every browser that runs shows where it runs.
+    _fake_psutil(
+        monkeypatch,
+        [SimpleNamespace(info={"pid": 16, "name": "chrome.exe", "cmdline": [f"--user-data-dir={profile}-of-another"]})],
+    )
+    assert launcher._left_by_a_browser_that_is_gone(profile) is True
+    # None is seen to, but one browser does not show where it runs: it may be this profile's.
+    _fake_psutil(monkeypatch, [SimpleNamespace(info={"pid": 17, "name": "chrome.exe", "cmdline": None})])
+    assert launcher._left_by_a_browser_that_is_gone(profile) is False
+    # The processes cannot be listed at all.
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    assert launcher._left_by_a_browser_that_is_gone(profile) is False

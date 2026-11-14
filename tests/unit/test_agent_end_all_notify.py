@@ -86,12 +86,13 @@ def test_end_all_stops_every_commission_before_tearing_down(srv, monkeypatch: py
 
     assert result["success"] is True
     # The commissions are stopped (and the HUD told) before the slow teardown.
-    # Stopping them is what cancels their calls, so the browser is closed and
-    # the keys are let go of only after that.
+    # Stopping them is what cancels their calls, so the keys are let go of and
+    # the browser is closed only after that; the keys first, which wait for
+    # nothing the browser does.
     assert order == [
         "stop:Cancelled by user",
-        "close_browser:{'update_capability': False}",
         "released:keyboard_mouse:",
+        "close_browser:{'update_capability': False}",
     ]
 
 
@@ -230,9 +231,12 @@ def test_end_all_kills_a_browser_that_does_not_close_in_the_time_it_has(srv, mon
     async def _scenario() -> None:
         result = await asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0)
         assert result["success"] is True
-        # Killed, off the event loop; and the keys did not wait for the browser.
-        assert len(killed_in) == 1 and killed_in[0] is not threading.current_thread()
         assert closing == ["asked", "given up"] and desktop.released == 1
+        # Killed, off the event loop.
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while not killed_in and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        assert len(killed_in) == 1 and killed_in[0] is not threading.current_thread()
 
     asyncio.run(_scenario())
 
@@ -264,3 +268,43 @@ def test_end_all_finishes_when_the_browser_can_be_neither_closed_nor_killed(srv,
     result = asyncio.run(asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0))
 
     assert result == {"success": True, "message": "all tasks terminated and cleared"}
+
+
+def test_end_all_answers_without_waiting_for_the_browser_to_be_killed(srv, monkeypatch: pytest.MonkeyPatch):
+    import threading
+
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_END_ALL_SECONDS", 0.05)
+    desktop = _Desktop()
+    monkeypatch.setattr(srv.builtin_provider, "_desktop", desktop)
+    killing = threading.Event()
+    killed = threading.Event()
+    let_it_finish = threading.Event()
+
+    def _slow_kill() -> None:
+        # Killing waits for the processes to be gone: seconds, on a bad day.
+        killing.set()
+        let_it_finish.wait(30)
+        killed.set()
+
+    async def _slow_close() -> None:
+        # The keys were let go of before the browser was even asked.
+        assert desktop.released == 1
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(srv.builtin_provider, "close_browser", _slow_close)
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", _slow_kill)
+
+    async def _scenario() -> None:
+        try:
+            result = await asyncio.wait_for(srv.admin_control({"action": "end_all"}), 5.0)
+            assert result["success"] is True
+            # Answered while the kill is still under way: the page gives up waiting after 5 seconds.
+            assert await asyncio.to_thread(killing.wait, 5.0)
+            assert not killed.is_set()
+        finally:
+            let_it_finish.set()
+        assert await asyncio.to_thread(killed.wait, 5.0)
+
+    asyncio.run(_scenario())
