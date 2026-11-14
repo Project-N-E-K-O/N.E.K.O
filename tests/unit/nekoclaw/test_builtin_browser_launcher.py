@@ -617,6 +617,7 @@ class Starter:
         monkeypatch.setattr(launcher, "browser_process_on", self._browser_process_on)
         # Not the processes of the computer the tests run on.
         monkeypatch.setattr(launcher, "_a_browser_cannot_be_looked_at", lambda: self.unreadable_browser)
+        monkeypatch.setattr(launcher, "_created", lambda pid: 1000.0 + pid)
 
     def _popen(self, arguments: list[str], **options: Any) -> FakeChild:
         self.started.append((list(arguments), options))
@@ -876,12 +877,49 @@ async def test_a_browser_that_was_attached_to_is_left_running(closer: Closer) ->
 async def test_our_child_asked_to_close_that_exits_is_not_killed(closer: Closer) -> None:
     child = FakeChild()
     connection = FakeConnection()
+    closer.process_on_profile = None
     await launcher.close(_ours(child), connection)
     assert connection.sent == [("Browser.close", {"timeout": 3.0})]
     assert child.waits == [launcher.CLOSE_WAIT_SECONDS]
     assert closer.killed == []
-    # Our own child is known by its pid; the profile is not searched.
-    assert closer.looked_up == []
+    # Our own child is known by its pid. The profile is looked at once it went, and only then:
+    # nothing is left on it, so the child was the browser.
+    assert closer.looked_up == ["/data/profile"] and closer.slept == []
+
+
+async def test_a_child_that_went_while_the_browser_runs_on_as_another_process_is_not_taken_for_the_browser(
+    closer: Closer,
+) -> None:
+    # The child handed over after its port was open; what it handed over to is asked to close and stays.
+    child = FakeChild()
+    connection = FakeConnection()
+    closer.endpoint_after_asking = "ws://127.0.0.1:9555/devtools/browser/still-here"
+    await launcher.close(_ours(child), connection)
+    assert child.waits == [launcher.CLOSE_WAIT_SECONDS]
+    # Its exit cannot be waited for: a moment, another look at its port, then by the number found on the profile.
+    assert closer.slept == [1.0] and closer.endpoint_checks == ["/data/profile"]
+    assert closer.killed == [7007]
+
+
+async def test_what_a_child_handed_over_to_is_left_alone_once_it_closed(closer: Closer) -> None:
+    child = FakeChild()
+    connection = FakeConnection()
+    closer.endpoint_after_asking = None
+    await launcher.close(_ours(child), connection)
+    assert closer.slept == [1.0] and closer.killed == []
+
+
+async def test_a_child_that_had_exited_before_the_closing_is_not_waited_for_or_killed_by_its_number(closer: Closer) -> None:
+    child = FakeChild(pid=5150)
+    child.returncode = 0
+    connection = FakeConnection()
+    closer.endpoint_after_asking = "ws://127.0.0.1:9555/devtools/browser/still-here"
+    await launcher.close(_ours(child), connection)
+    # Gone long ago: waiting for it would come back at once and say nothing about the browser.
+    assert child.waits == []
+    assert closer.slept == [1.0]
+    # Number 5150 may be anybody's by now; the browser is the one on the profile.
+    assert closer.killed == [7007]
 
 
 async def test_our_child_asked_to_close_that_stays_is_killed_with_its_tree(closer: Closer) -> None:
@@ -1404,3 +1442,65 @@ def test_killing_a_browser_whose_child_has_exited_does_not_kill_by_the_old_numbe
 
     # Nothing runs on the profile any more: nothing is killed, least of all whoever has number 4321 now.
     assert killed == [None]
+
+
+def test_a_number_that_went_to_another_process_is_not_taken_for_the_child(monkeypatch: Any, tmp_path: Path) -> None:
+    profile = str(tmp_path / "browser_profile")
+    monkeypatch.setattr(launcher, "browser_process_on", lambda directory: 7004)
+    created = {4321: 500.0}
+    monkeypatch.setattr(launcher, "_created", created.get)
+    # ``poll`` still says it runs (nobody has collected its exit, or another thread is waiting for it).
+    child = FakeChild()
+    browser = RunningBrowser(
+        install=CHROME, endpoint="ws://127.0.0.1:9222/devtools/browser/x", process=child, owned=True, user_data_dir=profile, started=500.0
+    )
+    assert launcher._pid_of(browser) == 4321
+
+    # The number is another program's now: it was created at another time.
+    created[4321] = 912.5
+    assert launcher._pid_of(browser) == 7004
+    # Or nobody's.
+    del created[4321]
+    assert launcher._pid_of(browser) == 7004
+
+    # When it was not known at the start when the child was created, the number is taken at its word.
+    unknown = RunningBrowser(
+        install=CHROME, endpoint="ws://127.0.0.1:9222/devtools/browser/x", process=child, owned=True, user_data_dir=profile
+    )
+    assert launcher._pid_of(unknown) == 4321
+
+
+def test_a_browser_that_is_started_remembers_when_its_process_was_created(starter: Starter) -> None:
+    starter.on_start.append(lambda: starter.browser_listens(9666))
+    browser = launcher._start(CHROME, str(starter.profile), False, ())
+    assert browser.process is starter.child and browser.started == 1000.0 + 4321
+
+
+def test_a_browser_whose_child_handed_over_at_once_has_no_time_of_creation_to_go_by(starter: Starter) -> None:
+    def hand_over() -> None:
+        starter.child.returncode = 0
+        starter.browser_listens(9666)
+
+    starter.on_start.append(hand_over)
+    browser = launcher._start(CHROME, str(starter.profile), False, ())
+    # Not our child: looked up by its profile whenever its process is wanted.
+    assert browser.process is None and browser.started is None
+
+
+def test_when_a_process_was_created_cannot_always_be_told(monkeypatch: Any) -> None:
+    class Gone(Exception):
+        pass
+
+    module = types.ModuleType("psutil")
+
+    def process(pid: int) -> Any:
+        if pid == 1:
+            raise Gone("no such process")
+        return SimpleNamespace(create_time=lambda: 1234.5)
+
+    module.Process = process  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psutil", module)
+    assert launcher._created(77) == 1234.5
+    assert launcher._created(1) is None
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    assert launcher._created(77) is None

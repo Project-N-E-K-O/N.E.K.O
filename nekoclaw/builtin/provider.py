@@ -245,10 +245,7 @@ class BuiltinToolProvider:
             # A kill that was asked for earlier and is not over yet takes what
             # it finds when its turn on the worker threads comes: started
             # before that, the browser of this call would be what it finds.
-            while True:
-                under_way = self._kills_under_way()
-                if not under_way:
-                    break
+            while under_way := self._kills_under_way():
                 # Not stopped along with this call, should it be stopped.
                 await asyncio.wait(under_way)
             outcome = await self.browser().call(tool_name, arguments, refused=still_on)

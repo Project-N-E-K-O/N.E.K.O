@@ -353,6 +353,9 @@ class RunningBrowser:
     # True when it is ours to close: started here, on the profile kept for it.
     owned: bool = False
     user_data_dir: str | None = None
+    # When ``process`` was created, as the system tells it; None when that
+    # could not be asked. A number alone does not name a process for good.
+    started: float | None = None
 
     @property
     def pid(self) -> int | None:
@@ -420,6 +423,7 @@ def _start(
         )
     except OSError as exc:
         raise BrowserStartError(f"{install.name} could not be started: {exc}") from exc
+    started = _created(process.pid)
     deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if stop is not None and stop.is_set():
@@ -432,7 +436,12 @@ def _start(
             # child: its process is looked up by its port when it is closed.
             child = process if process.poll() is None else None
             return RunningBrowser(
-                install=install, endpoint=endpoint_url(*active), process=child, owned=True, user_data_dir=user_data_dir
+                install=install,
+                endpoint=endpoint_url(*active),
+                process=child,
+                owned=True,
+                user_data_dir=user_data_dir,
+                started=started if child is not None else None,
             )
         time.sleep(0.1)
     exited = process.poll() is not None
@@ -535,6 +544,30 @@ def kill_tree(pid: int | None) -> None:
         logger.warning("the browser process %s could not be killed: %s", pid, type(exc).__name__)
 
 
+def _created(pid: int) -> float | None:
+    """Return when the process of a number was created, or None when that cannot be told. Blocking."""
+    try:
+        import psutil
+
+        return float(psutil.Process(pid).create_time())
+    except Exception:  # noqa: BLE001 - no psutil, no such process, no right to ask: it cannot be told
+        return None
+
+
+def _is_the_child(pid: int, started: float | None) -> bool:
+    """Whether the process of that number is still the one that was started. Blocking.
+
+    ``poll`` says a child runs for as long as nobody has collected its exit,
+    and for a moment longer when another thread is waiting for it; a number
+    that was given to another program meanwhile shows by when its process
+    was created. True when that was not known at the start.
+    """
+    if started is None:
+        return True
+    now = _created(pid)
+    return now is not None and abs(now - started) < 0.01
+
+
 def _wait_gone(process: Any, seconds: float) -> bool:
     if process is None:
         return True
@@ -583,7 +616,7 @@ def _pid_of(browser: RunningBrowser) -> int | None:
     whatever it had not saved.
     """
     child = browser.process
-    if child is not None and child.poll() is None:
+    if child is not None and child.poll() is None and _is_the_child(child.pid, browser.started):
         return child.pid
     if browser.user_data_dir:
         # Not our child (found running on the profile), or no longer running:
@@ -607,6 +640,11 @@ async def close(browser: RunningBrowser, connection: Any = None) -> None:
     if not browser.owned:
         return
     pid = await asyncio.to_thread(_pid_of, browser)
+    # The process that was started, for as long as it runs. One that has
+    # exited says nothing about the browser, which may run on as the process
+    # it handed over to: that one is dealt with as a browser that was never
+    # our child.
+    child = browser.process if browser.process is not None and browser.process.poll() is None else None
     asked = False
     if connection is not None and not connection.closed:
         try:
@@ -614,9 +652,15 @@ async def close(browser: RunningBrowser, connection: Any = None) -> None:
             asked = True
         except Exception:  # noqa: BLE001 - killed below instead
             logger.debug("asking the browser to close failed", exc_info=True)
-    if asked and browser.process is not None and await asyncio.to_thread(_wait_gone, browser.process, CLOSE_WAIT_SECONDS):
-        return
-    if asked and browser.process is None:
+    if asked and child is not None and await asyncio.to_thread(_wait_gone, child, CLOSE_WAIT_SECONDS):
+        # The child went. With nothing left on the profile, that was the
+        # browser; with something left, the child had handed over to it
+        # after its port was open, and it is the browser.
+        pid = await asyncio.to_thread(browser_process_on, browser.user_data_dir) if browser.user_data_dir else None
+        if pid is None:
+            return
+        child = None
+    if asked and child is None:
         # Not our child, so its exit cannot be waited for; give it a moment.
         await asyncio.sleep(1.0)
         if browser.user_data_dir and await asyncio.to_thread(running_endpoint, browser.user_data_dir) is None:
