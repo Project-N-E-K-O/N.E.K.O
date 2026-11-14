@@ -837,6 +837,8 @@ class Closer:
         self.looked_up: list[Any] = []
         self.process_on_profile: int | None = 7007
         self.endpoint_after_asking: str | None = None
+        # What the port of the profile answers, look by look; ``endpoint_after_asking`` once these are used up.
+        self.endpoint_answers: list[str | None] = []
         self.endpoint_checks: list[Any] = []
         self.slept: list[float] = []
         monkeypatch.setattr(launcher, "kill_tree", self.killed.append)
@@ -850,6 +852,8 @@ class Closer:
 
     def _running_endpoint(self, profile: Any) -> str | None:
         self.endpoint_checks.append(profile)
+        if self.endpoint_answers:
+            return self.endpoint_answers.pop(0)
         return self.endpoint_after_asking
 
     async def _sleep(self, seconds: float) -> None:
@@ -877,14 +881,22 @@ async def test_a_browser_that_was_attached_to_is_left_running(closer: Closer) ->
 async def test_our_child_asked_to_close_that_exits_is_not_killed(closer: Closer) -> None:
     child = FakeChild()
     connection = FakeConnection()
-    closer.process_on_profile = None
     await launcher.close(_ours(child), connection)
     assert connection.sent == [("Browser.close", {"timeout": 3.0})]
     assert child.waits == [launcher.CLOSE_WAIT_SECONDS]
     assert closer.killed == []
-    # Our own child is known by its pid. The profile is looked at once it went, and only then:
-    # nothing is left on it, so the child was the browser.
-    assert closer.looked_up == ["/data/profile"] and closer.slept == []
+    # Once it went, the port of its profile is asked, once: it is closed, so the child was the browser.
+    assert closer.endpoint_checks == ["/data/profile"] and closer.slept == []
+    # The processes of the computer are not gone through for it: every close would pay for that.
+    assert closer.looked_up == []
+
+
+async def test_our_child_without_a_profile_that_exits_is_taken_for_the_browser(closer: Closer) -> None:
+    child = FakeChild()
+    await launcher.close(_ours(child, profile=None), FakeConnection())
+    # There is no profile whose port could be asked, and none to find another process on.
+    assert child.waits == [launcher.CLOSE_WAIT_SECONDS]
+    assert closer.endpoint_checks == [] and closer.slept == [] and closer.killed == []
 
 
 async def test_a_child_that_went_while_the_browser_runs_on_as_another_process_is_not_taken_for_the_browser(
@@ -896,17 +908,21 @@ async def test_a_child_that_went_while_the_browser_runs_on_as_another_process_is
     closer.endpoint_after_asking = "ws://127.0.0.1:9555/devtools/browser/still-here"
     await launcher.close(_ours(child), connection)
     assert child.waits == [launcher.CLOSE_WAIT_SECONDS]
-    # Its exit cannot be waited for: a moment, another look at its port, then by the number found on the profile.
-    assert closer.slept == [1.0] and closer.endpoint_checks == ["/data/profile"]
+    # The port still answers once the child went. What answers cannot be waited for: a moment, another look at
+    # the port, then by the number found on the profile, which is looked for only now.
+    assert closer.slept == [1.0] and closer.endpoint_checks == ["/data/profile", "/data/profile"]
+    assert closer.looked_up == ["/data/profile"]
     assert closer.killed == [7007]
 
 
 async def test_what_a_child_handed_over_to_is_left_alone_once_it_closed(closer: Closer) -> None:
     child = FakeChild()
     connection = FakeConnection()
-    closer.endpoint_after_asking = None
+    # Still answering when the child went, closed a moment later.
+    closer.endpoint_answers = ["ws://127.0.0.1:9555/devtools/browser/still-here", None]
     await launcher.close(_ours(child), connection)
-    assert closer.slept == [1.0] and closer.killed == []
+    assert closer.slept == [1.0] and closer.endpoint_checks == ["/data/profile", "/data/profile"]
+    assert closer.killed == [] and closer.looked_up == []
 
 
 async def test_a_child_that_had_exited_before_the_closing_is_not_waited_for_or_killed_by_its_number(closer: Closer) -> None:
@@ -1457,7 +1473,15 @@ def test_a_number_that_went_to_another_process_is_not_taken_for_the_child(monkey
     )
     assert launcher._pid_of(browser) == 4321
 
+    # A clock that was set meanwhile moves the time by a little; it is the child all the same.
+    created[4321] = 500.6
+    assert launcher._pid_of(browser) == 4321
+    created[4321] = 499.2
+    assert launcher._pid_of(browser) == 4321
+
     # The number is another program's now: it was created at another time.
+    created[4321] = 502.0
+    assert launcher._pid_of(browser) == 7004
     created[4321] = 912.5
     assert launcher._pid_of(browser) == 7004
     # Or nobody's.

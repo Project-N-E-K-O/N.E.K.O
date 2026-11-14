@@ -795,6 +795,11 @@ async def test_a_ledger_made_before_a_column_was_added_is_given_it_when_it_is_op
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
     assert columns.count("session_dir") == 1 and version == 2
+    # It has every column a new ledger has. A column put into the table and the commission but left out of
+    # ``_ADDED_COLUMNS`` shows here: the ledgers there are could then no longer be read.
+    from nekoclaw.host.ledger import _COMMISSION_COLUMNS
+
+    assert set(columns) == set(_COMMISSION_COLUMNS)
 
     # Opened again, nothing is added a second time.
     again = Ledger(path)

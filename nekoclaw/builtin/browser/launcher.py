@@ -544,6 +544,11 @@ def kill_tree(pid: int | None) -> None:
         logger.warning("the browser process %s could not be killed: %s", pid, type(exc).__name__)
 
 
+# How far apart two readings of when a process was created may be for it to
+# be the same process (see ``_is_the_child``).
+_SAME_PROCESS_SECONDS = 1.0
+
+
 def _created(pid: int) -> float | None:
     """Return when the process of a number was created, or None when that cannot be told. Blocking."""
     try:
@@ -561,11 +566,18 @@ def _is_the_child(pid: int, started: float | None) -> bool:
     and for a moment longer when another thread is waiting for it; a number
     that was given to another program meanwhile shows by when its process
     was created. True when that was not known at the start.
+
+    The two times are taken for the same within a second. On Linux the time
+    is worked out from when the system was started, which is itself worked
+    out from the clock of now: a clock that was set meanwhile moves it. A
+    number goes to another program only after the child has exited, and that
+    program was then created later than the child by as long as the child
+    ran.
     """
     if started is None:
         return True
     now = _created(pid)
-    return now is not None and abs(now - started) < 0.01
+    return now is not None and abs(now - started) < _SAME_PROCESS_SECONDS
 
 
 def _wait_gone(process: Any, seconds: float) -> bool:
@@ -652,11 +664,13 @@ async def close(browser: RunningBrowser, connection: Any = None) -> None:
         except Exception:  # noqa: BLE001 - killed below instead
             logger.debug("asking the browser to close failed", exc_info=True)
     if asked and child is not None and await asyncio.to_thread(_wait_gone, child, CLOSE_WAIT_SECONDS):
-        # The child went. With nothing left on the profile, that was the
-        # browser; with something left, the child had handed over to it
-        # after its port was open, and it is the browser.
-        left = await asyncio.to_thread(browser_process_on, browser.user_data_dir) if browser.user_data_dir else None
-        if left is None:
+        # The child went. With the port of the profile closed, that was the
+        # browser; with it still answering, the child had handed over to
+        # another process after the port was open, and that one is the
+        # browser. The port is asked, not the processes on the profile:
+        # listing those reads the command line of every process there is,
+        # and every close would pay for it.
+        if not browser.user_data_dir or await asyncio.to_thread(running_endpoint, browser.user_data_dir) is None:
             return
         child = None
     if asked and child is None:
@@ -664,7 +678,8 @@ async def close(browser: RunningBrowser, connection: Any = None) -> None:
         await asyncio.sleep(1.0)
         if browser.user_data_dir and await asyncio.to_thread(running_endpoint, browser.user_data_dir) is None:
             return
-    # Which process that is, is asked only now: what the child was when the
-    # closing began may no longer hold (it may have handed over and gone
-    # meanwhile), and its number would then be nobody's, or somebody else's.
-    await asyncio.to_thread(kill_tree, await asyncio.to_thread(_pid_of, browser))
+    # Which process that is, is asked only now (``kill`` looks it up): what
+    # the child was when the closing began may no longer hold (it may have
+    # handed over and gone meanwhile), and its number would then be nobody's,
+    # or somebody else's.
+    await asyncio.to_thread(kill, browser)
