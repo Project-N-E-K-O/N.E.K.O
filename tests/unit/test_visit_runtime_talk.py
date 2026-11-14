@@ -2189,8 +2189,10 @@ async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeyp
         return sealings[-1]
 
     async def wait(fs, *args, **kwargs):
-        if sealings and sealings[-1] in fs:
-            budgets["seal"] = kwargs.get("timeout")
+        # Only the timed foreground wait: once it times out, the background
+        # finish waits on the same seal with no timeout, and may get there first.
+        if sealings and sealings[-1] in fs and "timeout" in kwargs:
+            budgets.setdefault("seal", kwargs["timeout"])
         return await real_wait(fs, *args, **kwargs)
 
     rt.settle_family_records = settle_family_records

@@ -1187,6 +1187,25 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
     # event, so the round would rightly owe nothing; at startup the outbox
     # only resumes after the round, so that ordering is not the one under test.
     round_applying = threading.Event()
+    live_written = threading.Event()
+    compaction_refused = threading.Event()
+    real_apply = log.aapply_and_advance
+    held = False
+
+    async def apply_then_hold_once(*args, **kwargs):
+        # After the first event the character lock is free again: hold the
+        # round there until a live write has moved the sentinel under it and
+        # compaction has been turned away, so both always land mid-round on a
+        # slow runner too. Waiting inside the handler would hold that lock.
+        nonlocal held
+        result = await real_apply(*args, **kwargs)
+        if not held:
+            held = True
+            await asyncio.to_thread(live_written.wait, 10)
+            await asyncio.to_thread(compaction_refused.wait, 10)
+        return result
+
+    log.aapply_and_advance = apply_then_hold_once
 
     def handler(_name, payload):
         round_applying.set()
@@ -1217,6 +1236,7 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
             except Exception as e:  # noqa: BLE001 - surfaced by the assert below
                 errors.append(e)
                 return
+            live_written.set()
             n += 1
             time.sleep(0.003)
 
@@ -1229,6 +1249,8 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
                 errors.append(e)
                 return
             outcomes[result.outcome] = outcomes.get(result.outcome, 0) + 1
+            if result.outcome == "replay_in_progress":
+                compaction_refused.set()
             time.sleep(0.0005)
 
     threads = [threading.Thread(target=writer, daemon=True),
