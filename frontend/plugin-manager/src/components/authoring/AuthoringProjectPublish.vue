@@ -196,7 +196,11 @@ import {
   type PublishTask,
   type Toolchain,
 } from '@/api/pluginProjects'
-import { listMarketPublicationReceipts, type SubmissionPanelState } from '@/api/marketSubmissions'
+import {
+  listMarketPublicationReceipts,
+  type MarketPublicationReceipt,
+  type SubmissionPanelState,
+} from '@/api/marketSubmissions'
 import { fetchMarketPluginVersions } from '@/api/market'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
 
@@ -420,10 +424,14 @@ async function loadMarketListing() {
   const receipts = await receiptsRequest
   if (disposed || read !== marketReads) return
   // The task's own receipt is picked by its request id; the Release URL is
-  // only the fallback for a receipt the task did not record.
+  // only the fallback for a receipt the task did not record. A Release sent
+  // again under the same tag has several receipts; the newest one counts,
+  // whatever order the Market lists them in.
   const receipt = repository && Array.isArray(receipts) && (
     (requestId ? receipts.find(item => item.id === requestId) : undefined) ??
-    receipts.find(item => isReleaseUrlOf(item.release_url, repository, tag))
+    receipts
+      .filter(item => isReleaseUrlOf(item.release_url, repository, tag))
+      .reduce<MarketPublicationReceipt | undefined>((newest, item) => (!newest || item.id > newest.id ? item : newest), undefined)
   )
   if (receipt && isMarketPublicationStatus(receipt.status)) marketReceipt.value = receipt.status
 }
