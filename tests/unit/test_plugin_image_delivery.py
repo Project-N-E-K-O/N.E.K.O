@@ -1112,17 +1112,14 @@ def test_plugin_image_budget_constants_are_pinned() -> None:
 
 
 def test_model_image_budget_matches_the_documented_plugin_contract() -> None:
-    """PLUGIN_DEVELOPMENT_GUIDE.md advertises 8 images / 8 MiB to authors.
+    """docs/zh-CN/plugins/push-message.md advertises 8 images / 8 MiB to authors.
 
     The guide is the contract plugin authors code against, so a silent drift
     between it and the enforced budget is the actual defect this guards.
     """
-    from pathlib import Path
-
     from app.main_server import character_runtime
 
-    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
-    text = guide.read_text(encoding="utf-8")
+    text = _guide_text()
     assert "单条消息最多向模型注入 8 张、合计" in text
     assert "8 MiB 图片" in text
     assert character_runtime._PLUGIN_IMAGE_MAX_COUNT == 8
@@ -1137,12 +1134,9 @@ def test_staged_quotas_match_the_documented_plugin_contract() -> None:
     turn can carry several pushes' worth -- and the maintainer chose to keep
     the resulting nine rather than trim across sources.
     """
-    from pathlib import Path
-
     from main_logic import proactive_delivery as pd
 
-    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
-    text = guide.read_text(encoding="utf-8")
+    text = _guide_text()
 
     # The figures the guide prints, tied to the constants that enforce them, so
     # changing a quota without the doc (or the reverse) fails here.
@@ -1168,10 +1162,7 @@ def test_the_guide_does_not_promise_ordering_the_model_path_cannot_keep() -> Non
     so interleaved caption/image pairs do not survive. Rather than leave the
     promise standing, the guide now scopes it.
     """
-    from pathlib import Path
-
-    guide = Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
-    text = guide.read_text(encoding="utf-8")
+    text = _guide_text()
     assert "**进模型的那条路不保序**" in text
 
 
@@ -2871,7 +2862,7 @@ async def test_cancelled_budget_fitting_gives_both_image_queues_back():
 
 
 # ---------------------------------------------------------------------------
-# The numbers PLUGIN_DEVELOPMENT_GUIDE.md hands plugin authors.
+# The numbers docs/zh-CN/plugins/push-message.md hands plugin authors.
 #
 # Every ceiling below had zero tests: the inline payload cap, the four upload
 # ceilings, and the double-carry that makes the inline cap mean roughly half of
@@ -2882,13 +2873,105 @@ async def test_cancelled_budget_fitting_gives_both_image_queues_back():
 # ---------------------------------------------------------------------------
 
 
-def _guide_text() -> str:
+def _guide_text(locale: str = "zh-CN") -> str:
     from pathlib import Path
 
-    guide = (
-        Path(__file__).resolve().parents[2] / "plugin" / "PLUGIN_DEVELOPMENT_GUIDE.md"
+    docs = Path(__file__).resolve().parents[2] / "docs"
+    base = docs if locale == "en" else docs / locale
+    return (base / "plugins" / "push-message.md").read_text(encoding="utf-8")
+
+
+_GUIDE_LOCALES = ("en", "zh-CN", "ja")
+
+# Per-locale anchors for the figures that only appear inside prose. Each is
+# formatted with the enforcing constants, so the number cannot drift in one
+# translation while the others (and the code) move on.
+_PER_PUSH_IMAGE_BUDGET_ANCHORS = {
+    "en": (
+        "At most {count} images totaling {mib} MiB are injected into the model",
+        "The {count} images / {mib} MiB figure",
+    ),
+    "zh-CN": ("单条消息最多向模型注入 {count} 张、合计 {mib} MiB", "{count} 张 / {mib} MiB"),
+    "ja": ("最大 {count} 枚・合計 {mib} MiB", "{count} 枚 / {mib} MiB"),
+}
+_HEADROOM_ANCHORS = {
+    "en": "{n}-byte",
+    "zh-CN": "{n} 字节",
+    "ja": "{n} バイト",
+}
+# How many times each locale prints the headroom figure. A plain ``in`` check
+# passes as long as ONE mention is current; counting makes a partial update
+# (one sentence edited, the others left stale) fail.
+_HEADROOM_MENTIONS = {"en": 3, "zh-CN": 4, "ja": 4}
+
+
+@pytest.mark.parametrize("locale", _GUIDE_LOCALES)
+def test_every_locale_of_the_guide_prints_the_same_numbers(locale: str) -> None:
+    """The figures are hand-copied into three locales; pin them in all three.
+
+    The tests above read zh-CN for its prose, but the code comments point at
+    the en page and ja is a third copy. Language-neutral lines -- constant
+    assignments, reason codes, measured sizes, the staging-quota cells -- must
+    agree with the code in every locale, or changing a constant while editing
+    only one translation would still pass CI.
+    """
+    from main_logic import proactive_delivery as pd
+    from plugin.sdk.shared.core.images import (
+        MAX_IMAGE_EDGE,
+        MAX_SOURCE_IMAGE_BYTES,
+        MAX_SOURCE_IMAGE_PIXELS,
+        MAX_UPLOADED_IMAGE_BYTES,
     )
-    return guide.read_text(encoding="utf-8")
+    from app.main_server import character_runtime
+    from plugin.core.context import _HOST_ENVELOPE_HEADROOM_BYTES
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    text = _guide_text(locale)
+
+    # Per-push model image budget (prose, so anchored per locale).
+    count = character_runtime._PLUGIN_IMAGE_MAX_COUNT
+    # The guide prints a whole number of MiB; a fractional budget would make
+    # the floor-divided figure below match a now-wrong page.
+    assert character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES % (1024 * 1024) == 0
+    mib = character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES // (1024 * 1024)
+    for anchor in _PER_PUSH_IMAGE_BUDGET_ANCHORS[locale]:
+        assert anchor.format(count=count, mib=mib) in text
+    # The local payload_too_large gate holds back the host headroom; the
+    # guide prints that byte count, so tie it to the constant.
+    assert _HEADROOM_ANCHORS[locale].format(n=_HOST_ENVELOPE_HEADROOM_BYTES) in text
+    import re
+
+    # Whole-number matches only, so "1227 bytes" or "227.4 KiB" elsewhere in
+    # the page cannot inflate the count.
+    headroom_re = rf"(?<![\d.]){_HOST_ENVELOPE_HEADROOM_BYTES}(?![\d.])"
+    assert len(re.findall(headroom_re, text)) == _HEADROOM_MENTIONS[locale]
+
+    assert (
+        f"`MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = {MESSAGE_PLANE_PAYLOAD_MAX_BYTES}"
+        in text
+    )
+    assert f"{MESSAGE_PLANE_PAYLOAD_MAX_BYTES // 1024} **KiB**" in text
+    assert f"{MESSAGE_PLANE_PAYLOAD_MAX_BYTES * 3 // 4 // 1024} KiB**" in text
+    for measured in ("341.8 KiB", "383.6 KiB"):
+        assert measured in text
+    for name, value in (
+        ("MAX_IMAGE_EDGE", MAX_IMAGE_EDGE),
+        ("MAX_UPLOADED_IMAGE_BYTES", MAX_UPLOADED_IMAGE_BYTES),
+        ("MAX_SOURCE_IMAGE_BYTES", MAX_SOURCE_IMAGE_BYTES),
+        ("MAX_SOURCE_IMAGE_PIXELS", MAX_SOURCE_IMAGE_PIXELS),
+    ):
+        assert f"`{name}` = {value}" in text
+    for reason in (
+        "backpressure",
+        "transport_error",
+        "transport_unavailable",
+        "payload_too_large",
+    ):
+        assert f"`{reason}`" in text
+    user_mib = pd.USER_PENDING_IMAGE_MAX_BYTES // (1024 * 1024)
+    plugin_mib = pd.PLUGIN_PENDING_IMAGE_MAX_BYTES // (1024 * 1024)
+    assert f"| {pd.USER_PENDING_IMAGE_MAX_COUNT} | {user_mib} MiB |" in text
+    assert f"| {pd.PLUGIN_PENDING_IMAGE_MAX_COUNT} | {plugin_mib} MiB |" in text
 
 
 def test_message_plane_payload_ceiling_is_pinned_and_documented() -> None:
@@ -3125,8 +3208,35 @@ def test_an_inline_image_rides_the_wire_envelope_once(monkeypatch) -> None:
     # Asserting the refusal is also the stronger claim. The bracket exists to
     # pin the ceiling the guide prints, and what a plugin author actually meets
     # at 385 KiB is a rejection, not a byte count they cannot observe.
-    _, under = _push_one_inline_image(monkeypatch, 383 * 1024)
-    assert len(ormsgpack.packb(under)) <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+    under_result, under = _push_one_inline_image(monkeypatch, 383 * 1024)
+    # A refused push returns no envelope, and packb(None) is one byte -- so the
+    # size check below would pass on a rejection too. Pin the verdict first.
+    assert under_result["submitted"] is True
+    assert under is not None
+    packed_under = len(ormsgpack.packb(under))
+    assert packed_under <= MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    # 383.6 KiB is the raw size that exactly fills the cap. Past this point
+    # every extra 3 raw bytes cost exactly 4 packed bytes (base64), so derive
+    # it from the 383 KiB measurement instead of trusting the prose.
+    from plugin.core.context import _HOST_ENVELOPE_HEADROOM_BYTES
+
+    fill_raw = 383 * 1024 + (MESSAGE_PLANE_PAYLOAD_MAX_BYTES - packed_under) * 3 // 4
+    assert abs(fill_raw / 1024 - 383.6) < 0.1
+    # The SDK refuses earlier than that: it holds back the host headroom, and
+    # the guide says the practical cutoff sits about 0.2 KiB lower. Pin both
+    # the gap and the verdict on either side of the real cutoff -- the
+    # rejected side is still under the full cap, i.e. inside the headroom.
+    cut_raw = 383 * 1024 + (
+        MESSAGE_PLANE_PAYLOAD_MAX_BYTES - _HOST_ENVELOPE_HEADROOM_BYTES - packed_under
+    ) * 3 // 4
+    assert 0.1 < (fill_raw - cut_raw) / 1024 < 0.25
+    below_result, _ = _push_one_inline_image(monkeypatch, cut_raw - 16)
+    assert below_result["submitted"] is True
+    inside_result, _ = _push_one_inline_image(monkeypatch, cut_raw + 16)
+    assert cut_raw + 16 < fill_raw
+    assert inside_result["reason"] == "payload_too_large"
+
     over_result, over = _push_one_inline_image(monkeypatch, 385 * 1024)
     assert over is None
     assert over_result == {
@@ -3141,8 +3251,7 @@ def test_an_inline_image_rides_the_wire_envelope_once(monkeypatch) -> None:
     # once, in a paragraph that says it used to be that way and names the
     # 2.34x double carry as the reason.
     assert text.count("110 KiB") == 1
-    # Blockquote paragraphs are separated by a bare "> " line, not a blank one.
-    history = next(p for p in text.split("\n>\n") if "110 KiB" in p)
+    history = next(p for p in text.split("\n\n") if "110 KiB" in p)
     assert "曾经" in history and "2.34" in history
     assert "384 KiB" not in history, (
         "the current ceiling must not be stated inside the historical paragraph"

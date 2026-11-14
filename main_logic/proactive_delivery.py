@@ -86,7 +86,7 @@ PASSIVE_MEDIA_BUDGET_DEFERRED_KEY = "_passive_media_budget_deferred"
 # callback into a single turn, so a per-push cap alone does not bound what the
 # provider receives: cues pile up whenever the proactive claim is denied (the
 # user is mid-conversation), then release together. The figures match the
-# contract PLUGIN_DEVELOPMENT_GUIDE.md advertises to plugin authors.
+# contract docs/plugins/push-message.md advertises to plugin authors.
 CALLBACK_IMAGE_MAX_COUNT = 8
 CALLBACK_IMAGE_MAX_TOTAL_BYTES = 8 * 1024 * 1024
 
@@ -135,7 +135,7 @@ USER_PENDING_IMAGE_MAX_BYTES = 2 * CALLBACK_IMAGE_MAX_TOTAL_BYTES
 #
 # Same figure as the per-turn callback budget rather than a second spelling:
 # one turn is one turn regardless of which path assembled it, and this is the
-# number PLUGIN_DEVELOPMENT_GUIDE.md already advertises.
+# number docs/plugins/push-message.md already advertises.
 #
 # This is a CEILING, not a quota — it never grants budget a per-source quota
 # withheld. It only trims what the per-source quotas already let through.

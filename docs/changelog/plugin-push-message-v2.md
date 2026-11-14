@@ -143,8 +143,12 @@ consumed the message, a model generated a response, or playback completed.
 Rejected results also include `ok=False` for compatibility with legacy callers;
 new integrations should use `submitted` as the authoritative discriminator.
 
-Synchronous rejection uses one of three stable reasons: `backpressure`,
-`transport_error`, or `transport_unavailable`. The result deliberately omits
+Synchronous rejection uses one of four stable reasons: `backpressure`,
+`transport_error`, `transport_unavailable`, or `payload_too_large`. The first
+three describe the transport at that moment, so resending later can succeed.
+`payload_too_large` is measured locally before sending, against
+`MESSAGE_PLANE_PAYLOAD_MAX_BYTES`; an identical retry always fails, so the push
+has to get smaller (for images, use `ctx.images.upload()`). The result deliberately omits
 internal transport names, message content, and raw exception text. Existing
 callers that ignore the return value keep their previous fire-and-forget
 behaviour; stateful callers may retain local state and apply their own retry and
@@ -180,4 +184,4 @@ v0.9 has removed the compatibility layer. The pending cleanup consists of:
 * `plugin/server/messaging/proactive_bridge.py`
 * `app/main_server/character_runtime.py` (image `media_parts` → `session.stream_image`; audio/video warn-drop pending a transport)
 * `plugin/plugins/{bilibili_danmaku,memo_reminder,sts2_autoplay}/__init__.py` (migrated senders)
-* `plugin/PLUGIN_DEVELOPMENT_GUIDE.md`
+* `docs/plugins/push-message.md` (and its zh-CN / ja mirrors)

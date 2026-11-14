@@ -67,6 +67,7 @@ N.E.K.O. のプラグインシステムは、**プロセス隔離**と**非同�
 - [プラグインを公開](/ja/plugins/cli) — GitHub へ upload し、審査提出と新 version の公開を行う
 - [v0.9 移行](./migration-v0.9) — 削除済み API と正確な移行先
 - [SDK リファレンス](./sdk-reference) — ベースクラス、コンテキスト API、Result 型
+- [メッセージ配信](./push-message) — `push_message` / `finish` の配信セマンティクス、サイズ制限、ロールプレースホルダー
 - [デコレーター](./decorators) — 利用可能なすべてのデコレーター
 - [サンプル](./examples) — 完全に動作するサンプル
 - [Adapter と並行処理](./advanced) — Adapter ゲートウェイ、非同期エントリー、スレッドセーフティ
