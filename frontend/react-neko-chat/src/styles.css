@@ -969,6 +969,18 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   scrollbar-width: none;
 }
 
+.message-list-load-older {
+  align-self: center;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
 .message-list::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -1988,11 +2000,548 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
 }
 
 /* ===== 底部工具栏 ===== */
+:is(.audio-message-composer, .message-audio-block, .audio-message-announcement) {
+  --audio-ink: #233b52;
+  --audio-muted: #506a81;
+  --audio-outline: rgba(70, 116, 151, 0.22);
+  --audio-surface: rgba(248, 252, 255, 0.84);
+  --audio-hover: rgba(53, 112, 161, 0.09);
+  --audio-action: #dceefa;
+  --audio-action-hover: #cde6f7;
+  --audio-progress: #497da3;
+  --audio-recording: #c93b58;
+}
+
+[data-theme="dark"] :is(.audio-message-composer, .message-audio-block, .audio-message-announcement) {
+  --audio-ink: #e1edf7;
+  --audio-muted: #a9bfd3;
+  --audio-outline: rgba(172, 205, 235, 0.24);
+  --audio-surface: rgba(34, 49, 67, 0.86);
+  --audio-hover: rgba(166, 207, 242, 0.12);
+  --audio-action: #2b4a64;
+  --audio-action-hover: #355b79;
+  --audio-progress: #8cc0e7;
+  --audio-recording: #ff879d;
+}
+
+.audio-message-composer {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex-shrink: 0;
+  color: var(--audio-ink);
+  font-size: 12px;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+
+.audio-message-composer .audio-message-mic {
+  border-radius: 50%;
+  color: var(--audio-muted);
+}
+
+.audio-message-composer .audio-message-mic:hover:not(:disabled) {
+  background: var(--audio-hover);
+  color: var(--audio-ink);
+}
+
+.audio-message-mic-glyph {
+  position: relative;
+  width: 16px;
+  height: 18px;
+  background:
+    linear-gradient(currentColor, currentColor) center bottom / 7px 1.5px no-repeat,
+    linear-gradient(currentColor, currentColor) center bottom / 1.5px 5px no-repeat;
+}
+
+.audio-message-mic-glyph::before,
+.audio-message-mic-glyph::after {
+  position: absolute;
+  left: 50%;
+  box-sizing: border-box;
+  transform: translateX(-50%);
+  border: 1.5px solid currentColor;
+  content: "";
+}
+
+.audio-message-mic-glyph::before {
+  top: 0;
+  width: 7px;
+  height: 11px;
+  border-radius: 5px;
+}
+
+.audio-message-mic-glyph::after {
+  top: 6px;
+  width: 13px;
+  height: 8px;
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+}
+
+.audio-message-strip {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 46px;
+  padding: 5px 6px 5px 13px;
+  border: 1px solid var(--audio-outline);
+  border-radius: 14px;
+  background: var(--audio-surface);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Reveal from the microphone side while keeping the final composer geometry. */
+  .audio-message-composer[data-audio-message-active="true"] > .audio-message-strip {
+    animation: audio-message-expand 200ms cubic-bezier(0.2, 0.75, 0.3, 1);
+  }
+
+  .audio-message-strip[data-recording="true"] > :is(.audio-message-clock, .audio-message-track, .audio-message-stop) {
+    animation: audio-message-controls-enter 140ms ease-out;
+  }
+}
+
+@keyframes audio-message-expand {
+  from {
+    clip-path: inset(-4px -4px -4px max(0px, 100% - 44px) round 14px);
+    opacity: 0.55;
+  }
+  to {
+    clip-path: inset(-4px round 14px);
+    opacity: 1;
+  }
+}
+
+@keyframes audio-message-controls-enter {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+
+.audio-message-strip button,
+.message-audio-block button {
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.audio-message-strip button {
+  min-height: 34px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.audio-message-strip button:hover:not(:disabled),
+.message-audio-block button:hover:not(:disabled),
+.message-audio-block .message-audio-more[aria-expanded="true"] {
+  background: var(--audio-hover);
+}
+
+.audio-message-composer button:focus-visible,
+.message-audio-block button:focus-visible {
+  outline: 2px solid var(--audio-progress);
+  outline-offset: 2px;
+}
+
+.audio-message-strip button:disabled,
+.message-audio-block button:disabled {
+  opacity: 0.62;
+  cursor: default;
+}
+
+.audio-message-clock,
+.audio-message-strip .audio-message-play {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.audio-message-recording-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--audio-recording);
+}
+
+.audio-message-track {
+  display: block;
+  min-width: 0;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--audio-outline);
+}
+
+.audio-message-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--audio-progress);
+}
+
+.audio-message-strip > .audio-message-track {
+  flex: 1;
+  margin-inline: 2px;
+}
+
+.audio-message-state {
+  min-width: 0;
+  color: var(--audio-muted);
+  overflow-wrap: anywhere;
+}
+
+.audio-message-strip .audio-message-cancel {
+  position: relative;
+  width: 34px;
+  flex: none;
+  margin-inline-start: auto;
+  padding: 0;
+  color: var(--audio-muted);
+}
+
+.audio-message-cancel::before,
+.audio-message-cancel::after {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 13px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+  content: "";
+}
+
+.audio-message-cancel::before {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.audio-message-cancel::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.audio-message-strip :is(.audio-message-stop, .audio-message-send) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 34px;
+  max-width: 100%;
+  background: var(--audio-action);
+  font-weight: 600;
+}
+
+.audio-message-strip :is(.audio-message-stop, .audio-message-send):hover:not(:disabled) {
+  background: var(--audio-action-hover);
+}
+
+.audio-message-stop-icon {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+.audio-message-stop-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@container audio-composer (max-width: 190px) {
+  .audio-message-stop-label {
+    display: none;
+  }
+}
+
+.audio-message-play-icon {
+  width: 0;
+  height: 0;
+  flex: none;
+  border-block: 4px solid transparent;
+  border-inline-start: 6px solid currentColor;
+}
+
+[data-playing="true"] > .audio-message-play-icon {
+  box-sizing: border-box;
+  width: 7px;
+  height: 9px;
+  border: 0;
+  border-inline: 2px solid currentColor;
+}
+
+.message-audio-block {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--audio-ink);
+  font-size: 0.875rem;
+  line-height: 1.35;
+}
+
+.message-bubble-user:has(> .message-audio-block:only-child),
+.compact-export-history-message.is-user .compact-export-history-bubble:has(.message-audio-block:only-child) {
+  padding: 4px 6px;
+  background: rgba(224, 238, 250, 0.92);
+}
+
+[data-theme="dark"] .message-bubble-user:has(> .message-audio-block:only-child),
+[data-theme="dark"] .compact-export-history-message.is-user .compact-export-history-bubble:has(.message-audio-block:only-child) {
+  background: rgba(39, 59, 80, 0.92);
+}
+
+.message-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.message-audio-block .message-audio-play {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 8px 0 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.message-audio-play-disc {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  box-sizing: border-box;
+  border: 1px solid var(--audio-outline);
+  border-radius: 50%;
+  background: var(--audio-surface);
+}
+
+.message-audio-play-disc:not([data-playing="true"]) .audio-message-play-icon {
+  margin-inline-start: 1px;
+}
+
+.message-audio-play .audio-message-track {
+  width: 42px;
+}
+
+.message-audio-duration {
+  flex: none;
+  color: var(--audio-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.message-audio-block .message-audio-more {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  min-height: 34px;
+  margin-inline-start: auto;
+  padding: 0;
+  color: var(--audio-muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.message-audio-menu {
+  display: grid;
+  margin-top: 3px;
+  padding-top: 4px;
+  border-top: 1px solid var(--audio-outline);
+}
+
+.message-audio-menu button,
+.message-audio-block > button {
+  padding: 5px 7px;
+  text-align: start;
+}
+
+.message-audio-status {
+  display: block;
+  margin: 2px 7px 4px;
+  color: var(--audio-muted);
+  font-size: 0.78rem;
+}
+
+.message-audio-transcript {
+  margin: 4px 6px 5px;
+  padding-top: 6px;
+  border-top: 1px solid var(--audio-outline);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.compact-chat-surface-frame .audio-message-strip {
+  min-height: 38px;
+  padding: 2px 3px 2px 6px;
+  border-color: transparent;
+  background: transparent;
+}
+
+@container audio-composer (max-width: 190px) {
+  .compact-chat-surface-frame .audio-message-strip {
+    gap: 4px;
+    padding-inline-start: 3px;
+  }
+
+  .compact-chat-surface-frame .audio-message-strip > .audio-message-track {
+    margin-inline: 0;
+  }
+
+  .compact-chat-surface-frame .audio-message-strip .audio-message-play {
+    gap: 4px;
+    padding-inline: 5px;
+  }
+
+  .compact-chat-surface-frame .audio-message-send-label {
+    display: none;
+  }
+
+  .compact-chat-surface-frame .audio-message-send::before {
+    content: "";
+    width: 14px;
+    height: 14px;
+    background: currentColor;
+    mask: url('/static/icons/send_new_icon.png') center / contain no-repeat;
+  }
+}
+
+@container audio-composer (max-width: 140px) {
+  .compact-chat-surface-frame .audio-message-strip {
+    gap: 3px;
+    padding-inline: 2px;
+  }
+
+  .compact-chat-surface-frame .audio-message-clock {
+    gap: 4px;
+  }
+
+  .compact-chat-surface-frame .audio-message-strip .audio-message-play {
+    padding-inline: 4px;
+  }
+
+  .compact-chat-surface-frame .audio-message-strip .audio-message-cancel {
+    width: 30px;
+  }
+
+  .compact-chat-surface-frame .audio-message-strip :is(.audio-message-stop, .audio-message-send) {
+    min-width: 30px;
+    padding-inline: 6px;
+  }
+}
+
+.compact-chat-surface-shell:has(> .compact-chat-surface-frame[data-audio-message-active="true"]) {
+  max-width: 100vw;
+}
+
+.audio-message-strip[data-audio-message-failed="true"] {
+  min-height: 34px;
+  padding: 0 2px;
+  gap: 2px;
+  border-color: transparent;
+  border-radius: 10px;
+  background: var(--audio-hover);
+}
+
+.composer-input-shell:has(.composer-send-actions .audio-message-composer[data-audio-message-active="true"]) {
+  min-height: 0;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.composer-input-shell:has(.audio-message-composer[data-audio-message-active="true"]) > .composer-input,
+.composer-bottom-bar:has(.audio-message-composer[data-audio-message-active="true"]) > .composer-bottom-tools {
+  display: none;
+}
+
+.composer-bottom-bar:has(.audio-message-composer[data-audio-message-active="true"]) {
+  padding: 0;
+}
+
+
+.composer-send-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+
+.composer-send-actions > .audio-message-composer {
+  flex-shrink: 1;
+}
+
+.audio-message-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.audio-message-announcement[data-visible="true"] {
+  position: fixed;
+  inset-block-start: calc(12px + env(safe-area-inset-top, 0px));
+  inset-inline: 12px;
+  z-index: 100004;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: min(28rem, calc(100% - 24px));
+  height: auto;
+  margin-inline: auto;
+  padding: 8px 12px;
+  border: 1px solid var(--audio-outline);
+  border-radius: 10px;
+  background: var(--audio-surface);
+  color: var(--audio-ink);
+  box-shadow: 0 4px 14px rgba(20, 34, 48, 0.18);
+  font-size: 12px;
+  line-height: 1.45;
+  clip-path: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.compact-chat-surface-frame[data-audio-message-active="true"] > .compact-chat-capsule-button,
+.compact-chat-surface-frame[data-audio-message-active="true"] > .composer-input,
+.compact-chat-surface-frame[data-audio-message-active="true"] > .compact-input-tool-toggle {
+  display: none;
+}
+
+.compact-chat-surface-frame[data-audio-message-active="true"] > .audio-message-composer {
+  flex: 1;
+  container: audio-composer / inline-size;
+}
+
 .composer-bottom-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 6px 0 10px;
+}
+
+.composer-send-actions:has(.audio-message-composer[data-audio-message-active="true"]) {
+  flex: 1 0 100%;
+}
+
+.composer-send-actions > .audio-message-composer[data-audio-message-active="true"] {
+  flex: 1;
+  container: audio-composer / inline-size;
 }
 
 .composer-bottom-tools {
@@ -3050,6 +3599,8 @@ body > .compact-chat-visit-anchor[data-chat-surface-mode="compact"] {
 
 .compact-chat-surface-shell {
   --compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));
+  --compact-input-tool-gutter: 62px;
+  --compact-input-tool-center-inset: 31px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -3141,7 +3692,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
+  padding: 5px var(--compact-input-tool-gutter, 62px) 5px var(--compact-chat-minimize-ball-slot);
 }
 
 /* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
@@ -3214,7 +3765,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
-  padding-right: 62px;
+  padding-right: var(--compact-input-tool-gutter, 62px);
   padding-left: var(--compact-chat-minimize-ball-slot);
 }
 
@@ -5006,7 +5557,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
   --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-y: var(--compact-tool-wheel-hover-radius);
-  --compact-tool-toggle-center-x: calc(100% - 31px);
+  --compact-tool-toggle-center-x: calc(100% - var(--compact-input-tool-center-inset, 31px));
   --compact-tool-toggle-center-y: 31px;
   --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
   --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
@@ -5059,6 +5610,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 }
 
 .compact-input-tool-fan-hit-region {
+  --compact-tool-hit-outline: 0 0, 100% 0, 100% 100%, 0 100%;
   position: absolute;
   left: calc(var(--compact-tool-wheel-center-x) - var(--compact-tool-wheel-hover-radius));
   top: calc(var(--compact-tool-wheel-center-y) - var(--compact-tool-wheel-hover-radius));
@@ -5390,10 +5942,27 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor.is-th
 /* 播放器位于轮盘中心左上方，其控制区会和圆形旋转命中区相交。播放器显示时，
    从命中圆左上挖出固定的控制带，让播放/暂停、音量与静音点击穿透到下层；
    道具按钮保持各自的 pointer-events:auto，不受影响。 */
-.app-shell:has(> #music-player-mount.compact-music-player-mount > .music-player-bar:not([hidden]))
+:where(.app-shell:has(> #music-player-mount.compact-music-player-mount > .music-player-bar:not([hidden])))
   .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]
   .compact-input-tool-fan-hit-region {
-  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) 0);
+  --compact-tool-hit-outline: 0 0, 100% 0, 100% 100%, 0 100%, 0 var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) var(--compact-tool-wheel-music-control-cutout-height), var(--compact-tool-wheel-music-control-cutout-width) 0;
+  clip-path: polygon(var(--compact-tool-hit-outline));
+}
+
+/* The mic sits at the end of the input row, just before the tool gutter. */
+.compact-chat-surface-shell:has(> .compact-chat-surface-frame .audio-message-mic:not(:disabled))
+  > .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]
+  > .compact-input-tool-fan-hit-region {
+  --compact-mic-hit-right: calc(var(--compact-tool-wheel-hover-radius) - var(--compact-input-tool-gutter) + var(--compact-input-tool-center-inset));
+  --compact-mic-hit-left: calc(var(--compact-mic-hit-right) - 34px);
+  --compact-mic-hit-top: calc(var(--compact-tool-wheel-hover-radius) - 18px);
+  --compact-mic-hit-bottom: calc(var(--compact-tool-wheel-hover-radius) + 18px);
+  clip-path: polygon(evenodd, var(--compact-tool-hit-outline), 0 0,
+    var(--compact-mic-hit-left) var(--compact-mic-hit-top),
+    var(--compact-mic-hit-right) var(--compact-mic-hit-top),
+    var(--compact-mic-hit-right) var(--compact-mic-hit-bottom),
+    var(--compact-mic-hit-left) var(--compact-mic-hit-bottom),
+    var(--compact-mic-hit-left) var(--compact-mic-hit-top), 0 0);
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-wheel-selection-pointer {
@@ -9545,13 +10114,17 @@ body.avatar-tool-editor-page .avatar-tool-workspace-settings {
      避免上面的 padding 简写把字幕文字挤到按钮下方喵 */
   .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"][data-compact-chat-state="default"],
   .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"][data-compact-chat-state="options"] {
-    padding-right: 62px;
+    padding-right: var(--compact-input-tool-gutter, 62px);
   }
 
   .compact-chat-surface-frame[data-compact-chat-state="input"] {
-    padding: 5px 62px 5px var(--compact-chat-minimize-ball-slot);
+    padding: 5px var(--compact-input-tool-gutter, 62px) 5px var(--compact-chat-minimize-ball-slot);
   }
 
+}
+
+.compact-chat-surface-frame[data-compact-chat-state][data-audio-message-active="true"] {
+  padding-inline: var(--compact-chat-minimize-ball-slot) 6px;
 }
 
 /* ===================================================================

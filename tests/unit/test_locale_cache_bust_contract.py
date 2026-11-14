@@ -66,6 +66,13 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-14-chat-audio-manual-unavailable",
+        "2026-11-14-theater-handoff-nekoclaw-merge",
+        "2026-11-13-chat-audio-close-preview",
+        "2026-11-12-chat-audio-atlascloud-main-merge",
+        "2026-11-11-chat-audio-messages",
+        "2026-11-11-chat-audio-main-merge",
+        "2026-11-11-atlascloud-assist-provider-main-merge",
         "2026-11-13-theater-safe-delivery",
         "2026-11-14-theater-handoff-feedback",
         "2026-11-14-theater-nekoclaw-main-merge",
@@ -73,12 +80,10 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-13-theater-invite-card",
         "2026-11-13-theater-main-merge",
         "2026-11-11-theater-sync-evidence-merge",
-        "2026-11-11-atlascloud-assist-provider-main-merge",
         "2026-11-03-theater-market-community-invite-merge",
         "2026-11-11-sync-evidence-notices",
         "2026-11-03-theater-market-news-overseas-merge",
         "2026-11-03-theater-market-systray-labels-merge",
-        "2026-11-03-news-overseas-systray-labels-main-merge",
         "2026-11-03-theater-market-chat-sync-merge",
         "2026-11-11-air-basketball-main-merge",
         "2026-11-02-atlascloud-assist-provider-main-merge",
@@ -574,7 +579,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "2816ad47b5dda4cdc664c40b3ca37beb36fd9feae050280a568e70b7788f06a0"
+LOCALE_KEY_SIGNATURE = "f3af38a9854d9878d8177eb03cffc069115dee927b6f1c5d434a9cd596ce440e"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

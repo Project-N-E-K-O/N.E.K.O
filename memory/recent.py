@@ -45,7 +45,7 @@ import locale
 import secrets
 import sys
 import time
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 
 from config.prompts.prompts_memory import (
     get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
@@ -570,6 +570,14 @@ def _load_theater_runs_unlocked(recent_path):
 
 class TheaterEpisodeRetracted(RuntimeError):
     """A theater archive write matched a tombstone left by the player's decline."""
+
+
+class RecentHistoryWriteBlocked(MaintenanceModeError):
+    """CloudSave blocked the batch before recent history accepted it."""
+
+
+class RecentHistoryWriteNotStarted(RuntimeError):
+    """Recent history could not enter the write lock to accept the batch."""
 
 
 def _load_theater_retraction_state_unlocked(recent_path) -> tuple[list[dict], list[dict]]:
@@ -1216,9 +1224,13 @@ class CompressedRecentHistoryManager:
         that the next call re-attaches them instead of letting the on-disk copy
         silently win.
         """
-        with recent_file.recent_file_access(
-            file_path, expected_generation=expected_generation,
-        ) as file_path:
+        with ExitStack() as stack:
+            try:
+                file_path = stack.enter_context(recent_file.recent_file_access(
+                    file_path, expected_generation=expected_generation,
+                ))
+            except OSError as exc:
+                raise RecentHistoryWriteNotStarted("could not acquire the recent history write lock") from exc
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
@@ -1825,7 +1837,10 @@ class CompressedRecentHistoryManager:
         """``preempted``: optional future; once it resolves, a summary in progress is abandoned
         like a failed one (the messages are already persisted and ``on_compress_done`` hands
         the snapshot to background compression). Callers holding the settle lock pass it so a
-        cold-start /new_dialog does not wait for the summary LLM (#3601)."""
+        cold-start /new_dialog does not wait for the summary LLM (#3601).
+        With ``compress=False``, return True for a persisted batch and False for a
+        batch accepted into the pending queue. Other failures propagate.
+        """
         # Ordinary writes carry no visit-diary idempotency key (only append_keyed stamps it server-side); strip caller-supplied keys.
         recent_file.strip_idempotency_metadata(new_messages)
         file_path, admission_generation = self._capture_recent_operation_admission(
@@ -1837,13 +1852,17 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
-        # Cloud-save fence remains outside try: MaintenanceModeError still propagates directly to caller.
-        await asyncio.to_thread(
-            assert_cloudsave_writable,
-            self._config_manager,
-            operation="save",
-            target=f"memory/{lanlan_name}/recent.json",
-        )
+        try:
+            await asyncio.to_thread(
+                assert_cloudsave_writable,
+                self._config_manager,
+                operation="save",
+                target=f"memory/{lanlan_name}/recent.json",
+            )
+        except MaintenanceModeError as exc:
+            raise RecentHistoryWriteBlocked(
+                exc.mode, operation=exc.operation, target=exc.target,
+            ) from exc
 
         try:
             # CS-1: read disk + merge pending batches + append + persist in one critical section.
@@ -1864,7 +1883,9 @@ class CompressedRecentHistoryManager:
                 # Like pre-refactor, first persistence failure skips compression (previously exception skipped
                 # the whole section). Batch is in _pending; next update_history writes it together
                 # with disk contents.
-                return
+                return False if not compress else None
+            if not compress:
+                return True
 
             # Preserve theater capsules unchanged through compression; exclude from trigger count and retained-tail count,
             # or many capsules keep compressed history above threshold, re-compressing and summarizing memo every settle.
@@ -1959,10 +1980,13 @@ class CompressedRecentHistoryManager:
                         detailed,
                         admission_generation,
                     )
-        except (MaintenanceModeError, recent_file.RecentFileDeletedError):
+        except (MaintenanceModeError, RecentHistoryWriteNotStarted, recent_file.RecentFileDeletedError):
             raise
         except Exception as e:
+            if not compress:
+                raise
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
+            return None
 
 
     # ── Past-block update metadata (prevent days-old events repeatedly resurfacing in summary;

@@ -44,6 +44,7 @@ from .session_lifecycle import SessionOwnershipMixin
 from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
 from .asr_runtime import AsrRuntimeMixin
+from .audio_message import AudioMessageMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
 from .turn_context import TurnContextMixin
@@ -63,6 +64,7 @@ class LLMSessionManager(
     ProactiveMixin,
     GreetingMixin,
     AsrRuntimeMixin,
+    AudioMessageMixin,
     StreamingMixin,
     NotifyMixin,
     TakeoverMixin,
@@ -82,6 +84,8 @@ class LLMSessionManager(
         self._init_session_lifecycle_state()
         self._init_tts_lifecycle_state()
         self._init_asr_runtime_state()
+        self._audio_message_records = {}
+        self._audio_message_lock = asyncio.Lock()
         self.last_time = None
         self.is_active = False
         self.active_session_is_idle = False

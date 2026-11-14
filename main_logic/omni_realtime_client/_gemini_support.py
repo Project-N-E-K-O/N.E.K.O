@@ -212,6 +212,7 @@ class _GeminiMixin:
             # client (audio_stream_end / activity_end). SERVER_VAD path
             # leaves automatic_activity_detection at SDK default (enabled).
             if self.turn_detection_mode == TurnDetectionMode.MANUAL:
+                config["generation_config"]["max_output_tokens"] = 4096
                 config["realtime_input_config"] = types.RealtimeInputConfig(
                     automatic_activity_detection=types.AutomaticActivityDetection(
                         disabled=True
@@ -516,10 +517,25 @@ class _GeminiMixin:
             if r.call_id:
                 kw["id"] = r.call_id
             function_responses.append(types.FunctionResponse(**kw))
+        audio_message = getattr(self, "_gemini_audio_message", None) if owner is not None else None
+        if audio_message is not None:
+            call_ids = {result.call_id for result in results}
+            if audio_message.outcome.done() or audio_message.pending_tool_ids.isdisjoint(call_ids):
+                audio_message = None
+            else:
+                # A continuation can arrive before the SDK send returns.
+                audio_message.pending_tool_ids.difference_update(call_ids)
         try:
             await session.send_tool_response(function_responses=function_responses)
         except Exception as e:
             logger.error("Gemini send_tool_response failed: %s", e)
+            if (
+                audio_message is not None
+                and self._gemini_audio_message is audio_message
+                and self._tool_task_owner_is_current(owner)
+                and not audio_message.outcome.done()
+            ):
+                audio_message.outcome.set_result(False)
 
     async def _close_gemini(self) -> None:
         """Close Gemini Live API session.
@@ -875,6 +891,7 @@ class _GeminiMixin:
             "_gemini_external_outcome_token",
             None,
         )
+        audio_message = getattr(self, "_gemini_audio_message", None)
         try:
             # Handle tool calls: dispatch every function_calls entry to
             # ``on_tool_call`` and return all results together via ``send_tool_response``
@@ -942,6 +959,10 @@ class _GeminiMixin:
                         logger.warning(
                             "Gemini tool_call received but no on_tool_call handler — replying with error"
                         )
+                    if audio_message is not None and not audio_message.outcome.done():
+                        audio_message.used_tools = True
+                        audio_message.reply_after_tools = False
+                        audio_message.pending_tool_ids.update(call.call_id for call in calls)
                     owner = self._capture_tool_task_owner(
                         session,
                         connection_generation=connection_generation,
@@ -950,7 +971,10 @@ class _GeminiMixin:
 
             cancellation = getattr(response, 'tool_call_cancellation', None)
             if cancellation:
-                self._cancel_tool_call_ids(list(getattr(cancellation, 'ids', None) or []))
+                cancelled_ids = list(getattr(cancellation, 'ids', None) or [])
+                self._cancel_tool_call_ids(cancelled_ids)
+                if audio_message is not None:
+                    audio_message.pending_tool_ids.difference_update(cancelled_ids)
 
             vad_signal = getattr(response, 'voice_activity_detection_signal', None)
             vad_signal_type = getattr(vad_signal, 'vad_signal_type', None)
@@ -960,11 +984,19 @@ class _GeminiMixin:
             # Check for server content.
             if response.server_content:
                 server_content = response.server_content
+                follows_tool_results = (
+                    audio_message is not None and audio_message.used_tools
+                    and not audio_message.pending_tool_ids and not self._skip_until_next_response
+                )
 
                 # Handle user-input transcription: accumulate without immediate sending to avoid fragmented display.
                 if hasattr(server_content, 'input_transcription') and server_content.input_transcription:
                     input_trans = server_content.input_transcription
-                    if hasattr(input_trans, 'text') and input_trans.text:
+                    if audio_message is not None and audio_message.on_transcript is not None:
+                        await audio_message.append(input_trans)
+                        if not event_owner_is_current():
+                            return
+                    elif hasattr(input_trans, 'text') and input_trans.text:
                         self._gemini_user_transcript += input_trans.text
                         if self._interrupted:
                             self._gemini_user_transcript_after_interrupt = True
@@ -974,6 +1006,20 @@ class _GeminiMixin:
                     server_content.model_turn or 
                     (hasattr(server_content, 'output_transcription') and server_content.output_transcription)
                 )
+                if (
+                    follows_tool_results
+                    and (
+                        getattr(server_content, "generation_complete", False)
+                        or getattr(getattr(server_content, "output_transcription", None), "text", None)
+                        or any(
+                            not getattr(part, "thought", False)
+                            and (getattr(part, "inline_data", None) or getattr(part, "text", None))
+                            for part in (getattr(server_content.model_turn, "parts", None) or ())
+                        )
+                    )
+                ):
+                    audio_message.reply_after_tools = True
+
                 proactive_owner = getattr(self, "_gemini_proactive_outcome_owner", None)
                 proactive_token = None
                 if (
@@ -1170,6 +1216,11 @@ class _GeminiMixin:
                     if _is_terminal_event
                     else False
                 )
+                if (
+                    was_interrupted and not _owed_to_cancelled and not self._skip_until_next_response
+                    and audio_message is not None and not audio_message.outcome.done()
+                ):
+                    audio_message.outcome.set_result(False)
                 # Warning: deliberately do **not** trigger on_audio_done here (issue #1566's audio-completion signal;
                 # see _transport.py's response.audio.done branch). Gemini (native +
                 # lanlan.app free proxy) has only turn_complete as its end signal, and it can
@@ -1220,10 +1271,20 @@ class _GeminiMixin:
                     if self._skip_until_next_response:
                         self._skip_until_next_response = False
                         logger.info("Gemini: skipped response (prime_context priming)")
-                    elif self.on_response_done:
-                        await self.on_response_done()
-                        if not event_owner_is_current():
-                            return
+                    elif not (
+                        audio_message is not None and audio_message.used_tools
+                        and not audio_message.outcome.done()
+                        and (audio_message.pending_tool_ids or not audio_message.reply_after_tools)
+                    ):
+                        if self.on_response_done:
+                            await self.on_response_done()
+                            if not event_owner_is_current():
+                                return
+                        if (
+                            not _owed_to_cancelled and audio_message is not None
+                            and not audio_message.outcome.done()
+                        ):
+                            audio_message.outcome.set_result(not (was_interrupted or self._interrupted))
 
                 # Check for interruption.
                 if was_interrupted:

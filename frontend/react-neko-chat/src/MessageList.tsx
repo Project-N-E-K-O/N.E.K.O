@@ -14,6 +14,7 @@ type MessageListProps = {
   failedStatusLabel?: string;
   thinking?: boolean;
   onAction?: (message: ChatMessage, action: MessageAction) => void;
+  onLoadOlderRecordings?: () => void;
   footer?: ReactNode;
   footerKey?: string;
 };
@@ -37,6 +38,7 @@ export default function MessageList({
   failedStatusLabel = i18n('chat.messageFailed', 'Failed'),
   thinking = false,
   onAction,
+  onLoadOlderRecordings,
   footer,
   footerKey,
 }: MessageListProps) {
@@ -51,10 +53,13 @@ export default function MessageList({
     scrollable: false,
   });
 
-  const displayMessages = useMemo(
-    () => messages.filter(message => !isMessageHidden(message) && hasVisibleMessageContent(message)).slice(-MAX_DISPLAY_MESSAGES),
-    [messages, isMessageHidden],
-  );
+  const displayMessages = useMemo(() => {
+    const visible = messages.filter(message => !isMessageHidden(message) && hasVisibleMessageContent(message));
+    // Recording history is paginated separately and every loaded recording must remain reachable.
+    const isRecording = (message: ChatMessage) => message.blocks.some(block => block.type === 'audio_message');
+    const recent = new Set(visible.filter(message => !isRecording(message)).slice(-MAX_DISPLAY_MESSAGES));
+    return visible.filter(message => recent.has(message) || isRecording(message));
+  }, [messages, isMessageHidden]);
 
   const exposureAnchorIds = useMemo(
     () => getScreenObservationAnchorIds(displayMessages, messages),
@@ -142,7 +147,7 @@ export default function MessageList({
     }
 
     return () => observer.disconnect();
-  }, [observedMessageKey, footerKey]);
+  }, [observedMessageKey, footerKey, Boolean(onLoadOlderRecordings)]);
 
   useEffect(() => {
     updateFloatingScrollbar(false);
@@ -167,7 +172,7 @@ export default function MessageList({
     transform: `translateY(${scrollbarState.top}px)`,
   };
 
-  if (displayMessages.length === 0 && !thinking && !footer) {
+  if (displayMessages.length === 0 && !thinking && !footer && !onLoadOlderRecordings) {
     return (
       <div className="message-list-shell">
         <div className="message-list" ref={containerRef} aria-label={ariaLabel}>
@@ -187,6 +192,11 @@ export default function MessageList({
   return (
     <div className="message-list-shell">
       <div className="message-list" ref={containerRef} aria-label={ariaLabel} onScroll={handleScroll}>
+        {onLoadOlderRecordings && (
+          <button type="button" className="message-list-load-older" onClick={onLoadOlderRecordings}>
+            {i18n('chat.audioHistoryOlder', 'Load older recordings')}
+          </button>
+        )}
         {displayMessages.map((message, index) => (
           <MessageBubble
             key={message.id}

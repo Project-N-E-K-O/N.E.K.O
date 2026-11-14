@@ -1340,6 +1340,63 @@
         return getConfiguredAssistantName() || 'Neko';
     }
 
+    async function sendComposerAudioMessage(payload) {
+        function rejectBeforeSend() {
+            const error = new Error('busy');
+            error.name = 'AudioMessageRejected';
+            return error;
+        }
+        const state = window.appState;
+        if (!state || payload.target !== window.lanlan_config?.lanlan_name
+                || state.isRecording || state.voiceStartPending) {
+            throw rejectBeforeSend();
+        }
+        try {
+            await window.ensureWebSocketOpen();
+        } catch (_) {
+            throw rejectBeforeSend();
+        }
+        const socket = state.socket;
+        if (payload.target !== window.lanlan_config?.lanlan_name || state.isRecording || state.voiceStartPending
+                || !socket || socket.readyState !== WebSocket.OPEN) {
+            throw rejectBeforeSend();
+        }
+        // Keep the exact socket and message ID. A timeout or disconnect never
+        // replays the recording, since the provider may already have it.
+        return new Promise(function (resolve, reject) {
+            const timeout = setTimeout(function () { finish(new Error('Audio message unconfirmed')); }, 95000);
+            function finish(error, result) {
+                clearTimeout(timeout);
+                socket.removeEventListener('message', receive);
+                socket.removeEventListener('close', close);
+                socket.removeEventListener('error', close);
+                if (error) reject(error); else resolve(result);
+            }
+            function receive(event) {
+                if (typeof event.data !== 'string') return;
+                let result;
+                try { result = JSON.parse(event.data); } catch (_) { return; }
+                if (!result || result.type !== 'audio_message_result' || result.request_id !== payload.requestId) return;
+                if (result.state === 'sending') return;
+                if (result.state === 'completed') {
+                    finish(null, result);
+                } else {
+                    const error = new Error(result.code || 'Audio message failed');
+                    if (result.state === 'rejected') error.name = 'AudioMessageRejected';
+                    finish(error);
+                }
+            }
+            function close() { finish(new Error('Audio message connection closed')); }
+            socket.addEventListener('message', receive);
+            socket.addEventListener('close', close);
+            socket.addEventListener('error', close);
+            try {
+                socket.send(JSON.stringify({ action: 'audio_message', request_id: payload.requestId,
+                    audio: payload.audio, sample_rate_hz: payload.sampleRateHz, save_local: payload.saveLocal === true }));
+            } catch (_) { finish(rejectBeforeSend()); }
+        });
+    }
+
     I.getCurrentUserName = function getCurrentUserName() {
         var candidates = [
             window.master_display_name,
@@ -1615,6 +1672,8 @@
             messages: I.state.messages.concat(catMessages),
             userName: getConfiguredUserName() || undefined,
             assistantName: getConfiguredAssistantName() || undefined,
+            audioMessageTarget: !visitOwnsComposer ? window.lanlan_config?.lanlan_name || undefined : undefined,
+            onComposerAudioMessage: sendComposerAudioMessage,
             composerAttachments: I.state.composerAttachments,
             rollbackDraft: I.state.rollbackDraft || undefined,
             _rollbackKey: I.state._rollbackKey || undefined,

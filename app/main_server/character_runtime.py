@@ -632,6 +632,13 @@ class _SyncMessageQueue(asyncio.Queue):
     semantically equivalent.
     """
 
+    draining_memory = False
+
+    def __init__(self, maxsize: int = 0):
+        super().__init__(maxsize)
+        self.deferred_memory_lock = asyncio.Lock()
+        self.recent_context_version = 0
+
     def put(self, item):  # type: ignore[override]
         # Intentionally override synchronously: the original asyncio.Queue.put is a coroutine.
         self.put_nowait(item)
@@ -682,6 +689,33 @@ def _iter_sync_connector_tasks():
         if task is None:
             continue
         yield name, task
+
+
+async def drain_sync_connector_memory(timeout: float = 4.0) -> None:
+    """Let live connectors persist their queued history before cancellation."""
+    loop = asyncio.get_running_loop()
+    completions: dict[asyncio.Future[bool], tuple[str, _SyncMessageQueue]] = {}
+    for name, task in _iter_sync_connector_tasks():
+        if task.done():
+            continue
+        queue = role_state[name].sync_message_queue
+        queue.draining_memory = True
+        completion = loop.create_future()
+        completions[completion] = (name, queue)
+        queue.put({"type": "system", "data": "session end", "_shutdown_memory_done": completion})
+    if not completions:
+        return
+    try:
+        done, pending = await asyncio.wait(completions, timeout=timeout)
+        for completion in pending:
+            logger.warning("[%s] 同步连接器关闭前保存记忆超时", completions[completion][0])
+        for completion in done:
+            if not completion.result():
+                logger.warning("[%s] 同步连接器关闭前无法确认剩余记忆已保存", completions[completion][0])
+    finally:
+        for completion, (_, queue) in completions.items():
+            queue.draining_memory = False
+            completion.cancel()
 
 
 def _signal_sync_connectors_shutdown(*, log: bool = True) -> None:

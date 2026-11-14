@@ -186,9 +186,20 @@ async def test_session_reconciliation_runs_without_the_config_transaction(monkey
     barrier timeout.
     """
     observed = {}
+    queue = SimpleNamespace(deferred_memory_lock=asyncio.Lock())
+
+    async def preempt_summary(active_queue, name):
+        assert active_queue is queue and name == "Mimi"
+        assert not character_config_mutation_lock.locked()
+        observed["preempted"] = True
+
+    monkeypatch.setattr(preference_router, "_preempt_recent_history_summary", preempt_summary)
 
     class ConnectorManager(_IdleManager):
+        sync_message_queue = queue
+
         async def settle_session_memory_if_idle(self, callback):
+            assert observed["preempted"]
             observed["locked_during_settle"] = character_config_mutation_lock.locked()
             self.settled.append(callback)
             # cross_server runs the callback on its own task, and that callback

@@ -529,6 +529,25 @@ class _TransportMixin:
 
     async def _deliver_input_transcript(self, transcript: str, *, item_id: object = None) -> bool:
         identity = self._take_input_route_identity(item_id)
+        audio_transcript = getattr(self, "_audio_message_transcript", None)
+        if audio_transcript is not None:
+            if not transcript.strip() or audio_transcript.finalized:
+                return
+            if not self._is_gemini:
+                if item_id is not None and not isinstance(item_id, str):
+                    return
+                if not self._audio_message_input_committed:
+                    early = self._audio_message_early_transcripts
+                    if getattr(self, "_audio_message_commit", None) is not None and len(early) < 4:
+                        early[item_id] = transcript
+                    return
+                if item_id != self._audio_message_input_item:
+                    return
+            audio_transcript.transcript = transcript
+            audio_transcript.finalized = True
+            await audio_transcript.publish()
+            audio_transcript.transcript_ready.set()
+            return
         routed_callback = getattr(self, "on_input_transcript_with_route", None)
         if callable(routed_callback):
             result = await routed_callback(
@@ -711,6 +730,8 @@ class _TransportMixin:
             # force enable_search=False when custom tools are registered, avoiding
             # rejected session.update. See Aliyun client-events documentation's
             # tools-and-enable_search incompatibility section.
+            if is_manual:
+                qwen_session["max_tokens"] = 2048 if self._model_lower.startswith("qwen-omni-turbo-realtime") else 4096
             if self.has_tools():
                 qwen_session["tools"] = self._tools_for_qwen()
                 qwen_session["enable_search"] = False
@@ -3233,6 +3254,8 @@ class _TransportMixin:
                     wire_trace.record_recv(event, generation=message_generation)
                 event_type = event.get("type")
 
+                self._observe_audio_message_event(event)
+
                 # if event_type not in ["response.audio.delta", "response.audio_transcript.delta",  "response.output_audio.delta", "response.output_audio_transcript.delta"]:
                 #     # print(f"Received event: {event}")
                 #     print(f"Received event: {event_type}")
@@ -3502,6 +3525,10 @@ class _TransportMixin:
                             message_ws,
                             connection_generation=message_generation,
                         )
+                        response_id = _response_id_text(event.get("response_id"))
+                        audio_tool_responses = getattr(self, "_audio_message_tool_responses", None)
+                        if audio_tool_responses is not None:
+                            audio_tool_responses.add(response_id or self._current_response_id)
                         self._start_raw_tool_call(
                             ToolCall(
                                 name=name,
@@ -3521,9 +3548,7 @@ class _TransportMixin:
                             # response identity -- there is then nothing that
                             # can prove two calls are siblings, and each is
                             # answered on its own as before.
-                            response_id=_response_id_text(
-                                event.get("response_id")
-                            ),
+                            response_id=response_id,
                         )
                 elif (
                     event_type
@@ -3573,6 +3598,11 @@ class _TransportMixin:
                     self._record_response_usage(event.get("response"))
                     if finalize_response is False:
                         continue
+                    audio_tool_responses = getattr(self, "_audio_message_tool_responses", None)
+                    audio_response_id = event_response_id or self._current_response_id
+                    audio_continues = audio_tool_responses is not None and audio_response_id in audio_tool_responses
+                    if audio_continues:
+                        audio_tool_responses.discard(audio_response_id)
                     pending_sid = self._cancelled_voice_successor_sid
                     if pending_sid is not None:
                         # A terminal cannot claim a reserved ID. If Core has
@@ -3615,6 +3645,8 @@ class _TransportMixin:
                         return
                     self._close_realtime_conversation_observation(response_status)
                     self._reset_per_turn_output_state()
+                    if audio_continues and response_status in {"", "completed", "success", "succeeded"}:
+                        continue
                     await self._notify_turn_finished(
                         connection_still_ours=receive_owner_is_current,
                         carry_host_turn_forward=response_status
@@ -3730,7 +3762,10 @@ class _TransportMixin:
                     already_scoped = self._raw_transcript_was_already_scoped(
                         event.get("item_id")
                     )
-                    if not self._has_server_vad and not already_scoped:
+                    if (
+                        not self._has_server_vad and not already_scoped
+                        and getattr(self, "_audio_message_transcript", None) is None
+                    ):
                         # Compatibility proxies may omit both server-VAD
                         # boundary events. The completed transcript is then the
                         # first authoritative signal that a new user turn has
@@ -4048,6 +4083,14 @@ class _TransportMixin:
         self._connection_generation += 1
         self._clear_input_route_identities()
         self._advance_tool_scope()
+        # Detach the old recording from the new receive loop. Its already
+        # scheduled transcript writes still hold the original recording object.
+        self._audio_message_transcript = None
+        self._audio_message_manual_confirmed = False
+        retired_audio_message = getattr(self, "_gemini_audio_message", None)
+        self._gemini_audio_message = None
+        if retired_audio_message is not None and not retired_audio_message.outcome.done():
+            retired_audio_message.outcome.set_result(False)
         # A pending proactive outcome belongs to the connection that created
         # it. Left in place it makes the REPLACEMENT reject its own proactive
         # work as "another Gemini proactive inject is pending" until the 60s
