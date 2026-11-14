@@ -12,6 +12,7 @@
 import {
   RELEASE_WORKFLOW_PATH,
   type PublishMode,
+  type MarketPublicationStatus,
   type PublishRemoteState,
   type PublishStatus,
   type PublishTask,
@@ -45,6 +46,7 @@ export interface PublishFlowFacts {
   task: PublishTask | null
   /** Whether the Market's public version list has this Release's tag; null when it was not read. */
   marketListed: boolean | null
+  marketReceipt?: MarketPublicationStatus | null
   /** The publishing tools of this machine; null or absent when they were not read. */
   toolchain?: Toolchain | null
 }
@@ -242,18 +244,32 @@ function marketAnswer(task: PublishTask | null, repository: string | null, tag: 
     .find(value => task.release_url.endsWith(value))
   if (!suffix) return null
   if (task.release_url.slice(0, -suffix.length).toLowerCase() !== `https://github.com/${repository}`.toLowerCase()) return null
-  const candidate = task.market_candidate_id ?? ''
-  switch (task.market_status) {
+  return marketPublicationAnswer(task.market_status, task.market_candidate_id)
+}
+
+function marketPublicationAnswer(status: MarketPublicationStatus, candidate?: number | null): Omit<PublishStep, 'id' | 'warning'> {
+  switch (status) {
     case 'published':
     case 'already_published':
     case 'approved':
       return { state: 'done', detail: message('marketVersionListed') }
     case 'pending_review':
-      return { state: 'waiting', detail: message('marketVersionPendingReview', { candidate }) }
+      return { state: 'waiting', detail: candidate
+        ? message('marketVersionPendingReview', { candidate })
+        : message('marketVersionAwaitingReview') }
+    case 'accepted':
+    case 'waiting_build':
+    case 'verifying':
+    case 'retry_wait':
+      return { state: 'waiting', detail: message('marketVersionVerifying') }
+    case 'platform_attention':
+      return { state: 'waiting', detail: message('marketVersionPlatformAttention') }
     case 'superseded':
       return { state: 'waiting', detail: message('marketVersionSuperseded') }
     case 'rejected':
-      return { state: 'todo', detail: message('marketVersionRejected', { candidate }) }
+      return { state: 'todo', detail: candidate
+        ? message('marketVersionRejected', { candidate })
+        : message('marketVersionRejectedReceipt') }
   }
 }
 
@@ -452,7 +468,9 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
   const releaseReady = remote?.release.ready === true
   const approved = submission.phase === 'approved'
   const submissionState = submission.phase ? SUBMISSION_STATES[submission.phase] : 'todo'
-  const answer = marketAnswer(facts.task, repo.github_repository, repo.tag)
+  const answer = facts.marketReceipt
+    ? marketPublicationAnswer(facts.marketReceipt)
+    : marketAnswer(facts.task, repo.github_repository, repo.tag)
   const steps: PublishStep[] = [
     { id: 'repository', warning: null, ...repositoryStep(status) },
     { id: 'verify', warning: null, ...verifyStep(remote) },

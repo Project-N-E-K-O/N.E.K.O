@@ -71,12 +71,14 @@ vi.mock('vue-router', () => ({
 // publish steps; only its Market login and network calls are replaced.
 const market = vi.hoisted(() => ({
   listMarketSubmissions: vi.fn(),
+  listMarketPublicationReceipts: vi.fn().mockResolvedValue([]),
   listMarketZones: vi.fn(),
   authenticated: false,
 }))
 vi.mock('@/api/marketSubmissions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/marketSubmissions')>()),
   listMarketSubmissions: market.listMarketSubmissions,
+  listMarketPublicationReceipts: market.listMarketPublicationReceipts,
   listMarketZones: market.listMarketZones,
 }))
 vi.mock('@/composables/useMarketAuth', async () => {
@@ -186,6 +188,7 @@ const publishTask = (overrides: Partial<PublishTask> = {}): PublishTask => ({
   release_url: '',
   market_status: null,
   market_candidate_id: null,
+  market_request_id: null,
   log: [],
   started_at: null,
   updated_at: 1,
@@ -342,6 +345,7 @@ async function settle() {
 
 beforeEach(() => {
   vi.resetAllMocks()
+  market.listMarketPublicationReceipts.mockResolvedValue([])
   api.route.query = {}
   vi.stubGlobal(
     'MutationObserver',

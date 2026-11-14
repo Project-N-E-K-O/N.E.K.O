@@ -185,15 +185,17 @@ import {
   getPluginProjectPublishStatus,
   getPluginProjectPublishTask,
   getPluginToolchain,
+  isMarketPublicationStatus,
   projectErrorCode,
   publishTaskActive,
   startPluginProjectPublish,
   type PublishMode,
+  type MarketPublicationStatus,
   type PublishStatus,
   type PublishTask,
   type Toolchain,
 } from '@/api/pluginProjects'
-import type { SubmissionPanelState } from '@/api/marketSubmissions'
+import { listMarketPublicationReceipts, type SubmissionPanelState } from '@/api/marketSubmissions'
 import { fetchMarketPluginVersions } from '@/api/market'
 import { useProjectErrorMessage } from '@/composables/useAuthoringProjects'
 
@@ -262,6 +264,7 @@ const submissionState = ref<SubmissionPanelState>({
 const submissionPanel = ref<InstanceType<typeof AuthoringProjectSubmission>[]>([])
 /** Whether the Market lists this Release; read from the Market, not from the task. */
 const marketListed = ref<boolean | null>(null)
+const marketReceipt = ref<MarketPublicationStatus | null>(null)
 let marketReads = 0
 let disposed = false
 let pollTimer: ReturnType<typeof setTimeout> | undefined
@@ -276,6 +279,7 @@ const flow = computed(() =>
         submission: submissionState.value,
         task: task.value,
         marketListed: marketListed.value,
+        marketReceipt: marketReceipt.value,
         toolchain: toolchain.value,
       })
     : null
@@ -394,21 +398,32 @@ async function load(options: { fresh?: boolean } = {}) {
 async function loadMarketListing() {
   const read = ++marketReads
   marketListed.value = null
+  marketReceipt.value = null
   const pluginId = submissionState.value.marketPluginId
   const tag = status.value?.repository.tag
   if (pluginId === null || !tag) {
     marketListed.value = null
     return
   }
+  const repository = status.value?.repository.github_repository
+  const releaseUrl = repository && `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`
+  const requestId = task.value?.release_url === releaseUrl ? task.value?.market_request_id : null
+  const receiptsRequest = releaseUrl
+    ? listMarketPublicationReceipts(pluginId, requestId ?? undefined).catch(() => [])
+    : []
   const versions = await fetchMarketPluginVersions(pluginId)
   if (disposed || read !== marketReads) return
   marketListed.value = versions ? versions.some((item) => item.version === tag) : null
+  const receipts = await receiptsRequest
+  if (disposed || read !== marketReads) return
+  const receipt = Array.isArray(receipts) && receipts.find(item =>
+    item.release_url.toLowerCase() === releaseUrl?.toLowerCase()
+  )
+  if (receipt && isMarketPublicationStatus(receipt.status)) marketReceipt.value = receipt.status
 }
 // The submission panel finds the approved plugin after the status is read.
-watch(
-  () => submissionState.value.marketPluginId,
-  () => void loadMarketListing()
-)
+watch([() => submissionState.value.marketPluginId, () => task.value?.market_request_id],
+  () => void loadMarketListing())
 
 function applyTask(next: PublishTask) {
   task.value = next

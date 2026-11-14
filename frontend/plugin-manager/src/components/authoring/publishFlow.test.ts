@@ -78,6 +78,7 @@ const task = (overrides: Partial<PublishTask> = {}): PublishTask => ({
   release_url: 'https://github.com/owner/n.e.k.o_plugin_hello_world/releases/tag/v0.2.0',
   market_status: null,
   market_candidate_id: null,
+  market_request_id: null,
   log: [],
   started_at: 1,
   updated_at: 2,
@@ -187,6 +188,34 @@ describe('publishFlow', () => {
       task: task({ market_status: marketStatus, market_candidate_id: 12 }),
     })
     expect(step(flow, 'market')).toMatchObject({ state, detail })
+  })
+
+  it.each([
+    ['verifying', 'waiting', { key: 'marketVersionVerifying' }],
+    ['accepted', 'waiting', { key: 'marketVersionVerifying' }],
+    ['platform_attention', 'waiting', { key: 'marketVersionPlatformAttention' }],
+    ['rejected', 'todo', { key: 'marketVersionRejectedReceipt' }],
+    ['pending_review', 'waiting', { key: 'marketVersionAwaitingReview' }],
+  ] as const)('shows the Market receipt status %s', (marketStatus, state, detail) => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: null,
+      marketReceipt: marketStatus,
+    })
+    expect(step(flow, 'market')).toMatchObject({ state, detail })
+  })
+
+  it('shows a task receipt status without a review candidate', () => {
+    const flow = flowOf({
+      status: status({ remote: published }),
+      submission: approved(),
+      task: task({ market_status: 'verifying', market_candidate_id: null, market_request_id: 12 }),
+    })
+    expect(step(flow, 'market')).toMatchObject({
+      state: 'waiting',
+      detail: { key: 'marketVersionVerifying' },
+    })
   })
 
   it('ignores a Market outcome without a release URL to identify its version', () => {
