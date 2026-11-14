@@ -297,7 +297,9 @@ def test_proactive_injected_image_evicts_through_normal_keep_turns():
     c._evict_old_images()  # keep_turns=2 → keep the two newest image turns
 
     # Proactive turn is the oldest image turn → image stripped, collapses to text.
-    assert c._conversation_history[1].content == "这是什么"
+    assert "这是什么" in str(c._conversation_history[1].content)
+    assert "Historical image attachment record: 1" in str(c._conversation_history[1].content)
+    assert _image_urls(c._conversation_history[1].content) == []
     # The two newer image turns keep their images.
     assert _image_urls(c._conversation_history[3].content) == ["data:image/jpeg;base64,USER1"]
     assert _image_urls(c._conversation_history[5].content) == ["data:image/jpeg;base64,USER2"]
