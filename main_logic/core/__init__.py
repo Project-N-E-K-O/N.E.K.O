@@ -88,7 +88,6 @@ from main_logic.proactive_delivery import (
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
-    publish_analyze_request_reliably,
     publish_voice_transcript_observed_best_effort,
 )
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
@@ -108,7 +107,6 @@ from config import (
 from config.prompts.prompts_sys import (
     _loc,
     SESSION_INIT_PROMPT, SESSION_INIT_PROMPT_AGENT,
-    AGENT_TASK_STATUS_RUNNING, AGENT_TASK_STATUS_QUEUED,
     AGENT_TASKS_HEADER, AGENT_TASKS_NOTICE,
     SYSTEM_NOTIFICATION_TASK_ACTIVE,
     SYSTEM_NOTIFICATION_TASK_PASSIVE,
@@ -135,14 +133,6 @@ from config.prompts.prompts_avatar_interaction import (
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )
-# Historical imports kept here (commented) for easy rollback:
-# from config import USER_PLUGIN_SERVER_PORT
-# from config.prompts.prompts_sys import (
-#     SESSION_INIT_PROMPT_AGENT_DYNAMIC,
-#     AGENT_CAPABILITY_COMPUTER_USE, AGENT_CAPABILITY_BROWSER_USE,
-#     AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
-#     AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
-# )
 from utils.config_manager import _as_bool, get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.tts.native_voice_registry import (
@@ -179,7 +169,7 @@ import httpx
 # _CONTEXT_APPEND_DEFAULT_MAX_TOKENS, load/aload_global_conversation_settings,
 # dispatch_text_user_message, is_livestream_active, process_screen_data,
 # route_external_start_session,
-# get_tts_worker, publish_analyze_request_reliably and
+# get_tts_worker and
 # publish_voice_transcript_observed_best_effort therefore keeps working
 # through a different mechanism: the mixins do not from-import those symbols
 # but read them late via ``_core_facade.<attr>`` at every call site. When

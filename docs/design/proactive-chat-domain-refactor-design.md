@@ -458,7 +458,6 @@ uv run python -m pytest \
   tests/unit/test_proactive_sid_guard.py \
   tests/unit/test_proactive_vision_screenshot_staging.py \
   tests/unit/test_proactive_interval_20s_rollback.py \
-  tests/unit/test_proactive_agent_trigger.py \
   tests/unit/test_proactive_action_note.py \
   tests/unit/test_proactive_text_does_not_dehumanize.py \
   tests/unit/test_proactive_meme_moderation_static.py \

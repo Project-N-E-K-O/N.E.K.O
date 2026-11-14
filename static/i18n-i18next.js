@@ -29,8 +29,8 @@
     const SUPPORTED_LANGUAGES = ['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'];
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
-    // 新增 Atlas Cloud 辅助 API 服务商名称（八语言），刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-11-atlascloud-assist-provider-main-merge';
+    // Theater handoff feedback and NekoClaw task HUD keys merged together.
+    const LOCALE_VERSION = '2026-11-14-theater-handoff-nekoclaw-merge';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

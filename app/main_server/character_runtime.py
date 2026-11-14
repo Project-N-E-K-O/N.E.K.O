@@ -32,7 +32,7 @@ from PIL import Image
 
 from config import USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
-from main_logic.agent_event_bus import notify_analyze_ack
+from main_logic.agent_event_bus import notify_turn_check_ack
 from main_logic.reply_tail import bind_image_validation
 from main_logic.proactive_delivery import (
     CALLBACK_EXPIRES_AT_KEY,
@@ -920,13 +920,13 @@ async def _handle_agent_event(event: dict):
             await deliver_plugin_card(event, dict(_iter_session_managers()), default_name)
             return
 
-        if event_type == "analyze_ack":
-            logger.info(
-                "[EventBus] analyze_ack received on main: event_id=%s lanlan=%s",
+        if event_type == "turn_check_ack":
+            logger.debug(
+                "[EventBus] turn_check_ack received on main: event_id=%s lanlan=%s",
                 event.get("event_id"),
                 lanlan,
             )
-            notify_analyze_ack(str(event.get("event_id") or ""))
+            notify_turn_check_ack(str(event.get("event_id") or ""))
             return
 
         if event_type == "voice_bridge_result":
@@ -1467,6 +1467,9 @@ async def _handle_agent_event(event: dict):
                         try:
                             await mgr.rotate_speech_id_for_response_done()
                             direct_reply_sid = mgr.current_speech_id
+                            # The reply's turn as it was before the send:
+                            # a user turn begun during it is not this one's.
+                            direct_reply_engaged = getattr(mgr, "last_user_engagement_time", None)
                             delivered = bool(
                                 await mgr.send_lanlan_response(detail_text, True, turn_id=direct_reply_sid,
                                                               expected_speech_id=direct_reply_sid)
@@ -1477,7 +1480,10 @@ async def _handle_agent_event(event: dict):
                             )
                     if delivered and hasattr(mgr, "handle_proactive_complete"):
                         try:
-                            await mgr.handle_proactive_complete()
+                            await mgr.handle_proactive_complete(
+                                expected_speech_id=direct_reply_sid,
+                                expected_user_engagement_time=direct_reply_engaged,
+                            )
                         except Exception as e:
                             logger.warning(
                                 "[EventBus] direct task_result turn_end failed: %s", e

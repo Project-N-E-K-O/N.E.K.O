@@ -1,10 +1,12 @@
 """Repair malformed author assets before projecting or repairing their references."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator, _validate_idea_outline
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator, _validate_idea_outline
 from .test_display_completion_generation import display_outline
 from .test_numeric_v2_generation import _generation_setup
 
@@ -27,7 +29,7 @@ def test_continuation_repairs_asset_and_preserves_reference_and_unrelated_prose(
     candidate['mainline_chapters'][0]['fixed_narrations'] = ['s']
     calls = []
     def model(messages, **options):
-        request = json.loads(messages[1]['content'])
+        request = prompt_payload(messages[1]['content'])
         calls.append(request)
         replacements = {}
         for path in request['requested_paths']:
@@ -59,7 +61,7 @@ def test_ending_asset_repair_receives_entry_only_contract_and_preserves_text():
     calls = []
 
     def model(messages, **options):
-        request = json.loads(messages[1]['content'])
+        request = prompt_payload(messages[1]['content'])
         calls.append(request)
         assert request['requested_paths'] == ['ending.fixed_narrations']
         contract = request['requested_replacements'][0]['output_contract']

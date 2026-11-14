@@ -131,6 +131,7 @@ def test_intent_coerces_malformed_payload(
             "analyzer_enabled": True,
             "computer_use_enabled": "yes",    # wrong type → drop
             "bogus": True,                     # unknown key → drop
+            "openclaw_enabled": True,          # key of a removed feature, left by an older version → drop
             42: True,                          # non-str key → won't survive JSON anyway
         }),
         encoding="utf-8",
@@ -526,7 +527,7 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     """Snapshot/restore the relevant global state on app.agent_server.Modules
     so tests can mutate freely. Also stubs out the side-effectful calls
     inside set_agent_enabled/set_agent_flags that need full process state
-    (ZMQ bridge, plugin lifecycle, openclaw probe, etc)."""
+    (ZMQ bridge, plugin lifecycle, etc)."""
     from app.agent_server import api_routes as srv
 
     backup_analyzer_enabled = srv.Modules.analyzer_enabled
@@ -564,7 +565,6 @@ def agent_state_isolation(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(srv, "_ensure_plugin_lifecycle_started", _plugin_lifecycle_started_ok)
     monkeypatch.setattr(srv, "_check_user_plugin_registry_readiness", _user_plugin_registry_ready)
     monkeypatch.setattr(srv, "admin_control", _noop_admin)
-    monkeypatch.setattr(srv, "_cancel_openclaw_enable_probe", lambda: None)
     monkeypatch.setattr(srv, "_try_refresh_computer_use_adapter", lambda force=False: False)
     monkeypatch.setattr(srv, "_fire_agent_llm_connectivity_check", _noop_async)
     monkeypatch.setattr(srv, "_bump_state_revision", lambda: 0)
@@ -591,7 +591,6 @@ async def test_set_agent_enabled_off_preserves_sub_flags(
     srv.Modules.agent_flags["computer_use_enabled"] = True
     srv.Modules.agent_flags["browser_use_enabled"] = True
     srv.Modules.agent_flags["user_plugin_enabled"] = True
-    srv.Modules.agent_flags["openclaw_enabled"] = True
 
     await srv.agent_command({
         "command": "set_agent_enabled",
@@ -604,41 +603,6 @@ async def test_set_agent_enabled_off_preserves_sub_flags(
     assert srv.Modules.agent_flags["computer_use_enabled"] is True
     assert srv.Modules.agent_flags["browser_use_enabled"] is True
     assert srv.Modules.agent_flags["user_plugin_enabled"] is True
-    assert srv.Modules.agent_flags["openclaw_enabled"] is True
-
-
-@pytest.mark.asyncio
-async def test_set_agent_enabled_on_reprobes_openclaw_when_intent_survives(
-    agent_state_isolation, isolated_intent_store: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Master ON must refresh OpenClaw readiness when the sub-toggle intent survived OFF."""
-    srv = agent_state_isolation
-    started: list[str | None] = []
-
-    srv.Modules.agent_flags["openclaw_enabled"] = True
-    srv.Modules.capability_cache["openclaw"] = {"ready": False, "reason": ""}
-    monkeypatch.setattr(srv, "_start_openclaw_enable_probe", lambda lanlan_name=None: started.append(lanlan_name))
-
-    with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
-        await srv.agent_command({
-            "command": "set_agent_enabled",
-            "enabled": False,
-            "_persist_intent": False,
-        })
-
-        assert srv.Modules.analyzer_enabled is False
-        assert srv.Modules.agent_flags["openclaw_enabled"] is True
-
-        started.clear()
-
-        await srv.agent_command({
-            "command": "set_agent_enabled",
-            "enabled": True,
-            "lanlan_name": "lanlan-test",
-            "_persist_intent": False,
-        })
-
-    assert started == ["lanlan-test"]
 
 
 @pytest.mark.asyncio
@@ -734,112 +698,11 @@ async def test_stale_master_off_cannot_stop_reenabled_master_lifecycle(
 
 
 @pytest.mark.asyncio
-async def test_openclaw_availability_ready_emits_after_canceling_pending_probe(
-    agent_state_isolation, monkeypatch: pytest.MonkeyPatch
-):
-    srv = agent_state_isolation
-    emitted: list[str | None] = []
-    canceled: list[bool] = []
-
-    class _ReadyOpenClaw:
-        def is_available(self):
-            return {"ready": True, "reasons": []}
-
-    async def _capture_emit(lanlan_name=None):
-        emitted.append(lanlan_name)
-
-    monkeypatch.setattr(srv.Modules, "openclaw", _ReadyOpenClaw())
-    monkeypatch.setattr(srv, "_openclaw_pending", lambda: True)
-    monkeypatch.setattr(srv, "_cancel_openclaw_enable_probe", lambda: canceled.append(True))
-    monkeypatch.setattr(srv, "_emit_agent_status_update", _capture_emit)
-
-    srv.Modules.agent_flags["openclaw_enabled"] = True
-    srv.Modules.capability_cache["openclaw"] = {
-        "ready": False,
-        "reason": "AGENT_PRECHECK_PENDING",
-    }
-
-    status = await srv.openclaw_availability()
-
-    assert status == {"ready": True, "reasons": []}
-    assert srv.Modules.capability_cache["openclaw"] == {"ready": True, "reason": ""}
-    assert canceled == [True]
-    assert emitted == [None]
-
-
-@pytest.mark.asyncio
-async def test_openclaw_availability_loss_emits_after_disabling_flag(
-    agent_state_isolation, monkeypatch: pytest.MonkeyPatch
-):
-    srv = agent_state_isolation
-    emitted: list[str | None] = []
-
-    class _UnavailableOpenClaw:
-        def is_available(self):
-            return {"ready": False, "reasons": ["AGENT_CONNECTIVITY_FAILED"]}
-
-    async def _capture_emit(lanlan_name=None):
-        emitted.append(lanlan_name)
-
-    monkeypatch.setattr(srv.Modules, "openclaw", _UnavailableOpenClaw())
-    monkeypatch.setattr(srv, "_openclaw_pending", lambda: False)
-    monkeypatch.setattr(srv, "_emit_agent_status_update", _capture_emit)
-
-    srv.Modules.agent_flags["openclaw_enabled"] = True
-    srv.Modules.capability_cache["openclaw"] = {"ready": True, "reason": ""}
-
-    status = await srv.openclaw_availability()
-
-    assert status == {"ready": False, "reasons": ["AGENT_CONNECTIVITY_FAILED"]}
-    assert srv.Modules.agent_flags["openclaw_enabled"] is False
-    assert srv.Modules.capability_cache["openclaw"] == {
-        "ready": False,
-        "reason": "AGENT_CONNECTIVITY_FAILED",
-    }
-    assert emitted == [None]
-
-
-@pytest.mark.asyncio
-async def test_openclaw_availability_pending_failure_emits_terminal_snapshot(
-    agent_state_isolation, monkeypatch: pytest.MonkeyPatch
-):
-    """A first-open PENDING snapshot must be replaced without reopening the popup."""
-    srv = agent_state_isolation
-    emitted: list[str | None] = []
-
-    class _UnavailableOpenClaw:
-        def is_available(self):
-            return {"ready": False, "reasons": ["AGENT_CONNECTIVITY_FAILED"]}
-
-    async def _capture_emit(lanlan_name=None):
-        emitted.append(lanlan_name)
-
-    monkeypatch.setattr(srv.Modules, "openclaw", _UnavailableOpenClaw())
-    monkeypatch.setattr(srv, "_openclaw_pending", lambda: False)
-    monkeypatch.setattr(srv, "_emit_agent_status_update", _capture_emit)
-
-    srv.Modules.agent_flags["openclaw_enabled"] = False
-    srv.Modules.capability_cache["openclaw"] = {
-        "ready": False,
-        "reason": "AGENT_PRECHECK_PENDING",
-    }
-
-    status = await srv.openclaw_availability()
-
-    assert status == {"ready": False, "reasons": ["AGENT_CONNECTIVITY_FAILED"]}
-    assert srv.Modules.capability_cache["openclaw"] == {
-        "ready": False,
-        "reason": "AGENT_CONNECTIVITY_FAILED",
-    }
-    assert emitted == [None]
-
-
-@pytest.mark.asyncio
 async def test_gate_fail_preserves_user_plugin_enabled(
     agent_state_isolation, isolated_intent_store: Path
 ):
     """Agent LLM gate failure (endpoint not configured) is the gate for
-    CU/BU/OpenClaw — but NOT user_plugin, which runs on its own
+    CU/BU — but NOT user_plugin, which runs on its own
     plugin lifecycle and doesn't touch the agent LLM."""
     srv = agent_state_isolation
 
@@ -1370,13 +1233,13 @@ async def test_explicit_disable_always_persists_false_intent(
 
     srv = agent_state_isolation
     srv.Modules.analyzer_enabled = True
-    srv.Modules.agent_flags["openclaw_enabled"] = True
+    srv.Modules.agent_flags["computer_use_enabled"] = True
 
     with patch.object(srv, "_check_agent_api_gate", return_value={"ready": True, "reasons": [], "is_free_version": False}):
-        await srv.set_agent_flags({"openclaw_enabled": False})
+        await srv.set_agent_flags({"computer_use_enabled": False})
 
-    assert srv.Modules.agent_flags["openclaw_enabled"] is False
-    assert ari.get_intent("openclaw_enabled") is False
+    assert srv.Modules.agent_flags["computer_use_enabled"] is False
+    assert ari.get_intent("computer_use_enabled") is False
 
 
 # ---------------------------------------------------------------------------
@@ -1585,16 +1448,15 @@ async def test_restore_skipped_when_master_intent_off(
 ):
     """Per Codex P1: if persisted intent has ``analyzer_enabled=False`` but
     sub flags True (a legitimate state now that master OFF preserves sub
-    intent), restore must NOT spin up plugin lifecycle / LLM probe / openclaw
-    probe — master is the runtime gate. Sub-flag intents stay in the file
-    untouched."""
+    intent), restore must NOT spin up plugin lifecycle / LLM probe — master
+    is the runtime gate. Sub-flag intents stay in the file untouched."""
     from app import agent_runtime_intent as ari
     from app.agent_server import api_routes as srv_mod
 
     ari.set_intent("analyzer_enabled", False)
     ari.set_intent("computer_use_enabled", True)
+    ari.set_intent("browser_use_enabled", True)
     ari.set_intent("user_plugin_enabled", True)
-    ari.set_intent("openclaw_enabled", True)
 
     # If any of these get called, the master-gate skip was missed.
     agent_command_calls = []
@@ -1631,8 +1493,8 @@ async def test_restore_skipped_when_master_intent_off(
 
     # Sub-flag intents untouched — they stay so next master ON re-activates
     assert ari.get_intent("computer_use_enabled") is True
+    assert ari.get_intent("browser_use_enabled") is True
     assert ari.get_intent("user_plugin_enabled") is True
-    assert ari.get_intent("openclaw_enabled") is True
     assert ari.get_intent("analyzer_enabled") is False
 
 

@@ -66,10 +66,23 @@ LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 # When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-13-theater-safe-delivery",
+        "2026-11-14-theater-handoff-feedback",
+        "2026-11-14-theater-nekoclaw-main-merge",
+        "2026-11-12-nekoclaw-task-hud-statuses",
+        "2026-11-13-theater-invite-card",
+        "2026-11-13-theater-main-merge",
+        "2026-11-11-theater-sync-evidence-merge",
+        "2026-11-11-atlascloud-assist-provider-main-merge",
+        "2026-11-03-theater-market-community-invite-merge",
+        "2026-11-11-sync-evidence-notices",
+        "2026-11-03-theater-market-news-overseas-merge",
+        "2026-11-03-theater-market-systray-labels-merge",
+        "2026-11-03-news-overseas-systray-labels-main-merge",
+        "2026-11-03-theater-market-chat-sync-merge",
         "2026-11-11-air-basketball-main-merge",
         "2026-11-02-atlascloud-assist-provider-main-merge",
         "2026-11-10-air-basketball-shared-court",
-        "2026-11-11-sync-evidence-notices",
         "2026-11-10-cat-visit-sync-main-merge",
         "2026-11-09-sync-recent-file-unreadable",
         "2026-11-05-cat-visit-exit-confirmation",
@@ -101,6 +114,18 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-11-03-sync-archive-subject-recovery",
         "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-03-systray-intro-es-pt-labels",
+        "2026-11-03-theater-market-model-shake-merge",
+        "2026-10-28-theater-entry-social-realtime-merge",
+        "2026-10-28-theater-entry-nekoverse-merge",
+        "2026-10-28-theater-entry-social-hub-merge",
+        "2026-10-27-theater-entry-watch-together-merge",
+        "2026-10-27-theater-entry-visit-hub-merge",
+        "2026-10-27-theater-entry-stories",
+        "2026-10-27-theater-market-feedback-merge",
+        "2026-10-27-theater-market-main-merge",
+        "2026-10-26-theater-market-main-sync",
+        "2026-10-26-theater-review-fixes",
+        "2026-11-03-news-overseas-chat-sync-main-merge",
         "2026-11-02-model-click-shake",
         "2026-10-30-news-overseas-trends-steam",
         "2026-10-30-edge-peek-first-notice",
@@ -549,7 +574,7 @@ RETIRED_LOCALE_VERSIONS = frozenset(
 #
 # Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
 # stale caches yield undefined, equivalent to missing keys.
-LOCALE_KEY_SIGNATURE = "d919dcd7a20ebdde882a57c39fbf3c656e39ff4ba2c2580479a77551e4868ca2"
+LOCALE_KEY_SIGNATURE = "2816ad47b5dda4cdc664c40b3ca37beb36fd9feae050280a568e70b7788f06a0"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "

@@ -1,6 +1,7 @@
 """Explicit contact conditions do not require an unrelated player handoff."""
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -49,7 +50,7 @@ def test_explicit_handoff_requirement_is_visible_to_same_review():
     engine, session = _context(False)
     messages, _ = _build_transition_judge_messages(engine, session,
         actor_performance={'performance': '（触碰物件）有字迹。'}, player_input='我拿着物件。')
-    payload = json.loads(messages[1].content[messages[1].content.index('{'):])
+    payload = prompt_payload(messages[1].content)
     assert payload['fixed_narration_candidates'][0]['player_handoff_required'] is False
     assert '不授权角色擅自接收物品' in messages[0].content
 
@@ -79,7 +80,7 @@ async def test_contact_delivery_commits_and_restores_without_extra_call(tmp_path
     calls = {'actor': 0, 'review': 0}
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
         return NumericV2EvaluationResult((), False)

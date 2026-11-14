@@ -64,13 +64,13 @@
 
 ## Agent 服务器（`app/agent_server/`，端口 48915 和 48916）
 
-`app/agent_server/__main__.py` 在 `127.0.0.1:48915` 启动 package 的 Tool Server FastAPI app。实现拆分在 `api_runtime.py`、`api_routes.py`、`capabilities.py`、`registry.py`、`tracker.py`、`results.py`、`plugin_host.py` 和 `channels/`。
+`app/agent_server/__main__.py` 在 `127.0.0.1:48915` 启动 package 的 Tool Server FastAPI app。实现拆分在 `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekoclaw_mount.py` 和 `nekoclaw_builtins.py`。负责记录和执行任务的猫爪（NekoClaw）宿主在 `nekoclaw/host/`。
 
-Agent 启动时，进程会初始化 capability state、`DirectTaskExecutor`、Agent 侧 ZeroMQ bridge、通道探测与后台 scheduler。`plugin_host.py` 在独立线程中启动 `127.0.0.1:48916` 的内嵌 user-plugin FastAPI listener。即使 listener 与 Agent 同进程，user-plugin 执行仍受 feature flag 与 plugin lifecycle gate 控制。
+Agent 启动时，进程会初始化 capability state、Agent 侧 ZeroMQ bridge 和 agent 模型的连通性检查，并登记猫爪宿主。登记不创建任何东西：宿主的台账、agent runtime 和能力网关都等到第一次用到时才创建。`plugin_host.py` 在独立线程中启动 `127.0.0.1:48916` 的内嵌 user-plugin FastAPI listener。即使 listener 与 Agent 同进程，user-plugin 执行仍受 feature flag 与 plugin lifecycle gate 控制。
 
 ### HTTP ownership
 
-- **`:48915` Tool Server** —— Agent flag/capability、任务提交与查询、取消、health、主动触发和内部通道控制。
+- **`:48915` Tool Server** —— Agent flag/capability、主对话两个任务工具背后的内部派发和查询路由、任务查看、取消、health，以及 deferred 完成回调。
 - **`:48916` 内嵌 user-plugin 服务** —— 已安装插件发现、run lifecycle、market bridge 目标和 deferred plugin completion 支持。
 
 主服务器把公开 `/api/agent/*` surface 代理到这些内部服务。浏览器代码应把主服务器响应视为权威状态，而不是调用进程本地对象。
@@ -80,20 +80,20 @@ Agent 启动时，进程会初始化 capability state、`DirectTaskExecutor`、A
 | 默认地址 | 模式 | Bind owner | 方向 | 用途 |
 |---|---|---|---|---|
 | `tcp://127.0.0.1:48961` | PUB / SUB | Main | Main → Agent | Session 与 lifecycle 事件 |
-| `tcp://127.0.0.1:48963` | PUSH / PULL | Main | Main → Agent | 可靠 `analyze_request` 队列 |
-| `tcp://127.0.0.1:48962` | PUSH / PULL | Main（`PULL`） | Agent → Main | ACK、状态、任务更新与结果 |
+| `tcp://127.0.0.1:48963` | PUSH / PULL | Main | Main → Agent | 可靠 `turn_check_request` 队列 |
+| `tcp://127.0.0.1:48962` | PUSH / PULL | Main（`PULL`） | Agent → Main | ACK、状态、任务更新与汇报 |
 
-Agent 连接对应的 SUB/PULL/PUSH 镜像 socket。Bridge 使用后台接收线程包装同步 ZeroMQ socket。Agent → Main 投递没有 HTTP fallback。
+Agent 连接对应的 SUB/PULL/PUSH 镜像 socket。Bridge 使用后台接收线程包装同步 ZeroMQ socket。Agent → Main 投递没有 HTTP fallback；关于任务的汇报留在宿主的 outbox 里重试，直到 bridge 收下为止。
 
 ### 任务执行路径
 
-1. `main_logic/cross_server.py` 把有界对话视图作为 `analyze_request` 发布；主 bridge 等待 ACK，超时后重试一次。
-2. Agent 应用主开关/capability gate、取消内容擦除和去重。
-3. `brain/task_executor.py` 中的 `DirectTaskExecutor` 评估已启用通道；已退役的 Analyzer/Planner/Processor 类不属于当前流水线。
-4. 非插件工作按优先级选择第一个可执行通道；user plugin 先确定性过滤候选，再由 LLM 做经过校验的 entry 选择。
-5. `app/agent_server/channels/` 下的选中 adapter 注册任务、发出更新、执行或委托工作，并记录终态结果。
-6. ACK、`task_update`、`task_result` 和 proactive event 通过 `:48962` 返回；Main bridge 更新浏览器，并把模型可见结果排入匹配的 `LLMSessionManager`。
+1. 主对话模型调用 `dispatch_task` 工具。`main_logic/core/tool_calling.py` 把这句话 POST 到 `:48915` 的 `/nekoclaw/dispatch`，再把回执交还给模型。
+2. 任务大脑（`nekoclaw/host/task_brain.py`）在台账里登记一件委托。第一轮在本地完成，大约一秒内给出回执；第二轮在后台进行。
+3. 决策模型选出插件入口，经插件服务的 `/runs` 协议直达调用。选不中，或者要分多步，就把委托交给 task agent（界面上叫「使魔」）。
+4. task agent 跑在 agent runtime（`nekoclaw/runtime/`）里，经能力网关使用插件入口、MCP 工具、键鼠和浏览器。
+5. 每次状态变化都作为 `task_update` 发出。结果、提问和更正先写进 outbox，再通过 `:48962` 发送；Main bridge 更新浏览器，并把模型可见的汇报排入匹配的 `LLMSessionManager`。
+6. 用户发起的一轮结束、而这一轮没有调用会动手的工具时，`main_logic/cross_server.py` 通过 `:48963` 发出 `turn_check_request`；主 bridge 等待 ACK，超时后重试一次。
 
-取消会先把 registry 标为终态，再执行 provider 专用 teardown，避免迟到输出覆盖取消状态。Deferred user-plugin task 会保持 running，直到 completion endpoint 或超时完成它。
+叫停时先把台账里的状态写成 `cancelled`，再取消插件的 Run 或关掉 task agent 的会话，所以迟到的输出盖不掉已叫停的委托。插件返回 deferred 结果时，委托保持 `working`，直到 completion endpoint 被调用，或超时后标为失败。
 
-通道路由、flag、保留和投递语义请参阅 [Agent 系统](/zh-CN/architecture/agent-system)。
+派发、事后检查、flag 和投递语义请参阅 [Agent 系统](/zh-CN/architecture/agent-system)。

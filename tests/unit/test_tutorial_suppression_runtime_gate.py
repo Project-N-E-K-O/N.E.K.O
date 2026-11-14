@@ -50,6 +50,7 @@ PROACTIVE_KEYS = (
     "proactiveMusicEnabled",
     "proactiveMemeEnabled",
     "proactiveMiniGameInviteEnabled",
+    "proactiveTheaterInviteEnabled",
 )
 
 TUTORIAL_SUPPRESSION_SOURCES = (

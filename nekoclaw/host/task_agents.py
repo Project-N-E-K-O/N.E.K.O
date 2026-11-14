@@ -45,7 +45,7 @@ from typing import Any, Protocol
 from nekoclaw.host.capabilities import CapabilityRegistry
 from nekoclaw.host.ledger import ACTIVE_STATUSES, Commission, Ledger
 from nekoclaw.host.paths import HostPaths
-from nekoclaw.host.permissions import PermissionAsk, PermissionGate
+from nekoclaw.host.permissions import CHOICES, PermissionAsk, PermissionGate
 from nekoclaw.host.plugin_runs import PluginRunner
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
 from nekoclaw.host.reports import CHANNEL_TASK_AGENT, Reporter
@@ -59,6 +59,7 @@ WEB_SEARCH_ENTRY_ID = "search"
 _WEB_SEARCH_PARALLEL = 3
 _SHUTDOWN_START_WAIT_SECONDS = 5.0
 _SHUT_DOWN_REASON = "the host was shut down"
+_QUOTA_REASON = "the free daily quota of the agent model is used up"
 # A task agent started by a task agent does not wait in the queue: its parent
 # keeps its own place while it waits, so with every place held by parents
 # nothing would ever move.
@@ -84,6 +85,11 @@ _REPLY_LANGUAGES = {
 ModelConfigProvider = Callable[[], Awaitable["dict[str, Any] | None"]]
 # Builds a runtime from the event sink and the host callbacks.
 RuntimeFactory = Callable[[Callable[[dict[str, Any]], None], Any], Any]
+
+
+# Counts one model request of a task agent against whatever quota applies to
+# its model. Returns False when no request is left; the commission then fails.
+UsageMeter = Callable[[str], Awaitable[bool]]
 
 
 class LessonSink(Protocol):
@@ -132,6 +138,18 @@ class _Session:
     # passed on to it waits in the notes, which go to it right after that work.
     ready: bool = False
     closing: bool = False
+    # Model requests already counted against the quota before they were
+    # sent; that many usage reports are not counted again.
+    prepaid_requests: int = 0
+    # Set when the session is closed before its work was given: what was
+    # passed on for that work is kept when the session is released.
+    keep_notes: bool = False
+    # What this start is to send that came from the user: what an earlier
+    # failed start kept, the sentence it was given, what was passed on
+    # while it was set up. Sending is not taking: it stays until an event
+    # shows the session at work on it, and is kept for the next start when
+    # this one fails before its prompt reached the session's transcript.
+    carried: list[str] = field(default_factory=list)
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
     # ends, the earlier one's end is held here and decides nothing.
@@ -154,6 +172,18 @@ def _shows_work_taken(event: dict[str, Any], sent: int) -> bool:
         inputs = event.get("inputs")
         return not isinstance(inputs, int) or inputs >= sent
     return True
+
+
+def _shows_run_at_work(event: dict[str, Any]) -> bool:
+    """Whether a session event shows a run at work on what it was given.
+
+    ``started`` does not: it answers the start, before any work is sent.
+    Nor does an error or an end other than a completed run.
+    """
+    kind = event.get("type")
+    if kind == "ended":
+        return event.get("reason") == "completed"
+    return kind in ("text", "tool_start", "tool_update", "tool_end", "report", "usage", "host_request")
 
 
 def default_runtime_factory(on_event: Callable[[dict[str, Any]], None], host: Any) -> Any:
@@ -205,7 +235,9 @@ class TaskAgentManager:
         enabled: Callable[[], bool] | None = None,
         max_concurrent: int | None = None,
         lessons: LessonSink | None = None,
+        meter: UsageMeter | None = None,
     ) -> None:
+        self._meter = meter
         self._ledger = ledger
         self._preferences = preferences
         self._permissions = permissions
@@ -225,6 +257,9 @@ class TaskAgentManager:
         self._queue: deque[str] = deque()
         # Text passed on to a commission that has not started yet.
         self._notes: dict[str, list[str]] = {}
+        # What a start given up for the quota was to send, kept for the
+        # next start; it comes before what that start is told, being older.
+        self._carried: dict[str, list[str]] = {}
         # What a commission taken up again is told: an addition to a blocked or
         # failed one, or the answer to one whose waiting session was closed.
         self._resume: dict[str, str] = {}
@@ -241,6 +276,9 @@ class TaskAgentManager:
         self._pump: asyncio.Task[None] | None = None
         self._closed = False
         permissions.set_asker(self.ask_permission)
+        # A task agent started by another is covered by what the user allowed
+        # for that one's session.
+        permissions.set_parent_lookup(self._parent_of)
 
     # -- state ------------------------------------------------------------
 
@@ -412,6 +450,10 @@ class TaskAgentManager:
         session = self._sessions.get(commission_id)
         if session is None:
             return False
+        # The sentence this start was given is the user's from the outset:
+        # a failure while it is set up keeps it too.
+        session.carried = [prompt] if prompt is not None else []
+        carried: list[str] = []
         try:
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
@@ -468,21 +510,54 @@ class TaskAgentManager:
                 self._discard(commission.id)
                 return False
             notes = self._notes.pop(commission.id, [])
-            text = prompt if prompt is not None else commission.dispatch_text
-            if notes:
-                text = "\n\n".join([text, *notes])
+            carried = self._carried.pop(commission.id, [])
+            session.carried = [*carried, *([prompt] if prompt is not None else []), *notes]
+            if prompt is not None:
+                parts = [*carried, prompt]
+            else:
+                parts = [commission.dispatch_text, *carried]
+            text = "\n\n".join([*parts, *notes])
             await runtime.start(spec)
+
+            async def stopped_meanwhile() -> bool:
+                current = await self._ledger.get(commission.id)
+                return self._sessions.get(commission.id) is not session or current is None or current.status != "working"
+
             # Starting can take a while (the runtime process coming up). A stop
             # meanwhile found no session to close; this one must get no work.
-            current = await self._ledger.get(commission.id)
-            if self._sessions.get(commission.id) is not session or current is None or current.status != "working":
+            # The first request is paid for after that and before the prompt
+            # that makes it: with the quota used up, a task agent sends
+            # nothing at all, and a start that fails or is stopped costs
+            # nothing. (Later requests are counted as their usage is reported.)
+            # Counting takes a moment too, so a stop is looked for again; a
+            # stop that lands then has paid for a request it does not make.
+            if await stopped_meanwhile():
                 session.closing = True
                 await runtime.close(commission.id)
                 return False
+            if not await self._pay_first_request(session):
+                # What the user added before and while it was being set up
+                # stays for when it is taken up again, as it did when this
+                # failed before anything was started. The session keeps its
+                # place until its own close comes back, as every other close
+                # does: a new session of the same commission started before
+                # that would be released by it.
+                self._keep_unsent(session)
+                await self._fail(commission.id, _QUOTA_REASON)
+                await self._close_session(session)
+                # What was passed on while the failure was being written.
+                self._keep_unsent(session)
+                return False
+            if await stopped_meanwhile():
+                # The stop has closed the session already.
+                await self._close_session(session)
+                return False
             await self._send_text(runtime, session, "prompt", text)
             session.ready = True
-            # What was passed on while the session was being set up.
+            # What was passed on while the session was being set up. Like the
+            # prompt, it is the user's until the run is seen at work.
             for note in self._notes.pop(commission.id, []):
+                session.carried.append(note)
                 await self._send_text(runtime, session, "steer", note)
             return True
         except asyncio.CancelledError:
@@ -500,9 +575,31 @@ class TaskAgentManager:
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("starting a task agent for %s failed: %s", commission_id, exc)
+            # Kept before the session is let go: the user's next words may
+            # take the commission up again while the failure is written.
+            self._keep_unsent(session)
             self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
+            self._keep_unsent(session)
             return False
+
+    async def _pay_first_request(self, session: _Session) -> bool:
+        """Count a session's first model request before it is made; False when the quota is used up.
+
+        A meter that cannot count does not stop the work.
+        """
+        if self._meter is None:
+            return True
+        try:
+            allowed = await self._meter(session.commission_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
+            logger.warning("counting a task agent's model request failed", exc_info=True)
+            return True
+        if allowed:
+            session.prepaid_requests += 1
+        return bool(allowed)
 
     @staticmethod
     async def _send_text(runtime: Any, session: _Session, command: str, text: str) -> None:
@@ -526,6 +623,24 @@ class TaskAgentManager:
                 session.run_ended = True
             raise
 
+    def _keep_unsent(self, session: _Session) -> None:
+        """Keep what the user said that a failed start did not get into the session, for the next start.
+
+        What this start was to send, then what was passed on since, in the
+        order it came: the next start sends it ahead of what it is given.
+        Called once the failure is written, so what came meanwhile is kept too.
+        A session closed by a stop keeps nothing: its commission is over.
+        """
+        commission_id = session.commission_id
+        if session.closing and not session.keep_notes:
+            session.carried = []
+            return
+        session.keep_notes = True
+        kept = [*session.carried, *self._notes.pop(commission_id, [])]
+        session.carried = []
+        if kept:
+            self._carried[commission_id] = [*self._carried.get(commission_id, []), *kept]
+
     def _discard(self, commission_id: str) -> None:
         self._sessions.pop(commission_id, None)
         self._candidates.pop(commission_id, None)
@@ -546,8 +661,10 @@ class TaskAgentManager:
             if self._gateway is not None:
                 self._gateway.revoke(commission_id)
         else:
+            session = self._sessions.get(commission_id)
             self._discard(commission_id)
-            self._notes.pop(commission_id, None)
+            if session is None or not session.keep_notes:
+                self._notes.pop(commission_id, None)
         if self._queue and not self._closed:
             self._spawn(self._start_next())
 
@@ -622,6 +739,8 @@ class TaskAgentManager:
             return
         if session.untaken_answer is not None and _shows_work_taken(event, session.sent):
             session.untaken_answer = None
+        if session.carried and session.sent > 0 and _shows_run_at_work(event):
+            session.carried = []
         if kind == "text":
             delta = str(event.get("delta") or "")
             session.text.append(delta)
@@ -642,6 +761,8 @@ class TaskAgentManager:
             await self._on_ended(session, event)
         elif kind == "error":
             await self._on_error(session, event)
+        elif kind == "usage":
+            await self._on_usage(session)
 
     def _summary(self, text: str) -> str:
         from config.nekoclaw_settings import TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
@@ -684,8 +805,17 @@ class TaskAgentManager:
         )
 
     async def _on_ended(self, session: _Session, event: dict[str, Any]) -> None:
+        from nekoclaw.runtime.protocol import PROCESS_EXITED_ERROR
+
         commission_id = session.commission_id
         reason = event.get("reason")
+        if session.closing and reason == "error" and event.get("error") == PROCESS_EXITED_ERROR:
+            # A close was asked for, and the runtime process went away
+            # before answering it: the close will not come back. It ends
+            # as that close would have, an answer it held included; the
+            # commission's status is the close's business, not an error's.
+            # Any other error while closing is followed by the close's own end.
+            reason = "closed"
         if reason == "closed":
             # An answer kept for a run that never came is not lost with the
             # session: it takes the commission up again from its transcript.
@@ -742,8 +872,48 @@ class TaskAgentManager:
         elif reason == "aborted":
             await self._end(commission_id, "cancelled", reason="the run was stopped", text="")
         elif reason == "error":
-            await self._fail(commission_id, str(event.get("error") or "the run failed"))
+            if session.sent == 0:
+                # Ended before its prompt was sent (the runtime process
+                # went away meanwhile): what it was to send is kept, and
+                # again once the failure is written, for what came meanwhile.
+                self._keep_unsent(session)
+                await self._fail(commission_id, str(event.get("error") or "the run failed"))
+                self._keep_unsent(session)
+            else:
+                # A run takes its prompt into the session's transcript before
+                # its first model request, and the next start goes on from
+                # that transcript: what was kept is there, and is not sent again.
+                session.carried = []
+                await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
+        for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
+            await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
+            await self.abort(child.id)
+        await self._close_session(session)
+
+    async def _on_usage(self, session: _Session) -> None:
+        """Count one model request; a commission whose quota is used up fails.
+
+        The runtime reports usage once per request, after the request, so the
+        request that uses the last unit still completes.
+        """
+        if self._meter is None or session.closing:
+            return
+        if session.prepaid_requests > 0:
+            # Counted before it was sent.
+            session.prepaid_requests -= 1
+            return
+        commission_id = session.commission_id
+        try:
+            allowed = await self._meter(commission_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a meter that cannot count does not stop the work
+            logger.warning("counting a task agent's model request failed", exc_info=True)
+            return
+        if allowed:
+            return
+        await self._fail(commission_id, _QUOTA_REASON)
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
             await self.abort(child.id)
@@ -773,11 +943,17 @@ class TaskAgentManager:
                     await self._deliver_answer(session, answer)
             return
         if command == "start":
+            # The runtime reports a start it could not make here, not by
+            # raising from ``start``.
             await self._fail(commission_id, f"the task agent could not be started: {message}")
+            self._keep_unsent(session)
             await self._release(commission_id)
         elif command == "prompt":
             session.untaken_answer = None
+            # Refused, so it is not in the transcript: what the user said
+            # with it is kept, as when the start itself fails.
             await self._fail(commission_id, message)
+            self._keep_unsent(session)
             await self._close_session(session)
         elif command == "close":
             # The session is gone already, for instance with its runtime process.
@@ -921,6 +1097,7 @@ class TaskAgentManager:
         if commission_id in self._queue:
             self._queue.remove(commission_id)
         self._notes.pop(commission_id, None)
+        self._carried.pop(commission_id, None)
         self._resume.pop(commission_id, None)
         session = self._sessions.get(commission_id)
         if session is None:
@@ -1148,11 +1325,26 @@ class TaskAgentManager:
                     )
                 )
 
+    async def ask_user(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
+        """Put a question to the user for a commission and wait; returns ``{"text", "choice"}``.
+
+        For the gateway: a plugin that wants the user's confirmation is not
+        answered by the task agent that called it.
+        """
+        return await self._ask(commission_id, question)
+
     async def ask_permission(self, commission_id: str, ask: PermissionAsk) -> str:
         """Ask the user to approve something; the ``Asker`` of the permission gate."""
         answer = await self._ask(commission_id, ask.to_json())
         choice = answer.get("choice")
-        return choice if choice in ask.options else "deny"
+        # Anything that is not one of the four answers is a refusal. An
+        # approval wider than the question offered is narrowed by the gate.
+        return choice if choice in CHOICES else "deny"
+
+    async def _parent_of(self, commission_id: str) -> str | None:
+        """Return the commission that started this one; the permission gate's lookup."""
+        commission = await self._ledger.get(commission_id)
+        return commission.parent_id if commission is not None else None
 
     # -- host callbacks ---------------------------------------------------
 

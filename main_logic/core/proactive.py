@@ -166,14 +166,21 @@ class ProactiveMixin:
                 'computer_use_enabled',
                 'browser_use_enabled',
                 'user_plugin_enabled',
-                'openclaw_enabled',
-                'openclaw_ready',
             ]:
                 if k in flags and isinstance(flags[k], bool):
                     self.agent_flags[k] = flags[k]
         except Exception:
             # Malformed flags payload — keep the current flags.
             pass
+        # The two task tools follow the switches: they are offered to the
+        # model only while NekoClaw is on, so a session without it does not
+        # pay for their definitions. Only an actual change touches the live
+        # session's tool list.
+        try:
+            if self._register_task_tools():
+                self._fire_task(self._sync_tools_to_active_session())
+        except Exception:
+            logger.debug("[%s] task tools not re-registered after a flag update", self.lanlan_name, exc_info=True)
 
     # ------------------------------------------------------------------
     # Voice-chat proactive text trigger (dedicated path)
@@ -686,6 +693,10 @@ class ProactiveMixin:
             # expected_speech_id already passed through phase2 and was just validated;
             # use that stable snapshot.
             commit_sid = expected_speech_id or self.current_speech_id
+            # What tells a user turn that begins during the awaits below from
+            # this one: its input moves the engagement time, its reply the sid.
+            # getattr: managers built without ``__init__`` (bare test managers).
+            engagement_at_commit = getattr(self, "last_user_engagement_time", None)
             # Pin ordinary proactive output to its own origin.
             mark_turn_origin(self, commit_sid, 'proactive')
             # Enter COMMITTING. send_lanlan_response rechecks after its own final await and
@@ -829,12 +840,32 @@ class ProactiveMixin:
                 # with outbound BM25 exemptions.
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
-                    await self._request_tts_done_for_turn("finish_proactive_delivery")
+                    # Only for this delivery's turn: a user turn begun meanwhile
+                    # has its own speech, which this signal would cut off.
+                    await self._request_tts_done_for_turn("finish_proactive_delivery", expected_speech_id=commit_sid)
                 except Exception:
                     # TTS done-signal is best-effort; the delivery itself already succeeded.
                     pass
 
-            self.sync_message_queue.put({'type': 'system', 'data': 'turn end'})
+            turn_end_msg = {'type': 'system', 'data': 'turn end'}
+            if (
+                self.current_speech_id == commit_sid
+                and getattr(self, "last_user_engagement_time", None) == engagement_at_commit
+            ):
+                # Carried as by every other turn end, though a turn she
+                # starts herself has no task tools to act through.
+                if self._close_turn_tool_state():
+                    turn_end_msg['acted_through_tools'] = True
+            else:
+                # The user began a turn while this one was being delivered
+                # (the sends and the TTS signal above are awaited). Its words
+                # and its tool calls are that turn's, which closes them itself
+                # when it ends. Nor may this turn end have cross_server check
+                # that turn by it: it carries none of that turn's marks, and a
+                # task done through a tool would be dispatched again. The
+                # callback kind ends a turn without a check.
+                turn_end_msg['data'] = 'turn end agent_callback'
+            self.sync_message_queue.put(turn_end_msg)
             try:
                 if (self.websocket
                         and hasattr(self.websocket, 'client_state')

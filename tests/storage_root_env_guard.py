@@ -116,7 +116,15 @@ def describe_storage_root_env_leak(nodeid: str, drifted: dict[str, tuple[str | N
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
-    cleared = clear_inherited_storage_root_env()
+    # tests/process_isolation.py already dropped inherited values before
+    # conftest imported anything; report those here too so the warning
+    # still names what the shell handed over.
+    from tests import process_isolation
+
+    cleared = {
+        **process_isolation.STORAGE_ROOT_ENV_CLEARED_BEFORE_IMPORT,
+        **clear_inherited_storage_root_env(),
+    }
     if cleared:
         session.config.issue_config_time_warning(
             pytest.PytestConfigWarning(

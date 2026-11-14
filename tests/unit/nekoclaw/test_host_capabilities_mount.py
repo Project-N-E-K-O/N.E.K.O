@@ -437,7 +437,14 @@ async def test_agent_process_registers_the_host_without_building_it(mount, monke
         assert host.brain._is_enabled() is False
         assert host.registry.plugins_enabled() is True
         monkeypatch.setattr(_shared.Modules, "analyzer_enabled", True)
+        assert host.brain._is_enabled() is True
+        # The master switch alone is not NekoClaw switched on.
         monkeypatch.setattr(_shared.Modules, "agent_flags", {"user_plugin_enabled": False})
+        assert host.brain._is_enabled() is False
+        assert host.registry.plugins_enabled() is False
+        monkeypatch.setattr(
+            _shared.Modules, "agent_flags", {"user_plugin_enabled": False, "browser_use_enabled": True}
+        )
         assert host.brain._is_enabled() is True
         assert host.registry.plugins_enabled() is False
         assert host.catalog._change_token() is token

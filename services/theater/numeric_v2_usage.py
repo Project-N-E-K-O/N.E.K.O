@@ -2,12 +2,14 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Mapping
 import json
 
 from starlette.responses import JSONResponse
 
 from .numeric_v2_trace import invoke_with_trace
+from .numeric_v2_turn_control import reserve_model_call
+from .numeric_v2_latency import model_call_timing, reported_tokens
 
 
 # Isolate requests; subtasks share their request container. Ordinary chat outside the scope is excluded entirely.
@@ -28,22 +30,21 @@ def numeric_v2_usage_scope():
 async def invoke_with_usage(client: Any, messages: list[Any], *, stage: str,
                             response_format: dict[str, Any] | None = None):
     """Read only reported client usage; timeout or missing provider data stays unknown rather than becoming an estimate presented as actual consumption."""
+    reserve_model_call(stage)
     # Actor/Evaluator already validate full messages against session tiers before calling; observe only, without trimming or rewriting evidence.
     calls = _usage_calls.get()
-    if calls is None:
-        return await invoke_with_trace(client, messages, stage=stage, response_format=response_format)
-    row = {"stage": stage, "input_tokens": None, "output_tokens": None}
-    calls.append(row)
-    response = await invoke_with_trace(client, messages, stage=stage, response_format=response_format)
-    usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}
-    # The Anthropic client also provides OpenAI aliases; native input fields include cache creation and reads.
-    prompt = usage.get("prompt_tokens")
-    if prompt is None and isinstance(usage.get("input_tokens"), int):
-        prompt = sum(usage.get(key) or 0 for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
-    completion = usage.get("completion_tokens", usage.get("output_tokens"))
-    for key, value in (("input_tokens", prompt), ("output_tokens", completion)):
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            row[key] = value
+    row = {"stage": stage, "input_tokens": None, "output_tokens": None} if calls is not None else None
+    if calls is not None:
+        calls.append(row)
+    with model_call_timing(stage) as timing:
+        response = await invoke_with_trace(client, messages, stage=stage, response_format=response_format)
+        if row is not None or timing is not None:
+            metadata = getattr(response, "response_metadata", None)
+            tokens = reported_tokens(metadata.get("token_usage") if isinstance(metadata, Mapping) else None)
+            if row is not None:
+                row.update({key: tokens[key] for key in ("input_tokens", "output_tokens")})
+            if timing is not None:
+                timing.update(tokens)
     return response
 
 

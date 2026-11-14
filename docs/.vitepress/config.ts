@@ -12,12 +12,6 @@ const SRC_EXCLUDE = new Set([
   'README_ja.md',
   'README_ru.md',
   'README_zh-CN.md',
-  'zh-CN/guide/openclaw_guide.md',
-  'zh-CN/guide/openclaw_guide.en.md',
-  'zh-CN/guide/openclaw_guide.ja.md',
-  'zh-CN/guide/openclaw_guide.ko.md',
-  'zh-CN/guide/openclaw_guide.ru.md',
-  'zh-CN/guide/openclaw_guide.zh-TW.md',
 ])
 const SOURCE_DIR_EXCLUDE = new Set(['.vitepress', 'node_modules', 'public'])
 
@@ -209,9 +203,6 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const implementationRecords = lang === 'en'
     ? [{ text: t.taskHud, link: '/architecture/task-hud-system' }]
     : []
-  const zhCNOnlyItems = lang === 'zh-CN'
-    ? [{ text: 'Neko x QwenPaw 接入规范', link: `${p}/architecture/neko-qwenpaw-integration` }]
-    : []
   return [
     {
       text: t.group,
@@ -224,7 +215,6 @@ function architectureSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.agent, link: `${p}/architecture/agent-system` },
         { text: t.tts, link: `${p}/architecture/tts-pipeline` },
         ...implementationRecords,
-        ...zhCNOnlyItems,
       ],
     },
   ]

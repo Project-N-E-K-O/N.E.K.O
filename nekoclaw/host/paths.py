@@ -19,6 +19,9 @@
     <data root>/nekoclaw/
     ├─ ledger.db                 the commission ledger
     ├─ permissions.json          permission settings
+    ├─ plugin_short_descriptions.json
+    │                            short descriptions written for plugins
+    │                            whose manifest has none
     └─ task_agents/projects/_daily/sessions/<commission id>/
         ├─ transcript.jsonl      written by the runtime
         ├─ outputs/              large tool output, written by the runtime
@@ -100,6 +103,9 @@ class HostPaths:
 
     def permissions_json(self) -> Path:
         return self.root() / "permissions.json"
+
+    def short_descriptions_json(self) -> Path:
+        return self.root() / "plugin_short_descriptions.json"
 
     def session_dir(self, commission_id: str, project: str | None = None) -> Path:
         """Return a commission's session directory; raises ValueError for an unsafe name."""

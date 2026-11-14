@@ -640,7 +640,6 @@ class BrowserUseAdapter:
             model=model,
             api_key=api_cfg.get("api_key"),
             base_url=base_url,
-            temperature=0.0,
             dont_force_structured_output=False,
             add_schema_to_system_prompt=False,
             remove_min_items_from_schema=False,
@@ -651,6 +650,10 @@ class BrowserUseAdapter:
             kwargs["add_schema_to_system_prompt"] = True
             kwargs["remove_min_items_from_schema"] = True
             kwargs["remove_defaults_from_schema"] = True
+        # No temperature in the request: many current models reject the field,
+        # so the model default decides (see scripts/check_no_temperature.py).
+        # browser-use's client sends 0.2 of its own unless it is told None.
+        kwargs["temperature"] = None
         if is_gemini:
             kwargs["frequency_penalty"] = None
             kwargs["seed"] = None

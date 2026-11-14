@@ -81,19 +81,24 @@ Routers obtain long-lived managers through `main_routers/shared_state.py` getter
 ## Agent event flow
 
 ```text
-cross_server turn/session end
-        │ recent messages + current-turn attachments
+main dialogue model
+        │ dispatch_task / query_tasks (tool call)
         ▼
-MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge
+tool_calling.py ── HTTP :48915 /nekoclaw/* ──> NekoClaw host ──> receipt back to the model
+
+cross_server turn end without a tool call that acts
+        │ user's words + the character's reply
+        ▼
+MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge ──> turn check
         ▲                                      │
-        │ ACK / task_update / task_result      ▼
-        └──────────── ZMQ :48962 ───── channel dispatch
+        │ ACK / task_update / reports          ▼
+        └──────────── ZMQ :48962 ───── NekoClaw host (outbox)
         │
         ├─ task_update ──> WebSocket ──> Task HUD
-        └─ task_result ──> LLMSessionManager callback queue ──> chat delivery
+        └─ task_result / proactive_message ──> LLMSessionManager callback queue ──> chat delivery
 ```
 
-Session broadcasts use the separate PUB/SUB address on port 48961. Analyze requests use the reliable PUSH/PULL queue on port 48963 and are acknowledged over the Agent → Main channel on port 48962.
+Dispatch and query are plain HTTP calls from the Main Server to the Agent Server. Session broadcasts use the separate PUB/SUB address on port 48961. Turn-check requests use the reliable PUSH/PULL queue on port 48963 and are acknowledged over the Agent → Main channel on port 48962. See [Agent System](/architecture/agent-system) for what the host does with them.
 
 ## TTS data flow
 

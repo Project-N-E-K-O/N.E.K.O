@@ -1,11 +1,14 @@
 from __future__ import annotations
-from theater_workshop.host import InProcessPackageGateway
 
+from tests.utils.theater_prompt import prompt_payload
+from services.theater_workshop.host import InProcessPackageGateway
+
+from copy import deepcopy
 import json
 
 import pytest
 
-from theater_workshop.sdk.generation.numeric_v2 import (
+from services.theater_workshop.sdk.generation.numeric_v2 import (
     _BRANCH_ENDING_PROMPT,
     _BRANCH_PATH_PROMPT,
     _SCENE_PROCESS_AUTHORING_RULE,
@@ -17,15 +20,16 @@ from theater_workshop.sdk.generation.numeric_v2 import (
     NumericV2GenerationError,
     NumericV2Generator,
 )
-from theater_workshop.sdk.generation.quality import (
+from services.theater_workshop.sdk.generation.quality import (
     _ASSESSMENT_PROMPT,
     _NODE_OPTIMIZATION_PROMPT,
     QUALITY_DIMENSIONS,
     NumericV2QualityAssessor,
     QualityAssessmentError,
 )
-from theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler, scene_turn_budget
+from services.theater_workshop.sdk.generation.facts import FACT_REVIEW_PROMPT
+from services.theater_workshop.sdk.generation.runtime_rules import AUTHOR_KNOWLEDGE_RULE, PUBLIC_TEXT_RULE
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler, scene_turn_budget
 from .numeric_v2_fixture import numeric_v2_setup
 
 
@@ -54,20 +58,14 @@ def test_numeric_v2_workshop_prompts_do_not_embed_stress_story_terms():
             assert fragment not in prompt
 
 
-@pytest.mark.parametrize("prompt", [
-    _MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT, _NODE_ENHANCEMENT_PROMPT,
-    _BRANCH_ENDING_PROMPT, _BRANCH_PATH_PROMPT,
-    _NODE_OPTIMIZATION_PROMPT,
-], ids=["mainline", "continuation", "enhancement", "branch-ending", "branch-path", "optimization"])
-def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
-    # Short IDs keep PYTEST_CURRENT_TEST below Windows' environment-value limit.
-    # Repair, refinement, and branch entry also generate boundaries; they must not overwrite initial mainline fixes with old contracts.
+@pytest.mark.parametrize("prompt", [_MAINLINE_PROMPT, _MAINLINE_CONTINUATION_PROMPT], ids=["mainline", "continuation"])
+def test_concrete_process_rule_covers_whole_outline_generation_and_continuation(prompt):
     assert prompt.count(_SCENE_PROCESS_AUTHORING_RULE) == 1
     assert prompt.endswith(_SCENE_PROCESS_AUTHORING_RULE)
     # Two-person enactment orientation applies to continuation, branches, and revision, not just the first mainline draft.
-    assert "主线、支线及结局的关键互动优先由男主与女主推进" in prompt
+    assert "主线、支线及结局的关键互动优先由玩家与当前角色推进" in prompt
     assert "不默认把配角的连续问答、实际操作、评价或认可作为推进和收束的必要条件" in prompt
-    assert "男主的选择、行动和台词仍由玩家输入决定" in prompt
+    assert "玩家的选择、行动和台词仍由玩家输入决定" in prompt
     assert "配角被直接询问时仍可简短回答、拒绝或说明未知" in prompt
     # Multiexit previews neither freeze routes nor require all candidate branches to finish first.
     assert "不要求把全部候选支线的调查都完成才离幕" in prompt
@@ -75,7 +73,7 @@ def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
     assert "各目标入口先兑现这项共同行动" in prompt
     # Exits explicitly identify known destinations/participants, preventing revisions from becoming unbounded investigation/escort tasks again.
     assert "谁同行及配角留在哪里" in prompt
-    assert "这四处必须兑现同一去向、时段和开始的活动" in prompt
+    assert "兑现已公开的同一去向、时段及开始的活动" in prompt
     assert "单个出口不能写‘去A或去B’却只通往C" in prompt
     assert "不能在换幕后临时编造新路径" in prompt
     assert "不以含糊标识诱导另造设施或重复任务" in prompt
@@ -96,16 +94,16 @@ def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
     assert "从当前状态实施的新可行动作仍正常承接" in prompt
     assert "不必再邀请、再确认一次" in prompt
     # Writing, continuation, and review preserve specific response objects without making dialogue templates mandatory tasks.
-    assert "必要角色反应写清她回应哪项选择或结果，以及为什么在意" in prompt
+    assert "必要角色反应写清该角色回应哪项选择或结果，以及为什么在意" in prompt
     assert "不把示例台词固定为必说原文" in prompt
     # Every generation/review entry preserves causal/stage differences in reactions, without requiring every interaction to intensify relationships.
-    assert "女主原先在意的具体事" in prompt
+    assert "当前角色原先在意的具体事" in prompt
     assert "不能把本幕尚待发生的反应提前写成入幕事实" in prompt
     assert "不要求每幕改变立场" in prompt
     assert "ending.summary 承接变化的原因" in prompt
     assert "不为了制造变化强行和解、彻底改观或升温" in prompt
     # Ending openings, summaries, and state lines share one time point; state fields cannot secretly add player actions.
-    assert "结束不等于散场，不默认男主执行作者未写明的附加动作" in prompt
+    assert "结束不等于散场，不默认玩家执行作者未写明的附加动作" in prompt
     # Refinement/scoring must not assign ordinary-turn tasks to endings with closed input.
     assert "结局目标只声明开场已经交付的环境事实" in prompt
     # The user explicitly places state after the opening; seven author entries must not shift it before opening or after the whole act.
@@ -156,7 +154,117 @@ def test_concrete_process_rule_covers_generation_and_revision_entries(prompt):
 def test_mainline_player_decision_example_matches_actionable_exit_rule():
     """Keep ordinary transition choices in the example; permit null only for final closure with no unresolved choice."""
 
-    assert '"player_decision": "普通换幕保留可执行选择；最后一幕自然收束且没有未决选择时为空字符串"' in _MAINLINE_PROMPT
+    assert '"player_decision": "需新授权时填可执行选择；结果承接或最后一幕没有未决选择时填空字符串"' in _MAINLINE_PROMPT
+
+
+def test_local_authoring_requests_leave_headroom_at_the_workshop_input_limit(monkeypatch):
+    from types import SimpleNamespace
+    from services.theater_workshop.host import NekoWorkshopModel
+    from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+    from utils import llm_client
+    from utils.tokenize import count_tokens
+    from .test_numeric_v2_branch import _character_state, _ending_goal, _path_result_from_context, branchable_project
+
+    branch = NumericV2BranchService(token_counter=count_tokens)
+    project = branchable_project()
+    selection = {"mode": "recommend"}
+    path = branch.prepare_path(project, source_node_id="main_1", endpoint_mode="existing_ending",
+                               endpoint_node_id="ending_normal", direction="核对柜台记录。", length=1,
+                               condition_selection=selection)
+    ending = branch.prepare_ending(project, source_node_id="main_1", ending_direction="让两人核对最后一份记录再道别。",
+                                   condition_selection=selection)
+    path_output = _path_result_from_context(path["context"])
+    path_output["scenes"][0]["completion_facts"] = [{
+        "id": "checked", "description": "已核对柜台记录。", "value_type": "bool", "target_value": True, "visibility": "public",
+    }]
+    path_output["transitions"][1]["trigger_fact_ids"] = ["checked"]
+    ending_output = {"condition_key": ending["condition_candidates"][0]["key"], "title": "道别", "summary": "记录已核对。",
+                     "opening_scene": "柜台上摊着核对完的记录。", "ordered_goals": [_ending_goal("结局记录已核对。")],
+                     "irreversible_facts": ["记录已经核对。"], "character_state": _character_state(),
+                     "catgirl_situation": "她放心地道别。", "tone": "克制"}
+    _, story, enhancement = _ending_enhancement_case()
+    enhancement["character_state"]["continuity_from_previous"] = []
+    outputs = iter((path_output, ending_output, enhancement))
+    request_sizes = []
+
+    class Client:
+        def invoke(self, messages, **options):
+            request_sizes.append(count_tokens(json.dumps(messages, ensure_ascii=False)))
+            return SimpleNamespace(content=json.dumps(next(outputs), ensure_ascii=False), response_metadata={})
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(llm_client, "create_chat_llm", lambda **options: Client())
+    model = NekoWorkshopModel({"model": "fixture-model", "base_url": "https://example.invalid/v1", "max_input_tokens": 10_000})
+    generator = NumericV2Generator(model, token_counter=count_tokens)
+    generator.generate_branch_path(context=path["context"])
+    generator.generate_branch_ending(context=ending["context"])
+    generator.enhance_node(story=story, node_id=story["nodes"][0]["id"])
+    assert len(request_sizes) == 3
+    assert max(request_sizes) <= 8_000
+
+
+def test_bundled_node_enhancement_requests_fit_workshop_input_budget():
+    from pathlib import Path
+    from utils.tokenize import count_tokens
+
+    class Captured(Exception):
+        pass
+
+    def capture(messages, **_options):
+        assert count_tokens(json.dumps(messages, ensure_ascii=False)) <= 10_000, (path.name, node["id"])
+        raise Captured
+
+    stories = sorted((Path(__file__).resolve().parents[3] / "assets" / "theater").glob("story_*.json"))
+    assert stories
+    generator = NumericV2Generator(capture, token_counter=count_tokens)
+    for path in stories:
+        story = json.loads(path.read_text(encoding="utf-8"))
+        for node in story["nodes"]:
+            with pytest.raises(Captured):
+                generator.enhance_node(story=story, node_id=node["id"])
+
+
+def test_enhancement_request_keeps_authored_props_at_10000_tokens():
+    from pathlib import Path
+    from utils.tokenize import count_tokens
+
+    path = Path(__file__).resolve().parents[3] / "assets" / "theater" / "story_neon_rebuild_ea2e45dab7.json"
+    story = json.loads(path.read_text(encoding="utf-8"))
+    props = [{"id": "terminal", "name": "工作室终端", "purpose": "展示追踪来源和原型机归属，用于两人确认已经公开的内容。",
+              "states": [{"node_id": "mainline_03", "owner": "environment", "state": "终端仍留在工作室主桌上，尚未读取其中的记录。"},
+                         {"node_id": "mainline_05", "owner": "environment", "state": "追踪日志已在终端显示，屏幕内容可见，原设备没有交给任何一方。"},
+                         {"node_id": "mainline_06", "owner": "environment", "state": "两人离开工作室后，终端仍留在原处。"}]},
+             {"id": "kit", "name": "急救盒", "purpose": "说明有限的现场包扎能力和已使用的耗材，不能据此假设伤势已经消失。",
+              "states": [{"node_id": "mainline_06", "owner": "environment", "state": "地铁站入口有一个薄铁盒，尚未检查是否能提供基础包扎。"},
+                         {"node_id": "mainline_07", "owner": "environment", "state": "急救盒就在旧地铁站深处的桌面，取用情况仍由实际互动决定。"}]}]
+
+    class Captured(Exception):
+        pass
+
+    def capture(messages, **_options):
+        payload = prompt_payload(messages[1]["content"])
+        assert payload["key_props"] == props
+        assert count_tokens(json.dumps(messages, ensure_ascii=False)) <= 10_000
+        assert messages[1]["content"].startswith("======以下为剧本工坊输入数据======\n")
+        assert messages[1]["content"].endswith("\n======以上为剧本工坊输入数据======")
+        raise Captured
+
+    with pytest.raises(Captured):
+        NumericV2Generator(capture, token_counter=count_tokens).enhance_node(
+            story=story, node_id="mainline_07", key_props=props,
+        )
+
+
+def test_node_text_optimization_keeps_runtime_and_public_text_rules_without_whole_story_authoring():
+    # 单节点文本修订不生成整包事实、关系弧或分支；已有文本权限与公开文案边界仍保留。
+    assert _NODE_OPTIMIZATION_PROMPT.startswith(AUTHOR_KNOWLEDGE_RULE)
+    assert _NODE_OPTIMIZATION_PROMPT.endswith(PUBLIC_TEXT_RULE)
+    assert _SCENE_PROCESS_AUTHORING_RULE not in _NODE_OPTIMIZATION_PROMPT
+    assert "不得改 goals 或 acting_contract" in _NODE_OPTIMIZATION_PROMPT
+    assert "不得新增、删除或改指路线" in _NODE_OPTIMIZATION_PROMPT
+    assert "只返回确实需要变更的允许字段" in _NODE_OPTIMIZATION_PROMPT
 
 
 def _idea_outline(chapter_count: int = 4) -> dict:
@@ -167,6 +275,7 @@ def _idea_outline(chapter_count: int = 4) -> dict:
             "rules": ["旧信中的信息必须通过现实证据交叉确认。"],
             "core_mystery": "当年的分别是否源于一场被隐瞒的误会。",
             "core_conflict": "两人都想知道真相，却害怕再次被对方抛下。",
+            "invitation": "雨还没停，旧站台那盏灯又亮了一下……要不要跟我过去看看？",
         },
         "story_protagonist": {
             "identity": "女主，守着花店和旧信的年轻女性。",
@@ -318,6 +427,31 @@ def test_numeric_v2_generator_normalizes_profile_part_punctuation():
     ) == "男主，身份说明。进入原因。介入能力。"
 
 
+def test_legacy_continuation_repairs_overflow_in_its_own_chapters():
+    outline = _idea_outline(9)
+    for chapter in outline["mainline_chapters"]:
+        chapter["completion_facts"] = [
+            {"id": f"fact_{number}", "description": f"核对档案的第{number}项结果。", "value_type": "bool",
+             "target_value": True, "visibility": "public"} for number in range(8)
+        ]
+        chapter["exit_plan"]["trigger_fact_ids"] = ["fact_0"]
+
+    def model(messages, **options):
+        request = prompt_payload(messages[1]["content"])
+        assert options["operation"] == "numeric_v2_mainline_continuation"
+        assert request["requested_paths"] == ["mainline_chapters[7]", "mainline_chapters[8]"]
+        replacements = {}
+        for index, maximum in ((7, 7), (8, 1)):
+            chapter = deepcopy(outline["mainline_chapters"][index])
+            chapter["completion_facts"] = chapter["completion_facts"][:maximum]
+            replacements[f"mainline_chapters[{index}]"] = chapter
+        return json.dumps({"replacements": replacements}, ensure_ascii=False)
+
+    story = NumericV2Generator(model).generate(title="续写容量", setup={**_generation_setup(), "length_preset": "standard"},
+                                              checkpoint={"candidate": outline})["story"]
+    assert len(NumericV2Compiler(InProcessPackageGateway()).compile(story).story["fact_contract"]["facts"]) == 64
+
+
 def test_numeric_v2_generator_rejects_exit_trigger_fact_not_declared_in_completion_facts():
     candidate = _idea_outline()
     candidate["mainline_chapters"][0]["exit_plan"]["trigger_fact_ids"] = [
@@ -383,7 +517,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert len(calls) == 1
     assert calls[0]["max_retries"] == 1
     assert calls[0]["operation"] == "numeric_v2_mainline_generation"
-    assert json.loads(calls[0]["messages"][1]["content"]) == {
+    assert prompt_payload(calls[0]["messages"][1]["content"]) == {
         "core_idea": setup["brief"],
             "length": {
                 "preset": "short",
@@ -419,6 +553,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     }]
     assert story["nodes"][0]["route_gates"][0]["conditions"] == {"all": []}
     assert story["intro"]["background"] == "雨季小镇与保存旧信的花店。"
+    assert story["intro"]["invitation"] == "雨还没停，旧站台那盏灯又亮了一下……要不要跟我过去看看？"
     assert "世界规则：" not in story["intro"]["background"]
     assert "核心悬念：" not in story["intro"]["background"]
     assert "核心矛盾：" not in story["intro"]["background"]
@@ -436,6 +571,7 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     }
     assert story["nodes"][0]["story_beat"]["narrative_focus"] == (
         "旧信上的日期正在把当年的误会引向一条可以核对的现实线索。"
+        "待发生的关系契机（不代表已发生或必须升温）：女主展示旧信，提供核对当年事实的机会。"
     )
     assert result["pacing_diagnostics"]["status"] == "pass"
     assert story["nodes"][0]["story_beat"]["character_state"] == {
@@ -450,7 +586,6 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert story["nodes"][0]["route_gates"][0]["transition_contract"]["must_preserve"] == [
         "当年离开时间仍存在待解矛盾",
         "关键道具“写有日期的旧信”[dated_old_letter]：用途为核对当年离开时间与收信记录。",
-        "旧信仍由女主保管",
     ]
     assert story["nodes"][0]["story_beat"]["transition_goal"] == (
         "在核对当前记录后，自然引出下一份可交叉验证的证据。"
@@ -484,19 +619,19 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert "不生成支线" in prompt
     assert "不生成数值" in prompt
     assert "只生成一个 normal 结局" in prompt
-    assert "剧情主角必须是女性" in prompt
-    assert "玩家角色必须是男性" in prompt
-    assert "story_protagonist.identity 必须以“女主，”开头" in prompt
-    assert "player_role.identity 必须以“男主，”开头" in prompt
+    assert "不预设性别" in prompt
+    assert "剧情主角必须是女性" not in prompt and "玩家角色必须是男性" not in prompt
+    assert "两种身份沿用程序校验提示的固定角色槽位开头" in prompt
+    assert "女主" not in prompt and "男主" not in prompt
     assert "只把会影响剧情的关键道具写入 key_props" in prompt
     assert "world.background 是直接展示给玩家的“前情提要”" in prompt
     assert "凡是在这段可见正文中指代玩家，一律使用第二人称“你”" in prompt
     assert "第一章必须从玩家尚未进行任何输入的状态开始" in prompt
-    assert "不能提前写入第一章才会交付或由男主决定的结果" in prompt
+    assert "不能提前写入第一章才会交付或由玩家决定的结果" in prompt
     assert "narrative 是作者侧梗概" in prompt
     assert "该句会直接作为换幕起始画面" not in prompt
     assert "不得替玩家说出台词、作出选择、完成关键行动" in prompt
-    assert "opening_scene 和 entry_bridge 都不能新增男主的主动行为" in prompt
+    assert "opening_scene 和 entry_bridge 都不能新增玩家的主动行为" in prompt
     assert "每章必须给出 opening_scene、entry_bridge、narrative_focus、expected_turns、transition_goal、completion_facts、exit_plan" in prompt
     assert "narrative_focus 只写一句当前最值得继续发展的因果或互动方向" in prompt
     assert "expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计" in prompt
@@ -535,15 +670,15 @@ def test_numeric_v2_generator_calls_model_once_for_mainline_and_one_normal_endin
     assert "默认使用 semantic 且 anchors 为空" in _BRANCH_PATH_PROMPT
     assert "exact anchors 指代玩家时必须使用最终可见的第二人称“你”" in _BRANCH_PATH_PROMPT
     assert "多个必须全部成立的条件、数量、期限或范围" in _BRANCH_PATH_PROMPT
-    assert "不得写入新的玩家身体行动" in _BRANCH_PATH_PROMPT
-    assert "每一幕只能推进一小级" in _BRANCH_PATH_PROMPT
-    assert "不得仅因进入支线就从警惕或疏离跳到粘人" in _BRANCH_PATH_PROMPT
-    assert "不得把 source 或 scene 的预期目标写成已经完成" in _BRANCH_PATH_PROMPT
-    assert "不得使用“我接受这个安排，继续进入下一阶段”等泛化句" in _BRANCH_PATH_PROMPT
-    assert '"fallback_offer": "普通路线的具体角色邀请' in _BRANCH_PATH_PROMPT
-    assert '"accept_input": "玩家明确接受同一具体安排的一句话' in _BRANCH_PATH_PROMPT
+    assert "不新增未经授权的玩家身体行动" in _BRANCH_PATH_PROMPT
+    assert "触发状态只在上限内改变距离" in _BRANCH_PATH_PROMPT
+    assert "回接时遵守目标的关系上限和认知范围" in _BRANCH_PATH_PROMPT
+    assert "不证明目标已经完成" in _BRANCH_PATH_PROMPT
+    assert "不能要求重做或用泛化同意" in _BRANCH_PATH_PROMPT
+    assert '"fallback_offer": "需新授权的普通路线的具体角色邀请' in _BRANCH_PATH_PROMPT
+    assert '"accept_input": "需新授权时玩家明确接受同一具体安排的一句话' in _BRANCH_PATH_PROMPT
     assert "不得只给抽象结论" in _BRANCH_PATH_PROMPT
-    assert "expected_turns 是作者对本幕从开场到自然离幕的大致普通回合数估计" in _BRANCH_PATH_PROMPT
+    assert "expected_turns 为 3—120 的普通回合软估计" in _BRANCH_PATH_PROMPT
     # The author confirmed facts before literature: move timing checks into the fact stage, whose report feeds literature.
     assert "按路线的实际 source/target" in FACT_REVIEW_PROMPT
     assert "fact_review 是完整事实报告" in _ASSESSMENT_PROMPT
@@ -687,6 +822,67 @@ def test_mainline_final_natural_ending_allows_no_extra_decision():
     assert not _validate_idea_outline(candidate, minimum=4, maximum=6)
 
 
+def test_mainline_completion_continuation_disallows_a_second_invitation():
+    candidate = _idea_outline(chapter_count=4)
+    exit_plan = candidate["mainline_chapters"][0]["exit_plan"]
+    exit_plan.update(advance_on_completion=True, player_decision="", fallback_offer="", accept_input="")
+    assert not _validate_idea_outline(candidate, minimum=4, maximum=6)
+    assert _pacing_diagnostics_for_outline(candidate)["scenes"][0]["natural_exit"]["available"]
+    exit_plan["fallback_offer"] = "我们现在再做一次吗？"
+    assert any(issue["code"] == "transition_completion_advance_invalid"
+               for issue in _validate_idea_outline(candidate, minimum=4, maximum=6))
+
+
+@pytest.mark.parametrize("offer,invalid", [
+    ("门外的喧闹声迫使你立刻动身。", True),
+    ("门外的喧闹声越来越近，你愿意跟我一起换个地方吗？", False),
+])
+def test_author_pressure_does_not_qualify_as_a_fallback_offer(offer, invalid):
+    candidate = _idea_outline(chapter_count=4)
+    candidate["mainline_chapters"][0]["exit_plan"]["fallback_offer"] = offer
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+    assert any(issue["code"] == "transition_fallback_offer_pressure_only" for issue in issues) is invalid
+
+
+def test_author_exit_requires_separate_words_for_the_invitation_and_player_acceptance():
+    candidate = _idea_outline(chapter_count=4)
+    exit_plan = candidate["mainline_chapters"][0]["exit_plan"]
+    exit_plan.update(fallback_offer="现在一起去核对材料吗？", accept_input="现在一起去核对材料吗。")
+    assert any(issue["code"] == "transition_offer_repeats_as_accept_input"
+               for issue in _validate_idea_outline(candidate, minimum=4, maximum=6))
+    exit_plan["accept_input"] = "好，我现在和你去核对材料。"
+    assert not _validate_idea_outline(candidate, minimum=4, maximum=6)
+
+
+@pytest.mark.parametrize("opening,invalid", [
+    ("访客走到设备前（或坐在等待区）。", True),
+    ("访客说：“我们到设备前（或者先在这里等）。”", False),
+    ("访客走到设备前，停了片刻（或许在辨认提示）。", False),
+])
+def test_public_opening_rejects_parenthetical_draft_alternatives(opening, invalid):
+    candidate = _idea_outline(chapter_count=4)
+    candidate["mainline_chapters"][1]["opening_scene"] = opening
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+    assert any(issue["code"] == "public_opening_unresolved_alternative" for issue in issues) is invalid
+
+
+def test_public_entry_state_rejects_parenthetical_draft_alternative():
+    candidate = _idea_outline(chapter_count=4)
+    stage = candidate["character_state_arc"]["stages"][1]
+    stage["environment_state"] = "环境在入口处（或已经移入操作区）。"
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+    assert any(issue["code"] == "public_opening_unresolved_alternative"
+               and issue["path"] == "character_state_arc.stages[1].environment_state" for issue in issues)
+
+
+def test_explicit_deferral_is_not_an_author_completion_target_for_a_choice():
+    candidate = _idea_outline(chapter_count=4)
+    fact = candidate["mainline_chapters"][0]["completion_facts"][0]
+    fact["description"] = "玩家明确选择方案之一，或明确提出暂缓讨论。"
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6)
+    assert any(issue["code"] == "completion_decision_includes_deferral" for issue in issues)
+
+
 def test_mainline_pacing_diagnostics_rejects_observer_only_exit_description():
     candidate = _idea_outline(chapter_count=4)
     candidate["mainline_chapters"][0]["exit_plan"]["player_decision"] = "无，仅作为观察者见证结局"
@@ -815,17 +1011,21 @@ def test_numeric_v2_generator_rejects_character_state_arc_with_swapped_subjects(
     }
 
 
-def test_numeric_v2_generator_does_not_match_scene_boundary_prefixes():
-    generator = NumericV2Generator()
+@pytest.mark.parametrize("boundary", ["避免把女主展示旧信的职责转交给男主", "角色互动应聚焦于情感共鸣"])
+def test_numeric_v2_generator_matches_native_boundary_contract(boundary):
+    from services.theater.numeric_v2 import NumericV2Compiler as NativeCompiler, NumericV2CompileError
+
     candidate = _idea_outline()
-    candidate["character_state_arc"]["stages"][0]["scene_boundaries"] = [
-        "避免把女主展示旧信的职责转交给男主"
-    ]
-    generator.call_llm = lambda *_args, **_kwargs: json.dumps(candidate, ensure_ascii=False)
-
-    story = generator.generate(title="状态边界自然措辞", setup=_generation_setup())["story"]
-
-    assert "避免把女主展示旧信的职责转交给男主" in story["nodes"][0]["story_beat"]["must_not_happen"]
+    candidate["character_state_arc"]["stages"][0]["scene_boundaries"] = [boundary]
+    issues = _validate_idea_outline(candidate, minimum=3, maximum=6)
+    assert any(issue["code"] == "character_state_boundary_polarity_invalid"
+               and issue["path"] == "character_state_arc.stages[0].scene_boundaries[0]" for issue in issues)
+    story = NumericV2Generator()._generation_result(title="边界合同一致", normalized_idea=_generation_setup()["brief"],
+        normalized_setup=_generation_setup(), candidate=candidate)["story"]
+    with pytest.raises(NumericV2CompileError) as caught:
+        NativeCompiler().compile_v2_2(story)
+    assert any(issue.code == "character_state_boundary_polarity_invalid"
+               and issue.path == "nodes[0].story_beat.character_state.scene_boundaries[0]" for issue in caught.value.issues)
 
 
 def test_numeric_v2_generator_projects_explicit_fresh_boot_state_only_where_declared():
@@ -1040,7 +1240,7 @@ def test_numeric_v2_generator_continues_only_invalid_paths_after_initial_outline
         calls.append({"messages": messages, **kwargs})
         if len(calls) == 1:
             return json.dumps(candidate, ensure_ascii=False)
-        model_input = json.loads(messages[1]["content"])
+        model_input = prompt_payload(messages[1]["content"])
         assert model_input["requested_paths"] == [
             "mainline_chapters[0].ordered_goals[0].owner",
             "mainline_chapters[0].ordered_goals[0].sources",
@@ -1060,6 +1260,266 @@ def test_numeric_v2_generator_continues_only_invalid_paths_after_initial_outline
     assert calls[1]["operation"] == "numeric_v2_mainline_continuation"
     assert story["nodes"][0]["story_beat"]["goals"][0]["owner"] == "catgirl"
     assert story["nodes"][1]["story_beat"]["summary"] == _idea_outline()["mainline_chapters"][1]["narrative"]
+
+
+@pytest.mark.parametrize("kind", ["opening", "situation", "ending_opening", "ending_situation"])
+@pytest.mark.parametrize("tokens", [384, 385])
+def test_mainline_projected_prompt_budget_matches_native_compiler(kind, tokens):
+    from services.theater.numeric_v2 import (
+        MAX_ACTOR_PROMPT_FIELD_TOKENS, NumericV2CompileError,
+        NumericV2Compiler as NativeCompiler,
+    )
+    from utils.tokenize import count_tokens
+
+    assert MAX_ACTOR_PROMPT_FIELD_TOKENS == 384
+    candidate = _idea_outline()
+    original = deepcopy(candidate)
+    is_ending = kind.startswith("ending_")
+    index = len(candidate["mainline_chapters"]) if is_ending else 0
+    source = candidate["ending"] if is_ending else candidate["mainline_chapters"][0]
+    field = "opening_scene" if kind.endswith("opening") else "catgirl_situation"
+    source_field = "summary" if kind == "ending_situation" else field
+    prefix = "ending" if is_ending else "mainline_chapters[0]"
+    generator = NumericV2Generator()
+
+    def project():
+        return generator._project_story(title="预算边界", original_idea="旧信", setup=_generation_setup(),
+                                        outline=candidate, tone=["克制"])
+
+    # Reach the exact final-field boundary, including fixed labels and other
+    # source fields; each individual source can still be shorter than the cap.
+    while count_tokens(project()["nodes"][index]["story_beat"][field]) < tokens:
+        source[source_field] += " a"
+    story = project()
+    assert count_tokens(story["nodes"][index]["story_beat"][field]) == tokens
+    before_validation = deepcopy(candidate)
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6, token_counter=count_tokens)
+    assert candidate == before_validation
+    assert not _validate_idea_outline(candidate, minimum=4, maximum=6)
+    if tokens == 384:
+        assert not issues
+        NativeCompiler().compile_v2_2(story)
+    else:
+        assert issues and {issue["code"] for issue in issues} == {"projected_prompt_field_too_large"}
+        assert f"{prefix}.{source_field}" in {issue["path"] for issue in issues}
+        assert all("384" in issue["message"] for issue in issues)
+        with pytest.raises(NumericV2CompileError) as caught:
+            NativeCompiler().compile_v2_2(story)
+        assert any(issue.code == "actor_prompt_field_too_large"
+                   and issue.path == f"nodes[{index}].story_beat.{field}" for issue in caught.value.issues)
+        if field == "catgirl_situation":
+            state = "character_state_arc.ending_stage" if is_ending else "character_state_arc.stages[0]"
+            assert {f"{state}.{part}" for part in ("catgirl_state", "player_state", "environment_state")}.issubset(
+                {issue["path"] for issue in issues})
+    assert candidate["mainline_chapters"][1] == original["mainline_chapters"][1]
+
+
+def test_mainline_reuses_continuation_for_projected_budget_without_dropping_contracts():
+    from utils.tokenize import count_tokens
+
+    candidate, repaired = _idea_outline(), _idea_outline()
+    for outline in (candidate, repaired):
+        outline["relationship_arc"]["stages"][0]["forbidden_behaviors"] = ["不直接亲密", "不预写承诺", "保留未参与拼接的约束"]
+    candidate["mainline_chapters"][0]["opening_scene"] += " a" * 400
+    # Neither contributor is independently over budget; their final assembly is.
+    candidate["mainline_chapters"][0]["catgirl_situation"] += " a" * 150
+    candidate["key_props"][0]["purpose"] += " a" * 150
+    assert count_tokens(candidate["mainline_chapters"][0]["catgirl_situation"]) < 384
+    assert count_tokens(candidate["key_props"][0]["purpose"]) < 384
+    calls = []
+    generator = NumericV2Generator(token_counter=count_tokens)
+
+    def fake_call(messages, **options):
+        calls.append(options)
+        if len(calls) == 1:
+            return json.dumps(candidate, ensure_ascii=False)
+        request = prompt_payload(messages[1]["content"])
+        paths = request["requested_paths"]
+        assert "mainline_chapters[0].opening_scene" in paths
+        assert "mainline_chapters[0].catgirl_situation" in paths
+        assert "key_props[0].purpose" in paths
+        assert "relationship_arc.stages[0].forbidden_behaviors[0]" in paths
+        assert "relationship_arc.stages[0].forbidden_behaviors[2]" not in paths
+        assert all("仅压缩表达密度" in item["issue"]["message"] for item in request["requested_replacements"])
+        replacements = {}
+        for path in paths:
+            value = repaired
+            for part in path.replace("[", ".").replace("]", "").split("."):
+                value = value[int(part)] if part.isdigit() else value[part]
+            replacements[path] = value
+        return json.dumps({"replacements": replacements}, ensure_ascii=False)
+
+    generator.call_llm = fake_call
+    story = generator.generate(title="组装预算", setup=_generation_setup())["story"]
+    assert [call["operation"] for call in calls] == ["numeric_v2_mainline_generation", "numeric_v2_mainline_continuation"]
+    assert all(call["max_retries"] == 1 for call in calls)
+    assert [call["max_tokens"] for call in calls] == [16000, 5000]
+    expected = NumericV2Generator()._generation_result(title="组装预算", normalized_idea=_generation_setup()["brief"],
+        normalized_setup=_generation_setup(), candidate=repaired)["story"]
+    assert story == expected
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)
+
+
+@pytest.mark.parametrize("structural_error", ["missing_later_stage", "invalid_exit"])
+def test_mainline_reports_safe_capacity_with_independent_structure_error(structural_error):
+    from utils.tokenize import count_tokens
+
+    candidate = _idea_outline()
+    candidate["mainline_chapters"][0]["catgirl_situation"] += " a" * 400
+    if structural_error == "missing_later_stage":
+        candidate["character_state_arc"]["stages"].pop()
+        candidate["mainline_chapters"][-1]["catgirl_situation"] += " a" * 400
+        expected_code = "character_state_stage_count_mismatch"
+    else:
+        candidate["mainline_chapters"][1]["exit_plan"]["accept_input"] = ""
+        expected_code = "transition_accept_input_required"
+    before = deepcopy(candidate)
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6, token_counter=count_tokens)
+    assert expected_code in {issue["code"] for issue in issues}
+    assert any(issue["code"] == "projected_prompt_field_too_large"
+               and issue["path"] == "mainline_chapters[0].catgirl_situation" for issue in issues)
+    if structural_error == "missing_later_stage":
+        assert not any(issue["code"] == "projected_prompt_field_too_large"
+                       and issue["path"] == "mainline_chapters[3].catgirl_situation" for issue in issues)
+    assert candidate == before
+    assert "projected_prompt_field_too_large" not in {
+        issue["code"] for issue in _validate_idea_outline(candidate, minimum=4, maximum=6)
+    }
+
+
+@pytest.mark.parametrize("broken", ["state", "state_list", "state_index", "relationship", "relationship_list",
+    "known_facts", "prop_list", "prop_states", "prop_index", "ending"])
+def test_mainline_skips_only_capacity_with_missing_or_invalid_contributors(broken):
+    from utils.tokenize import count_tokens
+
+    candidate = _idea_outline()
+    candidate["mainline_chapters"][0]["catgirl_situation"] += " a" * 400
+    candidate["mainline_chapters"][1]["opening_scene"] += " a" * 400
+    if broken == "state":
+        candidate["character_state_arc"]["stages"][0]["catgirl_state"] = None
+    elif broken == "state_list":
+        candidate["character_state_arc"]["stages"] = None
+    elif broken == "state_index":
+        candidate["character_state_arc"]["stages"][0]["chapter_index"] = "first"
+    elif broken == "relationship":
+        candidate["relationship_arc"]["stages"][0]["stage_ceiling"] = "unknown"
+    elif broken == "relationship_list":
+        candidate["relationship_arc"]["stages"] = None
+    elif broken == "known_facts":
+        candidate["relationship_arc"]["stages"][0]["known_player_facts"] = [None]
+    elif broken == "prop_states":
+        candidate["key_props"][0]["states"] = None
+    elif broken == "prop_list":
+        candidate["key_props"] = None
+    elif broken == "prop_index":
+        candidate["key_props"][0]["states"][0]["chapter_index"] = "first"
+    else:
+        candidate["ending"] = None
+    before = deepcopy(candidate)
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6, token_counter=count_tokens)
+    capacity_paths = {issue["path"] for issue in issues if issue["code"] == "projected_prompt_field_too_large"}
+    assert any(issue["code"] != "projected_prompt_field_too_large" for issue in issues)
+    assert "mainline_chapters[1].opening_scene" in capacity_paths
+    assert ("mainline_chapters[0].catgirl_situation" in capacity_paths) is (broken == "ending")
+    assert candidate == before
+
+
+@pytest.mark.parametrize("tokens", [384, 385])
+def test_mainline_parallel_capacity_keeps_existing_boundary(tokens):
+    from utils.tokenize import count_tokens
+
+    candidate = _idea_outline()
+    generator = NumericV2Generator()
+    while True:
+        story = generator._project_story(title="独立边界", original_idea="", setup={}, outline=candidate, tone=[])
+        if count_tokens(story["nodes"][0]["story_beat"]["catgirl_situation"]) >= tokens:
+            break
+        candidate["mainline_chapters"][0]["catgirl_situation"] += " a"
+    assert count_tokens(story["nodes"][0]["story_beat"]["catgirl_situation"]) == tokens
+    candidate["mainline_chapters"][1]["exit_plan"]["accept_input"] = ""
+    before = deepcopy(candidate)
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6, token_counter=count_tokens)
+    assert any(issue["code"] == "transition_accept_input_required" for issue in issues)
+    assert any(issue["code"] == "projected_prompt_field_too_large" for issue in issues) is (tokens > 384)
+    assert candidate == before
+
+
+@pytest.mark.parametrize("names", ["omitted", None, {},
+    {"player_name": "甲", "catgirl_name": "乙"},
+    {"player_name": "长名字" * 100, "catgirl_name": "另一名字" * 100}],
+    ids=["default", "none", "empty", "named", "long-names"])
+def test_independent_capacity_text_matches_full_projection_for_cast_names(names):
+    from services.theater_workshop.sdk.generation.numeric_v2 import _projected_prompt_field_issues
+    from utils.tokenize import count_tokens
+
+    candidate = _idea_outline()
+    before = deepcopy(candidate)
+    kwargs = {} if names == "omitted" else {"cast_names": names}
+    story = NumericV2Generator()._project_story(title="角色名投影", original_idea="", setup={},
+        outline=candidate, tone=[], **kwargs)
+    expected = [node["story_beat"][field] for node in story["nodes"]
+                for field in (("opening_scene", "catgirl_situation") if node["type"] == "ending"
+                              else ("opening_scene", "summary", "narrative_focus", "catgirl_situation"))]
+    actual = []
+
+    def counter(text):
+        actual.append(text)
+        return count_tokens(text)
+
+    issues = _projected_prompt_field_issues(candidate, token_counter=counter,
+        cast_names=None if names == "omitted" else names)
+    assert actual == expected
+    assert bool(issues) is any(count_tokens(text) > 384 for text in expected)
+    assert candidate == before
+
+
+@pytest.mark.parametrize("chapter_index", [True, 1.0], ids=["bool-index", "float-index"])
+def test_parallel_capacity_preserves_existing_stage_index_equality(chapter_index):
+    from utils.tokenize import count_tokens
+
+    candidate = _idea_outline()
+    candidate["character_state_arc"]["stages"][0]["chapter_index"] = chapter_index
+    candidate["relationship_arc"]["stages"][0]["chapter_index"] = chapter_index
+    candidate["mainline_chapters"][0]["catgirl_situation"] += " a" * 400
+    before = deepcopy(candidate)
+    # 既有结构校验接受相等索引，真实投影按列表位置拼接；容量门控不能悄悄增加类型限制。
+    assert _validate_idea_outline(candidate, minimum=4, maximum=6) == []
+    issues = _validate_idea_outline(candidate, minimum=4, maximum=6, token_counter=count_tokens)
+    assert any(issue["code"] == "projected_prompt_field_too_large"
+               and issue["path"] == "mainline_chapters[0].catgirl_situation" for issue in issues)
+    assert candidate == before
+
+
+def test_mainline_repairs_independent_structure_and_capacity_in_same_continuation():
+    from utils.tokenize import count_tokens
+    from services.theater_workshop.sdk.generation.numeric_v2 import _value_at_path
+
+    repaired = _idea_outline()
+    candidate = deepcopy(repaired)
+    candidate["mainline_chapters"][0]["catgirl_situation"] += " a" * 400
+    candidate["mainline_chapters"][1]["exit_plan"]["accept_input"] = ""
+    before = deepcopy(candidate)
+    calls = []
+
+    def reply(messages, **options):
+        calls.append(options)
+        if len(calls) == 1:
+            return json.dumps(candidate, ensure_ascii=False)
+        request = prompt_payload(messages[1]["content"])
+        assert "mainline_chapters[1].exit_plan.accept_input" in request["requested_paths"]
+        assert "mainline_chapters[0].catgirl_situation" in request["requested_paths"]
+        return json.dumps({"replacements": {path: _value_at_path(repaired, path)
+            for path in request["requested_paths"]}}, ensure_ascii=False)
+
+    result = NumericV2Generator(reply, token_counter=count_tokens).generate(
+        title="并行校验", setup=_generation_setup())
+    expected = NumericV2Generator()._generation_result(title="并行校验",
+        normalized_idea=_generation_setup()["brief"], normalized_setup=_generation_setup(), candidate=repaired)
+    assert result == expected
+    assert candidate == before
+    assert [call["operation"] for call in calls] == ["numeric_v2_mainline_generation", "numeric_v2_mainline_continuation"]
+    assert [call["max_tokens"] for call in calls] == [16000, 5000]
+    assert all(call["max_retries"] == 1 for call in calls)
 
 
 def test_numeric_v2_generator_resumes_checkpoint_without_regenerating_valid_outline():
@@ -1386,7 +1846,7 @@ def test_numeric_v2_generator_keeps_original_idea_and_returns_only_derived_setup
     assert calls[0]["max_retries"] == 1
     assert calls[0]["operation"] == "numeric_v2_mainline_generation"
     assert calls[0]["max_tokens"] == 16000
-    assert json.loads(calls[0]["messages"][1]["content"]) == {
+    assert prompt_payload(calls[0]["messages"][1]["content"]) == {
         "core_idea": idea,
             "length": {
                 "preset": "short",
@@ -1453,25 +1913,123 @@ def _quality_wire_payload(payload):
 
 def _plan_review_reply(messages):
     # Independent model doubles return each review without silently treating old reports as reviewed.
-    plans = json.loads(messages[1]["content"])["plans"]
+    plans = prompt_payload(messages[1]["content"])["plans"]
     return json.dumps({"conflicts": [], "checks": [{"issue_id": row["issue_id"], "status": "ready",
         "reason": "测试方案与字段一致", "missing_targets": []} for row in plans]})
 
 
-def _reviewed_fixture(report):
+def _reviewed_fixture(report, context):
     # For downstream patch tests only: explicitly build plan-reviewed reports; old-report tests never call this helper.
+    from services.theater_workshop.sdk.generation.facts import (
+        build_contract_targets, build_fact_sources, fact_review_tasks, validate_fact_review,
+    )
+    from services.theater_workshop.sdk.generation.repair import context_nodes
+
+    _, sources = build_fact_sources(context)
+    refs = {row["path"]: ref for ref, row in sources.items()}
+    targets = build_contract_targets(context, set(context_nodes(context)))
+    request = {"checked_node_ids": list(context_nodes(context)), "contract_targets": [
+        {**target, "definition_ref": refs[target["definition_path"]]} for target in targets
+    ]}
+    from services.theater_workshop.sdk.generation.facts import bind_contract_targets
+    bind_contract_targets(request["contract_targets"], sources)
+    request["story_outline"] = build_fact_sources(context)[0]
+    checks = validate_fact_review(context, _fact_review_payload(request), set(context_nodes(context)),
+                                  evidence_sources=sources)["contract_checks"]
+    report["contract_check"] = {"status": "clear", "checks": checks, "rehearsal": "not_run"}
+    tasks = fact_review_tasks(context)
+    node_ids = list(context_nodes(context))
+    edges = [{key: task[key] for key in ("source_node_id", "route_id", "target_node_id")}
+             for task in tasks if task["kind"] == "transition"]
+    report["fact_check"] = {"status": "complete", "checked_node_ids": node_ids,
+                            "checked_tasks": [task["id"] for task in tasks], "checked_edges": deepcopy(edges)}
+    originals = []
+    groups = [("/mainline", context["mainline"]), ("/endings", context["endings"])]
+    groups.extend((f"/branches/{index}/nodes", branch["nodes"]) for index, branch in enumerate(context["branches"]))
+    for prefix, nodes in groups:
+        for index, node in enumerate(nodes):
+            originals.extend({"ref": ref, "node_id": node["id"]} for ref, source in sources.items()
+                             if source["path"].startswith(f"{prefix}/{index}/"))
+    blocks = []
+    for edge in edges:
+        checked_ids = list(dict.fromkeys((edge["source_node_id"], edge["target_node_id"])))
+        payload = _literary_block_payload({"checked_node_ids": checked_ids, "original_sources": originals})
+        blocks.append({"block_id": f"fixture:{len(blocks)}", "checked_node_ids": checked_ids,
+                       "covered_edges": [deepcopy(edge)], "node_notes": payload["node_notes"]})
+    covered_ids = {node_id for block in blocks for node_id in block["checked_node_ids"]}
+    for node_id in node_ids:
+        if node_id not in covered_ids:
+            payload = _literary_block_payload({"checked_node_ids": [node_id], "original_sources": originals})
+            blocks.append({"block_id": f"fixture:{len(blocks)}", "checked_node_ids": [node_id],
+                           "covered_edges": [], "node_notes": payload["node_notes"]})
+    report["literary_coverage"] = {"status": "complete", "checked_node_ids": node_ids,
+                                   "checked_edges": deepcopy(edges), "blocks": blocks}
     report["repair_plan_version"] = 3
     for row in [*report.get("issues", []), *report.get("relationship_advice", [])]:
         row["plan_review"] = {"status": "ready", "reason": "测试方案与字段一致", "missing_targets": [], "conflicting_issue_ids": []}
     return report
 
 
+def _contract_checks(request):
+    # Unrelated orchestration tests explicitly supply a clear semantic verdict;
+    # dedicated contract tests must still exercise missing and uncertain checks.
+    checks = [{
+        "target_id": target["id"], "status": "clear",
+        "subject": "测试桩：按本项合同核对实际行动主体。",
+        "completion_evidence": "测试桩：核对本项合同要求的真实证据与行动权限。",
+        "timing": "测试桩：区分既有前情、本幕交付和后续安排的时点。",
+        "refusal": "测试桩：玩家拒绝时可留幕，不预定其行动。",
+        "alternatives": [],
+        "evidence_refs": [target["definition_ref"]],
+    } for target in request.get("contract_targets", [])]
+    strings = {}
+    def collect(value):
+        if isinstance(value, dict):
+            if set(value) == {"ref", "text"} and isinstance(value["ref"], str): strings[value["ref"]] = value["text"]
+            else:
+                for child in value.values(): collect(child)
+        elif isinstance(value, list):
+            for child in value: collect(child)
+    collect(request)
+    for target, check in zip(request.get("contract_targets", []), checks, strict=True):
+        check.update(_matrix_fixture(target, reason_quote=strings.get(target["definition_ref"], "")))
+    return checks
+
+
+def _matrix_fixture(target, *, downstream_ref=None, reason_quote=""):
+    """Explicit semantic doubles for unrelated protocol tests; not automatic production clearances."""
+    if target.get("kind") == "entry_ownership":
+        return {"ownership_checks": [{"unit_id": unit["id"], "quote": unit.get("text", reason_quote[unit.get("start", 0):unit.get("end", 0)]), "subject": "",
+            "owner": "environment", "kind": "passive", "authorization_refs": [], "status": "clear"}
+            for unit in target["ownership_units"]]}
+    if target.get("kind") == "transition_contract":
+        return {"choice_checks": [{"choice_quote": reason_quote, "guarantee_ids": [],
+            "downstream_refs": [downstream_ref] if downstream_ref else target["downstream_refs"][:],
+            "compatible": True, "counterexample": ""}]}
+    return {}
+
+
+def _fact_review_payload(request, issues=()):
+    return {"checked_node_ids": request["checked_node_ids"], "issues": deepcopy(list(issues)),
+            "contract_checks": _contract_checks(request)}
+
+
+def _literary_block_payload(request):
+    return {"checked_node_ids": request["checked_node_ids"], "node_notes": [{
+        "node_id": node_id, "assessment": "测试桩：保留本幕原文，供全局统一评分。",
+        "evidence_refs": [next(row["ref"] for row in request["original_sources"]
+                               if row["node_id"] == node_id)],
+    } for node_id in request["checked_node_ids"]], "issues": []}
+
+
 def _quality_reply(payload):
     # Literature tests use valid empty fact reports, distinguishing first-stage structural failures from literary-validation failures.
     def reply(messages, **kwargs):
         if kwargs.get("operation") == "numeric_v2_fact_review":
-            context = json.loads(messages[1]["content"])
-            return json.dumps({"checked_node_ids": context["checked_node_ids"], "issues": []})
+            context = prompt_payload(messages[1]["content"])
+            return json.dumps(_fact_review_payload(context))
+        if kwargs.get("operation") in {"numeric_v2_literary_block", "numeric_v2_literary_block_format_repair"}:
+            return json.dumps(_literary_block_payload(prompt_payload(messages[1]["content"])), ensure_ascii=False)
         if kwargs.get("operation") == "numeric_v2_repair_plan_review":
             return _plan_review_reply(messages)
         return json.dumps(_quality_wire_payload(payload), ensure_ascii=False)
@@ -1499,7 +2057,8 @@ def test_numeric_v2_quality_assessor_runs_only_when_called_and_returns_node_plan
 
     def fake_call(messages, **kwargs):
         calls.append({"messages": messages, **kwargs})
-        if kwargs.get("operation") in {"numeric_v2_fact_review", "numeric_v2_repair_plan_review"}:
+        if kwargs.get("operation") in {"numeric_v2_fact_review", "numeric_v2_repair_plan_review",
+                                       "numeric_v2_literary_block", "numeric_v2_literary_block_format_repair"}:
             return _quality_reply({})(messages, **kwargs)
         payload = _quality_payload()
         payload["relationship_advice"] = [{
@@ -1521,7 +2080,8 @@ def test_numeric_v2_quality_assessor_runs_only_when_called_and_returns_node_plan
             "all": [{"type": "metric_compare", "metric": "trust", "op": ">=", "value": 30}]
         },
     })
-    story["nodes"].append({"id": "branch_scene", "type": "scene", "route_gates": []})
+    story["nodes"].append({"id": "branch_scene", "type": "scene", "route_gates": [],
+                           "story_beat": {"summary": "两人在门廊核对信封上的旧邮戳。"}})
     authoring["route_semantics"] = {
         "route_to_branch_outside_scope": {"label": "当信任达到试探状态"}
     }
@@ -1534,34 +2094,60 @@ def test_numeric_v2_quality_assessor_runs_only_when_called_and_returns_node_plan
     assert assessment["metric_advice"]["current_count"] == 1
     assert assessment["relationship_advice"][0]["target_node_ids"] == ["mainline_01"]
     assert assessment["relationship_advice"][0]["repairable"] is True
-    assert [call["operation"] for call in calls] == ["numeric_v2_fact_review", "numeric_v2_quality_assessment", "numeric_v2_repair_plan_review"]
-    assert "fact_review" in calls[1]["messages"][0]["content"]
-    model_input = json.loads(calls[1]["messages"][1]["content"])
-    outline = model_input["story_outline"]
+    fact_calls = [call for call in calls if call["operation"] == "numeric_v2_fact_review"]
+    fact_requests = [prompt_payload(call["messages"][1]["content"]) for call in fact_calls]
+    expected_edges = {(node["id"], route["id"], route["target_node_id"])
+                      for node in story["nodes"] for route in node.get("route_gates", [])}
+    assert {request["audit_task"]["node_id"] for request in fact_requests
+            if request["audit_task"]["kind"] == "node"} == {node["id"] for node in story["nodes"]}
+    assert {(task["source_node_id"], task["route_id"], task["target_node_id"])
+            for request in fact_requests if (task := request["audit_task"])["kind"] == "transition"} == expected_edges
+    assert len(fact_calls) == len(story["nodes"]) + len(expected_edges)
+    block_calls = [call for call in calls if call["operation"] == "numeric_v2_literary_block"]
+    blocks = [prompt_payload(call["messages"][1]["content"]) for call in block_calls]
+    assert {(edge["source_node_id"], edge["route_id"], edge["target_node_id"])
+            for block in blocks for edge in block["covered_edges"]} == expected_edges
+    assert [call["operation"] for call in calls] == [*["numeric_v2_fact_review"] * len(fact_calls),
+        *["numeric_v2_literary_block"] * len(block_calls), "numeric_v2_quality_assessment", "numeric_v2_repair_plan_review"]
+    global_call = next(call for call in calls if call["operation"] == "numeric_v2_quality_assessment")
+    assert "fact_review" in global_call["messages"][0]["content"]
+    model_input = prompt_payload(global_call["messages"][1]["content"])
+    assert "story_outline" not in model_input
+    assert model_input["story_context"]["background"] == story["intro"]["background"]
+    assert model_input["story_context"]["key_props"][0]["id"] == "dated_old_letter"
+    assert {node["id"] for node in model_input["story_graph"]["nodes"]} == {node["id"] for node in story["nodes"]}
+    assert len(model_input["literary_blocks"]) == len(blocks)
+    outline = next(block["story_outline"] for block in blocks
+                   if any(node["id"] == "mainline_01" for node in block["story_outline"]["mainline"]))
     assert set(outline) == {
-        "author_intent", "background", "characters", "metrics", "key_props", "mainline", "branches", "endings"
+        "author_intent", "background", "characters", "metrics",
+        "key_props", "mainline", "branches", "endings", "repair_field_sets", "start_node_id",
     }
-    assert outline["background"] == story["intro"]["background"]
+    assert outline["background"]["text"] == story["intro"]["background"]
     assert outline["key_props"][0]["id"] == "dated_old_letter"
-    assert outline["mainline"][0]["opening_scene"].startswith("雨水沿着花店玻璃")
-    assert outline["mainline"][0]["transition_goal"].startswith("在核对当前记录后")
+    assert outline["mainline"][0]["opening_scene"]["text"].startswith("雨水沿着花店玻璃")
+    assert outline["mainline"][0]["transition_goal"]["text"].startswith("在核对当前记录后")
     assert outline["mainline"][0]["outgoing_routes"][0]["transition_contract"][
         "bridge_scene_narration"
-    ] == "雨声渐缓，花店阁楼的灯在下一次整点时亮起。"
-    assert outline["endings"][0]["id"] == "ending_normal"
-    assert outline["endings"][0]["opening_scene"].startswith("雨停后")
-    assert outline["branches"][0]["id"] == "route_to_branch_outside_scope"
-    assert outline["branches"][0]["nodes"][0]["id"] == "branch_scene"
-    assert outline["branches"][0]["entry_condition"]["label"] == "当信任达到试探状态"
-    assert outline["branches"][0]["entry_condition"]["rules"][0] == {
-        "metric": "trust", "op": ">=", "value": 30
-    }
+    ]["text"] == "雨声渐缓，花店阁楼的灯在下一次整点时亮起。"
+    ending = next(node for block in blocks for node in block["story_outline"]["endings"] if node["id"] == "ending_normal")
+    assert ending["opening_scene"]["text"].startswith("雨停后")
+    branch = next(branch for block in blocks for branch in block["story_outline"]["branches"]
+                  if branch["id"] == "route_to_branch_outside_scope")
+    assert branch["nodes"][0]["id"] == "branch_scene"
+    assert branch["entry_condition"]["label"]["text"] == "当信任达到试探状态"
+    rule, = branch["entry_condition"]["rules"]
+    assert (rule["metric"]["text"], rule["op"]["text"], rule["value"]) == ("trust", ">=", 30)
     assert set(outline["mainline"][0]) == {
         "id", "title", "summary", "opening_scene", "goals", "relationship_state",
-        "relationship_goal", "transition_goal", "outgoing_routes", "character_state",
+        "transition_goal", "outgoing_routes", "character_state",
         "narrative_focus", "must_not_happen", "acting_contract",
-        "text_repair_fields",
+        "repair_field_set",
     }
+    fact_outline = prompt_payload(calls[0]["messages"][1]["content"])["story_outline"]
+    sent_rule, = fact_outline["mainline"][0]["completion_contract"]["all"]
+    source_rule, = story["nodes"][0]["completion_contract"]["all"]
+    assert {**sent_rule, "key": sent_rule["key"]["text"]} == source_rule
     assert "min_turns" not in json.dumps(model_input, ensure_ascii=False)
 
 
@@ -1614,7 +2200,7 @@ def test_numeric_v2_quality_assessor_optimizes_one_map_node_with_all_relevant_su
         "repair_scope": "text",
     }]
     assessment = assessor._validated_assessment(context, payload)
-    _reviewed_fixture(assessment)
+    _reviewed_fixture(assessment, context)
     calls = []
 
     def fake_call(messages, **kwargs):
@@ -1639,7 +2225,7 @@ def test_numeric_v2_quality_assessor_optimizes_one_map_node_with_all_relevant_su
     )
 
     assert calls[0]["operation"] == "numeric_v2_quality_single_node_optimization"
-    model_input = json.loads(calls[0]["messages"][1]["content"])
+    model_input = prompt_payload(calls[0]["messages"][1]["content"])
     assert model_input["target_node"]["id"] == "mainline_02"
     assert {item["source"] for item in model_input["accepted_suggestions"]} == {
         "quality_issue",
@@ -1656,11 +2242,11 @@ def test_quality_repair_updates_existing_state_text_without_rewriting_scene_or_p
     assessor = NumericV2QualityAssessor()
     story, authoring = _quality_story_context()
     original = deepcopy(story)
+    context = assessor._assessment_context(story, _generation_setup(), authoring)
     assessment = assessor._validated_assessment(
-        assessor._assessment_context(story, _generation_setup(), authoring),
-        _quality_payload(weak_dimension="plot", target_node_id="mainline_02"),
+        context, _quality_payload(weak_dimension="plot", target_node_id="mainline_02"),
     )
-    _reviewed_fixture(assessment)
+    _reviewed_fixture(assessment, context)
     assessment["issues"][0]["repair_targets"] = [{"node_id": "mainline_02", "field": "/character_state/catgirl"}]
     replacement = "女主双手空着，旧信已放在柜台上。"
     assessor.call_llm = lambda *_args, **_kwargs: json.dumps({"node_updates": [{
@@ -1763,7 +2349,7 @@ def test_numeric_v2_quality_assessor_marks_structural_plan_as_manual_only():
     payload["issues"][0]["repair_scope"] = "structure"
 
     assessment = assessor._validated_assessment(context, payload)
-    _reviewed_fixture(assessment)
+    _reviewed_fixture(assessment, context)
 
     assert assessment["issues"][0]["repairable"] is False
     with pytest.raises(QualityAssessmentError) as caught:
@@ -1819,7 +2405,7 @@ def test_mainline_length_boundaries_generate_without_padding(preset, count, mini
     setup["length_preset"] = preset
     result = generator.generate(title="自然分幕", setup=setup)
     assert len(calls) == 1
-    length = json.loads(calls[0][1]["content"])["length"]
+    length = prompt_payload(calls[0][1]["content"])["length"]
     assert (length["mainline_chapter_min"], length["mainline_chapter_max"]) == (minimum, maximum)
     story = result["story"]
     assert sum(node["type"] != "ending" for node in story["nodes"]) == count
@@ -1840,7 +2426,7 @@ def test_numeric_v2_generator_continues_only_missing_transition_contract_fields(
         calls.append({"messages": messages, **kwargs})
         if len(calls) == 1:
             return json.dumps(candidate, ensure_ascii=False)
-        model_input = json.loads(messages[1]["content"])
+        model_input = prompt_payload(messages[1]["content"])
         assert set(model_input["requested_paths"]) == {
             "mainline_chapters[0].transition_goal",
             "mainline_chapters[0].exit_plan",
@@ -2007,9 +2593,9 @@ def test_numeric_v2_node_enhancement_sends_node_type_context_and_metrics_once(
     assert len(calls) == 1
     assert calls[0]["max_retries"] == 1
     assert calls[0]["operation"] == "numeric_v2_node_enhancement"
-    model_input = json.loads(calls[0]["messages"][1]["content"])
+    model_input = prompt_payload(calls[0]["messages"][1]["content"])
     assert model_input["node_type"] == "scene"
-    assert model_input["existing_story_beat"] == branch["story_beat"]
+    assert model_input["existing_story_beat"] == {key: value for key, value in branch["story_beat"].items() if key != "summary"}
     assert [goal["delivery"]["timing"] for goal in
             model_input["existing_story_beat"]["goals"]] == ["opening", "turn"]
     assert model_input["node_type_label"] == "幕节点"
@@ -2088,7 +2674,7 @@ def test_node_enhancement_does_not_accumulate_existing_state_prefix(copies):
     observed = []
 
     def echo_context(messages, **_kwargs):
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         context = request["existing_story_beat"]["catgirl_situation"]
         observed.append(context)
         return json.dumps({**candidate, "catgirl_situation": context}, ensure_ascii=False)
@@ -2159,6 +2745,403 @@ def test_ending_enhancement_preserves_opening_delivery_and_compiles():
     NumericV2Compiler(InProcessPackageGateway()).compile(story)
 
 
+@pytest.mark.parametrize("policy", ["required", "optional", "forbidden"])
+def test_enhancement_cannot_invalidate_existing_fixed_entry_route(tmp_path, policy):
+    from services.theater_workshop.host import open_workshop
+    from .test_sdk_lifecycle import TestConfig
+
+    _, story, candidate = _ending_enhancement_case()
+    source, target = story["nodes"][-2:]
+    source["route_gates"][0]["transition_contract"]["fixed_entry_only"] = True
+    target["story_beat"]["acting_contract"]["dialogue_policy"] = "optional"
+    target["story_beat"]["fixed_narrations"] = [{"id": "report", "text": "原文：记录已经归档。",
+        "trigger": {"type": "entry"}, "after": [], "required_before_exit": False}]
+    candidate["character_state"]["acting_contract"]["dialogue_policy"] = policy
+
+    def reply(messages, **_options):
+        assert "fixed_entry_only=true 时保留原文独立入幕" in messages[0]["content"]
+        return json.dumps(candidate, ensure_ascii=False)
+
+    host = open_workshop(TestConfig(tmp_path), model_call=reply)
+    sdk = host.sdk
+    try:
+        project = sdk.import_story(story)
+        if policy == "required":
+            with pytest.raises(NumericV2GenerationError, match="invalid_node_enhancement") as caught:
+                sdk.enhance_node(project["project_id"], target["id"], base_revision=project["revision"])
+            assert caught.value.issues[0]["code"] == "transition_fixed_entry_only_invalid"
+            assert sdk.get_project(project["project_id"]) == project
+        else:
+            result = sdk.enhance_node(project["project_id"], target["id"], base_revision=project["revision"])["project"]
+            assert result["story"]["nodes"][-1]["story_beat"]["acting_contract"]["dialogue_policy"] == policy
+            sdk.compile(result["project_id"], base_revision=result["revision"])
+    finally:
+        sdk.close()
+
+
+# 节点完善：分别保留上游处境、原始入幕规划与路线来源，不将互斥规划混成已发生事实。
+
+def test_enhancement_receives_direct_source_relationship_and_motivation_verbatim():
+    generator, story, candidate = _ending_enhancement_case()
+    source, target = story["nodes"][-2:]
+    situation = "  女主只接受合作关系；她留下是为核对日期，不是等待关系升温。\n"
+    source["story_beat"]["catgirl_situation"] = situation
+    original = deepcopy(story)
+    calls = []
+
+    def capture(messages, **options):
+        data = prompt_payload(messages[1]["content"])
+        calls.append(options)
+        upstream = next(row for row in data["upstream_nodes"] if row["id"] == source["id"])
+        assert upstream["catgirl_situation"] == situation
+        earliest = next(row for row in data["upstream_nodes"] if row["id"] == story["nodes"][0]["id"])
+        assert "catgirl_situation" not in earliest and "opening_scene" not in earliest
+        assert earliest["route_gates"][0]["target_node_id"] == story["nodes"][1]["id"]
+        assert data["existing_story_beat"] == {key: value for key, value in target["story_beat"].items() if key != "summary"}
+        # 调用方修改请求副本不能回写作者原稿。
+        upstream["catgirl_situation"] = "仅修改请求副本。"
+        return json.dumps(candidate, ensure_ascii=False)
+
+    generator.call_llm = capture
+    result = generator.enhance_node(story=story, node_id=target["id"])
+    assert story == original
+    assert result["opening_scene"] == candidate["opening_scene"]
+    assert len(calls) == 1
+    assert calls[0]["operation"] == "numeric_v2_node_enhancement"
+    assert calls[0]["max_tokens"] == 4000
+    assert calls[0]["max_retries"] == 1
+
+
+def test_enhancement_transports_typed_gates_and_source_evidence_without_duplicate_routes():
+    generator, story, candidate = _ending_enhancement_case()
+    source, target = story["nodes"][:2]
+    incoming_key = f"scene:{source['id']}:permission"
+    outgoing_key = f"scene:{target['id']}:returned"
+    definitions = {
+        incoming_key: {"value_type": "bool", "visibility": "public", "description": "核准 XQ-144 号许可。"},
+        outgoing_key: {"value_type": "bool", "visibility": "public", "description": "归还 YQ-799 号样本。"},
+    }
+    story["fact_contract"]["facts"].update(definitions)
+    incoming, outgoing = source["route_gates"][0], target["route_gates"][0]
+    for route, key in ((incoming, incoming_key), (outgoing, outgoing_key)):
+        route["conditions"] = {"all": [{"type": "fact_equals", "key": key, "value": True}]}
+    target["completion_contract"] = {"all": [{"key": outgoing_key, "equals": True}]}
+    original = "旧报告写着蓝盒编号 ZX-761。"
+    source["story_beat"]["fixed_narrations"] = [{
+        "id": "report", "text": original, "trigger": {"type": "entry"}, "after": [], "required_before_exit": False,
+    }]
+    reason, boundary = "门铃响三次确认本次搬移。", "不得在样本未归还时宣布登记结束。"
+    incoming["transition_contract"]["reason"] = reason
+    target["story_beat"]["must_not_happen"] = [boundary]
+    target["story_beat"]["summary"] = "第二区核对巡检箱里的样本。"
+
+    def capture(messages, **_options):
+        serialized = messages[1]["content"]
+        data = prompt_payload(serialized)
+        assert data["incoming_routes"] == [{**incoming, "source_node_id": source["id"]}]
+        assert data["outgoing_routes"] == [{
+            **{key: outgoing[key] for key in ("id", "target_node_id", "priority", "conditions")},
+            "transition_contract": {"fallback_offer": outgoing["transition_contract"]["fallback_offer"]},
+        }]
+        assert data["completion_contract"] == target["completion_contract"]
+        assert data["fact_definitions"] == definitions
+        assert data["upstream_nodes"][0]["entry_narrations"] == [original]
+        assert all(serialized.count(text) == 1 for text in (reason, original, boundary, target["story_beat"]["summary"]))
+        return json.dumps(candidate, ensure_ascii=False)
+
+    generator.call_llm = capture
+    target["story_beat"].update(generator.enhance_node(story=story, node_id=target["id"]))
+    NumericV2Compiler(InProcessPackageGateway()).compile(story)
+
+
+def test_enhancement_keeps_mutually_exclusive_upstream_situations_separate():
+    generator, story, candidate = _ending_enhancement_case()
+    source, target = story["nodes"][:2]
+    source["story_beat"]["catgirl_situation"] = "女主暂不信任男主，继续核对是为保留质疑。"
+    source["route_gates"][0]["conditions"] = {
+        "all": [{"type": "metric_compare", "metric": "trust", "op": "<", "value": 40}]}
+    alternate = deepcopy(source)
+    alternate.update(id="alternate_source", chapter="另一条入路", type="scene")
+    alternate["story_beat"]["catgirl_situation"] = "女主已经接受共同核对，仍不认同当年的选择。"
+    alternate["route_gates"][0].update(id="alternate_entry", conditions={
+        "all": [{"type": "metric_compare", "metric": "trust", "op": ">=", "value": 40}]})
+    story["nodes"].append(alternate)
+    original = deepcopy(story)
+    calls = []
+
+    def capture(messages, **_options):
+        data = prompt_payload(messages[1]["content"])
+        calls.append(data)
+        upstream = {row["id"]: row for row in data["upstream_nodes"]}
+        incoming = {row["source_node_id"]: row for row in data["incoming_routes"]}
+        assert set(upstream) == {source["id"], alternate["id"]}
+        for node in (source, alternate):
+            assert upstream[node["id"]]["catgirl_situation"] == node["story_beat"]["catgirl_situation"]
+            assert incoming[node["id"]]["conditions"] == node["route_gates"][0]["conditions"]
+        return json.dumps(candidate, ensure_ascii=False)
+
+    generator.call_llm = capture
+    generator.enhance_node(story=story, node_id=target["id"])
+    assert story == original
+    assert len(calls) == 1
+
+
+def test_missing_upstream_situation_remains_unknown_and_excludes_unrelated_future():
+    generator, story, candidate = _ending_enhancement_case()
+    source, target = story["nodes"][:2]
+    source["story_beat"].pop("catgirl_situation")
+    source["story_beat"]["summary"] = "摘要写有角色决定，不能据此补造缺失的处境原文。"
+    unrelated = deepcopy(source)
+    unrelated.update(id="unrelated_future", route_gates=[])
+    unrelated["story_beat"]["catgirl_situation"] = "未来唯一处境：女主已在远处开始另一段合作。"
+    story["nodes"].append(unrelated)
+    original = deepcopy(story)
+    calls = []
+
+    def capture(messages, **_options):
+        data = prompt_payload(messages[1]["content"])
+        calls.append(data)
+        upstream = {row["id"]: row for row in data["upstream_nodes"]}
+        assert set(upstream) == {source["id"]}
+        assert "catgirl_situation" in upstream[source["id"]]
+        assert upstream[source["id"]]["catgirl_situation"] is None
+        assert unrelated["story_beat"]["catgirl_situation"] not in messages[1]["content"]
+        return json.dumps(candidate, ensure_ascii=False)
+
+    generator.call_llm = capture
+    generator.enhance_node(story=story, node_id=target["id"])
+    assert story == original
+    assert len(calls) == 1
+
+
+def _upstream_entry_case(target_kind):
+    generator, story, candidate = _ending_enhancement_case()
+    source = story["nodes"][0]
+    target = story["nodes"][1]
+    if target_kind == "branch":
+        target = deepcopy(target)
+        target.update(id="branch_entry", type="scene", route_gates=[])
+        story["nodes"].append(target)
+        source["route_gates"].append({**deepcopy(source["route_gates"][0]),
+                                      "id": "entry_branch", "target_node_id": target["id"]})
+    source["story_beat"]["opening_scene"] = "女主把封好的铜盒留在柜台左侧，男主没有碰它。"
+    source["story_beat"]["character_state"].update(
+        catgirl_state="女主双手空着，铜盒已经留在柜台左侧。",
+        player_state="男主站在窗边，尚未接触铜盒。",
+        environment_state="环境中柜台左侧有一个封好的铜盒。")
+    original_route = next(route for route in source["route_gates"] if route["target_node_id"] == target["id"])
+    original_route["transition_contract"]["must_preserve"] = ["这条入路保留柜台左侧的铜盒。"]
+    alternate = deepcopy(source)
+    alternate.update(id="alternate_source", type="scene", chapter="另一条入路")
+    alternate["story_beat"]["opening_scene"] = "女主站在门边，已经把铜盒收回自己的布袋。"
+    alternate["story_beat"]["character_state"].update(
+        catgirl_state="女主站在门边，布袋内装着铜盒。",
+        player_state="男主仍在窗边，没有替女主保管铜盒。",
+        environment_state="环境中柜台已经空出，铜盒位于女主的布袋内。")
+    alternate["route_gates"] = [{**deepcopy(original_route), "id": "entry_alternate",
+        "conditions": {"all": [{"type": "metric_compare", "metric": "trust", "op": ">=", "value": 40}]},
+        "transition_contract": {**deepcopy(original_route["transition_contract"]),
+                                "must_preserve": ["另一条入路保留布袋内的铜盒。"]}}]
+    story["nodes"].append(alternate)
+    unrelated = deepcopy(alternate)
+    unrelated.update(id="unrelated_future", route_gates=[])
+    unrelated["story_beat"]["opening_scene"] = "不在本目标上游的未来秘密画面。"
+    story["nodes"].append(unrelated)
+    return generator, story, candidate, target, [source, alternate]
+
+
+@pytest.mark.parametrize("target_kind", ["mainline"])
+def test_native_enhancement_receives_distinct_original_upstream_entry_plans(target_kind):
+    generator, story, candidate, target, sources = _upstream_entry_case(target_kind)
+    original = deepcopy(story)
+    calls = []
+
+    def capture(messages, **options):
+        data = prompt_payload(messages[1]["content"])
+        calls.append((data, options))
+        upstream = {node["id"]: node for node in data["upstream_nodes"]}
+        assert set(upstream) == {source["id"] for source in sources}
+        for source in sources:
+            # 原文允许不同入路有不同规划；投影不能合并为统一的当前游戏事实，也不能从摘要补造。
+            assert upstream[source["id"]]["opening_scene"] == source["story_beat"]["opening_scene"]
+            assert upstream[source["id"]]["character_state"] == source["story_beat"]["character_state"]
+        incoming = {route["source_node_id"]: route for route in data["incoming_routes"]}
+        for source in sources:
+            route = next(route for route in source["route_gates"] if route["target_node_id"] == target["id"])
+            assert incoming[source["id"]]["conditions"] == route["conditions"]
+            assert incoming[source["id"]]["transition_contract"] == route["transition_contract"]
+        assert data["existing_story_beat"] == {key: value for key, value in target["story_beat"].items() if key != "summary"}
+        assert "不在本目标上游的未来秘密画面" not in messages[1]["content"]
+        # 请求副本的嵌套状态可由调用方读取和修改，不回写作者稿。
+        upstream[sources[0]["id"]]["character_state"]["continuity_from_previous"].append("只改请求副本。")
+        return json.dumps(candidate, ensure_ascii=False)
+
+    generator.call_llm = capture
+    result = generator.enhance_node(story=story, node_id=target["id"])
+    assert story == original
+    assert len(calls) == 1
+    assert calls[0][1]["operation"] == "numeric_v2_node_enhancement"
+    assert calls[0][1]["max_tokens"] == 4000
+    assert calls[0][1]["max_retries"] == 1
+    assert calls[0][1]["thinking"] == {"type": "disabled"}
+    assert result["opening_scene"] == candidate["opening_scene"]
+
+
+def test_legacy_upstream_missing_entry_fields_remains_unknown_without_invented_state():
+    generator, story, candidate, target, sources = _upstream_entry_case("mainline")
+    source = sources[0]
+    source["story_beat"].pop("opening_scene")
+    source["story_beat"].pop("character_state")
+    original = deepcopy(story)
+
+    def capture(messages, **_options):
+        data = prompt_payload(messages[1]["content"])
+        row = next(row for row in data["upstream_nodes"] if row["id"] == source["id"])
+        assert row.get("opening_scene") is None
+        assert row["character_state"] == {}
+        return json.dumps(candidate, ensure_ascii=False)
+
+    generator.call_llm = capture
+    generator.enhance_node(story=story, node_id=target["id"])
+    assert story == original
+
+
+def _upstream_route_graph(*, scene=False):
+    generator, story, candidate = _ending_enhancement_case()
+    start, target = story["nodes"][0], story["nodes"][-1]
+    template = deepcopy(start["route_gates"][0])
+
+    def edge(route_id, destination, *, priority=10, op=">=", value=40):
+        return {**deepcopy(template), "id": route_id, "target_node_id": destination,
+            "priority": priority, "conditions": {"all": [
+                {"type": "metric_compare", "metric": "trust", "op": op, "value": value}]}}
+
+    branches = []
+    for node_id in ("left", "right", "join_left", "join_right"):
+        node = deepcopy(start)
+        node.update(id=node_id, type="scene", chapter=node_id, route_gates=[])
+        branches.append(node)
+    left, right, join_left, join_right = branches
+    start["route_gates"] = [edge("choose_left", "left", op="<"), edge("choose_right", "right")]
+    left["route_gates"] = [edge("left_join", "join_left")]
+    right["route_gates"] = [edge("right_join", "join_right")]
+    join_left["route_gates"] = [edge("left_entry", target["id"])]
+    join_right["route_gates"] = [edge("right_entry", target["id"])]
+    nodes = [start, *branches, target]
+    if scene:
+        ending = deepcopy(target)
+        target.update(type="scene", terminal=False)
+        target.pop("ending_id", None)
+        ending.update(id="later_ending", type="ending", terminal=True, ending_id="normal", route_gates=[])
+        nodes.append(ending)
+        target["route_gates"] = [edge("later", ending["id"])]
+    story["nodes"] = nodes
+    return generator, story, candidate, target, branches, edge
+
+
+def _capture_upstream_enhancement_request(generator, story, candidate, target):
+    before = deepcopy(story)
+    calls = []
+
+    def capture(messages, **options):
+        calls.append((deepcopy(messages), options))
+        return json.dumps(candidate, ensure_ascii=False)
+
+    generator.call_llm = capture
+    result = generator.enhance_node(story=story, node_id=target["id"])
+    assert story == before
+    assert len(calls) == 1
+    assert calls[0][1] == {
+        "temperature": 0.3, "max_tokens": 4000, "max_retries": 1,
+        "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"},
+        "operation": "numeric_v2_node_enhancement",
+    }
+    assert "route_gates" not in result
+    data = prompt_payload(calls[0][0][1]["content"])
+    assert data["existing_story_beat"] == {key: value for key, value in target["story_beat"].items() if key != "summary"}
+    system = calls[0][0][0]["content"]
+    return data, system, result
+
+
+@pytest.mark.parametrize("scene", [False], ids=['ending'])
+def test_swapping_remote_edges_changes_request_without_changing_entry_or_author_text(scene):
+    generator, story, candidate, target, branches, _edge = _upstream_route_graph(scene=scene)
+    first, system, result = _capture_upstream_enhancement_request(generator, story, candidate, target)
+    swapped = deepcopy(story)
+    by_id = {node["id"]: node for node in swapped["nodes"]}
+    by_id["left"]["route_gates"][0]["target_node_id"] = "join_right"
+    by_id["right"]["route_gates"][0]["target_node_id"] = "join_left"
+    second, second_system, second_result = _capture_upstream_enhancement_request(generator, swapped, candidate, by_id[target["id"]])
+    assert first != second
+    assert "upstream_nodes.route_gates" in system
+    assert "不是完整出口表或已选路线" in system
+    assert first["incoming_routes"] == second["incoming_routes"]
+    assert system == second_system
+    assert result == second_result
+    for data, graph in ((first, story), (second, swapped)):
+        upstream = {node["id"]: node for node in data["upstream_nodes"]}
+        for source in graph["nodes"]:
+            if source["id"] in upstream:
+                actual = upstream[source["id"]]["route_gates"]
+                expected = [route for route in source["route_gates"] if route["target_node_id"] != target["id"]]
+                assert len(actual) == len(expected)
+                for projected, original in zip(actual, expected, strict=True):
+                    assert all(projected[key] == original[key] for key in ("id", "target_node_id", "priority", "conditions"))
+        for node in data["upstream_nodes"]:
+            node.pop("route_gates")
+    # The old projection cannot distinguish these two author graphs at all.
+    assert first == second
+
+
+def test_relevant_parallel_routes_keep_order_priority_and_nested_contract_without_side_branches():
+    generator, story, candidate, target, branches, edge = _upstream_route_graph()
+    left = branches[0]
+    parallel = edge("left_other_condition", "join_left", priority=3, op="<", value=12)
+    parallel["transition_contract"].update(
+        source_ids=["runtime.player_input"], accept_input_confirmation_only=True,
+        must_preserve=["男主继续保管原来的物品，尚未交接。"],
+    )
+    unrelated = deepcopy(target)
+    unrelated.update(id="unrelated_end", chapter="非本目标的侧支", route_gates=[])
+    side = edge("side_exit", unrelated["id"], priority=99)
+    side["transition_contract"]["reason"] = "只属于无关侧支的唯一去向说明。"
+    left["route_gates"] = [parallel, side, *left["route_gates"]]
+    story["nodes"].append(unrelated)
+    original = deepcopy(story)
+    data, _, _ = _capture_upstream_enhancement_request(generator, story, candidate, target)
+    upstream = {node["id"]: node for node in data["upstream_nodes"]}
+    routes = upstream["left"]["route_gates"]
+    assert [route["id"] for route in routes] == [parallel["id"], left["route_gates"][-1]["id"]]
+    assert routes[0]["priority"] == 3
+    assert routes[0]["conditions"] == parallel["conditions"]
+    assert routes[0]["transition_contract"] == {
+        "source_ids": ["runtime.player_input"], "accept_input_confirmation_only": True,
+        "must_preserve": ["男主继续保管原来的物品，尚未交接。"],
+    }
+    assert unrelated["id"] not in upstream
+    assert side["transition_contract"]["reason"] not in json.dumps(data, ensure_ascii=False)
+    # A consumer can edit the request copy without changing the author graph.
+    upstream["left"]["route_gates"][0]["conditions"]["all"][0]["value"] = 99
+    upstream["left"]["route_gates"][0]["transition_contract"]["must_preserve"].append("只改副本。")
+    assert story == original
+
+
+def test_return_cycle_keeps_current_target_separate_from_upstream_nodes():
+    generator, story, candidate, target, branches, edge = _upstream_route_graph(scene=True)
+    target["route_gates"].append(edge("return_to_left", "left"))
+    original = deepcopy(story)
+    data, _, _ = _capture_upstream_enhancement_request(generator, story, candidate, target)
+    upstream = {node["id"]: node for node in data["upstream_nodes"]}
+    assert set(upstream) == {story["nodes"][0]["id"], *(node["id"] for node in branches)}
+    assert target["id"] not in upstream
+    assert upstream["join_left"]["route_gates"] == []
+    assert target["route_gates"] == original["nodes"][-2]["route_gates"]
+    left, right = data["incoming_routes"]
+    assert left == {**branches[2]["route_gates"][0], "source_node_id": branches[2]["id"]}
+    assert right == {**{key: value for key, value in branches[3]["route_gates"][0].items() if key != "transition_contract"},
+                     "source_node_id": branches[3]["id"], "transition_contract_from": left["id"]}
+
+
 @pytest.mark.parametrize("boundaries", [[], ["不得让女主改写旧信日期"]])
 def test_mainline_preserves_explicit_or_empty_state_boundaries(boundaries):
     # Empty arrays mean no extra restrictions; projections must retain explicit restrictions unchanged rather than simplify them away.
@@ -2178,7 +3161,7 @@ def test_mainline_preserves_explicit_or_empty_state_boundaries(boundaries):
 @pytest.mark.parametrize("boundaries", [None, [""], ["不得越界"] * 5])
 def test_state_boundary_relaxation_still_rejects_malformed_arrays(boundaries):
     # Relax the count minimum only, not field shape, nonempty-entry requirements, or the four-entry maximum.
-    from theater_workshop.sdk.generation.numeric_v2 import _validate_character_state_stage
+    from services.theater_workshop.sdk.generation.numeric_v2 import _validate_character_state_stage
     state = _idea_outline()["character_state_arc"]["stages"][0]
     state["scene_boundaries"] = boundaries
     issues = []
@@ -2214,8 +3197,8 @@ def test_quality_context_preserves_author_intent_and_terminal_conflicts_without_
     assert story == old_story and authoring == old_authoring
 
 
-def test_quality_context_preserves_adjacent_delivery_and_legacy_state_fallback():
-    # Legacy packages retain readable author state; join ordinary-act/branch/ending routes by ID for checking.
+def test_quality_context_preserves_adjacent_delivery_without_legacy_state_cache():
+    # Legacy packages can omit state; the formal projection must not cite the editor's old planning cache.
     story, authoring = _quality_story_context()
     first, second = story['nodes'][:2]
     first['story_beat'].pop('character_state')
@@ -2225,7 +3208,7 @@ def test_quality_context_preserves_adjacent_delivery_and_legacy_state_fallback()
     context = NumericV2QualityAssessor._assessment_context(story, {}, authoring)
     source, target = context['mainline'][:2]
     assert context['author_intent'] == ''
-    assert source['character_state']['player'] == '尚未进行选择。'
+    assert source['character_state']['player'] == ''
     assert source['outgoing_routes'][0]['target_node_id'] == target['id']
     assert target['narrative_focus'] == second['story_beat']['narrative_focus']
     assert [item['timing'] for item in target['goals']] == [
@@ -2244,7 +3227,7 @@ def test_quality_route_issue_resolves_to_owner_and_repairs_only_that_node():
     payload['issues'][0]['target_node_ids'].append(first['id'])
     payload['issues'][0]['repair_targets'] = [{'node_id': first['id'], 'field': '/outgoing_routes/0/transition_contract/bridge_scene_narration'}]
     assessment = NumericV2QualityAssessor._validated_assessment(context, payload)
-    _reviewed_fixture(assessment)
+    _reviewed_fixture(assessment, context)
     assert assessment['issues'][0]['target_node_ids'] == [first['id']]
     assessor = NumericV2QualityAssessor()
     assessor.call_llm = lambda *_args, **_kwargs: json.dumps({'node_updates': [{
@@ -2307,6 +3290,10 @@ def test_literature_reads_review_first_without_losing_story_or_suggestions():
     assessor = NumericV2QualityAssessor()
     context = assessor._assessment_context(story, _generation_setup(), authoring)
     context['author_extension'] = {'z': '保留原文', 'a': '不按字母重排'}
+    from services.theater_workshop.sdk.generation.facts import build_fact_sources
+    marked, sources = build_fact_sources(context)
+    marked_nodes = {node['id']: node for group in ('mainline', 'endings') for node in marked[group]}
+    context_nodes = {node['id']: node for group in ('mainline', 'endings') for node in context[group]}
     facts = {'issues': [{'issue_id': 'fact_01'}], 'excluded_issue_ids': ['rejected'],
              'protected_repair_targets': [{'node_id': 'mainline_01', 'field': '/opening_scene'}]}
     original = deepcopy((context, facts))
@@ -2315,20 +3302,54 @@ def test_literature_reads_review_first_without_losing_story_or_suggestions():
     payload['issues'].append(duplicate)
     payload['scores']['plot'].update(score=65, fact_issue_ids=['fact_01'])
     payload['relationship_advice'] = []
-    calls = []
+    calls = [];blocks = []
 
     def reply(messages, **kwargs):
-        request = json.loads(messages[1]['content']);calls.append(kwargs)
-        assert list(request) == ['fact_review', 'story_outline', 'allowed_target_node_ids']
-        assert request == {'fact_review': facts, 'story_outline': context,
-                           'allowed_target_node_ids': sorted(node['id'] for node in story['nodes'])}
-        assert list(request['story_outline']) == list(context)
-        assert list(request['story_outline']['author_extension']) == ['z', 'a']
+        request = prompt_payload(messages[1]['content']);calls.append(kwargs)
+        assert request['fact_review'] == facts
+        if kwargs['operation'] == 'numeric_v2_literary_block':
+            assert 1 <= len(request['checked_node_ids']) <= 2
+            outline = request['story_outline']
+            assert list(outline) == [key for key in marked if key != 'fact_contract'] + ['repair_field_sets']
+            assert list(outline['author_extension']) == ['z', 'a']
+            assert outline['author_extension']['z']['text'] == '保留原文'
+            assert outline['author_extension']['a']['text'] == '不按字母重排'
+            for source in request['original_sources']:
+                assert source['path'] == sources[source['ref']]['path']
+            for group in ('mainline', 'endings'):
+                for node in outline[group]:
+                    original_node = context_nodes[node['id']]
+                    for field in ('id', 'summary', 'opening_scene', 'outgoing_routes'):
+                        assert node[field] == marked_nodes[node['id']][field]
+                    assert 'completion_contract' not in node
+                    assert outline['repair_field_sets'][node['repair_field_set']] == original_node['text_repair_fields']
+                    assert all('evidence' not in goal for goal in node['goals'])
+            block = _literary_block_payload(request)
+            blocks.append({'block_id': request['block_id'], 'checked_node_ids': request['checked_node_ids'],
+                           'covered_edges': request['covered_edges'], 'node_notes': block['node_notes']})
+            return json.dumps(block, ensure_ascii=False)
+        assert kwargs['operation'] == 'numeric_v2_quality_assessment'
+        assert list(request) == ['fact_review', 'story_graph', 'literary_blocks', 'story_context',
+                                 'allowed_target_node_ids', 'original_sources', 'retained_local_issues']
+        assert request['allowed_target_node_ids'] == sorted(node['id'] for node in story['nodes'])
+        assert request['literary_blocks'] == blocks
+        note_refs = {ref for block in blocks for note in block['node_notes'] for ref in note['evidence_refs']}
+        from services.theater_workshop.sdk.generation.facts import _resolve_pointer
+        restored = [{"ref": row["ref"], "path": row["path"],
+                     "quote": row.get("quote") or _resolve_pointer(request,row["text_path"])} for row in request['original_sources']]
+        assert restored == [{'ref': ref, **sources[ref]} for ref in sorted(note_refs)]
+        assert request['story_context']['background'] == context['background']
+        assert request['story_context']['key_props'] == context['key_props']
+        for node in request['story_graph']['nodes']:
+            assert node['summary'] == context_nodes[node['id']]['summary']
+            assert node['opening_scene'] == context_nodes[node['id']]['opening_scene']
         return json.dumps(_quality_wire_payload(payload), ensure_ascii=False)
 
     assessor.call_llm = reply
     report = assessor._assess_literature(context, facts)
-    assert len(calls) == 1 and calls[0]['max_retries'] == 1
+    assert len(calls) == len(blocks) + 1
+    assert all(call['max_retries'] == 1 for call in calls)
+    assert {node_id for block in blocks for node_id in block['checked_node_ids']} == set(context_nodes)
     assert (context, facts) == original
     assert len(report['issues']) == 2
     assert {issue['dimension'] for issue in report['issues']} == {'prose_style', 'characterization'}
@@ -2351,11 +3372,11 @@ def test_single_node_request_limits_cross_node_quality_and_relationship_targets(
         'expected_result': '两幕各有回应对象。', 'repair_scope': 'text',
     }]
     report = assessor._validated_assessment(context, payload)
-    _reviewed_fixture(report)
+    _reviewed_fixture(report, context)
     original = deepcopy((report, story, authoring));calls = []
 
     def reply(messages, **kwargs):
-        request = json.loads(messages[1]['content']);calls.append(kwargs)
+        request = prompt_payload(messages[1]['content']);calls.append(kwargs)
         assert len(request['accepted_suggestions']) == 2
         for suggestion in request['accepted_suggestions']:
             assert suggestion['repair_targets'] == targets[:1]
@@ -2391,10 +3412,12 @@ def test_literary_low_scores_explicitly_link_existing_issues_without_copying():
     raw = _linked_quality_payload();original = deepcopy(raw);calls = []
     def reply(messages, **kwargs):
         calls.append(kwargs)
-        return json.dumps(_quality_wire_payload(raw), ensure_ascii=False)
+        return _quality_reply(raw)(messages, **kwargs)
     assessor.call_llm = reply
     report = assessor._assess_literature(context, {'issues': []})
-    assert raw == original and len(calls) == 1 and calls[0]['max_retries'] == 1
+    assert raw == original
+    assert sum(call['operation'] == 'numeric_v2_quality_assessment' for call in calls) == 1
+    assert all(call['max_retries'] == 1 for call in calls)
     assert len(report['issues']) == 1 and len(report['relationship_advice']) == 1
     assert report['scores']['characterization']['related_issue_ids'] == ['relationship_advice_01']
     assert report['scores']['pacing']['related_issue_ids'] == ['quality_issue_01']
@@ -2423,7 +3446,7 @@ def test_literary_links_reject_missing_ambiguous_or_non_explicit_basis(defect):
     elif defect == 'invalid_id': raw['issues'][0]['issue_id'] = ['L1']
     elif defect == 'fact_as_literary': raw['scores']['pacing']['related_issue_ids'] = ['fact_01']
     elif defect == 'missing_link': raw['scores']['characterization'].pop('related_issue_ids')
-    assessor.call_llm = lambda *_args, **_kwargs: json.dumps(_quality_wire_payload(raw))
+    assessor.call_llm = _quality_reply(raw)
     with pytest.raises(QualityAssessmentError, match='invalid_quality_assessment'):
         assessor._assess_literature(context, {'issues': [{'issue_id': 'fact_01'}]})
 
@@ -2441,7 +3464,7 @@ def test_start_node_enhancement_allows_empty_prior_continuity_and_preserves_stor
     generator.call_llm = call
     result = generator.enhance_node(story=story, node_id=story["start_node_id"])
     assert len(calls) == 1
-    model_input = json.loads(calls[0][1]["content"])
+    model_input = prompt_payload(calls[0][1]["content"])
     assert model_input["node_type"] == "start"
     assert model_input["node_type_label"] == "幕节点"
     assert model_input["upstream_nodes"] == []
@@ -2502,7 +3525,7 @@ def test_mainline_generation_repairs_invalid_fixed_narrations_before_success():
         calls.append(kwargs["operation"])
         if len(calls) == 1:
             return json.dumps(candidate, ensure_ascii=False)
-        model_input = json.loads(messages[1]["content"])
+        model_input = prompt_payload(messages[1]["content"])
         assert model_input["requested_paths"] == ["ending.fixed_narrations"]
         return json.dumps({"replacements": {"ending.fixed_narrations": [_fixed_piece()]}},
                           ensure_ascii=False)
@@ -2517,7 +3540,7 @@ def test_mainline_generation_repairs_invalid_fixed_narrations_before_success():
 
 
 def test_mainline_continuation_exception_keeps_candidate_in_checkpoint():
-    from theater_workshop.sdk import WorkshopError
+    from services.theater_workshop.sdk import WorkshopError
 
     candidate = _idea_outline()
     candidate["mainline_chapters"][0]["ordered_goals"][0]["owner"] = "player"

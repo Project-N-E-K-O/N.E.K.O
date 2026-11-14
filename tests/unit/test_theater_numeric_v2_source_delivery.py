@@ -9,6 +9,7 @@ import pytest
 from services.theater.numeric_v2_actor import _turn_messages
 from services.theater.numeric_v2_evaluator import _build_transition_judge_messages
 from services.theater.numeric_v2_runtime import TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
@@ -79,8 +80,8 @@ def test_source_evidence_stays_separate_from_author_template_and_candidate(topic
     actor = _turn_messages(engine, session, outcome, message, '谨慎友好。', '小葵', '你')
     review = _build_transition_judge_messages(engine, session, player_input=message,
         actor_performance=candidate, transition_outcome=outcome)[0]
-    actor_data = json.loads(actor[1].content.split('\n', 1)[1])
-    review_data = json.loads(review[1].content.split('：', 1)[1])
+    actor_data = prompt_payload(actor[1].content)
+    review_data = prompt_payload(review[1].content)
     pending, result = DELIVERY_TOPICS[topic][2], DELIVERY_TOPICS[topic][5]
     expected = result if variant == 'history' else pending
     assert expected in json.dumps(actor_data['recent_context'], ensure_ascii=False)
@@ -110,7 +111,7 @@ def test_review_history_coverage_never_claims_missing_or_packed_records_are_comp
             lambda profile: {**original(profile), 'formal_judge_input_max_tokens': 100})
     messages = evaluator._build_transition_judge_messages(engine, session, player_input=message,
         actor_performance=candidate, transition_outcome=outcome)[0]
-    payload = json.loads(messages[1].content.split('：', 1)[1])
+    payload = prompt_payload(messages[1].content)
     assert payload['current_visit_history_complete'] is (not truncated and not missing)
 
 
@@ -124,7 +125,7 @@ def test_pacing_does_not_promote_authored_exit_preconditions_to_current_results(
     outcome = engine.resolve_turn(session, TurnRequestV2('question', 0, message), ())
     messages = _turn_messages(engine, session, outcome, message, '谨慎友好。', '小葵', '你',
                              )
-    data = json.loads(messages[1].content.split('\n', 1)[1])
+    data = prompt_payload(messages[1].content)
     assert beat['transition_goal'] not in data['pacing']
     assert '包裹仍在柜台' in data['story_so_far']
     assert '领取自己的包裹' in data['current_scene']

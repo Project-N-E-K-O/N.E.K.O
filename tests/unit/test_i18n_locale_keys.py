@@ -13,6 +13,8 @@ REQUIRED_KEYS = (
     "chat.miniGameInviteOptionsAriaLabel",
     "chat.watchTogetherInviteTitle",
     "chat.watchTogetherInviteHint",
+    "chat.theaterInviteTitle",
+    "chat.theaterInviteHint",
     "chat.avatarToolTemporarilyUnavailable",
     "autostartPrompt.title",
     "autostartPrompt.message",
@@ -164,7 +166,7 @@ EXPECTED_DISCOVERED_STATUS_CODES = frozenset({
     "TURN_IMAGES_TRIMMED",
     "API_KEY_REJECTED",
     "ASR_MULTIMODAL_TURN_FAILED",
-    "OPENCLAW_COMMAND_DISPATCH_FAILED",
+    "MINI_GAME_BLOCKED_BY_EXTERNAL_ROUTE",
 })
 
 

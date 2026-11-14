@@ -31,6 +31,10 @@ and nowhere else needs to check.
 The file is opened on first use, never at startup. All SQLite work runs on
 one worker thread, so the event loop never waits for the disk and there is a
 single writer.
+
+``subscribe`` registers a callable that is told, on the event loop and after
+the change is stored, whenever a commission is filed or its status changes.
+The task HUD is fed from it.
 """
 
 from __future__ import annotations
@@ -86,6 +90,9 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 
 SOURCES: tuple[str, ...] = ("dispatch", "promised", "task_agent")
 ROUTES: tuple[str, ...] = ("plugin", "task_agent")
+
+# Why a commission left unfinished by an earlier host process failed.
+HOST_ENDED_REASON = "the host process ended before this finished"
 
 _SCHEMA_VERSION = 1
 _BUSY_TIMEOUT_SECONDS = 5.0
@@ -253,6 +260,14 @@ class OutboxItem:
     last_error: str | None
 
 
+# Told about a commission that was filed (``previous`` None) or whose status
+# changed (``previous`` is the status it had).
+Listener = Callable[[Commission, "str | None"], None]
+# Given a commission that reconciling failed, returns the ``(kind, payload)``
+# outbox row that reports it, or None. Runs on the ledger thread.
+ReconcileReport = Callable[[Commission], "tuple[str, dict[str, Any]] | None"]
+
+
 def new_commission_id() -> str:
     """Return a new commission id. It doubles as the task agent's session id."""
     return uuid.uuid4().hex
@@ -284,9 +299,12 @@ class Ledger:
         path: Path | Callable[[], Path],
         *,
         clock: Callable[[], float] = time.time,
+        reconcile_report: ReconcileReport | None = None,
     ) -> None:
         self._path_source = path
         self._clock = clock
+        self._reconcile_report = reconcile_report
+        self._listeners: list[Listener] = []
         self._executor: ThreadPoolExecutor | None = None
         self._conn: sqlite3.Connection | None = None
         self._open_lock = asyncio.Lock()
@@ -294,6 +312,34 @@ class Ledger:
         # Tells this process's rows from those a previous process left behind.
         self.instance = uuid.uuid4().hex
         self.path: Path | None = None
+
+    # -- listeners --------------------------------------------------------
+
+    def subscribe(self, listener: Listener) -> Callable[[], None]:
+        """Call ``listener(commission, previous_status)`` after every filing and status change.
+
+        It runs on the event loop once the change is stored; ``previous`` is
+        None for a commission just filed. What it raises is logged and
+        dropped. Returns a callable that removes it again.
+        """
+        self._listeners.append(listener)
+
+        def unsubscribe() -> None:
+            try:
+                self._listeners.remove(listener)
+            except ValueError:
+                pass  # Removed already; unsubscribing twice is fine.
+
+        return unsubscribe
+
+    def _notify(self, commission: Commission | None, previous: str | None) -> None:
+        if commission is None:
+            return
+        for listener in list(self._listeners):
+            try:
+                listener(commission, previous)
+            except Exception:  # noqa: BLE001 - a listener must not undo or block a stored change
+                logger.exception("a ledger listener failed")
 
     # -- lifecycle --------------------------------------------------------
 
@@ -333,8 +379,10 @@ class Ledger:
         blocked, and a deferred one stays as it is: until its deadline its
         plugin's result may still arrive, and past it the task brain's sweep
         fails it with the same report as when the host kept running.
-        Questions of the failed ones that were never sent are dropped. All of
-        it is one transaction, so no status changes without its event.
+        Questions of the failed ones that were never sent are dropped. With a
+        ``reconcile_report``, the row it builds for a failed commission is
+        stored along with the change, so she learns of it. All of it is one
+        transaction, so no status changes without its event.
         """
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -345,7 +393,11 @@ class Ledger:
                 (self.instance,),
             ).fetchall()
             for row in rows:
-                self._transition(conn, row["id"], "failed", "the host process ended before this finished", {})
+                moved = self._transition(conn, row["id"], "failed", HOST_ENDED_REASON, {})
+                if moved.applied and moved.commission is not None and self._reconcile_report is not None:
+                    report = self._reconcile_report(moved.commission)
+                    if report is not None:
+                        self._outbox_insert(conn, row["id"], report[0], report[1])
                 # A question it asked and that never went out can no longer be
                 # answered; it must not reach her now.
                 conn.execute(
@@ -466,7 +518,10 @@ class Ledger:
                     return existing, False
             return self._insert(conn, values), True
 
-        return await self.run(work)
+        commission, created = await self.run(work)
+        if created:
+            self._notify(commission, None)
+        return commission, created
 
     async def get(self, commission_id: str) -> Commission | None:
         return await self.run(
@@ -607,7 +662,10 @@ class Ledger:
             ids = tuple(self._outbox_insert(conn, commission_id, kind, payload) for kind, payload in reports)
             return Transition(moved.applied, moved.commission, moved.previous, moved.refusal, ids)
 
-        return await self.run(work)
+        result = await self.run(work)
+        if result.applied:
+            self._notify(result.commission, result.previous)
+        return result
 
     async def update(self, commission_id: str, **values: Any) -> Commission | None:
         """Write columns other than the status."""

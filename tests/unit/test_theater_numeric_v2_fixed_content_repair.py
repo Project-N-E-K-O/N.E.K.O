@@ -199,7 +199,7 @@ async def test_unrepaired_verified_forgery_never_enters_semantic_fallback_histor
     monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
     with pytest.raises(workflow.NumericV2ActorOutputError, match="transition_review_failed"):
-        await workflow.execute_numeric_v2_turn(
+        await workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("new", 0, "请你触碰，我仍保管物品。"),
             ensure_current_binding=lambda _: _binding(),
