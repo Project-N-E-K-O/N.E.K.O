@@ -898,7 +898,7 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
     monkeypatch.setattr("main_logic.omni_realtime_client._gemini_support.types", types)
     monkeypatch.setattr(TokenTracker, "get_instance", lambda: SimpleNamespace(record=Mock()))
     analyze = AsyncMock(return_value=True)
-    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", analyze)
+    monkeypatch.setattr(cross_server, "_publish_turn_check_with_fallback", analyze)
     save_original = AsyncMock(side_effect=lambda *_args, record_id, **_kwargs: record_id)
     monkeypatch.setattr(cross_server, "save_original", save_original)
 
@@ -1081,7 +1081,11 @@ async def test_gemini_audio_memory_uses_the_latest_transcript_before_its_reply(
         assert writes[0][-1][1].endswith("I'll look it up.")
         assert [event["type"] for event in forwarded].count("turn end") == 1
         if bounded:
-            analyze.assert_awaited_once()
+            if boundary == "no-transcript":
+                # No user words reached history, so there is nothing to hold her reply against.
+                analyze.assert_not_awaited()
+            else:
+                analyze.assert_awaited_once()
             await receive(input_transcription=types.Transcription(text=" Late correction.", finished=True))
             assert isolated_history.receipt(payload["request_id"])["transcript"].endswith("Late correction.")
             assert len(writes) == 1
