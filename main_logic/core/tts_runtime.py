@@ -58,6 +58,7 @@ from main_logic.tts_client import (
 from main_logic.tts_client.workers.gptsovits import GPTSOVITS_END_TIMEOUT_SECONDS
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from utils.config_manager import _as_bool, get_reserved
+from utils.tts import provider_registry
 from utils.tts.native_voice_registry import is_free_preset_voice_id, resolve_native_voice_for_routing
 from utils.api_config_loader import get_livestream_config
 from threading import Thread
@@ -727,6 +728,13 @@ class TtsRuntimeMixin:
                 'tts_custom' if has_custom else 'tts_default'
             )
             api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
+            provider = provider_registry.get(provider_key)
+            hosted_default_voice = (
+                core_config.get('TTS_VOICE_ID', '')
+                if provider and provider.realtime_output_override and provider.preset_catalog
+                and not provider.preset_catalog.is_voice(route_voice_id)
+                else ''
+            )
             return (
                 provider_key,
                 self.core_api_type,
@@ -736,6 +744,7 @@ class TtsRuntimeMixin:
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
+                hosted_default_voice,
                 api_key,
                 tuple(sorted(getattr(self, "_tts_excluded_provider_keys", frozenset()))),
             )
@@ -2124,6 +2133,11 @@ class TtsRuntimeMixin:
                 log_prefix,
                 configured_provider,
             )
+            return True
+        hosted_provider = _core_facade.selected_realtime_output_tts_provider_key(
+            core_config_snapshot, self._config_manager, self.voice_id,
+        )
+        if hosted_provider:
             return True
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")

@@ -1466,6 +1466,10 @@ class CoreConfigMixin:
                 # without realtime support, the snapshot already falls back to follow_core. URL/model/key
                 # overrides must follow that same path, avoiding leftover autofilled values.
                 provider = config.get(f'{prefix}ModelProvider', '')
+                if prefix == 'tts' and provider == 'deepseek':
+                    # The hosted worker uses the DeepSeek key book and fixed endpoint.
+                    # Keep the generic TTS slot available to existing clone workers.
+                    continue
                 # follow_core / follow_assist URLs are readonly frontend-linked hints autofilled by
                 # static/js/api_key_settings.js: onCustomModelProviderChange, not evidence
                 # of user-selected custom deployments. Only omni/tts are affected:

@@ -89,6 +89,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         audio_format="PCM 24kHz → resample 48kHz",
         notes="text.delta 逐片发送；无 session 握手；language=auto；每个 speech_id 重连",
     ),
+    "deepseek": TTSProviderMeta(
+        name="deepseek",
+        category="ws_bistream",
+        protocol="WebSocket (wss://api.deepseek.com/v1/tools/tts)",
+        input_streaming=True,
+        output_streaming=True,
+        client_sentence_split=False,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="One connection per speech; finish_text ends input and finish ends audio.",
+    ),
     "cosyvoice": TTSProviderMeta(
         name="cosyvoice",
         category="ws_bistream",
