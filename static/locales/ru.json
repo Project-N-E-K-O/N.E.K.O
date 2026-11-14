@@ -670,11 +670,6 @@
         "TTS_GPT_SOVITS_URL_REQUIRED": "Введите URL GPT-SoVITS API",
         "TTS_GPT_SOVITS_URL_INVALID": "Недопустимый URL GPT-SoVITS API",
         "AGENT_NO_PLUGINS_FOUND": "Пользовательские плагины не найдены",
-        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw недоступен: {{reason}}",
-        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw включен, ожидаем готовности службы подключения...",
-        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Не удалось включить OpenClaw: модуль не загружен",
-        "AGENT_OPENCLAW_UNAVAILABLE": "Не удалось включить OpenClaw: {{reason}}",
-        "OPENCLAW_COMMAND_DISPATCH_FAILED": "⚠️ Не удалось передать эту команду в OpenClaw. Попробуйте ещё раз.",
         "AGENT_PLUGIN_SERVER_ERROR": "Не удалось запустить сервер пользовательских плагинов",
         "CURRENT_CATGIRL_IN_USE": "Нельзя выполнить это действие с активным персонажем «{{character_name}}». Сначала переключитесь на другого персонажа",
         "DIRECT_LINK_INACCESSIBLE": "Прямая ссылка недоступна",
@@ -4054,7 +4049,6 @@
             "userPlugin": "Пользовательский плагин",
             "pluginConfigPage": "Настройки",
             "pluginManagementPanel": "Панель управления",
-            "mcpTools": "Инструменты MCP",
             "browserUse": "Управление браузером",
             "focusMode": "Разрешить прерывание",
             "unavailable": "{{name}} Недоступен",
@@ -4063,13 +4057,10 @@
             "serverOffline": "Сервер Лапки Неко оффлайн",
             "masterRequired": "Сначала включите главный переключатель Лапки Неко",
             "capabilityNotReady": "{{name}} ещё не готов, нажмите, чтобы попробовать включить",
-            "openclawUnavailableReason": "{{name}} недоступен: {{reason}}. Убедитесь, что служба OpenClaw запущена и слушает 127.0.0.1:8088.",
             "enabled": "{{name}} Включен",
             "disabled": "{{name}} Отключен",
             "enableFailed": "{{name}} Ошибка включения",
             "userPluginAdapting": "Пользовательский плагин (В разработке)",
-            "openclawConnect": "OpenClaw",
-            "openclawGuide": "Руководство по OpenClaw",
             "chatSettings": "Настройки чата",
             "animationSettings": "Настройки анимации",
             "renderQuality": "Качество рендеринга",
@@ -4096,17 +4087,6 @@
             "textGuardHighWarning": "Слишком большое значение может вызвать путаницу в памяти и речи кошечки, рекомендуется в пределах 1000 токенов",
             "textGuardNote": "Применяется только к текстовым ответам, на голосовые сессии не влияет"
         }
-    },
-    "openclawGuide": {
-        "windowTitle": "Руководство по OpenClaw - N.E.K.O.",
-        "pageTitle": "Руководство по OpenClaw",
-        "pageSubtitle": "Соединяет установку QwenPaw, настройку модели, файлы замены и настройки N.E.K.O в один понятный путь.",
-        "sourceLabel": "Источник руководства",
-        "contentLanguageNotice": "Переключение языка обновляет и элементы управления страницы, и текст руководства.",
-        "languageLabel": "Язык",
-        "tocTitle": "Содержание",
-        "tocEmpty": "Пока нет содержания",
-        "guideUnavailable": "Содержимое руководства пусто."
     },
     "subtitle": {
         "title": "Субтитры в реальном времени",
@@ -4199,6 +4179,8 @@
             "statusCompleted": "Завершено",
             "statusFailed": "Ошибка",
             "statusCancelled": "Отменено",
+            "statusWaitingUser": "Ждёт ответа",
+            "statusBlocked": "Застряло",
             "minimize": "Свернуть/Развернуть",
             "cancelAll": "Отменить все задачи",
             "cancelTask": "Отменить задачу",
@@ -4206,7 +4188,8 @@
             "typeUserPlugin": "Пользовательский плагин",
             "typeComputerUse": "Управление клавиатурой/мышью",
             "typeBrowserUse": "Управление браузером",
-            "typeMCP": "Инструмент MCP"
+            "typeTaskAgent": "Фамильяр",
+            "typeTask": "Поручение"
         }
     },
     "vrm": {

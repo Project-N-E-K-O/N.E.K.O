@@ -943,7 +943,6 @@ class ComputerUseAdapter:
                 api_key=api_key,
                 timeout=65.0,
                 max_retries=0,
-                temperature=0,
                 provider_type=provider_type,
             )
         except Exception as e:
@@ -1015,7 +1014,6 @@ class ComputerUseAdapter:
                         api_key=api_key,
                         timeout=65.0,
                         max_retries=0,
-                        temperature=0,
                         provider_type=provider_type,
                     )
                     self._llm_client_sig = current_sig

@@ -17,7 +17,7 @@ def test_each_rejection_keeps_its_actual_body_quote_rule_and_resolution(tmp_path
         {"event": "contract.checked", "sequence": 4, "data": {
             "findings": [{"rule": "玩家行动", "candidate": {"id": "c0"}, "quote": "第二稿"}]}}
     ]
-    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows))
+    path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
     cleared, blocked = list(rejection_rows([path]))
     assert cleared["candidate"]["performance"] == cleared["quote"] == "第一稿"
     assert blocked["candidate"]["performance"] == blocked["quote"] == "第二稿"

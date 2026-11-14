@@ -3669,8 +3669,40 @@ def test_numeric_v2_actor_failure_commits_only_safe_reply(tmp_path, monkeypatch)
         )
         assert restored.json()["session"]["revision"] == 1
         assert len(restored.json()["session"]["performance_history"]) == 1
-        saved = json.loads((tmp_path / "theater/numeric_v2/sessions/http_actor_fail.json").read_text())
+        saved = json.loads((tmp_path / "theater/numeric_v2/sessions/http_actor_fail.json").read_text(encoding="utf-8"))
         assert saved["ledger_events"][-1]["delivery_fallback"]
+
+
+@pytest.mark.parametrize("unavailable,reason", [
+    ("actor", "numeric_v2_actor_unavailable"),
+    ("evaluator", "numeric_v2_evaluator_unavailable"),
+])
+def test_numeric_v2_unavailable_model_is_reported_without_committing_a_turn(tmp_path, monkeypatch, unavailable, reason):
+    """A missing or unreachable model drafts nothing: no safe reply is committed and the input stays retryable."""
+    from services.theater import numeric_v2_workflow
+    from services.theater.numeric_v2_actor_output import NumericV2ActorUnavailableError
+    from services.theater.numeric_v2_evaluator import NumericV2EvaluatorUnavailableError
+
+    client = _client(tmp_path, monkeypatch)
+    with client:
+        client.post("/api/theater-numeric/session/start",
+                    json={"story_id": "numeric_v2_contract", "session_id": "http_unavailable"})
+        path = tmp_path / "theater/numeric_v2/sessions/http_unavailable.json"
+        before = path.read_bytes()
+
+        async def unavailable_turn(*args, **kwargs):
+            if unavailable == "actor":
+                raise NumericV2ActorUnavailableError("numeric_v2_actor_config_unavailable")
+            raise NumericV2EvaluatorUnavailableError("numeric_v2_evaluator_config_unavailable")
+
+        monkeypatch.setattr(numeric_v2_workflow, "_execute_numeric_v2_turn", unavailable_turn)
+        failed = client.post("/api/theater-numeric/session/input", json={
+            "story_id": "numeric_v2_contract", "session_id": "http_unavailable",
+            "client_turn_id": "unavailable_turn", "base_revision": 0, "message": "继续吧。",
+        })
+        assert failed.status_code == 503
+        assert failed.json()["reason"] == reason
+        assert path.read_bytes() == before
 
 
 def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_sessions(

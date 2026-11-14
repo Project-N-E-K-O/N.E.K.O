@@ -5,7 +5,7 @@ LLM 在用户问"北京天气怎么样"时会自动调用，等待返回结果�
 最终回复。
 
 ::: warning 它不同于插件入口
-`@llm_tool(name="get_weather")` 把对话期工具注册到 main_server 的 `/api/tools` registry。`@plugin_entry(id="get_weather")` 声明的是供插件管理器、跨插件调用和独立用户插件 Agent 路由使用的运行时入口。SDK 内部为了复用 IPC，会把 LLM tool handler 存成保留前缀的动态入口（`__llm_tool__...`），但这项实现细节不会把两套公开 API 合并成一套。
+`@llm_tool(name="get_weather")` 把对话期工具注册到 main_server 的 `/api/tools` registry。`@plugin_entry(id="get_weather")` 声明的是供插件管理器、跨插件调用和独立的 Agent（猫爪，NekoClaw）路由使用的运行时入口。SDK 内部为了复用 IPC，会把 LLM tool handler 存成保留前缀的动态入口（`__llm_tool__...`），但这项实现细节不会把两套公开 API 合并成一套：带这个前缀的入口只由主对话模型调用，不会进入 Agent 的插件筛选，也不会提供给 task agent。
 :::
 
 本机制由 `main_logic/tool_calling.py` 的 `ToolRegistry` 支撑，对所有支持工具

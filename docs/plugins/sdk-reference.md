@@ -243,7 +243,7 @@ Signal task completion to the host.
 
 ### Reply Control
 
-The `finish()` method accepts a `reply` parameter (default `True`) that controls whether the plugin result triggers the main character to speak.
+The `finish()` method accepts a `reply` parameter (default `True`) that controls whether the plugin result triggers the main character to speak. It takes effect when the Agent calls the entry directly. When a task agent calls the entry, the result goes back to the task agent, and how the user is told follows the task's own setting.
 
 ```python
 # Normal: character will announce the result
@@ -255,7 +255,7 @@ return await self.finish(data={"summary": "Done"}, reply=False)
 
 ### LLM Result Field Filtering
 
-Use `llm_result_fields` on `@plugin_entry` (static entries) or `register_dynamic_entry()` (dynamic entries) to control which fields of the result the main LLM can see. Fields not listed are excluded from the LLM prompt but still stored in the task registry.
+Use `llm_result_fields` on `@plugin_entry` (static entries) or `register_dynamic_entry()` (dynamic entries) to control which fields of the result a model can see: the main LLM when the entry is called directly, or the task agent that called it. Fields not listed are excluded from the prompt but remain in the run's result. See "How the Agent calls an entry" in [Entries](./entries) for what is shown when an entry declares no fields.
 
 ```python
 # Static entry

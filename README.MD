@@ -139,7 +139,7 @@ Supporting machinery:
   - VMC-protocol pose output to external apps;
   - Steam Workshop sharing for models, voices and character cards.
 - **Agent**:
-  - channels: computer use, browser use, MCP, an OpenClaw-compatible external agent adapter, and user plugins;
+  - she hands tasks to NekoClaw: a one-step task calls a plugin directly, and a multi-step task goes to a familiar that can use plugins, MCP tools, computer use and browser use;
   - the companion keeps talking to you while a task runs.
 - **Plugins**:
   - a plugin SDK with a `neko-plugin` CLI and a Vue plugin manager;
@@ -166,7 +166,7 @@ How N.E.K.O. differs from neighboring tools:
 
 | Compared with | They are | N.E.K.O. |
 |---|---|---|
-| **General agents (OpenClaw, Hermes, …)** | Task engines: instruction → work → done | Relationship-first. It can drive such agents as its hands, while staying with you during the task |
+| **General agents (OpenClaw, Hermes, …)** | Task engines: instruction → work → done | Relationship-first. She dispatches and follows up on tasks herself, while staying with you during the task |
 | **Roleplay front ends (SillyTavern, …)** | Text RP clients that you wire to models and keep consistent by hand with lorebooks | Integrated end to end: native voice and vision, an embodied avatar, persistent memory with a sense of time, and the ability to act on your computer |
 
 ## Roadmap

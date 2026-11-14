@@ -182,7 +182,7 @@ async def test_public_turn_logs_all_outcomes_with_complete_total_and_no_private_
     assert "Numeric v2 workflow timing:" in caplog.text
     assert "PRIVATE_" not in caplog.text
     trace, = (tmp_path / "traces").glob("*.jsonl")
-    recorded = [json.loads(line) for line in trace.read_text().splitlines()]
+    recorded = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
     assert next(row["data"] for row in recorded if row["event"] == "turn.latency") == measured
     assert latency._current.get() is None
 

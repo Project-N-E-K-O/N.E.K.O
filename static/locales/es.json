@@ -670,11 +670,6 @@
         "TTS_GPT_SOVITS_URL_REQUIRED": "Se requiere la URL de la API GPT-SoVITS",
         "TTS_GPT_SOVITS_URL_INVALID": "URL de API de GPT-SoVITS no válida",
         "AGENT_NO_PLUGINS_FOUND": "No se encontraron complementos de usuario",
-        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw no disponible: {{reason}}",
-        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw habilitado, esperando a que el servicio de conexión esté listo...",
-        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "No se puede habilitar OpenClaw: módulo no cargado",
-        "AGENT_OPENCLAW_UNAVAILABLE": "No se puede habilitar OpenClaw: {{reason}}",
-        "OPENCLAW_COMMAND_DISPATCH_FAILED": "⚠️ No se pudo entregar ese comando a OpenClaw. Inténtalo de nuevo.",
         "AGENT_PLUGIN_SERVER_ERROR": "Falló el inicio del servidor de complementos de usuario",
         "CURRENT_CATGIRL_IN_USE": "No se puede realizar esta acción en el personaje activo «{{character_name}}». Cambia a otro personaje primero",
         "DIRECT_LINK_INACCESSIBLE": "El enlace directo no es accesible",
@@ -4054,7 +4049,6 @@
             "userPlugin": "Complemento de usuario",
             "pluginConfigPage": "configuración",
             "pluginManagementPanel": "Panel de gestión",
-            "mcpTools": "Herramientas MCP",
             "browserUse": "Control del navegador",
             "focusMode": "Permitir interrupción",
             "unavailable": "{{name}} No disponible",
@@ -4063,13 +4057,10 @@
             "serverOffline": "Servidor NekoClaw sin conexión",
             "masterRequired": "Habilite primero el interruptor maestro NekoClaw",
             "capabilityNotReady": "{{name}} no está listo, haga clic para intentar habilitarlo",
-            "openclawUnavailableReason": "{{name}} no está disponible: {{reason}}. Asegúrese de que el servicio OpenClaw esté ejecutándose y escuchando en 127.0.0.1:8088.",
             "enabled": "{{name}} Habilitado",
             "disabled": "{{name}} Deshabilitado",
             "enableFailed": "{{name}} Error al habilitar",
             "userPluginAdapting": "Complemento de usuario (en desarrollo)",
-            "openclawConnect": "garra abierta",
-            "openclawGuide": "Guía de configuración de OpenClaw",
             "chatSettings": "Configuración de chat",
             "animationSettings": "Configuración de animación",
             "renderQuality": "Calidad",
@@ -4096,17 +4087,6 @@
             "textGuardHighWarning": "Un ajuste demasiado alto puede causar confusión en la memoria y el idioma, recomendado dentro de 1000 tokens",
             "textGuardNote": "Se aplica únicamente a respuestas de texto y no afecta las sesiones de voz"
         }
-    },
-    "openclawGuide": {
-        "windowTitle": "Guía de configuración de OpenClaw - N.E.K.O.",
-        "pageTitle": "Guía de configuración de OpenClaw",
-        "pageSubtitle": "Conecte la instalación de QwenPaw, la configuración del modelo, los archivos de reemplazo y la configuración de N.E.K.O en una ruta clara.",
-        "sourceLabel": "Fuente de la guía",
-        "contentLanguageNotice": "El cuerpo de la guía cambia con el idioma seleccionado.",
-        "languageLabel": "Idioma",
-        "tocTitle": "Índice",
-        "tocEmpty": "Sin índice todavía",
-        "guideUnavailable": "El contenido de la guía está vacío."
     },
     "subtitle": {
         "title": "Subtítulos en tiempo real",
@@ -4199,6 +4179,8 @@
             "statusCompleted": "Terminado",
             "statusFailed": "Fallido",
             "statusCancelled": "Cancelar",
+            "statusWaitingUser": "Esperando tu respuesta",
+            "statusBlocked": "Atascado",
             "minimize": "Contraer/Expandir",
             "cancelAll": "Cancelar todas las tareas",
             "cancelTask": "Cancelar tarea",
@@ -4206,7 +4188,8 @@
             "typeUserPlugin": "Complemento de usuario",
             "typeComputerUse": "Uso de la computadora",
             "typeBrowserUse": "Control del navegador",
-            "typeMCP": "Herramienta MCP"
+            "typeTaskAgent": "Familiar",
+            "typeTask": "Encargo"
         }
     },
     "vrm": {

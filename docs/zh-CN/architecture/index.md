@@ -1,6 +1,6 @@
 # 架构概览
 
-Project N.E.K.O. 由三个主要 Python 服务进程组成：主服务器拥有 UI 与实时会话；记忆服务器拥有持久记忆；Agent 服务器评估并执行可选后台工作。HTTP/WebSocket 承载服务和浏览器流量，ZeroMQ 承载 Agent 事件桥。
+Project N.E.K.O. 由三个主要 Python 服务进程组成：主服务器拥有 UI 与实时会话；记忆服务器拥有持久记忆；Agent 服务器记录并执行角色派发的任务。HTTP/WebSocket 承载服务和浏览器流量，ZeroMQ 承载 Agent 事件桥。
 
 ## 系统架构图
 
@@ -12,7 +12,7 @@ Project N.E.K.O. 由三个主要 Python 服务进程组成：主服务器拥有 
 |---|---:|---|---|
 | **主服务器** | 48911 | `app/main_server/__main__.py` | Web UI/静态资源、REST API、浏览器 WebSocket、逐角色会话、外部 TTS |
 | **记忆服务器** | 48912 | `app/memory_server/__main__.py` | 对话接收、近期上下文、事实/反思/persona、启动上下文渲染与召回 |
-| **Agent / Tool Server** | 48915 | `app/agent_server/__main__.py` | 能力状态、任务评估、通道分派、取消与任务结果 |
+| **Agent / Tool Server** | 48915 | `app/agent_server/__main__.py` | 能力状态、猫爪（NekoClaw）宿主（任务台账、派发、task agent）、取消与任务汇报 |
 
 每个服务的 FastAPI app 与实现都位于对应 package 中。特别是 Agent 实现位于 `app/agent_server/`。
 
@@ -31,8 +31,8 @@ Agent 进程还会在独立线程中，于 `127.0.0.1:48916` 托管内嵌的 use
   ├── WebSocket mirror ───> Monitor Server :48913（可选）
   └── ZeroMQ bridge
        PUB  :48961 ───────> Agent SUB       session/lifecycle 事件
-       PUSH :48963 ───────> Agent PULL      可靠 analyze request
-       PULL :48962 <─────── Agent PUSH      ACK、任务更新、结果
+       PUSH :48963 ───────> Agent PULL      可靠 turn-check request
+       PULL :48962 <─────── Agent PUSH      ACK、任务更新、汇报
 ```
 
 三个 ZeroMQ socket 都由主进程 bind；Agent 进程连接对应的镜像 socket。Agent → Main 结果没有 HTTP fallback。
@@ -61,4 +61,4 @@ Agent 进程还会在独立线程中，于 `127.0.0.1:48916` 托管内嵌的 use
 - [数据流](/zh-CN/architecture/data-flow) —— 浏览器输入、模型输出与持久化路径
 - [会话管理](/zh-CN/architecture/session-management) —— 模式选择与热切换生命周期
 - [记忆系统](/zh-CN/architecture/memory-system) —— 持久化、自动渲染与按需召回
-- [Agent 系统](/zh-CN/architecture/agent-system) —— 评估、通道、事件投递与任务状态
+- [Agent 系统](/zh-CN/architecture/agent-system) —— 任务工具、猫爪宿主、汇报与事后检查

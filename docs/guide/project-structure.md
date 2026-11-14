@@ -7,15 +7,16 @@ N.E.K.O/
 ├── app/
 │   ├── main_server/          # Main Web/API entrypoint
 │   ├── memory_server/        # Memory API/runtime
-│   └── agent_server/         # Agent/tool API and channels
+│   └── agent_server/         # Agent API; hosts NekoClaw
 ├── launcher.py               # Thin public launcher entrypoint
 ├── launcher_core/            # Bootstrap, ports, process lifecycle
-├── brain/                    # Agent routing/execution adapters
+├── brain/                    # Keyboard-and-mouse and browser control adapters
 ├── config/                   # Defaults, prompts, provider/network data
 ├── knowledge/                # Public knowledge packs (runs in the Memory Server)
 ├── main_logic/               # Conversation, clients, TTS, buses
 ├── main_routers/             # Main FastAPI route packages/modules
 ├── memory/                   # Facts, recall, persona, reflection, event/outbox
+├── nekoclaw/                 # Task brain and host (host/), agent runtime (runtime/)
 ├── plugin/                   # SDK, host/server, built-ins, tooling
 ├── services/                 # Domain services: chat sync, theater runtime
 ├── utils/

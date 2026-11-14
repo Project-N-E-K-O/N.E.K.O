@@ -26,12 +26,6 @@ const EXCLUDED_SOURCE_PATHS = new Set([
   'README_ja.md',
   'README_ru.md',
   'README_zh-CN.md',
-  'zh-CN/guide/openclaw_guide.md',
-  'zh-CN/guide/openclaw_guide.en.md',
-  'zh-CN/guide/openclaw_guide.ja.md',
-  'zh-CN/guide/openclaw_guide.ko.md',
-  'zh-CN/guide/openclaw_guide.ru.md',
-  'zh-CN/guide/openclaw_guide.zh-TW.md',
 ])
 
 function normalizePath(path) {

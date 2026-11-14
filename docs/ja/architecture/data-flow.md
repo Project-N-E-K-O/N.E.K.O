@@ -81,19 +81,24 @@ Router は `main_routers/shared_state.py` の getter から長寿命 manager を
 ## Agent イベントフロー
 
 ```text
-cross_server turn/session end
-        │ recent messages + current-turn attachments
+main dialogue model
+        │ dispatch_task / query_tasks (tool call)
         ▼
-MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge
+tool_calling.py ── HTTP :48915 /nekoclaw/* ──> NekoClaw host ──> receipt back to the model
+
+cross_server turn end without a tool call that acts
+        │ user's words + the character's reply
+        ▼
+MainServerAgentBridge ── ZMQ :48963 ──> AgentServerEventBridge ──> turn check
         ▲                                      │
-        │ ACK / task_update / task_result      ▼
-        └──────────── ZMQ :48962 ───── channel dispatch
+        │ ACK / task_update / reports          ▼
+        └──────────── ZMQ :48962 ───── NekoClaw host (outbox)
         │
         ├─ task_update ──> WebSocket ──> Task HUD
-        └─ task_result ──> LLMSessionManager callback queue ──> chat delivery
+        └─ task_result / proactive_message ──> LLMSessionManager callback queue ──> chat delivery
 ```
 
-セッション broadcast は別の 48961 PUB/SUB を使います。分析要求は 48963 の信頼性付き PUSH/PULL queue を使い、48962 の Agent → Main channel で ACK されます。
+dispatch と query は、Main Server から Agent Server への通常の HTTP 呼び出しです。セッション broadcast は別の 48961 PUB/SUB を使います。ターン後チェックの要求は 48963 の信頼性付き PUSH/PULL queue を使い、48962 の Agent → Main channel で ACK されます。ホストが受け取った後の処理は [Agent システム](/ja/architecture/agent-system)を参照してください。
 
 ## TTS データフロー
 

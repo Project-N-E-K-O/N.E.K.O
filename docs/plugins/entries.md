@@ -1,10 +1,10 @@
 # Entries & Parameters
 
-An entry point is a callable operation a loaded plugin exposes to Plugin Manager, other plugins, and the user-plugin Agent route. It is identified by the runtime `entry_id` from `@plugin_entry(id=...)`.
+An entry point is a callable operation a loaded plugin exposes to Plugin Manager, other plugins, and the Agent (NekoClaw). It is identified by the runtime `entry_id` from `@plugin_entry(id=...)`.
 
-Do not confuse this with `[plugin].entry` in `plugin.toml`, which is the `module.path:ClassName` used by the host to import the plugin class. Also do not confuse it with `@llm_tool`: LLM tools are registered with main_server's `/api/tools` registry and can be called during a conversation, while user-plugin Agent routing selects a plugin runtime entry.
+Do not confuse this with `[plugin].entry` in `plugin.toml`, which is the `module.path:ClassName` used by the host to import the plugin class. Also do not confuse it with `@llm_tool`: LLM tools are registered with main_server's `/api/tools` registry and are called by the main dialogue model during a conversation, while the Agent selects a plugin runtime entry when a task has been handed over to it.
 
-For Agent routing, entry metadata is considered only after plugin-level filtering. Stage 2 must return an exact `plugin_id` and `entry_id`; an unknown or missing ID gets one corrective retry and is then rejected.
+The Agent filters plugins first and looks at entry metadata afterwards. The fine selection must return an exact `plugin_id` and `entry_id`; an unknown or missing ID is not asked about again and no entry is called directly: the task goes to a task agent, or is reported as not doable when none is available. See [How the Agent calls an entry](#how-the-agent-calls-an-entry) for when entries are called, by whom, and what happens to their results.
 
 ---
 
@@ -67,7 +67,7 @@ async def greet(
 
 Now the panel shows "The person's name" next to `name`, and "How many times to repeat" next to `times`.
 
-The AI agent also sees these descriptions, helping it understand what values to pass.
+A task agent that calls the entry also sees these descriptions, because it is given the entry's full `input_schema`. The selection that calls an entry directly sees only parameter names, types, and `enum` values, so anything it has to know belongs in the entry's `description`. Both callers are explained in [How the Agent calls an entry](#how-the-agent-calls-an-entry).
 
 ---
 
@@ -126,7 +126,7 @@ async def divide(self, a: float, b: float):
 
 ## Controlling what the AI sees
 
-By default, the AI sees all fields you return. But sometimes the return value contains large raw data (like a full search results list) and you only want the AI to see a summary:
+Declare `llm_result_fields` to say which fields of the result the AI reads. A return value often contains large raw data (like a full search results list) while the AI only needs a summary:
 
 ```python
 @plugin_entry(
@@ -146,6 +146,8 @@ async def search(self, query: str):
 ```
 
 Only fields listed in `llm_result_fields` are sent to the AI. Other fields are stored normally and visible in the panel — they just don't get stuffed into the AI's context (saves tokens).
+
+Without `llm_result_fields`, what the AI gets depends on who called the entry; see the Results table in [How the Agent calls an entry](#how-the-agent-calls-an-entry).
 
 ---
 
@@ -209,6 +211,58 @@ def _make_handler(self, cmd_info):
 Dynamic entries work just like static ones — visible in the panel, executable, callable by the AI. If the handler accepts parameters, pass `input_schema` explicitly; dynamic registration does not infer it from the handler signature.
 
 Use `self.unregister_dynamic_entry(entry_id)` to remove them.
+
+---
+
+## How the Agent calls an entry
+
+The Agent (NekoClaw) looks for an entry only when the main dialogue model hands a task over: the model called its `dispatch_task` tool, or it agreed out loud and the turn check dispatched for it. Finished turns are not analysed automatically. [Agent System](/architecture/agent-system) describes the whole path; how plugins are filtered is described in [plugin.toml](./plugin-toml). Entries whose ID starts with `__llm_tool__` (the ones `@llm_tool` creates) never take part; only the main dialogue model calls them.
+
+### Which entries the Agent can see
+
+An entry is left out when its plugin sets `passive = true`, or when the entry's `metadata` has `agent_auto`, `agent_exposed`, or `llm_exposed` set to `false`, or `agent_hidden` set to `true`:
+
+```python
+@plugin_entry(id="internal_sync", metadata={"agent_hidden": True})
+async def internal_sync(self):
+    ...
+```
+
+These switches only affect the Agent. The entry stays callable from Plugin Manager and from other plugins.
+
+### Two callers
+
+- **Direct call (the main path).** When one entry can finish the task, the fine selection picks it and fills in the arguments. It is shown the plugin's `description` and, for each visible entry, its ID, its `description`, and a compact argument hint: the first eight parameters with their types and `enum` values, plus `required`. Parameter descriptions are not included.
+- **Task agent.** When no entry fits or the task needs several steps, the task goes to a task agent, an execution session that the interface calls a familiar. It reaches entries as tools through the capability gateway. The tool description is the plugin name, the entry name, and the entry's `description` (cut at 200 tokens), and the tool parameters are the entry's `input_schema`. A task agent is given the task as it was handed over, not the conversation history. Entries of the plugins that the selection shortlisted are listed to it up front; other visible entries are found through a search tool that matches their descriptions.
+
+Both callers send the same `/runs` request and inject the same keys into `args._ctx`:
+
+| `_ctx` key | Value |
+|---|---|
+| `lanlan_name` | The character the task belongs to |
+| `conversation_id` | The identifier that came with the dispatch, when there is one |
+| `entry_timeout` | The timeout that applies to this call: the entry's `timeout`, or the host default |
+| `latest_user_request` | The user's own words of that turn, unchanged |
+
+The permission category for plugin entries (`plugin_entry` in the host's `permissions.json`) is `allow` by default. When it is set to one of the asking modes, a task agent's call waits for the user's approval; `deny` keeps both callers away from plugin entries.
+
+### What happens to the result
+
+| | Direct call | Called by a task agent |
+|---|---|---|
+| Who reads the result | The main dialogue model, as the report of the task | The task agent, as the tool result. The user hears about it when the whole task ends |
+| With `llm_result_fields` | Only the listed fields | Only the listed fields |
+| Without `llm_result_fields` | One sentence: `data.reply` if it is a non-empty string, otherwise the run's message | That sentence, followed by `data` as JSON |
+| `meta.agent.delivery`, `result_kind`, `expires_in_s` | Applied | Not applied. The report to the user follows the task's own setting |
+| `data.needs_confirmation` (or `status: "confirm_required"`) | The task ends as `blocked` and the plugin's message is reported | The gateway puts the plugin's message to the user as a question and gives the answer to the task agent, which cannot answer in the user's place |
+| `data.action: "clarify"` (or `status: "clarify"` / `"blocked"`) | The task ends as `blocked` and the plugin's message is reported | Returned to the task agent with a note that the call was not carried out |
+| `data.deferred: true` | The task stays open until the plugin calls back, and fails after one hour without a callback | Returned to the task agent with a note that the plugin finishes it later. `bind_task` is not called |
+
+The direct-call column is unchanged from the previous Agent. A result with `observation_only` set is not read for `needs_confirmation` or `clarify` by either caller.
+
+### Stopping
+
+When a task is stopped, the host calls `POST /runs/{run_id}/cancel` on the plugin service for every run of that task that is still going. This applies to direct calls and to calls made by a task agent.
 
 ---
 

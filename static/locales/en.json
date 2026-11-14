@@ -670,11 +670,6 @@
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL is required",
         "TTS_GPT_SOVITS_URL_INVALID": "Invalid GPT-SoVITS API URL",
         "AGENT_NO_PLUGINS_FOUND": "No user plugins found",
-        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw is unavailable: {{reason}}",
-        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw enabled, waiting for the connection service to become ready...",
-        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "Cannot enable OpenClaw: module not loaded",
-        "AGENT_OPENCLAW_UNAVAILABLE": "Cannot enable OpenClaw: {{reason}}",
-        "OPENCLAW_COMMAND_DISPATCH_FAILED": "⚠️ Couldn't hand that command over to OpenClaw. Please try again.",
         "AGENT_PLUGIN_SERVER_ERROR": "User plugin server failed to start",
         "CURRENT_CATGIRL_IN_USE": "Cannot perform this action on the active character \"{{character_name}}\". Please switch to another character first.",
         "DIRECT_LINK_INACCESSIBLE": "Direct link is not accessible",
@@ -4054,7 +4049,6 @@
             "userPlugin": "User Plugin",
             "pluginConfigPage": "Config",
             "pluginManagementPanel": "Management Panel",
-            "mcpTools": "MCP Tools",
             "browserUse": "Browser Control",
             "focusMode": "Allow Interrupt",
             "unavailable": "{{name}} Unavailable",
@@ -4063,13 +4057,10 @@
             "serverOffline": "NekoClaw Server Offline",
             "masterRequired": "Please enable NekoClaw Master Switch first",
             "capabilityNotReady": "{{name}} not ready, click to try enabling",
-            "openclawUnavailableReason": "{{name}} is unavailable: {{reason}}. Make sure the OpenClaw service is running and listening on 127.0.0.1:8088.",
             "enabled": "{{name}} Enabled",
             "disabled": "{{name}} Disabled",
             "enableFailed": "{{name}} Enable Failed",
             "userPluginAdapting": "User Plugin (Developing)",
-            "openclawConnect": "OpenClaw",
-            "openclawGuide": "OpenClaw Setup Guide",
             "chatSettings": "Chat Settings",
             "animationSettings": "Animation Settings",
             "renderQuality": "Quality",
@@ -4096,17 +4087,6 @@
             "textGuardHighWarning": "Setting too high may cause memory and language confusion, recommended within 1000 tokens",
             "textGuardNote": "Applies to text replies only and does not affect voice sessions"
         }
-    },
-    "openclawGuide": {
-        "windowTitle": "OpenClaw Setup Guide - N.E.K.O.",
-        "pageTitle": "OpenClaw Setup Guide",
-        "pageSubtitle": "Connect QwenPaw installation, model setup, replacement files, and N.E.K.O configuration in one clear path.",
-        "sourceLabel": "Guide Source",
-        "contentLanguageNotice": "The guide body switches with the selected language.",
-        "languageLabel": "Language",
-        "tocTitle": "Contents",
-        "tocEmpty": "No headings yet",
-        "guideUnavailable": "Guide content is empty."
     },
     "subtitle": {
         "title": "Real-time Subtitles",
@@ -4199,6 +4179,8 @@
             "statusCompleted": "Completed",
             "statusFailed": "Failed",
             "statusCancelled": "Cancelled",
+            "statusWaitingUser": "Waiting for you",
+            "statusBlocked": "Stuck",
             "minimize": "Collapse/Expand",
             "cancelAll": "Cancel all tasks",
             "cancelTask": "Cancel task",
@@ -4206,7 +4188,8 @@
             "typeUserPlugin": "User Plugin",
             "typeComputerUse": "Computer Use",
             "typeBrowserUse": "Browser Control",
-            "typeMCP": "MCP Tool"
+            "typeTaskAgent": "Familiar",
+            "typeTask": "Task"
         }
     },
     "vrm": {

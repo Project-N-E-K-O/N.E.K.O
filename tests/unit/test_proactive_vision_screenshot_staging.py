@@ -564,23 +564,6 @@ async def test_finish_clears_stale_screenshot_when_none():
     assert mgr.session._proactive_image_to_inject is None
 
 
-def test_clear_text_pending_images_also_clears_proactive_slot():
-    """Magic-command bypasses (OpenClaw/Qwenpaw) go through _clear_text_pending_images
-    instead of stream_text, so that hook must also drop the staged screenshot —
-    otherwise it survives and injects into a later unrelated message (Codex P2)."""
-    mgr = LLMSessionManager.__new__(LLMSessionManager)
-    mgr.session = _real_session()
-    mgr.session._pending_images = ["user-frame"]
-    mgr.session.set_proactive_screenshot("SCREEN_B64")
-    assert mgr.session._proactive_image_to_inject == "SCREEN_B64"
-
-    LLMSessionManager._clear_text_pending_images(mgr)
-
-    assert mgr.session._pending_images == []
-    assert mgr.session._proactive_image_to_inject is None
-    assert mgr.session._proactive_image_staged_at == 0.0
-
-
 @pytest.mark.asyncio
 async def test_finish_does_not_stage_on_sid_mismatch():
     """sid mismatch (user already took over this turn) → finish short-circuits
@@ -600,6 +583,50 @@ async def test_finish_does_not_stage_on_sid_mismatch():
     # Neither write a new screenshot nor clear the old one: the whole turn returns early at sid validation.
     assert mgr.session._proactive_image_to_inject == "PREEXISTING"
     assert mgr.session._conversation_history == []
+
+
+@pytest.mark.asyncio
+async def test_finish_closes_the_tool_state_of_its_own_turn():
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s"
+    mgr.session = _real_session()
+    mgr._request_tts_done_for_turn = AsyncMock()
+    # What this proactive turn noted (she called a task tool in it).
+    mgr._turn_acted_through_tools = True
+
+    assert await LLMSessionManager.finish_proactive_delivery(mgr, "顺手帮你查了", expected_speech_id="s") is True
+
+    assert mgr._turn_acted_through_tools is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sign", ["engagement", "sid"])
+async def test_finish_leaves_the_tool_state_of_a_user_turn_that_began_meanwhile(sign):
+    """The sends and the TTS signal of a delivery are awaited; the user can begin a turn there.
+
+    That turn's words and its tool calls are its own. Cleared by the turn that
+    was being delivered, the task it dispatches goes without the user's words,
+    and its end no longer says that she acted, so it is checked for a task
+    she did hand over.
+    """
+    mgr = _make_mgr()
+    mgr.current_speech_id = "s"
+    mgr.session = _real_session()
+
+    async def user_begins_a_turn(*_args, **_kwargs):
+        if sign == "engagement":
+            mgr.last_user_engagement_time = 1234.5
+        else:
+            mgr.current_speech_id = "s_user"
+        mgr._latest_user_utterance = "明早七点叫我"
+        mgr._turn_acted_through_tools = True
+
+    mgr._request_tts_done_for_turn = AsyncMock(side_effect=user_begins_a_turn)
+
+    assert await LLMSessionManager.finish_proactive_delivery(mgr, "今天天气不错", expected_speech_id="s") is True
+
+    assert mgr._latest_user_utterance == "明早七点叫我"
+    assert mgr._turn_acted_through_tools is True
 
 
 def test_plugin_read_arriving_during_model_switch_is_not_lost():
