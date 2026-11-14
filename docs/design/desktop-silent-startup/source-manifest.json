@@ -1,0 +1,87 @@
+{
+  "desktop_package_version": "0.9.1",
+  "baseline": "Installed desktop app source; not a checkout of the inaccessible Electron repository",
+  "files": [
+    {
+      "path": "src/main.js",
+      "before_sha256": "dbf536572cfb83ddb8b22e3dc7cb38e00dc49cc43c43582ee06d4aaa9af3e348",
+      "after_sha256": "7f3d10143d56ee013168e7a72c0f0295f1915c3fb60ae0c66c6bd4df1713eba7"
+    },
+    {
+      "path": "src/main/desktop-settings-actions.js",
+      "before_sha256": "4d348895b84dd02f3b58481d842f80a6931d0c271ae4761c3695e1b433fa16f4",
+      "after_sha256": "a56d66b18be42b3bfc21611ed1e042253fe50c5f879eb85f2822ac90be124042"
+    },
+    {
+      "path": "src/main/tray-settings-pet-locales.js",
+      "before_sha256": "47a71e2a23e215422cb92a22e6db35debe40f6608ddb2af097865745a6e96e77",
+      "after_sha256": "ad51b5aeff02b3e4120798d03a4c37a63393e3d1fcbf1349869bd7bb8b46bb44"
+    },
+    {
+      "path": "src/renderer/settings/settings.js",
+      "before_sha256": "7b3ebaca87bc090eea254a8197fa8b6e5a79cb94e2f9f464eea745bb6203061b",
+      "after_sha256": "743c1ac2f8f8d368f51dfa8da2111113908dffd0349eb1591dc6155e2c479561"
+    },
+    {
+      "path": "src/renderer/settings/settings.css",
+      "before_sha256": "a61ea4d4b941079fe76abcbac8164c683ba967132157a51d1fc2fbd417ba4975",
+      "after_sha256": "485f5986d032ad98c7cf9aae00e2f8757c522450f64b51b962cd1b9b6c7e1e0c"
+    }
+  ],
+  "verified_contract_sources": [
+    {
+      "path": "src/main/unified-settings-window.js",
+      "sha256": "bb22db74877f77ed6fbb63a19956c4c6c1177a57b249c6209da81ef249d5ab53"
+    },
+    {
+      "path": "src/main/backend-runtime.js",
+      "sha256": "638dcdf317dc8613e6ded104827d8bb13bb97f9d8573fd6e710ea3f572d5f09a"
+    },
+    {
+      "path": "src/main/load-failure-dialog.js",
+      "sha256": "f705575f054f8dbf31e19680dfbb69bd79474d70b64b788b0d307fac47c47c28"
+    },
+    {
+      "path": "src/main/pet-window-lifecycle.js",
+      "sha256": "aac06b3bf8424cba7eea7a244d2cbd5d0629f7ca925f7032b03201bbf413faf3"
+    },
+    {
+      "path": "src/main/tray-menu-locales.js",
+      "sha256": "f4bbaceb0910e2ca0857b83b36348f6b6b8b0db815b466c4d7465b9f1b86831f"
+    }
+  ],
+  "compatibility_check": {
+    "date": "2026-11-13",
+    "package_version": "0.9.1",
+    "source": "Current installed desktop archive, checked in an extracted copy",
+    "procedure": "Reverse the original PR patch, then apply this revision; preserve unrelated local changes",
+    "upstream_head": "Unavailable: N.E.K.O.-PC returns HTTP 404",
+    "files": [
+      {
+        "path": "src/main.js",
+        "installed_sha256": "04f59526af3b32db335069c94571dcf21934be8849d4c6474268cd5618b4483e",
+        "revised_sha256": "814629c25fb0de4d7b08c8ed400817fbd18e5c75c4ed06955ced6c86ef234088"
+      },
+      {
+        "path": "src/main/desktop-settings-actions.js",
+        "installed_sha256": "a56d66b18be42b3bfc21611ed1e042253fe50c5f879eb85f2822ac90be124042",
+        "revised_sha256": "a56d66b18be42b3bfc21611ed1e042253fe50c5f879eb85f2822ac90be124042"
+      },
+      {
+        "path": "src/main/tray-settings-pet-locales.js",
+        "installed_sha256": "7706024179fa8594d48a6e87748be3213a114d191b9c75063d1b38be1b8bf1f4",
+        "revised_sha256": "9fe36c4b03678ee852f043fad0e7eebd2b84bf7230c288d7a9f1752762b395ce"
+      },
+      {
+        "path": "src/renderer/settings/settings.js",
+        "installed_sha256": "5e3282837e0489cfc6519d1d0fb510c2643b66a1855300b35fce5550689cb658",
+        "revised_sha256": "c0623fbf72bf3b365d9dad4f410006d065e925daf53283ef38ee99c5e61bb326"
+      },
+      {
+        "path": "src/renderer/settings/settings.css",
+        "installed_sha256": "81679672b551dc784ab2e941299d0336f5ba4ba6debe56d78453823127841f68",
+        "revised_sha256": "485f5986d032ad98c7cf9aae00e2f8757c522450f64b51b962cd1b9b6c7e1e0c"
+      }
+    ]
+  }
+}
