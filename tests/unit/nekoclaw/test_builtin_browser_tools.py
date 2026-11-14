@@ -441,6 +441,60 @@ async def test_a_key_whose_modifier_opens_a_dialog_is_not_said_to_have_been_pres
     assert outcome == BuiltinOutcome(True, f"Typed text. Control+Enter {NOT_PRESSED}\n{NOTICE}")
 
 
+STOPPED = "the page stopped taking input (it opened a dialog, or closed)"
+
+
+async def test_a_click_that_was_not_carried_out_is_not_said_to_have_succeeded(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+    gift = fake.find("Gift wrap")
+    gift.on_hover = lambda browser, page: browser.open_dialog(page, "alert", "Draft saved")
+    outcome = await call(tools, "click", uid=uid_of("Gift wrap"))
+    # Not "Successfully clicked": the pointer got there, the button never went down.
+    assert outcome == BuiltinOutcome(
+        True, f"The click on the element was NOT completed: {STOPPED} before the button was pressed and released.\n{NOTICE}"
+    )
+    assert gift.clicks == 0 and gift.checked is False
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    # The same for a double click, in its own words.
+    fake.hovered = None
+    outcome = await call(tools, "click", uid=uid_of("Gift wrap"), dblClick=True)
+    assert outcome == BuiltinOutcome(
+        True, f"The double click on the element was NOT completed: {STOPPED} before the button was pressed and released.\n{NOTICE}"
+    )
+    assert gift.clicks == 0
+
+
+async def test_a_double_click_that_got_no_further_than_one_click_says_so(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+    # "Save draft" answers its first click with a dialog.
+    outcome = await call(tools, "click", uid=uid_of("Save draft"), dblClick=True)
+    assert outcome == BuiltinOutcome(
+        True, f"The element was clicked once, NOT double clicked: {STOPPED} after the first click.\n{NOTICE}"
+    )
+    assert fake.find("Save draft").clicks == 1
+    # A single click that the page answers with a dialog was a click.
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    outcome = await call(tools, "click", uid=uid_of("Save draft"))
+    assert outcome == BuiltinOutcome(True, f"Successfully clicked on the element\n{NOTICE}")
+
+
+async def test_filling_a_box_that_could_not_be_clicked_fails_and_says_why(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+    gift = fake.find("Gift wrap")
+    gift.on_hover = lambda browser, page: browser.open_dialog(page, "alert", "Draft saved")
+    uid = uid_of("Gift wrap")
+    outcome = await call(tools, "fill", uid=uid, value="true")
+    assert outcome == BuiltinOutcome(
+        False,
+        f"A dialog opened before the click on the element with uid {uid} was carried out, so it was not changed. "
+        f"Handle the dialog, then fill the element in again.\n{NOTICE}",
+    )
+    assert gift.checked is False
+
+
 async def test_filling_a_select_whose_change_asks_first_answers_at_once_with_the_dialog(
     tools: BrowserTools, world: BrowserWorld
 ) -> None:

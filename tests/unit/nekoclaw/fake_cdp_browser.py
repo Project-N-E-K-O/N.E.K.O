@@ -96,6 +96,7 @@ class Element:
         on_input: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_change: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         on_focus: Callable[["FakeBrowser", "FakePage"], None] | None = None,
+        on_hover: Callable[["FakeBrowser", "FakePage"], None] | None = None,
         frame: "Document | None" = None,
         quad: list[float] | None = None,
         script_error: str | None = None,
@@ -118,6 +119,8 @@ class Element:
         self.on_change = on_change
         # Called when a script gives the element the focus (the page's own ``focus`` handler).
         self.on_focus = on_focus
+        # Called when the pointer moves onto the element (the page's own ``mouseover`` handler).
+        self.on_hover = on_hover
         # What lies over the element (a banner, a dialog of the page), and
         # where: None for all of it, else ``(left, top, right, bottom)``.
         self.cover: Element | None = None
@@ -1051,7 +1054,10 @@ class FakeBrowser:
         page.mouse.append(event)
         element = self._at(page, event.get("x"), event.get("y"))
         if event.get("type") == "mouseMoved":
+            entered = element is not None and page.hovered is not element
             page.hovered = element
+            if entered and element.on_hover is not None:
+                element.on_hover(self, page)
         elif event.get("type") == "mousePressed" and element is not None and element.on_press is not None:
             element.on_press(self, page)
         elif event.get("type") == "mouseReleased" and element is not None and not element.disabled:

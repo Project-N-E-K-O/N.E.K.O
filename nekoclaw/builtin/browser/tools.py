@@ -89,11 +89,15 @@ def cap_lines(lines: list[str], max_tokens: int) -> tuple[str, int]:
 # holds up the ones behind it.
 MAX_TIMEOUT_SECONDS = 120.0
 
-# Said of a key that was asked for and not pressed. When that came about is
-# not said (while text was typed before it, when one of its modifiers went
-# down, in between): what stopped it follows in the same answer, the dialog
-# with its text or that the page has closed.
-_NOT_PRESSED = "was NOT pressed: the page stopped taking input (it opened a dialog, or closed) before the key could be sent."
+# Said of a key that was asked for and not pressed, and of an element that
+# was to be clicked and was not. When that came about is not said (while text
+# was typed before the key, when one of its modifiers went down, when the
+# pointer moved over the element): what stopped it follows in the same
+# answer, the dialog with its text or that the page has closed.
+_STOPPED_TAKING_INPUT = "the page stopped taking input (it opened a dialog, or closed)"
+_NOT_PRESSED = f"was NOT pressed: {_STOPPED_TAKING_INPUT} before the key could be sent."
+_NOT_COMPLETED = f"was NOT completed: {_STOPPED_TAKING_INPUT} before the button was pressed and released."
+_ONLY_ONE_CLICK = f"The element was clicked once, NOT double clicked: {_STOPPED_TAKING_INPUT} after the first click."
 
 
 def _seconds(arguments: dict[str, Any]) -> float | None:
@@ -345,8 +349,16 @@ class BrowserTools:
         uid = _text(arguments, "uid")
         before, pages = page.navigations, len(self._session.pages())
         double = arguments.get("dblClick") is True
-        await self._session.click(page, uid, double=double)
-        done = f"Successfully {'double clicked' if double else 'clicked'} on the element"
+        clicks = await self._session.click(page, uid, double=double)
+        if clicks >= (2 if double else 1):
+            done = f"Successfully {'double clicked' if double else 'clicked'} on the element"
+        elif clicks:
+            # The first click of a double click made the page ask something
+            # (a button that wants a "sure?" first): no double click came of it.
+            done = _ONLY_ONE_CLICK
+        else:
+            # Said outright: read as clicked, what the click was for would be taken for done.
+            done = f"The {'double click' if double else 'click'} on the element {_NOT_COMPLETED}"
         return await self._after(page, done, arguments, before, pages)
 
     async def _hover(self, arguments: dict[str, Any]) -> BuiltinOutcome:

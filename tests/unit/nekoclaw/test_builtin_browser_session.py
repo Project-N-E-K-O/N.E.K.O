@@ -1180,10 +1180,110 @@ async def test_click_moves_to_the_element_presses_and_releases_at_its_point(sess
 
 async def test_a_double_click_is_two_clicks_counted_one_and_two(session: BrowserSession, world: BrowserWorld) -> None:
     page, fake, snapshot = await open_page(session, world)
-    await session.click(page, uid_of(snapshot, "Order a part"), double=True)
+    assert await session.click(page, uid_of(snapshot, "Order a part"), double=True) == 2
     heading = fake.find("Order a part")
     assert fake.mouse == click_events(heading.point(), count=2)
     assert heading.clicks == 2
+    # One click is one.
+    assert await session.click(page, uid_of(snapshot, "Gift wrap")) == 1
+
+
+def kinds_of(fake: FakePage) -> list[str]:
+    return [event["type"] for event in fake.mouse]
+
+
+async def test_a_dialog_the_pointer_opens_on_its_way_leaves_the_element_unclicked(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    gift = fake.find("Gift wrap")
+    gift.on_hover = lambda browser, target: browser.open_dialog(target, "alert", "Gift wrap costs extra")
+    # Bounded: the page answers nothing more once its dialog is open.
+    assert await asyncio.wait_for(session.click(page, uid_of(snapshot, "Gift wrap")), 5.0) == 0
+    # The pointer got there and that was all: nothing is sent to a page with a dialog open, the button included.
+    assert kinds_of(fake) == ["mouseMoved"]
+    assert gift.clicks == 0 and gift.checked is False
+    assert page.dialog == Dialog("alert", "Gift wrap costs extra", "")
+
+
+async def test_a_dialog_that_opens_as_the_button_goes_down_leaves_no_click(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    gift = fake.find("Gift wrap")
+    gift.on_press = lambda browser, target: browser.open_dialog(target, "alert", "Gift wrap costs extra")
+    assert await asyncio.wait_for(session.click(page, uid_of(snapshot, "Gift wrap")), 5.0) == 0
+    # The button went down and never came up: the page saw no click.
+    assert kinds_of(fake) == ["mouseMoved", "mousePressed"]
+    assert gift.clicks == 0 and gift.checked is False
+
+
+async def test_a_dialog_the_click_itself_opens_does_not_undo_the_click(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    # "Save draft" answers its click with a dialog: the click was carried out, and that is what it did.
+    assert await asyncio.wait_for(session.click(page, uid_of(snapshot, "Save draft")), 5.0) == 1
+    assert kinds_of(fake) == ["mouseMoved", "mousePressed", "mouseReleased"]
+    assert fake.find("Save draft").clicks == 1 and page.dialog is not None
+
+
+async def test_a_double_click_whose_first_click_opens_a_dialog_is_one_click(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    # A button that asks at the first click: the second never reaches it, and no double click comes of it.
+    assert await asyncio.wait_for(session.click(page, uid_of(snapshot, "Save draft"), double=True), 5.0) == 1
+    assert kinds_of(fake) == ["mouseMoved", "mousePressed", "mouseReleased"]
+    assert fake.find("Save draft").clicks == 1
+
+
+@pytest.mark.parametrize("what", ["a dialog opens", "the page closes"])
+async def test_the_button_does_not_go_down_when_the_page_stopped_taking_input_after_the_pointer_arrived(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any, what: str
+) -> None:
+    # Not the pointer's doing: a timer of the page's, between the pointer arriving and the button going down.
+    page, fake, snapshot = await open_page(session, world)
+    real = session._mouse
+
+    async def mouse_then(target: Page, kind: str, x: float, y: float, **extra: Any) -> bool:
+        answered = await real(target, kind, x, y, **extra)
+        if kind == "mouseMoved":
+            if what == "a dialog opens":
+                world.browser.open_dialog(fake, "alert", "Your session ran out")
+                await asyncio.wait_for(target.dialog_event.wait(), 5.0)
+            else:
+                world.browser.remove_page(fake)
+                for _ in range(400):
+                    if not session.is_open(target):
+                        break
+                    await asyncio.sleep(0.005)
+                assert not session.is_open(target)
+        return answered
+
+    monkeypatch.setattr(session, "_mouse", mouse_then)
+    assert await asyncio.wait_for(session.click(page, uid_of(snapshot, "Gift wrap")), 10.0) == 0
+    assert kinds_of(fake) == ["mouseMoved"] and fake.find("Gift wrap").clicks == 0
+
+
+async def test_a_box_that_was_not_clicked_is_not_taken_for_filled_in(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    gift = fake.find("Gift wrap")
+    uid = uid_of(snapshot, "Gift wrap")
+    gift.on_hover = lambda browser, target: browser.open_dialog(target, "alert", "Draft saved")
+    await refused(
+        world,
+        session.fill_many(page, [(uid, "true")]),
+        f"A dialog opened before the click on the element with uid {uid} was carried out, so it was not changed. "
+        f"Handle the dialog, then fill the element in again.\n{NOTICE}",
+    )
+    assert gift.checked is False and kinds_of(fake) == ["mouseMoved"]
+    # Once the dialog is handled the box is ticked as asked.
+    gift.on_hover = None
+    await session.handle_dialog(page, True)
+    assert await session.fill_many(page, [(uid, "true")]) == [uid]
+    assert gift.checked is True
+
+
+async def test_a_box_whose_page_closed_before_the_click_is_not_taken_for_filled_in(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    uid = uid_of(snapshot, "Gift wrap")
+    fake.find("Gift wrap").on_hover = lambda browser, target: browser.remove_page(target)
+    await refused(
+        world, session.fill_many(page, [(uid, "true")]), f"The page closed before the click on the element with uid {uid} was carried out."
+    )
 
 
 async def test_an_option_of_a_select_is_chosen_without_a_click(session: BrowserSession, world: BrowserWorld) -> None:

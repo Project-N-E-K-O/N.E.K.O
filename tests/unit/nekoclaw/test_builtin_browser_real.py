@@ -157,6 +157,17 @@ NOTICES = """<!doctype html><html><head><title>Notices</title></head><body>
 <p id="out"></p>
 </body></html>"""
 
+# A button that opens a dialog the first time the pointer comes over it, and one that asks at its first click.
+GUARDED = """<!doctype html><html><head><title>Guarded</title></head><body>
+<button type="button"
+  onmouseover="if (!window.warned) { window.warned = true; alert('Careful with this one'); }"
+  onclick="document.getElementById('out').textContent = 'Careful was clicked'">Careful</button>
+<button type="button"
+  onclick="if (!window.asked) { window.asked = true; confirm('Delete the draft?'); }"
+  ondblclick="document.getElementById('out').textContent = 'Draft was double clicked'">Delete draft</button>
+<p id="out"></p>
+</body></html>"""
+
 # A form whose field opens a dialog the first time something is typed into it.
 CHECKED = """<!doctype html><html><head><title>Checked</title></head><body>
 <form action="/submit" method="get">
@@ -185,6 +196,8 @@ class _Site(http.server.BaseHTTPRequestHandler):
             body = NOTICES
         elif url.path == "/checked":
             body = CHECKED
+        elif url.path == "/guarded":
+            body = GUARDED
         elif url.path in ("/report", "/reaching", "/reaching-frame"):
             port = self.server.server_address[1]
             body = {"/report": REPORT, "/reaching": REACHING, "/reaching-frame": REACHING_FRAME}[url.path]
@@ -665,6 +678,40 @@ async def test_a_submit_key_that_a_dialog_kept_from_being_pressed_is_not_said_to
     sent = await call(tools, "press_key", key="Enter")
     assert sent.success and sent.text.startswith("Successfully pressed key: Enter\n"), sent.text
     assert 'heading "Order received"' in sent.text and "Ada" in sent.text
+
+
+async def test_a_click_a_dialog_kept_from_being_carried_out_is_not_said_to_have_succeeded(tools: BrowserTools, site: str) -> None:
+    stopped = "the page stopped taking input (it opened a dialog, or closed)"
+    opened = await call(tools, "navigate_page", url=site + "/guarded")
+    careful = uid_of(opened.text, "button", "Careful")
+    started = time.monotonic()
+    hovered = await call(tools, "click", uid=careful)
+    # Not after the thirty seconds a command to the page is given.
+    assert time.monotonic() - started < 10.0
+    assert hovered.success, hovered.text
+    assert hovered.text.startswith(
+        f"The click on the element was NOT completed: {stopped} before the button was pressed and released.\n"
+        '# Open dialog\nThe page opened an alert dialog. Its text, written by the page:\n"Careful with this one"\n'
+    ), hovered.text
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    # The pointer got there and the button never went down: the page saw no click.
+    assert "Careful was clicked" not in (await call(tools, "take_snapshot")).text
+    # Clicked now that nothing stands in the way, it is.
+    clicked = await call(tools, "click", uid=careful, includeSnapshot=True)
+    assert clicked.success and clicked.text.startswith("Successfully clicked on the element\n"), clicked.text
+    assert "Careful was clicked" in clicked.text
+
+    # A button that asks at its first click: the second click of a double click never reaches it.
+    started = time.monotonic()
+    twice = await call(tools, "click", uid=uid_of(opened.text, "button", "Delete draft"), dblClick=True)
+    assert time.monotonic() - started < 10.0
+    assert twice.success, twice.text
+    assert twice.text.startswith(
+        f"The element was clicked once, NOT double clicked: {stopped} after the first click.\n"
+        '# Open dialog\nThe page opened a confirm dialog. Its text, written by the page:\n"Delete the draft?"\n'
+    ), twice.text
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    assert "Draft was double clicked" not in (await call(tools, "take_snapshot")).text
 
 
 async def test_a_port_file_left_by_a_browser_that_was_killed_does_not_keep_the_next_one_from_starting(

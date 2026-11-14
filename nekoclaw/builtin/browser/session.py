@@ -1413,22 +1413,41 @@ class BrowserSession:
     async def _mouse(self, page: Page, kind: str, x: float, y: float, **extra: Any) -> bool:
         return await self._send_unless_dialog(page, "Input.dispatchMouseEvent", {"type": kind, "x": x, "y": y, **extra})
 
-    async def _click_at(self, page: Page, x: float, y: float, *, count: int = 1) -> None:
+    async def _click_at(self, page: Page, x: float, y: float, *, count: int = 1) -> int:
+        """Click at a point ``count`` times; return how many of the clicks were carried out.
+
+        A click is the button going down and coming up, both sent to the
+        page. Fewer than asked for are carried out when the page stopped
+        taking input on the way, nothing being sent to a page with a dialog
+        open or to one that has closed: when the pointer got there (a page
+        that opens a dialog on being hovered over), when the button went
+        down, or after an earlier click of the ``count`` (a button that asks
+        "are you sure?" at the first click of a double click). What a click
+        that was carried out led to is not held against it: the dialog that
+        came instead of an answer to the button coming up is what clicking
+        did.
+        """
         await self._mouse(page, "mouseMoved", x, y)
+        done = 0
         for number in range(1, count + 1):
-            pressed = False
             try:
-                pressed = await self._mouse(page, "mousePressed", x, y, button="left", buttons=1, clickCount=number)
+                await self._mouse(page, "mousePressed", x, y, button="left", buttons=1, clickCount=number)
             finally:
                 # Sent even when the call is stopped in between, so the button
-                # is never left down. (With a dialog open nothing is sent.)
-                released = await asyncio.shield(
-                    self._mouse(page, "mouseReleased", x, y, button="left", buttons=0, clickCount=number)
-                )
-            if not (pressed and released):
-                return
+                # is never left down. Whether it is sent is told beforehand,
+                # the same way sending tells it: not to a page with a dialog
+                # open (one the pointer opened, or the button going down, or
+                # the click before this one), nor to one that has closed.
+                came_up = page.dialog is None and self.is_open(page)
+                await asyncio.shield(self._mouse(page, "mouseReleased", x, y, button="left", buttons=0, clickCount=number))
+            if not came_up:
+                # No click came of it, and none will of the ones still to do.
+                break
+            done += 1
+        return done
 
-    async def click(self, page: Page, uid: str, *, double: bool = False) -> None:
+    async def click(self, page: Page, uid: str, *, double: bool = False) -> int:
+        """Click an element, twice for a double click; return how many clicks were carried out (see ``_click_at``)."""
         self.require_no_dialog(page)
         node, object_id = await self.element(page, uid)
         before = page.navigations
@@ -1437,10 +1456,12 @@ class BrowserSession:
         except _DialogOpened:
             # The option was chosen, and what the page does on that change asks first.
             chosen = True
+        clicks = 2 if double else 1
         if not chosen:
             x, y = await self._point(page, uid, node, object_id)
-            await self._click_at(page, x, y, count=2 if double else 1)
+            clicks = await self._click_at(page, x, y, count=clicks)
         await self.after_action(page, before)
+        return clicks
 
     async def hover(self, page: Page, uid: str) -> None:
         self.require_no_dialog(page)
@@ -1466,7 +1487,15 @@ class BrowserSession:
             raise BrowserError(f"The element with uid {uid} could not be filled in: {plan.get('message')}.")
         if kind == "click":
             x, y = await self._point(page, uid, node, object_id)
-            await self._click_at(page, x, y)
+            if not await self._click_at(page, x, y):
+                # Not changed, and said so: read as filled in, a box that was
+                # to be ticked would be taken for ticked.
+                if page.dialog is not None:
+                    raise BrowserError(
+                        f"A dialog opened before the click on the element with uid {uid} was carried out, so it "
+                        f"was not changed. Handle the dialog, then fill the element in again.\n{self.dialog_notice(page)}"
+                    )
+                raise BrowserError(f"The page closed before the click on the element with uid {uid} was carried out.")
         elif kind == "type":
             try:
                 await self._call(page, object_id, _FOCUS_FOR_TYPING)
