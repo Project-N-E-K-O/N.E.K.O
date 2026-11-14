@@ -88,6 +88,26 @@ async def test_public_turn_stops_at_four_provider_calls_and_delivers_safe_curren
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["numeric_v2_actor_player_handoff_unverified", "numeric_v2_actor_model_call_failed"])
+async def test_blocked_handoff_fallback_gives_specific_feedback_without_granting_transfer(tmp_path, monkeypatch, reason):
+    runtime, current = await _case(tmp_path)
+    _install(monkeypatch, runtime)
+    runtime.engine.fact_contract[KEY].update(player_handoff_item=["设备"], evidence_source="performance")
+
+    async def rejected(**kwargs):
+        raise wf.NumericV2ActorOutputError(reason)
+
+    monkeypatch.setattr(wf, "_execute_numeric_v2_turn", rejected)
+    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("pending-handoff", 0, "信物已留，我们走吧。"), ensure_current_binding=lambda _: _binding())
+    assert result.diagnostics["safe_delivery_fallback"] is True
+    assert result.diagnostics["handoff_pending_feedback"] is True
+    assert "设备" in result.performance["performance"]
+    assert "当面递出" in result.performance["performance"]
+    assert result.stored.session.story_state["facts"] == current.session.story_state["facts"]
+
+
+@pytest.mark.asyncio
 async def test_safe_reply_cannot_swallow_an_identity_change(tmp_path, monkeypatch):
     runtime, current = await _case(tmp_path)
     _install(monkeypatch, runtime)

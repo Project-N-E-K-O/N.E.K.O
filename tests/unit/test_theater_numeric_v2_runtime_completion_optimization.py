@@ -99,7 +99,7 @@ async def _signed_case(tmp_path, monkeypatch, *, legacy=False):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [False, True])
-async def test_current_signed_acceptance_uses_one_final_audit_without_another_intent_vote(tmp_path, monkeypatch, legacy):
+async def test_current_signed_acceptance_trusts_exact_program_entry_without_another_vote(tmp_path, monkeypatch, legacy):
     runtime, current, calls, receipt = await _signed_case(tmp_path, monkeypatch, legacy=legacy)
 
     async def no_model_intent(self, **kwargs):
@@ -107,11 +107,13 @@ async def test_current_signed_acceptance_uses_one_final_audit_without_another_in
 
     monkeypatch.setattr(ev.NumericV2MetricEvaluator, "evaluate", no_model_intent)
     monkeypatch.setattr(ev.NumericV2MetricEvaluator, "review_story_evidence", no_model_intent)
+    monkeypatch.setattr(ev.NumericV2MetricEvaluator, "verify_contract_boundaries", no_model_intent)
     result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("accept", current.session.revision, receipt["accept_input"], "suggestion"), ensure_current_binding=lambda _: _binding())
     assert result.diagnostics["evaluator_skip_reason"] == "verified_invitation_acceptance"
     assert result.stored.session.current_node_id == "work"
-    assert calls == {"actor": 0, "contract": 1}
+    assert calls == {"actor": 0, "contract": 0}
+    assert result.diagnostics["trusted_accepted_author_entry"] is True
     assert result.stored.session.metrics == current.session.metrics
     assert await runtime.restore_session(current.session.session_id) == result.stored
 
@@ -134,6 +136,19 @@ async def test_receipt_shortcut_keeps_completion_choice_and_current_input_guards
     elif changed == "not_ready":
         current = replace(current, session=replace(current.session, story_state={**current.session.story_state, "facts": {}}))
     assert not wf._receipt_acceptance_only(runtime, current, turn, source["route_gates"][0]["id"])
+
+
+@pytest.mark.asyncio
+async def test_accepted_program_original_preserves_ordinary_equal_signs(tmp_path, monkeypatch):
+    runtime, current, calls, receipt = await _signed_case(tmp_path, monkeypatch)
+    text = "工作台的标牌写着 a=b，1+1=2，x>=1，还有一行======。"
+    runtime.engine.nodes["work"]["story_beat"]["fixed_narrations"][0]["text"] = text
+    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2("accept-equals", current.session.revision, receipt["accept_input"], "suggestion"),
+        ensure_current_binding=lambda _: _binding())
+    originals = result.performance["segments"][-1]["fixed_narrations"]
+    assert originals[0]["text"] == text
+    assert calls == {"actor": 0, "contract": 0}
 
 
 @pytest.mark.asyncio
@@ -268,7 +283,7 @@ async def test_legacy_soft_budget_uses_only_current_committed_readiness(tmp_path
         ensure_current_binding=lambda _: _binding())
     assert accepted.stored.session.current_node_id == "work"
     assert accepted.diagnostics["evaluator_skip_reason"] == "verified_invitation_acceptance"
-    assert calls == {"actor": 0, "contract": 1}
+    assert calls == {"actor": 0, "contract": 0}
     assert accepted.stored.session.story_state["facts"].get(KEY) is None
 
 
@@ -324,20 +339,21 @@ async def test_evaluator_and_body_audit_cannot_write_one_fact_twice_or_reverse_i
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("handed", [False, True])
+@pytest.mark.parametrize("handed", [False, True, "forged_receipt"])
 async def test_body_audit_cannot_grant_a_program_blocked_player_handoff(tmp_path, monkeypatch, handed):
     from tests.unit.test_theater_numeric_v2_handoff_suggestion import _start, KEY as HANDOFF
     runtime, current = await _start(tmp_path, "剑匣", [])
-    message = "（我把剑匣递向保管员）请接好。" if handed else "信物已留，我们走吧。"
+    authorized = handed is True
+    message = "（我把剑匣递向保管员）请接好。" if authorized else "信物已留，我们走吧。"
     async def evaluate(self, **kwargs):
         return ev.NumericV2EvaluationResult((), False)
     async def generate(self, **kwargs):
         return {"performance": "我在旁边等候。", "suggested_inputs": [],
             "scene_narration": "保管员已伸手接稳剑匣。" if handed else "保管员仍在等候亲手交接。"}
     def audit(messages, data, kwargs):
-        assert ("bound_completion_check" in data) is handed
+        assert ("bound_completion_check" in data) is authorized
         payload = _clear(kwargs)
-        if handed:
+        if authorized:
             payload["bound_completion_approved_indexes"] = [0]
         return payload
     _audit_transport(monkeypatch, audit)
@@ -348,6 +364,11 @@ async def test_body_audit_cannot_grant_a_program_blocked_player_handoff(tmp_path
     monkeypatch.setattr(actor.NumericV2Actor, "_character_profile", lambda self: "认真。")
     result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("handoff", 0, message), ensure_current_binding=lambda _: _binding())
-    assert not result.diagnostics.get("safe_delivery_fallback")
-    assert (HANDOFF in result.stored.session.story_state["facts"]) is handed
+    if handed == "forged_receipt":
+        assert result.diagnostics["safe_delivery_fallback"] is True
+        assert result.diagnostics["handoff_pending_feedback"] is True
+        assert "接稳剑匣" not in str(result.performance)
+    else:
+        assert not result.diagnostics.get("safe_delivery_fallback")
+    assert (HANDOFF in result.stored.session.story_state["facts"]) is authorized
     assert await runtime.restore_session(current.session.session_id) == result.stored

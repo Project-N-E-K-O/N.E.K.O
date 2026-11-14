@@ -50,7 +50,7 @@ async def test_generated_author_recovery_cannot_skip_actual_state_review(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_fixed_original_finding_does_not_spend_an_uneditable_actor_rewrite(tmp_path, monkeypatch):
+async def test_fixed_original_finding_tries_one_program_recovery_without_actor_rewrite(tmp_path, monkeypatch):
     runtime, current = await _case(tmp_path)
     calls = _install(monkeypatch, runtime)
     before = runtime.store._path(current.session.session_id).read_bytes()
@@ -64,7 +64,7 @@ async def test_fixed_original_finding_does_not_spend_an_uneditable_actor_rewrite
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "verify_contract_boundaries", reject)
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_violation"):
         await _execute(runtime, current)
-    assert calls == {"actor": 1, "contract": 1}
+    assert calls == {"actor": 1, "contract": 2}
     assert runtime.store._path(current.session.session_id).read_bytes() == before
 
 

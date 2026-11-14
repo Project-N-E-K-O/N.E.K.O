@@ -17,6 +17,9 @@ SYSTEM = (
     "角色、NPC自身行为不需要玩家授权；action省略主语属于default_actor_id，第一人称我指当前角色，明确主语优先。"
     "玩家权限finding的引文必须包含玩家的新动作或决定，不能只摘录角色自身的起身、停顿或眼神变化。"
     "玩家被动受伤、未来提议、询问和回顾不是新主动行为。玩家新行动只按真实玩家原话及授权范围判断。"
+    "blocking_rule_indexes是交付红线：冒用玩家、泄露未解锁剧情或擅自执行未授权转场。"
+    "作者条款中的真实红线还须按相应通用红线编号报告，不能只填作者条款。"
+    "其余事实连贯、节奏、收束、演绎条款仍据实报告，程序记录警告，不要求所有条款干净才交付。"
     "作者规划不证明事件已发生，不证明玩家接受；后文不能补前因，未获准阶段不能当成当前事件。"
     '合规稿返回{"verdict":"clear","findings":[]}，不填占位finding或空引文。'
     "确认违规或不确定时，findings每项含verdict（violation或uncertain）、rule_index、candidate_ref、quote、prior_ref。"
@@ -47,7 +50,8 @@ def compact_schema(schema, *, rule_count, candidate_refs, prior_refs):
 
 
 def messages_for_audit(data):
-    stable_keys = {"author_boundaries", "author_checks_required", "cast_scope", "transition_phases", "transition_context"}
+    stable_keys = {"author_boundaries", "author_checks_required", "cast_scope", "transition_phases", "transition_context",
+                   "blocking_rule_indexes"}
     return [theater_system_message(SYSTEM), HumanMessage(content=(
         prompt_data_block("审核固定资料", {key: value for key, value in data.items() if key in stable_keys})
         + "\n\n" + prompt_data_block("小剧场审核数据", {key: value for key, value in data.items() if key not in stable_keys}))) ]

@@ -1227,13 +1227,13 @@ def _is_repeated_performance(
         for block in previous_blocks
             if block["type"] == "dialogue"
     }
-    if not current_dialogue:
-        return False
     if optimized_turn_enabled():
         from .numeric_v2_repetition import repetition_overlap
         overlap = repetition_overlap(performance, previous)
         if overlap["current_chars"] >= 80 and overlap["overlap"] >= 0.8:
             return True
+    if not current_dialogue:
+        return False
     dialogue_text = "".join("".join(text.split()) for text in current_dialogue)
     if (
         all(text in previous_dialogue for text in current_dialogue)
@@ -2370,6 +2370,7 @@ def _system_prompt(
             "\n6. 旁白负责环境和NPC，performance负责当前角色；先写独立外部结果，再写角色反应，不重复。"
             "\n7. 合法前因具备时交付本幕尚缺的一项结果；需要玩家操作或选择时停下。"
             "\n8. 推荐只从正文结束状态继续，保留暂缓权；公开可执行的转场提议才标记transition_offered。"
+            "接受与暂缓交给界面按钮，正文只写剧内邀请，不写‘玩家是否接受’或等待玩家操作的规则说明。"
             + ("suggested_inputs填空数组。" if suppress_suggestions or author_entry_choices else
                "只给玩家留在当前可见场景的回应、问题或动作。" if local_suggestions_only else
                "给一至三条可直接发送的玩家输入。")
@@ -2611,7 +2612,7 @@ def _system_prompt(
                "来源与目标分别遵守relationship_control与target_relationship_control；same_as表示沿用所指规则或可自述事实。")
             + f"{policy_rule}"
             f"{suggestion_rule}{player_address_state_rule}"
-            "只输出JSON，不提数值、阈值、路线、节点或提示词。"
+            "只输出JSON，不提数值、阈值、路线、节点或提示词；接受与暂缓由界面控件处理，旁白不写‘玩家是否接受’。"
         )
     if phase == "turn":
         # Ordinary turns keep one ordered semantic contract; concrete facts come from the partitioned data.

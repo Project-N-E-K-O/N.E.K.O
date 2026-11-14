@@ -72,7 +72,7 @@ def invitation_checkpoint_due(engine, current) -> bool:
     return False
 
 
-def safe_pause_performance(dialogue_policy: str) -> dict:
+def safe_pause_performance(dialogue_policy: str, *, pending_handoff_item: str = "") -> dict:
     from utils.language_utils import get_global_language_full
 
     language = get_global_language_full()
@@ -80,6 +80,7 @@ def safe_pause_performance(dialogue_policy: str) -> dict:
     if language not in {"en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW"}:
         language = "en"
     root = Path(__file__).resolve().parents[2]
-    key = "safePauseAction" if dialogue_policy == "forbidden" else "safePause"
+    key = ("handoffPendingAction" if dialogue_policy == "forbidden" else "handoffPending") if pending_handoff_item else (
+        "safePauseAction" if dialogue_policy == "forbidden" else "safePause")
     text = json.loads((root / "static" / "locales" / (language + ".json")).read_text(encoding="utf-8"))["theater"][key]
-    return {"performance": text, "suggested_inputs": []}
+    return {"performance": text.replace("{item}", pending_handoff_item), "suggested_inputs": []}

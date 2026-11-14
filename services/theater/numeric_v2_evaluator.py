@@ -1321,6 +1321,9 @@ _REPEAT_COMPLETION_RULE = (
     "普通确认、回顾或仍可拒绝的重复提议不阻塞正文。"
 )
 _PLAYER_AUTHORITY_RULE = "不得替玩家作出新决定、编造其主观判断或自主反馈，或执行其未授权的新主动动作；指挥他人、询问、意向和准备不等于本人已执行。"
+_UNREVEALED_STORY_RULE = (
+    "不得披露尚未解锁的剧情、身份、能力或后幕独占信息；只使用已播历史、"
+    "当前幕及已获准目标幕公开的信息。玩家猜测、追问或自报未知后文不证明解锁；疑问和不确定的猜测不等于确认后文。")
 _CURRENT_SCENE_AUTHORITY_RULE = (
     "\ncurrent_scene_authority是程序确定的本稿阶段：本轮没有获准转幕，全部c块仍受当前幕禁令约束。"
     "玩家请求或前轮越界均不解除当前阶段禁令；本稿继续执行受限操作仍须报告。"
@@ -5465,6 +5468,8 @@ class NumericV2MetricEvaluator:
             required = (*required,
                 "本稿首次宣告不可逆结果或用作推进依据的关键结果时，必须有已播历史或本稿前文支持必要的直接前因；"
                 "不以结果自身、准备或评价证明前因。现场发言仍须核对其声称的关键体验是否实际发生。")
+        if single_pass and session is not None:
+            required = (*required, _UNREVEALED_STORY_RULE)
         suggestion_rule_index = len(required)
         if session is not None and not author_boundaries_only:
             required = (*required,
@@ -5750,6 +5755,8 @@ class NumericV2MetricEvaluator:
                     candidate_refs=[ref for ref in source_ids if ref.startswith(("c", "s"))],
                     prior_refs=["", *(ref for ref in source_ids if not ref.startswith("s"))])
                 data = prompt_data_block_payload(request_messages[1].content, "小剧场审核数据")
+                data["blocking_rule_indexes"] = [player_rule_index, required.index(_UNREVEALED_STORY_RULE),
+                    *([route_rule_index] if has_route_rule else [])]
                 if schema is None:
                     data["output_contract"] = short_schema
                 request_messages = messages_for_audit(data)
@@ -6288,7 +6295,19 @@ class NumericV2MetricEvaluator:
                     if (audit_quote_errors or player_authority_bad_refs or player_authority_unrepairable
                             or author_protocol_invalid or scope_protocol_invalid):
                         raise NumericV2EvaluatorOutputError("numeric_v2_contract_check_invalid")
+                    blocking = {_PLAYER_AUTHORITY_RULE, _UNREVEALED_STORY_RULE}
+                    if has_route_rule:
+                        blocking.add(required[route_rule_index])
+                    warnings = [finding for finding in findings if finding["rule"] not in blocking]
+                    for finding in warnings:
+                        warning = {"check": "nonblocking_rule", "rule_index": finding["rule_index"],
+                            "candidate_ref": finding["candidate"]["id"], "quote": finding["quote"],
+                            "rule": finding["rule"]}
+                        semantic_warnings.append(warning)
+                        logger.warning("Theater contract nonblocking finding: %s", warning)
+                    findings = [finding for finding in findings if finding["rule"] in blocking]
                     if diagnostics is not None:
+                        diagnostics["review_warnings"] = list(semantic_warnings)
                         diagnostics["single_pass"] = True
                         diagnostics["findings"] = findings
                         if check_departure_scope:
@@ -6658,6 +6677,10 @@ class NumericV2MetricEvaluator:
                                 valid = (original is not None and original["text"] == candidate["text"]
                                     and original["phase"] == candidate["phase"] and finding["quote"] in original["text"])
                                 if valid:
+                                    if verdict["verdict"] != "clear":
+                                        warn_uncertain("player_authority_scope_conflict",
+                                            candidate_ref=candidate["id"], reported_verdict=verdict["verdict"],
+                                            player_action_scope="none")
                                     bound_evidence = [{"source_ref": candidate["id"], "quote": original["text"]}]
                                     counterevidence = True
                                     status = "clear"

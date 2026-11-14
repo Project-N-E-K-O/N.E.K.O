@@ -3532,6 +3532,8 @@
   "theater": {
     "safePauseAction": "(pauses briefly)",
     "safePause": "How would you like to continue?",
+    "handoffPending": "The handover is still unfinished. Would you like to offer {item} in person and wait for it to be received, or ask how to hand it over?",
+    "handoffPendingAction": "(the handover remains unfinished; {item} still awaits an in-person transfer)",
     "tokenStage_dispute": "Dispute review",
     "tokenStage_history_lookup": "History lookup",
     "tokenStage_review": "Fast review",

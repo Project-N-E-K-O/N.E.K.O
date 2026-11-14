@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // Refresh theater and main's merged locale keys together.
-    const LOCALE_VERSION = '2026-11-13-theater-safe-delivery';
+    const LOCALE_VERSION = '2026-11-14-theater-handoff-feedback';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

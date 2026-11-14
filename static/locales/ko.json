@@ -3532,6 +3532,8 @@
   "theater": {
     "safePauseAction": "（잠시 멈춘다）",
     "safePause": "이제 어떻게 이어가고 싶어?",
+    "handoffPending": "아직 전달이 끝나지 않았어. {item}을 직접 건네고 상대가 받을 때까지 기다릴까, 아니면 먼저 전달 방법을 물어볼까?",
+    "handoffPendingAction": "（아직 전달이 끝나지 않아 {item}을 직접 건네야 한다）",
     "tokenStage_dispute": "이의 재검토",
     "tokenStage_history_lookup": "기록 검색",
     "tokenStage_review": "빠른 검토",

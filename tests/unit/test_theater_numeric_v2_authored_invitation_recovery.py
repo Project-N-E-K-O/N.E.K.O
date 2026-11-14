@@ -112,8 +112,8 @@ async def test_failed_in_act_draft_recovers_a_real_control_then_continues(tmp_pa
     assert moved.stored.session.revision == current.session.revision + 2
     assert len([event for event in moved.stored.ledger_events if event["from_node_id"] != event["to_node_id"]]) == 1
     assert moved.stored.session.metrics["trust"] == result.stored.session.metrics["trust"]
-    # The accepted, self-contained fixed entry is assembled by the program and still audited.
-    assert calls == {"actor": 2, "contract": 3, "evaluator": 1}
+    # The accepted, self-contained fixed entry is trusted by its private program receipt.
+    assert calls == {"actor": 2, "contract": 2, "evaluator": 1}
     assert moved.diagnostics["evaluator_skip_reason"] == "verified_invitation_acceptance"
 
 

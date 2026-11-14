@@ -3532,6 +3532,8 @@
   "theater": {
     "safePauseAction": "（稍作停顿）",
     "safePause": "接下来，你想怎么继续？",
+    "handoffPending": "交接还没完成。先把{item}当面递出，等对方接稳，还是先问清接收方式？",
+    "handoffPendingAction": "（交接尚未完成，{item}仍待当面交付）",
     "tokenStage_dispute": "争议复查",
     "tokenStage_history_lookup": "历史查找",
     "tokenStage_review": "快速复核",

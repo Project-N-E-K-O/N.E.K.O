@@ -27,6 +27,7 @@ from .numeric_v2 import (
 )
 
 FLOW = "staged.v1"
+CHECKPOINT_VERSION = 1
 _SCENE_INPUT_TARGET = 10_000
 _LOCAL_REPAIR_RULE = (
     '\n局部修订覆盖上述输出格式。只返回 {"replacements":{"请求路径":修正后的完整值}}。'
@@ -69,7 +70,7 @@ ordered_goals 用合同枚举和 1—6 项有限交付。previous_goal 只指本
 trigger_fact_ids 只选本幕必要结果。target_value 按字面匹配，不写 any_non_empty。普通出口的 entry_prerequisite_fact_ids 只填下一幕独立要求的硬前提。typed 事实不超过 remaining_typed_fact_keys，展示引用不占事实键。
 普通出口先确定是否仍需新的玩家决定。若本幕已做出的决定或已交付的结果自然引出下一幕，无新许可、承诺、去向或操作待选，填 advance_on_completion=true，player_decision、fallback_offer 和 accept_input 均为空，省略 silent_choice。proposal 写由既成结果引出的后果；目标开场从后果开始，不能再次要求完成触发事实。否则填 false，proposal 与 fallback_offer 邀请同一项新活动、地点和时段，accept_input 写明确接受原话。许可、交易和风险承诺须明确授权。需新授权且作者发声策略为 forbidden 时才省口头邀请并填写 silent_choice。邀约字段为至多30 tokens的单行。末幕沿用自然结局，advance_on_completion=false，两项邀约字段为空。
 关系和权限不随换幕重置，关系上限相邻最多变一级。known_player_facts、allowed_behaviors、forbidden_behaviors 各最多4项。known_player_facts 以玩家全名开头；progress_opportunity 以当前角色全名或“环境”开头，只写有限变化。首幕 address_state 不用 known_from_prior_scene。scene_boundaries 只写会破坏本幕因果、已确定状态或玩家权限的硬限制，以“不得”“禁止”或“不能”开头。区分在场配角当轮答复与无依据的事后转述。上幕局部限制结束，持续作者限制沿用。
-按 length.scene_expected_turns_target 的非空目标估计 expected_turns。entry 固定原文可交付独立于玩家的关键证据或NPC自主事件，开场不复制原文。初始开场只建立原文前的环境；后续非 fixed_entry_only 入幕，原文尚缺且已获准、前因明确的角色或在场NPC非语言必要触发动作，可在原文前以明确主体交付一次，不代玩家行动，不编未知成败或额外操作；其余自身动作、对白与新反应放在原文之后。原文已完整承担角色开场时用 optional；只有确认下一幕由原文独立开场时才标 exit_plan.fixed_entry_only。仍需玩家参与的选择、谈判、操作和结果留在 turn；无独立原文时 fixed_narrations 写[]。
+按 length.scene_expected_turns_target 的非空目标估计 expected_turns。entry 固定原文可交付独立于玩家的关键证据或NPC自主事件，开场不复制原文。初始开场只建立原文前的环境；后续非 fixed_entry_only 入幕，原文尚缺且已获准、前因明确的角色或在场NPC非语言必要触发动作，可在原文前以明确主体交付一次，不代玩家行动，不编未知成败或额外操作；其余自身动作、对白与新反应放在原文之后。原文已完整承担角色开场时用 optional；只有确认下一幕由原文独立开场时才标 exit_plan.fixed_entry_only。生成时逐段核对独立入幕原文的必要前因、已公开范围和玩家授权，前因必须由合法入路保证或在原文内先行交付，不依赖运行时演员补演。仍需玩家参与的选择、谈判、操作和结果留在 turn；无独立原文时 fixed_narrations 写[]。
 narrative 和 opening_scene 各不超过384 tokens。关系和道具应简洁，为后续摘录状态与处境后合计384 tokens的字段留出余量。
 issues.path 是当前输出中的修订位置，source_path 是整稿定位。native_validation_issues 是本幕正式编译错误；只修当前返回对象，保留其它正文与事件，不修改已完成前幕、后幕或故事框架。只返回 JSON object。"""
 _FINAL_CHAPTER_CAUSALITY = (
@@ -315,11 +316,14 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
         raise NumericV2GenerationError("invalid_length_preset")
     minimum, maximum = _LENGTH_PRESETS[preset]
     state = deepcopy(dict(checkpoint)) if checkpoint is not None else {
-        "flow": FLOW, "stage": "frame", "candidate": {}, "completed_chapters": 0,
+        "flow": FLOW, "checkpoint_version": CHECKPOINT_VERSION,
+        "stage": "frame", "candidate": {}, "completed_chapters": 0,
         "phase_candidate": None, "issues": [],
         **({"cast_names": dict(cast_names)} if cast_names is not None else {}),
     }
-    if state.get("flow") != FLOW:
+    state.setdefault("checkpoint_version", 0)
+    if (state.get("flow") != FLOW or type(state["checkpoint_version"]) is not int
+            or state["checkpoint_version"] not in (0, CHECKPOINT_VERSION)):
         raise NumericV2GenerationError("generation_checkpoint_invalid")
     if state["stage"] in {"complete", "frame"} and state.get("native_issues") and state.get("issues"):
         # Older complete checkpoints or frame checkpoints can contain node-local diagnostics.
@@ -671,8 +675,13 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
         return result
 
     candidate = state["candidate"]
-    legacy_invitation = (checkpoint is not None and state["stage"] != "frame"
+    legacy_invitation = (state["checkpoint_version"] == 0 and state["stage"] != "frame"
                          and "invitation" not in (candidate.get("world") or {}))
+    if (checkpoint is not None and state["stage"] != "frame" and not legacy_invitation
+            and "invitation" not in (candidate.get("world") or {})):
+        raise NumericV2GenerationError("generation_checkpoint_invalid", checkpoint=state, issues=[{
+            "code": "required_text", "path": "world.invitation", "message": "新版检查点缺少角色邀约语。",
+        }])
     if checkpoint is not None and state["completed_chapters"]:
         chapters = candidate["mainline_chapters"]
         completed = state["completed_chapters"]
@@ -770,7 +779,8 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
                 state["author_brief"] = author_brief
             candidate["relationship_arc"]["stages"] = []
             candidate["character_state_arc"] = {"stages": [], "ending_stage": {}}
-            state.update(candidate=candidate, stage="chapter", phase_candidate=None)
+            state.update(candidate=candidate, stage="chapter", phase_candidate=None,
+                         checkpoint_version=CHECKPOINT_VERSION)
         state["story_frame"] = _frame_projection(frame)
         persist()
 

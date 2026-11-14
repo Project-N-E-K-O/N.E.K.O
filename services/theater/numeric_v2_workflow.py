@@ -1993,7 +1993,10 @@ async def execute_numeric_v2_turn(
                     # Cancellation, stale revisions, identity and storage failures still propagate.
                     outcome = runtime.prepare_turn(current, turn, (), condition_narrations_enabled=False,
                                                    hold_current_scene=True)
-                    performance = safe_pause_performance(outcome.session.dialogue_policy)
+                    blocked = runtime.engine.blocked_player_handoffs(current.session, turn.message,
+                        input_source=turn.input_source)
+                    item = next((names[0] for names in blocked.values() if names), "")
+                    performance = safe_pause_performance(outcome.session.dialogue_policy, pending_handoff_item=item)
                     outcome, performance = runtime.engine.finalize_transition_offer_state(
                         outcome, performance, new_offer=False,
                         invalidate_previous_offer=turn.input_source == "accept_invitation")
@@ -2001,6 +2004,8 @@ async def execute_numeric_v2_turn(
                     stored, outcome, performance, binding = await _commit_program_delivery(
                         **commit_options, outcome=outcome, performance=performance)
                     diagnostics.update(completed=True, safe_delivery_fallback=True, fallback_reason=str(exc))
+                    if item:
+                        diagnostics["handoff_pending_feedback"] = True
                     trace_event("turn.safe_delivery", reason=str(exc), performance=performance)
                     result = NumericV2TurnWorkflowResult(stored, outcome, performance, binding, diagnostics)
             trace_event("turn.committed", state_after=trace_state(result.stored.session),
@@ -3524,7 +3529,7 @@ async def _execute_numeric_v2_turn(
         nonlocal authored_recovery_receipt, final_fixed_review, actor_publishes_transition_offer
         nonlocal actor_draft_route, reviewed_transition_offered, outcome
         nonlocal authored_invitation_recovered, program_invitation_performance
-        if (authored_recovery_receipt is not None or recovery_author_original_conflict
+        if (authored_recovery_receipt is not None
                 or diagnostics.get("contract_check_calls", 0) >= 2):
             return None
         recovered = _authored_transition_recovery(runtime.engine, current, outcome,
@@ -3835,6 +3840,12 @@ async def _execute_numeric_v2_turn(
         target_id = str(outcome.ledger_event["to_node_id"])
         changed = target_id != str(outcome.ledger_event["from_node_id"])
         key = contract_key(candidate)
+        if not changed and blocked_handoffs and any(
+                performed_player_handoff("\n".join(block["text"] for block in performance_content_blocks(candidate)
+                    if block["type"] != "dialogue"), names) for names in blocked_handoffs.values()):
+            # A blocked receipt must constrain visible prose as well as fact writes.
+            # Otherwise an NPC picking up an unoffered item silently completes it.
+            raise NumericV2ActorOutputError("numeric_v2_actor_player_handoff_unverified")
         pending_results = _pending_completion_facts(runtime.engine, outcome.session) if not changed else ()
         for claim in candidate.get("fact_candidates") or ():
             if not isinstance(claim, Mapping) or not isinstance(claim.get("key"), str):
@@ -3890,6 +3901,18 @@ async def _execute_numeric_v2_turn(
             offer_key = (key[1], offer_route["id"], offer_text, offer_accept_input)
         if key in contract_verdicts and (offer_key is None or offer_key in offer_verdicts):
             return contract_verdicts[key]
+        if (optimized_turn_enabled() and changed and is_authored_recovery(candidate)
+                and reviewed_transition_source is None
+                and outcome.route is not None
+                and outcome.ledger_event.get("accepted_offer_route_id") == outcome.route["id"]
+                and outcome.ledger_event.get("transition_intent") == "accept"):
+            # Runtime has verified the accepted route and reconstructed every
+            # byte from the authored entry. Actor text cannot acquire this receipt.
+            diagnostics["trusted_accepted_author_entry"] = True
+            trace_event("contract.authored_entry_trusted", route_id=outcome.route["id"],
+                        body_fingerprint=performance_fingerprint(candidate))
+            contract_verdicts[key] = ()
+            return ()
         if (authored_recovery_receipt is not None or cited_dialogue_recovered) and diagnostics.get("contract_check_calls", 0) >= 2:
             # Recovery shares the original draft/rewrite allowance. An edited
             # recovery cannot inherit a cached approval or add a third audit.
@@ -4049,9 +4072,12 @@ async def _execute_numeric_v2_turn(
 
     performance, problems = await checked_delivery(performance)
     if problems and recovery_author_original_conflict:
-        # Actor cannot edit a program original. Retain the real conflict and
-        # stop before spending a rewrite that must reproduce the same source.
-        raise NumericV2ActorOutputError("numeric_v2_contract_violation")
+        recovered = recover_authored_transition("author_original_conflict")
+        if recovered is None:
+            raise NumericV2ActorOutputError("numeric_v2_contract_violation")
+        performance, problems = await checked_delivery(recovered)
+        if problems:
+            raise NumericV2ActorOutputError("numeric_v2_contract_violation")
     if problems and diagnostics["semantic_rewrite_attempts"]:
         recovered = recover_authored_transition("contract_rewrite_exhausted")
         if recovered is None:

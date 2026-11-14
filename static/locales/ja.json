@@ -3532,6 +3532,8 @@
   "theater": {
     "safePauseAction": "（少し間を置く）",
     "safePause": "この先、どうしたい？",
+    "handoffPending": "受け渡しはまだ終わっていない。{item}を直接差し出して受け取ってもらうのを待つ？ それとも、渡し方を先に聞く？",
+    "handoffPendingAction": "（受け渡しはまだ終わらず、{item}は直接渡されるのを待っている）",
     "tokenStage_dispute": "再審査",
     "tokenStage_history_lookup": "履歴検索",
     "tokenStage_review": "簡易確認",

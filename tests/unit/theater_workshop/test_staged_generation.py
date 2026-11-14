@@ -1391,6 +1391,7 @@ def test_next_scene_does_not_receive_previous_scene_local_boundaries():
 def _without_invitation(checkpoint):
     """A checkpoint saved before world.invitation existed."""
     legacy = deepcopy(checkpoint)
+    legacy.pop("checkpoint_version", None)
     for holder in (legacy.get("candidate"), legacy.get("story_frame"), legacy.get("phase_candidate")):
         if isinstance(holder, dict) and isinstance(holder.get("world"), dict):
             holder["world"].pop("invitation", None)
@@ -1439,6 +1440,19 @@ def test_new_frame_without_invitation_is_sent_back_for_it():
     assert len(frames) == 2
     assert any(issue.get("path") == "world.invitation" for issue in frames[1])
     assert story["intro"]["invitation"] == outline["world"]["invitation"]
+
+
+@pytest.mark.parametrize("stage_index", [2, -1])
+def test_versioned_checkpoint_missing_invitation_cannot_claim_legacy_compatibility(stage_index):
+    outline, checkpoints = _idea_outline(3), []
+    generator = NumericV2Generator(lambda messages, **options: staged_reply(messages, options["operation"], outline))
+    generator.generate_staged(title="新存档", setup=_generation_setup(), save_checkpoint=checkpoints.append)
+    checkpoint = _without_invitation(checkpoints[stage_index])
+    checkpoint["checkpoint_version"] = checkpoints[stage_index]["checkpoint_version"]
+    assert checkpoint["checkpoint_version"] == 1
+    with pytest.raises(NumericV2GenerationError) as error:
+        generator.generate_staged(title="新存档", setup=_generation_setup(), checkpoint=checkpoint)
+    assert any(issue.get("path") == "world.invitation" for issue in error.value.issues)
 
 
 @pytest.mark.parametrize("invitation", [None, "", "   ", [], {}])

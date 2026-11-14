@@ -50,7 +50,7 @@ async def test_final_audit_uses_one_http_even_when_it_reports_a_problem(monkeypa
         assert not {"author_checks", "player_authority", "violations"} & props.keys()
         payload = _clear(kwargs)
         if verdict != "clear":
-            payload.update(verdict=verdict, findings=[{"verdict": verdict, "rule_index": 0,
+            payload.update(verdict=verdict, findings=[{"verdict": verdict, "rule_index": data["blocking_rule_indexes"][0],
                 "candidate_ref": "c0", "quote": data["sources"][0]["text"], "prior_ref": ""}])
         return payload
     calls = _install(monkeypatch, respond)
@@ -60,6 +60,35 @@ async def test_final_audit_uses_one_http_even_when_it_reports_a_problem(monkeypa
     assert bool(result) is (verdict == "violation")
     assert len(calls) == 1 and diagnostics["single_pass"] is True
     assert bool(diagnostics.get("review_warnings")) is (verdict == "uncertain")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("redline", [None, "player", "spoiler"])
+async def test_author_warnings_never_clear_an_independent_redline(monkeypatch, redline):
+    engine, session = _frame()
+    body = _body()
+    def respond(messages, data, kwargs):
+        payload = _clear(kwargs)
+        row = data["sources"][0]
+        soft = next(rule["rule_index"] for rule in data["author_boundaries"]
+                    if rule["rule_index"] not in data["blocking_rule_indexes"])
+        findings = [{"verdict": "violation", "rule_index": soft, "candidate_ref": row["id"],
+                     "quote": row["text"], "prior_ref": ""}]
+        if redline:
+            findings.append({**findings[0], "rule_index": data["blocking_rule_indexes"][0 if redline == "player" else 1]})
+        return {**payload, "verdict": "violation", "findings": findings}
+    _install(monkeypatch, respond)
+    diagnostics = {}
+    problems = await _review(engine, session, body, _bound(engine, session, body), [],
+                             diagnostics=diagnostics, single_pass=True)
+    assert bool(problems) is bool(redline)
+    assert any(row["check"] == "nonblocking_rule" for row in diagnostics["review_warnings"])
+
+
+def test_action_and_narration_only_repetition_uses_the_same_ngram_guard():
+    body = {"performance": "", "scene_narration": "雨水沿玻璃滴落，旧纸箱仍放在木柜旁，台灯照着桌上摊开的登记本，脚步声从走廊尽头传来。" * 3}
+    with bounded_model_calls():
+        assert actor._is_repeated_performance(body, deepcopy(body))
 
 
 @pytest.mark.asyncio

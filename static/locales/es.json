@@ -3532,6 +3532,8 @@
   "theater": {
     "safePauseAction": "(hace una breve pausa)",
     "safePause": "¿Cómo te gustaría continuar?",
+    "handoffPending": "La entrega sigue pendiente. ¿Quieres ofrecer {item} en persona y esperar a que lo reciban, o preguntar cómo entregarlo?",
+    "handoffPendingAction": "(la entrega sigue pendiente; {item} aún espera una entrega en persona)",
     "tokenStage_dispute": "Segunda revisión",
     "tokenStage_history_lookup": "Consulta del historial",
     "tokenStage_review": "Revisión rápida",

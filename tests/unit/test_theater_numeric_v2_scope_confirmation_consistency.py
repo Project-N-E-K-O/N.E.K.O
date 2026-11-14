@@ -48,7 +48,7 @@ def _session():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("recorded", ["escort", "neon"])
-async def test_recorded_confirmation_binds_its_actual_full_block_without_granting_permission(monkeypatch, recorded):
+async def test_recorded_confirmation_binds_its_actual_full_block_without_granting_permission(monkeypatch, recorded, caplog):
     calls, diagnostics = [], {}
     if recorded == "escort":
         body = {"scene_narration": "管事将通行文书举至灯前，指尖轻抚印纹仔细核验。片刻后，管事将文书平推回柜面，神色缓和地开口：“印色虽淡，但纹路无误，确是雁回镖局的冬例。两位请便。”",
@@ -86,6 +86,9 @@ async def test_recorded_confirmation_binds_its_actual_full_block_without_grantin
     assert effective["verdict"] == "clear" and effective["player_action_scope"] == "none"
     assert effective["clearance"] == [{"source_ref": "c1", "quote": calls[1]["finding"]["candidate"]["text"]}]
     assert diagnostics["player_authority_scope_overrides"][0]["reported_verdict"] == answer["verdict"]
+    if answer["verdict"] != "clear":
+        assert any(row["check"] == "player_authority_scope_conflict" for row in diagnostics["review_warnings"])
+        assert "player_authority_scope_conflict" in caplog.text
 
 
 @pytest.mark.asyncio
