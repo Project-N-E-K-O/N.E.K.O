@@ -239,7 +239,7 @@ Agent API Key 的取法：
 > - 键鼠控制：镜像（`docker/Dockerfile`、`docker/Dockerfile.full`）和 `docker/entrypoint.sh` 都不启动 X 显示服务，也不设置 `DISPLAY`，因此默认 Docker 部署下 pyautogui 无法导入，键鼠控制不可用（可用性检查返回未就绪，原因码 `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE`）。
 > - 浏览器控制：容器里没有用户自己的浏览器，应用自己也不下载浏览器。standard 镜像（`docker/Dockerfile`）不带浏览器，浏览器控制不可用，可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。full 镜像（`docker/Dockerfile.full`）装有 Debian 的 `chromium` 和 `chromium-sandbox`，浏览器工具按命令名 `chromium` 找到它。要让这个 Chromium 在容器里启动起来，还有两个条件（见 `docker/Dockerfile.full` 里「Browser for the browser tools」一段）：
 >   - 服务以 `neko` 用户运行，不是 root（官方 `docker/entrypoint.sh` 已经这样做）；
->   - Chromium 的沙箱要创建命名空间，Docker 默认的 seccomp 配置和权限集不允许，需要给容器换一个允许用户命名空间的 seccomp 配置，或者加 `--cap-add=SYS_ADMIN`，否则 Chromium 一启动就退出，浏览器工具报告浏览器启动不了；
+>   - Chromium 的沙箱要创建用户命名空间，Docker 默认的 seccomp 配置不允许，Chromium 会一启动就退出，浏览器工具报告浏览器启动不了。仓库里带了一份配置 `docker/seccomp/chromium.json`（Docker 的默认配置，只多一条允许创建命名空间的规则）：用 Compose 时连同 `docker/compose.browser.yaml` 一起起就会带上它，`docker run` 时加 `--security-opt seccomp=docker/seccomp/chromium.json`。它放开了什么、代价是什么、怎么在宿主机上确认，见 `docker/seccomp/README.md`；
 >
 >   容器里没有显示器这一点不用处理：`DISPLAY` 和 `WAYLAND_DISPLAY` 都没设时，浏览器工具自己不开窗口启动浏览器，和 `browser.json` 里的 `headless` 怎么设无关。
 

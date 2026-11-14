@@ -12,7 +12,7 @@
 
 按 [Docker 部署](./docker) 完成安装，Compose 文件就是 `docker/docker-compose.yml`。低配机器上建议：
 
-- **要用浏览器操控就选 full 镜像**：在 `docker/.env` 设置 `NEKO_IMAGE_VERSION=latest-full`。镜像自带 Chromium，代价是多占约 1GB 磁盘。standard 镜像不带浏览器，应用自己也不下载，所以在 standard 镜像里浏览器操控会报告找不到可用的浏览器。Chromium 要在容器里启动起来还需要另外一项设置（沙箱需要用户命名空间），见 `docker/README_Docker.md`。
+- **要用浏览器操控就选 full 镜像**：在 `docker/.env` 设置 `NEKO_IMAGE_VERSION=latest-full`。镜像自带 Chromium，代价是多占约 1GB 磁盘。standard 镜像不带浏览器，应用自己也不下载，所以在 standard 镜像里浏览器操控会报告找不到可用的浏览器。Chromium 的沙箱需要用户命名空间，要连同 `docker/compose.browser.yaml` 一起启动才起得来：在 `docker/.env` 里再设 `COMPOSE_FILE=docker-compose.yml:compose.browser.yaml`（已经有 `COMPOSE_FILE` 时把 `compose.browser.yaml` 接在后面），说明见 `docker/README_Docker.md`。
 - **固定版本**：`latest`、`latest-full` 是滚动标签。上线前用 `NEKO_IMAGE` 固定经过验证的 tag 或 digest，并确认镜像包含实例授权（#3289）与 HTTP 配对（#3299）。
 - **自有域名**：在 `docker/.env` 配置，官方 Compose 会把它们传入容器：
 

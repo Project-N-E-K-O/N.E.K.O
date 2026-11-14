@@ -7,10 +7,12 @@
 # needs before that Chromium can start.
 #
 # Build: docker build -f docker/Dockerfile.full -t neko:full .
-# Run:   docker run -d --name neko -p 48911:80 -p 48912:443 neko:full
+# Run:   docker run -d --name neko -p 48911:80 -p 48912:443 \
+#          --security-opt seccomp=docker/seccomp/chromium.json neko:full
 #
-# Usage with docker-compose:
-#   NEKO_IMAGE_VERSION=full docker-compose up -d
+# Usage with Compose (in docker/):
+#   NEKO_IMAGE_VERSION=latest-full \
+#     docker compose -f docker-compose.yml -f compose.browser.yaml up -d
 # ============================================================================
 
 # --- Stage 1: Build frontend projects ---
@@ -129,10 +131,11 @@ RUN echo "deb https://mirrors.aliyun.com/debian/ bookworm main non-free non-free
 #     browser tools do not pass that flag. This does not apply here: the
 #     entrypoint starts the services as the `neko` user (`runuser -u neko`).
 #   * As an unprivileged user, Chromium's sandbox needs to create namespaces,
-#     which Docker's default seccomp profile and capability set do not allow.
-#     Unless the container is run with a seccomp profile that allows user
-#     namespaces, or with --cap-add=SYS_ADMIN, Chromium exits at start and the
-#     browser tools report that the browser could not be started.
+#     which Docker's default seccomp profile does not allow. The container has
+#     to be run with docker/seccomp/chromium.json (Docker's default profile
+#     plus that one permission; docker/compose.browser.yaml puts it on, and
+#     docker/seccomp/README.md says what it costs), or Chromium exits at start
+#     and the browser tools report that the browser could not be started.
 #   * There is no display. Nothing has to be set for that: the browser tools
 #     start the browser without a window when neither DISPLAY nor
 #     WAYLAND_DISPLAY is set, whatever <data root>/nekoclaw/browser.json says.

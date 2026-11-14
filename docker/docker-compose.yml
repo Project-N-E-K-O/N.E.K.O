@@ -6,12 +6,16 @@ version: '3.8'
 #
 # 支持两种镜像版本：
 #   1. 标准版 (standard) - 轻量 (~1.5GB)，不带浏览器，浏览器控制不可用
-#   2. 完整版 (full)     - 完整 (~2.5GB)，装有发行版的 Chromium，供浏览器控制使用
-#                          （容器里启动它的条件见 docker/Dockerfile.full 里的说明）
+#   2. 完整版 (full)     - 完整 (~2.5GB)，装有发行版的 Chromium，供浏览器控制使用。
+#                          要连同 compose.browser.yaml 一起用：它给容器换上
+#                          seccomp/chromium.json，Chromium 的沙箱才起得来
+#                          （见 seccomp/README.md）。
 #
 # 使用方法：
 #   docker compose up -d                                   # 标准版
-#   NEKO_IMAGE_VERSION=latest-full docker compose up -d    # 完整版
+#   NEKO_IMAGE_VERSION=latest-full \
+#     docker compose -f docker-compose.yml -f compose.browser.yaml up -d    # 完整版
+#   # 完整版更省事的写法：把这两项写进 .env（见 env.template 末尾），之后照常 docker compose up -d
 #
 #   # 本地构建：本文件没有 build: 段，docker compose build 不会构建任何东西。
 #   # 下面两条要在仓库根执行（构建上下文是仓库根），所以 compose 要显式给 -f；

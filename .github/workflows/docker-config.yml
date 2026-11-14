@@ -2,10 +2,11 @@ name: Docker Config
 
 # Docker 侧的配置与宿主脚本回归。
 #
-# 这三个测试覆盖的都是「不会让镜像构建失败、只会在部署时静默失效」的东西：
+# 这几个测试覆盖的都是「不会让镜像构建失败、只会在部署时静默失效」的东西：
 #   docker/nginx/      反代配置分层：渲染两种模式 + 分层不变量 + nginx -t
 #   docker/watchdog/   宿主自愈看门狗（隔离 harness，mock docker/curl，不碰真实宿主）
 #   docker/            宿主预检 preflight.sh（挂载源符号链接与属主）
+#   docker/seccomp/    浏览器控制用的 seccomp 配置：在真容器里试（见 docker/seccomp/README.md）
 #
 # 在此之前它们只能靠人工 sudo 执行，等于没有覆盖。分层背景见 docker/nginx/README.md。
 
@@ -54,6 +55,12 @@ jobs:
           printf '%s\n' "$merged" | grep -qE 'mem_limit: ?"?(2g|2147483648)"?' \
             || { echo "资源上限覆盖文件未生效："; printf '%s\n' "$merged" | head -40; exit 1; }
 
+          # 浏览器覆盖文件：这里只看合并结果里有 seccomp 这一项；它在真容器里
+          # 起不起作用由下面的 browser-seccomp 任务试。
+          merged=$(docker compose -f docker/docker-compose.yml -f docker/compose.browser.yaml config)
+          printf '%s\n' "$merged" | grep -q 'seccomp' \
+            || { echo "浏览器覆盖文件未生效："; printf '%s\n' "$merged" | head -40; exit 1; }
+
       - name: Nginx 配置分层（渲染 + 分层不变量）
         run: sudo bash docker/nginx/test-render.sh
 
@@ -65,3 +72,21 @@ jobs:
 
       - name: 宿主备份 harness
         run: bash docker/test-backup.sh
+
+  # full 镜像里的 Chromium 要靠 docker/seccomp/chromium.json 才能带着沙箱启动。
+  # 这份配置错了不会让任何东西构建失败，只会让部署出来的浏览器起不来，或者放开得
+  # 比说的多，所以在真的 Docker 上试：它该放开的放开了、别的没放开、Compose 按文档
+  # 的写法带上了它、Debian 的 Chromium 在它下面起得来。
+  browser-seccomp:
+    name: 浏览器的 seccomp 配置（真容器）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 仓库里的这份必须正好是「Docker 的默认配置 + 一条规则」，不接受手工改动。
+      - name: 配置与上游的默认配置只差一条规则
+        run: bash docker/seccomp/update.sh --check
+
+      # 不带配置时 Docker 本来就放开的话，下面的检查分辨不出配置起没起作用，算失败。
+      - name: 在真容器里试
+        run: NEKO_SECCOMP_REQUIRE_CONTROL=1 bash docker/seccomp/test-chromium-profile.sh
