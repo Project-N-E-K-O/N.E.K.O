@@ -13,7 +13,7 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 from tests.unit.theater_workshop.test_numeric_v2_generation import _generation_setup, _idea_outline
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
 
 
 @pytest.mark.asyncio
@@ -26,7 +26,7 @@ async def test_new_verified_invitation_does_not_reinsert_this_turns_consumed_act
     current = await runtime.start_session(session_id='consumed_new_offer', catgirl_binding=_binding(), opening_performance=_opening())
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult((), False)
@@ -68,7 +68,7 @@ async def test_authored_acceptance_is_reviewed_and_rejected_batch_is_not_reinser
     reviewed = []
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult((), False)
@@ -140,7 +140,7 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
     calls = {'actor': 0, 'narrow': 0, 'review': 0}
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult((), True, natural_ending_ready=True)
@@ -184,13 +184,15 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
                   turn=TurnRequestV2('finish', 0, '就到这里吧。'), ensure_current_binding=lambda _: _binding())
     if requires_reply or timeout or full_review_rejects:
         with pytest.raises(workflow.NumericV2ActorOutputError):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session('terminal_question') == current
         assert calls['actor'] == (1 if timeout else 2)
-        assert calls['narrow'] == (1 if timeout else 2)
+        # The stub returns the same visible draft on rewrite. The narrow
+        # verdict can be reused, while the independent review still runs.
+        assert calls['narrow'] == 1
         assert calls['review'] == (2 if full_review_rejects else 0)
     else:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.status == 'ended'
         assert calls == {'actor': 1, 'narrow': int('？' in text), 'review': 1}
         assert result.diagnostics['terminal_question_review_calls'] == calls['narrow']

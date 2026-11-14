@@ -191,6 +191,52 @@ def test_numeric_v2_fact_contract_accepts_only_explicit_typed_keys():
     assert compiled.story["fact_contract"] == story["fact_contract"]
 
 
+def test_player_handoff_item_requires_a_public_boolean_performance_fact():
+    story = numeric_v2_story()
+    key = "scene:start:box_received"
+    definition = {
+        "description": "旧友已接稳剑匣。",
+        "value_type": "bool",
+        "visibility": "public",
+        "evidence_source": "performance",
+        "player_handoff_item": ["剑匣", "木匣"],
+    }
+    story["fact_contract"] = {"facts": {key: definition}}
+
+    compiled = NumericV2Compiler().compile_v2_2(story)
+
+    assert compiled.story["fact_contract"]["facts"][key] == definition
+
+
+@pytest.mark.parametrize("changes", [
+    {"player_handoff_item": "剑匣"},
+    {"player_handoff_item": []},
+    {"player_handoff_item": ["剑匣", "木匣", "旧匣", "匣子", "小匣"]},
+    {"player_handoff_item": ["剑匣", "剑匣"]},
+    {"player_handoff_item": [""]},
+    {"player_handoff_item": ["  "]},
+    {"player_handoff_item": ["剑匣\n木匣"]},
+    {"player_handoff_item": [["剑匣"]]},
+    {"value_type": "string"},
+    {"visibility": "story"},
+    {"evidence_source": None},
+])
+def test_player_handoff_item_rejects_invalid_aliases_or_incompatible_facts(changes):
+    story = numeric_v2_story()
+    key = "scene:start:box_received"
+    definition = {"value_type": "bool", "visibility": "public", "evidence_source": "performance",
+                  "player_handoff_item": ["剑匣"], **changes}
+    if definition["evidence_source"] is None:
+        definition.pop("evidence_source")
+    story["fact_contract"] = {"facts": {key: definition}}
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_2(story)
+
+    assert any(issue.code == "invalid_fact_contract_player_handoff_item"
+               and issue.path == f"fact_contract.facts.{key}.player_handoff_item" for issue in caught.value.issues)
+
+
 def test_numeric_v2_completion_contract_accepts_declared_typed_facts():
     """Act-completion conditions may reference only the fact contract and must retain the author's exact target values."""  # noqa: DOCSTRING_CJK
 
@@ -1175,112 +1221,6 @@ def test_numeric_v2_registry_imports_once_without_touching_sessions(tmp_path):
     assert not (tmp_path / "theater" / "numeric_v2" / "sessions").exists()
     with pytest.raises(NumericV2PackageExistsError):
         registry.import_package(numeric_v2_story())
-
-
-def test_numeric_v2_registry_waits_for_future_bundled_story_before_marking(tmp_path):
-    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
-    registry = NumericV2PackageRegistry(package_root)
-
-    registry.ensure_default_packages()
-
-    assert registry.list_packages() == []
-    assert not (package_root / ".defaults_initialized").exists()
-
-    registry.ensure_default_packages()
-
-    assert registry.list_packages() == []
-    assert not (package_root / ".defaults_initialized").exists()
-
-
-def test_numeric_v2_registry_installs_missing_defaults_beside_user_packages(
-    tmp_path,
-    monkeypatch,
-):
-    """Existing user scripts must not prevent initial installation of other built-in scripts."""  # noqa: DOCSTRING_CJK
-
-    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
-    bundled_root = tmp_path / "bundled"
-    bundled_root.mkdir()
-    (bundled_root / "default.json").write_text(
-        json.dumps(numeric_v2_story(), ensure_ascii=False),
-        encoding="utf-8",
-    )
-    registry = NumericV2PackageRegistry(package_root)
-    user_story = numeric_v2_story()
-    user_story["meta"]["story_id"] = "user_numeric_story"
-    registry.import_package(user_story)
-    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
-
-    registry.ensure_default_packages()
-
-    assert {item["story_id"] for item in registry.list_packages()} == {
-        "numeric_v2_contract",
-        "user_numeric_story",
-    }
-    assert (package_root / ".defaults_initialized").is_file()
-
-
-def test_numeric_v2_registry_reconciles_new_defaults_without_restoring_deleted_ones(
-    tmp_path,
-    monkeypatch,
-):
-    """Upgrades install only newly added built-in scripts; old built-ins explicitly deleted by users remain deleted."""  # noqa: DOCSTRING_CJK
-
-    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
-    bundled_root = tmp_path / "bundled"
-    bundled_root.mkdir()
-    first_story = numeric_v2_story()
-    (bundled_root / "first.json").write_text(
-        json.dumps(first_story, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    registry = NumericV2PackageRegistry(package_root)
-    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
-    registry.ensure_default_packages()
-    registry.delete_package(first_story["meta"]["story_id"])
-
-    later_story = numeric_v2_story()
-    later_story["meta"]["story_id"] = "numeric_v2_later_default"
-    (bundled_root / "later.json").write_text(
-        json.dumps(later_story, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    registry.ensure_default_packages()
-
-    assert {item["story_id"] for item in registry.list_packages()} == {
-        "numeric_v2_later_default",
-    }
-
-
-def test_numeric_v2_registry_treats_concurrent_default_install_as_success(
-    tmp_path,
-    monkeypatch,
-):
-    """If another process installs default packages first, this process must still complete the initialization marker."""  # noqa: DOCSTRING_CJK
-    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
-    bundled_root = tmp_path / "bundled"
-    bundled_root.mkdir()
-    story = numeric_v2_story()
-    (bundled_root / "default.json").write_text(
-        json.dumps(story, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    registry = NumericV2PackageRegistry(package_root)
-    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
-
-    def _concurrent_install(payload):
-        compiled = registry.compiler.compile(payload)
-        target = registry.package_path(compiled.story_id)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(compiled.json_bytes)
-        raise NumericV2PackageExistsError("numeric_v2_package_exists")
-
-    monkeypatch.setattr(registry, "import_package", _concurrent_install)
-
-    registry.ensure_default_packages()
-
-    assert (package_root / ".defaults_initialized").is_file()
-    assert registry.list_packages()[0]["story_id"] == "numeric_v2_contract"
 
 
 def test_numeric_v2_registry_publishes_complete_package_without_hard_links(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@
 from contextlib import suppress
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 import random
 import threading
 from types import SimpleNamespace
@@ -86,7 +87,7 @@ def test_long_scene_packing_tokenizes_logarithmically(monkeypatch):
     judge_messages, _ = evaluator._build_transition_judge_messages(
         engine, session, actor_performance=candidate, player_input='好。', transition_outcome=outcome,
     )
-    payload = json.loads(judge_messages[1].content.split('：', 1)[1])
+    payload = prompt_payload(judge_messages[1].content)
     full_index = 240 + 1 - NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy']['history_max_turns']
     assert len(payload['scene_fact_index']) < full_index - 100
     assert len(calls) < 40
@@ -120,6 +121,8 @@ async def test_prompt_packing_runs_off_event_loop(monkeypatch):
             return False
 
         async def ainvoke(self, messages):
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps(dict(
                 offer_present=False, valid=False, body_violations=[],
                 unsafe_suggestion_indexes=[], delivery_matches_route=True,

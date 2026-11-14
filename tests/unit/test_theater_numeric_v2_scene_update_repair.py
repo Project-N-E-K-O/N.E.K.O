@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -119,6 +120,8 @@ async def test_model_cannot_enable_crop_during_fact_review(monkeypatch, pending_
             return False
 
         async def ainvoke(self, messages):
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content='{"body_violations":["player_action"],"failure_reason":"未经授权。"}')
             assert ('"scene_update_removal_safe"' in messages[0].content) is not pending_facts
             return SimpleNamespace(content=json.dumps({
                 "offer_present": False, "valid": False, "body_violations": ["player_action"],
@@ -144,7 +147,7 @@ async def test_model_cannot_enable_crop_during_fact_review(monkeypatch, pending_
     )
     assert review.scene_update_removal_safe is not pending_facts
     assert review.body_violations == ("player_action",)
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0]["max_completion_tokens"] == (350 if pending_facts else 512)
     assert calls[0]["timeout"] == evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
 

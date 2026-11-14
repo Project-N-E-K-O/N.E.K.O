@@ -24,7 +24,7 @@ def _engine():
             "source": {"id": "source", "story_beat": SOURCE_BEAT, "route_gates": [{"target_node_id": "target"}]},
             "target": {"id": "target", "story_beat": {"opening_scene": TARGET_OPENING, "summary": "她冲进控制台。"}},
         },
-        preview_route=lambda node_id, metrics: {
+        preview_route=lambda node_id, metrics, *, facts=None: {
             "target_node_id": "target",
             "transition_contract": {"bridge_scene_narration": "按玩家的等待略去平静时段，来到19:47、预热剩三分钟时。"},
         },
@@ -71,6 +71,18 @@ def test_player_input_and_dialogue_may_reference_the_exit():
     assert leaked == ()
 
 
+def test_player_claim_cannot_waive_target_guards_while_departure_is_blocked():
+    engine, session, outcome = _engine(), _session(), _outcome()
+    outcome.departure_blocker = "completion_pending"
+    player_input = TARGET_OPENING
+    assert premature_target_markers(engine, session, outcome,
+        {"scene_narration": TARGET_OPENING}, player_input) == ("19:47",)
+    assert premature_target_scene_facts(engine, session, outcome,
+        {"scene_narration": TARGET_OPENING}, player_input) == ("信标预热还剩三分钟", "隔壁控制台突然报警")
+    assert not premature_target_markers(engine, session, outcome,
+        {"performance": "等条件齐了，我们19:47再出发。"}, player_input)
+
+
 def test_transition_turns_may_deliver_the_target_opening():
     # Formal transitions must deliver the target act's opening, so allow its narration segments.
     leaked = premature_target_markers(
@@ -103,6 +115,85 @@ def test_exact_target_opening_fact_in_dialogue_is_allowed():
         {"performance": "信标预热还剩三分钟，隔壁控制台突然报警。"},
     )
     assert leaked == ()
+
+
+def _unresolved_routes():
+    engine = _engine()
+    engine.preview_route = lambda *args, **kwargs: None
+    engine.nodes["source"] = {
+        "id": "source",
+        "story_beat": {"opening_scene": "镖局兵器房内，桌上放着文书。小葵说：“官道先到驿站。”"},
+        "route_gates": [
+            {"target_node_id": "target"},
+            {"target_node_id": "station", "transition_contract": {
+                "bridge_scene_narration": "半日后，你们抵达了官道旁的驿站，推门而入。",
+            }},
+        ],
+    }
+    engine.nodes["station"] = {
+        "id": "station",
+        "type": "scene",
+        "story_beat": {"opening_scene": "驿站大堂人来人往，炉火正旺。管事请两人出示通行文书。"},
+    }
+    return engine
+
+
+_ARRIVAL_DRAFT = {
+    "scene_narration": "两匹马在风雪中缓缓靠近驿站入口，厚重的木门半掩，门内透出昏黄的灯火与暖意。",
+    "performance": "（勒住缰绳停在门外，呼出一口白气）到了，先把马牵到檐下避风处。",
+}
+_ENTRANCE_DRAFT = {"performance": "（推开半掩的木门，侧身让你先进去）里头暖和些，文书我带着，你只管护好匣子。"}
+
+
+def test_unresolved_routes_still_guard_exact_target_opening_and_time():
+    engine = _unresolved_routes()
+    assert premature_target_scene_facts(engine, _session(), _outcome(), {
+        "scene_narration": "信标预热还剩三分钟，隔壁控制台突然报警。",
+    }) == ("信标预热还剩三分钟", "隔壁控制台突然报警")
+    assert premature_target_markers(engine, _session(), _outcome(), {
+        "scene_narration": "时间来到19:47。",
+    }) == ("19:47",)
+    assert not premature_target_markers(engine, _session(), _outcome(), {
+        "scene_narration": "她打算等到19:47再出发。",
+    })
+
+
+def test_unresolved_route_catches_actual_arrival_and_continuation_in_old_save():
+    engine = _unresolved_routes()
+    session = _session()
+    assert premature_target_scene_facts(engine, session, _outcome(), _ARRIVAL_DRAFT,
+        "（勒住缰绳放慢速度）收到，我小心靠近。") == ("驿站入口",)
+    # A generic door in a draft proves nothing on its own. In the old save,
+    # the immediately previous performance established the same blocked destination.
+    assert not premature_target_scene_facts(engine, session, _outcome(), _ENTRANCE_DRAFT)
+    session.performance_history = ({**_ARRIVAL_DRAFT, "from_node_id": "source", "to_node_id": "source"},)
+    assert premature_target_scene_facts(engine, session, _outcome(), _ENTRANCE_DRAFT,
+        "（翻身下马，把木匣抱在怀里）咱们这就进去办手续吧。") == ("驿站入口",)
+    assert not premature_target_scene_facts(engine, session, _outcome(), _ENTRANCE_DRAFT,
+        "（推开木门并走进去）")
+
+
+@pytest.mark.parametrize("draft,player_input", [
+    ({"scene_narration": "她打算等会儿到达驿站。"}, ""),
+    ({"scene_narration": "她问：‘前面是驿站入口吗？’"}, ""),
+    ({"performance": "到了驿站入口，我们再下来歇脚。"}, ""),
+    ({"scene_narration": "前方已经能看见驿站入口。"}, ""),
+    ({"scene_narration": "两匹马缓缓靠近驿站入口。", "performance": "（勒住缰绳停在门外）到了再下马。"}, ""),
+    (_ARRIVAL_DRAFT, "（抵达驿站入口后勒马）"),
+    (_ARRIVAL_DRAFT, "（走到驿站入口后勒马）"),
+])
+def test_unresolved_route_does_not_confuse_destination_references_with_arrival(draft, player_input):
+    assert not premature_target_scene_facts(_unresolved_routes(), _session(), _outcome(), draft, player_input)
+
+
+def test_unresolved_route_does_not_guard_same_location_or_prior_scene_entry():
+    engine = _unresolved_routes()
+    session = _session()
+    session.story_state = {"revision": 1, "facts": {"event:scene.entered:station:r1": {"visibility": "public"}}}
+    assert not premature_target_scene_facts(engine, session, _outcome(), _ARRIVAL_DRAFT)
+
+    engine.nodes["source"]["story_beat"]["opening_scene"] = "驿站门外，两匹马已经饮过水。"
+    assert not premature_target_scene_facts(engine, _session(), _outcome(), _ARRIVAL_DRAFT)
 
 
 @pytest.mark.parametrize('later_events', [0, 32])

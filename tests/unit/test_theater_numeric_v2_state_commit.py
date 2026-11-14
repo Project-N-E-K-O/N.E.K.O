@@ -46,10 +46,10 @@ async def test_failure_reason_alone_does_not_bypass_independent_review(tmp_path,
         turn=TurnRequestV2("one", 0, "我在这里等你完成检查。"),
         ensure_current_binding=lambda _: _binding(),
     )
-    assert len(generations) == 1
-    assert len(reviews) == 2 and reviews[1]["dispute_review"] is True
+    assert len(generations) == 2
+    assert [bool(review.get("dispute_review")) for review in reviews] == [False, False, True]
     assert result.performance["performance"] == reply
-    assert result.diagnostics["semantic_rewrite_attempts"] == 0
+    assert result.diagnostics["semantic_rewrite_attempts"] == 1
     assert await runtime.restore_session("catgirl_movement") == result.stored
 
 
@@ -92,7 +92,7 @@ async def test_unreviewed_or_rejected_scene_change_keeps_entire_transaction(
     if failure == "rewrite_unreviewed":
         monkeypatch.setattr(workflow, "NUMERIC_V2_REVIEW_BUDGET_SECONDS", 0.0)
     with pytest.raises(NumericV2ActorOutputError, match="numeric_v2_transition_review_failed"):
-        await workflow.execute_numeric_v2_turn(
+        await workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("one", 0, "我等你。"),
             ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics,
@@ -138,12 +138,12 @@ async def test_final_ordinary_draft_rechecks_target_facts_with_review_disabled(
         ensure_current_binding=lambda _: _binding(),
     )
     if repaired:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.current_node_id == "start"
         assert target_fact not in str(result.stored.session.performance_history)
         assert result.diagnostics["review_skipped"] is True
     else:
         with pytest.raises(NumericV2ActorOutputError, match="numeric_v2_transition_review_failed"):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session("deterministic_scene") == current
     assert len(generations) == 2

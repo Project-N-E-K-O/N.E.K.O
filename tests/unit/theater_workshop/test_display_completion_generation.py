@@ -1,15 +1,17 @@
 """Author display references survive generation without becoming semantic facts."""
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
 import pytest
 
-from theater_workshop.host import InProcessPackageGateway
-from theater_workshop.sdk.generation.numeric_v2 import (
+from services.theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk.generation.numeric_v2 import (
     NumericV2Generator, _validate_idea_outline, _continuation_output_contract,
 )
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
 from .numeric_v2_fixture import numeric_v2_setup
 from .test_numeric_v2_generation import _idea_outline, _generation_setup
 
@@ -31,10 +33,33 @@ def display_outline(genre='letter'):
     return outline
 
 
-def test_continuation_carries_display_and_trigger_shapes():
-    chapter = _continuation_output_contract('mainline_chapters[1]')
-    assert 'fixed_narration_id' in chapter['completion_facts'][0]
+def test_continuation_keeps_display_shape_separate_from_performance():
+    chapter = _continuation_output_contract('mainline_chapters[0]')
+    assert 'evidence_source' not in chapter['completion_facts'][0]
+    assert 'fixed_narration_id' not in chapter['completion_facts'][0]
     assert chapter['fixed_narrations'][0]['trigger']['player_handoff_required'] is False
+
+    outline = display_outline()
+    fact = outline['mainline_chapters'][0]['completion_facts'][1]
+    mixed_fact = {**fact, 'evidence_source': 'performance'}
+    outline['mainline_chapters'][0]['completion_facts'][1] = mixed_fact
+    path = 'mainline_chapters[0].completion_facts[1]'
+
+    def model(messages, **options):
+        assert options['operation'] == 'numeric_v2_mainline_continuation'
+        assert '只用 fixed_narration_id 引用该段' in messages[0]['content']
+        assert '固定展示须省略 evidence_source' in messages[0]['content']
+        wire = prompt_payload(messages[1]['content'])
+        assert wire['current_outline']['mainline_chapters'][0]['completion_facts'][1] == mixed_fact
+        assert wire['requested_paths'] == [path]
+        repair, = wire['requested_replacements']
+        assert 'current_value' not in repair
+        assert repair['issue']['code'] == 'completion_fact_shape_invalid'
+        return json.dumps({'replacements': {path: fact}}, ensure_ascii=False)
+
+    result = NumericV2Generator(model).generate(title='续写原文', setup=_generation_setup(),
+        checkpoint={'candidate': outline})
+    assert result['story']['nodes'][0]['completion_contract']['all'][-1] == {'fixed_narration_id': 'original_text'}
 
 
 @pytest.mark.parametrize('genre', ['letter', 'science'])
