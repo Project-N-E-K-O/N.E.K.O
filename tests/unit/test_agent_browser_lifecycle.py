@@ -979,7 +979,52 @@ async def test_shutdown_does_not_kill_a_browser_that_closes_in_time(modules, pro
     killed: list[int] = []
     monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed.append(1))
     assert api_runtime.BROWSER_SHUTDOWN_SECONDS == 4.0
+    # Within what the launcher gives the process (8 seconds), with time left to kill in.
+    assert api_runtime.BROWSER_SHUTDOWN_SECONDS < api_runtime.BROWSER_KILL_AFTER_SECONDS == 5.0
+    monkeypatch.setattr(api_runtime, "BROWSER_KILL_AFTER_SECONDS", 0.2)
 
     await api_runtime.shutdown()
 
     assert browser.closes >= 1 and killed == []
+    # Nor later: what was set to kill it at the last is called off once it is closed.
+    await asyncio.sleep(0.5)
+    assert killed == []
+
+
+async def test_shutdown_kills_the_browser_though_an_earlier_step_takes_all_the_time_there_is(
+    modules, process, search, browser, monkeypatch
+):
+    import threading
+
+    killed_in: list[threading.Thread] = []
+    stuck = asyncio.Event()
+
+    async def host_that_will_not_stop() -> None:
+        await stuck.wait()
+
+    monkeypatch.setattr(api_runtime, "BROWSER_KILL_AFTER_SECONDS", 0.05)
+    monkeypatch.setattr(api_runtime, "shutdown_nekoclaw_host", host_that_will_not_stop)
+    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", lambda: killed_in.append(threading.current_thread()))
+
+    shutting_down = asyncio.ensure_future(api_runtime.shutdown())
+    try:
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while not killed_in and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        # The step that closes the browser was never reached (the launcher would end the
+        # process about now), and the browser is killed all the same, off the event loop.
+        assert browser.closes == 0 and not shutting_down.done()
+        assert len(killed_in) == 1 and killed_in[0] is not threading.current_thread()
+    finally:
+        stuck.set()
+    await asyncio.wait_for(shutting_down, 10.0)
+    assert len(killed_in) == 1 and process[-1] == "status"
+
+
+def test_the_last_resort_of_a_shutdown_does_not_fail_when_the_browser_cannot_be_killed(monkeypatch):
+    def cannot() -> None:
+        raise OSError("access denied")
+
+    monkeypatch.setattr(nekoclaw_builtins.provider, "kill_browser", cannot)
+    # On a thread of its own, where nothing would hear of it.
+    api_runtime._kill_browser_at_last()

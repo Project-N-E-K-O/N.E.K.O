@@ -23,6 +23,7 @@ the HUD uses.
 """
 
 import math
+import threading
 from collections import OrderedDict
 
 from .api_shared import (  # noqa: F401
@@ -620,6 +621,19 @@ async def startup():
 # How long the browser is given to close when this process shuts down, before
 # it is killed. Well within what the launcher gives the process itself.
 BROWSER_SHUTDOWN_SECONDS = 4.0
+# How long after the shutdown began the browser is killed whatever the
+# shutdown has got to by then. The steps of a shutdown have bounds of their
+# own that add up to more than the launcher gives this process, so the step
+# that closes the browser may never be reached.
+BROWSER_KILL_AFTER_SECONDS = 5.0
+
+
+def _kill_browser_at_last() -> None:
+    """Kill the browser the tools started: the last resort of a shutdown. Runs on a thread of its own."""
+    try:
+        builtin_provider.kill_browser()
+    except Exception as e:
+        logger.warning(f"[Agent] Killing the browser failed: {e}")
 
 
 @app.on_event("shutdown")
@@ -627,6 +641,12 @@ async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     global _loop_stall_watchdog
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
+    # Set first: whatever the steps below take, and whether or not the event
+    # loop gets round to them, the browser the tools started does not outlive
+    # this process. Cancelled once the browser has been closed.
+    browser_last_resort = threading.Timer(BROWSER_KILL_AFTER_SECONDS, _kill_browser_at_last)
+    browser_last_resort.daemon = True
+    browser_last_resort.start()
     # Release first so the synchronous cleanup below is not reported as stalls.
     if _loop_stall_watchdog is not None:
         try:
@@ -700,6 +720,7 @@ async def shutdown():
             await asyncio.to_thread(builtin_provider.kill_browser)
         except Exception as e:
             logger.warning(f"[Agent] Killing the browser failed: {e}")
+    browser_last_resort.cancel()
     try:
         await asyncio.wait_for(builtin_provider.aclose(), timeout=8.0)
     except Exception as e:
