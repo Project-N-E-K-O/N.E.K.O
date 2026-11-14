@@ -26,7 +26,9 @@ from plugin.neko_plugin_cli.core.project import (
     create_project,
     prepare_project,
 )
+from plugin.neko_plugin_cli.core.toml_utils import load_toml
 from plugin import settings
+from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugin_project_commands import project_operation, run_cli
@@ -452,10 +454,49 @@ async def update_project_metadata(project_id: str, metadata: ProjectMetadata) ->
         raise _busy_error(exc) from exc
 
 
+def _installed_directory_owns_id(candidate: Path, plugin_id: str) -> bool:
+    """Whether an installed plugin directory already belongs to ``plugin_id``.
+
+    The directory name is matched with the same rule the loader uses (a kebab-case
+    directory may stand for a snake-case package, and the spelling can mix both,
+    e.g. ``foo-bar_baz``). The manifest decides: a directory that merely shares the
+    spelling but declares another id belongs to that other plugin, so it does not
+    reserve this one. An unreadable manifest fails closed and counts as an owner.
+    """
+    if not plugin_package_matches_directory(plugin_id, candidate.name):
+        return False
+    manifest = candidate / "plugin.toml"
+    if not manifest.is_file():
+        return False
+    try:
+        data = load_toml(manifest)
+    except (OSError, ValueError):
+        return True
+    section = data.get("plugin")
+    declared = section.get("id") if isinstance(section, dict) else None
+    if not isinstance(declared, str) or not declared.strip():
+        return True
+    return declared.strip() == plugin_id
+
+
+def _installed_root_owns_id(root: Path, plugin_id: str) -> bool:
+    """Scan one installed-plugin root for a directory that already owns the id."""
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return False
+    return any(
+        child.is_dir() and _installed_directory_owns_id(child, plugin_id)
+        for child in children
+    )
+
+
 def _require_available_plugin_id(plugin_id: str, source_dir: Path) -> None:
     """A plugin ID has one owner: an installed/built-in plugin or one project."""
+    # Scan the physical directories instead of guessing spellings: a cloned plugin
+    # may sit in `foo-bar_baz/` while its id is `foo_bar_baz` (#3724).
     for root in settings.PLUGIN_CONFIG_ROOTS:
-        if (Path(root) / plugin_id / "plugin.toml").is_file():
+        if _installed_root_owns_id(Path(root), plugin_id):
             raise project_error(
                 Code.PROJECT_PLUGIN_ID_CONFLICT,
                 f"Plugin ID '{plugin_id}' is already used by an installed plugin",
@@ -469,9 +510,12 @@ def _require_available_plugin_id(plugin_id: str, source_dir: Path) -> None:
             f"Plugin ID '{plugin_id}' is already used by an installed plugin",
             409,
         )
+    # Directory names are compared through the same rule the loader uses, so the
+    # same ID cannot be registered twice via `foo-bar/` and `foo_bar/` (#3724).
     owner = next(
         (item for item in store.list_records()
-         if item.source_dir.name == plugin_id and item.source_dir != source_dir),
+         if item.source_dir != source_dir
+         and plugin_package_matches_directory(plugin_id, item.source_dir.name)),
         None,
     )
     if owner is not None:

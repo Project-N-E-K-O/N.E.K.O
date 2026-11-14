@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TypedDict
 
+from plugin.core.entry_points import plugin_package_matches_directory
+
 
 class PluginConfigWarning(TypedDict):
     code: str
@@ -62,7 +64,11 @@ def collect_plugin_toml_semantic_warnings(
     plugin_id = str(raw_plugin_id).strip() if _is_non_empty_string(raw_plugin_id) else toml_path.parent.name
 
     directory_name = toml_path.parent.name.strip()
-    if plugin_id and directory_name and plugin_id != directory_name:
+    if (
+        plugin_id
+        and directory_name
+        and not plugin_package_matches_directory(plugin_id, directory_name)
+    ):
         warnings.append(
             _warning(
                 code="PLUGIN_DIRECTORY_ID_MISMATCH",

@@ -9,6 +9,7 @@ import pytest
 from plugin import settings
 from plugin.core.state import state
 from plugin.neko_plugin_cli.core import project as creator
+from plugin.server.application import plugin_projects
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.server.application.plugin_cli.source_resolver import PluginSourceResolver
 from plugin.server.application.plugins import lifecycle_service, project_sources, registry_service
@@ -151,6 +152,116 @@ def test_projects_cannot_live_inside_managed_plugin_roots(isolated):
     inside = scaffold(isolated, "inside")
     with pytest.raises(ValueError, match="overlaps a managed plugin directory"):
         project_sources.inspect_source_directory(inside)
+
+
+def test_a_cloned_kebab_directory_loads_its_snake_package(tmp_path):
+    """`git clone` keeps `my-cool-plugin/`; the id and entry stay snake_case. (#3724)"""
+    source = scaffold(tmp_path, "cloned_plugin")
+    kebab = source.with_name("cloned-plugin")
+    source.rename(kebab)
+
+    metadata = project_sources.inspect_source_directory(kebab.resolve())
+
+    assert metadata.plugin_id == "cloned_plugin"
+    assert metadata.entry.startswith("plugins.cloned_plugin:")
+
+
+def test_a_kebab_case_plugin_id_is_rejected(tmp_path):
+    """The id is also the package/cache key, so it may not carry a dash. (#3724)"""
+    source = scaffold(tmp_path, "foo_bar")
+    kebab = source.with_name("foo-bar")
+    source.rename(kebab)
+    manifest = kebab / "plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace('id = "foo_bar"', 'id = "foo-bar"'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="snake_case Python identifier"):
+        project_sources.inspect_source_directory(kebab.resolve())
+
+
+def test_entry_package_must_equal_the_plugin_id(tmp_path):
+    """A dash may name the directory, never the package named by plugin.entry. (#3724)"""
+    source = scaffold(tmp_path, "bar_baz")
+    kebab = source.with_name("bar-baz")
+    source.rename(kebab)
+    manifest = kebab / "plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "plugin.plugins.bar_baz", "plugin.plugins.bar-baz"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="identical to plugin.id"):
+        project_sources.inspect_source_directory(kebab.resolve())
+
+
+def test_the_same_id_cannot_be_registered_from_kebab_and_snake_directories(
+    isolated, tmp_path
+):
+    """One id has one owner: `foo-bar/` and `foo_bar/` are the same plugin. (#3724)"""
+    first = scaffold(tmp_path / "projects", "dup_plugin")
+    kebab = first.with_name("dup-plugin")
+    first.rename(kebab)
+    second = scaffold(tmp_path / "projects", "dup_plugin")
+
+    plugin_projects._add_sync(str(kebab.resolve()))
+
+    with pytest.raises(ServerDomainError) as caught:
+        plugin_projects._add_sync(str(second.resolve()))
+    assert caught.value.code == "PROJECT_PLUGIN_ID_CONFLICT"
+    assert caught.value.status_code == 409
+
+
+@pytest.mark.parametrize("directory_name", ["foo_bar_baz", "foo-bar_baz", "foo_bar-baz"])
+def test_an_installed_directory_owning_the_id_blocks_it(
+    isolated, tmp_path, directory_name
+):
+    """Mixed '-'/'_' spellings are found by scanning the install root, not by guessing. (#3724)"""
+    installed_dir = isolated / directory_name
+    installed_dir.mkdir()
+    (installed_dir / "plugin.toml").write_text(
+        "[plugin]\nid = 'foo_bar_baz'\n", encoding="utf-8"
+    )
+    project = scaffold(tmp_path / "projects", "foo_bar_baz")
+
+    with pytest.raises(ServerDomainError) as caught:
+        plugin_projects._add_sync(str(project.resolve()))
+    assert caught.value.code == "PROJECT_PLUGIN_ID_CONFLICT"
+    assert caught.value.status_code == 409
+
+
+def test_an_installed_directory_for_another_id_does_not_block(isolated, tmp_path):
+    """The manifest decides: a directory that declares another id reserves nothing. (#3724)"""
+    installed_dir = isolated / "foo-bar_baz"
+    installed_dir.mkdir()
+    (installed_dir / "plugin.toml").write_text(
+        "[plugin]\nid = 'another_plugin'\n", encoding="utf-8"
+    )
+    project = scaffold(tmp_path / "projects", "foo_bar_baz")
+
+    record, plugin_id = plugin_projects._add_sync(str(project.resolve()))
+
+    assert plugin_id == "foo_bar_baz"
+    assert record.source_dir == project.resolve()
+
+
+def test_a_project_directory_still_must_name_its_entry_package(tmp_path):
+    source = scaffold(tmp_path, "cloned_plugin")
+    renamed = source.with_name("something_else")
+    source.rename(renamed)
+    manifest = renamed / "plugin.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'id = "cloned_plugin"', 'id = "something_else"'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="targets package"):
+        project_sources.inspect_source_directory(renamed.resolve())
 
 
 @pytest.mark.asyncio
