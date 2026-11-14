@@ -242,6 +242,8 @@ describe('publishFlow', () => {
   it.each([
     ['https://github.com/other/repo/releases/tag/v0.2.0', false],
     ['https://github.com/OWNER/N.E.K.O_PLUGIN_HELLO_WORLD/releases/tag/v0.2.0', true],
+    // Tags are case-sensitive on GitHub: V0.2.0 is another Release.
+    ['https://github.com/owner/n.e.k.o_plugin_hello_world/releases/tag/V0.2.0', false],
   ] as const)('associates the Market answer with its repository: %s', (url, listed) => {
     const flow = flowOf({ status: status({ remote: published }), submission: approved(), task: task({ release_url: url, market_status: 'published' }) })
     expect(step(flow, 'market').detail?.key).toBe(listed ? 'marketVersionListed' : 'marketVersionNotify')

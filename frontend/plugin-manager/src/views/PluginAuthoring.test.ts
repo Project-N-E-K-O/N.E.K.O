@@ -619,6 +619,65 @@ describe('authoring workbench backed by the server project list', () => {
     await settle()
   })
 
+  it('shows the Market receipt of the current Release and ignores the others', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.2.0',
+        market_request_id: 55,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      // Another Release, and a tag that only differs in case: neither is this one.
+      { id: 1, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0', status: 'rejected' },
+      { id: 2, release_url: 'https://github.com/owner/hello_world/releases/tag/V0.2.0', status: 'rejected' },
+      // The owner's case does not matter on GitHub.
+      { id: 3, release_url: 'https://github.com/Owner/Hello_World/releases/tag/v0.2.0', status: 'verifying' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    // The task's request id is only passed for the task of this Release.
+    expect(market.listMarketPublicationReceipts).toHaveBeenLastCalledWith(7, 55)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).toContain(en.marketVersionVerifying)
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+  })
+
+  it('reads no request id from a task of another Release, nor a receipt of another tag', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(
+      publishStatus({ remote: { release: { state: 'published', missing_assets: [], workflow: 'success' as const, ready: true } } })
+    )
+    api.getPluginProjectPublishTask.mockResolvedValue(
+      publishTask({
+        mode: 'market_notify',
+        status: 'succeeded',
+        release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0',
+        market_request_id: 44,
+        finished_at: 1_700_000_000,
+      })
+    )
+    market.listMarketPublicationReceipts.mockResolvedValue([
+      { id: 1, release_url: 'https://github.com/owner/hello_world/releases/tag/v0.1.0', status: 'rejected' },
+    ])
+    approvedSubmission()
+    const container = await mount()
+    await openPublish(container)
+    expect(market.listMarketPublicationReceipts).toHaveBeenLastCalledWith(7, undefined)
+    const marketVersion = steps()[4]!
+    expect(marketVersion.textContent).not.toContain(en.marketVersionRejectedReceipt)
+    expect(marketVersion.textContent).toContain('Release v0.2.0 is ready; notify the Market to list it.')
+  })
+
   it('starts the full publish after the second confirmation, with its task in the Release step', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])

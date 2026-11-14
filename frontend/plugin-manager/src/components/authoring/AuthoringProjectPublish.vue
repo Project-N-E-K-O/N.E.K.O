@@ -173,6 +173,7 @@ import AuthoringPublishToolchain from '@/components/authoring/AuthoringPublishTo
 import AuthoringPublishWorkspace from '@/components/authoring/AuthoringPublishWorkspace.vue'
 import {
   PUBLISH_PAGE_ORDER,
+  isReleaseUrlOf,
   publishFlow,
   type ActionBlocker,
   type FlowMessage,
@@ -406,9 +407,11 @@ async function loadMarketListing() {
     return
   }
   const repository = status.value?.repository.github_repository
-  const releaseUrl = repository && `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`
-  const requestId = task.value?.release_url === releaseUrl ? task.value?.market_request_id : null
-  const receiptsRequest = releaseUrl
+  const currentTask = task.value
+  const requestId = repository && currentTask && isReleaseUrlOf(currentTask.release_url, repository, tag)
+    ? currentTask.market_request_id
+    : null
+  const receiptsRequest = repository
     ? listMarketPublicationReceipts(pluginId, requestId ?? undefined).catch(() => [])
     : []
   const versions = await fetchMarketPluginVersions(pluginId)
@@ -416,8 +419,9 @@ async function loadMarketListing() {
   marketListed.value = versions ? versions.some((item) => item.version === tag) : null
   const receipts = await receiptsRequest
   if (disposed || read !== marketReads) return
-  const receipt = Array.isArray(receipts) && receipts.find(item =>
-    item.release_url.toLowerCase() === releaseUrl?.toLowerCase()
+  // Owner and repository names ignore case on GitHub; the tag does not.
+  const receipt = repository && Array.isArray(receipts) && receipts.find(item =>
+    isReleaseUrlOf(item.release_url, repository, tag)
   )
   if (receipt && isMarketPublicationStatus(receipt.status)) marketReceipt.value = receipt.status
 }

@@ -236,14 +236,23 @@ function releaseStep(facts: PublishFlowFacts, releaseReady: boolean): Omit<Publi
   }
 }
 
+/**
+ * Whether `url` is the GitHub Release page of `tag` in `repository`. GitHub
+ * owner and repository names ignore case; tags do not, so the tag must match
+ * exactly (raw or URL-encoded).
+ */
+export function isReleaseUrlOf(url: string, repository: string, tag: string): boolean {
+  const suffix = [tag, encodeURIComponent(tag)]
+    .map(value => `/releases/tag/${value}`)
+    .find(value => url.endsWith(value))
+  if (!suffix) return false
+  return url.slice(0, -suffix.length).toLowerCase() === `https://github.com/${repository}`.toLowerCase()
+}
+
 /** The Market's answer to the latest task's release notification, when it carries one. */
 function marketAnswer(task: PublishTask | null, repository: string | null, tag: string): Omit<PublishStep, 'id' | 'warning'> | null {
   if (!task?.market_status || !repository) return null
-  const suffix = [tag, encodeURIComponent(tag)]
-    .map(value => `/releases/tag/${value}`)
-    .find(value => task.release_url.endsWith(value))
-  if (!suffix) return null
-  if (task.release_url.slice(0, -suffix.length).toLowerCase() !== `https://github.com/${repository}`.toLowerCase()) return null
+  if (!isReleaseUrlOf(task.release_url, repository, tag)) return null
   return marketPublicationAnswer(task.market_status, task.market_candidate_id)
 }
 
