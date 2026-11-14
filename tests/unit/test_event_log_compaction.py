@@ -1190,19 +1190,17 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
     live_written = threading.Event()
     compaction_refused = threading.Event()
     real_apply = log.aapply_and_advance
-    held = False
+    mid_round: dict[str, bool] = {}
 
     async def apply_then_hold_once(*args, **kwargs):
         # After the first event the character lock is free again: hold the
         # round there until a live write has moved the sentinel under it and
         # compaction has been turned away, so both always land mid-round on a
         # slow runner too. Waiting inside the handler would hold that lock.
-        nonlocal held
         result = await real_apply(*args, **kwargs)
-        if not held:
-            held = True
-            await asyncio.to_thread(live_written.wait, 10)
-            await asyncio.to_thread(compaction_refused.wait, 10)
+        if not mid_round:
+            mid_round["live write"] = await asyncio.to_thread(live_written.wait, 10)
+            mid_round["compaction refused"] = await asyncio.to_thread(compaction_refused.wait, 10)
         return result
 
     log.aapply_and_advance = apply_then_hold_once
@@ -1266,6 +1264,7 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
                 t.join(10)
 
         assert not errors, errors[:3]
+        assert mid_round == {"live write": True, "compaction refused": True}, mid_round
         assert outcomes.get("replay_in_progress", 0) > 0, outcomes
         missing = sorted(owed - set(applied))
         assert not missing, f"本轮欠下的事件丢了 {len(missing)} 条: {missing[:5]} {outcomes}"
