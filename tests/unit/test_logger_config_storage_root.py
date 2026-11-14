@@ -193,6 +193,7 @@ def test_concurrent_writability_probes_from_separate_processes_all_succeed(tmp_p
         for process in processes:
             if process.poll() is None:
                 process.kill()
+                process.wait(timeout=10)
         pool.shutdown(wait=False)
 
     for process, (stdout, stderr) in zip(processes, outputs):
