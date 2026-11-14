@@ -485,15 +485,11 @@ class TaskAgentManager:
             from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
-            workdir_text = commission.workdir
-
             def prepare() -> tuple[str, str]:
                 # In here: where the session is kept is told by what is on the disk.
                 session_dir = self._session_dir_of(commission)
                 session_dir.mkdir(parents=True, exist_ok=True)
-                from pathlib import Path
-
-                workdir = Path(workdir_text) if workdir_text else self._paths.work_dir(commission.id, commission.project)
+                workdir = self._workdir_of(commission, session_dir)
                 workdir.mkdir(parents=True, exist_ok=True)
                 return str(session_dir), str(workdir)
 
@@ -1630,24 +1626,55 @@ class TaskAgentManager:
         application at it. The sessions came along then; the place on record
         is where they used to be, and would be made anew, empty.
         """
-        from pathlib import Path
-
         current = self._paths.session_dir(commission.id, commission.project)
-        recorded = None
-        if commission.session_dir:
-            recorded = Path(commission.session_dir)
-        elif commission.workdir:
-            # Taken up by a build from before the place was recorded: its
-            # working directory was, and is by default the ``work`` directory
-            # of its session.
-            workdir = Path(commission.workdir)
-            if workdir.name == "work" and workdir.parent.name == commission.id:
-                recorded = workdir.parent
+        recorded = self._recorded_session_dir(commission)
         if recorded is None:
             return current
         if not _has_transcript(recorded) and _has_transcript(current):
             return current
         return recorded
+
+    @staticmethod
+    def _recorded_session_dir(commission: Commission) -> Any:
+        """Return where the ledger has a commission's session, or None when it does not say."""
+        from pathlib import Path
+
+        if commission.session_dir:
+            return Path(commission.session_dir)
+        if commission.workdir:
+            # Taken up by a build from before the place was recorded: its
+            # working directory was, and is by default the ``work`` directory
+            # of its session.
+            workdir = Path(commission.workdir)
+            if workdir.name == "work" and workdir.parent.name == commission.id:
+                return workdir.parent
+        return None
+
+    def _workdir_of(self, commission: Commission, session_dir: Any) -> Any:
+        """Return a commission's working directory, its session being kept in ``session_dir``.
+
+        The one on record. When the sessions are no longer where the record
+        has them (``_session_dir_of``: the data folder was moved by hand), a
+        working directory that was among them went along with them: the
+        ``work`` directory of its own session, or a directory inside that of
+        the commission it was started by. It is that directory where the
+        sessions are now; at the place on record there would be an empty one,
+        made anew, and none of what the task agent had written. A directory
+        elsewhere (a project of the user's) is where it was.
+        """
+        from pathlib import Path
+
+        if not commission.workdir:
+            return self._paths.work_dir(commission.id, commission.project)
+        workdir = Path(commission.workdir)
+        recorded = self._recorded_session_dir(commission)
+        if recorded is None or recorded == session_dir:
+            return workdir
+        try:
+            among = workdir.relative_to(recorded.parent)
+        except ValueError:
+            return workdir
+        return session_dir.parent / among
 
     async def _child_workdir(self, parent: Commission, cwd: Any) -> str | None:
         """Return the working directory of a task agent the parent starts.

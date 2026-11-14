@@ -3352,6 +3352,8 @@ async def test_a_data_folder_moved_by_hand_takes_its_sessions_along(hosts, tmp_p
     await wait_until(lambda: old.task_agents.running == [], what="the session being released")
     hosts.remove(old)
     await old.shutdown()
+    # What the task agent had got done so far, in its working directory.
+    (_sessions(old_root) / receipt.commission_id / "work" / "sorted so far.txt").write_text("IMG_0001", encoding="utf-8")
 
     # Not through the storage settings: the user moves the whole folder and points the application at it.
     shutil.move(str(old_root), str(new_root))
@@ -3369,7 +3371,47 @@ async def test_a_data_folder_moved_by_hand_takes_its_sessions_along(hosts, tmp_p
     assert [event.payload["resumed"] for event in started] == [False, True]
     # Where it is kept now is what is on record from here on.
     assert Path(done.session_dir) == _sessions(new_root) / receipt.commission_id
-    assert not (_sessions(old_root) / receipt.commission_id / "transcript.jsonl").exists()
+    # Its working directory went along with it: the task agent works on among what it had got done, not in
+    # an empty directory made anew where the folder used to be.
+    assert Path(done.workdir) == _sessions(new_root) / receipt.commission_id / "work"
+    assert (Path(done.workdir) / "sorted so far.txt").read_text(encoding="utf-8") == "IMG_0001"
+    assert not old_root.exists()
+
+
+async def test_a_working_directory_goes_where_its_sessions_went_and_one_elsewhere_stays(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]))
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort", dispatch_text="sort the photos", source="dispatch", route="task_agent"
+    )
+    were = tmp_path / "where they were" / "sessions"
+    recorded, current = were / commission.id, _sessions(tmp_path) / commission.id
+
+    async def workdir(recorded_workdir: Path | None, kept_in: Path) -> Path:
+        await host.ledger.update(
+            commission.id, session_dir=str(recorded), workdir=str(recorded_workdir) if recorded_workdir else None
+        )
+        return host.task_agents._workdir_of(await host.ledger.get(commission.id), kept_in)
+
+    # The session is where the ledger has it: so is the working directory, whichever it is.
+    assert await workdir(recorded / "work", recorded) == recorded / "work"
+    assert await workdir(tmp_path / "a project of the user", recorded) == tmp_path / "a project of the user"
+    # The sessions are below the root of now. The ``work`` directory of its own session went along ...
+    assert await workdir(recorded / "work", current) == current / "work"
+    # ... and so did a directory inside the session of the commission that started this one ...
+    assert await workdir(were / "its-parent" / "work" / "thumbnails", current) == (
+        _sessions(tmp_path) / "its-parent" / "work" / "thumbnails"
+    )
+    # ... while a project of the user's is where it always was, and so is anything else outside the sessions.
+    assert await workdir(tmp_path / "a project of the user", current) == tmp_path / "a project of the user"
+    assert await workdir(were.parent / "beside the sessions", current) == were.parent / "beside the sessions"
+    # None on record: the default one below the root of now.
+    assert await workdir(None, current) == current / "work"
+
+    # A commission from before the place of its session was recorded is told by its working directory.
+    await host.ledger.update(commission.id, session_dir=None, workdir=str(recorded / "work"))
+    older = await host.ledger.get(commission.id)
+    assert host.task_agents._workdir_of(older, current) == current / "work"
+    assert host.task_agents._workdir_of(older, recorded) == recorded / "work"
 
 
 async def test_the_place_on_record_gives_way_only_to_a_session_that_has_something_in_it(hosts, tmp_path):
