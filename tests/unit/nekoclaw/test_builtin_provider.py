@@ -931,3 +931,84 @@ async def test_a_browser_call_whose_turn_comes_while_a_kill_is_under_way_is_refu
     # Once it is over, the next call is carried out.
     tools.while_waiting = None
     assert (await asyncio.wait_for(rig.browse("browser_click", "commission-2", uid="1_1"), 10.0)).success
+
+
+# ---------------------------------------------------------------------------
+# A browser that is being stopped, and a process that shuts down
+# ---------------------------------------------------------------------------
+
+BEING_CLOSED = BuiltinOutcome(False, "the browser is being closed; call the tool again in a moment")
+
+
+async def test_a_browser_call_whose_turn_comes_while_the_browser_is_being_stopped_is_refused(rig: Rig) -> None:
+    # Whoever stops the browser asks for the kill only once the closing has run out of time. A call that
+    # waited its turn behind the closing gets it before that, with no kill under way to hold it off.
+    with rig.provider.stopping_browser():
+        assert await rig.browse("browser_click", "commission-2", uid="1_1") == BEING_CLOSED
+        # Stopped twice at once (the page gave up on the first request and the user pressed again): the one
+        # that ends first does not end it for the other.
+        with rig.provider.stopping_browser():
+            pass
+        assert await rig.browse("browser_click", "commission-2", uid="1_1") == BEING_CLOSED
+        assert rig.browser.calls == []
+        # The keyboard and the mouse have nothing to do with it.
+        assert (await rig.computer(action="click", x=1, y=1)).success
+    # Once it is over the next call is carried out.
+    assert (await rig.browse("browser_click", "commission-2", uid="1_1")).success
+    assert rig.browser.calls == [("browser_click", {"uid": "1_1"})]
+
+
+async def test_a_stopping_that_fails_is_over_all_the_same(rig: Rig) -> None:
+    with pytest.raises(RuntimeError, match="the closing failed"):
+        with rig.provider.stopping_browser():
+            raise RuntimeError("the closing failed")
+    assert (await rig.browse("browser_click", "commission-2", uid="1_1")).success
+
+
+async def test_a_call_that_began_to_wait_before_the_stopping_is_refused_when_its_turn_comes_within_it(rig: Rig) -> None:
+    # As it goes on Python 3.11: the closing is given up, the call that waited behind it takes its turn,
+    # and only then does the one who stops the browser get round to asking for the kill.
+    stopping = rig.provider.stopping_browser()
+    rig.browser.while_waiting = stopping.__enter__
+    try:
+        assert await rig.browse("browser_click", "commission-2", uid="1_1") == BEING_CLOSED
+        assert rig.browser.calls == []
+    finally:
+        stopping.__exit__(None, None, None)
+
+
+async def test_once_the_process_shuts_down_no_call_is_carried_out(rig: Rig) -> None:
+    listed = rig.provider.available()
+    rig.provider.shut_down()
+    outcome = await rig.browse("browser_click", "commission-2", uid="1_1")
+    assert outcome == BuiltinOutcome(False, "browser_click is not available: shutting down with the application")
+    outcome = await rig.computer(action="click", x=1, y=1)
+    assert outcome == BuiltinOutcome(False, "computer is not available: shutting down with the application")
+    assert rig.browser.calls == [] and rig.desktop.calls == []
+    # What the list of tools says is the switches' to say, as before.
+    assert rig.provider.available() == listed and all(item.available for item in listed)
+
+
+async def test_a_browser_call_whose_turn_comes_after_the_shutdown_began_is_refused(rig: Rig) -> None:
+    # It waited behind the closing of the browser; carried out, it would start one nobody is left to close.
+    rig.browser.while_waiting = rig.provider.shut_down
+    outcome = await rig.browse("browser_click", "commission-2", uid="1_1")
+    assert outcome == BuiltinOutcome(False, "browser control is shutting down with the application")
+    assert rig.browser.calls == []
+
+
+async def test_a_keyboard_call_whose_turn_comes_after_the_shutdown_began_is_refused(rig: Rig) -> None:
+    let_go = threading.Event()
+    rig.desktop.behaviour = lambda action, arguments, stop: (let_go.wait(10), DesktopResult(text="Did it."))[1]
+    first = asyncio.ensure_future(rig.computer("c1", action="click", x=1, y=1))
+    await until(lambda: rig.desktop.active == 1, "the first call reaching the desktop")
+    second = asyncio.ensure_future(rig.computer("c2", action="type", text="hello"))
+    for _ in range(20):
+        await asyncio.sleep(0)
+    rig.provider.shut_down()
+    let_go.set()
+    one, two = await asyncio.wait_for(asyncio.gather(first, second), 10.0)
+    # The one under way goes on to its end; the keys are let go of after it.
+    assert one.success
+    assert two == BuiltinOutcome(False, "keyboard and mouse control is shutting down with the application")
+    assert len(rig.desktop.calls) == 1

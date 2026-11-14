@@ -43,6 +43,11 @@ from pathlib import Path
 
 DEFAULT_PROJECT = "_daily"
 
+# What was said in a session, in its directory. The runtime writes it and
+# names it (``nekoclaw.runtime.session.TRANSCRIPT_FILE``); the host only
+# looks whether it is there, and a test keeps the two names the same.
+TRANSCRIPT_NAME = "transcript.jsonl"
+
 # Separators, drive and stream colons, characters Windows forbids in a name,
 # and control characters.
 _UNSAFE_CHARACTERS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')

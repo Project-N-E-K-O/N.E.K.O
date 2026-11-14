@@ -3340,3 +3340,78 @@ async def test_a_commission_taken_up_before_the_place_was_recorded_is_found_by_i
     # And one that is on record is taken at its word.
     await host.ledger.update(commission.id, session_dir=str(tmp_path / "recorded"))
     assert host.task_agents._session_dir_of(await host.ledger.get(commission.id)) == tmp_path / "recorded"
+
+
+async def test_a_data_folder_moved_by_hand_takes_its_sessions_along(hosts, tmp_path):
+    import shutil
+
+    old_root, new_root = tmp_path / "old", tmp_path / "new"
+    old = _host(hosts, old_root, ScriptedLLM([_report("blocked", "the camera drive is not connected")]))
+    receipt = await _dispatch(old, "sort the photos on the camera drive")
+    await wait_status(old, receipt.commission_id, "blocked")
+    await wait_until(lambda: old.task_agents.running == [], what="the session being released")
+    hosts.remove(old)
+    await old.shutdown()
+
+    # Not through the storage settings: the user moves the whole folder and points the application at it.
+    shutil.move(str(old_root), str(new_root))
+    resumed = ScriptedLLM([_report("ready", "sorted after all")])
+    new = _host(hosts, new_root, resumed)
+
+    assert await new.task_agents.tell(receipt.commission_id, "the camera drive is E: now") is True
+    done = await wait_status(new, receipt.commission_id, "done")
+
+    assert done.result_summary == "sorted after all"
+    # The sessions came along. The place on record is where they used to be: taken at its word, it would
+    # have been made anew, empty, and the commission begun from nothing.
+    assert any(message.get("role") == "assistant" for message in resumed.requests[0])
+    started = await _events(new, receipt.commission_id, "started")
+    assert [event.payload["resumed"] for event in started] == [False, True]
+    # Where it is kept now is what is on record from here on.
+    assert Path(done.session_dir) == _sessions(new_root) / receipt.commission_id
+    assert not (_sessions(old_root) / receipt.commission_id / "transcript.jsonl").exists()
+
+
+async def test_the_place_on_record_gives_way_only_to_a_session_that_has_something_in_it(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]))
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort", dispatch_text="sort the photos", source="dispatch", route="task_agent"
+    )
+    recorded, current = tmp_path / "where it was" / commission.id, _sessions(tmp_path) / commission.id
+    await host.ledger.update(commission.id, session_dir=str(recorded))
+    kept = await host.ledger.get(commission.id)
+
+    def where() -> Path:
+        return host.task_agents._session_dir_of(kept)
+
+    # Nothing was said in either place: the one on record (the storage location was moved before the
+    # commission got as far as a first word, or the place is simply new).
+    assert where() == recorded
+    current.mkdir(parents=True)
+    assert where() == recorded
+    # A record with nothing in it is not one.
+    (current / "transcript.jsonl").write_bytes(b"")
+    assert where() == recorded
+    # Something was said below the root of now and nothing where the record points: the folder was moved.
+    (current / "transcript.jsonl").write_text('{"type": "session"}\n', encoding="utf-8")
+    assert where() == current
+    recorded.mkdir(parents=True)
+    (recorded / "transcript.jsonl").write_bytes(b"")
+    assert where() == current
+    # Something was said in both: the one on record, as the ledger was told.
+    (recorded / "transcript.jsonl").write_text('{"type": "session"}\n', encoding="utf-8")
+    assert where() == recorded
+
+    # The same for a commission from before the place was recorded, found by its working directory.
+    await host.ledger.update(commission.id, session_dir=None, workdir=str(recorded / "work"))
+    older = await host.ledger.get(commission.id)
+    assert older.session_dir is None and host.task_agents._session_dir_of(older) == recorded
+    (recorded / "transcript.jsonl").unlink()
+    assert host.task_agents._session_dir_of(older) == current
+
+
+def test_the_host_and_the_runtime_call_the_transcript_by_the_same_name():
+    from nekoclaw.host.paths import TRANSCRIPT_NAME
+    from nekoclaw.runtime.session import TRANSCRIPT_FILE
+
+    assert TRANSCRIPT_NAME == TRANSCRIPT_FILE

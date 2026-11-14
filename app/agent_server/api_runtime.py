@@ -641,6 +641,12 @@ async def shutdown():
     browser_last_resort = threading.Timer(BROWSER_KILL_AT_SHUTDOWN_SECONDS, _kill_browser_at_last)
     browser_last_resort.daemon = True
     browser_last_resort.start()
+    # And no call of the built-in tools is carried out from here on. The
+    # browser is closed (or killed) once, further down; a task agent whose
+    # runtime is not stopped by then (the host is only waited for for a few
+    # seconds) would have its next browser call start another, with nobody
+    # left to close it.
+    builtin_provider.shut_down()
     # Release first so the synchronous cleanup below is not reported as stalls.
     if _loop_stall_watchdog is not None:
         try:

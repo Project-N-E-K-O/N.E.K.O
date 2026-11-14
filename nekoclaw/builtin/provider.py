@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 from nekoclaw.host.capabilities import (
@@ -53,6 +54,10 @@ WindowListener = Callable[["dict[str, Any] | None"], None]
 # How long a stopped keyboard-and-mouse call waits for its worker thread to
 # let go of the mouse before the next call may start.
 _DESKTOP_STOP_WAIT_SECONDS = 15.0
+
+# Why no call is carried out any more once the process shuts down; put after
+# "... is not available:" and "... control is".
+_SHUTTING_DOWN = "shutting down with the application"
 
 
 def _drop_outcome(future: "asyncio.Future[Any]") -> None:
@@ -95,6 +100,13 @@ class BuiltinToolProvider:
         # The kills of the browser that nobody waits for (``kill_browser_unwaited``)
         # and that are not over yet; browser calls wait for all of them.
         self._killing: set[asyncio.Future[None]] = set()
+        # How many callers are closing the browser right now and will have it
+        # killed should that fail (``stopping_browser``). A browser call
+        # whose turn comes meanwhile is refused.
+        self._stopping_browser = 0
+        # Set once the process shuts down (``shut_down``): no call of any
+        # tool is carried out from then on.
+        self._shut_down = False
 
     # -- availability -----------------------------------------------------
 
@@ -130,6 +142,24 @@ class BuiltinToolProvider:
                 )
             )
         return items
+
+    def _ready(self, group: str) -> tuple[bool, str | None]:
+        """Whether a call of a group may be carried out now, and why not."""
+        if self._shut_down:
+            return False, _SHUTTING_DOWN
+        return self._state(group)
+
+    def shut_down(self) -> None:
+        """No call is carried out from now on; for when the process shuts down. Not undone.
+
+        The shutdown closes the browser and lets go of the keys once. A task
+        agent whose runtime has not been stopped yet (its start outlasted
+        the time the shutdown waits for the host) goes on calling tools
+        meanwhile: the next browser call would start a browser nobody is left
+        to close, the next keyboard call press a key nobody is left to
+        release.
+        """
+        self._shut_down = True
 
     def is_running(self, group: str | None = None) -> bool:
         """Whether a call is under way right now (of one group, or of any)."""
@@ -169,7 +199,7 @@ class BuiltinToolProvider:
     async def run(self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
         """Carry out one call. Cancelling it stops what it started."""
         group = capability.group
-        ready, reason = self._state(group or "")
+        ready, reason = self._ready(group or "")
         if not ready:
             return BuiltinOutcome(False, f"{capability.tool_name} is not available: {reason or 'switched off'}")
         if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
@@ -186,7 +216,7 @@ class BuiltinToolProvider:
         action = str(arguments.get("action") or "")
         async with self._desktop_lock:
             # Checked again: it may have been switched off while this waited its turn.
-            ready, reason = self._state(BUILTIN_GROUP_KEYBOARD_MOUSE)
+            ready, reason = self._ready(BUILTIN_GROUP_KEYBOARD_MOUSE)
             if not ready:
                 return BuiltinOutcome(False, f"keyboard and mouse control is {reason or 'switched off'}")
             loop = asyncio.get_running_loop()
@@ -229,14 +259,18 @@ class BuiltinToolProvider:
     async def _run_browser(self, tool_name: str, arguments: dict[str, Any]) -> BuiltinOutcome:
         def still_on() -> str | None:
             # Asked when the call's turn has come: the browser may have been
-            # switched off while it waited, and must not be started again.
-            ready, reason = self._state(BUILTIN_GROUP_BROWSER)
+            # switched off while it waited (or the process begun to shut
+            # down), and must not be started again.
+            ready, reason = self._ready(BUILTIN_GROUP_BROWSER)
             if not ready:
                 return f"browser control is {reason or 'switched off'}"
             # Nor while a kill is under way that was asked for after this
             # call began to wait its turn: it cannot be waited for here, and
             # the browser this call started would be what the kill finds.
-            if self._kills_under_way():
+            # Nor while the browser is being closed by someone who will have
+            # it killed if it does not close: this call's turn may come the
+            # moment that closing lets go, before the kill is on record.
+            if self._stopping_browser or self._kills_under_way():
                 return "the browser is being closed; call the tool again in a moment"
             return None
 
@@ -324,6 +358,24 @@ class BuiltinToolProvider:
         killing = asyncio.get_running_loop().run_in_executor(None, kill)
         self._killing.add(killing)
         killing.add_done_callback(self._killing.discard)
+
+    @contextlib.contextmanager
+    def stopping_browser(self) -> Iterator[None]:
+        """For as long as a caller closes the browser and, should that fail, has it killed.
+
+        The kill is only asked for once the closing has failed or run out of
+        time. A browser call that waited its turn behind the closing gets it
+        the moment the closing lets go, which is before its caller has got
+        round to asking for the kill: it would start a browser, and the kill
+        would take that one. Such a call is refused for as long as this
+        lasts. Left once the browser is closed or the kill is on record
+        (``kill_browser_unwaited``), with nothing awaited in between.
+        """
+        self._stopping_browser += 1
+        try:
+            yield
+        finally:
+            self._stopping_browser -= 1
 
     def _kills_under_way(self) -> list["asyncio.Future[None]"]:
         # (One that is over may not have been taken out yet: that is done in

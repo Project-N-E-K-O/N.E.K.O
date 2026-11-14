@@ -113,6 +113,8 @@ def modules(monkeypatch: pytest.MonkeyPatch) -> Any:
     # A lock of this test's own event loop.
     monkeypatch.setattr(capabilities, "_llm_check_lock", asyncio.Lock())
     monkeypatch.setattr(nekoclaw_builtins, "_in_use", {})
+    # A shutdown sets it for good, on the provider every test of this process shares.
+    monkeypatch.setattr(nekoclaw_builtins.provider, "_shut_down", False)
 
     async def ignore_status_update(*_args: Any, **_kwargs: Any) -> None:
         return None
@@ -882,6 +884,30 @@ async def test_shutdown_closes_the_browser_and_lets_go_of_held_keys_after_the_ho
     # What the status sent last says about the browser tools is their own
     # means again, not a browser that happens to be closed.
     assert modules.capability_cache["browser_use"] == {"ready": True, "reason": ""}
+
+
+async def test_from_the_start_of_a_shutdown_no_call_of_the_built_in_tools_is_carried_out(
+    modules, process, search, browser, monkeypatch
+):
+    from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER
+
+    seen: list[Any] = []
+    real_host_shutdown = api_runtime.shutdown_nekoclaw_host
+
+    async def host_shutdown() -> None:
+        # The first step of the shutdown: a task agent whose runtime is not stopped yet calls a tool now.
+        seen.append(nekoclaw_builtins.provider._ready(BUILTIN_GROUP_BROWSER))
+        await real_host_shutdown()
+
+    monkeypatch.setattr(api_runtime, "shutdown_nekoclaw_host", host_shutdown)
+    monkeypatch.setattr(nekoclaw_builtins.provider, "_state", lambda group: (True, ""))
+    assert nekoclaw_builtins.provider._ready(BUILTIN_GROUP_BROWSER) == (True, "")
+
+    await api_runtime.shutdown()
+
+    # Refused already then, well before the browser is closed: it would start another, with nobody left to close it.
+    assert seen == [(False, "shutting down with the application")]
+    assert browser.closes == 1
 
 
 async def test_shutdown_finishes_when_the_browser_will_not_close(modules, process, search, browser, monkeypatch):

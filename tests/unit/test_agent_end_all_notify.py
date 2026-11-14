@@ -359,6 +359,91 @@ def test_a_task_started_after_end_all_does_not_reach_the_browser_before_the_kill
     asyncio.run(_scenario())
 
 
+def test_a_browser_call_that_waited_behind_the_closing_is_refused_when_end_all_gives_the_closing_up(
+    srv, monkeypatch: pytest.MonkeyPatch
+):
+    """A call of a new task that queued behind the closing gets its turn before end_all has asked for the kill."""
+    import threading
+
+    from config import nekoclaw_settings as settings
+
+    let_kill_finish = threading.Event()
+    done: list[str] = []
+    monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_END_ALL_SECONDS", 0.05)
+
+    class _Tools:
+        """Like the real ones: one lock for the closing and the calls, and the call asks when its turn has come."""
+
+        def __init__(self) -> None:
+            self.lock = asyncio.Lock()
+
+        async def call(self, tool_name, arguments, *, refused=None):
+            async with self.lock:
+                why = refused() if refused is not None else None
+                if why:
+                    return why
+                done.append("a browser started")
+                return "done"
+
+        async def aclose(self) -> None:
+            async with self.lock:
+                await asyncio.sleep(3600)
+
+        def window(self):
+            return None
+
+    tools = _Tools()
+    monkeypatch.setattr(srv.builtin_provider, "_browser", tools)
+    # The provider's own closing, which the fixture replaces, and switches that are on.
+    monkeypatch.setattr(srv.builtin_provider, "close_browser", lambda: tools.aclose())
+    monkeypatch.setattr(srv.builtin_provider, "_state", lambda group: (True, ""))
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", lambda: (let_kill_finish.wait(30), done.append("killed")))
+    monkeypatch.setattr(srv.builtin_provider, "_killing", set())
+    monkeypatch.setattr(srv.builtin_provider, "_stopping_browser", 0)
+
+    async def _scenario() -> None:
+        try:
+            stopping = asyncio.ensure_future(srv.admin_control({"action": "end_all"}))
+            # The closing has the lock; the next task calls a browser tool and waits behind it.
+            for _ in range(200):
+                if tools.lock.locked():
+                    break
+                await asyncio.sleep(0.005)
+            assert tools.lock.locked()
+            calling = asyncio.ensure_future(srv.builtin_provider._run_browser("browser_click", {"uid": "1_1"}))
+            assert (await asyncio.wait_for(stopping, 5.0))["success"] is True
+            # Whichever of the two the event loop let on first when the closing was given up: no browser was
+            # started for the kill to take.
+            assert await asyncio.wait_for(calling, 5.0) == "the browser is being closed; call the tool again in a moment"
+            assert done == []
+        finally:
+            let_kill_finish.set()
+        for _ in range(400):
+            if not srv.builtin_provider._killing:
+                break
+            await asyncio.sleep(0.005)
+        assert done == ["killed"] and srv.builtin_provider._stopping_browser == 0
+        # With the kill over, the next call is carried out.
+        assert await asyncio.wait_for(srv.builtin_provider._run_browser("browser_click", {"uid": "1_1"}), 5.0) == "done"
+
+    asyncio.run(_scenario())
+
+
+def test_end_all_that_closes_the_browser_in_time_leaves_nothing_being_stopped(srv, monkeypatch: pytest.MonkeyPatch):
+    seen: list[int] = []
+
+    async def _close() -> None:
+        seen.append(srv.builtin_provider._stopping_browser)
+
+    monkeypatch.setattr(srv.builtin_provider, "close_browser", _close)
+    monkeypatch.setattr(srv.builtin_provider, "browser_unclosed", lambda: False)
+    monkeypatch.setattr(srv.builtin_provider, "_stopping_browser", 0)
+
+    assert asyncio.run(srv.admin_control({"action": "end_all"}))["success"] is True
+    # Said from before the closing began, and no longer once it was over.
+    assert seen == [1] and srv.builtin_provider._stopping_browser == 0
+
+
 def test_end_all_asks_the_browser_to_close_without_waiting_for_the_keys(srv, monkeypatch: pytest.MonkeyPatch):
     import threading
 

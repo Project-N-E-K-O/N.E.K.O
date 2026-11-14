@@ -986,26 +986,32 @@ async def admin_control(payload: Dict[str, Any]):
         # this request.
         from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
 
-        closed_in_time = True
-        try:
-            await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
-        except asyncio.TimeoutError:
-            closed_in_time = False
-            logger.warning("[Agent] end_all: the browser did not close in time; killing it")
-        if closed_in_time and builtin_provider.browser_unclosed():
-            # Asked in time, and closing it failed: it would be kept to be
-            # closed some other time, and run on meanwhile although the user
-            # stopped everything.
-            closed_in_time = False
-            logger.warning("[Agent] end_all: the browser could not be closed; killing it")
-        if not closed_in_time:
-            # Not waited for: killing waits for the processes to be gone,
-            # which takes seconds more, and the answer to this request does
-            # not depend on it. A browser call that comes meanwhile waits
-            # until the kill is over (the provider sees to it): the kill
-            # takes what it finds when its turn comes, and must not find a
-            # browser that a later task has started.
-            builtin_provider.kill_browser_unwaited()
+        # From before the closing begins until the kill, if it comes to one,
+        # is on record: a browser call of a new task that waits its turn
+        # behind the closing gets it the moment the closing is given up,
+        # which is before this request has asked for the kill. Let through,
+        # it would start a browser for the kill to take.
+        with builtin_provider.stopping_browser():
+            closed_in_time = True
+            try:
+                await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
+            except asyncio.TimeoutError:
+                closed_in_time = False
+                logger.warning("[Agent] end_all: the browser did not close in time; killing it")
+            if closed_in_time and builtin_provider.browser_unclosed():
+                # Asked in time, and closing it failed: it would be kept to be
+                # closed some other time, and run on meanwhile although the user
+                # stopped everything.
+                closed_in_time = False
+                logger.warning("[Agent] end_all: the browser could not be closed; killing it")
+            if not closed_in_time:
+                # Not waited for: killing waits for the processes to be gone,
+                # which takes seconds more, and the answer to this request does
+                # not depend on it. A browser call that comes meanwhile waits
+                # until the kill is over (the provider sees to it): the kill
+                # takes what it finds when its turn comes, and must not find a
+                # browser that a later task has started.
+                builtin_provider.kill_browser_unwaited()
         await releasing_keys
         return {"success": True, "message": "all tasks terminated and cleared"}
     elif action == "enable_analyzer":

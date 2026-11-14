@@ -44,7 +44,7 @@ from typing import Any, Protocol
 
 from nekoclaw.host.capabilities import CapabilityRegistry
 from nekoclaw.host.ledger import ACTIVE_STATUSES, Commission, Ledger
-from nekoclaw.host.paths import HostPaths
+from nekoclaw.host.paths import TRANSCRIPT_NAME, HostPaths
 from nekoclaw.host.permissions import CHOICES, PermissionAsk, PermissionGate
 from nekoclaw.host.plugin_runs import PluginRunner
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
@@ -188,6 +188,14 @@ def _shows_run_at_work(event: dict[str, Any]) -> bool:
     if kind == "ended":
         return event.get("reason") == "completed"
     return kind in ("text", "tool_start", "tool_update", "tool_end", "report", "usage", "host_request")
+
+
+def _has_transcript(session_dir: Any) -> bool:
+    """Whether something was ever said in a session directory. Blocking."""
+    try:
+        return (session_dir / TRANSCRIPT_NAME).stat().st_size > 0
+    except OSError:
+        return False
 
 
 def default_runtime_factory(on_event: Callable[[dict[str, Any]], None], host: Any) -> Any:
@@ -477,10 +485,11 @@ class TaskAgentManager:
             from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
-            session_dir = self._session_dir_of(commission)
             workdir_text = commission.workdir
 
             def prepare() -> tuple[str, str]:
+                # In here: where the session is kept is told by what is on the disk.
+                session_dir = self._session_dir_of(commission)
                 session_dir.mkdir(parents=True, exist_ok=True)
                 from pathlib import Path
 
@@ -1608,26 +1617,37 @@ class TaskAgentManager:
         return {"name": name}
 
     def _session_dir_of(self, commission: Commission) -> Any:
-        """Return where a commission's session is kept.
+        """Return where a commission's session is kept. Blocking: it looks at files.
 
         Where it was when the commission was first taken up, when that is on
-        record: the data root may have been moved since, and the sessions do
-        not move with it. Worked out from the root of now, a commission
-        taken up again after such a move would find an empty directory and
-        start from nothing instead of going on.
+        record: the data root may have been moved since through the storage
+        settings, and the sessions do not move with it. Worked out from the
+        root of now, a commission taken up again after such a move would
+        find an empty directory and start from nothing instead of going on.
+
+        Unless nothing was ever said there, and something was below the root
+        of now: the user moved the whole data folder by hand and pointed the
+        application at it. The sessions came along then; the place on record
+        is where they used to be, and would be made anew, empty.
         """
         from pathlib import Path
 
+        current = self._paths.session_dir(commission.id, commission.project)
+        recorded = None
         if commission.session_dir:
-            return Path(commission.session_dir)
-        if commission.workdir:
+            recorded = Path(commission.session_dir)
+        elif commission.workdir:
             # Taken up by a build from before the place was recorded: its
             # working directory was, and is by default the ``work`` directory
             # of its session.
             workdir = Path(commission.workdir)
             if workdir.name == "work" and workdir.parent.name == commission.id:
-                return workdir.parent
-        return self._paths.session_dir(commission.id, commission.project)
+                recorded = workdir.parent
+        if recorded is None:
+            return current
+        if not _has_transcript(recorded) and _has_transcript(current):
+            return current
+        return recorded
 
     async def _child_workdir(self, parent: Commission, cwd: Any) -> str | None:
         """Return the working directory of a task agent the parent starts.
