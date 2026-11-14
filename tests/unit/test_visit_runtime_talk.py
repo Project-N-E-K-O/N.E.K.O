@@ -2172,30 +2172,28 @@ async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeyp
     rt.record_line = slow_record
     rt.journal.seal = slow_seal
     monkeypatch.setattr(rtm, "_SEAL_MAX_S", 1.0)
-    # Record the budget each wait is handed rather than timing the whole call:
-    # a stalled runner stretches wall time, never the budgets themselves.
+    # Record the timeout each actual wait runs with rather than timing the whole
+    # call: a stalled runner stretches wall time, never the timeouts themselves.
     budgets: dict[str, float] = {}
-    real_settle = rt.settle_family_records
     real_start_seal = rt._start_seal
     real_wait = asyncio.wait
     sealings: list[asyncio.Future] = []
-
-    async def settle_family_records(timeout):
-        budgets["family"] = timeout
-        return await real_settle(timeout)
 
     def start_seal(*args, **kwargs):
         sealings.append(real_start_seal(*args, **kwargs))
         return sealings[-1]
 
     async def wait(fs, *args, **kwargs):
-        # Only the timed foreground wait: once it times out, the background
-        # finish waits on the same seal with no timeout, and may get there first.
-        if sealings and sealings[-1] in fs and "timeout" in kwargs:
-            budgets.setdefault("seal", kwargs["timeout"])
+        # Only timed waits, first one each: once the seal times out, the
+        # background finish waits on it with no timeout, and may get there first.
+        if "timeout" in kwargs:
+            family = {id(f) for f in rt.family_records}
+            if any(id(f) in family for f in fs):
+                budgets.setdefault("family", kwargs["timeout"])
+            elif sealings and sealings[-1] in fs:
+                budgets.setdefault("seal", kwargs["timeout"])
         return await real_wait(fs, *args, **kwargs)
 
-    rt.settle_family_records = settle_family_records
     rt._start_seal = start_seal
     monkeypatch.setattr(rtm.asyncio, "wait", wait)
     try:
