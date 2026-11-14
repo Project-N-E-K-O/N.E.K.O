@@ -3669,7 +3669,7 @@ def test_numeric_v2_actor_failure_commits_only_safe_reply(tmp_path, monkeypatch)
         )
         assert restored.json()["session"]["revision"] == 1
         assert len(restored.json()["session"]["performance_history"]) == 1
-        saved = json.loads((tmp_path / "theater/numeric_v2/sessions/http_actor_fail.json").read_text())
+        saved = json.loads((tmp_path / "theater/numeric_v2/sessions/http_actor_fail.json").read_text(encoding="utf-8"))
         assert saved["ledger_events"][-1]["delivery_fallback"]
 
 
