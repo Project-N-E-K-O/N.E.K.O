@@ -93,7 +93,8 @@ async def test_public_unmarked_invitation_is_reviewed_and_crosses_once(tmp_path,
         ensure_current_binding=lambda _: _binding())
     assert continued.stored.session.current_node_id == "work"
     assert len([row for row in continued.stored.ledger_events if row["from_node_id"] != row["to_node_id"]]) == 1
-    assert calls == {"evaluator": 2, "actor": 2, "contract": 1, "offer": 1}
+    # Plain local prose still receives the same single player-authority audit.
+    assert calls == {"evaluator": 2, "actor": 2, "contract": 2, "offer": 1}
 
 
 @pytest.mark.asyncio

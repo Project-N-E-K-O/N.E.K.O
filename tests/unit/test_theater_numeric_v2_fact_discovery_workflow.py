@@ -213,7 +213,7 @@ async def _run(runtime, current, state, *, message="请工作人员核对并交�
     token = _STATE.set(state)
     state.diagnostics = {}
     try:
-        return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2(key, current.session.revision, message, source), ensure_current_binding=lambda _: _binding(),
             diagnostics_sink=state.diagnostics)
     finally:

@@ -3530,6 +3530,8 @@
         }
     },
   "theater": {
+    "safePauseAction": "(pauses briefly)",
+    "safePause": "How would you like to continue?",
     "tokenStage_dispute": "Dispute review",
     "tokenStage_history_lookup": "History lookup",
     "tokenStage_review": "Fast review",

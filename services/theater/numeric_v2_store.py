@@ -1290,6 +1290,7 @@ class NumericV2SessionStore:
                     ledger_events=tuple(events[:event_index]) if ("accepted_offer_route_id" in event
                         or event.get("input_source") == "accept_invitation") else (),
                     condition_narrations_enabled=condition_narrations_enabled,
+                    hold_current_scene=event.get("delivery_hold") is True,
                     routing_fact_operations=tuple(event["routing_fact_operations"])
                     if "routing_fact_operations" in event else None,
                     fact_operations=tuple(
@@ -1324,10 +1325,18 @@ class NumericV2SessionStore:
                 "fact_operations",
                 "routing_fact_operations",
                 "accepted_offer_route_id",
+                "delivery_hold",
             ):
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             replayed_session = replayed.session
+            if "delivery_hold" in event and event["delivery_hold"] is not True:
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if "delivery_fallback" in event and (
+                    event.get("delivery_hold") is not True or not isinstance(event["delivery_fallback"], str)
+                    or not event["delivery_fallback"] or event["from_node_id"] != event["to_node_id"]
+                    or event["metric_changes"] or event.get("fact_operations")):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if "offer_repair_attempted" in event and (event["offer_repair_attempted"] is not True
                     or event["from_node_id"] != event["to_node_id"]
                     or event.get("input_source", "freeform") not in {"freeform", "suggestion"}):

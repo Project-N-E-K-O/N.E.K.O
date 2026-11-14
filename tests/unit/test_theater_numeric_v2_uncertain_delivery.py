@@ -173,9 +173,9 @@ async def test_fixed_original_cause_distinguishes_uncertainty_from_grounded_conf
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("raw_verdict", ["clear", "violation"])
+@pytest.mark.parametrize("raw_verdict", ["clear", "violation", "uncertain"])
 @pytest.mark.parametrize("proof", [[], ["unknown-source"], [{"source_ref": "c0", "quote": "伪造原文"}]])
-async def test_uncertain_player_scope_has_one_meaning_without_accepting_forged_proofs(monkeypatch, raw_verdict, proof):
+async def test_uncertain_player_scope_cannot_override_violation_or_accept_forged_proofs(monkeypatch, raw_verdict, proof):
     engine, session = _frame()
     body = _body()
     before = deepcopy(session.to_dict())
@@ -193,8 +193,36 @@ async def test_uncertain_player_scope_has_one_meaning_without_accepting_forged_p
     problems = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
         node=engine.nodes["start"], session=session, actor_performance=body,
         player_input="我只等候。", diagnostics=diagnostics)
-    assert bool(problems) is bool(proof)
-    assert bool(diagnostics.get("review_warnings")) is not bool(proof)
+    warning = raw_verdict != "violation" and not proof
+    assert bool(problems) is not warning
+    assert bool(diagnostics.get("review_warnings")) is warning
     assert session.to_dict() == before and len(calls) == 2
-    if not proof:
+    if warning:
         assert diagnostics["confirmation_verdicts"][0]["verdict"] == "uncertain"
+    elif raw_verdict == "violation":
+        assert diagnostics["confirmation_verdicts"][0]["verdict"] == "violation"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_unauthorized_player_action_stays_blocked_when_scope_is_uncertain(monkeypatch):
+    engine, session = _frame()
+    body = {"scene_narration": "你替工作人员签下长期维护合同。", "performance": ""}
+    before = deepcopy(session.to_dict())
+
+    def respond(messages, data, kwargs):
+        if "sources" in data:
+            payload = contract_audit_payload({"violations": []}, messages)
+            payload["player_authority"]["c0"] = [{"quote": body["scene_narration"], "authorization_ref": ""}]
+            return payload
+        return {"verdict": "violation", "reason": "玩家只授权等候，没有授权签订合同。", "clearance": [],
+                "player_action_scope": "uncertain"}
+
+    calls = _install(monkeypatch, respond)
+    diagnostics = {}
+    problems = await ev.NumericV2MetricEvaluator(object()).verify_contract_boundaries(
+        node=engine.nodes["start"], session=session, actor_performance=body,
+        player_input="我只在旁边等候。", diagnostics=diagnostics)
+    assert ev._PLAYER_AUTHORITY_RULE in problems
+    assert diagnostics["confirmation_verdicts"][0]["verdict"] == "violation"
+    assert not diagnostics.get("review_warnings")
+    assert len(calls) == 2 and session.to_dict() == before

@@ -3530,6 +3530,8 @@
         }
     },
   "theater": {
+    "safePauseAction": "(faz uma breve pausa)",
+    "safePause": "Como você gostaria de continuar?",
     "tokenStage_dispute": "Nova revisão",
     "tokenStage_history_lookup": "Consulta ao histórico",
     "tokenStage_review": "Revisão rápida",

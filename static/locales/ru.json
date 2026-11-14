@@ -3530,6 +3530,8 @@
         }
     },
   "theater": {
+    "safePauseAction": "(делает короткую паузу)",
+    "safePause": "Как ты хочешь продолжить?",
     "tokenStage_dispute": "Повторная проверка",
     "tokenStage_history_lookup": "Поиск в истории",
     "tokenStage_review": "Быстрая проверка",

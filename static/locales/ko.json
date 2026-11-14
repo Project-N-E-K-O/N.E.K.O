@@ -3530,6 +3530,8 @@
         }
     },
   "theater": {
+    "safePauseAction": "（잠시 멈춘다）",
+    "safePause": "이제 어떻게 이어가고 싶어?",
     "tokenStage_dispute": "이의 재검토",
     "tokenStage_history_lookup": "기록 검색",
     "tokenStage_review": "빠른 검토",

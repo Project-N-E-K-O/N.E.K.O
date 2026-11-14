@@ -195,10 +195,10 @@ async def test_wrong_destination_reuses_rewrite_and_commits_only_current_scene(t
                   turn=TurnRequestV2('go', current.session.revision, c['message']), ensure_current_binding=lambda _: _binding())
     if ordinary_result == 'technical' and dispute != 'allow':
         with pytest.raises(NumericV2ActorOutputError):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session('wrong_destination') == current
         return
-    result = await workflow.execute_numeric_v2_turn(**kwargs)
+    result = await workflow._execute_numeric_v2_turn(**kwargs)
     assert len(evaluation_calls) == 1
     assert result.stored.session.revision == current.session.revision + 1
     assert len(result.stored.ledger_events) == len(current.ledger_events) + 1
@@ -385,11 +385,11 @@ async def test_acceptance_body_repair_preserves_route_and_shares_rewrite_budget(
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     if late_rejection:
         with pytest.raises(NumericV2ActorOutputError, match='transition_review_failed'):
-            await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            await workflow._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
                 turn=TurnRequestV2('go', current.session.revision, '好，走吧。'), ensure_current_binding=lambda _: _binding())
         assert await runtime.restore_session('accepted') == current
         return
-    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    result = await workflow._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('go', current.session.revision, '好，走吧。'), ensure_current_binding=lambda _: _binding())
     assert len(evaluation_calls) == 1 and len(actor_calls) == 2
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2

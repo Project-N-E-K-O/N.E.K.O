@@ -161,11 +161,11 @@ async def test_dynamic_transition_reviews_whole_candidate_before_atomic_commit(m
                   turn=TurnRequestV2('one', 0, '给你毛巾。'), ensure_current_binding=lambda _: _binding())
     if verdict == 'unavailable':
         with pytest.raises(NumericV2ActorOutputError):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session('review') == current
         assert {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
     else:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.status == 'ended'
         assert result.diagnostics['semantic_review_fallback'] is (verdict == 'reject')
         # Diagnostics stay visible but never enter plot facts consumed by later actors.

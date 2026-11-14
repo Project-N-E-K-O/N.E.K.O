@@ -102,8 +102,9 @@ async def _setup(tmp_path, monkeypatch, *, scenario="valid", review=False):
     return runtime, current, calls
 
 
-async def _turn(runtime, current, key="inspect", message="请管事核验文书。", source="freeform"):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+async def _turn(runtime, current, key="inspect", message="请管事核验文书。", source="freeform", *, strict=False):
+    execute = wf._execute_numeric_v2_turn if strict else wf.execute_numeric_v2_turn
+    return await execute(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2(key, current.session.revision, message, source),
         ensure_current_binding=lambda _: _binding())
 

@@ -257,6 +257,13 @@ async def test_blocked_workflow_uses_actual_external_delivery_and_keeps_player_a
             if 'direction' in properties:
                 return SimpleNamespace(content='{"direction":""}')
             answer = {'violations': []}
+            if 'bound_completion_approved_indexes' in properties and mode in {'actor_complete', 'partial_actor'}:
+                check = data['bound_completion_check']
+                assert check['claims'][0]['key'] == KEY
+                permissions.append([row['source'] for row in check['claims'][0]['evidence']])
+                assert set(permissions[-1]) == {'actor_performance'}
+                calls.append('proof_review')  # This proof shares the contract HTTP.
+                answer['bound_completion_approved_indexes'] = [0] if mode == 'actor_complete' else []
             blocks = [row for row in data['sources'] if row['id'].startswith('c')]
             if 'departure_scope' in properties:
                 answer['departure_scope'] = [{'scope': 'current_scene', 'candidate_ref': row['id'], 'quote': row['text']}
@@ -302,7 +309,9 @@ async def test_blocked_workflow_uses_actual_external_delivery_and_keeps_player_a
         assert 'tail' not in calls
     if mode == 'explicit_player': assert calls == ['proof_review', 'source']
     if mode == 'deferred_mixed':
-        assert calls == ['proof_review', 'source', 'proof_review']
+        # The final body audit now also rejects the prebound claim; no extra fact-review HTTP.
+        assert calls == ['proof_review', 'source']
+        assert result.diagnostics['source_completion_reviews_merged'] == 1
         assert preliminary_approvals == [()]
     if mode == 'partial_actor': assert calls == ['source', 'proof_review']
     if mode in {'native_player', 'discovery_mixed'}: assert calls == ['source']

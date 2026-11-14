@@ -145,10 +145,10 @@ async def test_combined_source_waits_for_independent_proof_and_commits_once(tmp_
     kwargs = dict(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("shared-combined", 0, message), ensure_current_binding=lambda _: _binding())
     if mode == "target_failure":
-        with pytest.raises(NumericV2ActorOutputError): await wf.execute_numeric_v2_turn(**kwargs)
+        with pytest.raises(NumericV2ActorOutputError): await wf._execute_numeric_v2_turn(**kwargs)
         assert path.read_bytes() == original
         return
-    result = await wf.execute_numeric_v2_turn(**kwargs)
+    result = await wf._execute_numeric_v2_turn(**kwargs)
     assert calls == (["source_with_evaluation", "separate_fallback", "source_review"] if mode == "evaluator_false"
         else ["source_with_evaluation", "source_review"] + (["target", "target_review"] if approved
             else ["separate_fallback"] if mode == "invalid_evaluation" else []))

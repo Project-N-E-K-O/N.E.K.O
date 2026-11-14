@@ -10,7 +10,7 @@ _ACCEPT_INSTRUCTION = re.compile(
 _PRESSURE = re.compile(r"逼迫|迫使|迫不得已|不得不|必须立刻|只能立即")
 _CHOICE = re.compile(r"[？?]|愿不愿|愿意|要不要|请你|我们一起|可以选择|还是|你来决定")
 _LEADING_ACTIONS = re.compile(r"^\s*(?:(?:（[^）]*）|\([^)]*\))\s*)+")
-_DEFERRAL = re.compile(r"^(?:先别|暂缓|稍等|等一下|再等等|现在不去|现在不开始)")
+_DEFERRAL = re.compile(r"^(?:(?:现在)?先别|暂缓|稍等|等一下|再等等|现在不去|现在不开始)")
 
 
 def is_placeholder_accept_input(text: str) -> bool:

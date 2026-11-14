@@ -72,11 +72,11 @@ async def test_rewrite_then_dispute_once_and_commit_latest_complete_reply(monkey
     repaired = rejected or offer_repaired_before_dispute or mode == 'release'
     if mode in {'reject', 'timeout', 'protocol'} or (formal and mode == 'invalid_offer'):
         with pytest.raises(workflow.NumericV2ActorOutputError, match='transition_review_failed'):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session('dispute') == current
         assert len(generations) == 2
         return
-    result = await workflow.execute_numeric_v2_turn(**kwargs)
+    result = await workflow._execute_numeric_v2_turn(**kwargs)
     assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
     assert result.stored.session.metrics['trust'] == current.session.metrics['trust'] + 2
     assert result.stored.session.current_node_id == ('ending_leave' if formal else 'start')
@@ -204,13 +204,13 @@ async def test_dispute_wait_does_not_consume_the_repair_review_budget(monkeypatc
                    turn=TurnRequestV2('one', 0, '我来帮你。'), ensure_current_binding=lambda _: _binding(),
                    diagnostics_sink=diagnostics)
     if repair_passes:
-        result = await workflow.execute_numeric_v2_turn(**request)
+        result = await workflow._execute_numeric_v2_turn(**request)
         assert result.stored.session.revision == 1
         assert '第2版回应' in str(result.stored.session.performance_history[-1])
         assert await NumericV2Runtime(engine, tmp_path).restore_session('dispute_budget') == result.stored
     else:
         with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
-            await workflow.execute_numeric_v2_turn(**request)
+            await workflow._execute_numeric_v2_turn(**request)
         assert await NumericV2Runtime(engine, tmp_path).restore_session('dispute_budget') == current
     assert len(generations) == len(reviews) == 2
     assert diagnostics['semantic_rewrite_attempts'] == 1
@@ -463,7 +463,7 @@ async def test_prose_only_movement_reason_keeps_veto_in_workflow(monkeypatch, tm
     monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
     monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     with pytest.raises(workflow.NumericV2ActorOutputError, match='transition_review_failed'):
-        await workflow.execute_numeric_v2_turn(
+        await workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('move_now', 0, '那带路吧，我们现在过去。'), ensure_current_binding=lambda _: _binding())
     assert await runtime.restore_session('prose_movement') == current

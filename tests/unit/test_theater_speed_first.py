@@ -73,7 +73,7 @@ async def test_opening_with_author_boundaries_does_not_call_review(speed_first, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("review_fails,new_invitation", [(False, False), (True, False), (False, True)])
-async def test_progress_review_runs_once_before_the_first_over_budget_actor_draft(
+async def test_program_checkpoint_avoids_progress_model_but_keeps_pending_offer_review(
     speed_first, tmp_path, monkeypatch, review_fails, new_invitation,
 ):
     from services.theater.numeric_v2_evaluator import NumericV2EvaluatorError
@@ -85,6 +85,7 @@ async def test_progress_review_runs_once_before_the_first_over_budget_actor_draf
     runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id="checkpoint", catgirl_binding=_binding(), opening_performance=_opening())
     calls = []
+    body_audits = []
     advice = "确认已经交付的线索，回应玩家眼前的行动。"
 
     async def evaluate(self, **kwargs):
@@ -103,9 +104,13 @@ async def test_progress_review_runs_once_before_the_first_over_budget_actor_draf
         calls.append(("actor", kwargs["session"].node_turn_count, kwargs.get("progress_direction")))
         return {"performance": f"（点头）我听到第{kwargs['session'].revision + 1}个问题了。", "suggested_inputs": []}
 
+    async def audit(self, **kwargs):
+        body_audits.append(kwargs["actor_performance"])
+        return ()
+
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "review_story_evidence", review)
-    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "verify_contract_boundaries", speed_first)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "verify_contract_boundaries", audit)
     monkeypatch.setattr(workflow.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "克制。")
     for i in range(9 if new_invitation else 5):
@@ -115,18 +120,16 @@ async def test_progress_review_runs_once_before_the_first_over_budget_actor_draf
             continue
         result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2(f"turn-{i}", i, f"第{i + 1}个问题。"), ensure_current_binding=lambda _: _binding())
-        assert result.diagnostics.get("progress_review_calls", 0) == int(i == 3 or new_invitation and i == 7)
+        assert result.diagnostics.get("progress_review_calls", 0) == int(new_invitation and i == 7)
         current = await runtime.restore_session(current.session.session_id)
         assert current == result.stored
-    assert calls[:5] == [
-        ("actor", 0, None), ("actor", 1, None), ("actor", 2, None), ("review", 3),
-        ("actor", 3, None if review_fails else advice),
-    ]
-    assert calls[5:] == (
+    assert calls[:4] == [("actor", i, None) for i in range(4)]
+    assert calls[4:] == (
         [("actor", 5, None), ("actor", 6, None), ("review", 7), ("actor", 7, advice), ("actor", 8, None)]
         if new_invitation else [("actor", 4, None)]
     )
     assert advice not in str(current.session.performance_history)
+    assert len(body_audits) == (8 if new_invitation else 5)
 
 
 @pytest.mark.asyncio

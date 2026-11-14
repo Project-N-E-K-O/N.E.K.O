@@ -101,10 +101,10 @@ async def test_only_successful_complete_absence_survives_source_delivery(
         turn=TurnRequestV2('reviewed-source', 0, message), ensure_current_binding=lambda _: _binding())
     if mode == 'author_violation':
         with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_contract_violation'):
-            await wf.execute_numeric_v2_turn(**kwargs)
+            await wf._execute_numeric_v2_turn(**kwargs)
         assert path.read_bytes() == before and actor_calls == ['source', 'tail']
         return
-    result = await wf.execute_numeric_v2_turn(**kwargs)
+    result = await wf._execute_numeric_v2_turn(**kwargs)
     assert result.stored.session.current_node_id == 'work'
     assert len([row for row in result.stored.ledger_events if row['from_node_id'] != row['to_node_id']]) == 1
     assert actor_calls == (['source', 'tail', 'tail'] if mode == 'tail_repair' else ['source', 'tail'])

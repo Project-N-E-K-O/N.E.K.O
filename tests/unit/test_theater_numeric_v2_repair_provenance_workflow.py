@@ -174,10 +174,10 @@ async def test_bad_review_quote_never_causes_actor_to_rewrite_legal_prose(tmp_pa
         turn=TurnRequestV2("show", 0, player), ensure_current_binding=lambda _: _binding())
     if repair == "invalid":
         with pytest.raises(NumericV2ActorOutputError, match="numeric_v2_contract_check_failed"):
-            await wf.execute_numeric_v2_turn(**kwargs)
+            await wf._execute_numeric_v2_turn(**kwargs)
         assert path.read_bytes() == original
     else:
-        result = await wf.execute_numeric_v2_turn(**kwargs)
+        result = await wf._execute_numeric_v2_turn(**kwargs)
         assert result.performance["performance"] == role
         assert result.stored.session.revision == 1
     assert len(generations) == 1 and len(requests) == 2

@@ -136,7 +136,7 @@ async def setup_case(tmp_path, monkeypatch, *, genre="fantasy", failure="actor",
     monkeypatch.setattr(runtime, "commit_turn", commit)
     diagnostics = {}
     async def execute():
-        return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("one", 0, c["input"]), ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
     return c, runtime, current, fact_key, ordinary, calls, diagnostics, execute
 

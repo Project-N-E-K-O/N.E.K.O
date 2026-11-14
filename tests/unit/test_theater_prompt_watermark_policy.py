@@ -54,17 +54,70 @@ def _unframed_messages(source, path="synthetic.py"):
                 return max(assignments, key=lambda item: item.lineno).value
         return None
 
+    def fixed_prefix(node, seen=frozenset(), parameters=None):
+        """Follow literal construction, including a local helper's returned prefix."""
+        if id(node) in seen:
+            return False
+        seen = seen | {id(node)}
+        parameters = parameters or {}
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return all(fixed_prefix(child, seen, parameters) for child in (node.left, node.right))
+        if isinstance(node, ast.IfExp):
+            return all(fixed_prefix(child, seen, parameters) for child in (node.body, node.orelse))
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"replace", "removesuffix"} and not node.keywords):
+            return all(fixed_prefix(child, seen, parameters) for child in (node.func.value, *node.args))
+        if isinstance(node, ast.Name):
+            for scope in enclosing(node):
+                assignments = [item for item in ast.walk(scope)
+                    if isinstance(item, (ast.Assign, ast.AnnAssign)) and item.lineno < node.lineno
+                    and node not in ast.walk(item)
+                    and next(enclosing(item), None) is scope
+                    and any(isinstance(child, ast.Name) and child.id == node.id
+                            for target in (item.targets if isinstance(item, ast.Assign) else [item.target])
+                            for child in ast.walk(target))]
+                if not assignments:
+                    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                            arg.arg == node.id for arg in (*scope.args.posonlyargs, *scope.args.args,
+                                                          *scope.args.kwonlyargs)):
+                        return parameters.get(node.id, False)
+                    continue
+                for assignment in assignments:
+                    for target in (assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]):
+                        if isinstance(target, ast.Name) and target.id == node.id:
+                            if not fixed_prefix(assignment.value, seen, parameters):
+                                return False
+                        elif isinstance(target, (ast.Tuple, ast.List)):
+                            for index, child in enumerate(target.elts):
+                                if isinstance(child, ast.Name) and child.id == node.id:
+                                    call = assignment.value
+                                    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
+                                        return False
+                                    helpers = [item for item in tree.body
+                                               if isinstance(item, ast.FunctionDef) and item.name == call.func.id]
+                                    if len(helpers) != 1:
+                                        return False
+                                    helper = helpers[0]
+                                    arguments = {arg.arg: value for arg, value in zip(helper.args.args, call.args)}
+                                    arguments.update({item.arg: item.value for item in call.keywords})
+                                    bindings = {key: fixed_prefix(value, seen, parameters)
+                                                for key, value in arguments.items()}
+                                    returns = [item for item in ast.walk(helper) if isinstance(item, ast.Return)
+                                               and next(enclosing(item), None) is helper]
+                                    if not returns or not all(isinstance(item.value, ast.Tuple)
+                                            and index < len(item.value.elts)
+                                            and fixed_prefix(item.value.elts[index], seen, bindings) for item in returns):
+                                        return False
+                return True
+        return False
+
     def prefix(node, seen=frozenset()):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value in _DATA_PREFIXES
-        # These existing builders pass a fixed instruction prefix separately
-        # from their framed fields. A prefix alone never proves data framing.
-        if (isinstance(node, ast.Name) and node.id == "human_prefix"
-                and path in {"services/theater/numeric_v2_actor.py", "services/theater/numeric_v2_evaluator.py"}):
-            return True
         if isinstance(node, ast.Name) and node.id not in seen:
-            value = prior_value(node)
-            return value is not None and prefix(value, seen | {node.id})
+            return fixed_prefix(node)
         return False
 
     def framed(node, seen=frozenset()):
@@ -172,3 +225,26 @@ def test_model_boundary_guard_detects_unframed_data(source):
 ])
 def test_model_boundary_guard_accepts_framed_data(source):
     assert not _unframed_messages(source)[0]
+
+
+@pytest.mark.parametrize("path", ["services/theater/numeric_v2_actor.py", "services/theater/numeric_v2_evaluator.py"])
+@pytest.mark.parametrize("assignment", [
+    "human_prefix = player_input",
+    "human_prefix = '固定说明：\\n' if ready else player_input",
+    "human_prefix = '固定说明：\\n'\nif ready:\n human_prefix = player_input",
+    "human_prefix = '固定说明：\\n'\nhuman_prefix = human_prefix.replace('说明', player_input)",
+    "human_prefix, data = make_prefix(player_input)",
+])
+def test_real_module_names_cannot_exempt_unframed_prefix_data(path, assignment):
+    source = assignment + "\nHumanMessage(content=human_prefix + prompt_data_block('审核数据', data))"
+    assert _unframed_messages(source, path)[0]
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_prefix_helper_is_checked_including_parameter_reassignment(changed):
+    source = ("def prefix_builder(prefix):\n"
+              + (" prefix = player_input\n" if changed else "")
+              + " return prefix, data\n"
+              "human_prefix, data = prefix_builder('固定说明：\\n')\n"
+              "HumanMessage(content=human_prefix + prompt_data_block('审核数据', data))")
+    assert bool(_unframed_messages(source)[0]) is changed

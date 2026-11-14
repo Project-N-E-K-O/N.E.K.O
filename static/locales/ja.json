@@ -3530,6 +3530,8 @@
         }
     },
   "theater": {
+    "safePauseAction": "（少し間を置く）",
+    "safePause": "この先、どうしたい？",
     "tokenStage_dispute": "再審査",
     "tokenStage_history_lookup": "履歴検索",
     "tokenStage_review": "簡易確認",

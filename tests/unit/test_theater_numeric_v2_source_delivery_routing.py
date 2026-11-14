@@ -145,10 +145,10 @@ async def test_delivery_then_approval_then_one_atomic_transition(tmp_path, monke
         turn=TurnRequestV2('source-route', 0, INPUT), ensure_current_binding=lambda _: _binding())
     if mode == 'tail_failure':
         with pytest.raises(NumericV2ActorOutputError):
-            await wf.execute_numeric_v2_turn(**kwargs)
+            await wf._execute_numeric_v2_turn(**kwargs)
         assert runtime.store._path(current.session.session_id).read_bytes() == original
         return
-    result = await wf.execute_numeric_v2_turn(**kwargs)
+    result = await wf._execute_numeric_v2_turn(**kwargs)
     transitions = [row for row in result.stored.ledger_events if row['from_node_id'] != row['to_node_id']]
     expected_advance = mode in {'agree', 'player_source'}
     assert len(transitions) == int(expected_advance)

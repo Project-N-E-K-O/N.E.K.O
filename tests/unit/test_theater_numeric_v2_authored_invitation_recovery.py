@@ -112,7 +112,9 @@ async def test_failed_in_act_draft_recovers_a_real_control_then_continues(tmp_pa
     assert moved.stored.session.revision == current.session.revision + 2
     assert len([event for event in moved.stored.ledger_events if event["from_node_id"] != event["to_node_id"]]) == 1
     assert moved.stored.session.metrics["trust"] == result.stored.session.metrics["trust"]
-    assert calls == {"actor": 3, "contract": 3, "evaluator": 2}
+    # The accepted, self-contained fixed entry is assembled by the program and still audited.
+    assert calls == {"actor": 2, "contract": 3, "evaluator": 1}
+    assert moved.diagnostics["evaluator_skip_reason"] == "verified_invitation_acceptance"
 
 
 @pytest.mark.asyncio
@@ -121,7 +123,7 @@ async def test_missing_completion_keeps_the_rejection(tmp_path, monkeypatch):
     _install_stay(monkeypatch, runtime)
     original = runtime.store._path(current.session.session_id).read_bytes()
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_violation"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("not-ready", current.session.revision, MESSAGE), ensure_current_binding=lambda _: _binding())
     assert runtime.store._path(current.session.session_id).read_bytes() == original
 
@@ -146,11 +148,11 @@ async def test_pending_condition_uses_the_same_gate_as_runtime(tmp_path, conditi
 async def test_floor_is_not_issued_repeatedly_in_the_same_visit(tmp_path, monkeypatch):
     runtime, current = await _stay_case(tmp_path)
     _install_stay(monkeypatch, runtime)
-    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    result = await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("once", current.session.revision, MESSAGE), ensure_current_binding=lambda _: _binding())
     original = runtime.store._path(current.session.session_id).read_bytes()
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_violation"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=result.stored,
+        await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=result.stored,
             turn=TurnRequestV2("twice", result.stored.session.revision, "还有一点想问。"), ensure_current_binding=lambda _: _binding())
     assert runtime.store._path(current.session.session_id).read_bytes() == original
     assert wf._confirmed_authored_acceptance(runtime.engine, result.stored,

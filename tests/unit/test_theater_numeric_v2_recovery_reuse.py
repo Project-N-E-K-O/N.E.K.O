@@ -146,7 +146,7 @@ async def test_rejected_recovery_reuses_only_the_same_approved_ordinary_draft(
     monkeypatch.setattr(runtime, "prepare_turn", prepare_with_changed_projection)
     monkeypatch.setattr(workflow, "_has_new_review_facts", record_preflight)
     diagnostics = {}
-    call = workflow.execute_numeric_v2_turn(
+    call = workflow._execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("question", current.session.revision, case["message"]),
         ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics,

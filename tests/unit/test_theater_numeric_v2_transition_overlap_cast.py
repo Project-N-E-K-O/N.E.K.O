@@ -115,7 +115,7 @@ async def _run_case(tmp_path, monkeypatch, *, authored, actual, catgirl_name,
         ensure_current_binding=lambda _: binding, diagnostics_sink=diagnostics,
     )
     if permitted:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert calls == {"actor": 1, "review": int(review_enabled)}
         assert diagnostics["semantic_rewrite_attempts"] == 0
         assert result.stored.session.revision == 1
@@ -125,7 +125,7 @@ async def _run_case(tmp_path, monkeypatch, *, authored, actual, catgirl_name,
         assert await runtime.restore_session("cast_overlap") == result.stored
     else:
         with pytest.raises(workflow.NumericV2ActorOutputError, match="transition_segment_overlap"):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert calls == {"actor": 2, "review": 0}
         assert diagnostics["semantic_rewrite_attempts"] == 1
         assert diagnostics["transition_bridge_leak_markers_after_rewrite"] == [actual.rstrip("。")]

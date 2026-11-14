@@ -98,18 +98,18 @@ async def test_contract_rewrite_is_bounded_and_rejected_body_never_commits(
     args = dict(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("one", 0, "按刚才的结果继续。"), ensure_current_binding=lambda _: _binding())
     if repair_succeeds:
-        result = await workflow.execute_numeric_v2_turn(**args)
+        result = await workflow._execute_numeric_v2_turn(**args)
         assert result.stored.session.revision == 1
         assert len(result.stored.ledger_events) == 1
         assert body not in json.dumps(result.stored.session.performance_history, ensure_ascii=False)
         assert await runtime.restore_session("contract_gate") == result.stored
     elif repair_succeeds is False:
         with pytest.raises(workflow.NumericV2ActorOutputError, match="contract_violation"):
-            await workflow.execute_numeric_v2_turn(**args)
+            await workflow._execute_numeric_v2_turn(**args)
         assert runtime.store._path("contract_gate").read_bytes() == before
     else:
         with pytest.raises(workflow.NumericV2ActorOutputError, match="contract_check_failed"):
-            await workflow.execute_numeric_v2_turn(**args)
+            await workflow._execute_numeric_v2_turn(**args)
         assert runtime.store._path("contract_gate").read_bytes() == before
     assert len(actors) == (1 if repair_succeeds is None else 2)
     assert len(checks) == (2 if repair_succeeds else 1)

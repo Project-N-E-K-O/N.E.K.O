@@ -64,14 +64,21 @@ async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[
     budget = numeric_v2_actor_budget(session.actor_budget_profile)
     result: dict[str, Any] = {"status": "not_found", "evidence": [], "calls": 0,
                               "pages_read": 0, "record_count": len(records)}
-    pages, omitted = await asyncio.to_thread(
-        _pages, records, query, budget["evaluator_input_max_tokens"],
-    )
-    result["pages_total"] = len(pages)
+    omitted = False
+    result["pages_total"] = 0
     selected: set[int] = set()
     errors: list[str] = []
     try:
-        config = await _model_config(config_manager)
+        config_task = asyncio.create_task(_model_config(config_manager))
+        try:
+            pages, omitted = await asyncio.to_thread(
+                _pages, records, query, budget["evaluator_input_max_tokens"])
+            result["pages_total"] = len(pages)
+            config = await config_task
+        finally:
+            if not config_task.done():
+                config_task.cancel()
+            await asyncio.gather(config_task, return_exceptions=True)
         semaphore = asyncio.Semaphore(2)
 
         async def read_page(rows: list[dict[str, Any]]) -> None:

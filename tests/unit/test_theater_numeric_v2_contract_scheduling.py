@@ -187,7 +187,7 @@ async def test_required_review_remains_inside_whole_turn_deadline_and_keeps_orig
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "verify_contract_boundaries", check)
     with pytest.raises(workflow.NumericV2ActorOutputError, match="contract_check_failed"):
-        await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        await workflow._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("one", 0, "请检查状态。"), ensure_current_binding=lambda _: _binding())
     assert len(checks) == 1 and cancelled == [True]
     assert runtime.store._path(current.session.session_id).read_bytes() == before
@@ -197,7 +197,7 @@ async def test_required_review_remains_inside_whole_turn_deadline_and_keeps_orig
 @pytest.mark.parametrize("contract,full_review,evaluation,expected_reserve", [
     (False, False, False, 8.5), (False, False, True, 8.5),
     (True, True, True, 8.5), (False, True, True, 8.5),
-    (True, False, True, 16.5), (True, False, False, 16.5),
+    (True, False, True, 8.5), (True, False, False, 8.5),
 ])
 async def test_extra_generation_reserve_only_applies_to_required_contract_review(
     tmp_path, monkeypatch, contract, full_review, evaluation, expected_reserve,

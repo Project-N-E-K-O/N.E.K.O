@@ -5324,6 +5324,7 @@ class NumericV2MetricEvaluator:
         reviewed_player_absence: Sequence[Mapping[str, Any]] = (),
         bound_completion_batch: CompletionFactBatch | None = None,
         bound_completion_sink: list[tuple[int, ...]] | None = None,
+        single_pass: bool = False,
     ) -> tuple[str, ...]:
         """Narrow evaluation confirms conflicts only from supplied prohibitions and current visible text.
 
@@ -5414,7 +5415,8 @@ class NumericV2MetricEvaluator:
                     "不得把内部节点、路由或触发条件作为剧中人物要告知玩家的内容。")
         if fixed_originals_present:
             required = (*required, _FIXED_ORIGINAL_CAUSE_RULE)
-        if not required and departure_blocker is None and not departure_attempt_observed:
+        if (not required and departure_blocker is None and not departure_attempt_observed
+                and not (single_pass and session is not None)):
             return ()
         bound_review_batch = None
         if bound_completion_batch is not None and bound_completion_sink is not None:
@@ -5533,7 +5535,7 @@ class NumericV2MetricEvaluator:
                                    if session is not None and target_node is None else None)
 
         def pack():
-            return _build_contract_check_messages(
+            packed = _build_contract_check_messages(
                 required=required,
                 candidate_text=json.dumps(visible, ensure_ascii=False),
                 player_input=player_input, terminal_input_closed=terminal_input_closed,
@@ -5555,6 +5557,10 @@ class NumericV2MetricEvaluator:
                 current_scene_authority=current_scene_authority,
                 reviewed_player_absence_refs=reviewed_player_absence_refs,
             )
+            if single_pass and session is not None:
+                from .numeric_v2_compact_review import SYSTEM
+                packed[0] = theater_system_message(SYSTEM)
+            return packed
 
         def input_tokens(request_messages):
             return count_tokens(json.dumps([
@@ -5603,7 +5609,7 @@ class NumericV2MetricEvaluator:
                        authority_repair_refs=None, confirmation_player_authority=False):
             nonlocal discovery_batch, bound_approval
             source_ids = [block["id"] for block in source_catalog()] if session is not None else None
-            schema = response_format_for(config, "theater_contract", contract_output_schema(
+            base_schema = contract_output_schema(
                 grounded=session is not None, confirmation=confirmation, check_offer=proposed_offer is not None,
                 confirmation_many=confirmation_many, check_route=route_rule_from_player_facts is not None,
                 author_rule_count=author_rule_count, rule_count=len(required),
@@ -5621,7 +5627,8 @@ class NumericV2MetricEvaluator:
                     if source_ids is not None else None,
                 check_departure=confirm_departure if confirmation else check_departure,
                 check_departure_scope=confirm_departure_scope if confirmation else check_departure_scope,
-                clearance_refs=clearance_refs))
+                clearance_refs=clearance_refs)
+            schema = response_format_for(config, "theater_contract", base_schema)
             discover = bool(
                 stage == "contract" and not confirmation and discovery_packet is not None
                 and discovery_sink is not None and session is not None and target_node is None
@@ -5728,6 +5735,20 @@ class NumericV2MetricEvaluator:
                         output["properties"][field] = bound_fields[field]
                         output["required"].append(field)
                     request_messages = extended
+            compact = single_pass and session is not None
+            if compact:
+                from .numeric_v2_compact_review import compact_schema, messages_for_audit
+                output = schema["json_schema"]["schema"] if schema is not None else base_schema
+                short_schema = compact_schema(output, rule_count=len(required),
+                    candidate_refs=[ref for ref in source_ids if ref.startswith(("c", "s"))],
+                    prior_refs=["", *(ref for ref in source_ids if not ref.startswith("s"))])
+                data = prompt_data_block_payload(request_messages[1].content, "小剧场审核数据")
+                if schema is None:
+                    data["output_contract"] = short_schema
+                request_messages = messages_for_audit(data)
+                if input_tokens(request_messages) > budget:
+                    raise NumericV2EvaluatorError("numeric_v2_contract_check_input_over_budget")
+                schema = response_format_for(config, "theater_contract", short_schema)
             client = await create_chat_llm_async(
                 str(config["model"]),
                 str(config["base_url"]),
@@ -5735,12 +5756,29 @@ class NumericV2MetricEvaluator:
                 provider_type=config.get("provider_type"),
                 timeout=NUMERIC_V2_CONTRACT_CHECK_TIMEOUT_SECONDS,
                 max_retries=0,
-                max_completion_tokens=(720 if session is not None and (not confirmation or confirm_departure)
+                max_completion_tokens=(512 if compact and not (discover or approve_bound) else
+                    720 if session is not None and (not confirmation or confirm_departure)
                     else min(720, 320 * len(findings)) if confirmation else NUMERIC_V2_CONTRACT_CHECK_MAX_OUTPUT_TOKENS),
             )
             async with client:
                 reply = await invoke_with_usage(client, request_messages, stage=stage,  # noqa: LLM_INPUT_BUDGET
                                                 response_format=schema)
+            if compact:
+                from .numeric_v2_compact_review import expand_report
+                payload = json.loads(strip_single_json_fence(str(reply.content)))
+                expanded = expand_report(payload, short_schema, author_count=author_rule_count,
+                    player_rule=player_rule_index,
+                    fixed_rule=required.index(_FIXED_ORIGINAL_CAUSE_RULE) if fixed_originals_present else None,
+                    sources={row["id"]: row for row in source_catalog()},
+                    fixed_refs=[f"c{i}" for i, block in enumerate(candidates) if block.get("program_fixed_original")],
+                    departure_rule=route_rule_index if check_departure_scope else None)
+                for row in payload["findings"]:
+                    if row["verdict"] == "uncertain":
+                        warn_uncertain("single_pass", rule_index=row["rule_index"], candidate_ref=row["candidate_ref"])
+                if payload["verdict"] == "uncertain" and not payload["findings"]:
+                    warn_uncertain("single_pass")
+                reply = copy(reply)
+                reply.content = json.dumps(expanded, ensure_ascii=False, separators=(",", ":"))
             if discover or approve_bound:
                 payload = json.loads(strip_single_json_fence(str(reply.content)))
                 if not isinstance(payload, dict):
@@ -6239,6 +6277,21 @@ class NumericV2MetricEvaluator:
                 findings, first_departure, departure_scope = verified_findings(getattr(response, "content", ""))
                 if diagnostics is not None:
                     diagnostics["grounded_findings"] = len(findings)
+                if single_pass:
+                    if (audit_quote_errors or player_authority_bad_refs or player_authority_unrepairable
+                            or author_protocol_invalid or scope_protocol_invalid):
+                        raise NumericV2EvaluatorOutputError("numeric_v2_contract_check_invalid")
+                    if diagnostics is not None:
+                        diagnostics["single_pass"] = True
+                        diagnostics["findings"] = findings
+                        if check_departure_scope:
+                            diagnostics["departure_scope"] = departure_scope or "uncertain"
+                    problems = tuple(finding["rule"] for finding in findings)
+                    if check_departure_scope and departure_scope is None:
+                        warn_uncertain("departure_scope")
+                    if first_departure is not None:
+                        problems = (*problems, required[route_rule_index])
+                    return publish_discovery(problems)
                 if (audit_quote_errors and not findings and not player_authority_unrepairable
                         and audit_quote_errors - {"player_authority"}):
                     # Repair the report over the same ordered originals. The
@@ -6389,7 +6442,8 @@ class NumericV2MetricEvaluator:
                     "只有玩家权限指控另填player_action_scope，其他指控省略；该字段独立核对finding的完整candidate块："
                     "新增玩家决定、主观判断、自主反馈或主动动作填present；仅角色/NPC自身行为、未来提议或玩家被动身体状态填none；判不清填uncertain。"
                     "none表示该完整块没有新增玩家行为，该权限指控不成立；程序直接绑定同c完整原文，不重复用verdict或作者计划判断动作是否存在。"
-                    "该块玩家动作主体仍不确定时，scope填uncertain，程序只记诊断，不以相反verdict认定越权或授予许可；present才另核实际授权。"
+                    "该块玩家动作主体仍不确定时，scope填uncertain；verdict也无法确认违规时只记诊断，不授予许可。"
+                    "明确violation仍须拦截，不能被scope=uncertain覆盖；present才另核实际授权。"
                     "同块只要另有玩家新主动动作、决定或承诺，就不能因其中角色/NPC行为合规而填none。"
                     "这不为真正玩家动作补授权，也不解除作者禁令、前因或整稿离幕审核。"
                     "各项已按序绑定原finding，不需重复抄首报；其余clear必须另引证明主体、阶段、条件或授权不同的真实反证，"
@@ -6524,7 +6578,7 @@ class NumericV2MetricEvaluator:
                         status = verdict["verdict"]
                         uncertain_player_scope = (finding["rule"] == _PLAYER_AUTHORITY_RULE
                                                   and verdict.get("player_action_scope") == "uncertain")
-                        if status == "uncertain" or uncertain_player_scope:
+                        if status == "uncertain" or uncertain_player_scope and status != "violation":
                             # Only an explicit, well-formed uncertainty over the
                             # already grounded finding is a delivery warning.
                             semantic_uncertain = True

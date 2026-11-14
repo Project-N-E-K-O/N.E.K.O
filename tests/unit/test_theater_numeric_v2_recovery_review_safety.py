@@ -21,7 +21,7 @@ def _fixed_finding(performance, *, rule="作者原文与实际状态冲突。", 
 
 
 async def _execute(runtime, current):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("recovery-review", current.session.revision, INPUT),
         ensure_current_binding=lambda _: _binding())
 

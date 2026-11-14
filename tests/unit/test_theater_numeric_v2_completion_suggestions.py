@@ -144,7 +144,7 @@ async def _setup(tmp_path, monkeypatch, *, actor_flag=True, author_offer=False,
 
 
 async def _turn(runtime, current, *, key="choices", message="接下来是继续坐着，还是去别处看看？", source="freeform"):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2(key, current.session.revision, message, source),
         ensure_current_binding=lambda _: _binding())
 

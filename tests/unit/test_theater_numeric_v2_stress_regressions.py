@@ -184,7 +184,7 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
                   turn=TurnRequestV2('finish', 0, '就到这里吧。'), ensure_current_binding=lambda _: _binding())
     if requires_reply or timeout or full_review_rejects:
         with pytest.raises(workflow.NumericV2ActorOutputError):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session('terminal_question') == current
         assert calls['actor'] == (1 if timeout else 2)
         # The stub returns the same visible draft on rewrite. The narrow
@@ -192,7 +192,7 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
         assert calls['narrow'] == 1
         assert calls['review'] == (2 if full_review_rejects else 0)
     else:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.status == 'ended'
         assert calls == {'actor': 1, 'narrow': int('？' in text), 'review': 1}
         assert result.diagnostics['terminal_question_review_calls'] == calls['narrow']

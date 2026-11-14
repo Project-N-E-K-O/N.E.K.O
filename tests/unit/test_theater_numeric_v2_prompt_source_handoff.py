@@ -162,7 +162,8 @@ async def test_workflow_keeps_same_selected_task_and_audit_only_plan_through_cle
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "review_story_evidence", guide)
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "verify_contract_boundaries", contract)
     monkeypatch.setattr(actor.NumericV2Actor, "_invoke", invoke)
-    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    # Exercise the retained model-selected task adapter; public turns use program scheduling.
+    result = await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("reply", 0, MESSAGE), ensure_current_binding=lambda _: _binding())
     assert len(guide_calls) == 1 and len(requests) == len(checked) == 2
     assert current == original and task == TASK

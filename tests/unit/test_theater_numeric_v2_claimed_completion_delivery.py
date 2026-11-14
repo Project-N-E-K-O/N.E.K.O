@@ -77,7 +77,7 @@ async def _setup(tmp_path, monkeypatch, drafts, *, source="performance", require
 
 
 async def _turn(runtime, current):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("inspect", current.session.revision, "请管事核对文书。"),
         ensure_current_binding=lambda _: _binding())
 

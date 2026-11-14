@@ -255,7 +255,7 @@ async def test_workflow_review_pack_timeout_never_connects_or_commits(tmp_path, 
     monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS', 0.05)
 
     diagnostics = {}
-    task = asyncio.create_task(numeric_v2_workflow.execute_numeric_v2_turn(
+    task = asyncio.create_task(numeric_v2_workflow._execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('new', current.session.revision, '我还想再聊聊。'),
         ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics))
@@ -799,7 +799,7 @@ async def test_review_budget_skips_later_rechecks_without_committing_unreviewed_
 
     diagnostics = {}
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
             ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
@@ -850,7 +850,7 @@ async def test_review_budget_exhaustion_keeps_transition_rollback(tmp_path, monk
     monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_REVIEW_BUDGET_SECONDS', 0.0)
 
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
             ensure_current_binding=lambda _: _binding())
@@ -1248,7 +1248,7 @@ async def test_transition_bridge_leak_after_rewrite_rolls_back(tmp_path, monkeyp
 
     diagnostics = {}
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_segment_overlap'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '带路吧。'),
             ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)

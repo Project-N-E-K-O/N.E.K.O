@@ -94,7 +94,7 @@ async def _setup(tmp_path, monkeypatch, *, mode="default", drafts=(GREETING,),
 
     async def execute():
         message = ACCEPT if mode == "all_off" else (case["message"] if case else "就到这里吧。")
-        return await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        return await workflow._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("finish", current.session.revision, message,
                               "suggestion" if mode == "all_off" else "freeform"),
             ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)

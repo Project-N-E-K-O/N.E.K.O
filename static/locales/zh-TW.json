@@ -3530,6 +3530,8 @@
         }
     },
   "theater": {
+    "safePauseAction": "（稍作停頓）",
+    "safePause": "接下來，你想怎麼繼續？",
     "tokenStage_dispute": "爭議複查",
     "tokenStage_history_lookup": "歷史查找",
     "tokenStage_review": "快速複核",

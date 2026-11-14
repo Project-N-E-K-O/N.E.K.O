@@ -75,12 +75,12 @@ async def test_bridge_overlap_with_authored_or_delivered_opening_rewrites_or_blo
                   turn=TurnRequestV2("go", 0, "带路吧。"), ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
     if scenario in {"authored_duplicate", "actual_duplicate", "new_duplicate"}:
         with pytest.raises(workflow.NumericV2ActorOutputError, match="transition_segment_overlap"):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert calls == {"actor": 2, "review": 0}
         assert diagnostics["transition_bridge_leak_markers_after_rewrite"] == [second if scenario == "new_duplicate" else first]
         assert await runtime.restore_session("actual_overlap") == current
     else:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert calls == {"actor": 1 if scenario == "authored_bridge_exempt" else 2, "review": 1}
         assert result.stored.session.revision == 1
         assert result.performance["segments"][2]["scene_narration"] == other
@@ -190,7 +190,7 @@ async def test_bridge_time_provenance_uses_only_latest_committed_source_narratio
         ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics,
     )
     if scenario in {"opening_clock_calendar", "latest_ordinary", "latest_target_opening"}:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert calls == {"actor": 1, "review": 1}
         assert diagnostics["semantic_rewrite_attempts"] == 0
         assert result.performance["segments"][1]["scene_narration"] == bridge
@@ -199,7 +199,7 @@ async def test_bridge_time_provenance_uses_only_latest_committed_source_narratio
         assert await NumericV2Runtime(engine, tmp_path).restore_session("source_time") == result.stored
     else:
         with pytest.raises(workflow.NumericV2ActorOutputError, match="transition_segment_overlap"):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert calls == {"actor": 2, "review": 0}
         assert diagnostics["semantic_rewrite_attempts"] == 1
         assert diagnostics["transition_bridge_leak_markers_after_rewrite"]

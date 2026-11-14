@@ -102,6 +102,11 @@ from .numeric_v2_runtime import (
 )
 from .numeric_v2_store import NumericV2StoredSession
 from .numeric_v2_trace import text_trace_scope, trace_event, trace_state
+from .numeric_v2_turn_control import (
+    optimized_turn_enabled, pending_scene_task,
+    NumericV2ModelCallLimitError, bounded_model_calls, invitation_checkpoint_due, safe_pause_performance,
+)
+from .numeric_v2_latency import turn_latency_scope
 from .numeric_v2_transition_text import (
     is_explicit_transition_deferral,
     is_placeholder_accept_input,
@@ -646,7 +651,8 @@ def _output_retry_hint(
 
     if "repeated" in last_error_code:
         return (
-            "上一版重复了已发生的回应。先核对最近历史，承接已完成动作和物品现状，再回应本轮输入。"
+            "上一版重复了已发生的回应。不要复述上轮，从最近已播正文结束状态之后写起；"
+            "承接已完成动作和物品现状，再回应本轮输入。"
             "玩家重复表达时可以简短确认或自然提醒；明确要求再做且条件允许时才承接再次行动。"
             "不要重演首次反应，也不为求新补造事实或动作；遵守当前发声策略。"
         )
@@ -1452,6 +1458,40 @@ def _confirmation_only_acceptance(
             and prepared.session.status == "active")
 
 
+def _committed_legacy_scene_ready(engine, current):
+    """Reuse only the current visit's committed completion verdict when no typed gate exists."""
+    session = current.session
+    if (engine.completion_contract_satisfied(session) is not None
+            or session.node_turn_count < engine.nodes[session.current_node_id].get("min_turns", 0)):
+        return False
+    latest = next((row for row in current.ledger_events if row.get("result_revision") == session.revision), {})
+    return (latest.get("from_node_id") == latest.get("to_node_id") == session.current_node_id
+        and latest.get("visit_started_revision") == current_visit_started_revision(session)
+        and latest.get("scene_complete") is True and latest.get("transition_intent") != "reject"
+        and not is_explicit_transition_deferral(str(latest.get("input_text") or ""))
+        and not latest.get("delivery_hold") and not latest.get("delivery_fallback"))
+
+
+def _receipt_acceptance_only(runtime, current, turn, route_id):
+    """A current signed click needs no second intent verdict on a settled, single exit."""
+    session = current.session
+    source = runtime.engine.nodes[session.current_node_id]
+    if (not route_id or session.status != "active" or turn.input_source != "suggestion"
+            or turn.base_revision != session.revision or turn.client_turn_id in session.processed_client_turn_ids
+            or len(source.get("route_gates", ())) != 1 or _pending_completion_facts(runtime.engine, session)):
+        return False
+    if route_id != _confirmed_authored_acceptance(runtime.engine, current, turn, require_program_invitation=True):
+        return False
+    completion = runtime.engine.completion_contract_satisfied(session)
+    if completion is False or completion is None and not _committed_legacy_scene_ready(runtime.engine, current):
+        return False
+    prepared = runtime.prepare_turn(current, turn, (), scene_complete=True, transition_intent="accept",
+        condition_narrations_enabled=False)
+    return (prepared.route is not None and prepared.route["id"] == route_id
+            and prepared.session.current_node_id != session.current_node_id
+            and prepared.session.status == "active")
+
+
 def _committed_natural_ending_review_redundant(
     runtime: NumericV2Runtime, current: NumericV2StoredSession, turn: TurnRequestV2,
     evaluation: NumericV2EvaluationResult, ending_route: Mapping[str, Any] | None,
@@ -1516,6 +1556,8 @@ async def _generate_actor_turn_with_output_retry(
         NUMERIC_V2_MAX_ACTOR_DRAFTS_PER_TURN if allow_output_retry
         else (2 if allow_transition_repeat_retry else 1)
     )
+    if optimized_turn_enabled():
+        max_attempts = 2
     if remaining_attempts is not None:
         max_attempts = min(max_attempts, remaining_attempts)
     if max_attempts <= 0:
@@ -1580,8 +1622,9 @@ async def _generate_actor_turn_with_output_retry(
             if last_error_code == "numeric_v2_actor_player_handoff_unverified" and attempt:
                 raise
             targeted_transition_repeat_retry = (
-                allow_transition_repeat_retry
-                and repetition_guard in {"earlier_session", "transition_source", "transition_target"}
+                (allow_transition_repeat_retry
+                 and repetition_guard in {"earlier_session", "transition_source", "transition_target"}
+                 or optimized_turn_enabled() and bool(repetition_guard))
                 and attempt == 0
             )
             if targeted_transition_repeat_retry:
@@ -1619,11 +1662,20 @@ async def _generate_actor_turn_with_output_retry(
     raise AssertionError("unreachable")
 
 
-def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2StoredSession, *, condition_narrations_enabled: bool = True) -> dict[str, Any] | None:
+def invitation_recovery_contract(runtime: NumericV2Runtime, current: NumericV2StoredSession, *,
+    condition_narrations_enabled: bool = True, committed: NumericV2StoredSession | None = None,
+) -> dict[str, Any] | None:
     """Project a new invitation only when the current state can authorize it."""
     session = current.session
-    if session.status != "active" or session.transition_offered or runtime.engine.completion_contract_satisfied(session) is not True:
+    completion = runtime.engine.completion_contract_satisfied(session)
+    if session.status != "active" or session.transition_offered or completion is False:
         return None
+    if completion is None:
+        proof = committed or current
+        if (proof.session.session_id != session.session_id or proof.session.current_node_id != session.current_node_id
+                or current_visit_started_revision(proof.session) != current_visit_started_revision(session)
+                or not _committed_legacy_scene_ready(runtime.engine, proof)):
+            return None
     if required_pending(runtime.engine.nodes[session.current_node_id], session,
             condition_triggers_enabled=condition_narrations_enabled):
         return None
@@ -1672,7 +1724,8 @@ def _authored_invitation_recovery(
     # Keep Runtime's original-delivery gate; discarded draft results cannot
     # make an invitation appear available.
     contract = invitation_recovery_contract(runtime, replace(current, session=outcome.session),
-        condition_narrations_enabled=outcome.ledger_event.get("condition_narrations_enabled") is not False)
+        condition_narrations_enabled=outcome.ledger_event.get("condition_narrations_enabled") is not False,
+        committed=current)
     if (contract is None or contract.get("silent") or not contract["offer"]
             or _adds_unconfirmed_prerequisite(player_input, contract["offer"])
             or any(block["type"] != "dialogue" for block in mixed_performance_blocks(contract["offer"]))):
@@ -1798,6 +1851,93 @@ async def _execute_reinvitation(*, config_manager, runtime, current, turn, ensur
     return NumericV2TurnWorkflowResult(stored, outcome, performance, binding, {"completed": True})
 
 
+def _log_workflow_timing(session_id, revision, diagnostics):
+    # Reviews can quote private player/candidate text. Ordinary logs accept only these
+    # numeric timings, counters and flags; detailed diagnostics stay with the caller.
+    log_diagnostics = {
+        key: diagnostics[key]
+        for key in (
+            "evaluator_model_attempts", "actor_generation_attempts", "actor_provider_calls",
+            "actor_suggestion_fill_attempts", "actor_suggestion_fill_provider_calls",
+            "actor_suggestion_refill_after_review_attempts",
+            "transition_judge_calls", "progress_review_calls", "dispute_review_attempts", "semantic_rewrite_attempts",
+            "completion_fact_review_calls", "completion_fact_rewrite_attempts",
+            "transition_cancellations", "missed_initiation_recoveries", "unsafe_suggestions_removed",
+            "recovered_ordinary_drafts_reused",
+            "authored_transition_recoveries",
+            "authored_invitation_recoveries",
+            "contract_warning_count",
+            "committed_ending_review_skips",
+            "dispute_review_skipped_high_confidence_body",
+            "dispute_review_skipped_unsafe_offer_buttons",
+            "dispute_review_skipped_contract_offer",
+            "dispute_review_deferred_offer_repair",
+            "explicit_player_movement_flags_cleared",
+            "actor_repeated_output_retry_aborted",
+            "player_action_projection_conflicts", "player_action_projection_safe_degrades",
+            "invalid_offer_local_crops", "invalid_scene_update_local_crops",
+            "transition_judge_degraded", "dispute_review_degraded", "semantic_review_fallback",
+            "evaluator_degraded", "completed",
+            "ordinary_turn_combined",
+        )
+        if type(diagnostics.get(key)) in (int, bool)
+    }
+    log_diagnostics["timings_ms"] = {
+        key: value for key, value in diagnostics.get("timings_ms", {}).items()
+        if type(value) in (int, float)
+    }
+    log_diagnostics["latency"] = diagnostics["latency"]
+    logger.info(
+        "Numeric v2 workflow timing: session_id=%s revision=%s diagnostics=%s",
+        session_id,
+        revision,
+        log_diagnostics,
+    )
+
+
+async def _commit_program_delivery(*, runtime, current, outcome, performance, ensure_current_binding,
+                                   before_commit, actor, generation_binding, generation_profile, diagnostics):
+    """Use the normal identity, lifecycle and storage fences for model-free delivery."""
+    diagnostics.setdefault("timings_ms", {})
+    started_at = time.monotonic()
+    try:
+        async with character_config_mutation_lock:
+            binding = ensure_current_binding(current.session)
+            if (actor_visible_profile(actor._character_profile()) != actor_visible_profile(generation_profile)
+                    or binding.get("catgirl_name") == generation_binding.get("catgirl_name")
+                    and binding.get("profile_hash", "") != generation_binding.get("profile_hash", "")):
+                raise ValueError("catgirl_profile_changed_requires_retry")
+            refreshed = {str(key): str(value) for key, value in binding.items()}
+            refreshed["player_address"] = str(outcome.session.catgirl_binding.get("player_address") or "")
+            outcome = replace(outcome, session=replace(outcome.session, catgirl_binding=refreshed))
+            async with runtime.story_session_guard():
+                if before_commit is not None:
+                    await before_commit()
+                stored = await runtime.commit_turn(outcome, performance)
+        return stored, outcome, performance, binding
+    finally:
+        _add_elapsed_ms(diagnostics, "commit_work", started_at)
+
+
+def _checkpoint_invitation(runtime, current, turn):
+    if (numeric_v2_options.MODEL_REVIEWS_ENABLED
+            or turn.input_source not in {"freeform", "suggestion"}
+            or is_explicit_transition_deferral(turn.message)
+            or not invitation_checkpoint_due(runtime.engine, current)):
+        return None
+    outcome = runtime.prepare_turn(current, turn, (), condition_narrations_enabled=False,
+        scene_complete=_committed_legacy_scene_ready(runtime.engine, current))
+    recovered = _authored_invitation_recovery(runtime, current, outcome, player_input=turn.message)
+    if recovered is None:
+        return None
+    outcome, performance, contract = recovered
+    outcome = replace(outcome, ledger_event={**outcome.ledger_event, "program_progress_invitation": True, "program_invitation": {
+        **contract, "performance": performance["performance"],
+        "visible_blocks": performance_content_blocks(performance),
+    }})
+    return outcome, performance
+
+
 async def execute_numeric_v2_turn(
     *,
     config_manager: Any,
@@ -1808,28 +1948,81 @@ async def execute_numeric_v2_turn(
     before_commit: Callable[[], Awaitable[None]] | None = None,
     diagnostics_sink: dict[str, Any] | None = None,
 ) -> NumericV2TurnWorkflowResult:
-    """Trace one attempt without changing the workflow, retry policy or public result."""
+    """Bound model work, offer ready progress, and safely deliver after a rejected draft."""
     diagnostics = diagnostics_sink if diagnostics_sink is not None else {}
-    if turn.input_source == "reinvite":
-        return await _execute_reinvitation(config_manager=config_manager, runtime=runtime, current=current, turn=turn,
-            ensure_current_binding=ensure_current_binding, before_commit=before_commit)
-    if turn.input_source == "accept_invitation" and (
-            turn.message or not runtime.engine.invitation_acceptance_route(
-                current.session, ledger_events=current.ledger_events)):
-        # 无效控件在读取人设或调用模型前拒绝，不能降级成空的普通聊天回合。
-        raise NumericV2RuntimeError("numeric_invitation_acceptance_not_available")
-    with text_trace_scope("turn", state_before=trace_state(current.session), turn=turn):
+    diagnostics.clear()
+    result = None
+    status, error_type = "failed", None
+    with turn_latency_scope() as latency, text_trace_scope(
+            "turn", state_before=trace_state(current.session), turn=turn), bounded_model_calls() as calls:
         try:
-            result = await _execute_numeric_v2_turn(
-                config_manager=config_manager, runtime=runtime, current=current, turn=turn,
-                ensure_current_binding=ensure_current_binding, before_commit=before_commit,
-                diagnostics_sink=diagnostics,
-            )
+            if turn.input_source == "reinvite":
+                result = await _execute_reinvitation(config_manager=config_manager, runtime=runtime, current=current, turn=turn,
+                    ensure_current_binding=ensure_current_binding, before_commit=before_commit)
+                diagnostics.update(result.diagnostics)
+                result = replace(result, diagnostics=diagnostics)
+                status = "completed"
+                return result
+            if turn.input_source == "accept_invitation" and (
+                    turn.message or not runtime.engine.invitation_acceptance_route(
+                        current.session, ledger_events=current.ledger_events)):
+                # 无效控件在读取人设或调用模型前拒绝，不能降级成空的普通聊天回合。
+                raise NumericV2RuntimeError("numeric_invitation_acceptance_not_available")
+            actor = NumericV2Actor(config_manager)
+            generation_binding = ensure_current_binding(current.session)
+            generation_profile = actor._character_profile()
+            commit_options = dict(runtime=runtime, current=current, ensure_current_binding=ensure_current_binding,
+                before_commit=before_commit, actor=actor, generation_binding=generation_binding,
+                generation_profile=generation_profile, diagnostics=diagnostics)
+            checkpoint = _checkpoint_invitation(runtime, current, turn)
+            if checkpoint is not None:
+                stored, outcome, performance, binding = await _commit_program_delivery(
+                    **commit_options, outcome=checkpoint[0], performance=checkpoint[1])
+                diagnostics.update(completed=True, program_progress_invitation=True)
+                result = NumericV2TurnWorkflowResult(stored, outcome, performance, binding, diagnostics)
+            else:
+                try:
+                    result = await _execute_numeric_v2_turn(
+                        config_manager=config_manager, runtime=runtime, current=current, turn=turn,
+                        ensure_current_binding=ensure_current_binding, before_commit=before_commit,
+                        diagnostics_sink=diagnostics,
+                        generation_context=(generation_binding, generation_profile),
+                    )
+                except (NumericV2ActorError, NumericV2EvaluatorError, NumericV2ModelCallLimitError) as exc:
+                    # A failed draft contributes no values, facts or transition authorization.
+                    # Cancellation, stale revisions, identity and storage failures still propagate.
+                    outcome = runtime.prepare_turn(current, turn, (), condition_narrations_enabled=False,
+                                                   hold_current_scene=True)
+                    performance = safe_pause_performance(outcome.session.dialogue_policy)
+                    outcome, performance = runtime.engine.finalize_transition_offer_state(
+                        outcome, performance, new_offer=False,
+                        invalidate_previous_offer=turn.input_source == "accept_invitation")
+                    outcome = replace(outcome, ledger_event={**outcome.ledger_event, "delivery_fallback": str(exc)})
+                    stored, outcome, performance, binding = await _commit_program_delivery(
+                        **commit_options, outcome=outcome, performance=performance)
+                    diagnostics.update(completed=True, safe_delivery_fallback=True, fallback_reason=str(exc))
+                    trace_event("turn.safe_delivery", reason=str(exc), performance=performance)
+                    result = NumericV2TurnWorkflowResult(stored, outcome, performance, binding, diagnostics)
             trace_event("turn.committed", state_after=trace_state(result.stored.session),
                         performance=result.performance, ledger_event=result.stored.ledger_events[-1],
                         stored_performance=result.stored.session.performance_history[-1])
+            status = "safe_fallback" if diagnostics.get("safe_delivery_fallback") else "completed"
             return result
+        except BaseException as exc:
+            status = "cancelled" if isinstance(exc, asyncio.CancelledError) else "failed"
+            error_type = type(exc).__name__
+            raise
         finally:
+            diagnostics["model_calls"] = len(calls.stages)
+            diagnostics["model_call_stages"] = list(calls.stages)
+            measured = latency.snapshot()
+            measured.update(status=status, error_type=error_type)
+            diagnostics["latency"] = measured
+            diagnostics.setdefault("timings_ms", {})["total_wall"] = measured["total_wall_ms"]
+            _log_workflow_timing(current.session.session_id,
+                result.stored.session.revision if result is not None else current.session.revision,
+                diagnostics)
+            trace_event("turn.latency", **measured)
             trace_event("turn.diagnostics", diagnostics=diagnostics)
 
 
@@ -1842,6 +2035,7 @@ async def _execute_numeric_v2_turn(
     ensure_current_binding: Callable[[Any], Mapping[str, str]],
     before_commit: Callable[[], Awaitable[None]] | None = None,
     diagnostics_sink: dict[str, Any] | None = None,
+    generation_context: tuple[Mapping[str, str], str] | None = None,
 ) -> NumericV2TurnWorkflowResult:
     """Execute Evaluator, Runtime, narrative/recommendation generation, identity revalidation, and atomic commit in fixed order."""  # noqa: DOCSTRING_CJK
 
@@ -1944,6 +2138,7 @@ async def _execute_numeric_v2_turn(
         "completed": False,
         "authored_transition_recoveries": 0,
         "authored_invitation_recoveries": 0,
+        "contract_warning_count": 0,
         "committed_ending_review_skips": 0,
     })
     evaluator = NumericV2MetricEvaluator(config_manager)
@@ -1971,7 +2166,8 @@ async def _execute_numeric_v2_turn(
     # Mandatory contract review can require first review plus confirmation. Reserve both request waits
     # inside the existing turn deadline, without shortening generation for other module configurations.
     required_review_reserve = max(
-        NUMERIC_V2_TURN_REVIEW_RESERVE_SECONDS, 2 * NUMERIC_V2_CONTRACT_CHECK_TIMEOUT_SECONDS + 0.5,
+        NUMERIC_V2_TURN_REVIEW_RESERVE_SECONDS,
+        (1 if optimized_turn_enabled() else 2) * NUMERIC_V2_CONTRACT_CHECK_TIMEOUT_SECONDS + 0.5,
     ) if module_options.get("review_contract") and not module_options.get("review") else NUMERIC_V2_TURN_REVIEW_RESERVE_SECONDS
     # Retain legacy diagnostic keys: dispute recheck is now in module table.
     dispute_review_enabled = bool(module_options.get("dispute"))
@@ -1988,8 +2184,8 @@ async def _execute_numeric_v2_turn(
     final_fixed_review: NumericV2TransitionOfferReview | None = None
     program_invitation_performance: str | None = None
     # Freeze actual persona input before narrative resampling; recommendations degrade internally, but final narrative must use same character generation.
-    generation_binding = ensure_current_binding(current.session)
-    generation_profile = actor._character_profile()
+    generation_binding, generation_profile = (generation_context if generation_context is not None else
+        (ensure_current_binding(current.session), actor._character_profile()))
     blocked_handoffs = runtime.engine.blocked_player_handoffs(current.session, turn.message,
         input_source=turn.input_source)
     source_node = runtime.engine.nodes[current.session.current_node_id]
@@ -2042,6 +2238,21 @@ async def _execute_numeric_v2_turn(
         if row.get("equals") is True and "player_handoff_item" in runtime.engine.fact_contract[row["key"]]
     }
 
+    def program_scene_task():
+        cast = NumericV2CastProjection.from_story(runtime.engine.story,
+            player_name=current.session.catgirl_binding["player_address"] if current.session.player_address_known else "你",
+            catgirl_name=current.session.catgirl_binding["catgirl_name"])
+        return pending_scene_task(cast.value(_scene_delivery_plan(source_node["story_beat"])),
+            _pending_completion_facts(runtime.engine, current.session),
+            {row["key"] for row in source_completion.get("all", ()) if "key" in row})
+
+    if (optimized_turn_enabled() and not module_options.get("review") and progress_review_due
+            and not current.session.transition_offered):
+        current_scene_task = program_scene_task()
+        progress_direction = str((current_scene_task or {}).get("direction") or "")
+        progress_review_due = False
+        diagnostics["program_progress_task"] = True
+
     def respect_player_handoffs(evaluation: NumericV2EvaluationResult) -> NumericV2EvaluationResult:
         rejected = {op["key"] for op in evaluation.fact_operations
                     if op.get("value") is True and op["key"] in blocked_handoffs}
@@ -2077,6 +2288,22 @@ async def _execute_numeric_v2_turn(
                 return _evaluation_without_evaluator(current, turn, engine=runtime.engine)
             finally:
                 _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
+        if (confirmed_acceptance_route_id and current.ledger_events
+                and current.ledger_events[-1].get("program_progress_invitation") is True
+                and runtime.engine.completion_contract_satisfied(current.session) is True):
+            diagnostics["evaluator_skipped"] = True
+            diagnostics["evaluator_skip_reason"] = "program_progress_acceptance"
+            _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
+            return NumericV2EvaluationResult((), False, transition_intent="accept",
+                transition_reply_target="pending_transition")
+        if (optimized_turn_enabled() and not module_options.get("review")
+                and _receipt_acceptance_only(runtime, current, turn, confirmed_acceptance_route_id)):
+            diagnostics["evaluator_skipped"] = True
+            diagnostics["evaluator_skip_reason"] = "verified_invitation_acceptance"
+            trace_event("evaluator.skipped", reason="verified_invitation_acceptance")
+            _add_elapsed_ms(diagnostics, "evaluator_work", started_at)
+            return NumericV2EvaluationResult((), True, transition_intent="accept",
+                transition_reply_target="pending_transition")
         if _confirmation_only_acceptance(runtime, current, turn,
                 history_lookup_enabled=bool(module_options.get("history_lookup")),
                 review_enabled=bool(module_options.get("review"))):
@@ -3249,9 +3476,13 @@ async def _execute_numeric_v2_turn(
         and (outcome.departure_blocker or unconfirmed_departure_quote)
         and departure_attempt_observed and module_options.get("evaluator"))
     if departure_direction_reviewed:
-        guide = await review_completion_evidence((), review_progress=True, blocked_departure=True)
-        progress_direction = guide.direction
-        current_scene_task = guide.current_scene_task
+        if optimized_turn_enabled() and not module_options.get("review"):
+            current_scene_task = program_scene_task()
+            progress_direction = str((current_scene_task or {}).get("direction") or "")
+        else:
+            guide = await review_completion_evidence((), review_progress=True, blocked_departure=True)
+            progress_direction = guide.direction
+            current_scene_task = guide.current_scene_task
         trace_event("story_evidence.blocked_departure_direction", direction=progress_direction)
     exit_mismatch_reason = evaluation.exit_mismatch_reason
     if (evaluation.wrong_exit_offer_quote and evaluation.transition_intent == "unclear"
@@ -3326,12 +3557,25 @@ async def _execute_numeric_v2_turn(
                 raise
             return recovered
 
-    performance = combined_performance if combined_performance is not None else await generate_transition_or_recover()
+    program_entry = (recover_authored_transition("program_authorized_entry")
+        if optimized_turn_enabled() and not module_options.get("review")
+        and (confirmed_acceptance_route_id or (evaluation.transition_intent == "accept"
+            and evaluation.transition_reply_target == "pending_transition"))
+        and outcome.session.current_node_id != current.session.current_node_id
+        and outcome.route is not None else None)
+    performance = (program_entry if program_entry is not None else combined_performance
+        if combined_performance is not None else await generate_transition_or_recover())
     performance = apply_deterministic_suggestion_filter(performance)
 
     def pending_source_delivery_batch(candidate):
-        return bind_source_delivery(runtime.engine, deferred_delivery_claims,
-            completion_packet(candidate), restrict_player_results=completion_source_restricted)
+        if optimized_turn_enabled() and not deferred_delivery_claims:
+            from .numeric_v2_fact_discovery import bind_pending_results
+            batch = bind_pending_results(completion_packet(candidate))
+        else:
+            batch = bind_source_delivery(runtime.engine, deferred_delivery_claims,
+                completion_packet(candidate), restrict_player_results=completion_source_restricted)
+        # Model approval cannot supply a missing player handoff authorization.
+        return batch.select(index for index, claim in enumerate(batch.claims) if claim["key"] not in blocked_handoffs)
 
     def reviewed_source_completion(candidate):
         receipt = source_completion_reviews.get(performance_fingerprint(candidate))
@@ -3345,13 +3589,16 @@ async def _execute_numeric_v2_turn(
         return batch, indexes
 
     async def verify_contract_boundaries(**kwargs: Any) -> tuple[str, ...]:
+        if optimized_turn_enabled() and not module_options.get("review"):
+            kwargs["single_pass"] = True
         remaining = model_deadline - time.monotonic() - 0.5
         if remaining <= 0:
             raise NumericV2EvaluatorError("numeric_v2_contract_check_timeout")
         try:
             async with asyncio.timeout(remaining):
                 collect = (
-                    discovery_collection_open and not numeric_v2_options.MODEL_REVIEWS_ENABLED
+                    (discovery_collection_open or optimized_turn_enabled() and adopted_completion_facts is not None)
+                    and not numeric_v2_options.MODEL_REVIEWS_ENABLED
                     and not cited_dialogue_recovered
                     and module_options.get("evaluator") and module_options.get("review_contract")
                     and not module_options.get("review") and kwargs.get("session") is current.session
@@ -3363,9 +3610,9 @@ async def _execute_numeric_v2_turn(
                 bound_batch = None
                 if collect:
                     packet = completion_packet(kwargs["actor_performance"])
-                    if packet["targets"] and packet["sources"]:
+                    if packet["targets"] and packet["sources"] and not optimized_turn_enabled():
                         kwargs.update(discovery_packet=packet, discovery_sink=sink)
-                    if deferred_delivery_claims:
+                    if deferred_delivery_claims or optimized_turn_enabled():
                         bound_batch = pending_source_delivery_batch(kwargs["actor_performance"])
                         if bound_batch.claims:
                             kwargs.update(bound_completion_batch=bound_batch, bound_completion_sink=approval_sink)
@@ -3561,9 +3808,13 @@ async def _execute_numeric_v2_turn(
     async def regenerate_blocked_departure():
         nonlocal progress_direction, current_scene_task, departure_direction_reviewed
         if module_options.get("evaluator") and not departure_direction_reviewed:
-            guide = await review_completion_evidence((), review_progress=True, blocked_departure=True)
-            progress_direction = guide.direction
-            current_scene_task = guide.current_scene_task
+            if optimized_turn_enabled() and not module_options.get("review"):
+                current_scene_task = program_scene_task()
+                progress_direction = str((current_scene_task or {}).get("direction") or "")
+            else:
+                guide = await review_completion_evidence((), review_progress=True, blocked_departure=True)
+                progress_direction = guide.direction
+                current_scene_task = guide.current_scene_task
             departure_direction_reviewed = True
             trace_event("story_evidence.blocked_departure_direction", direction=progress_direction)
         return await generate_actor_turn(outcome, departure_repair=True, retry_hint=(
@@ -3668,7 +3919,8 @@ async def _execute_numeric_v2_turn(
             and bool(performance_content_blocks(candidate))
         )
         if (module_options.get("review_contract") and not module_options.get("review")
-                and (requires_contract_check or author_boundaries_only)):
+                and (requires_contract_check or author_boundaries_only
+                     or optimized_turn_enabled() and bool(performance_content_blocks(candidate)))):
             started = time.monotonic()
             diagnostics["contract_check_calls"] = diagnostics.get("contract_check_calls", 0) + 1
             cast = NumericV2CastProjection.from_story(runtime.engine.story,
@@ -3757,10 +4009,12 @@ async def _execute_numeric_v2_turn(
                 else:
                     contract_findings[key] = findings
                 contract_unsafe_suggestions[key] = set(check_diagnostics.get("unsafe_suggestion_texts", ()))
-                trace_event("contract.checked", **check_diagnostics)
+                diagnostics["contract_warning_count"] += len(check_diagnostics.get("review_warnings", ()))
+                trace_event("contract.checked", candidate=candidate, problems=list(problems),
+                            body_fingerprint=performance_fingerprint(candidate), **check_diagnostics)
             except NumericV2EvaluatorError as exc:
                 diagnostics["contract_check_degraded"] = True
-                trace_event("contract.check_failed", error_code=str(exc))
+                trace_event("contract.check_failed", error_code=str(exc), candidate=candidate)
                 raise NumericV2ActorOutputError("numeric_v2_contract_check_failed") from exc
             finally:
                 _add_elapsed_ms(diagnostics, "contract_check_work", started)
@@ -4666,10 +4920,22 @@ async def _execute_numeric_v2_turn(
     bound_review = reviewed_source_completion(fact_evidence_performance) if not route_changed else None
     if bound_review is not None:
         batch, indexes = bound_review
+        existing = {row["key"]: row for row in outcome.ledger_event.get("fact_operations", ())}
+        for index in indexes:
+            claim = batch.claims[index]
+            previous = existing.get(claim["key"])
+            if previous is not None and (type(previous["value"]) is not type(claim["value"])
+                    or any(previous[field] != claim[field] for field in ("op", "value", "visibility"))):
+                raise NumericV2ActorOutputError("numeric_v2_source_delivery_fact_conflict")
+        # An independent approval can corroborate the Evaluator's same write;
+        # it cannot enqueue it twice or replace a different approved value.
+        indexes = tuple(index for index in indexes if batch.claims[index]["key"] not in existing)
         approved = batch.select(indexes)
         if approved.claims:
             outcome = runtime.engine.finalize_fact_operations(current.session, outcome, operations=approved.operations)
             approved_completion_facts = (*approved_completion_facts, *approved.claims)
+            if optimized_turn_enabled() and not deferred_delivery_claims:
+                adopted_completion_facts = approved
             approved_keys = {claim["key"] for claim in approved.claims}
             approved_delivery_claims = tuple(claim for claim in deferred_delivery_claims if claim["key"] in approved_keys)
             approved_delivery_fingerprint = performance_fingerprint(performance)
@@ -5355,16 +5621,27 @@ async def _execute_numeric_v2_turn(
             raise NumericV2ActorOutputError("numeric_v2_source_delivery_final_review_failed")
         trace_event("story_evidence.source_delivery_final_reviewed", approved_keys=[row["key"] for row in final_claims])
     if adopted_completion_facts is not None:
-        packet = completion_packet(performance)
+        packet = (pending_source_delivery_batch(performance).packet
+                  if optimized_turn_enabled() and not deferred_delivery_claims else completion_packet(performance))
         if not completion_evidence_matches(adopted_completion_facts, packet):
             try:
                 final_batch = rebind_completion_evidence(adopted_completion_facts, packet)
             except NumericV2RuntimeError as exc:
                 raise NumericV2ActorOutputError("numeric_v2_discovery_final_evidence_invalid") from exc
-            review = await review_completion_evidence(final_batch.claims,
-                actor_evidence=_actor_fact_evidence_text(performance), evidence_batch=final_batch)
-            if set(review.approved_indexes) != set(range(len(final_batch.claims))):
+            receipt = reviewed_source_completion(performance) if optimized_turn_enabled() else None
+            approved = receipt[0].select(receipt[1]) if receipt is not None else None
+            covered = approved is not None and all(any(
+                    row["key"] == claim["key"] and type(row["value"]) is type(claim["value"])
+                    and row["value"] == claim["value"] for row in approved.claims) for claim in final_batch.claims)
+            if optimized_turn_enabled() and not covered:
                 raise NumericV2ActorOutputError("numeric_v2_discovery_final_review_failed")
+            if covered:
+                trace_event("fact_discovery.final_approval_reused")
+            else:
+                review = await review_completion_evidence(final_batch.claims,
+                    actor_evidence=_actor_fact_evidence_text(performance), evidence_batch=final_batch)
+                if set(review.approved_indexes) != set(range(len(final_batch.claims))):
+                    raise NumericV2ActorOutputError("numeric_v2_discovery_final_review_failed")
             trace_event("fact_discovery.final_reviewed", approved=final_batch.operations)
     stored_performance = performance
     visible_body = str(performance.get("performance") or "")
@@ -5429,48 +5706,6 @@ async def _execute_numeric_v2_turn(
         3,
     )
     diagnostics["completed"] = True
-    # Reviews can quote private player/candidate text. Ordinary logs accept only these
-    # numeric timings, counters and flags; detailed diagnostics stay with the caller.
-    log_diagnostics = {
-        key: diagnostics[key]
-        for key in (
-            "evaluator_model_attempts", "actor_generation_attempts", "actor_provider_calls",
-            "actor_suggestion_fill_attempts", "actor_suggestion_fill_provider_calls",
-            "actor_suggestion_refill_after_review_attempts",
-            "transition_judge_calls", "progress_review_calls", "dispute_review_attempts", "semantic_rewrite_attempts",
-            "completion_fact_review_calls", "completion_fact_rewrite_attempts",
-            "transition_cancellations", "missed_initiation_recoveries", "unsafe_suggestions_removed",
-            "recovered_ordinary_drafts_reused",
-            "authored_transition_recoveries",
-            "authored_invitation_recoveries",
-            "committed_ending_review_skips",
-            "dispute_review_skipped_high_confidence_body",
-            "dispute_review_skipped_unsafe_offer_buttons",
-            "dispute_review_skipped_contract_offer",
-            "dispute_review_deferred_offer_repair",
-            "explicit_player_movement_flags_cleared",
-            "actor_repeated_output_retry_aborted",
-            "player_action_projection_conflicts", "player_action_projection_safe_degrades",
-            "invalid_offer_local_crops", "invalid_scene_update_local_crops",
-            "transition_judge_degraded", "dispute_review_degraded", "semantic_review_fallback",
-            "evaluator_degraded", "completed",
-            "ordinary_turn_combined",
-        )
-        if type(diagnostics.get(key)) in (int, bool)
-    }
-    log_diagnostics["timings_ms"] = {
-        key: value for key in (
-            "evaluator_work", "runtime_prepare_work", "actor_work", "transition_judge_work",
-            "history_lookup_work", "commit_work", "total_wall",
-        )
-        if type(value := diagnostics["timings_ms"].get(key)) in (int, float)
-    }
-    logger.info(
-        "Numeric v2 workflow timing: session_id=%s revision=%s diagnostics=%s",
-        current.session.session_id,
-        stored.session.revision,
-        log_diagnostics,
-    )
     return NumericV2TurnWorkflowResult(
         stored=stored,
         outcome=outcome,

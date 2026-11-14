@@ -245,6 +245,36 @@ def bind_source_delivery(
     return CompletionFactBatch(packet, tuple(valid), tuple(valid_refs), tuple(errors))
 
 
+def bind_pending_results(packet: dict[str, Any]) -> CompletionFactBatch:
+    """Bind issued targets before the audit; only an independent explicit approval can adopt them."""
+    if not _packet_intact(packet):
+        return CompletionFactBatch(deepcopy(packet), (), (), ("packet_changed",))
+    packet = deepcopy(packet)
+    originals = packet["sources"]
+    sources = []
+    for kind in ("current_player", "committed_current_visit", "current_draft"):
+        rows = [row for row in originals if row["kind"] == kind]
+        if not rows:
+            continue
+        sources.append({"ref": "audit_" + kind, "kind": kind, "source": rows[0]["source"],
+                        "text": "\n\n".join(row["text"] for row in rows),
+                        **({"components": [row["ref"] for row in rows]} if len(rows) > 1 else {})})
+    packet["sources"] = sources
+    packet["binding"]["sources_digest"] = _digest(sources)
+    items = []
+    for index, target in enumerate(packet["targets"][:4]):
+        definition = target["definition"]
+        allowed = target.get("allowed_sources") or (
+            ["actor_performance"] if definition.get("evidence_source") == "performance" else
+            ["player_input"] if definition.get("evidence_source") == "player_input" else
+            ["actor_performance", "player_input"])
+        refs = [row["ref"] for row in sources if row["source"] in allowed
+                and (row["kind"] != "committed_current_visit" or target["key"] in packet["history_allowed_keys"])]
+        if refs:
+            items.append({"target_index": index, "refs": refs})
+    return parse_discoveries(items, packet)
+
+
 def combine_actor_claims(
     engine: Any, batch: CompletionFactBatch, claims: Sequence[Mapping[str, Any]],
 ) -> CompletionFactBatch:

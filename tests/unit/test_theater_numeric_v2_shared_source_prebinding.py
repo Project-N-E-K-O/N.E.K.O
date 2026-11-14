@@ -138,10 +138,10 @@ async def _exercise(tmp_path, monkeypatch, *, mode="agree", topic="equipment", m
     kwargs = dict(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("shared-source", 0, message), ensure_current_binding=lambda _: _binding())
     if mode in {"tail_failure", "tail_contract_failure"}:
-        with pytest.raises(NumericV2ActorOutputError): await wf.execute_numeric_v2_turn(**kwargs)
+        with pytest.raises(NumericV2ActorOutputError): await wf._execute_numeric_v2_turn(**kwargs)
         assert path.read_bytes() == original
         return
-    result = await wf.execute_numeric_v2_turn(**kwargs)
+    result = await wf._execute_numeric_v2_turn(**kwargs)
     assert result.stored.session.revision == 1
     assert result.stored.session.current_node_id == ("work" if approve else "start")
     if mode == "false_op": assert result.stored.session.story_state["facts"][KEY]["value"] is False

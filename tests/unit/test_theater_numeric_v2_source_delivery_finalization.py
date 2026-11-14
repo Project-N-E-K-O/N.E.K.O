@@ -57,7 +57,7 @@ async def _start(tmp_path, *, partial=False):
 
 
 async def _run(runtime, current, *, diagnostics=None):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('final-source-turn', 0, INPUT), ensure_current_binding=lambda _: _binding(),
         diagnostics_sink=diagnostics)
 

@@ -57,6 +57,13 @@ def contract_audit_payload(payload, messages):
                         and row["candidate_ref"] == source["id"]), None)
         fixed_causes[source["id"]] = ({key: finding[key] for key in ("quote", "prior_ref")}
                                      if finding is not None else "clear")
+    if messages[0].content.startswith("一次完成本稿最终审核"):
+        findings = [{"verdict": "violation", **item} for item in payload["violations"]]
+        return {**({"bound_completion_approved_indexes": [], "bound_completion_rejections": []}
+                   if "bound_completion_check" in data else {}),
+                **({"fact_discoveries": []} if "completion_check" in data else {}),
+                **{key: value for key, value in payload.items() if key != "violations"},
+                "verdict": "violation" if findings else "clear", "findings": findings}
     return {**payload, **({"author_checks": compact} if "author_checks_required" in data else {}),
             **({"fixed_original_cause": fixed_causes} if fixed_causes else {}),
             "player_authority": {row["id"]: "none" for row in data["sources"] if row["id"].startswith("c")},

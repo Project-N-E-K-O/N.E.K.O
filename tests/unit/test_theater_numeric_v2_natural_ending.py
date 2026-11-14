@@ -176,7 +176,7 @@ async def test_authored_handoff_requires_player_action_before_body_and_fact_comm
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
 
     async def run():
-        return await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        return await workflow._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("deliver", current.session.revision, message), ensure_current_binding=lambda _: _binding())
 
     if case == "reject":
@@ -266,7 +266,7 @@ async def test_natural_ending_commits_only_the_result_actually_delivered_in_its_
     monkeypatch.setattr(workflow.NumericV2Actor, "_invoke", invoke)
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
     async def run():
-        return await workflow.execute_numeric_v2_turn(
+        return await workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=stored,
             turn=TurnRequestV2("end", 0, player_input), ensure_current_binding=lambda _: _binding())
 

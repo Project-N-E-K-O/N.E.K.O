@@ -273,7 +273,7 @@ async def test_located_completion_repair_second_veto_rolls_back_even_without_fac
     monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
     with pytest.raises(NumericV2ActorOutputError, match="^numeric_v2_completion_fact_review_rejected$"):
-        await scenario._turn(runtime, current)
+        await scenario._turn(runtime, current, strict=True)
     assert calls == {"evaluator": 1, "actor": 2, "review": 2}
     assert path.read_bytes() == before
     assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id) == current

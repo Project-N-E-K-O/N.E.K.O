@@ -388,7 +388,7 @@ async def test_unrouted_claim_reaches_both_drafts_as_unconfirmed_original(tmp_pa
         assert kwargs["outcome"].route is None and kwargs["outcome"].session.status == "active"
         assert kwargs["player_input"] == message
         assert kwargs["unconfirmed_departure_quote"] == claim
-        assert kwargs["progress_direction"] == "当场检查设备接线。"
+        assert kwargs["progress_direction"] == "眼前的事情已经处理完。"
         assert kwargs.get("draft_repair_context") is None
         assert rejected not in kwargs.get("retry_hint", "")
         return {"performance": rejected if len(calls) == 1 else LOCAL, "suggested_inputs": [],
@@ -446,7 +446,7 @@ async def test_no_blocker_claim_reaches_the_actual_actor_request_with_reviewed_t
     assert data["player_input"] == message and list(data)[-1] == "player_input"
     assert data["player_input_scope"]["statement_quote"] == claim
     direction = data["current_scene_task"]["direction"]
-    assert direction == "当场检查设备接线。"
+    assert direction == "眼前的事情已经处理完。"
     assert result.stored.session.current_node_id == "start" and result.performance["performance"] == LOCAL
 
 
@@ -482,7 +482,7 @@ async def test_unblocked_claim_requires_full_contract_check_even_for_plain_perfo
             mismatch = kwargs["exit_mismatch_reason"]
             assert "运行时本轮仍留在当前幕" in mismatch
             assert "目标开场" not in mismatch and "后续阶段方向" not in mismatch
-            assert kwargs["current_scene_task"]["direction"] == "当场检查设备接线。"
+            assert kwargs["current_scene_task"]["direction"] == "眼前的事情已经处理完。"
         else:
             assert not kwargs.get("current_scene_task")
         return ()
@@ -534,7 +534,7 @@ async def test_unblocked_claim_without_completion_contract_keeps_environment_goa
         checked.append(kwargs)
         assert kwargs["author_boundaries_only"] is False and kwargs["departure_attempt_observed"] is True
         task = kwargs["current_scene_task"]
-        assert task["pending_results"] == [] and task["direction"] == "当场检查设备接线。"
+        assert task["pending_results"] == [] and task["direction"] == goal["description"]
         assert task["allowed_behaviors"] == [permission]
         assert task["goals"] == [{key: goal[key] for key in ("id", "owner", "description")}
                                  | {"source_ids": ["opening.start"]}]

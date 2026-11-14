@@ -547,10 +547,10 @@ async def test_pending_reply_is_reviewed_without_losing_invitation_or_recounting
         turn=TurnRequestV2('followup', current.session.revision, '我先问个细节。'), ensure_current_binding=lambda _: _binding())
     if mode in {'actor_failure', 'fast_failure'}:
         with pytest.raises(NumericV2ActorOutputError):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session(current.session.session_id) == current
         return
-    result = await workflow.execute_numeric_v2_turn(**kwargs)
+    result = await workflow._execute_numeric_v2_turn(**kwargs)
     assert len(reviews) == (3 if mode == 'fallback' else 2 if needs_repair else 1)
     assert len(evaluations) == 1 and len(generations) == (2 if needs_repair else 1)
     if needs_repair:
@@ -992,7 +992,7 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
         path = runtime.store._path(current.session.session_id)
         previous_bytes = path.read_bytes()
         with pytest.raises(workflow.NumericV2ActorOutputError):
-            await workflow.execute_numeric_v2_turn(
+            await workflow._execute_numeric_v2_turn(
                 config_manager=object(), runtime=runtime, current=current,
                 turn=TurnRequestV2('ask_next', current.session.revision, message),
                 ensure_current_binding=lambda _: _binding(),
@@ -1001,7 +1001,7 @@ async def test_completed_scene_uses_author_fallback_when_safe_actor_reply_has_no
         assert path.read_bytes() == previous_bytes
         assert await runtime.restore_session(current.session.session_id) == current
         return
-    result = await workflow.execute_numeric_v2_turn(
+    result = await workflow._execute_numeric_v2_turn(
         config_manager=object(),
         runtime=runtime,
         current=current,

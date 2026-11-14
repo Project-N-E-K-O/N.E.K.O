@@ -100,7 +100,7 @@ def _install(monkeypatch, runtime, current, item, *, ending=False, received=True
 
 
 async def _run(runtime, current, message, source="suggestion"):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("handoff", current.session.revision, message, source),
         ensure_current_binding=lambda _: _binding())
 

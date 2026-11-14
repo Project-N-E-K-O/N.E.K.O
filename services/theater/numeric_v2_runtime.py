@@ -1360,12 +1360,15 @@ class NumericV2Engine:
         ledger_events: tuple[Mapping[str, Any], ...] = (),
         condition_narrations_enabled: bool = True,
         routing_fact_operations: tuple[Mapping[str, Any], ...] | None = None,
+        hold_current_scene: bool = False,
     ) -> TurnOutcomeV2:
         """Settle a v2.2 turn; targets, evidence, and completion latches no longer enter the state machine."""  # noqa: DOCSTRING_CJK
 
         self.validate_session(session)
         if not isinstance(condition_narrations_enabled, bool):
             raise NumericV2RuntimeError("condition_narrations_enabled_invalid")
+        if not isinstance(hold_current_scene, bool):
+            raise NumericV2RuntimeError("hold_current_scene_invalid")
         if session.status == "ended":
             raise NumericV2RuntimeError("session_already_ended")
         if request.base_revision != session.revision:
@@ -1494,6 +1497,9 @@ class NumericV2Engine:
             continuation, _ = self._select_route(source, after, route_facts)
             if continuation is not None and continuation["transition_contract"].get("advance_on_completion") is True:
                 route = continuation
+        if hold_current_scene:
+            route = None
+            route_status = "transition_offered" if session.transition_offered else "playing"
         blocked_departure_route = None
         departure_blocker = None
         if route is not None:
@@ -1644,6 +1650,8 @@ class NumericV2Engine:
         # Record positive new signals only; legacy Ledger defaults false, preventing fork replay from ending old history early.
         if natural_ending_ready is True:
             event["natural_ending_ready"] = True
+        if hold_current_scene:
+            event["delivery_hold"] = True
         # Record disabled values only; legacy Ledger defaults enabled, retaining original act-exit thresholds on replay.
         if condition_narrations_enabled is False:
             event["condition_narrations_enabled"] = False
@@ -2146,6 +2154,7 @@ class NumericV2Runtime:
                 ledger_events=tuple(replay_events) if ("accepted_offer_route_id" in source_event
                     or source_event.get("input_source") == "accept_invitation") else (),
                 condition_narrations_enabled=source_event.get("condition_narrations_enabled") is not False,
+                hold_current_scene=source_event.get("delivery_hold") is True,
                 routing_fact_operations=tuple(source_event["routing_fact_operations"])
                 if "routing_fact_operations" in source_event else None,
                 fact_operations=tuple(
@@ -2175,6 +2184,10 @@ class NumericV2Runtime:
                 replayed_event["transition_offer_presented"] = True
             if "transition_offer_source" in source_event:
                 replayed_event["transition_offer_source"] = source_event["transition_offer_source"]
+            if "delivery_fallback" in source_event:
+                replayed_event["delivery_fallback"] = source_event["delivery_fallback"]
+            if source_event.get("program_progress_invitation") is True:
+                replayed_event["program_progress_invitation"] = True
             replayed_session_after_turn = outcome.session
             if "transition_offered" in source_event:
                 # Fork replay uses committed original proposal states rather than reinterpreting Actor results.
@@ -2235,6 +2248,7 @@ class NumericV2Runtime:
         fact_operations: tuple[Mapping[str, Any], ...] = (),
         condition_narrations_enabled: bool = True,
         initiation_quote: str | None = None,
+        hold_current_scene: bool = False,
     ) -> TurnOutcomeV2:
         superseded_offer = transition_intent == "accept" and self.engine.invitation_used_superseded_route(current)
         placeholder_reply = transition_intent in {"accept", "initiate"} and is_placeholder_accept_input(request.message)
@@ -2249,6 +2263,7 @@ class NumericV2Runtime:
                 ledger_events=current.ledger_events,
                 fact_operations=fact_operations,
                 condition_narrations_enabled=condition_narrations_enabled,
+                hold_current_scene=hold_current_scene,
             )
 
         blocked_authorization = superseded_offer or placeholder_reply

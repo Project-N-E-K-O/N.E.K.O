@@ -87,10 +87,10 @@ async def test_source_violation_aborts_instead_of_resampling_tail_verdict(
         turn=TurnRequestV2('delivery', 0, message), ensure_current_binding=lambda _: _binding())
     if finding_phase == 'source_response':
         with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_contract_violation'):
-            await wf.execute_numeric_v2_turn(**kwargs)
+            await wf._execute_numeric_v2_turn(**kwargs)
         assert calls == ['source', 'tail']
         assert runtime.store._path(topic).read_bytes() == original
     else:
-        result = await wf.execute_numeric_v2_turn(**kwargs)
+        result = await wf._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.current_node_id == 'work'
         assert calls == (['source', 'tail'] if finding_phase == 'cleared_future' else ['source', 'tail', 'tail'])

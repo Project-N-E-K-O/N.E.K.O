@@ -2050,8 +2050,10 @@ def test_numeric_v2_scene_update_and_offer_errors_share_one_body_rewrite(
     assert review_calls == (2 if remaining_violation is None else 3)
     assert unsafe_body_only_reviews == 0
     if remaining_violation == "scene_boundary":
-        assert submitted.status_code == 502
-        assert session_path.read_bytes() == before_bytes
+        assert submitted.status_code == 200
+        after = json.loads(session_path.read_bytes())
+        assert after["ledger_events"][-1]["delivery_fallback"]
+        assert after["session"]["metrics"] == json.loads(before_bytes)["session"]["metrics"]
         return
     assert submitted.status_code == 200
     if remaining_violation:
@@ -2223,8 +2225,10 @@ def test_numeric_v2_boundary_repair_commits_last_reply_after_correction_budget(
     assert review_calls == (2 if remove_conflict else 3)
     after = json.loads(session_path.read_bytes())
     if not remove_conflict:
-        assert submitted.status_code == 502
-        assert after == before
+        assert submitted.status_code == 200
+        assert after["ledger_events"][-1]["delivery_fallback"]
+        assert after["session"]["metrics"] == before["session"]["metrics"]
+        assert after["session"]["current_node_id"] == before["session"]["current_node_id"]
         return
     assert submitted.status_code == 200
     assert after["session"]["revision"] == before["session"]["revision"] + 1
@@ -2476,12 +2480,13 @@ def test_numeric_v2_offer_uses_one_guard_and_never_rewrites_service_failure(
     assert actor_calls == 1
     assert review_calls == 1
     if review_failed:
-        assert submitted.status_code == 502
+        assert submitted.status_code == 200
         persisted = json.loads(
             (tmp_path / "theater/numeric_v2/sessions/actor_offer.json").read_text(encoding="utf-8")
         )
-        assert persisted["session"]["revision"] == 0
-        assert persisted["session"]["performance_history"] == []
+        assert persisted["session"]["revision"] == 1
+        assert len(persisted["session"]["performance_history"]) == 1
+        assert persisted["ledger_events"][-1]["delivery_fallback"]
         assert persisted["session"]["transition_offered"] is False
         return
     assert submitted.status_code == 200
@@ -3634,7 +3639,7 @@ def test_workflow_timing_log_never_serializes_review_or_candidate_text(tmp_path,
     assert "transition_review_results" not in payload
 
 
-def test_numeric_v2_actor_failure_does_not_commit_half_turn(tmp_path, monkeypatch):
+def test_numeric_v2_actor_failure_commits_only_safe_reply(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     with client:
         client.post(
@@ -3656,14 +3661,16 @@ def test_numeric_v2_actor_failure_does_not_commit_half_turn(tmp_path, monkeypatc
                 "message": "这一轮不能留下半回合。",
             },
         )
-        assert failed.status_code == 502
+        assert failed.status_code == 200
 
         restored = client.get(
             "/api/theater-numeric/session/http_actor_fail",
             params={"story_id": "numeric_v2_contract"},
         )
-        assert restored.json()["session"]["revision"] == 0
-        assert restored.json()["session"]["performance_history"] == []
+        assert restored.json()["session"]["revision"] == 1
+        assert len(restored.json()["session"]["performance_history"]) == 1
+        saved = json.loads((tmp_path / "theater/numeric_v2/sessions/http_actor_fail.json").read_text())
+        assert saved["ledger_events"][-1]["delivery_fallback"]
 
 
 def test_numeric_v2_router_delete_story_reports_active_catgirls_and_cascades_sessions(

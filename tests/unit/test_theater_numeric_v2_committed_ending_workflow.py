@@ -98,7 +98,7 @@ async def _case(tmp_path, monkeypatch, *, subject="旧钟", progress=False, pend
 
 
 async def _turn(runtime, current, *, message="嗯，今天辛苦了。", binding=None):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("finish", current.session.revision, message),
         ensure_current_binding=binding or (lambda _: _binding()))
 

@@ -3530,6 +3530,8 @@
         }
     },
   "theater": {
+    "safePauseAction": "（稍作停顿）",
+    "safePause": "接下来，你想怎么继续？",
     "tokenStage_dispute": "争议复查",
     "tokenStage_history_lookup": "历史查找",
     "tokenStage_review": "快速复核",

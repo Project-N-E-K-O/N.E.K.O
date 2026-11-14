@@ -77,7 +77,7 @@ async def _setup(tmp_path, monkeypatch, *, mode='natural', failure='source', per
 
 
 async def _execute(runtime, current, diagnostics):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('finish', current.session.revision, '任务已毕。'),
         ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
 

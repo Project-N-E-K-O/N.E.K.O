@@ -186,10 +186,10 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
                   turn=TurnRequestV2("go", 0, case["message"]), ensure_current_binding=lambda _: _binding())
     if formal_failure in {"timeout", "body"}:
         with pytest.raises(NumericV2ActorOutputError, match="numeric_v2_transition_(review_failed|fact_boundary)"):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session("recover") == current
     else:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
         assert result.stored.session.current_node_id == "ending_leave"
         assert result.diagnostics["missed_initiation_recoveries"] == 1

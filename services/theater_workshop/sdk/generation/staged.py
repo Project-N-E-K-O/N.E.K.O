@@ -385,8 +385,9 @@ def generate_staged(generator, *, title, setup, checkpoint=None, cast_names=None
             cast_names=names, token_counter=generator._token_counter,
             pending_state_index=pending_state_index,
             pending_chapter_index=pending_chapter_index)
-        if legacy_invitation:
-            issues = [issue for issue in issues if issue.get("path") != "world.invitation"]
+        if legacy_invitation and "invitation" not in (candidate.get("world") or {}):
+            issues = [issue for issue in issues if not (
+                issue.get("path") == "world.invitation" and issue.get("code") == "required_text")]
         return issues
 
     def persist():

@@ -29,6 +29,7 @@ from .numeric_v2_usage import invoke_with_usage
 from .numeric_v2_structured_output import actor_output_schema, response_format_for
 from .numeric_v2_options import aload_theater_module_options
 from .numeric_v2_trace import trace_event
+from .numeric_v2_turn_control import optimized_turn_enabled
 from utils.tokenize import count_tokens, truncate_head_tail_tokens, truncate_to_tokens
 
 from .llm_context import (
@@ -1027,7 +1028,7 @@ def _history(
     ]
     if max_turns is not None:
         # Trim tiers from the earliest complete record only, never splitting turns or transition segments.
-        rows = rows[-max(1, int(max_turns)):]
+        rows = rows[-max(1, min(2, int(max_turns)) if optimized_turn_enabled() else int(max_turns)):]
     selected: list[dict[str, Any]] = []
     for row in reversed(rows):
         candidate = [row, *selected]
@@ -1228,6 +1229,11 @@ def _is_repeated_performance(
     }
     if not current_dialogue:
         return False
+    if optimized_turn_enabled():
+        from .numeric_v2_repetition import repetition_overlap
+        overlap = repetition_overlap(performance, previous)
+        if overlap["current_chars"] >= 80 and overlap["overlap"] >= 0.8:
+            return True
     dialogue_text = "".join("".join(text.split()) for text in current_dialogue)
     if (
         all(text in previous_dialogue for text in current_dialogue)
@@ -2354,6 +2360,26 @@ def _system_prompt(
         if player_address_known
         else "玩家称呼尚未确认，正文只用“你”，不要猜昵称。"
     )
+    if optimized_turn_enabled() and phase == "turn":
+        return (
+            "1. 按角色设定、认知、关系和对白策略演出；人格不增加事实或权限。" + player_address_state_rule
+            + "\n2. 先回应玩家本次输入，从最近已播状态之后继续；不复述上轮或重演已完成动作。"
+            "\n3. 玩家尚未实施的行动、发言、心理、选择和反馈留给玩家；仅承接原话真实授权的范围。"
+            "\n4. 只演当前公开场景；next_scene仅为未来邀请依据，程序授权前不出发、不交付后幕事件。"
+            "\n5. 作者方向与待办不是已发生事实，按历史承接位置、持物、前因和结果，不为推进补造条件。"
+            "\n6. 旁白负责环境和NPC，performance负责当前角色；先写独立外部结果，再写角色反应，不重复。"
+            "\n7. 合法前因具备时交付本幕尚缺的一项结果；需要玩家操作或选择时停下。"
+            "\n8. 推荐只从正文结束状态继续，保留暂缓权；公开可执行的转场提议才标记transition_offered。"
+            + ("suggested_inputs填空数组。" if suppress_suggestions or author_entry_choices else
+               "只给玩家留在当前可见场景的回应、问题或动作。" if local_suggestions_only else
+               "给一至三条可直接发送的玩家输入。")
+            + ("本幕补充交付段：source_delivery_task只提示本幕待交付结果，审核通过且出幕条件满足后由程序接续后续请求。"
+               "可以不同意或说明尚未确定的部分，不强行达成共识。"
+               + ("共识只交付共识，不替玩家同意、不写成已经执行。" if shared_agreement_delivery else "")
+               if source_delivery_only else "")
+            + _output_schema_instruction(phase, combined_evaluation=combined_evaluation)
+            + "只返回JSON，不输出理由、推理、规则或内部字段说明。"
+        )
     if phase == "reinvitation":
         # 控制请求从入口只生成邀请，不继承普通回合的 NPC 回应、结果交付或事实抽取任务。
         # 人设、认知、历史与状态仍由原有六块投影提供；此处不批准任何新动作或换幕。
@@ -4497,7 +4523,7 @@ def _turn_messages(
     if not reinvitation and (current_scene_task or (departure_pending and progress_direction)):
         data["current_scene_task"] = dict(current_scene_task) if current_scene_task else {"direction": progress_direction}
         system_prompt += (
-            "\ncurrent_scene_task是独立预审选出的当前幕作者任务。selected_id仅指定本轮这一项，"
+            "\ncurrent_scene_task是程序或独立预审排定的当前幕作者任务。selected_id存在时仅指定本轮这一项，"
             "其余goals只作依赖背景；owner、source_ids和allowed_behaviors说明主体、作者引用与角色权限，"
             "不证明前因或结果已成立，也不要求执行全部目标。按已播历史与玩家意愿交付可行内容；"
             "仍需玩家行动或同意时留给玩家，不把这些调度资料写成剧中对白或旁白。"
@@ -5053,6 +5079,11 @@ class NumericV2Actor:
                 performance,
                 previous_scene_performance,
             )
+        from .numeric_v2_repetition import repetition_overlap
+        overlap = repetition_overlap(performance, previous_scene_performance)
+        trace_event("actor.repetition", **overlap, route_changed=route_changed)
+        logger.info("Numeric v2 Actor overlap: session_id=%s revision=%s ngram=%s overlap=%s chars=%s",
+                    session.session_id, session.revision, overlap["ngram"], overlap["overlap"], overlap["current_chars"])
         def reject_repeated_output(guard: str) -> None:
             """Record repetition-protection source labels for Workflow retry budgets."""  # noqa: DOCSTRING_CJK
 
@@ -5217,7 +5248,8 @@ class NumericV2Actor:
         performance["suggested_inputs"] = await self._ensure_suggestions(
             # Explicit author mode already published the program entry text, so the existing
             # filler must produce the buttons even though workflow keeps auto-fill disabled.
-            allow_fill=(allow_suggestion_fill or fixed_entry_only) and entry_inputs is None
+            allow_fill=not optimized_turn_enabled()
+                       and (allow_suggestion_fill or fixed_entry_only) and entry_inputs is None
                        and not local_suggestions_only,
             performance=performance,
             player_input=player_input,
@@ -5280,10 +5312,6 @@ class NumericV2Actor:
         if single_ending_response is None:
             single_ending_response = natural_ending and target_dialogue_policy in {"optional", "forbidden"}
         set_call_type("theater_numeric_v2_actor")
-        request_messages = _ensure_actor_messages_fit(
-            messages,
-            max_tokens=max_input_tokens,
-        )
         started_at = time.monotonic()
         config_finished_at = started_at
         client_finished_at = started_at
@@ -5294,7 +5322,21 @@ class NumericV2Actor:
         try:
             # Total deadlines cover configuration, client creation, network, parsing, and client closure.
             async with asyncio.timeout(NUMERIC_V2_ACTOR_TIMEOUT_SECONDS):
-                config = await _model_config(self.config_manager)
+                config_task = asyncio.create_task(_model_config(self.config_manager))
+                try:
+                    request_messages = await asyncio.to_thread(
+                        _ensure_actor_messages_fit, messages, max_tokens=max_input_tokens)
+                    if optimized_turn_enabled():
+                        from .numeric_v2_prompt_cache import cache_ordered_messages
+                        ordered = cache_ordered_messages(request_messages)
+                        # The extra framing must fit the same admitted wire budget.
+                        if _messages_tokens(ordered) <= max_input_tokens:
+                            request_messages = ordered
+                    config = await config_task
+                finally:
+                    if not config_task.done():
+                        config_task.cancel()
+                    await asyncio.gather(config_task, return_exceptions=True)
                 model_name = str(config.get("model") or "")
                 # Log hostnames only, excluding full URLs so query parameters/credentials cannot enter performance logs.
                 provider_host = urlsplit(str(config.get("base_url") or "")).netloc

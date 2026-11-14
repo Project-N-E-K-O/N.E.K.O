@@ -229,7 +229,7 @@ async def test_second_completion_rejection_rolls_back_without_a_third_draft(tmp_
     monkeypatch.setattr(wf.NumericV2Actor, "generate_turn", generate)
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
     with pytest.raises(NumericV2ActorOutputError, match="^numeric_v2_completion_fact_review_rejected$"):
-        await scenario._turn(runtime, current)
+        await scenario._turn(runtime, current, strict=True)
     assert calls == {"evaluator": 1, "actor": 2, "review": 2}
     assert path.read_bytes() == before
     assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id) == current
@@ -254,7 +254,7 @@ async def test_completion_repair_exhausted_budget_does_not_start_another_actor(t
 
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "validate_transition_offer", review)
     with pytest.raises(wf.NumericV2ActorError):
-        await scenario._turn(runtime, current)
+        await scenario._turn(runtime, current, strict=True)
     assert calls == {"evaluator": 1, "actor": 1, "review": 1}
     assert path.read_bytes() == before
     assert await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id) == current
@@ -270,7 +270,7 @@ async def test_failed_completion_check_leaves_store_unchanged(tmp_path, monkeypa
     before = runtime.store._path(current.session.session_id).read_bytes()
     _install_review(monkeypatch, calls, error=error)
     with pytest.raises(NumericV2ActorOutputError, match="^numeric_v2_completion_fact_review_failed$"):
-        await scenario._turn(runtime, current)
+        await scenario._turn(runtime, current, strict=True)
     assert calls == {"evaluator": 1, "actor": 1, "review": 1}
     assert runtime.store._path(current.session.session_id).read_bytes() == before
     assert await runtime.restore_session(current.session.session_id) == current

@@ -500,11 +500,11 @@ async def test_pending_automatic_departure_only_requests_advice_for_a_repair(tmp
     turn = TurnRequestV2("check", 1, "你能先检查连接状态吗？")
     if draft_case == "rollback":
         with pytest.raises(wf.NumericV2ActorOutputError, match="numeric_v2_contract_violation"):
-            await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
                 turn=turn, ensure_current_binding=lambda _: _binding())
         assert await runtime.restore_session(current.session.session_id) == current
     else:
-        result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        result = await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=turn, ensure_current_binding=lambda _: _binding())
         assert result.performance["performance"] == local_action + local
         assert result.stored.session.performance_history[-1]["performance"] == local_action + local
@@ -688,11 +688,11 @@ async def test_blocked_departure_requires_scope_only_on_high_risk_turns(tmp_path
     turn = TurnRequestV2("check", 1, attempted)
     if case == "rollback":
         with pytest.raises(wf.NumericV2ActorOutputError, match="numeric_v2_contract_violation"):
-            await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
                 turn=turn, ensure_current_binding=lambda _: _binding())
         assert await runtime.restore_session(current.session.session_id) == current
     else:
-        result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        result = await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=turn, ensure_current_binding=lambda _: _binding())
         assert result.performance["performance"] == drafts[-1]
         assert result.stored.session.current_node_id == "start"

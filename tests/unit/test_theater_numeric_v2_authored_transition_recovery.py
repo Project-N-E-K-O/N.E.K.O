@@ -133,7 +133,7 @@ async def test_failed_source_first_tail_cannot_add_a_third_author_review(tmp_pat
     calls = _install(monkeypatch, runtime, source_first=True)
     before = runtime.store._path(current.session.session_id).read_bytes()
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_check_failed"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("source-first", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert calls == {"actor": 2, "contract": 2}
     assert runtime.store._path(current.session.session_id).read_bytes() == before
@@ -145,7 +145,7 @@ async def test_bad_source_first_tail_cannot_skip_the_author_candidate_review(tmp
     calls = _install(monkeypatch, runtime, source_first=True, bad_tail=True)
     before = runtime.store._path(current.session.session_id).read_bytes()
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_check_failed"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("bad-tail", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert calls == {"actor": 2, "contract": 2}
     assert runtime.store._path(current.session.session_id).read_bytes() == before
@@ -177,12 +177,12 @@ async def test_contract_rejection_then_actor_rewrite_failure_keeps_author_delive
     if source_first:
         before = runtime.store._path(current.session.session_id).read_bytes()
         with pytest.raises(wf.NumericV2ActorError, match="actor_timeout"):
-            await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
                 turn=TurnRequestV2("rewrite-failed", 0, INPUT), ensure_current_binding=lambda _: _binding())
         assert calls == {"actor": 3, "contract": 2}
         assert runtime.store._path(current.session.session_id).read_bytes() == before
         return
-    result = await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    result = await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("rewrite-failed", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert result.stored.session.current_node_id == "work"
     assert result.performance["segments"][0]["performance"] == (AGREED if source_first else "")
@@ -205,7 +205,7 @@ async def test_confirmed_source_violation_cannot_be_hidden_by_an_author_tail(tmp
 
     monkeypatch.setattr(wf.NumericV2MetricEvaluator, "verify_contract_boundaries", contract)
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_violation"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("bad-source", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert runtime.store._path(current.session.session_id).read_bytes() == before
 
@@ -216,7 +216,7 @@ async def test_no_author_mark_cannot_turn_a_rejected_dynamic_draft_into_approval
     _install(monkeypatch, runtime)
     before = runtime.store._path(current.session.session_id).read_bytes()
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_check_failed"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("no-authority", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert runtime.store._path(current.session.session_id).read_bytes() == before
 
@@ -280,7 +280,7 @@ async def test_author_original_conflict_cannot_be_reinstalled_as_its_own_recover
     _install(monkeypatch, runtime, failure="fixed_original")
     before = runtime.store._path(current.session.session_id).read_bytes()
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_violation"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("fixed-conflict", 0, INPUT), ensure_current_binding=lambda _: _binding())
     assert runtime.store._path(current.session.session_id).read_bytes() == before
 

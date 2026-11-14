@@ -125,7 +125,7 @@ def _install(monkeypatch, topic, *, mode="clear"):
 
 
 async def _execute(runtime, current):
-    return await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+    return await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("cited-recovery", current.session.revision, MESSAGE),
         ensure_current_binding=lambda _: _binding())
 

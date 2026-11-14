@@ -703,7 +703,7 @@ async def test_regenerated_formal_drafts_rerun_deterministic_transition_checks(t
     diagnostics: dict[str, Any] = {}
     terminal = path.startswith("terminal_rewrite")
     expected = "segment_overlap" if terminal else "terminal_new_question"
-    execution = numeric_v2_workflow.execute_numeric_v2_turn(
+    execution = numeric_v2_workflow._execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("later", 0, message), ensure_current_binding=lambda _: _binding(),
         diagnostics_sink=diagnostics)

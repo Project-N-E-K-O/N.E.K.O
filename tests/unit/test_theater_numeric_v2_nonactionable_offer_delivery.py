@@ -132,7 +132,7 @@ async def test_body_violation_is_not_reclassified_as_only_an_invalid_offer(tmp_p
     calls, _ = _install(monkeypatch, pending="none", body_violation=True)
     before = runtime.store._path(current.session.session_id).read_bytes()
     with pytest.raises(wf.NumericV2ActorOutputError, match="contract_violation"):
-        await wf.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+        await wf._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2("bad-body", current.session.revision, "今晚有什么需要交接的？"),
             ensure_current_binding=lambda _: _binding())
     assert 1 <= calls["actor"] <= 2 and len(calls["contract"]) == 1

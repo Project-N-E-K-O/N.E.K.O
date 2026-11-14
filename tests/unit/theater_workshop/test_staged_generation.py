@@ -1439,3 +1439,17 @@ def test_new_frame_without_invitation_is_sent_back_for_it():
     assert len(frames) == 2
     assert any(issue.get("path") == "world.invitation" for issue in frames[1])
     assert story["intro"]["invitation"] == outline["world"]["invitation"]
+
+
+@pytest.mark.parametrize("invitation", [None, "", "   ", [], {}])
+def test_existing_invalid_checkpoint_invitation_is_not_treated_as_a_missing_legacy_field(invitation):
+    outline, checkpoints = _idea_outline(3), []
+    generator = NumericV2Generator(lambda messages, **options: staged_reply(messages, options["operation"], outline))
+    generator.generate_staged(title="旧存档", setup=_generation_setup(), save_checkpoint=checkpoints.append)
+    checkpoint = _without_invitation(checkpoints[2])
+    checkpoint["candidate"]["world"]["invitation"] = invitation
+
+    with pytest.raises(NumericV2GenerationError) as error:
+        generator.generate_staged(title="旧存档", setup=_generation_setup(), checkpoint=checkpoint)
+    assert any(issue.get("path") == "world.invitation" and issue.get("code") == "required_text"
+               for issue in error.value.issues)

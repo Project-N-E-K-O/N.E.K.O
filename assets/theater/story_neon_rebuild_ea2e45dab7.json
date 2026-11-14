@@ -43,7 +43,7 @@
     "author": "NEKO_Numeric_drama",
     "contract_version": "v2.2",
     "language": "zh-CN",
-    "revision": "workshop-20261113-exit-sources-broadcast-continuity-v3",
+    "revision": "workshop-20261114-dispatch-boundary-v4",
     "story_id": "story_neon_rebuild_ea2e45dab7",
     "title": "《霓虹下的猫耳重构》"
   },
@@ -650,7 +650,7 @@
         "fixed_narrations": [
           {
             "id": "morning_dispatch",
-            "text": "清晨的阳光透过百叶窗洒进工作室；桌边留着昨夜的半块黑面包，维修架上放着一罐机油。独立联网的店务终端亮起一份地下街义肢维修委托：客户的旧式义肢关节卡顿，需要到委托地点查看。异常维修终端仍保持断电隔离。{{catgirl_name}}现有储能足够维持今天的活动；安全补能规格尚未确认，面包和机油也都不是可用的补能选项，现场也没有可用于确认规格的资料或充电实验。",
+            "text": "清晨的阳光透过百叶窗洒进工作室；桌边留着昨夜的半块黑面包，维修架上放着一罐机油。独立联网的店务终端亮起一份地下街义肢维修委托，需要到委托地点查看。异常维修终端仍保持断电隔离。{{catgirl_name}}现有储能足够维持今天的活动；安全补能规格尚未确认，面包和机油也都不是可用的补能选项，现场也没有可用于确认规格的资料或充电实验。",
             "trigger": {
               "type": "entry"
             },

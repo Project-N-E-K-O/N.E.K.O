@@ -107,11 +107,11 @@ async def test_evaluator_claims_wait_for_final_review_without_extra_calls(tmp_pa
     turn = TurnRequestV2("confirmation", current.session.revision, message)
     if scenario in {"timeout", "formal_timeout", "budget_skip"}:
         with pytest.raises(workflow.NumericV2ActorOutputError, match="transition_review_failed"):
-            await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
+            await workflow._execute_numeric_v2_turn(config_manager=object(), runtime=runtime, current=current,
                                                   turn=turn, ensure_current_binding=lambda _: _binding())
         assert await runtime.restore_session(current.session.session_id) == current
         return
-    result = await workflow.execute_numeric_v2_turn(
+    result = await workflow._execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current, turn=turn,
         ensure_current_binding=lambda _: _binding(),
     )
@@ -371,14 +371,14 @@ async def test_actor_completion_handoff_uses_only_this_drafts_reviewed_quote(tmp
     monkeypatch.setattr(evaluator, "create_chat_llm_async", factory)
     if scenario == "timeout":
         with pytest.raises(workflow.NumericV2ActorOutputError, match="transition_review_failed"):
-            await workflow.execute_numeric_v2_turn(
+            await workflow._execute_numeric_v2_turn(
                 config_manager=object(), runtime=runtime, current=current,
                 turn=TurnRequestV2("handoff", 0, "请把这项工作完成并核对结果。"), ensure_current_binding=lambda _: _binding(),
             )
         assert runtime.store._path(current.session.session_id).read_bytes() == original_bytes
         assert await runtime.restore_session(current.session.session_id) == current
         return
-    result = await workflow.execute_numeric_v2_turn(
+    result = await workflow._execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2("handoff", 0, "请把这项工作完成并核对结果。"), ensure_current_binding=lambda _: _binding(),
     )
