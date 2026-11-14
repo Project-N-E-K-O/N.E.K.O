@@ -462,6 +462,13 @@ class BrowserSession:
         except Exception as exc:  # noqa: BLE001 - whatever went wrong, there is no browser to drive
             try:
                 await launcher.close(browser)
+            except asyncio.CancelledError:
+                # Stopped while it was being closed: left to a task, as above.
+                self._abandon(browser)
+                raise
+            except Exception:  # noqa: BLE001 - what is told is that it could not be reached
+                logger.warning("closing a browser that could not be reached failed", exc_info=True)
+                self._keep_unclosed(browser)
             finally:
                 self._reached = None
             hint = " Allow the connection in the browser's prompt and try again." if attach else ""
@@ -576,12 +583,18 @@ class BrowserSession:
             self._reached = None
         self._abandoned = asyncio.ensure_future(self._close_unheld(browser))
 
+    def _keep_unclosed(self, browser: launcher.RunningBrowser) -> None:
+        """Remember a browser that could not be closed: ``close`` tries again, and ``kill`` takes it along."""
+        if not any(browser is other for other in self._unclosed):
+            self._unclosed.append(browser)
+
     async def _close_unheld(self, browser: launcher.RunningBrowser) -> None:
         """Close a browser that was started and is held by nobody (one of ``_unheld``); never raises."""
         try:
             await launcher.close(browser)
-        except Exception:  # noqa: BLE001 - nothing more can be done about it
+        except Exception:  # noqa: BLE001 - tried again whenever closing is asked for
             logger.warning("closing a browser whose start was cancelled failed", exc_info=True)
+            self._keep_unclosed(browser)
         finally:
             if browser in self._unheld:
                 self._unheld.remove(browser)

@@ -3426,3 +3426,78 @@ async def test_a_browser_is_killed_once_however_many_ways_it_is_known(
     session.kill()
 
     assert killed == [8765]
+
+
+# ---------------------------------------------------------------------------
+# a browser that can neither be reached nor closed is not lost sight of
+# ---------------------------------------------------------------------------
+
+
+async def test_a_browser_that_can_neither_be_reached_nor_closed_is_kept_to_be_closed_or_killed(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    world.connect_error = OSError("connection refused")
+    world.close_error = RuntimeError("the process would not die")
+
+    # What is told is why there is no browser to drive, not what closing it ran into.
+    with pytest.raises(BrowserError, match="The browser could not be reached"):
+        await session.start()
+
+    ((stray, _connection),) = world.closed
+    # It runs on, and nothing else knows of it.
+    assert session._unclosed == [stray] and session._reached is None and session.holds_a_browser is True
+    session.kill()
+    assert killed == [8765]
+
+    # And closing, asked for again, tries once more.
+    world.close_error = None
+    await session.close()
+    assert [browser for browser, _connection in world.closed] == [stray, stray]
+    assert session._unclosed == [] and session.holds_a_browser is False
+
+
+async def test_a_browser_a_stopped_start_left_that_could_not_be_closed_is_kept_as_well(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    world.connect_gate = asyncio.Event()
+    world.close_error = RuntimeError("the process would not die")
+    starting = asyncio.ensure_future(session.start())
+    try:
+        await _until(lambda: world.connected)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(starting, 5.0)
+    finally:
+        world.connect_gate.set()
+    # The task that was to close it has given up.
+    await _until(lambda: session._unheld == [])
+
+    ((stray, _connection),) = world.closed
+    assert session._unclosed == [stray]
+    session.kill()
+    assert killed == [8765]
+
+
+async def test_a_start_stopped_while_it_closes_a_browser_it_could_not_reach_leaves_the_closing_to_a_task(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.connect_error = OSError("connection refused")
+    world.close_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    try:
+        await _until(lambda: world.closed)
+        starting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(starting, 5.0)
+        # Still known, though the start that knew of it is gone.
+        assert len(session._unheld) == 1 and session._reached is None
+    finally:
+        world.close_gate.set()
+    await _until(lambda: session._unheld == [])
+    assert len(world.closed) == 2 and world.closed[0][0] is world.closed[1][0]
