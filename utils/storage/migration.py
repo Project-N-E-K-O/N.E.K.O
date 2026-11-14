@@ -97,7 +97,9 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     # and the profile of the browser the browser tools start (lock links on
     # macOS and Linux), and one link fails a whole migration. Those two stay
     # in the old root; see ``DELIBERATELY_UNMIGRATED`` in
-    # ``tests/unit/test_storage_runtime_entry_contract.py``. The ledger's
+    # ``tests/unit/test_storage_runtime_entry_contract.py``. A commission
+    # that was taken up before the move goes on in the session it had there:
+    # the ledger records where that is (``Commission.session_dir``). The ledger's
     # write-ahead log is no entry of its own right: see ``_COMPANION_ENTRIES``.
     "nekoclaw/ledger.db",
     "nekoclaw/ledger.db-wal",

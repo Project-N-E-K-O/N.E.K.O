@@ -945,7 +945,8 @@ async def test_a_browser_that_is_not_our_child_is_looked_up_by_its_profile_and_l
     connection = FakeConnection()
     closer.endpoint_after_asking = None
     await launcher.close(_ours(None), connection)
-    assert closer.looked_up == ["/data/profile"]
+    # Its process is looked for only when it has to be killed, and it has not.
+    assert closer.looked_up == []
     assert connection.sent == [("Browser.close", {"timeout": 3.0})]
     # It cannot be waited for, so it is given a moment and its endpoint is looked at again.
     assert closer.slept == [1.0]
@@ -1504,3 +1505,19 @@ def test_when_a_process_was_created_cannot_always_be_told(monkeypatch: Any) -> N
     assert launcher._created(1) is None
     monkeypatch.setitem(sys.modules, "psutil", None)
     assert launcher._created(77) is None
+
+
+async def test_a_child_that_goes_while_the_browser_cannot_be_asked_is_not_killed_by_its_number(closer: Closer) -> None:
+    child = FakeChild(pid=5150)
+
+    class Refusing(FakeConnection):
+        async def send(self, method: str, params: Any = None, **options: Any) -> Any:
+            # While the browser is being asked, the child hands over and goes.
+            child.returncode = 0
+            raise RuntimeError("the connection broke")
+
+    await launcher.close(_ours(child), Refusing())
+
+    # Which process is the browser is asked when it is to be killed: by then it is the one on the profile.
+    assert closer.looked_up == ["/data/profile"]
+    assert closer.killed == [7007]

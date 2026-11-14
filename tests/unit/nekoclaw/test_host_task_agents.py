@@ -3267,3 +3267,76 @@ async def test_a_refused_picture_is_learned_from_and_the_next_task_agent_gets_no
 
     assert [spec.model.supports_images for spec in specs] == [True, False]
     assert "read_image" in offered(first) and "read_image" not in offered(second)
+
+
+# ---------------------------------------------------------------------------
+# Where a commission's session is kept
+# ---------------------------------------------------------------------------
+
+
+def _sessions(root: Path) -> Path:
+    return root / "nekoclaw" / "task_agents" / "projects" / "_daily" / "sessions"
+
+
+async def test_where_the_session_is_kept_is_recorded_when_the_commission_is_taken_up(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]))
+
+    receipt = await _dispatch(host, "tidy the desktop")
+    done = await wait_status(host, receipt.commission_id, "done")
+
+    assert Path(done.session_dir) == _sessions(tmp_path) / receipt.commission_id
+    assert Path(done.workdir) == Path(done.session_dir) / "work"
+
+
+async def test_a_commission_taken_up_before_the_data_root_moved_goes_on_in_the_session_it_had(hosts, tmp_path):
+    import shutil
+
+    old_root, new_root = tmp_path / "old", tmp_path / "new"
+    old = _host(hosts, old_root, ScriptedLLM([_report("blocked", "the camera drive is not connected")]))
+    receipt = await _dispatch(old, "sort the photos on the camera drive")
+    await wait_status(old, receipt.commission_id, "blocked")
+    await wait_until(lambda: old.task_agents.running == [], what="the session being released")
+    hosts.remove(old)
+    await old.shutdown()
+
+    # The storage location is moved: the ledger goes along, the sessions stay where they are.
+    (new_root / "nekoclaw").mkdir(parents=True)
+    for name in ("ledger.db", "ledger.db-wal"):
+        if (old_root / "nekoclaw" / name).exists():
+            shutil.copy2(old_root / "nekoclaw" / name, new_root / "nekoclaw" / name)
+    resumed = ScriptedLLM([_report("ready", "sorted after all")])
+    new = _host(hosts, new_root, resumed)
+
+    assert await new.task_agents.tell(receipt.commission_id, "the camera drive is E: now") is True
+    done = await wait_status(new, receipt.commission_id, "done")
+
+    assert done.result_summary == "sorted after all"
+    # It went on where it was: the model was shown what had been said before the move ...
+    assert any(message.get("role") == "assistant" for message in resumed.requests[0])
+    started = await _events(new, receipt.commission_id, "started")
+    assert [event.payload["resumed"] for event in started] == [False, True]
+    # ... in the session it had, not in an empty one below the new root.
+    assert Path(done.session_dir) == _sessions(old_root) / receipt.commission_id
+    assert not (new_root / "nekoclaw" / "task_agents").exists()
+
+
+async def test_a_commission_taken_up_before_the_place_was_recorded_is_found_by_its_working_directory(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]))
+    elsewhere = tmp_path / "moved-from" / "sessions"
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort", dispatch_text="sort the photos", source="dispatch", route="task_agent"
+    )
+    # As an earlier build left it: the working directory on record, the session directory not.
+    await host.ledger.update(commission.id, workdir=str(elsewhere / commission.id / "work"))
+    kept = await host.ledger.get(commission.id)
+    assert kept.session_dir is None
+    assert host.task_agents._session_dir_of(kept) == elsewhere / commission.id
+
+    # A working directory that is not the default one of its own session says nothing of it.
+    await host.ledger.update(commission.id, workdir=str(elsewhere / "another-commission" / "work"))
+    assert host.task_agents._session_dir_of(await host.ledger.get(commission.id)) == _sessions(tmp_path) / commission.id
+    await host.ledger.update(commission.id, workdir=str(tmp_path / "a project of the user"))
+    assert host.task_agents._session_dir_of(await host.ledger.get(commission.id)) == _sessions(tmp_path) / commission.id
+    # And one that is on record is taken at its word.
+    await host.ledger.update(commission.id, session_dir=str(tmp_path / "recorded"))
+    assert host.task_agents._session_dir_of(await host.ledger.get(commission.id)) == tmp_path / "recorded"

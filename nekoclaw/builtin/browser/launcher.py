@@ -639,7 +639,6 @@ async def close(browser: RunningBrowser, connection: Any = None) -> None:
     """
     if not browser.owned:
         return
-    pid = await asyncio.to_thread(_pid_of, browser)
     # The process that was started, for as long as it runs. One that has
     # exited says nothing about the browser, which may run on as the process
     # it handed over to: that one is dealt with as a browser that was never
@@ -656,8 +655,8 @@ async def close(browser: RunningBrowser, connection: Any = None) -> None:
         # The child went. With nothing left on the profile, that was the
         # browser; with something left, the child had handed over to it
         # after its port was open, and it is the browser.
-        pid = await asyncio.to_thread(browser_process_on, browser.user_data_dir) if browser.user_data_dir else None
-        if pid is None:
+        left = await asyncio.to_thread(browser_process_on, browser.user_data_dir) if browser.user_data_dir else None
+        if left is None:
             return
         child = None
     if asked and child is None:
@@ -665,4 +664,7 @@ async def close(browser: RunningBrowser, connection: Any = None) -> None:
         await asyncio.sleep(1.0)
         if browser.user_data_dir and await asyncio.to_thread(running_endpoint, browser.user_data_dir) is None:
             return
-    await asyncio.to_thread(kill_tree, pid)
+    # Which process that is, is asked only now: what the child was when the
+    # closing began may no longer hold (it may have handed over and gone
+    # meanwhile), and its number would then be nobody's, or somebody else's.
+    await asyncio.to_thread(kill_tree, await asyncio.to_thread(_pid_of, browser))

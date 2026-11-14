@@ -477,7 +477,7 @@ class TaskAgentManager:
             from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
-            session_dir = self._paths.session_dir(commission.id, commission.project)
+            session_dir = self._session_dir_of(commission)
             workdir_text = commission.workdir
 
             def prepare() -> tuple[str, str]:
@@ -536,6 +536,7 @@ class TaskAgentManager:
                 runtime=RUNTIME_BUILTIN,
                 route="task_agent",
                 workdir=workdir,
+                session_dir=session_path,
             )
             if not moved.applied:
                 # Stopped while it was being prepared.
@@ -1605,6 +1606,28 @@ class TaskAgentManager:
         if not await self.submit(child, candidate_plugin_ids=self._candidates.get(parent.id, ()), wait=False):
             raise RuntimeError(f"{_NO_PLACE_REASON}; do this part yourself")
         return {"name": name}
+
+    def _session_dir_of(self, commission: Commission) -> Any:
+        """Return where a commission's session is kept.
+
+        Where it was when the commission was first taken up, when that is on
+        record: the data root may have been moved since, and the sessions do
+        not move with it. Worked out from the root of now, a commission
+        taken up again after such a move would find an empty directory and
+        start from nothing instead of going on.
+        """
+        from pathlib import Path
+
+        if commission.session_dir:
+            return Path(commission.session_dir)
+        if commission.workdir:
+            # Taken up by a build from before the place was recorded: its
+            # working directory was, and is by default the ``work`` directory
+            # of its session.
+            workdir = Path(commission.workdir)
+            if workdir.name == "work" and workdir.parent.name == commission.id:
+                return workdir.parent
+        return self._paths.session_dir(commission.id, commission.project)
 
     async def _child_workdir(self, parent: Commission, cwd: Any) -> str | None:
         """Return the working directory of a task agent the parent starts.
