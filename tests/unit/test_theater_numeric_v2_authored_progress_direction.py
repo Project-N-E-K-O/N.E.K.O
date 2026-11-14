@@ -48,12 +48,13 @@ async def test_ordinary_progress_can_only_select_current_author_task_or_declared
     monkeypatch.setattr(ev, "create_chat_llm_async", factory)
     kwargs = dict(engine=case["engine"], session=case["session"], message="看看眼前地图。",
                   claims=(), review_progress=True, timeout_seconds=1)
+    result = await _REVIEW(ev.NumericV2MetricEvaluator(object()), **kwargs)
+    assert result.approved_indexes == () and result.ending_ready is False
     if choice in {"player_enters", "future_goal", "寻找暗格中的新日记。"}:
-        with pytest.raises(ev.NumericV2EvaluatorError, match="story_evidence_failed"):
-            await _REVIEW(ev.NumericV2MetricEvaluator(object()), **kwargs)
+        # Not a current author task or offer: the optional hint is dropped,
+        # never turned into new advice, and the rest of the review stands.
+        assert result.direction == "" and result.current_scene_task is None
     else:
-        result = await _REVIEW(ev.NumericV2MetricEvaluator(object()), **kwargs)
-        assert result.approved_indexes == () and result.ending_ready is False
         if choice in {"show_map", DESCRIPTION}:
             assert result.direction == DESCRIPTION
             assert result.current_scene_task["selected_id"] == "show_map"
@@ -114,10 +115,45 @@ async def test_ordinary_legacy_fact_fallback_does_not_schedule_player_or_unknown
     monkeypatch.setattr(ev, "create_chat_llm_async", factory)
     kwargs = dict(engine=case["engine"], session=case["session"], message="先看看。", claims=(),
                   review_progress=True, timeout_seconds=1)
+    result = await _REVIEW(ev.NumericV2MetricEvaluator(object()), **kwargs)
     if source == "performance":
-        result = await _REVIEW(ev.NumericV2MetricEvaluator(object()), **kwargs)
         assert result.current_scene_task["selected_id"] == key
     else:
-        with pytest.raises(ev.NumericV2EvaluatorError, match="story_evidence_failed"):
-            await _REVIEW(ev.NumericV2MetricEvaluator(object()), **kwargs)
+        assert result.direction == "" and result.current_scene_task is None
     assert requests[0]["progress"]["direction_ids"] == ([key] if source == "performance" else [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("direction", ["让角色把钥匙交出来。", " show_map ", "exit:to_leave "])
+async def test_unknown_progress_hint_keeps_the_offer_decision_of_the_same_review(monkeypatch, direction):
+    """Providers without a strict schema may write free text; the player's acceptance must still count."""
+    case = initiation_case()
+    case["engine"].nodes["start"]["story_beat"]["goals"] = [
+        {"id": "show_map", "owner": "catgirl", "description": DESCRIPTION,
+         "delivery": {"source_ids": ["opening.start"]}},
+    ]
+    case["engine"].nodes["start"]["route_gates"][1]["transition_contract"]["fallback_offer"] = OFFER
+    message = "好，我们这就去阅览室。"
+
+    async def config(_): return {"model": "test", "base_url": "https://test.invalid", "api_key": "test"}
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def ainvoke(self, messages, **kwargs):
+            return SimpleNamespace(content=json.dumps({
+                "direction": direction, "offer_decision": "accept", "offer_quote": message,
+                "offer_reason": "玩家明确同意。"}, ensure_ascii=False))
+    async def factory(*args, **kwargs): return Client()
+    monkeypatch.setattr(ev, "_model_config", config)
+    monkeypatch.setattr(ev, "create_chat_llm_async", factory)
+    result = await _REVIEW(ev.NumericV2MetricEvaluator(object()), engine=case["engine"], session=case["session"],
+                           message=message, claims=(), pending_offer=OFFER, pending_offer_revision=0,
+                           review_progress=True, timeout_seconds=1)
+    assert result.offer_decision == "accept" and result.offer_quote == message
+    if direction.strip() == "show_map":
+        # Surrounding whitespace no longer turns a valid id into an error.
+        assert result.current_scene_task["selected_id"] == "show_map"
+    elif direction.strip() == "exit:to_leave":
+        assert OFFER in result.direction and result.current_scene_task is None
+    else:
+        assert result.direction == "" and result.current_scene_task is None
