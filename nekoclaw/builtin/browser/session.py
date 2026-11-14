@@ -1430,16 +1430,26 @@ class BrowserSession:
         await self._mouse(page, "mouseMoved", x, y)
         done = 0
         for number in range(1, count + 1):
+            came_up = False
+
+            async def release(number: int = number) -> None:
+                # Whether the button coming up is sent is told the way sending
+                # tells it: not to a page with a dialog open (one the pointer
+                # opened, or the button going down, or the click before this
+                # one), nor to one that has closed. Told in here, in the very
+                # step that goes on to send it: told before this is started,
+                # a dialog whose news arrives in between would keep the
+                # button from coming up after it was counted as having.
+                nonlocal came_up
+                came_up = page.dialog is None and self.is_open(page)
+                await self._mouse(page, "mouseReleased", x, y, button="left", buttons=0, clickCount=number)
+
             try:
                 await self._mouse(page, "mousePressed", x, y, button="left", buttons=1, clickCount=number)
             finally:
                 # Sent even when the call is stopped in between, so the button
-                # is never left down. Whether it is sent is told beforehand,
-                # the same way sending tells it: not to a page with a dialog
-                # open (one the pointer opened, or the button going down, or
-                # the click before this one), nor to one that has closed.
-                came_up = page.dialog is None and self.is_open(page)
-                await asyncio.shield(self._mouse(page, "mouseReleased", x, y, button="left", buttons=0, clickCount=number))
+                # is never left down.
+                await asyncio.shield(release())
             if not came_up:
                 # No click came of it, and none will of the ones still to do.
                 break

@@ -1258,6 +1258,32 @@ async def test_the_button_does_not_go_down_when_the_page_stopped_taking_input_af
     assert kinds_of(fake) == ["mouseMoved"] and fake.find("Gift wrap").clicks == 0
 
 
+async def test_a_dialog_whose_news_arrives_as_the_button_is_to_come_up_leaves_no_click(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    # The page answered the button going down, and a dialog of its own (a timer's) opened right behind
+    # that answer: its news is read before the step that would send the button coming up gets its turn.
+    page, fake, snapshot = await open_page(session, world)
+    real = session._mouse
+
+    def the_news_is_read() -> None:
+        # What the session does when the browser tells it of a dialog.
+        page.dialog = Dialog("alert", "Your session ran out", "")
+        page.dialog_event.set()
+
+    async def mouse_then(target: Page, kind: str, x: float, y: float, **extra: Any) -> bool:
+        answered = await real(target, kind, x, y, **extra)
+        if kind == "mousePressed":
+            # Runs once this call has returned and before anything that is started after it.
+            asyncio.get_running_loop().call_soon(the_news_is_read)
+        return answered
+
+    monkeypatch.setattr(session, "_mouse", mouse_then)
+    assert await asyncio.wait_for(session.click(page, uid_of(snapshot, "Gift wrap")), 10.0) == 0
+    # The button went down and did not come up: counted as a click, the box would be taken for ticked.
+    assert kinds_of(fake) == ["mouseMoved", "mousePressed"] and fake.find("Gift wrap").clicks == 0
+
+
 async def test_a_box_that_was_not_clicked_is_not_taken_for_filled_in(session: BrowserSession, world: BrowserWorld) -> None:
     page, fake, snapshot = await open_page(session, world)
     gift = fake.find("Gift wrap")
