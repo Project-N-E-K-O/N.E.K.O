@@ -23,6 +23,7 @@ from .numeric_v2_actor import (
 )
 from .numeric_v2_actor_output import (
     NumericV2ActorError,
+    NumericV2ActorUnavailableError,
     _normalized_comparison_text,
     _without_standalone_transition_offer,
 )
@@ -60,6 +61,7 @@ from .numeric_v2_history import lookup_history
 from .numeric_v2_evaluator import (
     NumericV2EvaluationResult,
     NumericV2EvaluatorError,
+    NumericV2EvaluatorUnavailableError,
     NumericV2MetricEvaluator,
     NumericV2StoryEvidenceReview,
     NumericV2TransitionOfferReview,
@@ -1988,6 +1990,10 @@ async def execute_numeric_v2_turn(
                         diagnostics_sink=diagnostics,
                         generation_context=(generation_binding, generation_profile),
                     )
+                except (NumericV2ActorUnavailableError, NumericV2EvaluatorUnavailableError):
+                    # No model is configured or reachable: nothing was drafted, so
+                    # the player keeps the input and sees the configuration error.
+                    raise
                 except (NumericV2ActorError, NumericV2EvaluatorError, NumericV2ModelCallLimitError) as exc:
                     # A failed draft contributes no values, facts or transition authorization.
                     # Cancellation, stale revisions, identity and storage failures still propagate.

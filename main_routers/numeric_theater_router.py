@@ -49,6 +49,7 @@ from services.theater.numeric_v2_archive import (
     build_numeric_v2_memory_messages,
 )
 from services.theater.numeric_v2_evaluator import (
+    NumericV2EvaluatorUnavailableError,
     NumericV2MetricEvaluator,
 )
 from services.theater.numeric_v2_registry import (
@@ -1160,6 +1161,9 @@ async def _submit_numeric_input_once(
         return _error("numeric_session_not_found", 404)
     except NumericV2ActorUnavailableError:
         return _error("numeric_v2_actor_unavailable", 503)
+    except NumericV2EvaluatorUnavailableError:
+        # The frontend restores the input and suggestions for this reason.
+        return _error("numeric_v2_evaluator_unavailable", 503)
     except NumericV2ActorError:
         return _error("numeric_v2_actor_failed", 502)
     except (NumericV2RuntimeError, NumericV2StoreError) as exc:
