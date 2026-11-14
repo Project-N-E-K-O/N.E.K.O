@@ -81,6 +81,7 @@ type CompactExportHistoryPanelProps = {
   choiceLayerAbove: boolean;
   visibilityState?: 'open' | 'closing';
   thinking?: boolean;
+  thinkingLabel?: string;
   failedStatusLabel: string;
   onAutoScrollToBottomChange: (enabled: boolean) => void;
   onToggleMessage: (messageId: string) => void;
@@ -244,6 +245,7 @@ export default function CompactExportHistoryPanel({
   choiceLayerAbove,
   visibilityState = 'open',
   thinking = false,
+  thinkingLabel,
   failedStatusLabel,
   onAutoScrollToBottomChange,
   onToggleMessage,
@@ -1136,7 +1138,7 @@ export default function CompactExportHistoryPanel({
                   >
                     <div className="compact-export-history-bubble focus-thinking-history-bubble">
                       <div className="compact-export-history-content">
-                        <ThinkingDots />
+                        <ThinkingDots label={thinkingLabel} />
                       </div>
                     </div>
                   </article>

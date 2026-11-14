@@ -371,19 +371,22 @@ def test_services_boundaries_are_forbidden_edges(script_module) -> None:
 
 @pytest.mark.unit
 def test_services_theater_workshop_and_launcher_core_are_layered(script_module) -> None:
-    """services is an L2 peer of main_logic, theater_workshop an L3 peer of
-    main_routers and launcher_core an L6 entrypoint next to app. With the
+    """services (including its workshop) is an L2 peer of main_logic,
+    and launcher_core an L6 entrypoint next to app. With the
     real layers, services importing main_routers is an inversion while the
-    legitimate edges of the three packages are not."""
+    legitimate edges below are not."""
     layer = script_module.PACKAGE_TO_LAYER
     assert layer["services"] == layer["main_logic"] == 2
-    assert layer["theater_workshop"] == layer["main_routers"] == 3
+    assert layer["main_routers"] == 3
+    assert "theater_workshop" not in layer
+    assert script_module.package_of_file(
+        script_module.REPO_ROOT / "services/theater_workshop/host.py"
+    ) == "services"
     assert layer["launcher_core"] == layer["app"] == 6
 
     edges = [
         _make_edge("services", "main_routers"),
         _make_edge("services", "memory"),
-        _make_edge("theater_workshop", "services"),
         _make_edge("launcher_core", "app"),
         _make_edge("main_logic", "services"),
     ]

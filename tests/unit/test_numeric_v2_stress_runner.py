@@ -2,12 +2,362 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
 
+from services.theater.numeric_v2_context import prompt_data_block_payload
 from scripts import run_numeric_v2_stress
+
+
+def _preflight_config(tmp_path, *, card=None, persona=None):
+    name = "测试猫娘"
+    characters = {"当前猫娘": name, "猫娘": {name: card or {}}}
+    if persona is not None:
+        path = tmp_path / "memory" / name / "persona.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(persona, ensure_ascii=False), encoding="utf-8")
+    return SimpleNamespace(
+        app_docs_dir=tmp_path,
+        load_characters=lambda **_kwargs: characters,
+        get_model_api_config=lambda slot: {
+            "model": f"model-{slot}", "provider_type": "openai",
+            "base_url": "https://private-endpoint.invalid",
+            "api_key": "PRIVATE_KEY_SENTINEL", "extra_private": "PRIVATE_CONFIG_SENTINEL",
+        },
+    )
+
+
+_PREFLIGHT_PACKAGE = {
+    "story_id": "story_test", "title": "测试剧本", "revision": "draft1",
+    "package_hash": "package-hash", "contract_version": "v2.2",
+    "intro": {"background": "HIDDEN_STORY_SENTINEL"},
+}
+
+
+def _preflight_engine(*, story_id="story_test", persona_scope="full", self_reference_mode="persona_allowed"):
+    from services.theater.numeric_v2_runtime import NumericV2Engine
+    from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
+
+    story = numeric_v2_story()
+    story["meta"]["story_id"] = story_id
+    start = next(node for node in story["nodes"] if node["id"] == story["start_node_id"])
+    start["story_beat"]["acting_contract"] = {
+        "cognition_state": "normal", "memory_state": "available",
+        "self_reference_mode": self_reference_mode, "persona_scope": persona_scope,
+        "dialogue_policy": "required", "allowed_behaviors": [], "forbidden_behaviors": [],
+    }
+    return NumericV2Engine.from_mapping(story)
+
+
+def _preflight_registry():
+    engine = _preflight_engine()
+    return SimpleNamespace(
+        list_packages=lambda: [_PREFLIGHT_PACKAGE],
+        load_engine=lambda _story_id: engine,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["load", "opening"])
+@pytest.mark.parametrize("required", [False, True])
+async def test_stress_preflight_isolates_failed_packages(tmp_path, monkeypatch, failure, required):
+    engines = {key: _preflight_engine(story_id=key) for key in ("story_bad", "story_good")}
+    attempted = []
+    def load(story_id):
+        attempted.append(story_id)
+        if story_id == "story_bad" and failure == "load":
+            raise ValueError("PRIVATE_FAILURE_SENTINEL")
+        return engines[story_id]
+    build = run_numeric_v2_stress.numeric_v2_actor._opening_messages
+    def opening(engine, *args, **kwargs):
+        if engine.story["meta"]["story_id"] == "story_bad":
+            raise ValueError("PRIVATE_FAILURE_SENTINEL")
+        return build(engine, *args, **kwargs)
+    monkeypatch.setattr(run_numeric_v2_stress.numeric_v2_actor, "_opening_messages", opening)
+    args = run_numeric_v2_stress._build_parser().parse_args(["--all"] + (["--require-persona"] if required else []))
+    result = await run_numeric_v2_stress._stress_preflight(
+        config_manager=_preflight_config(tmp_path, card={"性格": "谨慎温和"}), args=args,
+        packages=[{**_PREFLIGHT_PACKAGE, "story_id": key} for key in engines],
+        registry=SimpleNamespace(load_engine=load))
+    assert attempted == ["story_bad", "story_good"]
+    assert result["status"] == ("blocked" if required else "ready")
+    assert result["error_code"] == ("numeric_v2_stress_opening_persona_unavailable" if required else None)
+    assert result["packages"][0]["opening_persona"] == {"effective_status": "unavailable", "error_type": "ValueError"}
+    assert result["packages"][1]["opening_persona"]["effective_status"] == "available"
+    assert "PRIVATE_FAILURE_SENTINEL" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("card,contract", [
+    ({"行为特征": "先检查再决定"}, {"persona_scope": "style_only"}),
+    ({"自称": "人家"}, {"self_reference_mode": "system_neutral"}),
+])
+@pytest.mark.asyncio
+async def test_stress_required_persona_checks_each_real_opening_before_any_story(
+    tmp_path, monkeypatch, card, contract,
+):
+    from services.theater.numeric_v2_actor import NumericV2Actor, actor_visible_profile
+
+    config = _preflight_config(tmp_path, card=card)
+    assert actor_visible_profile(NumericV2Actor(config)._character_profile())
+    engines = {
+        "story_valid": _preflight_engine(story_id="story_valid"),
+        "story_filtered": _preflight_engine(story_id="story_filtered", **contract),
+    }
+    registry = SimpleNamespace(
+        list_packages=lambda: [{**_PREFLIGHT_PACKAGE, "story_id": key} for key in engines],
+        load_engine=lambda story_id: engines[story_id],
+    )
+    monkeypatch.setattr(run_numeric_v2_stress, "ConfigManager", lambda: config)
+    monkeypatch.setattr(run_numeric_v2_stress, "NumericV2PackageRegistry", lambda _path: registry)
+    monkeypatch.setattr(
+        run_numeric_v2_stress, "numeric_v2_catgirl_binding",
+        lambda _config: {"catgirl_name": "测试猫娘"},
+    )
+    called = []
+
+    async def run_story(**kwargs):
+        called.append(kwargs["story_id"])
+        return {"story_id": kwargs["story_id"], "primary_trace": {"turns": []}}
+
+    async def options():
+        return {"evaluator": True}
+
+    monkeypatch.setattr(run_numeric_v2_stress, "_run_story", run_story)
+    monkeypatch.setattr(
+        run_numeric_v2_stress.numeric_v2_workflow, "aload_theater_module_options", options,
+    )
+    args = run_numeric_v2_stress._build_parser().parse_args([
+        "--all", "--package-root", str(tmp_path / "packages"), "--require-persona",
+        "--output", str(tmp_path / "report.json"),
+    ])
+    code, report_path = await run_numeric_v2_stress._async_main(args)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert code == 1
+    assert called == []
+    assert report["preflight"]["persona"]["effective_status"] == "available"
+    by_id = {row["story_id"]: row for row in report["preflight"]["packages"]}
+    assert by_id["story_valid"]["opening_persona"]["effective_status"] == "available"
+    assert by_id["story_filtered"]["opening_persona"]["effective_status"] == "empty"
+    assert report["preflight"]["error_code"] == "numeric_v2_stress_opening_persona_empty"
+    assert report["stories"] == []
+
+
+@pytest.mark.parametrize("persona", [
+    None,
+    {"neko": {"facts": [{"text": "特殊能力：PRIVATE_PERSONA_SENTINEL"}]}},
+])
+@pytest.mark.asyncio
+async def test_stress_required_empty_persona_stops_before_opening_and_writes_report(
+    tmp_path, monkeypatch, persona,
+):
+    config = _preflight_config(tmp_path, persona=persona)
+    monkeypatch.setattr(run_numeric_v2_stress, "ConfigManager", lambda: config)
+    monkeypatch.setattr(
+        run_numeric_v2_stress, "NumericV2PackageRegistry",
+        lambda _path: _preflight_registry(),
+    )
+
+    async def no_model_or_story(*_args, **_kwargs):
+        pytest.fail("empty-persona preflight must stop before opening or any model call")
+
+    monkeypatch.setattr(run_numeric_v2_stress, "_run_story", no_model_or_story)
+    monkeypatch.setattr(run_numeric_v2_stress, "create_chat_llm_async", no_model_or_story)
+    monkeypatch.setattr(run_numeric_v2_stress, "generate_validated_opening", no_model_or_story)
+
+    async def options():
+        return {"evaluator": True}
+
+    monkeypatch.setattr(
+        run_numeric_v2_stress.numeric_v2_workflow, "aload_theater_module_options",
+        options,
+    )
+    args = run_numeric_v2_stress._build_parser().parse_args([
+        "--story-id", "story_test", "--package-root", str(tmp_path / "packages"),
+        "--require-persona", "--output", str(tmp_path / "report.json"),
+    ])
+
+    code, report_path = await run_numeric_v2_stress._async_main(args)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert code == 1
+    assert report["preflight"]["status"] == "blocked"
+    assert report["preflight"]["error_code"] == "numeric_v2_stress_effective_persona_empty"
+    assert report["preflight"]["persona"]["effective_status"] == "empty"
+    assert report["summary"]["preflight_failure_count"] == 1
+    assert report["stories"] == []
+    assert "PRIVATE_" not in report_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("source", ["card", "persona"])
+@pytest.mark.asyncio
+async def test_stress_preflight_reports_effective_projection_without_private_text(
+    tmp_path, monkeypatch, source,
+):
+    from services.theater.numeric_v2_actor import NumericV2Actor, actor_visible_profile
+
+    # A current card is a valid source even before background persona.json exists.
+    config = _preflight_config(
+        tmp_path,
+        card={"性格": "PRIVATE_PERSONA_SENTINEL：细心而谨慎"} if source == "card" else None,
+        persona=(
+            {"neko": {"facts": [{"text": "语气：PRIVATE_PERSONA_SENTINEL，措辞温和"}]}}
+            if source == "persona" else None
+        ),
+    )
+    raw = NumericV2Actor(config)._character_profile()
+    effective = actor_visible_profile(raw)
+    assert effective
+
+    async def options():
+        return {"evaluator": True, "review": False, "actor_retry": False}
+
+    monkeypatch.setattr(
+        run_numeric_v2_stress.numeric_v2_workflow, "aload_theater_module_options", options,
+    )
+    args = run_numeric_v2_stress._build_parser().parse_args([
+        "--story-id", "story_test", "--require-persona",
+    ])
+    registry = _preflight_registry()
+    result = await run_numeric_v2_stress._stress_preflight(
+        config_manager=config, args=args, packages=[_PREFLIGHT_PACKAGE], registry=registry,
+    )
+    assert result["status"] == "ready"
+    assert result["persona"]["effective_status"] == "available"
+    assert result["persona"]["effective_sha256"] == hashlib.sha256(effective.encode()).hexdigest()
+    assert result["quality_acceptance"] == {
+        "personalization": "not_assessed", "refusal": "not_assessed",
+    }
+    assert result["models"]["scope"] == "preflight_snapshot"
+    assert result["models"]["slots"]["conversation"]["model"] == "model-conversation"
+    assert result["models"]["slots"]["summary"]["model"] == "model-summary"
+    assert result["runtime"]["module_options"] == await options()
+    assert result["runtime"]["tts"] is False
+    assert result["runtime"]["entrypoint"] == "execute_numeric_v2_turn"
+    engine = registry.load_engine("story_test")
+    report_package = result["packages"][0]
+    assert report_package["package_hash"] == engine.compiled.package_hash
+    for key in ("story_id", "title", "revision", "contract_version"):
+        assert report_package[key] == engine.story["meta"][key]
+    assert report_package["opening_persona"]["effective_status"] == "available"
+
+    # Capture the true generate_opening invocation without constructing any client;
+    # its post-contract persona must match the preflight, not merely the full union.
+    class OpeningCaptured(BaseException):
+        pass
+
+    captured = []
+    actor = NumericV2Actor(config)
+
+    async def capture(messages, **_kwargs):
+        captured.append(messages)
+        raise OpeningCaptured()
+
+    monkeypatch.setattr(actor, "_invoke", capture)
+    with pytest.raises(OpeningCaptured):
+        await actor.generate_opening(engine=engine, actor_budget_profile=args.profile)
+    actual_opening_persona = prompt_data_block_payload(
+        captured[0][1].content, "角色设定",
+    )["acting_context"]["core_persona"]
+    assert report_package["opening_persona"]["effective_sha256"] == hashlib.sha256(
+        actual_opening_persona.encode("utf-8"),
+    ).hexdigest()
+    encoded = json.dumps(result, ensure_ascii=False)
+    assert "PRIVATE_" not in encoded
+    assert "private-endpoint" not in encoded
+    assert "HIDDEN_STORY_SENTINEL" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_stress_preflight_async_configuration_failure_does_not_echo_credentials(
+    tmp_path, monkeypatch,
+):
+    config = _preflight_config(tmp_path)
+
+    async def config_error(_slot):
+        raise ValueError("PRIVATE_KEY_SENTINEL in provider configuration")
+
+    async def options():
+        return {"evaluator": True}
+
+    config.aget_model_api_config = config_error
+    monkeypatch.setattr(
+        run_numeric_v2_stress.numeric_v2_workflow, "aload_theater_module_options", options,
+    )
+    args = run_numeric_v2_stress._build_parser().parse_args(["--story-id", "story_test"])
+    result = await run_numeric_v2_stress._stress_preflight(
+        config_manager=config, args=args, packages=[_PREFLIGHT_PACKAGE], registry=_preflight_registry(),
+    )
+    assert result["models"]["slots"] == {
+        slot: {"status": "unavailable", "error_type": "ValueError"}
+        for slot in ("conversation", "summary")
+    }
+    assert "PRIVATE_" not in json.dumps(result, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_stress_generic_mode_keeps_empty_persona_run_but_never_claims_acceptance(
+    tmp_path, monkeypatch,
+):
+    config = _preflight_config(tmp_path)
+    monkeypatch.setattr(run_numeric_v2_stress, "ConfigManager", lambda: config)
+    monkeypatch.setattr(
+        run_numeric_v2_stress, "NumericV2PackageRegistry",
+        lambda _path: _preflight_registry(),
+    )
+    monkeypatch.setattr(
+        run_numeric_v2_stress, "numeric_v2_catgirl_binding",
+        lambda _config: {"catgirl_name": "测试猫娘"},
+    )
+    calls = []
+
+    async def run_story(**kwargs):
+        calls.append(kwargs)
+        return {"story_id": kwargs["story_id"], "primary_trace": {"turns": []}}
+
+    async def options():
+        return {"evaluator": True}
+
+    monkeypatch.setattr(run_numeric_v2_stress, "_run_story", run_story)
+    monkeypatch.setattr(
+        run_numeric_v2_stress.numeric_v2_workflow, "aload_theater_module_options", options,
+    )
+    args = run_numeric_v2_stress._build_parser().parse_args([
+        "--story-id", "story_test", "--package-root", str(tmp_path / "packages"),
+        "--output", str(tmp_path / "report.json"),
+    ])
+    code, report_path = await run_numeric_v2_stress._async_main(args)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert code == 0
+    assert len(calls) == 1
+    assert report["preflight"]["validation_scope"] == "generic_stress"
+    assert report["preflight"]["persona"]["effective_status"] == "empty"
+    assert report["preflight"]["quality_acceptance"]["personalization"] == "not_assessed"
+    assert report["preflight"]["quality_acceptance"]["refusal"] == "not_assessed"
+
+
+def test_stress_player_full_public_input_does_not_receive_preflight_or_hidden_contracts():
+    player_input = "（把借来的表格放回桌边）" + "我想先听清安排。" * 300 + "但我现在还没同意报名。"
+    history = [{
+        "player_input": player_input,
+        "performance": {"performance": "（点头）你可以先了解，再决定。"},
+        "preflight": {"persona": "PRIVATE_PERSONA_SENTINEL"},
+        "completion_contract": "HIDDEN_COMPLETION_SENTINEL",
+        "route_gates": "HIDDEN_ROUTE_SENTINEL",
+    }]
+    for messages in (
+        run_numeric_v2_stress._dynamic_player_messages(
+            latest_performance=history[0]["performance"], recent_turns=history, off_topic_turn=False,
+        ),
+        run_numeric_v2_stress._grounded_player_rewrite_messages(
+            latest_performance=history[0]["performance"], recent_turns=history, candidate="我还想问清安排。",
+        ),
+    ):
+        payload = json.loads(messages[1].content)
+        assert payload["recent_visible_turns"][0]["player_input"] == player_input
+        assert "PRIVATE_" not in messages[1].content
+        assert "HIDDEN_" not in messages[1].content
 
 
 _BASELINE_TITLES = {
@@ -676,8 +1026,9 @@ def test_numeric_v2_stress_allows_one_retry_after_cancelled_offer():
     ) is True
 
 
-def test_numeric_v2_stress_accepts_two_or_three_suggestions_only():
-    for count in (2, 3):
+def test_numeric_v2_stress_accepts_zero_to_three_suggestions():
+    # D-36 permits a single valid choice and free input after unsafe choices are removed.
+    for count in (0, 1, 2, 3):
         trace = {"quality_errors": []}
         performance = {
             "suggested_inputs": [f"选项{index}" for index in range(count)]
@@ -690,6 +1041,7 @@ def test_numeric_v2_stress_accepts_two_or_three_suggestions_only():
             route_status="scene_incomplete",
         )
         assert trace["quality_errors"] == []
+        assert len(trace.get("quality_warnings", [])) == (1 if count < 2 else 0)
 
     trace = {"quality_errors": []}
     run_numeric_v2_stress._record_suggestion_quality(
@@ -700,6 +1052,129 @@ def test_numeric_v2_stress_accepts_two_or_three_suggestions_only():
         route_status="scene_incomplete",
     )
     assert trace["quality_errors"][0]["error_code"] == "excessive_player_suggestions"
+
+
+@pytest.mark.parametrize("strategy,attempt,source", [
+    ("mixed", 0, "recommended"), ("mixed", 2, "freeform"),
+    ("recommended", 0, "recommended"), ("freeform", 0, "freeform"),
+    ("chat", 0, "freeform"),
+])
+def test_stress_uses_real_suggestions_without_invitation_recovery(strategy, attempt, source):
+    _, actual = run_numeric_v2_stress.choose_player_input(
+        strategy=strategy, attempt_index=attempt, suggestions=["普通回应"],
+    )
+    assert actual == source
+
+
+@pytest.mark.parametrize("strategy,attempt,control", [
+    ("recommended", 0, True), ("mixed", 0, True), ("mixed", 2, False),
+    ("freeform", 0, False), ("chat", 0, False),
+])
+def test_stress_accepts_program_invitation_only_on_recommended_click_turns(strategy, attempt, control):
+    message, source = run_numeric_v2_stress.choose_player_input(
+        strategy=strategy, attempt_index=attempt, suggestions=[],
+        invitation_acceptance_available=True, route_status="transition_offered",
+    )
+    assert (source == "accept_invitation") is control
+    assert (message == "") is control
+
+
+@pytest.mark.asyncio
+async def test_stress_real_trace_consumes_proposal_control_without_simulating_player_text(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_workflow
+    from tests.unit.test_theater_numeric_v2_runtime import _binding
+    from tests.unit.test_theater_reinvitation import reinvite
+    from tests.unit.test_theater_review_round8_invitation import setup_case
+
+    runtime, current = await setup_case(tmp_path, monkeypatch, mode="on")
+    offered = await reinvite(runtime, current)
+    assert offered.performance["suggested_inputs"] == []
+    received = []
+    execute = run_numeric_v2_stress.execute_numeric_v2_turn
+
+    async def capture(**kwargs):
+        received.append(kwargs["turn"])
+        return await execute(**kwargs)
+
+    async def no_evaluator(*_args, **_kwargs):
+        pytest.fail("程序接受按钮不是模拟玩家台词，不得调用普通意图模型")
+
+    monkeypatch.setattr(run_numeric_v2_stress, "numeric_v2_catgirl_binding", lambda _: _binding())
+    monkeypatch.setattr(run_numeric_v2_stress, "execute_numeric_v2_turn", capture)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, "evaluate", no_evaluator)
+    accepted, trace = await run_numeric_v2_stress._run_trace(
+        runtime=runtime, config_manager=object(), current=offered.stored, attempts=1,
+        strategy="recommended", trace_name="proposal-control", max_errors=1,
+        packing_handler=run_numeric_v2_stress._PackingLogHandler(),
+    )
+    assert len(received) == 1 and received[0].input_source == "accept_invitation"
+    assert received[0].message == ""
+    assert trace["errors"] == []
+    # 接受前的空推荐由真实控件解释；转场后的普通空推荐仍按旧规则记警告。
+    assert trace["quality_warnings"] == [{
+        "attempt": 2, "base_revision": accepted.session.revision,
+        "route_status": "advanced", "error_code": "missing_player_suggestions",
+    }]
+    assert trace["invitation_acceptance_actions"] == 1 and trace["reinvitation_actions"] == 0
+    assert trace["turns"][0]["invitation_acceptance_available"] is True
+    assert trace["turns"][0]["player_input"] == ""
+    assert trace["turns"][0]["player_input_generation"] == "not_used"
+    assert trace["turns"][0]["route_changed"] is True
+    assert accepted.session.current_node_id != current.session.current_node_id
+    assert accepted.ledger_events[-1]["input_source"] == "accept_invitation"
+    assert accepted.ledger_events[-1]["input_text"] == ""
+    summary = run_numeric_v2_stress.summarize_stories([{"primary_trace": trace}])
+    assert summary["invitation_acceptance_actions"] == 1
+    assert summary["response_latency"]["transition"]["count"] == 1
+    assert summary["response_latency"]["reinvitation"]["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stress_final_visible_control_does_not_require_a_fake_text_suggestion(tmp_path, monkeypatch):
+    from tests.unit.test_theater_numeric_v2_runtime import _binding
+    from tests.unit.test_theater_reinvitation import reinvite
+    from tests.unit.test_theater_review_round8_invitation import setup_case
+
+    runtime, current = await setup_case(tmp_path, monkeypatch, mode="on")
+    offered = await reinvite(runtime, current)
+    monkeypatch.setattr(run_numeric_v2_stress, "numeric_v2_catgirl_binding", lambda _: _binding())
+    unchanged, trace = await run_numeric_v2_stress._run_trace(
+        runtime=runtime, config_manager=object(), current=offered.stored, attempts=0,
+        strategy="recommended", trace_name="final-control", max_errors=1,
+        packing_handler=run_numeric_v2_stress._PackingLogHandler(),
+    )
+    assert unchanged == offered.stored
+    assert trace["quality_warnings"] == []
+    assert trace["invitation_acceptance_actions"] == 0
+    assert offered.performance["suggested_inputs"] == []
+
+
+@pytest.mark.asyncio
+async def test_stress_uses_normal_response_instead_of_inventing_recovery(tmp_path, monkeypatch):
+    from services.theater import numeric_v2_workflow
+    from services.theater.numeric_v2_evaluator import NumericV2EvaluationResult
+    from tests.unit.test_theater_numeric_v2_runtime import _binding
+    from tests.unit.test_theater_review_round8_invitation import setup_case
+
+    runtime, current = await setup_case(tmp_path, monkeypatch, review=False)
+    monkeypatch.setattr(run_numeric_v2_stress, "numeric_v2_catgirl_binding", lambda _: _binding())
+    calls = []
+    async def evaluate(*_args, **_kwargs):
+        calls.append('evaluator')
+        return NumericV2EvaluationResult((), False)
+    async def generate(*_args, **_kwargs):
+        calls.append('actor')
+        return {'performance': '我在这里听你说。', 'suggested_inputs': [], 'transition_offered': False}
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    restored, trace = await run_numeric_v2_stress._run_trace(
+        runtime=runtime, config_manager=object(), current=current, attempts=1,
+        strategy='recommended', trace_name='normal', max_errors=1,
+        packing_handler=run_numeric_v2_stress._PackingLogHandler())
+    assert trace['errors'] == [] and trace['reinvitation_actions'] == 0
+    assert calls.count('actor') == 1
+    assert restored.session.revision == current.session.revision + 1
+    assert trace['turns'][0]['input_source'] != 'reinvite'
 
 
 def test_numeric_v2_stress_reports_scene_and_transition_stalls_from_runtime_state():
@@ -833,11 +1308,57 @@ def test_numeric_v2_stress_report_is_written_atomically(tmp_path):
     assert list(target.parent.glob("*.tmp")) == []
 
 
+def test_response_latency_separates_recovery_controls_failures_and_forks():
+    report = run_numeric_v2_stress.summarize_stories([{
+        "primary_trace": {
+            "turns": [
+                {"input_source": "recommended", "route_changed": False, "elapsed_seconds": 4.0},
+                {"input_source": "freeform", "route_changed": False, "elapsed_seconds": 8.0},
+                {"input_source": "reinvite", "route_changed": False, "elapsed_seconds": 0.002},
+            ],
+            "errors": [{"elapsed_seconds": 30.0}],
+            # The simulated player's wait is not an application's reply latency.
+            "player_input_generation_errors": [{"elapsed_seconds": 100.0}],
+        },
+        "fork_trace": {"turns": [
+            {"input_source": "recommended", "route_changed": True, "elapsed_seconds": 12.0},
+        ]},
+    }])["response_latency"]
+
+    assert report["unit"] == "seconds"
+    assert report["scope"] == "workflow_only_excludes_simulated_player_http_playback_tts"
+    assert report["narrative"] == {
+        "count": 3, "mean": 8.0, "p50": 8.0, "p90": 11.2, "p95": 11.6, "max": 12.0,
+    }
+    assert report["ordinary"]["p50"] == 6.0
+    assert report["transition"]["count"] == 1
+    assert report["transition"]["p95"] == 12.0
+    assert report["reinvitation"]["count"] == 1
+    assert report["reinvitation"]["p50"] == 0.002
+    assert report["failed"]["count"] == 1
+    assert report["failed"]["max"] == 30.0
+
+
+def test_response_latency_does_not_turn_missing_or_invalid_measurements_into_zero():
+    report = run_numeric_v2_stress.summarize_stories([{
+        "primary_trace": {"turns": [
+            {}, {"elapsed_seconds": None}, {"elapsed_seconds": True},
+            {"elapsed_seconds": -1}, {"elapsed_seconds": float("nan")},
+            {"elapsed_seconds": float("inf")},
+        ]},
+    }])["response_latency"]
+
+    assert report["narrative"] == {
+        "count": 0, "mean": None, "p50": None, "p90": None, "p95": None, "max": None,
+    }
+
+
 def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
     summary = run_numeric_v2_stress.summarize_stories([
         {
             "primary_trace": {
                 "committed_turns": 3,
+                "reinvitation_actions": 1,
                 "turns": [{
                     "route_changed": False,
                     "workflow_diagnostics": {
@@ -869,10 +1390,8 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                             "completion_fallback_offer_applied": 1,
                             "pending_acceptance_suggestions_preserved": 1,
                             "verified_offer_acceptance_suggestions_inserted": 1,
-                            "author_fallback_invitation_protected": 1,
                         "narration_offer_flags_cleared": 1,
                         "explicit_player_movement_flags_cleared": 1,
-                        "current_scene_offer_flags_cleared": 1,
                         "unsafe_suggestions_removed": 1,
                         "route_suggestion_reviews": 1,
                         "transition_review_results": [
@@ -930,10 +1449,8 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
                             "completion_fallback_offer_applied": 2,
                             "pending_acceptance_suggestions_preserved": 2,
                             "verified_offer_acceptance_suggestions_inserted": 2,
-                            "author_fallback_invitation_protected": 2,
                         "narration_offer_flags_cleared": 2,
                         "explicit_player_movement_flags_cleared": 2,
-                        "current_scene_offer_flags_cleared": 2,
                         "unsafe_suggestions_removed": 2,
                         "route_suggestion_reviews": 2,
                     },
@@ -948,9 +1465,12 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
         {"fatal_error": {"code": "opening_failed"}},
     ])
 
+    assert summary.pop("response_latency")["narrative"]["count"] == 0
     assert summary == {
         "story_count": 2,
         "committed_turns": 4,
+        "reinvitation_actions": 1,
+        "invitation_acceptance_actions": 0,
         "fatal_count": 1,
         "turn_error_count": 1,
         "quality_error_count": 1,
@@ -988,12 +1508,10 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
             "completion_fallback_offer_applied": 3,
             "pending_acceptance_suggestions_preserved": 3,
             "verified_offer_acceptance_suggestions_inserted": 3,
-            "author_fallback_invitation_protected": 3,
         "narration_offer_flags_cleared": 3,
         "explicit_player_movement_flags_cleared": 3,
         "player_action_projection_conflicts": 0,
         "player_action_projection_safe_degrades": 0,
-        "current_scene_offer_flags_cleared": 3,
         "unsafe_suggestions_removed": 3,
         "route_suggestion_reviews": 3,
         "transition_judge_calls": 3,
@@ -1015,7 +1533,8 @@ def test_numeric_v2_stress_summary_marks_turn_and_isolation_failures():
 
 
 @pytest.mark.asyncio
-async def test_numeric_v2_stress_failed_turn_confirms_revision_rollback(monkeypatch):
+@pytest.mark.parametrize("transition_offered", [False, True])
+async def test_numeric_v2_stress_failed_turn_confirms_revision_rollback(monkeypatch, transition_offered):
     session = SimpleNamespace(
         session_id="stress_atomic",
         revision=0,
@@ -1024,6 +1543,7 @@ async def test_numeric_v2_stress_failed_turn_confirms_revision_rollback(monkeypa
         catgirl_binding={"character_id": "character_test"},
         performance_history=(),
         opening_performance={"suggested_inputs": []},
+        transition_offered=transition_offered,
     )
     stored = SimpleNamespace(session=session)
 
@@ -1055,16 +1575,20 @@ async def test_numeric_v2_stress_failed_turn_confirms_revision_rollback(monkeypa
     assert trace["committed_turns"] == 0
     assert trace["errors"][0]["error_code"] == "model_failed"
     assert trace["errors"][0]["atomic_rollback"] is True
-    assert trace["quality_errors"] == [{
+    assert trace["quality_errors"] == []
+    assert trace["quality_warnings"] == [{
         "attempt": 1,
         "base_revision": 0,
-        "route_status": "",
+        "route_status": "transition_offered" if transition_offered else "",
         "error_code": "missing_player_suggestions",
-    }]
+    }] + ([{
+        "attempt": 1, "base_revision": 0, "route_status": "transition_offered",
+        "error_code": "missing_transition_advance_suggestion", "suggestions": [],
+    }] if transition_offered else [])
 
 
 @pytest.mark.asyncio
-async def test_numeric_v2_stress_reports_a_single_suggestion_as_quality_error(monkeypatch):
+async def test_numeric_v2_stress_reports_a_single_suggestion_as_warning(monkeypatch):
     session = SimpleNamespace(
         session_id="stress_two_suggestions",
         revision=0,
@@ -1098,7 +1622,8 @@ async def test_numeric_v2_stress_reports_a_single_suggestion_as_quality_error(mo
         max_errors=1,
     )
 
-    assert trace["quality_errors"] == [{
+    assert trace["quality_errors"] == []
+    assert trace["quality_warnings"] == [{
         "attempt": 1,
         "base_revision": 0,
         "route_status": "",
@@ -1161,7 +1686,8 @@ async def test_numeric_v2_stress_checks_final_committed_suggestions(monkeypatch)
         max_errors=1,
     )
 
-    assert trace["quality_errors"] == [{
+    assert trace["quality_errors"] == []
+    assert trace["quality_warnings"] == [{
         "attempt": 2,
         "base_revision": 1,
         "route_status": "scene_incomplete",

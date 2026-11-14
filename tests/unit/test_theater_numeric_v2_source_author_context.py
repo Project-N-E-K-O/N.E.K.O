@@ -1,6 +1,7 @@
 """Source entrance labels retain author constraints and later committed history without changing either."""
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from services.theater import numeric_v2_actor as actor
 from services.theater.numeric_v2_cast import NumericV2CastProjection
 from services.theater.numeric_v2_runtime import TurnRequestV2
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 
@@ -66,14 +68,19 @@ def source_context(request):
     }
 
 
-def test_transition_names_source_author_state_without_changing_payload(source_context):
+@pytest.mark.parametrize("extra", ["", "这只用于说明入场前的立场。"])
+def test_transition_keeps_only_unique_source_author_situation(source_context, extra):
     expected = source_context
+    if extra:
+        state = expected['acting_context']['character_state']
+        expected['acting_context']['current_scene_state'] = ''.join(
+            state[key] for key in ('catgirl_state', 'player_state', 'environment_state')
+        ) + extra
     transition = expected['transition']
     source, target = transition['source_scene'], transition['target_scene']
     inputs = dict(story_context=expected['story_context'], player_address=expected['player_address'],
         current_chapter_title=source['chapter_title'], source_story_direction=source['story_direction'],
-        target_chapter_title=target['chapter_title'], shared_boundaries=transition['shared_boundaries'],
-        source_boundaries=source['boundaries'], target_boundaries=target['boundaries'],
+        target_chapter_title=target['chapter_title'],
         runtime_target_opening=target['opening_situation'], transition_contract=transition,
         recent_context=expected['recent_context'], acting_context=expected['acting_context'],
         player_input=expected['player_input'])
@@ -83,16 +90,31 @@ def test_transition_names_source_author_state_without_changing_payload(source_co
 
     assert json.dumps(inputs, ensure_ascii=False) == json.dumps(before, ensure_ascii=False)
     assert list(actual['acting_context']) == [
-        'story_identity', 'story_role_context', 'source_author_entry_situation', 'capability_state',
+        'story_identity', 'story_role_context', *(['source_author_entry_situation'] if extra else []), 'capability_state',
         'core_persona', 'dialogue_policy', 'source_author_entry_state', 'acting_contract',
-        'relationship_control', 'target_acting_contract', 'target_character_state',
+        'relationship_control', 'target_acting_contract',
         'target_dialogue_policy', 'target_relationship_control',
     ]
-    # After checking every output key, restore only its original label by position.
-    # Comparing the whole ordered payload also catches lost or changed nested values and history.
+    # Reconstruct the pre-projection shadow, including the target plan's move;
+    # the complete comparison still detects any changed text, condition or history.
     restored = deepcopy(actual)
-    restored['acting_context'] = dict(zip(expected['acting_context'], actual['acting_context'].values()))
-    assert json.dumps(restored, ensure_ascii=False) == json.dumps(expected, ensure_ascii=False)
+    target_plan = restored['transition']['target_scene'].pop('author_entry_plan')
+    original_labels = {'source_author_entry_situation': 'current_scene_state',
+                       'source_author_entry_state': 'character_state'}
+    context = {original_labels.get(key, key): value
+               for key, value in restored['acting_context'].items()}
+    context['target_character_state'] = target_plan
+    restored['acting_context'] = {key: context[key] for key in expected['acting_context'] if key in context}
+    # Complete hard boundaries now live once in the phase-labelled System message.
+    expected_wire = deepcopy(expected)
+    if extra:
+        expected_wire['acting_context']['current_scene_state'] = extra
+    else:
+        expected_wire['acting_context'].pop('current_scene_state')
+    expected_wire['transition'].pop('shared_boundaries')
+    expected_wire['transition']['source_scene'].pop('boundaries')
+    expected_wire['transition']['target_scene'].pop('boundaries')
+    assert json.dumps(restored, ensure_ascii=False) == json.dumps(expected_wire, ensure_ascii=False)
 
 
 def test_source_labels_stay_unchanged_outside_transition(source_context):
@@ -109,17 +131,88 @@ def test_source_labels_stay_unchanged_outside_transition(source_context):
     outcome = engine.resolve_turn(session, TurnRequestV2('ordinary', 0, '眼前这件事已经做完了。'), ())
     assert outcome.session.current_node_id == session.current_node_id
     opening = actor._opening_messages(engine, original['core_persona'], '小岚', '你')
-    opening_data = json.loads(opening[1].content)
+    opening_data = prompt_payload(opening[1].content)
+    assert generic['current_scene_state'] == original['current_scene_state']
+    assert 'current_scene_state' not in opening_data['acting_context']
     for context in [generic, opening_data['acting_context']]:
-        assert context['current_scene_state'] == original['current_scene_state']
-        assert context['character_state'] == original['character_state']
+        expected_state = deepcopy(original['character_state'])
+        if context is opening_data['acting_context']:
+            for rule in expected_state.pop('scene_boundaries'):
+                assert rule in opening[0].content
+        assert context['character_state'] == expected_state
         assert 'source_author_entry_situation' not in context
         assert 'source_author_entry_state' not in context
     ordinary = actor._turn_messages(engine, session, outcome, '眼前这件事已经做完了。',
                                     original['core_persona'], '小岚', '你')
-    ordinary_data = json.loads(ordinary[1].content.split('\n', 1)[1])
-    assert list(ordinary_data) == ['role', 'current_scene', 'story_so_far', 'pacing', 'next_scene', 'player_input']
-    assert original['current_scene_state'] in ordinary_data['role']
-    assert original['character_state']['player_state'] in ordinary_data['role']
+    ordinary_data = prompt_payload(ordinary[1].content)
+    assert list(ordinary_data) == ["role", "current_scene", "pacing", "next_scene", "story_so_far", "player_input"]
+    assert original['current_scene_state'] in ordinary_data['current_scene']
+    assert original['character_state']['player_state'] in ordinary_data['current_scene']
     assert 'source_author_entry_situation' not in ordinary[1].content
     assert 'source_author_entry_state' not in ordinary[1].content
+
+
+def test_formal_transition_sends_identical_shared_continuity_and_relationship_once(source_context):
+    shared = "玩家已到场。"
+    source = source_context["acting_context"]
+    source["target_character_state"]["continuity_from_previous"] = [shared, "目标幕仍等待玩家选择。"]
+    source["target_relationship_control"] = deepcopy(source["relationship_control"])
+    original = deepcopy(source)
+    transition = source_context["transition"]
+    actual = actor._transition_prompt_data(
+        story_context=source_context["story_context"], player_address="你",
+        current_chapter_title="来源幕", source_story_direction="",
+        target_chapter_title="目标幕", runtime_target_opening="站在门内。",
+        transition_contract={**transition, "must_preserve": [shared]},
+        recent_context=source_context["recent_context"], acting_context=source,
+        player_input=source_context["player_input"],
+    )
+
+    assert actual["transition"]["must_preserve"] == [shared]
+    assert actual["transition"]["target_scene"]["author_entry_plan"]["continuity_from_previous"] == [
+        "目标幕仍等待玩家选择。",
+    ]
+    assert "continuity_from_previous" not in actual["acting_context"]["source_author_entry_state"]
+    assert actual["acting_context"]["target_relationship_control"] == {"same_as": "relationship_control"}
+    assert source == original
+
+
+@pytest.mark.parametrize("legacy", [
+    "并未确认“{state}”这条旧记录。",
+    "旧记录里有人说：“首先检查通行证。{state}”这句话还未被证实。",
+    "{state}其实这只是上一段日志的旧记录。",
+])
+def test_author_state_inside_context_is_not_a_redundant_sentence(legacy):
+    state = "闸门已经打开。"
+    extra = legacy.format(state=state)
+    assert actor._author_entry_situation({
+        "current_scene_state": extra,
+        "character_state": {"catgirl_state": "她在大厅等候。", "environment_state": state},
+    }) == extra
+
+
+def test_formal_prompts_reference_only_identical_author_bridge_requirement():
+    from services.theater import numeric_v2_evaluator as evaluator
+    from tests.unit.test_theater_numeric_v2_transition_history import _candidate
+
+    engine = _engine(ordinary=True)
+    session = engine.create_session(session_id="bridge-ref", catgirl_binding=_binding(),
+                                    opening_performance=_opening())
+    message = "请带路。"
+    outcome = engine.resolve_turn(session, TurnRequestV2("enter", 0, message), (), transition_intent="initiate")
+    assert outcome.session.current_node_id != session.current_node_id
+    bridge = "旧廊的灯熄灭，两人抵达工作室门外。"
+    separate = "旧廊的灯熄灭，但紧急出口仍可开启。"
+    contract = {**outcome.transition_contract, "bridge_scene_narration": bridge,
+                "must_deliver": [bridge, separate]}
+    original = deepcopy(contract)
+    outcome = replace(outcome, transition_contract=contract)
+    actor_messages = actor._turn_messages(engine, session, outcome, message, "克制。", "小岚", "你")
+    guard_messages = evaluator._build_transition_judge_messages(engine, session,
+        actor_performance=_candidate(), player_input=message, transition_outcome=outcome)[0]
+    for messages, key in ((actor_messages, "transition"), (guard_messages, "transition_contract")):
+        wire = prompt_payload(messages[1].content)[key]
+        assert messages[1].content.count(bridge) == 1
+        assert wire["must_deliver"] == [{"content_ref": "bridge_scene_narration"}, separate]
+        assert "content_ref 取合同原文。" in messages[0].content
+    assert outcome.transition_contract == original

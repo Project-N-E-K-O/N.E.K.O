@@ -8,9 +8,18 @@ from typing import Any, Callable, Mapping
 
 from utils.tokenize import count_tokens
 
+from .numeric_v2_context import prompt_data_block
+
 
 MAX_FIXED_NARRATIONS = 8
 MAX_FIXED_NARRATION_TOKENS = 2000
+ENTRY_TRIGGER_ACTION_RULE = (
+    "入幕前因规则：原文尚缺且已获准、前因明确的角色或在场NPC非语言必要触发动作，"
+    "须用明确主体在目标旁白交付一次，仅限紧接的程序原文所需的直接前因。"
+    "仅写等待、准备或即将触发，不能接上已经完整展示该事件的原文。"
+    "不编未知成败或额外操作，不替玩家行动、发言或补新授权，角色对白仍在target_performance。"
+    "已经由历史或原文交付的动作不重做，target_performance只接原文结束后的状态与新反应，不再次启动或等待已播事件。"
+)
 _PLACEHOLDER = re.compile(r"\{\{(catgirl_name|player_name)\}\}")
 _ACTOR_RECEIVE_MARKERS = ("接过", "接到", "收到", "收下", "拿到", "戴上")
 _PLAYER_HANDOFF_MARKERS = ("递给", "递出", "交给", "交出", "给你", "交到你手里")
@@ -83,6 +92,10 @@ def pending_definitions(node: Mapping[str, Any], session: Any) -> list[dict[str,
     return [item for item in definitions(node) if (node["id"], item["id"]) not in seen]
 
 
+def has_pending_entry(node: Mapping[str, Any], session: Any) -> bool:
+    return any(item["trigger"]["type"] == "entry" for item in pending_definitions(node, session))
+
+
 def _gates_exit(item: Mapping[str, Any], condition_triggers_enabled: bool) -> bool:
     """A required piece gates exit only when something can still deliver it."""
     # Condition pieces are delivered solely through the review module's trigger claims;
@@ -102,7 +115,7 @@ def render_text(text: str, bindings: Mapping[str, str]) -> str:
 
 
 def _bindings(binding: Mapping[str, Any], known: bool) -> dict[str, str]:
-    return {"catgirl_name": str(binding.get("catgirl_name") or "当前猫娘"),
+    return {"catgirl_name": str(binding.get("catgirl_name") or "当前角色"),
             "player_name": str(binding.get("player_address") or "你") if known else "你"}
 
 
@@ -126,24 +139,39 @@ def add_entry(node: Mapping[str, Any], performance: Mapping[str, Any], binding: 
 
 def actor_note(node: Mapping[str, Any], session: Any, binding: Mapping[str, Any], known: bool,
                *, project_condition: Callable[[str], str] = str,
-               condition_triggers_enabled: bool = True) -> str:
+               condition_triggers_enabled: bool = True,
+               include_instructions: bool = True,
+               allow_entry_trigger_actions: bool = False,
+               include_entry: bool = True) -> str:
     """Only entry text is readable before delivery; condition text stays private."""
-    rows = pending_definitions(node, session)
+    rows = [item for item in pending_definitions(node, session)
+            if (condition_triggers_enabled or item["trigger"]["type"] == "entry")
+            and (include_entry or item["trigger"]["type"] != "entry")]
     if not rows:
         return ""
-    lines = ["固定旁白由程序按原文插入，禁止在正文、旁白或推荐中复述其全文。"
-             "入幕原文在场景建立后、猫娘开口前展示，可承接反应；"
-             "条件片段在本轮实际触发动作及复核后才展示，不得提前读到或演出阅读后的反应。"]
+    lines = ["固定旁白是程序独立播放的内容，不属于你的任何输出字段，不要替程序生成。"
+             "入幕原文在场景建立后、你开口前展示，可承接反应；"
+             + ("目标旁白先交付程序原文所需的直接前因，再建立环境。" + ENTRY_TRIGGER_ACTION_RULE
+                if allow_entry_trigger_actions else
+                "场景旁白只建立原文之前的地点与氛围，不复演原文的动作、对白和结果，换词也不重演；") +
+             "角色正文从原文结束后的状态回应，不再次宣布或执行已经交付的事件。"
+             "原文已发问或邀请时，不再复述或另发同一邀请，也不替玩家作答；推荐可直接回应原文。"] if include_instructions else []
+    if any(item["trigger"]["type"] == "condition" for item in rows):
+        lines.append("条件片段在本轮实际触发动作及复核后才展示，不得提前读到或演出阅读后的反应。")
     for item in rows:
         if item["trigger"]["type"] == "entry":
-            lines.append("入幕固定旁白：" + render_text(item["text"], _bindings(binding, known)))
+            lines.append(prompt_data_block("程序自动播放的入幕原文（不输出）", {
+                "text": render_text(item["text"], _bindings(binding, known)),
+            }))
         else:
             # Actor selects neither fragments nor settlement dependencies; supply only actual triggers to keep internal IDs out of visible narration.
-            lines.append(f"待展示原文的触发条件：{project_condition(item['trigger']['condition'])}。不得替玩家执行触发动作。")
+            lines.append("待展示原文的触发条件：\n" + prompt_data_block("固定旁白触发条件", {
+                "condition": project_condition(item["trigger"]["condition"]),
+            }) + "\n不得替玩家执行触发动作。")
             if "player_handoff_required" in item["trigger"]:
                 lines.append("此条件必须有玩家实际递交。" if item["trigger"]["player_handoff_required"] else
                              "此条件不要求玩家递交；这不授权改变物品持有者或替玩家行动。")
-    if any(_gates_exit(item, condition_triggers_enabled) for item in rows):
+    if any(item["trigger"]["type"] == "condition" and _gates_exit(item, condition_triggers_enabled) for item in rows):
         lines.append("当前尚有离幕前必显片段；回应当前互动，不提前邀请跳到下一幕或结束。")
     return "\n".join(lines)
 

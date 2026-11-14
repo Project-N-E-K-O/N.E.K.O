@@ -16,6 +16,7 @@ import string
 from typing import Any, Mapping
 
 from utils.tokenize import count_tokens
+from .numeric_v2_actor_output import _parse_actor_suggestions
 from .numeric_v2_fixed_narration import validate_definitions
 
 
@@ -67,12 +68,55 @@ _FORBIDDEN_LEGACY_FIELDS = frozenset(
     {"interaction_rules", "available_interaction_ids", "choices", "state_schema"}
 )
 _IDENTITY_SEPARATORS = frozenset("，,；;：:\n（(")
+# intro.invitation is what the current character says when an in-voice invite
+# cannot be generated. It stays inside the story's situation, so it must not
+# name the theater itself, and its length matches one spoken invitation.
+MAX_INVITATION_CHARS = 80
+INVITATION_META_TERMS = ("剧本", "剧场", "演出", "演绎", "扮演", "表演", "演一")
 _CHARACTER_STATE_SUBJECTS = {
     "catgirl_state": "女主",
     "player_state": "男主",
     "environment_state": "环境",
 }
 _NEGATIVE_STATE_BOUNDARY_PREFIXES = ("不得", "禁止", "不能")
+
+
+def _valid_fact_evidence_phrase(phrase: Any) -> bool:
+    return (
+        isinstance(phrase, str)
+        and 1 <= len(phrase) <= 48
+        and phrase.strip() == phrase
+        and phrase.isprintable()
+    )
+
+
+def valid_fact_evidence_anchor(definition: Mapping[str, Any]) -> bool:
+    if definition.get("evidence_source") != "performance":
+        return False
+    anchor = definition.get("evidence_anchor")
+    if isinstance(anchor, str):
+        return _valid_fact_evidence_phrase(anchor)
+    return isinstance(anchor, list) and 1 <= len(anchor) <= 4 and all(
+        isinstance(group, list) and 1 <= len(group) <= 8
+        and all(_valid_fact_evidence_phrase(phrase) for phrase in group)
+        for group in anchor
+    )
+
+
+def valid_fact_player_handoff_item(definition: Mapping[str, Any]) -> bool:
+    """Validate literal item names for an opted-in, performed handoff result."""
+
+    items = definition.get("player_handoff_item")
+    return (
+        definition.get("value_type") == "bool"
+        and definition.get("visibility") == "public"
+        and definition.get("evidence_source") == "performance"
+        and isinstance(items, list)
+        and 1 <= len(items) <= 4
+        and all(isinstance(item, str) and item and item.isprintable() and item.strip() == item for item in items)
+        and len(set(items)) == len(items)
+    )
+
 
 @dataclass(frozen=True)
 class NumericV2Issue:
@@ -120,6 +164,14 @@ def _is_int(value: Any) -> bool:
 
 def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value == value.strip()
+
+
+def _fact_value_matches(value_type: Any, value: Any) -> bool:
+    return bool(
+        (value_type == "bool" and type(value) is bool)
+        or (value_type == "int" and _is_int(value))
+        or (value_type == "string" and _text(value))
+    )
 
 
 def _valid_id(value: Any) -> bool:
@@ -356,7 +408,7 @@ def _conditions_overlap(
     right: Mapping[str, Any],
     metric_ranges: Mapping[str, tuple[int | None, int | None]],
 ) -> bool:
-    """Return whether two route predicates can be true for one metric state.
+    """Return whether two route predicates can be true for one metric/fact state.
 
     Runs in near-linear time in the number of rows: an ``all`` branch folds into
     per-metric intervals, and ``any`` rows are checked against those intervals
@@ -367,6 +419,32 @@ def _conditions_overlap(
         return False
     left_mode, left_rows = _condition_mode_rows(left)
     right_mode, right_rows = _condition_mode_rows(right)
+    # Equality-only fact values are independent categorical dimensions. Encode
+    # them locally so the same interval algorithm handles mixed all/any rows;
+    # missing facts cannot satisfy equality and add no overlapping state.
+    fact_values: dict[str, dict[tuple[type, Any], int]] = {}
+    projected_rows: list[list[Mapping[str, Any]]] = []
+    for rows in (left_rows, right_rows):
+        projected: list[Mapping[str, Any]] = []
+        for row in rows:
+            if row.get("type") != "fact_equals":
+                projected.append(row)
+                continue
+            key, value = row.get("key"), row.get("value")
+            if not isinstance(key, str) or type(value) not in (bool, int, str):
+                projected.append({})
+                continue
+            # NUL cannot occur in a valid metric ID, so namespaces cannot collide.
+            dimension = f"\0fact:{key}"
+            domain = fact_values.setdefault(dimension, {})
+            ordinal = domain.setdefault((type(value), value), len(domain))
+            projected.append({"metric": dimension, "op": "==", "value": ordinal})
+        projected_rows.append(projected)
+    left_rows, right_rows = projected_rows
+    if fact_values:
+        metric_ranges = {**metric_ranges, **{
+            dimension: (0, len(domain) - 1) for dimension, domain in fact_values.items()
+        }}
     if left_mode == "any" and right_mode == "any":
         return _any_rows_overlap(left_rows, right_rows, metric_ranges)
     if left_mode == "any" or right_mode == "any":
@@ -598,6 +676,8 @@ class NumericV2Compiler:
         intro = c.obj(value, "intro")
         for field in ("background", "player_identity", "catgirl_identity"):
             c.require_text(intro.get(field), f"intro.{field}")
+        if "invitation" in intro:
+            NumericV2Compiler._validate_invitation(c, intro)
         # Real nicknames may contain commas or exceed the old first-segment limit; new Workshop packages declare paired names to avoid runtime split-point guessing.
         if "player_name" in intro or "catgirl_name" in intro:
             for role in ("player", "catgirl"):
@@ -608,7 +688,7 @@ class NumericV2Compiler:
                     c.add("intro_identity_name_mismatch", f"intro.{role}_identity",
                           "剧情身份必须以对应的完整姓名和中文逗号开头。")
             if _text(intro.get("player_name")) and intro.get("player_name") == intro.get("catgirl_name"):
-                c.add("intro_identity_names_conflict", "intro", "玩家与猫娘的作者姓名不能相同。")
+                c.add("intro_identity_names_conflict", "intro", "玩家与当前角色的作者姓名不能相同。")
             return
         for field in ("player_identity", "catgirl_identity"):
             identity = intro.get(field)
@@ -624,8 +704,26 @@ class NumericV2Compiler:
             c.add(
                 "intro_identity_names_conflict",
                 "intro",
-                "玩家与猫娘身份的首段名称不能相同。",
+                "玩家与当前角色身份的首段名称不能相同。",
             )
+
+    @staticmethod
+    def _validate_invitation(c: _Collector, intro: dict[str, Any]) -> None:
+        """Older packages may omit it; when present it must work as a spoken fallback invite."""
+        invitation = c.require_text(intro.get("invitation"), "intro.invitation")
+        if not invitation:
+            return
+        if len(invitation) > MAX_INVITATION_CHARS:
+            c.add("intro_invitation_too_long", "intro.invitation",
+                  f"邀请句不超过 {MAX_INVITATION_CHARS} 个字符，只写一两句。")
+        used = [term for term in INVITATION_META_TERMS if term in invitation]
+        if used:
+            c.add("intro_invitation_meta_term", "intro.invitation",
+                  f"邀请句要从故事开场的情境出发，不能出现“{'”“'.join(used)}”这类点明这是一场演出的词。")
+        names = [str(intro.get(f"{role}_name") or "").strip() for role in ("player", "catgirl")]
+        if any(name and name in invitation for name in names):
+            c.add("intro_invitation_author_name", "intro.invitation",
+                  "邀请句由用户自己的角色说给用户听，用“你”“我”指代两人，不写作者设定的姓名。")
 
     @staticmethod
     def _validate_binding(c: _Collector, value: Any) -> None:
@@ -724,8 +822,17 @@ class NumericV2Compiler:
             if not isinstance(key, str) or not _FACT_CONTRACT_KEY_RE.fullmatch(key):
                 c.add("invalid_fact_contract_key", path, "事实键必须是安全且稳定的 ID。")
             definition = c.obj(raw, path)
-            if set(definition).difference({"value_type", "visibility", "description"}):
-                c.add("unexpected_fact_contract_definition_field", path, "事实定义只允许 value_type、visibility 和 description。")
+            if set(definition).difference({"value_type", "visibility", "description", "evidence_source",
+                                           "evidence_anchor", "player_handoff_item"}):
+                c.add("unexpected_fact_contract_definition_field", path,
+                      "事实定义只允许 value_type、visibility、description、evidence_source、evidence_anchor 和 player_handoff_item。")
+            if "evidence_source" in definition and definition["evidence_source"] not in ("performance", "player_input"):
+                c.add("invalid_fact_contract_evidence_source", f"{path}.evidence_source", "限定来源时只允许 performance 或 player_input。")
+            if "evidence_anchor" in definition and not valid_fact_evidence_anchor(definition):
+                c.add("invalid_fact_contract_evidence_anchor", f"{path}.evidence_anchor", "演出锚点须为 performance 来源，使用单个短语或最多四组短语。每组至多八项，每项 1 到 48 个可见字符。")
+            if "player_handoff_item" in definition and not valid_fact_player_handoff_item(definition):
+                c.add("invalid_fact_contract_player_handoff_item", f"{path}.player_handoff_item",
+                      "交接物品须列出一至四个不同的非空原文名称，仅用于 public 布尔事实且 evidence_source 为 performance。")
             if definition.get("value_type") not in _FACT_CONTRACT_VALUE_TYPES:
                 c.add(
                     "invalid_fact_contract_value_type",
@@ -775,6 +882,24 @@ class NumericV2Compiler:
     ) -> None:
         beat = c.obj(value, path)
         validate_definitions(c, beat, path)
+        if "entry_player_inputs" in beat:
+            entry_path = f"{path}.entry_player_inputs"
+            entries = beat["entry_player_inputs"]
+            if not isinstance(entries, list) or not 1 <= len(entries) <= 3:
+                c.add("entry_player_inputs_invalid", entry_path, "入幕回复必须是 1—3 条玩家输入。")
+            else:
+                seen_inputs: set[str] = set()
+                for index, entry in enumerate(entries):
+                    item_path = f"{entry_path}[{index}]"
+                    # Share Runtime formatting/subject rules, but reject rather than coerce or silently drop author input.
+                    parsed = _parse_actor_suggestions([entry]) if isinstance(entry, str) else []
+                    if not parsed or len(entry) > 120:
+                        c.add("entry_player_input_invalid", item_path,
+                              "入幕回复必须是不超过 120 字符的玩家对白、玩家动作，或动作后接对白。")
+                    elif parsed[0] in seen_inputs:
+                        c.add("duplicate_entry_player_input", item_path, "入幕回复不能重复。")
+                    else:
+                        seen_inputs.add(parsed[0])
         c.require_text(beat.get("summary"), f"{path}.summary")
         # Optional prompt fields fall back to other beat text when empty, but a
         # non-empty value is sent to the Actor/Evaluator and needs the same cap.
@@ -803,6 +928,8 @@ class NumericV2Compiler:
                 allow_empty=False,
             )
         c.require_text_list(beat.get("must_not_happen"), f"{path}.must_not_happen", allow_empty=True)
+        if "content_boundaries" in beat:
+            c.require_text_list(beat["content_boundaries"], f"{path}.content_boundaries", allow_empty=True)
         if "opening_only_boundaries" in beat:
             opening_boundaries = c.require_text_list(
                 beat.get("opening_only_boundaries"),
@@ -841,6 +968,14 @@ class NumericV2Compiler:
         """Validate author-written three-party act-entry state, constraining enactment without entering Session values."""  # noqa: DOCSTRING_CJK
 
         state = c.obj(value, path)
+        if "temporal_context" in state:
+            temporal = state["temporal_context"]
+            if (not isinstance(temporal, Mapping) or set(temporal) != {"anchor", "relation_to_previous"}
+                    or not _text(temporal.get("anchor")) or len(temporal["anchor"]) > 80
+                    or temporal.get("relation_to_previous") not in {
+                        "unspecified", "same_day", "next_day", "after_interval"}):
+                c.add("character_state_temporal_context_invalid", f"{path}.temporal_context",
+                      "时序规划须含非空且至多80字的原文anchor及约定的相对时间枚举；未知时省略。")
         for field, subject in _CHARACTER_STATE_SUBJECTS.items():
             # Legacy packages retain fixed subject prefixes; new ones use intro-validated names for explicit state ownership.
             name = (cast_names or {}).get(field.replace("_state", "_name"))
@@ -1001,7 +1136,7 @@ class NumericV2Compiler:
                     c.add(
                         "catgirl_action_anchor_third_person",
                         f"{evidence_path}.anchors[{index}]",
-                        "猫娘动作锚点必须直接写动作，不得以‘她/女主/猫娘’等第三人称主语开头。",
+                        "当前角色动作锚点必须直接写动作，不得以第三人称代词或角色称呼开头。",
                     )
         source_ids = c.array(delivery.get("source_ids", []), f"{path}.source_ids")
         if len(source_ids) > 8:
@@ -1170,6 +1305,9 @@ class NumericV2Compiler:
                 c, node.get("story_beat"), f"{path}.story_beat", cast_names=cast_names,
             )
             terminal = node.get("type") == "ending" or node.get("terminal") is True
+            if terminal and isinstance(node.get("story_beat"), Mapping) and "entry_player_inputs" in node["story_beat"]:
+                c.add("terminal_entry_player_inputs_forbidden", f"{path}.story_beat.entry_player_inputs",
+                      "终局不再接收玩家输入，不能声明入幕回复。")
             if "completion_contract" in node:
                 if terminal:
                     c.add(
@@ -1226,6 +1364,7 @@ class NumericV2Compiler:
                     route.get("conditions"),
                     route_path,
                     metric_ranges,
+                    fact_definitions=fact_definitions or {},
                     allow_empty=allow_empty_conditions,
                 )
                 if priority is not None:
@@ -1327,12 +1466,7 @@ class NumericV2Compiler:
                 )
             expected_type = definition.get("value_type")
             expected_value = requirement.get("equals")
-            type_matches = (
-                (expected_type == "bool" and type(expected_value) is bool)
-                or (expected_type == "int" and _is_int(expected_value))
-                or (expected_type == "string" and _text(expected_value))
-            )
-            if not type_matches:
+            if not _fact_value_matches(expected_type, expected_value):
                 c.add(
                     "completion_fact_value_type_mismatch",
                     f"{requirement_path}.equals",
@@ -1346,6 +1480,7 @@ class NumericV2Compiler:
         route_path: str,
         metric_ranges: Mapping[str, tuple[int | None, int | None]],
         *,
+        fact_definitions: Mapping[str, Any],
         allow_empty: bool,
     ) -> str:
         conditions = c.obj(value, f"{route_path}.conditions")
@@ -1356,14 +1491,39 @@ class NumericV2Compiler:
         mode = modes[0]
         rows = c.array(conditions.get(mode), f"{route_path}.conditions.{mode}")
         if not rows and (not allow_empty or mode == "any"):
-            c.add("route_condition_required", f"{route_path}.conditions.{mode}", "同一幕存在多个出口时，每条路线至少需要一个 metric 条件。")
+            c.add("route_condition_required", f"{route_path}.conditions.{mode}", "同一幕存在多个出口时，每条路线至少需要一个数值或事实条件。")
         signature_rows: list[str] = []
         can_check_compound = True
         for index, raw in enumerate(rows):
             path = f"{route_path}.conditions.{mode}[{index}]"
             condition = c.obj(raw, path)
+            if condition.get("type") == "fact_equals":
+                issue_count = len(c.issues)
+                if set(condition) != {"type", "key", "value"}:
+                    c.add("invalid_route_fact_shape", path, "事实路线条件只允许 type、key 和 value。")
+                key = condition.get("key")
+                if not isinstance(key, str) or not _FACT_CONTRACT_KEY_RE.fullmatch(key):
+                    c.add("invalid_route_fact_key", f"{path}.key", "路线事实必须引用稳定的事实键。")
+                    can_check_compound = False
+                    continue
+                definition = fact_definitions.get(key)
+                if not isinstance(definition, Mapping):
+                    c.add("unknown_route_fact_key", f"{path}.key", "路线事实必须先在 fact_contract.facts 中声明。")
+                    can_check_compound = False
+                    continue
+                if not _text(definition.get("description")):
+                    c.add("route_fact_description_required", f"fact_contract.facts.{key}.description",
+                          "被路线条件引用的事实必须提供作者语义描述。")
+                if not _fact_value_matches(definition.get("value_type"), condition.get("value")):
+                    c.add("route_fact_value_type_mismatch", f"{path}.value",
+                          "路线事实的 value 必须匹配事实合同声明的值类型。")
+                if len(c.issues) != issue_count:
+                    can_check_compound = False
+                    continue
+                signature_rows.append(json.dumps(["fact_equals", key, condition["value"]], ensure_ascii=False))
+                continue
             if condition.get("type") != "metric_compare":
-                c.add("invalid_condition_type", f"{path}.type", "第一版只支持 metric_compare。")
+                c.add("invalid_condition_type", f"{path}.type", "路线条件只支持 metric_compare 或 fact_equals。")
                 can_check_compound = False
             metric = c.require_id(condition.get("metric"), f"{path}.metric")
             if not metric or metric not in metric_ranges:
@@ -1406,7 +1566,7 @@ class NumericV2Compiler:
                 c.add(
                     "route_condition_impossible",
                     f"{route_path}.conditions",
-                    "路线条件组合在 metric 的声明范围内永远无法同时成立。",
+                    "路线条件组合在数值范围和事实值约束下永远无法同时成立。",
                 )
         return f"{mode}|{'|'.join(sorted(signature_rows))}"
 
@@ -1414,6 +1574,15 @@ class NumericV2Compiler:
     def _validate_transition(c: _Collector, value: Any, path: str) -> None:
         contract = c.obj(value, path)
         c.require_text(contract.get("reason"), f"{path}.reason")
+        if "advance_on_completion" in contract and type(contract["advance_on_completion"]) is not bool:
+            c.add("transition_completion_advance_invalid", f"{path}.advance_on_completion",
+                  "结果承接声明必须是布尔值。")
+        if "accept_input_confirmation_only" in contract and not isinstance(contract["accept_input_confirmation_only"], bool):
+            c.add("transition_confirmation_only_invalid", f"{path}.accept_input_confirmation_only",
+                  "纯确认声明必须是布尔值。")
+        if "fixed_entry_only" in contract and not isinstance(contract["fixed_entry_only"], bool):
+            c.add("transition_fixed_entry_only_invalid", f"{path}.fixed_entry_only",
+                  "原文独立入幕声明必须是布尔值。")
         if "fallback_offer" in contract:
             fallback_offer = c.require_text(
                 contract.get("fallback_offer"),
@@ -1462,7 +1631,7 @@ class NumericV2Compiler:
         c.require_text_list(
             contract.get("must_deliver"),
             f"{path}.must_deliver",
-            allow_empty=False,
+            allow_empty=True,
         )
         if "bridge_scene_narration" in contract:
             c.require_text(
@@ -1529,25 +1698,76 @@ class NumericV2Compiler:
 
         # Normal acts allowed to speak after completion provide author-written fallback invitations; silent outcomes cannot fall back to extra dialogue.
         for source_id, node in nodes.items():
-            if "completion_contract" not in node:
-                continue
             beat = node.get("story_beat") or {}
-            policy = (beat.get("acting_contract") or {}).get("dialogue_policy")
-            for goal in beat.get("goals") or []:
+            if not isinstance(beat, Mapping):
+                continue
+            acting = beat.get("acting_contract") or {}
+            if not isinstance(acting, Mapping):
+                continue
+            policy = acting.get("dialogue_policy")
+            goals = beat.get("goals") or []
+            for goal in goals if isinstance(goals, list) else []:
                 if not isinstance(goal, Mapping):
                     continue
-                effects = (goal.get("delivery") or {}).get("state_effects") or {}
+                delivery = goal.get("delivery") or {}
+                if not isinstance(delivery, Mapping):
+                    continue
+                effects = delivery.get("state_effects") or {}
+                if not isinstance(effects, Mapping):
+                    continue
                 policy = effects.get("dialogue_policy", policy)
-            for route_index, raw_route in enumerate(node.get("route_gates") or []):
+            routes = node.get("route_gates") or []
+            for route_index, raw_route in enumerate(routes if isinstance(routes, list) else []):
                 if not isinstance(raw_route, Mapping):
                     continue
                 target = nodes.get(str(raw_route.get("target_node_id") or ""))
                 if not isinstance(target, Mapping):
                     continue
-                if target.get("type") == "ending" or target.get("terminal") is True:
-                    continue
                 contract = raw_route.get("transition_contract")
                 contract = contract if isinstance(contract, Mapping) else {}
+                terminal_target = target.get("type") == "ending" or target.get("terminal") is True
+                if contract.get("fixed_entry_only") is True:
+                    target_beat = target.get("story_beat") or {}
+                    target_beat = target_beat if isinstance(target_beat, Mapping) else {}
+                    target_acting = target_beat.get("acting_contract") or {}
+                    target_acting = target_acting if isinstance(target_acting, Mapping) else {}
+                    pieces = target_beat.get("fixed_narrations") or []
+                    has_entry = any(
+                        isinstance(piece, Mapping)
+                        and isinstance(piece.get("trigger"), Mapping)
+                        and piece["trigger"].get("type") == "entry"
+                        for piece in pieces if isinstance(pieces, list)
+                    )
+                    if target_acting.get("dialogue_policy") not in {"optional", "forbidden"} or not has_entry:
+                        c.add("transition_fixed_entry_only_invalid",
+                              f"nodes.{source_id}.route_gates[{route_index}].transition_contract.fixed_entry_only",
+                              "原文独立入幕需要目标幕有 entry 原文，且其发声策略为 optional 或 forbidden。")
+                if contract.get("accept_input_confirmation_only") is True:
+                    completion = node.get("completion_contract")
+                    if (
+                        not isinstance(completion, Mapping)
+                        or not isinstance(completion.get("all"), list)
+                        or not completion["all"]
+                        or not _text(contract.get("fallback_offer"))
+                        or not _text(contract.get("accept_input"))
+                        or terminal_target
+                        or "silent_choice" in contract
+                        or policy == "forbidden"
+                    ):
+                        c.add("transition_confirmation_only_invalid",
+                              f"nodes.{source_id}.route_gates[{route_index}].transition_contract.accept_input_confirmation_only",
+                              "纯确认声明需要非空幕完成条件、作者邀请和接受输入，且不能用于静默出口或结局目标。")
+                if contract.get("advance_on_completion") is True:
+                    completion = node.get("completion_contract")
+                    if (terminal_target or not isinstance(completion, Mapping) or not completion.get("all")
+                            or any(field in contract for field in ("fallback_offer", "accept_input", "silent_choice"))
+                            or contract.get("accept_input_confirmation_only") is True):
+                        c.add("transition_completion_advance_invalid",
+                              f"nodes.{source_id}.route_gates[{route_index}].transition_contract.advance_on_completion",
+                              "结果承接需要非空幕完成条件和普通目标幕，不得同时声明邀约或接受输入。")
+                    continue
+                if "completion_contract" not in node or terminal_target:
+                    continue
                 if policy != "forbidden":
                     c.require_text(
                         contract.get("fallback_offer"),

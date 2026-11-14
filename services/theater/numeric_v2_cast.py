@@ -34,7 +34,7 @@ def _identity_name(identity: Any) -> str:
 
 @dataclass(frozen=True, slots=True)
 class NumericV2CastProjection:
-    """Fixed at runtime: the player plays the male lead and the current neko plays the female lead."""  # noqa: DOCSTRING_CJK
+    """Bind the player and current character to their story roles without assigning genders."""  # noqa: DOCSTRING_CJK
 
     source_player_name: str
     source_catgirl_name: str
@@ -55,12 +55,17 @@ class NumericV2CastProjection:
             source_player_name=str(intro["player_name"]) if "player_name" in intro else _identity_name(intro.get("player_identity")),
             source_catgirl_name=str(intro["catgirl_name"]) if "catgirl_name" in intro else _identity_name(intro.get("catgirl_identity")),
             player_name=str(player_name or "你").strip() or "你",
-            catgirl_name=str(catgirl_name or "当前猫娘").strip() or "当前猫娘",
+            # Missing names are role references only; Actor generation requires a real card name.
+            catgirl_name=str(catgirl_name or "当前角色").strip() or "当前角色",
         )
 
     def text(self, value: Any) -> str:
         lead_pair = f"{self.player_name}和{self.catgirl_name}"
         replacements = (
+            # 普通作者文案也可能使用固定旁白约定的显式姓名占位；与实名同次替换，
+            # 不再扫描绑定值，避免猫娘名恰含作者姓名或另一个占位时被递归改写。
+            ("{{player_name}}", self.player_name),
+            ("{{catgirl_name}}", self.catgirl_name),
             ("男女主人公", lead_pair),
             ("男女主角", lead_pair),
             ("男女主", lead_pair),

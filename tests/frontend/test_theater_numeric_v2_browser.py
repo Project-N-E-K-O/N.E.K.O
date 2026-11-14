@@ -93,9 +93,11 @@ def _install_selector_routes(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('via_market', [False, True])
 def test_owned_selector_closes_after_capsule_takeover_before_opening_response(
     mock_page: Page,
     running_server: str,
+    via_market: bool,
 ):
     """Close the main-app-opened selection page after capsule takeover, without waiting for the opening model request."""  # noqa: DOCSTRING_CJK
 
@@ -122,10 +124,17 @@ def test_owned_selector_closes_after_capsule_takeover_before_opening_response(
     mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
     mock_page.wait_for_function("() => window.nekoTheaterRuntime && window.reactChatWindowHost")
 
+    if via_market:
+        mock_page.context.route('http://market.test/selected', lambda route: route.fulfill(
+            body=f'<button onclick="location.replace(\'{running_server}/theater?story_id={STORY["story_id"]}\')">Import</button>'))
     with mock_page.expect_popup() as popup_info:
-        mock_page.evaluate("() => window.open('/theater', 'neko_theater_test')")
+        mock_page.evaluate("url => window.open(url, 'neko_theater_test')", 'http://market.test/selected' if via_market else '/theater')
     selector = popup_info.value
+    if via_market:
+        selector.get_by_role('button', name='Import', exact=True).click()
+        selector.wait_for_url(f'{running_server}/theater?story_id={STORY["story_id"]}')
     selector.wait_for_load_state("domcontentloaded")
+    assert selector.evaluate('!!window.opener && !window.opener.closed')
     expect(selector.locator("#theater-start-btn")).to_be_enabled()
     with mock_page.expect_request("**/api/theater-numeric/session/start"):
         selector.locator("#theater-start-btn").click()

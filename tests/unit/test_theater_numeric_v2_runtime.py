@@ -106,6 +106,178 @@ def test_numeric_v2_turn_request_validates_ephemeral_input_source():
         })
 
 
+async def _reviewed_proposal_session(tmp_path):
+    """Publish a native receipt without granting an Actor-generated button authority."""
+    from tests.unit.test_theater_numeric_v2_unified_pacing import story_for
+    from services.theater.numeric_v2_performance import performance_content_blocks
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story_for("下一阶段")), tmp_path)
+    current = await runtime.start_session(session_id="proposal-control", catgirl_binding=_binding(),
+        opening_performance=_opening())
+    result = runtime.prepare_turn(current, TurnRequestV2("complete", 0, "先完成眼前的事。"), (),
+        fact_operations=({"op": "set", "key": "scene:start:done", "value": True, "visibility": "public"},))
+    current = await runtime.commit_turn(result, _performance("这件事处理完了。"))
+    result = runtime.prepare_turn(current, TurnRequestV2("proposal", 1, "", "reinvite"), ())
+    result, body = runtime.engine.finalize_transition_offer_state(result,
+        {"performance": "（望向桌边）接下来一起商量下一阶段的安排吧？", "suggested_inputs": []},
+        new_offer=True, invalidate_previous_offer=True)
+    route = runtime.engine.preview_route(current.session.current_node_id, current.session.metrics,
+        facts=current.session.story_state["facts"])
+    receipt = {"kind": "reviewed_proposal", "revision": result.session.revision,
+        "route_id": route["id"], "target_node_id": route["target_node_id"],
+        "offer": body["performance"], "performance": body["performance"],
+        "visible_blocks": performance_content_blocks(body)}
+    result = replace(result, ledger_event={**result.ledger_event, "program_invitation": receipt})
+    return runtime, await runtime.commit_turn(result, body)
+
+
+def test_explicit_invitation_acceptance_request_has_no_roleplay_message():
+    request = TurnRequestV2.from_mapping({"client_turn_id": "accept-control", "base_revision": 2,
+        "message": "", "input_source": "accept_invitation"})
+    assert request.message == "" and request.input_source == "accept_invitation"
+    with pytest.raises(NumericV2RuntimeError, match="numeric_invitation_acceptance_not_available"):
+        TurnRequestV2.from_mapping({"client_turn_id": "accept-control", "base_revision": 2,
+            "message": "顺便完成全部任务。", "input_source": "accept_invitation"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["none", "missing", "legacy", "revision", "body", "visible", "offer", "route",
+    "target", "visit", "withdrawn", "suggestions", "terminal", "completion", "cross_kind_field"])
+async def test_explicit_invitation_acceptance_requires_exact_live_proposal(tmp_path, mutation):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    before = deepcopy(current)
+    events = deepcopy(current.ledger_events)
+    session = deepcopy(current.session)
+    receipt = events[-1]["program_invitation"]
+    if mutation == "missing":
+        events[-1].pop("program_invitation")
+    elif mutation == "legacy":
+        receipt.update(kind="reviewed_dynamic", accept_input="先等等。")
+    elif mutation == "revision":
+        receipt["revision"] -= 1
+    elif mutation == "body":
+        session.performance_history[-1]["performance"] += "但是先别开始。"
+    elif mutation == "visible":
+        receipt["visible_blocks"] = []
+    elif mutation == "offer":
+        receipt["offer"] = "这是未展示的另一段邀请。"
+    elif mutation == "route":
+        receipt["route_id"] = "another-route"
+    elif mutation == "target":
+        receipt["target_node_id"] = "another-target"
+    elif mutation == "visit":
+        events[-1]["visit_started_revision"] = session.revision
+    elif mutation == "withdrawn":
+        session = replace(session, transition_offered=False)
+    elif mutation == "suggestions":
+        session.performance_history[-1]["suggested_inputs"] = ["先等等。"]
+    elif mutation == "terminal":
+        runtime.engine.nodes[receipt["target_node_id"]]["terminal"] = True
+    elif mutation == "completion":
+        session.story_state["facts"]["scene:start:done"]["value"] = False
+    elif mutation == "cross_kind_field":
+        receipt["silent"] = True
+    route = runtime.engine.invitation_acceptance_route(session, ledger_events=tuple(events))
+    assert bool(route) is (mutation == "none")
+    assert current == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("contamination", ["message", "metrics", "facts", "routing_facts", "complete", "ending", "reject", "initiate"])
+async def test_explicit_invitation_acceptance_cannot_settle_other_results(tmp_path, contamination):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    path = runtime.store._path(current.session.session_id)
+    persisted = path.read_bytes()
+    request = TurnRequestV2("accept", current.session.revision, "" if contamination != "message" else "做别的事。", "accept_invitation")
+    kwargs = {"transition_intent": contamination if contamination in {"reject", "initiate"} else "accept"}
+    operation = {"op": "set", "key": "scene:start:done", "value": False, "visibility": "public"}
+    if contamination == "facts":
+        kwargs["fact_operations"] = (operation,)
+    elif contamination == "routing_facts":
+        kwargs["routing_fact_operations"] = (operation,)
+    elif contamination == "complete":
+        kwargs["scene_complete"] = True
+    elif contamination == "ending":
+        kwargs["natural_ending_ready"] = True
+    changes = (MetricChangeV2("trust", 1, "玩家兑现承诺", "增加积分"),) if contamination == "metrics" else ()
+    with pytest.raises(NumericV2RuntimeError, match="numeric_invitation_acceptance_not_available"):
+        runtime.engine.resolve_turn(current.session, request, changes, ledger_events=current.ledger_events, **kwargs)
+    assert path.read_bytes() == persisted
+
+
+@pytest.mark.asyncio
+async def test_explicit_invitation_acceptance_restores_and_forks_without_player_action(tmp_path):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id)
+    assert restored == current
+    fork = await runtime.fork_session_for_test(current.session.session_id, session_id="proposal-fork", through_revision=current.session.revision)
+    for stored in (restored, fork):
+        result = runtime.prepare_turn(stored, TurnRequestV2("accept-control", stored.session.revision, "", "accept_invitation"), (), transition_intent="accept")
+        assert result.route is not None
+        assert result.session.metrics == stored.session.metrics
+        assert result.session.story_state["facts"]["scene:start:done"] == stored.session.story_state["facts"]["scene:start:done"]
+        assert result.ledger_event["player_action_projection"]["confirmed_actions"] == []
+        assert result.ledger_event["player_action_projection"]["future_references"] == []
+        committed = await runtime.commit_turn(result, _transition_performance(result.session.current_node_id))
+        assert committed.session.performance_history[-1]["input_source"] == "accept_invitation"
+        assert await runtime.restore_session(stored.session.session_id) == committed
+        accepted_fork = await runtime.fork_session_for_test(stored.session.session_id,
+            session_id=stored.session.session_id + "-accepted", through_revision=committed.session.revision)
+        assert accepted_fork.session.performance_history[-1]["input_source"] == "accept_invitation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", ["event", "performance", "both", "receipt"])
+async def test_explicit_invitation_acceptance_cannot_drop_control_provenance_on_restore(tmp_path, tamper):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    result = runtime.prepare_turn(current, TurnRequestV2("accept-control", current.session.revision, "", "accept_invitation"), (), transition_intent="accept")
+    current = await runtime.commit_turn(result, _transition_performance(result.session.current_node_id))
+    path = runtime.store._path(current.session.session_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if tamper in {"event", "both"}:
+        payload["ledger_events"][-1].pop("input_source")
+    if tamper in {"performance", "both"}:
+        payload["session"]["performance_history"][-1].pop("input_source")
+    if tamper == "receipt":
+        payload["ledger_events"][-2].pop("program_invitation")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(numeric_v2_store.NumericV2StoreError):
+        await runtime.restore_session(current.session.session_id)
+
+
+@pytest.mark.asyncio
+async def test_explicit_invitation_acceptance_unclear_requires_recorded_cancellation(tmp_path):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    result = runtime.prepare_turn(current, TurnRequestV2("cancel-control", current.session.revision, "", "accept_invitation"), (), transition_intent="unclear")
+    assert result.route is None and result.session.current_node_id == current.session.current_node_id
+    with pytest.raises(numeric_v2_store.NumericV2StoreError):
+        await runtime.commit_turn(result, {"performance": "这段安排还需核对。", "suggested_inputs": []})
+    result, body = runtime.engine.finalize_transition_offer_state(result,
+        {"performance": "这段安排与实际入口不符，先留在这里。", "suggested_inputs": []},
+        new_offer=False, invalidate_previous_offer=True)
+    committed = await runtime.commit_turn(result, body)
+    assert not committed.session.transition_offered
+    assert await runtime.restore_session(current.session.session_id) == committed
+
+
+@pytest.mark.asyncio
+async def test_explicit_invitation_acceptance_still_obeys_required_delivery_and_duplicate_guards(tmp_path):
+    from services.theater.numeric_v2_fixed_narration import required_pending
+    from tests.unit.test_theater_numeric_v2_fixed_narration import _piece
+
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    request = TurnRequestV2("accept-control", current.session.revision, "", "accept_invitation")
+    runtime.engine.nodes["start"]["story_beat"]["fixed_narrations"] = [_piece("pending", "应先公开的记录。")]
+    assert required_pending(runtime.engine.nodes["start"], current.session)
+    with pytest.raises(NumericV2RuntimeError, match="numeric_invitation_acceptance_not_available"):
+        runtime.prepare_turn(current, request, (), transition_intent="accept")
+    runtime.engine.nodes["start"]["story_beat"].pop("fixed_narrations")
+    outcome = runtime.prepare_turn(current, request, (), transition_intent="accept")
+    committed = await runtime.commit_turn(outcome, _transition_performance(outcome.session.current_node_id))
+    with pytest.raises(NumericV2RuntimeError):
+        runtime.prepare_turn(committed, replace(request, base_revision=committed.session.revision), (), transition_intent="accept")
+
+
 def test_numeric_v2_idle_store_and_receipt_locks_are_reclaimed(tmp_path):
     """The lock must be reused during the concurrency window and must not accumulate permanently by historical ID after the caller releases it."""  # noqa: DOCSTRING_CJK
 
@@ -598,6 +770,116 @@ def test_numeric_v2_fact_candidate_rejects_future_tense_evidence():
         evidence_sources={"actor_performance": "准备工作已经完成，相关角色已进入安全区域。"},
     )
     assert finalized.session.story_state["facts"]["scene:start:sheltered"]["value"] is True
+
+
+@pytest.mark.parametrize(("description", "quote", "visible", "accepted"), [
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "带你出去，然后我来锁门",
+        "走吧，我带你出去，然后我来锁门。",
+        False,
+    ),
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "锁舌咔哒一声落进槽里",
+        "（跨出门槛，反手握住门把将沉重的木门缓缓合拢，锁舌咔哒一声落进槽里。拔出钥匙攥在掌心）",
+        True,
+    ),
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "锁舌咔哒一声落进槽里，然后我来收钥匙",
+        "锁舌咔哒一声落进槽里，然后我来收钥匙。",
+        True,
+    ),
+    (
+        "双方完成闭馆分工，栀宁承诺负责锁门。",
+        "带你出去，然后我来锁门",
+        "走吧，我带你出去，然后我来锁门。",
+        True,
+    ),
+    ("已完成证物归还。", "然后我来归还证物", "然后我来归还证物。", False),
+    ("已完成交接并离开。", "然后我来交接了钥匙", "然后我来交接了钥匙。", True),
+    ("已完成抵达。", "然后我来到了档案室", "然后我来到了档案室。", True),
+    ("已完成此前的巡查。", "然后我来过档案室", "然后我来过档案室。", True),
+])
+def test_performance_fact_distinguishes_prospective_actor_assignment(description, quote, visible, accepted):
+    story = numeric_v2_story()
+    key = "scene:start:performed_result"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": description, "evidence_source": "performance",
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="performed-result", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("performed-turn", 0, "现在怎么样了？"), ())
+    candidates = [{"key": key, "value": True, "evidence_quote": quote}]
+    evidence_sources = {"actor_performance": visible}
+    if not accepted:
+        with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_not_completed"):
+            engine.finalize_actor_fact_candidates(session, outcome, candidates=candidates, evidence_sources=evidence_sources)
+        return
+    committed, _ = engine.finalize_actor_fact_candidates(
+        session, outcome, candidates=candidates, evidence_sources=evidence_sources,
+    )
+    assert engine.completion_contract_satisfied(committed.session)
+
+
+def test_performance_fact_requires_its_author_anchor_in_the_cited_text():
+    story = numeric_v2_story()
+    key = "scene:start:sheet_detached"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": "所有选定的拓样均已揭下并摊稳。",
+        "evidence_source": "performance", "evidence_anchor": "揭下并摊稳",
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="anchor", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("anchor-turn", 0, "就留这两块吧。"), ())
+    preparation = "（又展开一张纸盖住歪太阳的位置，指尖压住纸边固定）你按住这边，别让它跑偏了。"
+    completion = "（将选定的两张拓样逐一揭下并摊稳）好，两张都在这儿了。"
+    candidate = {"key": key, "value": True, "evidence_quote": preparation}
+    with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_anchor_missing"):
+        engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                             evidence_sources={"actor_performance": preparation + completion})
+
+    committed, _ = engine.finalize_actor_fact_candidates(
+        session, outcome, candidates=[{**candidate, "evidence_quote": completion}],
+        evidence_sources={"actor_performance": preparation + completion},
+    )
+    assert engine.completion_contract_satisfied(committed.session)
+
+
+@pytest.mark.parametrize(("quote", "accepted"), [
+    ("线条从墙面浮到纸上，拓得挺实。", False),
+    ("把薄纸揭下来，托在手里。", False),
+    ("把薄纸揭下来，等你回来再摊平。", False),
+    ("先把薄纸揭下来，然后摊平在墙根？", False),
+    ("把薄纸摊平贴在墙上，从边上揭下胶带。", False),
+    ("把纸揭下来平铺在地上。", True),
+    ("将薄纸从墙面剥离，摊平在墙根的青苔上。", True),
+    ("从墙上取下拓样，平放在墙根。", True),
+])
+def test_grouped_evidence_anchor_requires_ordered_performed_actions(quote, accepted):
+    story = numeric_v2_story()
+    key = "scene:start:first_sheet"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": "首张拓样已从墙面揭下并放稳。",
+        "evidence_source": "performance",
+        "evidence_anchor": [["揭下", "从墙面剥离", "从墙上取下"], ["平铺", "摊平", "平放"]],
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="grouped-anchor", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("grouped-turn", 0, "我按住纸角。"), ())
+    candidate = {"key": key, "value": True, "evidence_quote": quote}
+    if not accepted:
+        with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_anchor_missing"):
+            engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                                 evidence_sources={"actor_performance": quote})
+        return
+    committed, _ = engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                                       evidence_sources={"actor_performance": quote})
+    assert engine.completion_contract_satisfied(committed.session)
 
 
 @pytest.mark.parametrize(
