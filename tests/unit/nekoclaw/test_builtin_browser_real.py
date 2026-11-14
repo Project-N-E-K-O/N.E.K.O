@@ -157,6 +157,14 @@ NOTICES = """<!doctype html><html><head><title>Notices</title></head><body>
 <p id="out"></p>
 </body></html>"""
 
+# A form whose field opens a dialog the first time something is typed into it.
+CHECKED = """<!doctype html><html><head><title>Checked</title></head><body>
+<form action="/submit" method="get">
+  <label>Name <input name="name" oninput="if (!window.told) { window.told = true; alert('Names are checked'); }"></label>
+  <button type="submit">Send</button>
+</form>
+</body></html>"""
+
 
 class _Site(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - the name the base class calls
@@ -175,6 +183,8 @@ class _Site(http.server.BaseHTTPRequestHandler):
             body = DRAFT
         elif url.path == "/notices":
             body = NOTICES
+        elif url.path == "/checked":
+            body = CHECKED
         elif url.path in ("/report", "/reaching", "/reaching-frame"):
             port = self.server.server_address[1]
             body = {"/report": REPORT, "/reaching": REACHING, "/reaching-frame": REACHING_FRAME}[url.path]
@@ -632,6 +642,29 @@ async def test_an_element_the_page_took_out_is_not_kept_alive_by_the_call_that_c
     # click left behind would: on a page that is never loaded anew, every
     # element ever acted on would stay in the memory of the browser.
     assert await _collected(tools, "window.gone"), "the removed button is still held by something"
+
+
+async def test_a_submit_key_that_a_dialog_kept_from_being_pressed_is_not_said_to_have_been(tools: BrowserTools, site: str) -> None:
+    opened = await call(tools, "navigate_page", url=site + "/checked")
+    assert (await call(tools, "click", uid=uid_of(opened.text, "textbox", "Name"))).success
+    started = time.monotonic()
+    typed = await call(tools, "type_text", text="Ada", submitKey="Enter")
+    # Not after the thirty seconds a command to the page is given.
+    assert time.monotonic() - started < 10.0
+    assert typed.success, typed.text
+    assert typed.text.startswith(
+        "Typed text. Enter was NOT pressed: the page stopped taking input (it opened a dialog, or closed) "
+        "while the text was typed.\n# Open dialog\nThe page opened an alert dialog. "
+        'Its text, written by the page:\n"Names are checked"\n'
+    ), typed.text
+    assert (await call(tools, "handle_dialog", action="accept")).success
+    # The form was typed into and not sent: the page is still the form, with the text in its field.
+    shown = await call(tools, "take_snapshot")
+    assert "Order received" not in shown.text and re.search(r'textbox "Name".*value="Ada"', shown.text), shown.text
+    # Pressed now that nothing stands in the way, the key sends it.
+    sent = await call(tools, "press_key", key="Enter")
+    assert sent.success and sent.text.startswith("Successfully pressed key: Enter\n"), sent.text
+    assert 'heading "Order received"' in sent.text and "Ada" in sent.text
 
 
 async def test_a_port_file_left_by_a_browser_that_was_killed_does_not_keep_the_next_one_from_starting(

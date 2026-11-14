@@ -544,8 +544,9 @@ def kill_tree(pid: int | None) -> None:
         logger.warning("the browser process %s could not be killed: %s", pid, type(exc).__name__)
 
 
-# How far apart two readings of when a process was created may be for it to
-# be the same process (see ``_is_the_child``).
+# Two readings of when a process was created: this close, they are of the
+# same process; up to this far apart they may be (see ``_is_the_child``).
+_SAME_READING_SECONDS = 0.01
 _SAME_PROCESS_SECONDS = 1.0
 
 
@@ -559,7 +560,7 @@ def _created(pid: int) -> float | None:
         return None
 
 
-def _is_the_child(pid: int, started: float | None) -> bool:
+def _is_the_child(pid: int, started: float | None, user_data_dir: str | None) -> bool:
     """Whether the process of that number is still the one that was started. Blocking.
 
     ``poll`` says a child runs for as long as nobody has collected its exit,
@@ -567,17 +568,23 @@ def _is_the_child(pid: int, started: float | None) -> bool:
     that was given to another program meanwhile shows by when its process
     was created. True when that was not known at the start.
 
-    The two times are taken for the same within a second. On Linux the time
-    is worked out from when the system was started, which is itself worked
-    out from the clock of now: a clock that was set meanwhile moves it. A
-    number goes to another program only after the child has exited, and that
-    program was then created later than the child by as long as the child
-    ran.
+    Read the same both times, it is the child. Read up to a second apart, it
+    may be: on Linux the time is worked out from when the system was started,
+    which is itself worked out from the clock of now, and a clock that was
+    set meanwhile moves it. It may as well be another program that got the
+    number of a child that ran for less than a second, so the time alone
+    does not settle it: the process has to be the browser of the profile by
+    its command line too.
     """
     if started is None:
         return True
     now = _created(pid)
-    return now is not None and abs(now - started) < _SAME_PROCESS_SECONDS
+    if now is None:
+        return False
+    apart = abs(now - started)
+    if apart < _SAME_READING_SECONDS:
+        return True
+    return apart < _SAME_PROCESS_SECONDS and user_data_dir is not None and _runs_on(pid, user_data_dir)
 
 
 def _wait_gone(process: Any, seconds: float) -> bool:
@@ -602,20 +609,46 @@ def browser_process_on(user_data_dir: str | os.PathLike[str]) -> int | None:
         import psutil
     except ImportError:
         return None
-    wanted = os.path.normcase(os.path.abspath(os.fspath(user_data_dir)))
+    wanted = _profile_key(user_data_dir)
     for process in psutil.process_iter(["pid", "cmdline"]):
         try:
             arguments = process.info.get("cmdline") or []
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-        if any(argument.startswith("--type=") for argument in arguments):
-            continue
-        for argument in arguments:
-            if argument.startswith("--user-data-dir="):
-                named = argument[len("--user-data-dir=") :].strip('"')
-                if os.path.normcase(os.path.abspath(named)) == wanted:
-                    return int(process.info["pid"])
+        if _is_browser_of(arguments, wanted):
+            return int(process.info["pid"])
     return None
+
+
+def _profile_key(user_data_dir: str | os.PathLike[str]) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(user_data_dir)))
+
+
+def _is_browser_of(arguments: list[str], wanted: str) -> bool:
+    """Whether a command line is that of the main process of a browser on the profile ``wanted`` (a ``_profile_key``)."""
+    if any(argument.startswith("--type=") for argument in arguments):
+        return False
+    for argument in arguments:
+        if argument.startswith("--user-data-dir="):
+            named = argument[len("--user-data-dir=") :].strip('"')
+            if _profile_key(named) == wanted:
+                return True
+    return False
+
+
+def _runs_on(pid: int, user_data_dir: str | os.PathLike[str]) -> bool:
+    """Whether the process of a number is the browser of a profile, by its command line. Blocking.
+
+    False when the command line cannot be read: what is not known to be the
+    browser is not killed for it.
+    """
+    try:
+        import psutil
+
+        arguments = psutil.Process(pid).cmdline()
+    except Exception:  # noqa: BLE001 - no psutil, no such process, no right to read it: it cannot be told
+        return False
+    return _is_browser_of(list(arguments or []), _profile_key(user_data_dir))
 
 
 def _pid_of(browser: RunningBrowser) -> int | None:
@@ -628,7 +661,7 @@ def _pid_of(browser: RunningBrowser) -> int | None:
     whatever it had not saved.
     """
     child = browser.process
-    if child is not None and child.poll() is None and _is_the_child(child.pid, browser.started):
+    if child is not None and child.poll() is None and _is_the_child(child.pid, browser.started, browser.user_data_dir):
         return child.pid
     if browser.user_data_dir:
         # Not our child (found running on the profile), or no longer running:

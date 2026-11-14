@@ -54,6 +54,8 @@ Persist the file set in `docker/.env` so every `docker compose` command without 
 COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml
 ```
 
+`COMPOSE_FILE` is the whole list of files and a new value replaces the old one, so keep every override file already in it. If you added `compose.browser.yaml` for the full image in section 1, write `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml:compose.browser.yaml` here; otherwise the next recreate drops the browser's seccomp profile and Chromium no longer starts.
+
 `!override` requires Docker Compose **2.24.4 or newer**. Check the final port bindings with `docker compose config` before each recreate. Set both `NEKO_INSTANCE_PUBLIC_ORIGIN` and `NEKO_TRUSTED_ORIGINS` to the public origin browsers actually use (for example `https://your-domain.example`). The gateway must keep Host and a correct `X-Forwarded-For` chain, proxy WebSockets, and either close public HTTP or redirect it to HTTPS. See [Community remote access](/design/security/community-remote-access).
 
 ## 3. Memory: ZRAM and swap

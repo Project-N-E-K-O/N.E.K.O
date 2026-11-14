@@ -54,6 +54,8 @@ services:
 COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml
 ```
 
+`COMPOSE_FILE` 是完整的文件列表，新写的值会整个替换旧的：之前已经写进去的覆盖文件要留在里面。比如第 1 节里为 full 镜像加过 `compose.browser.yaml`，这里要写成 `COMPOSE_FILE=docker-compose.yml:compose.gateway.yaml:compose.browser.yaml`，否则下次重建容器时浏览器的 seccomp 配置会被去掉，Chromium 起不来。
+
 `!override` 需要 Docker Compose **2.24.4 及以上**。每次重建前用 `docker compose config` 核对最终端口绑定。
 
 网关按浏览器实际访问的公开 Origin 同时配置以下两项（例如网关使用 443）：

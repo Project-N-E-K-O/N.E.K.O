@@ -89,6 +89,10 @@ def cap_lines(lines: list[str], max_tokens: int) -> tuple[str, int]:
 # holds up the ones behind it.
 MAX_TIMEOUT_SECONDS = 120.0
 
+# Why a key that was asked for was not pressed. What stopped it (the dialog
+# and its text, or that the page closed) follows in the same answer.
+_STOPPED_TAKING_INPUT = "the page stopped taking input (it opened a dialog, or closed)"
+
 
 def _seconds(arguments: dict[str, Any]) -> float | None:
     value = arguments.get("timeout")
@@ -378,17 +382,28 @@ class BrowserTools:
         if not isinstance(text, str):
             raise BrowserError("text is required")
         submit = arguments.get("submitKey")
+        wanted = submit if isinstance(submit, str) and submit else None
         before, pages = page.navigations, len(self._session.pages())
-        await self._session.type_text(page, text, submit if isinstance(submit, str) and submit else None)
-        done = f"Typed text{f' + {submit}' if isinstance(submit, str) and submit else ''}"
+        pressed = await self._session.type_text(page, text, wanted)
+        if wanted is None:
+            done = "Typed text"
+        elif pressed:
+            done = f"Typed text + {wanted}"
+        else:
+            # Said outright: read as "typed and sent", a form that was only
+            # typed into would be taken for one that was submitted.
+            done = f"Typed text. {wanted} was NOT pressed: {_STOPPED_TAKING_INPUT} while the text was typed."
         return await self._after(page, done, arguments, before, pages)
 
     async def _press_key(self, arguments: dict[str, Any]) -> BuiltinOutcome:
         page = self._session.selected()
         key = _text(arguments, "key")
         before, pages = page.navigations, len(self._session.pages())
-        await self._session.press_key(page, key)
-        return await self._after(page, f"Successfully pressed key: {key}", arguments, before, pages)
+        if await self._session.press_key(page, key):
+            done = f"Successfully pressed key: {key}"
+        else:
+            done = f"{key} was NOT pressed: {_STOPPED_TAKING_INPUT} when its modifier keys went down."
+        return await self._after(page, done, arguments, before, pages)
 
     async def _take_screenshot(self, arguments: dict[str, Any]) -> BuiltinOutcome:
         from nekoclaw.builtin.desktop import fit_jpeg

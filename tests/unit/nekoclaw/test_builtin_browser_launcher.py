@@ -1473,17 +1473,46 @@ def test_a_number_that_went_to_another_process_is_not_taken_for_the_child(monkey
     )
     assert launcher._pid_of(browser) == 4321
 
-    # A clock that was set meanwhile moves the time by a little; it is the child all the same.
+    # Read the same: the command line is not asked for.
+    asked: list[tuple[int, str]] = []
+    on_the_profile = True
+
+    def runs_on(pid: int, directory: str) -> bool:
+        asked.append((pid, directory))
+        return on_the_profile
+
+    monkeypatch.setattr(launcher, "_runs_on", runs_on)
+    created[4321] = 500.004
+    assert launcher._pid_of(browser) == 4321 and asked == []
+
+    # A clock that was set meanwhile moves the time by a little. It is the child all the same, when the
+    # process is the browser of the profile by its command line.
     created[4321] = 500.6
     assert launcher._pid_of(browser) == 4321
     created[4321] = 499.2
     assert launcher._pid_of(browser) == 4321
+    assert asked == [(4321, profile), (4321, profile)]
 
-    # The number is another program's now: it was created at another time.
+    # Created within the same second, and something else by its command line: another program that got
+    # the number of a child that had run for less than a second.
+    on_the_profile = False
+    assert launcher._pid_of(browser) == 7004
+
+    # The number is another program's now: it was created at another time. Its command line is not asked for.
+    on_the_profile = True
+    asked.clear()
     created[4321] = 502.0
     assert launcher._pid_of(browser) == 7004
     created[4321] = 912.5
     assert launcher._pid_of(browser) == 7004
+    assert asked == []
+
+    # Without a profile there is no command line to tell it by; the time alone does not settle it.
+    created[4321] = 500.6
+    adrift = RunningBrowser(
+        install=CHROME, endpoint="ws://127.0.0.1:9222/devtools/browser/x", process=child, owned=True, user_data_dir=None, started=500.0
+    )
+    assert launcher._pid_of(adrift) is None
     # Or nobody's.
     del created[4321]
     assert launcher._pid_of(browser) == 7004
@@ -1545,3 +1574,30 @@ async def test_a_child_that_goes_while_the_browser_cannot_be_asked_is_not_killed
     # Which process is the browser is asked when it is to be killed: by then it is the one on the profile.
     assert closer.looked_up == ["/data/profile"]
     assert closer.killed == [7007]
+
+
+def test_whether_a_process_is_the_browser_of_a_profile_is_read_from_its_command_line(monkeypatch: Any, tmp_path: Path) -> None:
+    profile = str(tmp_path / "browser_profile")
+    lines: dict[int, Any] = {
+        15: ["chrome", "--remote-debugging-port=0", f"--user-data-dir={profile}", "about:blank"],
+        11: ["chrome", "--type=renderer", f"--user-data-dir={profile}"],
+        14: ["chrome", f"--user-data-dir={tmp_path / 'another_profile'}", "about:blank"],
+        13: ["python", "serve.py"],
+        12: None,
+    }
+    module = types.ModuleType("psutil")
+
+    def process(pid: int) -> Any:
+        if pid not in lines:
+            raise RuntimeError("no such process")
+        return SimpleNamespace(cmdline=lambda: lines[pid])
+
+    module.Process = process  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psutil", module)
+    assert launcher._runs_on(15, profile) is True
+    # A process the browser started for its pages, a browser on another profile, something else, one whose
+    # command line reads as nothing, and no process at all.
+    assert [launcher._runs_on(pid, profile) for pid in (11, 14, 13, 12, 99)] == [False] * 5
+    # Without psutil it cannot be told.
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    assert launcher._runs_on(15, profile) is False

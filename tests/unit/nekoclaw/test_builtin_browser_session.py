@@ -1617,7 +1617,8 @@ ENTER_UP = key("keyUp", "Enter", "Enter", 13)
 async def test_typed_text_is_inserted_where_the_focus_is(session: BrowserSession, world: BrowserWorld) -> None:
     page, fake, snapshot = await open_page(session, world)
     await session.fill(page, uid_of(snapshot, "Your name"), "Ada")
-    await session.type_text(page, " Lovelace")
+    # No key was asked for, so none is missing.
+    assert await session.type_text(page, " Lovelace") is True
     assert fake.inserted == ["Ada", " Lovelace"]
     assert fake.find("Your name").value == "Ada Lovelace"
     assert fake.keys == []
@@ -1626,7 +1627,7 @@ async def test_typed_text_is_inserted_where_the_focus_is(session: BrowserSession
 async def test_the_submit_key_is_pressed_after_the_text(session: BrowserSession, world: BrowserWorld) -> None:
     page, fake, _snapshot = await open_page(session, world)
     sent = world.browser.mark()
-    await session.type_text(page, "brass hinge", "Enter")
+    assert await session.type_text(page, "brass hinge", "Enter") is True
     assert [command.method for command in world.browser.input_events(sent)] == [
         "Input.insertText",
         "Input.dispatchKeyEvent",
@@ -1634,6 +1635,65 @@ async def test_the_submit_key_is_pressed_after_the_text(session: BrowserSession,
     ]
     assert fake.inserted == ["brass hinge"]
     assert fake.keys == [ENTER_DOWN, ENTER_UP]
+
+
+async def test_a_dialog_the_typing_opens_leaves_the_submit_key_unpressed_and_typing_says_so(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    await session.fill(page, uid_of(snapshot, "Your name"), "Ada")
+    fake.find("Your name").on_input = lambda browser, target: browser.open_dialog(target, "alert", "Names are checked")
+    sent = world.browser.mark()
+    # Bounded: the page answers nothing more once its dialog is open.
+    assert await asyncio.wait_for(session.type_text(page, " Lovelace", "Enter"), 5.0) is False
+    # The text went in. Nothing is sent to a page with a dialog open, the key included: the form was not sent.
+    assert fake.inserted == ["Ada", " Lovelace"] and fake.keys == []
+    assert [command.method for command in world.browser.input_events(sent)] == ["Input.insertText"]
+    assert page.dialog == Dialog("alert", "Names are checked", "")
+
+
+async def test_a_page_that_closes_while_it_is_typed_into_leaves_the_submit_key_unpressed(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    await session.fill(page, uid_of(snapshot, "Your name"), "Ada")
+    # A window that closes itself once it has what it asked for.
+    fake.find("Your name").on_input = lambda browser, target: browser.remove_page(target)
+    assert await asyncio.wait_for(session.type_text(page, " Lovelace", "Enter"), 5.0) is False
+    assert fake.inserted == ["Ada", " Lovelace"] and fake.keys == []
+    assert not session.is_open(page)
+
+
+async def test_a_dialog_a_modifier_opens_leaves_the_key_unpressed_and_pressing_says_so(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, _snapshot = await open_page(session, world)
+
+    def refuse_shortcuts(browser: Any, target: FakePage, event: dict[str, Any]) -> None:
+        if event["key"] == "Control" and event["type"] == "rawKeyDown":
+            browser.open_dialog(target, "alert", "Shortcuts are off")
+
+    fake.on_key = refuse_shortcuts
+    assert await asyncio.wait_for(session.press_key(page, "Control+Enter"), 5.0) is False
+    # Control went down and that was all: Enter never reached the page.
+    assert [(event["type"], event["key"]) for event in fake.keys] == [("rawKeyDown", "Control")]
+    assert await session.handle_dialog(page, True) == "Successfully accepted the dialog."
+    # The same when it is the key that follows typed text: the text went in whole, and the key still did not.
+    assert await asyncio.wait_for(session.type_text(page, "x", "Control+Enter"), 5.0) is False
+    assert fake.inserted == ["x"] and [event["key"] for event in fake.keys] == ["Control", "Control"]
+    assert await session.handle_dialog(page, True) == "Successfully accepted the dialog."
+    fake.on_key = None
+    assert await session.press_key(page, "Control+Enter") is True
+
+
+async def test_a_key_is_not_taken_for_pressed_when_a_dialog_was_open_before_it_went_down(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    # A dialog that opens between the text and the key (a timer of the page's): the key has nowhere to go.
+    page, fake, _snapshot = await open_draft_dialog(session, world)
+    before = len(fake.keys)
+    assert await session._press(page, *session_module.parse_key("Enter")) is False
+    assert len(fake.keys) == before
 
 
 async def test_no_text_with_a_submit_key_only_presses_the_key(session: BrowserSession, world: BrowserWorld) -> None:

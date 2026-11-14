@@ -409,6 +409,36 @@ async def test_typing_a_submit_key_that_loads_another_document_answers_with_its_
     assert 'RootWebArea "Thanks"' in outcome.text
 
 
+STOPPED = "the page stopped taking input (it opened a dialog, or closed)"
+
+
+async def test_typing_that_opens_a_dialog_says_the_submit_key_was_not_pressed(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+    assert (await call(tools, "fill", uid=uid_of("Your name"), value="Ada")).success
+    fake.find("Your name").on_input = lambda browser, page: browser.open_dialog(page, "alert", "Draft saved")
+    outcome = await call(tools, "type_text", text=" Lovelace", submitKey="Enter")
+    # Not "Typed text + Enter": the form was typed into, not sent, and the answer has to say which.
+    assert outcome == BuiltinOutcome(True, f"Typed text. Enter was NOT pressed: {STOPPED} while the text was typed.\n{NOTICE}")
+    assert fake.find("Your name").value == "Ada Lovelace" and fake.keys == []
+
+
+async def test_a_key_whose_modifier_opens_a_dialog_is_not_said_to_have_been_pressed(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+
+    def refuse_shortcuts(browser: Any, page: Any, event: dict[str, Any]) -> None:
+        if event["key"] == "Control" and event["type"] == "rawKeyDown":
+            browser.open_dialog(page, "alert", "Draft saved")
+
+    fake.on_key = refuse_shortcuts
+    outcome = await call(tools, "press_key", key="Control+Enter")
+    assert outcome == BuiltinOutcome(
+        True, f"Control+Enter was NOT pressed: {STOPPED} when its modifier keys went down.\n{NOTICE}"
+    )
+    assert [event["key"] for event in fake.keys] == ["Control"]
+
+
 async def test_filling_a_select_whose_change_asks_first_answers_at_once_with_the_dialog(
     tools: BrowserTools, world: BrowserWorld
 ) -> None:

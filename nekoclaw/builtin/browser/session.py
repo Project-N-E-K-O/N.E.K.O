@@ -1522,7 +1522,13 @@ class BrowserSession:
             params["unmodifiedText"] = key.text or text
         return await self._send_unless_dialog(page, "Input.dispatchKeyEvent", params, timeout=timeout)
 
-    async def _press(self, page: Page, key: KeyDefinition, modifiers: list[KeyDefinition]) -> None:
+    async def _press(self, page: Page, key: KeyDefinition, modifiers: list[KeyDefinition]) -> bool:
+        """Press a key with its modifiers held; return whether the key itself was sent to the page.
+
+        It is not when the page stopped taking input before its turn came: a
+        dialog that is open, or one a modifier going down opened, leaves the
+        key nowhere to go (nothing is sent to a page with a dialog open).
+        """
         mask = 0
         down: list[KeyDefinition] = []
         key_is_down = False
@@ -1534,12 +1540,15 @@ class BrowserSession:
                 # stopped before the answer, it still has to come up.
                 down.append(modifier)
                 if not await self._key_event(page, "keyDown", modifier, mask):
-                    return
+                    return False
+            if page.dialog is not None:
+                return False
             # The same for the key itself.
             key_is_down = True
             if await self._key_event(page, "keyDown", key, mask):
                 await self._key_event(page, "keyUp", key, mask)
             key_is_down = False
+            return True
         except BaseException:
             failed = True
             raise
@@ -1581,17 +1590,26 @@ class BrowserSession:
             if late is not None and (not failed or isinstance(late, asyncio.CancelledError)):
                 raise late
 
-    async def press_key(self, page: Page, combination: str) -> None:
+    async def press_key(self, page: Page, combination: str) -> bool:
+        """Press a key or a combination; return whether the key itself was sent (see ``_press``)."""
         self.require_no_dialog(page)
         try:
             key, modifiers = parse_key(combination)
         except UnknownKey as exc:
             raise BrowserError(str(exc)) from exc
         before = page.navigations
-        await self._press(page, key, modifiers)
+        pressed = await self._press(page, key, modifiers)
         await self.after_action(page, before)
+        return pressed
 
-    async def type_text(self, page: Page, text: str, submit_key: str | None = None) -> None:
+    async def type_text(self, page: Page, text: str, submit_key: str | None = None) -> bool:
+        """Type text where the focus is, then press ``submit_key``; return whether that key was sent.
+
+        It is not when the page stopped taking input while the text went in
+        (it opened a dialog, or closed): the key would have nowhere to go.
+        The answer has to tell the two apart, or a form that was only typed
+        into reads as one that was sent. True when no key was asked for.
+        """
         self.require_no_dialog(page)
         submit = None
         if submit_key:
@@ -1600,11 +1618,14 @@ class BrowserSession:
             except UnknownKey as exc:
                 raise BrowserError(str(exc)) from exc
         before = page.navigations
+        taking = True
         if text:
-            await self._send_unless_dialog(page, "Input.insertText", {"text": text})
-        if submit is not None:
-            await self._press(page, *submit)
+            taking = await self._send_unless_dialog(page, "Input.insertText", {"text": text})
+        pressed = submit is None
+        if submit is not None and taking:
+            pressed = await self._press(page, *submit)
         await self.after_action(page, before)
+        return pressed
 
     # -- the rest ---------------------------------------------------------------
 
