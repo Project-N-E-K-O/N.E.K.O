@@ -21,19 +21,22 @@ export function chatAudioUrl(character: string, id?: string) {
   return `/api/chat-audio${path}?${new URLSearchParams({ character })}`;
 }
 
-export function useChatAudioHistory(target: string | undefined, author: string) {
+export function useChatAudioHistory(target: string | undefined, author: string, inlinePagination = true) {
   const [loaded, setLoaded] = useState<{ target: string; rows: AudioRow[]; more: boolean }>();
   const [pending, setPending] = useState<PendingAudio[]>([]);
   const active = useRef<{
     target: string;
     availability: () => Promise<HistoryAvailability>;
     refresh: () => Promise<HistoryAvailability>;
+    loadOlder: () => void;
   }>();
 
   useEffect(() => {
     if (!target) return;
     const character = target;
     let pages = 1;
+    let canLoadOlder = false;
+    let loadingOlder = false;
     let controller: AbortController;
     let socket: EventTarget | undefined;
     let disposed = false;
@@ -41,7 +44,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
     let available: HistoryAvailability;
     let latest: Promise<HistoryAvailability>;
 
-    function refresh(): Promise<HistoryAvailability> {
+    function refresh(requestedPages = pages): Promise<HistoryAvailability> {
       controller?.abort();
       const request = new AbortController();
       controller = request;
@@ -50,7 +53,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
       latest = (async () => {
         const rows: AudioRow[] = [];
         let before: number | null = null;
-        for (let index = 0; index < pages; index++) {
+        for (let index = 0; index < requestedPages; index++) {
           const url = chatAudioUrl(character) + (before === null ? '' : `&before=${before}`);
           const response = await fetch(url, { signal, cache: 'no-store' });
           if (!response.ok) {
@@ -58,6 +61,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
             if (response.status !== 403 && response.status !== 404) return undefined;
             setLoaded({ target: character, rows: [], more: false });
             setPending(entries => entries.filter(entry => entry.target !== character || !entry.saveLocal));
+            canLoadOlder = false;
             available = false;
             return available;
           }
@@ -69,7 +73,9 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
         if (signal.aborted || disposed) return undefined;
         const ids = new Set(rows.map(row => row.request_id));
         const visibleRows = rows.filter(row => row.created_at > clearedAt);
-        setLoaded({ target: character, rows: visibleRows, more: before !== null && visibleRows.length === rows.length });
+        pages = requestedPages;
+        canLoadOlder = before !== null && visibleRows.length === rows.length;
+        setLoaded({ target: character, rows: visibleRows, more: canLoadOlder });
         // Once history has shown a row, only history can display it again.
         setPending(entries => entries.filter(entry => entry.target !== character || !ids.has(entry.row.request_id)));
         available = true;
@@ -98,10 +104,14 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
       void refresh();
     }
 
+    function loadOlder() {
+      if (!canLoadOlder || loadingOlder) return;
+      loadingOlder = true;
+      void refresh(pages + 1).finally(() => { loadingOlder = false; });
+    }
+
     function onLoadOlder(event: Event) {
-      if ((event as CustomEvent<string>).detail !== character) return;
-      pages++;
-      void refresh();
+      if ((event as CustomEvent<string>).detail === character) loadOlder();
     }
 
     function onLocalChange(event: Event) {
@@ -120,6 +130,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
     function onMessagesCleared() {
       clearedAt = Date.now();
       pages = 1;
+      canLoadOlder = false;
       controller.abort();
       setLoaded({ target: character, rows: [], more: false });
       setPending(entries => entries.filter(entry => entry.target !== character));
@@ -137,6 +148,7 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
         return available;
       },
       refresh,
+      loadOlder,
     };
     void refresh();
     active.current = session;
@@ -212,10 +224,13 @@ export function useChatAudioHistory(target: string | undefined, author: string) 
         type: 'audio_message', character: target, requestId: row.request_id,
         durationMs: row.duration_ms, transcript: row.transcript, state: row.state,
         available: row.available !== false,
-        canLoadOlder: loaded?.target === target && loaded.more && row === rows[rows.length - 1],
+        canLoadOlder: inlinePagination && loaded?.target === target && loaded.more && row === rows[rows.length - 1],
       }],
     }));
-  }, [author, loaded, pending, target]);
+  }, [author, inlinePagination, loaded, pending, target]);
 
-  return { messages, submit };
+  const onLoadOlder = target && loaded?.target === target && loaded.more
+    ? active.current?.loadOlder
+    : undefined;
+  return { messages, submit, onLoadOlder };
 }

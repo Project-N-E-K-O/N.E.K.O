@@ -969,6 +969,18 @@ body.neko-electron-runtime .app-shell:not(.chat-surface-mode-compact)[data-focus
   scrollbar-width: none;
 }
 
+.message-list-load-older {
+  align-self: center;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
 .message-list::-webkit-scrollbar {
   width: 0;
   height: 0;

@@ -291,6 +291,41 @@ describe('App', () => {
     expect(container.querySelector('.compact-chat-stage')).toBeNull();
   });
 
+  it('keeps older recordings reachable through multiple pages in the full chat', async () => {
+    const audioRows = (start: number) => Array.from({ length: 50 }, (_, offset) => ({
+      request_id: String(start - offset), created_at: start - offset, duration_ms: 500,
+      state: 'sent', transcript: '',
+    }));
+    const fetchHistory = vi.fn(async (url: string) => {
+      const before = new URL(url, 'http://localhost').searchParams.get('before');
+      const start = before === null ? 150 : Number(before) - 1;
+      return Response.json({ messages: audioRows(start), next_before: start > 50 ? start - 49 : null });
+    });
+    vi.stubGlobal('fetch', fetchHistory);
+    const messages = Array.from({ length: 51 }, (_, index) => parseChatMessage({
+      id: 'text-' + index, role: 'assistant', author: 'Neko', time: '12:00', createdAt: 200 + index,
+      blocks: [{ type: 'text', text: 'Reply ' + index }],
+    }));
+    try {
+      const { container } = render(<App chatSurfaceMode="full" audioMessageTarget="Yui" messages={messages} />);
+      const playButtons = () => container.querySelectorAll('.message-audio-play');
+      const olderButton = () => screen.queryByRole('button', { name: 'Load older recordings' });
+
+      await waitFor(() => expect(olderButton()).toBeInTheDocument());
+      expect(playButtons()).toHaveLength(50);
+      expect(screen.queryByText('Reply 0')).not.toBeInTheDocument();
+      expect(screen.getByText('Reply 50')).toBeInTheDocument();
+
+      fireEvent.click(olderButton()!);
+      await waitFor(() => expect(playButtons()).toHaveLength(100));
+      fireEvent.click(olderButton()!);
+      await waitFor(() => expect(playButtons()).toHaveLength(150));
+      expect(olderButton()).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('hides the full composer and tools when composerHidden is true', () => {
     const message = parseChatMessage({
       id: 'm-full-hidden',

@@ -897,7 +897,10 @@ function getCompactHistoryScrollUnderCompactToolWheel(
 export default function ChatWindowRoot(props: ChatWindowProps) {
   const audioGuideLocked = useGuideChatButtonLock();
   const target = !props.catLocalTextOnly && !props.theaterPresentation?.active ? props.audioMessageTarget : undefined;
-  const { messages: audioHistory, submit } = useChatAudioHistory(target, props.userName || 'You');
+  const fullChat = props.chatSurfaceMode === 'full';
+  const { messages: audioHistory, submit, onLoadOlder } = useChatAudioHistory(
+    target, props.userName || 'You', !fullChat,
+  );
   const send = props.onComposerAudioMessage;
   const audioComposer = useAudioMessageComposer({
     target: send ? target : undefined,
@@ -929,7 +932,7 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
   return (
     <ChatScreenVisibilityProvider messages={messages || defaultMessages}>
       {props.chatSurfaceMode === 'full'
-        ? <FullChatSurface {...surfaceProps} />
+        ? <FullChatSurface {...surfaceProps} onLoadOlderRecordings={onLoadOlder} />
         : <CompactChatApp {...surfaceProps} />}
       <NekoTooltipLayer />
     </ChatScreenVisibilityProvider>
