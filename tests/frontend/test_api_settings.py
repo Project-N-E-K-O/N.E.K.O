@@ -1603,6 +1603,44 @@ def test_custom_tts_uses_openai_speech_probe_and_protocol_hint(mock_page: Page, 
 
 
 @pytest.mark.frontend
+def test_custom_tts_without_voice_explains_core_voice_fallback(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='custom']", state="attached", timeout=10000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    hint = mock_page.locator("#tts-voice-fallback-hint")
+
+    def type_voice(value):
+        # The settings section may be collapsed; fire the same input event a user edit does.
+        mock_page.evaluate(
+            """(value) => {
+                const input = document.getElementById('ttsVoiceId');
+                input.value = value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            }""",
+            value,
+        )
+
+    type_voice("")
+    provider.select_option("custom", force=True, timeout=5000)
+    expect(hint).to_have_css("display", "block")
+    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。")
+
+    mock_page.evaluate("window.changeLanguage('en')")
+    expect(hint).to_contain_text("Core API's built-in voice")
+
+    type_voice("af_heart")
+    expect(hint).to_have_css("display", "none")
+    type_voice("")
+    expect(hint).to_have_css("display", "block")
+
+    provider.select_option("follow_assist", force=True, timeout=5000)
+    expect(hint).to_have_css("display", "none")
+
+
+@pytest.mark.frontend
 def test_doubao_tts_is_keybook_only_and_hidden_from_tts_config(mock_page: Page, running_server: str):
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")

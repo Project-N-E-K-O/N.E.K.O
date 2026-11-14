@@ -190,6 +190,7 @@ __all__ = [
     "_custom_openai_tts_is_selected", "_custom_openai_tts_resolve",
     "tts_provider_falls_back_on_failure", "tts_provider_uses_configured_preset_voice",
     "selected_configured_tts_preset_provider_key", "selected_realtime_output_tts_provider_key",
+    "realtime_output_tts_provider_ready",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
@@ -526,6 +527,8 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_sub_type='openai_tts',
     configured_preset_voice=True,
     fallback_on_failure=True,
+    realtime_output_override=True,
+    uses_configured_default_voice=True,
     # The generic "custom" option is already inserted into every model dropdown.
     # Keep this registry entry available as metadata without adding a duplicate.
     tts_config_visible=False,
@@ -566,12 +569,58 @@ def selected_configured_tts_preset_provider_key(core_config, cm, voice_id):
         return None
 
 
+def _tts_provider_is_explicit_choice(provider_key, core_config):
+    """Whether the TTS dropdown names ``provider_key`` rather than a follow_* default."""
+    choices = {
+        str(core_config.get(field) or "").strip().lower()
+        for field in ("TTS_PROVIDER", "ttsProvider", "ttsModelProvider")
+    }
+    return provider_key in choices
+
+
+def _is_canonical_catalog_voice(catalog, voice_id):
+    """Whether ``voice_id`` is a catalog voice name itself, not a generic alias."""
+    voice, recognized = catalog.normalize(voice_id)
+    return bool(recognized and voice_id and voice_id.casefold() == str(voice).casefold())
+
+
 def selected_realtime_output_tts_provider_key(core_config, cm, voice_id):
-    """Return a selected provider that handles realtime sessions' speech output."""
+    """Return a selected provider that handles realtime sessions' speech output.
+
+    The provider takes over only on a deliberate choice: the user picked it in
+    the TTS dropdown (an assist-API default such as assistApi=mimo does not
+    count), or the character uses one of its catalog voices by exact name.
+    A stored custom voice keeps the established routing.
+    """
+    voice_id = str(voice_id or "").strip()
     provider = _tts_providers.selected_provider(
-        _tts_providers.DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id or "")
+        _tts_providers.DispatchContext(core_config=core_config, cm=cm, voice_id=voice_id)
     )
-    return provider.key if provider and provider.realtime_output_override else None
+    if not provider or not provider.realtime_output_override:
+        return None
+    if provider.preset_catalog and _is_canonical_catalog_voice(provider.preset_catalog, voice_id):
+        return provider.key
+    if not _tts_provider_is_explicit_choice(provider.key, core_config):
+        return None
+    if voice_id and cm.voice_id_exists_in_any_storage(voice_id):
+        return None
+    return provider.key
+
+
+def realtime_output_tts_provider_ready(core_config, cm, voice_id, provider_key):
+    """Whether ``provider_key`` resolves to a real worker rather than the silent dummy."""
+    provider = _tts_providers.get(provider_key)
+    if provider is None:
+        return False
+    try:
+        worker, _, resolved_key = provider.resolve(_tts_providers.DispatchContext(
+            core_config=core_config, cm=cm, voice_id=str(voice_id or "").strip(),
+        ))
+    except Exception:
+        # The exception may echo credentials or signed URLs; log only the stage.
+        log_configured_tts_failure(provider_key, "realtime_output")
+        return False
+    return resolved_key is not None and worker is not dummy_tts_worker
 
 
 # Cloned-voice providers (hosted SaaS, selected by voice_meta.provider). Priority 30/40/50
@@ -653,6 +702,9 @@ _tts_providers.register(_tts_providers.TTSProvider(
     is_selected=_mimo_is_selected,
     resolve=_mimo_resolve,
     preset_catalog=MIMO_PRESET_CATALOG,
+    # Speaks for realtime sessions only when chosen in the TTS dropdown or by
+    # an exact catalog voice; assistApi=mimo alone keeps the realtime voice.
+    realtime_output_override=True,
     tts_dropdown_only=False,
 ))
 
@@ -680,6 +732,8 @@ _tts_providers.register(_tts_providers.TTSProvider(
     capabilities=frozenset({'clone'}),
     is_selected=_doubao_is_selected,
     resolve=_doubao_resolve,
+    realtime_output_override=True,
+    uses_configured_default_voice=True,
     default_url='https://openspeech.bytedance.com',
     default_model='seed-icl-2.0',
     default_voice='',

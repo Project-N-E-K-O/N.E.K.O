@@ -1583,6 +1583,7 @@
         "ttsProtocolHintOpenAI": "OpenAI互換：HTTP(S) POST /v1/audio/speech。テキストを一括送信し、音声レスポンスをストリーミングします。",
         "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream。テキストと音声を双方向ストリーミングします。",
         "ttsVoiceIdHint": "（任意、キャラクター音声がない場合のフォールバック）",
+        "ttsCustomVoiceFallbackHint": "Voice ID が空の場合、音声を設定していないキャラクターはコア API の標準音声を使います。",
         "ttsVoiceIdPlaceholder": "例: 日本語（女性）, alloy",
         "agentModelUrlPlaceholder": "空欄のままにすると、アシストAPIビジョンモデルのURLを継承します",
         "agentModelIdPlaceholder": "空欄のままにすると、アシストAPIビジョンモデルのIDを継承します",

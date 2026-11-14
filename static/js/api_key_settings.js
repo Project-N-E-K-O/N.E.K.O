@@ -1745,6 +1745,29 @@ function updateTtsProviderFieldVisibility(provider) {
         voiceInput.placeholder = translated && translated !== key ? translated : fallback;
     }
     updateTtsProtocolHint(provider);
+    updateTtsVoiceFallbackHint();
+}
+
+/**
+ * 自定义 TTS 没填 Voice ID 时，没设音色的角色不会走自定义端点（文字和语音模式都用核心 API 自带的声音），
+ * 这里把这条规则告诉用户，避免误以为自定义 TTS 没生效。
+ */
+function updateTtsVoiceFallbackHint() {
+    const hint = document.getElementById('tts-voice-fallback-hint');
+    if (!hint) return;
+    const provider = document.getElementById('ttsModelProvider')?.value || '';
+    const voice = (document.getElementById('ttsVoiceId')?.value || '').trim();
+    if (provider !== 'custom' || voice) {
+        hint.style.display = 'none';
+        hint.textContent = '';
+        return;
+    }
+    const key = 'api.ttsCustomVoiceFallbackHint';
+    const translated = window.t ? window.t(key) : '';
+    hint.textContent = translated && translated !== key
+        ? translated
+        : 'Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。';
+    hint.style.display = 'block';
 }
 
 function updateTtsProtocolHint(provider) {
@@ -1789,6 +1812,10 @@ function updateGptSovitsTutorialLink() {
 window.addEventListener('localechange', updateGptSovitsTutorialLink);
 window.addEventListener('localechange', () => {
     updateTtsProtocolHint(document.getElementById('ttsModelProvider')?.value || '');
+    updateTtsVoiceFallbackHint();
+});
+document.addEventListener('input', (event) => {
+    if (event.target && event.target.id === 'ttsVoiceId') updateTtsVoiceFallbackHint();
 });
 
 /**
@@ -2886,6 +2913,7 @@ async function loadCurrentApiKey() {
                 }
             }
             setInputValue('ttsVoiceId', data.ttsVoiceId);
+            updateTtsVoiceFallbackHint();
 
             // 加载 GPT-SoVITS 配置：启用状态以 ttsModelProvider 下拉为准，
             // 无下拉时回落旧 gptsovitsEnabled / localhost 启发式（兼容存量）
