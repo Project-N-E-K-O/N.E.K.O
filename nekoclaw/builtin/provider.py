@@ -238,7 +238,10 @@ class BuiltinToolProvider:
             # A kill that was asked for earlier and is not over yet takes what
             # it finds when its turn on the worker threads comes: started
             # before that, the browser of this call would be what it finds.
-            while self._killing is not None:
+            # (One that is over is not waited for, though it may not have
+            # been taken down yet: waiting for it would not give the event
+            # loop the turn in which it is.)
+            while self._killing is not None and not self._killing.done():
                 await asyncio.shield(self._killing)
             outcome = await self.browser().call(tool_name, arguments, refused=still_on)
         finally:

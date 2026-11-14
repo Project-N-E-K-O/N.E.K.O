@@ -853,3 +853,27 @@ async def test_a_call_stopped_while_it_waits_for_a_kill_leaves_the_kill_to_finis
     if killing is not None:
         await asyncio.wait_for(asyncio.shield(killing), 10.0)
     assert tools.kills == 1 and tools.calls == []
+
+
+class _OverAndNotTakenDown(asyncio.Future):  # type: ignore[type-arg]
+    """A kill that is over; waited for again and again, it says so instead of letting the test hang."""
+
+    waits = 0
+
+    def __await__(self) -> Any:
+        type(self).waits += 1
+        if type(self).waits > 100:
+            raise AssertionError("the call waits again and again for a kill that is over")
+        return super().__await__()
+
+
+async def test_a_kill_that_is_over_but_not_taken_down_yet_does_not_keep_a_browser_call_spinning(rig: Rig) -> None:
+    # The moment between the kill ending on its thread and the event loop taking note of it.
+    over = _OverAndNotTakenDown()
+    over.set_result(None)
+    rig.provider._killing = over
+
+    outcome = await asyncio.wait_for(rig.browse("browser_click", "commission-2", uid="1_1"), 10.0)
+
+    # Waiting for it would never give the event loop the turn in which it is taken down.
+    assert outcome.success and len(rig.browser.calls) == 1
