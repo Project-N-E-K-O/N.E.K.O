@@ -2172,14 +2172,39 @@ async def test_the_family_wait_and_the_seal_share_one_deadline(tmp_path, monkeyp
     rt.record_line = slow_record
     rt.journal.seal = slow_seal
     monkeypatch.setattr(rtm, "_SEAL_MAX_S", 1.0)
+    # Record the budget each wait is handed rather than timing the whole call:
+    # a stalled runner stretches wall time, never the budgets themselves.
+    budgets: dict[str, float] = {}
+    real_settle = rt.settle_family_records
+    real_start_seal = rt._start_seal
+    real_wait = asyncio.wait
+    sealings: list[asyncio.Future] = []
+
+    async def settle_family_records(timeout):
+        budgets["family"] = timeout
+        return await real_settle(timeout)
+
+    def start_seal(*args, **kwargs):
+        sealings.append(real_start_seal(*args, **kwargs))
+        return sealings[-1]
+
+    async def wait(fs, *args, **kwargs):
+        if sealings and sealings[-1] in fs:
+            budgets["seal"] = kwargs.get("timeout")
+        return await real_wait(fs, *args, **kwargs)
+
+    rt.settle_family_records = settle_family_records
+    rt._start_seal = start_seal
+    monkeypatch.setattr(rtm.asyncio, "wait", wait)
     try:
         sending = asyncio.ensure_future(rtm.route_stream_message("Host", {
             "input_type": "text", "data": "卡住的一句", "source": "neko_visit:guest_cat"}))
         await wait_for(lambda: rt.outbox.reserved_bytes > 0)
-        loop = asyncio.get_running_loop()
-        started = loop.time()
         assert await asyncio.wait_for(rt.seal_and_finalize("peer_left"), 5) is False
-        assert loop.time() - started < 1.6                    # Combined waits must not exceed one _SEAL_MAX_S.
+        assert set(budgets) == {"family", "seal"}, budgets
+        # Combined waits must not exceed one _SEAL_MAX_S; the slack covers an
+        # asyncio timer firing up to one clock tick early.
+        assert budgets["family"] + budgets["seal"] <= 1.0 + 0.1, budgets
         sending.cancel()
     finally:
         stuck.set()

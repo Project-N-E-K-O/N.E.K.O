@@ -1182,8 +1182,14 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
     applied_lock = threading.Lock()
     rng = random.Random(seed)
     delays = {f"t{i}": rng.choice([0.0, 0.001, 0.002]) for i in range(25)}
+    # Set once the round has read the sentinel and applies its tail. A live
+    # write landing before that read would move the sentinel past every owed
+    # event, so the round would rightly owe nothing; at startup the outbox
+    # only resumes after the round, so that ordering is not the one under test.
+    round_applying = threading.Event()
 
     def handler(_name, payload):
+        round_applying.set()
         time.sleep(delays.get(payload["i"], 0.0))
         with applied_lock:
             applied.append(payload["i"])
@@ -1196,6 +1202,9 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
     view: dict = {}
 
     def writer():
+        while not round_applying.wait(0.01):
+            if stop.is_set():
+                return
         n = 0
         while not stop.is_set():
             try:
