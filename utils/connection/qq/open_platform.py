@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import os
 import time
 from typing import Any, Optional
 
@@ -15,6 +17,92 @@ from ..base import ConnectionBase
 from .open_platform_media import QQOpenPlatformMediaMixin
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
+
+#: Dispatch families, per the v2 event list. The receive loop used to recognise only
+#: ``GROUP_AT_MESSAGE_CREATE`` / ``C2C_MESSAGE_CREATE`` and dropped everything else, so
+#: full-group-message mode, robot add/remove and friend events never reached a consumer.
+MESSAGE_EVENTS = frozenset({
+    "GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE", "C2C_MESSAGE_CREATE",
+})
+NOTICE_EVENTS = frozenset({
+    "GROUP_ADD_ROBOT", "GROUP_DEL_ROBOT", "GROUP_JOIN_REQUEST",
+    "GROUP_MEMBER_ADD", "GROUP_MEMBER_REMOVE",
+    "GROUP_MSG_RECEIVE", "GROUP_MSG_REJECT", "C2C_MSG_RECEIVE", "C2C_MSG_REJECT",
+    "FRIEND_ADD", "FRIEND_DEL", "SUBSCRIBE_MESSAGE_STATUS", "INTERACTION_CREATE",
+})
+
+#: Intents this connector identifies with by default -- unchanged bits that carry
+#: the group full/AT message, robot add/remove and friend families.
+BASE_INTENTS = (1 << 25) | (1 << 12)
+#: ``GROUP_JOIN_REQUEST`` / ``GROUP_MEMBER_ADD`` / ``GROUP_MEMBER_REMOVE`` only
+#: arrive with GROUP_MEMBER_EVENT (1 << 24), ``INTERACTION_CREATE`` only with
+#: INTERACTION (1 << 26). Subscribing an intent the bot is not entitled to makes
+#: the gateway drop the connection outright, so those bits stay opt-in through
+#: the ``extra_intents`` argument; the event types remain registered so wired
+#: consumers start working the moment the operator opts in.
+
+#: Rich-media ``file_type`` values of the upload interfaces.
+FILE_TYPE_IMAGE = 1
+FILE_TYPE_VIDEO = 2
+FILE_TYPE_VOICE = 3
+FILE_TYPE_FILE = 4
+
+#: Passive-reply and mute relevant ``err_code``s ("judge by err_code, not by message").
+ERR_TOKEN_INVALID = 40011027
+#: ``40054002`` is what the plain send interface reports while the bot is muted;
+#: ``850018`` comes from the rich-media/upload family. Watching only one leaves
+#: the other mute unrecorded.
+ERR_GROUP_MUTED = frozenset({850018, 40054002})
+
+#: How long an id stays in ``_seen_groups`` without another message.
+_SEEN_GROUPS_TTL = 30 * 24 * 3600
+
+#: ``file_data`` (inline binary upload) size ceiling; above it URL/chunked upload is
+#: required. shortcut: inline upload only, >5 MB falls back to the URL path.
+INLINE_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
+
+
+class QQOpenPlatformAPIError(RuntimeError):
+    """A v2 REST call came back failed. Carries the platform ``err_code``/``trace_id``.
+
+    The send paths used to swallow every failure into ``None``, so a caller could not
+    tell "quota exhausted" from "wrong id namespace" from "network down" -- and the
+    message text is not stable, only ``err_code`` is.
+    """
+
+    def __init__(self, *, method: str, path: str, http_status: int = 0, err_code: int = 0,
+                 message: str = "", trace_id: str = ""):
+        self.method = method
+        self.path = path
+        self.http_status = int(http_status or 0)
+        self.err_code = int(err_code or 0)
+        self.api_message = str(message or "")
+        self.trace_id = str(trace_id or "")
+        super().__init__(
+            f"{method} {path} failed: http={self.http_status} err_code={self.err_code} "
+            f"{self.api_message}" + (f" trace={self.trace_id}" if self.trace_id else "")
+        )
+
+
+class QQOpenPlatformUnsupportedError(RuntimeError):
+    """The official Bot API does not offer this operation at all.
+
+    Not "unimplemented here". These used to be ``return {}`` stubs: an empty dict is
+    truthy enough to keep the caller going but tells it the request succeeded, which is
+    worse than an error -- e.g. mute detection reads ``shut_up_timestamp`` out of
+    ``get_group_member_info`` and never fired, so a muted bot kept sending.
+    """
+
+    def __init__(self, operation: str, reason: str):
+        self.operation = operation
+        self.reason = reason
+        super().__init__(f"QQ Open Platform does not offer {operation}: {reason}")
+
+
+#: Mention shapes inside message content: v2 uses ``<@member_openid>``, the legacy
+#: shape (still produced by some payloads and by the OneBot side) is ``<@!uin>``.
+_AT_OPENID_RE = _re.compile(r"<@([0-9A-Za-z_-]{8,})>")
+_AT_LEGACY_RE = _re.compile(r"<@!(\d+)>")
 
 #: Placeholder text for an image that is not sent as media.
 _IMAGE_PLACEHOLDER = "[图片]"
@@ -188,6 +276,15 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     #: string is just a discarded expression statement and `__doc__` is None.
     CHANNEL: str = "open"
 
+    #: Defaults for the v2 reception state. Instances are sometimes built through
+    #: ``__new__`` (test harnesses, partial reconstruction), and a missing attribute
+    #: there raises inside event handling -- which the receive loop reports as a
+    #: disconnect, so it would look like an unstable connection rather than a bug.
+    _all_messages_observed = False
+    _recv_msg_setting = ""
+    _bot_member_role = ""
+    _bot_member_openid = ""
+
     #: Production and sandbox are **two different domains**. An unpublished bot only
     #: exists in the sandbox: connecting to the production gateway completes the
     #: handshake and returns READY, yet the platform keeps reporting it offline and
@@ -243,6 +340,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         identity_probe: Any = None,
         emit_log: Any = None,
         sandbox: Any = None,
+        extra_intents: int = 0,
     ):
         #: Sandbox toggle: a bool or a zero-arg callable (same convention as
         #: ``identity_probe``). Passed as a callable, a settings change takes effect
@@ -256,6 +354,9 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         #: No-op by default, same convention as OneBotClient.
         self._emit_log = emit_log or (lambda level, msg: None)
         self._identity_probe_emitted = 0
+        #: Identify intents; bits beyond ``BASE_INTENTS`` must be granted to this
+        #: bot first, or the gateway disconnects on identify.
+        self._intents = BASE_INTENTS | _to_int(extra_intents)
         #: Connection-mode marker, so runtime knows whether it must rebuild the
         #: connection (= "open_platform").
         self.mode = "open_platform"
@@ -284,35 +385,84 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         #: Replied-to message id -> (last ``msg_seq`` used, monotonic time of that use),
         #: least recently used first (see ``_next_msg_seq``).
         self._msg_seq_by_reply_id: dict[str, tuple[int, float]] = {}
+        #: Proof that the platform is pushing every group message (see the property).
+        self._all_messages_observed = False
+        self._recv_msg_setting = ""
+        self._bot_member_openid = ""
+        self._bot_member_role = ""
+        #: Groups this connection actually saw a message from; the platform offers no
+        #: "my groups" listing, so observed ids are the only honest answer.
+        self._seen_groups: dict[str, float] = {}
+        #: Notice-event sinks (message events keep going to ``_message_queue``).
+        self._event_sinks: list = []
+        #: group_id -> muted-until, same shape as ``OneBotClient._group_muted``.
+        self._group_muted: dict[str, float] = {}
+        #: group_id -> last observed ``global_rule`` of the mute settings.
+        self._shut_global_rule: dict[str, dict] = {}
 
     @property
     def needs_attention(self) -> bool:
-        return False  # Open Platform only gets @bot; no attention competition
+        """Whether this channel delivers traffic that is not addressed to the bot.
+
+        It used to be a flat ``False`` ("only @bot"), which is true only while the
+        group is in mention-only mode. Once the platform pushes
+        ``GROUP_MESSAGE_CREATE`` the consumer does have to decide who a message was
+        for, so the flag follows :attr:`receives_all_messages` instead of a constant.
+        """
+        return self.receives_all_messages
 
     @property
     def supports_voice(self) -> bool:
-        return False  # Open Platform does not support voice messages
+        return True  # rich media accepts voice: file_type=3 (silk / mp3 / wav)
 
     @property
     def supports_poke(self) -> bool:
-        return False  # Open Platform does not support poke
+        return False  # no poke interface for groups or private chats in v2
 
     @property
     def receives_all_messages(self) -> bool:
-        return False  # Open Platform only receives @bot messages
+        """True once the platform is actually pushing every group message.
+
+        Two independent proofs, either is enough: ``bot_state.recv_msg_setting``
+        says ``all`` (that interface is permission-gated, so it is often unavailable),
+        or a ``GROUP_MESSAGE_CREATE`` really arrived. Guessing from settings alone
+        would claim a capability the platform may not have enabled for the group.
+        """
+        if self._recv_msg_setting == "all":
+            return True
+        return self._all_messages_observed
 
     @property
     def supports_ark_cards(self) -> bool:
-        return True  # Open Platform natively supports Ark rich cards
+        return False  # v2 has no ark on the send side any more (receive side still does)
+
+    @property
+    def supports_card_messages(self) -> bool:
+        """Image-text card (``msg_type=8``): what ``send_group_ark_card`` now builds."""
+        return True
+
+    @property
+    def supports_reference_messages(self) -> bool:
+        """Visible quoting via ``message_reference`` (needs the REFIDX token)."""
+        return True
+
+    @property
+    def supports_recall(self) -> bool:
+        """Recall of own messages, and of others' messages when the bot is a group admin."""
+        return True
+
+    @property
+    def recv_msg_setting(self) -> str:
+        """``all`` / ``only_mention`` / ``mention_and_context`` / ``""`` (not probed)."""
+        return self._recv_msg_setting
+
+    @property
+    def bot_member_role(self) -> str:
+        """``member`` / ``admin`` / ``owner`` as reported by ``bot_state``, or ``""``."""
+        return self._bot_member_role
 
     async def get_login_info(self) -> dict[str, Any]:
         return {"user_id": self._self_id, "nickname": self._self_nickname}
-
-    async def get_friend_list(self) -> list[dict[str, Any]]:
-        return []
-
-    async def get_group_list(self) -> list[dict[str, Any]]:
-        return []
 
     # ==========================================
     # connection lifecycle
@@ -378,7 +528,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         await self._ws.send(json.dumps({
             "op": 2, "d": {
                 "token": f"QQBot {self._access_token}",
-                "intents": (1 << 25) | (1 << 12),
+                "intents": self._intents,
                 "shard": [0, 1],
             },
         }))
@@ -493,14 +643,9 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                     # trusted-group whitelist gate so an unconfigured group can still
                     # be sampled.
                     self._log_identity_probe(event_type, payload.get("d"))
-                    if event_type in ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE"):
-                        msg = self._convert_event(event_type, payload["d"])
-                        if msg:
-                            try:
-                                self._message_queue.put_nowait(msg)
-                            except asyncio.QueueFull:
-                                self._message_queue.get_nowait()
-                                self._message_queue.put_nowait(msg)
+                    await self._dispatch_event(
+                        event_type, payload.get("d"), str(payload.get("id") or "")
+                    )
                     continue  # handled; skip reconnect
                 elif op == 1:  # Heartbeat
                     await self._ws.send(json.dumps({"op": 11, "d": self._last_seq}))
@@ -525,6 +670,131 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             # Disconnected -> reconnect
             if not self._closing:
                 await self._try_reconnect()
+
+    async def _dispatch_event(self, event_type: str, data: Any, envelope_id: str) -> None:
+        """Send one dispatch frame where it belongs: queue for messages, sinks for notices.
+
+        Dropping the other families here is what made full-group-message mode look
+        broken: the platform pushed ``GROUP_MESSAGE_CREATE``, the loop ignored it, and
+        nothing downstream could tell "not enabled" from "connector threw it away".
+        """
+        if not isinstance(data, dict):
+            return
+        if event_type in MESSAGE_EVENTS:
+            if event_type == "GROUP_MESSAGE_CREATE" and not self._all_messages_observed:
+                self._all_messages_observed = True
+                if self.logger:
+                    self.logger.info(
+                        "[QQOpenPlatform] 收到 GROUP_MESSAGE_CREATE：本通道正在推送全量群消息"
+                    )
+            msg = self._convert_event(event_type, data)
+            if not msg:
+                return
+            self._remember_group(msg.get("group_id") or "")
+            try:
+                self._message_queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                # Keep the newest context: dropping the incoming message would leave the
+                # conversation with a hole exactly where a reply is being decided.
+                try:
+                    self._message_queue.get_nowait()
+                except Exception:
+                    pass
+                self._message_queue.put_nowait(msg)
+            return
+        if event_type not in NOTICE_EVENTS:
+            # Loud enough to notice in a log, quiet enough not to look like a failure:
+            # the platform adds event types and a silent drop is how they stay unknown.
+            # Once per type: channel bots push guild events constantly.
+            logged = self._mutable("_unknown_logged", set)
+            if self.logger and event_type not in logged:
+                logged.add(event_type)
+                self.logger.info(f"[QQOpenPlatform] 未处理的官方事件: {event_type}")
+            return
+        payload = self._normalize_notice(event_type, data, envelope_id)
+        for sink in list(self._mutable("_event_sinks", list)):
+            try:
+                result = sink(event_type, payload)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:  # a broken consumer must not drop the transport
+                if self.logger:
+                    self.logger.warning(f"[QQOpenPlatform] 事件监听器异常({event_type}): {exc}")
+
+    def _normalize_notice(self, event_type: str, data: dict, envelope_id: str) -> dict:
+        """Common shape for non-message events (``channel`` matches ``CHANNEL``)."""
+        out = {
+            "event_type": event_type,
+            "channel": self.CHANNEL,
+            "group_id": str(data.get("group_openid") or data.get("group_id") or ""),
+            "user_id": str(
+                data.get("op_member_openid") or data.get("member_openid")
+                or data.get("user_openid") or ""
+            ),
+            "timestamp": int(time.time()),
+            "event_id": envelope_id,  # usable as the passive-reply ``event_id``
+            "raw": data,
+        }
+        if event_type == "INTERACTION_CREATE":
+            out["interaction_id"] = str(data.get("id") or "")
+            out["interaction_type"] = data.get("type")
+        if event_type == "GROUP_JOIN_REQUEST":
+            out["join_request_id"] = str(data.get("join_request_id") or "")
+            out["username"] = str(data.get("username") or "")
+        return out
+
+    def add_event_sink(self, callback) -> None:
+        """Register a notice-event consumer: ``callback(event_type, payload)``.
+
+        Message events are not delivered here; they keep arriving through
+        :meth:`receive_message`, so an existing consumer needs no change.
+        """
+        sinks = self._mutable("_event_sinks", list)
+        if callback not in sinks:
+            sinks.append(callback)
+
+    def remove_event_sink(self, callback) -> None:
+        sinks = self._mutable("_event_sinks", list)
+        if callback in sinks:
+            sinks.remove(callback)
+
+    def _mutable(self, name: str, factory):
+        """Container attribute, created on first use (``__new__``-safe)."""
+        value = getattr(self, name, None)
+        if value is None:
+            value = factory()
+            setattr(self, name, value)
+        return value
+
+    def _remember_group(self, group_id: str) -> None:
+        group_id = str(group_id or "").strip()
+        if not group_id:
+            return
+        seen = self._mutable("_seen_groups", dict)
+        now = time.time()
+        # shortcut: TTL sweep happens at record time; a group silent for 30 days
+        # drops out of ``get_group_list``, which stays honest for "actually seen".
+        for stale in [k for k, ts in seen.items() if now - ts > _SEEN_GROUPS_TTL]:
+            seen.pop(stale, None)
+        seen[group_id] = now
+
+    def is_group_muted(self, group_id: str) -> bool:
+        """Local mute bookkeeping, same shape as ``OneBotClient.is_group_muted``.
+
+        The only reliable signal this channel has is the platform rejecting a send
+        with ``40054002`` / ``850018``; without recording it the caller keeps sending
+        into a muted group.
+        """
+        gid = str(group_id or "").strip()
+        if not gid:
+            return False
+        muted = self._mutable("_group_muted", dict)
+        until = float(muted.get(gid, 0) or 0)
+        if until and until > 0:
+            if time.time() < until:
+                return True
+            muted.pop(gid, None)
+        return False
 
     async def receive_message(self, timeout: float = 1.0) -> Optional[dict[str, Any]]:
         try:
@@ -756,8 +1026,19 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             group_id, [{"type": "text", "data": {"text": message}}],
         )
 
-    async def send_private_record(self, user_id: str, file_uri: str, *, reply_message_id: str = "") -> None:
-        """Send a private voice -- not supported by the Open Platform; returns None so the upper layer degrades to text."""
+    async def send_private_record(
+        self, user_id: str, file_uri: str, *, reply_message_id: str = "", **_: Any
+    ) -> Optional[str]:
+        """Send a private voice message: rich media ``file_type=3`` with ``msg_type=7``.
+
+        Returns the message id, or ``None`` when upload/send failed so the caller can
+        fall back to text. v2 does accept voice (silk / mp3 / wav), so the old
+        "not supported" no-op was throwing away every TTS result on this channel.
+        """
+        return await self._send_media(
+            scope="users", owner_id=user_id, file_type=FILE_TYPE_VOICE, source=file_uri,
+            reply_message_id=reply_message_id,
+        )
 
     async def send_private_message_segments(
         self, user_id: str, segments: list[dict[str, Any]], *, record_sent: bool = True
@@ -859,16 +1140,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                 self.logger.warning(f"[QQOpenPlatform] 发送私聊失败: {e}")
             return None
 
-    async def send_group_poke(self, group_id: str, user_id: str) -> Optional[str]:
-        # QQ Open Platform does not support poke -- degrade to text. The result
-        # propagates (None = swallowed failure); the delivery-confirmation chain
-        # uses it to decide whether to clear the undelivered marker / mention.
-        return await self.send_group_message_segments(
-            group_id,
-            [{"type": "text", "data": {"text": f" (戳了戳 {user_id})"}}],
-            record_sent=False,
-        )
-
+    async def send_group_poke(self, group_id: str, user_id: str, **_: Any) -> Optional[str]:
+        raise self._unsupported("poke", "v2 has no poke interface for any conversation")
     async def send_group_image(
         self, group_id: str, image_data: str, *, reply_message_id: str = "", at_user_id: str = "", sub_type: str = ""
     ) -> Optional[str]:
@@ -881,32 +1154,42 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         return await self.send_group_message_segments(group_id, segments, record_sent=False)
 
     async def send_group_record(
-        self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = ""
-    ) -> None:
-        """Send a group voice -- not supported by the Open Platform; returns None so the upper layer degrades to text."""
+        self, group_id: str, file_uri: str, *, reply_message_id: str = "", at_user_id: str = "", **_: Any
+    ) -> Optional[str]:
+        """Send a group voice message.
+
+        ``at_user_id`` is accepted for signature parity with the OneBot client and is
+        deliberately not attached: one media item per message, and a voice message with
+        an @ payload was what made the TTS path unusable on NapCat too.
+        """
+        return await self._send_media(
+            scope="groups", owner_id=group_id, file_type=FILE_TYPE_VOICE, source=file_uri,
+            reply_message_id=reply_message_id,
+        )
 
     async def send_group_ark_card(
         self, group_id: str, ark_obj: dict[str, Any], **_: Any
     ) -> bool:
-        """Send a group Ark rich card (Open Platform only).
+        """Send a group card. v2 has no ark on the send side, so this builds an image-text card.
 
-        Called by the qq_auto_reply plugin's ``reply_pipeline`` when
-        ``supports_ark_cards`` is True; OneBot backends degrade to text before
-        reaching here. Card images must be pre-resolved
-        to URLs in ``ark_obj``; no upload needed here.
+        ``supports_ark_cards`` is therefore False while ``supports_card_messages`` is
+        True: callers that check the first flag alone would drop a card they can
+        actually deliver. Both the NapCat-shaped ``{"ark": {"kv": [{"key": "#TITLE#"...}]}}``
+        input and a plain ``{"title": ..., "description": ...}`` are accepted, because
+        the qq_auto_reply plugin still assembles the former.
         """
         try:
             await self._ensure_token()
             resp = await self._http.post(
                 f"{self._API_BASE}/v2/groups/{group_id}/messages",
-                json=ark_obj,
+                json={"msg_type": 8, "card": self._card_message_payload(ark_obj)},
                 headers=self._auth_headers(),
             )
             data = resp.json()
             return bool(data.get("id"))
         except Exception as e:
             if self.logger:
-                self.logger.warning(f"[QQOpenPlatform] 发送群 Ark 卡片失败: {e}")
+                self.logger.warning(f"[QQOpenPlatform] 发送图文卡片失败: {e}")
             return False
 
     async def get_login_status(self) -> dict[str, Any]:
@@ -1061,7 +1344,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                 "attachments": self._extract_attachments(data),
             }
 
-        if event_type == "GROUP_AT_MESSAGE_CREATE":
+        if event_type in ("GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE"):
             content = str(data.get("content") or "")
             # This channel's group identifier is itself an openid (see the
             # qq_auto_reply plugin's display_name_service note); official v2 puts
@@ -1075,18 +1358,42 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             # zero behavior change and guards against total message loss.
             group_id = str(data.get("group_id") or data.get("group_openid") or "")
             mentioned_ids: list[str] = []
-            mentions_all = False
-            # Check @ targets (<@!id> format in content).
-            import re
-            for m in re.finditer(r"<@!(\d+)>", content):
-                mentioned_ids.append(m.group(1))
-            # Clean text after removing <@!id> placeholders.
-            clean_content = re.sub(r"<@!\d+>", "", content).strip()
-            if self._self_id:
-                mentions_other_user = any(mid != self._self_id for mid in mentioned_ids)
+            # Two mention shapes exist in the wild: the documented v2 form
+            # ``<@member_openid>`` (hex) and the legacy ``<@!uin>`` that older payloads
+            # and the OneBot side still produce. Parsing only the legacy one meant every
+            # v2 mention was invisible -- including mentions of the bot itself.
+            v2_tags = _AT_OPENID_RE.findall(content)
+            legacy_tags = _AT_LEGACY_RE.findall(content)
+            for user in data.get("mentions") or []:
+                if isinstance(user, dict):
+                    who = str(user.get("member_openid") or user.get("id") or "").strip()
+                    if who and who not in mentioned_ids:
+                        mentioned_ids.append(who)
+            for who in v2_tags + legacy_tags:
+                if who not in mentioned_ids:
+                    mentioned_ids.append(who)
+            mentions_all = "<@all>" in content
+            clean_content = _AT_OPENID_RE.sub("", _AT_LEGACY_RE.sub("", content))
+            clean_content = clean_content.replace("<@all>", "").strip()
+            # The bot's own group-side identity is member_openid, which only bot_state
+            # (permission-gated) or a learned mention can supply; READY's id is app-level.
+            self_ids = {str(self._self_id or "")}
+            if self._bot_member_openid:
+                self_ids.add(self._bot_member_openid)
+            if event_type == "GROUP_AT_MESSAGE_CREATE":
+                # The platform only emits this event when the bot itself was addressed.
+                is_at_bot = True
             else:
-                # GROUP_AT_MESSAGE_CREATE always includes the bot mention; without
-                # READY self_id, only multiple mentions prove another user was named.
+                is_at_bot = bool(self_ids & set(mentioned_ids)) or any(
+                    f"<@{sid}>" in content for sid in self_ids if sid)
+                if is_at_bot and len(mentioned_ids) == 1:
+                    # The single mention was the bot: learn its group-side id so later
+                    # full-mode pushes can recognise it too. bot_state may never come.
+                    self._bot_member_openid = mentioned_ids[0]
+            if self._self_id:
+                mentions_other_user = any(mid not in self_ids for mid in mentioned_ids)
+            else:
+                # Without a known self id, only several mentions prove someone else was named.
                 mentions_other_user = len(mentioned_ids) > 1
 
             return {
@@ -1097,7 +1404,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                 "content": clean_content,
                 "message_id": str(data.get("id") or ""),
                 "timestamp": int(time.time()),
-                "is_at_bot": True,
+                "is_at_bot": is_at_bot,
                 "is_reply_to_bot": False,
                 "group_id": group_id,
                 "quoted_message_id": "",
@@ -1122,90 +1429,624 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         return attachments
 
     # ==========================================
-    # Stub API methods (not supported by the Open Platform; no-op returns)
+    # v2 REST helpers
     # ==========================================
 
-    # Message operations
-    async def set_msg_emoji_like(self, **kw) -> dict: return {}
-    async def delete_msg(self, **kw) -> dict: return {}
-    async def get_msg(self, **kw) -> dict: return {}
-    async def get_forward_msg(self, **kw) -> dict: return {}
-    async def send_like(self, **kw) -> dict: return {}
-    async def mark_msg_as_read(self, **kw) -> dict: return {}
-    async def mark_private_msg_as_read(self, **kw) -> dict: return {}
-    async def mark_group_msg_as_read(self, **kw) -> dict: return {}
-    async def _mark_all_as_read(self, **kw) -> dict: return {}
-    async def send_group_forward_msg(self, **kw) -> dict: return {}
-    async def send_private_forward_msg(self, **kw) -> dict: return {}
-    async def send_forward_msg(self, **kw) -> dict: return {}
-    async def forward_friend_single_msg(self, **kw) -> dict: return {}
-    async def forward_group_single_msg(self, **kw) -> dict: return {}
-    async def get_friend_msg_history(self, **kw) -> dict: return {}
-    async def get_group_msg_history(self, **kw) -> dict: return {}
+    async def _api(
+        self, method: str, path: str, *, params: Optional[dict] = None,
+        payload: Optional[dict] = None, retry_on_token: bool = True,
+    ) -> dict:
+        """One v2 call: token, auth headers, err_code judgement, one token retry.
 
-    # Friend operations
-    async def set_friend_add_request(self, **kw) -> dict: return {}
-    async def delete_friend(self, **kw) -> dict: return {}
-    async def get_friends_with_category(self, **kw) -> dict: return {}
-    async def friend_poke(self, **kw) -> dict: return {}
-    async def get_profile_like(self, **kw) -> dict: return {}
+        ``err_code`` is the only stable failure signal (the docs say not to judge by
+        ``message``), and success may carry no body at all -- any 2xx (a 200 with an
+        empty body, or a 204) is returned as ``{}`` rather than treated as an error.
+        """
+        from urllib.parse import urlencode
 
-    # Group operations
-    async def set_group_kick(self, **kw) -> dict: return {}
-    async def set_group_ban(self, **kw) -> dict: return {}
-    async def set_group_whole_ban(self, **kw) -> dict: return {}
-    async def set_group_admin(self, **kw) -> dict: return {}
-    async def set_group_card(self, **kw) -> dict: return {}
-    async def set_group_name(self, **kw) -> dict: return {}
-    async def set_group_leave(self, **kw) -> dict: return {}
-    async def set_group_special_title(self, **kw) -> dict: return {}
-    async def set_group_add_request(self, **kw) -> dict: return {}
-    async def set_group_sign(self, **kw) -> dict: return {}
-    async def send_group_sign(self, **kw) -> dict: return {}
-    async def set_group_portrait(self, **kw) -> dict: return {}
-    async def get_group_at_all_remain(self, **kw) -> dict: return {}
-    async def get_group_ignore_add_request(self, **kw) -> dict: return {}
-    async def get_group_system_msg(self, **kw) -> dict: return {}
-    async def _send_group_notice(self, **kw) -> dict: return {}
-    async def _get_group_notice(self, **kw) -> dict: return {}
-    async def _del_group_notice(self, **kw) -> dict: return {}
-    async def group_poke(self, **kw) -> dict: return {}
-    async def send_group_ai_record(self, **kw) -> dict: return {}
+        await self._ensure_token()
+        query = {k: v for k, v in (params or {}).items() if v not in (None, "")}
+        url = f"{self._API_BASE}{path}" + (f"?{urlencode(query)}" if query else "")
+        headers = self._auth_headers()
+        headers["Content-Type"] = "application/json; charset=utf-8"
+        try:
+            response = await self._http.request(method, url, headers=headers, json=payload)
+        except Exception as exc:
+            raise QQOpenPlatformAPIError(
+                method=method, path=path, message=f"transport error: {exc}") from exc
+        status = int(getattr(response, "status_code", 0) or 0)
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        body = data if isinstance(data, dict) else {}
+        err_code = _to_int(body.get("err_code") or body.get("code"))
+        if 200 <= status < 300 and not err_code:
+            return body
+        if err_code == ERR_TOKEN_INVALID and retry_on_token:
+            self._access_token = ""
+            self._token_expires_at = 0
+            await self._refresh_token()
+            return await self._api(
+                method, path, params=params, payload=payload, retry_on_token=False)
+        if err_code in ERR_GROUP_MUTED:
+            gid = _group_id_of(path)
+            if gid:
+                # Without this the caller keeps sending into a muted group and learns
+                # nothing except a rejected send, every round.
+                self._mutable("_group_muted", dict)[gid] = time.time() + 300
+        raise QQOpenPlatformAPIError(
+            method=method, path=path, http_status=status, err_code=err_code,
+            message=str(body.get("message") or ""), trace_id=str(body.get("trace_id") or ""))
 
-    # Group file operations
-    async def upload_group_file(self, **kw) -> dict: return {}
-    async def delete_group_file(self, **kw) -> dict: return {}
-    async def create_group_file_folder(self, **kw) -> dict: return {}
-    async def delete_group_folder(self, **kw) -> dict: return {}
-    async def get_group_file_system_info(self, **kw) -> dict: return {}
-    async def get_group_root_files(self, **kw) -> dict: return {}
-    async def get_group_files_by_folder(self, **kw) -> dict: return {}
-    async def get_group_file_url(self, **kw) -> dict: return {}
+    async def _upload_media(
+        self, *, scope: str, owner_id: str, source: str, file_type: int
+    ) -> str:
+        """Upload one rich-media item and return ``file_info`` (``""`` when it failed).
 
-    # Info queries
-    async def get_stranger_info(self, **kw) -> dict: return {}
-    async def get_group_info(self, **kw) -> dict: return {}
-    async def get_group_member_info(self, **kw) -> dict: return {}
-    async def get_group_member_list(self, **kw) -> list: return []
-    async def get_group_honor_info(self, **kw) -> dict: return {}
-    async def get_group_shut_list(self, **kw) -> list: return []
-    async def get_group_info_ex(self, **kw) -> dict: return {}
-    async def get_essence_msg_list(self, **kw) -> dict: return {}
-    async def set_essence_msg(self, **kw) -> dict: return {}
-    async def delete_essence_msg(self, **kw) -> dict: return {}
+        Two documented paths only: URL hand-off, and inline binary (``file_data``,
+        up to 5 MB). shortcut: no chunked upload here; anything larger is refused with a
+        log line, and the upgrade is ``upload_prepare``/``upload_part_finish``.
+        """
+        source = str(source or "").strip()
+        if not source:
+            return ""
+        endpoint = f"/v2/{scope}/{owner_id}/files"
+        if source.startswith(("http://", "https://")):
+            body: dict[str, Any] = {
+                "file_type": int(file_type), "url": source, "srv_send_msg": False}
+        else:
+            path = source[7:] if source.startswith("file://") else source
+            try:
+                raw = await asyncio.to_thread(_read_bytes, path)
+            except Exception as exc:
+                if self.logger:
+                    self.logger.warning(f"[QQOpenPlatform] 富媒体读取失败: {exc}")
+                return ""
+            if not raw:
+                return ""
+            if len(raw) > INLINE_UPLOAD_MAX_BYTES:
+                if self.logger:
+                    self.logger.warning(
+                        f"[QQOpenPlatform] 富媒体 {len(raw)} 字节超过内联上传上限，"
+                        "需要改走分片上传")
+                return ""
+            body = {
+                "file_type": int(file_type),
+                "file_name": path.replace("\\", "/").rsplit("/", 1)[-1],
+                "file_data": base64.b64encode(raw).decode("ascii"),
+                "srv_send_msg": False,
+            }
+        try:
+            data = await self._api("POST", endpoint, payload=body)
+        except QQOpenPlatformAPIError as exc:
+            if self.logger:
+                self.logger.warning(f"[QQOpenPlatform] 富媒体上传失败: {exc}")
+            return ""
+        return str(data.get("file_info") or "")
 
-    # Credentials / cookies
-    async def get_cookies(self, **kw) -> dict: return {}
-    async def get_csrf_token(self, **kw) -> dict: return {}
-    async def get_credentials(self, **kw) -> dict: return {}
+    async def _send_media(
+        self, *, scope: str, owner_id: str, file_type: int, source: str,
+        reply_message_id: str = "", record_sent: bool = True,
+    ) -> Optional[str]:
+        file_info = await self._upload_media(
+            scope=scope, owner_id=owner_id, source=source, file_type=file_type)
+        if not file_info:
+            return None
+        payload: dict[str, Any] = {"msg_type": 7, "media": {"file_info": file_info}}
+        anchor = str(reply_message_id or "").strip()
+        if anchor:
+            payload["msg_id"] = anchor
+            payload["msg_seq"] = self._next_msg_seq(anchor)
+        try:
+            data = await self._api("POST", f"/v2/{scope}/{owner_id}/messages", payload=payload)
+        except QQOpenPlatformAPIError as exc:
+            if self.logger:
+                self.logger.warning(f"[QQOpenPlatform] 富媒体消息发送失败: {exc}")
+            return None
+        message_id = str(data.get("id") or "")
+        if message_id and record_sent:
+            self.record_sent_message_id(message_id)
+        return message_id or None
 
-    # Image / file
-    async def get_image(self, **kw) -> dict: return {}
-    async def upload_private_file(self, **kw) -> dict: return {}
-    async def download_file(self, **kw) -> dict: return {}
-    async def get_file(self, **kw) -> dict: return {}
+    def _card_message_payload(self, obj: dict) -> dict:
+        """Build an image-text card body from either the ark-kv shape or a plain dict."""
+        kv = obj.get("ark", {}).get("kv") if isinstance(obj.get("ark"), dict) else None
+        if isinstance(kv, list):
+            fields = {
+                str(item.get("key") or "").strip("#").upper(): str(item.get("value") or "")
+                for item in kv if isinstance(item, dict)}
+            content = {
+                "title": fields.get("TITLE") or "卡片",
+                "description": fields.get("DESC") or fields.get("SUBTITLE") or "",
+                "url": fields.get("URL") or "",
+                "pic_url": fields.get("IMG") or ""}
+        else:
+            raw = obj.get("content") if isinstance(obj.get("content"), dict) else obj
+            content = {
+                "title": str(raw.get("title") or "卡片"),
+                "description": str(raw.get("description") or raw.get("desc") or ""),
+                "url": str(raw.get("url") or ""),
+                "pic_url": str(raw.get("pic_url") or raw.get("img") or "")}
+        # Non-https links are rejected by the platform; fix the scheme instead of
+        # silently dropping the fields the caller asked for.
+        for key in ("url", "pic_url"):
+            if content[key] and not content[key].startswith("https://"):
+                content[key] = "https://" + content[key].lstrip("/")
+        if not content["description"]:
+            content["description"] = content["title"]
+        return {"type": "tuwen", "content": content}
+
+    # ==========================================
+    # Operations the Open Platform does not offer
+    # ==========================================
+    #
+    # These used to ``return {}`` / ``return []``. An empty dict does not stop a caller
+    # that only checks "did it raise", so each of them looked like a success: mute
+    # detection read a field that was never there, reactions looked sent, history looked
+    # empty by chance. Raising with the reason is the honest version -- and callers that
+    # care already wrap these and degrade visibly.
+
+    def _unsupported(self, operation: str, reason: str) -> QQOpenPlatformUnsupportedError:
+        return QQOpenPlatformUnsupportedError(operation, reason)
+
+    async def set_msg_emoji_like(self, **kw):
+        raise self._unsupported(
+            "message reactions",
+            "reactions exist only for guild/channel messages; v2 has no group or c2c variant")
+
+    async def send_like(self, **kw):
+        raise self._unsupported("profile like", "no such interface in v2")
+
+    async def get_profile_like(self, **kw):
+        raise self._unsupported("profile like", "no such interface in v2")
+
+    async def mark_msg_as_read(self, **kw):
+        raise self._unsupported("mark as read", "no such interface in v2")
+
+    async def mark_private_msg_as_read(self, **kw):
+        raise self._unsupported("mark as read", "no such interface in v2")
+
+    async def mark_group_msg_as_read(self, **kw):
+        raise self._unsupported("mark as read", "no such interface in v2")
+
+    async def _mark_all_as_read(self, **kw):
+        raise self._unsupported("mark as read", "no such interface in v2")
+
+    async def get_msg(self, **kw):
+        raise self._unsupported(
+            "message lookup", "v2 has no message-read interface; a bot only learns what "
+            "the platform pushed to it")
+
+    async def get_forward_msg(self, **kw):
+        raise self._unsupported("forwarded message read-back", "no such interface in v2")
+
+    async def get_friend_msg_history(self, **kw):
+        raise self._unsupported(
+            "message history", "no such interface in v2; use the consumer's own backlog")
+
+    async def get_group_msg_history(self, **kw):
+        raise self._unsupported(
+            "message history", "no such interface in v2; use the consumer's own backlog")
+
+    async def send_group_forward_msg(self, **kw):
+        raise self._unsupported("merged forward", "no such interface in v2")
+
+    async def send_private_forward_msg(self, **kw):
+        raise self._unsupported("merged forward", "no such interface in v2")
+
+    async def send_forward_msg(self, **kw):
+        raise self._unsupported("merged forward", "no such interface in v2")
+
+    async def forward_friend_single_msg(self, **kw):
+        raise self._unsupported("single-message forward", "no such interface in v2")
+
+    async def forward_group_single_msg(self, **kw):
+        raise self._unsupported("single-message forward", "no such interface in v2")
+
+    async def get_friend_list(self, **kw):
+        raise self._unsupported(
+            "friend list", "v2 identifies users by openid only and lists no friends")
+
+    async def set_friend_add_request(self, **kw):
+        raise self._unsupported("friend request approval", "no such interface in v2")
+
+    async def delete_friend(self, **kw):
+        raise self._unsupported("friend removal", "no such interface in v2")
+
+    async def get_friends_with_category(self, **kw):
+        raise self._unsupported("friend categories", "no such interface in v2")
+
+    async def friend_poke(self, **kw):
+        raise self._unsupported("poke", "v2 has no poke interface for any conversation")
+
+    async def group_poke(self, **kw):
+        raise self._unsupported("poke", "v2 has no poke interface for any conversation")
+
+    async def set_group_whole_ban(self, **kw):
+        raise self._unsupported(
+            "whole-group mute", "restrict_chat_setting is applied per member; the "
+            "group-wide mute rules are read-only here")
+
+    async def set_group_admin(self, **kw):
+        raise self._unsupported("group admin changes", "no such interface in v2")
+
+    async def set_group_card(self, **kw):
+        raise self._unsupported("member card nickname", "no such interface in v2")
+
+    async def set_group_name(self, **kw):
+        raise self._unsupported("group renaming", "no such interface in v2")
+
+    async def set_group_leave(self, **kw):
+        raise self._unsupported("leaving a group", "not offered by the API; use the console")
+
+    async def set_group_special_title(self, **kw):
+        raise self._unsupported("special titles", "no such interface in v2")
+
+    async def set_group_sign(self, **kw):
+        raise self._unsupported("group sign-in", "no such interface in v2")
+
+    async def send_group_sign(self, **kw):
+        raise self._unsupported("group sign-in", "no such interface in v2")
+
+    async def set_group_portrait(self, **kw):
+        raise self._unsupported("group portrait", "no such interface in v2")
+
+    async def get_group_at_all_remain(self, **kw):
+        raise self._unsupported(
+            "@all quota read-back", "the platform does not report the remaining count; "
+            "sending without the admin role, or after the daily cap, returns an err_code")
+
+    async def get_group_ignore_add_request(self, **kw):
+        raise self._unsupported("ignored join requests", "no such interface in v2")
+
+    async def get_group_system_msg(self, **kw):
+        raise self._unsupported("system messages", "no such interface in v2")
+
+    async def _send_group_notice(self, **kw):
+        raise self._unsupported("group announcements", "no such interface in v2")
+
+    async def _get_group_notice(self, **kw):
+        raise self._unsupported("group announcements", "no such interface in v2")
+
+    async def _del_group_notice(self, **kw):
+        raise self._unsupported("group announcements", "no such interface in v2")
+
+    async def send_group_ai_record(self, **kw):
+        raise self._unsupported(
+            "AI voice pack", "no such interface in v2; voice messages go through "
+            "send_group_record with a real audio file")
+
+    async def get_group_honor_info(self, **kw):
+        raise self._unsupported("group honours", "no such interface in v2")
+
+    async def get_group_info_ex(self, **kw):
+        raise self._unsupported("extended group info", "no such interface in v2")
+
+    async def get_essence_msg_list(self, **kw):
+        raise self._unsupported("essence messages", "no such interface in v2")
+
+    async def set_essence_msg(self, **kw):
+        raise self._unsupported("essence messages", "no such interface in v2")
+
+    async def delete_essence_msg(self, **kw):
+        raise self._unsupported("essence messages", "no such interface in v2")
+
+    async def get_stranger_info(self, **kw):
+        raise self._unsupported(
+            "stranger profile", "only group members can be looked up, by member_openid")
+
+    async def delete_group_file(self, **kw):
+        raise self._unsupported(
+            "group file system", "v2 offers upload only; no file management or listing")
+
+    async def create_group_file_folder(self, **kw):
+        raise self._unsupported("group file system", "v2 offers upload only")
+
+    async def delete_group_folder(self, **kw):
+        raise self._unsupported("group file system", "v2 offers upload only")
+
+    async def get_group_file_system_info(self, **kw):
+        raise self._unsupported("group file system", "v2 offers upload only")
+
+    async def get_group_root_files(self, **kw):
+        raise self._unsupported("group file system", "v2 offers upload only")
+
+    async def get_group_files_by_folder(self, **kw):
+        raise self._unsupported("group file system", "v2 offers upload only")
+
+    async def get_group_file_url(self, **kw):
+        raise self._unsupported("group file system", "v2 offers upload only")
+
+    async def get_cookies(self, **kw):
+        raise self._unsupported(
+            "web login credentials", "an official bot authenticates with AppID and "
+            "AppSecret only; there is no cookie and no CSRF token")
+
+    async def get_csrf_token(self, **kw):
+        raise self._unsupported("web login credentials", "no web session exists for a bot")
+
+    async def get_credentials(self, **kw):
+        raise self._unsupported("web login credentials", "no web session exists for a bot")
+
+    async def get_image(self, **kw):
+        raise self._unsupported(
+            "local image cache", "attachments arrive as URLs in the event; nothing is "
+            "cached on disk by this connector")
+
+    async def download_file(self, **kw):
+        raise self._unsupported("file download", "use the URL the event carries")
+
+    async def get_file(self, **kw):
+        raise self._unsupported("file download", "use the URL the event carries")
+
+    # ==========================================
+    # Operations v2 does support
+    # ==========================================
+
+    async def recall_message(self, message_id: str, *, group_id: str = "", user_id: str = "") -> bool:
+        """Delete one message. Own messages always; others' only when the bot is a group admin.
+
+        The platform rejects a recall older than 2 minutes with its own err_code, which
+        is raised rather than swallowed -- a caller that thinks it retracted something
+        still on screen is worse off than one that gets an error.
+        """
+        message_id = str(message_id or "").strip()
+        group_id = str(group_id or "").strip()
+        user_id = str(user_id or "").strip()
+        if not message_id:
+            return False
+        if group_id:
+            path = f"/v2/groups/{group_id}/messages/{message_id}"
+        elif user_id:
+            path = f"/v2/users/{user_id}/messages/{message_id}"
+        else:
+            # The two scopes are different endpoints; guessing would either fail or
+            # recall inside the wrong conversation.
+            raise ValueError("recall_message needs group_id or user_id")
+        await self._api("DELETE", path)
+        return True
+
+    async def delete_msg(self, message_id: str = "", **kw) -> dict:
+        await self.recall_message(
+            message_id or str(kw.get("message_id") or ""),
+            group_id=str(kw.get("group_id") or ""), user_id=str(kw.get("user_id") or ""))
+        return {"status": "ok"}
+
+    async def get_group_info(self, group_id: str = "", **_: Any) -> dict:
+        gid = str(group_id or "").strip()
+        if not gid:
+            return {}
+        return await self._api("GET", f"/v2/groups/{gid}/info")
+
+    async def get_group_bot_state(self, group_id: str, *, force: bool = False) -> dict:
+        """Read this group's reception setting, the bot's role and the push permission.
+
+        This is what makes :attr:`receives_all_messages` answerable before any traffic
+        arrives. The interface is permission-gated, so the caller must tolerate the
+        error and fall back to observed events.
+        """
+        gid = str(group_id or "").strip()
+        if not gid:
+            return {}
+        state = await self._api("GET", f"/v2/groups/{gid}/bot_state")
+        self._recv_msg_setting = str(state.get("recv_msg_setting") or "")
+        self._bot_member_role = str(state.get("member_role") or "")
+        # Keep an earlier self-detected id when this interface is not entitled
+        # to answer with one.
+        self._bot_member_openid = str(
+            state.get("member_openid") or self._bot_member_openid)
+        return state
+
+    async def get_group_member_info(self, group_id: str = "", user_id: str = "", **_: Any) -> dict:
+        gid = str(group_id or "").strip()
+        member = str(user_id or "").strip()
+        if not gid or not member:
+            return {}
+        return await self._api("GET", f"/v2/groups/{gid}/members/{member}")
+
+    async def get_group_member_list(self, group_id: str = "", **kw: Any) -> list:
+        """Page through members (30 at a time) until the cursor runs out or max_pages hits."""
+        gid = str(group_id or "").strip()
+        if not gid:
+            return []
+        pages = max(1, min(_to_int(kw.get("max_pages")) or 10, 20))
+        out: list = []
+        cursor = ""
+        for _ in range(pages):
+            data = await self._api("GET", f"/v2/groups/{gid}/members", params={"cursor": cursor})
+            out.extend(data.get("members") or [])
+            cursor = str(data.get("next_cursor") or "")
+            if not cursor:
+                break
+        return out
+
+    async def set_group_ban(self, group_id: str = "", user_id: str = "", duration: int = 600, **_: Any) -> dict:
+        """Mute one member for ``duration`` seconds; 0 lifts it. Needs the group admin role."""
+        gid = str(group_id or "").strip()
+        member = str(user_id or "").strip()
+        if not gid or not member:
+            return {}
+        seconds = _to_int(duration)
+        op = "del"
+        if seconds > 0:
+            # ``add`` is rejected for a member who is already muted; retiming
+            # one is an ``update``. A failed pre-read must not cost the mute
+            # itself: fall back to ``add`` (the pre-update behavior); a dead
+            # transport still raises from the POST below.
+            try:
+                muted = {str(m.get("member_openid") or "")
+                         for m in await self.get_group_shut_list(gid)
+                         if isinstance(m, dict)}
+                op = "update" if member in muted else "add"
+            except Exception:
+                op = "add"
+        entry = {
+            "op": op,
+            "member_openid": member,
+            # The platform takes an expiry timestamp, not a duration.
+            "mute_expire_at": "" if seconds <= 0 else _rfc3339_in(seconds)}
+        await self._api(
+            "POST", f"/v2/groups/{gid}/restrict_chat_setting", payload={"members": [entry]})
+        return {"status": "ok"}
+
+    async def get_group_shut_list(self, group_id: str = "", **_: Any) -> list:
+        gid = str(group_id or "").strip()
+        data = await self._api("GET", f"/v2/groups/{gid}/restrict_chat_setting")
+        rule = data.get("global_rule")
+        self._mutable("_shut_global_rule", dict)[gid] = (
+            rule if isinstance(rule, dict) else {})
+        members = data.get("members")
+        return members if isinstance(members, list) else []
+
+    def group_shut_global_rule(self, group_id: str) -> dict:
+        """Last observed global rule (``mode``: none/always/schedule) for one group.
+
+        With a mode other than ``none`` everyone -- the bot included -- is muted,
+        so an empty :meth:`get_group_shut_list` does not mean sends will pass.
+        """
+        return dict(
+            self._mutable("_shut_global_rule", dict).get(str(group_id or "").strip()) or {})
+
+    async def set_group_kick(self, group_id: str = "", user_id: str = "", **kw: Any) -> dict:
+        gid = str(group_id or "").strip()
+        member = str(user_id or "").strip()
+        if not gid or not member:
+            return {}
+        body: dict[str, Any] = {"member_openids": [member]}
+        if kw.get("add_to_member_blacklist") or kw.get("reject_add_request"):
+            body["add_to_member_blacklist"] = True
+        return await self._api("POST", f"/v2/groups/{gid}/batch_remove_members", payload=body)
+
+    async def list_group_join_requests(self, group_id: str = "", cursor: str = "", limit: int = 20, **_: Any) -> dict:
+        gid = str(group_id or "").strip()
+        if not gid:
+            return {}
+        return await self._api(
+            "GET", f"/v2/groups/{gid}/join_request_list",
+            params={"cursor": cursor, "limit": max(1, min(_to_int(limit) or 20, 50))})
+
+    async def set_group_add_request(self, flag: str = "", approve: bool = True, reason: str = "", **kw: Any) -> dict:
+        """Approve or decline one join request; ``list_group_join_requests`` supplies the ids.
+
+        Join-request *events* need the GROUP_MEMBER_EVENT intent, off unless
+        ``extra_intents`` opts in, so approvals are pulled rather than pushed.
+        """
+        gid = str(kw.get("group_id") or kw.get("group_openid") or "").strip()
+        member = str(kw.get("user_id") or kw.get("member_openid") or "").strip()
+        if not gid or not member:
+            return {}
+        body: dict[str, Any] = {
+            "op": "approve" if approve else "decline", "join_request_id": str(flag or "")}
+        if not approve:
+            if reason:
+                body["reject_reason"] = str(reason)[:100]
+            if kw.get("add_to_member_blacklist"):
+                body["add_to_member_blacklist"] = True
+        await self._api("POST", f"/v2/groups/{gid}/approval_join_request/{member}", payload=body)
+        return {"status": "ok"}
+
+    async def operate_group_member_blacklist(
+        self, group_id: str, member_openids: list, *, op: str = "add") -> dict:
+        gid = str(group_id or "").strip()
+        ids = [str(x).strip() for x in (member_openids or []) if str(x).strip()][:20]
+        if not gid or not ids or op not in ("add", "del"):
+            return {}
+        return await self._api(
+            "POST", f"/v2/groups/{gid}/member_blacklist", payload={"op": op, "member_openids": ids})
+
+    async def list_group_member_blacklist(self, group_id: str, cursor: str = "") -> dict:
+        gid = str(group_id or "").strip()
+        if not gid:
+            return {}
+        return await self._api("GET", f"/v2/groups/{gid}/member_blacklist", params={"cursor": cursor})
+
+    async def upload_group_file(self, file: str = "", name: str = "", **kw: Any) -> dict:
+        """Send a group file (``file_type=4``). Upload-only: v2 has no file management."""
+        gid = str(kw.get("group_id") or kw.get("group_openid") or "").strip()
+        if not gid:
+            return {}
+        mid = await self._send_media(
+            scope="groups", owner_id=gid, file_type=FILE_TYPE_FILE, source=str(file or ""))
+        return {"file_id": mid, "id": mid} if mid else {}
+
+    async def upload_private_file(self, file: str = "", name: str = "", **kw: Any) -> dict:
+        uid = str(kw.get("user_id") or kw.get("openid") or "").strip()
+        if not uid:
+            return {}
+        mid = await self._send_media(
+            scope="users", owner_id=uid, file_type=FILE_TYPE_FILE, source=str(file or ""))
+        return {"file_id": mid, "id": mid} if mid else {}
+
+    async def get_menu(self) -> dict:
+        return await self._api("GET", "/v2/menu")
+
+    async def set_menu(self, menu: dict) -> dict:
+        """Overwrite the whole global menu (``items`` max 10)."""
+        if not isinstance(menu, dict):
+            raise ValueError("set_menu needs the full menu object")
+        await self._api("PUT", "/v2/menu", payload={"menu": menu})
+        return {"status": "ok"}
+
+    async def respond_interaction(self, interaction_id: str, code: int = 0) -> dict:
+        """Answer an INTERACTION_CREATE; the platform expects it within about 3 seconds."""
+        iid = str(interaction_id or "").strip()
+        if not iid:
+            return {}
+        await self._api("PUT", f"/interactions/{iid}", payload={"code": _to_int(code)})
+        return {"status": "ok", "interaction_id": iid}
+
+    async def generate_url_link(self, callback_data: str = "") -> dict:
+        return await self._api(
+            "POST", "/v2/generate_url_link", payload={"callback_data": str(callback_data or "")[:32]})
+
+    async def get_group_list(self) -> list:
+        """The groups this connection actually saw a message from.
+
+        There is no "my groups" endpoint, and the old flat ``[]`` could not tell
+        "the bot is in no group" from "the ids were never learned" -- which matters
+        because group ids here are ``group_openid`` values that cannot be guessed from
+        a QQ group number. ``group_name`` is empty: no push carries it, and
+        :meth:`get_group_info` resolves it one call per group.
+        """
+        seen = self._mutable("_seen_groups", dict)
+        now = time.time()
+        # Read-time expiry: the record-time sweep never runs when no message
+        # arrives, so stale ids would otherwise linger here.
+        live = [gid for gid, ts in seen.items() if now - ts <= _SEEN_GROUPS_TTL]
+        for gid in set(seen) - set(live):
+            seen.pop(gid, None)
+        return [{"group_id": gid, "group_name": ""} for gid in sorted(live)]
 
     # Status
     async def can_send_image(self) -> bool: return True
-    async def can_send_record(self) -> bool: return False
+    async def can_send_record(self) -> bool: return True  # voice = rich media file_type=3
     async def get_status(self) -> dict: return {"online": self._ws is not None}
+
+
+def _to_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _group_id_of(path: str) -> str:
+    match = _re.match(r"/v2/groups/([^/?]+)", str(path or ""))
+    return match.group(1) if match else ""
+
+
+def _read_bytes(path: str) -> bytes:
+    """Blocking read; callers run it in a thread so a slow disk cannot stall the loop."""
+    if not path or not os.path.isfile(path):
+        return b""
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def _rfc3339_in(seconds: int) -> str:
+    """RFC3339 timestamp ``seconds`` from now, in the platform's own +08:00 frame."""
+    from datetime import datetime, timedelta, timezone
+
+    moment = datetime.now(timezone(timedelta(hours=8))) + timedelta(seconds=int(seconds))
+    return moment.replace(microsecond=0).isoformat()
