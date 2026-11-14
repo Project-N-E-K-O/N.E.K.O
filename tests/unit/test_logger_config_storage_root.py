@@ -159,6 +159,7 @@ def test_concurrent_writability_probes_from_separate_processes_all_succeed(tmp_p
     # per-process part of the probe name as well.
     import subprocess
     import sys
+    from concurrent.futures import ThreadPoolExecutor
 
     from tests.process_isolation import child_process_env
 
@@ -175,14 +176,24 @@ def test_concurrent_writability_probes_from_separate_processes_all_succeed(tmp_p
     ]
     # Handshake rather than a fixed delay: every child finishes its cold
     # imports and reports ready before any of them is told to probe, so the
-    # probes overlap however slow the imports are.
-    for process in processes:
-        ready = process.stdout.readline().strip()
-        assert ready == "ready", process.stderr.read()
-    for process in processes:
-        process.stdin.write("go" + chr(10))
-        process.stdin.flush()
-    outputs = [process.communicate(timeout=120) for process in processes]
+    # probes overlap however slow the imports are. The ready lines are read on
+    # worker threads so a hung child fails the test instead of blocking it;
+    # killing the children in finally unblocks any read still pending.
+    pool = ThreadPoolExecutor(max_workers=len(processes))
+    try:
+        ready = [pool.submit(process.stdout.readline) for process in processes]
+        for index, future in enumerate(ready):
+            line = future.result(timeout=120).strip()
+            assert line == "ready", f"child {index} did not report ready: {line!r}"
+        for process in processes:
+            process.stdin.write("go" + chr(10))
+            process.stdin.flush()
+        outputs = [process.communicate(timeout=120) for process in processes]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+        pool.shutdown(wait=False)
 
     for process, (stdout, stderr) in zip(processes, outputs):
         assert process.returncode == 0, stderr
