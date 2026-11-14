@@ -216,7 +216,7 @@ Hosted TSX 使用导出的 `ui` namespace 和 manifest surface，详见 [Hosted 
 
 ### 回复控制
 
-`finish()` 通过 `delivery` 参数（`"proactive"` 默认 / `"passive"` / `"silent"`）控制插件结果是否进入主 AI 上下文、是否立即触发角色说话。`reply=True/False` 是已弃用的布尔别名。它在 Agent 直达调用入口时生效。入口由 task agent 调用时，结果回给 task agent，怎么告诉用户按那件事自己的设置。
+`finish()` 通过 `delivery` 参数（`"proactive"` 默认 / `"passive"` / `"silent"`）控制插件结果是否进入主 AI 上下文、是否立即触发角色说话。`reply=True/False` 是已弃用的布尔别名。`delivery` 在 Agent 直达调用入口时生效。入口由 task agent 调用时，结果回给 task agent，怎么告诉用户按那件事自己的设置。
 
 ```python
 # 正常：角色会播报结果

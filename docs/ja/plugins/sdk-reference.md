@@ -203,7 +203,7 @@ Hosted TSX は exported `ui` namespace と manifest surface を使います。�
 
 ### 返信制御
 
-`finish()` は `delivery` パラメータ（`"proactive"`（既定）/ `"passive"` / `"silent"`）で、結果をメイン AI のコンテキストに入れるか、キャラクターにすぐ話させるかを制御します。`reply=True/False` は非推奨のブール別名です。これが効くのは、Agent がエントリを直接呼んだ場合です。task agent がエントリを呼んだ場合、結果は task agent に返り、ユーザーへの伝え方はその用件自体の設定に従います。
+`finish()` は `delivery` パラメータ（`"proactive"`（既定）/ `"passive"` / `"silent"`）で、結果をメイン AI のコンテキストに入れるか、キャラクターにすぐ話させるかを制御します。`reply=True/False` は非推奨のブール別名です。`delivery` が効くのは、Agent がエントリを直接呼んだ場合です。task agent がエントリを呼んだ場合、結果は task agent に返り、ユーザーへの伝え方はその用件自体の設定に従います。
 
 ```python
 # 通常：キャラクターが結果を報告する

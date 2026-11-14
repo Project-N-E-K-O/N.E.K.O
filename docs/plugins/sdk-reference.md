@@ -208,7 +208,7 @@ Signal task completion to the host.
 
 ### Reply Control
 
-`finish()` takes a `delivery` argument (`"proactive"` by default, `"passive"`, or `"silent"`) that controls whether the result enters the main AI's context and whether the character speaks immediately. `reply=True/False` is the deprecated boolean alias. It takes effect when the Agent calls the entry directly. When a task agent calls the entry, the result goes back to the task agent, and how the user is told follows the task's own setting.
+`finish()` takes a `delivery` argument (`"proactive"` by default, `"passive"`, or `"silent"`) that controls whether the result enters the main AI's context and whether the character speaks immediately. `reply=True/False` is the deprecated boolean alias. `delivery` takes effect when the Agent calls the entry directly. When a task agent calls the entry, the result goes back to the task agent, and how the user is told follows the task's own setting.
 
 ```python
 # Normal: character will announce the result
