@@ -141,9 +141,10 @@ def test_over_budget_chapter_retry_repairs_only_the_invalid_field(monkeypatch, r
     calls, checkpoints = [], []
     # Keep the full retry over budget while the scoped replacement fits with
     # the independently supplied author brief.
-    # Current neutral-role contracts keep valid requests below 9k; the full
-    # repair is above 9.5k while the scoped replacement remains below 6.2k.
-    budget = 9000
+    # Valid requests stay just above 9k since 4ff82de lengthened the scene
+    # prompt; the full repair is above 9.6k while the scoped replacement stays
+    # near 8k, so 9.3k keeps only the full repair over budget.
+    budget = 9300
     host = NekoWorkshopModel({"model": "offline", "base_url": "https://example.invalid/v1", "max_input_tokens": budget})
 
     def unexpected_client(**_):
