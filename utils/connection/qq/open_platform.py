@@ -31,6 +31,16 @@ NOTICE_EVENTS = frozenset({
     "FRIEND_ADD", "FRIEND_DEL", "SUBSCRIBE_MESSAGE_STATUS", "INTERACTION_CREATE",
 })
 
+#: Intents this connector identifies with by default -- unchanged bits that carry
+#: the group full/AT message, robot add/remove and friend families.
+BASE_INTENTS = (1 << 25) | (1 << 12)
+#: ``GROUP_JOIN_REQUEST`` / ``GROUP_MEMBER_ADD`` / ``GROUP_MEMBER_REMOVE`` only
+#: arrive with GROUP_MEMBER_EVENT (1 << 24), ``INTERACTION_CREATE`` only with
+#: INTERACTION (1 << 26). Subscribing an intent the bot is not entitled to makes
+#: the gateway drop the connection outright, so those bits stay opt-in through
+#: the ``extra_intents`` argument; the event types remain registered so wired
+#: consumers start working the moment the operator opts in.
+
 #: Rich-media ``file_type`` values of the upload interfaces.
 FILE_TYPE_IMAGE = 1
 FILE_TYPE_VIDEO = 2
@@ -39,7 +49,13 @@ FILE_TYPE_FILE = 4
 
 #: Passive-reply and mute relevant ``err_code``s ("judge by err_code, not by message").
 ERR_TOKEN_INVALID = 40011027
-ERR_GROUP_MUTED = 850018
+#: ``40054002`` is what the plain send interface reports while the bot is muted;
+#: ``850018`` comes from the rich-media/upload family. Watching only one leaves
+#: the other mute unrecorded.
+ERR_GROUP_MUTED = frozenset({850018, 40054002})
+
+#: How long an id stays in ``_seen_groups`` without another message.
+_SEEN_GROUPS_TTL = 30 * 24 * 3600
 
 #: ``file_data`` (inline binary upload) size ceiling; above it URL/chunked upload is
 #: required. shortcut: inline upload only, >5 MB falls back to the URL path.
@@ -324,6 +340,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         identity_probe: Any = None,
         emit_log: Any = None,
         sandbox: Any = None,
+        extra_intents: int = 0,
     ):
         #: Sandbox toggle: a bool or a zero-arg callable (same convention as
         #: ``identity_probe``). Passed as a callable, a settings change takes effect
@@ -337,6 +354,9 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         #: No-op by default, same convention as OneBotClient.
         self._emit_log = emit_log or (lambda level, msg: None)
         self._identity_probe_emitted = 0
+        #: Identify intents; bits beyond ``BASE_INTENTS`` must be granted to this
+        #: bot first, or the gateway disconnects on identify.
+        self._intents = BASE_INTENTS | _to_int(extra_intents)
         #: Connection-mode marker, so runtime knows whether it must rebuild the
         #: connection (= "open_platform").
         self.mode = "open_platform"
@@ -377,6 +397,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         self._event_sinks: list = []
         #: group_id -> muted-until, same shape as ``OneBotClient._group_muted``.
         self._group_muted: dict[str, float] = {}
+        #: group_id -> last observed ``global_rule`` of the mute settings.
+        self._shut_global_rule: dict[str, dict] = {}
 
     @property
     def needs_attention(self) -> bool:
@@ -506,7 +528,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         await self._ws.send(json.dumps({
             "op": 2, "d": {
                 "token": f"QQBot {self._access_token}",
-                "intents": (1 << 25) | (1 << 12),
+                "intents": self._intents,
                 "shard": [0, 1],
             },
         }))
@@ -746,14 +768,22 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
 
     def _remember_group(self, group_id: str) -> None:
         group_id = str(group_id or "").strip()
-        if group_id:
-            self._mutable("_seen_groups", dict)[group_id] = time.time()
+        if not group_id:
+            return
+        seen = self._mutable("_seen_groups", dict)
+        now = time.time()
+        # shortcut: TTL sweep happens at record time; a group silent for 30 days
+        # drops out of ``get_group_list``, which stays honest for "actually seen".
+        for stale in [k for k, ts in seen.items() if now - ts > _SEEN_GROUPS_TTL]:
+            seen.pop(stale, None)
+        seen[group_id] = now
 
     def is_group_muted(self, group_id: str) -> bool:
         """Local mute bookkeeping, same shape as ``OneBotClient.is_group_muted``.
 
-        The only reliable signal this channel has is the platform rejecting a send with
-        ``850018``; without recording it the caller keeps sending into a muted group.
+        The only reliable signal this channel has is the platform rejecting a send
+        with ``40054002`` / ``850018``; without recording it the caller keeps sending
+        into a muted group.
         """
         gid = str(group_id or "").strip()
         if not gid:
@@ -1409,8 +1439,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         """One v2 call: token, auth headers, err_code judgement, one token retry.
 
         ``err_code`` is the only stable failure signal (the docs say not to judge by
-        ``message``), and success may carry no body at all -- a 200 with an empty body
-        is returned as ``{}`` rather than treated as an error.
+        ``message``), and success may carry no body at all -- any 2xx (a 200 with an
+        empty body, or a 204) is returned as ``{}`` rather than treated as an error.
         """
         from urllib.parse import urlencode
 
@@ -1431,7 +1461,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             data = {}
         body = data if isinstance(data, dict) else {}
         err_code = _to_int(body.get("err_code") or body.get("code"))
-        if status == 200 and err_code == 0:
+        if 200 <= status < 300 and not err_code:
             return body
         if err_code == ERR_TOKEN_INVALID and retry_on_token:
             self._access_token = ""
@@ -1439,7 +1469,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             await self._refresh_token()
             return await self._api(
                 method, path, params=params, payload=payload, retry_on_token=False)
-        if err_code == ERR_GROUP_MUTED:
+        if err_code in ERR_GROUP_MUTED:
             gid = _group_id_of(path)
             if gid:
                 # Without this the caller keeps sending into a muted group and learns
@@ -1802,6 +1832,10 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         state = await self._api("GET", f"/v2/groups/{gid}/bot_state")
         self._recv_msg_setting = str(state.get("recv_msg_setting") or "")
         self._bot_member_role = str(state.get("member_role") or "")
+        # Keep an earlier self-detected id when this interface is not entitled
+        # to answer with one.
+        self._bot_member_openid = str(
+            state.get("member_openid") or self._bot_member_openid)
         return state
 
     async def get_group_member_info(self, group_id: str = "", user_id: str = "", **_: Any) -> dict:
@@ -1834,8 +1868,15 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         if not gid or not member:
             return {}
         seconds = _to_int(duration)
+        op = "del"
+        if seconds > 0:
+            # ``add`` is rejected for a member who is already muted; retiming
+            # one is an ``update``.
+            muted = {str(m.get("member_openid") or "")
+                     for m in await self.get_group_shut_list(gid)}
+            op = "update" if member in muted else "add"
         entry = {
-            "op": "del" if seconds <= 0 else "add",
+            "op": op,
             "member_openid": member,
             # The platform takes an expiry timestamp, not a duration.
             "mute_expire_at": "" if seconds <= 0 else _rfc3339_in(seconds)}
@@ -1844,9 +1885,22 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         return {"status": "ok"}
 
     async def get_group_shut_list(self, group_id: str = "", **_: Any) -> list:
-        data = await self._api("GET", f"/v2/groups/{str(group_id or '').strip()}/restrict_chat_setting")
+        gid = str(group_id or "").strip()
+        data = await self._api("GET", f"/v2/groups/{gid}/restrict_chat_setting")
+        rule = data.get("global_rule")
+        self._mutable("_shut_global_rule", dict)[gid] = (
+            rule if isinstance(rule, dict) else {})
         members = data.get("members")
         return members if isinstance(members, list) else []
+
+    def group_shut_global_rule(self, group_id: str) -> dict:
+        """Last observed global rule (``mode``: none/always/schedule) for one group.
+
+        With a mode other than ``none`` everyone -- the bot included -- is muted,
+        so an empty :meth:`get_group_shut_list` does not mean sends will pass.
+        """
+        return dict(
+            self._mutable("_shut_global_rule", dict).get(str(group_id or "").strip()) or {})
 
     async def set_group_kick(self, group_id: str = "", user_id: str = "", **kw: Any) -> dict:
         gid = str(group_id or "").strip()
@@ -1869,8 +1923,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     async def set_group_add_request(self, flag: str = "", approve: bool = True, reason: str = "", **kw: Any) -> dict:
         """Approve or decline one join request; ``list_group_join_requests`` supplies the ids.
 
-        Join-request *events* need the GROUP_MEMBER_EVENT intent which this connector
-        does not subscribe to, so approvals are pulled rather than pushed.
+        Join-request *events* need the GROUP_MEMBER_EVENT intent, off unless
+        ``extra_intents`` opts in, so approvals are pulled rather than pushed.
         """
         gid = str(kw.get("group_id") or kw.get("group_openid") or "").strip()
         member = str(kw.get("user_id") or kw.get("member_openid") or "").strip()
@@ -1878,8 +1932,11 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             return {}
         body: dict[str, Any] = {
             "op": "approve" if approve else "decline", "join_request_id": str(flag or "")}
-        if not approve and reason:
-            body["reject_reason"] = str(reason)[:100]
+        if not approve:
+            if reason:
+                body["reject_reason"] = str(reason)[:100]
+            if kw.get("add_to_member_blacklist"):
+                body["add_to_member_blacklist"] = True
         await self._api("POST", f"/v2/groups/{gid}/approval_join_request/{member}", payload=body)
         return {"status": "ok"}
 
@@ -1943,7 +2000,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         There is no "my groups" endpoint, and the old flat ``[]`` could not tell
         "the bot is in no group" from "the ids were never learned" -- which matters
         because group ids here are ``group_openid`` values that cannot be guessed from
-        a QQ group number.
+        a QQ group number. ``group_name`` is empty: no push carries it, and
+        :meth:`get_group_info` resolves it one call per group.
         """
         return [
             {"group_id": gid, "group_name": ""}

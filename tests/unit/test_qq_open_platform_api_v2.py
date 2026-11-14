@@ -278,6 +278,69 @@ def test_mute_sends_an_expiry_timestamp_and_del_lifts_it():
     assert conn._http.calls[-1][2]["members"][0]["op"] == "del"
 
 
+# ── review follow-ups: intents opt-in, mute codes, 204, richer mute state ──
+
+def test_intents_stay_opt_in_beyond_the_always_sent_bits():
+    conn = QQOpenPlatformConnection(app_id="1", client_secret="2")
+    assert conn._intents == (1 << 25) | (1 << 12)
+    opted = QQOpenPlatformConnection(
+        app_id="1", client_secret="2", extra_intents=1 << 24)
+    assert opted._intents == (1 << 25) | (1 << 12) | (1 << 24)
+
+
+def test_both_documented_mute_codes_are_recorded():
+    for code in (850018, 40054002):
+        conn = _conn([_Response({"err_code": code, "message": "机器人已被禁言"}, 400)])
+        with pytest.raises(QQOpenPlatformAPIError):
+            run(conn.get_group_info("G5"))
+        assert conn.is_group_muted("G5") is True
+
+
+def test_write_calls_may_succeed_as_204_with_no_body():
+    conn = _conn([_Response(None, 204)])
+    assert run(conn.set_group_ban("G1", "M1", 0)) == {"status": "ok"}
+    assert conn._http.calls[-1][0] == "POST"
+
+
+def test_bot_state_lands_the_member_openid():
+    conn = _conn([_Response({"recv_msg_setting": "all", "member_role": "member",
+                             "member_openid": "BOT1"})])
+    run(conn.get_group_bot_state("G1"))
+    assert conn._bot_member_openid == "BOT1"
+
+
+def test_shut_list_keeps_the_global_rule():
+    conn = _conn([_Response({"members": [{"member_openid": "A"}],
+                             "global_rule": {"mode": "always"}})])
+    assert [m["member_openid"] for m in run(conn.get_group_shut_list("G1"))] == ["A"]
+    assert conn.group_shut_global_rule("G1") == {"mode": "always"}
+
+
+def test_remuting_an_already_muted_member_uses_update():
+    conn = _conn([_Response({"members": [{"member_openid": "M1"}]}), _Response({})])
+    run(conn.set_group_ban("G1", "M1", 600))
+    assert conn._http.calls[0][1].endswith("/v2/groups/G1/restrict_chat_setting")
+    assert conn._http.calls[-1][2]["members"][0]["op"] == "update"
+
+
+def test_declined_join_request_can_move_the_applier_to_the_blacklist():
+    conn = _conn()
+    run(conn.set_group_add_request("F1", approve=False, reason="不合适",
+                                   group_id="G1", user_id="M1",
+                                   add_to_member_blacklist=True))
+    body = conn._http.calls[-1][2]
+    assert body["reject_reason"] == "不合适"
+    assert body["add_to_member_blacklist"] is True
+
+
+def test_seen_groups_expire():
+    conn = _conn()
+    conn._remember_group("G1")
+    conn._seen_groups["G1"] -= 31 * 24 * 3600
+    conn._remember_group("G2")
+    assert [g["group_id"] for g in run(conn.get_group_list())] == ["G2"]
+
+
 def test_voice_message_uploads_file_type_three_then_sends_msg_type_seven():
     conn = _conn([_Response({"file_info": "FI-voice"}), _Response({"id": "m-voice"})])
     assert run(conn.send_group_record("G1", "https://cdn.example/a.wav")) == "m-voice"
