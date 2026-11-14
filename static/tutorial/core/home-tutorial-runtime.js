@@ -7,7 +7,6 @@
         'computer_use_enabled',
         'browser_use_enabled',
         'user_plugin_enabled',
-        'openclaw_enabled',
     ]);
 
     const mod = {};
@@ -264,15 +263,7 @@
     }
 
     function syncAgentFlagsUi() {
-        if (typeof window.syncAgentFlagsFromBackend === 'function') {
-            try {
-                Promise.resolve(window.syncAgentFlagsFromBackend()).catch(function (error) {
-                    console.warn('[HomeTutorialRuntime] agent flag UI sync failed:', error);
-                });
-            } catch (error) {
-                console.warn('[HomeTutorialRuntime] agent flag UI sync failed:', error);
-            }
-        }
+        // 开关本身由 agent_ui_v2 按后端推来的状态快照刷新，这里只需要让任务 HUD 跟上。
         if (typeof window.checkAndToggleTaskHUD === 'function') {
             try {
                 window.checkAndToggleTaskHUD();

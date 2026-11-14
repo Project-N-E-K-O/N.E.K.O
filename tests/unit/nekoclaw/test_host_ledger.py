@@ -633,3 +633,118 @@ async def test_reporter_stores_nothing_for_a_silent_result_or_a_child_task_agent
     # A question from a child task agent still has to reach the user.
     assert await reporter.question(child, {"kind": "questions", "questions": []}) is not None
     assert [item.kind for item in await ledger.outbox_pending()] == ["question"]
+
+
+# ---------------------------------------------------------------------------
+# Listeners and the report of what an earlier process left unfinished
+# ---------------------------------------------------------------------------
+
+
+async def test_listener_is_told_of_filings_and_status_changes_after_they_are_stored(ledger):
+    seen: list[tuple[str, str, Any]] = []
+
+    def listener(commission: Any, previous: Any) -> None:
+        seen.append((commission.id, commission.status, previous))
+
+    ledger.subscribe(listener)
+    commission = await _file(ledger)
+    await ledger.transition(commission.id, "working")
+    await ledger.transition(commission.id, "done")
+
+    assert seen == [
+        (commission.id, "queued", None),
+        (commission.id, "working", "queued"),
+        (commission.id, "done", "working"),
+    ]
+
+
+async def test_listener_is_not_told_of_a_refused_move_or_of_a_filing_that_did_not_happen(ledger):
+    commission = await _file(ledger)
+    await _walk(ledger, commission.id, "cancelled")
+    seen: list[Any] = []
+    ledger.subscribe(lambda commission, previous: seen.append((commission.status, previous)))
+
+    refused = await ledger.transition(commission.id, "working")
+    same, created = await ledger.create(
+        unless=lambda active: commission,
+        lanlan_name="Lan",
+        title="weather",
+        dispatch_text="check the weather",
+        source="dispatch",
+    )
+
+    assert not refused.applied and not created and same.id == commission.id
+    assert seen == []
+
+
+async def test_a_listener_that_raises_does_not_undo_the_change_or_silence_the_others(ledger):
+    seen: list[str] = []
+
+    def broken(commission: Any, previous: Any) -> None:
+        raise RuntimeError("listener bug")
+
+    ledger.subscribe(broken)
+    ledger.subscribe(lambda commission, previous: seen.append(commission.status))
+
+    commission = await _file(ledger)
+    moved = await ledger.transition(commission.id, "working")
+
+    assert moved.applied
+    assert (await ledger.get(commission.id)).status == "working"
+    assert seen == ["queued", "working"]
+
+
+async def test_unsubscribing_stops_the_calls(ledger):
+    seen: list[str] = []
+    unsubscribe = ledger.subscribe(lambda commission, previous: seen.append(commission.status))
+    commission = await _file(ledger)
+
+    unsubscribe()
+    unsubscribe()
+    await ledger.transition(commission.id, "working")
+
+    assert seen == ["queued"]
+
+
+async def test_what_an_earlier_process_left_unfinished_is_reported_with_its_failure(tmp_path):
+    path = tmp_path / "nekoclaw" / "ledger.db"
+    first = Ledger(path)
+    working = await _file(first, title="resize the photos")
+    await first.transition(working.id, "working")
+    blocked = await _file(first, title="book a table")
+    await _walk(first, blocked.id, "blocked")
+    await first.close()
+
+    asked: list[str] = []
+
+    def report(commission: Any) -> Any:
+        asked.append(commission.id)
+        return "task_result", {"task_id": commission.id, "status": commission.status, "delivery_mode": "passive"}
+
+    second = Ledger(path, reconcile_report=report)
+    try:
+        rows = await second.outbox_pending()
+        assert asked == [working.id]
+        assert [(row.commission_id, row.kind, row.payload) for row in rows] == [
+            (working.id, "task_result", {"task_id": working.id, "status": "failed", "delivery_mode": "passive"})
+        ]
+        assert (await second.get(working.id)).status == "failed"
+        assert (await second.get(blocked.id)).status == "blocked"
+    finally:
+        await second.close()
+
+
+async def test_no_report_is_stored_when_the_hook_gives_none(tmp_path):
+    path = tmp_path / "nekoclaw" / "ledger.db"
+    first = Ledger(path)
+    commission = await _file(first)
+    await first.transition(commission.id, "working")
+    await first.close()
+
+    second = Ledger(path, reconcile_report=lambda commission: None)
+    try:
+        assert await second.outbox_pending() == []
+        assert (await second.get(commission.id)).status == "failed"
+    finally:
+        await second.close()
+

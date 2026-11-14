@@ -185,12 +185,15 @@ def test_wayland_agent_never_reopens_portal_for_each_frame():
 
 
 @pytest.mark.unit
-def test_both_agent_toggles_wait_for_capture_permission_before_enabling():
+def test_agent_toggle_waits_for_capture_permission_before_enabling():
     modern = (ROOT / "static/js/agent_ui_v2.js").read_text(encoding="utf-8")
-    legacy = (ROOT / "static/app/app-agent.js").read_text(encoding="utf-8")
     assert modern.index("await capturePreparation") < modern.index("await sendCommand('set_flag'")
-    legacy_toggle = legacy.split("const capturePreparation = flagKey === 'computer_use_enabled'", 1)[1]
-    assert legacy_toggle.index("await capturePreparation") < legacy_toggle.index("fetch('/api/agent/flags'")
+    # agent_ui_v2 is the only toggle controller: app-agent.js hands over to it
+    # and writes no flags itself, so no toggle can skip the wait above.
+    app_agent = (ROOT / "static/app/app-agent.js").read_text(encoding="utf-8")
+    assert "window.initAgentUiV2();" in app_agent
+    assert "/api/agent/flags" not in app_agent
+    assert "/api/agent/command" not in app_agent
 
 
 @pytest.mark.unit
@@ -221,12 +224,10 @@ def test_computer_use_stream_owner_is_brokered_across_chat_and_pet():
 def test_screen_share_chooser_timeout_can_use_native_fallback_without_hanging_toggle():
     source = (ROOT / "static/app/app-websocket.js").read_text(encoding="utf-8")
     modern = (ROOT / "static/js/agent_ui_v2.js").read_text(encoding="utf-8")
-    legacy = (ROOT / "static/app/app-agent.js").read_text(encoding="utf-8")
     assert "requestTimedOut = true" in source
     assert "stream.getTracks().forEach(function (track) { track.stop(); });" in source
     assert "window.computerUseNativeCaptureAvailable = async function ()" in source
-    for toggle in (modern, legacy):
-        assert "await window.computerUseNativeCaptureAvailable()" in toggle
+    assert "await window.computerUseNativeCaptureAvailable()" in modern
 
 
 @pytest.mark.unit
@@ -236,7 +237,13 @@ def test_active_task_cards_reconcile_with_backend_terminal_state():
         "window.computerUseNeedsCaptureStream", 1
     )[0]
     assert "fetch('/api/agent/tasks', { cache: 'no-store' })" in reconcile
-    assert "['completed', 'failed', 'cancelled']" in reconcile
+    # blocked has ended, like failed; a task waiting for the user's reply is
+    # still under way and keeps the reconciliation running.
+    assert "['completed', 'failed', 'cancelled', 'blocked']" in reconcile
+    assert "['completed', 'failed', 'cancelled']" not in reconcile
+    still_under_way = "return task.status === 'running' || task.status === 'queued' || task.status === 'waiting_user';"
+    assert reconcile.count(still_under_way) == 2
+    assert "task.status !== 'running' && task.status !== 'queued' && task.status !== 'waiting_user'" in reconcile
     assert "terminal_at: terminalAt" in reconcile
     assert "taskMap = window._agentTaskMap" in reconcile
 

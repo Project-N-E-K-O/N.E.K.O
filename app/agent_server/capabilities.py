@@ -33,22 +33,11 @@ from ._shared import (
     logger,
     BrowserUseAdapter,
     ComputerUseAdapter,
-    ThrottledLogger,
     _set_capability,
     _bump_state_revision,
 )
-from .registry import _cleanup_task_registry, _now_iso
+from ._shared import _now_iso
 from .results import _emit_main_event
-
-
-def _rewire_browser_use_dependents() -> None:
-    """Keep task_executor in sync after BrowserUse lifecycle changes."""
-    try:
-        executor = _shared.Modules.task_executor
-        if executor is not None and hasattr(executor, "browser_use"):
-            executor.browser_use = _shared.Modules.browser_use
-    except Exception as exc:
-        logger.debug("[Agent] BrowserUse dependent rewire failed: %s", exc)
 
 
 def _browser_use_dependency_status() -> tuple[bool, str]:
@@ -85,7 +74,6 @@ async def _ensure_browser_use_adapter():
             return None
 
         _shared.Modules.browser_use = current
-        _rewire_browser_use_dependents()
         logger.info("[Agent] BrowserUseAdapter ready (on-demand init)")
         return current
 
@@ -116,7 +104,6 @@ async def _close_browser_use_adapter(
         async with _shared.Modules.browser_use_init_lock:
             current = _shared.Modules.browser_use
             if current is None:
-                _rewire_browser_use_dependents()
                 if (
                     update_capability
                     and (
@@ -137,7 +124,6 @@ async def _close_browser_use_adapter(
             finally:
                 if not cancelled:
                     _shared.Modules.browser_use = None
-                    _rewire_browser_use_dependents()
                     if (
                         update_capability
                         and (
@@ -146,15 +132,6 @@ async def _close_browser_use_adapter(
                         )
                     ):
                         _set_unloaded_browser_use_capability(capability_reason)
-
-def _rewire_computer_use_dependents() -> None:
-    """Keep task_executor in sync after computer_use adapter refresh."""
-    try:
-        if _shared.Modules.task_executor is not None and hasattr(_shared.Modules.task_executor, "computer_use"):
-            _shared.Modules.task_executor.computer_use = _shared.Modules.computer_use
-    except Exception:
-        pass
-
 
 def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
     """
@@ -169,7 +146,6 @@ def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
     try:
         refreshed = ComputerUseAdapter()
         _shared.Modules.computer_use = refreshed
-        _rewire_computer_use_dependents()
         logger.info("[Agent] ComputerUse adapter rebuilt (connectivity pending)")
         return True
     except Exception as e:
@@ -219,13 +195,11 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
         # transient timeout) and we must not flip flags off or post a bogus
         # "猫爪预检失败 / 已自动关闭" toast on top of a working task.
         def _has_running(kind: str) -> bool:
-            try:
-                for info in _shared.Modules.task_registry.values():
-                    if info.get("type") == kind and info.get("status") in ("queued", "running"):
-                        return True
-            except Exception:
-                pass
-            return False
+            from nekoclaw.host.capabilities import BUILTIN_BROWSER, BUILTIN_KEYBOARD_MOUSE
+
+            from .nekoclaw_builtins import provider
+
+            return provider.is_running(BUILTIN_KEYBOARD_MOUSE if kind == "computer_use" else BUILTIN_BROWSER)
 
         try:
             probe_result = await asyncio.get_event_loop().run_in_executor(None, _probe)
@@ -301,12 +275,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
 
 
 def _agent_flags_snapshot() -> Dict[str, Any]:
-    flags = dict(_shared.Modules.agent_flags or {})
-    openclaw_capability = (_shared.Modules.capability_cache or {}).get("openclaw") or {}
-    flags["openclaw_ready"] = bool(flags.get("openclaw_enabled")) and bool(
-        openclaw_capability.get("ready")
-    )
-    return flags
+    return dict(_shared.Modules.agent_flags or {})
 
 
 def _collect_agent_status_snapshot() -> Dict[str, Any]:
@@ -316,26 +285,12 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     gate = _agent_server_facade._check_agent_api_gate()
     flags = _agent_flags_snapshot()
     capabilities = dict(_shared.Modules.capability_cache or {})
-    # Periodic cleanup of completed tasks to prevent memory leak
-    # Note: _emit_agent_status_update also calls this and handles timed_out tasks
-    _cleanup_task_registry()
-    # Include active (queued/running) tasks so frontend can restore after page refresh
-    active_tasks = []
-    for tid, info in _shared.Modules.task_registry.items():
-        try:
-            st = info.get("status")
-            if st in ("queued", "running"):
-                active_tasks.append({
-                    "id": tid,
-                    "status": st,
-                    "type": info.get("type"),
-                    "start_time": info.get("start_time"),
-                    "params": info.get("params", {}),
-                    "session_id": info.get("session_id"),
-                    "lanlan_name": info.get("lanlan_name"),
-                })
-        except Exception:
-            continue
+    # The commissions under way, so the frontend can restore its task HUD
+    # after a page refresh. Read from this process's view of the ledger;
+    # nothing is opened or fetched here.
+    from .nekoclaw_mount import hud
+
+    active_tasks = hud.active()
     note = _shared.Modules.notification
     if _shared.Modules.notification:
         _shared.Modules.notification = None
@@ -354,26 +309,6 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
 
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
     try:
-        # First check for timed-out deferred tasks and send task_update notifications
-        timed_out = _cleanup_task_registry()
-        for task_info in timed_out:
-            try:
-                await _emit_main_event(
-                    "task_update",
-                    task_info.get("lanlan_name"),
-                    task={
-                        "id": task_info.get("id"),
-                        "status": "failed",
-                        "type": task_info.get("type"),
-                        "start_time": task_info.get("start_time"),
-                        "end_time": task_info.get("end_time"),
-                        "error": task_info.get("error"),
-                        "params": task_info.get("params", {}),
-                    },
-                )
-            except Exception as e:
-                logger.warning("[Agent] Failed to emit task_update for timed-out task %s: %s", task_info.get("id"), e)
-
         snapshot = _collect_agent_status_snapshot()
         await _emit_main_event(
             "agent_status_update",

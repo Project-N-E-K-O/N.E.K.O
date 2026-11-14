@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from main_logic.tool_calling import ToolDefinition, ToolRegistry
 from main_routers import tool_router as tr
+from main_routers import tool_host_monitor as host_monitor
 
 
 class _Mgr:
@@ -60,7 +62,7 @@ def _use_managers(monkeypatch, *managers):
     return mapping
 
 
-async def _register(name, *, role=None, source="plugin:mc", description="", port=9001):
+async def _register(name, *, role=None, source="plugin:mc", description="", port=9001, host_id=None):
     return await tr.register_tool(
         tr.ToolRegisterRequest(
             name=name,
@@ -68,12 +70,147 @@ async def _register(name, *, role=None, source="plugin:mc", description="", port
             callback_url=f"http://127.0.0.1:{port}/cb",
             role=role,
             source=source,
+            host_instance_id=host_id,
+            host_pid=1 if host_id else None,
+            host_process_started_at=1 if host_id else None,
         )
     )
 
 
 def _rebuilt(name):
     return _Mgr(name)
+
+
+@pytest.mark.asyncio
+async def test_host_probe_reclaims_tools_without_dispatch(monkeypatch):
+    alpha, beta = _Mgr("Alpha"), _Mgr("Beta")
+    _use_managers(monkeypatch, alpha, beta)
+    await _register("shared", host_id="old")
+    await _register("scoped", role="Beta", host_id="old")
+    await _register("legacy")
+    running = True
+    requests = 0
+
+    def health(request):
+        nonlocal requests
+        requests += 1
+        if not running:
+            raise httpx.ConnectError("host exited", request=request)
+        return httpx.Response(200, json={"host_instance_id": "old"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(health)) as client:
+        monkeypatch.setattr(host_monitor, "get_internal_http_client", lambda: client)
+        monkeypatch.setattr(host_monitor, "_process_exited", lambda *_: not running)
+        monitor = host_monitor.ToolHostMonitor(tr._registered_tool_hosts, tr._evict_tool_host)
+        await monitor.probe_once()
+        assert requests == 1
+        running = False
+        for _ in range(host_monitor._FAILURE_THRESHOLD - 1):
+            await monitor.probe_once()
+            assert beta.tool_registry.get("scoped") is not None
+        await monitor.probe_once()
+
+    for mgr in (alpha, beta):
+        assert mgr.tool_registry.names() == ["legacy"]
+        assert tr.replay_remote_tools(_rebuilt(mgr.lanlan_name), mgr.lanlan_name) == ["legacy"]
+
+
+@pytest.mark.asyncio
+async def test_old_host_probe_and_release_preserve_same_port_replacement(monkeypatch):
+    alpha = _Mgr("Alpha")
+    _use_managers(monkeypatch, alpha)
+    await _register("shared", host_id="old")
+    await _register("old_only", host_id="old")
+    probing = asyncio.Event()
+    replaced = asyncio.Event()
+
+    async def health(request):
+        probing.set()
+        await replaced.wait()
+        return httpx.Response(200, json={"host_instance_id": "new"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(health)) as client:
+        monkeypatch.setattr(host_monitor, "get_internal_http_client", lambda: client)
+        monkeypatch.setattr(host_monitor, "_process_exited", lambda *_: True)
+        monitor = host_monitor.ToolHostMonitor(tr._registered_tool_hosts, tr._evict_tool_host)
+        pending_probe = asyncio.create_task(monitor.probe_once())
+        await asyncio.wait_for(probing.wait(), timeout=1)
+        try:
+            await _register("shared", host_id="new", description="replacement")
+            await _register("new_only", host_id="new")
+        finally:
+            replaced.set()
+            await pending_probe
+
+    assert alpha.tool_registry.names() == ["shared", "new_only"]
+    stale_unregistration = await tr.unregister_tool(tr.ToolUnregisterRequest(
+        name="shared", expected_source="plugin:mc", expected_host_instance_id="old",
+    ))
+    assert stale_unregistration["removed"] is False
+    # A delayed callback failure from before the restart must also be scoped
+    # to the old host, even though it has the same source and callback address.
+    tr._evict_dead_callback_origin("plugin:mc", "http://127.0.0.1:9001", "old")
+    assert (await tr.release_tool_host(tr.ToolHostReleaseRequest(host_instance_id="old")))["removed"] == 0
+    assert tr.replay_remote_tools(_rebuilt("Alpha"), "Alpha") == ["shared", "new_only"]
+    assert alpha.tool_registry.get("shared").description == "replacement"
+    assert (await tr.release_tool_host(tr.ToolHostReleaseRequest(host_instance_id="new")))["removed"] == 2
+
+
+@pytest.mark.asyncio
+async def test_host_that_has_not_bound_yet_keeps_startup_registrations(monkeypatch):
+    alpha = _Mgr("Alpha")
+    _use_managers(monkeypatch, alpha)
+    await _register("startup_tool", host_id="starting")
+
+    def health(request):
+        raise httpx.ConnectError("socket not bound", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(health)) as client:
+        monkeypatch.setattr(host_monitor, "get_internal_http_client", lambda: client)
+        loop = asyncio.get_running_loop()
+
+        def process_exited(*_):
+            with pytest.raises(RuntimeError, match="no running event loop"):
+                asyncio.get_running_loop()
+            assert loop.is_running()
+            return False
+
+        monkeypatch.setattr(host_monitor, "_process_exited", process_exited)
+        monitor = host_monitor.ToolHostMonitor(tr._registered_tool_hosts, tr._evict_tool_host)
+        for _ in range(host_monitor._FAILURE_THRESHOLD + 1):
+            await monitor.probe_once()
+    assert alpha.tool_registry.get("startup_tool") is not None
+
+
+@pytest.mark.asyncio
+async def test_never_confirmed_host_is_reclaimed_after_startup_grace(monkeypatch):
+    # An embedded host that stopped before its first probe and failed to
+    # release leaves an instance that never answered /health while the shared
+    # process keeps running; once the grace period ends it must be reclaimed.
+    alpha = _Mgr("Alpha")
+    _use_managers(monkeypatch, alpha)
+    await _register("stale_only", host_id="stale")
+    await _register("fresh_only", host_id="fresh", port=9002)
+
+    def health(request):
+        if request.url.port == 9002:
+            return httpx.Response(200, json={"host_instance_id": "fresh"})
+        raise httpx.ConnectError("listener stopped", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(health)) as client:
+        monkeypatch.setattr(host_monitor, "get_internal_http_client", lambda: client)
+        monkeypatch.setattr(host_monitor, "_process_exited", lambda *_: False)
+        monitor = host_monitor.ToolHostMonitor(tr._registered_tool_hosts, tr._evict_tool_host)
+        for _ in range(host_monitor._FAILURE_THRESHOLD + 1):
+            await monitor.probe_once()
+        assert alpha.tool_registry.get("stale_only") is not None
+        for state in monitor._probes.values():
+            state.first_probed_at -= host_monitor._STARTUP_GRACE
+        for _ in range(host_monitor._FAILURE_THRESHOLD):
+            await monitor.probe_once()
+
+    assert alpha.tool_registry.names() == ["fresh_only"]
+    assert tr.replay_remote_tools(_rebuilt("Alpha"), "Alpha") == ["fresh_only"]
 
 
 @pytest.mark.asyncio

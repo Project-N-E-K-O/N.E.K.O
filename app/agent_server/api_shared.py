@@ -52,7 +52,6 @@ import httpx
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
 # ``_shared`` calls setup_logging() before any config/brain import so
 # import-time failures are persisted — same order as the old monolith.
@@ -64,78 +63,25 @@ from ._shared import (  # noqa: F401
     AgentServerEventBridge,
     ComputerUseAdapter,
     BrowserUseAdapter,
-    OpenClawAdapter,
-    TaskDeduper,
-    DirectTaskExecutor,
-    parse_computer_use_result,
-    parse_browser_use_result,
-    parse_plugin_result,
-    _rp_phrase,
-    _rp_lang,
     Modules,
     PLUGIN_NAME_CACHE_TTL,
-    TASK_REGISTRY_CLEANUP_TTL,
-    DEFERRED_TASK_TIMEOUT,
-    OPENCLAW_ENABLE_CHECK_ATTEMPTS,
-    OPENCLAW_ENABLE_CHECK_INTERVAL,
     _get_throttled_logger,
     _bump_state_revision,
     _set_capability,
     _track_background_task,
     _create_tracked_task,
+    _now_iso,
 )
 
-from config import (  # noqa: F401  (tail entries keep facade parity with the old monolith namespace)
+from config import (  # noqa: F401
     USER_PLUGIN_SERVER_PORT,
-    TASK_ERROR_MAX_TOKENS,
-    EXCEPTION_TEXT_MAX_CHARS,
-    USER_NOTIFICATION_REASON_MAX_CHARS,
-    USER_NOTIFICATION_ERROR_MAX_CHARS,
     TOOL_SERVER_PORT,
-    TASK_DETAIL_MAX_TOKENS,
-    AGENT_HISTORY_TURNS,
-    ERROR_MESSAGE_MAX_CHARS,
-    TASK_TRACKER_DETAIL_MAX_CHARS,
-    TASK_TRACKER_INJECT_DETAIL_MAX_CHARS,
-    AGENT_PROACTIVE_ANALYZE_ENABLED,
-    AGENT_PROACTIVE_ANALYZE_MAX_PER_SESSION,
 )
 from utils.config_manager import get_config_manager
 from utils.host_origin_guard import HostOriginGuardMiddleware
-from utils.tokenize import truncate_to_tokens as _tt
 
-from .tracker import (  # noqa: F401
-    TASK_TRACKER_MAX_RECORDS,
-    TASK_TRACKER_TTL,
-    AgentTaskTracker,
-    _task_tracker,
-    _normalize_lanlan_key,
-    _user_message_sender_id,
-    _user_message_payload_text,
-    _build_user_turn_fingerprint,
-    _build_assistant_turn_fingerprint,
-    _build_analyze_event_fingerprint,
-    _user_message_signature,
-    _last_user_message_signature,
-    REDACTED_USER_TURN_MARKER,
-    _redact_cancelled_user_turns,
-)
-from .registry import (  # noqa: F401
-    _LEGACY_CORRECTION_PUBLIC_KEYS,
-    _now_iso,
-    _cleanup_task_registry,
-    _collect_existing_task_descriptions,
-    _is_duplicate_task,
-    _spawn_task,
-    _set_internal_correction_context,
-    _get_internal_correction_context,
-    _tracker_desc_for_task_info,
-    _public_task_info,
-    _spawn_background_cancel,
-)
 from .plugin_host import (  # noqa: F401
     _plugin_name_cache_lock,
-    _bind_deferred_task,
     _get_plugin_friendly_name,
     _get_plugin_display_id,
     _start_embedded_user_plugin_server,
@@ -148,8 +94,6 @@ from .capabilities import (  # noqa: F401
     _browser_use_dependency_status,
     _close_browser_use_adapter,
     _ensure_browser_use_adapter,
-    _rewire_browser_use_dependents,
-    _rewire_computer_use_dependents,
     _try_refresh_computer_use_adapter,
     _llm_check_lock,
     _fire_agent_llm_connectivity_check,
@@ -158,34 +102,23 @@ from .capabilities import (  # noqa: F401
     _emit_agent_status_update,
 )
 from .results import (  # noqa: F401
-    _emit_task_result,
     _emit_main_event,
+    _send_main_event,
 )
-from . import channels
-from .channels.computer_use import (  # noqa: F401
-    _run_computer_use_task,
-    _computer_use_scheduler_loop,
-)
-from .channels.openclaw import (  # noqa: F401
-    _default_openclaw_task_description,
-    _resolve_openclaw_sender_id,
-    _collect_active_openclaw_task_ids,
-    _cancel_openclaw_tasks_for_stop,
-    _openclaw_pending,
-    _cancel_openclaw_enable_probe,
-    _openclaw_first_reason,
-    _openclaw_reason_code,
-    _openclaw_reason_text,
-    _openclaw_notification,
-    _start_openclaw_enable_probe,
-    _run_openclaw_enable_probe,
-)
-from .channels.user_plugin import (  # noqa: F401
-    _plugin_terminal_status,
-    _resolve_delivery_mode,
-    _resolve_plugin_result_contract,
-    _lookup_llm_result_fields,
-    _is_reply_suppressed,
+from .nekoclaw_builtins import provider as builtin_provider  # noqa: F401
+from .nekoclaw_mount import (  # noqa: F401
+    HUD_ACTIVE,
+    hud,
+    hud_task,
+    ledger_exists,
+    mount_nekoclaw_host,
+    nekoclaw_on,
+    peek_host,
+    ready_host,
+    restore_hud,
+    send_report,
+    shutdown_nekoclaw_host,
+    stop_everything,
 )
 
 

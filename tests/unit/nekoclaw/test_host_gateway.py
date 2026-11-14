@@ -686,3 +686,369 @@ async def test_a_listener_that_ends_cancelled_still_lets_stop_return(host):
 
     assert task.cancelled()
     assert not host.gateway.started
+
+
+# ---------------------------------------------------------------------------
+# A plugin that wants the user's confirmation
+# ---------------------------------------------------------------------------
+
+
+class UserAnswers:
+    """Stands in for the waiting a task agent's own questions go through."""
+
+    def __init__(self, text: str = "yes, delete them") -> None:
+        self.text = text
+        self.asked: list[tuple[str, dict[str, Any]]] = []
+
+    async def __call__(self, commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
+        self.asked.append((commission_id, question))
+        return {"text": self.text, "choice": None}
+
+
+def _memo(server: FakePluginServer, data: dict[str, Any]) -> None:
+    server.add_plugin(
+        plugin("memo", "Memos", [entry("purge", "Delete all memos", llm_result_fields=["reply"])]),
+        purge=_returns(finish(data)),
+    )
+
+
+async def test_a_plugins_request_for_confirmation_is_put_to_the_user_not_to_the_task_agent(host, server):
+    _memo(server, {"needs_confirmation": True, "reply": "really delete 3 memos?"})
+    user = UserAnswers("yes, delete them")
+    host.gateway.set_ask_user(user)
+    commission = await _commission(host)
+    grant = _grant(host, commission)
+
+    result = await _call(host, grant, "plugin__memo__purge")
+
+    assert user.asked == [
+        (
+            commission.id,
+            {
+                "kind": "confirmation",
+                "question": "really delete 3 memos?",
+                "capability": "plugin:memo:purge",
+                "title": "memo: purge",
+            },
+        )
+    ]
+    assert result["isError"] is False
+    assert _text(result) == (
+        "[The plugin did not carry this out: it needs the user's confirmation first. The user was asked and "
+        'answered: "yes, delete them". Only if that is a go-ahead, call it again the way the plugin asks; '
+        "otherwise leave it.]\nreally delete 3 memos?"
+    )
+    # The plugin was called once; calling it again is the task agent's next step.
+    assert len(server.calls) == 1
+
+
+async def test_confirm_required_status_is_a_request_for_confirmation_too(host, server):
+    _memo(server, {"status": "confirm_required", "reply": "send the mail?"})
+    user = UserAnswers("no")
+    host.gateway.set_ask_user(user)
+    grant = _grant(host, await _commission(host))
+
+    result = await _call(host, grant, "plugin__memo__purge")
+
+    assert [question["question"] for _cid, question in user.asked] == ["send the mail?"]
+    assert 'answered: "no"' in _text(result)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"action": "clarify", "reply": "which city?"},
+        {"status": "clarify", "reply": "which city?"},
+        {"status": "blocked", "reply": "not signed in"},
+        # Marked as an observation only: nothing in it asks for anything.
+        {"needs_confirmation": True, "observation_only": True, "reply": "noted"},
+    ],
+)
+async def test_a_clarification_goes_back_to_the_task_agent_and_the_user_is_not_asked(host, server, data):
+    _memo(server, data)
+    user = UserAnswers()
+    host.gateway.set_ask_user(user)
+    grant = _grant(host, await _commission(host))
+
+    result = await _call(host, grant, "plugin__memo__purge")
+
+    assert user.asked == []
+    assert "The user was asked" not in _text(result)
+
+
+async def test_deferred_result_is_not_put_to_the_user(host, server):
+    _memo(server, {"deferred": True, "reply": "will remind at five"})
+    user = UserAnswers()
+    host.gateway.set_ask_user(user)
+    grant = _grant(host, await _commission(host))
+
+    result = await _call(host, grant, "plugin__memo__purge")
+
+    assert user.asked == []
+    assert _text(result) == "[Accepted; the plugin completes this later on its own.]\nwill remind at five"
+
+
+async def test_a_confirmation_that_cannot_be_asked_goes_back_to_the_task_agent_as_before(host, server):
+    _memo(server, {"needs_confirmation": True, "reply": "really delete 3 memos?"})
+
+    async def nobody(commission_id: str, question: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("the commission has no session to ask for")
+
+    host.gateway.set_ask_user(nobody)
+    grant = _grant(host, await _commission(host))
+
+    result = await _call(host, grant, "plugin__memo__purge")
+
+    assert _text(result) == (
+        "[The plugin did not carry this out: it needs the user's confirmation or a clarification first.]\n"
+        "really delete 3 memos?"
+    )
+
+
+async def test_the_question_put_to_the_user_is_capped_in_tokens(host, server):
+    from config.nekoclaw_settings import GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    _memo(server, {"needs_confirmation": True, "reply": "confirm " + " ".join(f"word{n}" for n in range(2000))})
+    user = UserAnswers()
+    host.gateway.set_ask_user(user)
+    grant = _grant(host, await _commission(host))
+
+    await _call(host, grant, "plugin__memo__purge")
+
+    assert count_tokens(user.asked[0][1]["question"]) <= GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS
+
+
+# ---------------------------------------------------------------------------
+# Built-in capabilities: keyboard and mouse, browser
+# ---------------------------------------------------------------------------
+
+
+class Builtins:
+    """A provider of the two built-in capabilities whose calls are recorded."""
+
+    def __init__(self, *, keyboard: bool = True, browser: bool = True) -> None:
+        self.ready = {"builtin:keyboard_mouse": keyboard, "builtin:browser": browser}
+        self.calls: list[tuple[str, str, dict[str, Any]]] = []
+        self.started = asyncio.Event()
+        self.release: asyncio.Event | None = None
+        self.cancelled: list[str] = []
+        self.outcome: Any = None
+
+    def available(self) -> list[Any]:
+        from nekoclaw.host.capabilities import builtin_capability
+
+        return [
+            builtin_capability(capability_id, available=ready, unavailable_reason="" if ready else "switched off")
+            for capability_id, ready in self.ready.items()
+        ]
+
+    async def run(self, capability_id: str, *, commission_id: str, arguments: dict[str, Any]) -> Any:
+        from nekoclaw.host.capabilities import BuiltinOutcome
+
+        self.calls.append((capability_id, commission_id, dict(arguments)))
+        self.started.set()
+        if self.release is not None:
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancelled.append(capability_id)
+                raise
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return self.outcome or BuiltinOutcome(True, f"did: {arguments.get('instruction')}")
+
+
+@pytest.fixture
+async def builtin_host(server: FakePluginServer, tmp_path: Any) -> Any:
+    provider = Builtins()
+    built = make_host(tmp_path, server, decision_llm=FakeDecisionLLM(), builtins=provider)
+    built.provider = provider
+    yield built
+    await built.shutdown()
+
+
+async def _tool_names(host: Any, grant: Any) -> list[str]:
+    answer = await _rpc(host, grant, "tools/list")
+    return [tool["name"] for tool in answer["result"]["tools"]]
+
+
+async def test_available_builtins_are_listed_up_front_without_being_candidates(builtin_host, server):
+    _catalog(server)
+    grant = _grant(builtin_host, await _commission(builtin_host), "weather")
+
+    names = await _tool_names(builtin_host, grant)
+
+    assert names == ["builtin__keyboard_mouse", "builtin__browser", "plugin__weather__today", SEARCH_TOOL, CALL_TOOL]
+
+
+async def test_candidate_plugins_that_fill_the_budget_do_not_push_the_builtins_off_the_list(
+    builtin_host, server, monkeypatch
+):
+    import config.nekoclaw_settings as settings
+
+    _catalog(server)
+    grant = _grant(builtin_host, await _commission(builtin_host), "weather")
+    everything = await _tool_names(builtin_host, grant)
+    assert "plugin__weather__today" in everything
+    # Room for the two built-in capabilities and nothing more.
+    definitions = await builtin_host.gateway.tool_definitions(grant)
+    from utils.tokenize import count_tokens
+
+    builtin_cost = sum(
+        count_tokens(json.dumps(item, ensure_ascii=False)) for item in definitions if item["name"].startswith("builtin__")
+    )
+    monkeypatch.setattr(settings, "GATEWAY_TOOL_LIST_MAX_TOKENS", builtin_cost)
+
+    names = await _tool_names(builtin_host, grant)
+
+    assert names == ["builtin__keyboard_mouse", "builtin__browser", SEARCH_TOOL, CALL_TOOL]
+
+
+async def test_builtins_alone_are_enough_for_a_gateway(builtin_host):
+    grant = _grant(builtin_host, await _commission(builtin_host))
+
+    assert await _tool_names(builtin_host, grant) == ["builtin__keyboard_mouse", "builtin__browser"]
+
+
+async def test_a_builtin_that_is_switched_off_is_neither_listed_nor_callable(builtin_host):
+    builtin_host.provider.ready["builtin:keyboard_mouse"] = False
+    builtin_host.permissions.set_asker(Asker("once"))
+    grant = _grant(builtin_host, await _commission(builtin_host))
+
+    names = await _tool_names(builtin_host, grant)
+    result = await _call(builtin_host, grant, "builtin__keyboard_mouse", {"instruction": "open the calculator"})
+
+    assert names == ["builtin__browser"]
+    assert result["isError"] is True
+    assert builtin_host.provider.calls == []
+
+
+async def test_without_a_provider_no_builtin_is_served(host):
+    grant = _grant(host, await _commission(host))
+
+    assert await _tool_names(host, grant) == []
+    assert [(item.id, item.available) for item in host.registry.builtins()] == [
+        ("builtin:keyboard_mouse", False),
+        ("builtin:browser", False),
+    ]
+
+
+async def test_a_builtin_call_asks_first_and_then_runs_for_the_commission(builtin_host):
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission)
+
+    result = await _call(builtin_host, grant, "builtin__browser", {"instruction": "find the opening hours"})
+
+    assert [(cid, ask.category, ask.key) for cid, ask in asker.asked] == [(commission.id, "browser", None)]
+    assert builtin_host.provider.calls == [
+        ("builtin:browser", commission.id, {"instruction": "find the opening hours"})
+    ]
+    assert (result["isError"], _text(result)) == (False, "did: find the opening hours")
+    events = [(event.type, event.payload) for event in await builtin_host.ledger.events(commission.id)]
+    assert ("builtin_run", {"capability": "builtin:browser"}) in events
+    assert ("builtin_run_ended", {"capability": "builtin:browser", "result": "completed"}) in events
+
+
+async def test_a_declined_builtin_is_not_run(builtin_host):
+    builtin_host.permissions.set_asker(Asker("deny"))
+    grant = _grant(builtin_host, await _commission(builtin_host))
+
+    result = await _call(builtin_host, grant, "builtin__keyboard_mouse", {"instruction": "open the calculator"})
+
+    assert result["isError"] is True
+    assert builtin_host.provider.calls == []
+
+
+async def test_keyboard_and_browser_are_asked_about_separately(builtin_host):
+    asker = Asker("session")
+    builtin_host.permissions.set_asker(asker)
+    grant = _grant(builtin_host, await _commission(builtin_host))
+
+    await _call(builtin_host, grant, "builtin__browser", {"instruction": "a"})
+    await _call(builtin_host, grant, "builtin__browser", {"instruction": "b"})
+    await _call(builtin_host, grant, "builtin__keyboard_mouse", {"instruction": "c"})
+
+    assert [ask.category for _cid, ask in asker.asked] == ["browser", "keyboard_mouse"]
+
+
+async def test_a_builtin_that_fails_is_an_error_result(builtin_host):
+    from nekoclaw.host.capabilities import BuiltinOutcome
+
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.outcome = BuiltinOutcome(False, "the page never loaded")
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission)
+
+    result = await _call(builtin_host, grant, "builtin__browser", {"instruction": "open it"})
+
+    assert (result["isError"], _text(result)) == (True, "the page never loaded")
+    events = [(event.type, event.payload) for event in await builtin_host.ledger.events(commission.id)]
+    assert ("builtin_run_ended", {"capability": "builtin:browser", "result": "failed"}) in events
+
+
+async def test_a_builtin_that_raises_is_an_error_result_without_its_text(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.outcome = RuntimeError("secret screen contents")
+    grant = _grant(builtin_host, await _commission(builtin_host))
+
+    result = await _call(builtin_host, grant, "builtin__browser", {"instruction": "open it"})
+
+    assert result["isError"] is True
+    assert "secret screen contents" not in _text(result)
+    assert "RuntimeError" in _text(result)
+
+
+async def test_stopping_the_commission_stops_a_builtin_call_under_way(builtin_host):
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.release = asyncio.Event()
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission)
+
+    call = asyncio.ensure_future(_call(builtin_host, grant, "builtin__keyboard_mouse", {"instruction": "type it"}))
+    grant.in_flight.add(call)
+    await asyncio.wait_for(builtin_host.provider.started.wait(), 5)
+    builtin_host.gateway.revoke(commission.id)
+    with pytest.raises(asyncio.CancelledError):
+        await call
+
+    assert builtin_host.provider.cancelled == ["builtin:keyboard_mouse"]
+    await wait_until(
+        lambda: _has_event(builtin_host, commission.id, "builtin_run_ended", "cancelled"),
+        what="the cancelled call being recorded",
+    )
+
+
+async def _has_event(host: Any, commission_id: str, kind: str, result: str) -> bool:
+    return any(
+        event.type == kind and event.payload.get("result") == result
+        for event in await host.ledger.events(commission_id)
+    )
+
+
+async def test_builtin_result_text_is_capped_in_tokens(builtin_host):
+    from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS
+    from nekoclaw.host.capabilities import BuiltinOutcome
+    from utils.tokenize import count_tokens
+
+    builtin_host.permissions.set_asker(Asker("once"))
+    builtin_host.provider.outcome = BuiltinOutcome(True, " ".join(f"line{n}" for n in range(20000)))
+    grant = _grant(builtin_host, await _commission(builtin_host))
+
+    result = await _call(builtin_host, grant, "builtin__browser", {"instruction": "read it"})
+
+    assert count_tokens(_text(result)) <= GATEWAY_RESULT_MAX_TOKENS
+
+
+async def test_the_task_brain_never_routes_to_a_builtin_directly(builtin_host, server):
+    # Only task agents reach the built-in capabilities; the decision model is
+    # shown plugins and nothing else.
+    _catalog(server)
+
+    shown = await builtin_host.registry.plugins()
+
+    assert sorted(item["id"] for item in shown) == ["lamp", "weather"]
+    assert all(not item.one_step for item in builtin_host.registry.builtins())
+

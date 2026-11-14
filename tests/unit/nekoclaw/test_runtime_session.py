@@ -540,6 +540,41 @@ async def test_host_decides_permissions_when_it_offers_to(tmp_path: Path) -> Non
         await session.close()
 
 
+async def test_reading_back_a_kept_result_is_not_reading_outside(tmp_path: Path) -> None:
+    # A result too long for the context is kept in the session's own outputs,
+    # and the model is told to read it there. That is not reading outside the
+    # working directory, which asks the user first.
+    spec = make_spec(tmp_path)
+    kept = Path(spec.session_dir) / "outputs" / "1-pwsh.txt"
+    kept.parent.mkdir(parents=True)
+    kept.write_text("the whole listing", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere.txt"
+    elsewhere.write_text("x", encoding="utf-8")
+    asked: list[dict] = []
+
+    async def decide(session_id: str, payload: dict) -> dict:
+        del session_id
+        asked.append(payload)
+        return {"allow": True}
+
+    llm = ScriptedLLM(
+        [
+            [call("read", {"file_path": str(kept)}), finish("tool_calls")],
+            [call("read", {"file_path": str(elsewhere)}), finish("tool_calls")],
+            [call("write", {"file_path": str(kept), "content": "changed"}), finish("tool_calls")],
+            [say("done"), finish()],
+        ]
+    )
+    session, events = await open_session(spec, llm, HostCallbacks(decide_permission=decide))
+    try:
+        session.prompt("read the kept listing")
+        await events.wait_ended()
+        # Writing there still counts as writing outside.
+        assert [item["category"] for item in asked] == ["workdir_files", "outside_read", "outside_write"]
+    finally:
+        await session.close()
+
+
 async def test_closing_stops_background_commands_before_it_waits_for_the_run(tmp_path: Path) -> None:
     hold = asyncio.Event()
 

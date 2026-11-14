@@ -32,8 +32,11 @@ What is in it:
   server, which is what permissions are asked for. The adapter's entries that
   call a tool of whatever server their arguments name (``call_tool``,
   ``gateway_invoke``) are not served to task agents;
-* built-in capabilities (keyboard and mouse, browser): listed as not yet
-  available; they arrive with a later change.
+* built-in capabilities (keyboard and mouse, browser). The host does not
+  implement them: whoever embeds it passes a ``BuiltinCapabilities`` provider
+  that lists them with their current availability and carries a call out.
+  Without one they are listed as not available. Only task agents call them,
+  through the gateway; the task brain never routes to them directly.
 
 For the task brain's own selection the MCP tools remain ordinary entries of
 the ``mcp_adapter`` plugin, exactly as the analyzer saw them.
@@ -41,6 +44,7 @@ the ``mcp_adapter`` plugin, exactly as the analyzer saw them.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -48,7 +52,7 @@ import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from nekoclaw.host.plugin_runs import PluginCatalog
 from nekoclaw.host.selection import routable_plugins, visible_entries
@@ -95,31 +99,98 @@ class Capability:
     tool_name: str = ""
 
 
+BUILTIN_KEYBOARD_MOUSE = "builtin:keyboard_mouse"
+BUILTIN_BROWSER = "builtin:browser"
+
+_INSTRUCTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "instruction": {
+            "type": "string",
+            "description": (
+                "One self-contained instruction in natural language: what to achieve and where "
+                "(which application, site or page). It is carried out without further questions."
+            ),
+        }
+    },
+    "required": ["instruction"],
+}
+
+
+def builtin_capability(capability_id: str, *, available: bool, unavailable_reason: str = "") -> Capability:
+    """Return one of the two built-in capabilities with the given availability.
+
+    Each takes one instruction and carries it out with a loop of its own
+    (screenshots, clicks, typing), then returns what it did.
+    """
+    if capability_id == BUILTIN_KEYBOARD_MOUSE:
+        return Capability(
+            id=BUILTIN_KEYBOARD_MOUSE,
+            kind=KIND_BUILTIN,
+            title="Keyboard and mouse",
+            description=(
+                "Operate the desktop of this computer with the keyboard and the mouse to carry out one "
+                "instruction. It looks at the screen, clicks and types on its own until the instruction is "
+                "done or it gives up, then returns what it did. What it did cannot be undone, and only one "
+                "runs at a time."
+            ),
+            input_schema=_INSTRUCTION_SCHEMA,
+            permission="keyboard_mouse",
+            permission_key=None,
+            one_step=False,
+            available=available,
+            unavailable_reason=unavailable_reason,
+            tool_name="builtin__keyboard_mouse",
+        )
+    if capability_id == BUILTIN_BROWSER:
+        return Capability(
+            id=BUILTIN_BROWSER,
+            kind=KIND_BUILTIN,
+            title="Browser",
+            description=(
+                "Carry out one instruction in a web browser: open pages, click, type, read what is shown. "
+                "It works on its own until the instruction is done or it gives up, then returns what it "
+                "found or did. Clicks and submissions already made cannot be undone, and only one runs at "
+                "a time."
+            ),
+            input_schema=_INSTRUCTION_SCHEMA,
+            permission="browser",
+            permission_key=None,
+            one_step=False,
+            available=available,
+            unavailable_reason=unavailable_reason,
+            tool_name="builtin__browser",
+        )
+    raise ValueError(f"unknown built-in capability {capability_id!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class BuiltinOutcome:
+    """How one call of a built-in capability ended."""
+
+    success: bool
+    # What it did or found, or why it failed; given to the task agent.
+    text: str
+
+
+class BuiltinCapabilities(Protocol):
+    """Lists the built-in capabilities and carries their calls out.
+
+    Implemented outside the host, next to the code that operates the keyboard,
+    the mouse and the browser.
+    """
+
+    def available(self) -> list[Capability]:
+        """Return the built-in capabilities, each with its availability as of now. Must not block."""
+
+    async def run(self, capability_id: str, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+        """Carry out one call. Cancelling it must stop what it started."""
+
+
+# Listed when the embedding process offers no built-in capabilities.
 BUILTIN_CAPABILITIES: tuple[Capability, ...] = (
-    Capability(
-        id="builtin:keyboard_mouse",
-        kind=KIND_BUILTIN,
-        title="Keyboard and mouse",
-        description="Operate the computer through the keyboard and the mouse.",
-        input_schema={"type": "object", "properties": {}},
-        permission="keyboard_mouse",
-        permission_key=None,
-        one_step=False,
-        available=False,
-        unavailable_reason="not connected to the gateway yet",
-    ),
-    Capability(
-        id="builtin:browser",
-        kind=KIND_BUILTIN,
-        title="Browser",
-        description="Open and operate web pages in a browser.",
-        input_schema={"type": "object", "properties": {}},
-        permission="browser",
-        permission_key=None,
-        one_step=False,
-        available=False,
-        unavailable_reason="not connected to the gateway yet",
-    ),
+    builtin_capability(BUILTIN_KEYBOARD_MOUSE, available=False, unavailable_reason="not offered by this process"),
+    builtin_capability(BUILTIN_BROWSER, available=False, unavailable_reason="not offered by this process"),
 )
 
 
@@ -307,9 +378,14 @@ class CapabilityRegistry:
         catalog: PluginCatalog,
         *,
         plugins_enabled: Callable[[], bool] | None = None,
+        builtins: BuiltinCapabilities | None = None,
+        short_descriptions: Any = None,
     ) -> None:
         self._catalog = catalog
         self._plugins_enabled = plugins_enabled
+        self._builtins = builtins
+        # ``nekoclaw.host.short_descriptions.ShortDescriptions``, or None.
+        self._short_descriptions = short_descriptions
 
     def invalidate(self) -> None:
         """Forget the cached plugin list. Call it when a plugin's lifecycle changes."""
@@ -327,11 +403,20 @@ class CapabilityRegistry:
         """Return the plugins the decision model selects from.
 
         Running, not passive, with at least one visible entry; none when the
-        plugin switch is off.
+        plugin switch is off. A plugin whose manifest has no short description
+        gets the one written for it, once there is one.
         """
         if not self.plugins_enabled():
             return []
-        return routable_plugins(await self._catalog.plugins())
+        plugins = routable_plugins(await self._catalog.plugins())
+        if self._short_descriptions is not None:
+            try:
+                plugins = await self._short_descriptions.apply(plugins)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - listed by their descriptions, as without it
+                logger.warning("applying the plugin short descriptions failed", exc_info=True)
+        return plugins
 
     async def summary(self) -> CatalogSummary:
         installed = await self._catalog.installed()
@@ -348,8 +433,26 @@ class CapabilityRegistry:
         items: list[Capability] = []
         for plugin in await self.plugins():
             items.extend(capabilities_of_plugin(plugin))
-        items.extend(BUILTIN_CAPABILITIES)
+        items.extend(self.builtins())
         return items
+
+    def builtins(self) -> list[Capability]:
+        """Return the built-in capabilities with their availability as of now."""
+        if self._builtins is None:
+            return list(BUILTIN_CAPABILITIES)
+        try:
+            return [item for item in self._builtins.available() if item.kind == KIND_BUILTIN]
+        except Exception:  # noqa: BLE001 - an unreadable provider offers nothing
+            logger.exception("listing the built-in capabilities failed")
+            return list(BUILTIN_CAPABILITIES)
+
+    async def run_builtin(
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]
+    ) -> BuiltinOutcome:
+        """Carry out one call of a built-in capability through the provider."""
+        if self._builtins is None:
+            return BuiltinOutcome(False, "this capability is not offered by this process")
+        return await self._builtins.run(capability.id, commission_id=commission_id, arguments=arguments)
 
     async def callable_by_task_agents(self) -> list[Capability]:
         """Return the capabilities the gateway can serve right now.

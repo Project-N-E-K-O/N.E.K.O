@@ -21,6 +21,9 @@ adapter imports, the ``Modules`` singleton state bag, cross-module numeric
 constants, and the state primitives (``_bump_state_revision`` /
 ``_set_capability`` / background-task bookkeeping).
 
+Tasks are not kept here. Every task is a commission in the NekoClaw host's
+ledger (``nekoclaw/host``); ``nekoclaw_mount`` connects this process to it.
+
 Split out of the former monolithic ``app/agent_server.py``. ``Modules`` is
 mutable shared state with this module as its single owner: sibling modules
 must do ``from . import _shared`` and access attributes as
@@ -29,6 +32,7 @@ must do ``from . import _shared`` and access attributes as
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, ClassVar
 
 from fastapi import FastAPI
@@ -42,16 +46,6 @@ from main_logic.agent_event_bus import AgentServerEventBridge
 try:
     from brain.computer_use import ComputerUseAdapter
     from brain.browser_use_adapter import BrowserUseAdapter
-    from brain.openclaw_adapter import OpenClawAdapter
-    from brain.deduper import TaskDeduper
-    from brain.task_executor import DirectTaskExecutor
-    from utils.result_parser import (  # noqa: F401  (re-exported via the package facade)
-        parse_computer_use_result,
-        parse_browser_use_result,
-        parse_plugin_result,
-        _phrase as _rp_phrase,
-        _get_lang as _rp_lang,
-    )
 except Exception as e:
     logger.exception(f"[Agent] Module import failed during startup: {e}")
     raise
@@ -60,9 +54,6 @@ except Exception as e:
 class Modules:
     computer_use: ComputerUseAdapter | None = None
     browser_use: BrowserUseAdapter | None = None
-    openclaw: OpenClawAdapter | None = None
-    deduper: TaskDeduper | None = None
-    task_executor: DirectTaskExecutor | None = None
     user_plugin_app: FastAPI | None = None
     user_plugin_http_server: Any = None
     user_plugin_http_task: Any = None  # threading.Thread (imported after class def)
@@ -73,23 +64,13 @@ class Modules:
     # background tasks, so an older readiness check must not overwrite a newer
     # toggle (or restart the lifecycle after the master switch was turned off).
     user_plugin_lifecycle_seq: int = 0
-    # Task tracking
-    task_registry: Dict[str, Dict[str, Any]] = {}
-    executor_reset_needed: bool = False
+    # The master switch. The name is the one the persisted intent file and the
+    # status snapshot use; nothing is "analyzed" any more.
     analyzer_enabled: bool = False
     analyzer_profile: Dict[str, Any] = {}
-    # Computer-use exclusivity and scheduling
-    computer_use_queue: Optional[asyncio.Queue] = None
-    computer_use_running: bool = False
-    active_computer_use_task_id: Optional[str] = None
-    active_computer_use_async_task: Optional[asyncio.Task] = None
-    # Browser-use task tracking
-    active_browser_use_task_id: Optional[str] = None
-    active_browser_use_bg_task: Optional[asyncio.Task] = None
     # Browser-use exclusivity: the adapter is a singleton whose cancel flag
-    # and browser session are shared state, so dispatches must not overlap
-    # (mirrors computer-use exclusivity, implemented as a lock instead of a
-    # scheduler loop). Lazily created on the running event loop.
+    # and browser session are shared state, so calls must not overlap.
+    # Lazily created on the running event loop.
     browser_use_dispatch_lock: Optional[asyncio.Lock] = None
     # BrowserUse imports a sizeable dependency graph and may own a Chromium
     # subprocess.  Keep construction/teardown serialized so on-demand callers
@@ -98,16 +79,11 @@ class Modules:
     # Monotonic intent generation. A background close may finish after a quick
     # re-enable, but must not overwrite the newer ready capability state.
     browser_use_lifecycle_seq: int = 0
-    # OpenClaw/QwenPaw is an external service. Enabling keeps the user's intent
-    # while a bounded background probe waits for the external health endpoint.
-    openclaw_enable_task: Optional[asyncio.Task] = None
-    openclaw_enable_seq: int = 0
     # Agent feature flags (controlled by UI)
     agent_flags: Dict[str, Any] = {
         "computer_use_enabled": False,
         "browser_use_enabled": False,
         "user_plugin_enabled": False,
-        "openclaw_enabled": False,
     }
     # Notification queue for frontend (one-time messages)
     notification: Optional[str] = None
@@ -115,32 +91,22 @@ class Modules:
     throttled_logger: "ThrottledLogger" = None  # Lazy initialization.
     agent_bridge: AgentServerEventBridge | None = None
     state_revision: int = 0
-    # Serialize analysis+dispatch to prevent duplicate tasks from concurrent analyze_request events
-    analyze_lock: Optional[asyncio.Lock] = None
-    # Per-lanlan fingerprint of latest user-turn payload already consumed by analyzer
-    last_user_turn_fingerprint: ClassVar[Dict[str, str]] = {}
-    # Proactive-analyze throttle state (opt-in feature, see AGENT_PROACTIVE_ANALYZE_*).
-    # Per-lanlan count of proactive analyses run this session (reset on greeting_check)
-    # and the last proactive assistant-turn fingerprint already consumed (dedupe).
-    proactive_analyze_count: ClassVar[Dict[str, int]] = {}
-    last_proactive_assistant_fingerprint: ClassVar[Dict[str, str]] = {}
     capability_cache: Dict[str, Dict[str, Any]] = {
         "computer_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "browser_use": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
         "user_plugin": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
-        "openclaw": {"ready": False, "reason": "AGENT_PRECHECK_PENDING"},
     }
     _background_tasks: ClassVar[set] = set()
     _persistent_tasks: ClassVar[set] = set()
-    # Cancellable background task handles by logical task_id
-    task_async_handles: ClassVar[Dict[str, asyncio.Task]] = {}
 
 
 PLUGIN_NAME_CACHE_TTL: float = 30.0  # Cache for 30 seconds.
-TASK_REGISTRY_CLEANUP_TTL: float = 300.0  # Retain completed tasks for 5 minutes.
-DEFERRED_TASK_TIMEOUT: float = 3600.0  # Deferred tasks time out after 1 hour.
-OPENCLAW_ENABLE_CHECK_ATTEMPTS: int = 24
-OPENCLAW_ENABLE_CHECK_INTERVAL: float = 1.0
+
+
+def _now_iso() -> str:
+    # datetime.utcnow() is deprecated since Python 3.12; the tz-aware form
+    # yields the exact same string ("+00:00" swapped back to the legacy "Z").
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _get_throttled_logger() -> ThrottledLogger:
@@ -163,12 +129,6 @@ def _set_capability(name: str, ready: bool, reason: str = "") -> None:
             return ""
         if text.startswith("AGENT_"):
             return text
-        if name == "openclaw":
-            # Late import: channels.openclaw imports _shared at module load,
-            # while this branch only runs at call time — the function-local
-            # import breaks the would-be cycle without changing behavior.
-            from .channels.openclaw import _openclaw_reason_code
-            return _openclaw_reason_code(text)
 
         lower = text.lower()
         # Normalize legacy Chinese/English free-text reasons into stable i18n codes.

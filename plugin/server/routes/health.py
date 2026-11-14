@@ -10,6 +10,7 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.utils.time_utils import now_iso
 from plugin.server.infrastructure.auth import require_admin
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
+from plugin.server.messaging.llm_tool_registry import tool_host_instance_id
 
 router = APIRouter()
 logger = get_logger("server.routes.health")
@@ -18,7 +19,7 @@ admin_query_service = AdminQueryService()
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "time": now_iso()}
+    return {"status": "ok", "time": now_iso(), "host_instance_id": tool_host_instance_id()}
 
 
 @router.get("/available")

@@ -29,6 +29,13 @@ The first round is local (duplicates, keyword and BM25 candidates, whether a
 task agent can be started); only when nothing matches locally and no task agent
 can be started does it make one small-model call."""
 
+TASK_TOOL_TIMEOUT_SECONDS = 2.5
+"""How long the main dialogue's task tools wait for the agent process, for
+the whole request from connecting to the last byte of the answer. The host
+answers a dispatch within ``DISPATCH_FIRST_ROUND_SECONDS`` and a query at
+once; the rest is room for the local request. When it runs out she is told
+that the task system did not respond, never that the task was taken."""
+
 DISPATCH_TEXT_MAX_TOKENS = 300
 """Cap on the sentence she dispatches, as stored and as shown to the decision model."""
 
@@ -46,6 +53,55 @@ DUPLICATE_SIMILARITY_SAME_USER_TEXT = 0.4
 
 SUPPLEMENT_MIN_OVERLAP = 0.15
 """Least similarity for a sentence to count as being about an active commission."""
+
+# ---------------------------------------------------------------------------
+# Turn check
+# ---------------------------------------------------------------------------
+
+TURN_CHECK_ENABLED = True
+"""Whether a turn in which she called no task tool is checked afterwards
+(design section 6.4). Off means nothing she only says is ever acted on."""
+
+TURN_CHECK_INTENT_THRESHOLD = 0.2
+"""The gate in front of the turn check, the one the analyzer had. The score is
+what the small model that reads the user's input already gave for "needs
+something outside the conversation" (0 to 1). A turn is checked unless that
+score is known and below this value and no plugin keyword matches either; a
+missing score never holds a turn back."""
+
+TURN_CHECK_USER_TEXT_MAX_TOKENS = 300
+"""Cap on the user's sentence shown to the turn check."""
+
+TURN_CHECK_REPLY_MAX_TOKENS = 300
+"""Cap on her reply shown to the turn check; the end of a long reply is kept
+out, the opening is what says whether she agreed or declined."""
+
+TURN_CHECK_OUTPUT_MAX_TOKENS = 120
+"""``max_completion_tokens`` of the turn check: a verdict and one sentence."""
+
+TURN_CHECK_TASK_MAX_TOKENS = 60
+"""Cap on the task the turn check names, as quoted back to her."""
+
+TURN_CHECK_STATUS_ANSWER_SECONDS = 60.0
+"""How long after her question about her tasks was answered with one that is
+done a claim that something is done, which no task matches, gets the softer
+notice (if she meant those, nothing to do; if something else, put it right)
+instead of "no record". Only the next check of her turns may use it; the
+answer comes within the turn, and the check follows its end within seconds."""
+
+QUESTION_TEXT_MAX_TOKENS = 300
+"""Cap on a commission's question as it is put to her to pass on."""
+
+PERMISSION_SUBJECT_MAX_TOKENS = 160
+"""Cap on the command, path or name a permission question quotes. A longer one
+keeps its beginning and its end with a mark in between that says the middle
+was left out. It is the part that gives way: the answers on offer and the
+instruction to hand the answer back come after it, and with this cap the
+whole sentence stays within ``QUESTION_TEXT_MAX_TOKENS`` in every language."""
+
+PERMISSION_SUBJECT_MIN_TOKENS = 24
+"""The least room that part is given in one line of a query answer or a
+brief, mark included."""
 
 # ---------------------------------------------------------------------------
 # What the decision model is shown
@@ -83,6 +139,11 @@ QUERY_RESULT_MAX_TOKENS = 400
 
 QUERY_ROW_MAX_TOKENS = 80
 """Cap on one commission line in a query answer."""
+
+QUERY_PERMISSION_ROW_MAX_TOKENS = 120
+"""Cap on the line of a commission that waits for a permission. It names what
+is to be allowed and lists the answers on offer, which in some languages do
+not fit in ``QUERY_ROW_MAX_TOKENS`` next to a title of full length."""
 
 QUERY_RECENT_SECONDS = 24 * 3600.0
 """How far back finished commissions are still listed by a query."""
@@ -127,6 +188,32 @@ GATEWAY_SEARCH_RESULTS = 8
 GATEWAY_RESULT_MAX_TOKENS = 4000
 """Cap on the text of one tool result served by the gateway."""
 
+GATEWAY_CONFIRMATION_QUESTION_MAX_TOKENS = 200
+"""Cap on a plugin's request for confirmation when the gateway puts it to the
+user; it reaches the main dialogue model as part of a report."""
+
+# ---------------------------------------------------------------------------
+# Shutting down
+# ---------------------------------------------------------------------------
+# The launcher gives the agent process 8 seconds to stop on its own
+# (``graceful_shutdown_timeout`` of the Agent Server in
+# ``launcher_core/runtime.py``, the same in merged mode) before it terminates
+# it. In that time the process also stops the plugin lifecycle and the embedded
+# plugin server, so the host gets a part of it, not all.
+
+HOST_SHUTDOWN_BUDGET_SECONDS = 4.0
+"""How long the agent process waits for the host to shut down before it goes
+on with the rest of its own shutdown. The host's steps keep running after
+that until the process exits; nothing is lost by it, because every status is
+already in the ledger and unsent reports go out with the next start."""
+
+HOST_CLOSE_STOP_WAIT_SECONDS = 1.5
+"""How long closing the task brain waits for stops that are under way.
+A stop writes the status first; what is left is one local request to the
+plugin server and closing the task agent's session, which take well under a
+second. A stop cut off here has still stopped the commission in the ledger,
+and the plugin server and the runtime are shut down right afterwards."""
+
 # ---------------------------------------------------------------------------
 # Outbox
 # ---------------------------------------------------------------------------
@@ -135,3 +222,34 @@ OUTBOX_RETRY_BASE_SECONDS = 1.0
 OUTBOX_RETRY_MAX_SECONDS = 300.0
 """Reports that could not be delivered are retried after 1 s, 2 s, 4 s ...,
 at most every five minutes."""
+
+# ---------------------------------------------------------------------------
+# Plugin short descriptions
+# ---------------------------------------------------------------------------
+
+PLUGIN_SHORT_DESCRIPTION_INPUT_MAX_TOKENS = 1000
+"""Cap on a plugin's description as it is given to the small model that writes
+a short description for a plugin whose manifest has none. A manifest's
+description is uncapped."""
+
+PLUGIN_SHORT_DESCRIPTION_RETRY_SECONDS = 600.0
+"""How long a plugin whose short description could not be written waits before
+it is tried again. Without it a model that is not configured, or one that keeps
+failing, would be asked again every time the plugins are listed."""
+
+PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES = 3
+"""How many times a short description is asked for a plugin and one version of
+its description before it is not asked for again, until the description
+changes. Failures are kept on disk with the short descriptions, so a restart
+neither resets the count nor retries at once."""
+
+PLUGIN_SHORT_DESCRIPTION_FAILURE_RESET_SECONDS = 86400.0
+"""After this long since the last failure, a plugin's failures count from zero
+again: a model that was not configured, or a network that was down, gets
+another try the next day. At most ``PLUGIN_SHORT_DESCRIPTION_MAX_FAILURES``
+requests per plugin and description in that time."""
+
+PLUGIN_SHORT_DESCRIPTION_REREAD_SECONDS = 60.0
+"""How long a short-descriptions file that exists but could not be read (held
+open by another program) is left alone before it is read again."""
+

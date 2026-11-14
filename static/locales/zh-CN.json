@@ -670,11 +670,6 @@
         "TTS_GPT_SOVITS_URL_REQUIRED": "请填写 GPT-SoVITS API URL",
         "TTS_GPT_SOVITS_URL_INVALID": "无效的 GPT-SoVITS API URL",
         "AGENT_NO_PLUGINS_FOUND": "未找到任何用户插件",
-        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw 不可用：{{reason}}",
-        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw 已开启，正在等待猫爪连接服务就绪...",
-        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "无法开启 OpenClaw：模块未加载",
-        "AGENT_OPENCLAW_UNAVAILABLE": "无法开启 OpenClaw：{{reason}}",
-        "OPENCLAW_COMMAND_DISPATCH_FAILED": "⚠️ 这条指令没能交给 OpenClaw，请稍后重试。",
         "AGENT_PLUGIN_SERVER_ERROR": "用户插件服务器启动失败",
         "CURRENT_CATGIRL_IN_USE": "无法对当前正在使用的角色「{{character_name}}」执行此操作，请先切换到其他角色",
         "DIRECT_LINK_INACCESSIBLE": "直链无法访问",
@@ -4052,7 +4047,6 @@
             "userPlugin": "用户插件",
             "pluginConfigPage": "配置页",
             "pluginManagementPanel": "管理面板",
-            "mcpTools": "MCP工具",
             "browserUse": "浏览器控制",
             "focusMode": "允许打断",
             "unavailable": "{{name}}不可用",
@@ -4061,13 +4055,10 @@
             "serverOffline": "猫爪服务器未启动",
             "masterRequired": "请先开启猫爪总开关",
             "capabilityNotReady": "{{name}}尚未就绪，点击尝试启用",
-            "openclawUnavailableReason": "{{name}}不可用：{{reason}}。请确认猫爪连接服务已启动，并监听 127.0.0.1:8088。",
             "enabled": "{{name}}已开启",
             "disabled": "{{name}}已关闭",
             "enableFailed": "{{name}}开启失败",
             "userPluginAdapting": "用户插件（开发中）",
-            "openclawConnect": "OpenClaw",
-            "openclawGuide": "OpenClaw 接入教程",
             "chatSettings": "对话设置",
             "animationSettings": "动画设置",
             "renderQuality": "画质",
@@ -4094,17 +4085,6 @@
             "textGuardHighWarning": "设置过大可能导致猫娘记忆和语言混乱，建议 1000 词元以内",
             "textGuardNote": "仅对文本回复有效，不影响语音对话"
         }
-    },
-    "openclawGuide": {
-        "windowTitle": "OpenClaw 接入教程 - N.E.K.O.",
-        "pageTitle": "OpenClaw 接入教程",
-        "pageSubtitle": "把 QwenPaw 安装、模型配置、替换文件与 N.E.K.O 配置串起来，按一条路径接通。",
-        "sourceLabel": "教程来源",
-        "contentLanguageNotice": "语言切换会同时更新页面控件文案和正文内容。",
-        "languageLabel": "语言",
-        "tocTitle": "目录",
-        "tocEmpty": "暂无目录",
-        "guideUnavailable": "教程内容为空。"
     },
     "subtitle": {
         "title": "实时字幕",
@@ -4197,6 +4177,8 @@
             "statusCompleted": "已完成",
             "statusFailed": "失败",
             "statusCancelled": "已取消",
+            "statusWaitingUser": "等你回话",
+            "statusBlocked": "卡住了",
             "minimize": "折叠/展开",
             "cancelAll": "终止所有任务",
             "cancelTask": "终止任务",
@@ -4204,7 +4186,8 @@
             "typeUserPlugin": "用户插件",
             "typeComputerUse": "键鼠控制",
             "typeBrowserUse": "浏览器控制",
-            "typeMCP": "MCP工具"
+            "typeTaskAgent": "使魔",
+            "typeTask": "委托"
         }
     },
     "vrm": {

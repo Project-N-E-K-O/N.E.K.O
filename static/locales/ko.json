@@ -670,11 +670,6 @@
         "TTS_GPT_SOVITS_URL_REQUIRED": "GPT-SoVITS API URL을 입력하세요",
         "TTS_GPT_SOVITS_URL_INVALID": "잘못된 GPT-SoVITS API URL",
         "AGENT_NO_PLUGINS_FOUND": "사용자 플러그인을 찾을 수 없습니다",
-        "AGENT_OPENCLAW_CAPABILITY_LOST": "OpenClaw 사용 불가: {{reason}}",
-        "AGENT_OPENCLAW_ENABLED_CHECKING": "OpenClaw가 활성화되었습니다. 연결 서비스 준비를 기다리는 중...",
-        "AGENT_OPENCLAW_MODULE_NOT_LOADED": "OpenClaw를 활성화할 수 없습니다: 모듈이 로드되지 않았습니다",
-        "AGENT_OPENCLAW_UNAVAILABLE": "OpenClaw를 활성화할 수 없습니다: {{reason}}",
-        "OPENCLAW_COMMAND_DISPATCH_FAILED": "⚠️ 이 명령을 OpenClaw에 전달하지 못했습니다. 잠시 후 다시 시도해 주세요.",
         "AGENT_PLUGIN_SERVER_ERROR": "사용자 플러그인 서버 시작에 실패했습니다",
         "CURRENT_CATGIRL_IN_USE": "현재 사용 중인 캐릭터 「{{character_name}}」에 대해 이 작업을 실행할 수 없습니다. 먼저 다른 캐릭터로 전환하세요",
         "DIRECT_LINK_INACCESSIBLE": "직접 링크에 접근할 수 없습니다",
@@ -4052,7 +4047,6 @@
             "userPlugin": "사용자 플러그인",
             "pluginConfigPage": "설정 페이지",
             "pluginManagementPanel": "관리 패널",
-            "mcpTools": "MCP 도구",
             "browserUse": "브라우저 제어",
             "focusMode": "인터럽트 허용",
             "unavailable": "{{name}} 사용할 수 없음",
@@ -4061,13 +4055,10 @@
             "serverOffline": "네코클로 서버 오프라인",
             "masterRequired": "먼저 네코클로 마스터 스위치를 활성화하십시오.",
             "capabilityNotReady": "{{name}}이(가) 아직 준비되지 않았습니다. 클릭하여 활성화를 시도하세요",
-            "openclawUnavailableReason": "{{name}}을(를) 사용할 수 없습니다: {{reason}}. OpenClaw 서비스가 실행 중이고 127.0.0.1:8088에서 수신 중인지 확인하세요.",
             "enabled": "{{name}} 활성화됨",
             "disabled": "{{name}} 비활성화됨",
             "enableFailed": "{{name}} 활성화 실패",
             "userPluginAdapting": "사용자 플러그인(개발 중)",
-            "openclawConnect": "OpenClaw",
-            "openclawGuide": "OpenClaw 연동 가이드",
             "chatSettings": "채팅 설정",
             "animationSettings": "애니메이션 설정",
             "renderQuality": "화질",
@@ -4094,17 +4085,6 @@
             "textGuardHighWarning": "설정이 너무 크면 냥이의 기억과 언어가 혼란스러워질 수 있습니다. 1000 토큰 이내를 권장합니다",
             "textGuardNote": "텍스트 응답에만 적용되며 음성 세션에는 영향이 없습니다"
         }
-    },
-    "openclawGuide": {
-        "windowTitle": "OpenClaw 연동 가이드 - N.E.K.O.",
-        "pageTitle": "OpenClaw 연동 가이드",
-        "pageSubtitle": "QwenPaw 설치, 모델 설정, 교체 파일, N.E.K.O 설정을 한 흐름으로 연결합니다.",
-        "sourceLabel": "가이드 출처",
-        "contentLanguageNotice": "언어 전환은 페이지 컨트롤 문구와 본문 모두에 적용됩니다.",
-        "languageLabel": "언어",
-        "tocTitle": "목차",
-        "tocEmpty": "목차가 없습니다",
-        "guideUnavailable": "가이드 내용이 비어 있습니다."
     },
     "subtitle": {
         "title": "실시간 자막",
@@ -4197,6 +4177,8 @@
             "statusCompleted": "완료됨",
             "statusFailed": "실패",
             "statusCancelled": "취소됨",
+            "statusWaitingUser": "답변 대기",
+            "statusBlocked": "막힘",
             "minimize": "접기/펼치기",
             "cancelAll": "모든 작업 취소",
             "cancelTask": "작업 취소",
@@ -4204,7 +4186,8 @@
             "typeUserPlugin": "사용자 플러그인",
             "typeComputerUse": "컴퓨터 제어",
             "typeBrowserUse": "브라우저 제어",
-            "typeMCP": "MCP 도구"
+            "typeTaskAgent": "사역마",
+            "typeTask": "의뢰"
         }
     },
     "vrm": {

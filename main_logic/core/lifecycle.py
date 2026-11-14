@@ -4454,8 +4454,7 @@ class LifecycleMixin:
         """Queue a terminal memory settlement followed by one local callback."""
         completion = asyncio.get_running_loop().create_future()
         self.sync_message_queue.put({
-            'type': 'system',
-            'data': 'session end',
+            **self._session_end_message(),
             '_after_memory_settlement': callback,
             '_memory_settlement_done': completion,
         })

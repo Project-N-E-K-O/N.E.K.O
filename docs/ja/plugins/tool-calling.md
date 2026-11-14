@@ -6,7 +6,7 @@ LLM が会話中にプラグインの機能を「呼び出せる」ようにし�
 応答を生成します。
 
 ::: warning plugin entry とは別です
-`@llm_tool(name="get_weather")` は conversation-time tool を main_server の `/api/tools` registry に登録します。`@plugin_entry(id="get_weather")` は Plugin Manager、cross-plugin call、別系統の user-plugin Agent route 用 runtime entry です。SDK 内部は IPC reuse のため LLM tool handler を reserved dynamic entry（`__llm_tool__...`）として保持しますが、この実装詳細によって 2 つの public API が同じになるわけではありません。
+`@llm_tool(name="get_weather")` は conversation-time tool を main_server の `/api/tools` registry に登録します。`@plugin_entry(id="get_weather")` は Plugin Manager、cross-plugin call、別系統の Agent（ネコクロー、NekoClaw）route 用 runtime entry です。SDK 内部は IPC reuse のため LLM tool handler を reserved dynamic entry（`__llm_tool__...`）として保持しますが、この実装詳細によって 2 つの public API が同じになるわけではありません。この prefix を持つ entry を呼ぶのはメインの対話モデルだけで、Agent の plugin 選択にも task agent にも渡されません。
 :::
 
 このメカニズムは `main_logic/tool_calling.py` の `ToolRegistry` に

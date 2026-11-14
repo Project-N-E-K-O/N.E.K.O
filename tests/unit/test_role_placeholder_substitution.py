@@ -259,6 +259,41 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, cap
     assert private_reply not in captured.err
 
 
+
+@pytest.mark.unit
+async def test_main_server_direct_reply_closes_the_turn_it_was_sent_in(monkeypatch):
+    """The completion is told the reply's turn as it was before the send: a
+    user turn begun during the send keeps its words and tool calls."""
+    from app import main_server
+
+    fake_mgr = _mgr_for_main_server()
+    fake_mgr.last_user_engagement_time = 100.0
+
+    async def send(*args, **kwargs):
+        # The user starts typing while the reply is being sent.
+        fake_mgr.last_user_engagement_time = 101.0
+        return True
+
+    fake_mgr.send_lanlan_response = AsyncMock(side_effect=send)
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "task_result",
+            "lanlan_name": "兰兰",
+            "text": "ignored",
+            "detail": "搞定了",
+            "direct_reply": True,
+            "channel": "plugin:demo",
+            "task_id": "t-2",
+            "media_parts": [],
+        }
+    )
+
+    fake_mgr.handle_proactive_complete.assert_awaited_once_with(
+        expected_speech_id="plugin-reply-turn", expected_user_engagement_time=100.0
+    )
+
 @pytest.mark.unit
 async def test_main_server_chat_passthrough_substitutes_master_name(monkeypatch):
     """visibility=["chat"] + ai_behavior="blind" → text goes verbatim to
