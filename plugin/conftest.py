@@ -27,9 +27,16 @@ straight off its file path instead.
 """
 
 import importlib.util as _importlib_util
+import os as _os
 from pathlib import Path as _Path
 
 import pytest as _pytest
+
+# Telemetry opt-out before any test imports utils.token_tracker (it reads the switch
+# once, at import, and flushes usage to the production server at process exit).
+# plugin/tests and tests/ get the same through tests/process_isolation.py; the
+# plugin/plugins/<name>/tests trees only pass through here.
+_os.environ["NEKO_DO_NOT_TRACK"] = "1"
 
 _REPO_ROOT = _Path(__file__).resolve().parents[1]
 
