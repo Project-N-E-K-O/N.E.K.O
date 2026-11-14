@@ -138,3 +138,47 @@ def test_concurrent_writability_probes_on_one_directory_all_succeed(tmp_path):
     assert len(results) == workers * 30
     assert all(results), f"{results.count(False)} of {len(results)} probes reported unwritable"
     assert list(directory.iterdir()) == []
+
+
+_PROBE_PROCESS = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from utils.logger_config import RobustLoggerConfig
+directory, start = Path(sys.argv[2]), float(sys.argv[3])
+while time.time() < start:
+    time.sleep(0.001)
+print(sum(not RobustLoggerConfig._test_directory_writable(None, directory) for _ in range(20)))
+"""
+
+
+@pytest.mark.unit
+def test_concurrent_writability_probes_from_separate_processes_all_succeed(tmp_path, tmp_path_factory):
+    # The case the fix is for: plugin processes, not threads, share a log
+    # directory. Thread ids can coincide across processes, so this pins the
+    # per-process part of the probe name as well.
+    import subprocess
+    import sys
+    import time
+
+    from tests.process_isolation import child_process_env
+
+    repo_root = Path(__file__).resolve().parents[2]
+    directory = tmp_path / "logs"
+    env = child_process_env(tmp_path_factory.mktemp("child-runtime-root"))
+    # Children start together after their (slow, cold) imports.
+    start = time.time() + 8
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", _PROBE_PROCESS, str(repo_root), str(directory), str(start)],
+            cwd=str(repo_root), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for _ in range(8)
+    ]
+    outputs = [process.communicate(timeout=120) for process in processes]
+
+    for process, (stdout, stderr) in zip(processes, outputs):
+        assert process.returncode == 0, stderr
+    unwritable = [int(stdout.strip().splitlines()[-1]) for stdout, _ in outputs]
+    assert unwritable == [0] * 8, f"probes reported unwritable per process: {unwritable}"
+    assert list(directory.iterdir()) == []
