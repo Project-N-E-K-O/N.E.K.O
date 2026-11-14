@@ -13,6 +13,7 @@ import asyncio
 import os
 import subprocess
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 
 import psutil
@@ -78,11 +79,13 @@ def cli_child_env() -> dict[str, str]:
     }
 
 
-def start_cli(argv: list[str], *, cwd: Path, merge_stderr: bool) -> subprocess.Popen[str]:
+def start_cli(
+    argv: list[str], *, cwd: Path, merge_stderr: bool, env: Mapping[str, str] | None = None
+) -> subprocess.Popen[str]:
     return subprocess.Popen(
         argv,
         cwd=cwd,
-        env=cli_child_env(),
+        env=cli_child_env() if env is None else env,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -138,7 +141,8 @@ def terminate_process_tree(process: subprocess.Popen[str]) -> None:
 
 
 async def run_cli(
-    argv: list[str], *, cwd: Path, timeout: float, merge_stderr: bool = False
+    argv: list[str], *, cwd: Path, timeout: float, merge_stderr: bool = False,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the CLI to completion.
 
@@ -146,7 +150,7 @@ async def run_cli(
     once the tree was killed after ``timeout``. Cancelling the caller kills
     the tree too, so a server shutdown leaves nothing running.
     """
-    process = start_cli(argv, cwd=cwd, merge_stderr=merge_stderr)
+    process = start_cli(argv, cwd=cwd, merge_stderr=merge_stderr, env=env)
     communicate = asyncio.ensure_future(asyncio.to_thread(process.communicate))
     try:
         stdout, stderr = await asyncio.wait_for(asyncio.shield(communicate), timeout)

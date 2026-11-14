@@ -532,11 +532,12 @@ def _run_tests(plugin_dir: Path, *, plugin_id: str, defaults: CliDefaults, skip_
         return "not-found"
     command = [sys.executable, "-m", "pytest"]
     env: dict[str, str] | None = None
-    pytest_ini = defaults.repo_root / "pytest.ini"
+    pytest_ini = Path(os.environ.get("NEKO_PLUGIN_TEST_CONFIG", defaults.repo_root / "pytest.ini"))
     if pytest_ini.is_file():
         # CI runs the tests from plugin/plugins/<id> of a N.E.K.O checkout, where
         # pytest picks up that checkout's pytest.ini; use the same configuration.
-        command += ["-c", str(pytest_ini), "--rootdir", str(defaults.repo_root)]
+        test_root = plugin_dir if "NEKO_PLUGIN_TEST_CONFIG" in os.environ else defaults.repo_root
+        command += ["-c", str(pytest_ini), "--rootdir", str(test_root)]
     if (defaults.plugin_root / "plugins" / plugin_id).resolve() != plugin_dir.resolve():
         # Out of tree: import plugin.plugins.<id> from here instead of a mount.
         command += ["-p", "plugin.neko_plugin_cli.plugin_import_alias"]

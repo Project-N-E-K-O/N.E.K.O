@@ -20,7 +20,11 @@ from __future__ import annotations
 import os
 import sys
 
-from launcher_core.bootstrap import _ensure_utf8_filesystem_encoding, _pin_project_root_first
+from launcher_core.bootstrap import (
+    _configure_desktop_tool_path,
+    _ensure_utf8_filesystem_encoding,
+    _pin_project_root_first,
+)
 
 
 if __name__ == "__main__":
@@ -37,6 +41,7 @@ if __name__ == "__main__":
 
     _load_dotenv(_Path(__file__).resolve().with_name(".env"), override=False)
     _ensure_utf8_filesystem_encoding()
+    _configure_desktop_tool_path()
     if os.environ.get("NEKO_WAKE_WORD_RELEASE_SMOKE") == "1":
         from multiprocessing import freeze_support as _wake_freeze_support
         _wake_freeze_support()

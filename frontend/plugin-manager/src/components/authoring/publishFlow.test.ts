@@ -424,7 +424,8 @@ describe('publishFlow step 0 (toolchain)', () => {
     git: { installed: true, version: '2.55.0', user_name: 'Dev', user_email: 'dev@example.com' },
     uv: { installed: true, version: '0.12.18' },
     gh: { installed: true, version: '2.101.0', authenticated: true, login: 'octocat' },
-    source_checkout: true,
+    tool_environment: 'source',
+    tool_environment_error: null,
   })
   const tool = (flow: ReturnType<typeof publishFlow>, id: string) =>
     flow.toolchain.tools.find((item) => item.id === id)!
@@ -452,7 +453,7 @@ describe('publishFlow step 0 (toolchain)', () => {
       status: status(),
       submission: approved(),
       task: null,
-      toolchain: { ...ready(), source_checkout: false },
+      toolchain: { ...ready(), tool_environment: 'ready' },
     })
     expect(flow.toolchain.tools.map((item) => item.id)).toEqual([
       'git', 'gitIdentity', 'uv', 'gh', 'githubAccount',
@@ -460,6 +461,36 @@ describe('publishFlow step 0 (toolchain)', () => {
     expect(flow.toolchain.state).toBe('done')
     expect(flow.currentStepId).toBe('release')
     expect(flow.blockers.github).toEqual([])
+  })
+
+  it.each([
+    ['preparing', 'toolEnvironmentPreparing'],
+    ['missing', 'toolEnvironmentMissing'],
+    ['unavailable', 'toolEnvironmentUnavailable'],
+  ] as const)('hard-blocks every publish mode while the tool environment is %s', (environment, key) => {
+    const flow = flowOf({
+      status: status(),
+      submission: approved(),
+      task: null,
+      toolchain: { ...ready(), tool_environment: environment },
+    })
+    for (const blockers of [flow.blockers.github, flow.blockers.github_and_market, flow.blockers.market_notify]) {
+      expect(blockers).toContainEqual({ severity: 'hard', step: 'toolchain', reason: { key } })
+    }
+  })
+
+  it('hard-blocks with the stored error when the tool environment failed', () => {
+    const flow = flowOf({
+      status: status(),
+      submission: approved(),
+      task: null,
+      toolchain: { ...ready(), tool_environment: 'failed', tool_environment_error: 'uv not found' },
+    })
+    expect(flow.blockers.github).toContainEqual({
+      severity: 'hard',
+      step: 'toolchain',
+      reason: { key: 'toolEnvironmentFailed', params: { error: 'uv not found' } },
+    })
   })
 
   it('becomes the current page and a hard blocker when a required tool is missing', () => {

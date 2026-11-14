@@ -413,13 +413,35 @@ function toolchainPage(toolchain: Toolchain | null | undefined): ToolchainPage {
   return { state, tools }
 }
 
+function toolEnvironmentBlocker(toolchain: Toolchain): ActionBlocker | null {
+  switch (toolchain.tool_environment) {
+    case 'source':
+    case 'ready':
+      return null
+    case 'preparing':
+      return hard('toolchain', message('toolEnvironmentPreparing'))
+    case 'failed':
+      return hard('toolchain', message('toolEnvironmentFailed', { error: toolchain.tool_environment_error ?? '' }))
+    case 'unavailable':
+      return hard('toolchain', message('toolEnvironmentUnavailable'))
+    default:
+      return hard('toolchain', message('toolEnvironmentMissing'))
+  }
+}
+
 /** A required tool that is missing makes every publish mode fail on the server or in the CLI. */
-function toolchainBlockers(page: ToolchainPage, mode: PublishMode): ActionBlocker[] {
+function toolchainBlockers(
+  page: ToolchainPage,
+  mode: PublishMode,
+  toolchain: Toolchain | null | undefined
+): ActionBlocker[] {
   // Notifying the Market runs no ruff, so it does not need uv.
   const needed: ToolId[] = mode === 'market_notify' ? ['git'] : ['git', 'uv']
-  return page.tools
+  const missing = page.tools
     .filter((tool) => needed.includes(tool.id) && tool.state === 'missing')
     .map((tool) => hard('toolchain', message('publishToolMissingBlocker', { tool: TOOL_NAMES[tool.id] })))
+  const environment = toolchain ? toolEnvironmentBlocker(toolchain) : null
+  return environment ? [...missing, environment] : missing
 }
 
 /** Product names, not translated. */
@@ -475,7 +497,7 @@ export function publishFlow(facts: PublishFlowFacts): PublishFlow {
     marketDone: !!answer || facts.marketListed === true,
   }
   const blockers = (mode: PublishMode, own: ActionBlocker[]) =>
-    bySeverity([...toolchainBlockers(tools, mode), ...own])
+    bySeverity([...toolchainBlockers(tools, mode, facts.toolchain), ...own])
   return {
     steps,
     toolchain: tools,

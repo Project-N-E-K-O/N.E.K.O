@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import re
 import subprocess
-import sys
 import threading
 import time
 from collections import deque
@@ -30,7 +29,11 @@ from plugin.server.application.plugin_project_commands import (
     start_cli,
     terminate_process_tree,
 )
-from plugin.server.application.plugin_projects import source_repo_root
+from plugin.server.application.plugin_tool_environment import (
+    ToolEnvironment,
+    ToolEnvironmentError,
+    tool_environment,
+)
 from plugin.server.application.plugin_publish_status import (
     LocalStatus,
     RemoteGithubState,
@@ -110,7 +113,7 @@ def _snapshot(task: _Task) -> dict[str, object]:
 class _Gate(NamedTuple):
     """Everything ``start_publish`` needs after the local preconditions pass."""
 
-    root: Path
+    environment: ToolEnvironment
     source_dir: Path
     plugin_id: str
     repository: str
@@ -153,7 +156,7 @@ def _release_blockers(local: LocalStatus) -> list[str]:
     if workflow != ActionFileStatus.CURRENT:
         reasons.append(
             f"the standard release workflow {_RELEASE_WORKFLOW} is {workflow or 'missing'}; "
-            f"run neko-plugin setup-repo {local.source_dir} --upgrade-github-actions"
+            "apply the workflow update in the plugin workbench"
         )
     if state.tag_exists and state.tag_at_head is False:
         reasons.append(
@@ -164,13 +167,10 @@ def _release_blockers(local: LocalStatus) -> list[str]:
 
 def _local_gate(project_id: str, mode: PublishMode) -> _Gate:
     """Refuse to start unless the CLI's own local preconditions already hold."""
-    root = source_repo_root()
-    if root is None:
-        raise project_error(
-            Code.PUBLISH_UNAVAILABLE,
-            "Publishing needs a source checkout; it is unavailable in a packaged build.",
-            503,
-        )
+    try:
+        environment = tool_environment()
+    except ToolEnvironmentError as exc:
+        raise project_error(Code.PUBLISH_UNAVAILABLE, str(exc), 503) from exc
     local = read_local_status(project_id)
     state = local.repository
     reasons: list[str] = []
@@ -187,7 +187,7 @@ def _local_gate(project_id: str, mode: PublishMode) -> _Gate:
         raise project_error(Code.PUBLISH_NOT_READY, "; ".join(reasons), 409)
     assert state.github_repository is not None  # the check above raised without it
     return _Gate(
-        root=root,
+        environment=environment,
         source_dir=local.source_dir,
         plugin_id=local.plugin_id,
         repository=state.github_repository,
@@ -261,7 +261,7 @@ def _verified_release_url(gate: _Gate, remote: RemoteGithubState) -> str:
 async def start_publish(project_id: str, mode: PublishMode) -> dict[str, object]:
     gate = await asyncio.to_thread(_local_gate, project_id, mode)
     budget = env_seconds("NEKO_PLUGIN_PUBLISH_BUDGET", 1200.0)
-    argv = [sys.executable, "-m", "plugin.neko_plugin_cli.cli", "publish"]
+    argv = gate.environment.command("publish")
     release_url = ""
     if mode == "market_notify":
         remote = await read_remote_github(
@@ -351,13 +351,13 @@ def _prune() -> None:
             _active.pop(task.project_id, None)
 
 
-def _stream(task: _Task, argv: list[str], cwd: Path) -> tuple[int | None, str]:
+def _stream(task: _Task, argv: list[str], environment: ToolEnvironment) -> tuple[int | None, str]:
     """Run the CLI to completion, collecting its output. Called in a thread."""
     with _lock:
         if task.cancel_requested or task.stop_requested:
             return None, ""
     try:
-        process = start_cli(argv, cwd=cwd, merge_stderr=True)
+        process = start_cli(argv, cwd=environment.cwd, merge_stderr=True, env=environment.env)
     except OSError as exc:
         return None, f"publish command could not start: {exc}"
     with _lock:
@@ -454,7 +454,7 @@ async def _timeout_message(task: _Task, gate: _Gate, budget: float) -> str:
 
 
 async def _run_task(task: _Task, argv: list[str], gate: _Gate, budget: float) -> None:
-    stream = asyncio.create_task(asyncio.to_thread(_stream, task, argv, gate.root))
+    stream = asyncio.create_task(asyncio.to_thread(_stream, task, argv, gate.environment))
     returncode: int | None = None
     spawn_error = ""
     timeout_message = ""

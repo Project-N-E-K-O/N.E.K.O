@@ -55,6 +55,16 @@
         </header>
         <AuthoringPublishGuide page-id="toolchain" :params="guideParams" :open="guideOpen('toolchain')" />
         <AuthoringPublishToolchain :page="flow.toolchain" :error="toolchainError" />
+        <p v-if="toolchain" class="authoring-muted">
+          {{ t(TOOL_ENV_LABELS[toolchain.tool_environment], { error: toolchain.tool_environment_error ?? '' }) }}
+        </p>
+        <el-button
+          v-if="toolchain && ['missing', 'failed'].includes(toolchain.tool_environment)"
+          :loading="preparingEnvironment"
+          @click="prepareEnvironment"
+        >
+          {{ t('authoring.toolEnvironmentPrepare') }}
+        </el-button>
       </section>
       <section
         v-for="(step, index) in flow.steps"
@@ -104,9 +114,14 @@
           :project-id="projectId"
           :can-create="flow.canCreateRepository"
           :notes="flow.notes"
+          :environment="toolchain?.tool_environment"
           @created="load({ fresh: true })"
         />
-        <AuthoringProjectPrecheck v-else-if="step.id === 'verify'" :project-id="projectId" />
+        <AuthoringProjectPrecheck
+          v-else-if="step.id === 'verify'"
+          :project-id="projectId"
+          :environment="toolchain?.tool_environment"
+        />
         <AuthoringProjectSubmission
           :key="status.repository.github_repository ?? ''"
           v-else-if="step.id === 'submission'"
@@ -185,6 +200,7 @@ import {
   getPluginProjectPublishStatus,
   getPluginProjectPublishTask,
   getPluginToolchain,
+  preparePluginToolEnvironment,
   projectErrorCode,
   publishTaskActive,
   startPluginProjectPublish,
@@ -324,9 +340,53 @@ async function loadToolchain() {
   toolchainFailure.clear()
   try {
     const next = await getPluginToolchain(props.projectId)
-    if (!disposed) toolchain.value = next
+    if (!disposed) {
+      toolchain.value = next
+      if (next.tool_environment === 'preparing') pollToolEnvironment()
+    }
   } catch (error) {
     if (!disposed) toolchainFailure.set(error)
+  }
+}
+
+const TOOL_ENV_LABELS: Record<Toolchain['tool_environment'], string> = {
+  source: 'authoring.toolEnvironmentSource',
+  ready: 'authoring.toolEnvironmentReady',
+  preparing: 'authoring.toolEnvironmentPreparing',
+  missing: 'authoring.toolEnvironmentMissing',
+  failed: 'authoring.toolEnvironmentFailed',
+  unavailable: 'authoring.toolEnvironmentUnavailable',
+}
+const preparingEnvironment = ref(false)
+let environmentPoll: Promise<void> | null = null
+/** One shared poll loop: started by the prepare button and by any load that finds the environment preparing. */
+function pollToolEnvironment() {
+  if (environmentPoll) return
+  environmentPoll = (async () => {
+    while (!disposed) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+      await loadToolchain()
+      if (disposed || toolchain.value?.tool_environment !== 'preparing') return
+    }
+  })().finally(() => {
+    environmentPoll = null
+  })
+}
+async function prepareEnvironment() {
+  preparingEnvironment.value = true
+  toolchainFailure.clear()
+  try {
+    const started = await preparePluginToolEnvironment()
+    if (started.state === 'ready' || started.state === 'source') {
+      await loadToolchain()
+      return
+    }
+    pollToolEnvironment()
+    await environmentPoll
+  } catch (error) {
+    if (!disposed) toolchainFailure.set(error)
+  } finally {
+    preparingEnvironment.value = false
   }
 }
 

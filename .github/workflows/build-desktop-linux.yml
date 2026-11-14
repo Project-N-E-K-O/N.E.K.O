@@ -423,6 +423,9 @@ jobs:
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
+      - name: Stage plugin workbench tools
+        run: .venv/bin/python scripts/build_plugin_tools.py --backend dist/Xiao8/projectneko_server
+
       # --- Verify bundled embedding + tiktoken assets ---
       # memory/embeddings.py treats every onnx_data sidecar plus both fp32
       # and int8 variants as required at session-load time; tiktoken
@@ -557,6 +560,15 @@ jobs:
           cache: 'npm'
           cache-dependency-path: electron-app/package-lock.json
 
+      - name: Check out workbench acceptance tests
+        uses: actions/checkout@v4
+        with:
+          path: backend-source
+          persist-credentials: false
+
+      - name: Install uv for workbench acceptance
+        uses: astral-sh/setup-uv@v4
+
       - name: Download Python backend artifact
         uses: actions/download-artifact@v4
         with:
@@ -630,6 +642,17 @@ jobs:
         run: npx electron-builder ${{ matrix.electron_args }} --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify plugin workbench in the Linux AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=(electron-app/dist/*.AppImage)
+          [[ ${#appimages[@]} -eq 1 ]] || { echo "Expected one Linux AppImage"; exit 1; }
+          uv run --project backend-source --python "$PYTHON_VERSION" --locked --only-group plugin-tools \
+            python backend-source/scripts/check_plugin_tools.py "${appimages[0]}" \
+              --check-desktop-runtime
 
       - name: List build output
         working-directory: electron-app/dist

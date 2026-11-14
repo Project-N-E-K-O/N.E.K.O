@@ -2248,3 +2248,47 @@ def test_external_test_import_hook_does_not_require_a_checkout_pytest_ini(tmp_pa
     assert "-c" not in command
     assert command[command.index("-p") + 1] == "plugin.neko_plugin_cli.plugin_import_alias"
     assert kwargs["env"][release_cmd.PLUGIN_SOURCE_ENV] == str(source)
+
+
+def test_run_tests_uses_the_packaged_test_config(tmp_path, monkeypatch):
+    source = tmp_path / "demo"
+    (source / "tests").mkdir(parents=True)
+    config = tmp_path / "tools" / "pytest.ini"
+    config.parent.mkdir()
+    config.write_text("[pytest]\n", encoding="utf-8")
+    monkeypatch.setenv("NEKO_PLUGIN_TEST_CONFIG", str(config))
+    root = tmp_path / "checkout"
+    (root / "pytest.ini").parent.mkdir(parents=True)
+    (root / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    defaults = CliDefaults(root / "plugin", root / "target", root / "plugin/plugins", root / "profiles")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, "")
+
+    monkeypatch.setattr(release_cmd.subprocess, "run", run)
+    assert release_cmd._run_tests(source, plugin_id="demo", defaults=defaults, skip_tests=False) == "passed"
+    command, _ = calls[0]
+    assert command[command.index("-c") + 1] == str(config)
+    assert command[command.index("--rootdir") + 1] == str(source)
+
+
+def test_test_import_hook_exposes_the_plugin_vendor_directory(tmp_path, monkeypatch):
+    import sys
+
+    from plugin.neko_plugin_cli import plugin_import_alias
+
+    source = tmp_path / "demo"
+    vendor = source / "vendor"
+    vendor.mkdir(parents=True)
+    monkeypatch.setenv(plugin_import_alias.PLUGIN_SOURCE_ENV, str(source))
+    monkeypatch.setenv(plugin_import_alias.PLUGIN_ID_ENV, "demo")
+    monkeypatch.setattr(plugin_import_alias, "install_source_imports", lambda *a: None)
+    monkeypatch.setattr(plugin_import_alias, "ensure_plugins_namespace", lambda *a: None)
+    monkeypatch.delitem(sys.modules, "plugins", raising=False)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+    plugin_import_alias.pytest_load_initial_conftests()
+
+    assert sys.path[0] == str(vendor)

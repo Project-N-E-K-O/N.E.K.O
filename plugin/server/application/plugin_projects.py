@@ -30,6 +30,10 @@ from plugin import settings
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.application.plugin_project_commands import project_operation, run_cli
+from plugin.server.application.plugin_tool_environment import (
+    ToolEnvironmentError,
+    tool_environment,
+)
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.application.plugins.operation_lock import (
     PluginOperationBusy,
@@ -608,29 +612,21 @@ async def precheck_project(project_id: str) -> dict[str, object]:
     the project, runs the CLI from the source checkout and returns its JSON
     report verbatim, so the workbench can never drift from CI.
     """
-    root = source_repo_root()
-    if root is None:
-        raise project_error(
-            Code.PRECHECK_UNAVAILABLE,
-            "Pre-release checks need a source checkout; they are unavailable in a packaged build.",
-            503,
-        )
     record = next((item for item in store.list_records() if item.project_id == project_id), None)
     if record is None:
         raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
     budget = env_seconds("NEKO_PLUGIN_PRECHECK_BUDGET", 600.0)
-    argv = [
-        sys.executable,
-        "-m",
-        "plugin.neko_plugin_cli.cli",
-        "precheck",
-        str(record.source_dir),
-        "--json",
-    ]
     # ``sync --clean`` rewrites vendor/; never alongside a publish or create-repo.
     with project_operation(project_id, "precheck"):
         try:
-            completed = await run_cli(argv, cwd=root, timeout=budget)
+            environment = tool_environment()
+        except ToolEnvironmentError as exc:
+            raise project_error(Code.PRECHECK_UNAVAILABLE, str(exc), 503) from exc
+        argv = environment.command("precheck", str(record.source_dir), "--json")
+        try:
+            completed = await run_cli(
+                argv, cwd=environment.cwd, timeout=budget, env=environment.env
+            )
         except subprocess.TimeoutExpired as exc:
             raise project_error(
                 Code.PRECHECK_FAILED_TO_RUN, f"precheck timed out after {budget:.0f} seconds", 504
@@ -654,3 +650,30 @@ async def precheck_project(project_id: str) -> dict[str, object]:
     if not isinstance(report, dict):
         raise project_error(Code.PRECHECK_FAILED_TO_RUN, "precheck report is not an object", 500)
     return report
+
+
+async def update_project_workflows(project_id: str, *, apply: bool) -> list[dict[str, str]]:
+    """Preview or apply the standard GitHub Actions files the CLI would write."""
+    from plugin.neko_plugin_cli.repo_action_migration import migrate_github_actions
+    from plugin.neko_plugin_cli.templates.generator import PluginSpec
+
+    def update() -> list[dict[str, str]]:
+        record = next((item for item in store.list_records() if item.project_id == project_id), None)
+        if record is None:
+            raise project_error(Code.PROJECT_NOT_FOUND, f"unknown project: {project_id}", 404)
+        try:
+            source = inspect_source_directory(record.source_dir)
+            changes = migrate_github_actions(
+                PluginSpec(plugin_id=source.plugin_id),
+                record.source_dir,
+                dry_run=not apply,
+            )
+        except (OSError, ValueError) as exc:
+            raise project_error(Code.PROJECT_IO_FAILED, str(exc), 400) from exc
+        return [
+            {"path": change.relative_path.as_posix(), "status": change.status.value}
+            for change in changes
+        ]
+
+    with project_operation(project_id, "update-workflows"):
+        return await asyncio.to_thread(update)

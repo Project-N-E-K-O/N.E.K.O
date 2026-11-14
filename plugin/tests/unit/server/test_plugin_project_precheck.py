@@ -116,6 +116,65 @@ async def test_precheck_unavailable_outside_a_source_checkout(app, tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_precheck_in_a_packaged_build_uses_the_prepared_venv(
+    app, tmp_path, monkeypatch
+):
+    from plugin.server.application.plugin_tool_environment import ToolEnvironment
+
+    record = store.add_record(_scaffold(tmp_path, "pre_demo"))
+    captured = {}
+
+    async def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(REPORT), stderr="")
+
+    venv = tmp_path / "tools-env"
+    python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    env = {"NEKO_PLUGIN_TEST_CONFIG": str(venv / "pytest.ini")}
+    monkeypatch.setattr(
+        service, "tool_environment", lambda: ToolEnvironment(python, venv, dict(env))
+    )
+    monkeypatch.setattr(service, "run_cli", fake_run)
+    async with client(app) as http:
+        response = await http.post(
+            f"/plugin-projects/{record.project_id}/precheck", json={}
+        )
+    assert response.status_code == 200, response.text
+    assert captured["argv"][:3] == [str(python), "-m", "plugin.neko_plugin_cli.cli"]
+    assert captured["argv"][3] == "precheck"
+    assert captured["cwd"] == venv
+    assert captured["env"]["NEKO_PLUGIN_TEST_CONFIG"] == env["NEKO_PLUGIN_TEST_CONFIG"]
+
+
+@pytest.mark.asyncio
+async def test_precheck_in_a_packaged_build_without_a_prepared_venv_is_unavailable(
+    app, tmp_path, monkeypatch
+):
+    from plugin.server.application.plugin_tool_environment import ToolEnvironmentError
+
+    record = store.add_record(_scaffold(tmp_path, "pre_demo"))
+    monkeypatch.setattr(service, "source_repo_root", lambda: None)
+
+    def _not_prepared():
+        raise ToolEnvironmentError(
+            "the plugin tool environment is not prepared yet — "
+            "prepare the plugin tool environment first"
+        )
+
+    monkeypatch.setattr(service, "tool_environment", _not_prepared)
+    async with client(app) as http:
+        response = await http.post(
+            f"/plugin-projects/{record.project_id}/precheck", json={}
+        )
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "PRECHECK_UNAVAILABLE"
+    assert "not prepared yet" in detail["message"]
+
+
+@pytest.mark.asyncio
 async def test_precheck_without_a_report_is_a_server_failure(app, tmp_path, monkeypatch):
     record = store.add_record(_scaffold(tmp_path, "pre_demo"))
     _stub_cli(monkeypatch, "", returncode=1)

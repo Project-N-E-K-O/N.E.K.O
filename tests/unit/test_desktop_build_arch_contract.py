@@ -155,3 +155,21 @@ def test_linux_only_workflow_runs_the_same_gate_before_upload() -> None:
     assert "scripts/check_dist_arch.py" in gate["run"]
     assert "--expect-arch x64" in gate["run"]
     assert names.index(GATE_STEP_NAME) < names.index("Upload Python backend artifact")
+
+
+@pytest.mark.parametrize("path", [CROSS_PLATFORM_WORKFLOW, LINUX_WORKFLOW])
+def test_desktop_workflows_stage_and_check_plugin_tools(path: Path) -> None:
+    workflow = _load(path)
+    backend = _steps(workflow, "build-python")
+    stage = "Stage plugin workbench tools"
+    assert "if" not in backend[stage]
+    assert "scripts/build_plugin_tools.py" in backend[stage]["run"]
+    assert "--backend" in backend[stage]["run"]
+    assert list(backend).index(stage) < list(backend).index("Upload Python backend artifact")
+    if path == CROSS_PLATFORM_WORKFLOW:
+        assert list(backend).index(stage) < list(backend).index("Re-sign macOS backend after post-processing")
+
+    desktop = _steps(workflow, "build-electron")
+    acceptance = "Verify plugin workbench in the Linux AppImage"
+    assert "scripts/check_plugin_tools.py" in desktop[acceptance]["run"]
+    assert list(desktop).index(acceptance) < list(desktop).index("Upload desktop artifact")

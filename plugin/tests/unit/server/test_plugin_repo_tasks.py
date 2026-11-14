@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from plugin.server.application import plugin_project_commands as commands
+from plugin.server.application import plugin_projects
 from plugin.server.application import plugin_repo_tasks as repo_tasks
+from plugin.server.application.plugin_tool_environment import ToolEnvironment
 from plugin.server.domain.errors import ServerDomainError
 
 pytestmark = pytest.mark.plugin_unit
@@ -23,7 +26,7 @@ def _completed(returncode: int, stdout: str):
 
 
 def _patch(monkeypatch, *, returncode: int, stdout: str, root: Path | None = Path("/repo")):
-    monkeypatch.setattr(repo_tasks, "source_repo_root", lambda: root)
+    monkeypatch.setattr(plugin_projects, "source_repo_root", lambda: root)
     monkeypatch.setattr(repo_tasks, "load_plugin_source", lambda _dir: object())
     monkeypatch.setattr(repo_tasks, "run_cli", _completed(returncode, stdout))
 
@@ -69,7 +72,7 @@ def test_a_packaged_build_without_a_checkout_is_refused(monkeypatch):
 
 
 def test_a_timeout_is_a_failed_domain_error(monkeypatch):
-    monkeypatch.setattr(repo_tasks, "source_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(plugin_projects, "source_repo_root", lambda: Path("/repo"))
     monkeypatch.setattr(repo_tasks, "load_plugin_source", lambda _dir: object())
 
     async def _timeout(*a, **k):
@@ -91,12 +94,38 @@ def test_private_flag_is_forwarded_to_the_cli(monkeypatch):
             argv, 0, "[OK] repository ready: https://github.com/o/n.e.k.o_plugin_demo", ""
         )
 
-    monkeypatch.setattr(repo_tasks, "source_repo_root", lambda: Path("/repo"))
+    monkeypatch.setattr(plugin_projects, "source_repo_root", lambda: Path("/repo"))
     monkeypatch.setattr(repo_tasks, "load_plugin_source", lambda _dir: object())
     monkeypatch.setattr(repo_tasks, "run_cli", _capture)
     _run(monkeypatch, private=True)
     assert "--private" in captured["argv"]
     assert "create-repo" in captured["argv"]
+
+
+def test_a_packaged_build_uses_the_prepared_venv(monkeypatch):
+    captured = {}
+
+    async def _capture(argv, **kwargs):
+        captured["argv"] = argv
+        captured["cwd"] = kwargs.get("cwd")
+        captured["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(
+            argv, 0, "[OK] repository ready: https://github.com/o/n.e.k.o_plugin_demo", ""
+        )
+
+    venv = Path("/tools/env")
+    python = venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    env = {"NEKO_PLUGIN_TEST_CONFIG": "/tools/pytest.ini"}
+    monkeypatch.setattr(
+        repo_tasks, "tool_environment", lambda: ToolEnvironment(python, venv, dict(env))
+    )
+    monkeypatch.setattr(repo_tasks, "load_plugin_source", lambda _dir: object())
+    monkeypatch.setattr(repo_tasks, "run_cli", _capture)
+    _run(monkeypatch)
+    assert captured["argv"][:3] == [str(python), "-m", "plugin.neko_plugin_cli.cli"]
+    assert captured["argv"][3] == "create-repo"
+    assert captured["cwd"] == venv
+    assert captured["env"] == env
 
 
 def test_create_repo_is_refused_while_the_project_is_busy(monkeypatch):

@@ -9,6 +9,7 @@ import it under the same name without anything being written to the checkout.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from plugin.core.source_imports import ensure_plugins_namespace, install_source_imports
@@ -22,5 +23,8 @@ def pytest_load_initial_conftests() -> None:
     # pytest loads conftest.py files in its own trylast implementation of
     # this hook, so the finder is in place before they import the plugin.
     source = Path(os.environ[PLUGIN_SOURCE_ENV])
+    vendor = source / "vendor"
+    if vendor.is_dir():
+        sys.path.insert(0, str(vendor))
     ensure_plugins_namespace(source.parent, get_logger("plugin-tests"))
     install_source_imports(f"plugins.{os.environ[PLUGIN_ID_ENV]}", source)

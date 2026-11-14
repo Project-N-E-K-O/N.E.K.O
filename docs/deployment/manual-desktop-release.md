@@ -17,7 +17,18 @@ and never creates a tag, GitHub Release, upload, or update-service request.
 Before running it, build the matching Nuitka backend on the native host and put
 it in the adjacent `N.E.K.O.-PC/bin` directory (`projectneko_server.exe` on
 Windows, `projectneko_server` on macOS/Linux). The script packages that backend
-with the locally available Electron signing identity.
+with the locally available Electron signing identity. On macOS the backend is
+the executable at `projectneko_server.app/Contents/MacOS/projectneko_server`.
+
+From the same N.E.K.O. checkout, stage the plugin workbench tools with
+`uv run python scripts/build_plugin_tools.py --backend <backend-executable>`
+using the same Python used for the Nuitka build, before signing the backend.
+The release script validates the staged resources with
+`scripts/check_plugin_tools.py --resources-only`, then starts the backend
+extracted from the full Portable archive in a temporary profile and drives its
+plugin workbench over HTTP (`--check-desktop-runtime`): it prepares the plugin
+tool environment, creates a project and runs the precheck. On Linux it also
+verifies the resources inside the AppImage.
 
 The publishing script also reuses the trusted manifest verifier from the sibling
 `N.E.K.O.-PC/src/main/portable-update.js` checkout. If the PC repository is stored
