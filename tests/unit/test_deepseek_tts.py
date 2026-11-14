@@ -1,7 +1,7 @@
 import asyncio
 import json
 import threading
-from queue import Queue
+from queue import Empty, Queue
 from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.parse import parse_qs, urlsplit
@@ -140,7 +140,12 @@ class FakeSocket:
         self.closed = threading.Event()
 
     async def __aenter__(self):
+        self.loop = asyncio.get_running_loop()
         return self
+
+    def receive(self, *replies):
+        for reply in replies:
+            self.loop.call_soon_threadsafe(self.incoming.put_nowait, reply)
 
     async def __aexit__(self, *args):
         self.closed.set()
@@ -224,6 +229,56 @@ def test_failure_reports_the_speech_and_next_speech_can_succeed(worker, reply, c
     worker.requests.put(("next", "again"))
     worker.requests.put((None, None))
     assert worker.replies.get(timeout=3) == (TTS_AUDIO_DONE_SENTINEL, "next")
+
+
+def test_next_speech_waits_until_the_previous_audio_finishes(worker):
+    finish = '{"event":"finish","code":"success"}'
+    pcm = b"\x10\x00" * 240
+    worker.script.put([])
+    worker.script.put([pcm, finish])
+    worker.requests.put(("first", "first line"))
+    worker.requests.put((None, None))
+    first, _, _ = worker.connections.get(timeout=3)
+    assert first.events.get(timeout=3) == {"event": "text", "text": "first line"}
+    assert first.events.get(timeout=3) == {"event": "finish_text"}
+
+    worker.requests.put(("second", "second line"))
+    worker.requests.put((None, None))
+    with pytest.raises(Empty):
+        worker.connections.get(timeout=0.2)
+    assert not first.closed.is_set()
+
+    first.receive(pcm, finish)
+    for speech_id in ("first", "second"):
+        kind, emitted_id, audio = worker.replies.get(timeout=3)
+        assert (kind, emitted_id, len(audio)) == ("__audio__", speech_id, len(pcm) * 2)
+        assert worker.replies.get(timeout=3) == (TTS_AUDIO_DONE_SENTINEL, speech_id)
+    second, _, _ = worker.connections.get(timeout=3)
+    assert second.events.get(timeout=3) == {"event": "text", "text": "second line"}
+    assert first.closed.is_set()
+
+
+def test_interrupt_discards_queued_speech_while_previous_audio_is_pending(worker):
+    finish = '{"event":"finish","code":"success"}'
+    worker.script.put([])
+    worker.script.put([finish])
+    worker.requests.put(("first", "first line"))
+    worker.requests.put((None, None))
+    first, _, _ = worker.connections.get(timeout=3)
+    assert first.events.get(timeout=3)["event"] == "text"
+    assert first.events.get(timeout=3)["event"] == "finish_text"
+
+    worker.requests.put(("discarded", "queued line"))
+    worker.requests.put((None, None))
+    worker.requests.put(("__interrupt__", None))
+    worker.requests.put(("replacement", "replacement line"))
+    worker.requests.put((None, None))
+
+    replacement, _, _ = worker.connections.get(timeout=3)
+    assert first.closed.is_set()
+    assert replacement.events.get(timeout=3) == {"event": "text", "text": "replacement line"}
+    assert worker.replies.get(timeout=3) == (TTS_AUDIO_DONE_SENTINEL, "replacement")
+    assert worker.replies.empty()
 
 
 def test_interrupt_closes_old_session_before_starting_the_next(worker):

@@ -165,42 +165,55 @@ def deepseek_tts_worker(request_queue, response_queue, audio_api_key, voice_id, 
         loop = asyncio.get_running_loop()
         speech_id = None
         text_queue = None
-        synthesis = None
+        pending_speeches = asyncio.Queue()
 
-        async def stop_speech():
-            if synthesis is not None:
-                synthesis.cancel()
-                await asyncio.gather(synthesis, return_exceptions=True)
+        async def synthesize_in_order():
+            nonlocal text_queue
+            while True:
+                sid, queued_text = await pending_speeches.get()
+                await _synthesize_speech(queued_text, response_queue, sid, url, headers)
+                if text_queue is queued_text:
+                    text_queue = None
 
-        # The server creates a synthesis session per speech; idle workers hold no socket.
+        async def stop_synthesis():
+            synthesis.cancel()
+            await asyncio.gather(synthesis, return_exceptions=True)
+
+        def finish_text():
+            nonlocal text_queue
+            if text_queue is not None:
+                text_queue.put_nowait(None)
+                text_queue = None
+
         response_queue.put(("__ready__", True))
+        synthesis = asyncio.create_task(synthesize_in_order())
         try:
             while True:
                 sid, text = await loop.run_in_executor(None, request_queue.get)
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
                 if sid == "__interrupt__":
-                    await stop_speech()
-                    speech_id = text_queue = synthesis = None
+                    await stop_synthesis()
+                    speech_id = text_queue = None
+                    pending_speeches = asyncio.Queue()
+                    synthesis = asyncio.create_task(synthesize_in_order())
                     continue
                 if sid is None:
-                    if text_queue is not None and not synthesis.done():
-                        text_queue.put_nowait(None)
-                    text_queue = None
+                    finish_text()
                     continue
                 if not text:
                     continue
                 if sid != speech_id:
-                    await stop_speech()
+                    # A new speech may be queued before the previous socket sends its last audio.
+                    # Serial synthesis preserves that tail while this loop still accepts interrupts.
+                    finish_text()
                     speech_id = sid
                     text_queue = asyncio.Queue()
-                    synthesis = asyncio.create_task(
-                        _synthesize_speech(text_queue, response_queue, sid, url, headers)
-                    )
-                if text_queue is not None and not synthesis.done():
+                    pending_speeches.put_nowait((sid, text_queue))
+                if text_queue is not None:
                     text_queue.put_nowait(text)
         finally:
-            await stop_speech()
+            await stop_synthesis()
 
     asyncio.run(run())
 
