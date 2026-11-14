@@ -90,7 +90,19 @@ def _check_desktop_runtime(backend: Path, root: Path) -> None:
                 "parent_dir": str(root), "plugin_id": "packaged_probe", "name": "Packaged Probe",
             })
             scaffold.raise_for_status()
-            project_id = scaffold.json()["project_id"]
+            created = scaffold.json()
+            project_id = created["project_id"]
+            # The scaffold runs `git init` without committing, and the
+            # release-check stage rejects untracked files. Commit it the way a
+            # plugin author would before publishing.
+            for git_args in (
+                ["add", "-A"],
+                ["-c", "user.name=N.E.K.O CI", "-c", "user.email=ci@neko.invalid",
+                 "commit", "--no-verify", "--no-gpg-sign", "-q", "-m", "Initial commit"],
+            ):
+                subprocess.run(
+                    ["git", *git_args], cwd=created["project_dir"], check=True, timeout=60,
+                )
             toolchain_url = f"{plugin_url}/plugin-projects/{project_id}/toolchain"
 
             deadline = monotonic() + 1800
