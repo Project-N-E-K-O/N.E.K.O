@@ -1182,8 +1182,31 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
     applied_lock = threading.Lock()
     rng = random.Random(seed)
     delays = {f"t{i}": rng.choice([0.0, 0.001, 0.002]) for i in range(25)}
+    # Set once the round has read the sentinel and applies its tail. A live
+    # write landing before that read would move the sentinel past every owed
+    # event, so the round would rightly owe nothing; at startup the outbox
+    # only resumes after the round, so that ordering is not the one under test.
+    round_applying = threading.Event()
+    live_written = threading.Event()
+    compaction_refused = threading.Event()
+    real_apply = log.aapply_and_advance
+    mid_round: dict[str, bool] = {}
+
+    async def apply_then_hold_once(*args, **kwargs):
+        # After the first event the character lock is free again: hold the
+        # round there until a live write has moved the sentinel under it and
+        # compaction has been turned away, so both always land mid-round on a
+        # slow runner too. Waiting inside the handler would hold that lock.
+        result = await real_apply(*args, **kwargs)
+        if not mid_round:
+            mid_round["live write"] = await asyncio.to_thread(live_written.wait, 10)
+            mid_round["compaction refused"] = await asyncio.to_thread(compaction_refused.wait, 10)
+        return result
+
+    log.aapply_and_advance = apply_then_hold_once
 
     def handler(_name, payload):
+        round_applying.set()
         time.sleep(delays.get(payload["i"], 0.0))
         with applied_lock:
             applied.append(payload["i"])
@@ -1196,6 +1219,9 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
     view: dict = {}
 
     def writer():
+        while not round_applying.wait(0.01):
+            if stop.is_set():
+                return
         n = 0
         while not stop.is_set():
             try:
@@ -1208,6 +1234,7 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
             except Exception as e:  # noqa: BLE001 - surfaced by the assert below
                 errors.append(e)
                 return
+            live_written.set()
             n += 1
             time.sleep(0.003)
 
@@ -1220,6 +1247,8 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
                 errors.append(e)
                 return
             outcomes[result.outcome] = outcomes.get(result.outcome, 0) + 1
+            if result.outcome == "replay_in_progress":
+                compaction_refused.set()
             time.sleep(0.0005)
 
     threads = [threading.Thread(target=writer, daemon=True),
@@ -1235,6 +1264,7 @@ async def test_concurrent_replay_live_writes_and_compaction_lose_nothing(tmp_pat
                 t.join(10)
 
         assert not errors, errors[:3]
+        assert mid_round == {"live write": True, "compaction refused": True}, mid_round
         assert outcomes.get("replay_in_progress", 0) > 0, outcomes
         missing = sorted(owed - set(applied))
         assert not missing, f"本轮欠下的事件丢了 {len(missing)} 条: {missing[:5]} {outcomes}"
