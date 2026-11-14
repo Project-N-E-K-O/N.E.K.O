@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import io
+import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -19,6 +21,10 @@ from plugin.neko_plugin_cli.repo_state import RepoState
 from plugin.server.application import plugin_project_commands as commands
 from plugin.server.application import plugin_publish_tasks as tasks
 from plugin.server.application.plugin_publish_status import LocalStatus
+from plugin.server.application.plugin_tool_environment import (
+    ToolEnvironment,
+    ToolEnvironmentError,
+)
 from plugin.server.application.plugins import operation_lock
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure import authoring_project_store as store
@@ -93,7 +99,11 @@ _REMOTE = {
 
 def _ready_gate(monkeypatch, tmp_path, *, actions=None, remote=None, **state):
     """Stub the gate's inputs so a plain directory looks publishable."""
-    monkeypatch.setattr(tasks, "source_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        tasks,
+        "tool_environment",
+        lambda: ToolEnvironment(Path(sys.executable), tmp_path, {}),
+    )
     local = LocalStatus(
         tmp_path,
         "demo",
@@ -200,7 +210,10 @@ async def _wait_terminal(project_id: str, timeout: float = 10.0) -> dict:
 
 async def test_canceling_the_worker_before_stream_start_prevents_cli_spawn(tmp_path, monkeypatch):
     task = tasks._Task("delayed", "delayed-project", "github")
-    gate = tasks._Gate(tmp_path, tmp_path, "demo", "owner/repo", "a" * 40, "v0.1.0")
+    gate = tasks._Gate(
+        ToolEnvironment(Path(sys.executable), tmp_path, {}),
+        tmp_path, "demo", "owner/repo", "a" * 40, "v0.1.0",
+    )
     entered, release = threading.Event(), threading.Event()
     terminated = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -235,9 +248,12 @@ async def test_canceling_the_worker_before_stream_start_prevents_cli_spawn(tmp_p
     assert task.project_id not in commands._busy
 
 
-async def test_publish_needs_a_source_checkout(app, tmp_path, monkeypatch):
+async def test_publish_needs_the_plugin_tool_environment(app, tmp_path, monkeypatch):
     record = store.add_record(tmp_path)
-    monkeypatch.setattr(tasks, "source_repo_root", lambda: None)
+    def _unavailable():
+        raise ToolEnvironmentError("prepare the plugin tool environment first")
+
+    monkeypatch.setattr(tasks, "tool_environment", _unavailable)
     async with client(app) as http:
         response = await http.post(
             f"/plugin-projects/{record.project_id}/publish", json={"mode": "github"}
@@ -495,7 +511,7 @@ def test_the_gate_requires_the_current_release_workflow(monkeypatch, tmp_path):
     with pytest.raises(ServerDomainError) as caught:
         tasks._local_gate("p", "github_and_market")
     assert "release.yml is UPGRADE" in caught.value.message
-    assert "--upgrade-github-actions" in caught.value.message
+    assert "apply the workflow update in the plugin workbench" in caught.value.message
 
 
 @pytest.mark.parametrize(
@@ -700,7 +716,11 @@ async def test_slow_spawn_does_not_block_polling_and_termination_reaps_the_child
     with tasks._lock:
         tasks._tasks[task.task_id] = task
         tasks._latest[task.project_id] = task.task_id
-    streaming = asyncio.create_task(asyncio.to_thread(tasks._stream, task, ["ignored"], tmp_path))
+    streaming = asyncio.create_task(
+        asyncio.to_thread(
+            tasks._stream, task, ["ignored"], ToolEnvironment(Path(sys.executable), tmp_path, {})
+        )
+    )
     assert await asyncio.to_thread(entered.wait, 2)
     try:
         snapshot = await asyncio.wait_for(asyncio.to_thread(tasks.latest_publish_task, task.project_id), 1)

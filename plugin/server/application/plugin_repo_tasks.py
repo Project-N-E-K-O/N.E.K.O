@@ -16,7 +16,6 @@ Outcomes mirror the CLI's exit codes:
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Literal
@@ -24,7 +23,10 @@ from typing import Literal
 from plugin.logging_config import get_logger
 from plugin.neko_plugin_cli.core.plugin_source import load_plugin_source
 from plugin.server.application.plugin_project_commands import project_operation, run_cli
-from plugin.server.application.plugin_projects import source_repo_root
+from plugin.server.application.plugin_tool_environment import (
+    ToolEnvironmentError,
+    tool_environment,
+)
 from plugin.server.application.plugins._env_budgets import env_seconds
 from plugin.server.domain.plugin_project_errors import ProjectErrorCode as Code
 from plugin.server.domain.plugin_project_errors import project_error
@@ -53,22 +55,21 @@ def _clip(text: str) -> list[str]:
 
 
 async def _run(source_dir: Path, *, private: bool) -> dict[str, object]:
-    root = source_repo_root()
-    if root is None:
-        raise project_error(
-            Code.REPO_CREATE_UNAVAILABLE,
-            "Creating a repository needs a source checkout; it is unavailable in a packaged build.",
-            503,
-        )
+    try:
+        environment = tool_environment()
+    except ToolEnvironmentError as exc:
+        raise project_error(Code.REPO_CREATE_UNAVAILABLE, str(exc), 503) from exc
     # Fail fast with a clear local code if the project cannot even be read.
     load_plugin_source(source_dir)
 
-    argv = [sys.executable, "-m", "plugin.neko_plugin_cli.cli", "create-repo", str(source_dir)]
+    argv = environment.command("create-repo", str(source_dir))
     if private:
         argv.append("--private")
     budget = env_seconds("NEKO_PLUGIN_REPO_CREATE_BUDGET", 180.0)
     try:
-        completed = await run_cli(argv, cwd=root, timeout=budget, merge_stderr=True)
+        completed = await run_cli(
+            argv, cwd=environment.cwd, timeout=budget, merge_stderr=True, env=environment.env
+        )
     except subprocess.TimeoutExpired as exc:
         raise project_error(
             Code.REPO_CREATE_FAILED,

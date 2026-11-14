@@ -199,13 +199,28 @@ export interface Toolchain {
   git: { installed: boolean; version: string | null; user_name: string | null; user_email: string | null }
   uv: { installed: boolean; version: string | null }
   gh: { installed: boolean; version: string | null; authenticated: boolean; login: string | null }
-  /** Checks, repository creation and publishing need a N.E.K.O source checkout. */
-  source_checkout: boolean
+  /** Checks, repository creation and publishing run the CLI through the plugin tool environment. */
+  tool_environment: 'source' | 'ready' | 'preparing' | 'missing' | 'failed' | 'unavailable'
+  tool_environment_error: string | null
 }
 
 /** The publishing tools of the machine running the server, seen from the project folder. Local reads only. */
 export const getPluginToolchain = (projectId: string): Promise<Toolchain> =>
   get(`/plugin-projects/${encodeURIComponent(projectId)}/toolchain`, config)
+
+export const preparePluginToolEnvironment = (): Promise<{ state: string; error: string | null }> =>
+  post('/plugin-projects/tool-environment', {}, config)
+
+export interface ProjectWorkflowChange {
+  path: string
+  status: 'ADD' | 'CURRENT' | 'UPGRADE' | 'CONFLICT'
+}
+
+export const previewProjectWorkflows = (projectId: string): Promise<ProjectWorkflowChange[]> =>
+  get(`/plugin-projects/${encodeURIComponent(projectId)}/workflows`, config)
+
+export const applyProjectWorkflows = (projectId: string): Promise<ProjectWorkflowChange[]> =>
+  post(`/plugin-projects/${encodeURIComponent(projectId)}/workflows`, {}, config)
 
 /** `fresh` bypasses the server's GitHub cache (an explicit refresh); rate limits still apply. */
 export const getPluginProjectPublishStatus = (

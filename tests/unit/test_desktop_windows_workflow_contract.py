@@ -349,6 +349,23 @@ def test_local_release_build_clears_stale_electron_dist_output() -> None:
     )
 
 
+def test_portable_archive_runs_the_desktop_runtime_check_before_release() -> None:
+    workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+    steps = _steps_by_name(workflow, "build-electron")
+    acceptance_name = "Verify plugin workbench in the Portable archive"
+    acceptance = steps[acceptance_name]
+    assert acceptance["if"] == "matrix.skip_portable_channel != true"
+    assert "--check-desktop-runtime" in acceptance["run"]
+    names = list(steps)
+    assert names.index("Create macOS/Linux Portable directory update assets") < names.index(acceptance_name)
+    assert names.index(acceptance_name) < names.index("Upload desktop artifact")
+
+    script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
+    assert script.index("'--check-desktop-runtime'") < script.index(
+        "Sign-PortableManifests -Directory $portableUpdateDirectory"
+    )
+
+
 def test_local_release_build_falls_back_when_previous_manifest_is_absent() -> None:
     local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
 
@@ -377,9 +394,7 @@ def test_local_release_build_pins_output_directory_before_changing_location() ->
 def test_local_release_build_metadata_does_not_expose_absolute_backend_path() -> None:
     local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
 
-    assert 'backend = "bin/$([System.IO.Path]::GetFileName($backendPath))"' in (
-        local_script
-    )
+    assert "backend = [System.IO.Path]::GetRelativePath($ElectronPath, $backendPath)" in local_script
     assert "backend = $backendPath" not in local_script
 
 

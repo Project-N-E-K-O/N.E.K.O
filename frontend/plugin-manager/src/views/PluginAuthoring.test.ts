@@ -30,6 +30,7 @@ const api = vi.hoisted(() => ({
   startPluginProjectPublish: vi.fn(),
   cancelPluginProjectPublishTask: vi.fn(),
   getPluginToolchain: vi.fn(),
+  preparePluginToolEnvironment: vi.fn(),
   buildPluginCli: vi.fn(),
   downloadPluginPackage: vi.fn(),
   fetchMarketPluginVersions: vi.fn(),
@@ -62,6 +63,7 @@ vi.mock('@/api/pluginProjects', async (importOriginal) => ({
   startPluginProjectPublish: api.startPluginProjectPublish,
   cancelPluginProjectPublishTask: api.cancelPluginProjectPublishTask,
   getPluginToolchain: api.getPluginToolchain,
+  preparePluginToolEnvironment: api.preparePluginToolEnvironment,
 }))
 vi.mock('vue-router', () => ({
   useRoute: () => api.route,
@@ -228,7 +230,8 @@ const readyToolchain = (overrides: Partial<Toolchain> = {}): Toolchain => ({
   git: { installed: true, version: '2.55.0', user_name: 'Dev', user_email: 'dev@example.com' },
   uv: { installed: true, version: '0.12.18' },
   gh: { installed: true, version: '2.101.0', authenticated: true, login: 'octocat' },
-  source_checkout: true,
+  tool_environment: 'source',
+  tool_environment_error: null,
   ...overrides,
 })
 const NativeMutationObserver = globalThis.MutationObserver
@@ -760,7 +763,7 @@ describe('authoring workbench backed by the server project list', () => {
       readyToolchain({
         uv: { installed: false, version: null },
         gh: { installed: true, version: '2.101.0', authenticated: false, login: null },
-        source_checkout: false,
+        tool_environment: 'ready',
       })
     )
     const container = await mount()
@@ -796,6 +799,62 @@ describe('authoring workbench backed by the server project list', () => {
     await settle()
     expect(page('toolchain').style.display).not.toBe('none')
     expect(api.startPluginProjectPublish).not.toHaveBeenCalled()
+  })
+
+  it('offers to prepare the plugin tools, then polls until the environment is ready', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginToolchain
+      .mockResolvedValueOnce(readyToolchain({ tool_environment: 'missing' }))
+      .mockResolvedValue(readyToolchain({ tool_environment: 'ready' }))
+    api.preparePluginToolEnvironment.mockResolvedValue({ state: 'preparing', error: null })
+    const container = await mount()
+    await openPublish(container)
+    const tools = page('toolchain')
+    expect(tools.textContent).toContain(en.toolEnvironmentMissing)
+    await click(en.toolEnvironmentPrepare)
+    expect(api.preparePluginToolEnvironment).toHaveBeenCalled()
+    await new Promise((resolve) => setTimeout(resolve, 2_300))
+    await settle()
+    expect(tools.textContent).toContain(en.toolEnvironmentReady)
+    expect(buttons(en.toolEnvironmentPrepare)).toHaveLength(0)
+  })
+
+  it('keeps polling after a failed toolchain read instead of trusting the stale state', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginToolchain
+      .mockResolvedValueOnce(readyToolchain({ tool_environment: 'missing' }))
+      .mockRejectedValueOnce(new Error('temporarily unavailable'))
+      .mockResolvedValue(readyToolchain({ tool_environment: 'ready' }))
+    api.preparePluginToolEnvironment.mockResolvedValue({ state: 'preparing', error: null })
+    const container = await mount()
+    await openPublish(container)
+    const tools = page('toolchain')
+    await click(en.toolEnvironmentPrepare)
+    await new Promise((resolve) => setTimeout(resolve, 4_300))
+    await settle()
+    expect(api.getPluginToolchain.mock.calls.length).toBeGreaterThanOrEqual(3)
+    expect(tools.textContent).toContain(en.toolEnvironmentReady)
+  }, 10_000)
+
+  it('polls the toolchain when it loads while the environment is preparing', async () => {
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([listed])
+    api.getPluginProjectPublishStatus.mockResolvedValue(publishStatus())
+    api.getPluginToolchain
+      .mockResolvedValueOnce(readyToolchain({ tool_environment: 'preparing' }))
+      .mockResolvedValue(readyToolchain({ tool_environment: 'ready' }))
+    const container = await mount()
+    await openPublish(container)
+    const tools = page('toolchain')
+    expect(tools.textContent).toContain(en.toolEnvironmentPreparing)
+    await new Promise((resolve) => setTimeout(resolve, 2_300))
+    await settle()
+    expect(api.getPluginToolchain.mock.calls.length).toBeGreaterThanOrEqual(2)
+    expect(tools.textContent).toContain(en.toolEnvironmentReady)
   })
 
   it('lists uncommitted files and recent commits on the repository page', async () => {

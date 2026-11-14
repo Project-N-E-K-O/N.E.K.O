@@ -13,6 +13,7 @@ from plugin.server.application import plugin_projects as service
 from plugin.server.application import plugin_publish_status as publish_status
 from plugin.server.application import plugin_publish_tasks as publish_tasks
 from plugin.server.application import plugin_repo_tasks as repo_tasks
+from plugin.server.application import plugin_tool_environment as tool_environment
 from plugin.server.application import plugin_toolchain as toolchain
 from plugin.server.application.plugin_projects import (
     AuthoringProject,
@@ -160,12 +161,29 @@ async def precheck_plugin_project(project_id: str):
     return await _call(service.precheck_project(project_id))
 
 
+@router.get("/{project_id}/workflows")
+async def preview_project_workflows(project_id: str):
+    return await _call(service.update_project_workflows(project_id, apply=False))
+
+
+@mutation_router.post("/{project_id}/workflows")
+async def apply_project_workflows(project_id: str):
+    return await _call(service.update_project_workflows(project_id, apply=True))
+
+
 @router.get("/{project_id}/toolchain")
 async def plugin_project_toolchain(project_id: str):
     # Read-only and local: which of git, uv, gh are installed, the git identity
     # a commit in this project gets, and whether gh is signed in. Never returns
     # a token, only whether one is stored.
     return await _call(asyncio.to_thread(toolchain.read_project_toolchain, project_id))
+
+
+@mutation_router.post("/tool-environment")
+async def prepare_tool_environment():
+    # Idempotent: starts the one-time packaged tool-environment build.
+    state, error = tool_environment.start_tool_environment_preparation()
+    return {"state": state, "error": error}
 
 
 @router.get("/{project_id}/publish-status")

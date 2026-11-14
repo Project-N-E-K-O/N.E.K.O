@@ -827,6 +827,18 @@ jobs:
           echo "=== Build output ==="
           ls -la dist/Xiao8/ || echo "dist/Xiao8 not found!"
 
+      - name: Stage plugin workbench tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            VENV_PYTHON=".venv/Scripts/python.exe"
+          else
+            VENV_PYTHON=".venv/bin/python"
+          fi
+          "$VENV_PYTHON" scripts/build_plugin_tools.py \
+            --backend "$NEKO_NUITKA_RUNTIME_DIR/${{ matrix.output_binary }}"
+
       - name: Smoke test frozen Owner voice identity runtime
         if: runner.os == 'Windows'
         shell: pwsh
@@ -1078,6 +1090,15 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
           cache-dependency-path: electron-app/package-lock.json
+
+      - name: Check out workbench acceptance tests
+        uses: actions/checkout@v4
+        with:
+          path: backend-source
+          persist-credentials: false
+
+      - name: Install uv for workbench acceptance
+        uses: astral-sh/setup-uv@v4
 
       - name: Download Python backend artifact
         uses: actions/download-artifact@v4
@@ -1372,6 +1393,36 @@ jobs:
             --version "$PORTABLE_VERSION" \
             --out dist/portable-update \
             ${PREVIOUS_ARGS[@]+"${PREVIOUS_ARGS[@]}"}
+
+      - name: Verify plugin workbench in the Portable archive
+        if: matrix.skip_portable_channel != true
+        shell: bash
+        env:
+          PORTABLE_KEY: ${{ matrix.portable_key }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          suffix=tar.gz
+          if [[ "$RUNNER_OS" == "Windows" ]]; then suffix=zip; fi
+          archives=(electron-app/dist/portable-update/*_"$PORTABLE_KEY"."$suffix")
+          [[ ${#archives[@]} -eq 1 ]] || { echo "Expected one full Portable archive for $PORTABLE_KEY"; exit 1; }
+          uv run --project backend-source --python "$PYTHON_VERSION" --locked --only-group plugin-tools \
+            python backend-source/scripts/check_plugin_tools.py "${archives[0]}" \
+              --check-desktop-runtime
+
+      - name: Verify plugin workbench in the Linux AppImage
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          APPIMAGE_CHECK: ${{ matrix.skip_portable_channel && '--check-desktop-runtime' || '--resources-only' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=(electron-app/dist/*.AppImage)
+          [[ ${#appimages[@]} -eq 1 ]] || { echo "Expected one Linux AppImage"; exit 1; }
+          uv run --project backend-source --python "$PYTHON_VERSION" --locked --only-group plugin-tools \
+            python backend-source/scripts/check_plugin_tools.py "${appimages[0]}" \
+              "$APPIMAGE_CHECK"
 
       - name: List build output
         working-directory: electron-app/dist
