@@ -713,7 +713,7 @@ async def shutdown():
             await asyncio.wait_for(_close_browser(), timeout=left)
             closed_in_time = True
         except asyncio.TimeoutError:
-            pass
+            pass  # Killed just below, like one there was no time left to ask.
     if not closed_in_time:
         logger.warning("[Agent] The browser did not close in time; killing it")
         try:

@@ -160,6 +160,11 @@ class BrowserTools:
                 return BuiltinOutcome(False, f"The browser did not answer in time ({exc}). The page may be busy; try again.")
             except CdpError as exc:
                 return BuiltinOutcome(False, f"The browser refused the action: {exc.message}")
+            finally:
+                # However the call ended, stopped included: what it held of
+                # the page is let go of (see ``OBJECT_GROUP``). Under the
+                # lock, so that the next call's handles are not among them.
+                await self._session.release_handles()
 
     async def released(self) -> None:
         """Another commission may use the browser next: the uids handed out so far stop working."""

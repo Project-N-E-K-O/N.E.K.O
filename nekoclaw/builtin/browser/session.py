@@ -79,6 +79,13 @@ MAX_IFRAME_DEPTH = 3
 MAX_IFRAMES = 12
 FULL_PAGE_MAX_HEIGHT = 6000
 ALLOWED_URL_SCHEMES = ("http://", "https://")
+# The handles an action takes on elements of a page are put in this group
+# and let go of when the call is over (``release_handles``). The browser
+# keeps what a handle points at alive, an element since taken out of the page
+# and everything that hangs on it included, until the handle is released or
+# the page is left: on a page that changes without ever loading anew they
+# would pile up from task to task.
+OBJECT_GROUP = "nekoclaw-action"
 
 
 def is_web_page(url: str) -> bool:
@@ -334,6 +341,9 @@ class BrowserSession:
         # Closing a browser whose start was cancelled; the next start and
         # ``close`` wait for it.
         self._abandoned: asyncio.Future[None] | None = None
+        # The pages (by target id) on which handles on elements were taken
+        # and not let go of yet.
+        self._handles: set[str] = set()
         # What a start that is under way is told to stop with; None while no
         # browser is being started.
         self._starting_stop: threading.Event | None = None
@@ -569,6 +579,7 @@ class BrowserSession:
         connection, self._connection = self._connection, None
         self._pages.clear()
         self._own_pages.clear()
+        self._handles.clear()
         self._selected = None
         if connection is not None:
             await connection.close()
@@ -605,6 +616,35 @@ class BrowserSession:
                 logger.warning("closing a browser that was driven earlier failed again", exc_info=True)
                 continue
             self._unclosed.remove(leftover)
+
+    async def release_handles(self) -> None:
+        """Let go of the handles on elements taken so far (``OBJECT_GROUP``).
+
+        Called when a call is over, however it ended; a browser that refuses
+        or does not answer is not an error of the call. A page with a dialog
+        open answers nothing until the dialog is handled: its handles are
+        kept for the next time, as are those of a page whose turn had not
+        come, or was not over, when the caller was stopped.
+        """
+        connection = self._connection
+        if connection is None or connection.closed:
+            self._handles.clear()
+            return
+        for target_id in list(self._handles):
+            page = self._pages.get(target_id)
+            if page is None or page.session_id is None:
+                # Closed, or detached from: its handles went with it.
+                self._handles.discard(target_id)
+                continue
+            if page.dialog is not None:
+                continue
+            try:
+                await connection.send(
+                    "Runtime.releaseObjectGroup", {"objectGroup": OBJECT_GROUP}, session_id=page.session_id, timeout=2.0
+                )
+            except (CdpError, CdpClosed, CdpTimeout):
+                logger.debug("letting go of the handles of a page failed", exc_info=True)
+            self._handles.discard(target_id)
 
     def stop_starting(self) -> None:
         """Tell a browser that is being started to give up; nothing is done when none is.
@@ -1152,15 +1192,23 @@ class BrowserSession:
         )
         if page.frame_loaders.get(node.frame_id) != node.loader_id:
             raise gone
+        self._handles.add(page.target_id)
         try:
-            resolved = await self._send(page, "DOM.resolveNode", {"backendNodeId": node.backend_node_id})
+            resolved = await self._send(
+                page, "DOM.resolveNode", {"backendNodeId": node.backend_node_id, "objectGroup": OBJECT_GROUP}
+            )
             object_id = (resolved.get("object") or {}).get("objectId")
             if not object_id:
                 raise gone
             element = await self._send(
                 page,
                 "Runtime.callFunctionOn",
-                {"objectId": object_id, "functionDeclaration": _ELEMENT_OF_NODE, "returnByValue": False},
+                {
+                    "objectId": object_id,
+                    "functionDeclaration": _ELEMENT_OF_NODE,
+                    "returnByValue": False,
+                    "objectGroup": OBJECT_GROUP,
+                },
             )
         except CdpError as exc:
             raise gone from exc
@@ -1238,7 +1286,12 @@ class BrowserSession:
                 if hit_frame in page.frame_loaders:
                     return "something outside the embedded page the element is in"
                 return True
-            resolved = await self._send(page, "DOM.resolveNode", {"backendNodeId": hit.get("backendNodeId")}, timeout=5.0)
+            resolved = await self._send(
+                page,
+                "DOM.resolveNode",
+                {"backendNodeId": hit.get("backendNodeId"), "objectGroup": OBJECT_GROUP},
+                timeout=5.0,
+            )
             answer = await self._send(
                 page,
                 "Runtime.callFunctionOn",
@@ -1450,7 +1503,10 @@ class BrowserSession:
                 if answered:
                     try:
                         await asyncio.shield(release)
-                    except BaseException as exc:  # noqa: BLE001 - raised below, once the rest is sent
+                    # A failure, or the call being stopped: not what ends the
+                    # process (an interrupt from the keyboard, an exit), which
+                    # goes on up at once.
+                    except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - raised below, once the rest is sent
                         # An error the browser itself answered with came back
                         # at once: the page still answers, and the rest is
                         # waited for as before.
@@ -1540,8 +1596,6 @@ class BrowserSession:
 
     async def wait_for(self, page: Page, texts: list[str], timeout: float | None = None) -> str:
         """Wait until one of the texts is on the page; return the one found."""
-        import json
-
         self.require_no_dialog(page)
         limit = timeout if timeout and timeout > 0 else WAIT_FOR_DEFAULT_SECONDS
         loop = asyncio.get_running_loop()

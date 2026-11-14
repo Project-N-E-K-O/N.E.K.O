@@ -148,6 +148,15 @@ window.addEventListener('beforeunload', function (event) { event.preventDefault(
 </script>
 </body></html>"""
 
+# A button that takes itself out of the page, of which the page keeps no more
+# than a weak reference.
+NOTICES = """<!doctype html><html><head><title>Notices</title></head><body>
+<button type="button"
+  onclick="window.gone = new WeakRef(this); this.remove(); document.getElementById('out').textContent = 'Notice dismissed'"
+  >Dismiss notice</button>
+<p id="out"></p>
+</body></html>"""
+
 
 class _Site(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - the name the base class calls
@@ -164,6 +173,8 @@ class _Site(http.server.BaseHTTPRequestHandler):
             body = POPUP
         elif url.path == "/draft":
             body = DRAFT
+        elif url.path == "/notices":
+            body = NOTICES
         elif url.path in ("/report", "/reaching", "/reaching-frame"):
             port = self.server.server_address[1]
             body = {"/report": REPORT, "/reaching": REACHING, "/reaching-frame": REACHING_FRAME}[url.path]
@@ -596,3 +607,28 @@ async def test_the_browser_is_kept_from_the_ports_of_this_application(tmp_path: 
                 server.server_close()
             for thread in threads:
                 thread.join(5)
+
+
+async def _collected(tools: BrowserTools, weak_reference: str) -> bool:
+    """Ask the browser to collect what nothing holds; say whether what the weak reference pointed at went."""
+    session = tools.session
+    page = session.selected()
+    deadline = time.monotonic() + 20.0
+    while True:
+        await session._send(page, "HeapProfiler.collectGarbage", {})
+        answer = await session._send(
+            page, "Runtime.evaluate", {"expression": f"{weak_reference}.deref() === undefined", "returnByValue": True}
+        )
+        if answer["result"]["value"] is True or time.monotonic() > deadline:
+            return answer["result"]["value"] is True
+        await asyncio.sleep(0.3)
+
+
+async def test_an_element_the_page_took_out_is_not_kept_alive_by_the_call_that_clicked_it(tools: BrowserTools, site: str) -> None:
+    opened = await call(tools, "navigate_page", url=site + "/notices")
+    clicked = await call(tools, "click", uid=uid_of(opened.text, "button", "Dismiss notice"), includeSnapshot=True)
+    assert clicked.success and "Notice dismissed" in clicked.text and 'button "Dismiss notice"' not in clicked.text
+    # The page does not hold the button any more. A handle on it that the
+    # click left behind would: on a page that is never loaded anew, every
+    # element ever acted on would stay in the memory of the browser.
+    assert await _collected(tools, "window.gone"), "the removed button is still held by something"

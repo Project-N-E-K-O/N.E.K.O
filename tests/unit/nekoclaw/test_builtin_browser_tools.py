@@ -1096,3 +1096,63 @@ async def test_closing_does_not_wait_for_a_browser_that_a_call_is_still_bringing
         world.launch_gate.set()
     assert not outcome.success and "the start was stopped" in outcome.text
     assert world.launch_stops[0].is_set() and world.closed == []
+
+
+async def test_what_a_call_held_of_the_page_is_let_go_when_the_call_is_over(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+    # Nothing was held so far, so the browser was not asked to let go of anything.
+    assert fake.released_groups == []
+
+    assert (await call(tools, "click", uid=uid_of("Gift wrap"))).success
+    assert fake.objects == {} and len(fake.released_groups) == 1
+
+    # A call that fails after it took a handle lets go of it all the same.
+    fake.find("Send").connected = False
+    outcome = await call(tools, "click", uid=uid_of("Send"))
+    assert not outcome.success and "no longer exists on the page" in outcome.text
+    assert fake.objects == {} and len(fake.released_groups) == 2
+
+    # So does one the browser refuses half way.
+    world.browser.refuse("DOM.getContentQuads", "Could not compute content quads.")
+    outcome = await call(tools, "hover", uid=uid_of("Terms"))
+    assert not outcome.success
+    assert fake.objects == {} and len(fake.released_groups) == 3
+
+
+async def test_a_call_that_was_stopped_lets_go_of_what_it_held_before_the_next_call_has_its_turn(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+    held = world.browser.hold("DOM.getContentQuads")
+    clicking = asyncio.ensure_future(tools.call(TOOL_PREFIX + "click", {"uid": uid_of("Send")}))
+    try:
+        await asyncio.wait_for(held.reached.wait(), 5.0)
+        assert fake.objects != {}
+        clicking.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(clicking, 5.0)
+    finally:
+        held.release()
+        world.browser.gates.remove(held)
+
+    assert fake.objects == {} and len(fake.released_groups) == 1
+    assert fake.find("Send").clicks == 0
+    # The tools are free again, and the next call's handles are its own.
+    assert (await call(tools, "click", uid=uid_of("Gift wrap"))).success
+    assert fake.find("Gift wrap").checked is True
+
+
+async def test_handles_on_a_page_with_a_dialog_open_are_let_go_once_the_dialog_was_handled(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    fake = world.browser.page("target-1")
+    # The click opens a dialog: the page answers nothing, so it is not asked to let go yet.
+    await call(tools, "click", uid=uid_of("Save draft"))
+    assert fake.objects != {} and fake.released_groups == []
+
+    assert (await call(tools, "handle_dialog", action="accept")).success
+
+    assert fake.objects == {} and len(fake.released_groups) == 1

@@ -30,13 +30,14 @@ import pytest
 
 from nekoclaw.builtin.browser import launcher
 from nekoclaw.builtin.browser import session as session_module
-from nekoclaw.builtin.browser.cdp import CdpError
+from nekoclaw.builtin.browser.cdp import CdpClosed, CdpError, CdpTimeout
 from nekoclaw.builtin.browser.launcher import BrowserStartError
 from nekoclaw.builtin.browser.session import (
     _ELEMENT_OF_NODE,
     _FOCUS_FOR_TYPING,
     _PREPARE_FILL,
     _SELECT_OPTION,
+    OBJECT_GROUP,
     BrowserError,
     BrowserSession,
     Dialog,
@@ -884,7 +885,10 @@ async def test_an_action_on_a_uid_reaches_the_element_the_uid_stands_for(session
     assert (node.role, node.name) == ("checkbox", "Gift wrap")
     assert fake.objects[handle] is fake.find("Gift wrap")
     resolved, asked = world.browser.since()[-2:]
-    assert (resolved.method, resolved.params) == ("DOM.resolveNode", {"backendNodeId": fake.find("Gift wrap").backend_id})
+    assert (resolved.method, resolved.params) == (
+        "DOM.resolveNode",
+        {"backendNodeId": fake.find("Gift wrap").backend_id, "objectGroup": OBJECT_GROUP},
+    )
     assert asked.method == "Runtime.callFunctionOn" and asked.params["functionDeclaration"] == _ELEMENT_OF_NODE
     await session.click(page, uid_of(snapshot, "Gift wrap"))
     assert fake.find("Gift wrap").checked is True
@@ -3152,3 +3156,130 @@ async def test_killing_tells_a_start_that_is_under_way_to_stop(
             await asyncio.wait_for(starting, 5.0)
     finally:
         world.launch_gate.set()
+
+
+# ---------------------------------------------------------------------------
+# what an action holds of a page is let go of
+# ---------------------------------------------------------------------------
+
+
+async def test_every_handle_an_action_takes_is_put_in_the_group_that_is_let_go_of(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    await session.click(page, uid_of(snapshot, "Gift wrap"))
+    await session.fill(page, uid_of(snapshot, "Your name"), "Ada")
+    await session.hover(page, uid_of(snapshot, "Terms"))
+
+    # The element of the uid, the one it was looked up through, and what lies under the point.
+    assert len(fake.objects) >= 6 and set(fake.handle_groups) == set(fake.objects)
+    # One outside the group would keep its element alive for as long as the page is not left.
+    assert set(fake.handle_groups.values()) == {OBJECT_GROUP}
+
+    mark = world.browser.mark()
+    await session.release_handles()
+
+    (released,) = world.browser.since(mark)
+    assert (released.method, released.params) == ("Runtime.releaseObjectGroup", {"objectGroup": OBJECT_GROUP})
+    assert released.session_id == page.session_id
+    assert fake.objects == {} and fake.released_groups == [OBJECT_GROUP]
+    # Nothing is left to let go of: the browser is not asked again.
+    await session.release_handles()
+    assert len(world.browser.since(mark)) == 1
+
+
+async def test_a_page_no_handle_was_taken_on_is_not_asked_to_let_go(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    await session.press_key(page, "Tab")
+    mark = world.browser.mark()
+    await session.release_handles()
+    assert world.browser.since(mark) == [] and fake.released_groups == []
+
+
+async def test_a_page_with_a_dialog_open_keeps_its_handles_until_the_dialog_was_handled(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    await session.element(page, uid_of(snapshot, "Send"))
+    world.browser.open_dialog(fake, "alert", "Draft saved")
+    mark = world.browser.mark()
+
+    # The page answers nothing while the dialog is open: asked now, the call would wait for nothing.
+    await asyncio.wait_for(session.release_handles(), 1.0)
+    assert world.browser.since(mark) == [] and fake.objects != {}
+
+    await session.handle_dialog(page, True)
+    await session.release_handles()
+    assert fake.objects == {} and fake.released_groups == [OBJECT_GROUP]
+
+
+async def test_the_handles_of_a_page_that_was_closed_went_with_it(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    other = await session.new_page(TERMS)
+    await session.element(page, uid_of(snapshot, "Send"))
+    world.browser.remove_page(fake)
+    mark = world.browser.mark()
+
+    await session.release_handles()
+
+    assert world.browser.since(mark) == [] and session._handles == set()
+    assert session.selected() is other
+
+
+async def test_after_the_browser_went_away_there_is_nothing_to_let_go_of(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    await session.element(page, uid_of(snapshot, "Send"))
+    world.browser.disconnect()
+    mark = world.browser.mark()
+    await session.release_handles()
+    assert world.browser.since(mark) == [] and session._handles == set()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        CdpError("Runtime.releaseObjectGroup", -32000, "Cannot find context with specified id"),
+        CdpTimeout("Runtime.releaseObjectGroup got no answer within 2s"),
+        CdpClosed("the connection to the browser is closed"),
+    ],
+    ids=["refused", "no answer", "closed"],
+)
+async def test_a_browser_that_does_not_let_go_does_not_fail_the_call_that_asked(
+    session: BrowserSession, world: BrowserWorld, failure: Exception
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    await session.element(page, uid_of(snapshot, "Send"))
+    world.browser.failures["Runtime.releaseObjectGroup"] = failure
+
+    await session.release_handles()
+
+    # It is not asked over and over at the end of every call from now on.
+    assert session._handles == set()
+    del world.browser.failures["Runtime.releaseObjectGroup"]
+    mark = world.browser.mark()
+    await session.release_handles()
+    assert world.browser.since(mark) == []
+
+
+async def test_a_letting_go_that_was_stopped_half_way_is_made_up_for_the_next_time(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    page, fake, snapshot = await open_page(session, world)
+    await session.element(page, uid_of(snapshot, "Send"))
+    held = world.browser.hold("Runtime.releaseObjectGroup")
+    letting_go = asyncio.ensure_future(session.release_handles())
+    try:
+        await asyncio.wait_for(held.reached.wait(), 5.0)
+        letting_go.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(letting_go, 5.0)
+    finally:
+        held.release()
+        world.browser.gates.remove(held)
+
+    # Whether the browser got as far as doing it is not known: it is asked again.
+    assert session._handles == {page.target_id}
+    mark = world.browser.mark()
+    await session.release_handles()
+    assert [command.method for command in world.browser.since(mark)] == ["Runtime.releaseObjectGroup"]
+    assert fake.objects == {} and session._handles == set()

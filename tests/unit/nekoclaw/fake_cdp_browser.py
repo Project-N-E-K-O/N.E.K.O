@@ -253,6 +253,10 @@ class FakePage:
         self.frames: dict[str, Frame] = {}
         self.elements: dict[int, Element] = {}
         self.objects: dict[str, Element] = {}
+        # The group each handle was asked to be put in (None: in none, so it
+        # is never let go of), and the groups that were let go of, in order.
+        self.handle_groups: dict[str, Any] = {}
+        self.released_groups: list[Any] = []
         self.history: list[str] = [url]
         self.history_at = 0
         self.sessions: set[str] = set()
@@ -513,6 +517,7 @@ class FakeBrowser:
         document = build() if build is not None else Document("")
         page.elements.clear()
         page.objects.clear()
+        page.handle_groups.clear()
         page.frames.clear()
         page.focused = None
         page.hovered = None
@@ -843,7 +848,21 @@ class FakeBrowser:
         element = page.elements.get(int(command.params.get("backendNodeId") or 0))
         if element is None or element.removed:
             raise CdpError(command.method, -32000, "No node with given id found")
-        return {"object": {"type": "object", "subtype": "node", "objectId": self._handle_on(page, element)}}
+        handle = self._handle_on(page, element)
+        self._group(page, command, handle)
+        return {"object": {"type": "object", "subtype": "node", "objectId": handle}}
+
+    def _group(self, page: FakePage, command: Sent, handle: str) -> None:
+        """Remember which group a handle was asked to be put in; one outside every group is never let go of."""
+        page.handle_groups[handle] = command.params.get("objectGroup")
+
+    def _do_Runtime_releaseObjectGroup(self, command: Sent, page: FakePage) -> dict[str, Any]:
+        group = command.params.get("objectGroup")
+        for handle in [handle for handle, of in page.handle_groups.items() if of == group]:
+            del page.handle_groups[handle]
+            page.objects.pop(handle, None)
+        page.released_groups.append(group)
+        return {}
 
     def _do_DOM_scrollIntoViewIfNeeded(self, command: Sent, page: FakePage) -> dict[str, Any]:
         element = self._element_of(command, page)
@@ -922,7 +941,9 @@ class FakeBrowser:
             assert command.params.get("returnByValue") is False
             if not element.connected:
                 return {"result": {"type": "object", "subtype": "null", "value": None}}
-            return {"result": {"type": "object", "subtype": "node", "objectId": self._handle_on(page, element)}}
+            handle = self._handle_on(page, element)
+            self._group(page, command, handle)
+            return {"result": {"type": "object", "subtype": "node", "objectId": handle}}
         assert command.params.get("returnByValue") is True
         if element.script_error is not None:
             return {
