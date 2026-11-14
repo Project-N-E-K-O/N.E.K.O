@@ -966,14 +966,19 @@ async def admin_control(payload: Dict[str, Any]):
 
         # Stopping a commission cancels its calls of the built-in tools and
         # gives the desktop and the browser back. Keys a stopped call left
-        # held are let go of, and first: a key that stays down is in the
-        # user's way at once, and has nothing to wait for in the browser.
-        try:
-            from nekoclaw.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
+        # held are let go of, and begun with: a key that stays down is in
+        # the user's way at once. The browser is not kept waiting for that
+        # (a worker that still has the mouse holds it up for seconds), nor
+        # the keys for the browser: the two go on side by side.
+        async def _release_keys() -> None:
+            try:
+                from nekoclaw.host.capabilities import BUILTIN_GROUP_KEYBOARD_MOUSE
 
-            await builtin_provider.released(BUILTIN_GROUP_KEYBOARD_MOUSE, "")
-        except Exception as e:
-            logger.warning(f"[Agent] Error releasing held keys during end_all: {e}")
+                await builtin_provider.released(BUILTIN_GROUP_KEYBOARD_MOUSE, "")
+            except Exception as e:
+                logger.warning(f"[Agent] Error releasing held keys during end_all: {e}")
+
+        releasing_keys = asyncio.ensure_future(_release_keys())
         # The browser the tools started is closed as well, so nothing they
         # opened outlives end_all (a disable-triggered close is itself
         # tracked above and may have been cancelled by this drain). Within a
@@ -992,6 +997,7 @@ async def admin_control(payload: Dict[str, Any]):
             # takes what it finds when its turn comes, and must not find a
             # browser that a later task has started.
             builtin_provider.kill_browser_unwaited()
+        await releasing_keys
         return {"success": True, "message": "all tasks terminated and cleared"}
     elif action == "enable_analyzer":
         Modules.analyzer_enabled = True

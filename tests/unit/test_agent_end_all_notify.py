@@ -339,7 +339,7 @@ def test_a_task_started_after_end_all_does_not_reach_the_browser_before_the_kill
     monkeypatch.setattr(srv.builtin_provider, "close_browser", _slow_close)
     monkeypatch.setattr(srv.builtin_provider, "kill_browser", _slow_kill)
     monkeypatch.setattr(srv.builtin_provider, "_browser", _Tools())
-    monkeypatch.setattr(srv.builtin_provider, "_killing", None)
+    monkeypatch.setattr(srv.builtin_provider, "_killing", set())
 
     async def _scenario() -> None:
         try:
@@ -356,3 +356,39 @@ def test_a_task_started_after_end_all_does_not_reach_the_browser_before_the_kill
         assert order == ["killed", "called"]
 
     asyncio.run(_scenario())
+
+
+def test_end_all_asks_the_browser_to_close_without_waiting_for_the_keys(srv, monkeypatch: pytest.MonkeyPatch):
+    import threading
+
+    let_go = threading.Event()
+    order: list[str] = []
+
+    class _SlowDesktop:
+        def release_held(self) -> bool:
+            # A worker that still has the mouse: letting go waits for it.
+            order.append("keys asked")
+            let_go.wait(30)
+            order.append("keys released")
+            return True
+
+    async def _close() -> None:
+        order.append("browser asked")
+        # The keys are still being let go of: the browser was not kept waiting for them.
+        assert "keys released" not in order
+        let_go.set()
+
+    monkeypatch.setattr(srv.builtin_provider, "_desktop", _SlowDesktop())
+    monkeypatch.setattr(srv.builtin_provider, "close_browser", _close)
+
+    try:
+        result = asyncio.run(asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0))
+    finally:
+        let_go.set()
+
+    assert result["success"] is True
+    # And the answer waits for the keys all the same. (Which of the two is asked first is a
+    # matter of when the worker thread gets going; that the browser is asked before the
+    # keys are done is what must hold.)
+    assert sorted(order) == ["browser asked", "keys asked", "keys released"]
+    assert order.index("browser asked") < order.index("keys released")

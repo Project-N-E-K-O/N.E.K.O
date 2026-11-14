@@ -401,6 +401,11 @@ class BrowserSession:
                     )
                     try:
                         browser = await asyncio.shield(starting)
+                        # Known to ``kill`` from here on, and before the start
+                        # can no longer be told to stop (just below): ``kill``
+                        # runs on another thread, and between the two it
+                        # would find neither.
+                        self._reached = browser
                     except asyncio.CancelledError:
                         # The start goes on in its thread. Told to stop, it
                         # gives up within a moment and takes what it started
@@ -415,11 +420,9 @@ class BrowserSession:
                     finally:
                         if self._starting_stop is stop:
                             self._starting_stop = None
-                    # Known to ``kill`` from here on, and only then asked
-                    # whether the start was told to stop meanwhile: in that
-                    # order, a stop that comes at this very moment finds the
-                    # browser one way or the other.
-                    self._reached = browser
+                    # Asked only now whether the start was told to stop
+                    # meanwhile: the browser being known first, a stop that
+                    # comes at this very moment finds it one way or the other.
                     if stop.is_set():
                         # It was up before the start heard of the stop. A
                         # start that was stopped does not end with a browser.

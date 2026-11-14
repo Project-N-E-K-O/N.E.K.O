@@ -291,6 +291,12 @@ def _left_by_a_browser_that_is_gone(user_data_dir: str | os.PathLike[str]) -> bo
     False whenever it cannot be told: a browser that does run must never be
     taken for gone, or its port file is removed and another browser is
     started on its profile, which only opens a window in the first and exits.
+
+    The price of that caution: on a computer where some browser keeps its
+    command line from being read (another user's, or one run with higher
+    rights), nothing is ever told, for any profile, and a port file whose
+    port went to another program fails the start again until that program
+    is gone. A file wrongly removed would be the worse of the two.
     """
     if browser_process_on(user_data_dir) is not None:
         return False

@@ -3501,3 +3501,28 @@ async def test_a_start_stopped_while_it_closes_a_browser_it_could_not_reach_leav
         world.close_gate.set()
     await _until(lambda: session._unheld == [])
     assert len(world.closed) == 2 and world.closed[0][0] is world.closed[1][0]
+
+
+async def test_a_browser_that_came_up_is_known_before_its_start_can_no_longer_be_told_to_stop(world: BrowserWorld) -> None:
+    known_then: list[Any] = []
+
+    class Watching(BrowserSession):
+        """Notes what was known of the browser at the moment the start could no longer be told to stop."""
+
+        @property
+        def _starting_stop(self) -> Any:
+            return self.__dict__.get("stop of the start")
+
+        @_starting_stop.setter
+        def _starting_stop(self, value: Any) -> None:
+            if value is None and self.__dict__.get("stop of the start") is not None:
+                known_then.append(self._reached)
+            self.__dict__["stop of the start"] = value
+
+    session = Watching(settings=world.store)
+    try:
+        await session.start()
+        # ``kill`` runs on another thread. Between the two, it would tell nothing to stop and find no browser.
+        assert len(known_then) == 1 and known_then[0] is session._browser
+    finally:
+        await session.close()

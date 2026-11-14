@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -54,6 +55,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _FILE_VERSION = 1
+
+
+# What a scheme is made of: a letter, then letters, digits, "+", "-" and ".".
+_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*")
 
 
 def model_key(base_url: Any, model: Any) -> str:
@@ -65,13 +70,16 @@ def model_key(base_url: Any, model: Any) -> str:
     address = str(base_url or "").strip().rstrip("/")
     # The first "://": a later one belongs to the path or to what follows it.
     scheme, separator, rest = address.partition("://")
-    if not separator or "/" in scheme:
+    if not separator or not _SCHEME.fullmatch(scheme):
         # No scheme: the address begins with the host.
         scheme, separator, rest = "", "", address
-    authority, slash, path = rest.partition("/")
+    # The host ends where the path, the query or the fragment begins.
+    ends = [at for at in (rest.find(mark) for mark in "/?#") if at != -1]
+    end = min(ends) if ends else len(rest)
+    authority, after = rest[:end], rest[end:]
     # Before the "@", if there is one: a name and a password, kept as written.
     credentials, at, host = authority.rpartition("@")
-    return f"{scheme.lower()}{separator}{credentials}{at}{host.lower()}{slash}{path}|{str(model or '').strip()}"
+    return f"{scheme.lower()}{separator}{credentials}{at}{host.lower()}{after}|{str(model or '').strip()}"
 
 
 class ModelCapabilityStore:

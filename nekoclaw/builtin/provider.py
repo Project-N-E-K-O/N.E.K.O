@@ -92,9 +92,9 @@ class BuiltinToolProvider:
         # group overlap (the browser tools queue them), and one that ends or
         # is stopped must not hide the ones still at it.
         self._running: dict[str, int] = {}
-        # A kill of the browser that nobody waits for (``kill_browser_unwaited``)
-        # and that is not over yet; browser calls wait for it.
-        self._killing: asyncio.Future[None] | None = None
+        # The kills of the browser that nobody waits for (``kill_browser_unwaited``)
+        # and that are not over yet; browser calls wait for all of them.
+        self._killing: set[asyncio.Future[None]] = set()
 
     # -- availability -----------------------------------------------------
 
@@ -231,18 +231,26 @@ class BuiltinToolProvider:
             # Asked when the call's turn has come: the browser may have been
             # switched off while it waited, and must not be started again.
             ready, reason = self._state(BUILTIN_GROUP_BROWSER)
-            return None if ready else f"browser control is {reason or 'switched off'}"
+            if not ready:
+                return f"browser control is {reason or 'switched off'}"
+            # Nor while a kill is under way that was asked for after this
+            # call began to wait its turn: it cannot be waited for here, and
+            # the browser this call started would be what the kill finds.
+            if self._kills_under_way():
+                return "the browser is being closed; call the tool again in a moment"
+            return None
 
         self._begin(BUILTIN_GROUP_BROWSER)
         try:
             # A kill that was asked for earlier and is not over yet takes what
             # it finds when its turn on the worker threads comes: started
             # before that, the browser of this call would be what it finds.
-            # (One that is over is not waited for, though it may not have
-            # been taken down yet: waiting for it would not give the event
-            # loop the turn in which it is.)
-            while self._killing is not None and not self._killing.done():
-                await asyncio.shield(self._killing)
+            while True:
+                under_way = self._kills_under_way()
+                if not under_way:
+                    break
+                # Not stopped along with this call, should it be stopped.
+                await asyncio.wait(under_way)
             outcome = await self.browser().call(tool_name, arguments, refused=still_on)
         finally:
             self._end(BUILTIN_GROUP_BROWSER)
@@ -313,14 +321,17 @@ class BuiltinToolProvider:
             except Exception:  # noqa: BLE001 - nobody waits for it: said in the log
                 logger.warning("killing the browser failed", exc_info=True)
 
+        # One more, not the one: asked for twice (the page gave up on the
+        # first request and the user pressed again), both are under way, and
+        # the one that ends first must not hide the other.
         killing = asyncio.get_running_loop().run_in_executor(None, kill)
-        self._killing = killing
+        self._killing.add(killing)
+        killing.add_done_callback(self._killing.discard)
 
-        def over(_done: "asyncio.Future[None]") -> None:
-            if self._killing is killing:
-                self._killing = None
-
-        killing.add_done_callback(over)
+    def _kills_under_way(self) -> list["asyncio.Future[None]"]:
+        # (One that is over may not have been taken out yet: that is done in
+        # a turn of the event loop of its own.)
+        return [killing for killing in self._killing if not killing.done()]
 
     def browser_unclosed(self) -> bool:
         """Whether a browser is still held after ``close_browser``: closing it failed, and it is kept to be closed later."""

@@ -280,3 +280,18 @@ def test_an_address_within_an_address_does_not_move_where_the_scheme_ends() -> N
     assert model_key("Gateway.Example.com/Route?Upstream=https://API.Example.com", "m") == (
         "gateway.example.com/Route?Upstream=https://API.Example.com|m"
     )
+
+
+def test_the_host_ends_where_the_query_or_the_fragment_begins_as_well() -> None:
+    # A key in the address is part of it as written.
+    assert model_key("HTTPS://API.Example.com?Token=AbC", "m") == "https://api.example.com?Token=AbC|m"
+    assert model_key("https://api.example.com?token=AbC", "m") != model_key("https://api.example.com?token=abc", "m")
+    assert model_key("https://API.example.com#Section", "m") == "https://api.example.com#Section|m"
+    assert model_key("https://API.example.com:8443?A=B/C", "m") == "https://api.example.com:8443?A=B/C|m"
+
+
+def test_only_what_is_a_scheme_is_taken_for_one() -> None:
+    # No scheme was written; the address further on has one.
+    assert model_key("Gateway:8080?Upstream=https://API.example.com", "m") == "gateway:8080?Upstream=https://API.example.com|m"
+    # Schemes may hold digits, "+", "-" and "." after their first letter.
+    assert model_key("Custom+V2.X-1://HOST/Path", "m") == "custom+v2.x-1://host/Path|m"

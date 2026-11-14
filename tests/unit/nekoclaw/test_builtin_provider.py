@@ -805,7 +805,7 @@ async def test_a_browser_call_waits_for_a_kill_nobody_waited_for(rig: Rig) -> No
     try:
         # Asked for and not waited for: the caller goes on at once.
         rig.provider.kill_browser_unwaited()
-        assert rig.provider._killing is not None
+        assert len(rig.provider._killing) == 1
         # A task that comes after it must not have its browser be what the kill finds.
         call = asyncio.ensure_future(rig.browse("browser_click", "commission-2", uid="1_1"))
         assert await asyncio.to_thread(tools.kill_began.wait, 10.0)
@@ -818,7 +818,7 @@ async def test_a_browser_call_waits_for_a_kill_nobody_waited_for(rig: Rig) -> No
 
     assert (await asyncio.wait_for(call, 10.0)).success
     assert tools.kills == 1 and len(tools.calls) == 1
-    assert rig.provider._killing is None
+    assert rig.provider._killing == set()
 
 
 async def test_a_kill_that_fails_does_not_keep_browser_calls_waiting_or_fail_them(rig: Rig) -> None:
@@ -831,7 +831,7 @@ async def test_a_kill_that_fails_does_not_keep_browser_calls_waiting_or_fail_the
     outcome = await asyncio.wait_for(rig.browse("browser_click", "commission-2", uid="1_1"), 10.0)
 
     assert outcome.success and tools.kills == 1
-    assert rig.provider._killing is None
+    assert rig.provider._killing == set()
 
 
 async def test_a_call_stopped_while_it_waits_for_a_kill_leaves_the_kill_to_finish(rig: Rig) -> None:
@@ -846,12 +846,12 @@ async def test_a_call_stopped_while_it_waits_for_a_kill_leaves_the_kill_to_finis
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(call, 10.0)
         # The call is gone, the kill is not.
-        assert not rig.provider.is_running() and rig.provider._killing is not None
+        assert not rig.provider.is_running() and len(rig.provider._killing) == 1
+        (killing,) = rig.provider._killing
+        assert not killing.cancelled()
     finally:
         tools.let_kill_finish.set()
-    killing = rig.provider._killing
-    if killing is not None:
-        await asyncio.wait_for(asyncio.shield(killing), 10.0)
+    await asyncio.wait_for(asyncio.shield(killing), 10.0)
     assert tools.kills == 1 and tools.calls == []
 
 
@@ -871,9 +871,63 @@ async def test_a_kill_that_is_over_but_not_taken_down_yet_does_not_keep_a_browse
     # The moment between the kill ending on its thread and the event loop taking note of it.
     over = _OverAndNotTakenDown()
     over.set_result(None)
-    rig.provider._killing = over
+    rig.provider._killing = {over}
 
-    outcome = await asyncio.wait_for(rig.browse("browser_click", "commission-2", uid="1_1"), 10.0)
+    outcome = await asyncio.wait_for(rig.browse("browser_click", "commission-2", uid="1_1"), 3.0)
 
     # Waiting for it would never give the event loop the turn in which it is taken down.
     assert outcome.success and len(rig.browser.calls) == 1
+
+
+async def test_a_browser_call_waits_for_every_kill_that_is_under_way_and_not_only_the_last(rig: Rig) -> None:
+    first, second = threading.Event(), threading.Event()
+    began: list[str] = []
+    ended: list[str] = []
+    tools = FakeBrowserTools()
+    turn = iter(("first", "second"))
+    gates = {"first": first, "second": second}
+
+    def kill() -> None:
+        which = next(turn)
+        began.append(which)
+        gates[which].wait(30)
+        ended.append(which)
+
+    tools.kill = kill  # type: ignore[attr-defined]
+    rig.provider._browser = tools  # type: ignore[assignment]
+    try:
+        # The page gave up on the first request and the user stopped everything once more.
+        rig.provider.kill_browser_unwaited()
+        rig.provider.kill_browser_unwaited()
+        await until(lambda: len(began) == 2, "both kills beginning")
+        call = asyncio.ensure_future(rig.browse("browser_click", "commission-2", uid="1_1"))
+        # The second ends first.
+        second.set()
+        await until(lambda: ended == ["second"] and len(rig.provider._killing) == 1, "the second kill ending")
+        await asyncio.sleep(0.05)
+        # The first is still looking for what runs on the profile: a browser started now would be it.
+        assert tools.calls == [] and not call.done()
+    finally:
+        first.set()
+        second.set()
+
+    assert (await asyncio.wait_for(call, 10.0)).success
+    assert ended == ["second", "first"] and rig.provider._killing == set()
+
+
+async def test_a_browser_call_whose_turn_comes_while_a_kill_is_under_way_is_refused(rig: Rig) -> None:
+    tools = KillableBrowserTools()
+    rig.provider._browser = tools  # type: ignore[assignment]
+    # The call was waiting its turn (the browser was being closed) when the kill was asked for.
+    tools.while_waiting = rig.provider.kill_browser_unwaited
+    try:
+        outcome = await asyncio.wait_for(rig.browse("browser_click", "commission-2", uid="1_1"), 10.0)
+        # Carried out, it would start a browser for the kill to find.
+        assert outcome == BuiltinOutcome(False, "the browser is being closed; call the tool again in a moment")
+        assert tools.calls == []
+    finally:
+        tools.let_kill_finish.set()
+    await until(lambda: rig.provider._killing == set(), "the kill ending")
+    # Once it is over, the next call is carried out.
+    tools.while_waiting = None
+    assert (await asyncio.wait_for(rig.browse("browser_click", "commission-2", uid="1_1"), 10.0)).success
