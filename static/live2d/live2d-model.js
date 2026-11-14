@@ -303,7 +303,9 @@ function live2dGetMotionOwners(motionManager) {
         state.reserve = function(...args) {
             if (owners.quarantine.size) return false;
             const accepted = reserve.apply(this, args);
-            if (accepted) {
+            // SDK keeps Idle and ordinary reservations in separate slots.
+            // Automatic Idle may load/start while an action is still loading.
+            if (accepted && args[2] > LIVE2D_MOTION_PRIORITY.IDLE) {
                 owners.reservation = { operation: owners.invocation, group: args[0], index: args[1] };
                 if (owners.invocation) owners.invocation.reservation = owners.reservation;
             }
@@ -323,11 +325,14 @@ function live2dGetMotionOwners(motionManager) {
                 }
             }
         };
-        motionManager.on('motionStart', () => {
+        motionManager.on('motionStart', (group, index) => {
             if (owners.active?.operation) {
                 live2dRetireMotionMetadata(owners.active.operation); owners.active.operation.dispose();
             }
-            owners.active = owners.reservation; owners.reservation = null;
+            const startsReservedAction = state.currentPriority > LIVE2D_MOTION_PRIORITY.IDLE
+                && owners.reservation?.group === group && owners.reservation?.index === index;
+            owners.active = startsReservedAction ? owners.reservation : null;
+            if (startsReservedAction) owners.reservation = null;
             if (owners.active?.operation) owners.active.operation.manager._activeActionMotionOperation = owners.active.operation;
         });
         motionManager.on('motionFinish', () => {
@@ -3453,11 +3458,16 @@ Live2DManager.prototype.installMouthOverride = function() {
                 }
             }
 
+            // Model profiles may shape the blink envelope/resting mouth only after
+            // the runtime writers. The resource validates model and ownership.
+            this._manualExpressionResource?.applyRuntime?.(currentCoreModel);
+
             // 注入点 3（渲染前最后姿态覆盖）：教程苏醒等短期动作在这里写入，
             // 确保不会被正脸锁、随机视线、眨眼或常驻表情在同一帧覆盖。
             if (typeof this._applyTemporaryPoseOverride === 'function') {
                 this._applyTemporaryPoseOverride(currentCoreModel);
             }
+            this._manualExpressionResource?.observeRuntime?.(currentCoreModel);
         } catch (e) {
             console.error('口型覆盖参数写入失败:', e);
         }

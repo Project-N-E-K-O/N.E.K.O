@@ -65,6 +65,46 @@ async function cancelledNative(options = {}) {
     } finally { gate.resolve(); f.release(); }
 }
 
+for (const outcome of ['complete', 'cancel', 'reject']) {
+    test(`SDK automatic Idle cannot steal a loading action receipt: ${outcome}`, async () => {
+        const f = await fixture(), entered = deferred(), gate = deferred();
+        let pending;
+        try {
+            f.native._loadMotion = async group => {
+                if (group === f.group) {
+                    entered.resolve(); await gate.promise;
+                    if (outcome === 'reject') throw new Error('controlled action failure');
+                }
+                return f.motion();
+            };
+            const controller = new AbortController();
+            pending = f.manager.playActionMotion(f.group, 0, { signal: controller.signal });
+            // Observe rejection immediately, including on the unpatched runtime.
+            const settled = pending.then(value => ({ value }), error => ({ error }));
+            await entered.promise;
+            assert.equal(await f.native.startMotion('Idle', 0, 1), true);
+            assert.equal(f.native.state.reservePriority, 2);
+            assert.equal(f.manager._activeActionMotionOperation, undefined,
+                'Idle must not adopt the pending action as its active owner');
+            if (outcome === 'cancel') controller.abort();
+            gate.resolve();
+            const result = await settled;
+            if (outcome === 'reject') assert.match(result.error?.message || '', /controlled action failure/);
+            else assert.equal(result.value, outcome === 'complete');
+            assert.equal(f.native.state.reservePriority, 0, 'no stale normal reservation may block expressions');
+            if (outcome === 'complete') {
+                assert.equal(f.native.state.currentPriority, 2);
+                assert.ok(f.manager._activeActionMotionOperation);
+                f.native.stopAllMotions();
+            } else {
+                assert.equal(f.native.state.currentPriority, 1, 'retiring the action preserves the independently started Idle');
+            }
+            assert.equal(f.manager.hasActiveActionMotion(), false);
+            assert.equal(f.manager._avatarOperations.size, 0);
+        } finally { gate.resolve(); if (pending) await pending.catch(() => false); f.release(); }
+    });
+}
+
 test('cancel before the real SDK loader returns revokes its reservation and settles before the response', async () => {
     assert.deepEqual(await cancelledNative(), { starts: 0, priority: 0, owners: 0 });
 });
