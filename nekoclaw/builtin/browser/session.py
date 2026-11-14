@@ -1527,7 +1527,10 @@ class BrowserSession:
 
         It is not when the page stopped taking input before its turn came: a
         dialog that is open, or one a modifier going down opened, leaves the
-        key nowhere to go (nothing is sent to a page with a dialog open).
+        key nowhere to go (nothing is sent to a page with a dialog open), and
+        so does a page that has closed. A key that was sent counts as
+        pressed whatever it led to: the dialog or the closing of the page
+        that came instead of its answer is what pressing it did.
         """
         mask = 0
         down: list[KeyDefinition] = []
@@ -1541,7 +1544,7 @@ class BrowserSession:
                 down.append(modifier)
                 if not await self._key_event(page, "keyDown", modifier, mask):
                     return False
-            if page.dialog is not None:
+            if page.dialog is not None or not self.is_open(page):
                 return False
             # The same for the key itself.
             key_is_down = True

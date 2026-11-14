@@ -1696,6 +1696,35 @@ async def test_a_key_is_not_taken_for_pressed_when_a_dialog_was_open_before_it_w
     assert len(fake.keys) == before
 
 
+async def test_a_key_is_not_taken_for_pressed_when_the_page_had_closed_before_it_went_down(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    # A page that closes between the text and the key, or when a modifier goes down.
+    page, fake, _snapshot = await open_page(session, world)
+    world.browser.remove_page(fake)
+    for _ in range(400):
+        if not session.is_open(page):
+            break
+        await asyncio.sleep(0.005)
+    assert not session.is_open(page), "the news of the page closing never came"
+    assert await session._press(page, *session_module.parse_key("Enter")) is False
+    assert await session._press(page, *session_module.parse_key("Control+Enter")) is False
+    assert fake.keys == []
+
+
+async def test_a_key_that_closes_the_page_was_pressed(session: BrowserSession, world: BrowserWorld) -> None:
+    page, fake, _snapshot = await open_page(session, world)
+
+    def close_on_enter(browser: Any, target: FakePage, event: dict[str, Any]) -> None:
+        if event["key"] == "Enter" and event["type"] == "keyDown":
+            browser.remove_page(target)
+
+    fake.on_key = close_on_enter
+    # Sent, and the closing of the page is what it did (a window that closes itself when its form is sent).
+    assert await asyncio.wait_for(session.press_key(page, "Enter"), 5.0) is True
+    assert [event["key"] for event in fake.keys] == ["Enter"]
+
+
 async def test_no_text_with_a_submit_key_only_presses_the_key(session: BrowserSession, world: BrowserWorld) -> None:
     page, fake, _snapshot = await open_page(session, world)
     await session.type_text(page, "", "Tab")
