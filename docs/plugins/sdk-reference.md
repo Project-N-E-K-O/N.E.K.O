@@ -123,6 +123,8 @@ result = self.push_message(
     parts=[{"type": "text", "text": "Task complete"}],
     priority=5,
 )
+if not result["submitted"]:
+    self.logger.warning("push failed: %s", result.get("reason"))
 ```
 
 The return value reports only local submission (`submitted` / `reason`). For the full axis semantics, `parts` types, payload and image size limits, `ctx.images.upload()`, and v1 field migration, see [Message Delivery](./push-message).

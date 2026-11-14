@@ -43,7 +43,7 @@ if not result["submitted"]:
 
 `submitted=True` means only that the SDK handed the payload to its authoritative local submission path and took over responsibility for it. It does not mean the host consumed it, the AI replied, or audio played.
 
-`submitted=False` carries a stable `reason`: `backpressure`, `transport_error`, `transport_unavailable`, or `payload_too_large`. The first three describe transport conditions at that moment (congestion / send failure / no channel), so resending the same payload later is meaningful. `payload_too_large` is different: the SDK measures it locally **before sending** — the packed payload exceeded `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` (see [Size limits](#size-limits)) — so an identical retry will always fail the same way. The only fix is a smaller push.
+`submitted=False` carries a stable `reason`: `backpressure`, `transport_error`, `transport_unavailable`, or `payload_too_large`. The first three describe transport conditions at that moment (congestion / send failure / no channel), so resending the same payload later is meaningful. `payload_too_large` is different: the SDK measures it locally **before sending** — the packed payload exceeded `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` (see [Size limits](#size-limits)) — so an identical retry will always fail the same way. The only fix is a smaller push: move inline images to `ctx.images.upload()` and send the returned URL part instead; `audio` / `video` have no upload API yet, so either shrink them yourself (shorter clips, lower bitrate or resolution) or host them yourself and pass `url=` instead of `data=`.
 
 Results never expose internal transport names and never echo the message body or exception text. Rejections also carry `ok=False` for legacy callers; new code should treat `submitted` as authoritative. Retry and deduplication remain plugin policy.
 
@@ -97,14 +97,14 @@ Inline `data: bytes` is base64-encoded by the SDK. To extend push_message, add a
 
 ### Size limits
 
-Inline parts travel over ZMQ through the message plane. The whole payload is capped by `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288 (512 **KiB** = 512×1024, not decimal 512 KB). The limit applies to the **packed** envelope, not the raw image: inline images are base64 in `parts[].binary_base64`, i.e. 4/3 of the raw bytes (+33%). The raw ceiling for one inline image is therefore 512 KiB × 3/4 ≈ **384 KiB**, minus a few hundred bytes of envelope and any text parts. Measured: a 256 KiB image plus a short sentence packs to 341.8 KiB, leaving about 170 KiB of headroom; the raw size that exactly fills the cap is 383.6 KiB.
+Inline parts travel over ZMQ through the message plane. The whole payload is capped by `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288 (512 **KiB** = 512×1024, not decimal 512 KB). That is the shipped default; a deployment can override it with the `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` environment variable, and every figure below assumes the default. The limit applies to the **packed** envelope, not the raw image: inline images are base64 in `parts[].binary_base64`, i.e. 4/3 of the raw bytes (+33%). The raw ceiling for one inline image is therefore 512 KiB × 3/4 ≈ **384 KiB**, minus a few hundred bytes of envelope and any text parts. Measured: a 256 KiB image plus a short sentence packs to 341.8 KiB, leaving about 170 KiB of headroom; the raw size that exactly fills the 524288-byte cap is 383.6 KiB. The local check (below) holds back a further 227 bytes of headroom, so the practical cutoff for that shape sits about 0.2 KiB lower — size against roughly 383 KiB, not the last decimal.
 
 That effective ceiling used to be much lower. To serve downstream consumers not yet migrated to v2, the wire envelope once carried each inline image **twice** — base64 in `parts[].binary_base64` and raw bytes in the legacy `binary_data` field — about 2.34× the source, so the old 256 KiB cap only fit images of roughly 110 KiB. `_build_wire_payload` (`plugin/core/context.py`) now fills the legacy field only when the caller passes both `parts=` and `binary_data=`; ordinary inline images travel base64 once. Dropping the duplicate and raising the cap to 512 KiB together are what let a 256 KiB image fit.
 
-Oversized payloads are **rejected locally**: `push_message()` packs and measures before handing anything to the message plane, and returns `submitted=False` with `reason="payload_too_large"` when over. Nothing goes on the wire, and the log names which part (`image` / `audio` / `video`) consumed the budget. The plugin side and the host side (`plugin/message_plane/ingest_server.py`) read the same constant; the host check stays as a final safeguard.
+Oversized payloads are **rejected locally**: `push_message()` packs and measures before handing anything to the message plane, and returns `submitted=False` with `reason="payload_too_large"` when the packed size exceeds the cap minus a 227-byte headroom (the host adds `plugin_id` / `message_id` / `time` fields to the record before measuring it; the headroom covers their worst case, so a push the SDK accepts is never dropped at ingest for size). Nothing goes on the wire, and the log names which part (`image` / `audio` / `video`) consumed the budget. The plugin side and the host side (`plugin/message_plane/ingest_server.py`) read the same constant; the host check stays as a final safeguard.
 
 - The gate sits on **every** submission exit: the batch fast path, the synchronous path, and the legacy control-plane queue used when ZMQ is unavailable.
-- It measures the whole payload, not only inline images — oversized text or metadata is rejected too. The only exception is a deployment that explicitly disables `NEKO_MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES`; then the host does not measure either.
+- It measures the whole payload, not only inline images — oversized text or metadata is rejected too. The only exception is a deployment that explicitly disables `NEKO_MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES` (on by default); then neither the SDK nor the host measures.
 - Rejection affects the **whole push**: text parts and `ui_action`s in the same message are rejected with the image.
 - This does not change what `submitted=True` means: host backpressure or a process restart can still drop a message silently.
 
@@ -199,7 +199,10 @@ Push a `ui_action: media_allowlist_add`, then start playback:
 async def play_external(self, url: str, **_):
     self.push_message(
         ai_behavior="blind",
-        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": [url]}],
+        # Allowlist your own fixed source, never the caller-supplied url: an
+        # LLM-chosen url here would bypass the allowlist entirely. Validate
+        # url against that source before playing it.
+        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": ["music.my-cdn.com"]}],
     )
     self.push_message(
         visibility=["chat"],
@@ -220,15 +223,21 @@ Pages served via `register_static_ui` can use the global `window.MusicPluginAPI`
 | `getAllowlist()` | none | Returns all currently allowed domains/IPs |
 | `addAllowlist(input)` | `string \| Array<string>` | Adds domains. Extracts hosts from URLs and deduplicates |
 
-A plugin page may be embedded in an `<iframe>` with unpredictable load timing, so listen for `music-ui-ready`:
+A plugin page may be embedded in an `<iframe>` with unpredictable load timing. `music-ui-ready` is dispatched **once** on the host page's `window` (the iframe's `window.parent`) and is not replayed, so check for the API first and only wait for the event if it is not there yet:
 
 ```javascript
-window.addEventListener('music-ui-ready', () => {
-    const api = window.MusicPluginAPI || (window.parent && window.parent.MusicPluginAPI);
-    if (api) {
-        api.addAllowlist(['my-music-cdn.com', 'https://safe-storage.org/stream/']);
-    }
-}, { once: true });
+const domains = ['my-music-cdn.com', 'https://safe-storage.org/stream/'];
+const getMusicApi = () => window.MusicPluginAPI || (window.parent && window.parent.MusicPluginAPI);
+
+const api = getMusicApi();
+if (api) {
+    api.addAllowlist(domains);
+} else {
+    window.parent.addEventListener('music-ui-ready', () => {
+        const readyApi = getMusicApi();
+        if (readyApi) readyApi.addAllowlist(domains);
+    }, { once: true });
+}
 ```
 
 ## `finish()` delivery modes

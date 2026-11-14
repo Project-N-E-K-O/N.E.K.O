@@ -118,6 +118,8 @@ result = self.push_message(
     parts=[{"type": "text", "text": "タスクが完了しました"}],
     priority=5,
 )
+if not result["submitted"]:
+    self.logger.warning("push failed: %s", result.get("reason"))
 ```
 
 戻り値はローカル送信の結果（`submitted` / `reason`）だけを示します。2 つの軸の完全なセマンティクス、`parts` の種類、payload と画像のサイズ制限、`ctx.images.upload()`、v1 フィールドの移行は[メッセージ配信](./push-message)を参照してください。
@@ -201,7 +203,7 @@ Hosted TSX は exported `ui` namespace と manifest surface を使います。�
 
 ### 返信制御
 
-`finish()` は `delivery` パラメータ（既定 `"proactive"` / `"passive"` / `"silent"`）で、結果をメイン AI のコンテキストに入れるか、キャラクターにすぐ話させるかを制御します。`reply=True/False` は非推奨のブール別名です。
+`finish()` は `delivery` パラメータ（`"proactive"`（既定）/ `"passive"` / `"silent"`）で、結果をメイン AI のコンテキストに入れるか、キャラクターにすぐ話させるかを制御します。`reply=True/False` は非推奨のブール別名です。
 
 ```python
 # 通常：キャラクターが結果を報告する

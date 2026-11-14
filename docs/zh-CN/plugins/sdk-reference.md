@@ -131,6 +131,8 @@ result = self.push_message(
     parts=[{"type": "text", "text": "任务已完成"}],
     priority=5,
 )
+if not result["submitted"]:
+    self.logger.warning("push failed: %s", result.get("reason"))
 ```
 
 返回值只表示本地提交结果（`submitted` / `reason`）。两条轴的完整语义、`parts` 类型、payload 与图片大小限制、`ctx.images.upload()` 以及 v1 字段迁移见[消息推送与结果投递](./push-message)。

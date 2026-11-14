@@ -43,7 +43,7 @@ if not result["submitted"]:
 
 `submitted=True` 只表示 SDK 已把 payload 交给权威本地提交路径，并接管后续提交责任；它不表示宿主已经消费、AI 已生成回复或音频已经播放。
 
-`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`、`transport_unavailable` 或 `payload_too_large`。前三个描述的是传输当时的状况（拥塞 / 发送失败 / 没有可用通道），换个时机原样重发是有意义的。`payload_too_large` 是另一类：它由 SDK 在**发送之前**本地量出来——整条 payload 打包后超过了 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（判据见下面的[大小限制](#大小限制)），所以原样重试必然还是同一个结果，唯一的出路是把这条 push 变小。
+`submitted=False` 会携带稳定的 `reason`：`backpressure`、`transport_error`、`transport_unavailable` 或 `payload_too_large`。前三个描述的是传输当时的状况（拥塞 / 发送失败 / 没有可用通道），换个时机原样重发是有意义的。`payload_too_large` 是另一类：它由 SDK 在**发送之前**本地量出来——整条 payload 打包后超过了 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES`（判据见下面的[大小限制](#大小限制)），所以原样重试必然还是同一个结果，唯一的出路是把这条 push 变小：inline 图片改用 `ctx.images.upload()` 换成 URL part；`audio` / `video` 目前没有对应的上传接口，只能自己压小（更短的片段、更低的码率或分辨率），或者自己托管后用 `url=` 代替 `data=`。
 
 结果不会暴露内部 transport 名称，也不会回显消息正文或异常内容。拒绝结果还会携带兼容旧调用方的 `ok=False`；新代码应以 `submitted` 为正式判据。调用方可以保留本地状态，但重试和去重仍由具体插件决定。
 
@@ -97,14 +97,14 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。需要�
 
 ### 大小限制
 
-inline part 通过 message_plane 走 ZMQ，整条 payload 上限是 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288（512 **KiB** = 512*1024，不是十进制的 512 KB）。这个数字量的是**打包后**的信封，不是原图字节数——inline 图片以 base64 放在 `parts[].binary_base64` 里，是原始字节的 4/3（+33%）。所以一张 inline 图的原始字节上限是 512 KiB × 3/4 = **约 384 KiB**，再减掉几百字节的信封开销和同一条消息里的 text part。实测：一张 256 KiB 的图加一句短文字打包出来是 341.8 KiB，离上限还有约 170 KiB 余量；恰好卡满的原始图片大小是 383.6 KiB。
+inline part 通过 message_plane 走 ZMQ，整条 payload 上限是 `MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = 524288（512 **KiB** = 512*1024，不是十进制的 512 KB）。这是出厂默认值，部署方可以用环境变量 `NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES` 覆盖，下文所有数字都按默认值算。这个数字量的是**打包后**的信封，不是原图字节数——inline 图片以 base64 放在 `parts[].binary_base64` 里，是原始字节的 4/3（+33%）。所以一张 inline 图的原始字节上限是 512 KiB × 3/4 = **约 384 KiB**，再减掉几百字节的信封开销和同一条消息里的 text part。实测：一张 256 KiB 的图加一句短文字打包出来是 341.8 KiB，离上限还有约 170 KiB 余量；恰好卡满 524288 字节的原始图片大小是 383.6 KiB。本地检查（见下）还会再预留 227 字节余量，所以同样形状的消息实际在本地被拦的位置要再低约 0.2 KiB——按大约 383 KiB 留量，不要压着最后一位小数。
 
 这个「实际上限」曾经低得多。wire envelope 以前为了照顾还没迁到 v2 的下游消费者，把同一张 inline 图带**两遍**：一份 base64 在 `parts[].binary_base64`，一份原始 bytes 在 legacy 的 `binary_data` 字段，加起来约是原图的 2.34 倍，于是当时 256 KiB 的上限实际只兜得住约 110 KiB 的图。现在 `_build_wire_payload`（`plugin/core/context.py`）只在「调用方同时传了 `parts=` 和 `binary_data=`」这一种形状下才填 legacy 字段，普通的 inline 图片只走 base64 那一遍；双份去掉、上限又提到 512 KiB，两件事合起来才让 256 KiB 的图能过。
 
-超限**在本地就被拦下**：`push_message()` 在把 payload 交给 message_plane 之前先打包量一次，超了直接返回 `submitted=False` + `reason="payload_too_large"`，那条消息一个字节都不会上线，日志里会写明是哪个 part（`image` / `audio` / `video`）吃掉了预算。插件侧和 host 侧（`plugin/message_plane/ingest_server.py`）读的是同一个常量，host 侧的检查作为最后一道兜底。
+超限**在本地就被拦下**：`push_message()` 在把 payload 交给 message_plane 之前先打包量一次，打包大小超过「上限减去 227 字节预留」就直接返回 `submitted=False` + `reason="payload_too_large"`，那条消息一个字节都不会上线，日志里会写明是哪个 part（`image` / `audio` / `video`）吃掉了预算。这 227 字节是给 host 的预留：host 在量之前会往记录里补 `plugin_id` / `message_id` / `time` 字段，预留按它们的最坏情况算，保证 SDK 放行的 push 不会再在 ingest 因为大小被丢。插件侧和 host 侧（`plugin/message_plane/ingest_server.py`）读的是同一个常量，host 侧的检查作为最后一道兜底。
 
 - 这道闸挂在**每一条**提交出口上：批量快路径、同步路径，以及 ZMQ 不可用时退下去的 legacy 控制面队列，都会先量一遍整条 payload。
-- 校验的是整条 payload 而不只是内联图片——超大的纯文本或 metadata 同样会被拒。唯一例外是显式关闭 `NEKO_MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES` 的部署，那时 host 也不量，超限消息会一路走到底。
+- 校验的是整条 payload 而不只是内联图片——超大的纯文本或 metadata 同样会被拒。唯一例外是显式关闭 `NEKO_MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES`（默认开启）的部署，那时 SDK 和 host 都不量，超限消息会一路走到底。
 - 超限影响的是**整条 push**，不是「图掉了、文字还在」：同一条消息里的 text part 和 `ui_action` 一起被拒。
 - 这没有改变 `submitted=True` 的含义：它仍然只表示「已交给传输」，宿主背压、进程重启之类仍然可能让消息静默消失。
 
@@ -199,7 +199,9 @@ N.E.K.O 默认只允许来自 `music.163.com` 等已知安全域名的音频播�
 async def play_external(self, url: str, **_):
     self.push_message(
         ai_behavior="blind",
-        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": [url]}],
+        # 白名单里只放你自己固定的音源，不要直接放调用方传进来的 url：
+        # url 可能是 LLM 选的，原样加进去等于绕过了白名单本身。播放前先校验 url 属于该音源。
+        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": ["music.my-cdn.com"]}],
     )
     self.push_message(
         visibility=["chat"],
@@ -220,15 +222,21 @@ async def play_external(self, url: str, **_):
 | `getAllowlist()` | 无 | 获取当前所有合法的域名/IP 列表 |
 | `addAllowlist(input)` | `string \| Array<string>` | 添加新域名。支持 URL 自动提取，自动去重 |
 
-插件页面可能通过 `<iframe>` 嵌入且加载时机不确定，建议监听 `music-ui-ready` 事件：
+插件页面可能通过 `<iframe>` 嵌入且加载时机不确定。`music-ui-ready` 只在宿主页面的 `window`（也就是 iframe 的 `window.parent`）上派发**一次**，不会重放，所以先检查 API 是否已经就绪，没有才去等这个事件：
 
 ```javascript
-window.addEventListener('music-ui-ready', () => {
-    const api = window.MusicPluginAPI || (window.parent && window.parent.MusicPluginAPI);
-    if (api) {
-        api.addAllowlist(['my-music-cdn.com', 'https://safe-storage.org/stream/']);
-    }
-}, { once: true });
+const domains = ['my-music-cdn.com', 'https://safe-storage.org/stream/'];
+const getMusicApi = () => window.MusicPluginAPI || (window.parent && window.parent.MusicPluginAPI);
+
+const api = getMusicApi();
+if (api) {
+    api.addAllowlist(domains);
+} else {
+    window.parent.addEventListener('music-ui-ready', () => {
+        const readyApi = getMusicApi();
+        if (readyApi) readyApi.addAllowlist(domains);
+    }, { once: true });
+}
 ```
 
 ## `finish()` 的投递模式

@@ -2883,6 +2883,66 @@ def _guide_text() -> str:
     return guide.read_text(encoding="utf-8")
 
 
+_GUIDE_LOCALES = ("en", "zh-CN", "ja")
+
+
+def _locale_guide_text(locale: str) -> str:
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parents[2] / "docs"
+    base = docs if locale == "en" else docs / locale
+    return (base / "plugins" / "push-message.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("locale", _GUIDE_LOCALES)
+def test_every_locale_of_the_guide_prints_the_same_numbers(locale: str) -> None:
+    """The figures are hand-copied into three locales; pin them in all three.
+
+    The tests above read zh-CN for its prose, but the code comments point at
+    the en page and ja is a third copy. Language-neutral lines -- constant
+    assignments, reason codes, measured sizes, the staging-quota cells -- must
+    agree with the code in every locale, or changing a constant while editing
+    only one translation would still pass CI.
+    """
+    from main_logic import proactive_delivery as pd
+    from plugin.sdk.shared.core.images import (
+        MAX_IMAGE_EDGE,
+        MAX_SOURCE_IMAGE_BYTES,
+        MAX_SOURCE_IMAGE_PIXELS,
+        MAX_UPLOADED_IMAGE_BYTES,
+    )
+    from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
+
+    text = _locale_guide_text(locale)
+
+    assert (
+        f"`MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = {MESSAGE_PLANE_PAYLOAD_MAX_BYTES}"
+        in text
+    )
+    assert f"{MESSAGE_PLANE_PAYLOAD_MAX_BYTES // 1024} **KiB**" in text
+    assert f"{MESSAGE_PLANE_PAYLOAD_MAX_BYTES * 3 // 4 // 1024} KiB**" in text
+    for measured in ("341.8 KiB", "383.6 KiB"):
+        assert measured in text
+    for name, value in (
+        ("MAX_IMAGE_EDGE", MAX_IMAGE_EDGE),
+        ("MAX_UPLOADED_IMAGE_BYTES", MAX_UPLOADED_IMAGE_BYTES),
+        ("MAX_SOURCE_IMAGE_BYTES", MAX_SOURCE_IMAGE_BYTES),
+        ("MAX_SOURCE_IMAGE_PIXELS", MAX_SOURCE_IMAGE_PIXELS),
+    ):
+        assert f"`{name}` = {value}" in text
+    for reason in (
+        "backpressure",
+        "transport_error",
+        "transport_unavailable",
+        "payload_too_large",
+    ):
+        assert f"`{reason}`" in text
+    user_mib = pd.USER_PENDING_IMAGE_MAX_BYTES // (1024 * 1024)
+    plugin_mib = pd.PLUGIN_PENDING_IMAGE_MAX_BYTES // (1024 * 1024)
+    assert f"| {pd.USER_PENDING_IMAGE_MAX_COUNT} | {user_mib} MiB |" in text
+    assert f"| {pd.PLUGIN_PENDING_IMAGE_MAX_COUNT} | {plugin_mib} MiB |" in text
+
+
 def test_message_plane_payload_ceiling_is_pinned_and_documented() -> None:
     """The inline push cap is 512 KiB, and the guide must print that number.
 
