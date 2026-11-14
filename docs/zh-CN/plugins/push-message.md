@@ -82,7 +82,7 @@ inline `data: bytes` 由 SDK 自动 base64 编码后随 payload 传出。需要�
 ### 当前实现限制
 
 - `ai_behavior in ("respond","read")` 时，inline `image` parts 和 `ctx.images.upload()` 返回的本地临时 URL 都能进入 LLM 上下文（最终走 `session.stream_image(base64)`）。任意外部 URL 仍会被拒绝，避免把远端抓取引入 agent event 投递路径。单条消息最多向模型注入 8 张、合计 8 MiB 图片；超出的 image parts 不会进入模型上下文。
-- 聊天显示（`visibility=["chat"]`）有自己独立的单次 push 上限：最多 8 张，其中 inline 图片合计不超过 8 MiB（`ctx.images.upload()` 返回的 URL 图不计字节）。超出的图在聊天气泡里同样会被丢掉，所以一次 push 里的第 9 张图哪里都不会出现。
+- 聊天显示（`visibility=["chat"]`）有自己独立的单次 push 上限：最多显示 8 张通过筛选的图，其中 inline 图片合计不超过 8 MiB（`ctx.images.upload()` 返回的 URL 图不计字节）。被跳过的图（比如任意外部 URL）不占名额，通过筛选但超出上限的图会被丢掉。两条路径计数方式不同：模型路径在解析之前就截取前 8 个 image part，其中某张送达失败也不会补位；聊天路径只数真正渲染出来的图。所以不要假设用户看到的图和模型收到的完全一致——每次 push 最多放 8 张有效图片。
 - `respond` 的图随回复轮次送出，任何服务商都能收到；`read` 的图只是尽力投给**当前**会话：没有当前会话时会被丢弃，实时服务商不支持原生视觉时也会被丢弃。图片必须送达这类服务商时请用 `ai_behavior="respond"`。
 - 上面的 8 张 / 8 MiB 是**单次 push** 的上限。文字模式下 `ai_behavior="read"` 的图不是立刻发给模型，而是先暂存、等用户下次开口时一起送出，所以**一个回合**里可能攒着好几次 push 的图。暂存按来源分开计额，互不侵蚀：
 
