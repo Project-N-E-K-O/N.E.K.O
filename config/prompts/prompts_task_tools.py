@@ -30,14 +30,14 @@ DISPATCH_TOOL_NAME = "dispatch_task"
 QUERY_TOOL_NAME = "query_tasks"
 
 DISPATCH_TOOL_DESCRIPTION = {
-    'zh': '把对话之外要动手的事交给任务系统去办；补充、改主意、叫停、转达用户的回答也用它。',
-    'zh-TW': '把對話以外要動手的事交給任務系統去辦；補充、改主意、叫停、轉達使用者的回答也用它。',
-    'en': "Hand what is to be done outside the conversation to the task system; also use it to add to a task, change it, stop it, or pass on the user's answer.",
-    'ja': '会話の外で実際に手を動かす用件をタスクシステムに任せます。追加、変更、中止、ユーザーの回答の伝達にも使います。',
-    'ko': '대화 밖에서 실제로 해야 하는 일을 작업 시스템에 맡깁니다. 추가, 변경, 중지, 사용자의 답 전달에도 씁니다.',
-    'ru': 'Передать системе задач то, что нужно сделать вне диалога; также для дополнения, изменения, остановки задачи и передачи ответа пользователя.',
-    'es': 'Encarga al sistema de tareas lo que haya que hacer fuera de la conversación; úsala también para añadir, cambiar, parar una tarea o transmitir la respuesta del usuario.',
-    'pt': 'Encarrega o sistema de tarefas do que precisar ser feito fora da conversa; use também para acrescentar, mudar, parar uma tarefa ou repassar a resposta do usuário.',
+    'zh': '把对话之外要动手的事交给任务系统去办（查资料、看状态也算；你本来就知道的直接答）；补充、改主意、叫停、转达用户的回答也用它。',
+    'zh-TW': '把對話以外要動手的事交給任務系統去辦（查資料、看狀態也算；你本來就知道的直接答）；補充、改主意、叫停、轉達使用者的回答也用它。',
+    'en': "Hand what is to be done outside the conversation to the task system (looking something up or checking a state counts; what you already know, answer yourself); also use it to add to a task, change it, stop it, or pass on the user's answer.",
+    'ja': '会話の外で実際に手を動かす用件（調べ物・状態確認も含む。既知なら自分で答える）をタスクシステムに任せます。追加、変更、中止、ユーザーの回答の伝達にも使います。',
+    'ko': '대화 밖에서 실제로 해야 하는 일(자료 찾기, 상태 확인 포함, 이미 아는 것은 직접 답하기)을 작업 시스템에 맡깁니다. 추가, 변경, 중지, 사용자의 답 전달에도 씁니다.',
+    'ru': 'Передать системе задач то, что нужно сделать вне диалога (в том числе найти что-то или проверить состояние; что и так знаете, отвечайте сами); также для дополнения, изменения, остановки задачи и передачи ответа пользователя.',
+    'es': 'Encarga al sistema de tareas lo que haya que hacer fuera de la conversación (buscar algo o comprobar un estado también cuenta; lo que ya sabes, respóndelo tú); úsala también para añadir, cambiar, parar una tarea o transmitir la respuesta del usuario.',
+    'pt': 'Encarrega o sistema de tarefas do que precisar ser feito fora da conversa (procurar algo ou ver um estado também conta; o que já sabe, responda); use também para acrescentar, mudar, parar uma tarefa ou repassar a resposta do usuário.',
 }
 
 DISPATCH_TOOL_TASK_DESCRIPTION = {

@@ -146,9 +146,11 @@ class _Session:
     # Set when the session is closed before its work was given: what was
     # passed on for that work is kept when the session is released.
     keep_notes: bool = False
-    # What an earlier start given up for the quota kept and this start is
-    # to send. Sending is not taking: it stays until an event shows the
-    # session at work on it, and is put back when the start fails first.
+    # What this start is to send that came from the user: what an earlier
+    # failed start kept, the sentence it was given, what was passed on
+    # while it was set up. Sending is not taking: it stays until an event
+    # shows the session at work on it, and is kept for the next start when
+    # this one fails before its prompt reached the session's transcript.
     carried: list[str] = field(default_factory=list)
     # Texts sent to the session (prompt and steer). A finished run that had
     # taken fewer is followed by a run that takes the rest; until that one
@@ -460,6 +462,9 @@ class TaskAgentManager:
         session = self._sessions.get(commission_id)
         if session is None:
             return False
+        # The sentence this start was given is the user's from the outset:
+        # a failure while it is set up keeps it too.
+        session.carried = [prompt] if prompt is not None else []
         carried: list[str] = []
         try:
             commission = await self._ledger.get(commission_id)
@@ -538,7 +543,7 @@ class TaskAgentManager:
                 return False
             notes = self._notes.pop(commission.id, [])
             carried = self._carried.pop(commission.id, [])
-            session.carried = list(carried)
+            session.carried = [*carried, *([prompt] if prompt is not None else []), *notes]
             if prompt is not None:
                 parts = [*carried, prompt]
             else:
@@ -569,22 +574,11 @@ class TaskAgentManager:
                 # place until its own close comes back, as every other close
                 # does: a new session of the same commission started before
                 # that would be released by it.
-                session.keep_notes = True
-                # The sentence this start was given (the user's answer when
-                # it was taken up again) is kept with them, in the order they
-                # came, ahead of whatever the next start is told.
-                kept = [*carried, *([prompt] if prompt is not None else []), *notes]
-                session.carried = []
-                kept += self._notes.pop(commission.id, [])
-                if kept:
-                    self._carried[commission.id] = kept
+                self._keep_unsent(session)
                 await self._fail(commission.id, _QUOTA_REASON)
                 await self._close_session(session)
-                # What was passed on while the failure was being written
-                # came before whatever the next start will be told.
-                late = self._notes.pop(commission.id, [])
-                if late:
-                    self._carried[commission.id] = [*self._carried.get(commission.id, []), *late]
+                # What was passed on while the failure was being written.
+                self._keep_unsent(session)
                 return False
             if await stopped_meanwhile():
                 # The stop has closed the session already.
@@ -592,8 +586,10 @@ class TaskAgentManager:
                 return False
             await self._send_text(runtime, session, "prompt", text)
             session.ready = True
-            # What was passed on while the session was being set up.
+            # What was passed on while the session was being set up. Like the
+            # prompt, it is the user's until the run is seen at work.
             for note in self._notes.pop(commission.id, []):
+                session.carried.append(note)
                 await self._send_text(runtime, session, "steer", note)
             return True
         except asyncio.CancelledError:
@@ -611,9 +607,12 @@ class TaskAgentManager:
             raise
         except Exception as exc:  # noqa: BLE001 - the commission fails with the reason
             logger.warning("starting a task agent for %s failed: %s", commission_id, exc)
-            self._put_back_carried(session)
+            # Kept before the session is let go: the user's next words may
+            # take the commission up again while the failure is written.
+            self._keep_unsent(session)
             self._discard(commission_id)
             await self._fail(commission_id, f"the task agent could not be started: {exc}")
+            self._keep_unsent(session)
             return False
 
     async def _sees_images(self, config: dict[str, Any]) -> bool:
@@ -692,12 +691,23 @@ class TaskAgentManager:
                 session.run_ended = True
             raise
 
-    def _put_back_carried(self, session: _Session) -> None:
-        """Keep what a failed start was to send for the start after it, as it was kept for this one."""
-        if session.carried:
-            commission_id = session.commission_id
-            self._carried[commission_id] = [*session.carried, *self._carried.get(commission_id, [])]
+    def _keep_unsent(self, session: _Session) -> None:
+        """Keep what the user said that a failed start did not get into the session, for the next start.
+
+        What this start was to send, then what was passed on since, in the
+        order it came: the next start sends it ahead of what it is given.
+        Called once the failure is written, so what came meanwhile is kept too.
+        A session closed by a stop keeps nothing: its commission is over.
+        """
+        commission_id = session.commission_id
+        if session.closing and not session.keep_notes:
             session.carried = []
+            return
+        session.keep_notes = True
+        kept = [*session.carried, *self._notes.pop(commission_id, [])]
+        session.carried = []
+        if kept:
+            self._carried[commission_id] = [*self._carried.get(commission_id, []), *kept]
 
     def _discard(self, commission_id: str) -> None:
         self._sessions.pop(commission_id, None)
@@ -969,9 +979,19 @@ class TaskAgentManager:
         elif reason == "aborted":
             await self._end(commission_id, "cancelled", reason="the run was stopped", text="")
         elif reason == "error":
-            # Before it got to work on what it was given, that is kept.
-            self._put_back_carried(session)
-            await self._fail(commission_id, str(event.get("error") or "the run failed"))
+            if session.sent == 0:
+                # Ended before its prompt was sent (the runtime process
+                # went away meanwhile): what it was to send is kept, and
+                # again once the failure is written, for what came meanwhile.
+                self._keep_unsent(session)
+                await self._fail(commission_id, str(event.get("error") or "the run failed"))
+                self._keep_unsent(session)
+            else:
+                # A run takes its prompt into the session's transcript before
+                # its first model request, and the next start goes on from
+                # that transcript: what was kept is there, and is not sent again.
+                session.carried = []
+                await self._fail(commission_id, str(event.get("error") or "the run failed"))
         # It is over; what it started must not go on working for nobody.
         for child in await self._ledger.select(parent_id=commission_id, statuses=ACTIVE_STATUSES):
             await self._ledger.transition(child.id, "cancelled", reason="its parent finished")
@@ -1032,12 +1052,15 @@ class TaskAgentManager:
         if command == "start":
             # The runtime reports a start it could not make here, not by
             # raising from ``start``.
-            self._put_back_carried(session)
             await self._fail(commission_id, f"the task agent could not be started: {message}")
+            self._keep_unsent(session)
             await self._release(commission_id)
         elif command == "prompt":
             session.untaken_answer = None
+            # Refused, so it is not in the transcript: what the user said
+            # with it is kept, as when the start itself fails.
             await self._fail(commission_id, message)
+            self._keep_unsent(session)
             await self._close_session(session)
         elif command == "close":
             # The session is gone already, for instance with its runtime process.
