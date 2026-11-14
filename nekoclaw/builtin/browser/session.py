@@ -1212,6 +1212,8 @@ class BrowserSession:
                     "objectId": object_id,
                     "functionDeclaration": _ELEMENT_OF_NODE,
                     "returnByValue": False,
+                    # The browser would put it in the group of the node it
+                    # was asked on; said outright all the same.
                     "objectGroup": OBJECT_GROUP,
                 },
             )

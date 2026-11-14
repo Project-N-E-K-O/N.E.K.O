@@ -853,8 +853,14 @@ class FakeBrowser:
         return {"object": {"type": "object", "subtype": "node", "objectId": handle}}
 
     def _group(self, page: FakePage, command: Sent, handle: str) -> None:
-        """Remember which group a handle was asked to be put in; one outside every group is never let go of."""
-        page.handle_groups[handle] = command.params.get("objectGroup")
+        """Remember which group a handle is in; one outside every group is never let go of.
+
+        As the browser does it: the group that was asked for or, for what a
+        function returns when none was, the group of the object the function
+        was called on.
+        """
+        on = page.handle_groups.get(str(command.params.get("objectId")))
+        page.handle_groups[handle] = command.params.get("objectGroup") or on
 
     def _do_Runtime_releaseObjectGroup(self, command: Sent, page: FakePage) -> dict[str, Any]:
         group = command.params.get("objectGroup")
