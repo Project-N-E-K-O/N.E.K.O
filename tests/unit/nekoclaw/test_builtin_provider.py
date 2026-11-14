@@ -733,3 +733,11 @@ async def test_killing_the_browser_is_passed_on_and_does_nothing_where_no_browse
     bare._browser = tools  # type: ignore[assignment]
     bare.kill_browser()
     assert tools.kills == 1
+
+
+async def test_the_keys_can_be_let_go_of_without_closing_the_browser(rig: Rig) -> None:
+    await rig.provider.release_keys()
+    # For a shutdown that has dealt with the browser already.
+    assert len(rig.desktop.release_threads) == 1 and rig.browser.closed == 0
+    await rig.provider.aclose()
+    assert len(rig.desktop.release_threads) == 2 and rig.browser.closed == 1

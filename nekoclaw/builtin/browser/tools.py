@@ -170,6 +170,9 @@ class BrowserTools:
         return self._session.window()
 
     async def aclose(self) -> None:
+        # A call that is starting the browser holds the tools until it is up:
+        # it is told to give up, so that closing does not wait that long.
+        self._session.stop_starting()
         async with self._lock:
             await self._session.close()
 

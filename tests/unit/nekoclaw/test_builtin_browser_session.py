@@ -197,9 +197,9 @@ async def test_a_start_cancelled_while_the_browser_comes_up_tells_the_start_to_s
     await _cancelled(starting)
     assert stop.is_set()
     assert world.closed == [] and world.connected == [] and not session.connected
-    world.launch_gate.set()
-    await session.close()
-    # Nothing came up, so there is nothing to close; and closing did not have to wait for a browser to come up.
+    # Closing does not have to wait for a browser to come up (it never does here): the start has given up.
+    await asyncio.wait_for(session.close(), 5.0)
+    # Nothing came up, so there is nothing to close.
     assert world.closed == []
 
 
@@ -222,6 +222,8 @@ async def test_the_next_start_waits_until_the_browser_of_a_cancelled_start_has_b
     session: BrowserSession, world: BrowserWorld
 ) -> None:
     world.launch_gate = asyncio.Event()
+    # The browser was coming up already when its start heard that it was to stop.
+    world.launch_ignores_stop = True
     starting = asyncio.ensure_future(session.start())
     await _until(lambda: world.launched)
     await _cancelled(starting)
@@ -235,11 +237,10 @@ async def test_the_next_start_waits_until_the_browser_of_a_cancelled_start_has_b
     assert len(world.launched) == 1 and not again.done()
     world.launch_gate.set()
     await again
-    # The first start gave up as it was told; the second brought the browser up.
-    assert len(world.launched) == 2 and world.closed == [] and session.connected
+    assert len(world.launched) == 2 and len(world.closed) == 1 and session.connected
     assert world.launch_stops[0].is_set() and not world.launch_stops[1].is_set()
     await session.close()
-    assert len(world.closed) == 1
+    assert len(world.closed) == 2
 
 
 async def test_a_start_that_was_cancelled_and_then_fails_leaves_nothing_to_close(
@@ -3066,6 +3067,8 @@ async def test_killing_takes_the_browsers_this_process_started_and_no_other(
     assert killed == []
 
     await session.start()
+    # No start is under way any more: there is nothing to tell to stop.
+    assert world.launch_stops[0].is_set() is False and session._starting_stop is None
     session.kill()
     # Not our child (it handed over): found by the profile it runs on.
     assert looked_up == [str(world.store.profile_dir())] and killed == [8765]
@@ -3109,3 +3112,37 @@ async def test_killing_also_takes_a_browser_that_could_not_be_closed_earlier(
 
     # Our child: killed by the process we hold, not looked up by its profile.
     assert killed == [4321]
+
+
+async def test_a_start_that_is_under_way_can_be_told_to_stop_by_whoever_closes(
+    session: BrowserSession, world: BrowserWorld
+) -> None:
+    world.launch_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: world.launched)
+    # Not cancelled: the browser is switched off while a call is still bringing it up.
+    session.stop_starting()
+
+    with pytest.raises(BrowserError, match="was not started: the start was stopped"):
+        await asyncio.wait_for(starting, 5.0)
+
+    assert world.closed == [] and not session.connected
+    # Nothing is told to stop when nothing is being started.
+    assert session._starting_stop is None
+    session.stop_starting()
+
+
+async def test_killing_tells_a_start_that_is_under_way_to_stop(
+    session: BrowserSession, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    monkeypatch.setattr(launcher, "kill_tree", lambda pid: None)
+    world.launch_gate = asyncio.Event()
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: world.launched)
+
+    session.kill()
+
+    # What the start had brought up is taken away by the start itself.
+    assert world.launch_stops[0].is_set()
+    with pytest.raises(BrowserError, match="the start was stopped"):
+        await asyncio.wait_for(starting, 5.0)

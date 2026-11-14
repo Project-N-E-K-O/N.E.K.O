@@ -334,6 +334,9 @@ class BrowserSession:
         # Closing a browser whose start was cancelled; the next start and
         # ``close`` wait for it.
         self._abandoned: asyncio.Future[None] | None = None
+        # What a start that is under way is told to stop with; None while no
+        # browser is being started.
+        self._starting_stop: threading.Event | None = None
         # Browsers of ours that could not be closed, when another took their
         # place or when closing was asked for; ``close`` tries again.
         self._unclosed: list[launcher.RunningBrowser] = []
@@ -376,6 +379,7 @@ class BrowserSession:
                     # is then started without one whatever the settings say.
                     headless = settings.headless or not launcher.display_available()
                     stop = threading.Event()
+                    self._starting_stop = stop
                     starting = asyncio.ensure_future(
                         launcher.launch(install, str(profile), headless=headless, stop=stop)
                     )
@@ -392,6 +396,9 @@ class BrowserSession:
                         stop.set()
                         self._abandoned = asyncio.ensure_future(self._close_once_started(starting))
                         raise
+                    finally:
+                        if self._starting_stop is stop:
+                            self._starting_stop = None
             except launcher.BrowserStartError as exc:
                 raise BrowserError(str(exc)) from exc
         held = self._browser
@@ -599,20 +606,30 @@ class BrowserSession:
                 continue
             self._unclosed.remove(leftover)
 
+    def stop_starting(self) -> None:
+        """Tell a browser that is being started to give up; nothing is done when none is.
+
+        The call that started it then fails ("the start was stopped"), and
+        what it had brought up is taken away by the start itself. For
+        whoever closes or kills while a start is under way and would
+        otherwise wait for the browser to come up.
+        """
+        stop = self._starting_stop
+        if stop is not None:
+            stop.set()
+
     def kill(self) -> None:
         """Kill the browsers this process started, without asking them to close. Blocking; never raises.
 
         For a shutdown that has run out of the time it has: a browser that
         is asked to close and takes its time would outlive the process.
         """
+        self.stop_starting()
         for browser in [self._browser, *self._unclosed]:
-            if browser is None or not browser.owned:
+            if browser is None:
                 continue
             try:
-                pid = browser.pid
-                if pid is None and browser.user_data_dir:
-                    pid = launcher.browser_process_on(browser.user_data_dir)
-                launcher.kill_tree(pid)
+                launcher.kill(browser)
             except Exception:  # noqa: BLE001 - nothing more can be done about it
                 logger.warning("killing the browser failed", exc_info=True)
 

@@ -618,16 +618,6 @@ async def startup():
     _bump_state_revision()
 
 
-# How long the browser is given to close when this process shuts down, before
-# it is killed. Well within what the launcher gives the process itself.
-BROWSER_SHUTDOWN_SECONDS = 4.0
-# How long after the shutdown began the browser is killed whatever the
-# shutdown has got to by then. The steps of a shutdown have bounds of their
-# own that add up to more than the launcher gives this process, so the step
-# that closes the browser may never be reached.
-BROWSER_KILL_AFTER_SECONDS = 5.0
-
-
 def _kill_browser_at_last() -> None:
     """Kill the browser the tools started: the last resort of a shutdown. Runs on a thread of its own."""
     try:
@@ -641,10 +631,14 @@ async def shutdown():
     """Gracefully stop running tasks and release async resources."""
     global _loop_stall_watchdog
     logger.info("[Agent] Shutdown initiated — stopping running tasks")
+    from config.nekoclaw_settings import BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, BROWSER_KILL_AT_SHUTDOWN_SECONDS
+
     # Set first: whatever the steps below take, and whether or not the event
     # loop gets round to them, the browser the tools started does not outlive
-    # this process. Cancelled once the browser has been closed.
-    browser_last_resort = threading.Timer(BROWSER_KILL_AFTER_SECONDS, _kill_browser_at_last)
+    # this process (see ``BROWSER_KILL_AT_SHUTDOWN_SECONDS``). Cancelled once
+    # the browser has been closed.
+    browser_killed_at = asyncio.get_running_loop().time() + BROWSER_KILL_AT_SHUTDOWN_SECONDS
+    browser_last_resort = threading.Timer(BROWSER_KILL_AT_SHUTDOWN_SECONDS, _kill_browser_at_last)
     browser_last_resort.daemon = True
     browser_last_resort.start()
     # Release first so the synchronous cleanup below is not reported as stalls.
@@ -707,22 +701,31 @@ async def shutdown():
     # The browser the tools started stays open between tasks; it is closed
     # at service shutdown, along with keys a stopped call left held. The
     # host's shutdown above has cancelled every call that was under way.
-    # The launcher gives this process a few seconds to shut down in and then
-    # ends it (``graceful_shutdown_timeout`` in ``launcher_core/runtime.py``),
-    # and a browser that is still closing then would run on with nobody to
-    # close it: asked to close within part of that time, it is killed when it
-    # has not.
-    try:
-        await asyncio.wait_for(_close_browser(), timeout=BROWSER_SHUTDOWN_SECONDS)
-    except asyncio.TimeoutError:
+    # The launcher ends this process a few seconds after it began to shut
+    # down, and a browser that is still closing then would run on with
+    # nobody to close it. It is asked to close within what is left before
+    # the time it is killed at, and killed when it has not; with nothing
+    # left (the steps above took it all) it is not asked at all.
+    left = min(BROWSER_CLOSE_AT_SHUTDOWN_SECONDS, browser_killed_at - asyncio.get_running_loop().time())
+    closed_in_time = False
+    if left > 0:
+        try:
+            await asyncio.wait_for(_close_browser(), timeout=left)
+            closed_in_time = True
+        except asyncio.TimeoutError:
+            pass
+    if not closed_in_time:
         logger.warning("[Agent] The browser did not close in time; killing it")
         try:
             await asyncio.to_thread(builtin_provider.kill_browser)
         except Exception as e:
             logger.warning(f"[Agent] Killing the browser failed: {e}")
     browser_last_resort.cancel()
+    # Only the keys now. The browser has been dealt with: asked to close once
+    # more (as ``aclose`` would), a browser that was just killed would be
+    # waited for all over again.
     try:
-        await asyncio.wait_for(builtin_provider.aclose(), timeout=8.0)
+        await asyncio.wait_for(builtin_provider.release_keys(), timeout=2.0)
     except Exception as e:
         logger.warning(f"[Agent] Built-in tools cleanup error: {e}")
 

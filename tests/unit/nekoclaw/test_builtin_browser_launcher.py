@@ -1166,8 +1166,9 @@ def test_a_start_that_is_told_to_stop_gives_up_at_once_and_takes_what_it_started
     with pytest.raises(BrowserStartError, match="Google Chrome was not started: the start was stopped"):
         launcher._start(CHROME, str(starter.profile), False, (), stop)
     assert len(starter.started) == 1
-    # The child, and whatever it handed over to on the profile; and none of the wait a browser is given.
-    assert starter.killed == [4321, 8765]
+    # The child is alive, so it is the browser: killed, without a look at every process for
+    # one on the profile; and none of the wait a browser is given.
+    assert starter.killed == [4321]
     assert starter.clock.sleeps == []
 
 
@@ -1202,3 +1203,46 @@ def test_a_start_that_is_never_told_to_stop_goes_on_as_before(starter: Starter) 
     starter.on_start.append(lambda: starter.browser_listens(9555))
     browser = launcher._start(CHROME, str(starter.profile), False, (), threading.Event())
     assert browser.endpoint == "ws://127.0.0.1:9555/devtools/browser/new" and starter.killed == []
+
+
+# ---------------------------------------------------------------------------
+# Killing a browser outright
+# ---------------------------------------------------------------------------
+
+
+def test_killing_takes_our_child_by_its_number_and_a_browser_that_is_not_our_child_by_its_profile(
+    monkeypatch: Any,
+) -> None:
+    from types import SimpleNamespace
+
+    killed: list[Any] = []
+    looked_up: list[Any] = []
+
+    def on_profile(profile: Any) -> int:
+        looked_up.append(profile)
+        return 8765
+
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", on_profile)
+    child = RunningBrowser(install=CHROME, endpoint="ws://x", process=SimpleNamespace(pid=4321), owned=True, user_data_dir="/profile")
+    launcher.kill(child)
+    assert killed == [4321] and looked_up == []
+
+    handed_over = RunningBrowser(install=CHROME, endpoint="ws://x", process=None, owned=True, user_data_dir="/profile")
+    launcher.kill(handed_over)
+    assert killed == [4321, 8765] and looked_up == ["/profile"]
+
+    # Neither a child nor a profile to find it by: nothing is found, nothing is killed.
+    launcher.kill(RunningBrowser(install=None, endpoint="ws://x", process=None, owned=True))
+    assert killed == [4321, 8765, None] and looked_up == ["/profile"]
+
+
+def test_a_browser_that_was_attached_to_is_never_killed(monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+
+    killed: list[Any] = []
+    monkeypatch.setattr(launcher, "kill_tree", killed.append)
+    monkeypatch.setattr(launcher, "browser_process_on", lambda profile: 8765)
+    theirs = RunningBrowser(install=CHROME, endpoint="ws://x", process=SimpleNamespace(pid=4321), owned=False, user_data_dir="/theirs")
+    launcher.kill(theirs)
+    assert killed == []

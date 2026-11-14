@@ -360,9 +360,8 @@ def _start(
     if sys.platform != "win32":
         # A group of its own, so a signal meant for us does not reach it first.
         options["start_new_session"] = True
-    stopped = BrowserStartError(f"{install.name} was not started: the start was stopped")
     if stop is not None and stop.is_set():
-        raise stopped
+        raise BrowserStartError(f"{install.name} was not started: the start was stopped")
     try:
         process = subprocess.Popen(  # noqa: S603 - the executable is a browser found on this computer
             launch_arguments(install.executable, user_data_dir, headless=headless, extra=extra), **options
@@ -372,11 +371,8 @@ def _start(
     deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if stop is not None and stop.is_set():
-            # The process that was started, and the one it may have handed over to.
-            if process.poll() is None:
-                kill_tree(process.pid)
-            kill_tree(browser_process_on(user_data_dir))
-            raise stopped
+            _kill_started(process, user_data_dir)
+            raise BrowserStartError(f"{install.name} was not started: the start was stopped")
         active = read_active_port(user_data_dir)
         if active is not None and _port_open(active[0]):
             # Some browsers (Edge) hand over to another process and let the
@@ -387,16 +383,28 @@ def _start(
                 install=install, endpoint=endpoint_url(*active), process=child, owned=True, user_data_dir=user_data_dir
             )
         time.sleep(0.1)
-    # Whatever was started on the profile must not stay behind: the process
-    # that was started, or the one it handed over to.
-    if process.poll() is None:
-        kill_tree(process.pid)
+    exited = process.poll() is not None
+    _kill_started(process, user_data_dir)
+    if not exited:
         raise BrowserStartError(f"{install.name} did not open its debugging port within {LAUNCH_TIMEOUT_SECONDS:.0f}s")
-    kill_tree(browser_process_on(user_data_dir))
     raise BrowserStartError(
         f"{install.name} exited (code {process.returncode}) without opening its debugging port. "
         "It may be set up by an administrator not to allow remote debugging."
     )
+
+
+def _kill_started(process: Any, user_data_dir: str) -> None:
+    """Take away what a start brought up that will not be used. Blocking.
+
+    Whatever was started on the profile must not stay behind: the process
+    that was started, or, when that one has exited (some browsers hand over
+    to another process), whatever runs on the profile now. The profile is
+    only searched then: finding it means looking at every process.
+    """
+    if process.poll() is None:
+        kill_tree(process.pid)
+    else:
+        kill_tree(browser_process_on(user_data_dir))
 
 
 async def launch(
@@ -506,6 +514,22 @@ def browser_process_on(user_data_dir: str | os.PathLike[str]) -> int | None:
     return None
 
 
+def _pid_of(browser: RunningBrowser) -> int | None:
+    """Return the process of a browser this process owns, or None when it cannot be found. Blocking."""
+    pid = browser.pid
+    if pid is None and browser.user_data_dir:
+        # Not our child (found running on the profile, or handed over to by
+        # the process we started): it is looked up by the profile it runs on.
+        pid = browser_process_on(browser.user_data_dir)
+    return pid
+
+
+def kill(browser: RunningBrowser) -> None:
+    """Kill a browser this process owns without asking it to close; one that was attached to is left running. Blocking."""
+    if browser.owned:
+        kill_tree(_pid_of(browser))
+
+
 async def close(browser: RunningBrowser, connection: Any = None) -> None:
     """Close a browser this process owns; a browser that was attached to is left running.
 
@@ -514,11 +538,7 @@ async def close(browser: RunningBrowser, connection: Any = None) -> None:
     """
     if not browser.owned:
         return
-    pid = browser.pid
-    if pid is None and browser.user_data_dir:
-        # Not our child (found running on the profile, or handed over to by
-        # the process we started): it is looked up by the profile it runs on.
-        pid = await asyncio.to_thread(browser_process_on, browser.user_data_dir)
+    pid = await asyncio.to_thread(_pid_of, browser)
     asked = False
     if connection is not None and not connection.closed:
         try:

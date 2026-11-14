@@ -275,11 +275,15 @@ class BuiltinToolProvider:
         if self._browser is not None:
             self._browser.kill()
 
-    async def aclose(self) -> None:
-        """Let go of everything; for shutting down."""
+    async def release_keys(self) -> None:
+        """Let go of keys and buttons a stopped call left held; never raises."""
         if self._desktop is not None:
             try:
                 await asyncio.to_thread(self._desktop.release_held)
             except Exception:  # noqa: BLE001 - shutting down goes on
                 logger.debug("releasing held keys failed", exc_info=True)
+
+    async def aclose(self) -> None:
+        """Let go of everything; for shutting down."""
+        await self.release_keys()
         await self.close_browser()

@@ -1238,8 +1238,12 @@ class BrowserWorld:
     ) -> RunningBrowser:
         self.launched.append((install, user_data_dir, headless))
         self.launch_stops.append(stop)
-        if self.launch_gate is not None:
-            await self.launch_gate.wait()
+        # Coming up until the test lets it, or (as the real start looks every
+        # tenth of a second) until it is told to stop.
+        while self.launch_gate is not None and not self.launch_gate.is_set():
+            if stop is not None and stop.is_set() and not self.launch_ignores_stop:
+                break
+            await asyncio.sleep(0.005)
         if self.launch_error is not None:
             raise self.launch_error
         if stop is not None and stop.is_set() and not self.launch_ignores_stop:

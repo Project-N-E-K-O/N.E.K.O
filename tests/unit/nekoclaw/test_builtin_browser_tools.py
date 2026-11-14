@@ -1075,3 +1075,21 @@ async def test_killing_is_passed_on_to_the_session_without_waiting_for_a_call_un
     async with tools._lock:
         tools.kill()
     assert killed == [1]
+
+
+async def test_closing_does_not_wait_for_a_browser_that_a_call_is_still_bringing_up(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    world.launch_gate = asyncio.Event()
+    # The call holds the tools while the browser comes up, which it never does here.
+    calling = asyncio.ensure_future(tools.call(TOOL_PREFIX + "navigate_page", {"url": ORDER}))
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not world.launched and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.005)
+    assert world.launched and not calling.done()
+
+    await asyncio.wait_for(tools.aclose(), 5.0)
+
+    outcome = await asyncio.wait_for(calling, 5.0)
+    assert not outcome.success and "the start was stopped" in outcome.text
+    assert world.launch_stops[0].is_set() and world.closed == []

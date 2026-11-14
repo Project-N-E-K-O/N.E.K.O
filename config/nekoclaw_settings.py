@@ -245,6 +245,20 @@ on with the rest of its own shutdown. The host's steps keep running after
 that until the process exits; nothing is lost by it, because every status is
 already in the ledger and unsent reports go out with the next start."""
 
+BROWSER_KILL_AT_SHUTDOWN_SECONDS = 5.0
+"""How long after the agent process began to shut down the browser the
+browser tools started is killed, whatever the shutdown has got to by then.
+The launcher gives the process 8 seconds and then ends it, without what it
+started (``graceful_shutdown_timeout`` in ``launcher_core/runtime.py``). The
+steps of the shutdown have bounds of their own (the host's above, the
+background tasks', and some have none) that add up to more than that, so the
+step that closes the browser is reached late or not at all: this does not
+depend on it being reached."""
+
+BROWSER_CLOSE_AT_SHUTDOWN_SECONDS = 4.0
+"""How long the browser is given to close by itself once the shutdown gets to
+it; less when less than that is left before it is killed (above)."""
+
 HOST_CLOSE_STOP_WAIT_SECONDS = 1.5
 """How long closing the task brain waits for stops that are under way.
 A stop writes the status first; what is left is one local request to the
