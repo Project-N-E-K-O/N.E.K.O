@@ -1871,10 +1871,16 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         op = "del"
         if seconds > 0:
             # ``add`` is rejected for a member who is already muted; retiming
-            # one is an ``update``.
-            muted = {str(m.get("member_openid") or "")
-                     for m in await self.get_group_shut_list(gid)}
-            op = "update" if member in muted else "add"
+            # one is an ``update``. A failed pre-read must not cost the mute
+            # itself: fall back to ``add`` (the pre-update behavior); a dead
+            # transport still raises from the POST below.
+            try:
+                muted = {str(m.get("member_openid") or "")
+                         for m in await self.get_group_shut_list(gid)
+                         if isinstance(m, dict)}
+                op = "update" if member in muted else "add"
+            except Exception:
+                op = "add"
         entry = {
             "op": op,
             "member_openid": member,
@@ -2003,10 +2009,14 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         a QQ group number. ``group_name`` is empty: no push carries it, and
         :meth:`get_group_info` resolves it one call per group.
         """
-        return [
-            {"group_id": gid, "group_name": ""}
-            for gid in sorted(self._mutable("_seen_groups", dict))
-        ]
+        seen = self._mutable("_seen_groups", dict)
+        now = time.time()
+        # Read-time expiry: the record-time sweep never runs when no message
+        # arrives, so stale ids would otherwise linger here.
+        live = [gid for gid, ts in seen.items() if now - ts <= _SEEN_GROUPS_TTL]
+        for gid in set(seen) - set(live):
+            seen.pop(gid, None)
+        return [{"group_id": gid, "group_name": ""} for gid in sorted(live)]
 
     # Status
     async def can_send_image(self) -> bool: return True

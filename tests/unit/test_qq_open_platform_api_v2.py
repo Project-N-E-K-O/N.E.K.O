@@ -341,6 +341,30 @@ def test_seen_groups_expire():
     assert [g["group_id"] for g in run(conn.get_group_list())] == ["G2"]
 
 
+def test_ban_still_mutes_when_the_shut_list_query_fails():
+    # A failed pre-read (missing rights, flaky network) must not turn into
+    # "cannot mute anyone": fall back to ``add``.
+    conn = _conn([_Response({"err_code": 40011028, "message": "no perms"}, 403),
+                  _Response({})])
+    assert run(conn.set_group_ban("G1", "M1", 600)) == {"status": "ok"}
+    assert conn._http.calls[-1][2]["members"][0]["op"] == "add"
+
+
+def test_ban_skips_malformed_entries_in_the_shut_list():
+    conn = _conn([_Response({"members": ["junk", {"member_openid": "M1"}]}),
+                  _Response({})])
+    run(conn.set_group_ban("G1", "M1", 600))
+    assert conn._http.calls[-1][2]["members"][0]["op"] == "update"
+
+
+def test_get_group_list_filters_expired_ids_without_a_new_record():
+    conn = _conn()
+    conn._remember_group("G1")
+    conn._seen_groups["G1"] -= 31 * 24 * 3600
+    assert run(conn.get_group_list()) == []
+    assert "G1" not in conn._seen_groups
+
+
 def test_voice_message_uploads_file_type_three_then_sends_msg_type_seven():
     conn = _conn([_Response({"file_info": "FI-voice"}), _Response({"id": "m-voice"})])
     assert run(conn.send_group_record("G1", "https://cdn.example/a.wav")) == "m-voice"
