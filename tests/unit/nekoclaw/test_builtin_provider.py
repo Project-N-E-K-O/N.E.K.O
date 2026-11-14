@@ -779,3 +779,77 @@ async def test_browser_calls_that_overlap_are_reported_until_the_last_of_them_is
     assert (await asyncio.wait_for(first, 10.0)).success
     assert not rig.provider.is_running(BUILTIN_GROUP_BROWSER) and not rig.provider.is_running()
     assert rig.provider._running == {}
+
+
+class KillableBrowserTools(FakeBrowserTools):
+    """Browser tools whose kill takes until the test lets it finish."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.kill_began = threading.Event()
+        self.let_kill_finish = threading.Event()
+        self.kills = 0
+        self.kill_error: Exception | None = None
+
+    def kill(self) -> None:
+        self.kill_began.set()
+        self.let_kill_finish.wait(30)
+        self.kills += 1
+        if self.kill_error is not None:
+            raise self.kill_error
+
+
+async def test_a_browser_call_waits_for_a_kill_nobody_waited_for(rig: Rig) -> None:
+    tools = KillableBrowserTools()
+    rig.provider._browser = tools  # type: ignore[assignment]
+    try:
+        # Asked for and not waited for: the caller goes on at once.
+        rig.provider.kill_browser_unwaited()
+        assert rig.provider._killing is not None
+        # A task that comes after it must not have its browser be what the kill finds.
+        call = asyncio.ensure_future(rig.browse("browser_click", "commission-2", uid="1_1"))
+        assert await asyncio.to_thread(tools.kill_began.wait, 10.0)
+        await asyncio.sleep(0.05)
+        assert tools.calls == [] and not call.done()
+        # Waiting its turn, it counts as under way.
+        assert rig.provider.is_running(BUILTIN_GROUP_BROWSER)
+    finally:
+        tools.let_kill_finish.set()
+
+    assert (await asyncio.wait_for(call, 10.0)).success
+    assert tools.kills == 1 and len(tools.calls) == 1
+    assert rig.provider._killing is None
+
+
+async def test_a_kill_that_fails_does_not_keep_browser_calls_waiting_or_fail_them(rig: Rig) -> None:
+    tools = KillableBrowserTools()
+    tools.kill_error = OSError("access denied")
+    tools.let_kill_finish.set()
+    rig.provider._browser = tools  # type: ignore[assignment]
+
+    rig.provider.kill_browser_unwaited()
+    outcome = await asyncio.wait_for(rig.browse("browser_click", "commission-2", uid="1_1"), 10.0)
+
+    assert outcome.success and tools.kills == 1
+    assert rig.provider._killing is None
+
+
+async def test_a_call_stopped_while_it_waits_for_a_kill_leaves_the_kill_to_finish(rig: Rig) -> None:
+    tools = KillableBrowserTools()
+    rig.provider._browser = tools  # type: ignore[assignment]
+    try:
+        rig.provider.kill_browser_unwaited()
+        call = asyncio.ensure_future(rig.browse("browser_click", "commission-2", uid="1_1"))
+        assert await asyncio.to_thread(tools.kill_began.wait, 10.0)
+        await asyncio.sleep(0.02)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(call, 10.0)
+        # The call is gone, the kill is not.
+        assert not rig.provider.is_running() and rig.provider._killing is not None
+    finally:
+        tools.let_kill_finish.set()
+    killing = rig.provider._killing
+    if killing is not None:
+        await asyncio.wait_for(asyncio.shield(killing), 10.0)
+    assert tools.kills == 1 and tools.calls == []

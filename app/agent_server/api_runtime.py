@@ -619,10 +619,7 @@ async def startup():
 
 
 def _kill_browser_at_last() -> None:
-    """Kill the browser the tools started, when asking it to close has run out of time; never raises.
-
-    For a shutdown and for ``end_all``. Blocking: runs on a thread of its own.
-    """
+    """Kill the browser the tools started: the last resort of a shutdown; never raises. Runs on a thread of its own."""
     try:
         builtin_provider.kill_browser()
     except Exception as e:

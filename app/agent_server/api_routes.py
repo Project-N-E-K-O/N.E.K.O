@@ -56,7 +56,6 @@ from .api_runtime import (  # noqa: F401
     _agent_master_enabled,
     _check_agent_api_gate,
     _handle_voice_transcript_request,
-    _kill_browser_at_last,
     _on_session_event,
     _user_plugins_enabled,
     _voice_transcript_plugin_gate_reason,
@@ -988,9 +987,11 @@ async def admin_control(payload: Dict[str, Any]):
             logger.warning("[Agent] end_all: the browser did not close in time; killing it")
             # Not waited for: killing waits for the processes to be gone,
             # which takes seconds more, and the answer to this request does
-            # not depend on it. Which browser is killed is settled as the
-            # kill begins, so one that is started after this is not touched.
-            asyncio.get_running_loop().run_in_executor(None, _kill_browser_at_last)
+            # not depend on it. A browser call that comes meanwhile waits
+            # until the kill is over (the provider sees to it): the kill
+            # takes what it finds when its turn comes, and must not find a
+            # browser that a later task has started.
+            builtin_provider.kill_browser_unwaited()
         return {"success": True, "message": "all tasks terminated and cleared"}
     elif action == "enable_analyzer":
         Modules.analyzer_enabled = True

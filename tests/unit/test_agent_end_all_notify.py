@@ -308,3 +308,51 @@ def test_end_all_answers_without_waiting_for_the_browser_to_be_killed(srv, monke
         assert await asyncio.to_thread(killed.wait, 5.0)
 
     asyncio.run(_scenario())
+
+
+def test_a_task_started_after_end_all_does_not_reach_the_browser_before_the_kill_is_over(
+    srv, monkeypatch: pytest.MonkeyPatch
+):
+    import threading
+
+    import config.nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "BROWSER_CLOSE_AT_END_ALL_SECONDS", 0.05)
+    let_it_finish = threading.Event()
+    order: list[str] = []
+
+    def _slow_kill() -> None:
+        let_it_finish.wait(30)
+        order.append("killed")
+
+    async def _slow_close() -> None:
+        await asyncio.sleep(3600)
+
+    class _Tools:
+        async def call(self, tool_name, arguments, *, refused=None):
+            order.append("called")
+            return "done"
+
+        def window(self):
+            return None
+
+    monkeypatch.setattr(srv.builtin_provider, "close_browser", _slow_close)
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", _slow_kill)
+    monkeypatch.setattr(srv.builtin_provider, "_browser", _Tools())
+    monkeypatch.setattr(srv.builtin_provider, "_killing", None)
+
+    async def _scenario() -> None:
+        try:
+            result = await asyncio.wait_for(srv.admin_control({"action": "end_all"}), 5.0)
+            assert result["success"] is True
+            # The next task calls a browser tool straight away.
+            calling = asyncio.ensure_future(srv.builtin_provider._run_browser("browser_click", {"uid": "1_1"}))
+            await asyncio.sleep(0.1)
+            assert order == [] and not calling.done()
+        finally:
+            let_it_finish.set()
+        assert await asyncio.wait_for(calling, 10.0) == "done"
+        # The kill found the browser of before, not the one this call would have started.
+        assert order == ["killed", "called"]
+
+    asyncio.run(_scenario())

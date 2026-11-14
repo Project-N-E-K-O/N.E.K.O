@@ -92,6 +92,9 @@ class BuiltinToolProvider:
         # group overlap (the browser tools queue them), and one that ends or
         # is stopped must not hide the ones still at it.
         self._running: dict[str, int] = {}
+        # A kill of the browser that nobody waits for (``kill_browser_unwaited``)
+        # and that is not over yet; browser calls wait for it.
+        self._killing: asyncio.Future[None] | None = None
 
     # -- availability -----------------------------------------------------
 
@@ -232,6 +235,11 @@ class BuiltinToolProvider:
 
         self._begin(BUILTIN_GROUP_BROWSER)
         try:
+            # A kill that was asked for earlier and is not over yet takes what
+            # it finds when its turn on the worker threads comes: started
+            # before that, the browser of this call would be what it finds.
+            while self._killing is not None:
+                await asyncio.shield(self._killing)
             outcome = await self.browser().call(tool_name, arguments, refused=still_on)
         finally:
             self._end(BUILTIN_GROUP_BROWSER)
@@ -285,6 +293,31 @@ class BuiltinToolProvider:
         """
         if self._browser is not None:
             self._browser.kill()
+
+    def kill_browser_unwaited(self) -> None:
+        """Have the browser this process started killed on a worker thread, and return at once.
+
+        For a caller that cannot wait for it (the request that stops every
+        task is given up on by the page after a few seconds, and killing
+        waits for the processes to be gone). Browser calls made from now on
+        wait until the kill is over, so that it never takes a browser that
+        was started after it was asked for.
+        """
+
+        def kill() -> None:
+            try:
+                self.kill_browser()
+            except Exception:  # noqa: BLE001 - nobody waits for it: said in the log
+                logger.warning("killing the browser failed", exc_info=True)
+
+        killing = asyncio.get_running_loop().run_in_executor(None, kill)
+        self._killing = killing
+
+        def over(_done: "asyncio.Future[None]") -> None:
+            if self._killing is killing:
+                self._killing = None
+
+        killing.add_done_callback(over)
 
     def browser_unclosed(self) -> bool:
         """Whether a browser is still held after ``close_browser``: closing it failed, and it is kept to be closed later."""
