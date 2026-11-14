@@ -2873,25 +2873,32 @@ async def test_cancelled_budget_fitting_gives_both_image_queues_back():
 # ---------------------------------------------------------------------------
 
 
-def _guide_text() -> str:
-    from pathlib import Path
-
-    guide = (
-        Path(__file__).resolve().parents[2]
-        / "docs" / "zh-CN" / "plugins" / "push-message.md"
-    )
-    return guide.read_text(encoding="utf-8")
-
-
-_GUIDE_LOCALES = ("en", "zh-CN", "ja")
-
-
-def _locale_guide_text(locale: str) -> str:
+def _guide_text(locale: str = "zh-CN") -> str:
     from pathlib import Path
 
     docs = Path(__file__).resolve().parents[2] / "docs"
     base = docs if locale == "en" else docs / locale
     return (base / "plugins" / "push-message.md").read_text(encoding="utf-8")
+
+
+_GUIDE_LOCALES = ("en", "zh-CN", "ja")
+
+# Per-locale anchors for the figures that only appear inside prose. Each is
+# formatted with the enforcing constants, so the number cannot drift in one
+# translation while the others (and the code) move on.
+_PER_PUSH_IMAGE_BUDGET_ANCHORS = {
+    "en": (
+        "At most {count} images totaling {mib} MiB are injected into the model",
+        "The {count} images / {mib} MiB figure",
+    ),
+    "zh-CN": ("单条消息最多向模型注入 {count} 张、合计 {mib} MiB", "{count} 张 / {mib} MiB"),
+    "ja": ("最大 {count} 枚・合計 {mib} MiB", "{count} 枚 / {mib} MiB"),
+}
+_HEADROOM_ANCHORS = {
+    "en": "{n}-byte",
+    "zh-CN": "{n} 字节",
+    "ja": "{n} バイト",
+}
 
 
 @pytest.mark.parametrize("locale", _GUIDE_LOCALES)
@@ -2911,9 +2918,20 @@ def test_every_locale_of_the_guide_prints_the_same_numbers(locale: str) -> None:
         MAX_SOURCE_IMAGE_PIXELS,
         MAX_UPLOADED_IMAGE_BYTES,
     )
+    from app.main_server import character_runtime
+    from plugin.core.context import _HOST_ENVELOPE_HEADROOM_BYTES
     from plugin.settings import MESSAGE_PLANE_PAYLOAD_MAX_BYTES
 
-    text = _locale_guide_text(locale)
+    text = _guide_text(locale)
+
+    # Per-push model image budget (prose, so anchored per locale).
+    count = character_runtime._PLUGIN_IMAGE_MAX_COUNT
+    mib = character_runtime._PLUGIN_IMAGE_TOTAL_MAX_BYTES // (1024 * 1024)
+    for anchor in _PER_PUSH_IMAGE_BUDGET_ANCHORS[locale]:
+        assert anchor.format(count=count, mib=mib) in text
+    # The local payload_too_large gate holds back the host headroom; the
+    # guide prints that byte count, so tie it to the constant.
+    assert _HEADROOM_ANCHORS[locale].format(n=_HOST_ENVELOPE_HEADROOM_BYTES) in text
 
     assert (
         f"`MESSAGE_PLANE_PAYLOAD_MAX_BYTES` = {MESSAGE_PLANE_PAYLOAD_MAX_BYTES}"

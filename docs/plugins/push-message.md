@@ -195,15 +195,23 @@ By default N.E.K.O only plays audio from known-safe domains such as `music.163.c
 Push a `ui_action: media_allowlist_add`, then start playback:
 
 ```python
+from urllib.parse import urlparse
+
+MUSIC_HOST = "music.my-cdn.com"
+
 @plugin_entry(id="play_external")
 async def play_external(self, url: str, **_):
-    self.push_message(
+    # Allowlist your own fixed source, never the caller-supplied url: the url
+    # may be chosen by an LLM, and allowlisting it would bypass the allowlist.
+    if urlparse(url).hostname != MUSIC_HOST:
+        return Err(SdkError("unsupported music source"))
+    result = self.push_message(
         ai_behavior="blind",
-        # Allowlist your own fixed source, never the caller-supplied url: an
-        # LLM-chosen url here would bypass the allowlist entirely. Validate
-        # url against that source before playing it.
-        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": ["music.my-cdn.com"]}],
+        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": [MUSIC_HOST]}],
     )
+    if not result["submitted"]:
+        # Without the allowlist entry the frontend would block playback anyway.
+        return Err(SdkError(f"allowlist push failed: {result.get('reason')}"))
     self.push_message(
         visibility=["chat"],
         ai_behavior="blind",
@@ -214,31 +222,9 @@ async def play_external(self, url: str, **_):
 
 The old SDK helper `self.register_music_domains(...)` has been removed.
 
-### Plugin page (JavaScript)
+### Plugin pages cannot reach `window.MusicPluginAPI`
 
-Pages served via `register_static_ui` can use the global `window.MusicPluginAPI`:
-
-| Method | Arguments | Description |
-|------|------|------|
-| `getAllowlist()` | none | Returns all currently allowed domains/IPs |
-| `addAllowlist(input)` | `string \| Array<string>` | Adds domains. Extracts hosts from URLs and deduplicates |
-
-A plugin page may be embedded in an `<iframe>` with unpredictable load timing. `music-ui-ready` is dispatched **once** on the host page's `window` (the iframe's `window.parent`) and is not replayed, so check for the API first and only wait for the event if it is not there yet:
-
-```javascript
-const domains = ['my-music-cdn.com', 'https://safe-storage.org/stream/'];
-const getMusicApi = () => window.MusicPluginAPI || (window.parent && window.parent.MusicPluginAPI);
-
-const api = getMusicApi();
-if (api) {
-    api.addAllowlist(domains);
-} else {
-    window.parent.addEventListener('music-ui-ready', () => {
-        const readyApi = getMusicApi();
-        if (readyApi) readyApi.addAllowlist(domains);
-    }, { once: true });
-}
-```
+`window.MusicPluginAPI` (`getAllowlist()` / `addAllowlist()`) and the `music-ui-ready` event exist only on the main pages that load `music_ui.js` (`index.html` / `chat.html`). Pages served via `register_static_ui` are opened in an `<iframe>` inside the plugin manager, which runs on a different port (origin) and does not load `music_ui.js`, so neither `window` nor `window.parent` has the API there. Allowlist domains from the backend with `media_allowlist_add` as shown above.
 
 ## `finish()` delivery modes
 

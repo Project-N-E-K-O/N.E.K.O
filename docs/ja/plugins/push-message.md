@@ -195,14 +195,23 @@ N.E.K.O は既定で `music.163.com` などの既知の安全なドメインか�
 `ui_action: media_allowlist_add` を push してから再生を開始します：
 
 ```python
+from urllib.parse import urlparse
+
+MUSIC_HOST = "music.my-cdn.com"
+
 @plugin_entry(id="play_external")
 async def play_external(self, url: str, **_):
-    self.push_message(
+    # 許可リストには自分の固定ソースだけを入れ、呼び出し側が渡した url は入れないこと。
+    # url は LLM が選んだものかもしれず、そのまま入れると許可リスト自体を迂回できてしまう。
+    if urlparse(url).hostname != MUSIC_HOST:
+        return Err(SdkError("unsupported music source"))
+    result = self.push_message(
         ai_behavior="blind",
-        # 許可リストには自分の固定ソースだけを入れ、呼び出し側が渡した url は入れないこと。
-        # url は LLM が選んだものかもしれず、そのまま入れると許可リスト自体を迂回できてしまう。再生前に url がそのソースか検証する。
-        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": ["music.my-cdn.com"]}],
+        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": [MUSIC_HOST]}],
     )
+    if not result["submitted"]:
+        # 許可リストに入らなければ、フロントエンドは結局再生を止める
+        return Err(SdkError(f"allowlist push failed: {result.get('reason')}"))
     self.push_message(
         visibility=["chat"],
         ai_behavior="blind",
@@ -213,31 +222,9 @@ async def play_external(self, url: str, **_):
 
 旧 SDK helper の `self.register_music_domains(...)` は削除されました。
 
-### プラグインページ（JavaScript）
+### プラグインページからは `window.MusicPluginAPI` を使えません
 
-`register_static_ui` で提供するページでは、グローバルオブジェクト `window.MusicPluginAPI` を使えます：
-
-| メソッド | 引数 | 説明 |
-|------|------|------|
-| `getAllowlist()` | なし | 現在許可されているドメイン/IP の一覧を取得 |
-| `addAllowlist(input)` | `string \| Array<string>` | ドメインを追加。URL からホストを抽出し、重複を除外 |
-
-プラグインページは `<iframe>` で埋め込まれ読み込みタイミングが不定なことがあります。`music-ui-ready` はホストページの `window`（iframe から見た `window.parent`）で**一度だけ**発火し、再送されません。そのため、まず API がすでにあるか確認し、なければイベントを待ってください：
-
-```javascript
-const domains = ['my-music-cdn.com', 'https://safe-storage.org/stream/'];
-const getMusicApi = () => window.MusicPluginAPI || (window.parent && window.parent.MusicPluginAPI);
-
-const api = getMusicApi();
-if (api) {
-    api.addAllowlist(domains);
-} else {
-    window.parent.addEventListener('music-ui-ready', () => {
-        const readyApi = getMusicApi();
-        if (readyApi) readyApi.addAllowlist(domains);
-    }, { once: true });
-}
-```
+`window.MusicPluginAPI`（`getAllowlist()` / `addAllowlist()`）と `music-ui-ready` イベントは、`music_ui.js` を読み込むメインページ（`index.html` / `chat.html`）にしか存在しません。`register_static_ui` で提供するページはプラグインマネージャー内の `<iframe>` で開かれます。プラグインマネージャーは別ポート（別オリジン）で動き、`music_ui.js` も読み込まないため、ページの `window` にも `window.parent` にもこの API はありません。上の節のとおり、バックエンドから `media_allowlist_add` を push して許可リストに追加してください。
 
 ## `finish()` の配信モード
 

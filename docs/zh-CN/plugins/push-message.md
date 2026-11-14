@@ -195,14 +195,23 @@ N.E.K.O 默认只允许来自 `music.163.com` 等已知安全域名的音频播�
 推一条 `ui_action: media_allowlist_add`，再让前端开播：
 
 ```python
+from urllib.parse import urlparse
+
+MUSIC_HOST = "music.my-cdn.com"
+
 @plugin_entry(id="play_external")
 async def play_external(self, url: str, **_):
-    self.push_message(
+    # 白名单里只放你自己固定的音源，不要直接放调用方传进来的 url：
+    # url 可能是 LLM 选的，原样加进去等于绕过了白名单本身。
+    if urlparse(url).hostname != MUSIC_HOST:
+        return Err(SdkError("unsupported music source"))
+    result = self.push_message(
         ai_behavior="blind",
-        # 白名单里只放你自己固定的音源，不要直接放调用方传进来的 url：
-        # url 可能是 LLM 选的，原样加进去等于绕过了白名单本身。播放前先校验 url 属于该音源。
-        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": ["music.my-cdn.com"]}],
+        parts=[{"type": "ui_action", "action": "media_allowlist_add", "domains": [MUSIC_HOST]}],
     )
+    if not result["submitted"]:
+        # 白名单没加上，前端照样会拦下播放
+        return Err(SdkError(f"allowlist push failed: {result.get('reason')}"))
     self.push_message(
         visibility=["chat"],
         ai_behavior="blind",
@@ -213,31 +222,9 @@ async def play_external(self, url: str, **_):
 
 旧 SDK helper `self.register_music_domains(...)` 已删除。
 
-### 插件页面（JavaScript）
+### 插件页面拿不到 `window.MusicPluginAPI`
 
-通过 `register_static_ui` 提供的页面可以使用全局对象 `window.MusicPluginAPI`：
-
-| 方法 | 参数 | 说明 |
-|------|------|------|
-| `getAllowlist()` | 无 | 获取当前所有合法的域名/IP 列表 |
-| `addAllowlist(input)` | `string \| Array<string>` | 添加新域名。支持 URL 自动提取，自动去重 |
-
-插件页面可能通过 `<iframe>` 嵌入且加载时机不确定。`music-ui-ready` 只在宿主页面的 `window`（也就是 iframe 的 `window.parent`）上派发**一次**，不会重放，所以先检查 API 是否已经就绪，没有才去等这个事件：
-
-```javascript
-const domains = ['my-music-cdn.com', 'https://safe-storage.org/stream/'];
-const getMusicApi = () => window.MusicPluginAPI || (window.parent && window.parent.MusicPluginAPI);
-
-const api = getMusicApi();
-if (api) {
-    api.addAllowlist(domains);
-} else {
-    window.parent.addEventListener('music-ui-ready', () => {
-        const readyApi = getMusicApi();
-        if (readyApi) readyApi.addAllowlist(domains);
-    }, { once: true });
-}
-```
+`window.MusicPluginAPI`（`getAllowlist()` / `addAllowlist()`）和 `music-ui-ready` 事件只存在于加载了 `music_ui.js` 的主页面（`index.html` / `chat.html`）。通过 `register_static_ui` 提供的页面是在插件管理器里用 `<iframe>` 打开的，插件管理器跑在另一个端口（不同源），也不加载 `music_ui.js`，所以页面的 `window` 和 `window.parent` 上都没有这个 API。请按上一节从后端推 `media_allowlist_add` 加白名单。
 
 ## `finish()` 的投递模式
 
