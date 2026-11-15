@@ -53,7 +53,7 @@ import os
 import re
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -411,8 +411,8 @@ _STANDING_PARTS_MAX = 500
 _STANDING_CHARACTERS_MAX = 200_000_000
 
 
-def _standing_marks(body: str) -> set[str] | None:
-    """Return the marks of every text that stands in an entry by itself: one part of it, or several in a row.
+def _standing_marks(body: str, marks: Iterable[str]) -> set[str] | None:
+    """Return which of ``marks`` are those of a text that stands in an entry by itself: one part of it, or several in a row.
 
     A part is what stands between blank lines, which is how
     ``_said_already`` tells that a text is there. For telling which of an
@@ -424,6 +424,9 @@ def _standing_marks(body: str) -> set[str] | None:
     None when the text is too long to look through while every other
     change to the space waits.
     """
+    wanted = set(marks)
+    if not wanted:
+        return set()
     lines = body.split("\n")
     firsts = [
         number for number, line in enumerate(lines) if line.strip() and (number == 0 or not lines[number - 1].strip())
@@ -435,8 +438,10 @@ def _standing_marks(body: str) -> set[str] | None:
         for number, line in enumerate(lines)
         if line.strip() and (number + 1 == len(lines) or not lines[number + 1].strip())
     }
-    marks: set[str] = set()
+    found: set[str] = set()
     for first in firsts:
+        if len(found) == len(wanted):
+            break
         # One pass for all that begins here, each as ``_digest`` would mark
         # it: without the white space before it and after it.
         running = hashlib.sha256()
@@ -448,8 +453,10 @@ def _standing_marks(body: str) -> set[str] | None:
             running.update((held + ("\n" if number > first else "") + said).encode("utf-8"))
             held = line[len(said) :]
             if number in lasts:
-                marks.add(running.copy().hexdigest()[:12])
-    return marks
+                mark = running.copy().hexdigest()[:12]
+                if mark in wanted:
+                    found.add(mark)
+    return found
 
 
 def _said_already(document: _Document, content: str) -> bool:
@@ -1200,8 +1207,8 @@ class TaskAgentSpace:
                     # In a text too long to look through they all stay: one
                     # of a text that is gone does no harm, as a text must
                     # stand in the entry as well to count as said.
-                    standing = _standing_marks(content)
                     marks = _marks_of(document)
+                    standing = _standing_marks(content, marks)
                     if standing is not None:
                         marks = [mark for mark in marks if mark in standing]
                     document.body = content

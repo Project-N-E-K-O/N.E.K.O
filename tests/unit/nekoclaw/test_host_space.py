@@ -3147,9 +3147,41 @@ def test_the_marks_of_what_stands_in_a_text_are_those_of_its_parts_one_or_severa
     expected = {_digest("\n".join(lines[first : last + 1])) for first in firsts for last in lasts if last >= first}
 
     assert len(firsts) == 5 and len(expected) == 15
-    assert _standing_marks(body) == expected
+    # Those asked for that stand in it, and no others.
+    gone = _digest("still first")
+    assert _standing_marks(body, [*expected, gone]) == expected
     assert _digest("First.  \nstill first\n \t\n## 2026-11-15") in expected
-    assert _standing_marks("") == set() and _standing_marks(" \n\n\t\n") == set()
+    last = _digest("Last")
+    assert _standing_marks(body, [last, gone]) == {last}
+    assert _standing_marks(body, []) == set()
+    assert _standing_marks("", [last]) == set() and _standing_marks(" \n\n\t\n", [last]) == set()
+
+
+def test_a_text_is_looked_through_no_longer_once_all_its_marks_were_found(monkeypatch):
+    import hashlib
+
+    from nekoclaw.host.space import _digest, _standing_marks
+
+    body = "one\n\ntwo\n\nthree\n\nfour"
+    begun: list[int] = []
+    sha256 = hashlib.sha256
+
+    def counted(*args, **kwargs):
+        begun.append(1)
+        return sha256(*args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "sha256", counted)
+    wanted = [sha256(b"one").hexdigest()[:12], sha256(b"two\n\nthree").hexdigest()[:12]]
+
+    assert _standing_marks(body, wanted) == set(wanted)
+    # Both found by what begins at the first two parts: the other two are not begun.
+    assert len(begun) == 2
+    begun.clear()
+    # Nothing to look for: nothing is looked through, however long the text.
+    assert _standing_marks(body * 1000, []) == set()
+    assert begun == []
+    monkeypatch.undo()
+    assert _digest("one") == wanted[0]
 
 
 async def test_a_note_that_still_stands_with_more_written_around_it_in_the_console_is_not_added_again(space, root, clock):
@@ -3209,17 +3241,20 @@ def test_a_text_with_too_many_parts_or_too_much_to_mark_is_not_looked_through(mo
     from nekoclaw.host import space as module
     from nekoclaw.host.space import _standing_marks
 
+    from nekoclaw.host.space import _digest
+
     body = "one\n\ntwo\n\nthree\n\nfour"
+    wanted = [_digest("three\n\nfour")]
     monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 4)
-    assert len(_standing_marks(body)) == 10
+    assert _standing_marks(body, wanted) == set(wanted)
     monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 3)
-    assert _standing_marks(body) is None
+    assert _standing_marks(body, wanted) is None
     monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 4)
     # Four parts, each marked with all that follows it.
     monkeypatch.setattr(module, "_STANDING_CHARACTERS_MAX", 4 * len(body))
-    assert len(_standing_marks(body)) == 10
+    assert _standing_marks(body, wanted) == set(wanted)
     monkeypatch.setattr(module, "_STANDING_CHARACTERS_MAX", 4 * len(body) - 1)
-    assert _standing_marks(body) is None
+    assert _standing_marks(body, wanted) is None
 
 
 async def test_the_marks_of_an_entry_all_stay_when_the_text_the_console_gives_is_too_long_to_look_through(
