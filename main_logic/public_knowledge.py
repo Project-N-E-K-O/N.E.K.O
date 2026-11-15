@@ -47,6 +47,7 @@ from config.prompts.prompts_knowledge import (
 )
 from config.prompts.prompts_sys import _loc, normalize_sys_prompt_locale
 from main_logic.tool_calling import ToolDefinition
+from config.permission_settings import ToolRisk
 from utils.logger_config import get_module_logger
 
 
@@ -264,6 +265,8 @@ def build_tool_definition(
     lang = normalize_sys_prompt_locale(language)
     return ToolDefinition(
         name=TOOL_NAME,
+        # An HTTP read of knowledge packages already stored in Memory Server.
+        risk=ToolRisk.READ,
         description=_loc(PUBLIC_KNOWLEDGE_TOOL_DESCRIPTION, lang),
         parameters={
             "type": "object",

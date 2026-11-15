@@ -1548,6 +1548,16 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             )
             self.register_llm_tool(
                 name=llm_name,
+                # An MCP server is a third party this repository does not own, and its
+                # tools can do anything the server implements. So the adapter declares
+                # every bridged tool `external` unless the operator pins a narrower
+                # class for that server in its config: guessing per tool from a
+                # description string would invent a label the author never reviewed,
+                # which is the thing this field exists to prevent.
+                risk=str(
+                    self._server_tool_risk(server_name)
+                    or "external"
+                ),
                 description=description or f"MCP tool '{tool_name}' from server '{server_name}'.",
                 parameters=parameters,
                 handler=self._build_chat_tool_handler(
@@ -1568,6 +1578,21 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             "tool_name": tool_name,
         }
         return True
+
+    def _server_tool_risk(self, server_name: str) -> str:
+        """The operator's pinned risk class for one MCP server, or "" if unpinned.
+
+        Read from the server config so a deployment can narrow the blanket default
+        (``external``) for a server it has actually inspected. Unset means the
+        default, never an inferred value.
+        """
+        try:
+            servers = self.ctx.config.get("servers") or {}
+            entry = servers.get(server_name) or {}
+            value = entry.get("tool_risk") if isinstance(entry, dict) else None
+        except Exception:
+            return ""
+        return str(value or "").strip().lower()
 
     async def _remote_unregister_llm_tool(self, llm_name: str) -> str:
         """Synchronously call main_server directly to unregister an LLM tool.

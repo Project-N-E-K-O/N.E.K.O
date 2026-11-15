@@ -26,6 +26,7 @@ import os
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
+from config.permission_settings import ToolRisk
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from config.prompts.prompts_sys import _loc
 from config.turn_context_settings import (
@@ -288,7 +289,13 @@ class ToolCallingMixin:
                 "required": [],
             },
             handler=self._handle_recall_memory_call,
+            # A lookup. It reads the character's own memory over HTTP and changes
+            # nothing, which is exactly what read means here. It does return private
+            # recollection to whoever is speaking, so the band that reaches it is the
+            # thing to watch, not the class -- see the STRANGER/read cell comment in
+            # config/permission_settings.py.
             metadata={"source": "builtin"},
+            risk=ToolRisk.READ,
         )
         self.tool_registry.register(recall_tool, replace=True)
         self._register_public_knowledge_tool()
@@ -336,7 +343,10 @@ class ToolCallingMixin:
                     "required": ["task"],
                 },
                 handler=self._handle_dispatch_task_call,
+                # Creates work in the task system that outlives this turn and can act
+                # further, so write rather than self: a call the speaker cannot undo.
                 metadata={"source": "builtin"},
+                risk=ToolRisk.WRITE,
             ),
             ToolDefinition(
                 name=QUERY_TOOL_NAME,
@@ -348,7 +358,9 @@ class ToolCallingMixin:
                     },
                 },
                 handler=self._handle_query_tasks_call,
+                # Status of work already dispatched. Reads only.
                 metadata={"source": "builtin"},
+                risk=ToolRisk.READ,
             ),
         )
         for definition in definitions:

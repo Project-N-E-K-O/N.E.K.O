@@ -33,7 +33,7 @@ def test_decorator_attaches_metadata():
     from plugin.sdk.plugin import llm_tool
     from plugin.sdk.plugin.llm_tool import LLM_TOOL_META_ATTR, LlmToolMeta
 
-    @llm_tool(
+    @llm_tool(risk="read", 
         name="get_weather",
         description="Get weather",
         parameters={"type": "object", "properties": {"city": {"type": "string"}}},
@@ -54,7 +54,7 @@ def test_decorator_defaults_to_method_name():
     from plugin.sdk.plugin import llm_tool
     from plugin.sdk.plugin.llm_tool import LLM_TOOL_META_ATTR
 
-    @llm_tool(description="d")
+    @llm_tool(risk="read", description="d")
     def my_tool(self):
         return None
 
@@ -66,12 +66,12 @@ def test_decorator_rejects_invalid_name():
     from plugin.sdk.plugin import llm_tool
 
     with pytest.raises(ValueError):
-        @llm_tool(name="has spaces")
+        @llm_tool(risk="read", name="has spaces")
         def f(self):
             pass
 
     with pytest.raises(ValueError):
-        @llm_tool(name="a" * 65)
+        @llm_tool(risk="read", name="a" * 65)
         def g(self):
             pass
 
@@ -80,7 +80,7 @@ def test_decorator_rejects_non_dict_parameters():
     from plugin.sdk.plugin import llm_tool
 
     with pytest.raises(TypeError):
-        @llm_tool(name="t", parameters=[1, 2, 3])  # type: ignore[arg-type]
+        @llm_tool(risk="read", name="t", parameters=[1, 2, 3])  # type: ignore[arg-type]
         def f(self):
             pass
 
@@ -89,7 +89,7 @@ def test_decorator_rejects_zero_timeout():
     from plugin.sdk.plugin import llm_tool
 
     with pytest.raises(ValueError):
-        @llm_tool(name="t", timeout=0)
+        @llm_tool(risk="read", name="t", timeout=0)
         def f(self):
             pass
 
@@ -97,7 +97,7 @@ def test_decorator_rejects_zero_timeout():
 def test_ipc_payload_shape():
     from plugin.sdk.plugin.llm_tool import LlmToolMeta
 
-    meta = LlmToolMeta(
+    meta = LlmToolMeta(risk="read", 
         name="tool_a",
         description="desc",
         parameters={"type": "object", "properties": {}},
@@ -110,6 +110,9 @@ def test_ipc_payload_shape():
         "plugin_id": "demo",
         "name": "tool_a",
         "description": "desc",
+        # The risk class rides the IPC payload now: without it the host would
+        # receive an unlabelled tool and refuse the registration.
+        "risk": "read",
         "parameters": {"type": "object", "properties": {}},
         "timeout_seconds": 20.0,
         "role": "Lanlan",
@@ -121,11 +124,11 @@ def test_collect_methods_finds_decorated_only():
     from plugin.sdk.plugin.llm_tool import collect_llm_tool_methods
 
     class P:
-        @llm_tool(name="a", description="da")
+        @llm_tool(risk="read", name="a", description="da")
         def a(self):
             return 1
 
-        @llm_tool(name="b", description="db")
+        @llm_tool(risk="read", name="b", description="db")
         def b(self):
             return 2
 
@@ -160,11 +163,11 @@ def test_base_auto_registers_decorated_methods():
 
     @neko_plugin
     class P(NekoPluginBase):
-        @llm_tool(name="alpha", description="A")
+        @llm_tool(risk="read", name="alpha", description="A")
         async def alpha(self, **_):
             return "a"
 
-        @llm_tool(name="beta", description="B", parameters={"type": "object", "properties": {"q": {"type": "string"}}})
+        @llm_tool(risk="read", name="beta", description="B", parameters={"type": "object", "properties": {"q": {"type": "string"}}})
         async def beta(self, **_):
             return "b"
 
@@ -210,7 +213,7 @@ def test_imperative_register_then_unregister():
     async def runtime_handler(**kwargs):
         return kwargs
 
-    ok = p.register_llm_tool(
+    ok = p.register_llm_tool(risk="write", 
         name="runtime",
         description="r",
         parameters={"type": "object", "properties": {}},
@@ -244,7 +247,7 @@ def test_imperative_register_rejects_duplicate():
 
     @neko_plugin
     class P(NekoPluginBase):
-        @llm_tool(name="dup", description="d")
+        @llm_tool(risk="read", name="dup", description="d")
         async def dup(self, **_):
             return None
 
@@ -252,7 +255,7 @@ def test_imperative_register_rejects_duplicate():
     p = P(ctx)
 
     with pytest.raises(EntryConflictError):
-        p.register_llm_tool(
+        p.register_llm_tool(risk="write", 
             name="dup",
             description="d",
             parameters={"type": "object", "properties": {}},

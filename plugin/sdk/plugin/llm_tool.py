@@ -87,6 +87,7 @@ class LlmToolMeta:
 
     name: str
     description: str
+    risk: str
     parameters: dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
     timeout_seconds: float = 30.0
     role: str | None = None
@@ -104,16 +105,27 @@ class LlmToolMeta:
             "name": self.name,
             "description": self.description,
             "parameters": dict(self.parameters),
+            "risk": self.risk,
             "timeout_seconds": float(self.timeout_seconds),
             "role": self.role,
             **({"reply_tail": True} if self.reply_tail else {}),
         }
 
 
+_RISK_VALUES = frozenset({"read", "self", "write", "external"})
+
+# Re-exported under this name for the SDK base class: the decorator and the
+# imperative register path must accept exactly the same set, and one list is the
+# only way to keep them equal. The host owns the meaning (config.permission_settings
+# .ToolRisk); a drift there is caught by ToolRegistry.register refusing the value.
+_LLM_TOOL_RISKS = _RISK_VALUES
+
+
 def llm_tool(
     *,
     name: str | None = None,
     description: str = "",
+    risk: str,
     parameters: dict[str, Any] | None = None,
     timeout: float = 30.0,
     role: str | None = None,
@@ -152,6 +164,13 @@ def llm_tool(
     name:
         The model-visible tool name. Defaults to the decorated method's
         ``__name__``. Must match ``[A-Za-z0-9_.\\-]{1,64}``.
+    risk:
+        Required, no default: ``read``, ``self``, ``write`` or ``external``. It says
+        what the tool does to the world, which is the input the host permission gate
+        needs (config/permission_settings.py). Required at decoration rather than at
+        registration, because the registration hop is fire-and-forget on an IPC queue
+        and a refusal there is swallowed by the consumer: the author would see a tool
+        that quietly never appeared instead of an error in their own file.
     description:
         Free-text description shown to the LLM. Be specific about what
         the tool does and what arguments it expects — the model uses
@@ -240,6 +259,13 @@ def llm_tool(
         if not isinstance(params, dict):
             raise TypeError(f"@llm_tool parameters must be a dict, got {type(params).__name__}")
 
+        # Fail at decoration time, in the plugin author's own process.
+        if not isinstance(risk, str) or risk.strip().lower() not in _RISK_VALUES:
+            raise ValueError(
+                f"@llm_tool on {func.__name__!r} must declare risk as one of "
+                f"{', '.join(sorted(_RISK_VALUES))}, got {risk!r}"
+            )
+
         timeout_seconds = float(timeout)
         if timeout_seconds <= 0:
             raise ValueError(f"@llm_tool timeout must be > 0, got {timeout_seconds}")
@@ -247,6 +273,7 @@ def llm_tool(
         meta = LlmToolMeta(
             name=resolved_name,
             description=description,
+            risk=risk.strip().lower(),
             parameters=params,
             timeout_seconds=timeout_seconds,
             role=role,

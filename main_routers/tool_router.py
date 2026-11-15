@@ -72,10 +72,12 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import asyncio
 import ipaddress
+
+from main_logic import tool_permissions
 from urllib.parse import urlparse
 
 import httpx
@@ -182,6 +184,13 @@ class ToolRegisterRequest(BaseModel):
     callback_url: str = Field(..., min_length=1)
     role: Optional[str] = None  # None = global
     source: str = "external"
+    # Required, no default, and a Literal rather than a str with a permissive
+    # validator: a misspelled "Read" must be a 422 at the wire instead of silently
+    # becoming some middle class, the same discipline config/memory_settings.py states
+    # for speaker_tier. This is also the breaking edge of the feature: anything already
+    # POSTing here without a risk field starts failing at registration rather than
+    # registering an unlabelled tool.
+    risk: Literal["read", "self", "write", "external"]
     # Bound values: huge timeouts block entire tool-call path and model turns;
     # synchronous tools longer than five minutes should be split into plugin tasks,
     # never hold main_server long-term.
@@ -512,6 +521,37 @@ class ReplyHookUnsubscribe(BaseModel):
     entry_id: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
 
 
+class PermissionResolveRequest(BaseModel):
+    request_id: str = Field(..., min_length=8, max_length=64)
+    approve: bool
+
+
+@router.post("/permission/pending")
+async def list_pending_permissions() -> Dict[str, Any]:
+    """What the permission gate is waiting on, oldest first.
+
+    The approver surface for a CONFIRM. Nothing in the host can push a question to the
+    owner today -- there is no owner roster, and the nearest park-and-resume code lives
+    behind a forbidden layering edge -- so this is polled, and
+    ``PERMISSION_APPROVER_ENABLED`` stays off until something can carry the request.
+    While it is off a CONFIRM degrades to a deny and the audit line names the reason.
+    """
+    rows = tool_permissions.approvals.snapshot()
+    rows.sort(key=lambda r: -r["age_seconds"])
+    return {"ok": True, "pending": rows, "count": len(rows)}
+
+
+@router.post("/permission/resolve")
+async def resolve_permission_request(req: PermissionResolveRequest) -> Dict[str, Any]:
+    """Answer one parked CONFIRM. An unknown or already-answered id returns ok=False.
+
+    Answering is the only path to an allow. Silence is not: the waiter times out and
+    denies, so a forgotten request cannot release a tool by accident.
+    """
+    resolved = tool_permissions.approvals.resolve(req.request_id, req.approve)
+    return {"ok": resolved, "request_id": req.request_id, "approve": req.approve}
+
+
 @router.post("/reply-tail/subscribe")
 async def subscribe_reply_completed(body: ReplyHookSubscription) -> dict:
     async def dispatch(payload: dict) -> None:
@@ -724,6 +764,7 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
         name=req.name,
         description=req.description,
         parameters=req.parameters,
+        risk=req.risk,
         handler=None,  # remote — dispatched via _remote_dispatch
         metadata={
             "source": req.source,

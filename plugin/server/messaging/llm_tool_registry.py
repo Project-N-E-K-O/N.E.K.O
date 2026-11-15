@@ -196,6 +196,7 @@ async def register_remote_tool(
     plugin_id: str,
     name: str,
     description: str,
+    risk: str,
     parameters: Dict[str, Any],
     timeout_seconds: float,
     role: Optional[str] = None,
@@ -218,6 +219,7 @@ async def register_remote_tool(
     payload = {
         "name": name,
         "description": description,
+        "risk": risk,
         "parameters": parameters,
         "callback_url": callback_url,
         "role": role,
