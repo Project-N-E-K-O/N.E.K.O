@@ -319,12 +319,18 @@ def notify_install_committed(result: dict) -> dict:
             )
         # Best-effort and off the event loop: the binding write takes the
         # storage lock and fsyncs, which must never stall async install paths
-        # or in-flight model streams.
+        # or in-flight model streams. A malformed entry must not fail the
+        # committed install either.
+        try:
+            plugin_id = str(installed["target_plugin_id"])
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Host model auto-bind skipped: install entry lacks target_plugin_id")
+            continue
         threading.Thread(
             target=_auto_bind_host_models_safe,
-            args=(str(installed["target_plugin_id"]),),
+            args=(plugin_id,),
             daemon=True,
-            name=f"host-model-autobind-{installed.get('target_plugin_id')}",
+            name=f"host-model-autobind-{plugin_id}",
         ).start()
     return result
 
