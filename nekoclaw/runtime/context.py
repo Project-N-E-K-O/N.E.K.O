@@ -36,6 +36,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Literal
 
 from config.prompts import prompts_nekoclaw as texts
@@ -283,40 +284,58 @@ def cap_result_text(text: str, cap: int, spill: SpillStore, hint: str) -> str | 
     return f"{kept}\n\n{notice}"
 
 
-# The least a block after the first is left of the cap, when the blocks in
-# front of it have used the cap up: a line or two said after a long text (a
-# note that a picture could not be passed on) is not cut for the text's sake.
-_LATER_BLOCK_MIN_TOKENS = 256
+# What is kept back of the cap for the text after a result's first block,
+# as far as that text needs it: a line or two said after a long text (a note
+# that a picture could not be passed on) is not cut for the text's sake.
+_REST_RESERVE_TOKENS = 256
 
 
-def cap_result_blocks(blocks: Sequence[str], cap: int, spill: SpillStore, hint: str) -> list[str] | None:
-    """Return the capped form of an oversized result of several text blocks, or ``None`` if together they fit.
+def first_block_and_rest(content: Sequence[TextContent | ImageContent]) -> tuple[str, str] | None:
+    """Return a result's first block of text and the rest of its text as one; ``None`` if it has one block or none.
 
-    The blocks share the cap from the front: one that fits in what the
-    blocks before it left stays whole, and one that does not is cut down to
-    that and saved whole, like a result of one block. Cut as one text, a
-    short block in front would lose its end to a long one behind it: the
-    host's gateway hands a group of tools over in front of the page its
-    first call opened, and the group has to arrive whole.
+    A result can come as several blocks of text: the host's gateway hands a
+    group of tools over in front of what the call that started the group
+    returned. Capped or pruned as one text, such a result would lose the
+    end of the group to a long page behind it. So the first block is told
+    apart from what follows it, and only the first: however many blocks
+    there are, a result is two texts at most, which keeps what either limit
+    lets through bounded.
+    """
+    blocks = [block.text for block in content if isinstance(block, TextContent)]
+    if len(blocks) < 2:
+        return None
+    return blocks[0], "".join(blocks[1:])
+
+
+def cap_result_blocks(
+    first: str, rest: str, cap: int, spill: SpillStore, hint: str, *, first_whole_up_to: int = 0
+) -> tuple[str, str] | None:
+    """Return the capped form of an oversized result of a first block and the rest, or ``None`` if together they fit.
+
+    The two share the cap. The first block gets all of it but what the
+    rest needs of ``_REST_RESERVE_TOKENS``, and the rest gets what the first
+    block left: a first block that fits stays whole, and whichever does not
+    fit is cut down and saved whole, like a result of one block.
+
+    ``first_whole_up_to`` is a size up to which the first block is never
+    cut, whatever the cap: a block the runtime would never prune must not
+    arrive cut either (a model with a window so small that a quarter of it
+    is less than that gets a result over its cap, by this much at the most).
 
     Blocking: tokenizes and writes the spill files.
     """
-    if _fits("".join(blocks), cap):
+    if _fits(first + rest, cap):
         return None
-    left = cap
-    out: list[str] = []
-    for index, block in enumerate(blocks):
-        room = left if index == 0 else max(left, _LATER_BLOCK_MIN_TOKENS)
-        # (The store numbers what it saves, so two blocks of one result never share a file.)
-        kept = cap_result_text(block, room, spill, hint)
-        if kept is None:
-            kept = block
-        elif block.endswith("\n"):
-            # It still ends where the block after it begins.
-            kept += "\n"
-        out.append(kept)
-        left -= _count(kept)
-    return out
+    reserve = min(_count(rest), _REST_RESERVE_TOKENS)
+    # (The store numbers what it saves, so the two never share a file.)
+    kept_first = cap_result_text(first, max(cap - reserve, first_whole_up_to), spill, hint)
+    if kept_first is None:
+        kept_first = first
+    elif first.endswith("\n"):
+        # It still ends where the rest begins.
+        kept_first += "\n"
+    kept_rest = cap_result_text(rest, max(cap - _count(kept_first), reserve), spill, hint)
+    return kept_first, rest if kept_rest is None else kept_rest
 
 
 # ---------------------------------------------------------------------------
@@ -334,24 +353,26 @@ def prune_text(text: str, policy: ContextPolicy) -> str | None:
 
 
 def prune_result(message: ToolResultMessage, policy: ContextPolicy) -> ToolResultMessage | None:
-    """Cut the large text blocks of a tool result to head and tail; ``None`` when none is large.
+    """Cut a large tool result to head and tail; ``None`` when it is small enough.
 
-    Block by block. A result can come as several blocks of text (the
-    host's gateway hands a group of tools over in front of what the call
-    that started the group returned), and a block that is small enough
-    stays whole however long the block next to it: cut as one text, such a
-    result would lose the tool definitions in its middle.
+    A result of several blocks of text is cut as two texts, its first block
+    and the rest (``first_block_and_rest``): a first block that is small
+    enough stays whole however long what follows it. Cut as one text, a
+    group of tools handed over in front of a long page would lose the tool
+    definitions in its middle.
     """
-    changed = False
-    content: list[TextContent | ImageContent] = []
-    for block in message.content:
-        if isinstance(block, TextContent):
-            pruned = prune_text(block.text, policy)
-            if pruned is not None:
-                block = block.model_copy(update={"text": pruned})
-                changed = True
-        content.append(block)
-    return message.model_copy(update={"content": content}) if changed else None
+    images = [block for block in message.content if isinstance(block, ImageContent)]
+    parts = first_block_and_rest(message.content)
+    if parts is None:
+        pruned = prune_text(message.text, policy)
+        if pruned is None:
+            return None
+        return message.model_copy(update={"content": [TextContent(text=pruned), *images]})
+    cut = [prune_text(part, policy) for part in parts]
+    if cut == [None, None]:
+        return None
+    kept = [TextContent(text=part if pruned is None else pruned) for part, pruned in zip(parts, cut, strict=True)]
+    return message.model_copy(update={"content": [*kept, *images]})
 
 
 def prune_rows(rows: Sequence[Row], policy: ContextPolicy, *, include_latest: bool) -> list[Row] | None:
@@ -552,27 +573,29 @@ class ContextManager:
     ) -> AgentToolResult:
         if tool_name in _UNCAPPED_TOOLS:
             return result
-        blocks = [block.text for block in result.content if isinstance(block, TextContent)]
-        if len(blocks) > 1:
-            # Capped block by block, each staying where it was.
+        images = [block for block in result.content if isinstance(block, ImageContent)]
+        parts = first_block_and_rest(result.content)
+        if parts is not None:
+            # Its first block and the rest, each capped by itself.
             fitted = await asyncio.to_thread(
-                cap_result_blocks, blocks, self.policy.result_cap, self.spill, f"{tool_name}-{call_id}"
+                partial(
+                    cap_result_blocks,
+                    *parts,
+                    self.policy.result_cap,
+                    self.spill,
+                    f"{tool_name}-{call_id}",
+                    first_whole_up_to=self.policy.prune_threshold_tokens,
+                )
             )
             if fitted is None:
                 return result
-            texts_left = iter(fitted)
-            content = [
-                block.model_copy(update={"text": next(texts_left)}) if isinstance(block, TextContent) else block
-                for block in result.content
-            ]
-            return result.model_copy(update={"content": content})
+            return result.model_copy(update={"content": [*(TextContent(text=part) for part in fitted), *images]})
         text = result.text
         capped = await asyncio.to_thread(
             cap_result_text, text, self.policy.result_cap, self.spill, f"{tool_name}-{call_id}"
         )
         if capped is None:
             return result
-        images = [block for block in result.content if isinstance(block, ImageContent)]
         return result.model_copy(update={"content": [TextContent(text=capped), *images]})
 
     # -- layers 2 and 3 -------------------------------------------------------

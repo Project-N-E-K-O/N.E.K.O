@@ -219,12 +219,63 @@ async def test_every_block_too_long_for_what_is_left_is_cut_and_saved_under_a_na
     first, second = capped.content
     assert first.text.startswith("ONE-START") and second.text.startswith("TWO-START")
     assert texts.SPILL_GAP in first.text and texts.SPILL_GAP in second.text
-    # The first took the cap; the second is left the least a later block is.
-    assert count_tokens(first.text) <= cap + 64
+    # The first took the cap but what was kept back for the second, and the two together stay within it.
     assert count_tokens(second.text) <= 256 + 64
+    assert count_tokens(first.text) + count_tokens(second.text) <= cap + 64
     saved = sorted(path.name for path in (tmp_path / "outputs").iterdir())
     assert len(saved) == 2 and saved[0] != saved[1]
     assert {path.read_text(encoding="utf-8") for path in (tmp_path / "outputs").iterdir()} == {one, two}
+
+
+async def test_a_result_of_many_short_blocks_is_two_texts_within_the_cap(tmp_path: Path) -> None:
+    manager = _blocks_manager(tmp_path, 12_000)
+    cap = manager.policy.result_cap
+    # Forty blocks, none of them long, four times the cap together.
+    blocks = [TextContent(text=f"BLOCK{n} " + _words(100, f"w{n}x") + "\n") for n in range(40)]
+    result = AgentToolResult(content=blocks)
+    assert max(count_tokens(block.text) for block in blocks) < 512 and count_tokens(result.text) > 4 * cap
+
+    capped = await manager.cap_tool_result("capability_call", "c1", result)
+
+    # However many blocks there were: the first, and all the rest as one
+    # text, cut to what the first left of the cap.
+    first, rest = capped.content
+    assert first == blocks[0]
+    assert rest.text.startswith("BLOCK1 ") and texts.SPILL_GAP in rest.text and "BLOCK39 " in rest.text
+    assert count_tokens(capped.text) <= cap + 64
+    (saved,) = (tmp_path / "outputs").iterdir()
+    assert saved.read_text(encoding="utf-8") == "".join(block.text for block in blocks[1:])
+
+
+async def test_a_first_block_small_enough_never_to_be_pruned_arrives_whole_whatever_the_cap(tmp_path: Path) -> None:
+    # The smallest window there can be: the cap on one result is a quarter of it.
+    manager = _blocks_manager(tmp_path, 4_096)
+    cap, never_pruned = manager.policy.result_cap, manager.policy.prune_threshold_tokens
+    assert (cap, never_pruned) == (1_024, 2_048)
+    group = "GROUP-START " + _words(800, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(3_000) + " PAGE-END"
+    assert cap < count_tokens(group) < never_pruned
+
+    capped = await manager.cap_tool_result(
+        "capability_call", "c1", AgentToolResult(content=[TextContent(text=group), TextContent(text=page)])
+    )
+
+    # Over the cap, and whole: what was handed over in front must not arrive cut.
+    first, rest = capped.content
+    assert first == TextContent(text=group)
+    assert rest.text.startswith("PAGE-START") and texts.SPILL_GAP in rest.text
+    assert count_tokens(rest.text) <= 256 + 64
+
+    # A first block over that size is cut down to it, like any text.
+    huge = "HUGE-START " + _words(3_000, "h") + " HUGE-END\n"
+    capped = await manager.cap_tool_result(
+        "capability_call", "c2", AgentToolResult(content=[TextContent(text=huge), TextContent(text="a note")])
+    )
+
+    first, rest = capped.content
+    assert first.text.startswith("HUGE-START") and texts.SPILL_GAP in first.text
+    assert count_tokens(first.text) <= never_pruned + 64
+    assert rest == TextContent(text="a note")
 
 
 # ---------------------------------------------------------------------------
@@ -310,8 +361,26 @@ def test_pruning_cuts_every_large_block_and_leaves_a_result_of_small_ones_alone(
     for block in both[2].message.content:
         assert block.text.startswith("START") and block.text.endswith("END")
         assert texts.PRUNED_MIDDLE_MARKER in block.text
-    # No block is large by itself: nothing to cut, whatever they come to together.
+    # The first block is small, and so is what follows it taken together: nothing to cut.
     assert untouched is None
+
+
+def test_pruning_takes_all_that_follows_the_first_block_as_one_text() -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    # Twelve blocks, none of them large by itself.
+    blocks = [TextContent(text=f"BLOCK{n} " + _words(400, f"w{n}x") + "\n") for n in range(12)]
+    assert max(count_tokens(block.text) for block in blocks) < policy.prune_threshold_tokens
+
+    pruned = prune_rows(_old_result(*blocks), policy, include_latest=False)
+
+    # Left block by block, such a result would never be cut at all. It is
+    # two texts: the first block whole, the rest cut as one.
+    assert pruned is not None
+    first, rest = pruned[2].message.content
+    assert first == blocks[0]
+    assert rest.text.startswith("BLOCK1 ") and texts.PRUNED_MIDDLE_MARKER in rest.text
+    assert count_tokens(rest.text) <= policy.prune_threshold_tokens
+    assert prune_rows(pruned, policy, include_latest=False) is None
 
 
 def test_what_the_summarizer_is_handed_is_cut_block_by_block_too() -> None:
