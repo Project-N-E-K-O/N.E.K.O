@@ -4212,6 +4212,46 @@ async def test_a_browser_with_no_tab_left_has_no_window_to_leave_open(make_sessi
     assert session.shows_a_window is True
 
 
+@pytest.mark.parametrize("asked", ["Target.attachToTarget", "Browser.getVersion"])
+async def test_a_tab_closed_while_the_browser_is_asked_about_what_is_open_is_not_back_when_the_start_is_over(
+    make_session: Any, world: BrowserWorld, asked: str
+) -> None:
+    # Left running by an earlier run, with two tabs; it cannot open another.
+    world.found_running = True
+    world.browser.can_create_tabs = False
+    shop = world.browser.add_page(ORDER, "Order form")
+    waiting = world.browser.hold(asked)
+    session = make_session(own_ports=lambda: OWN)
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: waiting.reached.is_set())
+    # The list of what is open has been read. The user closes one tab while the browser is asked about it ...
+    world.browser.remove_page(shop)
+    waiting.release()
+    await starting
+    # ... and that tab is neither a page to work on nor a tab the browser still has.
+    assert [page.url for page in session.pages()] == ["about:blank"]
+    assert session._tabs == {"target-1"} and session._not_kept == set()
+    assert session.shows_a_window is True
+
+
+async def test_the_last_tab_closed_while_the_browser_is_asked_about_what_is_open_leaves_no_window(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.found_running = True
+    world.browser.can_create_tabs = False
+    waiting = world.browser.hold("Target.attachToTarget")
+    session = make_session(own_ports=lambda: OWN)
+    starting = asyncio.ensure_future(session.start())
+    await _until(lambda: waiting.reached.is_set())
+    # The user closes its last window meanwhile; the browser runs on in the background.
+    world.browser.remove_page(world.browser.page("target-1"))
+    waiting.release()
+    await starting
+    assert session.connected and session.pages() == [] and session._tabs == set()
+    # Taken for one with a window, it would be left open, unseen, when the tasks are stopped.
+    assert session.shows_a_window is False
+
+
 async def test_the_tabs_of_a_browser_are_counted_afresh_when_it_is_connected_to_anew(
     make_session: Any, world: BrowserWorld
 ) -> None:

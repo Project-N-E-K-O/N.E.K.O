@@ -530,6 +530,14 @@ class BrowserSession:
             await self._keep_from_own_ports(connection, browser)
             await connection.send("Target.setDiscoverTargets", {"discover": True})
             targets = await connection.send("Target.getTargets")
+            # Taken note of before anything else is waited for: what is in
+            # this answer is as of now. A tab that is closed while the
+            # browser is asked the things below is taken off by the event
+            # about it, and noted after that it would be back, as a page
+            # that is no longer there and as a window the browser no longer
+            # has.
+            for info in targets.get("targetInfos") or ():
+                self._note_target(info)
             if was_running and browser.owned:
                 await self._ask_whether_headless(connection, browser)
             if self._blocked_everywhere:
@@ -538,8 +546,6 @@ class BrowserSession:
                 # extension greets its user with) may be there before this
                 # connection is.
                 await self._keep_what_was_open(connection, targets.get("targetInfos") or ())
-            for info in targets.get("targetInfos") or ():
-                self._note_target(info)
             if attach or not self._pages:
                 # A browser the user is using: their own tabs are left as they
                 # are, and the work gets a tab of its own where that can be had.
