@@ -77,6 +77,8 @@ Choose storage by data shape:
 | Structured SQLite data | `self.db` after enabling `[plugin.database]` |
 | Arbitrary persistent files | `self.data_path(...)` |
 | Rebuildable files | `self.cache_path(...)` |
+| Files other plugins may read | `self.shared_path(...)` |
+| Files another plugin published | `self.shared_path_of("<plugin_id>", ...)` after declaring it in `[plugin.shared]` |
 
 ```python
 from plugin.sdk.plugin import unwrap
@@ -146,6 +148,27 @@ Get a path under the plugin's disposable cache directory.
 preview_path = self.cache_path("preview.png")
 # → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
+
+#### `shared_path(*parts) -> Path`
+
+Get a path under the directory this plugin publishes for other plugins to read. The directory is not created for you, and it is kept when the plugin is removed.
+
+```python
+cities = self.shared_path("cities.json")
+# → <storage-root>/plugin_shared/<plugin_id>/cities.json
+cities.parent.mkdir(parents=True, exist_ok=True)
+```
+
+#### `shared_path_of(plugin_id, *parts) -> Path`
+
+Get a path under another plugin's shared directory, for reading. That plugin's id must be listed under `[plugin.shared] reads` in `plugin.toml`; otherwise `ValidationError` is raised (`code="shared_not_declared"`). A path that would leave the shared directory is refused as well (`code="shared_bad_path"`).
+
+```python
+cities = self.shared_path_of("weather", "cities.json")
+# → <storage-root>/plugin_shared/weather/cities.json
+```
+
+This is an agreement between plugins, not a security boundary: plugins are not sandboxed from each other. Treat the files as read-only.
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
 

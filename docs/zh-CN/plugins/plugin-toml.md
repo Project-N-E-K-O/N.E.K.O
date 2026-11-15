@@ -199,6 +199,24 @@ enabled = true
 
 ---
 
+### `[plugin.shared]` — 读取别的插件的共享文件
+
+```toml
+[plugin.shared]
+reads = ["weather"]
+```
+
+每个插件都有一个共享目录 `<用户数据根目录>/plugin_shared/<插件 id>/`，用来放它愿意让别的插件读的文件。目录的主人用 `self.shared_path(...)` 往里写。要读别的插件发布的文件，先把那个插件的 id 写进 `reads`，再调用 `self.shared_path_of("weather", ...)`；没有声明就调用会抛 `ValidationError`。
+
+有两点要知道：
+
+- **这是约定，不是安全边界。** 插件之间没有沙箱，没有任何东西能拦住一个插件往别的插件的目录里写。声明的作用只是让这层依赖在清单里看得见。别的插件的文件请只读不写，也不要把密钥放进自己的共享目录。
+- **共享目录不属于插件的私有状态。** 发布它的插件被删除后，目录会留下；用户更换存储位置时，它跟着用户数据一起搬。
+
+发布文件不需要声明。既不发布也不读取共享文件？不写这段就行。
+
+---
+
 ### `[plugin.ui]` — 自定义界面
 
 ```toml
@@ -273,6 +291,8 @@ plugin/plugins/smart_notes/
 │   └── plugin.toml          ← 这个用户实际使用的配置
 ├── data/                    ← 运行时数据，self.data_path() 指向这里
 └── cache/                   ← 运行时缓存，self.cache_path() 指向这里
+
+<用户数据根目录>/plugin_shared/smart_notes/   ← self.shared_path() 指向这里，给声明过的插件读
 ```
 
 必需的是 `plugin.toml` 和 `[plugin].entry` 指向的可导入 Python 模块。模块不一定非得是 `__init__.py`，只是这种布局最常见。安装包中的代码与这些可写状态分开存放。

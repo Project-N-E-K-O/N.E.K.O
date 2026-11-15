@@ -4993,6 +4993,15 @@ def _nekoclaw_with_links(tmp_path):
     (nekoclaw / "ledger.db-wal").write_bytes(b"not yet in the ledger file")
     (nekoclaw / "permissions.json").write_text('{"browser": "always"}', encoding="utf-8")
     (nekoclaw / "browser.json").write_text('{"mode": "own_profile"}', encoding="utf-8")
+    # What task agents keep for later commissions, and what a plugin publishes for others.
+    space = nekoclaw / "task_agent_space"
+    (space / "projects" / "Budget app" / "reviews").mkdir(parents=True)
+    (space / "memory").mkdir()
+    (space / "MEMORY.md").write_text("- [Use uv](memory/use-uv.md)\n", encoding="utf-8")
+    (space / "memory" / "use-uv.md").write_text("Run Python through uv.", encoding="utf-8")
+    (space / "projects" / "Budget app" / "reviews" / "c1.md").write_text("It was done.", encoding="utf-8")
+    (source_root / "plugin_shared" / "weather").mkdir(parents=True)
+    (source_root / "plugin_shared" / "weather" / "cities.json").write_text("[]", encoding="utf-8")
     # A working directory with a virtual environment: links to an interpreter elsewhere.
     work = nekoclaw / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work"
     work.mkdir(parents=True)
@@ -5031,6 +5040,12 @@ def test_links_below_nekoclaw_do_not_stop_a_migration_and_its_plain_files_move(t
     assert {"nekoclaw/ledger.db", "nekoclaw/ledger.db-wal", "nekoclaw/permissions.json", "nekoclaw/browser.json"} <= copied
     # A file that is not there (nothing was learned about a model yet) is no entry.
     assert "nekoclaw/model_capabilities.json" not in copied
+    # The task agent space moves whole, and so does what plugins share.
+    assert {"nekoclaw/task_agent_space", "plugin_shared"} <= copied
+    assert (moved / "task_agent_space" / "MEMORY.md").read_text(encoding="utf-8") == "- [Use uv](memory/use-uv.md)\n"
+    assert (moved / "task_agent_space" / "memory" / "use-uv.md").read_text(encoding="utf-8") == "Run Python through uv."
+    assert (moved / "task_agent_space" / "projects" / "Budget app" / "reviews" / "c1.md").is_file()
+    assert (target_root / "plugin_shared" / "weather" / "cities.json").read_text(encoding="utf-8") == "[]"
     # The working directories and the browser profile stay in the old root, untouched.
     assert not (moved / "task_agents").exists() and not (moved / "browser_profile").exists()
     assert (source_root / "nekoclaw" / "task_agents" / "projects" / "_daily" / "sessions" / "c1" / "work" / "notes.txt").is_file()

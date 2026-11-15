@@ -86,6 +86,8 @@ timeout = await self.config.get_int("my_settings.timeout", default=30)
 | 结构化 SQLite 数据 | 启用 `[plugin.database]` 后使用 `self.db` |
 | 任意持久文件 | `self.data_path(...)` |
 | 可重新生成的文件 | `self.cache_path(...)` |
+| 给别的插件读的文件 | `self.shared_path(...)` |
+| 别的插件发布的文件 | 在 `[plugin.shared]` 里声明后使用 `self.shared_path_of("<plugin_id>", ...)` |
 
 ```python
 from plugin.sdk.plugin import unwrap
@@ -154,6 +156,27 @@ db_path = self.data_path("records.db")
 preview_path = self.cache_path("preview.png")
 # → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
+
+#### `shared_path(*parts) -> Path`
+
+获取本插件共享目录下的路径，这个目录里的文件是发布给别的插件读的。目录不会自动创建；插件被删除后目录会保留。
+
+```python
+cities = self.shared_path("cities.json")
+# → <storage-root>/plugin_shared/<plugin_id>/cities.json
+cities.parent.mkdir(parents=True, exist_ok=True)
+```
+
+#### `shared_path_of(plugin_id, *parts) -> Path`
+
+获取另一个插件共享目录下的路径，用来读取。那个插件的 id 必须写在 `plugin.toml` 的 `[plugin.shared] reads` 里，否则抛 `ValidationError`（`code="shared_not_declared"`）。会跑出共享目录的路径同样会被拒绝（`code="shared_bad_path"`）。
+
+```python
+cities = self.shared_path_of("weather", "cities.json")
+# → <storage-root>/plugin_shared/weather/cities.json
+```
+
+这是插件之间的约定，不是安全边界：插件之间没有沙箱。拿到的文件请只读不写。
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
 

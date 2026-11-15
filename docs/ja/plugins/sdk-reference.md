@@ -73,6 +73,8 @@ timeout = await self.config.get_int("my_settings.timeout", default=30)
 | 構造化された SQLite データ | `[plugin.database]` を有効にして `self.db` を使用 |
 | 任意の永続ファイル | `self.data_path(...)` |
 | 再生成可能なファイル | `self.cache_path(...)` |
+| 他のプラグインに読ませるファイル | `self.shared_path(...)` |
+| 他のプラグインが公開したファイル | `[plugin.shared]` で宣言したうえで `self.shared_path_of("<plugin_id>", ...)` |
 
 ```python
 from plugin.sdk.plugin import unwrap
@@ -141,6 +143,27 @@ db_path = self.data_path("records.db")
 preview_path = self.cache_path("preview.png")
 # → <storage-root>/plugins/<plugin_id>/cache/preview.png
 ```
+
+#### `shared_path(*parts) -> Path`
+
+このプラグインの共有ディレクトリ配下のパスを取得します。ここに置いたファイルは他のプラグインに読ませるためのものです。ディレクトリは自動では作成されず、プラグインが削除されても残ります。
+
+```python
+cities = self.shared_path("cities.json")
+# → <storage-root>/plugin_shared/<plugin_id>/cities.json
+cities.parent.mkdir(parents=True, exist_ok=True)
+```
+
+#### `shared_path_of(plugin_id, *parts) -> Path`
+
+他のプラグインの共有ディレクトリ配下のパスを、読み取り用に取得します。そのプラグインの id が `plugin.toml` の `[plugin.shared] reads` に書かれている必要があり、書かれていなければ `ValidationError`（`code="shared_not_declared"`）が発生します。共有ディレクトリの外に出るパスも拒否されます（`code="shared_bad_path"`）。
+
+```python
+cities = self.shared_path_of("weather", "cities.json")
+# → <storage-root>/plugin_shared/weather/cities.json
+```
+
+これはプラグイン間の取り決めであり、セキュリティ境界ではありません。プラグイン同士はサンドボックスで隔離されていません。取得したファイルは読み取り専用として扱ってください。
 
 #### `register_dynamic_entry(entry_id, handler, ...) -> bool`
 

@@ -107,7 +107,16 @@ MIGRATED_RUNTIME_ENTRY_NAMES = (
     "nekoclaw/plugin_short_descriptions.json",
     "nekoclaw/model_capabilities.json",
     "nekoclaw/browser.json",
+    # What task agents keep for later commissions: rules, indexes, entries,
+    # reviews, archived projects. Plain text the host alone writes, kept in
+    # a directory of its own, apart from the session directories, so that it
+    # can move as a whole (``nekoclaw.host.paths.SpacePaths``).
+    "nekoclaw/task_agent_space",
     "plugins",
+    # What plugins publish for other plugins to read, one directory per
+    # publishing plugin (``PluginBase.shared_path``). User data like the
+    # plugins' own state, and moved the same way.
+    "plugin_shared",
     # Installed code and its source records live outside the plugin state tree.
     *_PLUGIN_INSTALLATION_ENTRIES,
     "live2d",

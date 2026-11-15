@@ -14,7 +14,7 @@ import json
 import os
 import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from plugin.sdk.shared.logging import LogLevel, setup_sdk_logging
 
@@ -92,6 +92,67 @@ def resolve_plugin_runtime_config_path(ctx: object) -> Path:
     return resolve_plugin_storage_dir(ctx) / "config" / "plugin.toml"
 
 
+PLUGIN_SHARED_DIRNAME = "plugin_shared"
+
+
+def resolve_plugin_shared_dir(plugin_id: object) -> Path:
+    """Return the directory a plugin publishes for other plugins to read.
+
+    ``<data root>/plugin_shared/<plugin id>/``, next to the plugins' private
+    state and outside it: removing a plugin leaves what it published.
+    """
+    return resolve_runtime_data_root() / PLUGIN_SHARED_DIRNAME / _safe_plugin_dirname(plugin_id)
+
+
+def _declared_shared_reads(plugin_section: object) -> frozenset[str] | None:
+    """Read ``[plugin.shared] reads`` from a ``[plugin]`` table; None when the table is not one."""
+    if not isinstance(plugin_section, dict):
+        return None
+    shared = plugin_section.get("shared")
+    reads = shared.get("reads") if isinstance(shared, dict) else None
+    if isinstance(reads, str):
+        reads = [reads]
+    if not isinstance(reads, (list, tuple)):
+        return frozenset()
+    return frozenset(item.strip() for item in reads if isinstance(item, str) and item.strip())
+
+
+def resolve_shared_reads(ctx: object) -> frozenset[str]:
+    """Return the ids of the plugins whose shared directory this plugin declares it reads.
+
+    From the plugin's effective configuration when the context has it, else
+    from the manifest itself.
+    """
+    declared = _declared_shared_reads(resolve_effective_config(ctx).get("plugin"))
+    if declared is not None:
+        return declared
+    config_path = getattr(ctx, "config_path", None)
+    if not isinstance(config_path, (str, Path)):
+        return frozenset()
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+        import tomli as tomllib  # type: ignore[no-redef]
+    try:
+        with Path(config_path).open("rb") as stream:
+            manifest = tomllib.load(stream)
+    except Exception:
+        return frozenset()
+    return _declared_shared_reads(manifest.get("plugin")) or frozenset()
+
+
+def join_shared_path(base: Path, parts: tuple[str, ...]) -> Path | None:
+    """Join ``parts`` below a shared directory; None when they would lead out of it."""
+    for part in parts:
+        # Read as a Windows path and as a POSIX path, whatever the platform:
+        # a drive, a leading separator or ".." in either reading leads out.
+        for flavour in (PureWindowsPath, PurePosixPath):
+            pure = flavour(str(part))
+            if pure.anchor or ".." in pure.parts or ":" in str(part):
+                return None
+    return base.joinpath(*(str(part) for part in parts)) if parts else base
+
+
 def resolve_effective_config(ctx: object) -> dict[str, object]:
     effective_cfg = getattr(ctx, "_effective_config", None)
     return effective_cfg if isinstance(effective_cfg, dict) else {}
@@ -142,7 +203,11 @@ __all__ = [
     "resolve_plugin_data_dir",
     "resolve_plugin_dir",
     "resolve_plugin_runtime_config_path",
+    "resolve_plugin_shared_dir",
     "resolve_plugin_storage_dir",
+    "resolve_shared_reads",
+    "join_shared_path",
+    "PLUGIN_SHARED_DIRNAME",
     "resolve_runtime_data_root",
     "resolve_state_backend",
     "resolve_store_enabled",
