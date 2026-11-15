@@ -54,10 +54,13 @@
   try:
       done, _ = await asyncio.wait({task}, timeout=3)
       assert done, "被测调用没有在时限内返回"
+      result = task.result()                     # 必须取结果：被测调用抛的异常在这里才会冒出来
   finally:
       release.set()                              # 放开它在等的事件或哨兵值
       await asyncio.wait({task}, timeout=3)      # 有界地等它收尾
   ```
+
+  `asyncio.wait` 把抛了异常的任务也算进 `done`，只断言 `done` 的话，被测调用一上来就报错测试照样绿。所以要 `task.result()`（或 `await task`）把异常取出来，再对返回值做断言。
 
   连出口都留不出来的调用，放到能被杀掉的独立进程里设超时。
 - 新建了带后台 worker 的对象的用例，一律 `try/finally` 收尾关掉它。否则策略一变，worker 不再自己退出，整场测试挂死。
