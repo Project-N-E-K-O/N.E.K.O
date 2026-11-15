@@ -1,8 +1,9 @@
-"""A client first install counts a Market download without a login."""
+"""Successful plugin-center downloads count on Market without a login."""
 
 from __future__ import annotations
 
 import asyncio
+from uuid import UUID
 
 import pytest
 
@@ -61,7 +62,8 @@ async def _drain_download_tasks() -> None:
         await asyncio.gather(*pending)
 
 
-async def test_successful_client_install_counts_one_download(monkeypatch) -> None:
+@pytest.mark.parametrize("mode", ["install", "upgrade", "reinstall"])
+async def test_successful_client_operation_counts_one_download(monkeypatch, mode) -> None:
     calls = []
 
     async def post(url, params=None):
@@ -73,18 +75,22 @@ async def test_successful_client_install_counts_one_download(monkeypatch) -> Non
         return Response()
 
     _install_market_client(monkeypatch, post)
-    market_bridge._record_market_download_best_effort(_payload())
+    market_bridge._record_market_download_best_effort(_payload(mode=mode), "task-21")
     await _drain_download_tasks()
 
-    assert calls == [
-        ("https://market.test/api/v1/plugins/21/download", _download_params())
-    ]
+    [(url, params)] = calls
+    assert url == "https://market.test/api/v1/plugins/21/download"
+    event_id = params.pop("event_id")
+    assert UUID(event_id).version == 5
+    assert params == _download_params(operation=mode)
+
+    calls.clear()
+    market_bridge._record_market_download_best_effort(_payload(mode=mode), "task-21")
+    await _drain_download_tasks()
+    assert calls == [(url, _download_params(operation=mode, event_id=event_id))]
 
 
-@pytest.mark.parametrize("mode", ["upgrade", "reinstall", "override_builtin"])
-async def test_replacing_an_installed_plugin_is_not_counted(
-    monkeypatch, mode
-) -> None:
+async def test_builtin_override_does_not_count(monkeypatch) -> None:
     calls = []
 
     async def post(url, params=None):
@@ -96,7 +102,9 @@ async def test_replacing_an_installed_plugin_is_not_counted(
         return Response()
 
     _install_market_client(monkeypatch, post)
-    market_bridge._record_market_download_best_effort(_payload(mode=mode))
+    market_bridge._record_market_download_best_effort(
+        _payload(mode="override_builtin"), "task-override"
+    )
     await _drain_download_tasks()
 
     assert calls == []
@@ -118,7 +126,7 @@ async def test_unicode_digits_are_not_a_market_plugin_id(monkeypatch) -> None:
         return Response()
 
     _install_market_client(monkeypatch, post)
-    market_bridge._record_market_download_best_effort(_payload(plugin_id="²1"))
+    market_bridge._record_market_download_best_effort(_payload(plugin_id="²1"), "task-21")
     await _drain_download_tasks()
 
     assert calls == []
@@ -136,7 +144,7 @@ async def test_slow_download_count_stops_at_the_total_timeout(monkeypatch) -> No
         return Response()
 
     _install_market_client(monkeypatch, post)
-    market_bridge._record_market_download_best_effort(_payload(plugin_id="24"))
+    market_bridge._record_market_download_best_effort(_payload(plugin_id="24"), "task-24")
     await asyncio.wait_for(_drain_download_tasks(), timeout=1)
     assert market_bridge._download_count_tasks == set()
 
@@ -154,7 +162,7 @@ async def test_non_market_plugin_id_is_not_counted(monkeypatch) -> None:
 
     _install_market_client(monkeypatch, post)
     market_bridge._record_market_download_best_effort(
-        _payload(plugin_id="war-thunder-mod")
+        _payload(plugin_id="war-thunder-mod"), "task-non-market"
     )
     await _drain_download_tasks()
 
@@ -175,7 +183,7 @@ async def test_market_rejection_or_outage_does_not_fail_the_count_helper(
         return Response()
 
     _install_market_client(monkeypatch, reject)
-    market_bridge._record_market_download_best_effort(_payload(plugin_id="22"))
+    market_bridge._record_market_download_best_effort(_payload(plugin_id="22"), "task-22")
     await _drain_download_tasks()
 
     async def offline(url, params=None):
@@ -183,7 +191,7 @@ async def test_market_rejection_or_outage_does_not_fail_the_count_helper(
         raise ConnectionError("market down")
 
     _install_market_client(monkeypatch, offline)
-    market_bridge._record_market_download_best_effort(_payload(plugin_id="23"))
+    market_bridge._record_market_download_best_effort(_payload(plugin_id="23"), "task-23")
     await _drain_download_tasks()
 
     assert calls == [
@@ -193,72 +201,87 @@ async def test_market_rejection_or_outage_does_not_fail_the_count_helper(
     assert market_bridge._download_count_tasks == set()
 
 
-async def test_failed_or_cancelled_install_does_not_count(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("mode", "handler"),
+    [("install", "_do_install"), ("upgrade", "_do_upgrade"), ("reinstall", "_do_upgrade")],
+)
+async def test_failed_or_cancelled_operation_does_not_count(
+    monkeypatch, mode, handler
+) -> None:
     counted = []
 
     async def bind(payload):
         return payload, {}
 
-    async def fail(_task, _payload, _log_ctx):
+    async def fail(_task, _payload, _log_ctx, **_kwargs):
         raise market_bridge._TaskError(code="verify_failed", message="bad package")
 
-    def count(payload):
+    def count(payload, _task_id):
         counted.append(("count", payload.plugin_id))
 
     async def report(_payload, _task):
         return None
 
     monkeypatch.setattr(market_bridge, "_bind_market_package_hash", bind)
-    monkeypatch.setattr(market_bridge, "_do_install", fail)
+    monkeypatch.setattr(market_bridge, handler, fail)
     monkeypatch.setattr(market_bridge, "_record_market_download_best_effort", count)
     monkeypatch.setattr(market_bridge, "_report_market_install_best_effort", report)
     market_bridge._tasks["task-fail"] = {}
     try:
-        await market_bridge._execute_install("task-fail", _payload())
+        await market_bridge._execute_install("task-fail", _payload(mode=mode))
         assert counted == []
         assert market_bridge._tasks["task-fail"]["status"] == "failed"
     finally:
         market_bridge._tasks.pop("task-fail", None)
 
-    async def cancel(_task, _payload, _log_ctx):
+    async def cancel(_task, _payload, _log_ctx, **_kwargs):
         raise market_bridge._TaskCancelled(code="cancelled", message="stopped")
 
-    monkeypatch.setattr(market_bridge, "_do_install", cancel)
+    monkeypatch.setattr(market_bridge, handler, cancel)
     market_bridge._tasks["task-cancel"] = {}
     try:
-        await market_bridge._execute_install("task-cancel", _payload())
+        await market_bridge._execute_install("task-cancel", _payload(mode=mode))
         assert counted == []
         assert market_bridge._tasks["task-cancel"]["status"] == "canceled"
     finally:
         market_bridge._tasks.pop("task-cancel", None)
 
 
-async def test_successful_install_task_counts_before_the_login_report(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("mode", "handler"),
+    [("install", "_do_install"), ("upgrade", "_do_upgrade"), ("reinstall", "_do_upgrade")],
+)
+@pytest.mark.parametrize("login_report_fails", [False, True])
+async def test_successful_task_counts_before_the_login_report(
+    monkeypatch, mode, handler, login_report_fails
 ) -> None:
     order = []
 
     async def bind(payload):
         return payload, {}
 
-    async def install_ok(task, _payload, _log_ctx):
+    async def install_ok(task, _payload, _log_ctx, **_kwargs):
         task["message"] = "installed"
         task["result"] = {"install": {}}
 
-    def count(payload):
-        order.append(f"count:{payload.plugin_id}")
+    def count(payload, task_id):
+        assert market_bridge._tasks[task_id]["status"] == "completed"
+        order.append(f"count:{payload.plugin_id}:{task_id}")
 
-    async def report(_payload, _task):
+    async def report(_payload, task):
+        assert task["status"] == "completed"
         order.append("report")
+        if login_report_fails:
+            raise PermissionError("cannot write the refreshed token")
 
     monkeypatch.setattr(market_bridge, "_bind_market_package_hash", bind)
-    monkeypatch.setattr(market_bridge, "_do_install", install_ok)
+    monkeypatch.setattr(market_bridge, handler, install_ok)
     monkeypatch.setattr(market_bridge, "_record_market_download_best_effort", count)
     monkeypatch.setattr(market_bridge, "_report_market_install_best_effort", report)
     market_bridge._tasks["task-ok"] = {}
     try:
-        await market_bridge._execute_install("task-ok", _payload())
-        assert order == ["count:21", "report"]
+        await market_bridge._execute_install("task-ok", _payload(mode=mode))
+        assert order == ["count:21:task-ok", "report"]
         assert market_bridge._tasks["task-ok"]["status"] == "completed"
     finally:
         market_bridge._tasks.pop("task-ok", None)

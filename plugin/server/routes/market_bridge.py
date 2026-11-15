@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Literal, TYPE_CHECKING, get_args
 from urllib.parse import quote, urlparse, urlencode
+from uuid import NAMESPACE_URL, uuid5
 
 if TYPE_CHECKING:
     import httpx
@@ -3682,11 +3683,13 @@ def _market_numeric_plugin_id(plugin_id: str | None) -> str | None:
 
 def _client_download_params(
     *,
+    operation: str,
+    event_id: str,
     version: str | None,
     channel: str | None,
     package_sha256: str | None,
 ) -> dict[str, str]:
-    params = {"source": "client"}
+    params = {"source": "client", "operation": operation, "event_id": event_id}
     if version and version.strip():
         params["version"] = version.strip()[:50]
     if channel and channel.strip():
@@ -3700,6 +3703,8 @@ def _client_download_params(
 async def _post_market_download_count(
     market_id: str,
     *,
+    operation: str,
+    event_id: str,
     version: str | None,
     channel: str | None,
     package_sha256: str | None,
@@ -3716,6 +3721,8 @@ async def _post_market_download_count(
                 response = await client.post(
                     url,
                     params=_client_download_params(
+                        operation=operation,
+                        event_id=event_id,
                         version=version,
                         channel=channel,
                         package_sha256=package_sha256,
@@ -3741,16 +3748,15 @@ async def _post_market_download_count(
 
 def _record_market_download_best_effort(
     payload: MarketInstallRequest,
+    task_id: str,
 ) -> None:
-    """Count a finished first install without a Market login.
+    """Report a successful plugin-center download without a Market login.
 
-    Only ``mode="install"`` counts. Upgrades, reinstalls and replacing a
-    built-in copy keep a plugin the user already had, so they do not add to
-    the public download count. The HTTP call runs in the background so a slow
-    or failed Market does not delay the local install result.
+    Send the HTTP request in the background so the local operation completes
+    independently of Market's response.
     """
 
-    if payload.mode != "install":
+    if payload.mode not in ("install", "upgrade", "reinstall"):
         return
     market_id = _market_numeric_plugin_id(payload.plugin_id)
     if market_id is None:
@@ -3758,6 +3764,8 @@ def _record_market_download_best_effort(
     task = asyncio.create_task(
         _post_market_download_count(
             market_id,
+            operation=payload.mode,
+            event_id=str(uuid5(NAMESPACE_URL, f"market-download:{task_id}")),
             version=payload.version,
             channel=payload.channel,
             package_sha256=payload.package_sha256,
@@ -3965,9 +3973,6 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
                 code="invalid_mode",
                 message=f"unknown mode: {payload.mode}",
             )
-        _record_market_download_best_effort(payload)
-        await _report_market_install_best_effort(payload, task)
-        _finalize_task_success(task, started_at, log_ctx)
     except _TaskCancelled as exc:
         _finalize_task_cancelled(task, exc, started_at, log_ctx)
     except _TaskError as exc:
@@ -3984,6 +3989,16 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
             started_at,
             log_ctx,
         )
+    else:
+        _finalize_task_success(task, started_at, log_ctx)
+        _record_market_download_best_effort(payload, task_id)
+        try:
+            await _report_market_install_best_effort(payload, task)
+        except Exception as exc:
+            logger.warning(
+                "[market-install-report] unexpected failure error={}",
+                type(exc).__name__,
+            )
 
 
 # ─── Task error / finalisers ─────────────────────────────────────────
