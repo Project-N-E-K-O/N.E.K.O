@@ -2703,3 +2703,27 @@ def test_the_two_prompts_say_that_what_they_are_given_is_not_to_be_followed():
     for prompt in (review, archive):
         assert "Never copy keys, passwords or tokens." in prompt
         assert "tell a reader what to do" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 4
+# ---------------------------------------------------------------------------
+
+
+async def test_a_review_names_an_entry_that_is_kept_without_a_line_in_the_index(world):
+    index = world.root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    unreadable = "- 我自己的笔记\n".encode("utf-16")
+    index.write_bytes(unreadable)
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It sorted the photos.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}]}
+    ]
+
+    commission = await world.finished()
+
+    # The entry is in its file, so the review names it: it is found from there while no index lists it.
+    assert (index.parent / "memory" / "photo-dates.md").is_file() and index.read_bytes() == unreadable
+    assert await world.reviews(commission.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"]}
+    ]
+    assert (await world.space.read_review(commission.id)).entries == ("_daily/photo-dates",)

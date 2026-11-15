@@ -4409,3 +4409,29 @@ async def test_a_note_kept_without_its_line_has_used_its_place_though_its_sessio
     assert (await space.submit(commission, _lesson("Two", "Two."))).startswith("kept in project _daily as two.md")
     assert (await space.submit(commission, _lesson("Three", "Three."))).startswith("kept in project _daily as three.md")
     assert (await space.submit(commission, _lesson("Four", "Four."))).startswith("not kept: this commission has added 3")
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 4
+# ---------------------------------------------------------------------------
+
+
+async def test_an_entry_filed_while_the_index_cannot_be_written_is_handed_back_as_kept(space, root):
+    index = root / "MEMORY.md"
+    index.parent.mkdir(parents=True)
+    unreadable = "- 我自己的笔记\n".encode("utf-16")
+    index.write_bytes(unreadable)
+
+    entry, created = await space.file_entry(None, title="Use uv", content="Run Python through uv.")
+
+    # In its file, and handed back as what it is; the index is as it was.
+    assert (entry.id, entry.content, created) == ("use-uv", "Run Python through uv.", True)
+    assert (root / "memory" / "use-uv.md").is_file() and index.read_bytes() == unreadable
+    # Added to, the same.
+    entry, created = await space.file_entry(None, title="Use uv", content="Also for pytest.")
+    assert (entry.id, created) == ("use-uv", False) and "Also for pytest." in entry.content
+
+    # The index can be written again: the next filing about the entry puts its line there.
+    index.write_text("- a line of the user\n", encoding="utf-8")
+    await space.file_entry(None, title="Use uv", content="Run Python through uv.")
+    assert index.read_text(encoding="utf-8").split("\n")[0] == "- [Use uv](memory/use-uv.md) — Run Python through uv."

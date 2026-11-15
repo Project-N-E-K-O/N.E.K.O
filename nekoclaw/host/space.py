@@ -517,9 +517,10 @@ class _NotAsWritten(OSError):
 class _LineNotAdded(OSError):
     """An entry is in its file, and its index could not be read or written, so no line was added for it."""
 
-    def __init__(self, entry_id: str, how: str) -> None:
-        super().__init__(f"the index has no line for {entry_id}")
-        self.entry_id = entry_id
+    def __init__(self, entry: Any, how: str) -> None:
+        super().__init__(f"the index has no line for {entry.id}")
+        self.entry = entry
+        self.entry_id = str(entry.id)
         self.how = how
 
 
@@ -935,6 +936,7 @@ class TaskAgentSpace:
             how = _ADDED if fresh_text and fresh_text[0] else _THERE
             # Its line in the index is left as it is (the user may have
             # reworded it); only a missing one is put back.
+            unlisted: OSError | None = None
             try:
                 self._index_add(
                     paths.index(project),
@@ -942,10 +944,12 @@ class TaskAgentSpace:
                     f"{paths.MEMORY_DIR}/{existing.id}.md",
                 )
             except OSError as exc:
+                unlisted = exc
+            entry = self._entry_from(path, project, with_content=True) or existing
+            if unlisted is not None:
                 # What was added is in the entry all the same.
-                raise _LineNotAdded(existing.id, how) from exc
-            entry = self._entry_from(path, project, with_content=True)
-            return entry or existing, how
+                raise _LineNotAdded(entry, how) from unlisted
+            return entry, how
         try:
             wanted = slug(title)
         except ValueError:
@@ -966,19 +970,25 @@ class TaskAgentSpace:
             has_meta=True,
         )
         path = directory / f"{name}.md"
+        landed = True
         try:
             self._put_text(path, _render_document(document))
         except _NotAsWritten:
             # In place, and saved over at that very moment. It is a file of
             # the directory all the same and gets its line: without one it
             # would be a file that no index lists.
+            landed = False
             logger.warning("a new entry does not hold what was written right after it was written", exc_info=True)
         target = f"{paths.MEMORY_DIR}/{name}.md"
+        unlisted = None
         try:
             self._index_add(paths.index(project), _index_line(title, target, description), target)
         except OSError as exc:
-            # The entry is a file by now, and is not taken away again.
-            raise _LineNotAdded(name, _CREATED) from exc
+            if not landed:
+                # Neither what was written is there nor a line for it:
+                # nothing of this entry was kept.
+                raise
+            unlisted = exc
         entry = self._entry_from(path, project, with_content=True)
         if entry is None:
             # Held by another program just now: told as it was written.
@@ -993,6 +1003,9 @@ class TaskAgentSpace:
                 sources=(source,) if source else (),
                 content=content.strip(),
             )
+        if unlisted is not None:
+            # The entry is a file by now, and is not taken away again.
+            raise _LineNotAdded(entry, _CREATED) from unlisted
         return entry, _CREATED
 
     async def submit(self, commission: Commission, lesson: dict[str, Any]) -> str | None:
@@ -1129,7 +1142,15 @@ class TaskAgentSpace:
         description: str = "",
         source: str | None = None,
     ) -> tuple[Entry, bool]:
-        """Keep one entry; see ``_file_entry``. Raises ``SpaceError`` for one that cannot be kept."""
+        """Keep one entry; see ``_file_entry``. Raises ``SpaceError`` for one that cannot be kept.
+
+        One that is in its file while its index could not be given a line
+        for it is kept, and is returned like any other: the review that
+        filed it names it, so it is found from there. Its line is put into
+        the index the next time something is filed about the entry. Lines
+        that are missing are not looked for and put back by themselves:
+        the user takes lines out of an index, too.
+        """
         try:
             entry, how = await self._write(
                 lambda: self._file_entry(
@@ -1138,6 +1159,9 @@ class TaskAgentSpace:
             )
         except ValueError as exc:
             raise SpaceError(str(exc)) from exc
+        except _LineNotAdded as exc:
+            logger.warning("an entry is kept, and the index could not be given a line for it", exc_info=True)
+            return exc.entry, exc.how == _CREATED
         return entry, how == _CREATED
 
     async def refile_entries(
