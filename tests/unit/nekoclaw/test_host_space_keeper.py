@@ -271,7 +271,7 @@ async def test_a_commission_filed_under_a_project_stays_there(world):
     assert (await world.space.read_review(commission.id)).project == "Budget app"
 
 
-@pytest.mark.parametrize("name", ["", "  ", "../outside", "a/b", "_daily", ".hidden", "CON", 7, None])
+@pytest.mark.parametrize("name", ["", "  ", "../outside", "a/b", "_daily", "_secret", ".hidden", "CON", 7, None])
 async def test_a_project_name_that_cannot_be_used_leaves_the_commission_where_it_is(world, name):
     world.llm.answers[TIER_REVIEW] = [{"review": "Done.", "project": name}]
 
@@ -502,6 +502,30 @@ async def test_what_is_sent_for_a_review_stays_within_its_cap(world):
     assert process.rstrip().split("\n")[-1].startswith("bash(")
     # With every part at its cap, none was pushed out by another.
     assert "Index of this project:\n- [Daily topic" in user
+
+
+def test_the_parts_of_a_review_fit_its_cap_so_that_none_is_cut_off_at_the_end():
+    from config import nekoclaw_settings as settings
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    system = texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT.format(language="Traditional Chinese", max_entries=settings.TASK_AGENT_REVIEW_MAX_ENTRIES)
+    frame = texts.TASK_AGENT_REVIEW_USER_TEMPLATE.format(
+        dispatch_text="", user_text="", status="cancelled", result="", project="", process="", filed="",
+        projects="", global_index="", project_index="",
+    )
+    parts = (
+        settings.DISPATCH_TEXT_MAX_TOKENS
+        + settings.DISPATCH_USER_TEXT_MAX_TOKENS
+        + settings.TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
+        + settings.TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS
+        + 120  # what was already filed during the commission
+        + settings.TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS
+        + 2 * settings.TASK_AGENT_REVIEW_INDEX_MAX_TOKENS
+        + settings.SPACE_PROJECT_NAME_MAX_TOKENS
+    )
+
+    assert count_tokens(system) + count_tokens(frame) + parts <= settings.TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
 
 
 def test_the_review_asks_for_no_more_output_than_was_agreed():

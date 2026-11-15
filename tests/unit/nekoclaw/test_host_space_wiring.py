@@ -272,6 +272,26 @@ async def test_a_child_task_agent_is_of_its_parents_project_and_gets_its_notes(h
     assert "Index of project Budget app:\n- [Stack](memory/stack.md)" in _system(child)
 
 
+async def test_a_child_of_a_daily_commission_stays_daily_whatever_its_words_name(hosts, tmp_path):
+    parent = ScriptedLLM(
+        [
+            _tool("subagent", {"description": "look at the budget app", "prompt": "Look at the budget app."}),
+            _tool("wait_agent", {}, "w1"),
+            _report(),
+        ]
+    )
+    child = ScriptedLLM([_report("ready", "looked")])
+    host = _host(hosts, tmp_path, lambda spec: parent if spec.top_level else child)
+    await host.space.touch_project("Budget app")
+
+    receipt = await _dispatch(host, "compare my two apps")
+    await wait_status(host, receipt.commission_id, "done")
+
+    (started,) = await host.ledger.select(parent_id=receipt.commission_id)
+    assert started.project is None
+    assert (await host.space.get_project("Budget app")).commissions == 1
+
+
 # ---------------------------------------------------------------------------
 # Reading and writing the space
 # ---------------------------------------------------------------------------

@@ -258,6 +258,32 @@ async def test_long_text_is_cut_by_tokens(space):
     assert count_tokens(full.content) <= SPACE_ENTRY_CONTENT_MAX_TOKENS
 
 
+async def test_what_the_user_saves_while_the_host_writes_is_not_written_over(space, root):
+    await space.submit(_commission(), _lesson("First", "One."))
+    index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    real = space._signature
+    saved = {"done": False}
+
+    def signature(path):
+        # The second look at the index is the one right before it is replaced:
+        # the user saves a line of their own just before that.
+        if Path(path) == index and not saved["done"] and getattr(signature, "seen", False):
+            saved["done"] = True
+            index.write_text(index.read_text(encoding="utf-8") + "- a line the user just added\n", encoding="utf-8")
+        if Path(path) == index:
+            signature.seen = True
+        return real(path)
+
+    space._signature = signature
+
+    await space.submit(_commission(), _lesson("Second", "Two."))
+
+    lines = index.read_text(encoding="utf-8").strip().split("\n")
+    assert saved["done"]
+    assert "- a line the user just added" in lines
+    assert "- [Second](memory/second.md) — Two." in lines and "- [First](memory/first.md) — One." in lines
+
+
 async def test_a_file_in_use_is_tried_again(space, root, monkeypatch):
     import utils.file_utils as file_utils
 
@@ -583,6 +609,25 @@ async def test_every_part_of_the_brief_has_its_cap_and_so_has_the_whole(space, r
     # that say where the files are included. The four parts leave room for those.
     assert SPACE_BRIEF_MAX_TOKENS == 1400
     assert sum(cap for _header, cap in caps) == 1200
+
+
+async def test_a_long_project_name_cannot_push_the_whole_over_its_cap(space):
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    # The name is repeated in two headings and in the line that says where the files are.
+    project = "很长的项目名字" * 8
+    assert count_tokens(project) >= 40
+    await space.write_rules("global rule. " * 2000)
+    await space.write_rules("project rule. " * 2000, project)
+    for number in range(150):
+        await space.file_entry(None, title=f"Global {number} g{number}", content="text " * 30)
+        await space.file_entry(project, title=f"Project {number} p{number}", content="text " * 30)
+
+    brief = await space.brief(project)
+
+    assert f"Index of project {project}:" in brief
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
 
 
 async def test_the_newest_lines_of_an_index_survive_the_cap(space):
