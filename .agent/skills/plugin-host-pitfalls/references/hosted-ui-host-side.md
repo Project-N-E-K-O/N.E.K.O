@@ -13,7 +13,7 @@ hosted TSX surface 跑在沙箱 iframe 的 `srcdoc` 里，自包含，没有模�
 | `frontend/plugin-manager/src/components/plugin/hosted/hostedTsxModule.mjs` | 浏览器运行时（`tsxRuntime.ts` 调 `bundleHostedTsxSource`）和检查脚本（`scripts/check-hosted-tsx.mjs` 调 `findHostedRelativeImportSpecifiers`、`assertHostedExportContract`）共用 | 轻量的字符串扫描器。纯 ESM，配一份手写的 `.d.mts`，不依赖 Node 或 DOM |
 | `plugin/server/application/plugins/ui_query_service.py` 里的 `_hosted_*` 函数 | 后端 `/plugin/{id}/hosted-ui/source` 端点走依赖图 | 手写的 Python 扫描器 |
 
-支持的导出形态只有这些：`export const/let/var NAME =`、`export function` / `export async function NAME`、`export class NAME`、只含类型的声明、入口文件的 `export default`。明确拒绝：re-export、`export { … }` 列表、`export *`、enum、generator、abstract class、解构导出、一条语句多个声明、`export namespace`、动态 `import()`、相对路径之外的裸模块（`@neko/plugin-ui` 除外）。
+支持的导出形态只有这些：`export const NAME =`（`export let` / `export var` 前后端的校验器都拒绝，要求改成 `const`）、`export function` / `export async function NAME`、`export class NAME`、只含类型的声明、入口文件的 `export default`。明确拒绝：re-export、`export { … }` 列表、`export *`、enum、generator、abstract class、解构导出、一条语句多个声明、`export namespace`、动态 `import()`、相对路径之外的裸模块（`@neko/plugin-ui` 除外）。
 
 为什么这么窄：
 

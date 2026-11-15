@@ -73,7 +73,7 @@ NekoClaw 的任务大脑挑插件时，候选集是这样筛出来的：
 
 **插件页面写路由的 token**（`docs/design/security/local-mutation-auth.md`）。会反复出现两类互相矛盾的意见，都按现行规则回复：
 
-- 「页面路由应该强制 token」→ 不收。市场上已发布的插件页面不带 token，而且凡是被信任的来源本来就能读到 token，强制它不增加实际边界。公网部署者可以自己开 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1`。
+- 「页面路由应该强制 token」→ 不收。市场上已发布的插件页面不带 token，强制会让它们失效。对完全匹配或已配置的来源，它们本来就能读到 token，强制不增加边界。例外是 NAS 的 hostname 兜底：同一台 NAS 上别的端口的页面能过来源校验，却因为 CORS 读不到 token，强制 token 拦得住它们。默认不强制是为了兼容做的取舍，公网部署者可以自己开 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1`。
 - 「只靠 hostname 兜底通过、又没有 `Sec-Fetch-Site` 头的请求应该拒绝」→ 不收。浏览器对纯 HTTP 的局域网来源不发这个头，这时「外层代理改了端口的市场插件页面」和「同一台 NAS 上别的端口的应用」在请求上分不开，按市场插件优先放行。反过来「带了 `same-site` / `cross-site` 也应该放行」同样不收。
 - 新增插件页面会直接调用的写路由，用 `PluginPageMutationGuardedRoute`。
 

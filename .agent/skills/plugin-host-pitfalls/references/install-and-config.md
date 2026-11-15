@@ -40,7 +40,7 @@ profile 编辑器的基线要用 `GET /plugin/{id}/config/base/effective`（清�
 - 值是**空表**，而基线同名键是表：结果是空表，也就是**清空**，不是「不变」。
 - 其余的表逐键递归合并；标量和数组直接覆盖。
 
-⚠️ profile 覆盖是按顶层段逐段合并的（`config_profiles.py`），`deep_merge` 只在顶层段**以下**起作用。所以上面这些标记和「空表即清空」只对嵌套的表成立；出现在顶层段或根上时，它们只是普通数据。
+⚠️ profile 覆盖是按顶层段逐段合并的（`config_profiles.py`），`deep_merge` 只在顶层段**以下**起作用。所以顶层段**里面**的字段照上面的规则走：段内某个字段写成 `__DELETE__` 会被删掉，段内嵌套表上的 `__replace__` 和空表也生效。不生效的是把标记用在顶层段本身上：整段的值写成 `__DELETE__`、在顶层段这张表上写 `__replace__`，都只是普通数据；顶层段写成空表是无操作，不会清空这一段。
 
 前端 `frontend/plugin-manager/src/utils/configEditor.ts` 里的 `applyProfileOverlay` / `deepMerge` / `replacesBaseTable` 是照着后端写的镜像。改后端合并规则时前端这份要一起改；两边有出入时，「保存后会发生什么」以后端为准。
 

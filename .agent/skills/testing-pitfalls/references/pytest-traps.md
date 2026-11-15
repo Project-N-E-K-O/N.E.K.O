@@ -21,7 +21,8 @@
 
 - 症状：某条用例之后，别的用例出现真实网络请求或莫名失败。
 - 根因：`thread.join(timeout)` 超时只是返回，用例照样绿。泄漏的线程在 `monkeypatch` 还原之后带着真实依赖继续跑。
-- 做法：在 autouse fixture 的收尾里统一 join 并 `assert not thread.is_alive()`。⚠️ 让这个 fixture 声明 `monkeypatch` 参数，这样它的收尾先于 monkeypatch 的还原执行，断言时桩还在。
+- 做法：在 autouse fixture 的收尾里先让线程停下来（置停止标志，把它正在等的事件或队列放开），再做有界的 join，并 `assert not thread.is_alive()`。⚠️ 让这个 fixture 声明 `monkeypatch` 参数，这样它的收尾先于 monkeypatch 的还原执行，断言时桩还在。
+- 断言失败并不会让线程停下，桩随后照样被还原。所以线程必须有一条测试能触发的退出路径；实在保证不了它退出的，把这条测试放到独立进程里跑。
 
 ## 模块级 `asyncio.Lock` 绑定事件循环
 
@@ -46,6 +47,7 @@
 - 测试桩里 `raise AssertionError` 表示「不该被调用」时，如果产品代码用 `try/except` 包着那个调用点，异常会被吞成默认值，和「没调用」分不开。改用计数断言。
 - 夹具里故意吞 `CancelledError` 的 handler，释放动作必须写在 `finally` 里。否则断言一失败，事件循环拆除时它继续吞，用例变成挂起，CI 上表现为超时而不是失败。
 - 可能永远等下去的被测调用，在测试里套一层 `asyncio.wait_for(<调用>, 3)`。实现被改坏时要的是失败，不是挂死。
+- ⚠️ `wait_for` 不是硬超时：它超时后是取消被测调用，并等它取消完成。被测代码吞掉 `CancelledError` 继续等的话，测试照样挂住。这类调用要在测试里留一个能放开它的出口（事件、哨兵值），放在 `finally` 里触发；确实取消不了的，放到能被杀掉的独立进程里设超时。
 - 新建了带后台 worker 的对象的用例，一律 `try/finally` 收尾关掉它。否则策略一变，worker 不再自己退出，整场测试挂死。
 
 ## `tmp_path` 的位置和长度

@@ -7,16 +7,20 @@
 不要写成「改一个文件、立刻写盘、再改下一个」。中间任何一个锚点断言失败，前面的文件已经落盘、后面的没写，代码停在半截状态。例如「创建处已经造出了对象，但没有任何地方使用或清理它」。这种状态语法检查照样通过，看不出来。
 
 ```python
-edits = []
+texts = {}                                           # 每个文件只读一次，改动都落在这份缓存上
 for tag, path, old, new in plan:
-    s = open(path, encoding="utf-8", newline="").read()
+    if path not in texts:
+        texts[path] = open(path, encoding="utf-8", newline="").read()
+    s = texts[path]
     assert s.count(old) == 1, (tag, s.count(old))   # 带标签，失败时知道是哪一处
-    edits.append((path, s.replace(old, new)))
+    texts[path] = s.replace(old, new)
 
-payloads = [(path, body.encode("utf-8")) for path, body in edits]   # 编码失败时还没碰任何文件
+payloads = [(path, body.encode("utf-8")) for path, body in texts.items()]   # 编码失败时还没碰任何文件
 for path, data in payloads:
     open(path, "wb").write(data)
 ```
+
+同一个文件有多处改动时，都改在同一份缓存上，最后每个文件只写一次。每条改动各读一遍原文件、各写一遍的话，后写的会把先写的盖掉，而且不报错。
 
 ## 锚点断言唯一性，不是存在性
 

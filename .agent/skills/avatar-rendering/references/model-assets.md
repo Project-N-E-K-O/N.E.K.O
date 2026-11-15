@@ -15,7 +15,7 @@ uv run python scripts/smooth_yui_mouth.py --root static/<模型目录>
 uv run python scripts/slim_live2d_motions.py --root static/<模型目录>
 ```
 
-- `smooth_yui_mouth.py`：只动 `ParamMouthForm` 和 `ParamMouthOpenY` 两条曲线，做低通平滑，并把每个动作的首尾压回 0。原因是这些动作只当背景动画用、不承担口型，画师给嘴部打的关键帧太抖，会闪。它会重算 `Meta` 里的曲线数、段数、点数。不带 `--root` 时默认处理 `static/yui-origin`。
+- `smooth_yui_mouth.py`：只动 `ParamMouthForm` 和 `ParamMouthOpenY` 两条曲线，做低通平滑，并把每个动作的首尾压回 0。原因是这些动作只当背景动画用、不承担口型，画师给嘴部打的关键帧太抖，会闪。所以它只适用于动作不承担口型的模型（内置的两个 yui 模型是这样）；新模型的嘴部曲线如果是有意做的表演，不要跑它，先问维护者。它会重算 `Meta` 里的曲线数、段数、点数。不带 `--root` 时默认处理 `static/yui-origin`。
 - `slim_live2d_motions.py`：只改序列化——去掉缩进和空格，非整数四舍五入到 6 位小数。每条曲线、每个关键帧都保留，`Meta` 计数不变，再跑一遍是空操作。位数不能再少：有些贝塞尔段只有几毫秒长、控制点远超参数范围，时间偏一点求值结果就偏掉约百分之一的量程（脚本文档字符串里有说明）。内置模型的动作文件靠这一步从 34MB 降到 8MB（#3576）。
 
 **规则：不删除任何动作曲线，包括被物理完全覆盖的输出参数。**

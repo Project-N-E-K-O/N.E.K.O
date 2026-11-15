@@ -12,7 +12,7 @@ CI 里只在 PR 上跑（`.github/workflows/analyze.yml` 的 Prompts & i18n 任�
 - **diff 是相对 merge-base 算的**（`git diff <base>...HEAD`，三个点）。自查对齐时要用同样的口径：
 
   ```bash
-  git diff --unified=0 $(git merge-base origin/main HEAD) -- static/locales/es.json
+  git diff --unified=0 $(git merge-base origin/main HEAD) HEAD -- static/locales/es.json   # 带上 HEAD：只比已提交的内容，和同步门一致
   ```
 
   逐个文件比块头。⚠️ 不要用两点的 `git diff origin/main`：main 在你分叉之后有人改过某个 locale 的某一行时，两点 diff 看到的是 main 的最新值，你会以为那一行「本来就是这样」而把它改回去，结果相对 merge-base 多出一个只有这个语言才有的块。
@@ -65,7 +65,7 @@ CI 里只在 PR 上跑（`.github/workflows/analyze.yml` 的 Prompts & i18n 任�
    合并结果的 key 集 == (base ∪ (分支 − base) ∪ (main − base)) − (base − 分支) − (base − main)
    ```
 
-   其中 base 是**这一次合并的 merge-base**。这是唯一能证明「按行合并 JSON 没有串键、丢键」的手段。
+   其中 base 是**这一次合并的 merge-base**。key 集相等能证明没有丢键、多键，证明不了译文没有串到别的 key 上（两个 key 的译文互换，key 集不变）。所以还要逐个 key 比值：两边都没改过的 key，值等于 base；只有一边改过的，值等于那一边；两边都改过的逐条人工看。
 
 合并后跑：
 

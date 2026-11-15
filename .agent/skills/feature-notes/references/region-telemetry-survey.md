@@ -73,5 +73,5 @@ IP 有结论就用 IP，并落定 `_region_cache`；IP 没结论才用 Steam 的
 排查和强制触发：
 
 - 先看 `/api/steam/workshop/status` 的 `steamworks_initialized` 和 `/api/survey` 的返回，判断卡在后端哪道闸。
-- 要在本机看弹窗：在控制台把 `neko_last_notified_version` 设成一个旧版本号，删掉另外两个 key，刷新（先弹更新日志，再弹问卷）。后端两道闸在源码模式下过不了，这只能验证前端流程。
+- 源码模式下后端两道闸过不了，`/api/survey` 只会返回 `has_survey: false`，所以本机看不到问卷弹窗。能验证的只到「前端发出了 `/api/survey` 请求」：在控制台把 `neko_last_notified_version` 设成一个旧版本号，删掉另外两个 key，刷新（会先弹更新日志）。要看弹窗本身，得让这个接口返回一份有效问卷，比如在 DevTools 里给它配一条本地覆盖响应。
 - 打包后不弹的一个固定原因：dist 里没有 `config/surveys` 目录。加新数据目录要同步本地打包脚本、CI 打包流程和 `scripts/check_nuitka_dist.py`，见 `docs/contributing/nuitka-packaging.md`。

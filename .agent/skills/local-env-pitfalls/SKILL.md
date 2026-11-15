@@ -20,7 +20,7 @@ description: 本地开发环境的坑：uv 和共享 .venv、在 git worktree �
 
 worktree 里没有 `.venv`，也没有 `node_modules`（它们不进版本库）。细节和命令见 `references/worktree.md`，要点：
 
-- **起应用、做交互验证，在有 `.venv` 的主检出里做**，不在 worktree 里。worktree 用来写代码和开 PR。
+- **起应用、做交互验证，在有 `.venv` 的主检出里做**，不在 worktree 里。worktree 用来写代码和开 PR。验证前先让主检出停在包含改动的提交上，否则跑的是旧代码。
 - **跑 pytest**：当前目录切到 worktree 的根，用主检出 `.venv` 里的解释器跑。不要站在主检出里跑 worktree 的测试路径。
 - **前端**：把主检出的 `node_modules` 用目录联接（junction）挂过来，或者在 worktree 里直接 `npm ci`。页面测试之前先构建。
 - ⚠️⚠️ **删 worktree 之前先单独删掉里面的 junction。** `git worktree remove --force` 和递归删除会顺着 junction 删进真实目录，把主检出的 `.venv` 或 `node_modules` 删坏。

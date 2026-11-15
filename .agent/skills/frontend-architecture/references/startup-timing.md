@@ -35,7 +35,8 @@
 
 - `static/tutorial/core/universal-manager.js` 在决定要自动启动教程、进入那串等待之前，就通过 `setHomeTutorialPending(true)` 置 `window.isNekoHomeTutorialPending`。
 - 需要给教程让路的地方把它和「已上锁」一起判断：选人格的 `isHomeTutorialInteractionLocked()`，以及 `app-auto-goodbye.js`、`app-autostart-prompt.js`、`app.js`、`static/js/agent_ui_v2.js`、新用户破冰、点击引导。新增启动期弹窗时也要读它。
-- ⚠️ pending 只在两个收口点清除：`dispatchStartupGreetingRelease()`（教程决定不启动，或已经结束——所有不启动的出口都经过它）和 `clearStartupGreetingRelease()`（教程已上锁，由 `isTutorialRunning` 接管）。不要在各个出口分别手动清，漏一个出口 pending 就永远为真，等它的一方永久卡死。
+- ⚠️ 结束 pending 并放行等待方的收口点是两个：`dispatchStartupGreetingRelease()`（教程决定不启动，或已经结束）和 `clearStartupGreetingRelease()`（教程已上锁，由 `isTutorialRunning` 接管）。新增「教程不启动」的出口要走前者，不要只手动清 pending：漏一个出口 pending 就永远为真，等它的一方永久卡死；只清 pending 而不派发放行事件，监听事件的一方同样等不到。
+- 例外在 `static/tutorial/click-guide/home.js`：点击引导在启动阶段没有接手的几条路径（已有教程在跑、状态里没有待启动的点击引导、启动抛错、启动流程中途退出）直接调 `setHomeTutorialPending(false)`。这几处只清 pending，不派发放行事件。「清 pending」和「派发放行」是两件事，读代码时不要假设前者一定经过上面两个函数。
 - 等待方还要监听 `neko:startup-greeting-release`（`detail.released === true`）来放行。教程中途夭折时不会有「完成」或「跳过」事件，后端状态也不会变成已结束，只靠轮询会一直等下去。
 - `released: true` 在教程正常完成时也会派发，而选人格那边的「不再等教程」标志是持久的。所以从设置里重新选人格时，只有在此刻确实有教程占屏时才重置这个标志去重新等；无条件重置会在没有后续放行事件时永久挂起。
 - 判断「教程是否占屏」用锁判定函数，不要用 `window.__NEKO_STARTUP_GREETING_RELEASED__`：启动放行时它会被消费掉并删除，之后读到的是空。

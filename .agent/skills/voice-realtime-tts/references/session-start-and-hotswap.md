@@ -2,7 +2,7 @@
 
 总览见 `docs/architecture/session-management.md`。代码主要在 `main_logic/core/lifecycle.py`、`session_lifecycle.py`、`asr_runtime.py`、`notify.py`，前端在 `static/app/app-state.js`、`app-buttons.js`、`app-websocket.js`、`app-audio-capture.js`。
 
-改这一带的总原则：**核心路径不回退是验收线**。自动评审会沿着并发交错一轮轮往深处挖，多数成立但属于极端交错。每条先判「是不是常见路径上的新回退」，是才动，不是就记录不改：动 `start_session` 的核心收尾本身就有回归风险。
+改这一带的总原则：**核心路径不回退是验收线**。自动评审会沿着并发交错一轮轮往深处挖，多数成立但属于极端交错。每条先判「是不是常见路径上的新回退」，是才动，不是就记录不改：动 `start_session` 的核心收尾本身就有回归风险。这条判据只管「要不要为自动评审挖出来的极端交错去动核心收尾」。「热切换：final swap」一节的几条取消规则不在此列：违反它们的改动必须修，哪怕只在极端交错里才触发。「已接受不修的残留」也只指「跨模式启动撞车」一节列出的那几项。
 
 ## 跨模式启动撞车
 

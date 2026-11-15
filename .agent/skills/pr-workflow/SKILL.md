@@ -14,7 +14,7 @@ description: 维护者处理 PR 的流程和判断标准：在提交者的分支
 3. **改 → 只跑直接相关的测试 → commit → push**。
 4. **回读**：`gh pr view <N> --json headRefOid`，确认 PR 的 head 就是刚推的提交。只看 push 的回显不算数。
 5. **回复线程**，在回复里引用提交号。修掉的线程回复后关闭；驳回的写清理由，留给维护者过目。
-6. **查冲突**：再看一次 `mergeable`。`CONFLICTING` 就立刻合 `origin/main` 解掉。
+6. **查冲突**：再看一次 `mergeable`。`CONFLICTING` 就立刻合 PR 的 base 分支解掉（`gh pr view <N> --json baseRefName`）。base 通常是 main；叠在别的分支上的 PR 要合那个分支，合 `origin/main` 不一定带得进造成冲突的改动。
 7. **看 CI**（见 `references/ci-and-gates.md`）。
 
 顺序是「先 push、再回帖」。自动评审收到回复后会立刻拉 head 核对，回复早于代码就会被判成「没落地」。

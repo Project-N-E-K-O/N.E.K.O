@@ -10,7 +10,7 @@
 
 冻结版没有运行时下载路径。哪一类权重漏打，对应功能就静默降级，没有报错，用户和开发者都很难发现。
 
-**校验为什么要具体到文件**：下载中断会留下一个空的子目录，「目录非空」这种检查能被它骗过去。所以 `check_nuitka_dist.py` 和 workflow 的 `Verify bundled offline assets` 都断言具体文件存在且非空；后者还要求每个权重在包里只出现一份，并且已经废弃的旧目录（`data/vad_models`、`data/speaker_models`）不得进包。
+**校验为什么要具体到文件**：下载中断会留下一个空的子目录，「目录非空」这种检查能被它骗过去。所以两处都按具体文件查：`check_nuitka_dist.py` 断言文件存在（它不查大小，空文件能过）；workflow 的 `Verify bundled offline assets` 另外断言文件非空，还要求每个权重在包里只出现一份，并且已经废弃的旧目录（`data/vad_models`、`data/speaker_models`）不得进包。
 
 **新增一类离线权重要动的地方**：prepare 脚本和它的清单、三处 Nuitka 步骤的 `--include-data-dir`、workflow 里的缓存步骤和 `Verify bundled offline assets`、`check_nuitka_dist.py` 的 `_REQUIRED_ASSETS`、`.gitignore` 的放行规则，再加上通知维护者同步本地打包脚本。
 

@@ -7,7 +7,7 @@
 - **所有读者只看运行时根。** facts、persona、settings、reflection、各个 sidecar、时间索引库，全部经 `memory.ensure_character_dir(memory_dir, name)` 解析路径。`utils/character_memory.py::iter_character_memory_roots` 返回两个根（运行时根和项目目录下的种子根），但种子根只用于枚举、存在性判断、删除 / 改名的记账，以及启动时的迁移。
 - ⚠️ 所以「某功能在种子根下的数据读不到」时，**不要给那个读者加种子根回落**。那会让它成为全仓库唯一认种子根的 store，同样搁浅的兄弟文件一个也修不到。正确方向是让数据到达运行时根（修迁移）。反过来，凡是用 `character_memory_exists` 列出角色的界面，都可能列出一个任何读者都打不开的角色。
 - 迁移（`utils/config_manager/migrations.py::migrate_memory_files`）是先拷到同盘的暂存目录再原子改名：目标要么完整要么不存在。**已存在的目标不动，也不补缺**：运行时根里缺某个文件不代表迁移没做完，云存档导入和用户删除都会有意移除文件，补缺会让被删的数据每次启动都复活。
-- ⚠️ `ensure_character_dir` 会建目录。只读路径不要调它（`PinnedFactStore._file_path` 就专门分了读路径和写路径）；角色改名或删除之后，任何晚到的写入经它都会把旧目录重建出来。写入前查 `utils.character_memory.is_character_write_fenced`，后台任务按 SKILL.md 清单登记成可取消的。
+- ⚠️ `ensure_character_dir` 会建目录。只读路径不要调它（`PinnedFactStore._file_path` 就专门分了读路径和写路径）；角色改名或删除之后，任何晚到的写入经它都会把旧目录重建出来。写入前要查两样：`utils.character_memory.is_character_write_fenced`（只是改名过程中的临时围栏，改名结束就解除，删除不设它），以及这个名字是不是已经退役（删除走的是退役）。已退役且目录不在时不要调 `ensure_character_dir`。`memory/anti_repeat.py` 的 `_write_file_path` 两样都查，可以照着写；新的带缓存的 store 还要在 `_CHARACTER_RUNTIME_CACHE_EVICTORS` 里登记，删除路径才退役得到它。后台任务按 SKILL.md 清单登记成可取消的。
 - **给存量角色补字段不要放在 `load_characters` 里写盘。** 启动引导期种子出来的 `characters.json` 一旦被加载路径改写，引导逻辑会认为目标已有用户数据，跳过旧数据根的导入，老用户升级后旧数据导不进来。补字段做成显式步骤，放在启动链路里云存档引导和启动导入之后（现有例子：`app/main_server/__init__.py` 里的 `abackfill_character_uids`）。另外云存档指纹含整个角色 payload，补字段会让已上云的角色显示成「已分叉」，动之前把这个影响算进去。
 
 ## 2. 写盘

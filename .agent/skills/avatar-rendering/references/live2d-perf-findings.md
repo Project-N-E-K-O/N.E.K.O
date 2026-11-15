@@ -42,3 +42,5 @@
 ## 验收怎么做
 
 在目标机器（带核显的 Windows 笔记本）上，用机器上装的 Chrome 打开开发页 `/`，它和分发版走同样的 ANGLE / D3D11，而且 DevTools 齐全。在控制台用 `performance.now()` 包住要量的方法（比如 `model.internalModel.draw`、`model.internalModel.motionManager.update`），补丁开、关两种状态各取 300 帧，比较中位数。加载期的改动用同一台机器、同一个模型冷启动若干次取中位数做相对比较。视觉上至少在 `mao_pro`（蒙版多）上确认裁剪蒙版没有花。
+
+Chrome 开发页量的是补丁在 JS 一侧的耗时。它不是 Pet 窗口：只对 Pet 窗口生效的路径（跳过 profile 保存、帧率总闸）在这里不走，透明整窗的合成成本也量不到。这两类改动要在目标机器的 Pet 窗口里量，同时看 GPU 进程的占用；Chrome 开发页只作补充。
