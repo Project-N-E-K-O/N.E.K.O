@@ -77,7 +77,7 @@ description: 维护者处理 PR 的流程和判断标准：在提交者的分支
 
 - 未关线程数为 0。查询必须分页，作者不限。
 - PR 级评论（`issues/<N>/comments`）里没有未回应的。未关线程查不到这一类。
-- 每条 review 的正文看过。CodeRabbit 的「Outside diff range」和「Nitpick」意见只写在 review 正文里，不生成线程。
+- 每条 review 的正文看过。CodeRabbit 的「Outside diff range」「Nitpick」意见只写在 review 正文里，不生成线程；意见多的时候「Minor」级的也全在正文里。
 - 线程总数和上次比有没有变多。
 - 不能拿「没收到推送」当依据。任何自动推送评论的通道都可能漏，尤其会漏掉用 PR 所用账号发的评论，而维护者的评审往往就是用这个账号发的。
 

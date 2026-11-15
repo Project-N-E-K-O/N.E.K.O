@@ -10,7 +10,7 @@
 | PR 级评论 | `repos/{owner}/{repo}/issues/{n}/comments` | 整篇的架构评审常常发在这里。查未关线程查不到它 |
 | review 正文 | `repos/{owner}/{repo}/pulls/{n}/reviews` | 每条 review 的 `body` |
 
-- ⚠️ CodeRabbit 有两类意见不生成线程，只写在 review 正文里：`Outside diff range comments (N)` 和 `Nitpick comments (N)`。「未关线程为 0」不代表处理完了。说可以合并之前，`gh api --paginate` 拉全部 review，在正文里数这两个标题后面的数字，逐条对照。这类意见没有线程可回，在 PR 上发一条 PR 级评论，逐条写明处理结论。
+- ⚠️ CodeRabbit 有几类意见不生成线程，只写在 review 正文里：`Outside diff range comments (N)`、`Nitpick comments (N)`，以及意见多的时候的 `Minor comments: N`（这时它只把 Critical 和 Major 级的发成行内线程，正文开头会有一句说明）。「未关线程为 0」不代表处理完了。说可以合并之前，`gh api --paginate` 拉全部 review，在正文里数这两个标题后面的数字，逐条对照。这类意见没有线程可回，在 PR 上发一条 PR 级评论，逐条写明处理结论。
 - 正文为空的 `COMMENTED` review 不等于「自己回复时带出来的记录」。很多自动评审的 review 本体就是空正文，内容全在行内评论里。看到 review 事件却没有配套的行内评论时，当场查未关线程。
 - review 正文里的「可选建议」也不在任何线程里。
 - 还在 `PENDING` 状态的 review，通过接口只能看到草稿的一部分。提交之后条数可能变多。
