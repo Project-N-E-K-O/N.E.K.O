@@ -4574,3 +4574,73 @@ async def test_with_no_note_allowed_at_all_a_note_is_turned_down_like_any_other(
     assert reply.startswith("not kept: this commission has added 0 notes already")
     assert [(who, payload["kept"], payload["reason"]) for who, _kind, payload in ledger.rows] == [("c-1", False, "cap")]
     assert space._added_by == {} and not (root / "projects").exists()
+
+
+async def test_a_note_that_waits_to_be_written_costs_no_other_commission_its_count(space, monkeypatch):
+    from nekoclaw.host import space as module
+
+    monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 2)
+    await space.submit(_commission(id="c-a"), _lesson("Photo dates", "Use the EXIF date."))
+    await space.submit(_commission(id="c-b"), _lesson("Folder names", "One folder a month."))
+    assert space._added_by == {"c-a": 1, "c-b": 1}
+    # Something else is writing. Two notes wait for their turn: one that is new, and one that is
+    # there already, word for word.
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    new = asyncio.create_task(space.submit(_commission(id="c-c"), _lesson("Camera drive", "It is E: on this computer.")))
+    same = asyncio.create_task(space.submit(_commission(id="c-d"), _lesson("Folder names", "One folder a month.")))
+    await asyncio.sleep(0.01)
+    assert not new.done() and not same.done()
+    space._lock.release()
+    replies = await asyncio.gather(new, same)
+
+    assert replies[0].startswith("kept in project _daily") and replies[1].startswith("already in folder-names.md")
+    # One note was added, so one commission is forgotten for it: the one that waited and added
+    # nothing took the place of none.
+    assert space._added_by == {"c-b": 1, "c-c": 1}
+    assert space._adding == {}
+
+
+async def test_two_notes_of_one_commission_that_wait_together_count_together(space):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    commission, child = _commission(id="c-1"), _commission(id="c-1-child", parent_id="c-1")
+    for number in range(SPACE_LESSONS_PER_COMMISSION - 1):
+        await space.submit(commission, _lesson(f"Note {number} n{number}", f"Text {number}."))
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    # Two of its task agents file at one moment, with one place left.
+    first = asyncio.create_task(space.submit(child, _lesson("Camera drive", "It is E: on this computer.")))
+    await asyncio.sleep(0.01)
+    try:
+        # Answered at once: it does not get as far as waiting for its turn to be written.
+        second = await asyncio.wait_for(
+            space.submit(commission, _lesson("Backups", "Nothing is deleted before it is copied.")), 2
+        )
+    finally:
+        space._lock.release()
+
+    # The one that came second is turned down while the first still waits to be written.
+    assert second.startswith("not kept: this commission has added 3 notes already")
+    assert (await first).startswith("kept in project _daily")
+    assert space._added_by == {"c-1": SPACE_LESSONS_PER_COMMISSION} and space._adding == {}
+
+
+async def test_a_note_that_fails_in_a_way_nobody_expected_leaves_its_place_free(space, monkeypatch):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    commission = _commission(id="c-1")
+    filing = TaskAgentSpace._file_entry
+
+    def broken(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("not one of the errors a write ends in")
+
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", broken)
+    for _number in range(SPACE_LESSONS_PER_COMMISSION + 1):
+        with pytest.raises(RuntimeError):
+            await space.submit(commission, _lesson("Photo dates", "Use the EXIF date."))
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", filing)
+
+    # No place is left taken by a note that came to nothing.
+    assert space._adding == {} and space._added_by == {}
+    assert (await space.submit(commission, _lesson("Photo dates", "Use the EXIF date."))).startswith("kept in project _daily")

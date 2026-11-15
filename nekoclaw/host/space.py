@@ -569,7 +569,11 @@ class TaskAgentSpace:
         # How many notes each commission added with ``note_lesson``, by the
         # commission she gave (its task agents' count with its own). Kept
         # while the host runs; the oldest go when there are many.
+        # How many notes each commission has added, and how many of its
+        # notes are on their way to be written. Kept apart: only what was
+        # added is what commissions are forgotten by.
         self._added_by: dict[str, int] = {}
+        self._adding: dict[str, int] = {}
 
     # -- plumbing ---------------------------------------------------------
 
@@ -1042,7 +1046,9 @@ class TaskAgentSpace:
         # the commission she gave: a task agent it started adds to its
         # count, not to one of its own.
         counted = commission.parent_id or commission.id
-        added = self._added_by.get(counted, 0)
+        # With the ones on their way: two of its task agents can file at
+        # one moment.
+        added = self._added_by.get(counted, 0) + self._adding.get(counted, 0)
         if added >= SPACE_LESSONS_PER_COMMISSION:
             # Still at work, as it shows: it is not the one to be forgotten
             # next. One that has added none is not counted (the most a
@@ -1051,28 +1057,29 @@ class TaskAgentSpace:
                 self._added_by[counted] = self._added_by.pop(counted)
             await self._note_unkept(commission, lesson, "cap")
             return SPACE_LESSONS_CAP_REACHED.format(count=SPACE_LESSONS_PER_COMMISSION)
-        # Taken before the files are written (two of its task agents can
-        # file at one moment), and given back when nothing is added. Put
-        # last, so that of more commissions than are counted the ones that
-        # have not filed for longest are forgotten, not one that began early
-        # and is still at work.
-        self._added_by.pop(counted, None)
-        self._added_by[counted] = added + 1
+        # A place is taken before the files are written, and settled when
+        # it is known what became of the note.
+        self._adding[counted] = self._adding.get(counted, 0) + 1
 
-        def keep() -> None:
-            # Counted for good. Only now is another commission forgotten for
-            # it: a note that adds nothing is not to cost one its count.
+        def settle(was_added: bool) -> None:
+            left = self._adding.get(counted, 0) - 1
+            if left > 0:
+                self._adding[counted] = left
+            else:
+                self._adding.pop(counted, None)
+            if not was_added:
+                # Nothing is counted for it: a commission that added none
+                # takes the place of no commission that has added some.
+                return
+            # Counted, and put last: of more commissions than are counted
+            # the ones that have not filed for longest are forgotten, not
+            # one that began early and is still at work. Notes that are
+            # still on their way are not among what is counted here, so
+            # none of them has a commission forgotten before it has added
+            # anything.
+            self._added_by[counted] = self._added_by.pop(counted, 0) + 1
             while len(self._added_by) > _COUNTED_COMMISSIONS:
                 del self._added_by[next(iter(self._added_by))]
-
-        def give_back() -> None:
-            left = self._added_by.get(counted, 0) - 1
-            if left > 0:
-                self._added_by[counted] = left
-            else:
-                # None added: it is not counted at all, and takes the place
-                # of no commission that has added some.
-                self._added_by.pop(counted, None)
 
         # What became of the note, once the files were written or looked at.
         became: list[str] = []
@@ -1101,13 +1108,10 @@ class TaskAgentSpace:
             # all the same). Only a note that was added has used a place:
             # one that never got as far would leave the commission and its
             # other task agents one short for nothing.
-            if not became or became[0] == _THERE:
-                give_back()
-            else:
-                keep()
+            settle(bool(became) and became[0] != _THERE)
             raise
         except (SpaceError, ValueError) as exc:
-            give_back()
+            settle(False)
             await self._note_unkept(commission, lesson, "refused")
             return f"not kept: {exc}"
         except _LineNotAdded as exc:
@@ -1120,14 +1124,17 @@ class TaskAgentSpace:
             logger.warning("a lesson is kept, and the index could not be given a line for it", exc_info=True)
             entry_id, how, listed = exc.entry_id, exc.how, False
         except OSError as exc:
-            give_back()
+            settle(False)
             logger.warning("a lesson could not be written into the task agent space (%s)", type(exc).__name__)
             await self._note_unkept(commission, lesson, "unwritable")
             return "not kept: the files of the task agent space could not be written"
-        if how == _THERE:
-            give_back()
-        else:
-            keep()
+        except Exception:
+            # Nothing that is expected. The place is settled all the same,
+            # or the commission would be one short for as long as the host
+            # runs.
+            settle(bool(became) and became[0] != _THERE)
+            raise
+        settle(how != _THERE)
         if self._ledger is not None:
             # On the commission's record too, so the board can show it.
             await self._ledger.append_event(
