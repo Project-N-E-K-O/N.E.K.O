@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 350" fill="none">
+  <rect width="880" height="350" rx="14" fill="#111827"/>
+  <rect x="1" y="1" width="878" height="348" rx="13" stroke="#374151" stroke-width="2"/>
+  <rect x="1" y="1" width="878" height="42" rx="13" fill="#1F2937"/>
+  <text x="28" y="27" fill="#F9FAFB" font-family="system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="700">OpenAI Codex — Session Composer</text>
+
+  <rect x="32" y="66" width="816" height="206" rx="12" fill="#1F2937" stroke="#D966C6" stroke-width="2"/>
+  <text x="54" y="96" fill="#F472B6" font-family="system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="700">Paste N.E.K.O Plugin Setup Prompt (Ctrl+V / Cmd+V)</text>
+  <text x="54" y="124" fill="#F9FAFB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">You are my N.E.K.O plugin development assistant. Use neko-plugin CLI...</text>
+  <text x="54" y="150" fill="#D1D5DB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">## 1. Check git &amp; uv, clone/reuse Project-N-E-K-O/N.E.K.O, run uv sync</text>
+  <text x="54" y="174" fill="#D1D5DB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">## 2. Scaffold with: uv run neko-plugin init water_reminder --type plugin</text>
+  <text x="54" y="198" fill="#D1D5DB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">## 3-5. Follow plugin.sdk.plugin rules, run check / lint / pytest / build</text>
+  <text x="54" y="226" fill="#FDE68A" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">## 6. Request: Build water_reminder with remind_now entry + @llm_tool</text>
+
+  <rect x="708" y="288" width="140" height="36" rx="8" fill="#D966C6"/>
+  <text x="778" y="311" text-anchor="middle" fill="#FFFFFF" font-family="system-ui, -apple-system, sans-serif" font-size="13.5" font-weight="700">Send Prompt ↵</text>
+</svg>

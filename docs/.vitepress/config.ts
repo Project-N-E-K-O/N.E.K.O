@@ -338,6 +338,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
   const t = {
     en: {
       group: 'Plugin Development', overview: 'Overview',
+      agentGroup: 'Build with Coding Agents', agentStart: 'Choose Your Coding Agent', agentGuide: 'Walkthroughs: Codex & dsh',
       journey: 'Getting Started', anatomy: 'Getting Started with Plugin Development', quick: 'Quick Start', cli: 'Publish a Plugin',
       toml: 'Plugin Config (plugin.toml)',
       entries: 'Entries & Parameters', router: 'Router (Code Splitting)',
@@ -346,6 +347,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     },
     'zh-CN': {
       group: '插件开发', overview: '概览',
+      agentGroup: '用 AI 零基础做插件', agentStart: '选择你的 Coding Agent', agentGuide: '图文实操：Codex 与 dsh',
       journey: '旅程的起点', anatomy: '插件开发入门文档', quick: '快速开始', cli: '发布插件',
       toml: '插件配置 (plugin.toml)',
       entries: '入口与参数', router: 'Router（代码拆分）',
@@ -354,6 +356,7 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     },
     ja: {
       group: 'プラグイン開発', overview: '概要',
+      agentGroup: 'AI エージェントで作る', agentStart: 'Coding Agent を選ぶ', agentGuide: '画面付きガイド：Codex と dsh',
       journey: 'はじめの一歩', anatomy: 'プラグイン開発入門ガイド', quick: 'クイックスタート', cli: 'プラグインを公開',
       toml: 'プラグイン設定 (plugin.toml)',
       entries: 'エントリーとパラメータ', router: 'Router（コード分割）',
@@ -367,6 +370,14 @@ function pluginsSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       text: t.group,
       items: [
         { text: t.overview, link: `${p}/plugins/` },
+        {
+          text: t.agentGroup,
+          collapsed: false,
+          items: [
+            { text: t.agentStart, link: `${p}/plugins/coding-agents` },
+            { text: t.agentGuide, link: `${p}/plugins/coding-agent-guide` },
+          ],
+        },
         {
           text: t.journey,
           collapsed: false,
