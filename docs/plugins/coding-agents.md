@@ -1,48 +1,78 @@
 ---
 title: Build Plugins with Coding Agents
-description: Build your first N.E.K.O plugin without writing code — create a project in Plugin studio, send one message to any AI coding agent, then check, reload, and start it with buttons.
+description: Build your first N.E.K.O plugin without writing code — let an AI coding agent set everything up, or use the Plugin studio in your installed N.E.K.O app.
 ---
 
 # Build Plugins with Coding Agents
 
-You do not need to write code. N.E.K.O scaffolds the plugin project with instructions for the AI (AGENTS.md), the AI writes the code and runs everything itself, and you just click buttons.
+You do not need to write code. Pick an AI coding agent, copy one message to it, and the AI does the rest — you only click Allow and buttons in the app.
 
 **What you can build**: for example, a plugin where the catgirl reminds you to drink water, a tool she can call in chat, or a small panel showing today's tasks — if you can describe it in one sentence, you can build it.
 
-## 1. Get two things ready
+## 1. Pick a route
 
-- **N.E.K.O installed**: the desktop app or the [Steam version](https://store.steampowered.com/app/4099310/__NEKO/).
-- **One AI coding agent**: pick one below, install it, and sign in. If unsure, open its official tutorial first.
+<div class="neko-route-cards">
+
+<div class="neko-route-card neko-route-card--recommended">
+
+### Route A: let the AI do it all (recommended)
+
+- You need: a coding agent
+- The AI prepares a source build of N.E.K.O itself, can check its own code, and changes reload automatically
+- The first setup downloads a lot, so it takes a while
+- It does not affect the N.E.K.O already installed on your computer (the first time the web page opens you fill in a model API key once in the UI)
+
+</div>
+
+<div class="neko-route-card">
+
+### Route B: use your installed Steam / desktop app, click yourself
+
+- You need: an installed N.E.K.O + [Git](https://git-scm.com/downloads) (install it with the official installer)
+- Quick to start
+- The AI cannot run checks or read logs, so when something fails you paste the error back to it
+- After every change you click Reload on the plugin page yourself
+
+</div>
+
+</div>
+
+## 2. Choose your agent
 
 <CodingAgentOnboarding section="agent" />
 
-## 2. Click New plugin in Plugin studio
+## 3. Copy this message and send it to the AI
 
-Open the N.E.K.O plugin manager, go to **Plugin studio** in the sidebar, and click **New plugin**: enter a name and ID, pick a parent folder, click **Preview project** to see the standard files it creates (AGENTS.md, CLAUDE.md, and more), then click **Create plugin**. **Remember where this project folder is** — you need it next.
-
-![Creating a plugin in Plugin studio and previewing the standard files](/images/plugins/onboarding/neko-studio-new-en.png)
-
-## 3. Open the folder in your agent
-
-Following the hints in your selected agent's card above, open the new plugin folder in that app and allow it to edit files and run actions.
-
-## 4. Copy this message and send it to the AI
+Pick a route on the card (A or B) first, then copy.
 
 <CodingAgentOnboarding section="prompt" />
 
-The AI reads AGENTS.md, writes the code, and runs the checks itself. Click Allow whenever it asks to run something; it will ask you in plain words if it gets stuck.
+## 4. Route A: let the AI guide you from scratch
 
-## 5. See it work in the studio
+1. **Open an empty folder** in your agent (anywhere — a dedicated folder for this project).
+2. Send it the "Route A" message above.
+3. Click Allow whenever the AI asks to run something; it downloads, installs, and configures everything itself, which takes a while. When it gives you a URL, open the web page — the first time, fill in a model API key in the UI when prompted.
+4. In the web plugin manager, click **Start** to try your plugin; every later change reloads automatically.
+5. Next time you want to continue, just tell the AI "start N.E.K.O for me".
 
-On the project detail page click **Open in plugin manager**, then click **Start** in the top-right corner of the plugin page to try it; after each new change, click **Reload**. To verify the project, the studio's **Publish** tab has **Run check**; to change features, just keep chatting with the AI.
+![The plugin page has Start and Reload buttons](/images/plugins/onboarding/neko-plugin-detail-en.png)
 
-![Studio project detail: refresh, open folder, open in plugin manager](/images/plugins/onboarding/neko-studio-project-en.png)
+## 5. Route B: use your installed N.E.K.O
+
+1. Install Git first: on the [official download page](https://git-scm.com/downloads), pick your OS and run the installer.
+2. Open the N.E.K.O plugin manager, go to **Plugin studio** in the sidebar, and click **New plugin**: enter a name and ID, pick a parent folder, click **Preview project** to confirm the standard files, then **Create plugin**. **Remember where this project folder is.**
+
+   ![Creating a plugin in Plugin studio and previewing the standard files](/images/plugins/onboarding/neko-studio-new-en.png)
+
+3. **Open this plugin project folder** in your agent.
+4. Send it the "Route B" message above.
+5. Click **Start** on the plugin page to try it; after each change the AI makes, click **Reload**. If something fails, paste the error back to the AI as-is.
 
 ![The plugin page has Start and Reload buttons](/images/plugins/onboarding/neko-plugin-detail-en.png)
 
 ## 6. Share it with others
 
-**Build package** in the studio exports a `.neko-plugin` file you can send to friends — they click **Import** on the Plugins page to install it. To publish to the Market, see [Publish a Plugin](/plugins/cli).
+On Route B, click **Build package** in the studio; on Route A, just ask the AI to package it. Either way you get a `.neko-plugin` file you can send to friends — they click **Import** on the Plugins page to install it. Publishing to the Market needs a source build, so only Route A can publish directly — see [Publish a Plugin](/plugins/cli).
 
 ![Friends install your .neko-plugin package via Import on the Plugins page](/images/plugins/onboarding/neko-import-dialog-en.png)
 

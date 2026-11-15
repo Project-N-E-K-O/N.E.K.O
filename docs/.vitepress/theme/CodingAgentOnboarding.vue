@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useData } from 'vitepress'
-import { selectedAgentId } from './agent-selection'
+import { selectedAgentId, selectedRoute } from './agent-selection'
 import {
   ONBOARDING_COPY,
   buildSetupPrompt,
@@ -29,7 +29,7 @@ const activeAgent = computed(() => {
 })
 
 const generatedPrompt = computed(() =>
-  buildSetupPrompt(locale.value, pluginIdea.value),
+  buildSetupPrompt(locale.value, pluginIdea.value, selectedRoute.value),
 )
 
 watch(
@@ -200,6 +200,27 @@ onBeforeUnmount(() => {
           <span>{{
             copiedKey === 'setup-prompt' ? `✓ ${copy.copiedPrompt}` : copy.copyPrompt
           }}</span>
+        </button>
+      </div>
+
+      <div class="NekoAgentOnboarding-routeSwitch" role="group">
+        <button
+          type="button"
+          class="NekoAgentOnboarding-routeBtn"
+          :class="{ 'is-active': selectedRoute === 'A' }"
+          :aria-pressed="selectedRoute === 'A'"
+          @click="selectedRoute = 'A'"
+        >
+          {{ copy.routeALabel }}
+        </button>
+        <button
+          type="button"
+          class="NekoAgentOnboarding-routeBtn"
+          :class="{ 'is-active': selectedRoute === 'B' }"
+          :aria-pressed="selectedRoute === 'B'"
+          @click="selectedRoute = 'B'"
+        >
+          {{ copy.routeBLabel }}
         </button>
       </div>
 
@@ -551,5 +572,83 @@ onBeforeUnmount(() => {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.NekoAgentOnboarding-routeSwitch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.NekoAgentOnboarding-routeBtn {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 999px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease;
+}
+
+.NekoAgentOnboarding-routeBtn:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+}
+
+.NekoAgentOnboarding-routeBtn.is-active {
+  border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+}
+</style>
+
+<!-- Route cards written in the markdown pages live outside this component,
+     so their styles must be unscoped. -->
+<style>
+.neko-route-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 12px 0 4px;
+}
+
+.neko-route-card {
+  padding: 14px 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+}
+
+.neko-route-card--recommended {
+  border-color: var(--vp-c-brand-1);
+}
+
+.neko-route-card h3 {
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+  color: var(--vp-c-text-1);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.neko-route-card ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--vp-c-text-2);
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+@media (max-width: 720px) {
+  .neko-route-cards {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

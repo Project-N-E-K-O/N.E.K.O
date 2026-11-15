@@ -27,6 +27,8 @@ export interface OnboardingCopy {
   contextNoteHeading: string
   promptTitle: string
   promptDesc: string
+  routeALabel: string
+  routeBLabel: string
   ideaLabel: string
   ideaPlaceholder: string
   copyPrompt: string
@@ -67,45 +69,100 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   return false
 }
 
-export function buildSetupPrompt(locale: DocsLocale, userIdea: string): string {
+export function buildSetupPrompt(
+  locale: DocsLocale,
+  userIdea: string,
+  route: 'A' | 'B',
+): string {
   const trimmed = userIdea.trim()
 
   if (locale === 'zh-CN') {
+    if (route === 'A') {
+      const ideaStep = trimmed
+        ? `5. 我想做：${trimmed}
+   先用大白话给我一个简短方案，等我确认后再写代码。写完自己跑检查，修好所有错误。`
+        : '5. 我还没想好做什么。读完 AGENTS.md 后，给我 3 个适合新手的点子让我挑，等我选好再写方案。'
+
+      return `我想用源码版 N.E.K.O 做一个插件。我不会用终端：所有命令都由你自己执行，不要让我去运行；需要我做的只有在你的界面里点「允许」，或在浏览器里点按钮。耗时的步骤先告诉我大概要等多久。
+
+请按顺序做：
+1. 准备工具：检查 git、uv、Node.js，缺什么就自己装。下载慢或失败时自己换国内镜像（GitHub、PyPI、npm），不要来问我。
+2. 准备 N.E.K.O 源码：在当前文件夹里按仓库 README 中从源码运行的步骤完成（部分克隆 https://github.com/Project-N-E-K-O/N.E.K.O 、uv sync、构建前端）。如果已有 N.E.K.O 文件夹就直接复用，不要删除或覆盖。
+3. 用独立的开发实例启动：按仓库 docs/contributing/developer-notes.md 里「Two backends on one machine」的做法，给它单独的数据目录、锁目录和端口，不要动我电脑上已安装的 N.E.K.O 的数据；同时设置 NEKO_PLUGIN_HOT_RELOAD=true，在后台运行 launcher.py，然后把网页地址告诉我。第一次打开如果需要配置模型 API，告诉我在网页的哪里填。
+4. 创建插件：在 N.E.K.O 仓库根目录运行 uv run neko-plugin init <插件ID> --name "<插件名>"，之后严格按插件目录里的 AGENTS.md 工作。
+${ideaStep}
+6. 告诉我在网页的插件管理里点哪里启动和试用。以后我对你说「帮我启动 N.E.K.O」，你就按第 3 步的方式重新启动。`
+    }
+
     const ideaLine = trimmed
-      ? `我想做：${trimmed}`
-      : '我还没想好做什么。请读完 AGENTS.md 后，给我 3 个适合新手的点子让我挑。'
+      ? `我想做：${trimmed}
+先用大白话给我一个简短方案，等我确认后再动手。`
+      : '我还没想好做什么。读完 AGENTS.md 后，给我 3 个适合新手的点子让我挑。'
 
-    return `这个文件夹是一个 N.E.K.O 插件项目。请先阅读 AGENTS.md，并按里面的要求工作（如果没有 AGENTS.md，请告诉我先把 N.E.K.O 更新到最新版本）。
+    return `这个文件夹是我在 N.E.K.O「插件制作工作台」里新建的插件项目，请先阅读 AGENTS.md 并按它工作。
+我用的是 Steam / 桌面版，电脑上没有 N.E.K.O 源码，所以 AGENTS.md 里需要源码的检查命令跑不了：写完后请仔细自查代码，然后告诉我在插件页点「启动」或「重载」；如果出错，我会把报错原样发给你。
+我不会用终端，不要让我运行任何命令。
 
-${ideaLine}
-
-请先用大白话给我一个简短方案，等我确认后再动手。我不会用终端，需要运行的命令都由你自己执行，不要让我去运行。
-做完后告诉我：在 N.E.K.O 里点哪里启动、重载插件，以及怎样试用效果。`
+${ideaLine}`
   }
 
   if (locale === 'ja') {
+    if (route === 'A') {
+      const ideaStep = trimmed
+        ? `5. 作りたいもの：${trimmed}
+   まず初心者にも分かる短い案を出し、私が確認してからコードを書いてください。書き終わったら自分でチェックを実行し、エラーをすべて直してください。`
+        : '5. まだ作りたいものが決まっていません。AGENTS.md を読んだあと、初心者向けのアイデアを 3 つ提案し、私が選んでから案を出してください。'
+
+      return `ソース版 N.E.K.O でプラグインを作りたいです。私はターミナルを使えません。コマンドはすべてあなたが実行し、私に実行させないでください。私がするのは、あなたの画面で「許可」を押すことと、ブラウザでボタンを押すことだけです。時間のかかる手順は、先にだいたいの所要時間を教えてください。
+
+順番にお願いします：
+1. ツールの準備：git、uv、Node.js を確認し、足りないものは自分でインストールしてください。ダウンロードが遅い・失敗するときは自分でミラー（GitHub、PyPI、npm）に切り替え、私に聞かないでください。
+2. N.E.K.O ソースの準備：現在のフォルダで、リポジトリ README のソースから実行する手順を完了させてください（部分クローン https://github.com/Project-N-E-K-O/N.E.K.O 、uv sync、フロントエンドのビルド）。すでに N.E.K.O フォルダがあれば削除・上書きせず再利用してください。
+3. 独立した開発インスタンスで起動：リポジトリの docs/contributing/developer-notes.md の「Two backends on one machine」に従い、専用のデータディレクトリ・ロックディレクトリ・ポートを使い、私の PC にインストール済みの N.E.K.O のデータに触れないでください。NEKO_PLUGIN_HOT_RELOAD=true を設定し、launcher.py をバックグラウンドで実行して、Web ページの URL を教えてください。初回にモデル API の設定が必要なら、Web ページのどこに入力するか教えてください。
+4. プラグインの作成：N.E.K.O リポジトリのルートで uv run neko-plugin init <プラグインID> --name "<プラグイン名>" を実行し、その後はプラグイン内の AGENTS.md に厳密に従って作業してください。
+${ideaStep}
+6. Web ページのプラグイン管理で起動・試用のために押すべきボタンを教えてください。今後「N.E.K.O を起動して」と言ったら、手順 3 と同じ方法で再起動してください。`
+    }
+
     const ideaLine = trimmed
-      ? `作りたいもの：${trimmed}`
+      ? `作りたいもの：${trimmed}
+まず初心者にも分かる短い案を出し、私が確認してから着手してください。`
       : 'まだ作りたいものが決まっていません。AGENTS.md を読んだあと、初心者向けのアイデアを 3 つ提案してください。'
 
-    return `このフォルダは N.E.K.O プラグインのプロジェクトです。まず AGENTS.md を読み、その指示に従って作業してください（AGENTS.md がない場合は、N.E.K.O を最新版に更新するよう私に伝えてください）。
+    return `このフォルダは、N.E.K.O の「プラグイン制作」で新規作成したプラグインプロジェクトです。まず AGENTS.md を読み、それに従って作業してください。
+私は Steam / デスクトップ版を使っていて、N.E.K.O のソースがありません。AGENTS.md にあるソース版用のチェックコマンドは実行できないので、書き終わったら自分でコードを入念に確認し、プラグイン画面で押すべき「起動」「リロード」を教えてください。エラーが出たら、そのまま貼って送ります。
+私はターミナルを使えません。私にコマンドを実行させないでください。
 
-${ideaLine}
+${ideaLine}`
+  }
 
-まず初心者にも分かる短い案を出し、私が確認してから着手してください。私はターミナルを使えません。コマンドはすべてあなたが実行し、私に実行させないでください。
-完成したら、N.E.K.O でプラグインを起動・リロードするために押すボタンと、試す方法を教えてください。`
+  if (route === 'A') {
+    const ideaStep = trimmed
+      ? `5. I want to build: ${trimmed}
+   First give me a short plain-language plan and wait for my confirmation before writing code. After writing, run the checks yourself and fix every error.`
+      : '5. I have not decided yet. After reading AGENTS.md, offer me 3 beginner-friendly ideas, and wait for my pick before writing the plan.'
+
+    return `I want to build a plugin for the source version of N.E.K.O. I cannot use a terminal: run every command yourself and never ask me to run one. The only things I should do are click "Allow" in your interface or click buttons in the browser. For slow steps, tell me roughly how long they will take.
+
+Please do this in order:
+1. Prepare the tools: check git, uv, and Node.js, and install whatever is missing yourself. If downloads are slow or fail, switch to a mirror yourself (GitHub, PyPI, npm) — do not ask me.
+2. Get the N.E.K.O source: inside the current folder, follow the "run from source" steps in the repo README (partial clone https://github.com/Project-N-E-K-O/N.E.K.O , uv sync, build the frontend). If a N.E.K.O folder already exists, reuse it — do not delete or overwrite it.
+3. Launch an isolated dev instance: follow "Two backends on one machine" in docs/contributing/developer-notes.md — separate data directory, lock directory, and port; do not touch the data of my installed N.E.K.O. Set NEKO_PLUGIN_HOT_RELOAD=true, run launcher.py in the background, then give me the web page URL. If it asks to configure a model API key the first time, tell me where in the web UI to enter it.
+4. Create the plugin: run uv run neko-plugin init <plugin id> --name "<plugin name>" in the N.E.K.O repo root, then strictly follow the AGENTS.md inside the plugin directory.
+${ideaStep}
+6. Tell me where to click in the plugin manager on the web page to start and try it. Later, when I say "start N.E.K.O for me", restart it the same way as step 3.`
   }
 
   const ideaLine = trimmed
-    ? `I want to build: ${trimmed}`
+    ? `I want to build: ${trimmed}
+First give me a short plain-language plan and wait for my confirmation before acting.`
     : "I haven't decided yet. After reading AGENTS.md, offer me 3 beginner-friendly ideas to pick from."
 
-  return `This folder is a N.E.K.O plugin project. Please read AGENTS.md first and follow it (if there is no AGENTS.md, tell me to update N.E.K.O to the latest version instead).
+  return `This folder is a plugin project I created in N.E.K.O "Plugin studio". Please read AGENTS.md first and work by it.
+I use the Steam / desktop build and have no N.E.K.O source checkout, so the source-based check commands in AGENTS.md will not work: after writing the code, review it carefully yourself, then tell me to click "Start" or "Reload" on the plugin page. If something goes wrong, I will paste the error back to you.
+I cannot use a terminal — never ask me to run any command.
 
-${ideaLine}
-
-Give me a short plain-English plan first and wait for my confirmation before acting. I cannot use a terminal — run any commands yourself and never ask me to run them.
-When done, tell me where to click in N.E.K.O to start and reload the plugin, and how to try it out.`
+${ideaLine}`
 }
 
 const zhAgents: AgentConfig[] = [
@@ -605,7 +662,9 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     allowActionsHeading: '允许 AI 执行操作',
     contextNoteHeading: '小提示',
     promptTitle: '复制这段话发给 AI',
-    promptDesc: '把这段话粘贴到 Agent 的对话框里发送即可。',
+    promptDesc: '选好路线，把这段话粘贴到 Agent 的对话框里发送即可。',
+    routeALabel: '路线 A：全交给 AI',
+    routeBLabel: '路线 B：用已装好的 N.E.K.O',
     ideaLabel: '可选：先写一句你想做的插件（留空也行，AI 会给你出点子）',
     ideaPlaceholder: '例如：做一个提醒喝水的插件，猫娘会定时提醒我',
     copyPrompt: '一键复制',
@@ -623,7 +682,9 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     allowActionsHeading: 'Let the AI take actions',
     contextNoteHeading: 'Good to know',
     promptTitle: 'Copy this message and send it to the AI',
-    promptDesc: 'Paste it into your agent’s chat box and send.',
+    promptDesc: 'Pick a route, paste the message into your agent’s chat box and send.',
+    routeALabel: 'Route A: let the AI do it all',
+    routeBLabel: 'Route B: use my installed N.E.K.O',
     ideaLabel: 'Optional: describe your plugin idea in one line (or leave blank and let the AI suggest ideas)',
     ideaPlaceholder: 'e.g. a plugin where the catgirl reminds me to drink water',
     copyPrompt: 'Copy',
@@ -641,7 +702,9 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     allowActionsHeading: 'AI に操作を許可する',
     contextNoteHeading: '補足',
     promptTitle: 'この文をコピーして AI に送信',
-    promptDesc: 'Agent のチャット欄に貼り付けて送るだけです。',
+    promptDesc: 'ルートを選び、この文を Agent のチャット欄に貼って送るだけです。',
+    routeALabel: 'ルート A：全部 AI に任せる',
+    routeBLabel: 'ルート B：インストール済みの N.E.K.O を使う',
     ideaLabel: '任意：作りたいプラグインを 1 文で入力（空欄なら AI が提案します）',
     ideaPlaceholder: '例：猫娘が水分補給を教えてくれるプラグイン',
     copyPrompt: 'コピー',
