@@ -1220,6 +1220,33 @@ async def test_commissions_that_ended_at_one_moment_are_all_reached_across_batch
     assert state["sessions_cleaned_until"] == world.clock.now - SPACE_TRANSCRIPT_KEPT_SECONDS
 
 
+async def test_a_session_of_exactly_the_time_the_scan_reached_is_looked_at_once(world):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    commission = await world.finished(calls=0)
+    _fill_session(world.paths.session_dir(commission.id))
+    # Old enough to the second: the scan ends exactly at it.
+    world.clock.now = commission.updated_at + SPACE_TRANSCRIPT_KEPT_SECONDS
+    looked_at: list[str] = []
+    remove = world.keeper._clean_session
+
+    def removing(directory: Path, commission_id: str) -> str:
+        looked_at.append(commission_id)
+        return remove(directory, commission_id)
+
+    world.keeper._clean_session = removing
+
+    await world.keeper.tidy(force=True)
+    assert looked_at == [commission.id]
+    assert not (world.paths.session_dir(commission.id) / "transcript.jsonl").exists()
+
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+    await world.keeper.tidy(force=True)
+
+    assert looked_at == [commission.id]
+
+
 async def test_a_remembered_session_that_was_taken_up_again_is_let_go(world):
     from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
 
