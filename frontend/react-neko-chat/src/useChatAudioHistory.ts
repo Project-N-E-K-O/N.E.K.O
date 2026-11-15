@@ -16,7 +16,7 @@ type PendingAudio = { target: string; row: AudioRow; saveLocal: boolean };
 type HistoryAvailability = boolean | undefined;
 export type OlderRecordingsStatus = 'idle' | 'loading' | 'failed';
 export const OlderRecordingsStatusContext = createContext<OlderRecordingsStatus | undefined>(undefined);
-const HISTORY_TIMEOUT_MS = 5000;
+const HISTORY_PAGE_TIMEOUT_MS = 5000;
 
 export function chatAudioUrl(character: string, id?: string) {
   const path = id ? `/${encodeURIComponent(id)}` : '';
@@ -67,7 +67,6 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
       const request = new AbortController();
       controller = request;
       const { signal } = request;
-      const timeout = setTimeout(() => request.abort(), HISTORY_TIMEOUT_MS);
       latest = (async () => {
         const rows: AudioRow[] = [];
         let before: number | null = null;
@@ -78,20 +77,25 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
             publishRows(rows, before);
           }
           const url = chatAudioUrl(character) + (before === null ? '' : `&before=${before}`);
-          const response = await fetch(url, { signal, cache: 'no-store' });
-          if (!response.ok) {
-            if (signal.aborted || disposed) return undefined;
-            if (response.status !== 403 && response.status !== 404) return undefined;
-            setLoaded({ target: character, rows: [], more: false });
-            setPending(entries => entries.filter(entry => entry.target !== character || !entry.saveLocal));
-            canLoadOlder = false;
-            available = false;
-            return available;
+          const timeout = setTimeout(() => request.abort(), HISTORY_PAGE_TIMEOUT_MS);
+          try {
+            const response = await fetch(url, { signal, cache: 'no-store' });
+            if (!response.ok) {
+              if (signal.aborted || disposed) return undefined;
+              if (response.status !== 403 && response.status !== 404) return undefined;
+              setLoaded({ target: character, rows: [], more: false });
+              setPending(entries => entries.filter(entry => entry.target !== character || !entry.saveLocal));
+              canLoadOlder = false;
+              available = false;
+              return available;
+            }
+            const page: { messages: AudioRow[]; next_before: number | null } = await response.json();
+            rows.push(...page.messages);
+            before = page.next_before;
+            if (before === null) break;
+          } finally {
+            clearTimeout(timeout);
           }
-          const page: { messages: AudioRow[]; next_before: number | null } = await response.json();
-          rows.push(...page.messages);
-          before = page.next_before;
-          if (before === null) break;
         }
         if (signal.aborted || disposed) return undefined;
         pages = requestedPages;
@@ -108,7 +112,7 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
           setPagination({ target: character, status: olderStatus });
         }
         return result;
-      }).finally(() => clearTimeout(timeout));
+      });
       return latest;
     }
 

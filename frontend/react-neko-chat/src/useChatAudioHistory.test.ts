@@ -66,6 +66,36 @@ it.each([true, false])('handles a remote send failure according to whether it wa
   }
 });
 
+it('loads a fifth recording page when each request meets its timeout', async () => {
+  vi.useFakeTimers();
+  const fetchHistory = vi.fn((url: string, { signal }: RequestInit) => {
+    const before = new URL(url, 'http://localhost').searchParams.get('before');
+    const page = before === null ? 1 : Number(before);
+    return new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(Response.json({
+        messages: [{ ...historyRow, request_id: String(page) }],
+        next_before: page < 5 ? page + 1 : null,
+      })), 1100);
+      signal!.addEventListener('abort', () => {
+        clearTimeout(timer);
+        reject(signal!.reason);
+      }, { once: true });
+    });
+  });
+  vi.stubGlobal('fetch', fetchHistory);
+  const { result } = renderHook(() => useChatAudioHistory('YUI', 'You'));
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(1100); });
+  for (let pages = 2; pages <= 5; pages++) {
+    expect(result.current.onLoadOlder).toBeDefined();
+    act(() => { result.current.onLoadOlder?.(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1100 * pages); });
+    expect(result.current.messages).toHaveLength(pages);
+  }
+  expect(result.current.onLoadOlder).toBeUndefined();
+  expect(result.current.loadOlderStatus).toBe('idle');
+});
+
 it('keeps a confirmed recording playable when the history refresh times out', async () => {
   vi.useFakeTimers();
   const fetchHistory = vi.fn().mockResolvedValueOnce(historyPage());
