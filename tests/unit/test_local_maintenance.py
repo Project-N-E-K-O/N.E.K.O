@@ -595,6 +595,16 @@ class MaintenanceTests(unittest.TestCase):
             maintain.verify(self.repo, policy)
         self.assertFalse((maintain.state_dir(self.repo) / "verified.json").exists())
 
+    def test_verify_detects_file_hidden_as_sparse_during_suite(self):
+        policy = self.policy(
+            "import subprocess; from pathlib import Path; "
+            "subprocess.run(['git', 'update-index', '--skip-worktree', "
+            "'app/main.py'], check=True); "
+            "Path('app/main.py').unlink()"
+        )
+        receipt = self.assert_failed_verification(policy)
+        self.assertFalse(receipt["source_unchanged"])
+
     def test_official_identity_rejects_multiple_origin_urls(self):
         self.git(
             "config",

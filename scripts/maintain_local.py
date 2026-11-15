@@ -263,6 +263,11 @@ def source_snapshot(repo):
         "index_sha256": hashlib.sha256(
             subprocess.check_output(["git", "ls-files", "--stage", "-z"], cwd=repo)
         ).hexdigest(),
+        # --stage omits skip-worktree/assume-unchanged; record them separately so
+        # a suite cannot hide a deletion by flagging the file mid-verification.
+        "index_flags_sha256": hashlib.sha256(
+            subprocess.check_output(["git", "ls-files", "-v", "-z"], cwd=repo)
+        ).hexdigest(),
         "diff_sha256": hashlib.sha256(
             subprocess.check_output(
                 [
