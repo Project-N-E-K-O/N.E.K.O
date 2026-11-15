@@ -219,6 +219,27 @@ def test_the_directory_name_reads_backwards_to_the_id(root, plugin_id) -> None:
     assert re.fullmatch(r"[a-z0-9_~-]+", resolve_plugin_shared_dir(plugin_id).name)
 
 
+@pytest.mark.parametrize("plugin_id", ["A" * 100, "a" * 300, "天气" * 40, "Plugin_" * 40])
+def test_a_long_plugin_id_gets_a_name_a_file_system_takes(root, plugin_id) -> None:
+    directory = resolve_plugin_shared_dir(plugin_id)
+
+    assert len(directory.name.encode("utf-8")) <= 120
+    directory.mkdir(parents=True)
+    (directory / "x.json").write_text("{}", encoding="utf-8")
+    assert (resolve_plugin_shared_dir(plugin_id) / "x.json").is_file()
+
+
+def test_long_plugin_ids_that_begin_alike_do_not_share_a_directory(root) -> None:
+    first, second = "A" * 100 + "x", "A" * 100 + "y"
+
+    assert resolve_plugin_shared_dir(first) != resolve_plugin_shared_dir(second)
+    # Nor is a shortened name the name of a short id.
+    shortened = resolve_plugin_shared_dir(first).name
+    assert resolve_plugin_shared_dir(shortened).name != shortened
+    # An id that fits is not shortened.
+    assert resolve_plugin_shared_dir("a" * 120).name == "a" * 120
+
+
 def test_private_state_keeps_its_directory_names(root, tmp_path) -> None:
     # Only the shared directory tells such ids apart; private paths are as they were.
     assert _plugin(tmp_path, "weather_").storage_dir == root / "plugins" / "weather"

@@ -68,6 +68,8 @@ _CLEANABLE = frozenset({"done", "failed", "cancelled"})
 _REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
 _EVENT_PAGE = 500
 _CLEAN_BATCH = 200
+# Sorts after every commission id (ids are hex digits).
+_AFTER_EVERY_ID = "~"
 _LANGUAGES = {
     "zh": "Simplified Chinese",
     "zh-CN": "Simplified Chinese",
@@ -678,11 +680,20 @@ class SpaceKeeper:
             if moved is not None:
                 logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary))
 
-    def _ended_long_ago(self, conn: sqlite3.Connection, after: float, until: float) -> list[sqlite3.Row]:
+    def _ended_long_ago(
+        self, conn: sqlite3.Connection, after: float, after_id: str, until: float
+    ) -> list[sqlite3.Row]:
+        """Return a batch of old ended commissions that come after ``(after, after_id)``, in that order.
+
+        The id is part of the order and of where the scan stands: with the
+        time alone, commissions that share one time and do not fit in one
+        batch would be skipped by the next.
+        """
         return conn.execute(
             "SELECT * FROM commissions WHERE route = 'task_agent' AND status IN ('done', 'failed', 'cancelled') "
-            "AND updated_at > ? AND updated_at <= ? ORDER BY updated_at ASC LIMIT ?",
-            (after, until, _CLEAN_BATCH),
+            "AND (updated_at > ? OR (updated_at = ? AND id > ?)) AND updated_at <= ? "
+            "ORDER BY updated_at ASC, id ASC LIMIT ?",
+            (after, after, after_id, until, _CLEAN_BATCH),
         ).fetchall()
 
     @staticmethod
@@ -727,8 +738,12 @@ class SpaceKeeper:
         from utils.asyncio_executor import to_thread_through_cancellation
 
         if self._hold_session is not None and not self._hold_session(commission.id):
-            # In use, or on its way to be: it comes round again once it has ended and aged.
-            return _NOTHING
+            # In use, or on its way to be. Not passed over: a commission
+            # whose taking up fails before its status changes is as old as
+            # it was, and the scan does not come by it again. It is looked
+            # at again next round; one that went on to work and ended anew
+            # is dropped then, being young.
+            return _NOT_REMOVED
         try:
             current = await self._ledger.get(commission.id)
             if current is None or current.status not in _CLEANABLE or current.updated_at > until:
@@ -755,6 +770,10 @@ class SpaceKeeper:
             return
         stored = state.get("sessions_cleaned_until")
         after = float(stored) if isinstance(stored, (int, float)) else 0.0
+        # Where the scan stands among commissions of that very time; empty
+        # when all of them are done with.
+        stored_id = state.get("sessions_cleaned_id")
+        after_id = stored_id if isinstance(stored_id, str) else ""
         until = now - SPACE_TRANSCRIPT_KEPT_SECONDS
         # Looked at is not cleaned. A session whose files could not be
         # removed (held open by another program) is remembered by itself
@@ -779,15 +798,25 @@ class SpaceKeeper:
             commission = await self._ledger.get(commission_id)
             if commission is not None:
                 await clean(commission)
-        reached = after
-        if until > after:
+        reached, reached_id = after, after_id
+        if until >= after:
             rows = await self._ledger.run(
-                lambda conn: [_commission(row) for row in self._ended_long_ago(conn, after, until)]
+                lambda conn: [_commission(row) for row in self._ended_long_ago(conn, after, after_id, until)]
             )
-            commissions = [item for item in rows if item is not None and item.id not in waiting]
-            for commission in commissions:
-                await clean(commission)
-            # A full batch leaves the rest to the next round, which goes on where this one stopped.
-            reached = rows[-1].updated_at if len(rows) >= _CLEAN_BATCH and rows[-1] is not None else until
-        if reached != after or still != waiting:
-            await self._space.write_state(sessions_cleaned_until=reached, sessions_to_retry=still)
+            found = [item for item in rows if item is not None]
+            for commission in found:
+                if commission.id not in waiting:
+                    await clean(commission)
+            if len(found) >= _CLEAN_BATCH:
+                # A full batch leaves the rest to the next round, which goes
+                # on right after the last one of this round.
+                reached, reached_id = found[-1].updated_at, found[-1].id
+            else:
+                # Everything up to ``until`` is done with. The largest id
+                # there can be keeps what is of exactly that time, and was
+                # looked at, from being found again.
+                reached, reached_id = until, _AFTER_EVERY_ID
+        if (reached, reached_id) != (after, after_id) or still != waiting:
+            await self._space.write_state(
+                sessions_cleaned_until=reached, sessions_cleaned_id=reached_id, sessions_to_retry=still
+            )

@@ -983,8 +983,8 @@ async def test_a_commission_taken_up_again_since_the_query_keeps_its_transcript(
     world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
     found = world.keeper._ended_long_ago
 
-    def query(conn: Any, after: float, until: float) -> Any:
-        rows = found(conn, after, until)
+    def query(conn: Any, after: float, after_id: str, until: float) -> Any:
+        rows = found(conn, after, after_id, until)
         # Between the query and the removal the user's words take the failed one up again.
         conn.execute("UPDATE commissions SET status = 'working' WHERE id = ?", (resumed.id,))
         return rows
@@ -1031,6 +1031,16 @@ async def test_a_session_in_use_is_not_cleaned_and_a_cleaned_one_is_held_meanwhi
     assert not (world.paths.session_dir(free.id) / "transcript.jsonl").exists()
     assert held == [free.id] and released == [free.id]
     assert seen_held_while_removing == [True]
+    # The one in use is not passed over: its taking up may fail without its
+    # status changing, and then it is as old as it was.
+    assert (await world.space.read_state())["sessions_to_retry"] == [in_use.id]
+
+    world.keeper._hold_session = lambda commission_id: True
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    assert not (world.paths.session_dir(in_use.id) / "transcript.jsonl").exists()
+    assert (await world.space.read_state())["sessions_to_retry"] == []
 
 
 async def test_a_session_whose_files_could_not_be_removed_is_tried_again_next_round(world):
@@ -1177,6 +1187,37 @@ async def test_a_cleaning_that_is_cancelled_holds_the_session_until_the_removing
         await task
     assert released == [commission.id]
     assert not (world.paths.session_dir(commission.id) / "transcript.jsonl").exists()
+
+
+async def test_commissions_that_ended_at_one_moment_are_all_reached_across_batches(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    monkeypatch.setattr("nekoclaw.host.space_keeper._CLEAN_BATCH", 2)
+    # Stopped together: the same time on every one of them.
+    commissions = [await world.finished(f"old task number {number} words{number}", calls=0) for number in range(5)]
+    assert len({commission.updated_at for commission in commissions}) == 1
+    later = await world.finished("ended a little later", calls=0)
+    for commission in (*commissions, later):
+        _fill_session(world.paths.session_dir(commission.id))
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    looked_at: list[str] = []
+    remove = world.keeper._clean_session
+
+    def removing(directory: Path, commission_id: str) -> str:
+        looked_at.append(commission_id)
+        return remove(directory, commission_id)
+
+    world.keeper._clean_session = removing
+
+    for _round in range(4):
+        await world.keeper.tidy(force=True)
+
+    for commission in (*commissions, later):
+        assert not (world.paths.session_dir(commission.id) / "transcript.jsonl").exists(), commission.title
+    # Each once: a round goes on right after the last one of the round before.
+    assert sorted(looked_at) == sorted(commission.id for commission in (*commissions, later))
+    state = await world.space.read_state()
+    assert state["sessions_cleaned_until"] == world.clock.now - SPACE_TRANSCRIPT_KEPT_SECONDS
 
 
 async def test_a_remembered_session_that_was_taken_up_again_is_let_go(world):

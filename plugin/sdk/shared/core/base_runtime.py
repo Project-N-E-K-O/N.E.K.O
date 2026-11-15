@@ -10,6 +10,7 @@ The maintainer emphatically forbids reintroducing loguru here. Lint: scripts/che
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -108,6 +109,11 @@ _SHARED_PLAIN_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
 _WINDOWS_DEVICE_NAMES = frozenset(
     {"con", "prn", "aux", "nul"} | {f"{prefix}{digit}" for prefix in ("com", "lpt") for digit in "123456789"}
 )
+# File systems take names of up to 255 bytes; a plugin id has no length limit
+# and an escaped character takes three. A longer name keeps its beginning
+# and ends in a hash of the whole id.
+_SHARED_NAME_MAX_CHARS = 120
+_SHARED_NAME_KEPT_CHARS = 96
 
 
 def _shared_dirname(plugin_id: object) -> str:
@@ -136,6 +142,11 @@ def _shared_dirname(plugin_id: object) -> str:
         # Windows reads these as devices, not as directories. Two tildes
         # cannot come from an escaped character, which is one tilde and hex.
         return f"~~{name}"
+    if len(name) > _SHARED_NAME_MAX_CHARS:
+        # ``~h`` cannot come from an escaped character either (``h`` is no
+        # hex digit), so a shortened name is never another id's full one.
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return f"{name[:_SHARED_NAME_KEPT_CHARS]}~h{digest}"
     return name
 
 
