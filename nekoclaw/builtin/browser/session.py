@@ -91,6 +91,9 @@ OBJECT_GROUP = "nekoclaw-action"
 # how long each answer is waited for.
 _HELD_ONE_BY_ONE = frozenset({"page", "iframe", "service_worker", "shared_worker"})
 _KEEP_OPEN_TIMEOUT_SECONDS = 5.0
+# What the browser answers a command about a target with when there is no
+# such target (it was closed meanwhile).
+_NO_SUCH_TARGET_CODE = -32602
 
 
 def is_web_page(url: str) -> bool:
@@ -367,6 +370,10 @@ class BrowserSession:
         # before, and nothing else tells it from one that is merely not in
         # use.
         self._unwanted = False
+        # How often that was said. A start reads it when it begins: said
+        # while a browser is being started and connected to, it is said of
+        # that browser, and connecting to it must not take it back.
+        self._unwanted_said = 0
         # The process the browser's windows belong to, as the browser tells
         # it, asked once per connection.
         self._window_pid: int | None = None
@@ -387,6 +394,7 @@ class BrowserSession:
         """Connect to a browser, starting one when needed. Does nothing while connected."""
         if self.connected:
             return
+        said_before = self._unwanted_said
         await self._settle_abandoned()
         await self._drop_connection()
         settings = await asyncio.to_thread(self._settings.load)
@@ -495,7 +503,10 @@ class BrowserSession:
         self._browser = browser
         self._reached = None
         # Connected to for a call: wanted, whatever was said of the one before.
-        self._unwanted = False
+        # Not when it was said while this one was being started: the closing
+        # that follows waits its turn behind this very call and may be
+        # stopped before it comes.
+        self._unwanted = self._unwanted_said != said_before
         # One that could not be closed earlier and is driven again (found
         # running on its profile) is this one now, and closed as this one.
         self._unclosed = [left for left in self._unclosed if left.user_data_dir != browser.user_data_dir]
@@ -584,27 +595,56 @@ class BrowserSession:
         that is running cannot be taken hold of at all: it is closed. A page
         that needs one makes it anew when it loads, and that one is held
         like everything new.
+
+        One of them that is still there and could not be dealt with (it
+        refused, or did not answer, twice) goes on reaching the ports. The
+        browser is then not taken for one that is kept from them as a whole:
+        every page is kept from them itself when it is worked on, as in a
+        browser that cannot hold requests for all of it.
         """
         patterns = {"patterns": self._block_patterns()}
 
-        async def keep(kind: str, target_id: str) -> None:
-            try:
-                if kind == "shared_worker":
+        async def taken_hold_of(kind: str, target_id: str) -> bool:
+            """Deal with one target; False when it is still there and still reaches the ports.
+
+            One that is gone by now (closed meanwhile) has nothing left to
+            reach them with, and is no failure.
+            """
+            if kind == "shared_worker":
+                try:
                     await connection.send("Target.closeTarget", {"targetId": target_id}, timeout=_KEEP_OPEN_TIMEOUT_SECONDS)
-                    return
+                    return True
+                except CdpError as exc:
+                    return exc.code == _NO_SUCH_TARGET_CODE
+                except CdpTimeout:
+                    return False
+            try:
                 attached = await connection.send(
                     "Target.attachToTarget", {"targetId": target_id, "flatten": True}, timeout=_KEEP_OPEN_TIMEOUT_SECONDS
                 )
-                session_id = str(attached["sessionId"])
-                try:
-                    await connection.send("Fetch.enable", patterns, session_id=session_id, timeout=_KEEP_OPEN_TIMEOUT_SECONDS)
-                finally:
-                    await self._send_quietly(connection, "Target.detachFromTarget", {"sessionId": session_id}, None)
-            except (CdpError, CdpTimeout):
-                # Gone meanwhile, as a rule. The kind only: an address may carry a token.
-                logger.warning(
-                    "a %s that was open before could not be kept from this application's own ports", kind, exc_info=True
-                )
+            except CdpError as exc:
+                return exc.code == _NO_SUCH_TARGET_CODE
+            except CdpTimeout:
+                return False
+            session_id = str(attached["sessionId"])
+            try:
+                await connection.send("Fetch.enable", patterns, session_id=session_id, timeout=_KEEP_OPEN_TIMEOUT_SECONDS)
+                return True
+            except CdpError as exc:
+                return exc.code == SESSION_GONE_CODE
+            except CdpTimeout:
+                return False
+            finally:
+                await self._send_quietly(connection, "Target.detachFromTarget", {"sessionId": session_id}, None)
+
+        async def keep(kind: str, target_id: str) -> bool:
+            # Twice: a browser that is busy for a moment answers the second time.
+            for _ in range(2):
+                if await taken_hold_of(kind, target_id):
+                    return True
+            # The kind only: an address may carry a token.
+            logger.warning("a %s that was open before could not be kept from this application's own ports", kind)
+            return False
 
         # All at once: one that does not answer must not hold up the others.
         outcomes = await asyncio.gather(
@@ -618,6 +658,18 @@ class BrowserSession:
         for outcome in outcomes:
             if isinstance(outcome, BaseException):
                 raise outcome  # The connection went: there is no browser to drive.
+        if not all(outcomes):
+            # Something that is still open reaches the ports: this is not a
+            # browser that is kept from them as a whole. Taken for one, a page
+            # that is worked on later would not be kept from them itself
+            # (``_attached``), the one that could not be taken hold of here
+            # among them. What is neither worked on nor loaded anew stays as
+            # it is, as in a browser that cannot hold requests for all of it.
+            self._blocked_everywhere = False
+            logger.warning(
+                "not everything that was open in the browser could be kept from this application's own ports; "
+                "each page is, when it is worked on"
+            )
 
     @staticmethod
     async def _ask_whether_headless(connection: CdpConnection, browser: launcher.RunningBrowser) -> None:
@@ -743,6 +795,7 @@ class BrowserSession:
         use meanwhile (``shows_a_window``).
         """
         self._unwanted = True
+        self._unwanted_said += 1
 
     @property
     def shows_a_window(self) -> bool:
@@ -763,7 +816,7 @@ class BrowserSession:
 
     async def close(self) -> None:
         """Drop the connection and close the browser if this process started it."""
-        self._unwanted = True
+        self.no_longer_wanted()
         await self._settle_abandoned()
         browser = self._browser
         connection = self._connection

@@ -922,8 +922,10 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     may have ended and another may be using the group. That one is left
     alone, and the answer says so: ``not_stopped`` lists each group that
     was asked about and is used by another commission, with the commission
-    that uses it. Without ``commission_id`` whoever uses the group is
-    stopped, as before, and the answer has no ``not_stopped``.
+    that uses it. Without ``commission_id`` (``null`` is taken as not
+    given) whoever uses the group is stopped, as before, and the answer has
+    no ``not_stopped``. Anything else that is not a non-empty string is
+    refused.
     """
     from nekoclaw.host.capabilities import BUILTIN_GROUPS
 

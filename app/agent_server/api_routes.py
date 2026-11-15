@@ -522,6 +522,11 @@ async def agent_command(payload: Dict[str, Any]):
         else:
             Modules.analyzer_enabled = False
             Modules.analyzer_profile = {}
+            # The user has said the browser is not wanted, and that stands
+            # whatever the switch reads by the time ``end_all`` below gets
+            # round to the browser: it waits for the tasks to be stopped
+            # first, and the switch may have been put on again meanwhile.
+            builtin_provider.browser_no_longer_wanted()
             # Invalidate an in-flight user-plugin enable/readiness task before
             # stopping its lifecycle.  The sub-flag intent itself remains ON.
             Modules.user_plugin_lifecycle_seq += 1
@@ -1041,6 +1046,9 @@ async def admin_control(payload: Dict[str, Any]):
     elif action == "disable_analyzer":
         Modules.analyzer_enabled = False
         Modules.analyzer_profile = {}
+        # Said at once, as where the master switch is put off by a command:
+        # the switch may read on again by the time ``end_all`` looks at it.
+        builtin_provider.browser_no_longer_wanted()
         # cascade end_all
         await admin_control({"action": "end_all"})
         return {"success": True, "analyzer_enabled": False}

@@ -74,7 +74,7 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 
 请求体：可选的 `{"group":"keyboard_mouse"}` 或 `{"group":"browser"}`；不带 `group` 就两组都停。未知的 group 返回 `400`。响应是 `{"success":true,"stopped":["<委托号>", ...]}`，没有委托占用时列表为空。叫停和对这件委托调用 `POST /tasks/{task_id}/cancel` 做的事一样：先写状态，再取消正在做的调用，桌面或浏览器随即放开。
 
-请求体里可以再带 `commission_id`，指明这次叫停冲着哪件委托（`builtin_activity` 事件里带着它）。带了以后，只有这件委托正占着被问到的那一组才停；那一组被别的委托占着时不停，响应里多一个 `not_stopped`：`[{"group":"browser","commission_id":"<占着它的委托号>"}, ...]`，没有这种情况时是空列表。叫停请求可能在路上耽搁，送到时原来那件委托已经结束、这一组换了别的委托在用，带上 `commission_id` 就不会误停后者。不带 `commission_id` 时行为和响应都不变。`commission_id` 不是非空字符串时返回 `400`。
+请求体里可以再带 `commission_id`，指明这次叫停冲着哪件委托（`builtin_activity` 事件里带着它）。带了以后，只有这件委托正占着被问到的那一组才停；那一组被别的委托占着时不停，响应里多一个 `not_stopped`：`[{"group":"browser","commission_id":"<占着它的委托号>"}, ...]`，没有这种情况时是空列表。叫停请求可能在路上耽搁，送到时原来那件委托已经结束、这一组换了别的委托在用，带上 `commission_id` 就不会误停后者。不带 `commission_id`，或者写成 `null`，行为和响应都不变。别的不是非空字符串的值（空字符串、数字、列表等）返回 `400`。
 
 ### `GET /builtin/browser/settings`
 

@@ -101,7 +101,7 @@
 
 请求体：可选的 `{"group":"keyboard_mouse"}` 或 `{"group":"browser"}`；不带 `group` 就两组都停。响应是 `{"success":true,"stopped":["<任务 id>", ...]}`，没有任务在用时列表为空。它做的事和对占着这一组的任务调用 `POST /api/agent/tasks/{task_id}/cancel` 一样。未知的 group 返回 `400`；`504` 表示请求已到达 Agent Server，但响应超时。
 
-请求体里可以再带 `commission_id`，指明这次叫停冲着哪个任务，就是 `agent_builtin_activity` 消息里的那个值。带了以后，只有这个任务正在用被问到的那一组才停；那一组被别的任务用着时不停，响应里多一个 `not_stopped`：`[{"group":"browser","commission_id":"<正在用它的任务 id>"}, ...]`，没有这种情况时是空列表。叫停请求可能在路上耽搁，送到时原来的任务已经结束、这一组换了别的任务在用，带上 `commission_id` 就不会误停后者。不带 `commission_id` 时行为和响应都不变。`commission_id` 不是非空字符串时返回 `400`。
+请求体里可以再带 `commission_id`，指明这次叫停冲着哪个任务，就是 `agent_builtin_activity` 消息里的那个值。带了以后，只有这个任务正在用被问到的那一组才停；那一组被别的任务用着时不停，响应里多一个 `not_stopped`：`[{"group":"browser","commission_id":"<正在用它的任务 id>"}, ...]`，没有这种情况时是空列表。叫停请求可能在路上耽搁，送到时原来的任务已经结束、这一组换了别的任务在用，带上 `commission_id` 就不会误停后者。不带 `commission_id`，或者写成 `null`，行为和响应都不变。别的不是非空字符串的值（空字符串、数字、列表等）返回 `400`。
 
 ### `GET /api/agent/builtin/browser/settings`
 
