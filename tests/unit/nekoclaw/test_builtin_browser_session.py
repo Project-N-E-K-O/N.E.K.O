@@ -4063,21 +4063,15 @@ async def test_a_browser_that_is_closed_while_it_is_being_set_up_is_one_the_user
     await session.start()
     world.browser.disconnect()
     assert session.closed_by_user is True
-    session.reopen_agreed()
-    await session.start()
-    assert session.closed_by_user is False
-
-    # Closed once more, and the user agrees once more; this time they close it again while it is
-    # being connected to.
-    world.browser.disconnect()
-    assert session.closed_by_user is True
-    session.reopen_agreed()
+    # The call the user agreed to connects to it again, and they close it again meanwhile.
+    assert session.use_reopen_agreement(session.reopen_agreed()) is True
     send = FakeConnection.send
 
     async def closed_meanwhile(self: Any, method: str, params: Any = None, **options: Any) -> dict[str, Any]:
         if method == "Target.getTargets":
-            # A tab had been seen, so the agreement is used up; then the window is closed.
+            # A window had been seen, so nothing was on record any more; then it is closed.
             session._note_target({"targetId": "seen", "type": "page", "url": "about:blank", "title": ""})
+            assert session.closed_by_user is False
             world.browser.disconnect()
             raise CdpClosed("the connection to the browser is closed")
         return await send(self, method, params, **options)
@@ -4086,11 +4080,43 @@ async def test_a_browser_that_is_closed_while_it_is_being_set_up_is_one_the_user
         patch.setattr(FakeConnection, "send", closed_meanwhile)
         with pytest.raises(BrowserError, match="did not answer"):
             await session.start()
+    session.reopening_over()
 
     # The connection was dropped, and it is still known that the user closed it.
     assert not session.connected and session.closed_by_user is True
-    session.reopen_agreed()
-    assert session.closed_by_user is False
+
+
+async def test_a_call_that_was_let_open_the_browser_and_lost_it_leaves_it_on_record_as_closed(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    session = make_session(own_ports=lambda: OWN)
+    await session.start()
+    world.browser.disconnect()
+    assert session.use_reopen_agreement(session.reopen_agreed()) is True
+
+    # The start of that call drops what was left of the connection, and no browser comes up.
+    await session._drop_connection()
+    session.reopening_over()
+
+    # Nothing is left that could say so, and it is still one the user closed.
+    assert session.closed_by_user is True
+
+
+async def test_an_agreement_is_what_lets_a_call_open_the_browser_and_nothing_else(make_session: Any, world: BrowserWorld) -> None:
+    session = make_session(own_ports=lambda: OWN)
+    await session.start()
+    world.browser.disconnect()
+    agreement = session.reopen_agreed()
+
+    # Having agreed changes nothing by itself, and nobody's agreement is no agreement.
+    assert session.closed_by_user is True
+    assert session.use_reopen_agreement(None) is False and session.use_reopen_agreement(agreement + 1) is False
+    assert session.use_reopen_agreement(agreement) is True
+    # Used up by that.
+    assert session.use_reopen_agreement(agreement) is False
+    await session.start()
+    session.reopening_over()
+    assert session.connected and session.closed_by_user is False
 
 
 async def test_a_browser_whose_tabs_have_not_been_looked_up_yet_is_not_one_the_user_closed(

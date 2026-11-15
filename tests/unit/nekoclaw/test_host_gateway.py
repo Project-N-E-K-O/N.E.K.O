@@ -909,8 +909,14 @@ class Builtins:
             for name, (group, definition, needs_images) in self.definitions.items()
         ]
 
-    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> Any:
+    async def run(
+        self, capability: Any, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None
+    ) -> Any:
         self.calls.append((capability.tool_name, commission_id, dict(arguments)))
+        self.reopened = [*self.reopened, reopen_agreement]
+        if reopen_agreement is not None:
+            # The call the user agreed to opens the browser again.
+            self.closed_by_user = False
         if self.observe is not None:
             self.observed.append(self.observe())
         self.started.set()
@@ -934,9 +940,12 @@ class Builtins:
     def browser_closed_by_user(self) -> bool:
         return self.closed_by_user
 
+    # The agreement each call was carried out with, in order (None: none).
+    reopened: list[Any] = []
+
     def browser_reopen_agreed(self) -> str:
+        # Agreed to for one call: the browser stays closed until that call is carried out.
         self.agreed += 1
-        self.closed_by_user = False
         return f"agreement-{self.agreed}"
 
     # What had been carried out each time a call of a browser tool was said to be over.
@@ -1977,6 +1986,8 @@ async def test_a_browser_the_user_closed_is_asked_about_before_a_call_opens_it_a
     }
     assert result.get("isError") is not True and builtin_host.provider.agreed == 1
     assert len(builtin_host.provider.calls) == 2
+    # The agreement went with the very call it was given for, and with no other.
+    assert builtin_host.provider.reopened == [None, "agreement-1"]
     # Open again, it is a browser like before: not asked about until it is closed again.
     await _call(builtin_host, grant, "browser_take_screenshot")
     assert len(asker.asked) == 1 and len(builtin_host.provider.calls) == 3
@@ -2155,7 +2166,7 @@ async def test_the_permission_for_the_browser_given_in_the_same_call_stands_for_
     # One question, not two in a row.
     assert [ask.category for _cid, ask in asker.asked] == ["browser"]
     assert result.get("isError") is not True and builtin_host.provider.agreed == 1
-    assert len(builtin_host.provider.calls) == 1
+    assert len(builtin_host.provider.calls) == 1 and builtin_host.provider.reopened == ["agreement-1"]
 
 
 async def test_a_refused_permission_for_the_browser_is_not_followed_by_a_question_about_opening_it(builtin_host):

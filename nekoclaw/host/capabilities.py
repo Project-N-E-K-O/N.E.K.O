@@ -446,12 +446,22 @@ class CapabilityRegistry:
             return []
 
     async def run_builtin(
-        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None
     ) -> BuiltinOutcome:
-        """Carry out one call of a built-in tool through the provider."""
+        """Carry out one call of a built-in tool through the provider.
+
+        ``reopen_agreement`` is what the provider called the user's
+        agreement to this call opening a browser they closed
+        (``browser_reopen_agreed``); only a provider that gave one is handed
+        it back.
+        """
         if self._builtins is None:
             return BuiltinOutcome(False, "this capability is not offered by this process")
-        return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
+        if reopen_agreement is None:
+            return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
+        return await self._builtins.run(
+            capability, commission_id=commission_id, arguments=arguments, reopen_agreement=reopen_agreement
+        )
 
     def browser_closed_by_user(self) -> bool:
         """Whether the user closed the browser the built-in tools started and has not agreed to another. Must not block."""

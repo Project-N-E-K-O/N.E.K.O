@@ -926,7 +926,16 @@ async def test_a_browser_that_does_not_answer_in_time_is_a_failed_outcome(tools:
     )
 
 
-async def test_a_browser_the_user_closed_is_not_opened_again_until_they_agree(tools: BrowserTools, world: BrowserWorld) -> None:
+async def agreed_call(tools: BrowserTools, name: str, **arguments: Any) -> BuiltinOutcome:
+    """Call one browser tool as the call the user agreed may open the browser they closed."""
+    return await asyncio.wait_for(
+        tools.call(TOOL_PREFIX + name, arguments, reopen_agreement=tools.reopen_agreed()), 10.0
+    )
+
+
+async def test_a_browser_the_user_closed_is_opened_again_only_by_the_call_they_agreed_to(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
     assert tools.closed_by_user() is False
     await on_the_order_form(tools)
     assert tools.closed_by_user() is False
@@ -939,116 +948,139 @@ async def test_a_browser_the_user_closed_is_not_opened_again_until_they_agree(to
     assert await call(tools, "navigate_page", url=THANKS) == BuiltinOutcome(False, CLOSED_BY_USER)
     assert len(world.launched) == 1 and len(world.connected) == 1 and world.browser.since(sent) == []
 
-    tools.reopen_agreed()
-    assert tools.closed_by_user() is False
-    outcome = await call(tools, "take_snapshot")
+    outcome = await agreed_call(tools, "take_snapshot")
     assert outcome.success and len(world.connected) == 2
     assert snapshot_of(outcome.text)[0].endswith('RootWebArea "Order form"')
+    assert tools.closed_by_user() is False
     # The uids of before the break are of the old connection's snapshot.
     stale = await call(tools, "click", uid="1_4")
     assert not stale.success and "not found on page 2" in stale.text
     # Agreed to once, not for good: closed once more, it is asked about once more.
-    assert tools.closed_by_user() is False
     world.browser.disconnect()
     assert tools.closed_by_user() is True
     assert await call(tools, "take_snapshot") == BuiltinOutcome(False, CLOSED_BY_USER)
 
 
-async def test_an_agreement_that_opened_no_browser_is_not_kept_for_a_later_call(tools: BrowserTools, world: BrowserWorld) -> None:
+async def test_an_agreement_given_for_one_call_opens_the_browser_for_no_other(tools: BrowserTools, world: BrowserWorld) -> None:
     await on_the_order_form(tools)
     world.browser.disconnect()
-    tools.reopen_agreed()
-    assert tools.closed_by_user() is False
+    # The user agreed to a call that is still waiting its turn.
+    agreement = tools.reopen_agreed()
 
-    # The call the user agreed for never got to the browser (it was stopped while it waited its turn).
-    tools.reopen_agreement_over()
-
+    # To every other call the browser is as closed as before, whoever asks and however often.
     assert tools.closed_by_user() is True
     assert await call(tools, "take_snapshot") == BuiltinOutcome(False, CLOSED_BY_USER)
+    assert await call(tools, "new_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
     assert len(world.connected) == 1
 
+    # And the call it was given for still has it.
+    outcome = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=agreement), 10.0)
+    assert outcome.success and len(world.connected) == 2
 
-async def test_an_agreement_that_opened_no_browser_is_not_kept_where_nothing_is_left_of_the_browser(
-    tools: BrowserTools, world: BrowserWorld
-) -> None:
+
+async def test_an_agreement_is_used_once(tools: BrowserTools, world: BrowserWorld) -> None:
     await on_the_order_form(tools)
     world.browser.disconnect()
-    # Every task was stopped since: what was left of the browser is cleared away.
-    await tools.aclose()
-    tools.reopen_agreed()
-    assert tools.closed_by_user() is False
+    agreement = tools.reopen_agreed()
+    assert (await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=agreement), 10.0)).success
+    world.browser.disconnect()
+
+    again = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=agreement), 10.0)
+
+    assert again == BuiltinOutcome(False, CLOSED_BY_USER) and len(world.connected) == 2
+    # One that was never given opens nothing either.
+    never = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=99), 10.0)
+    assert never == BuiltinOutcome(False, CLOSED_BY_USER)
+
+
+async def test_an_agreement_whose_call_is_over_opens_nothing_any_more(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    stopped = tools.reopen_agreed()
+    waiting = tools.reopen_agreed()
+
+    # The first call never got to the browser (it was stopped while it waited its turn).
+    tools.reopen_agreement_over(stopped)
+
+    late = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=stopped), 10.0)
+    assert late == BuiltinOutcome(False, CLOSED_BY_USER) and len(world.connected) == 1
+    # The other call's agreement is its own, and not ended along with it.
+    outcome = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=waiting), 10.0)
+    assert outcome.success and len(world.connected) == 2
+
+
+async def test_every_unused_agreement_ends_when_none_is_named(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    first, second = tools.reopen_agreed(), tools.reopen_agreed()
+    assert first != second
 
     tools.reopen_agreement_over()
 
-    # Nothing is held that could say so, and it is still known that the user closed it.
-    assert not tools.holds_a_browser() and tools.closed_by_user() is True
+    for agreement in (first, second):
+        outcome = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=agreement), 10.0)
+        assert outcome == BuiltinOutcome(False, CLOSED_BY_USER)
 
 
-async def test_a_browser_whose_windows_the_user_closed_is_given_none_by_a_start_nobody_agreed_to(
-    tools: BrowserTools, world: BrowserWorld
-) -> None:
-    await on_the_order_form(tools)
-    for page in list(world.browser.pages.values()):
-        world.browser.remove_page(page)
-    sent = world.browser.mark()
-
-    await tools.session.start()
-
-    assert world.browser.since(sent) == [] and world.browser.pages == {}
-
-
-async def test_a_call_that_ends_late_does_not_end_an_agreement_that_was_given_since(
-    tools: BrowserTools, world: BrowserWorld
-) -> None:
+async def test_an_agreement_that_opened_the_browser_leaves_nothing_to_end(tools: BrowserTools, world: BrowserWorld) -> None:
     await on_the_order_form(tools)
     world.browser.disconnect()
-    first = tools.reopen_agreed()
-    assert (await call(tools, "take_snapshot")).success
-    # The call the user agreed for goes on (it waits for something on the page). They close the
-    # browser again, and agree to another task opening it; that task still waits its turn.
-    world.browser.disconnect()
-    second = tools.reopen_agreed()
-    assert second != first
+    agreement = tools.reopen_agreed()
+    assert (await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=agreement), 10.0)).success
 
-    tools.reopen_agreement_over(first)
-
-    # The agreement that stands is the other call's to use, or to end.
-    assert tools.closed_by_user() is False
-    tools.reopen_agreement_over(second)
-    assert tools.closed_by_user() is True
-
-
-async def test_an_agreement_that_opened_the_browser_is_used_up_and_nothing_is_left_to_end(
-    tools: BrowserTools, world: BrowserWorld
-) -> None:
-    await on_the_order_form(tools)
-    world.browser.disconnect()
-    tools.reopen_agreed()
-    assert (await call(tools, "take_snapshot")).success
-
-    tools.reopen_agreement_over()
-    # Never agreed to anything, too: nothing changes.
+    tools.reopen_agreement_over(agreement)
     tools.reopen_agreement_over()
 
     assert tools.closed_by_user() is False and (await call(tools, "take_snapshot")).success
 
 
-async def test_the_call_the_user_agreed_for_gives_a_browser_that_is_still_connected_to_its_window_back(
+async def test_an_agreement_brought_to_a_browser_that_is_open_is_not_used(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    assert (await agreed_call(tools, "take_snapshot")).success
+    # Another call was agreed to while the browser was closed, and finds it open.
+    spare = tools.reopen_agreed()
+    assert (await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=spare), 10.0)).success
+    world.browser.disconnect()
+
+    # It was not needed, and is still that call's: handed back when the call is over.
+    tools.reopen_agreement_over(spare)
+    late = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=spare), 10.0)
+    assert late == BuiltinOutcome(False, CLOSED_BY_USER)
+
+
+async def test_a_call_that_was_let_open_the_browser_and_opened_none_leaves_it_closed(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    # Every task was stopped since: nothing is held of the browser that could say it was closed.
+    await tools.aclose()
+    assert not tools.holds_a_browser()
+
+    # The call had its turn, and no browser came of it (it could not be started).
+    assert tools.session.use_reopen_agreement(tools.reopen_agreed()) is True
+    tools.session.reopening_over()
+
+    assert tools.closed_by_user() is True
+    assert await call(tools, "take_snapshot") == BuiltinOutcome(False, CLOSED_BY_USER)
+
+
+async def test_the_call_the_user_agreed_to_gives_a_browser_that_is_still_connected_to_its_window_back(
     tools: BrowserTools, world: BrowserWorld
 ) -> None:
     await on_the_order_form(tools)
     for page in list(world.browser.pages.values()):
         world.browser.remove_page(page)
-    tools.reopen_agreed()
+    assert tools.session.connected and tools.closed_by_user() is True
 
     # Whatever the call is about, here a look at the list of pages: it is the one that was agreed to,
     # and the window comes back with it, not with some later call nobody was asked about.
-    outcome = await call(tools, "list_pages")
-    tools.reopen_agreement_over()
+    outcome = await agreed_call(tools, "list_pages")
 
     assert outcome.success and "about:blank" in outcome.text
     assert [page.url for page in world.browser.pages.values()] == ["about:blank"]
-    assert tools.closed_by_user() is False
+    assert tools.closed_by_user() is False and len(world.connected) == 1
     # Closed again, the agreement of before does not stand for it.
     for page in list(world.browser.pages.values()):
         world.browser.remove_page(page)
@@ -1056,59 +1088,48 @@ async def test_the_call_the_user_agreed_for_gives_a_browser_that_is_still_connec
     assert await call(tools, "new_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
 
 
-async def test_an_agreement_is_over_with_its_call_where_the_window_could_not_be_given_back(
+async def test_a_call_nobody_agreed_to_gives_such_a_browser_no_window(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    sent = world.browser.mark()
+
+    assert await call(tools, "new_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
+    assert await call(tools, "list_pages") == BuiltinOutcome(False, CLOSED_BY_USER)
+    # Nor does a start that is not part of a call that was agreed to.
+    await tools.session.start()
+
+    assert world.browser.since(sent) == [] and world.browser.pages == {}
+
+
+async def test_the_window_that_could_not_be_given_back_leaves_the_browser_closed(
     tools: BrowserTools, world: BrowserWorld
 ) -> None:
     await on_the_order_form(tools)
     for page in list(world.browser.pages.values()):
         world.browser.remove_page(page)
     world.browser.refuse("Target.createTarget", "Not supported")
-    tools.reopen_agreed()
 
-    await call(tools, "list_pages")
-    tools.reopen_agreement_over()
+    await agreed_call(tools, "list_pages")
 
     # No window came of it: the next call is asked about like the one before.
     assert world.browser.pages == {} and tools.closed_by_user() is True
+    # And what the call was let do ended with it: no later start takes it for the one that was agreed to.
+    assert tools.session._reopening is False
+    assert await call(tools, "list_pages") == BuiltinOutcome(False, CLOSED_BY_USER)
 
 
-async def test_an_agreement_for_a_browser_that_is_still_connected_to_is_not_kept_when_its_call_never_got_there(
-    tools: BrowserTools, world: BrowserWorld
-) -> None:
+async def test_the_page_the_agreed_call_asks_for_is_opened_next_to_the_blank_one(tools: BrowserTools, world: BrowserWorld) -> None:
     await on_the_order_form(tools)
     for page in list(world.browser.pages.values()):
         world.browser.remove_page(page)
-    tools.reopen_agreed()
 
-    # The call was stopped while it waited for the browser to come free.
-    tools.reopen_agreement_over()
+    outcome = await agreed_call(tools, "new_page", url=ORDER)
 
-    assert tools.session.connected and tools.closed_by_user() is True
-    assert await call(tools, "new_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
-    assert world.browser.pages == {}
-
-
-
-
-async def test_a_browser_whose_last_window_the_user_closed_is_not_given_another_until_they_agree(
-    tools: BrowserTools, world: BrowserWorld
-) -> None:
-    await on_the_order_form(tools)
-    # The browser runs on in the background, still connected to.
-    for page in list(world.browser.pages.values()):
-        world.browser.remove_page(page)
-    assert tools.session.connected and tools.closed_by_user() is True
-    sent = world.browser.mark()
-
-    assert await call(tools, "new_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
-    assert world.browser.since(sent) == [] and world.browser.pages == {}
-
-    tools.reopen_agreed()
-    outcome = await call(tools, "new_page", url=ORDER)
     assert outcome.success, outcome.text
     # The window came back with a blank page, as a browser that is started has one, and the page asked for.
     assert sorted(page.url for page in world.browser.pages.values()) == sorted([ORDER, "about:blank"])
-    assert len(world.connected) == 1
+    assert len(world.connected) == 1 and tools.closed_by_user() is False
     # With a window again, it is one that can be closed again.
     for page in list(world.browser.pages.values()):
         world.browser.remove_page(page)
@@ -1165,8 +1186,7 @@ async def test_that_the_user_closed_the_browser_is_kept_when_what_it_left_is_cle
     assert tools.closed_by_user() is True
     assert await call(tools, "navigate_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
     assert len(world.launched) == 1
-    tools.reopen_agreed()
-    outcome = await call(tools, "navigate_page", url=ORDER)
+    outcome = await agreed_call(tools, "navigate_page", url=ORDER)
     assert outcome.success and len(world.launched) == 2 and tools.closed_by_user() is False
 
 

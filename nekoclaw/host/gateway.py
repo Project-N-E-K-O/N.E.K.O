@@ -860,22 +860,23 @@ class CapabilityGateway:
 
         if capability.kind == KIND_BUILTIN:
             if capability.group == BUILTIN_GROUP_BROWSER:
-                refusal, agreed, agreement = await self._ask_before_reopening(
+                refusal, agreement = await self._ask_before_reopening(
                     commission, capability, just_asked=decision.asked
                 )
                 if refusal is not None:
                     return refusal
-                if agreed:
+                if agreement is not None:
                     try:
-                        return await self._call_builtin(commission, capability, arguments)
+                        # What the user agreed to is this call opening the
+                        # browser: the agreement goes with it, and no other
+                        # call opens the browser on the strength of it.
+                        return await self._call_builtin(
+                            commission, capability, arguments, reopen_agreement=agreement
+                        )
                     finally:
-                        # What the user agreed to was this call opening the
-                        # browser. If it ended without (stopped, or the
-                        # browser stayed in use by another task), the next
-                        # one asks. Only the call that was agreed to ends
-                        # the agreement, and only its own: another one that
-                        # ends meanwhile must not take it away, nor this one
-                        # an agreement that was given to another since.
+                        # Should it have ended before it got to the browser
+                        # (stopped, or the browser stayed in use by another
+                        # task): the agreement ends with it.
                         self._registry.browser_reopen_agreement_over(agreement)
             return await self._call_builtin(commission, capability, arguments)
 
@@ -958,12 +959,12 @@ class CapabilityGateway:
 
     async def _ask_before_reopening(
         self, commission: Commission, capability: Capability, *, just_asked: bool
-    ) -> tuple[dict[str, Any] | None, bool, Any]:
+    ) -> tuple[dict[str, Any] | None, Any]:
         """Ask the user before a browser they closed is opened again.
 
         Returns what the task agent is told when it is not to be opened (or
-        None), whether the user agreed to this call opening it, and what
-        the provider calls that agreement.
+        None), and what the provider calls the user's agreement to this
+        call opening it (None when nothing was to be agreed to).
 
         The browser the tools started stays open between tasks. When the
         user has closed it, a call would start it anew and put the window
@@ -974,7 +975,7 @@ class CapabilityGateway:
         operate the browser), and that answer stands for this, too.
         """
         if not self._registry.browser_closed_by_user():
-            return None, False, None
+            return None, None
         if not just_asked:
             decision = await self._permissions.ask_each_time(
                 commission.id, BROWSER_REOPEN, detail={"tool": capability.tool_name, "capability": capability.id}
@@ -988,12 +989,12 @@ class CapabilityGateway:
                         "The user closed the browser, and does not want it opened again. Nothing was done. Go on "
                         "without the browser, or report that the task cannot be done without it.",
                         error=True,
-                    ), False, None
+                    ), None
                 return _text(
                     "The user closed the browser, and could not be asked whether it may be opened again. Nothing "
                     "was done.",
                     error=True,
-                ), False, None
+                ), None
             # The answer may have been long in coming, and the permission to
             # operate the browser was decided before the question: forbidden
             # in the settings since, it stays forbidden.
@@ -1001,11 +1002,11 @@ class CapabilityGateway:
                 await self._ledger.append_event(
                     commission.id, "capability_denied", {"capability": capability.id, "reason": DENIED_BY_SETTINGS}
                 )
-                return _text(DENIED_BY_SETTINGS, error=True), False, None
-        return None, True, self._registry.browser_reopen_agreed()
+                return _text(DENIED_BY_SETTINGS, error=True), None
+        return None, self._registry.browser_reopen_agreed()
 
     async def _call_builtin(
-        self, commission: Commission, capability: Capability, arguments: dict[str, Any]
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any], *, reopen_agreement: Any = None
     ) -> dict[str, Any]:
         """Carry out one call of a built-in tool for a commission.
 
@@ -1039,7 +1040,9 @@ class CapabilityGateway:
                 self._leases.release(commission.id)
                 return _text("this commission is no longer under way", error=True)
         try:
-            outcome = await self._registry.run_builtin(capability, commission_id=commission.id, arguments=arguments)
+            outcome = await self._registry.run_builtin(
+                capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on

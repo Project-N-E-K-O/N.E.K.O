@@ -196,8 +196,19 @@ class BuiltinToolProvider:
 
     # -- calls --------------------------------------------------------------
 
-    async def run(self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
-        """Carry out one call. Cancelling it stops what it started."""
+    async def run(
+        self,
+        capability: Capability,
+        *,
+        commission_id: str,
+        arguments: dict[str, Any],
+        reopen_agreement: int | None = None,
+    ) -> BuiltinOutcome:
+        """Carry out one call. Cancelling it stops what it started.
+
+        ``reopen_agreement``: the user's agreement to this call opening a
+        browser they closed (``browser_reopen_agreed``).
+        """
         group = capability.group
         ready, reason = self._ready(group or "")
         if not ready:
@@ -205,7 +216,7 @@ class BuiltinToolProvider:
         if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
             return await self._run_desktop(dict(arguments or {}))
         if group == BUILTIN_GROUP_BROWSER:
-            return await self._run_browser(capability.tool_name, dict(arguments or {}))
+            return await self._run_browser(capability.tool_name, dict(arguments or {}), reopen_agreement)
         return BuiltinOutcome(False, f"unknown tool {capability.tool_name}")
 
     async def _run_desktop(self, arguments: dict[str, Any]) -> BuiltinOutcome:
@@ -256,7 +267,9 @@ class BuiltinToolProvider:
             images = (BuiltinImage(base64.b64encode(result.screenshot).decode("ascii"), result.mime_type),)
         return BuiltinOutcome(True, result.text, images)
 
-    async def _run_browser(self, tool_name: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _run_browser(
+        self, tool_name: str, arguments: dict[str, Any], reopen_agreement: int | None = None
+    ) -> BuiltinOutcome:
         def still_on() -> str | None:
             # Asked when the call's turn has come: the browser may have been
             # switched off while it waited (or the process begun to shut
@@ -282,7 +295,12 @@ class BuiltinToolProvider:
             while under_way := self._kills_under_way():
                 # Not stopped along with this call, should it be stopped.
                 await asyncio.wait(under_way)
-            outcome = await self.browser().call(tool_name, arguments, refused=still_on)
+            if reopen_agreement is None:
+                outcome = await self.browser().call(tool_name, arguments, refused=still_on)
+            else:
+                outcome = await self.browser().call(
+                    tool_name, arguments, refused=still_on, reopen_agreement=reopen_agreement
+                )
         finally:
             self._end(BUILTIN_GROUP_BROWSER)
         self._tell_window()
@@ -347,10 +365,11 @@ class BuiltinToolProvider:
         return self._browser is not None and self._browser.closed_by_user()
 
     def browser_reopen_agreed(self) -> int | None:
-        """The user agreed to the browser they closed being opened again: the next call starts it.
+        """The user agreed to one call opening the browser they closed.
 
-        Returns which agreement this is, to be handed back when the call it
-        was given for is over (``browser_reopen_agreement_over``).
+        Returns the number of that agreement: handed to ``run`` with the
+        call it was given for, and handed back when that call is over
+        (``browser_reopen_agreement_over``). No other call opens the browser.
         """
         if self._browser is None:
             return None

@@ -910,7 +910,7 @@ Claude Code 和 dsh 也是这个形态：Claude Code 的键鼠、浏览器各是
 - 我们自己起的、有窗口的浏览器，不是我们关的却没了，就当作用户关的（`BrowserSession.closed_by_user`）：调试连接断了；或者连接还在、但一个标签页都不剩。浏览器自己崩溃和用户关掉，应用看到的都是「连接断了」，分不开，一律按被关掉算。没窗口的浏览器（没人能手动关它）、用户自己的浏览器、我们正在关或已经关掉的（保存了有变化的设置、退出应用）不算。
 - 这时使魔再调浏览器工具，网关在占用浏览器之前先问用户（`CapabilityGateway._ask_before_reopening`）：委托进入「等你回话」，她转述「要不要重新打开浏览器（之前开的那个被关掉了）」，两个选项：本次允许、拒绝。走的是权限提问的那条通道（`PermissionGate.ask_each_time`），但不看「浏览器」这一类权限的设置，选过「始终允许」也照样问；答案不保存。没有时限，没人回答就一直等，和别的提问一样，这期间不占着浏览器。
 - 同意：这一次调用照常做，浏览器重新起来。之后它是一个普通的浏览器，再被关掉就再问一次。没有「以后都直接开」这个选项。
-- 同意只管得到它的那一次调用。浏览器还连着、只是窗口全关了的，由这一次调用把窗口开回来（先开一个空白页，不管这次调用本身是做什么的），同意当场用掉。这次调用没走到浏览器（被叫停、等别的任务让出浏览器等到超时）或者没开成的，调用结束时同意作废，下一次要用仍然先问。别的调用结束不会带走这份同意。
+- 同意只管得到它的那一次调用，不记在整个浏览器上：提供方给每份同意一个编号，网关把它随这一次调用一路传到浏览器工具，只有带着这份同意的调用才能把浏览器开回来（`BrowserSession.use_reopen_agreement`）。别的调用，包括同时在等浏览器的另一件委托，看到的仍然是「被用户关掉了」，各自先问。浏览器还连着、只是窗口全关了的，由这一次调用把窗口开回来（先开一个空白页，不管这次调用本身是做什么的）。这次调用没走到浏览器（被叫停、等别的任务让出浏览器等到超时）的，调用结束时这份同意作废；走到了却没开出窗口的，浏览器照旧算被关掉的。两种情况下一次要用都仍然先问。
 - 问的期间「浏览器」这一类权限被改成了禁止：同意之后按新设置拒绝。
 - 拒绝，或者问不了：这一次调用什么都不做，回给使魔一句话（用户不同意重新打开；或没法问到用户），台账记一条 `capability_denied`。下一次调用还会问。
 - 同一次调用里刚问过「浏览器」这一类权限、用户同意了，就不再问第二遍。
@@ -1083,7 +1083,7 @@ Claude Code 和 dsh 也是这个形态：Claude Code 的键鼠、浏览器各是
 - `end_all`（`app/agent_server/api_routes.py`）：`browser_window_stays()` 为真时，对浏览器什么都不做；否则走原来关和杀的那段（挪成了 `_close_browser_at_end_all`，内容没变）。不再看总开关：关总开关也是走 `end_all`，有窗口的同样留着。
 - 自动停用（`capabilities.py` 里连通性检查失败的两处）和关浏览器工具的开关（`set_agent_flags`）：`_close_browser(..., leave_window=True)`，窗口留着时不关，能力位照旧写成不可用的原因。留不留由 `BrowserTools.aclose(keep_window=True)` 在拿到锁之后判断，也就是等正在进行的调用结束。
 - 保存浏览器设置（`set_browser_settings`）：存的和原来不一样时，在建后台关闭任务之前先调 `builtin_provider.browser_no_longer_wanted()`；`BrowserTools.aclose()`（不带 `keep_window`）一进来也先记一次。一样时什么都不做。退出应用那一处没动。
-- 用户关掉以后先问：`BrowserSession.closed_by_user`、`reopen_agreed()`，经 `BrowserTools`、`BuiltinToolProvider.browser_closed_by_user()`、`browser_reopen_agreed()`、`CapabilityRegistry` 的同名方法透到网关；网关在 `_call_capability` 里、占用浏览器之前问（`_ask_before_reopening`）。提问的类别名是 `browser_reopen`，不在权限设置里，文案在 `PERMISSION_CATEGORY_TEXTS`（八种语言）。
+- 用户关掉以后先问：`BrowserSession.closed_by_user`、`reopen_agreed()`（返回同意的编号）、`use_reopen_agreement()`、`reopen_agreement_over()`，经 `BrowserTools`、`BuiltinToolProvider.browser_closed_by_user()`、`browser_reopen_agreed()`、`browser_reopen_agreement_over()`、`CapabilityRegistry` 的同名方法透到网关；网关在 `_call_capability` 里、占用浏览器之前问（`_ask_before_reopening`），得到同意后把编号经 `run_builtin(..., reopen_agreement=…)`、提供方的 `run`、`BrowserTools.call` 传到会话。提问的类别名是 `browser_reopen`，不在权限设置里，文案在 `PERMISSION_CATEGORY_TEXTS`（八种语言）。
 - 补拦截：`BrowserSession._keep_what_was_open`，对我们自己的浏览器每次连上都做（刚启动的也做）；补不上的目标记在 `_not_kept` 里，其中的页面在 `_attached` 里补上了才操作。问有没有窗口：`_ask_whether_headless`，只对资料目录上早就在跑的浏览器做。
 - 横幅的 `ended` 事件不经过这些代码：它由委托放手时发出，浏览器留不留都照常发。
 - 不动模型调用：调用次数、token、延迟都不变。

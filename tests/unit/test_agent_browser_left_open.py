@@ -936,10 +936,18 @@ async def test_a_browser_the_user_closed_is_one_to_ask_about_whatever_was_stoppe
     assert not refused.success and refused.text.startswith("The browser was closed by the user.")
     assert len(world.launched) == 1 and len(world.connected) == 1
 
-    stage.provider.browser_reopen_agreed()
-    assert stage.provider.browser_closed_by_user() is False
-    outcome = await stage.browse(url=THANKS)
+    agreement = stage.provider.browser_reopen_agreed()
+    # Agreed to for one call: every other one is refused as before.
+    assert agreement is not None and stage.provider.browser_closed_by_user() is True
+    assert not (await stage.browse(url=THANKS)).success
+    # As the host carries it out: by the capability, with the agreement the provider gave for it.
+    (navigate,) = [item for item in stage.provider.available() if item.tool_name == "browser_navigate_page"]
+    outcome = await asyncio.wait_for(
+        stage.provider.run(navigate, commission_id="commission-1", arguments={"url": THANKS}, reopen_agreement=agreement),
+        10.0,
+    )
     assert outcome.success, outcome.text
+    assert stage.provider.browser_closed_by_user() is False
 
 
 async def test_a_browser_closed_for_changed_settings_is_started_again_without_asking(stage: Any, world: BrowserWorld) -> None:
@@ -957,14 +965,14 @@ async def test_the_provider_ends_the_agreement_it_is_handed_back_and_no_other(st
     await _on_the_order_form(stage)
     world.browser.disconnect()
     first = stage.provider.browser_reopen_agreed()
-    assert (await stage.browse(url=THANKS)).success
-    # Closed again while the call that was agreed to goes on, and agreed to once more for another task.
-    world.browser.disconnect()
     second = stage.provider.browser_reopen_agreed()
     assert first is not None and second not in (None, first)
 
+    # The first call is over before it got to the browser.
     stage.provider.browser_reopen_agreement_over(first)
-    assert stage.provider.browser_closed_by_user() is False
 
-    stage.provider.browser_reopen_agreement_over(second)
-    assert stage.provider.browser_closed_by_user() is True
+    late = await asyncio.wait_for(stage.provider._run_browser("browser_navigate_page", {"url": THANKS}, first), 10.0)
+    assert not late.success and late.text.startswith("The browser was closed by the user.")
+    assert len(world.connected) == 1
+    outcome = await asyncio.wait_for(stage.provider._run_browser("browser_navigate_page", {"url": THANKS}, second), 10.0)
+    assert outcome.success, outcome.text

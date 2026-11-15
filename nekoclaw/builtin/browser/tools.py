@@ -148,12 +148,19 @@ class BrowserTools:
         return self._session
 
     async def call(
-        self, tool_name: str, arguments: dict[str, Any], *, refused: Callable[[], str | None] | None = None
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        refused: Callable[[], str | None] | None = None,
+        reopen_agreement: int | None = None,
     ) -> BuiltinOutcome:
         """Carry out one call and return its answer; failures come back as text for the model.
 
         ``refused`` is asked once the call's turn has come and returns why
-        it is not to be carried out after all, or None.
+        it is not to be carried out after all, or None. ``reopen_agreement``
+        is the user's agreement to this call opening a browser they closed
+        (``reopen_agreed``); without it such a browser stays closed.
         """
         handler = self._handlers.get(tool_name[len(TOOL_PREFIX) :] if tool_name.startswith(TOOL_PREFIX) else "")
         if handler is None:
@@ -162,9 +169,10 @@ class BrowserTools:
             why = refused() if refused is not None else None
             if why:
                 return BuiltinOutcome(False, why)
-            if self._session.closed_by_user:
+            if self._session.closed_by_user and not self._session.use_reopen_agreement(reopen_agreement):
                 # The host asks the user before a call gets here; this one
-                # came without (the browser was closed after it looked).
+                # came without their agreement (the browser was closed after
+                # the host looked, or the agreement is another call's).
                 return BuiltinOutcome(False, CLOSED_BY_USER)
             try:
                 await self._session.start()
@@ -186,6 +194,7 @@ class BrowserTools:
                 # the page is let go of (see ``OBJECT_GROUP``). Under the
                 # lock, so that the next call's handles are not among them.
                 await self._session.release_handles()
+                self._session.reopening_over()
 
     async def released(self) -> None:
         """Another commission may use the browser next: the uids handed out so far stop working."""
