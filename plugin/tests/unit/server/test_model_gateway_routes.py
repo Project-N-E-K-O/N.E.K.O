@@ -1213,3 +1213,62 @@ async def test_exhausted_free_primary_falls_back_to_paid_manual_backup(http_clie
     assert attempts[0]["error_code"] == "agent_quota_exceeded"
     assert attempts[-1]["slot_id"] == SLOT_ID
     assert attempts[-1]["status"] == "success"
+
+
+async def test_legacy_disk_document_reads_through_real_store_and_explicit_temperature_calls(
+    http_client, setup_gateway, monkeypatch, tmp_path,
+):
+    # Full path: a pre-limit document on disk -> real ModelConfigStore.read()
+    # (whole-document validation) -> gateway call with an explicit temperature.
+    from contextlib import contextmanager
+
+    import utils.cloudsave_runtime as cloudsave
+    from plugin.server.infrastructure.model_config_store import CONFIG_FILENAME, ModelConfigStore
+    from utils.file_utils import atomic_write_json
+
+    class DiskConfigManager:
+        def get_runtime_config_path(self, filename):
+            return tmp_path / filename
+
+        def save_json_config(self, filename, data):
+            atomic_write_json(tmp_path / filename, data)
+
+    atomic_write_json(tmp_path / CONFIG_FILENAME, {
+        "schema_version": 1, "seed_version": 1,
+        "slots": {
+            HOST_SLOT_ID: {
+                "name": "Legacy host", "source": "host_follow", "host_api": "assist",
+                "capabilities": ["text", "streaming"],
+                "defaults": {"temperature": 1.5},
+            },
+        },
+        "bindings": {"alpha": {"analysis": HOST_SLOT_ID}},
+        "binding_versions": {"alpha": {"analysis": 1}},
+    })
+
+    @contextmanager
+    def writable(*_args, **_kwargs):
+        yield
+
+    monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", writable)
+    store = ModelConfigStore(DiskConfigManager())
+    monkeypatch.setattr(routes, "config_store", store)
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1",
+        "api_key": "free-access", "provider_type": "anthropic",
+    })
+
+    async def anthropic_upstream(request):
+        assert json.loads(request.content)["temperature"] == 0.5
+        return httpx.Response(200, json={
+            "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
+            "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 6, "output_tokens": 1},
+        })
+
+    setup_gateway.upstream.handler = anthropic_upstream
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
+    assert response.status_code == 200, response.text
+    assert consumed == ["plugin:alpha:analysis"]
+    # The legacy default survived the call untouched on disk.
+    assert store.read().slots[HOST_SLOT_ID].defaults.temperature == 1.5
