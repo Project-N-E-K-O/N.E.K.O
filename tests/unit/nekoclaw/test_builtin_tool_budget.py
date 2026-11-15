@@ -308,45 +308,39 @@ async def test_a_loaded_group_is_small_enough_never_to_lose_its_middle_to_the_ru
         assert count_tokens(refused["content"][0]["text"]) <= policy.prune_threshold_tokens, group
 
 
-async def test_in_every_window_that_can_hold_a_loaded_group_the_cap_on_one_result_holds_it_whole(host):
-    # The cap on one result is a quarter of the model's window. A group
-    # loaded by its name, or handed over in place of a call, comes as one
-    # text, so in a window small enough it would arrive cut (4096: a cap of
-    # 1024 against a group of up to 2000). No such window holds a task agent
-    # that uses the group, though: what every request carries before a word
-    # is said, and the group next to it, come to more than the size at which
-    # a conversation is summarized. This finds the smallest window in which
-    # they do fit, for the smallest fixed text a task agent of the host has,
-    # and holds the cap there against a group at its largest.
-    listed = await _listed(host, images=False)
+async def test_a_group_arrives_whole_in_the_smallest_window_there_is_however_it_is_handed_over(host, tmp_path):
+    from nekoclaw.runtime.context import ContextManager
+    from nekoclaw.runtime.loop.tools import AgentToolResult
 
-    def fixed_text(platform: str, workdir: str) -> int:
-        own = _own_tools(platform, workdir, images=False)
-        served = build_gateway_tools(
-            GatewayClient("http://127.0.0.1:1/mcp", "token"), listed, reserved={tool.name for tool in own}
-        )
-        tools = sorted([*own, *served], key=lambda tool: tool.name)
-        system = build_system_prompt(tool_names=[tool.name for tool in tools], workdir=workdir, platform=platform)
-        definitions = [[tool.name, tool.description, dict(tool.parameters)] for tool in tools]
-        return count_tokens(system + json.dumps(definitions, ensure_ascii=False))
+    async def no_summary(messages: Any, max_tokens: int) -> Any:
+        raise AssertionError("nothing is summarized here")
 
-    fixed = min(fixed_text(platform, workdir) for platform, workdir in PLATFORMS)
-    # The least a model may be given to answer in: the most room for the conversation.
-    least_output = ModelConfig(model="any", api_key="key", max_output_tokens=256).max_output_tokens
-    window = next(
-        size
-        for size in range(4_000, 400_000, 16)
-        if ContextPolicy(window=size, max_output=least_output).threshold >= fixed + GATEWAY_TOOL_GROUP_MAX_TOKENS
+    # The smallest window a model may have, and the least it may be given
+    # to answer in. The cap on one result is a quarter of the window: far
+    # less than a group. A group loaded by its name, or handed over in
+    # place of a call, is one text, and a text small enough never to be
+    # pruned is not cut by the cap either.
+    model = ModelConfig(model="any", api_key="key", context_window=4_000, max_output_tokens=256)
+    policy = ContextPolicy(window=model.context_window, max_output=model.max_output_tokens)
+    manager = ContextManager(
+        policy=policy, spill=SpillStore(tmp_path / "outputs"), summarize=no_summary, new_entry_id=lambda: "entry"
     )
-    policy = ContextPolicy(window=window, max_output=least_output)
-    # What is said in front of a group handed over in place of a call.
+    assert policy.result_cap == 1_000
+    # What is said in front of a group handed over in place of a call. With
+    # it, a group at its largest is still a text the runtime never cuts.
     said = count_tokens(TOOL_GROUP_NOT_LOADED.format(tool=BROWSER_SCREENSHOT_TOOL_NAME, name="browser")) + 4
+    assert GATEWAY_TOOL_GROUP_MAX_TOKENS + said <= policy.prune_threshold_tokens
 
-    assert policy.result_cap >= GATEWAY_TOOL_GROUP_MAX_TOKENS + said, (
-        f"a window of {window} tokens holds the fixed text of a task agent ({fixed}) and a loaded group "
-        f"({GATEWAY_TOOL_GROUP_MAX_TOKENS}), but the cap on one result there is {policy.result_cap}: a group "
-        "loaded by its name would arrive cut"
-    )
+    for group, tool in (("browser", "browser_click"), ("desktop", COMPUTER_TOOL_NAME)):
+        loaded = await _loaded(host, group, images=True)
+        refused = await host.gateway.call_tool(await _grant(host, images=True), tool, {})
+        for text in (loaded, refused["content"][0]["text"]):
+            result = AgentToolResult(content=text)
+            assert await manager.cap_tool_result(CALL_TOOL, "call-1", result) is result, group
+    # The browser's is over the cap, so it is the rule above that kept it whole.
+    assert count_tokens(await _loaded(host, "browser", images=True)) > policy.result_cap
+    # Nothing was cut, so nothing was saved.
+    assert not (tmp_path / "outputs").exists() or not list((tmp_path / "outputs").iterdir())
 
 
 def test_how_the_two_groups_are_used_stays_under_its_ceiling():

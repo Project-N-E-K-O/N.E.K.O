@@ -591,9 +591,12 @@ class ContextManager:
                 return result
             return result.model_copy(update={"content": [*(TextContent(text=part) for part in fitted), *images]})
         text = result.text
-        capped = await asyncio.to_thread(
-            cap_result_text, text, self.policy.result_cap, self.spill, f"{tool_name}-{call_id}"
-        )
+        # A text small enough never to be pruned is not cut here either,
+        # however small the window (below 8192 tokens a quarter of it is
+        # less than that): a group of tools loaded by its name, or handed
+        # over in place of a call, is one text and has to arrive whole.
+        cap = max(self.policy.result_cap, self.policy.prune_threshold_tokens)
+        capped = await asyncio.to_thread(cap_result_text, text, cap, self.spill, f"{tool_name}-{call_id}")
         if capped is None:
             return result
         return result.model_copy(update={"content": [TextContent(text=capped), *images]})

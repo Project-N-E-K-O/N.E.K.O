@@ -278,6 +278,32 @@ async def test_a_first_block_small_enough_never_to_be_pruned_arrives_whole_whate
     assert rest == TextContent(text="a note")
 
 
+async def test_a_text_small_enough_never_to_be_pruned_is_not_capped_either_whatever_the_window(
+    tmp_path: Path,
+) -> None:
+    # The smallest window there can be: a quarter of it is half of what an old result is left whole at.
+    manager = _blocks_manager(tmp_path, 4_096)
+    cap, never_pruned = manager.policy.result_cap, manager.policy.prune_threshold_tokens
+    assert (cap, never_pruned) == (1_024, 2_048)
+    kept = AgentToolResult(content="GROUP-START " + _words(900, "tool") + " GROUP-END")
+    cut = AgentToolResult(content="LONG-START " + _words(3_000) + " LONG-END")
+    assert cap < count_tokens(kept.text) < never_pruned < count_tokens(cut.text)
+
+    # Over the cap, and whole: a group of tools loaded by its name is such a text.
+    assert await manager.cap_tool_result("capability_search", "c1", kept) is kept
+    # A longer one is cut down to that size, and saved.
+    capped = await manager.cap_tool_result("bash", "c2", cut)
+
+    assert capped.text.startswith("LONG-START") and texts.SPILL_GAP in capped.text
+    assert count_tokens(capped.text) <= never_pruned + 64
+    (saved,) = (tmp_path / "outputs").iterdir()
+    assert saved.read_text(encoding="utf-8") == cut.text
+    # In a window whose quarter is more than that, the quarter is the cap as before.
+    wide = _blocks_manager(tmp_path / "wide", 32_000)
+    assert wide.policy.result_cap == 8_000 > count_tokens(cut.text)
+    assert await wide.cap_tool_result("bash", "c3", cut) is cut
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: pruning
 # ---------------------------------------------------------------------------
