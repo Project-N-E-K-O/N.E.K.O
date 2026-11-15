@@ -43,6 +43,7 @@ def clean_required(repo):
         raise ValueError(
             "Commit or deliberately preserve working changes first; automatic stashing is disabled."
         )
+    index_flags_required(repo)
     for name in (
         "MERGE_HEAD",
         "CHERRY_PICK_HEAD",
@@ -75,9 +76,11 @@ def index_flags_required(repo):
         if not entry:
             continue
         tag, name = entry[:1].decode("ascii"), os.fsdecode(entry[2:])
-        if tag.islower() or tag == "S":
+        # Sparse checkouts mark absent files skip-worktree; nothing is hidden
+        # until such a file appears in the working tree.
+        if tag.islower() or (tag == "S" and os.path.lexists(repo / name)):
             raise ValueError(
-                f"Clear assume-unchanged/skip-worktree before backup or verification: {name}"
+                f"Clear assume-unchanged/skip-worktree; Git hides changes to: {name}"
             )
 
 
@@ -125,6 +128,7 @@ def backup(repo, destination=None):
     patch_options = [
         "--binary",
         "--unified=3",
+        "--submodule=short",
         "--no-ext-diff",
         "--no-textconv",
         "--no-color",

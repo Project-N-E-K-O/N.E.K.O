@@ -570,8 +570,19 @@ class MaintenanceTests(unittest.TestCase):
                 self.assertFalse(destination.exists())
                 with self.assertRaisesRegex(ValueError, "skip-worktree"):
                     maintain.source_snapshot(self.repo)
+                with self.assertRaisesRegex(ValueError, "skip-worktree"):
+                    maintain.clean_required(self.repo)
                 self.git("update-index", flag.replace("--", "--no-", 1), "app/main.py")
                 self.git("checkout", "--", "app/main.py")
+
+    def test_sparse_checkout_absent_files_are_not_hidden_changes(self):
+        # Sparse checkout leaves out-of-cone files absent with skip-worktree set.
+        self.git("update-index", "--skip-worktree", "app/main.py")
+        (self.repo / "app/main.py").unlink()
+        maintain.clean_required(self.repo)
+        maintain.source_snapshot(self.repo)
+        saved = maintain.backup(self.repo, self.root / "backups")
+        self.assertEqual((saved / "working.patch").stat().st_size, 0)
 
     def test_verify_rejects_hidden_index_flag_set_during_suite(self):
         policy = self.policy(
