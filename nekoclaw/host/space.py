@@ -75,12 +75,14 @@ _PROJECT_FILE_VERSION = 1
 _STATE_FILE_VERSION = 1
 _SLUG_MAX_CHARS = 60
 _WRITE_ATTEMPTS = 3
-# The names a directory has while it is copied to another volume, and while
-# what it was copied from is removed. Neither is a project's name (a name
-# cannot begin with a dot), and a directory whose name begins with a dot is
-# not taken for a project.
+# The names a directory has while it is copied to another volume, while what
+# it was copied from is out of sight, and once that is known to be of no use
+# any more. None is a project's name (a name cannot begin with a dot), and a
+# directory whose name begins with a dot is not taken for a project. Only
+# what has the last of the three names is ever removed by a later move.
 _UNFINISHED_PREFIX = ".unfinished-"
 _REMOVING_PREFIX = ".removing-"
+_GONE_PREFIX = ".gone-"
 _WRITE_RETRY_SECONDS = 0.05
 # Characters that cannot be in a file name, white space, and what Markdown
 # would read as part of a link.
@@ -410,6 +412,10 @@ class SpaceError(RuntimeError):
     """Something asked of the space cannot be done: an unknown entry, an unusable name."""
 
 
+class _NotAsWritten(OSError):
+    """A file was replaced, and what it holds afterwards is not what was written, or cannot be read."""
+
+
 # ---------------------------------------------------------------------------
 # The space
 # ---------------------------------------------------------------------------
@@ -497,12 +503,24 @@ class TaskAgentSpace:
         for attempt in range(_WRITE_ATTEMPTS):
             try:
                 atomic_write_text(path, text)
-                if path.read_text(encoding="utf-8") == text:
-                    return
-                last = OSError("the file does not hold what was written")
             except OSError as exc:
                 last = exc
-            time.sleep(_WRITE_RETRY_SECONDS * (attempt + 1))
+                time.sleep(_WRITE_RETRY_SECONDS * (attempt + 1))
+                continue
+            # Replaced. From here on it is only looked at, never written
+            # again: what it holds now may be what the user saved a moment
+            # after, and writing the same text once more would put that out.
+            for look in range(_WRITE_ATTEMPTS):
+                try:
+                    there = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    last = exc
+                    time.sleep(_WRITE_RETRY_SECONDS * (look + 1))
+                    continue
+                if there == text:
+                    return
+                raise _NotAsWritten(f"{path.name} does not hold what was written")
+            raise _NotAsWritten(f"{path.name} could not be read after it was written") from last
         raise last if last is not None else OSError("the file could not be written")
 
     @staticmethod
@@ -518,17 +536,25 @@ class TaskAgentSpace:
 
         Read, changed and written back; when the file was written by someone
         else in between (the user saving it in an editor), it is read again,
-        so their change is not written over.
+        so their change is not written over. So it is when the file does not
+        hold what was written right after it was replaced: the change is
+        made again to what is there then.
         """
+        written = False
         for _attempt in range(_WRITE_ATTEMPTS):
             before = self._signature(path)
             text = self._text_to_change(path)
             changed = change(text)
             if changed == text:
-                return False
+                # Nothing to change, or it holds the change already.
+                return written
             if self._signature(path) != before:
                 continue
-            self._put_text(path, changed)
+            try:
+                self._put_text(path, changed)
+            except _NotAsWritten:
+                written = True
+                continue
             return True
         raise OSError(f"{path.name} kept changing while it was being written")
 
@@ -735,7 +761,9 @@ class TaskAgentSpace:
             def add(text: str) -> str:
                 document = _parse_document(text)
                 fresh = not _said_already(document, content)
-                fresh_text[:] = [fresh]
+                # Made a second time when the file had to be read again: what
+                # was added the first time is still what this filing added.
+                fresh_text[:] = [fresh or bool(fresh_text and fresh_text[0])]
                 if fresh:
                     addition = f"## {today}\n\n{content}"
                     document.body = f"{document.body.rstrip()}\n\n{addition}\n"
@@ -926,8 +954,11 @@ class TaskAgentSpace:
                     text: str, marks: tuple[str, str] = marks, taken: list[str] = taken, place: list[int] = place
                 ) -> str:
                     lines = text.split(chr(10))
-                    taken[:] = [item for item in lines if _points_at(item, marks)]
-                    place[:] = [number for number, item in enumerate(lines) if _points_at(item, marks)][:1]
+                    found = [number for number, item in enumerate(lines) if _points_at(item, marks)]
+                    if found:
+                        # Kept when this is made a second time and the line is gone by then.
+                        taken[:] = [lines[number] for number in found]
+                        place[:] = found[:1]
                     return chr(10).join(item for item in lines if not _points_at(item, marks))
 
                 def put_back(taken: list[str] = taken, place: list[int] = place, was: str = was) -> None:
@@ -1942,27 +1973,42 @@ def _is_project(directory: Path) -> bool:
     return directory.is_dir() and not directory.name.startswith(".")
 
 
-# A file in a directory that was set aside and must not be removed: it is
-# the only place that has what the user saved last.
-_KEEP_MARK = ".keep"
+def _free_beside(source: Path, prefix: str) -> Path:
+    """Return a name next to ``source`` that begins with ``prefix`` and that nothing has."""
+    free = source.with_name(f"{prefix}{source.name}")
+    number = 2
+    while free.exists():
+        free = source.with_name(f"{prefix}{source.name}-{number}")
+        number += 1
+    return free
 
 
 def _set_aside_name(source: Path) -> Path:
-    """Return a name next to ``source`` that nothing has, for it to be removed under.
+    """Return a name next to ``source`` that nothing has, for it to be out of sight under.
 
-    What an earlier move left under such a name is removed first, unless
-    it is marked to be kept (``_copy_across``).
+    What an earlier move left under such a name is not touched: a move
+    that was cut off before it had looked at what it set aside may have
+    left the only copy of what the user saved last there.
     """
-    aside = source.with_name(f"{_REMOVING_PREFIX}{source.name}")
-    number = 2
-    while aside.exists():
-        if not (aside / _KEEP_MARK).exists():
-            shutil.rmtree(aside, ignore_errors=True)
-            if not aside.exists():
-                break
-        aside = source.with_name(f"{_REMOVING_PREFIX}{source.name}-{number}")
-        number += 1
-    return aside
+    return _free_beside(source, _REMOVING_PREFIX)
+
+
+def _remove_set_aside(aside: Path, source: Path) -> None:
+    """Remove a directory that was set aside and is known to be of no use any more.
+
+    Given the name of what can go first, in one step: removing can stop
+    half way, and what is left is then told from what must stay. What
+    earlier moves left under such a name is cleared away with it.
+    """
+    for left in source.parent.glob(f"{_GONE_PREFIX}{source.name}*"):
+        shutil.rmtree(left, ignore_errors=True)
+    gone = _free_beside(source, _GONE_PREFIX)
+    try:
+        os.replace(aside, gone)
+    except OSError:
+        logger.warning("a directory that can go could not be given the name of one", exc_info=True)
+        return
+    shutil.rmtree(gone, ignore_errors=True)
 
 
 def _bring_up_to(copy: Path, original: Path) -> None:
@@ -2022,10 +2068,13 @@ def _copy_across(source: Path, target: Path) -> None:
        its own volume: it happens whole or not at all. If it cannot be done
        (a file in it is held open), the copy is taken out of sight again
        and removed, and the source stays.
-    4. What was set aside is removed. Removing can stop half way; what is
-       left then has a name that is no project's. Before that it is looked
-       at once more: when a file in it was saved while it was copied, it
-       is put back, the copy is taken back, and OSError is raised.
+    4. What was set aside is removed. Before that it is looked at once
+       more: when a file in it was saved while it was copied, it is put
+       back, the copy is taken back, and OSError is raised. Only once it
+       is known to hold nothing the target lacks is it given a name that
+       says it can go, and removed; removing can stop half way, and what
+       is left then has a name that is no project's. Stopped before that,
+       it keeps the name it was set aside under, which nothing removes.
 
     So neither place ever has part of the directory under its name:
     removing the source under its own name could leave half of an active
@@ -2077,20 +2126,14 @@ def _copy_across(source: Path, target: Path) -> None:
             # the user saved last is only in what was set aside, and nothing
             # is saved into that any more: the copy is brought up to it, and
             # the move is done after all. If that cannot be done either,
-            # what was set aside is marked, so that nothing removes it.
+            # what was set aside stays as it is: nothing removes it.
             logger.warning("a project that changed while it was copied could not be put back", exc_info=True)
-            try:
-                _bring_up_to(target, aside)
-            except BaseException:
-                try:
-                    (aside / _KEEP_MARK).touch()
-                except OSError:
-                    logger.warning("a directory that holds what was saved last could not be marked", exc_info=True)
-                raise
+            _bring_up_to(target, aside)
         else:
             take_back()
             raise OSError(f"{source.name} was changed while it was copied to another volume; it stays where it was")
-    shutil.rmtree(aside, ignore_errors=True)
+    # Only now is it known that the target has all of it.
+    _remove_set_aside(aside, source)
 
 
 def _move(source: Path, target: Path) -> None:

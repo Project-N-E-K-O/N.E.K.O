@@ -857,7 +857,7 @@ async def test_what_is_left_of_a_project_copied_elsewhere_is_not_the_project(spa
 
     def half_removed(path, *args, **kwargs):
         # Removing what was set aside stops half way: one file is gone, the rest is held open.
-        if Path(path).name.startswith(".removing-"):
+        if Path(path).name.startswith(".gone-"):
             (Path(path) / "memory" / "stack.md").unlink(missing_ok=True)
             return None
         return remove(path, *args, **kwargs)
@@ -869,7 +869,7 @@ async def test_what_is_left_of_a_project_copied_elsewhere_is_not_the_project(spa
 
     # Archived whole. What is left among the projects is no project, and is not used as one.
     assert archived is not None and archived.status == "archived"
-    assert sorted(item.name for item in (root / "projects").iterdir()) == [".removing-Budget app"]
+    assert sorted(item.name for item in (root / "projects").iterdir()) == [".gone-Budget app"]
     assert [(item.name, item.status) for item in await space.list_projects()] == [("Budget app", "archived")]
 
     # A commission of it is taken up again: the whole project comes back from the archive.
@@ -2462,9 +2462,6 @@ def test_what_was_saved_last_is_never_removed_when_nothing_else_has_it(tmp_path,
     # The next move of a directory of the name takes another name, and leaves this one alone.
     assert _set_aside_name(source) == source.parent / ".removing-Budget app-2"
     assert (kept / "memory" / "stack.md").read_text(encoding="utf-8") == "FastAPI now, and more."
-    # What an ordinary move left half removed is still cleared away.
-    (kept / ".keep").unlink()
-    assert _set_aside_name(source) == kept and not kept.exists()
 
 
 async def test_archiving_does_not_make_an_empty_project_of_one_that_is_set_aside(space, root, monkeypatch):
@@ -2623,4 +2620,210 @@ def test_a_copy_that_does_not_hold_what_was_saved_last_does_not_let_the_original
 
     kept = source.parent / ".removing-Budget app"
     assert (kept / "memory" / "export.md").read_text(encoding="utf-8") == "CSV."
-    assert (kept / ".keep").is_file()
+
+
+# ---------------------------------------------------------------------------
+# The twenty-seventh review round
+# ---------------------------------------------------------------------------
+
+
+async def test_what_the_user_saves_right_after_a_file_was_replaced_is_not_written_over(space, root, monkeypatch):
+    await space.file_entry(None, title="First", content="One.")
+    index = root / "MEMORY.md"
+    read = Path.read_text
+    reads: list[int] = []
+
+    def read_text(self, *args, **kwargs):
+        if self == index:
+            reads.append(len(reads) + 1)
+            if len(reads) == 2:
+                # The look right after the file was replaced: it cannot be read for a moment,
+                # and in that moment the user saves a line of their own from an editor.
+                index.write_bytes(index.read_bytes() + "- a line the user just saved\n".encode())
+                raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    await space.file_entry(None, title="Second", content="Two.")
+
+    monkeypatch.undo()
+    lines = index.read_text(encoding="utf-8").splitlines()
+    assert len(reads) >= 3
+    # The user's line is there, and so is the one that was being added.
+    assert "- a line the user just saved" in lines
+    assert "- [Second](memory/second.md) — Two." in lines and "- [First](memory/first.md) — One." in lines
+    assert len(lines) == 3
+
+
+def test_a_file_that_was_replaced_and_holds_something_else_is_not_written_again(tmp_path, monkeypatch):
+    from nekoclaw.host.space import _NotAsWritten
+
+    path = tmp_path / "MEMORY.md"
+    path.write_text("old\n", encoding="utf-8")
+    read = Path.read_text
+    writes: list[str] = []
+
+    def read_text(self, *args, **kwargs):
+        if self == path and not writes:
+            # Saved by someone else between the replacing and the look at it.
+            writes.append("saved")
+            path.write_text("what the user saved\n", encoding="utf-8")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(_NotAsWritten):
+        TaskAgentSpace._put_text(path, "what the host wrote\n")
+
+    monkeypatch.undo()
+    assert path.read_text(encoding="utf-8") == "what the user saved\n"
+
+
+def test_what_a_move_set_aside_and_did_not_look_at_is_never_removed_by_a_later_move(tmp_path, monkeypatch):
+    import errno
+    import os
+    import shutil
+
+    from nekoclaw.host.space import _files_of, _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    target.parent.mkdir()
+    rename, copy = os.replace, shutil.copytree
+    looks: list[Path] = []
+
+    class Stopped(BaseException):
+        """The process is gone: nothing after this happens."""
+
+    def other_volume(first, second):
+        if Path(first).parent == source.parent and Path(second).parent == target.parent:
+            if not Path(first).name.startswith(".") and not Path(second).name.startswith("."):
+                raise OSError(errno.EXDEV, "cross-device link")
+        return rename(first, second)
+
+    def copied_and_then_saved(first, second, *args, **kwargs):
+        result = copy(first, second, *args, **kwargs)
+        if Path(first) == source and not looks[1:]:
+            (source / "memory" / "export.md").write_text("Saved while it was copied.", encoding="utf-8")
+        return result
+
+    def stopped_at_the_second_look(root):
+        looks.append(Path(root))
+        if len(looks) == 2:
+            raise Stopped()
+        return _files_of(root)
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    monkeypatch.setattr(shutil, "copytree", copied_and_then_saved)
+    monkeypatch.setattr("nekoclaw.host.space._files_of", stopped_at_the_second_look)
+
+    # Set aside, and stopped before it was looked at: what the user saved is only there.
+    with pytest.raises(Stopped):
+        _move(source, target)
+    left = source.parent / ".removing-Budget app"
+    assert (left / "memory" / "export.md").read_text(encoding="utf-8") == "Saved while it was copied."
+
+    # Started again; a project of the name is there again and is moved to the other volume too.
+    monkeypatch.setattr("nekoclaw.host.space._files_of", _files_of)
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "new.md").write_text("Another project of the name.", encoding="utf-8")
+    _move(source, tmp_path / "archive" / "Budget app-2")
+
+    assert (tmp_path / "archive" / "Budget app-2" / "memory" / "new.md").is_file()
+    # What the first move left is as it was; what the second set aside is gone.
+    assert (left / "memory" / "export.md").read_text(encoding="utf-8") == "Saved while it was copied."
+    assert sorted(item.name for item in source.parent.iterdir()) == [".removing-Budget app"]
+
+
+def test_what_an_earlier_move_left_half_removed_is_cleared_away_by_the_next(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    target.parent.mkdir()
+    # Left by a move whose removing stopped half way: known to be of no use.
+    (source.parent / ".gone-Budget app" / "memory").mkdir(parents=True)
+    (source.parent / ".gone-Budget app-2").mkdir()
+    rename = os.replace
+
+    def other_volume(first, second):
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        return rename(first, second)
+
+    monkeypatch.setattr(os, "replace", other_volume)
+
+    _move(source, target)
+
+    assert sorted(item.name for item in source.parent.iterdir()) == []
+    assert (target / "memory" / "stack.md").is_file()
+
+
+def _not_read_back(monkeypatch, path, before, looks=3):
+    """Make the looks at a file right after it was replaced fail, as when another program holds it for a moment.
+
+    ``before`` is how often the file is read before it is replaced.
+    """
+    read = Path.read_text
+    reads: list[int] = []
+
+    def read_text(self, *args, **kwargs):
+        if self == path:
+            reads.append(len(reads) + 1)
+            if before < len(reads) <= before + looks:
+                raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return reads
+
+
+async def test_a_text_is_said_to_be_added_though_the_file_could_not_be_read_back_at_once(space, root, clock, monkeypatch):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    clock.now += 86400
+    path = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    # Read once to find the entry of the topic, once to make the change from.
+    reads = _not_read_back(monkeypatch, path, before=2)
+
+    reply = await space.submit(_commission(id="c-2"), _lesson("Stack", "And SQLite."))
+
+    monkeypatch.undo()
+    assert len(reads) >= 6
+    # Added, and said to be: the change was made again to a file that had it by then.
+    assert reply == "added to stack.md in project _daily"
+    assert (await space.read_entry("stack", DEFAULT_PROJECT)).content.count("And SQLite.") == 1
+
+
+async def test_a_line_goes_with_its_entry_though_the_index_could_not_be_read_back_at_once(space, root, monkeypatch):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    daily.write_text("- [What it is built on](memory/stack.md) — my own words\n", encoding="utf-8")
+    await space.touch_project("Budget app")
+    # The first read of the index is the one that says it can be read at all.
+    read = Path.read_text
+    reads: list[int] = []
+
+    def read_text(self, *args, **kwargs):
+        if self == daily:
+            reads.append(len(reads) + 1)
+            # The third to fifth: the looks right after the line was taken out of it.
+            if 3 <= len(reads) <= 5:
+                raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+
+    monkeypatch.undo()
+    assert len(reads) >= 6
+    # Moved, with the line the user wrote, and gone where it was.
+    assert "- [What it is built on](memory/stack.md) — my own words" in await space.read_index("Budget app")
+    assert await space.list_entries(DEFAULT_PROJECT) == []
+    assert daily.read_text(encoding="utf-8").strip() == ""

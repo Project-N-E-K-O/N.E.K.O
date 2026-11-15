@@ -135,8 +135,13 @@ def test_the_declaration_is_read_from_the_effective_configuration_when_there_is_
 
     assert resolve_shared_reads(travel.ctx) == frozenset({"weather"})
     assert travel.shared_path_of("weather") == root / "plugin_shared" / "weather"
-    # An effective configuration without the table says: nothing is declared.
-    assert resolve_shared_reads(plain.ctx) == frozenset()
+    # An effective configuration without the table says nothing: the manifest counts
+    # (the host keeps such a configuration while a change of it is not confirmed).
+    assert resolve_shared_reads(plain.ctx) == frozenset({"weather"})
+    assert plain.shared_path_of("weather") == root / "plugin_shared" / "weather"
+    # One with the table and nothing in it says: nothing is declared.
+    emptied = _plugin(tmp_path, "emptied", '\n[plugin.shared]\nreads = ["weather"]\n', {"plugin": {"shared": {}}})
+    assert resolve_shared_reads(emptied.ctx) == frozenset()
 
 
 def test_a_manifest_that_cannot_be_read_declares_nothing(root, tmp_path) -> None:

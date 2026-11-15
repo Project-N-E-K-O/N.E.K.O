@@ -154,11 +154,18 @@ def _shared_dirname(plugin_id: object) -> str:
 
 
 def _declared_shared_reads(plugin_section: object) -> frozenset[str] | None:
-    """Read ``[plugin.shared] reads`` from a ``[plugin]`` table; None when the table is not one."""
+    """Read ``[plugin.shared] reads`` from a ``[plugin]`` table; None when it has no ``shared`` table.
+
+    None, not "nothing declared": a configuration the host keeps while a
+    change of it is not confirmed can lack the table though the manifest
+    has it, and the manifest is then what counts.
+    """
     if not isinstance(plugin_section, dict):
         return None
     shared = plugin_section.get("shared")
-    reads = shared.get("reads") if isinstance(shared, dict) else None
+    if not isinstance(shared, dict):
+        return None
+    reads = shared.get("reads")
     if isinstance(reads, str):
         reads = [reads]
     if not isinstance(reads, (list, tuple)):
