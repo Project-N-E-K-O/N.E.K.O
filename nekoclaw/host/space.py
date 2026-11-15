@@ -318,7 +318,7 @@ def _entry_type(value: Any) -> str:
 
 
 # The heading of what was added to an entry on a later day.
-_ADDITION_HEADING = re.compile(r"(?m)^## \d{4}-\d{2}-\d{2}[ \t]*$")
+_DATE_HEADING = r"## \d{4}-\d{2}-\d{2}[ \t]*"
 # What became of an entry that was filed: a new file, added to one, or there already.
 _CREATED, _ADDED, _THERE = "created", "added", "there"
 
@@ -338,6 +338,19 @@ def _link(target: str) -> str:
     ``#`` or ``%`` in it rightly.
     """
     return target if _PLAIN_TARGET.fullmatch(target) else f"<{target}>"
+
+
+def _said_already(body: str, content: str) -> bool:
+    """Whether an entry's text has ``content`` word for word: as what it said first, or as one of its additions.
+
+    Looked for as a whole between the headings the host puts above an
+    addition, not by cutting the text at such headings: a note that has a
+    heading like that inside it is still one note.
+    """
+    whole = (
+        r"(?:\A|\n" + _DATE_HEADING + r"\n+)" + re.escape(content.strip()) + r"\s*(?:\n" + _DATE_HEADING + r"(?:\n|\Z)|\Z)"
+    )
+    return re.search(whole, body.strip()) is not None
 
 
 def _index_marks(target: str) -> tuple[str, str]:
@@ -629,8 +642,7 @@ class TaskAgentSpace:
 
             def add(text: str) -> str:
                 document = _parse_document(text)
-                said = [part.strip() for part in _ADDITION_HEADING.split(document.body)]
-                fresh = content.strip() not in said
+                fresh = not _said_already(document.body, content)
                 fresh_text[:] = [fresh]
                 if fresh:
                     addition = f"## {today}\n\n{content}"
@@ -833,7 +845,19 @@ class TaskAgentSpace:
                 else:
                     for mark in marks:
                         line = line.replace(mark, f"]({_link(link)})")
-                self._index_add(paths.index(target), line, link)
+                try:
+                    self._index_add(paths.index(target), line, link)
+                except OSError:
+                    # The index of where it goes cannot be written: the
+                    # entry stays where it was, listed there as it was, and
+                    # the copy made of it is taken back.
+                    if taken:
+                        self._index_add(paths.index(source), taken[0], was)
+                    try:
+                        (destination / f"{name}.md").unlink()
+                    except OSError:
+                        logger.warning("the copy of an entry that stays where it was could not be removed", exc_info=True)
+                    raise
                 moved.append(name)
                 if same and self._signature(old) != before:
                     # Saved once more while its line was moved: what is at

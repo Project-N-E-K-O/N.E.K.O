@@ -2020,3 +2020,52 @@ async def test_a_summary_kept_does_not_hold_for_a_commission_filed_later_though_
 
     assert (project.commissions, project.last_commission_at) == (2, last)
     assert (await space.get_project("Budget app")).kept_summary() is None
+
+
+# ---------------------------------------------------------------------------
+# The nineteenth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_note_with_a_dated_heading_of_its_own_is_kept_once(space, root, clock):
+    note = "Before the change.\n## 2026-11-15\nAfter the change."
+    first = await space.submit(_commission(id="c-1"), _lesson("The change", note))
+    clock.now += 86400
+    second = await space.submit(_commission(id="c-2"), _lesson("The change", note))
+    # Added to on another day, and then the same thing filed once more.
+    await space.submit(_commission(id="c-3"), _lesson("The change", "A later note.\n## 2026-11-16\nWith a heading too."))
+    clock.now += 86400
+    again = await space.submit(_commission(id="c-4"), _lesson("The change", "A later note.\n## 2026-11-16\nWith a heading too."))
+    third = await space.submit(_commission(id="c-5"), _lesson("The change", note))
+
+    assert first == "kept in project _daily as the-change.md"
+    assert second == again == third == "already in the-change.md in project _daily, word for word; nothing was added"
+    entry = await space.read_entry("the-change", DEFAULT_PROJECT)
+    assert entry.content.count("Before the change.") == 1 and entry.content.count("A later note.") == 1
+    assert entry.sources == ("c-1", "c-2", "c-3", "c-4", "c-5")
+
+
+async def test_an_entry_stays_listed_where_it_was_when_the_index_of_where_it_goes_cannot_be_written(space, root, monkeypatch):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    daily.write_text("- [What it is built on](memory/stack.md) — my own words\n", encoding="utf-8")
+    await space.touch_project("Budget app")
+    there = root / "projects" / "Budget app" / "MEMORY.md"
+    edit = TaskAgentSpace._edit_text
+
+    def held_open(self, path, change):
+        if path == there:
+            raise PermissionError(13, "in use")
+        return edit(self, path, change)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", held_open)
+
+    with pytest.raises(OSError):
+        await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app")
+
+    monkeypatch.undo()
+    # Where it was, listed in the user's words; nothing of it is left where it did not get to.
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["stack"]
+    assert daily.read_text(encoding="utf-8") == "- [What it is built on](memory/stack.md) — my own words\n"
+    assert await space.list_entries("Budget app") == []
+    assert not (root / "projects" / "Budget app" / "memory" / "stack.md").exists()
