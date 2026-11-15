@@ -358,7 +358,12 @@ def _said_already(document: _Document, content: str) -> bool:
     if document.body.strip() == content.strip():
         return True
     marks = [item.strip() for item in document.get("texts").split(",") if item.strip()]
-    return _digest(content) in marks and content.strip() in document.body
+    if _digest(content) not in marks:
+        return False
+    # Still there as a text of its own, between blank lines or at an end of
+    # the entry: found inside another sentence, it is not what was filed.
+    alone = r"(?:\A|\n[ \t]*\n)" + re.escape(content.strip()) + r"(?:[ \t]*\n[ \t]*\n|\s*\Z)"
+    return re.search(alone, document.body.strip()) is not None
 
 
 def _index_marks(target: str) -> tuple[str, str]:
@@ -849,10 +854,17 @@ class TaskAgentSpace:
                     else:
                         line = self._index_line_in(self._text_to_change(paths.index(source)), was)
                 except OSError:
-                    # The index cannot be read any more, or keeps being
-                    # saved: nothing of it is touched, the entry stays
-                    # there as well.
+                    # The index cannot be read any more, keeps being saved,
+                    # or was written and could not be read back: the entry
+                    # stays there as well. A line that was taken out is put
+                    # back, and it is the line that goes along.
                     same = False
+                    if taken:
+                        line = taken[0]
+                        try:
+                            self._index_add(paths.index(source), taken[0], was)
+                        except OSError:
+                            logger.warning("the line of an entry could not be put back into its index", exc_info=True)
                 if line is None:
                     line = _index_line(entry.title, link, entry.description)
                 else:
@@ -1830,6 +1842,20 @@ def _set_aside_name(source: Path) -> Path:
     return aside
 
 
+def _files_of(root: Path) -> list[tuple[str, int, int]]:
+    """Return what a directory holds: every file's path in it, when it was last written and its size."""
+    found: list[tuple[str, int, int]] = []
+    for directory, _directories, names in os.walk(root):
+        for name in names:
+            path = Path(directory) / name
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            found.append((path.relative_to(root).as_posix(), stat.st_mtime_ns, stat.st_size))
+    return sorted(found)
+
+
 def _copy_across(source: Path, target: Path) -> None:
     """Move a directory to another volume, so that it is whole under its name somewhere at every moment.
 
@@ -1842,7 +1868,9 @@ def _copy_across(source: Path, target: Path) -> None:
        (a file in it is held open), the copy is taken out of sight again
        and removed, and the source stays.
     4. What was set aside is removed. Removing can stop half way; what is
-       left then has a name that is no project's.
+       left then has a name that is no project's. Before that it is looked
+       at once more: when a file in it was saved while it was copied, it
+       is put back, the copy is taken back, and OSError is raised.
 
     So neither place ever has part of the directory under its name:
     removing the source under its own name could leave half of an active
@@ -1856,23 +1884,39 @@ def _copy_across(source: Path, target: Path) -> None:
     """
     unfinished = target.with_name(f"{_UNFINISHED_PREFIX}{target.name}")
     shutil.rmtree(unfinished, ignore_errors=True)
+    before = _files_of(source)
     try:
         shutil.copytree(source, unfinished)
         os.replace(unfinished, target)
     except BaseException:
         shutil.rmtree(unfinished, ignore_errors=True)
         raise
-    aside = _set_aside_name(source)
-    try:
-        os.replace(source, aside)
-    except BaseException:
+
+    def take_back() -> None:
         try:
             os.replace(target, unfinished)
         except OSError:
             logger.warning("the copy of a project that stays where it was could not be taken back", exc_info=True)
         else:
             shutil.rmtree(unfinished, ignore_errors=True)
+
+    aside = _set_aside_name(source)
+    try:
+        os.replace(source, aside)
+    except BaseException:
+        take_back()
         raise
+    # Out of sight, nothing is saved into it any more. A file the user saved
+    # from an editor while it was copied is not in the copy: the directory
+    # goes back to where it was, and the copy is taken back.
+    if _files_of(aside) != before:
+        try:
+            os.replace(aside, source)
+        except OSError:
+            logger.warning("a project that changed while it was copied could not be put back", exc_info=True)
+        else:
+            take_back()
+        raise OSError(f"{source.name} was changed while it was copied to another volume; it stays where it was")
     shutil.rmtree(aside, ignore_errors=True)
 
 

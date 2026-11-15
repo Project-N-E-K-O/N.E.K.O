@@ -1925,3 +1925,33 @@ async def test_no_tidying_while_what_the_space_keeps_about_it_cannot_be_read(wor
     assert state.read_bytes() == before
     assert await world.new_keeper().tidy(force=True) is True
     assert (await world.space.read_state())["since"] == json.loads(before)["since"]
+
+
+async def test_a_summary_held_is_dropped_for_a_commission_filed_late_that_leaves_the_time_as_it_was(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    await world.space.touch_project("Alpha")
+    last = (await world.space.get_project("Alpha")).last_commission_at
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    put = TaskAgentSpace._put_project
+
+    def held_open(source, target):
+        raise PermissionError(13, "a file in it is held open")
+
+    def record_cannot_keep_it(self, directory, project):
+        if project.pending_archive is not None:
+            raise PermissionError(13, "the record cannot be replaced")
+        return put(self, directory, project)
+
+    monkeypatch.setattr("nekoclaw.host.space._move", held_open)
+    monkeypatch.setattr(TaskAgentSpace, "_put_project", record_cannot_keep_it)
+    await world.keeper.tidy(force=True)
+    assert world.llm.count(TIER_ARCHIVE) == 1
+
+    # A commission that ended before the last one is filed under it late: the time stays, the count does not.
+    project = await world.space.open_project("Alpha", at=last - 3600)
+    assert (project.last_commission_at, project.commissions) == (last, 2)
+    await world.keeper.tidy(force=True)
+
+    # What was written before that commission is not what the project is archived with.
+    assert world.llm.count(TIER_ARCHIVE) == 2

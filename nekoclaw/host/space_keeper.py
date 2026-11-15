@@ -241,11 +241,11 @@ class SpaceKeeper:
         # to say when to stop.
         self._archive_unasked: set[str] = set()
         # What a model wrote for a project that could not be moved then:
-        # (the last_commission_at it was written at, the summary, the line).
-        # The space keeps that in the project's record; this is for when the
-        # record cannot be written either, so that the model is still asked
-        # once and not once a round.
-        self._summaries: dict[str, tuple[float, str, str]] = {}
+        # (the last_commission_at and the number of commissions it was
+        # written at, the summary, the line). The space keeps that in the
+        # project's record; this is for when the record cannot be written
+        # either, so that the model is still asked once and not once a round.
+        self._summaries: dict[str, tuple[float, int, str, str]] = {}
 
     # -- listening --------------------------------------------------------
 
@@ -733,8 +733,10 @@ class SpaceKeeper:
             # and uses it, so the model is asked once, not once a round.
             kept = project.kept_summary() is not None
             held = self._summaries.get(project.name)
-            if held is not None and (kept or held[0] != project.last_commission_at):
-                # In the record after all, or the project was used since.
+            if held is not None and (kept or held[:2] != (project.last_commission_at, project.commissions)):
+                # In the record after all, or the project was used since: a
+                # commission filed late can leave the time as it was, so the
+                # number of commissions is looked at as well.
                 del self._summaries[project.name]
                 held = None
             ask = (
@@ -763,9 +765,9 @@ class SpaceKeeper:
             summary = truncate_to_tokens(str((data or {}).get("summary") or "").strip(), 400)
             line = _cut((data or {}).get("line"), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
             if held is not None:
-                _written_at, summary, line = held
+                _written_at, _commissions, summary, line = held
             elif summary:
-                self._summaries[project.name] = (project.last_commission_at, summary, line)
+                self._summaries[project.name] = (project.last_commission_at, project.commissions, summary, line)
             # What the summary says holds beyond the project is filed when
             # the summary is written, whether or not the project then moves:
             # a later try uses the summary that was kept and asks nothing,

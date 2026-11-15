@@ -2154,3 +2154,108 @@ async def test_a_text_that_replaced_an_entrys_in_an_editor_is_not_added_when_it_
 
     assert same == "already in stack.md in project _daily, word for word; nothing was added"
     assert (await space.read_entry("stack", DEFAULT_PROJECT)).content.count("It uses FastAPI now.") == 1
+
+
+# ---------------------------------------------------------------------------
+# The twenty-second review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_text_found_inside_another_sentence_is_not_the_text_that_was_filed(space, root, clock):
+    await space.submit(_commission(id="c-1"), _lesson("Running the tests", "Use pytest"))
+    clock.now += 86400
+    await space.submit(_commission(id="c-2"), _lesson("Running the tests", "The old instruction was Use pytest yesterday."))
+    path = root / "projects" / DEFAULT_PROJECT / "memory" / "running-the-tests.md"
+    # The user takes out what it said first; the same words are still inside the sentence that was added.
+    text = path.read_text(encoding="utf-8")
+    heading = text.index("## ")
+    # The last time the words occur before the heading: in the text, not in the front matter.
+    start = text.rindex("Use pytest", 0, heading)
+    path.write_text(text[:start] + text[heading:], encoding="utf-8")
+    assert "texts: " in path.read_text(encoding="utf-8")
+    assert "The old instruction was Use pytest yesterday." in path.read_text(encoding="utf-8")
+
+    again = await space.submit(_commission(id="c-3"), _lesson("Running the tests", "Use pytest"))
+    once_more = await space.submit(_commission(id="c-4"), _lesson("Running the tests", "Use pytest"))
+
+    assert again == "added to running-the-tests.md in project _daily"
+    assert once_more == "already in running-the-tests.md in project _daily, word for word; nothing was added"
+
+
+@pytest.mark.parametrize("saved", ["an entry is changed", "a file is added", "a file is removed"])
+def test_a_directory_changed_while_it_is_copied_to_another_volume_stays_where_it_was(tmp_path, monkeypatch, saved):
+    import errno
+    import os
+    import shutil
+
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    (source / "AGENTS.md").write_text("Old rules.", encoding="utf-8")
+    target.parent.mkdir()
+    rename, copy = os.replace, shutil.copytree
+
+    def other_volume(first, second):
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        return rename(first, second)
+
+    def copied_and_then_saved(first, second, *args, **kwargs):
+        result = copy(first, second, *args, **kwargs)
+        if Path(first) != source:
+            # A directory inside it: the copying is not done yet.
+            return result
+        # The copy is made; the user saves from an editor before the source is set aside.
+        if saved == "an entry is changed":
+            (source / "memory" / "stack.md").write_text("FastAPI now, and more.", encoding="utf-8")
+        elif saved == "a file is added":
+            (source / "memory" / "export.md").write_text("CSV.", encoding="utf-8")
+        else:
+            (source / "AGENTS.md").unlink()
+        return result
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    monkeypatch.setattr(shutil, "copytree", copied_and_then_saved)
+
+    with pytest.raises(OSError, match="was changed while it was copied"):
+        _move(source, target)
+
+    # Where it was, as the user left it; nothing of it at the target, nothing left over.
+    if saved == "an entry is changed":
+        assert (source / "memory" / "stack.md").read_text(encoding="utf-8") == "FastAPI now, and more."
+    elif saved == "a file is added":
+        assert (source / "memory" / "export.md").read_text(encoding="utf-8") == "CSV."
+    else:
+        assert not (source / "AGENTS.md").exists() and (source / "memory" / "stack.md").is_file()
+    assert sorted(item.name for item in source.parent.iterdir()) == ["Budget app"]
+    assert sorted(item.name for item in target.parent.iterdir()) == []
+
+
+async def test_a_line_taken_out_of_an_index_that_could_not_be_read_back_is_not_lost(space, root, monkeypatch):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    daily.write_text("- [What it is built on](memory/stack.md) — my own words\n", encoding="utf-8")
+    await space.touch_project("Budget app")
+    put = TaskAgentSpace._put_text
+    failed: list[bool] = []
+
+    def written_and_not_read_back(path, text):
+        put(path, text)
+        if path == daily and not failed:
+            # Replaced, and then what is there could not be checked.
+            failed.append(True)
+            raise OSError("the file does not hold what was written")
+
+    monkeypatch.setattr(TaskAgentSpace, "_put_text", staticmethod(written_and_not_read_back))
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+
+    monkeypatch.undo()
+    assert failed
+    words = "- [What it is built on](memory/stack.md) — my own words"
+    # The user's line is where the entry went, and back where the entry still is.
+    assert words in await space.read_index("Budget app")
+    assert words in daily.read_text(encoding="utf-8")
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["stack"]
