@@ -46,8 +46,20 @@
 - ⚠️ `time.monotonic()` 在 Windows 上粒度约 15 毫秒，「先取 t0、做点事、再取 t1」经常得到 `t0 == t1`。用时间戳区分先后的判据必须另有一条不依赖时钟的硬判据（例如单调递增的代号）。
 - 测试桩里 `raise AssertionError` 表示「不该被调用」时，如果产品代码用 `try/except` 包着那个调用点，异常会被吞成默认值，和「没调用」分不开。改用计数断言。
 - 夹具里故意吞 `CancelledError` 的 handler，释放动作必须写在 `finally` 里。否则断言一失败，事件循环拆除时它继续吞，用例变成挂起，CI 上表现为超时而不是失败。
-- 可能永远等下去的被测调用，在测试里套一层 `asyncio.wait_for(<调用>, 3)`。实现被改坏时要的是失败，不是挂死。
-- ⚠️ `wait_for` 不是硬超时：它超时后是取消被测调用，并等它取消完成。被测代码吞掉 `CancelledError` 继续等的话，测试照样挂住。这类调用要在测试里留一个能放开它的出口（事件、哨兵值），放在 `finally` 里触发；确实取消不了的，放到能被杀掉的独立进程里设超时。
+- 可能永远等下去、但会响应取消的被测调用，在测试里套一层 `asyncio.wait_for(<调用>, 3)`。实现被改坏时要的是失败，不是挂死。
+- ⚠️ `wait_for` 不是硬超时：它超时后是取消被测调用，并等它取消完成。被测代码吞掉 `CancelledError` 继续等的话，`await asyncio.wait_for(...)` 自己就不返回，测试连 `finally` 都进不去，把放开它的动作写在 `finally` 里也救不了。这类调用不要用 `wait_for`：把它起成任务，用 `asyncio.wait` 等到期限（它到点就返回，不取消任务），再放开留给它的出口并收尾。
+
+  ```python
+  task = asyncio.ensure_future(<调用>)
+  try:
+      done, _ = await asyncio.wait({task}, timeout=3)
+      assert done, "被测调用没有在时限内返回"
+  finally:
+      release.set()                              # 放开它在等的事件或哨兵值
+      await asyncio.wait({task}, timeout=3)      # 有界地等它收尾
+  ```
+
+  连出口都留不出来的调用，放到能被杀掉的独立进程里设超时。
 - 新建了带后台 worker 的对象的用例，一律 `try/finally` 收尾关掉它。否则策略一变，worker 不再自己退出，整场测试挂死。
 
 ## `tmp_path` 的位置和长度
