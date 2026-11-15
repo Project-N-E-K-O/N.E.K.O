@@ -317,7 +317,20 @@ def notify_install_committed(result: dict) -> dict:
             logger.warning(
                 "Capability job enqueue failed: error={}", type(exc).__name__
             )
+        try:
+            _auto_bind_host_models(str(installed["target_plugin_id"]))
+        except Exception as exc:
+            logger.warning(
+                "Host model auto-bind failed: plugin_id={}, error={}",
+                installed.get("target_plugin_id"), type(exc).__name__,
+            )
     return result
+
+
+def _auto_bind_host_models(plugin_id: str) -> None:
+    from plugin.server.application.model_config_service import ModelConfigService
+
+    ModelConfigService().ensure_host_follow_binding(plugin_id)
 
 
 def schedule_analysis(plugin_id: str, *, force: bool = False) -> None:

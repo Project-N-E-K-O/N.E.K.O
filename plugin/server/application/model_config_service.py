@@ -81,6 +81,10 @@ class ModelConfigService:
                 if target == slot_id
             ],
         )
+        if slot.source == "host_follow":
+            from plugin.server.infrastructure.host_model_slots import host_slot_status
+
+            result["host_status"] = host_slot_status(slot)
         return result
 
     def list_slots(self) -> dict:
@@ -123,8 +127,18 @@ class ModelConfigService:
             if isinstance(updates.get("defaults"), dict):
                 # PATCH semantics also apply to nested defaults; explicit null still clears a field.
                 updates["defaults"] = {**old.defaults.model_dump(), **updates["defaults"]}
-            slot = _validate_slot({**old.model_dump(), **updates})
-            if old.api_key and "api_key" not in updates and (
+            merged = {**old.model_dump(), **updates}
+            if merged.get("source") == "host_follow":
+                # Endpoint, model and credentials belong to the main app, never to this document.
+                for field in ("base_url", "model", "api_key"):
+                    merged[field] = ""
+                merged["protocol"] = "openai_chat"
+            elif old.source == "host_follow":
+                # Switching to manual must not inherit the host's resolved protocol.
+                merged["protocol"] = updates.get("protocol", "openai_chat")
+                merged["host_api"] = None
+            slot = _validate_slot(merged)
+            if old.source == "manual" and slot.source == "manual" and old.api_key and "api_key" not in updates and (
                 old.protocol != slot.protocol or not same_endpoint(old.base_url, slot.base_url)
             ):
                 raise ServerDomainError(
@@ -237,4 +251,51 @@ class ModelConfigService:
             elif current < expected_version:
                 raise ServerDomainError("MODEL_BINDING_CONFLICT", "Refresh the binding before trying again", 409)
             return {"version": current, "slot_id": config.bindings.get(plugin_id, {}).get(usage_id)}
+        return self.store.update(change)
+
+    def ensure_host_follow_binding(self, plugin_id: str) -> dict:
+        """Bind still-unbound declared usages to a shared host-follow slot.
+
+        Called after a committed install so a fresh plugin works against the
+        main app's assist API without manual setup. Existing bindings are never
+        touched; usages the shared slot cannot serve stay unbound for the user.
+        """
+        requirements = self.requirements_loader(plugin_id)
+        if not requirements:
+            return {"bound": [], "slot_id": None}
+
+        def change(config):
+            existing_slot_ids = set(config.slots)
+            slot_id = next(
+                (key for key, slot in config.slots.items()
+                 if slot.source == "host_follow" and slot.host_api == "assist"),
+                None,
+            )
+            if slot_id is None:
+                slot_id = "slot_" + uuid4().hex
+                config.slots[slot_id] = ModelSlot(
+                    name="Host assist API", source="host_follow", host_api="assist",
+                    capabilities=["text", "streaming"],
+                )
+            slot = config.slots[slot_id]
+            bindings = config.bindings.setdefault(plugin_id, {})
+            bound = []
+            created_slot = slot_id not in existing_slot_ids
+            for usage_id, requirement in requirements.items():
+                if usage_id in bindings:
+                    continue
+                if not set(requirement.capabilities).issubset(slot.capabilities):
+                    continue
+                bindings[usage_id] = slot_id
+                versions = config.binding_versions.setdefault(plugin_id, {})
+                versions[usage_id] = versions.get(usage_id, 0) + 1
+                bound.append(usage_id)
+            if not bindings:
+                config.bindings.pop(plugin_id, None)
+            if created_slot and not bound:
+                # Nothing could use the new shared slot; do not leave an orphan.
+                del config.slots[slot_id]
+                slot_id = None
+            return {"bound": bound, "slot_id": slot_id}
+
         return self.store.update(change)

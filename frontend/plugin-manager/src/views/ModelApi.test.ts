@@ -14,7 +14,7 @@ vi.mock('@/api/models', () => api)
 vi.mock('@/utils/request', () => ({ formatHttpError: (error: Error) => error.message }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
 
-const saved: ModelSlot = { id: 'slot_123', name: 'Vision model', protocol: 'openai_chat', base_url: 'https://example.test/v1', model: 'model-a', api_key: '__NEKO_SECRET_MASKED__', api_key_preview: 'sk-abc......wxyz', capabilities: ['text', 'image_input'], defaults: { temperature: null, max_output_tokens: null }, timeout_seconds: 60, fallback_slot_id: null, bound_by: [{ plugin_id: 'example', usage_id: 'vision', version: 0 }] }
+const saved: ModelSlot = { id: 'slot_123', name: 'Vision model', source: 'manual', host_api: null, protocol: 'openai_chat', base_url: 'https://example.test/v1', model: 'model-a', api_key: '__NEKO_SECRET_MASKED__', api_key_preview: 'sk-abc......wxyz', capabilities: ['text', 'image_input'], defaults: { temperature: null, max_output_tokens: null }, timeout_seconds: 60, fallback_slot_id: null, bound_by: [{ plugin_id: 'example', usage_id: 'vision', version: 0 }] }
 const emptyUsage: ModelUsageResult = { requests: [], filters: { plugin_id: null, slot_id: null }, summary: { window: 'recent_retained', retained_request_count: 0, logical_request_count: 0, upstream_attempt_count: 0, usage_counts: { reported: 0, partial: 0, unknown: 0 }, status_counts: { success: 0, error: 0, timeout: 0, cancelled: 0 }, tokens: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 } } }
 let cleanup: (() => void) | undefined
 const NativeMutationObserver = globalThis.MutationObserver
@@ -80,6 +80,29 @@ describe('model slot credentials', () => {
     expect(needsModelKeyUpdate(form, saved)).toBe(false)
     expect(modelSlotPayload(form).defaults).toEqual({ temperature: 0, max_output_tokens: null })
   })
+  it('builds a host-follow payload without endpoint, model or credentials', () => {
+    const form = modelSlotForm()
+    form.name = 'Host assist'
+    form.source = 'host_follow'
+    form.host_api = 'assist'
+    form.base_url = 'https://leftover.test/v1'
+    form.model = 'leftover-model'
+    form.api_key = 'leftover-key'
+    form.key_edited = true
+    const payload = modelSlotPayload(form)
+    expect(payload.source).toBe('host_follow')
+    expect(payload.host_api).toBe('assist')
+    expect(payload.base_url).toBe('')
+    expect(payload.model).toBe('')
+    expect(payload).not.toHaveProperty('api_key')
+    expect(needsModelKeyUpdate(form, null)).toBe(false)
+  })
+  it('switching a manual slot to host-follow drops the credential-update requirement', () => {
+    const form = modelSlotForm(saved)
+    form.source = 'host_follow'
+    expect(needsModelKeyUpdate(form, saved)).toBe(false)
+    expect(modelSlotPayload(form).api_key).toBeUndefined()
+  })
 })
 
 describe('Plugin API page', () => {
@@ -124,6 +147,21 @@ describe('Plugin API page', () => {
     const container = await mount()
     expect(container.textContent).toContain('Configuration is invalid')
     expect(container.textContent).not.toContain('No model slots yet')
+  })
+  it('renders a host-follow slot with the resolved main-app model and no stored key', async () => {
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', capabilities: ['text', 'streaming'], host_status: { configured: true, model: 'qwen3.8-flash', protocol: 'openai_chat', free: false }, bound_by: [] }
+    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
+    const container = await mount()
+    expect(container.textContent).toContain('Main app assist API')
+    expect(container.textContent).toContain('qwen3.8-flash')
+    expect(container.textContent).toContain('Managed by the main app')
+    expect(container.textContent).not.toContain('__NEKO_SECRET_MASKED__')
+  })
+  it('flags a host-follow slot whose main-app API is not configured', async () => {
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host core', source: 'host_follow', host_api: 'core', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_unsupported' }, bound_by: [] }
+    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
+    const container = await mount()
+    expect(container.textContent).toContain('Main app API not configured')
   })
   it('removes a stale plugin usage binding and enables slot deletion after refreshing', async () => {
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...saved, bound_by: [{ plugin_id: 'uninstalled_plugin', usage_id: 'removed_usage', version: 0 }] }] })

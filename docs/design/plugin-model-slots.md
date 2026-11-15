@@ -52,13 +52,43 @@ Existing plugins without declarations continue to work.
 
 The version-1 document contains `slots` keyed by host-generated stable IDs and
 `bindings` keyed by plugin ID, then usage ID. Each binding points to one slot ID.
-A slot contains `name`, `protocol` (`openai_chat` or `anthropic_messages`),
+A slot contains `name`, `source`, `protocol` (`openai_chat` or `anthropic_messages`),
 `base_url`, `model`, `api_key`, `capabilities`, `defaults`, `timeout_seconds`, and
 an optional `fallback_slot_id`. Defaults validate temperature against the selected protocol (0–1 for Anthropic,
 0–2 for OpenAI Chat), including on protocol changes. Defaults currently accept `temperature` and
 `max_output_tokens` (1–1,000,000, matching the request limit). These fields
 configure subsequent execution; saving does not make a model request or prove
 provider capabilities.
+
+### Host-follow slots
+
+`source` is `manual` (the default, preserving existing documents) or
+`host_follow`. A host-follow slot sets `host_api` to `assist` or `core` and
+stores no `base_url`, `model` or `api_key`; those belong to the main app's
+`core_config.json`. At call time the gateway resolves the slot through
+`get_model_api_config('conversation')` (assist) or `('realtime')` (core) and
+materializes an executable snapshot, so main-app provider, key and custom-API
+changes apply to the next request without notification hooks. Anthropic
+providers resolve to the `anthropic_messages` protocol automatically.
+
+An unconfigured main-app API returns `host_api_not_configured` (409). Most
+realtime core providers use WebSocket endpoints, which cannot serve chat
+requests; those return `host_api_unsupported` (409) rather than silently
+substituting the assist API. Slot views include a read-only `host_status`
+summary (configured flag, resolved model, protocol, free-tier flag) that never
+contains credentials. Connection tests resolve host-follow slots the same way.
+
+When a host-follow call resolves to the built-in free credentials
+(`free-access`), it consumes one unit of the agent daily quota with source
+`plugin:<plugin_id>:<usage_id>` before any upstream request; exhaustion returns
+`agent_quota_exceeded` (429). User-supplied keys, whether in manual slots or a
+paid main-app API, are never metered.
+
+After a committed install, `notify_install_committed` binds still-unbound
+declared usages to a shared host-follow assist slot (created lazily, reused
+across plugins, `text` + `streaming` capabilities). Existing bindings are never
+overwritten; usages the shared slot cannot serve stay unbound for explicit
+user choice. Auto-bind failures only log a warning and never fail the install.
 
 All endpoints are served by the plugin HTTP app under `/api/model-config` and
 use its existing management access policy.

@@ -18,7 +18,7 @@ vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
 
 const mounted: Array<() => void> = []
 const capable: ModelSlot = {
-  id: 'slot_saved_id', name: 'Vision', model: 'vision-model', protocol: 'openai_chat',
+  id: 'slot_saved_id', name: 'Vision', source: 'manual', host_api: null, model: 'vision-model', protocol: 'openai_chat',
   base_url: 'https://example.test/v1', api_key: '__NEKO_SECRET_MASKED__',
   capabilities: ['text', 'image_input'], defaults: { temperature: null, max_output_tokens: null },
   timeout_seconds: 60, fallback_slot_id: null, bound_by: [],

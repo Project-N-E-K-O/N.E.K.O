@@ -23,14 +23,24 @@ USAGE = {"prompt_tokens": 6, "completion_tokens": 1, "total_tokens": 7}
 
 
 class ReadOnlyStore:
-    def __init__(self, protocol="openai_chat", timeout_seconds=60.0):
-        primary = ModelSlot(
-            name="Saved model", protocol=protocol, base_url="https://saved.test/v1",
-            model="saved-model", api_key=SECRET, timeout_seconds=timeout_seconds,
-            fallback_slot_id=FALLBACK_ID,
-        )
-        backup = primary.model_copy(update={"model": "backup", "fallback_slot_id": None})
-        self.config = PluginModelsConfig(slots={SLOT_ID: primary, FALLBACK_ID: backup})
+    def __init__(self, protocol="openai_chat", timeout_seconds=60.0, host_follow=False):
+        if host_follow:
+            primary = ModelSlot(
+                name="Host assist", source="host_follow", host_api="assist",
+                timeout_seconds=timeout_seconds,
+            )
+            backup = None
+        else:
+            primary = ModelSlot(
+                name="Saved model", protocol=protocol, base_url="https://saved.test/v1",
+                model="saved-model", api_key=SECRET, timeout_seconds=timeout_seconds,
+                fallback_slot_id=FALLBACK_ID,
+            )
+            backup = primary.model_copy(update={"model": "backup", "fallback_slot_id": None})
+        slots = {SLOT_ID: primary}
+        if backup is not None:
+            slots[FALLBACK_ID] = backup
+        self.config = PluginModelsConfig(slots=slots)
         self.threads = []
 
     def read(self):
@@ -66,8 +76,8 @@ def response_for(protocol, include_usage=True):
 async def setup_probe(monkeypatch):
     executors = []
 
-    def setup(handler=None, *, protocol="openai_chat", timeout_seconds=60.0):
-        store = ReadOnlyStore(protocol, timeout_seconds)
+    def setup(handler=None, *, protocol="openai_chat", timeout_seconds=60.0, host_follow=False):
+        store = ReadOnlyStore(protocol, timeout_seconds, host_follow=host_follow)
         recorder = Recorder()
         seen = []
         clients = []
@@ -326,3 +336,44 @@ async def test_browser_disconnect_cancels_probe_and_closes_upstream(setup_probe)
         await asyncio.wait_for(request, 1)
     assert clients[0].is_closed
     assert recorder.requests[0]["status"] == "cancelled"
+
+
+async def test_probe_resolves_host_follow_slot_from_main_app(setup_probe, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "conversation"
+            return {"model": "saved-model", "base_url": "https://saved.test/v1", "api_key": SECRET}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    app, store, recorder, seen, _ = setup_probe(host_follow=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
+        response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
+    assert response.status_code == 200, response.text
+    assert seen[0].headers["authorization"] == "Bearer " + SECRET
+    assert json.loads(seen[0].content)["model"] == "saved-model"
+    assert store.config.slots[SLOT_ID].api_key == ""
+    assert recorder.requests[0]["plugin_id"] == model_config.PROBE_IDENTITY
+
+
+async def test_probe_reports_unconfigured_host_follow_slot(setup_probe, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "", "base_url": "", "api_key": ""}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    app, _, _, seen, _ = setup_probe(host_follow=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
+        response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
+    assert response.status_code == 409
+    assert response.headers["X-Error-Code"] == "host_api_not_configured"
+    assert not seen

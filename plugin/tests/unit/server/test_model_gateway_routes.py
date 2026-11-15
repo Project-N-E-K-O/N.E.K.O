@@ -924,3 +924,115 @@ async def test_gateway_shutdown_bounds_blocked_usage_flush(setup_gateway, monkey
             release_recording.set()
             await asyncio.gather(request, *([closing] if closing is not None else []), return_exceptions=True)
             await executor.aclose()
+
+
+HOST_SLOT_ID = "slot_" + "b" * 32
+
+
+def bind_host_slot(setup_gateway, **slot_updates):
+    fields = {
+        "name": "Host assist", "source": "host_follow", "host_api": "assist",
+        "capabilities": ["text", "streaming"],
+    }
+    fields.update(slot_updates)
+    setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(**fields)
+    setup_gateway.config.bindings["alpha"]["analysis"] = HOST_SLOT_ID
+
+
+def patch_host_config(monkeypatch, config):
+    import utils.config_manager as config_manager
+
+    consumed = []
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "conversation"
+            return dict(config)
+
+        async def aget_model_api_config(self, model_type):
+            return self.get_model_api_config(model_type)
+
+        async def aconsume_agent_daily_quota(self, source="", units=1):
+            consumed.append(source)
+            return True, {"used": len(consumed), "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    return consumed
+
+
+async def test_host_follow_slot_resolves_main_app_credentials(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway)
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1",
+        "api_key": SECRET, "provider_type": "openai_compatible",
+    })
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "hello"
+    assert consumed == []  # a paid main-app key is not metered
+    assert setup_gateway.config.slots[HOST_SLOT_ID].api_key == ""  # nothing copied into plugin storage
+
+
+async def test_host_follow_free_tier_consumes_agent_quota(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway)
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
+    })
+
+    async def free_upstream(request):
+        assert request.headers["authorization"] == "Bearer free-access"
+        return httpx.Response(200, json=reply())
+
+    setup_gateway.upstream.handler = free_upstream
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200
+    assert consumed == ["plugin:alpha:analysis"]
+
+
+async def test_host_follow_free_quota_exhaustion_rejects_before_upstream(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway)
+    patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
+    })
+    import utils.config_manager as config_manager
+
+    class ExhaustedManager:
+        def get_model_api_config(self, model_type):
+            return {"model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access"}
+
+        async def aget_model_api_config(self, model_type):
+            return self.get_model_api_config(model_type)
+
+        async def aconsume_agent_daily_quota(self, source="", units=1):
+            return False, {"used": 500, "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: ExhaustedManager())
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "agent_quota_exceeded"
+    assert setup_gateway.calls == []
+
+
+async def test_host_follow_unconfigured_main_api_fails_without_upstream(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway)
+    patch_host_config(monkeypatch, {"model": "", "base_url": "", "api_key": ""})
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "host_api_not_configured"
+    assert setup_gateway.calls == []
+
+
+async def test_host_follow_websocket_core_is_rejected(http_client, setup_gateway, monkeypatch):
+    bind_host_slot(setup_gateway, host_api="core")
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"model": "real-model", "base_url": "wss://realtime.test/core", "api_key": "k"}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "host_api_unsupported"
+    assert setup_gateway.calls == []

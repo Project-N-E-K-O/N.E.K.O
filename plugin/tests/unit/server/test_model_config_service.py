@@ -353,3 +353,88 @@ def test_output_default_limit_is_validated_before_saving(config_env):
     slot = service.store.read().slots[created["id"]]
     prepared = prepare_chat_request(slot, {"model": "analysis", "messages": [{"role": "user", "content": "Hi"}]})
     assert prepared["max_completion_tokens"] == MAX_OUTPUT_TOKENS
+
+
+def host_payload(**updates):
+    return {"name": "Host assist", "source": "host_follow", "host_api": "assist", **updates}
+
+
+def test_host_follow_slot_stores_no_credentials(config_env, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "host-model", "base_url": "https://host.test/v1", "api_key": "sk-host"}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    _, service, _ = config_env
+    created = service.create_slot(host_payload())
+    assert created["source"] == "host_follow"
+    assert created["api_key"] == ""
+    assert created["host_status"] == {"configured": True, "model": "host-model", "protocol": "openai_chat", "free": False}
+    stored = service.store.read().slots[created["id"]]
+    assert stored.base_url == stored.model == stored.api_key == ""
+    assert "sk-host" not in json.dumps(service.list_slots())
+
+
+def test_host_follow_slot_rejects_stored_endpoint_or_key(config_env):
+    _, service, _ = config_env
+    for updates in ({"base_url": "https://x.test/v1"}, {"model": "m"}, {"api_key": "k"}, {"host_api": None}):
+        with pytest.raises(ServerDomainError) as error:
+            service.create_slot(host_payload(**updates))
+        assert error.value.code == "MODEL_SLOT_INVALID"
+    with pytest.raises(ServerDomainError):
+        service.create_slot(slot_payload(host_api="assist"))
+
+
+def test_switching_sources_clears_inapplicable_fields(config_env):
+    _, service, _ = config_env
+    manual_id = service.create_slot(slot_payload())["id"]
+    switched = service.update_slot(manual_id, {"source": "host_follow", "host_api": "assist"})
+    assert switched["base_url"] == switched["model"] == ""
+    assert switched["api_key"] == ""
+    back = service.update_slot(manual_id, {
+        "source": "manual", "protocol": "openai_chat",
+        "base_url": "https://new.test/v1", "model": "new-model", "api_key": "new-key",
+    })
+    assert back["host_api"] is None
+    assert back["model"] == "new-model"
+    with pytest.raises(ServerDomainError):
+        service.update_slot(manual_id, {"source": "manual", "base_url": "", "model": ""})
+
+
+def test_manual_endpoint_change_still_requires_key_update(config_env):
+    _, service, _ = config_env
+    slot_id = service.create_slot(slot_payload())["id"]
+    with pytest.raises(ServerDomainError) as error:
+        service.update_slot(slot_id, {"base_url": "https://other.test/v1"})
+    assert error.value.code == "MODEL_CREDENTIAL_UPDATE_REQUIRED"
+
+
+def test_ensure_host_follow_binding_creates_shared_slot_and_binds_compatible_usages(config_env):
+    cm, service, declarations = config_env
+    declarations["beta"]["vision"] = PluginModelRequirementSchema(label="Vision", capabilities=["image_input"])
+    first = service.ensure_host_follow_binding("beta")
+    assert first["bound"] == ["analysis"]
+    slot_id = first["slot_id"]
+    assert service.get_bindings("beta")["bindings"] == {"analysis": slot_id}
+    assert service.get_bindings("beta")["requirements"]["vision"]["status"] == "unbound"
+    # A second plugin reuses the same shared slot; existing bindings are untouched.
+    service.set_binding("beta", "analysis", service.create_slot(slot_payload())["id"], 1)
+    second = service.ensure_host_follow_binding("alpha")
+    assert second["slot_id"] == slot_id
+    assert second["bound"] == []  # alpha requires image_input, the shared slot is text+streaming
+    assert service.get_bindings("beta")["bindings"]["analysis"] != slot_id
+    assert len(service.list_slots()["slots"]) == 2
+
+
+def test_ensure_host_follow_binding_is_idempotent_and_skips_undeclared_plugins(config_env):
+    _, service, _ = config_env
+    assert service.ensure_host_follow_binding("legacy") == {"bound": [], "slot_id": None}
+    assert service.list_slots()["slots"] == []
+    first = service.ensure_host_follow_binding("beta")
+    again = service.ensure_host_follow_binding("beta")
+    assert again == {"bound": [], "slot_id": first["slot_id"]}
+    assert len(service.list_slots()["slots"]) == 1
+    version = service.get_bindings("beta")["requirements"]["analysis"]["version"]
+    assert version == 1

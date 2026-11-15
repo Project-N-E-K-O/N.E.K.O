@@ -13,13 +13,19 @@
           <el-empty v-if="!loadingSlots && !slotsError && !slots.length" :description="t('modelApi.noSlots')" />
           <el-card v-for="slot in slots" :key="slot.id" shadow="never" class="slot-card" :data-slot-id="slot.id">
             <template #header>
-              <div class="slot-heading"><h2>{{ slot.name }}</h2><el-tag size="small" effect="plain">{{ protocolLabel(slot.protocol) }}</el-tag></div>
+              <div class="slot-heading"><h2>{{ slot.name }}</h2><el-tag size="small" effect="plain">{{ slot.source === 'host_follow' ? t(`modelApi.hostApi.${slot.host_api}`) : protocolLabel(slot.protocol) }}</el-tag></div>
             </template>
-            <div class="slot-model">{{ slot.model }}</div>
-            <p class="endpoint">{{ slot.base_url }}</p>
+            <template v-if="slot.source === 'host_follow'">
+              <div class="slot-model">{{ slot.host_status?.configured ? slot.host_status.model : t('modelApi.hostNotConfigured') }}</div>
+              <p class="endpoint">{{ t('modelApi.hostManagedHint') }}</p>
+            </template>
+            <template v-else>
+              <div class="slot-model">{{ slot.model }}</div>
+              <p class="endpoint">{{ slot.base_url }}</p>
+            </template>
             <div class="capabilities"><el-tag v-for="capability in slot.capabilities" :key="capability" size="small" type="info">{{ t(`modelApi.capability.${capability}`) }}</el-tag></div>
             <dl class="slot-details">
-              <div><dt>{{ t('modelApi.key') }}</dt><dd>{{ t(slot.api_key ? 'modelApi.keySet' : 'modelApi.keyEmpty') }}</dd></div>
+              <div><dt>{{ t('modelApi.key') }}</dt><dd>{{ slot.source === 'host_follow' ? t('modelApi.hostManagedKey') : t(slot.api_key ? 'modelApi.keySet' : 'modelApi.keyEmpty') }}</dd></div>
               <div><dt>{{ t('modelApi.timeout') }}</dt><dd>{{ t('modelApi.seconds', { count: slot.timeout_seconds }) }}</dd></div>
               <div><dt>{{ t('modelApi.fallback') }}</dt><dd>{{ slot.fallback_slot_id ? slotName(slot.fallback_slot_id) : t('modelApi.noFallback') }}</dd></div>
             </dl>
@@ -83,6 +89,23 @@
       <el-form label-position="top" @submit.prevent="saveSlot">
         <el-alert v-if="formError" :title="formError" type="error" :closable="false" show-icon />
         <el-form-item :label="t('modelApi.name')" required><el-input v-model="form.name" data-testid="slot-name" maxlength="128" :disabled="saving" /></el-form-item>
+        <el-form-item :label="t('modelApi.source')" required>
+          <el-select v-model="form.source" data-testid="slot-source" :disabled="saving">
+            <el-option :label="t('modelApi.sourceManual')" value="manual" />
+            <el-option :label="t('modelApi.sourceHost')" value="host_follow" />
+          </el-select>
+          <p class="field-hint">{{ t('modelApi.sourceHint') }}</p>
+        </el-form-item>
+        <template v-if="form.source === 'host_follow'">
+          <el-form-item :label="t('modelApi.hostApiLabel')" required>
+            <el-select v-model="form.host_api" data-testid="slot-host-api" :disabled="saving">
+              <el-option :label="t('modelApi.hostApi.assist')" value="assist" />
+              <el-option :label="t('modelApi.hostApi.core')" value="core" />
+            </el-select>
+            <p class="field-hint">{{ t(form.host_api === 'core' ? 'modelApi.hostCoreHint' : 'modelApi.hostAssistHint') }}</p>
+          </el-form-item>
+        </template>
+        <template v-else>
         <div class="form-pair">
           <el-form-item :label="t('modelApi.protocol')" required><el-select v-model="form.protocol" :disabled="saving"><el-option label="OpenAI Chat Completions" value="openai_chat" /><el-option label="Anthropic Messages" value="anthropic_messages" /></el-select></el-form-item>
           <el-form-item :label="t('modelApi.model')" required><el-input v-model="form.model" data-testid="slot-model" maxlength="256" :disabled="saving" /></el-form-item>
@@ -93,6 +116,7 @@
           <p class="field-hint">{{ t('modelApi.keyEditHint') }}</p>
           <p v-if="keyUpdateRequired" class="field-error">{{ t('modelApi.keyUpdateRequired') }}</p>
         </el-form-item>
+        </template>
         <el-form-item :label="t('modelApi.capabilities')"><el-checkbox-group v-model="form.capabilities" :disabled="saving"><el-checkbox v-for="capability in capabilities" :key="capability" :value="capability" :disabled="capability === 'text'">{{ t(`modelApi.capability.${capability}`) }}</el-checkbox></el-checkbox-group><p class="field-hint">{{ t('modelApi.capabilitiesHint') }}</p></el-form-item>
         <div class="form-pair">
           <el-form-item :label="t('modelApi.temperature')"><el-input-number v-model="form.temperature" :min="0" :max="form.protocol === 'anthropic_messages' ? 1 : 2" :step="0.1" :precision="2" :disabled="saving" :placeholder="t('modelApi.providerDefault')" /></el-form-item>
@@ -189,7 +213,7 @@ function copyMaskedKey(event: ClipboardEvent) {
 }
 async function saveSlot() {
   if (saving.value || keyUpdateRequired.value) return
-  if (!form.name.trim() || !form.model.trim() || !form.base_url.trim()) { formError.value = t('modelApi.requiredFields'); return }
+  if (!form.name.trim() || (form.source === 'manual' && (!form.model.trim() || !form.base_url.trim()))) { formError.value = t('modelApi.requiredFields'); return }
   saving.value = true
   formError.value = ''
   try {

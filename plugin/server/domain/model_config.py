@@ -40,14 +40,29 @@ class ModelSlot(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
 
     name: str = Field(min_length=1, max_length=128)
-    protocol: Literal["openai_chat", "anthropic_messages"]
-    base_url: str = Field(min_length=1, max_length=2048)
-    model: str = Field(min_length=1, max_length=256)
+    source: Literal["manual", "host_follow"] = "manual"
+    host_api: Literal["assist", "core"] | None = None
+    protocol: Literal["openai_chat", "anthropic_messages"] = "openai_chat"
+    base_url: str = Field(default="", max_length=2048)
+    model: str = Field(default="", max_length=256)
     api_key: str = Field(default="", max_length=4096, repr=False)
     capabilities: list[ModelCapability] = Field(default_factory=lambda: ["text"])
     defaults: ModelDefaults = Field(default_factory=ModelDefaults)
     timeout_seconds: float = Field(default=60, gt=0, le=300)
     fallback_slot_id: SlotId | None = None
+
+    @model_validator(mode="after")
+    def validate_source_fields(self) -> ModelSlot:
+        if self.source == "host_follow":
+            if self.host_api is None:
+                raise ValueError("A host-follow slot must select assist or core")
+            if self.base_url or self.model or self.api_key:
+                raise ValueError("A host-follow slot must not store endpoint, model or credentials")
+        elif self.host_api is not None:
+            raise ValueError("Only a host-follow slot may set host_api")
+        elif not self.base_url or not self.model:
+            raise ValueError("A manual slot requires base_url and model")
+        return self
 
     @model_validator(mode="after")
     def validate_protocol_defaults(self) -> ModelSlot:
@@ -75,6 +90,9 @@ class ModelSlot(BaseModel):
     @classmethod
     def normalize_url(cls, value: str) -> str:
         value = value.strip()
+        if not value:
+            # Host-follow slots store no endpoint; source validation enforces non-empty for manual slots.
+            return value
         if any(char.isspace() or ord(char) < 32 for char in value):
             raise ValueError("base_url must be an HTTP(S) base URL")
         try:

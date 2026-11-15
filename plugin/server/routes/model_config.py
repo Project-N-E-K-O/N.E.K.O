@@ -46,6 +46,12 @@ async def _call(method: Callable, *args):
         return await asyncio.to_thread(method, *args)
     except ServerDomainError as exc:
         raise_http_from_domain(exc, logger=logger, include_details=True)
+    except ModelGatewayError as exc:
+        # Host-follow probes resolve the main app configuration before any request.
+        raise HTTPException(
+            exc.status_code, {"code": exc.code, "message": exc.message},
+            headers={"X-Error-Code": exc.code},
+        ) from None
     except MaintenanceModeError as exc:
         raise HTTPException(409, "Model settings cannot be changed during storage maintenance") from exc
 
@@ -66,8 +72,10 @@ async def get_slot(slot_id: str, _: str = require_admin):
 
 
 def _resolve_probe(slot_id: str) -> ResolvedModelCall:
+    from plugin.server.infrastructure.host_model_slots import resolve_host_slot
+
     config = service.store.read()
-    slot = service._slot(config, slot_id).model_copy(deep=True)
+    slot = resolve_host_slot(service._slot(config, slot_id)).model_copy(deep=True)
     slot.timeout_seconds = min(slot.timeout_seconds, PROBE_MAX_SECONDS)
     slot.fallback_slot_id = None
     return ResolvedModelCall(PROBE_IDENTITY, PROBE_USAGE, slot_id, slot)

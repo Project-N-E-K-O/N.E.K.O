@@ -23,6 +23,7 @@ from plugin.server.application.model_gateway_service import (
     ModelGatewayService,
 )
 from plugin.server.domain.errors import ServerDomainError
+from plugin.server.infrastructure.host_model_slots import is_free_host_config, resolve_host_slot
 from plugin.server.infrastructure.model_config_store import ModelConfigStore
 from plugin.server.infrastructure.model_usage_store import ModelUsageRecorder
 from plugin.server.model_gateway.errors import ModelGatewayError
@@ -88,7 +89,7 @@ def _resolve_call(plugin_id: str, usage_id: object) -> ResolvedModelCall:
         config = config_store.read()
         slot_id = config.bindings.get(plugin_id, {}).get(usage_id)
         slot = config.slots.get(slot_id) if slot_id else None
-        if slot is None:
+        if slot is None or slot_id is None:
             raise ModelGatewayError("model_usage_not_bound", "Bind a model slot to this plugin usage first", 403, "model")
         if not set(requirement.capabilities).issubset(slot.capabilities):
             raise ModelGatewayError("model_capability_mismatch", "Bound slot no longer meets plugin requirements", 409, "model")
@@ -96,13 +97,42 @@ def _resolve_call(plugin_id: str, usage_id: object) -> ResolvedModelCall:
         fallback = config.slots.get(fallback_id) if fallback_id else None
         return ResolvedModelCall(
             plugin_id=plugin_id, usage_id=usage_id, slot_id=slot_id,
-            slot=slot.model_copy(deep=True), fallback_slot_id=fallback_id,
-            fallback_slot=fallback.model_copy(deep=True) if fallback is not None else None,
+            slot=resolve_host_slot(slot).model_copy(deep=True),
+            fallback_slot_id=fallback_id,
+            fallback_slot=resolve_host_slot(fallback).model_copy(deep=True) if fallback is not None else None,
         )
     except ServerDomainError as exc:
         # Translate before crossing asynchronous/context-manager boundaries;
         # the shared domain exception is a frozen dataclass.
         raise ModelGatewayError(exc.code.lower(), exc.message, exc.status_code) from None
+
+
+async def _reserve_host_free_quota(call: ResolvedModelCall) -> None:
+    """Meter host-follow calls that resolve to the built-in free credentials.
+
+    User-supplied keys (manual slots or a paid main-app API) are not metered.
+    """
+    config = await asyncio.to_thread(config_store.read)
+    stored = config.slots.get(call.slot_id)
+    if stored is None or stored.source != "host_follow":
+        return
+    from utils.config_manager import get_config_manager
+
+    manager = get_config_manager()
+    host_config = await manager.aget_model_api_config(
+        "conversation" if stored.host_api == "assist" else "realtime"
+    )
+    if not is_free_host_config(host_config):
+        return
+    ok, info = await manager.aconsume_agent_daily_quota(
+        source=f"plugin:{call.plugin_id}:{call.usage_id}", units=1,
+    )
+    if not ok:
+        raise ModelGatewayError(
+            "agent_quota_exceeded",
+            f"Free agent daily quota exceeded ({info.get('used', 0)}/{info.get('limit', 500)})",
+            429,
+        )
 
 
 def _get_executor(request: Request) -> ModelExecutor:
@@ -246,6 +276,7 @@ async def create_chat_completion(request: Request):
             body = await _read_request(request)
             guard.watch_disconnect = True
             call = await asyncio.to_thread(_resolve_call, plugin_id, body.get("model"))
+            await _reserve_host_free_quota(call)
             executor = _get_executor(request)
             call = replace(call, deadline=asyncio.get_running_loop().time() + call.slot.timeout_seconds)
             if body.get("stream") is True:
