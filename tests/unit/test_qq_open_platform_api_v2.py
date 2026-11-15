@@ -24,6 +24,7 @@ import json
 import pytest
 
 from utils.connection.qq import open_platform as mod
+from utils.connection.qq import open_platform as open_plat_mod
 from utils.connection.qq.open_platform import (
     QQOpenPlatformAPIError,
     QQOpenPlatformConnection,
@@ -1110,6 +1111,9 @@ def test_blacklist_batches_instead_of_dropping_the_tail():
     assert len(posts) == 2
     assert len(posts[0][2]["member_openids"]) == 20
     assert posts[1][2]["member_openids"] == ["M20"]
+    # The path is the point: batching rewrote it to /blacklist, which the platform has
+    # no such endpoint, so every add and remove failed while the test counted posts.
+    assert all(call[1].endswith("/v2/groups/G1/member_blacklist") for call in posts), posts
     assert out["processed"] == 21
     assert out["batches"] == 2
 
@@ -1117,4 +1121,106 @@ def test_blacklist_batches_instead_of_dropping_the_tail():
     out2 = run(single.operate_group_member_blacklist("G1", ids[:20], op="del"))
     assert len([c for c in single._http.calls if c[0] == "POST"]) == 1
     assert "processed" not in out2
+
+# ── round 11: shared msg_seq, member paging, hold re-attribution ───────────
+
+def test_explicit_card_seq_is_recorded_in_the_shared_counter():
+    # greptile r4576805062 / CodeRabbit r4576821304: a card sent with msg_seq=1 left
+    # the allocator untouched, so the next reply to the same message also got 1 and
+    # the platform dropped it as a duplicate (msg_id, msg_seq).
+    conn = _conn([_Response({"id": "c1"}), _Response({"id": "t1"})])
+    assert run(conn.send_group_ark_card("G1", {
+        "ark": {"kv": [{"key": "#TITLE#", "value": "t"}]},
+        "msg_id": "M", "msg_seq": 1})) is True
+    assert conn._msg_seq_by_reply_id["M"][0] == 1
+
+    assert run(conn.send_group_message_segments("G1", [
+        {"type": "reply", "data": {"id": "M"}},
+        {"type": "text", "data": {"text": "后续"}}])) == "t1"
+    assert conn._http.calls[-1][2]["msg_seq"] == 2
+
+
+def test_card_seq_from_ark_is_not_used_for_a_keyword_anchor():
+    # The seq belongs to the message the caller was replying to. Borrowing it for a
+    # different anchor would repeat a pair the platform already saw.
+    conn = _conn([_Response({"id": "c2"})])
+    run(conn.send_group_ark_card(
+        "G1",
+        {"ark": {"kv": [{"key": "#TITLE#", "value": "t"}]},
+         "msg_id": "OTHER", "msg_seq": 4},
+        reply_message_id="M-NEW"))
+    body = conn._http.calls[-1][2]
+    assert body["msg_id"] == "M-NEW"
+    assert body["msg_seq"] == 1
+
+
+def test_member_list_pages_to_the_end_by_default():
+    # greptile r4576752652: the old default of 10 pages dropped every member past
+    # page 10 and still returned a plain list, so a caller could not tell the
+    # difference between a small group and a truncated read.
+    responses = []
+    for page in range(14):
+        responses.append(_Response({
+            "members": [{"member_openid": f"M{page}_{i}"} for i in range(30)],
+            "next_cursor": f"c{page + 1}" if page < 13 else "",
+        }))
+    conn = _conn(responses)
+    out = run(conn.get_group_member_list("G1"))
+    assert len(out) == 14 * 30
+    assert conn._http.calls[-1][1].endswith("/members?cursor=c13")
+
+
+def test_member_list_reports_when_a_cap_leaves_members_unread():
+    conn = _conn()
+    logs = []
+    conn.logger = type("L", (), {
+        "warning": staticmethod(lambda m: logs.append(str(m))),
+        "info": staticmethod(lambda m: None)})()
+    responses = [
+        _Response({"members": [{"member_openid": f"A{i}"} for i in range(30)],
+                   "next_cursor": f"c{i + 1}"})
+        for i in range(5)
+    ]
+    conn._http.script = responses
+    out = run(conn.get_group_member_list("G1", max_pages=2))
+    assert len(out) == 60
+    assert any("返回结果不完整" in line for line in logs), logs
+    assert conn._member_pages_state["G1"]["next_cursor"] == "c2"
+
+
+def test_held_copy_is_re_judged_after_the_identity_is_learned():
+    # CodeRabbit r4576780342: M1 waits unattributed. M2 then proves the group's bot
+    # openid through is_you. Releasing M1 with its stored verdict would keep calling a
+    # real summon chatter, even though the identity is now known.
+    import asyncio
+
+    BOT = "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ1"
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._self_id = ""
+    conn.logger = None
+    conn._message_queue = asyncio.Queue(maxsize=8)
+    m1 = {"id": "M1", "group_openid": "G1", "content": f"开会 <@{BOT}>",
+          "author": {"member_openid": "H1"}}
+
+    async def go():
+        await conn._dispatch_event("GROUP_MESSAGE_CREATE", m1, "e1")
+        await asyncio.sleep(0)
+        assert conn._message_queue.empty()          # M1 is held, not queued
+        m2 = {"id": "M2", "group_openid": "G1", "content": "早安",
+              "author": {"member_openid": "H2"},
+              "mentions": [{"member_openid": BOT, "is_you": True}]}
+        await conn._dispatch_event("GROUP_MESSAGE_CREATE", m2, "e2")
+        await asyncio.sleep(0)
+        assert conn._remembered_bot_openid("G1") == BOT
+        await asyncio.sleep(open_plat_mod._AT_MERGE_WINDOW_SECONDS + 0.05)
+        delivered = []
+        while not conn._message_queue.empty():
+            delivered.append(conn._message_queue.get_nowait())
+        return delivered
+
+    delivered = asyncio.run(go())
+    by_id = {d["message_id"]: d for d in delivered}
+    assert by_id["M1"]["is_at_bot"] is True          # re-judged with the new identity
+    assert by_id["M1"]["mentions_other_user"] is False
+
 

@@ -158,6 +158,18 @@ _ATTRIBUTION_HOLD_MAX = 8
 #: pass more; the operation batches rather than dropping the tail.
 _BLACKLIST_BATCH = 20
 
+#: Ceiling on member-list paging when a caller asks for a cap. Pages are 30 members,
+#: so 20 pages is 600 members: beyond that a caller gets `truncated` plus the cursor.
+_MEMBER_PAGES_HARD_CAP = 20
+
+#: Ceiling for a caller who asks for no cap at all. Pages of 30, so 200 pages is 6,000
+#: members: past any real group, and low enough that a server stuck handing back the
+#: same cursor cannot spin inside one tool call.
+_MEMBER_PAGES_SAFETY_CAP = 200
+#: Page size the v2 member endpoint returns. The paging bound counts members per page,
+#: so it lives with the page size instead of as a magic division.
+_MEMBER_PAGE_SIZE = 30
+
 # ==========================================
 # R11 identity scope: resolved
 # (docs/design/speaker-trust-entity-semantics.md §2.15.4)
@@ -457,6 +469,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         self._attribution_hold: dict[str, dict] = {}
         self._attribution_hold_tasks: dict[str, object] = {}
         self._hold_saturated_warned: set = set()
+        #: group_id -> the truncated member-page state of the last list read.
+        self._member_pages_state: dict[str, dict] = {}
         #: Inbound ids accepted recently -> the monotonic time they arrived. Guards
         #: against the platform delivering one message twice (see ``_enqueue_inbound``).
         self._seen_inbound_ids: dict[str, float] = {}
@@ -1209,6 +1223,17 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         msg = self._mutable("_attribution_hold", dict).pop(mid, None)
         if msg is None:
             return
+        # The identity may have been proved while this copy waited, by another
+        # message's is_you item. Judging the stored verdict again would keep calling a
+        # summon chatter for no reason, so re-convert from the raw frame when the group
+        # now has an openid (r4576780342).
+        gid = str(msg.get("group_id") or "").strip()
+        raw = msg.get("raw")
+        if (gid and raw and not msg.get("is_at_bot")
+                and self._remembered_bot_openid(gid)):
+            fresh = self._convert_event("GROUP_MESSAGE_CREATE", raw)
+            if fresh:
+                msg = fresh
         refusal = self._enqueue_inbound(msg)
         if self.logger:
             if refusal == "duplicate":
@@ -1646,6 +1671,19 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     # message send
     # ==========================================
 
+    def _adopt_msg_seq(self, reply_id: str, seq: int) -> None:
+        """Record a sequence number the caller chose, so the next one is larger.
+
+        ``_next_msg_seq`` is the only allocator, and the platform de-duplicates on
+        ``(msg_id, msg_seq)``. Any path that sends a seq without going through the
+        allocator leaves that pair claimable a second time, and the second reply is the
+        one the platform throws away -- silently, from the caller's side.
+        """
+        now = time.monotonic()
+        seqs = self._mutable("_msg_seq_by_reply_id", dict)
+        previous = seqs.pop(reply_id, (0, now))[0]
+        seqs[reply_id] = (max(previous, int(seq)), now)
+
     def _next_msg_seq(self, reply_id: str) -> int:
         """The next ``msg_seq`` for a reply to ``reply_id`` (1, 2, 3, ...).
 
@@ -2029,11 +2067,23 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         # keywords) were dropped and the card went out as a proactive send: it then
         # either consumed the active-message quota or was refused outright in a group
         # that disabled proactive messages (r4576712126).
+        # The anchor's origin decides whether ark_obj's seq may be used. A caller that
+        # passes reply_message_id as a keyword while ark_obj still carries the msg_id
+        # and msg_seq of some earlier message would otherwise reply to the new anchor
+        # with the old message's sequence number (r4576851216).
+        keyword_anchor = bool(str(reply_message_id or "").strip())
         anchor = str(reply_message_id or ark_obj.get("msg_id") or "").strip()
         if anchor:
             payload["msg_id"] = anchor
-            seq = _to_int(ark_obj.get("msg_seq"))
-            payload["msg_seq"] = seq if seq > 0 else self._next_msg_seq(anchor)
+            seq = 0 if keyword_anchor else _to_int(ark_obj.get("msg_seq"))
+            if seq > 0:
+                payload["msg_seq"] = seq
+                # An explicit seq still has to enter the shared counter, or the next
+                # reply to the same message reuses it and the platform drops that
+                # reply as a duplicate (r4576805062, r4576821304).
+                self._adopt_msg_seq(anchor, seq)
+            else:
+                payload["msg_seq"] = self._next_msg_seq(anchor)
         else:
             ev = str(event_id or ark_obj.get("event_id") or "").strip()
             if ev:
@@ -2489,7 +2539,12 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                 # exactly-at-limit file measured one byte over and was refused, and a
                 # line-wrapped encoding refused files even further below the ceiling
                 # (r4574585087).
-                predicted = _base64_decoded_size(encoded)
+                # In a worker thread. The measure walks the whole string several times
+                # (trailing whitespace, padding, then the count), and a payload near
+                # the 200 MB ceiling is ~267 MB of text: scanned on the event loop it
+                # stalls message receive and heartbeats for the length of the check
+                # (r4576805065). Over-limit input is the case that pays most.
+                predicted = await asyncio.to_thread(_base64_decoded_size, encoded)
                 if predicted > UPLOAD_HARD_MAX_BYTES:
                     # Refuse on the encoded length, before decoding. Decoding first to
                     # measure the result allocates the whole payload plus its
@@ -2921,19 +2976,44 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         return await self._api("GET", f"/v2/groups/{gid}/members/{member}")
 
     async def get_group_member_list(self, group_id: str = "", **kw: Any) -> list:
-        """Page through members (30 at a time) until the cursor runs out or max_pages hits."""
+        """Page through members until the cursor runs out, or until a page cap says stop."""
         gid = str(group_id or "").strip()
         if not gid:
             return self._missing_argument("get_group_member_list", "group_id", empty=list)
-        pages = max(1, min(_to_int(kw.get("max_pages")) or 10, 20))
+        # Page caps hide members. The old version returned a plain list after burning
+        # its pages, so a caller counting members could not tell a complete read from a
+        # truncated one and silently missed everyone past the cap (r4576752652). Read
+        # to the end by default; when a cap is asked for, say that it stopped.
+        wanted = _to_int(kw.get("max_pages"))
+        # Asking for no cap means "read the whole group", which is the default the
+        # reviewer asked for. It still needs a ceiling: an endpoint that keeps handing
+        # back a cursor would otherwise page forever inside one tool call, so the
+        # uncapped path stops at the safety bound and says so.
+        cap = _MEMBER_PAGES_SAFETY_CAP if wanted <= 0 else max(1, min(wanted, _MEMBER_PAGES_HARD_CAP))
         out: list = []
         cursor = ""
-        for _ in range(pages):
+        truncated = False
+        while True:
             data = await self._api("GET", f"/v2/groups/{gid}/members", params={"cursor": cursor})
             out.extend(data.get("members") or [])
             cursor = str(data.get("next_cursor") or "")
             if not cursor:
                 break
+            if len(out) // _MEMBER_PAGE_SIZE >= cap:
+                truncated = True
+                break
+        if truncated:
+            # The signature is a list, so the cursor cannot ride along. Saying it out
+            # loud is the honest half: a caller that asked for a page cap now has a log
+            # line naming the group, the count and the cursor to continue from, instead
+            # of a list that looks final.
+            self._member_pages_state[gid] = {"next_cursor": cursor, "count": len(out)}
+            if self.logger:
+                self.logger.warning(
+                    f"[QQOpenPlatform] 群 {gid} 成员列表读到 {len(out)} 人就停在上限 "
+                    f"{cap} 页，仍有 next_cursor，返回结果不完整")
+            return out
+        self._member_pages_state.pop(gid, None)
         return out
 
     async def set_group_ban(self, group_id: str = "", user_id: str = "", duration: int = 600, **_: Any) -> dict:
@@ -3041,21 +3121,25 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         # nothing upstream retried, and the extra members quietly stayed off the
         # blacklist (r4574519956). Batch instead, and return the last batch's answer
         # with the count actually processed.
+        # The path is ``member_blacklist``, the same one
+        # list_group_member_blacklist reads below. The batching rewrite retyped it as
+        # ``blacklist`` in both new calls and left the original line below the return,
+        # so every add and remove hit a nonexistent endpoint and the dead line made it
+        # look reviewed (r4576849506). One helper now, one path, no unreachable tail.
+        def body(chunk: list[str]) -> dict[str, Any]:
+            return {"op": op, "member_openids": chunk}
+
         if len(ids) <= _BLACKLIST_BATCH:
             return await self._api(
-                "POST", f"/v2/groups/{gid}/blacklist",
-                payload={"op": op, "member_openids": ids})
+                "POST", f"/v2/groups/{gid}/member_blacklist", payload=body(ids))
         result: dict[str, Any] = {}
         for start in range(0, len(ids), _BLACKLIST_BATCH):
-            chunk = ids[start:start + _BLACKLIST_BATCH]
             result = await self._api(
-                "POST", f"/v2/groups/{gid}/blacklist",
-                payload={"op": op, "member_openids": chunk})
+                "POST", f"/v2/groups/{gid}/member_blacklist",
+                payload=body(ids[start:start + _BLACKLIST_BATCH]))
         result["processed"] = len(ids)
         result["batches"] = (len(ids) + _BLACKLIST_BATCH - 1) // _BLACKLIST_BATCH
         return result
-        return await self._api(
-            "POST", f"/v2/groups/{gid}/member_blacklist", payload={"op": op, "member_openids": ids})
 
     async def list_group_member_blacklist(self, group_id: str, cursor: str = "") -> dict:
         gid = str(group_id or "").strip()
