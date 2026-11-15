@@ -77,10 +77,12 @@ realtime core providers use WebSocket endpoints, which cannot serve chat
 requests; those return `host_api_unsupported` (409) rather than silently
 substituting the assist API. A host-follow slot's default temperature is
 limited to the protocol intersection (0–1) at save time, because the main app
-may resolve to Anthropic at any moment; the editor enforces the same limit. A
-legacy document that still carries a higher default fails resolution with
-`model_defaults_incompatible` (409) before any upstream request or quota
-reservation. Slot views include a read-only `host_status` summary (configured
+may resolve to Anthropic at any moment; the editor enforces the same limit.
+Temperature compatibility is judged on the effective request value: an
+explicit valid override works even when a legacy document carries a higher
+default, and only a request that actually exceeds the resolved protocol's
+range fails with `model_defaults_incompatible` (400) before any upstream
+request. Slot views include a read-only `host_status` summary (configured
 flag, resolved model, protocol, free-tier flag, or an error code with an
 actionable message) that never contains credentials. Connection tests resolve
 host-follow slots the same way.

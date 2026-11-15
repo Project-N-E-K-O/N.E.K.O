@@ -206,7 +206,6 @@ def test_tool_choice_mapping(choice, expected):
     "overrides,param",
     [
         ({"response_format": {"type": "json_object"}}, "response_format"),
-        ({"temperature": 1.5}, "temperature"),
         ({"n": 2}, "n"),
         ({"thinking": {"type": "enabled"}}, "thinking"),
         (
@@ -568,3 +567,13 @@ def test_malformed_stop_reasons_are_safe_errors(bad_value):
     with pytest.raises(ModelGatewayError) as exc:
         converter.feed(_end(bad_value)[0])
     assert exc.value.status_code == 502
+
+
+def test_out_of_range_temperature_reports_actionable_code():
+    with pytest.raises(ModelGatewayError) as exc:
+        prepare_request(_request(temperature=1.5))
+    assert exc.value.code == "model_defaults_incompatible"
+    assert exc.value.param == "temperature"
+    assert exc.value.status_code == 400
+    # A valid explicit value passes.
+    assert prepare_request(_request(temperature=0.5))["temperature"] == 0.5

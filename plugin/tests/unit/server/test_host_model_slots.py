@@ -108,17 +108,17 @@ def test_status_reports_unconfigured_host(monkeypatch):
     assert status["error_code"] == "host_api_unsupported"
     assert "WebSocket" in status["message"]
 
-def test_anthropic_resolution_rejects_temperature_above_one(monkeypatch):
-    # Saving now rejects >1 for host-follow slots; only a legacy document can
-    # still carry it, and resolution must fail before any upstream request.
+def test_legacy_high_default_does_not_block_resolution(monkeypatch):
+    # Saving rejects >1 for host-follow slots; a legacy document may still
+    # carry it. Resolution must succeed so an explicit valid request override
+    # keeps working — the effective value is judged at request preparation.
     slot = host_slot(defaults={"temperature": 1.0})
     object.__setattr__(slot.defaults, "temperature", 1.5)
     config = {"model": "m", "base_url": "https://api.test/v1", "api_key": "k", "provider_type": "anthropic"}
-    with pytest.raises(ModelGatewayError) as error:
-        materialize_host_slot(slot, config)
-    assert error.value.code == "model_defaults_incompatible"
-    assert error.value.status_code == 409
-    # Within the Anthropic range the snapshot resolves normally.
+    resolved = materialize_host_slot(slot, config)
+    assert resolved.protocol == "anthropic_messages"
+    assert resolved.defaults.temperature == 1.5
+    # Within the Anthropic range the snapshot resolves normally too.
     ok = materialize_host_slot(host_slot(defaults={"temperature": 1.0}), config)
     assert ok.protocol == "anthropic_messages"
     # OpenAI resolution keeps the legacy default untouched.
@@ -126,7 +126,7 @@ def test_anthropic_resolution_rejects_temperature_above_one(monkeypatch):
     assert openai.defaults.temperature == 1.5
 
 
-def test_status_surfaces_defaults_mismatch_with_message(monkeypatch):
+def test_status_stays_configured_with_legacy_high_default(monkeypatch):
     import utils.config_manager as config_manager
 
     class Manager:
@@ -137,6 +137,6 @@ def test_status_surfaces_defaults_mismatch_with_message(monkeypatch):
     legacy = host_slot(defaults={"temperature": 1.0})
     object.__setattr__(legacy.defaults, "temperature", 1.5)
     status = host_slot_status(legacy)
-    assert status["configured"] is False
-    assert status["error_code"] == "model_defaults_incompatible"
-    assert "temperature" in status["message"]
+    # The slot is usable with an explicit override; do not label it broken.
+    assert status["configured"] is True
+    assert status["protocol"] == "anthropic_messages"

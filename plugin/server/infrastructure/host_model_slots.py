@@ -48,16 +48,9 @@ def materialize_host_slot(slot: ModelSlot, config: dict[str, Any]) -> ModelSlot:
             409, "model",
         )
     protocol = "anthropic_messages" if config.get("provider_type") == "anthropic" else "openai_chat"
-    temperature = slot.defaults.temperature
-    if protocol == "anthropic_messages" and temperature is not None and temperature > 1:
-        # Saving already rejects this intersection; only a legacy document can
-        # reach here. Fail before any upstream request (and before quota).
-        raise ModelGatewayError(
-            "model_defaults_incompatible",
-            "The main app API resolved to Anthropic, which allows temperature up to 1; "
-            "lower this slot's default temperature",
-            409, "model",
-        )
+    # Temperature compatibility is judged on the effective request value in
+    # prepare_chat_request: an explicit valid override must not be rejected
+    # because of an unused (legacy) saved default.
     return slot.model_copy(update={
         "protocol": protocol,
         "base_url": base_url,

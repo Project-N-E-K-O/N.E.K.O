@@ -1063,10 +1063,17 @@ async def test_free_host_fallback_consumes_quota_after_paid_primary_fails(http_c
     consumed = patch_host_config(monkeypatch, {
         "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
     })
-    bind_host_slot(setup_gateway)
+    # Keep the binding on the paid manual primary; the free host slot is only
+    # its fallback (bind_host_slot would rebind the usage to the host slot).
+    setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(
+        name="Host assist", source="host_follow", host_api="assist",
+        capabilities=["text", "image_input", "streaming"],
+    )
     setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
+    seen_auth = []
 
     async def failing_primary(request):
+        seen_auth.append(request.headers["authorization"])
         if request.headers["authorization"] == "Bearer " + SECRET:
             return httpx.Response(500, json={"error": "boom"})
         assert request.headers["authorization"] == "Bearer free-access"
@@ -1075,8 +1082,11 @@ async def test_free_host_fallback_consumes_quota_after_paid_primary_fails(http_c
     setup_gateway.upstream.handler = failing_primary
     response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
     assert response.status_code == 200
-    # The fallback executed with free credentials, so it must be metered.
+    # The paid primary ran (and failed) first; only the free fallback is metered.
+    assert seen_auth[0] == "Bearer " + SECRET
+    assert "Bearer free-access" in seen_auth
     assert consumed == ["plugin:alpha:analysis"]
+    assert [a["slot_id"] for a in setup_gateway.records[0]["attempts"]][-1] == HOST_SLOT_ID
 
 
 async def test_free_host_fallback_quota_exhaustion_is_final(http_client, setup_gateway, monkeypatch):
@@ -1090,7 +1100,11 @@ async def test_free_host_fallback_quota_exhaustion_is_final(http_client, setup_g
             return False, {"used": 500, "limit": 500}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
-    bind_host_slot(setup_gateway)
+    # Binding stays on the paid manual primary; the free host slot is its fallback.
+    setup_gateway.config.slots[HOST_SLOT_ID] = ModelSlot(
+        name="Host assist", source="host_follow", host_api="assist",
+        capabilities=["text", "image_input", "streaming"],
+    )
     setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
     seen_auth = []
 
@@ -1104,16 +1118,18 @@ async def test_free_host_fallback_quota_exhaustion_is_final(http_client, setup_g
     response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "agent_quota_exceeded"
-    # The exhausted free fallback was never sent upstream: the only recorded
-    # attempt is the fallback slot itself, rejected before any request.
-    assert seen_auth == []
-    assert setup_gateway.calls == []
+    # The paid primary ran upstream (and failed); the exhausted free fallback
+    # was rejected before any request of its own.
+    assert seen_auth and set(seen_auth) == {"Bearer " + SECRET}
     attempts = setup_gateway.records[0]["attempts"]
-    assert [a["slot_id"] for a in attempts] == [HOST_SLOT_ID]
-    assert attempts[0]["upstream_started"] is False
+    assert attempts[0]["slot_id"] == SLOT_ID
+    assert attempts[0]["upstream_started"] is True
+    assert attempts[-1]["slot_id"] == HOST_SLOT_ID
+    assert attempts[-1]["upstream_started"] is False
+    assert attempts[-1]["error_code"] == "agent_quota_exceeded"
 
 
-async def test_anthropic_host_with_high_default_temperature_fails_before_quota(http_client, setup_gateway, monkeypatch):
+async def test_anthropic_host_legacy_default_rejected_only_when_effective(http_client, setup_gateway, monkeypatch):
     consumed = patch_host_config(monkeypatch, {
         "model": "real-model", "base_url": "https://upstream.test/v1",
         "api_key": "free-access", "provider_type": "anthropic",
@@ -1121,8 +1137,28 @@ async def test_anthropic_host_with_high_default_temperature_fails_before_quota(h
     # Saving rejects >1 now; simulate a legacy document that still carries it.
     bind_host_slot(setup_gateway, defaults={"temperature": 1.0})
     object.__setattr__(setup_gateway.config.slots[HOST_SLOT_ID].defaults, "temperature", 1.5)
-    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "model_defaults_incompatible"
-    assert setup_gateway.calls == []
-    assert consumed == []  # rejected before any quota reservation
+
+    async def anthropic_upstream(request):
+        payload = json.loads(request.content)
+        assert payload["temperature"] == 0.5
+        return httpx.Response(200, json={
+            "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
+            "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 6, "output_tokens": 1},
+        })
+
+    setup_gateway.upstream.handler = anthropic_upstream
+    # An explicit valid override must succeed despite the unused legacy default.
+    ok = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
+    assert ok.status_code == 200, ok.text
+    assert consumed == ["plugin:alpha:analysis"]
+    # Omitting temperature falls back to the legacy default and is rejected
+    # before any upstream request. (Quota is reserved before request
+    # preparation, so the rejected attempt still consumes one unit — the same
+    # reserve-before-send semantics as any upstream failure.)
+    calls_before = len(setup_gateway.calls)
+    bad = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "model_defaults_incompatible"
+    assert len(setup_gateway.calls) == calls_before
+    assert consumed == ["plugin:alpha:analysis", "plugin:alpha:analysis"]
