@@ -10,12 +10,19 @@ export default function MiniGameInvitePrompt({ prompt, presentation, disabled = 
 }) {
   // Watch together is an invitation to a video, not a game round.
   const watchTogether = prompt.gameType === 'watch-together';
+  // The character's line stays inside the story, so the card is what says that
+  // accepting opens the theater.
+  const theater = prompt.gameType === 'theater';
   const title = watchTogether
     ? i18n('chat.watchTogetherInviteTitle', 'Watch together')
-    : i18n('chat.miniGameInviteTitle', 'Game invitation');
+    : theater
+      ? i18n('chat.theaterInviteTitle', 'Theater')
+      : i18n('chat.miniGameInviteTitle', 'Game invitation');
   const hint = watchTogether
     ? i18n('chat.watchTogetherInviteHint', "Pick a video and I'll watch it with you")
-    : i18n('chat.miniGameInviteHint', 'Shall we play together?');
+    : theater
+      ? i18n('chat.theaterInviteHint', 'Accepting opens the theater; you can leave any time.')
+      : i18n('chat.miniGameInviteHint', 'Shall we play together?');
   return (
     <section className={`mini-game-invite mini-game-invite-${presentation}`}
       data-invite-session-id={prompt.sessionId} data-compact-no-drag="true"

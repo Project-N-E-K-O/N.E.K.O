@@ -16,9 +16,10 @@
 
 What plugin authors were promised stays the same (RFC #3683, section 4.2): the
 request a plugin entry receives, ``args._ctx``, the progress it reports and
-the terminal states. Every test runs once per caller in ``CALLERS``: the
-analyzer's executor that exists today, and each new caller as it is added. The
-plugin server side is the production run service and run manager.
+the terminal states. Every test runs once per caller in ``CALLERS``; each
+new caller is added there. Until the analyzer was removed its executor was
+one of them, which is how the request was carried over unchanged. The plugin
+server side is the production run service and run manager.
 """
 
 from __future__ import annotations
@@ -37,63 +38,6 @@ from tests.unit.nekoclaw.plugin_server_fake import (
 )
 
 pytestmark = pytest.mark.asyncio
-
-
-class AnalyzerCaller:
-    """The path in use today: ``DirectTaskExecutor._execute_user_plugin``."""
-
-    name = "analyzer"
-
-    def __init__(self, server: FakePluginServer, monkeypatch: Any) -> None:
-        from brain import task_executor
-        from brain.task_executor import DirectTaskExecutor
-
-        monkeypatch.setattr(task_executor.httpx, "AsyncClient", server.client)
-        self._executor = object.__new__(DirectTaskExecutor)
-        self._executor.plugin_list = server.catalog
-
-        async def provider(force_refresh: bool = True) -> list[dict[str, Any]]:
-            del force_refresh
-            return server.catalog
-
-        self._executor.plugin_list_provider = provider  # type: ignore[method-assign]
-
-    async def call(
-        self,
-        plugin_id: str,
-        entry_id: str | None,
-        args: dict[str, Any] | None = None,
-        *,
-        lanlan_name: str | None = "Lan",
-        conversation_id: str | None = "conv-1",
-        latest_user_request: str = "",
-        on_progress: Any = None,
-        task_id: str = "task-1",
-    ) -> dict[str, Any]:
-        result = await self._executor._execute_user_plugin(
-            task_id,
-            plugin_id=plugin_id,
-            plugin_args=args,
-            entry_id=entry_id,
-            lanlan_name=lanlan_name,
-            conversation_id=conversation_id,
-            latest_user_request=latest_user_request,
-            on_progress=on_progress,
-        )
-        payload = result.result if isinstance(result.result, dict) else {}
-        return {
-            "success": result.success,
-            "error": result.error,
-            "entry_id": result.entry_id,
-            "run_id": payload.get("run_id"),
-            "run_token": payload.get("run_token"),
-            "expires_at": payload.get("expires_at"),
-            "run_status": payload.get("run_status"),
-            "run_data": payload.get("run_data"),
-            "run_error": payload.get("run_error"),
-            "meta": payload.get("meta"),
-            "message": payload.get("message"),
-        }
 
 
 class NekoclawCaller:
@@ -145,7 +89,7 @@ class NekoclawCaller:
         }
 
 
-CALLERS: dict[str, Any] = {AnalyzerCaller.name: AnalyzerCaller, NekoclawCaller.name: NekoclawCaller}
+CALLERS: dict[str, Any] = {NekoclawCaller.name: NekoclawCaller}
 
 
 @pytest.fixture
@@ -450,7 +394,7 @@ async def test_ctx_reaches_the_plugin_with_the_run_id_added(server, caller):
     assert received["run_id"] == server.runs()[0].run_id
 
 
-async def test_ctx_keeps_values_the_arguments_already_carry(server, caller):
+async def test_ctx_keeps_values_the_arguments_already_carry_but_not_the_character(server, caller):
     ctx = await _ctx_of_one_call(
         server,
         caller,
@@ -460,7 +404,8 @@ async def test_ctx_keeps_values_the_arguments_already_carry(server, caller):
         latest_user_request="new words",
     )
 
-    assert ctx["lanlan_name"] == "Other"
+    # Which character the call is for is the host's to say (owner, 2026-11-13).
+    assert ctx["lanlan_name"] == "Tian"
     assert ctx["latest_user_request"] == "original words"
     assert ctx["extra"] == 1
     # The conversation always is the one this call belongs to.

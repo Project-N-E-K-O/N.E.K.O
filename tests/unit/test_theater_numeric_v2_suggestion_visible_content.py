@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from tests.utils.theater_prompt import prompt_payload
+
 from services.theater.numeric_v2_actor import _suggestion_fill_messages
 
 
@@ -18,7 +20,7 @@ def test_fixed_text_reaches_choices_without_private_metadata_or_old_scene(text, 
                                 {'phase': 'target_opening', **visible}]} if transition else visible
     messages = _suggestion_fill_messages(catgirl_name='测试角色', performance=performance,
         player_input='旧幕的输入。', max_tokens=10000, after_scene_change=transition)
-    data = json.loads(messages[1].content)
+    data = prompt_payload(messages[1].content)
     blocks = json.loads(data['visible_performance'])
     assert [b['text'] for b in blocks] == (
         ['桌面上显示文字。', text, '你可以慢慢看。'] if position == 'before'

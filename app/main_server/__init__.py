@@ -190,7 +190,7 @@ try:
     from main_logic import core as core, cross_server as cross_server  # noqa
     from main_logic.agent_event_bus import (
         MainServerAgentBridge,
-        notify_analyze_ack,
+        notify_turn_check_ack,
         set_main_bridge,
     )  # noqa
     from fastapi.templating import Jinja2Templates  # noqa

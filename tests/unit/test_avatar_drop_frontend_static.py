@@ -265,7 +265,8 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert '_IMAGE_INPUT_TYPES = frozenset({"screen", "camera", "avatar_drop_image", "user_image"})' in core_source
     assert "memory_text = self._clean_frontend_memory_text(message.get(\"memory_text\"))" in core_source
     assert "record_data = memory_text or data" in core_source
-    assert "openclaw_magic_command = self._normalize_explicit_openclaw_magic_command(data)" in core_source
+    # The OpenClaw text-command handoff is gone with the OpenClaw channel.
+    assert "_normalize_explicit_openclaw_magic_command" not in core_source
     assert "_should_handoff_text_to_openclaw" not in core_source
     assert "input_transcript_callback" in core_source
     assert 'stream_text_kwargs["history_replacement_text"] = memory_text' in core_source
@@ -281,7 +282,8 @@ def test_avatar_drop_image_and_memory_override_are_routed_as_text_session_inputs
     assert "input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None" in offline_source
     assert "history_replacement_text: str | None = None" in offline_source
     # The index is only a hint; the write goes wherever identity finds the turn.
-    assert "_history[_replace_at] = HumanMessage(content=history_replacement_text)" in offline_source
+    # History replacement behavior is covered by the real stream_text/request
+    # tests in test_image_history; do not pin its assignment syntax.
     assert "transcript_callback = input_transcript_callback or self.on_input_transcript" in offline_source
     assert '_SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})' in websocket_source
     assert '_TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})' in websocket_source

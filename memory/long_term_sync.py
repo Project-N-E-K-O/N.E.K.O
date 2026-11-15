@@ -115,6 +115,11 @@ EVIDENCE_FIELDS = {'reinforcement': 'reinforcement', 'disputation': 'disputation
     'rein_last_signal_at': 'reinLastSignalAt', 'disp_last_signal_at': 'dispLastSignalAt'}
 
 
+# arbitration_reason an import gives a listed row it moves into cold storage; the
+# row's own reason (who archived it on its device) does not travel.
+IMPORTED_ARCHIVE_REASON = 'dedup_arbitration'
+
+
 def timestamp(value):
     if type(value) in (int, float):
         return int(value)
@@ -836,7 +841,7 @@ def _move_listed_rows_to_cold(views, cold, held_cold, completed, taken):
         archived_at = iso(item['archivedAt']) or iso(completed)
         if kind == 'fact':
             if not copy.get('arbitration_archived_at'):
-                copy.update(arbitration_archived_at=archived_at, arbitration_reason='dedup_arbitration')
+                copy.update(arbitration_archived_at=archived_at, arbitration_reason=IMPORTED_ARCHIVE_REASON)
             if item.get('supersededById'):
                 copy['superseded_by'] = item['supersededById']
             _append_cold(views, 'factCold', copy, completed, taken)

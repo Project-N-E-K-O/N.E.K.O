@@ -1,20 +1,22 @@
 """Regress the four authoring prompt contracts with injected model replies only."""
 from __future__ import annotations
 
+from tests.utils.theater_prompt import prompt_payload
+
 from copy import deepcopy
 import json
 
 import pytest
 import tiktoken
 
-from theater_workshop.sdk.generation.numeric_v2 import (
+from services.theater_workshop.sdk.generation.numeric_v2 import (
     NumericV2GenerationError,
     NumericV2Generator,
     _BRANCH_PATH_PROMPT,
     _MAINLINE_PROMPT,
 )
-from theater_workshop.sdk.model import LLMCallFailure
-from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+from services.theater_workshop.sdk.model import LLMCallFailure
+from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
 
 from .test_numeric_v2_branch import _character_state, _ending_goal
 from .test_numeric_v2_generation import _generation_setup, _idea_outline
@@ -60,7 +62,7 @@ def test_continuation_supplies_requested_contract_from_actual_initial_prompt(pat
         requested_paths=[path],
     )
 
-    request = json.loads(calls[0][1]["content"])
+    request = prompt_payload(calls[0][1]["content"])
     assert request["requested_paths"] == [path]
     assert request["requested_replacements"][0]["output_contract"] == expected
     assert "output_contract" in calls[0][0]["content"]
@@ -77,7 +79,7 @@ def test_missing_state_arc_continuation_has_all_enums_and_preserves_other_story_
 
     def reply(messages, **options):
         calls.append(options)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         assert request["requested_paths"] == ["character_state_arc"]
         contract = request["requested_replacements"][0]["output_contract"]
         acting = contract["stages"][0]["acting_contract"]
@@ -185,7 +187,7 @@ def test_continuation_repairs_forbidden_field_absent_from_initial_output_contrac
 
     def reply(messages, **options):
         calls.append(options)
-        request = json.loads(messages[1]["content"])
+        request = prompt_payload(messages[1]["content"])
         replacement = request["requested_replacements"][0]
         assert replacement["path"] == "character_state_arc.ending_stage.chapter_index"
         assert replacement["output_contract"] is None
@@ -219,7 +221,9 @@ def test_branch_ending_resolves_author_text_without_model_copying_or_input_mutat
 
     def reply(messages, **options):
         calls.append(options)
-        assert json.loads(messages[1]['content']) == context
+        assert prompt_payload(messages[1]['content']) == context
+        assert messages[1]['content'].startswith('======以下为剧本工坊输入数据======\n')
+        assert messages[1]['content'].endswith('\n======以上为剧本工坊输入数据======')
         return json.dumps(wire, ensure_ascii=False)
 
     generator.call_llm = reply

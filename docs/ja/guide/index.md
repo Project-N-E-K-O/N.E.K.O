@@ -2,7 +2,7 @@
 
 Project N.E.K.O. は avatar rendering、realtime/text interaction、persistent memory、Agent execution、plugin を備える open-source AI companion platform です。このサイトは current repository の contributor/integrator 向けで、pricing/provider marketing ではありません。
 
-主な境界は `app/` services、`main_logic/` と `memory/`、`brain/`、Jinja/static + shared React chat、Vue plugin manager、N.E.K.O.-PC Electron shell、`docker/` です。
+主な境界は `app/` services、`main_logic/` と `memory/`、`nekoclaw/`（Agent execution）、Jinja/static + shared React chat、Vue plugin manager、N.E.K.O.-PC Electron shell、`docker/` です。
 
 ## 利用前に N.E.K.O. を確認する
 

@@ -7,8 +7,6 @@ returns zero matches — the numbers just come out wrong for a Traditional write
   units, so every Traditional topic shares 這/個/還/嗎 and scores as more
   similar to every other one than it should;
 * question particles: a Traditional question never opens the follow-up window;
-* vague markers: a Traditional "繼續處理一下" is not recognised as needing
-  context, so the agent gets a task description with no referent;
 * holiday hints: four tables that must be backfilled together or the locale
   selection picks zh-TW off one table and then misses on the others.
 """  # noqa: DOCSTRING_CJK
@@ -159,90 +157,6 @@ def test_the_particle_table_does_not_include_the_trailing_me_character():
     assert "麼" not in _CN_QUESTION_PARTICLES, (
         "收了「麼」会把「我不知道該說什麼」误判成问句"
     )
-
-
-# ---------------------------------------------------------------------------
-# brain/task_executor.py — vague-reference detection
-# ---------------------------------------------------------------------------
-
-VAGUE_PAIRS = [
-    ("继续处理一下", "繼續處理一下"),
-    ("帮我弄一下", "幫我弄一下"),
-    ("刚才那个", "剛才那個"),
-    ("打开这个", "打開這個"),
-    ("继续那个", "繼續那個"),
-    ("上一条", "上一條"),
-    ("接着做", "接著做"),
-    ("发给他", "發給他"),
-]
-
-
-def _needs_context(latest: str) -> bool:
-    """Whether the executor decides to splice earlier turns in as context.
-
-    Driven through the real entry point rather than the marker tuple, so the
-    length-threshold fallback (short CJK turns are vague regardless) is part of
-    what is being asserted — a marker-only check would pass on short inputs that
-    never consult the table.
-    """  # noqa: DOCSTRING_CJK
-    from brain.task_executor import DirectTaskExecutor
-
-    history = [
-        {"role": "user", "content": "帮我把上周的会议纪要整理成邮件"},
-        {"role": "assistant", "content": "好的"},
-        {"role": "user", "content": latest},
-    ]
-    # Bound method on the class, but its body never touches ``self`` — calling
-    # it unbound avoids constructing an executor (which would want config/IO).
-    return DirectTaskExecutor._normalize_user_intent(None, latest, history) != latest
-
-
-@pytest.mark.parametrize(("simplified", "traditional"), VAGUE_PAIRS)
-def test_vague_references_are_recognised_in_both_scripts(simplified, traditional):
-    assert _needs_context(simplified) == _needs_context(traditional)
-
-
-# Simplified -> Traditional for exactly the characters this table uses.
-_VAGUE_CHAR_MAP = str.maketrans({
-    "这": "這", "个": "個", "继": "繼", "续": "續", "处": "處", "帮": "幫",
-    "刚": "剛", "条": "條", "发": "發", "给": "給", "开": "開", "着": "著",
-    "她": "她", "它": "它",
-})
-
-
-def test_every_simplified_marker_has_a_traditional_sibling():
-    """Auto-discovered from the table, so deleting any single Traditional entry
-    goes red.
-
-    ⚠️ Hand-written sentences could not do this: 「繼續處理一下」 contains 一下,
-    which is spelled the same in both scripts, so it keeps matching even with
-    every Traditional entry removed. My first version of this test passed the
-    mutation for exactly that reason.
-    """  # noqa: DOCSTRING_CJK
-    from brain.task_executor import VAGUE_REFERENCE_MARKERS
-
-    present = set(VAGUE_REFERENCE_MARKERS)
-    missing = []
-    converted_any = False
-    for marker in VAGUE_REFERENCE_MARKERS:
-        if not any("一" <= ch <= "鿿" for ch in marker):
-            continue  # latin / kana / hangul row
-        traditional = marker.translate(_VAGUE_CHAR_MAP)
-        if traditional == marker:
-            continue  # identical in both scripts
-        converted_any = True
-        if traditional not in present:
-            missing.append((marker, traditional))
-    assert converted_any, "字符映射没转出任何东西，用例已失效"
-    assert not missing, f"缺繁体对应条目：{missing}"
-
-
-@pytest.mark.parametrize("marker", ["上一條", "接著做", "發給他", "繼續做", "剛才那個"])
-def test_traditional_only_markers_are_reachable(marker):
-    """Each of these is Traditional-only *and* free of any script-neutral
-    marker, so it is genuinely pinned by the table rather than by 一下/那個."""  # noqa: DOCSTRING_CJK
-    # Padded past the 3-char length fallback with text carrying no marker.
-    assert _needs_context(f"請你{marker}謝謝") is True
 
 
 # ---------------------------------------------------------------------------

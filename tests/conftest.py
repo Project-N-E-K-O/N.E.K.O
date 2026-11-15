@@ -1,6 +1,5 @@
 import os as _os
 import sys as _sys
-import tempfile as _tempfile
 from pathlib import Path as _Path
 
 # Project root must be on sys.path before importing `utils.*` — works even when
@@ -41,35 +40,14 @@ def _ensure_builtin_live2d_unpacked(model_name):
 for _builtin_live2d_model in ("yui-origin", "yui-lolita"):
     _ensure_builtin_live2d_unpacked(_builtin_live2d_model)
 
-# Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
-# Without this, every pytest session — including ones that intentionally inject
-# OSError / malformed JSON / mock-driven failures via patches — dumps ERROR lines into
-# the user's Documents tree.
-#
-# We override RobustLoggerConfig._get_log_directory directly (rather than going
-# through NEKO_STORAGE_SELECTED_ROOT) because that env var also drives
-# ConfigManager / cloudsave_runtime layout, and pointing those at the temp dir
-# triggers a legacy-app-root migration scan that rmtrees the temp dir mid-test.
-# Loggers are constructed at module import time, so the patch must happen here
-# in conftest BEFORE any project module is imported.
-_NEKO_TEST_LOG_ROOT = _Path(_tempfile.gettempdir()) / f"neko_test_logs_{_os.getpid()}"
-_NEKO_TEST_LOG_ROOT.mkdir(parents=True, exist_ok=True)
-from utils import logger_config as _logger_config_module
-# Override only the Documents-fallback hook (priority 2 in _get_log_directory).
-# Env-var-based override (priority 1) and the cascade through application/system
-# data dirs stay intact — so tests that use monkeypatch.setenv on
-# NEKO_STORAGE_SELECTED_ROOT still see the override they expect.
-_logger_config_module.RobustLoggerConfig._get_documents_directory = (
-    lambda self, _root=_NEKO_TEST_LOG_ROOT: _root
-)
+# Before ANY product module is imported: telemetry opt-out, inherited storage-root
+# variables dropped, logs redirected out of the real Documents/N.E.K.O/logs, and
+# ConfigManager root resolution pointed at a throwaway root (module-level
+# get_config_manager() singletons run the migration chain on import). Shared with
+# plugin/tests/conftest.py; see tests/process_isolation.py for why each step is there.
+from tests.process_isolation import isolate_test_process as _isolate_test_process
 
-# Likewise for the runtime root itself: get_config_manager() defaults migrate=True,
-# so importing any of seven module-level singletons first runs the full migration chain against the real root.
-# Install this before importing any product module (see tests/real_root_isolation.py).
-from utils.config_manager import ConfigManager as _ConfigManagerForIsolation
-from tests import real_root_isolation as _real_root_isolation
-
-_real_root_isolation.install(_ConfigManagerForIsolation)
+_isolate_test_process()
 
 import asyncio
 import asyncio.runners

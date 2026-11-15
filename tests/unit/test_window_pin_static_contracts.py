@@ -97,19 +97,8 @@ def test_only_requested_top_level_templates_define_pin_controls():
         # window-control styling by prepending ``neko-window-control-btn`` to the
         # class list, so a token that assumed minimize-btn was the FIRST class
         # stopped matching and ``str.index`` raised instead of asserting. The id
-        # survives restyling (same reason the openclaw_guide case below uses one).
+        # survives restyling.
         'id="minimizeBtn"',
-    )
-
-    openclaw_guide = read_text("templates/openclaw_guide.html")
-    assert 'data-neko-window-control="pin" hidden' in openclaw_guide
-    assert 'class="neko-window-pin-icon" aria-hidden="true"' in openclaw_guide
-    assert "/static/css/window_controls.css" in openclaw_guide
-    assert "/static/js/window_controls.js" in openclaw_guide
-    assert_pin_precedes_minimize(
-        openclaw_guide,
-        "templates/openclaw_guide.html",
-        'id="minimizeGuideBtn"',
     )
 
     for path in (
@@ -132,7 +121,6 @@ def test_pin_templates_version_shared_window_control_and_locale_assets():
         "templates/cookies_guide.html",
         "templates/cloudsave_manager.html",
         "templates/jukebox.html",
-        "templates/openclaw_guide.html",
     ):
         source = read_text(path)
         assert "/static/i18n-i18next.js?v={{ static_asset_version" in source, path
@@ -147,15 +135,6 @@ def test_pin_templates_version_shared_window_control_and_locale_assets():
     )
     assert jukebox_route
     assert "**_static_assets_ctx()" in jukebox_route.group("body")
-
-    agent_routes = read_text("main_routers/agent_router.py")
-    openclaw_route = re.search(
-        r"async def openclaw_guide_page\(request: Request\):(?P<body>[\s\S]*?)"
-        r"(?=\n@router\.get)",
-        agent_routes,
-    )
-    assert openclaw_route
-    assert "**_static_assets_ctx()" in openclaw_route.group("body")
 
     auth_routes = read_text("main_routers/cookies_login_router.py")
     credential_guide_route = re.search(

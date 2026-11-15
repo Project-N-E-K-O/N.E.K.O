@@ -683,9 +683,15 @@ async def update_core_config(request: Request):
                 except ValueError as exc:
                     return {"success": False, "error": str(exc)}
 
+        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
+        _effective_tts_provider = str(data.get('ttsModelProvider', stored_tts_model_provider) or '').strip()
+
         # Custom API configuration: Provider / Url / Id / ApiKey per model type
         for mt in CORE_CONFIG_MODEL_TYPES:
             for suffix in ['Provider', 'Url', 'Id', 'ApiKey']:
+                if mt == 'tts' and suffix != 'Provider' and _effective_tts_provider == 'deepseek':
+                    # Older clients may submit DeepSeek's display-only URL or credentials.
+                    continue
                 field = f'{mt}Model{suffix}'
                 if field in data:
                     if suffix == 'ApiKey':
@@ -698,7 +704,6 @@ async def update_core_config(request: Request):
         # other ttsModelProvider means an explicit user switch; set the leftover old flag False,
         # or get_core_config's follow_* fallback resurrects old true and even follow_assist cannot
         # disable GSV. Partial updates omitting ttsModelProvider retain the flag for legacy users who never resave.
-        _incoming_tts_provider = str(data.get('ttsModelProvider', '') or '').strip()
         if _incoming_tts_provider and _incoming_tts_provider != 'gptsovits':
             core_cfg['gptsovitsEnabled'] = False
         if _incoming_tts_provider == 'doubao_tts':

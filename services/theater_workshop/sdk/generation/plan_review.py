@@ -1,0 +1,104 @@
+"""Review plan wording, fields and preservation requirements on demand without generating patches or expanding execution permissions."""
+from copy import deepcopy
+from typing import Any, Mapping
+
+from .facts import _resolve_pointer
+from .evidence import effective_targets
+from .repair import BRIDGE_REMOVAL_RULE, context_nodes
+
+# Express individual scope and combination conflicts separately; declare each conflict once and protect both sides programmatically.
+PLAN_REVIEW_PROMPT = BRIDGE_REMOVAL_RULE + "\n\n" + """你是剧本修改方案的执行前复核员。只检查给定plans中的方案文字、repair_targets和preserve是否一致，不判断文学分数，不寻找新剧情缺陷，不替作者改稿，不删除原问题。保留玩家行动权及路线条件，目标规划不证明行动完成，固定原文由程序展示。
+
+story_outline保留节点顺序、方案所列字段及明确受保护的原文。outgoing_routes按原顺序提供出口ID，未附合同的出口只用于定位。text_omitted=true的节点仅供定位；其他节点也可能省略与方案无关的字段，省略不代表原稿缺失。text_repair_fields列可直接修订的位置。modification_plan或suggestion是方案正文；preserve是保留要求。protected_repair_targets中的字段须原样保留。事实复核的requires_change=false只表示本条不改该字段，不能扩大修改命令。
+
+global_strengths_to_preserve是整份报告要求保留的优点，同样不能牺牲。removable_bridge_targets列出程序已核实可删除的重复旁白位置；其他旁白如需修订，只能改写。
+
+字段职责（来自当前作者稿投影，不能互相代替）：
+- opening_scene：当幕唯一开场的演出文字。
+- character_state/catgirl：开场演完后的当前角色状态记录。
+- character_state/player：开场演完后的玩家状态记录。
+- character_state/environment：开场演完后的环境与物件状态记录。
+- summary：当幕剧情概览；结局节点为结局摘要，scene_summary另指结局节点正文摘要。
+- narrative_focus：角色演绎重心指引，属于结构字段。
+- outgoing_routes/N/transition_contract：第N个出口自身的转场合同；tone是语气，reason是原因，bridge_scene_narration是旁白，彼此独立。
+“修改某字段的状态记录”必须修改该字段，不能通过润色开场或摘要代替；“描写环境”不自动等于要求修改后台环境状态记录。根据方案明确要求与上述字段职责定位，不能把需要保留的字段当成修改目标。
+
+逐项核对：
+1. 方案正文明确要求修改的所有既有字段是否列入repair_targets？不能因字段名字出现在原文证据或“保留”要求里，就当作要改。不能把“改演绎指引/目标”通过只改摘要实现。
+2. 已列位置是否与正文对应？只检查真实需要改变的原字段，不能仅因润色动作描述就要求把全部状态一起重写。
+3. 方案与保留要求是否相容？“保持原文逐字不变”不允许润色；“保持动作事实、时间地点与顺序”允许改变表达。保留事实不等于保留每个字。
+4. 需要改goals、narrative_focus、acting_contract、图结构或其它不在text_repair_fields中的字段，不能直接执行。缺失字段或有冲突时指出原因，不补齐授权，不修改方案。如果输入不足以判断，标uncertain。
+
+路线已明确允许多种完成方式时，承接修法应保留这些选择，收回桥段或入口未获保证的已然断言；不能靠新增硬门槛、强制合并分支或要求玩家补做原本可不做的动作来消除反例。一条方案若并列“删除选择或改桥段”等尚未选定的互斥修法，标uncertain，不将备选方案当作同时执行的命令。
+
+5. 分开判断“单条方案”和“组合冲突”。只有一条方案时conflicts必须为空，本条内部矛盾只写入本条checks。checks只检查本条修改命令、字段权限及保留要求，不在checks里判断其他方案。从plans中所有不同issue_id的组合检查互斥要求，同一issue_id不与自己比较。conflicts只记录真实冲突，每对只列一次，issue_ids恰好含双方ID，reason引用双方无法同时满足的要求。字段重叠、相同修法或相容润色不算冲突；同节点的建议会被一次修订统筹为一份补丁，不是依次执行多次。这些是合写同一份文本的要求，不是两个已生成的文本补丁。只判断要求能否同时成立，不判断编辑器锁、资源竞争或并发写入；不能因将来的两份候选句式可能不同就认定当前要求互斥。程序会让冲突双方都不可执行，无需模型再分别给双方填写冲突编号或修改局部状态。
+
+只输出JSON object。先填写conflicts，再逐个覆盖所有原issue_id的checks，各一次。checks.status仅表示单条方案的ready（字段完整且与本条保留要求相容）、blocked（明确缺项/本条冲突/结构修改）或uncertain（信息不足）；程序还会结合conflicts决定能否执行。即使两条单独都ready，只要组合冲突仍会同时被拦截。
+reason给具体原文依据，保留模型的单条复核说明与组合冲突说明。missing_targets只列本条正文确实要求而原清单遗漏的既有字段；明确子字段不扩大成父对象或兄弟字段，仅作证据或要求保留的字段不列。它们仅解释，不补授权。没有遗漏或组合冲突均用[]。checks不再输出conflicting_issue_ids。有跨方案冲突时，conflicts中的每项为{"issue_ids":["不同的原ID甲","不同的原ID乙"],"reason":"双方具体互斥要求"}；无真实互斥就使用空数组，不为填写此栏寻找冲突。
+{"conflicts":[],"checks":[{"issue_id":"原ID","status":"ready|blocked|uncertain","reason":"单条方案核对依据","missing_targets":[{"node_id":"节点ID","field":"/投影路径"}]}]}
+"""
+
+
+def validate_plan_review(context: Mapping[str, Any], plans: list[dict], payload: Mapping[str, Any]) -> dict[str, dict]:
+    """Cover every original plan; omitted fields remain display-only and must not enter repair_targets."""
+    nodes = context_nodes(context)
+    expected = {plan["issue_id"]: plan for plan in plans}
+    result = {}
+    try:
+        # Declare each conflict pair once; validate original IDs and explanations, then project the same conclusion onto both sides without guessing natural-language associations.
+        pairs = payload["conflicts"]
+        if not isinstance(pairs, list):
+            raise ValueError()
+        by_issue = {identity: [] for identity in expected}
+        seen_pairs = set()
+        for pair in pairs:
+            identities, reason = pair["issue_ids"], pair["reason"]
+            if (not isinstance(identities, list) or len(identities) != 2
+                    or any(not isinstance(identity, str) or identity not in expected for identity in identities)
+                    or identities[0] == identities[1] or not isinstance(reason, str) or not reason.strip()):
+                raise ValueError()
+            key = tuple(sorted(identities))
+            if key in seen_pairs:
+                raise ValueError()
+            seen_pairs.add(key)
+            for identity in identities:
+                by_issue[identity].append({"issue_ids": identities[:], "reason": reason})
+        checks = payload["checks"]
+        if not isinstance(checks, list):
+            raise ValueError()
+        for row in checks:
+            issue_id = row["issue_id"]
+            if issue_id not in expected or issue_id in result:
+                raise ValueError()
+            status, reason, missing = row["status"], row["reason"], row["missing_targets"]
+            if status not in {"ready", "blocked", "uncertain"} or not isinstance(reason, str) or not reason.strip():
+                raise ValueError()
+            if not isinstance(missing, list) or (status == "ready" and missing):
+                raise ValueError()
+            # The new model protocol reads conflicts only from paired declarations; do not silently ignore one-sided conflict opinions in the old format.
+            if "conflicting_issue_ids" in row:
+                raise ValueError()
+            seen = set()
+            for target in missing:
+                node_id, field = target["node_id"], target["field"]
+                # Actual omissions in other acts or structural fields may be identified, but nonexistent fields cannot be fabricated as located results.
+                _resolve_pointer(nodes[node_id], field)
+                key = (node_id, field)
+                if key in seen or any(node_id == t["node_id"] and
+                        (field == t["field"] or field.startswith(t["field"] + "/"))
+                        for t in effective_targets(expected[issue_id])):
+                    raise ValueError()
+                seen.add(key)
+            conflicts = by_issue[issue_id]
+            result[issue_id] = deepcopy({
+                "status": "blocked" if conflicts else status,
+                # Archive and display local approval separately from combination conflicts; the program only tightens permissions and does not rewrite the model's original rationale.
+                "local_status": status, "reason": reason, "missing_targets": missing,
+                "conflicting_issue_ids": [other for pair in conflicts for other in pair["issue_ids"] if other != issue_id],
+                "conflict_checks": conflicts,
+            })
+        if set(result) != set(expected):
+            raise ValueError()
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as error:
+        raise ValueError("invalid_repair_plan_review") from error
+    return result

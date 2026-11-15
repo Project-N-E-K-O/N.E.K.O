@@ -425,6 +425,22 @@ window.createChatModeToggle = function(options) {
     wrapper.appendChild(indicator);
     wrapper.appendChild(label);
 
+    if (globalVarName === 'proactiveTheaterInviteEnabled') {
+        const enter = document.createElement('button');
+        enter.type = 'button';
+        enter.className = 'theater-market-enter';
+        enter.title = '';
+        enter.setAttribute('data-i18n', 'theater.marketEnter');
+        enter.textContent = window.t ? window.t('theater.marketEnter') : '';
+        enter.addEventListener('pointerdown', event => event.stopPropagation());
+        enter.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (window.nekoTheaterMarket) window.nekoTheaterMarket.open();
+        });
+        wrapper.appendChild(enter);
+    }
+
     window.updateChatModeStyle(checkbox);
 
     return wrapper;
@@ -479,6 +495,12 @@ window.CHAT_MODE_CONFIG = [
         labelKey: 'settings.toggles.proactiveMiniGameInviteChat',
         tooltipKey: 'settings.toggles.proactiveMiniGameInviteChatTooltip',
         globalVarName: 'proactiveMiniGameInviteEnabled'
+    },
+    {
+        mode: 'theater',
+        labelKey: 'settings.toggles.proactiveTheaterInviteChat',
+        tooltipKey: 'settings.toggles.proactiveTheaterInviteChatTooltip',
+        globalVarName: 'proactiveTheaterInviteEnabled'
     }
 ];
 

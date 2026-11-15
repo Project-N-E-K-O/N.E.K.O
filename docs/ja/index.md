@@ -7,7 +7,7 @@ description: オープンソース AI コンパニオン Project N.E.K.O. の開
 hero:
   name: Project N.E.K.O.
   text: 開発者ドキュメント
-  tagline: 任意の画面コンテキスト連携、永続メモリ、エージェントチャンネル、具現化アバターを備えたプロアクティブなマルチモーダル AI コンパニオン。
+  tagline: 任意の画面コンテキスト連携、永続メモリ、エージェントタスク、具現化アバターを備えたプロアクティブなマルチモーダル AI コンパニオン。
   image:
     src: /logo.jpg
     alt: N.E.K.O. ロゴ
@@ -48,7 +48,7 @@ features:
     linkText: 仕組みを見る
   - icon: 🤖
     title: エージェントフレームワーク
-    details: 有効化され利用可能な Computer Use、Browser Use、ユーザープラグイン、OpenClaw チャンネルで任意のバックグラウンドタスクを実行します。個別タスクと全アクティブタスクを停止できます。
+    details: キャラクターはツール呼び出しで用件を任せます。一手で終わる用件はプラグインエントリを直接呼び、複数ステップの用件は使い魔に任せます。使い魔はプラグイン、MCP ツール、キーボード・マウス、ブラウザーを使えます。個別タスクと全アクティブタスクを停止できます。
     link: /ja/architecture/agent-system
     linkText: エージェントを探る
   - icon: 🔌

@@ -6,12 +6,13 @@ import asyncio
 import json
 from typing import Any
 
-from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm_async
+from utils.llm_client import HumanMessage, create_chat_llm_async
+from .numeric_v2_prompt_mark import theater_system_message
 from utils.token_tracker import set_call_type
 from utils.tokenize import count_tokens
 
 from .numeric_v2_budget import numeric_v2_actor_budget
-from .numeric_v2_context import performance_history_records
+from .numeric_v2_context import performance_history_records, prompt_data_block
 from .numeric_v2_evaluator import _model_config
 from .numeric_v2_json import strip_single_json_fence
 from .numeric_v2_usage import invoke_with_usage
@@ -28,8 +29,9 @@ _LOOKUP_TIMEOUT_SECONDS = 12.0
 
 
 def _messages(query: str, rows: list[dict[str, Any]]) -> list[Any]:
-    return [SystemMessage(content=_LOOKUP_SYSTEM), HumanMessage(content=json.dumps(
-        {"question": query, "records": rows}, ensure_ascii=False, separators=(",", ":"),
+    return [theater_system_message(_LOOKUP_SYSTEM), HumanMessage(content=(
+        prompt_data_block("历史对话", {"records": rows}) + "\n\n"
+        + prompt_data_block("本次检索问题", {"question": query})
     ))]
 
 
@@ -62,14 +64,21 @@ async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[
     budget = numeric_v2_actor_budget(session.actor_budget_profile)
     result: dict[str, Any] = {"status": "not_found", "evidence": [], "calls": 0,
                               "pages_read": 0, "record_count": len(records)}
-    pages, omitted = await asyncio.to_thread(
-        _pages, records, query, budget["evaluator_input_max_tokens"],
-    )
-    result["pages_total"] = len(pages)
+    omitted = False
+    result["pages_total"] = 0
     selected: set[int] = set()
     errors: list[str] = []
     try:
-        config = await _model_config(config_manager)
+        config_task = asyncio.create_task(_model_config(config_manager))
+        try:
+            pages, omitted = await asyncio.to_thread(
+                _pages, records, query, budget["evaluator_input_max_tokens"])
+            result["pages_total"] = len(pages)
+            config = await config_task
+        finally:
+            if not config_task.done():
+                config_task.cancel()
+            await asyncio.gather(config_task, return_exceptions=True)
         semaphore = asyncio.Semaphore(2)
 
         async def read_page(rows: list[dict[str, Any]]) -> None:
@@ -97,7 +106,11 @@ async def lookup_history(config_manager: Any, session: Any, query: str) -> dict[
                     # Record lookup failures must not masquerade as absent history; downstream may answer current input but must not invent missing past events.
                     errors.append(type(exc).__name__)
 
-        await asyncio.wait_for(asyncio.gather(*(read_page(page) for page in pages)), timeout=_LOOKUP_TIMEOUT_SECONDS)
+        # Start with later corrections before the shared timeout can cut off older pages.
+        # Keep each page and the returned evidence in their original chronological order.
+        await asyncio.wait_for(
+            asyncio.gather(*(read_page(page) for page in reversed(pages))), timeout=_LOOKUP_TIMEOUT_SECONDS,
+        )
     except Exception as exc:
         errors.append(type(exc).__name__)
     result["evidence"] = [records[index] for index in sorted(selected)]

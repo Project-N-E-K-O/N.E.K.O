@@ -8,6 +8,7 @@ import pytest
 from services.theater import numeric_v2_history as history
 from services.theater.numeric_v2_actor_output import NumericV2ActorOutputError, _parse_output
 from services.theater.numeric_v2_json import strip_single_json_fence
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_history_lookup import _session
 
 
@@ -59,7 +60,7 @@ async def test_history_lookup_accepts_fenced_evidence_ids(monkeypatch):
             return False
 
         async def ainvoke(self, messages):
-            rows = json.loads(messages[1].content)["records"]
+            rows = prompt_payload(messages[1].content)["records"]
             ids = [row["id"] for row in rows if "许可撤回" in row["text"]]
             return SimpleNamespace(content=f"```json\n{json.dumps({'evidence_ids': ids})}\n```")
 

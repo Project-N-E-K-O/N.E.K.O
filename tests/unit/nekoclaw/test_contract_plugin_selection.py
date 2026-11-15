@@ -476,28 +476,23 @@ async def test_valid_answer_names_plugin_entry_and_arguments(impl):
 
 
 @pytest.mark.asyncio
-async def test_unknown_entry_is_asked_about_once_and_can_be_corrected(impl):
-    wrong = {"has_task": True, "can_execute": True, "plugin_id": "weather", "entry_id": "now", "plugin_args": {}}
-    right = {**wrong, "entry_id": "today"}
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        {"has_task": True, "can_execute": True, "plugin_id": "weather", "entry_id": "now", "plugin_args": {}},
+        {"has_task": True, "can_execute": True, "plugin_id": "wetter", "entry_id": "today", "plugin_args": {}},
+    ],
+    ids=["unknown-entry", "unknown-plugin"],
+)
+async def test_an_entry_or_plugin_that_does_not_exist_is_never_called(impl, wrong):
+    right = {**wrong, "plugin_id": "weather", "entry_id": "today"}
     model = ScriptedSelectionModel(fine=[wrong, right])
 
     run = await impl.select("weather in Paris", _weather_catalog(), model)
 
-    assert run.stages == ["fine", "fine"]
-    assert "CORRECTION" in run.calls[1].user
-    assert (run.executable, run.entry_id) == (True, "today")
-
-
-@pytest.mark.asyncio
-async def test_unknown_plugin_is_asked_about_once_then_refused(impl):
-    wrong = {"has_task": True, "can_execute": True, "plugin_id": "wetter", "entry_id": "today", "plugin_args": {}}
-    model = ScriptedSelectionModel(fine=[wrong, wrong, wrong])
-
-    run = await impl.select("weather in Paris", _weather_catalog(), model)
-
-    # One correction, never a third request.
-    assert run.stages == ["fine", "fine"]
-    assert run.executable is False
+    # Asked once; the answer is not acted on and not asked about again.
+    assert run.stages == ["fine"]
+    assert (run.executable, run.entry_id) == (False, None)
 
 
 @pytest.mark.asyncio

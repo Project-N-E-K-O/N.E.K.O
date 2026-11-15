@@ -194,6 +194,8 @@ supported = ">=0.1.0,<0.3.0"
 - `entry` は `module.path:ClassName` 形式で Python class を指定します。
 - `[plugin.sdk]` は対応する SDK version を宣言します。
 
+ほかの人に使ってもらう前に、`[plugin]` に `description` と一文の `short_description` を書き足してください（[プラグイン設定](/ja/plugins/plugin-toml) を参照）。NekoClaw はこれらでタスクに使うプラグインを選びます。`short_description` がなく `description` が長いとモデルに要約させるため、リクエストが 1 回余分にかかります。
+
 scaffold は新しいユーザー向けの初期 runtime config として `config.example.toml` も作成します：
 
 ```toml

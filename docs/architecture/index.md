@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Project N.E.K.O. uses three principal Python service processes. The Main Server owns the UI and live sessions, the Memory Server owns durable memory, and the Agent Server assesses and executes optional background work. HTTP/WebSocket carry service and browser traffic; ZeroMQ carries the Agent event bridge.
+Project N.E.K.O. uses three principal Python service processes. The Main Server owns the UI and live sessions, the Memory Server owns durable memory, and the Agent Server keeps and carries out the tasks the character dispatches. HTTP/WebSocket carry service and browser traffic; ZeroMQ carries the Agent event bridge.
 
 ## System diagram
 
@@ -12,7 +12,7 @@ Project N.E.K.O. uses three principal Python service processes. The Main Server 
 |---|---:|---|---|
 | **Main Server** | 48911 | `app/main_server/__main__.py` | Web UI/static assets, REST API, browser WebSocket, per-character sessions, external TTS |
 | **Memory Server** | 48912 | `app/memory_server/__main__.py` | Conversation ingest, recent context, facts/reflections/persona, startup rendering, and recall |
-| **Agent Server / Tool Server** | 48915 | `app/agent_server/__main__.py` | Capability state, task assessment, channel dispatch, cancellation, and task results |
+| **Agent Server / Tool Server** | 48915 | `app/agent_server/__main__.py` | Capability state, the NekoClaw host (task ledger, dispatch, task agents), cancellation, and task reports |
 
 Each service's FastAPI application and implementation live in the matching package. In particular, the Agent implementation is `app/agent_server/`.
 
@@ -31,8 +31,8 @@ Main Server :48911
   ├── WebSocket mirror ───> Monitor Server :48913 (optional)
   └── ZeroMQ bridge
        PUB  :48961 ───────> Agent SUB       session/lifecycle events
-       PUSH :48963 ───────> Agent PULL      reliable analyze requests
-       PULL :48962 <─────── Agent PUSH      ACKs, task updates, results
+       PUSH :48963 ───────> Agent PULL      reliable turn-check requests
+       PULL :48962 <─────── Agent PUSH      ACKs, task updates, reports
 ```
 
 The Main process binds all three ZeroMQ sockets; the Agent process connects the mirror sockets. Agent-to-Main results have no HTTP fallback.
@@ -61,4 +61,4 @@ Text input uses `OmniOfflineClient`; audio input uses `OmniRealtimeClient`. The 
 - [Data Flow](/architecture/data-flow) — browser input through model output and persistence
 - [Session Management](/architecture/session-management) — mode selection and hot-swap lifecycle
 - [Memory System](/architecture/memory-system) — persistence, automatic rendering, and on-demand recall
-- [Agent System](/architecture/agent-system) — assessment, channels, event delivery, and task state
+- [Agent System](/architecture/agent-system) — task tools, the NekoClaw host, reports, and the turn check

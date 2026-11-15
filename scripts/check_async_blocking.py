@@ -94,10 +94,9 @@ DEFAULT_PATHS = [
     # memory_server package + its import chain (memory/ package)
     "app/memory_server",
     "memory",
-    # agent_server package + its import chain (brain/ package; main_logic
-    # already in scope above)
+    # agent_server package (its import chain, main_logic and nekoclaw, is
+    # in scope above and below)
     "app/agent_server",
-    "brain",
     # shared services (chat_sync / theater) running on the main server loop
     "services",
     # agent runtime: many sessions share one loop, in a child process or in
@@ -1246,10 +1245,10 @@ def main(argv: list[str] | None = None) -> int:
     # ``foo(...)`` calls are still checked against the risky entry:
     # even if there's an async variant somewhere, a bare call that
     # hits the sync one blocks, and our report should surface it.
-    # Example trigger: ``brain/computer_use.py`` defines a sync
-    # ``run_instruction`` while openclaw/browser_use adapters
-    # expose ``async def run_instruction`` — ``await adapter.run_X()``
-    # is fine, a hypothetical bare ``run_instruction(...)`` is not.
+    # Example trigger: one adapter defines a sync ``run_instruction``
+    # while another exposes ``async def run_instruction`` —
+    # ``await adapter.run_X()`` is fine, a bare ``run_instruction(...)``
+    # is not.
     ambiguous_async_names = async_names & set(indexer.risky)
 
     # Pass 2: walk async bodies for direct blocking + depth-1 transitive.

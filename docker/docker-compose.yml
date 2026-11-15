@@ -5,12 +5,17 @@ version: '3.8'
 # ============================================================================
 #
 # 支持两种镜像版本：
-#   1. 标准版 (standard) - 轻量 (~1.5GB)，首次启动时下载 Chromium
-#   2. 完整版 (full)     - 完整 (~2.5GB)，构建时已包含 Chromium，开箱即用
+#   1. 标准版 (standard) - 轻量 (~1.5GB)，不带浏览器，浏览器控制不可用
+#   2. 完整版 (full)     - 完整 (~2.5GB)，装有发行版的 Chromium，供浏览器控制使用。
+#                          要连同 compose.browser.yaml 一起用：它给容器换上
+#                          seccomp/chromium.json，Chromium 的沙箱才起得来
+#                          （见 seccomp/README.md）。
 #
 # 使用方法：
 #   docker compose up -d                                   # 标准版
-#   NEKO_IMAGE_VERSION=latest-full docker compose up -d    # 完整版
+#   NEKO_IMAGE_VERSION=latest-full \
+#     docker compose -f docker-compose.yml -f compose.browser.yaml up -d    # 完整版
+#   # 完整版更省事的写法：把这两项写进 .env（见 env.template 末尾），之后照常 docker compose up -d
 #
 #   # 本地构建：本文件没有 build: 段，docker compose build 不会构建任何东西。
 #   # 下面两条要在仓库根执行（构建上下文是仓库根），所以 compose 要显式给 -f；
@@ -59,12 +64,6 @@ services:
 
       # 2. 源码模式的调试日志回退目录
       - ${NEKO_LOGS_DIR:-./logs}:/app/logs
-
-      # 3. 可选：把运行期下载的浏览器持久化。
-      #    不开：standard 镜像每次「删除容器后重建」都会重新下载 Chromium。
-      #    开了：镜像自带的浏览器会被复制进这个卷（full 镜像约多占 1GB 磁盘）。
-      #    40G 盘的低配机器先看 docs/deployment/low-spec-server.md 再决定。
-      # - neko-playwright:/opt/ms-playwright
 
     # .env 里的变量注入容器。
     # ⚠️ 关键：Compose 默认只把 .env 用于 ${} 插值 —— 没有被 environment 或
@@ -127,7 +126,7 @@ services:
       timeout: 20s
       retries: 3
       # 启动期实测：三个服务各 sleep 5s + 15s 健康检查 + nginx 3s ≈ 33s，还不含
-      # uv sync 与 standard 镜像首次下载 Chromium（分钟级）。放宽到 5m。
+      # uv sync。放宽到 5m。
       start_period: 5m
 
     # 限制 Docker 容器日志（docker logs）体积，避免长期运行撑满磁盘；
@@ -150,7 +149,3 @@ services:
 networks:
   neko-network:
     driver: bridge
-
-# 可选卷定义（配合上面的 neko-playwright 挂载一起启用）
-# volumes:
-#   neko-playwright:

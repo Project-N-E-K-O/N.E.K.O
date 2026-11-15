@@ -8,7 +8,7 @@ from services.theater import numeric_v2_workflow as workflow
 from services.theater.numeric_v2_identity import numeric_v2_character_ids
 from tests.unit.test_theater_numeric_v2_router import _client
 from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup
-from theater_workshop.sdk.numeric_v2_project_store import _setup_fields
+from services.theater_workshop.sdk.numeric_v2_project_store import _setup_fields
 from utils.cloudsave_runtime import MaintenanceModeError
 
 
@@ -96,9 +96,9 @@ def test_imported_band_extensions_are_discarded_but_metric_fields_remain_strict(
 def test_import_story_author_snapshot_roundtrip_cleans_band_extensions(tmp_path):
     from contextlib import nullcontext
     from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_story
-    from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore
-    from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-    from theater_workshop.host import InProcessPackageGateway
+    from services.theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore
+    from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+    from services.theater_workshop.host import InProcessPackageGateway
     story = numeric_v2_story()
     for definition in story['metric_schema'].values():
         for band in definition['bands']:

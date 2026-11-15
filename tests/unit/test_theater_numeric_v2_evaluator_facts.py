@@ -9,6 +9,7 @@ import pytest
 from services.theater.numeric_v2_context import project_scene_facts
 from services.theater.numeric_v2_evaluator import _build_messages, _parse_output
 from services.theater.numeric_v2_runtime import apply_fact_ops, NumericV2Engine
+from tests.utils.theater_prompt import prompt_payload
 from tests.unit.test_theater_numeric_v2_contract import numeric_v2_story
 
 
@@ -58,7 +59,7 @@ def test_evaluator_prompt_scopes_contract_and_exposes_committed_values(fact_cont
     engine, session = fact_context
     original_contract = deepcopy(engine.fact_contract)
     messages = _build_messages(engine, session, "我已经打开门。")
-    data = json.loads(messages[1].content.split("\n", 1)[1])
+    data = prompt_payload(messages[1].content)
     beat = data["current_story_beat"]
 
     assert set(beat["fact_contract"]["facts"]) == {
@@ -69,6 +70,47 @@ def test_evaluator_prompt_scopes_contract_and_exposes_committed_values(fact_cont
     }
     assert engine.fact_contract == original_contract
     assert "subject、action、object、result" in messages[0].content
+
+
+@pytest.mark.parametrize("key,value_type,target,previous", [
+    ("scene:start:selection", "string", "confirmed", "unselected"),
+    ("scene:start:closed", "bool", False, True),
+    ("global:remaining", "int", 0, 1),
+])
+def test_evaluator_sees_typed_unmet_completion_targets_as_plans(key, value_type, target, previous):
+    story = numeric_v2_story()
+    story["fact_contract"] = {"facts": {
+        key: {"value_type": value_type, "visibility": "public", "description": "本幕约定结果。"},
+        "scene:start:recorded": {"value_type": "bool", "visibility": "public", "description": "已记录。"},
+        "scene:next:arrived": {"value_type": "bool", "visibility": "public", "description": "下一幕结果。"},
+        "prop:letter": {"value_type": "string", "visibility": "public", "description": "信件当前存放位置。"},
+    }}
+    story["nodes"][0]["completion_contract"] = {"all": [
+        {"key": key, "equals": target}, {"key": "scene:start:recorded", "equals": True},
+    ]}
+    story["nodes"][0]["route_gates"][0]["conditions"]["all"].append(
+        {"type": "fact_equals", "key": "prop:letter", "value": "table"},
+    )
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="typed_target", catgirl_binding={"catgirl_name": "测试猫娘"},
+                                    opening_performance={"performance": "结果尚未确定。"})
+    session = replace(session, story_state=apply_fact_ops(
+        session.story_state, fact_contract={"facts": engine.fact_contract}, revision=1, client_turn_id="prior", ops=[
+            {"op": "set", "key": key, "value": previous, "visibility": "public"},
+            {"op": "set", "key": "scene:start:recorded", "value": True, "visibility": "public"},
+        ],
+    ))
+    original = deepcopy(session)
+    messages = _build_messages(engine, session, "我先看看，还没决定。")
+    beat = prompt_payload(messages[1].content)["current_story_beat"]
+
+    assert beat.get("completion_fact_targets") == {key: target}
+    assert type(beat["completion_fact_targets"][key]) is type(target)
+    assert beat["route_fact_values"] == {"prop:letter": ["table"]}
+    assert beat["committed_fact_values"][key] == previous
+    assert "scene:next:arrived" not in beat["fact_contract"]["facts"]
+    assert "completion_fact_targets 是作者结果编码，不是已发生事实" in messages[0].content
+    assert session == original
 
 
 def test_rich_fact_preserves_new_value_and_runtime_audit(fact_context):
@@ -141,11 +183,13 @@ def test_rich_fact_keeps_scope_type_and_evidence_guards(fact_context, patch, mes
     assert result.fact_audit == ()
 
 
-def test_duplicate_fact_does_not_bypass_evidence_validation(fact_context):
+def test_duplicate_committed_fact_is_validated_without_erasing_independent_fact(fact_context):
     engine, session = fact_context
     result = _evaluate(engine, session, [
         _candidate("prop:letter", "抽屉", "不在输入中的原话"), _candidate(),
     ])
 
-    assert result.fact_operations == ()
-    assert result.fact_audit == ()
+    assert result.fact_operations == ({
+        "op": "set", "key": "scene:start:door_open", "value": True, "visibility": "public",
+    },)
+    assert [row["key"] for row in result.fact_audit] == ["scene:start:door_open"]

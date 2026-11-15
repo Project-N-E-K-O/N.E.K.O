@@ -147,10 +147,9 @@ def test_backup_inventory_covers_every_persistent_storage_root():
 def test_dockerignore_does_not_hide_the_docs_the_runtime_reads():
     """docs/ must stay in the build context as a whole.
 
-    main_routers/agent_router.py reads docs/zh-CN/guide/openclaw_guide.md at
-    runtime and voice_identity_router.py reads docs/development/voice-readiness.md.
-    When they are missing there is no error -- the guide silently falls back to
-    its built-in stub text.
+    main_routers/voice_identity_router.py reads
+    docs/development/voice-readiness.md at runtime. When it is missing there is
+    no error -- the guide silently falls back to its built-in stub text.
 
     This asserts "docs is not excluded", not "excluded then re-included with !".
     Re-inclusion depends on whether Docker's context walker descends into an

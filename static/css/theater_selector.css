@@ -238,15 +238,18 @@ display:flex;
 flex-direction:column}
 
 .theater-library-heading{
-display:grid;
-grid-template-columns:repeat(2,minmax(0,1fr));
+display:flex;
+flex-wrap:wrap;
+align-items:center;
+justify-content:space-between;
 gap:12px;
 padding:22px;
 border-bottom:1px solid var(--theater-line)}
 
-.theater-library-heading>div{
-grid-column:1/-1;
-min-width:0}
+.theater-library-actions{
+display:flex;
+flex-wrap:wrap;
+gap:8px}
 
 .theater-library-heading p,.theater-detail-heading p{
 margin:0 0 6px;

@@ -400,6 +400,24 @@ _MARKET_RELEASE_URL = "https://github.com/neko/n.e.k.o_plugin_demo/releases/tag/
             "waiting for a Market reviewer",
         ),
         (
+            httpx.Response(202, json={
+                "status": "verifying", "candidate": None,
+                "publication_request": {"id": 12, "status": "verifying"},
+            }),
+            0,
+            "[MARKET] status=verifying request=12\n",
+            "Market accepted the notification",
+        ),
+        (
+            httpx.Response(202, json={
+                "status": "pending_review", "candidate": None,
+                "publication_request": {"id": 12, "status": "pending_review"},
+            }),
+            0,
+            "[MARKET] status=pending_review request=12\n",
+            "waiting for a Market reviewer",
+        ),
+        (
             httpx.Response(202, json=_market_review("rejected")),
             1,
             "[MARKET] status=rejected candidate=7\n",
@@ -894,6 +912,7 @@ def test_publish_defaults_to_github_then_market(
         (200, {"status": "already_published", "version": {}}),
         (200, {"status": "published", "version": {"version": "1.2.0"}}),
         (202, {"status": "pending_review", "version": None, "candidate": None}),
+        (202, {"status": "verifying", "candidate": None}),
         (202, {"status": "published", "version": None, "candidate": {"id": 7}}),
     ],
 )

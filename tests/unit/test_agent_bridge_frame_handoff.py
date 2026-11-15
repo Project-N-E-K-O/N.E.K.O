@@ -130,7 +130,7 @@ async def test_non_frame_events_are_not_dropped_under_the_same_pressure() -> Non
 
     Same stall, same flood, but the small events interleaved into it must all
     arrive and in order. A bound that shed them would be the wrong bound: a
-    dropped ``analyze_request`` leaves main_server waiting on an ack that is
+    dropped ``turn_check_request`` leaves main_server waiting on an ack that is
     never coming.
     """
     delivered: list = []
@@ -144,7 +144,7 @@ async def test_non_frame_events_are_not_dropped_under_the_same_pressure() -> Non
         if i % 5 == 0:
             event_id = f"small{i}"
             small = {
-                "event_type": "analyze_request" if i % 10 == 0 else "agent_intent_restore_signal",
+                "event_type": "turn_check_request" if i % 10 == 0 else "agent_intent_restore_signal",
                 "event_id": event_id,
                 "lanlan_name": "Yui",
             }

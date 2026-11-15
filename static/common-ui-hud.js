@@ -399,14 +399,6 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             initialDisabled: true,
             initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
             controlStyle: 'slider'
-        },
-        {
-            id: 'agent-openclaw',
-            label: window.t ? window.t('settings.toggles.openclawConnect') : 'OpenClaw',
-            labelKey: 'settings.toggles.openclawConnect',
-            initialDisabled: true,
-            initialTitle: window.t ? window.t('settings.toggles.checking') : '查询中...',
-            controlStyle: 'slider'
         }
     ];
 
@@ -439,8 +431,8 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             popup.appendChild(separator);
         }
 
-        // 侧边快捷入口（用户插件管理面板 / OpenClaw 接入教程）
-        if ((toggle.id === 'agent-user-plugin' || toggle.id === 'agent-openclaw') && typeof this._createSidePanelContainer === 'function') {
+        // 侧边快捷入口（用户插件管理面板）
+        if (toggle.id === 'agent-user-plugin' && typeof this._createSidePanelContainer === 'function') {
             document.querySelectorAll(`[data-neko-sidepanel-type="${toggle.id}-actions"]`).forEach((element) => {
                 if (element && typeof element.remove === 'function') {
                     element.remove();
@@ -461,25 +453,15 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             sidePanel._popupElement = popup;
 
             const configBtn = document.createElement('div');
-            const actionConfig = toggle.id === 'agent-user-plugin'
-                ? {
-                    actionId: 'management-panel',
-                    labelKey: 'settings.toggles.pluginManagementPanel',
-                    labelFallback: '管理面板',
-                    icon: '⚙',
-                    url: getPluginDashboardRedirectUrl,
-                    windowName: 'neko_plugin_dashboard',
-                    forceReloadOnReuse: true
-                }
-                : {
-                    actionId: 'openclaw-guide',
-                    labelKey: 'settings.toggles.openclawGuide',
-                    labelFallback: 'OpenClaw 接入教程',
-                    icon: '📘',
-                    url: '/api/agent/openclaw/guide',
-                    windowName: 'neko_openclaw_guide',
-                    forceReloadOnReuse: true
-                };
+            const actionConfig = {
+                actionId: 'management-panel',
+                labelKey: 'settings.toggles.pluginManagementPanel',
+                labelFallback: '管理面板',
+                icon: '⚙',
+                url: getPluginDashboardRedirectUrl,
+                windowName: 'neko_plugin_dashboard',
+                forceReloadOnReuse: true
+            };
             const existingActionButton = document.getElementById(`neko-sidepanel-action-${toggle.id}-${actionConfig.actionId}`);
             if (existingActionButton && typeof existingActionButton.remove === 'function') {
                 existingActionButton.remove();
@@ -1065,7 +1047,7 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
     let changed = false;
     map.forEach((t, id) => {
         if (!t || (ids && !ids.has(id))) return;
-        if (t.status !== 'running' && t.status !== 'queued') return;
+        if (t.status !== 'running' && t.status !== 'queued' && t.status !== 'waiting_user') return;
         map.set(id, Object.assign({}, t, { status: terminalStatus, terminal_at: now }));
         changed = true;
         // Schedule the same 10s map removal as the websocket event path —
@@ -1086,7 +1068,7 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
                 success: true,
                 tasks: remaining,
                 total_count: remaining.length,
-                running_count: remaining.filter(t2 => t2.status === 'running').length,
+                running_count: remaining.filter(t2 => t2.status === 'running' || t2.status === 'waiting_user').length,
                 queued_count: remaining.filter(t2 => t2.status === 'queued').length,
                 completed_count: remaining.filter(t2 => t2.status === 'completed').length,
                 failed_count: remaining.filter(t2 => t2.status === 'failed').length,
@@ -1100,7 +1082,7 @@ window.AgentHUD._markTasksCancelledLocally = function (taskIds, status) {
         success: true,
         tasks: tasks,
         total_count: tasks.length,
-        running_count: tasks.filter(t => t.status === 'running').length,
+        running_count: tasks.filter(t => t.status === 'running' || t.status === 'waiting_user').length,
         queued_count: tasks.filter(t => t.status === 'queued').length,
         completed_count: tasks.filter(t => t.status === 'completed').length,
         failed_count: tasks.filter(t => t.status === 'failed').length,
@@ -1152,15 +1134,20 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         if (!this._taskFirstSeen[t.id]) this._taskFirstSeen[t.id] = now;
         this._taskStatusById[t.id] = t.status;
         // Record when a task first transitions to terminal status
-        const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled';
+        const isTerminal = t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'blocked';
         if (isTerminal && !this._taskTerminalAt[t.id]) {
             this._taskTerminalAt[t.id] = now;
+        } else if (!isTerminal && this._taskTerminalAt[t.id]) {
+            // blocked 的委托可以接着办；回到在办时清掉旧的结束时间，
+            // 否则它再次结束时会被当成早就过了展示期。
+            delete this._taskTerminalAt[t.id];
         }
     });
 
-    // Show running/queued tasks + terminal tasks still within linger window
+    // Show running/queued tasks + terminal tasks still within linger window.
+    // waiting_user (waiting for the user's reply) is still under way.
     const activeTasks = (tasksData.tasks || []).filter(t => {
-        if (t.status === 'running' || t.status === 'queued') return true;
+        if (t.status === 'running' || t.status === 'queued' || t.status === 'waiting_user') return true;
         const termAt = this._taskTerminalAt[t.id];
         if (termAt && (now - termAt) < MIN_DISPLAY_MS) return true;
         return false;
@@ -1168,7 +1155,7 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
 
     // Schedule a deferred re-render to clean up lingering cards after they expire
     const lingeringTasks = activeTasks.filter(t =>
-        t.status !== 'running' && t.status !== 'queued'
+        t.status !== 'running' && t.status !== 'queued' && t.status !== 'waiting_user'
     );
     if (lingeringTasks.length > 0) {
         // Reset timer so newly arrived terminal tasks get a full linger window
@@ -1182,7 +1169,7 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
                     queued_count: 0
                 };
                 snapshot.tasks.forEach(t => {
-                    if (t.status === 'running') snapshot.running_count++;
+                    if (t.status === 'running' || t.status === 'waiting_user') snapshot.running_count++;
                     if (t.status === 'queued') snapshot.queued_count++;
                 });
                 window.AgentHUD.updateAgentTaskHUD(snapshot);
@@ -1211,7 +1198,7 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
     }
 
     if (cancelBtn) {
-        const hasCancelable = activeTasks.some(t => t.status === 'running' || t.status === 'queued');
+        const hasCancelable = activeTasks.some(t => t.status === 'running' || t.status === 'queued' || t.status === 'waiting_user');
         cancelBtn.style.display = hasCancelable ? 'flex' : 'none';
     }
 
@@ -1228,11 +1215,10 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
         }
     }
 
-    // 排序：前台任务（computer_use / mcp）优先，插件任务沉底
+    // 排序：前台任务（使魔在办的 task_agent / computer_use）优先，插件任务沉底
     const _taskSortPriority = (t) => {
-        if (t.type === 'computer_use' || t.type === 'browser_use') return 0;
-        if (t.type === 'mcp') return 1;
-        // user_plugin / plugin_direct → 沉底
+        if (t.type === 'task_agent' || t.type === 'computer_use' || t.type === 'browser_use') return 0;
+        // user_plugin / plugin_direct / task（刚登记、还没决定谁来办）→ 沉底
         return 2;
     };
     activeTasks.sort((a, b) => _taskSortPriority(a) - _taskSortPriority(b));
@@ -1279,10 +1265,13 @@ window.AgentHUD._doUpdateAgentTaskHUD = function () {
 // 差异更新已有任务卡片（避免全量 DOM 重建触发 backdrop-filter 重合成导致模型闪烁）
 window.AgentHUD._updateTaskCard = function (card, task) {
     const isRunning = task.status === 'running';
+    // waiting_user：等用户回话，仍在办；blocked：卡住了，已结束。
+    const isWaitingUser = task.status === 'waiting_user';
     const isCompleted = task.status === 'completed';
     const isFailed = task.status === 'failed';
+    const isBlocked = task.status === 'blocked';
     const isCancelled = task.status === 'cancelled';
-    const isTerminal = isCompleted || isFailed || isCancelled;
+    const isTerminal = isCompleted || isFailed || isBlocked || isCancelled;
 
     // Update start_time data attribute
     if (task.start_time) card.dataset.startTime = task.start_time;
@@ -1294,9 +1283,11 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
         cardBg = 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.06))';
         cardBorder = 'var(--neko-popup-success-border, rgba(22, 163, 74, 0.2))';
-    } else if (isFailed) {
+    } else if (isFailed || isBlocked) {
         statusColor = 'var(--neko-popup-error, #dc2626)';
-        statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
+        statusText = isBlocked
+            ? (window.t ? window.t('agent.taskHud.statusBlocked') : '卡住了')
+            : (window.t ? window.t('agent.taskHud.statusFailed') : '失败');
         cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
         cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
     } else if (isCancelled) {
@@ -1304,9 +1295,11 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         statusText = window.t ? window.t('agent.taskHud.statusCancelled') : '已取消';
         cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
         cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
-    } else if (isRunning) {
+    } else if (isRunning || isWaitingUser) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
-        statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
+        statusText = isWaitingUser
+            ? (window.t ? window.t('agent.taskHud.statusWaitingUser') : '等你回话')
+            : (window.t ? window.t('agent.taskHud.statusRunning') : '运行中');
         cardBg = 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))';
         cardBorder = 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))';
     } else {
@@ -1317,7 +1310,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
     }
 
     // Use semantic state key to avoid comparing CSS var() strings against resolved style values
-    const stateKey = isCancelled ? 'cancelled' : isCompleted ? 'completed' : isFailed ? 'failed' : isRunning ? 'running' : 'queued';
+    const stateKey = isCancelled ? 'cancelled' : isCompleted ? 'completed' : isBlocked ? 'blocked' : isFailed ? 'failed' : isWaitingUser ? 'waiting_user' : isRunning ? 'running' : 'queued';
     if (card.dataset.cardState !== stateKey) {
         card.dataset.cardState = stateKey;
         card.style.background = cardBg;
@@ -1331,7 +1324,7 @@ window.AgentHUD._updateTaskCard = function (card, task) {
         badge.dataset.statusState = stateKey;
         badge.textContent = statusText;
         badge.style.color = statusColor;
-        const badgeBg = isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
+        const badgeBg = isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : (isFailed || isBlocked) ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : (isRunning || isWaitingUser) ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))';
         badge.style.background = badgeBg;
     }
 
@@ -1437,10 +1430,13 @@ window.AgentHUD._createTaskCard = function (task) {
     }
 
     const isRunning = task.status === 'running';
+    // waiting_user：等用户回话，仍在办；blocked：卡住了，已结束。
+    const isWaitingUser = task.status === 'waiting_user';
     const isCompleted = task.status === 'completed';
     const isFailed = task.status === 'failed';
+    const isBlocked = task.status === 'blocked';
     const isCancelled = task.status === 'cancelled';
-    const isTerminal = isCompleted || isFailed || isCancelled;
+    const isTerminal = isCompleted || isFailed || isBlocked || isCancelled;
 
     let statusColor, statusText, cardBg, cardBorder;
     if (isCompleted) {
@@ -1448,9 +1444,11 @@ window.AgentHUD._createTaskCard = function (task) {
         statusText = window.t ? window.t('agent.taskHud.statusCompleted') : '已完成';
         cardBg = 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.06))';
         cardBorder = 'var(--neko-popup-success-border, rgba(22, 163, 74, 0.2))';
-    } else if (isFailed) {
+    } else if (isFailed || isBlocked) {
         statusColor = 'var(--neko-popup-error, #dc2626)';
-        statusText = window.t ? window.t('agent.taskHud.statusFailed') : '失败';
+        statusText = isBlocked
+            ? (window.t ? window.t('agent.taskHud.statusBlocked') : '卡住了')
+            : (window.t ? window.t('agent.taskHud.statusFailed') : '失败');
         cardBg = 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.06))';
         cardBorder = 'var(--neko-popup-error-border, rgba(220, 38, 38, 0.2))';
     } else if (isCancelled) {
@@ -1458,9 +1456,11 @@ window.AgentHUD._createTaskCard = function (task) {
         statusText = window.t ? window.t('agent.taskHud.statusCancelled') : '已取消';
         cardBg = 'var(--neko-popup-bg, rgba(249, 249, 249, 0.6))';
         cardBorder = 'var(--neko-popup-border-color, rgba(0, 0, 0, 0.06))';
-    } else if (isRunning) {
+    } else if (isRunning || isWaitingUser) {
         statusColor = 'var(--neko-popup-accent, #2a7bc4)';
-        statusText = window.t ? window.t('agent.taskHud.statusRunning') : '运行中';
+        statusText = isWaitingUser
+            ? (window.t ? window.t('agent.taskHud.statusWaitingUser') : '等你回话')
+            : (window.t ? window.t('agent.taskHud.statusRunning') : '运行中');
         cardBg = 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.08))';
         cardBorder = 'var(--neko-popup-accent-border, rgba(42, 123, 196, 0.25))';
     } else {
@@ -1496,12 +1496,12 @@ window.AgentHUD._createTaskCard = function (task) {
     let typeIcon;
     if (rawTypeName === 'user_plugin' || rawTypeName === 'plugin_direct') {
         typeIcon = '🧩';
+    } else if (rawTypeName === 'task_agent') {
+        typeIcon = '🐾';
     } else if (rawTypeName === 'computer_use') {
         typeIcon = '🖱️';
     } else if (rawTypeName === 'browser_use') {
         typeIcon = '🌐';
-    } else if (rawTypeName === 'mcp') {
-        typeIcon = '🔌';
     } else {
         typeIcon = '⚙️';
     }
@@ -1511,12 +1511,16 @@ window.AgentHUD._createTaskCard = function (task) {
     if (rawTypeName === 'user_plugin' || rawTypeName === 'plugin_direct') {
         // 优先级：plugin_name > plugin_id > 翻译文本
         typeName = params.plugin_name || params.plugin_id || (window.t ? window.t('agent.taskHud.typeUserPlugin') : '用户插件');
+    } else if (rawTypeName === 'task_agent') {
+        // 后端的 task_agent 在界面上叫「使魔」。
+        typeName = window.t ? window.t('agent.taskHud.typeTaskAgent') : '使魔';
+    } else if (rawTypeName === 'task') {
+        // 刚登记、还没决定谁来办的委托。
+        typeName = window.t ? window.t('agent.taskHud.typeTask') : '委托';
     } else if (rawTypeName === 'computer_use') {
         typeName = window.t ? window.t('agent.taskHud.typeComputerUse') : '电脑控制';
     } else if (rawTypeName === 'browser_use') {
         typeName = window.t ? window.t('agent.taskHud.typeBrowserUse') : '浏览器控制';
-    } else if (rawTypeName === 'mcp') {
-        typeName = window.t ? window.t('agent.taskHud.typeMCP') : 'MCP工具';
     }
 
     const typeLabel = document.createElement('span');
@@ -1547,7 +1551,7 @@ window.AgentHUD._createTaskCard = function (task) {
         fontSize: '11px',
         fontWeight: '500',
         padding: '1px 8px',
-        background: isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : isFailed ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : isRunning ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
+        background: isCompleted ? 'var(--neko-popup-success-bg, rgba(22, 163, 74, 0.1))' : (isFailed || isBlocked) ? 'var(--neko-popup-error-bg, rgba(220, 38, 38, 0.1))' : (isRunning || isWaitingUser) ? 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.12))' : 'var(--neko-popup-bg, rgba(0, 0, 0, 0.05))',
         borderRadius: '10px',
         flexShrink: '0'
     });
@@ -1602,7 +1606,7 @@ window.AgentHUD._createTaskCard = function (task) {
                     try {
                         const body = await r.json();
                         if (body && body.success === false
-                            && ['completed', 'failed', 'cancelled'].indexOf(body.status) !== -1) {
+                            && ['completed', 'failed', 'cancelled', 'blocked'].indexOf(body.status) !== -1) {
                             realStatus = body.status;
                         }
                     } catch (_) { /* empty or non-JSON body */ }

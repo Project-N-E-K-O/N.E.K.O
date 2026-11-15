@@ -1,9 +1,8 @@
 """Traditional/Simplified parity for the guard-class matchers (issue #2500).
 
-These four sites are not "the feature renders in the wrong script" — they are
+These three sites are not "the feature renders in the wrong script" — they are
 matchers whose *failure changes what the system does*:
 
-* redaction lets a secret through verbatim,
 * the card assistant rewrites a card the user only asked for advice on,
 * a weak-bodied persona gets a 3x higher anger cap,
 * a prompt-injection warning never fires.
@@ -21,60 +20,6 @@ from __future__ import annotations
 import re
 
 import pytest
-
-
-# ---------------------------------------------------------------------------
-# brain/task_executor.py — secret redaction before the text reaches an agent
-# ---------------------------------------------------------------------------
-
-REDACTION_PAIRS = [
-    ("我的密码是 hunter2", "我的密碼是 hunter2"),
-    ("密钥是 abc123xyz", "密鑰是 abc123xyz"),
-    ("秘钥为 abc123xyz", "祕鑰為 abc123xyz"),
-    ("验证码是 483920", "驗證碼是 483920"),
-    ("校验码 483920", "校驗碼 483920"),
-    ("短信码 483920", "簡訊碼 483920"),
-    ("动态码：112233", "動態碼：112233"),
-    # 令牌 / 口令 / cookie are spelled the same in both scripts — these pairs
-    # differ only in the copula, which is its own failure mode: 為 missing from
-    # the alternation defeated redaction for every script-neutral noun.
-    ("令牌为 tok_9999", "令牌為 tok_9999"),
-    ("口令为 hunter2", "口令為 hunter2"),
-    ("cookie为 sid=abc123", "cookie為 sid=abc123"),
-]
-
-
-def _redact(text: str) -> str:
-    from brain.task_executor import DirectTaskExecutor
-
-    return DirectTaskExecutor._sanitize_correction_text(text)
-
-
-@pytest.mark.parametrize(("simplified", "traditional"), REDACTION_PAIRS)
-def test_secrets_are_redacted_in_both_scripts(simplified, traditional):
-    """A leak here is not cosmetic: the raw text becomes the downstream agent's
-    task description."""  # noqa: DOCSTRING_CJK
-    for text in (simplified, traditional):
-        out = _redact(text)
-        assert "REDACTED" in out, f"未打码：{text!r} -> {out!r}"
-        assert "hunter2" not in out
-        assert "abc123xyz" not in out
-        assert "483920" not in out
-        assert "112233" not in out
-        assert "tok_9999" not in out
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "今天天气不错，我跳了 3 次",
-        "今天天氣不錯，我跳了 3 次",
-        "把这段话翻译成英文",
-        "把這段話翻譯成英文",
-    ],
-)
-def test_ordinary_text_is_not_redacted(text):
-    assert "REDACTED" not in _redact(text)
 
 
 # ---------------------------------------------------------------------------

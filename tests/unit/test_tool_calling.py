@@ -1603,7 +1603,7 @@ async def test_remote_dispatch_evicts_dead_plugin_after_three_connect_failures(
 
     # Reset the counter after eviction to avoid a false eviction on the next single failure.
     dead_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
-    assert ("plugin:dead_foo", dead_origin) not in _tr._consecutive_connect_failures
+    assert ("plugin:dead_foo", dead_origin, None) not in _tr._consecutive_connect_failures
 
 
 @pytest.mark.asyncio
@@ -1651,7 +1651,7 @@ async def test_remote_dispatch_business_error_does_not_evict(
     assert mgr.fire_task_count == 0
     # The counter never accumulates (each successful HTTP request resets it).
     buggy_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
-    assert ("plugin:buggy", buggy_origin) not in _tr._consecutive_connect_failures
+    assert ("plugin:buggy", buggy_origin, None) not in _tr._consecutive_connect_failures
 
 
 @pytest.mark.asyncio
@@ -1702,7 +1702,7 @@ async def test_remote_dispatch_success_resets_failure_counter(
     assert mgr.tool_registry.names() == ["flaky"]
     assert mgr.fire_task_count == 0
     flaky_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
-    assert _tr._consecutive_connect_failures.get(("plugin:flaky", flaky_origin)) == 2
+    assert _tr._consecutive_connect_failures.get(("plugin:flaky", flaky_origin, None)) == 2
 
 
 @pytest.mark.asyncio
@@ -1738,7 +1738,7 @@ async def test_remote_dispatch_builtin_source_never_evicted(
     assert mgr.tool_registry.names() == ["recall_memory"]
     assert mgr.fire_task_count == 0
     # Builtin sources never enter the counter dict.
-    assert not any(src == "builtin" for src, _origin in _tr._consecutive_connect_failures)
+    assert not any(src == "builtin" for src, _, _ in _tr._consecutive_connect_failures)
 
 
 @pytest.mark.asyncio
@@ -1773,7 +1773,7 @@ async def test_remote_dispatch_read_timeout_does_not_evict(
     assert mgr.tool_registry.names() == ["slow"]
     assert mgr.fire_task_count == 0
     slow_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
-    assert ("plugin:slow", slow_origin) not in _tr._consecutive_connect_failures
+    assert ("plugin:slow", slow_origin, None) not in _tr._consecutive_connect_failures
 
 
 @pytest.mark.asyncio
@@ -1834,7 +1834,7 @@ async def test_remote_dispatch_endpoint_local_outage_preserves_sibling_endpoints
 
     # No counter should ever exist for the healthy port: it never failed.
     live_origin = _tr._callback_origin("http://127.0.0.1:9002/cb")
-    assert ("plugin:multi_port", live_origin) not in _tr._consecutive_connect_failures
+    assert ("plugin:multi_port", live_origin, None) not in _tr._consecutive_connect_failures
 
     # The healthy endpoint stays callable and visible in the schema.
     live_call = ToolCall(name="tool_on_live_port", arguments={}, call_id="L")

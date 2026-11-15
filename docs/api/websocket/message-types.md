@@ -228,7 +228,7 @@ Relevant microphone-control status codes are:
 
 These are current UI integration events, not a stable external contract:
 
-- Agent: `agent_notification`, `agent_task_update`, `agent_status_update`.
+- Agent: `agent_notification`, `agent_task_update`, `agent_status_update`, `agent_builtin_activity` (a task began or stopped using the keyboard and mouse or the browser; see [Agent API](/api/rest/agent)).
 - Capture: `request_screenshot`, `capture_bridge_request`, `screen_share_error`.
 - Mini-games: `mini_game_invite_options`, `mini_game_invite_resolved`, `game_window_state_change`.
 - Music/tools: `music_play_url`, `music_allowlist_add`.

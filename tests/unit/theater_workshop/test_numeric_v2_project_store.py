@@ -1,11 +1,11 @@
 from __future__ import annotations
 from contextlib import nullcontext
-from theater_workshop.host import InProcessPackageGateway
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
 
 import pytest
 
-from theater_workshop.sdk.numeric_v2_project_store import (
+from services.theater_workshop.sdk.numeric_v2_project_store import (
     NumericV2ProjectError,
     NumericV2ProjectStore,
     NumericV2RevisionConflictError,
@@ -372,7 +372,7 @@ def test_mainline_order_is_author_only_and_must_follow_existing_routes(tmp_path)
 @pytest.mark.parametrize('change', ['editor', 'stage', 'editor_stage', 'empty', 'same_mainline', 'changed_mainline', 'story', 'setup', 'title'])
 def test_author_save_rebases_only_current_branch_drafts(tmp_path, change):
     from copy import deepcopy
-    from theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
+    from services.theater_workshop.sdk.numeric_v2_branch import NumericV2BranchService
 
     store = NumericV2ProjectStore(tmp_path, transaction=nullcontext, compiler=NumericV2Compiler(InProcessPackageGateway()))
     story = numeric_v2_story()

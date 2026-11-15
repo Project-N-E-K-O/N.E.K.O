@@ -95,8 +95,7 @@ backup/
 
 # Documentation：**不排除**。
 #
-# 运行时要读 docs/ 下的两棵子树：
-#   main_routers/agent_router.py          → docs/zh-CN/guide/openclaw_guide.md（含各语言版本）
+# 运行时要读 docs/ 下的一棵子树：
 #   main_routers/voice_identity_router.py → docs/development/voice-readiness.md
 # 被排除时不会报错，只会静默退回代码里的短桩文案（日志留一条 warning），
 # entrypoint 里对 /app/docs 的属主修复也会变成空操作。

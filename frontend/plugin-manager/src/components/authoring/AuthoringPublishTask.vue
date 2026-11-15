@@ -2,7 +2,9 @@
   <section class="authoring-publish-task">
     <h4>
       <el-tag size="small" :type="TASK_TAG_TYPES[task.status]">
-        {{ t(TASK_LABELS[task.status]) }}
+        {{ t(task.status === 'succeeded' && task.market_status &&
+          !['published', 'already_published', 'approved'].includes(task.market_status)
+          ? 'authoring.publishTaskMarketAccepted' : TASK_LABELS[task.status]) }}
       </el-tag>
       <span v-if="finishedAt" class="authoring-muted authoring-small">{{
         t('authoring.publishTaskLastRun', { time: finishedAt })

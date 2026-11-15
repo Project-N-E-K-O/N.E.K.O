@@ -551,6 +551,7 @@
         'proactiveMusicEnabled',
         'proactiveMemeEnabled',
         'proactiveMiniGameInviteEnabled',
+        'proactiveTheaterInviteEnabled',
         'mergeMessagesEnabled',
         'focusModeEnabled',
         'focusCognitionEnabled',
@@ -595,6 +596,7 @@
             proactiveMusicEnabled: true,
             proactiveMemeEnabled: true,
             proactiveMiniGameInviteEnabled: true,
+            proactiveTheaterInviteEnabled: true,
             mergeMessagesEnabled: false,
             focusModeEnabled: false,
             focusCognitionEnabled: true,
@@ -659,6 +661,7 @@
             proactiveMusicEnabled: S.proactiveMusicEnabled,
             proactiveMemeEnabled: S.proactiveMemeEnabled,
             proactiveMiniGameInviteEnabled: S.proactiveMiniGameInviteEnabled,
+            proactiveTheaterInviteEnabled: S.proactiveTheaterInviteEnabled,
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
@@ -1680,6 +1683,9 @@
         const currentMiniGameInviteChat = typeof window.proactiveMiniGameInviteEnabled !== 'undefined'
             ? window.proactiveMiniGameInviteEnabled
             : S.proactiveMiniGameInviteEnabled;
+        const currentTheaterInviteChat = typeof window.proactiveTheaterInviteEnabled !== 'undefined'
+            ? window.proactiveTheaterInviteEnabled
+            : S.proactiveTheaterInviteEnabled;
         const currentAvatarReactionBubble = typeof window.avatarReactionBubbleEnabled !== 'undefined'
             ? window.avatarReactionBubbleEnabled
             : S.avatarReactionBubbleEnabled;
@@ -1749,6 +1755,7 @@
             proactiveMusicEnabled: currentMusicChat,
             proactiveMemeEnabled: currentMemeChat,
             proactiveMiniGameInviteEnabled: currentMiniGameInviteChat,
+            proactiveTheaterInviteEnabled: currentTheaterInviteChat,
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
@@ -1799,6 +1806,7 @@
         S.proactiveMusicEnabled = currentMusicChat;
         S.proactiveMemeEnabled = currentMemeChat;
         S.proactiveMiniGameInviteEnabled = currentMiniGameInviteChat;
+        S.proactiveTheaterInviteEnabled = currentTheaterInviteChat;
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
@@ -1942,7 +1950,8 @@
                     settings.proactivePersonalChatEnabled !== undefined ||
                     settings.proactiveMusicEnabled !== undefined ||
                     settings.proactiveMemeEnabled !== undefined ||
-                    settings.proactiveMiniGameInviteEnabled !== undefined;
+                    settings.proactiveMiniGameInviteEnabled !== undefined ||
+                    settings.proactiveTheaterInviteEnabled !== undefined;
                     if (!hasNewFlags) {
                         // 根据旧的视觉偏好决定迁移策略
                         if (settings.proactiveVisionEnabled === false) {
@@ -1985,6 +1994,7 @@
                 S.proactiveMusicEnabled = settings.proactiveMusicEnabled ?? true;
                 S.proactiveMemeEnabled = settings.proactiveMemeEnabled ?? true;
                 S.proactiveMiniGameInviteEnabled = settings.proactiveMiniGameInviteEnabled ?? true;
+                S.proactiveTheaterInviteEnabled = settings.proactiveTheaterInviteEnabled ?? true;
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
@@ -2098,6 +2108,7 @@
                 S.proactiveMusicEnabled = true;
                 S.proactiveMemeEnabled = true;
                 S.proactiveMiniGameInviteEnabled = true;
+                S.proactiveTheaterInviteEnabled = true;
                 // 首次启动默认 token 上限 300（tiktoken o200k_base）
                 S.textGuardMaxLength = 300;
                 window.textGuardMaxLength = 300;
@@ -2377,6 +2388,7 @@
                     window.proactiveMusicEnabled = S.proactiveMusicEnabled;
                     window.proactiveMemeEnabled = S.proactiveMemeEnabled;
                     window.proactiveMiniGameInviteEnabled = S.proactiveMiniGameInviteEnabled;
+                    window.proactiveTheaterInviteEnabled = S.proactiveTheaterInviteEnabled;
                     window.mergeMessagesEnabled = S.mergeMessagesEnabled;
                     window.focusModeEnabled = S.focusModeEnabled;
                     window.focusCognitionEnabled = S.focusCognitionEnabled;
@@ -2980,7 +2992,7 @@
         }
 
         // 如果已开启主动搭话且选择了搭话方式，立即启动定时器
-        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled)) {
+        if (S.proactiveChatEnabled && (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled || S.proactiveTheaterInviteEnabled)) {
             // 主动搭话启动自检
             console.log('========== 主动搭话启动自检 ==========');
             console.log('[自检] proactiveChatEnabled: ' + S.proactiveChatEnabled);
@@ -3007,7 +3019,7 @@
         } else {
             console.log('[App] 主动搭话未满足启动条件，跳过调度器启动:');
             console.log('  - proactiveChatEnabled: ' + S.proactiveChatEnabled);
-            console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled));
+            console.log('  - 任意搭话模式启用: ' + (S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled || S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled || S.proactiveMusicEnabled || S.proactiveMemeEnabled || S.proactiveMiniGameInviteEnabled || S.proactiveTheaterInviteEnabled));
         }
 
         // 所有步骤完成后，最后才设置初始化成功的标志

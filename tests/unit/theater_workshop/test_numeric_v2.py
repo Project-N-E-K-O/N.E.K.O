@@ -1,9 +1,9 @@
 from __future__ import annotations
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.host import InProcessPackageGateway
 
 import pytest
 
-from theater_workshop.sdk.numeric_v2 import (
+from services.theater_workshop.sdk.numeric_v2 import (
     NekoV2BridgeError,
     NumericV2Compiler,
     allocate_metric_id,

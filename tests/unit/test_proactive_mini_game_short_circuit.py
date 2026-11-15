@@ -370,3 +370,26 @@ async def test_router_short_circuit_returns_chat_and_pushes_options_once(
     assert mgr.bool_reads == 1
     assert mgr.active_reads == 1
     assert mgr.session_reads == 0
+
+
+@pytest.mark.parametrize('lang', ['zh', 'zh-TW', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
+def test_work_break_theater_prompt_invites_from_the_frozen_public_opening(lang):
+    from main_logic.proactive_chat.break_reminders import _render_work_break_game_invite_prompt
+    story = {'id': 42, 'revision': 3, 'title': '月台猫灯', 'background': '夜班管理员遇见守着旧信号灯的人。',
+             'invitation': '末班车快到了，月台那盏灯还亮着，陪我去看看？'}
+    prompt = _render_work_break_game_invite_prompt(
+        pending=SimpleNamespace(app='VS Code', minutes=45), game_type='theater',
+        master_name='主人', lang=lang, theater_story=story)
+    assert story['background'] in prompt and story['invitation'] in prompt
+    # The invite starts from the opening situation; the title is not spoken.
+    assert story['title'] not in prompt
+    assert '45' in prompt and 'VS Code' in prompt
+    assert '42' not in prompt
+    assert prompt.startswith('========以下为环境提示========') and prompt.endswith('========以上为环境提示========')
+
+
+def test_work_break_never_invites_an_unidentified_theater_story():
+    from main_logic.proactive_chat.break_reminders import _render_work_break_game_invite_prompt
+    assert _render_work_break_game_invite_prompt(
+        pending=SimpleNamespace(app='VS Code', minutes=45), game_type='theater',
+        master_name='主人', lang='zh') is None

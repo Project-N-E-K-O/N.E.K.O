@@ -1,10 +1,12 @@
 """Verify suggestion scope, shared repair plans and actual modification boundaries separately from natural-language semantic stress tests."""
+
+from tests.utils.theater_prompt import prompt_payload
 from copy import deepcopy
 import json
 import pytest
 
-from theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
-from theater_workshop.sdk.generation.repair import classify_repair, assign_shared_plans
+from services.theater_workshop.sdk.generation.quality import NumericV2QualityAssessor, QualityAssessmentError
+from services.theater_workshop.sdk.generation.repair import classify_repair, assign_shared_plans
 from .test_numeric_v2_generation import _quality_story_context, _generation_setup, _quality_payload, _reviewed_fixture
 
 
@@ -15,7 +17,7 @@ def fixture(field="/character_state/catgirl"):
     raw = _quality_payload(weak_dimension="plot", target_node_id="mainline_01")
     raw["issues"][0]["repair_targets"] = [{"node_id": "mainline_01", "field": field}]
     report = assessor._validated_assessment(context, raw)
-    _reviewed_fixture(report)
+    _reviewed_fixture(report, context)
     return story, authoring, assessor, context, report
 
 
@@ -83,7 +85,7 @@ def test_single_repair_call_receives_one_plan_with_all_impacts():
     second = deepcopy(report["issues"][0]);second.update(issue_id="quality_issue_02", problem="第二种影响")
     report["issues"].append(second)
     def reply(messages, **kwargs):
-        suggestions = json.loads(messages[1]["content"])["accepted_suggestions"]
+        suggestions = prompt_payload(messages[1]["content"])["accepted_suggestions"]
         assert len(suggestions) == 1
         assert suggestions[0]["related_impacts"][0]["problem"] == "第二种影响"
         return json.dumps({"node_updates": [{"node_id": "mainline_01", "story_beat": {
@@ -93,3 +95,33 @@ def test_single_repair_call_receives_one_plan_with_all_impacts():
     repaired = assessor.optimize_node(story=story, setup=_generation_setup(), authoring=authoring, assessment=report, node_id="mainline_01")
     assert repaired["nodes"][1:] == story["nodes"][1:]
     assert repaired["nodes"][0]["story_beat"]["opening_scene"] == story["nodes"][0]["story_beat"]["opening_scene"]
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_single_repair_requires_changes_for_every_approved_field(partial):
+    story, authoring, assessor, _, report = fixture()
+    report["issues"].append({**deepcopy(report["issues"][0]),
+                             "issue_id": "quality_issue_02", "modification_plan": "在开场补足环境信息。",
+                             "repair_targets": [{"node_id": "mainline_01", "field": "/opening_scene"}]})
+    before = deepcopy(story)
+
+    def reply(messages, **kwargs):
+        request = prompt_payload(messages[1]["content"])
+        assert {t["field"] for s in request["accepted_suggestions"] for t in s["repair_targets"]} == {
+            "/character_state/catgirl", "/opening_scene",
+        }
+        patch = {"character_state": {"catgirl_state": "女主双手空着。"}}
+        if not partial:
+            patch["opening_scene"] = "窗外下起了雨。"
+        return json.dumps({"node_updates": [{"node_id": "mainline_01", "story_beat": patch}]})
+
+    assessor.call_llm = reply
+    params = dict(story=story, setup=_generation_setup(), authoring=authoring, assessment=report, node_id="mainline_01")
+    if partial:
+        with pytest.raises(QualityAssessmentError, match="invalid_quality_repair"):
+            assessor.optimize_node(**params)
+    else:
+        repaired = assessor.optimize_node(**params)
+        assert repaired["nodes"][0]["story_beat"]["opening_scene"] == "窗外下起了雨。"
+        assert repaired["nodes"][0]["story_beat"]["character_state"]["catgirl_state"] == "女主双手空着。"
+    assert story == before

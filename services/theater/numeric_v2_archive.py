@@ -20,7 +20,7 @@ from weakref import WeakValueDictionary
 
 from memory.message_sources import THEATER_MEMORY_SOURCE
 
-from .numeric_v2_performance import content_blocks, mixed_performance_blocks
+from .numeric_v2_performance import content_blocks, mixed_performance_blocks, scene_narration_text
 from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
 
 
@@ -1712,7 +1712,7 @@ def _performance_memory_parts(container: Mapping[str, Any], *, phase: str) -> tu
     parts: list[dict[str, str]] = []
     chunks: list[str] = []
     if "scene_narration" in container or "performance" in container:
-        scene_narration = str(container.get("scene_narration") or "").strip()
+        scene_narration = scene_narration_text(container)
         if scene_narration:
             parts.append({"kind": "scene_narration", "phase": phase, "text": scene_narration})
             chunks.append(scene_narration)
@@ -1822,7 +1822,6 @@ def _episode_performed_at(session: Any, start: int, through: int) -> str:
 
 def _compact_episode_summary(
     session: Any,
-    ending: Mapping[str, Any] | None,
     *,
     max_chars: int = 360,
     archive_from_revision: int = 1,
@@ -1845,9 +1844,8 @@ def _compact_episode_summary(
         fallback_phase = "opening"
     else:
         return ""
-    ending_summary = str((ending or {}).get("summary") or "").strip()
-    if ending_summary and history and history[-1].get("revision") == session.revision:
-        return ending_summary
+    # 作者结局摘要是创作元数据，不能覆盖实际演出中可能不同的决定或结果。
+    # 新记忆胶囊只摘取已提交正文，沿用原有水位和长度限制；旧摘要元数据不迁移。
     _, text = _performance_memory_projection(source, fallback_phase=fallback_phase)
     normalized = " ".join(text.split())
     if len(normalized) <= max_chars:
@@ -1933,7 +1931,7 @@ def build_numeric_v2_memory_messages(
     )
     from_revision = max(1, int(archive_from_revision))
     episode_summary = _compact_episode_summary(
-        session, ending, archive_from_revision=from_revision,
+        session, archive_from_revision=from_revision,
         archive_through_revision=through_revision, include_opening=include_opening,
     )
     if not episode_summary:

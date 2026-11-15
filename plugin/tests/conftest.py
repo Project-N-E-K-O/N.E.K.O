@@ -15,9 +15,25 @@ _REPO_ROOT = str(_Path(__file__).resolve().parents[2])
 if _sys.path[:1] != [_REPO_ROOT]:
     _sys.path.insert(0, _REPO_ROOT)
 
-# pytest discovers hooks by name in the conftest namespace, so this import has no explicit call site;
-# it is not dead code: deleting it disables the entire process-wide clock guard.
+# Before ANY product module is imported (this file's own imports below build the
+# ConfigManager singleton during collection): telemetry opt-out, inherited storage-root
+# variables dropped, logs redirected, ConfigManager root resolution pointed at a
+# throwaway root. Same call as tests/conftest.py; see tests/process_isolation.py.
+from tests.process_isolation import isolate_test_process as _isolate_test_process  # noqa: E402
+
+_isolate_test_process()
+
+# pytest discovers hooks by name in the conftest namespace, so these imports have no explicit call site;
+# they are not dead code: deleting one disables that process-wide guard.
 from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
+# Storage-root environment guard (tests/storage_root_env_guard.py): a test that leaves
+# NEKO_STORAGE_ANCHOR_ROOT / NEKO_STORAGE_CLOUDSAVE_ROOT behind (the autouse fixture below
+# only resets SELECTED) would steer every later ConfigManager toward the real root.
+from tests.storage_root_env_guard import (  # noqa: E402
+    pytest_runtest_setup,  # noqa: F401
+    pytest_runtest_teardown,  # noqa: F401
+    pytest_sessionstart,  # noqa: F401
+)
 
 import asyncio.events as _events
 from collections.abc import AsyncIterator
@@ -58,9 +74,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def _isolate_plugin_runtime_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> None:
+):
+    from tests.storage_root_env_guard import restore_storage_root_env, snapshot_storage_root_env
+
+    before = snapshot_storage_root_env()
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
     monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+    yield
+    # Starting a plugin process makes the host export its whole storage layout
+    # into os.environ for the child (plugin/core/host.py:
+    # _refresh_child_storage_layout_env). monkeypatch only undoes keys it saw,
+    # so ANCHOR / CLOUDSAVE stayed set for the rest of the session -- and before
+    # the ConfigManager singleton was isolated they named the real root.
+    restore_storage_root_env(before)
 
 
 @pytest.fixture(autouse=True)

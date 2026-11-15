@@ -179,7 +179,6 @@ BUNDLED_ROOTS: tuple[str, ...] = (
     "config/characters",
     "config/changelog",
     "config/surveys",
-    "data/browser_use_prompts",
     "data/tiktoken_cache",
     "data/embedding_models",
     # Not all of docs/ — the build packs exactly one subtree

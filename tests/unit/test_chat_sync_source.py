@@ -687,7 +687,7 @@ async def test_actual_connector_saves_exact_reply_and_keeps_memory_projection_se
     memory = AsyncMock(return_value=(True, "", {}))
     monkeypatch.setattr(source_module, "save_original", save)
     monkeypatch.setattr(cross_server, "_post_memory_server", memory)
-    monkeypatch.setattr(cross_server, "_publish_analyze_request_with_fallback", AsyncMock(return_value=True))
+    monkeypatch.setattr(cross_server, "_publish_turn_check_with_fallback", AsyncMock(return_value=True))
     queue = asyncio.Queue()
     ordinary = mark_turn_origin(SimpleNamespace(), "ordinary", "chat")
     excluded = mark_turn_origin(SimpleNamespace(), "avatar", "avatar")
@@ -835,7 +835,7 @@ async def test_actual_tool_dispatch_syncs_complete_reply_text(
     )
     monkeypatch.setattr(
         cross_server,
-        "_publish_analyze_request_with_fallback",
+        "_publish_turn_check_with_fallback",
         AsyncMock(return_value=True),
     )
     queue = asyncio.Queue()

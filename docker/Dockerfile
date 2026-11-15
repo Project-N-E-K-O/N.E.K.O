@@ -1,8 +1,9 @@
 # ============================================================================
-# N.E.K.O. Dockerfile - Standard Version (lightweight, downloads Chromium at runtime)
+# N.E.K.O. Dockerfile - Standard Version (lightweight, no browser)
 # ============================================================================
 # This Dockerfile builds the "standard" version of N.E.K.O (~1.5GB).
-# Chromium browser is downloaded on first container start.
+# It contains no browser and none is downloaded at start, so the browser tools
+# report that no browser was found. Use Dockerfile.full for browser control.
 #
 # Build: docker build -f docker/Dockerfile -t neko:latest .
 # Run:   docker run -d --name neko -p 48911:80 -p 48912:443 neko:latest
@@ -89,7 +90,7 @@ RUN if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     unset http_proxy && \
     unset https_proxy
 
-# Create nginx user and neko application user, plus Playwright cache directory
+# Create nginx user and neko application user
 #
 # neko 固定 uid/gid 1000（不用 `-r` 的系统号段）。/home/neko 是 bind mount 出去的
 # 持久化目录，容器给它的属主会原样出现在宿主机上；1000 是绝大多数 Linux 发行版第一个
@@ -109,8 +110,8 @@ RUN groupadd -r nginx && \
     chown -R nginx:nginx /var/log/nginx /var/cache/nginx && \
     groupadd -g 1000 neko && \
     useradd -u 1000 -g 1000 -d /home/neko -s /bin/bash neko && \
-    mkdir -p /home/neko /app/logs /app/N.E.K.O /home/neko/ssl /opt/ms-playwright && \
-    chown -R neko:neko /home/neko /app /opt/ms-playwright
+    mkdir -p /home/neko /app/logs /app/N.E.K.O /home/neko/ssl && \
+    chown -R neko:neko /home/neko /app
 
 # 3. Create Python symlinks
 RUN ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
@@ -217,9 +218,6 @@ RUN cd /app && \
 
 # 8c. Fix ownership after root operations (uv sync + model download create files as root)
 RUN chown -R neko:neko /app
-
-# 9. Set Playwright environment variable
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
 # 10. Set remaining environment variables
 ENV PATH="/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH"

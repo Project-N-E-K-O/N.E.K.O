@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -77,7 +78,7 @@ async def test_source_reply_survives_commit_cold_restore_and_fork(tmp_path, with
 
     reviewed = _build_transition_judge_messages(runtime.engine, current.session,
         actor_performance=assembled, player_input=message, transition_outcome=outcome)[0]
-    review_data = json.loads(reviewed[1].content.split('：', 1)[1])
+    review_data = prompt_payload(reviewed[1].content)
     if with_narration:
         assert review_data['candidate_segments'][0]['scene_narration'] == NPC_REPLY
     else:

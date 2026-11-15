@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -34,7 +35,7 @@ def test_review_uses_short_refs_for_pending_pieces_and_their_dependencies():
         player_input='登记铭牌。',
     )
     user = messages[1].content
-    data = json.loads(user[user.index('{'):])
+    data = prompt_payload(user)
     candidates = data['fixed_narration_candidates']
     assert [item['id'] for item in candidates] == ['0', '1']
     assert [item['after'] for item in candidates] == [[], ['0']]

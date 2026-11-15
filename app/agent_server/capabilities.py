@@ -25,168 +25,211 @@ through the facade at call time.
 
 import json
 import asyncio
-import importlib.util
-from typing import Dict, Any, Optional, Tuple
+import time
+from typing import Callable, Dict, Any, Optional, Tuple
 
 from . import _shared
 from ._shared import (
     logger,
-    BrowserUseAdapter,
-    ComputerUseAdapter,
-    ThrottledLogger,
     _set_capability,
     _bump_state_revision,
 )
-from .registry import _cleanup_task_registry, _now_iso
+from ._shared import _now_iso
+from .model_probe import AgentModelProbe
 from .results import _emit_main_event
 
+# How long the answer to "is there a browser on this computer" is kept. It is
+# a handful of file checks, asked for from the status paths.
+_BROWSER_SEARCH_TTL_SECONDS = 30.0
+_browser_search: Optional[Tuple[float, bool, str]] = None
 
-def _rewire_browser_use_dependents() -> None:
-    """Keep task_executor in sync after BrowserUse lifecycle changes."""
+BROWSER_NOT_FOUND = "AGENT_BROWSER_NOT_FOUND"
+
+
+def _browser_dependency_status() -> tuple[bool, str]:
+    """Return whether there is a browser the browser tools can drive, and if not, the reason code.
+
+    No browser comes with the application: the tools use one the user has
+    (``nekoclaw/builtin/browser/launcher.py``). The answer is found the way
+    the tools themselves pick their browser, so a browser the user named in
+    the browser settings counts although the search would not find it. It is
+    a settings file read and a handful of file checks (blocking: call it in
+    a worker thread), and the answer is kept for a moment.
+    """
+    global _browser_search
+    now = time.monotonic()
+    if _browser_search is not None and now - _browser_search[0] < _BROWSER_SEARCH_TTL_SECONDS:
+        return _browser_search[1], _browser_search[2]
     try:
-        executor = _shared.Modules.task_executor
-        if executor is not None and hasattr(executor, "browser_use"):
-            executor.browser_use = _shared.Modules.browser_use
-    except Exception as exc:
-        logger.debug("[Agent] BrowserUse dependent rewire failed: %s", exc)
+        from nekoclaw.builtin.browser.launcher import NoBrowserError, pick_browser
+        from nekoclaw.builtin.browser.settings import BrowserSettingsStore
 
-
-def _browser_use_dependency_status() -> tuple[bool, str]:
-    """Check BrowserUse installation without importing its heavy module graph."""
-    current = _shared.Modules.browser_use
-    if current is not None:
-        ready = bool(getattr(current, "_ready_import", False))
-        return ready, "" if ready else str(getattr(current, "last_error", "") or "")
-    try:
-        installed = importlib.util.find_spec("browser_use") is not None
-    except Exception as exc:
-        return False, str(exc)
-    return installed, "" if installed else "browser-use package not found"
-
-
-async def _ensure_browser_use_adapter():
-    """Build the heavy BrowserUse adapter only when the feature is requested."""
-    if _shared.Modules.browser_use_init_lock is None:
-        _shared.Modules.browser_use_init_lock = asyncio.Lock()
-
-    async with _shared.Modules.browser_use_init_lock:
-        current = _shared.Modules.browser_use
-        if current is not None:
-            return current
         try:
-            current = await asyncio.to_thread(BrowserUseAdapter)
-        except Exception as exc:
-            logger.error("[Agent] BrowserUseAdapter on-demand init failed: %s", exc)
-            _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
-            return None
-
-        if not getattr(current, "_ready_import", False):
-            _set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")
-            return None
-
-        _shared.Modules.browser_use = current
-        _rewire_browser_use_dependents()
-        logger.info("[Agent] BrowserUseAdapter ready (on-demand init)")
-        return current
+            pick_browser(BrowserSettingsStore().load().executable)
+            found = True
+        except NoBrowserError:
+            found = False
+    except Exception as exc:
+        logger.warning("[Agent] Searching for a browser failed: %s", exc)
+        found = False
+    _browser_search = (now, found, "" if found else BROWSER_NOT_FOUND)
+    return _browser_search[1], _browser_search[2]
 
 
-def _set_unloaded_browser_use_capability(capability_reason: Optional[str]) -> None:
+def _forget_browser_search() -> None:
+    """Look for a browser afresh next time; for when the browser settings changed."""
+    global _browser_search
+    _browser_search = None
+
+
+def _keyboard_mouse_availability() -> Dict[str, Any]:
+    """Return whether the keyboard-and-mouse tools can be used: the agent model and input both have to work.
+
+    Blocking (the first call imports pyautogui): call it in a worker thread.
+    """
+    from .nekoclaw_builtins import provider
+
+    probe = _shared.Modules.model_probe
+    status = probe.is_available() if probe is not None else {"ready": False, "reasons": ["AGENT_CU_MODULE_NOT_LOADED"], "model": ""}
+    reasons = list(status.get("reasons") or [])
+    input_ready, input_reason = provider.desktop().available()
+    if not input_ready:
+        reasons.append(input_reason)
+    return {
+        "enabled": True,
+        "ready": bool(status.get("ready")) and input_ready,
+        "reasons": reasons,
+        "provider": "nekoclaw",
+        "model": status.get("model", ""),
+    }
+
+
+async def _model_images_status() -> Dict[str, Any]:
+    """Return whether the agent model is sent pictures and, if it is not, why and until when.
+
+    The keyboard-and-mouse tool and the screenshot tools are only given to a
+    task agent whose model sees pictures. A model is taken not to when its
+    provider said so (``nekoclaw/host/model_capabilities.py``); without this
+    the tools would be missing with nothing to show for it.
+    """
+    probe = _shared.Modules.model_probe
+    if probe is None:
+        return {"sees": True}
+    try:
+        from nekoclaw.host import mount
+
+        config = await asyncio.to_thread(probe.model_config)
+        host = mount.peek_host()
+        if host is not None:
+            store = host.model_capabilities
+        else:
+            from nekoclaw.host.model_capabilities import ModelCapabilityStore
+            from nekoclaw.host.paths import HostPaths
+
+            store = ModelCapabilityStore(HostPaths().model_capabilities_json)
+        return await store.describe(config.get("base_url"), config.get("model"))
+    except Exception as exc:
+        logger.debug("[Agent] What the agent model can see is not known: %s", exc)
+        return {"sees": True}
+
+
+async def _set_closed_browser_capability(capability_reason: Optional[str], still_current: Callable[[], bool]) -> None:
+    """Say what the browser tools can do now that the browser is closed.
+
+    ``still_current`` is asked again after the search for a browser, which
+    runs in a worker thread (it reads the settings and looks at files): the
+    switch may have been set anew meanwhile, and that setting's word stands.
+    """
     if capability_reason is not None:
         _set_capability("browser_use", False, capability_reason)
         return
-    dependency_ready, dependency_error = _browser_use_dependency_status()
-    _set_capability("browser_use", dependency_ready, dependency_error)
+    dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
+    if still_current():
+        _set_capability("browser_use", dependency_ready, dependency_error)
 
 
-async def _close_browser_use_adapter(
+async def _close_browser(
     *,
     capability_reason: Optional[str] = None,
     expected_lifecycle_seq: Optional[int] = None,
     update_capability: bool = True,
 ) -> None:
-    """Close Chromium/browser-use resources and detach the singleton adapter."""
-    if _shared.Modules.browser_use_dispatch_lock is None:
-        _shared.Modules.browser_use_dispatch_lock = asyncio.Lock()
-    if _shared.Modules.browser_use_init_lock is None:
-        _shared.Modules.browser_use_init_lock = asyncio.Lock()
+    """Close the browser the browser tools started, if they started one.
 
-    # Lock order is dispatch -> init everywhere that needs both. This drains
-    # an active run before releasing the shared BrowserSession/Chromium graph.
-    async with _shared.Modules.browser_use_dispatch_lock:
-        async with _shared.Modules.browser_use_init_lock:
-            current = _shared.Modules.browser_use
-            if current is None:
-                _rewire_browser_use_dependents()
-                if (
-                    update_capability
-                    and (
-                        expected_lifecycle_seq is None
-                        or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
-                    )
-                ):
-                    _set_unloaded_browser_use_capability(capability_reason)
-                return
-            cancelled = False
-            try:
-                await current.close()
-            except asyncio.CancelledError:
-                cancelled = True
-                raise
-            except Exception as exc:
-                logger.warning("[Agent] BrowserUseAdapter close failed: %s", exc)
-            finally:
-                if not cancelled:
-                    _shared.Modules.browser_use = None
-                    _rewire_browser_use_dependents()
-                    if (
-                        update_capability
-                        and (
-                            expected_lifecycle_seq is None
-                            or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
-                        )
-                    ):
-                        _set_unloaded_browser_use_capability(capability_reason)
-
-def _rewire_computer_use_dependents() -> None:
-    """Keep task_executor in sync after computer_use adapter refresh."""
-    try:
-        if _shared.Modules.task_executor is not None and hasattr(_shared.Modules.task_executor, "computer_use"):
-            _shared.Modules.task_executor.computer_use = _shared.Modules.computer_use
-    except Exception:
-        pass
-
-
-def _try_refresh_computer_use_adapter(force: bool = False) -> bool:
+    A browser the user is using (attach mode) is only let go of. The
+    provider waits for a call under way before it closes anything.
     """
-    Best-effort refresh for computer-use adapter.
+    from .nekoclaw_builtins import provider
+
+    def still_current() -> bool:
+        return expected_lifecycle_seq is None or _shared.Modules.browser_use_lifecycle_seq == expected_lifecycle_seq
+
+    cancelled = False
+    try:
+        await provider.close_browser()
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    except Exception as exc:
+        logger.warning("[Agent] Closing the browser failed: %s", exc)
+    finally:
+        if not cancelled and update_capability and still_current():
+            await _set_closed_browser_capability(capability_reason, still_current)
+
+
+def _try_refresh_model_probe(force: bool = False) -> bool:
+    """
+    Best-effort refresh of the agent model probe.
     Useful when API key/model settings were fixed after agent_server startup.
     Does NOT block on LLM connectivity — call ``_fire_agent_llm_connectivity_check``
     afterwards to probe the endpoint asynchronously.
     """
-    current = _shared.Modules.computer_use
+    current = _shared.Modules.model_probe
     if not force and current is not None and getattr(current, "init_ok", False):
         return True
     try:
-        refreshed = ComputerUseAdapter()
-        _shared.Modules.computer_use = refreshed
-        _rewire_computer_use_dependents()
-        logger.info("[Agent] ComputerUse adapter rebuilt (connectivity pending)")
+        _shared.Modules.model_probe = AgentModelProbe()
+        logger.info("[Agent] Agent model probe rebuilt (connectivity pending)")
         return True
     except Exception as e:
-        logger.warning(f"[Agent] ComputerUse adapter refresh failed: {e}")
+        logger.warning(f"[Agent] Agent model probe refresh failed: {e}")
         return False
 
 
 _llm_check_lock = asyncio.Lock()
 
 
+def _tool_group_in_use(kind: str) -> bool:
+    """Whether a commission is using the tools of ``computer_use`` or ``browser_use`` right now."""
+    from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, BUILTIN_GROUP_KEYBOARD_MOUSE
+
+    from .nekoclaw_builtins import group_in_use
+
+    return group_in_use(BUILTIN_GROUP_KEYBOARD_MOUSE if kind == "computer_use" else BUILTIN_GROUP_BROWSER)
+
+
+def _probe_lost_a_race() -> bool:
+    """Whether the probe says the agent model is unreachable while a commission is being answered by it.
+
+    A probe that failed leaves its word on the probe (``init_ok``) whatever
+    ``_fire_agent_llm_connectivity_check`` then made of it. Whoever reads
+    that word to switch a tool off or to mark it lost asks this first, so
+    that the one rule holds everywhere: nothing is taken from a task that is
+    under way because a probe lost a race against it.
+    """
+    probe = _shared.Modules.model_probe
+    if probe is None or getattr(probe, "init_ok", False):
+        return False
+    return _tool_group_in_use("computer_use") or _tool_group_in_use("browser_use")
+
+
 async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
     """Probe the shared Agent-LLM endpoint in a background thread.
 
-    Both ComputerUse and BrowserUse rely on the same ``agent`` model config,
-    so a single connectivity check covers both capabilities.  Updates
-    ``init_ok`` on the CUA adapter and refreshes the capability cache for
-    *both* computer_use and browser_use.
+    The keyboard-and-mouse and browser tools are driven by task agents, which
+    use the ``agent`` model config, so a single connectivity check covers
+    both capabilities.  Updates ``init_ok`` on the probe and refreshes the
+    capability cache for *both* computer_use and browser_use.
 
     Uses a lock to prevent concurrent probes from racing.
 
@@ -203,8 +246,8 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
         return
 
     async with _llm_check_lock:
-        adapter = _shared.Modules.computer_use
-        if adapter is None:
+        probe = _shared.Modules.model_probe
+        if probe is None:
             _set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")
             _set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")
             _bump_state_revision()
@@ -212,26 +255,19 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
             return
 
         def _probe() -> Tuple[bool, str]:
-            return adapter.check_connectivity()
+            return probe.check_connectivity()
 
-        # If a real CUA/BU task is currently running, the LLM is demonstrably
-        # reachable — the probe lost a race (shared _llm_client + rate limit /
-        # transient timeout) and we must not flip flags off or post a bogus
-        # "猫爪预检失败 / 已自动关闭" toast on top of a working task.
-        def _has_running(kind: str) -> bool:
-            try:
-                for info in _shared.Modules.task_registry.values():
-                    if info.get("type") == kind and info.get("status") in ("queued", "running"):
-                        return True
-            except Exception:
-                pass
-            return False
+        # If a commission is using the keyboard and mouse or the browser right
+        # now, the LLM is demonstrably reachable — the probe lost a race (rate
+        # limit / transient timeout) and we must not flip flags off or post a
+        # bogus "猫爪预检失败 / 已自动关闭" toast on top of a working task.
+        _has_running = _tool_group_in_use
 
         try:
             probe_result = await asyncio.get_event_loop().run_in_executor(None, _probe)
-            # Tolerate legacy bool returns in case some adapter implementation
+            # Tolerate legacy bool returns in case some probe implementation
             # hasn't been migrated yet (defense-in-depth: the only real probe
-            # — computer_use.check_connectivity — already returns a tuple).
+            # — AgentModelProbe.check_connectivity — already returns a tuple).
             if isinstance(probe_result, tuple):
                 ok, probe_reason = probe_result
             else:
@@ -251,21 +287,17 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 return
 
             reason = "" if ok else (probe_reason or "AGENT_LLM_UNREACHABLE")
-            _set_capability("computer_use", ok, reason)
-            bu = _shared.Modules.browser_use
             if not ok:
+                _set_capability("computer_use", False, reason)
                 _set_capability("browser_use", False, reason)
-            elif bu is None:
-                dependency_ready, dependency_error = _browser_use_dependency_status()
-                _set_capability(
-                    "browser_use",
-                    dependency_ready,
-                    "" if dependency_ready else dependency_error,
-                )
-            elif not getattr(bu, "_ready_import", False):
-                _set_capability("browser_use", False, "AGENT_BROWSER_USE_NOT_INSTALLED")
             else:
-                _set_capability("browser_use", True, "")
+                # The model answers; each tool group also needs its own means:
+                # input that can be sent, a browser that can be found.
+                keyboard = await asyncio.to_thread(_keyboard_mouse_availability)
+                keyboard_reasons = keyboard.get("reasons") or []
+                _set_capability("computer_use", bool(keyboard.get("ready")), keyboard_reasons[0] if keyboard_reasons else "")
+                dependency_ready, dependency_error = await asyncio.to_thread(_browser_dependency_status)
+                _set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)
 
             if ok:
                 logger.info("[Agent] Agent-LLM connectivity check passed")
@@ -277,7 +309,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 if _shared.Modules.agent_flags.get("browser_use_enabled"):
                     _shared.Modules.agent_flags["browser_use_enabled"] = False
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
-                    await _close_browser_use_adapter(capability_reason=reason)
+                    await _close_browser(capability_reason=reason)
 
             _bump_state_revision()
             await _emit_agent_status_update()
@@ -294,19 +326,14 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 _shared.Modules.agent_flags["computer_use_enabled"] = False
             if _shared.Modules.agent_flags.get("browser_use_enabled"):
                 _shared.Modules.agent_flags["browser_use_enabled"] = False
-                await _close_browser_use_adapter(capability_reason="AGENT_LLM_UNREACHABLE")
+                await _close_browser(capability_reason="AGENT_LLM_UNREACHABLE")
             _shared.Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
             _bump_state_revision()
             await _emit_agent_status_update()
 
 
 def _agent_flags_snapshot() -> Dict[str, Any]:
-    flags = dict(_shared.Modules.agent_flags or {})
-    openclaw_capability = (_shared.Modules.capability_cache or {}).get("openclaw") or {}
-    flags["openclaw_ready"] = bool(flags.get("openclaw_enabled")) and bool(
-        openclaw_capability.get("ready")
-    )
-    return flags
+    return dict(_shared.Modules.agent_flags or {})
 
 
 def _collect_agent_status_snapshot() -> Dict[str, Any]:
@@ -316,26 +343,12 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
     gate = _agent_server_facade._check_agent_api_gate()
     flags = _agent_flags_snapshot()
     capabilities = dict(_shared.Modules.capability_cache or {})
-    # Periodic cleanup of completed tasks to prevent memory leak
-    # Note: _emit_agent_status_update also calls this and handles timed_out tasks
-    _cleanup_task_registry()
-    # Include active (queued/running) tasks so frontend can restore after page refresh
-    active_tasks = []
-    for tid, info in _shared.Modules.task_registry.items():
-        try:
-            st = info.get("status")
-            if st in ("queued", "running"):
-                active_tasks.append({
-                    "id": tid,
-                    "status": st,
-                    "type": info.get("type"),
-                    "start_time": info.get("start_time"),
-                    "params": info.get("params", {}),
-                    "session_id": info.get("session_id"),
-                    "lanlan_name": info.get("lanlan_name"),
-                })
-        except Exception:
-            continue
+    # The commissions under way, so the frontend can restore its task HUD
+    # after a page refresh. Read from this process's view of the ledger;
+    # nothing is opened or fetched here.
+    from .nekoclaw_mount import hud
+
+    active_tasks = hud.active()
     note = _shared.Modules.notification
     if _shared.Modules.notification:
         _shared.Modules.notification = None
@@ -354,26 +367,6 @@ def _collect_agent_status_snapshot() -> Dict[str, Any]:
 
 async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
     try:
-        # First check for timed-out deferred tasks and send task_update notifications
-        timed_out = _cleanup_task_registry()
-        for task_info in timed_out:
-            try:
-                await _emit_main_event(
-                    "task_update",
-                    task_info.get("lanlan_name"),
-                    task={
-                        "id": task_info.get("id"),
-                        "status": "failed",
-                        "type": task_info.get("type"),
-                        "start_time": task_info.get("start_time"),
-                        "end_time": task_info.get("end_time"),
-                        "error": task_info.get("error"),
-                        "params": task_info.get("params", {}),
-                    },
-                )
-            except Exception as e:
-                logger.warning("[Agent] Failed to emit task_update for timed-out task %s: %s", task_info.get("id"), e)
-
         snapshot = _collect_agent_status_snapshot()
         await _emit_main_event(
             "agent_status_update",

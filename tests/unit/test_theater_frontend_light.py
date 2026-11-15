@@ -581,21 +581,12 @@ def test_theater_transport_owns_shared_request_and_message_protocol():
     assert "async function requestJson" not in runtime
 
 
-def test_theater_settings_reuses_shared_shell_transport_and_locale():
-    html = _source("templates/theater_settings.html")
-    selector = _source("templates/theater.html")
-    script = _source("static/js/theater_settings.js")
-
-    assert "/static/i18n-i18next.js" in html
-    assert "/static/css/window_controls.css" in html
-    assert "/static/theme-manager.js" in html
-    assert "/static/js/window_controls.js" in html
-    assert 'data-i18n="theater.settingsTitle"' in html
-    assert 'data-i18n="theater.settingsButton"' in selector
-    assert "nekoTheaterTransport" in script
-    assert "requestJson" in script
-    assert "fetch(" not in script
-    assert "localechange" in script
+def test_theater_settings_entry_and_configuration_routes_are_removed():
+    assert 'theater-settings-btn' not in _source('templates/theater.html')
+    assert '/theater/settings' not in _source('main_routers/pages_router.py')
+    assert 'theater_settings' not in _source('main_routers/pages_router.py')
+    assert '@router.get("/options")' not in _source('main_routers/numeric_theater_router.py')
+    assert '@router.post("/options")' not in _source('main_routers/numeric_theater_router.py')
 
 
 def test_theater_locales_remain_valid_and_aligned():
@@ -621,27 +612,18 @@ def test_theater_locales_remain_valid_and_aligned():
             "performanceArchiveOpening",
             "performanceArchiveTurn",
             "performanceArchiveLoadFailed",
-            "settingsButton",
-            "settingsTitle",
-            "settingsBack",
-            "settingsIntroTitle",
-            "settingsIntroBody",
-            "settingsTip",
-            "settingsSaved",
-            "settingsSaveFailed",
-            "settingsLoadFailed",
-            "moduleOptDetail.evaluator",
         ):
             assert theater[key]
     assert all(keys == theater_keys[0] for keys in theater_keys[1:])
 
 
-def test_theater_popup_entry_opens_story_selector():
+def test_theater_entry_uses_independent_proactive_invites():
     popup_config = _source("static/avatar/avatar-ui-popup-config.js")
     pngtuber = _source("static/pngtuber-core.js")
-    assert popup_config.count("url: '/theater'") == 3
-    assert pngtuber.count("url: '/theater'") == 1
+    assert "proactiveTheaterInviteEnabled" in _source("static/app/app-settings.js")
+    assert "theater_invite_enabled" in _source("static/app/app-proactive.js")
     for source in (popup_config, pngtuber):
+        assert "url: '/theater'" not in source
         assert "url: '/theater-home'" not in source
         assert "url: '/theater-numeric'" not in source
 
@@ -649,10 +631,8 @@ def test_theater_popup_entry_opens_story_selector():
 _THEATER_FRONTEND_SOURCES = (
     "static/app/app-theater-runtime.js",
     "static/js/theater_selector.js",
-    "static/js/theater_settings.js",
     "static/js/theater_transport.js",
     "templates/theater.html",
-    "templates/theater_settings.html",
 )
 _SUPPORTED_LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
@@ -699,15 +679,14 @@ def test_every_theater_key_used_by_the_frontend_exists_in_every_locale():
     assert all(not keys for keys in missing.values()), missing
 
 
-def test_actor_retry_copy_states_the_real_actor_call_budget():
-    """The actor_retry option copy must match the workflow's real attempt count."""
+def test_actor_retry_keeps_the_real_actor_call_budget():
+    """Removing the UI leaves the existing retry attempt budget intact."""
 
     import asyncio
     import re
     from types import SimpleNamespace
 
     from services.theater.numeric_v2_actor_output import NumericV2ActorOutputError
-    from services.theater.numeric_v2_options import disabled_effects
     from services.theater.numeric_v2_workflow import _generate_actor_turn_with_output_retry
 
     calls = []
@@ -731,16 +710,3 @@ def test_actor_retry_copy_states_the_real_actor_call_budget():
     asyncio.run(run())
     budget = str(len(calls))
     assert budget == "4"
-
-    copies = {
-        language: json.loads(_source(f"static/locales/{language}.json"))["theater"]["moduleOptDetail.actor_retry"]
-        for language in _SUPPORTED_LOCALES
-    }
-    details_block = re.search(r"var details = \{(.*?)\};", _source("static/js/theater_settings.js"), re.S).group(1)
-    fallback = re.search(r"actor_retry: '([^']*)'", details_block).group(1)
-    copies["js-fallback"] = fallback
-    copies["server"] = disabled_effects()["actor_retry"]
-    for source, text in copies.items():
-        assert budget in text, (source, text)
-    assert "once" not in copies["en"].lower()
-    assert "一次" not in copies["zh-CN"] and "一次" not in fallback

@@ -52,9 +52,8 @@ def test_production_pages_render_with_real_templates(pages_client, path):
 @pytest.mark.parametrize("path", [
     f"{cookies_login_router.router.prefix}/page",
     f"{cookies_login_router.router.prefix}/guide",
-    f"{agent_router.router.prefix}/openclaw/guide",
 ])
-def test_credentials_and_agent_guides_render_with_real_templates(pages_client, path):
+def test_credentials_pages_render_with_real_templates(pages_client, path):
     response = pages_client.get(path)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")

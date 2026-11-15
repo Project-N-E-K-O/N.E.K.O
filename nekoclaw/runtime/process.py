@@ -475,7 +475,7 @@ class SubprocessRuntime:
                     protocol.EndedEvent(
                         session_id=session_id,
                         reason="error",
-                        error="the runtime process exited",
+                        error=protocol.PROCESS_EXITED_ERROR,
                     )
                 )
             )

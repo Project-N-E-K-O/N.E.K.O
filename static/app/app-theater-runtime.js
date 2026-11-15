@@ -27,7 +27,8 @@
     var state = {
         active: false, phase: 'inactive', storyId: '', storyTitle: '', sessionId: '', revision: 0, lifecycleRevision: 0,
         playerName: '', catgirlName: '', activityCatgirlName: '', activityClaimId: '',
-        sessionStatus: '', scene: null, history: [], suggestedInputs: [], invitationRecoveryAvailable: false,
+        sessionStatus: '', scene: null, history: [], suggestedInputs: [],
+        invitationAcceptanceAvailable: false,
         queueToken: 0, pendingTurn: null, pendingEnd: null, channel: null, hostReadyTimer: 0,
         draftRestore: null, ordinaryDraftRestore: null, composerVisibilityRestore: null,
         chatSurfaceModeRestore: null, windowClaimed: false,
@@ -466,12 +467,15 @@
             if (container && (Object.prototype.hasOwnProperty.call(container, 'scene_narration')
                 || Object.prototype.hasOwnProperty.call(container, 'performance'))) {
                 var sceneNarration = String(container.scene_narration || '').trim();
+                var fixedNarrations = Array.isArray(container.fixed_narrations) ? container.fixed_narrations : [];
+                if (fixedNarrations.some(function (item) { return item.position === 'before' && item.text === sceneNarration; })) {
+                    sceneNarration = '';
+                }
                 if (phase === 'transition_bridge' && sceneNarration === LEGACY_EMPTY_TRANSITION_BRIDGE) {
                     sceneNarration = '';
                 }
                 if (sceneNarration) blocks.push(presentationBlock('narration', sceneNarration, 'scene'));
                 // Fixed text is committed by the runtime, outside the actor/TTS body.
-                var fixedNarrations = Array.isArray(container.fixed_narrations) ? container.fixed_narrations : [];
                 fixedNarrations.filter(function (item) { return item.position === 'before'; }).forEach(function (item) {
                     blocks.push(presentationBlock('narration', item.text, 'scene'));
                 });
@@ -530,6 +534,10 @@
             .filter(Boolean)
             .join(group.preserveSpacing ? '' : '\n');
     }
+    function endingCardTitle(ending) {
+        // 结局卡只标记标题；具体收束来自已提交的终幕正文，不追加作者预写摘要。
+        return String(ending && ending.title || '').trim() || t('theater.ended', '已结束');
+    }
     function buildCommittedHistory(snapshot) {
         var session = snapshot.session || {};
         var result = [];
@@ -562,7 +570,7 @@
         });
         if (snapshot.scene && snapshot.scene.terminal && snapshot.scene.ending) {
             var ending = snapshot.scene.ending;
-            result.push(historyEntry('ending-' + session.session_id, 'ending', [ending.title, ending.summary].filter(Boolean).join('：')));
+            result.push(historyEntry('ending-' + session.session_id, 'ending', endingCardTitle(ending)));
         }
         return result;
     }
@@ -590,16 +598,24 @@
         return { summary: summary, detail: detail.join('\n') };
     }
 
+    function presentationSuggestedInputs() {
+        if (state.phase !== 'awaiting_player'
+                && !(state.phase === 'performing' && state.suggestedInputs.length)) return [];
+        var suggestions = state.suggestedInputs.slice();
+        if (state.invitationAcceptanceAvailable) {
+            // 这是服务端当前回执授予的控制，不是演员替玩家写的一句台词；同文推荐不能再占一个按钮。
+            var acceptLabel = t('theater.acceptInvitation', '接受邀请');
+            suggestions = [acceptLabel].concat(suggestions.filter(function (text) { return text !== acceptLabel; }));
+        }
+        return suggestions.slice(0, 3);
+    }
     function presentation() {
         return {
             active: state.active,
             phase: state.phase,
             storyTitle: state.storyTitle,
             history: state.history.slice(),
-            suggestedInputs: state.phase === 'awaiting_player' ? (state.invitationRecoveryAvailable
-                ? [t('theater.reinvite', '重新邀请')].concat(state.suggestedInputs.filter(function (text) {
-                    return text !== t('theater.reinvite', '重新邀请');
-                })).slice(0, 3) : state.suggestedInputs.slice(0, 3)) : [],
+            suggestedInputs: presentationSuggestedInputs(),
             busy: ['loading', 'evaluating', 'ending', 'returning_selector'].indexOf(state.phase) >= 0,
             sessionEnded: state.sessionStatus === 'ended',
             errorMessage: state.errorMessage,
@@ -613,14 +629,15 @@
         if (!chatHost || typeof chatHost.setViewProps !== 'function') return false;
         if (state.active) captureChatSurfaceMode(chatHost);
         var externallyLocked = hostComposerLocked(chatHost);
-        var compactState = state.active && state.phase === 'awaiting_player' && !externallyLocked ? 'input' : 'default';
+        var canInput = state.phase === 'awaiting_player' || (state.phase === 'performing' && state.sessionStatus !== 'ended');
+        var compactState = state.active && canInput && !externallyLocked ? 'input' : 'default';
         // 先让宿主知道剧场已接管，再把输入区设为可见：否则 goodbye 状态下的“恢复输入区”
         // 会在剧场投影生效前为普通聊天请求一次 Galgame 选项。
         chatHost.setViewProps({
             theaterPresentation: presentation(),
             chatSurfaceMode: 'compact',
             compactChatState: compactState,
-            composerDisabled: externallyLocked || (state.active && state.phase !== 'awaiting_player')
+            composerDisabled: externallyLocked || (state.active && !canInput)
         });
         claimComposerVisibility(chatHost);
         // 打字机每个字都会渲染；openWindow 会重挂窗口并重新请求普通 Galgame 选项，每个 Session 只需打开一次。
@@ -639,7 +656,11 @@
         });
     }
     function submitSuggestedFromHost(text) {
-        var source = state.invitationRecoveryAvailable && text === t('theater.reinvite', '重新邀请') ? 'reinvite' : 'suggestion';
+        if (state.phase === 'performing' && presentationSuggestedInputs().indexOf(text) >= 0) skipPlayback();
+        // 只有建议按钮回调加当前服务端能力态才能选中控制；手动输入同名文案仍走普通演绎。
+        var source = state.invitationAcceptanceAvailable && text === t('theater.acceptInvitation', '接受邀请')
+            ? 'accept_invitation' : 'suggestion';
+        if (source === 'accept_invitation') text = '';
         void submit(text, source).catch(function () {
             if (!state.active) return;
             state.phase = 'awaiting_player';
@@ -692,7 +713,7 @@
         state.scene = snapshot.scene || null;
         state.storyTitle = String(snapshot.story_title || state.storyTitle || state.storyId);
         state.suggestedInputs = Array.isArray(snapshot.suggested_inputs) ? snapshot.suggested_inputs.map(String) : [];
-        state.invitationRecoveryAvailable = snapshot.invitation_recovery_available === true;
+        state.invitationAcceptanceAvailable = snapshot.invitation_acceptance_available === true;
         if (snapshot.end_receipt_pending) {
             state.errorMessage = t('theater.endReceiptPending', '演出已经结束；记忆确认暂未准备好，请稍后重新打开选剧页。');
         } else if (snapshot.evaluator_degraded) {
@@ -779,12 +800,35 @@
                 // TTS 是表现层旁路；请求失败时按阅读时长继续，不能中断正文播放或锁住输入。
                 result = { ok: false };
             }
+            if (token !== state.queueToken) {
+                if (activeSpeechRequests[playbackRequestId] === token) delete activeSpeechRequests[playbackRequestId];
+                return false;
+            }
             if (result.ok && result.speech_id && (result.audio_queued || result.audio_sent)) alive = await waitForSpeech(result.speech_id, speechTimeout(dialogueText), token);
             else alive = await wait(readingDelay(dialogueText), token);
             delete activeSpeechRequests[playbackRequestId];
             publishSpeechAllowlist();
         }
         return alive && token === state.queueToken;
+    }
+    function skipPlayback() {
+        if (!state.active || state.phase !== 'performing' || !committedSnapshot) return false;
+        var speechIds = currentSpeechAllowlist();
+        state.queueToken += 1;
+        publishSpeechAllowlist();
+        claimAudioPlayback();
+        // Cancel local playback waits as well as withdrawing permission in the audio-owning window.
+        speechIds.forEach(function (id) {
+            speechEventRelays.slice().forEach(function (relay) {
+                relay({ type: 'neko-assistant-speech-cancel', detail: { turnId: id } });
+            });
+            delete activeSpeechRequests[id];
+        });
+        state.history = buildCommittedHistory(committedSnapshot);
+        state.suggestedInputs = Array.isArray(committedSnapshot.suggested_inputs) ? committedSnapshot.suggested_inputs.map(String) : [];
+        state.phase = state.sessionStatus === 'ended' ? 'ended' : 'awaiting_player';
+        render();
+        return true;
     }
     async function playPerformance(performance, revision, options) {
         var token = ++state.queueToken;
@@ -796,8 +840,9 @@
             state.history.push(historyEntry('player-' + revision, 'player_action', options.playerInput, state.playerName));
         }
         var historyBaseId = options && options.historyId || 'performance-' + revision;
-        // 开场首句前的场景和动作整段呈现；对白及后续段落仍按原有打字/语音时序播放。
-        var openingPrefix = !!(options && options.displayPhase === 'opening');
+        // 开场和已提交换幕的首句前缀整段呈现；后续角色动作仍沿用打字/语音时序。
+        var committedTransition = performance && performance.transition_delivered === true;
+        var openingPrefix = !!(options && options.displayPhase === 'opening') || committedTransition;
         for (var groupIndex = 0; groupIndex < groups.length; groupIndex += 1) {
             var group = groups[groupIndex];
             var historyId = historyBaseId + '-' + groupIndex;
@@ -818,7 +863,14 @@
                 if (!speechPromise && item.block.type === 'dialogue') {
                     speechPromise = playDialogue(group, item.block, item.blockIndex, revision, token);
                 }
-                if (!await typeBlock(historyId, item.block, token, openingPrefix)) return;
+                var immediate = openingPrefix || (committedTransition
+                    && item.block.type === 'narration' && item.block.displayKind === 'scene');
+                if (!await typeBlock(historyId, item.block, token, immediate)) return;
+            }
+            // 推荐已经随已提交回复返回；正文完整呈现后即可选择，不必再等语音收尾。
+            if (groupIndex === groups.length - 1 && state.sessionStatus !== 'ended') {
+                state.suggestedInputs = nextSuggestedInputs;
+                render();
             }
             if (speechPromise && !await speechPromise) return;
             var completedEntry = state.history.find(function (entry) { return entry.id === historyId; });
@@ -826,7 +878,7 @@
             render();
         }
         if (state.sessionStatus === 'ended') {
-            if (state.scene && state.scene.ending) state.history.push(historyEntry('ending-' + state.sessionId, 'ending', [state.scene.ending.title, state.scene.ending.summary].filter(Boolean).join('：')));
+            if (state.scene && state.scene.ending) state.history.push(historyEntry('ending-' + state.sessionId, 'ending', endingCardTitle(state.scene.ending)));
             state.phase = 'ended';
         } else {
             state.phase = 'awaiting_player';
@@ -884,6 +936,7 @@
         state.revision = 0;
         state.lifecycleRevision = 0;
         state.suggestedInputs = [];
+        state.invitationAcceptanceAvailable = false;
         state.storyTitle = String(message.story_title || state.storyTitle || nextStoryId);
         state.history = [historyEntry(
             'opening-loading-' + nextSessionId,
@@ -1119,8 +1172,13 @@
     }
     async function submit(text, inputSource) {
         var message = String(text || '').trim();
-        var normalizedInputSource = inputSource === 'reinvite' ? 'reinvite' : inputSource === 'suggestion' ? 'suggestion' : 'freeform';
-        if (!state.active || state.phase !== 'awaiting_player' || !message) return false;
+        var normalizedInputSource = inputSource === 'accept_invitation' ? 'accept_invitation'
+            : inputSource === 'suggestion' ? 'suggestion' : 'freeform';
+        var controlInput = normalizedInputSource === 'accept_invitation';
+        if (state.active && state.phase === 'performing' && state.sessionStatus !== 'ended' && message && normalizedInputSource === 'freeform') skipPlayback();
+        if (!state.active || state.phase !== 'awaiting_player'
+            || (!message && normalizedInputSource !== 'accept_invitation')
+            || (normalizedInputSource === 'accept_invitation' && !state.invitationAcceptanceAvailable)) return false;
         var signature = state.sessionId + '\u001f' + state.revision + '\u001f' + normalizedInputSource + '\u001f' + message;
         if (!state.pendingTurn || state.pendingTurn.signature !== signature) state.pendingTurn = { signature: signature, id: createId('theater_turn_') };
         // 请求期间可能从另一个选剧页切换剧本；响应只能写回发起它的 Session。
@@ -1131,7 +1189,7 @@
         var submittedSuggestedInputs = state.suggestedInputs.slice();
         var optimisticHistoryId = 'player-pending-' + state.pendingTurn.id;
         // 玩家行动先进入历史区，让推荐输入和手动提交都立即得到可见反馈。
-        if (normalizedInputSource !== 'reinvite' && !state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
+        if (!controlInput && !state.history.some(function (entry) { return entry.id === optimisticHistoryId; })) {
             state.history.push(historyEntry(optimisticHistoryId, 'player_action', message, state.playerName));
         }
         state.phase = 'evaluating'; state.suggestedInputs = []; state.draftRestore = null; state.errorMessage = ''; render();
@@ -1161,9 +1219,15 @@
             var refreshed = null;
             if (result.reason === 'numeric_base_revision_mismatch'
                 || result.reason === 'numeric_reinvitation_not_available'
+                || result.reason === 'numeric_invitation_acceptance_not_available'
                 || result.reason === 'numeric_suggested_input_not_current'
                 || result.reason === 'numeric_duplicate_client_turn_id'
                 || result.reason === 'session_already_ended') {
+                // 明确的接受冲突已证明旧控制失效；刷新失败时也不能重新展示它。
+                // 单纯断网仍保留能力和幂等编号，只有成功快照能重新授予接受能力。
+                if (normalizedInputSource === 'accept_invitation'
+                    && (result.reason === 'numeric_base_revision_mismatch'
+                        || result.reason === 'numeric_invitation_acceptance_not_available')) state.invitationAcceptanceAvailable = false;
                 try {
                     refreshed = await requestJson(api.session + '/' + encodeURIComponent(submittedSessionId) + '?story_id=' + encodeURIComponent(submittedStoryId));
                 } catch (_) {
@@ -1174,7 +1238,7 @@
             if (!state.active || state.storyId !== submittedStoryId || state.sessionId !== submittedSessionId
                 || !state.pendingTurn || state.pendingTurn.id !== submittedTurnId || state.phase !== 'evaluating') return false;
             state.history = state.history.filter(function (entry) { return entry.id !== optimisticHistoryId; });
-            state.draftRestore = { id: createId('theater_draft_restore_'), text: normalizedInputSource === 'reinvite' ? '' : message };
+            state.draftRestore = { id: createId('theater_draft_restore_'), text: controlInput ? '' : message };
             state.errorMessage = t('theater.inputFailed', '暂时未能取得演绎回复，请重试。');
             // 只有当前接口明确在提交前返回的模型失败才恢复旧按钮；断网仍保留原输入与幂等编号。
             if (['numeric_v2_actor_failed', 'numeric_v2_actor_unavailable',
@@ -1196,7 +1260,7 @@
                 }
                 state.errorMessage = state.sessionStatus === 'ended'
                     ? t('theater.ended', '已结束')
-                    : normalizedInputSource === 'reinvite'
+                    : controlInput
                         ? t('theater.numericSessionUpdatedControl', '演出状态已更新，请确认当前可用操作。')
                         : t('theater.numericSessionUpdated', '演出状态已更新，已保留你的输入，请确认后重试。');
             }
@@ -1269,6 +1333,7 @@
         if (state.active && state.phase !== 'loading') claimAudioPlayback();
         state.queueToken += 1;
         state.active = false; state.phase = 'inactive'; state.history = []; state.suggestedInputs = [];
+        state.invitationAcceptanceAvailable = false;
         state.playerName = ''; state.catgirlName = ''; state.activityCatgirlName = ''; state.activityClaimId = ''; state.windowClaimed = false;
         state.endInFlight = null;
         if (wasActive) publishSpeechAllowlist();
@@ -1661,6 +1726,7 @@
             return true;
         },
         requestEnd: requestEnd,
+        skipPlayback: skipPlayback,
         clear: clear,
         getState: function () { return Object.assign({}, state, { history: state.history.slice() }); }
     };

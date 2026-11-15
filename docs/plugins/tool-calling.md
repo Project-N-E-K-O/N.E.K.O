@@ -7,7 +7,7 @@ Beijing", wait for the result, then use the returned value to generate
 its final reply.
 
 ::: warning Different from a plugin entry
-`@llm_tool(name="get_weather")` registers a conversation-time tool in main_server's `/api/tools` registry. `@plugin_entry(id="get_weather")` declares a runtime entry for Plugin Manager, cross-plugin calls, and the separate user-plugin Agent route. The SDK implements an LLM tool handler internally as a reserved dynamic entry (`__llm_tool__...`) for IPC reuse, but that implementation detail does not merge the two public APIs.
+`@llm_tool(name="get_weather")` registers a conversation-time tool in main_server's `/api/tools` registry. `@plugin_entry(id="get_weather")` declares a runtime entry for Plugin Manager, cross-plugin calls, and the separate Agent (NekoClaw) route. The SDK implements an LLM tool handler internally as a reserved dynamic entry (`__llm_tool__...`) for IPC reuse, but that implementation detail does not merge the two public APIs: entries with this prefix are called only by the main dialogue model and are never offered to the Agent's plugin selection or to task agents.
 :::
 
 This mechanism is backed by `ToolRegistry` in

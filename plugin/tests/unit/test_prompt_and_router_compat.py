@@ -79,7 +79,7 @@ def test_is_default_prompt_accepts_legacy_screen_capture_typo() -> None:
     assert is_default_prompt(legacy_prompt) is True
 
 
-def test_agent_router_exports_openclaw_availability_proxy() -> None:
+def test_agent_router_no_longer_exports_openclaw_proxies() -> None:
     paths = {
         path
         for path in (
@@ -88,4 +88,7 @@ def test_agent_router_exports_openclaw_availability_proxy() -> None:
         )
         if isinstance(path, str)
     }
-    assert "/api/agent/openclaw/availability" in paths
+    # The OpenClaw channel was removed together with its availability probe
+    # and guide pages; the remaining capability proxies are still exported.
+    assert "/api/agent/user_plugin/availability" in paths
+    assert not [path for path in paths if "openclaw" in path.lower()]

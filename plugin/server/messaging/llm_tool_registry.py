@@ -33,7 +33,11 @@ from __future__ import annotations
 import asyncio
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from uuid import uuid4
+
+import psutil
 
 if TYPE_CHECKING:
     import httpx
@@ -55,6 +59,54 @@ logger = get_logger("server.messaging.llm_tool_registry")
 # per-tool timeout in the callback route (so we don't hard-code 30s).
 _plugin_tools: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
 _lock = asyncio.Lock()
+
+
+@dataclass
+class _ToolHostInstance:
+    instance_id: str
+    pid: int
+    started_at: float
+    registration_attempted: bool = False
+
+
+_tool_host_instance: _ToolHostInstance | None = None
+
+
+def tool_host_instance_id() -> str | None:
+    host = _tool_host_instance
+    return host.instance_id if host is not None else None
+
+
+async def start_tool_host_instance() -> str:
+    global _tool_host_instance
+    started_at = await asyncio.to_thread(lambda: psutil.Process().create_time())
+    host = _ToolHostInstance(uuid4().hex, os.getpid(), started_at)
+    _tool_host_instance = host
+    return host.instance_id
+
+
+async def release_tool_host_instance(host_instance_id: str) -> None:
+    host = _tool_host_instance
+    if host is None or host.instance_id != host_instance_id or not host.registration_attempted:
+        return
+
+    # This runs on the HTTP server loop, which may differ from the IPC loop.
+    httpx = await ensure_httpx()
+    try:
+        async with httpx.AsyncClient(timeout=0.5, trust_env=False) as client:
+            response = await asyncio.wait_for(
+                client.post(
+                    f"{_main_server_base_url()}/api/tools/release-host",
+                    json={"host_instance_id": host_instance_id},
+                ),
+                timeout=0.5,
+            )
+            response.raise_for_status()
+    except (TimeoutError, httpx.HTTPError) as exc:
+        logger.debug(
+            "Tool host {} release failed; main_server will probe it: {}", host_instance_id, exc,
+        )
+
 
 # Lazy-initialised httpx client. We share one client across registrations
 # because the plugin server may register dozens of tools at startup —
@@ -162,6 +214,7 @@ async def register_remote_tool(
     """
     callback_url = build_callback_url(plugin_id, name)
     httpx = await ensure_httpx()
+    host = _tool_host_instance
     payload = {
         "name": name,
         "description": description,
@@ -175,6 +228,12 @@ async def register_remote_tool(
 
     client = _get_http_client()
     url = f"{_main_server_base_url()}/api/tools/register"
+    if host is not None:
+        payload.update(
+            host_instance_id=host.instance_id, host_pid=host.pid,
+            host_process_started_at=host.started_at,
+        )
+        host.registration_attempted = True
     try:
         resp = await client.post(url, json=payload)
     except httpx.HTTPError as exc:
@@ -247,6 +306,9 @@ async def unregister_remote_tool(
     another plugin's tool by name collision.
     """
     payload = {"name": name, "role": role, "expected_source": _source_tag(plugin_id)}
+    host_id = tool_host_instance_id()
+    if host_id is not None:
+        payload["expected_host_instance_id"] = host_id
     httpx = await ensure_httpx()
     client = _get_http_client()
     url = f"{_main_server_base_url()}/api/tools/unregister"

@@ -437,7 +437,8 @@
         },
 
         async ensureAvatarFloatingAgentSidePanel(toggleId) {
-            const normalizedToggleId = toggleId === 'openclaw' ? 'agent-openclaw' : 'agent-user-plugin';
+            // 只有用户插件开关带侧边面板，toggleId 取什么都落到它。
+            const normalizedToggleId = 'agent-user-plugin';
             const ready = await this.ensureAgentSidePanelVisible(normalizedToggleId);
             if (!ready || this.isStopping()) {
                 return null;
@@ -449,8 +450,7 @@
             return [
                 'agent-keyboard',
                 'agent-browser',
-                'agent-user-plugin',
-                'agent-openclaw'
+                'agent-user-plugin'
             ].map((toggleId) => this.getAgentToggleElement(toggleId)).filter(Boolean);
         },
 
@@ -2494,7 +2494,7 @@
             this.clearSpotlightVariantHints();
             this.overlay.clearActionSpotlight();
             await this.closeManagedPanels().catch(() => {});
-            ['agent-user-plugin', 'agent-openclaw'].forEach((toggleId) => this.collapseAgentSidePanel(toggleId));
+            this.collapseAgentSidePanel('agent-user-plugin');
             this.collapseCharacterSettingsSidePanel();
         },
 

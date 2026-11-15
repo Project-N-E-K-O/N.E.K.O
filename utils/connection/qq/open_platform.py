@@ -190,7 +190,11 @@ _ATTRIBUTION_HOLD_MAX = 8
 # undocumented union_openid sibling key), so keeping them lets us confirm on a live
 # bot. Default off; never participates in any decision.
 _IDENTITY_PROBE_TAG = "[R11]"
-_IDENTITY_PROBE_EVENTS = ("GROUP_AT_MESSAGE_CREATE", "C2C_MESSAGE_CREATE")
+#: GROUP_MESSAGE_CREATE belongs in this list: with the privilege on it is the frame
+#: that carries the group's unaddressed traffic, so identity forensics without it is
+#: blind to exactly the mode whose behaviour is under discussion.
+_IDENTITY_PROBE_EVENTS = ("GROUP_AT_MESSAGE_CREATE", "GROUP_MESSAGE_CREATE",
+                            "C2C_MESSAGE_CREATE")
 #: Max lines recorded per connection. Forensics only needs three (group X, group Y,
 #: private each); the cap exists so the log doesn't grow unbounded if the switch is
 #: left on, not to limit forensics.
@@ -488,29 +492,33 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     def receives_all_messages(self) -> bool:
         """True while any group is known to push every group message.
 
-        Two independent proofs, either is enough: ``bot_state.recv_msg_setting``
-        says ``all`` (that interface is permission-gated, so it is often unavailable),
-        or a ``GROUP_MESSAGE_CREATE`` really arrived. Guessing from settings alone
-        would claim a capability the platform may not have enabled for the group.
+        Proof only, the rule #3706 established and this merge keeps: the intents
+        bitmap is something we submit, the privilege is granted group by group by a
+        human, and ``bot_state`` is permission-gated, so a subscription, a setting or a
+        probe is never evidence. Receiving a ``GROUP_MESSAGE_CREATE`` is.
 
-        Aggregated on purpose, and aggregated pessimistically: the privilege belongs
-        to one group, so a second group that only pushes @mentions must not be
-        reported as full-push by the first one's traffic. Use
-        :meth:`group_receives_all_messages` wherever a group id is at hand -- which
-        is everywhere a reply decision is made.
+        ``recv_msg_setting`` therefore stays a report of what bot_state said
+        (:meth:`group_recv_msg_setting`) and deliberately does not drive this flag.
+        Folding the two together is how a claim outlives the platform's decision.
+
+        Aggregated pessimistically in the other direction too: one group's traffic
+        must not advertise a second group as full-push. Use
+        :meth:`group_receives_all_messages` wherever a group id is at hand, which is
+        everywhere a reply decision is made.
         """
-        if self._mutable("_all_messages_observed_groups", set):
-            return True
-        return "all" in self._mutable("_recv_msg_setting_by_group", dict).values()
+        return bool(self._mutable("_all_messages_observed_groups", set))
 
     def group_receives_all_messages(self, group_id: str) -> bool:
-        """Whether one specific group pushes every message (not just @mentions)."""
+        """Whether this group has actually delivered a whole-group message.
+
+        Proof only, for the same reason as :attr:`receives_all_messages`: a group
+        whose ``bot_state`` says ``all`` but which has pushed nothing since this
+        session started reports ``False``, because that is what we can act on.
+        """
         gid = str(group_id or "").strip()
         if not gid:
             return False
-        if gid in self._mutable("_all_messages_observed_groups", set):
-            return True
-        return self.group_recv_msg_setting(gid) == "all"
+        return gid in self._mutable("_all_messages_observed_groups", set)
 
     def group_proactive_allowed(self, group_id: str):
         """Whether one group lets the bot send unprompted. ``None`` when unknown.
@@ -670,10 +678,10 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         # above and keeps the known-good value, which is why the reset belongs here and
         # not in the reconnect path.
         self._mutable("_all_messages_observed_groups", set).clear()
-        # The setting map is a claim about the *current* session's privileges too. A
-        # group can go from "all" to "@-only" while we are down, and nothing else
-        # expires this value, so leaving it would advertise a mode the platform has
-        # taken away -- the same latch the commits above promise to re-learn.
+        # Identify is the only reset point for the reception proof, per #3706: Resume
+        # keeps what it had, and nothing else touches it. The setting map clears
+        # alongside it because it is a claim about privileges that may have moved
+        # while we were away -- it never drove the flag anyway.
         self._mutable("_recv_msg_setting_by_group", dict).clear()
         self._mutable("_proactive_allowed_by_group", dict).clear()
         await self._ws.send(json.dumps({
@@ -917,6 +925,9 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             self._mutable("_proactive_allowed_by_group", dict)[gid] = True
             return
         if event_type == "GROUP_MSG_REJECT" and gid:
+            # Proactive-send permission only. The reception proof stays: this notice is
+            # not about the push switch, and clearing the proof here would let an
+            # unrelated admin action silently revoke a mode we have proved.
             self._mutable("_proactive_allowed_by_group", dict)[gid] = False
             return
         if event_type == "GROUP_DEL_ROBOT" and gid:

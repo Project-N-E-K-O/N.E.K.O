@@ -13,97 +13,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Structured event emission toward main_server (task_result / generic events).
+"""Event emission toward main_server.
 
-Split out of the former monolithic ``app/agent_server.py``. Everything here
-funnels through ``Modules.agent_bridge`` (ZeroMQ) — there is deliberately no
-HTTP fallback.
+Everything here goes through ``Modules.agent_bridge`` (ZeroMQ); there is
+deliberately no HTTP fallback. How a task ended is not emitted from here any
+more: the NekoClaw host stores each report in its outbox first and
+``nekoclaw_mount`` sends it, so a report that could not be delivered is tried
+again instead of being lost.
 """
 
-from typing import Dict, Optional
-
-from utils.tokenize import truncate_to_tokens as _tt
+from typing import Any, Dict, Optional
 
 from . import _shared
 from ._shared import logger
-from .registry import _now_iso
 
-async def _emit_task_result(
-    lanlan_name: Optional[str],
-    *,
-    channel: str,
-    task_id: str,
-    success: bool,
-    summary: str,
-    detail: str = "",
-    error_message: str = "",
-    direct_reply: bool = False,
-    status: Optional[str] = None,
-    source_kind: Optional[str] = None,
-    source_name: Optional[str] = None,
-    delivery_mode: str = "proactive",
-    result_kind: str = "task_result",
-    expires_in_s: Optional[float] = None,
-) -> None:
-    """Emit a structured task_result event to main_server.
 
-    Status, source_kind, source_name and delivery_mode propagate to the
-    callback queue and drive the i18n outer-template rendering in
-    main_logic. ``status`` defaults to ``completed`` / ``partial`` / ``failed``
-    based on (success, detail) when not explicitly passed; pass ``"cancelled"``
-    for user/system cancellation.
-    """
-    if status is None:
-        if success:
-            status = "completed"
-        elif detail:
-            status = "partial"
-        else:
-            status = "failed"
-    # tiktoken token-based limits (same semantic grouping as main_logic):
-    # summary is the LLM-facing summary (group B "longer reflective blurb").
-    # detail is the longer frontend HUD version (group G "large tool result").
-    # error_message has its own tier.
-    from config import (
-        TASK_SUMMARY_MAX_TOKENS as _SUMMARY_LIMIT,
-        TASK_LARGE_DETAIL_MAX_TOKENS as _DETAIL_LIMIT,
-        TASK_ERROR_MAX_TOKENS as _ERROR_LIMIT,
-    )
-    # Truncate once and reuse, avoiding double encoding of the same summary in text/summary fields
-    # and consolidating final-budget ownership here.
-    _summary_t = _tt(summary, _SUMMARY_LIMIT)
-    _detail_t = _tt(detail, _DETAIL_LIMIT) if detail else ""
-    _error_t = _tt(error_message, _ERROR_LIMIT) if error_message else ""
-    await _emit_main_event(
-        "task_result",
-        lanlan_name,
-        text=_summary_t,
-        task_id=task_id,
-        channel=channel,
-        status=status,
-        success=success,
-        summary=_summary_t,
-        detail=_detail_t,
-        error_message=_error_t,
-        direct_reply=direct_reply,
-        source_kind=source_kind or "",
-        source_name=source_name or "",
-        delivery_mode=delivery_mode,
-        result_kind=result_kind,
-        expires_in_s=expires_in_s,
-        timestamp=_now_iso(),
-    )
+async def _send_main_event(event: Dict[str, Any]) -> bool:
+    """Hand one event to the bridge. Returns whether it was taken."""
+    bridge = _shared.Modules.agent_bridge
+    if bridge is None:
+        return False
+    try:
+        return bool(await bridge.emit_to_main(event))
+    except Exception as e:
+        logger.warning("[Agent] event not sent: type=%s error=%s", event.get("event_type"), e)
+        return False
 
 
 async def _emit_main_event(event_type: str, lanlan_name: Optional[str], **payload) -> None:
     event = {"event_type": event_type, "lanlan_name": lanlan_name, **payload}
-    if _shared.Modules.agent_bridge:
-        try:
-            sent = await _shared.Modules.agent_bridge.emit_to_main(event)
-            if sent:
-                return
-            logger.debug("[Agent] _emit_main_event not sent: type=%s lanlan=%s (bridge returned False)", event_type, lanlan_name)
-        except Exception as e:
-            logger.warning("[Agent] _emit_main_event failed: type=%s lanlan=%s error=%s", event_type, lanlan_name, e)
-    else:
+    if _shared.Modules.agent_bridge is None:
         logger.debug("[Agent] _emit_main_event skipped: no agent_bridge, type=%s", event_type)
+        return
+    if not await _send_main_event(event):
+        logger.debug("[Agent] _emit_main_event not sent: type=%s lanlan=%s", event_type, lanlan_name)

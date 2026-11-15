@@ -13,9 +13,15 @@
     <script src="/static/app/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <!-- 共享传输协议必须先于选择页业务脚本加载。 -->
     <script src="/static/js/theater_transport.js?v={{ static_asset_version }}" defer></script>
+    <script src="/static/js/theater_market.js?v={{ static_asset_version }}" defer></script>
     <script src="/static/js/theater_selector.js?v={{ static_asset_version }}" defer></script>
 </head>
 <body>
+    {% if request.query_params.get('market') %}
+    <main class="theater-selector-shell">
+        <p id="theater-selector-status" role="status" data-i18n="theater.marketPreparing">正在连接剧本市场…</p>
+    </main>
+    {% else %}
     <main class="theater-selector-shell" data-theater-selector-app>
         <header class="theater-title-bar page-title-bar">
             <div class="theater-title-copy">
@@ -23,19 +29,15 @@
                 <span class="theater-mode-badge" data-i18n="theater.scriptMode">剧本模式</span>
                 <div class="theater-status" id="theater-selector-status" tabindex="0" role="status" aria-live="polite" aria-label="正在准备舞台..." data-i18n="theater.loading" data-i18n-aria="theater.loading">正在准备舞台...</div>
             </div>
-            <div class="neko-window-controls theater-window-controls">
-                <button type="button" class="neko-window-control-btn" data-neko-window-control="pin" hidden data-i18n-title="common.pinWindow" data-i18n-aria="common.pinWindow" title="置顶窗口" aria-label="置顶窗口" aria-pressed="false"><span class="neko-window-pin-icon" aria-hidden="true"></span></button>
-                <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化"><span class="neko-window-minimize-icon"></span></button>
-                <button type="button" class="neko-window-control-btn" data-neko-window-control="maximize" data-i18n-title="common.maximize" data-i18n-aria="common.maximize" title="最大化" aria-label="最大化"><span class="neko-window-maximize-icon"></span></button>
-                <button type="button" class="neko-window-control-btn theater-close-btn" data-neko-window-control="close" data-i18n-title="common.close" data-i18n-aria="common.close" title="关闭" aria-label="关闭"><span class="theater-close-icon" aria-hidden="true"></span></button>
-            </div>
         </header>
         <div class="theater-selector-layout">
             <aside class="theater-story-library" aria-labelledby="theater-library-title">
                 <div class="theater-library-heading">
                     <div><p data-i18n="theater.selectorKicker">STORY LIBRARY</p><h1 id="theater-library-title" data-i18n="theater.selectorTitle">选择一个剧本</h1></div>
-                    <button type="button" class="theater-icon-action" id="theater-settings-btn" data-theater-settings data-i18n="theater.settingsButton">剧场设置</button>
-                    <button type="button" class="theater-icon-action" id="theater-import-btn" data-i18n="theater.importStory">导入剧本</button>
+                    <div class="theater-library-actions">
+                        <button type="button" class="theater-icon-action" id="theater-market-btn" data-i18n="theater.moreStories">更多剧本</button>
+                        <button type="button" class="theater-icon-action" id="theater-import-btn" data-i18n="theater.importStory">导入剧本</button>
+                    </div>
                     <input id="theater-import-input" type="file" accept="application/json,.json" hidden>
                 </div>
                 <div class="theater-story-list" id="theater-story-list" role="listbox" aria-label="选择小剧场故事" data-i18n-aria="theater.storyListAria"></div>
@@ -81,5 +83,6 @@
             <div class="theater-modal-actions"><button type="button" class="theater-secondary" id="theater-modal-cancel"></button><button type="button" class="theater-primary" id="theater-modal-confirm"></button></div>
         </section>
     </div>
+    {% endif %}
 </body>
 </html>

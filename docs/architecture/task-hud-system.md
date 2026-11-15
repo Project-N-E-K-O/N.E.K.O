@@ -1,11 +1,11 @@
 # Task HUD System
 
-The Task HUD is the browser/Electron view of Agent task state. It is a client-side projection of the Agent Server's registry, not an independent task scheduler.
+The Task HUD is the browser/Electron view of Agent task state. It is a client-side projection of the commissions in the NekoClaw host's ledger, not an independent task scheduler. See [Agent System](/architecture/agent-system) for how a commission is filed and carried out.
 
 ## Current data path
 
 ```text
-Agent channel
+NekoClaw host (a commission is filed or changes status)
     │ task_update
     ▼
 AgentServerEventBridge ── ZMQ :48962 ──> MainServerAgentBridge
@@ -20,7 +20,7 @@ static/app/app-websocket.js
 static/common-ui-hud.js → window.AgentHUD
 ```
 
-There is no live `agent_task_snapshot` WebSocket message. On socket open, the frontend fetches `/api/agent/state`; `snapshot.active_tasks` restores queued/running cards after refresh or reconnect. Subsequent changes arrive as `agent_task_update` messages.
+There is no live `agent_task_snapshot` WebSocket message. On socket open, the frontend fetches `/api/agent/state`; `snapshot.active_tasks` restores the cards of tasks under way (`queued`, `running`, `waiting_user`) after refresh or reconnect. Subsequent changes arrive as `agent_task_update` messages.
 
 The state snapshot is filtered by `lanlan_name` before rebuilding `window._agentTaskMap`, so one character's page does not display another character's tasks.
 
@@ -28,26 +28,30 @@ The state snapshot is filtered by `lanlan_name` before rebuilding `window._agent
 
 | State | Meaning | HUD behavior |
 |---|---|---|
-| `queued` | Accepted but waiting for an execution slot | Active card with queued state |
-| `running` | Provider or plugin is executing | Active card, timer and optional progress |
+| `queued` | Filed; not yet being worked on | Active card with queued state |
+| `running` | A plugin entry or a task agent is working on it | Active card, timer and optional progress |
+| `waiting_user` | Waits for the user's answer or approval; still under way | Active card with waiting state |
 | `completed` | Successful terminal result | Dimmed terminal card, then removed |
+| `blocked` | Ended without a result; something else is needed first | Terminal card, then removed |
 | `failed` | Terminal failure | Error card, then removed |
-| `cancelled` | Cancelled by user/system | Cancelled card, then removed |
+| `cancelled` | Stopped by user/system | Cancelled card, then removed |
 
-Live update payloads are partial. `app-websocket.js` merges a new object with the existing task and preserves `params` when a later update omits it.
+These are the HUD's names for the ledger statuses: the ledger's `working` is sent as `running` and `done` as `completed`.
+
+`app-websocket.js` merges each update into the existing task by `id` and preserves `params` when an update omits it.
 
 Common fields are:
 
 | Field | Purpose |
 |---|---|
-| `id` | Stable registry/task key |
-| `type` | Channel such as `computer_use`, `browser_use`, `user_plugin`, or `openclaw` |
+| `id` | Commission ID |
+| `type` | `user_plugin` (a plugin entry called directly), `task_agent` (a task agent is working on it; the HUD labels it as a familiar), or `task` (filed, not yet decided who takes it) |
 | `status` | Lifecycle state |
-| `start_time`, `end_time` | ISO timestamps when available |
+| `start_time`, `end_time` | ISO timestamps; `end_time` once the task has ended |
 | `lanlan_name` | Character owner |
-| `params` | Display metadata such as `instruction`, `description`, `plugin_id`, `plugin_name`, and `entry_id` |
-| `step`, `step_total`, `progress`, `message` | Optional provider/plugin progress |
-| `error` | Terminal failure/cancellation detail |
+| `params` | Display metadata: `description` (title), `instruction` (the dispatched sentence), and for `user_plugin` tasks `plugin_id`, `plugin_name`, and `entry_id` |
+| `step`, `step_total`, `progress`, `stage`, `message` | Optional progress of a directly called plugin entry |
+| `error` | Reason on `failed`, `blocked`, and `cancelled` tasks |
 
 The HUD shortens `params.description` or `params.instruction` for the card while keeping the raw value as tooltip text.
 
@@ -55,7 +59,7 @@ The HUD shortens `params.description` or `params.instruction` for the card while
 
 `window.AgentHUD.updateAgentTaskHUD()` uses request-animation-frame throttling and differential card updates. Running time is refreshed once per second while an active task exists.
 
-Terminal cards remain visible for at least ten seconds. Both the WebSocket map and HUD renderer maintain terminal timestamps/timers so rapid tasks do not disappear before the user can see the result. Backend terminal records are retained longer—normally five minutes—for API inspection and deduplication.
+Terminal cards remain visible for at least ten seconds. Both the WebSocket map and HUD renderer maintain terminal timestamps/timers so rapid tasks do not disappear before the user can see the result. The Agent process keeps ended tasks in its own HUD view longer—five minutes—so a page that reloads can still read them through the API.
 
 The floating HUD is 320 px wide with a 60 vh maximum height. A standalone Agent HUD page uses the full viewport. Floating mode supports:
 
@@ -75,7 +79,7 @@ An individual card calls:
 POST /api/agent/tasks/{task_id}/cancel
 ```
 
-The Main Server proxies this request to the Agent Server. The Agent Server marks the registry entry `cancelled` first, cancels its async wrapper, emits a terminal `task_update`, and starts provider-specific teardown without blocking the HTTP response.
+The Main Server proxies this request to the Agent Server. The host writes `cancelled` to the ledger first, which sends the terminal `task_update`; then it cancels the plugin run on the plugin service or closes the task agent's session. A task that has already ended is answered with `success: false` and its actual `status`.
 
 The title-bar cancel-all button confirms with the user and calls:
 
@@ -84,11 +88,11 @@ POST /api/agent/admin/control
 { "action": "end_all" }
 ```
 
-A `504` means the proxy forwarded the request but timed out waiting for teardown, so the HUD may apply its terminal fallback. A connection/proxy failure cannot prove that cancellation reached the Agent Server and must not be treated as success.
+`end_all` stops every commission under way. A `504` means the proxy forwarded the request but timed out waiting for teardown, so the HUD may apply its terminal fallback. A connection/proxy failure cannot prove that cancellation reached the Agent Server and must not be treated as success.
 
 ## Plugin display names
 
-The Agent Server cannot read another process's plugin runtime state directly. `app/agent_server/plugin_host.py` queries the embedded user-plugin service at `127.0.0.1:48916/plugins` and caches the ID-to-name map for 30 seconds. Task dispatch copies the friendly name into `params.plugin_name`; the HUD falls back to `plugin_id` or a localized type label.
+The Agent Server cannot read another process's plugin runtime state directly. `app/agent_server/plugin_host.py` queries the embedded user-plugin service at `127.0.0.1:48916/plugins` and caches the ID-to-name map for 30 seconds. `app/agent_server/nekoclaw_mount.py` adds the friendly name to `params.plugin_name` when it sends a `user_plugin` task update; the HUD falls back to `plugin_id` or a localized type label.
 
 The embedded plugin service itself is hosted from the Agent Server process in an isolated Uvicorn thread. This replaces the old assumption that plugin state is owned by the Main Server.
 
@@ -99,8 +103,8 @@ A successful user-plugin call can return `data.deferred: true` when scheduling i
 ```text
 plugin run returns deferred + reminder_id
         │
-        ├─ registry stays running
-        ├─ deferred timeout = now + 1 hour
+        ├─ commission stays working (HUD: running)
+        ├─ deferred deadline = now + 1 hour
         └─ plugin bind_task receives agent_task_id
                          │
                          ▼ later callback
@@ -109,15 +113,15 @@ POST :48915/api/agent/tasks/{task_id}/complete
                          └─ completed task_update → Main → HUD
 ```
 
-The completion endpoint is accepted only for a running `user_plugin` task that has `deferred_timeout`. It is idempotent after the task has already reached a terminal state. Registry cleanup checks deferred deadlines and marks an uncompleted callback as failed after one hour.
+The completion endpoint is accepted only for a `working` commission that was routed to a plugin entry and has a deferred deadline. It is idempotent after the commission has already ended. The host marks a commission whose callback has not arrived after one hour as failed. `agent_task_id` is the commission ID.
 
 The browser-facing cancellation endpoint is proxied under `/api/agent`. The deferred-completion endpoint is an internal Agent Server callback on port 48915 and is not a general browser API.
 
 ## Retention and recovery
 
-- `/api/agent/state` returns only queued/running tasks in `active_tasks` for reconnect recovery.
-- Registry cleanup runs at most once per minute.
-- Terminal entries with a valid `end_time` are removed after five minutes; legacy terminal entries without one receive a looser window.
+- `/api/agent/state` returns only tasks under way (`queued`, `running`, `waiting_user`) in `active_tasks` for reconnect recovery.
+- Ended tasks leave the Agent process's HUD view after five minutes. The commission itself stays in the ledger.
+- The HUD view lives in memory. After the Agent process restarts it is filled again from the commissions still under way in the ledger when the host is first used.
 - Frontend terminal cards are removed after ten seconds, independently of backend retention.
 
 ## Implementation map
@@ -129,6 +133,6 @@ The browser-facing cancellation endpoint is proxied under `/api/agent`. The defe
 | Browser-facing Agent proxy | `main_routers/agent_router.py` |
 | Authoritative state snapshot | `app/agent_server/capabilities.py` |
 | Task cancellation and deferred completion | `app/agent_server/api_runtime.py` |
-| Registry cleanup | `app/agent_server/registry.py` |
+| HUD task view and `task_update` emission | `app/agent_server/nekoclaw_mount.py` |
 | Plugin-name lookup | `app/agent_server/plugin_host.py` |
-| Channel task updates | `app/agent_server/channels/` |
+| Commission ledger and status changes | `nekoclaw/host/ledger.py` |

@@ -18,7 +18,6 @@ import portalocker
 from .numeric_v2_archive import _retry_windows_permission_error
 from .numeric_v2_context import pending_transition_record
 from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_mutation
-from .numeric_v2_narrative import apply_narrative_record, narrative_body_fingerprint
 from .numeric_v2_performance import (
     is_silent_invitation_control,
     transition_source_dialogue_policy,
@@ -904,53 +903,6 @@ class NumericV2SessionStore:
 
             return await self._mutate(commit_turn)
 
-    async def settle_narrative(
-        self, expected: NumericV2StoredSession, record: Mapping[str, Any] | None,
-    ) -> bool:
-        """Settle only the pending tail; never advance or rewrite delivered story state."""
-        path = self._path(expected.session.session_id)
-        async with _lock(path):
-            def settle() -> bool:
-                if not path.is_file():
-                    return False
-                current = self._load_validated(path)
-                if current is None or not current.ledger_events:
-                    return False
-                pending = current.ledger_events[-1].get("narrative_pending")
-                if (not pending or pending != expected.ledger_events[-1].get("narrative_pending")
-                        or current.session.revision != expected.session.revision
-                        or current.session.lifecycle_revision != expected.session.lifecycle_revision
-                        or current.session.status != expected.session.status
-                        or current.session.forgotten_through_revision != expected.session.forgotten_through_revision
-                        or pending["body"] != narrative_body_fingerprint(current.session.performance_history[-1])):
-                    return False
-                events = deepcopy(list(current.ledger_events))
-                history = deepcopy(list(current.session.performance_history))
-                events[-1].pop("narrative_pending")
-                if record is not None:
-                    events[-1]["narrative_record"] = deepcopy(dict(record))
-                    history[-1]["narrative_record"] = deepcopy(dict(record))
-                # Rebuild the derived projection from the durable sequence. Both
-                # copies of the record and the Session move in one atomic write.
-                state = None
-                opening = current.session.opening_performance
-                node = str(self.engine.story["start_node_id"])
-                if "narrative_record" in opening:
-                    state = apply_narrative_record(None, opening["narrative_record"], revision=0,
-                        node_id=node, from_node_id=node, performance=opening, message="")
-                for event, performance in zip(events, history):
-                    if "narrative_record" in event:
-                        state = apply_narrative_record(state, event["narrative_record"],
-                            revision=event["result_revision"], node_id=event["to_node_id"],
-                            from_node_id=event["from_node_id"], performance=performance,
-                            message=event["input_text"])
-                stored = NumericV2StoredSession(replace(current.session,
-                    narrative_state=state, performance_history=tuple(history)), tuple(events))
-                self._validate_chain(stored)
-                self._write(path, stored)
-                return True
-
-            return await self._mutate(settle)
 
     async def end_session(
         self,
@@ -1119,7 +1071,10 @@ class NumericV2SessionStore:
         events = payload.get("ledger_events")
         if not isinstance(events, list) or any(not isinstance(item, dict) for item in events):
             raise NumericV2StoreError("numeric_ledger_invalid")
-        return NumericV2StoredSession(session, tuple(deepcopy(events)))
+        # Old extraction jobs and records have no role in transaction validation.
+        events = [{key: deepcopy(value) for key, value in event.items()
+                   if key not in {"narrative_record", "narrative_pending"}} for event in events]
+        return NumericV2StoredSession(session, tuple(events))
 
     def _validate_lifecycle_chain(self, stored: NumericV2StoredSession) -> None:
         """Validate an archive chain independently of script content, only for lifecycle cleanup and startup audit."""  # noqa: DOCSTRING_CJK
@@ -1224,22 +1179,12 @@ class NumericV2SessionStore:
             session_id=stored.session.session_id,
             catgirl_binding=stored.session.catgirl_binding,
             opening_performance={key: value for key, value in stored.session.opening_performance.items()
-                                 if key not in {"fixed_narrations", "narrative_record"}},
+                                 if key not in {"fixed_narrations"}},
             actor_budget_profile=stored.session.actor_budget_profile,
         )
         # Delivery was validated above against its captured names. Renaming must
         # not rewrite already displayed text while replaying the ledger.
         replay_session = replace(replay_session, opening_performance=stored.session.opening_performance)
-        if "narrative_record" in stored.session.opening_performance:
-            try:
-                narrative_state = apply_narrative_record(
-                    None, stored.session.opening_performance["narrative_record"], revision=0,
-                    node_id=expected_node, from_node_id=expected_node,
-                    performance=stored.session.opening_performance, message="",
-                )
-            except ValueError as exc:
-                raise NumericV2StoreError("numeric_narrative_replay_invalid") from exc
-            replay_session = replace(replay_session, narrative_state=narrative_state)
         if len(stored.session.performance_history) != len(events):
             raise NumericV2StoreError("numeric_performance_history_mismatch")
         for event_index, event in enumerate(events):
@@ -1258,6 +1203,31 @@ class NumericV2SessionStore:
             raw_changes = event.get("metric_changes")
             if not isinstance(raw_changes, list):
                 raise NumericV2StoreError("numeric_ledger_metric_changes_invalid")
+            performance = stored.session.performance_history[event_index]
+            if not isinstance(performance, Mapping):
+                raise NumericV2StoreError("numeric_performance_record_invalid")
+            if event.get("input_source") == "accept_invitation" or performance.get("input_source") == "accept_invitation":
+                # New control provenance is mandatory in both durable records.
+                # An empty ordinary input cannot replay a stripped marker as an
+                # old model-authored acceptance. Legacy sources remain unchanged.
+                if (event.get("input_source") != "accept_invitation"
+                        or performance.get("input_source") != "accept_invitation"
+                        or event.get("input_text") != "" or performance.get("input_text") != ""):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                for value in (event, performance):
+                    projection = value.get("player_action_projection")
+                    if (not isinstance(projection, Mapping) or projection.get("confirmed_actions") != []
+                            or projection.get("future_references") != []):
+                        raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                if event.get("transition_intent") == "unclear":
+                    # Full Review may retract an incorrect proposal without
+                    # moving the scene. No other empty control round may commit.
+                    if (event.get("from_node_id") != event.get("to_node_id")
+                            or event.get("transition_offer_invalidated") is not True
+                            or performance.get("transition_offer_invalidated") is not True):
+                        raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+                elif event.get("transition_intent") != "accept":
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             if (event.get("transition_intent") == "accept"
                     and event.get("from_node_id") != event.get("to_node_id")):
                 origin = pending_transition_record(
@@ -1306,6 +1276,10 @@ class NumericV2SessionStore:
                         "input_source": event.get("input_source", "freeform"),
                     }
                 )
+                source = self.engine.nodes[replay_session.current_node_id]
+                if self.engine.node_uses_fact_routes(source) or self.engine.node_has_completion_advance(source):
+                    if not isinstance(event.get("routing_fact_operations"), list):
+                        raise ValueError("routing_fact_operations_missing")
                 replayed = self.engine.resolve_turn(
                     replay_session,
                     request,
@@ -1313,8 +1287,12 @@ class NumericV2SessionStore:
                     scene_complete=scene_complete,
                     transition_intent=str(event.get("transition_intent") or "unclear"),
                     natural_ending_ready=natural_ending_ready,
-                    ledger_events=tuple(events[:event_index]) if "accepted_offer_route_id" in event else (),
+                    ledger_events=tuple(events[:event_index]) if ("accepted_offer_route_id" in event
+                        or event.get("input_source") == "accept_invitation") else (),
                     condition_narrations_enabled=condition_narrations_enabled,
+                    hold_current_scene=event.get("delivery_hold") is True,
+                    routing_fact_operations=tuple(event["routing_fact_operations"])
+                    if "routing_fact_operations" in event else None,
                     fact_operations=tuple(
                         dict(operation)
                         for operation in event.get("fact_operations") or []
@@ -1324,19 +1302,6 @@ class NumericV2SessionStore:
                 performance = stored.session.performance_history[event_index]
                 if not isinstance(performance, Mapping):
                     raise ValueError("performance_record_shape")
-                if "narrative_pending" in event:
-                    pending = event["narrative_pending"]
-                    if (event_index != len(events) - 1 or not isinstance(pending, Mapping)
-                            or set(pending) != {"job_id", "body", "lifecycle_revision", "forgotten_through_revision"}
-                            or not isinstance(pending["job_id"], str) or len(pending["job_id"]) != 32
-                            or any(c not in "0123456789abcdef" for c in pending["job_id"])
-                            or pending["body"] != narrative_body_fingerprint(performance)
-                            or type(pending["lifecycle_revision"]) is not int
-                            or not 0 <= pending["lifecycle_revision"] <= stored.session.lifecycle_revision
-                            or type(pending["forgotten_through_revision"]) is not int
-                            or not -1 <= pending["forgotten_through_revision"] <= stored.session.forgotten_through_revision
-                            or event.get("narrative_record", {}).get("coverage") != "unrecorded"):
-                        raise NumericV2StoreError("numeric_narrative_pending_invalid")
                 validate_delivery(self.engine.story, performance, session=replay_session)
             except Exception as exc:
                 raise NumericV2StoreError("numeric_ledger_replay_invalid") from exc
@@ -1358,11 +1323,24 @@ class NumericV2SessionStore:
                 "after_metrics",
                 "metric_changes",
                 "fact_operations",
+                "routing_fact_operations",
                 "accepted_offer_route_id",
+                "delivery_hold",
             ):
                 if event.get(field) != expected_event.get(field):
                     raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             replayed_session = replayed.session
+            if "delivery_hold" in event and event["delivery_hold"] is not True:
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if "delivery_fallback" in event and (
+                    event.get("delivery_hold") is not True or not isinstance(event["delivery_fallback"], str)
+                    or not event["delivery_fallback"] or event["from_node_id"] != event["to_node_id"]
+                    or event["metric_changes"] or event.get("fact_operations")):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
+            if "offer_repair_attempted" in event and (event["offer_repair_attempted"] is not True
+                    or event["from_node_id"] != event["to_node_id"]
+                    or event.get("input_source", "freeform") not in {"freeform", "suggestion"}):
+                raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             # Invitation withdrawal boundaries affect later acceptance decisions and must match same-turn history; old records default to no boundary.
             for value in (event, performance):
                 if not isinstance(value.get("transition_offer_invalidated", False), bool):
@@ -1487,12 +1465,18 @@ class NumericV2SessionStore:
                             transition_source_dialogue_policy(
                                 str(event.get("source_transition_dialogue_policy") or replay_session.dialogue_policy)
                             ),
+                            allow_empty=True,
                         )
                         # Contract version 3 allows an empty deduplicated beat; the target opening must remain non-empty and be injected by Runtime.
                         or not valid_scene_narration(segments[1], allow_empty=True)
-                        or not valid_scene_narration(segments[2])
+                        or not valid_scene_narration(segments[2], allow_empty=any(
+                            piece["position"] == "before" for piece in segments[2].get("fixed_narrations", ())))
                         or not valid_mixed_performance_policy(
-                            segments[2], replayed_session.dialogue_policy
+                            segments[2], replayed_session.dialogue_policy,
+                            allow_empty=any(piece["position"] == "before"
+                                for piece in segments[2].get("fixed_narrations", ()))
+                                or (replayed_session.status == "ended"
+                                    and expected_event.get("natural_ending_ready") is True),
                         )
                     ):
                         raise NumericV2StoreError("numeric_transition_performance_invalid")
@@ -1509,26 +1493,17 @@ class NumericV2SessionStore:
                     != ["source_response", "transition_bridge", "target_opening"]
                 ):
                     raise NumericV2StoreError("numeric_transition_performance_invalid")
-            if ("narrative_record" in event) != ("narrative_record" in performance):
-                raise NumericV2StoreError("numeric_narrative_record_mismatch")
-            if "narrative_record" in event:
-                if event["narrative_record"] != performance["narrative_record"]:
-                    raise NumericV2StoreError("numeric_narrative_record_mismatch")
-                try:
-                    narrative_state = apply_narrative_record(
-                        replay_session.narrative_state, event["narrative_record"],
-                        revision=expected_revision, node_id=str(expected_event["to_node_id"]),
-                        from_node_id=str(expected_event["from_node_id"]),
-                        performance=performance, message=request.message,
-                    )
-                except ValueError as exc:
-                    raise NumericV2StoreError("numeric_narrative_replay_invalid") from exc
-                replayed_session = replace(replayed_session, narrative_state=narrative_state)
             # Restore the committed body history during replay so it remains available to later context.
             replay_session = replace(
                 replayed_session,
                 performance_history=(*replayed_session.performance_history, deepcopy(dict(performance))),
             )
+            receipt = event.get("program_invitation")
+            if isinstance(receipt, Mapping) and receipt.get("kind") == "reviewed_proposal":
+                # Validate new receipts at their original revision, rather than
+                # trusting a copied JSON object during restore or test forks.
+                if not self.engine.invitation_acceptance_route(replay_session, ledger_events=tuple(events[:event_index + 1])):
+                    raise NumericV2StoreError("numeric_ledger_replay_mismatch")
             expected_node = str(expected_event["to_node_id"])
             expected_metrics = dict(expected_event["after_metrics"])
             seen_turns.add(turn_id)
@@ -1552,7 +1527,6 @@ class NumericV2SessionStore:
             or replay_session.dialogue_policy != stored.session.dialogue_policy
             or replay_session.transition_offered != stored.session.transition_offered
             or replay_session.story_state != stored.session.story_state
-            or replay_session.narrative_state != stored.session.narrative_state
         ):
             raise NumericV2StoreError("numeric_session_scene_progress_mismatch")
 

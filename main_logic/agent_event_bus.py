@@ -148,7 +148,12 @@ _ack_waiters_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 
 class MainServerAgentBridge:
-    """Runs inside the main_server process; binds PUB, PUSH(analyze), PULL(agent→main)."""
+    """Runs inside the main_server process; binds PUB, PUSH(analyze), PULL(agent→main).
+
+    The PUSH socket is the acknowledged request channel. It still carries the
+    name of the analyzer it was built for; what travels on it now is the
+    request to check a finished turn (``publish_turn_check_reliably``).
+    """
 
     def __init__(self, on_agent_event: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
         self.on_agent_event = on_agent_event
@@ -463,12 +468,11 @@ class AgentServerEventBridge:
             try:
                 msg = orjson.loads(self.analyze_pull.recv())
                 if isinstance(msg, dict):
-                    if msg.get("event_type") == "analyze_request":
-                        logger.info(
-                            "[EventBus] analyze_request dequeued on agent: event_id=%s lanlan=%s trigger=%s",
+                    if msg.get("event_type") == "turn_check_request":
+                        logger.debug(
+                            "[EventBus] turn_check_request dequeued on agent: event_id=%s lanlan=%s",
                             msg.get("event_id"),
                             msg.get("lanlan_name"),
-                            msg.get("trigger"),
                         )
                     self._submit_to_loop(msg)
             except zmq.Again:
@@ -514,7 +518,7 @@ async def publish_session_event_threadsafe(event: Dict[str, Any]) -> bool:
     return await bridge.publish_session_event(event)
 
 
-def notify_analyze_ack(event_id: str) -> None:
+def notify_turn_check_ack(event_id: str) -> None:
     if not event_id:
         return
     waiter = None
@@ -632,62 +636,55 @@ def dispatch_text_user_message(
     return None
 
 
-async def publish_analyze_request_reliably(
+async def publish_turn_check_reliably(
     lanlan_name: str,
-    trigger: str,
-    messages: list[dict],
     *,
+    user_text: str,
+    reply_text: str,
     ack_timeout_s: float = 0.8,
     retries: int = 1,
     conversation_id: Optional[str] = None,
     external_intent: Optional[float] = None,
-    proactive: bool = False,
     language: Optional[str] = None,
 ) -> bool:
-    """Reliably publish analyze_request: carries event_id + ack, with short retries.
+    """Reliably ask the agent process to check a finished turn: event_id + ack, with short retries.
 
-    ``external_intent`` (0..1, or ``None``) is the cheap pre-gate hint produced by
-    the master-emotion call that already ran at input-time. It rides this same
-    payload so the agent can cheaply decide whether to skip its expensive
-    assessment. ``None`` (reading unavailable / no usable signal) is omitted from
-    the event → the agent gate fails open (runs the assessment).
+    Sent for a turn in which she called no task tool. The agent process decides
+    whether the turn is worth a look at all and what follows (see
+    ``nekoclaw.host.task_brain.TaskBrain.check_turn``). A request sent again
+    after a slow acknowledgement carries the same ``event_id``, which the
+    agent process uses to check the turn once.
 
-    ``proactive`` marks a self-initiated (no fresh user input) turn. The agent
-    routes these through a separate throttled path instead of the user-turn
-    dedupe; omitted (not set) for ordinary user turns.
+    ``external_intent`` (0..1, or ``None``) is the hint the master-emotion call
+    produced at input-time for the user's sentence. ``None`` (reading
+    unavailable / no usable signal) is omitted from the event, and the gate on
+    the other side then lets the turn through.
 
     ``language`` is the live session locale (the frontend i18n truth held in
     ``session_manager[...].user_language``, a full code like ``zh-TW``). The agent
     runs in its own process, so it cannot see that value — its own
     ``get_global_language()`` only derives NEKO_LANGUAGE / Steam / system locale,
-    which is wrong whenever the UI language differs. It rides this payload so the
-    analyzer's prompts follow the language the user is actually reading. Omitted
-    (``None``) → the agent falls back to its process-global value.
+    which is wrong whenever the UI language differs. Omitted (``None``) → the
+    agent falls back to its process-global value.
     """
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
 
     for attempt in range(max(retries, 0) + 1):
         event = {
-            "event_type": "analyze_request",
+            "event_type": "turn_check_request",
             "event_id": event_id,
-            "trigger": trigger,
             "lanlan_name": lanlan_name,
-            "messages": messages,
+            "user_text": user_text,
+            "reply_text": reply_text,
         }
         if conversation_id:
             event["conversation_id"] = conversation_id
-        # Only an optimization hint; omitted when None so the agent fails open.
+        # Only an optimization hint; omitted when None so the gate lets the turn through.
         if external_intent is not None:
             event["external_intent"] = external_intent
-        # Self-initiated turn marker; omitted for ordinary user turns so the
-        # agent's user-turn path is byte-for-byte unchanged when disabled.
-        if proactive:
-            event["proactive"] = True
         # Live session locale; omitted when unknown so the agent keeps its
-        # process-global fallback. Not part of the analyze dedupe fingerprint
-        # (that hashes messages + trigger only), so adding it cannot change
-        # which turns get analyzed.
+        # process-global fallback.
         if language:
             event["language"] = language
 
@@ -720,10 +717,10 @@ async def publish_analyze_request_reliably(
                         sent = await asyncio.wrap_future(cf)
                     except Exception as e:
                         coro.close()
-                        logger.debug("[EventBus] publish_analyze_request threadsafe failed: %s", e)
+                        logger.debug("[EventBus] turn_check_request threadsafe publish failed: %s", e)
                         sent = False
             except Exception as e:
-                logger.debug("[EventBus] publish_analyze_request threadsafe failed: %s", e)
+                logger.debug("[EventBus] turn_check_request threadsafe publish failed: %s", e)
                 sent = False
 
         if not sent:
@@ -733,11 +730,10 @@ async def publish_analyze_request_reliably(
 
         try:
             await asyncio.wait_for(waiter, timeout=ack_timeout_s)
-            logger.info(
-                "[EventBus] analyze_request acked: event_id=%s lanlan=%s trigger=%s latency_ms=%.1f",
+            logger.debug(
+                "[EventBus] turn_check_request acked: event_id=%s lanlan=%s latency_ms=%.1f",
                 event_id,
                 lanlan_name,
-                trigger,
                 (time.perf_counter() - sent_at) * 1000.0,
             )
             return True
@@ -745,11 +741,10 @@ async def publish_analyze_request_reliably(
             with _ack_waiters_lock:
                 _ack_waiters.pop(event_id, None)
             logger.info(
-                "[EventBus] analyze_request ack timeout (attempt %d): event_id=%s lanlan=%s trigger=%s",
+                "[EventBus] turn_check_request ack timeout (attempt %d): event_id=%s lanlan=%s",
                 attempt + 1,
                 event_id,
                 lanlan_name,
-                trigger,
             )
 
     return False

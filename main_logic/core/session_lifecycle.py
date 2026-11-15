@@ -661,7 +661,7 @@ class SessionOwnershipMixin:
                     record.handoff_error = exc
                     logger.exception("Session memory settlement failed during retirement")
             elif record.was_active and not callable(after_memory_settlement) and not record.memory_boundary_sent:
-                self.sync_message_queue.put({'type': 'system', 'data': 'session end'})
+                self.sync_message_queue.put(self._session_end_message())
                 record.memory_boundary_sent = True
             if not by_server and record.was_active and record.session is not None and not record.departure_notified:
                 try:

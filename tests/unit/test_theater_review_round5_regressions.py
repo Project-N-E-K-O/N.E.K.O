@@ -10,11 +10,11 @@ from services.theater import numeric_v2_workflow as workflow
 from tests.unit.test_theater_review_round2_frontend import RUNTIME_HARNESS, _run
 from tests.unit.test_theater_numeric_v2_router import _client
 from tests.unit.theater_workshop.numeric_v2_fixture import numeric_v2_setup
-from theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore, _setup_fields
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.sdk.numeric_v2_project_store import NumericV2ProjectStore, _setup_fields
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.host import InProcessPackageGateway
 from tests.unit.theater_workshop.test_sdk_lifecycle import opened, ready_to_publish, setup_project  # noqa: F401
-from theater_workshop.sdk import WorkshopError
+from services.theater_workshop.sdk import WorkshopError
 
 
 @pytest.mark.parametrize('reason', ['user_exit', 'story_ending'])
@@ -138,7 +138,7 @@ def test_generate_maps_draft_normalization_errors(opened, metrics):
 
 
 def test_enhance_allows_last_draft_goal_without_id(opened, monkeypatch):
-    from theater_workshop.sdk.numeric_v2 import goals_to_package
+    from services.theater_workshop.sdk.numeric_v2 import goals_to_package
     from tests.unit.theater_workshop.test_numeric_v2_branch import _ordered_goal
     host, _ = opened
     project = ready_to_publish(host.sdk)

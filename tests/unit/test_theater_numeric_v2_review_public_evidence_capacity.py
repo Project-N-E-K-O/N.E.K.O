@@ -1,6 +1,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 import pytest
 
 from services.theater import numeric_v2_evaluator as evaluator
@@ -29,7 +30,7 @@ def packed_case(monkeypatch, request):
 def build(case):
     engine, session, kwargs, _ = case
     messages, evidence = evaluator._build_transition_judge_messages(engine, session, **kwargs)
-    data = json.loads(messages[1].content.split('：', 1)[1])
+    data = prompt_payload(messages[1].content)
     return messages, data, evidence, sum(evaluator.count_tokens(m.content) for m in messages)
 
 
@@ -78,3 +79,38 @@ def test_still_over_budget_keeps_complete_original_evidence(monkeypatch, packed_
     assert after['scene_context'] == before['scene_context']
     assert after['player_input'] == before['player_input']
     assert after['actor_performance'] == before['actor_performance']
+
+
+def test_numbered_bridge_uses_exact_phase_reference_and_restores_literal_after_eviction(monkeypatch):
+    engine, session, _, _ = _fixture(20)
+    quote = '北侧楼梯通往档案室，门已打开。' * 30
+    kwargs = dict(actor_performance={'performance': '我听到了。', 'suggested_inputs': []},
+                  player_input='请带我去档案室。', check_missed_initiation=True)
+    entry = {'revision': 1, 'from_node_id': 'old', 'to_node_id': 'start', 'segments': [
+        {'phase': 'source_response', 'performance': '这句仍属于旧幕。'},
+        {'phase': 'transition_bridge', 'scene_narration': quote},
+        {'phase': 'target_opening', 'performance': '总算到了。'},
+    ]}
+    source = {'revision': 1, 'current_entry_bridge': True, 'current_visit': False,
+              'source': 'performance', 'text': quote}
+    monkeypatch.setattr(evaluator, 'history_evidence', lambda *a, **kw: [source])
+    session = replace(session, revision=1, performance_history=(entry,))
+    case = engine, session, kwargs, quote
+    messages, data, evidence, _ = build(case)
+    assert evidence == (quote,)
+    assert messages[1].content.count(quote) == 1
+    assert data['missed_initiation_check']['public_destination_evidence'] == [
+        {'content_ref': 'scene_context[0].entry_bridge[0].text'},
+    ]
+    assert '这句仍属于旧幕。' not in messages[1].content
+
+    latest = {'revision': 2, 'from_node_id': 'start', 'to_node_id': 'start',
+              'performance': '角色继续留在现场回答问题。'}
+    advanced = replace(session, revision=2, performance_history=(entry, latest))
+    # Use the native budget eviction rather than removing provenance before it is numbered.
+    profile = NUMERIC_V2_ACTOR_BUDGET_PROFILES[session.actor_budget_profile]
+    monkeypatch.setitem(profile, 'formal_judge_input_max_tokens', 1)
+    messages, data, evidence, _ = build((engine, advanced, kwargs, quote))
+    assert [row['revision'] for row in data['scene_context']] == [2]
+    assert data['missed_initiation_check']['public_destination_evidence'] == [quote]
+    assert messages[1].content.count(quote) == 1 and evidence == (quote,)
