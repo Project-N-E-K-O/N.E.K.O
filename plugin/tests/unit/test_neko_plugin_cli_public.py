@@ -181,6 +181,9 @@ def test_build_rules_skip_scaffolded_agent_kit() -> None:
         assert should_skip_path(path, is_dir=is_dir, rules=rules) is True
     # Like .DS_Store, the guide names are excluded at every depth.
     assert should_skip_path(Path("docs/AGENTS.md"), is_dir=False, rules=rules) is True
+    # A dangling or file-target symlink is walked as a file, not a directory.
+    assert should_skip_path(Path(".claude"), is_dir=False, rules=rules) is True
+    assert should_skip_path(Path(".agents"), is_dir=False, rules=rules) is True
 
 
 def _assert_probed_without_bytecode(package_path: Path, plugin_ids: list[str]) -> None:

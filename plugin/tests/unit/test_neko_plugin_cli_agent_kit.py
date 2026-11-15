@@ -144,6 +144,7 @@ def test_public_pack_rules_skip_scaffolded_agent_kit() -> None:
         (Path(".agents"), True),
         (Path(".agents/skills/neko-plugin/SKILL.md"), False),
         (Path(".claude"), True),
+        (Path(".claude"), False),
         (Path("AGENTS.md"), False),
         (Path("CLAUDE.md"), False),
     ):

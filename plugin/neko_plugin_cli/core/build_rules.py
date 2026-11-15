@@ -50,6 +50,10 @@ _DEFAULT_EXCLUDE_FILE_NAMES = {
     # Scaffolded agent guides belong to the plugin repository, not the package.
     "AGENTS.md",
     "CLAUDE.md",
+    # Non-directory forms (dangling or file symlinks) of the agent kit dirs
+    # bypass the directory set; copy2 would follow them.
+    ".agents",
+    ".claude",
 }
 _DEFAULT_EXCLUDE_SUFFIXES = {
     ".pyc",
