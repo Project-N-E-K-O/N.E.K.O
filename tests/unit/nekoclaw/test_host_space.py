@@ -2118,3 +2118,39 @@ async def test_an_entry_written_by_hand_has_a_text_already_only_when_that_is_all
     assert same == "already in stack.md in project _daily, word for word; nothing was added"
     assert other == "added to stack.md in project _daily"
     assert (directory / "stack.md").read_text(encoding="utf-8").count("It uses") == 2
+
+
+# ---------------------------------------------------------------------------
+# The twenty-first review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_text_an_entry_was_given_in_the_console_is_not_added_when_it_is_filed(space, root, clock):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.edit_entry("stack", DEFAULT_PROJECT, content="It uses FastAPI now.")
+    clock.now += 86400
+
+    same = await space.submit(_commission(id="c-2"), _lesson("Stack", "It uses FastAPI now."))
+    # Something is added to it, and then the text it was given is filed once more.
+    added = await space.submit(_commission(id="c-3"), _lesson("Stack", "And SQLite."))
+    again = await space.submit(_commission(id="c-4"), _lesson("Stack", "It uses FastAPI now."))
+    # What it said before it was changed is not what it says: filed again, it is added.
+    before = await space.submit(_commission(id="c-5"), _lesson("Stack", "It uses Flask."))
+
+    already = "already in stack.md in project _daily, word for word; nothing was added"
+    assert (same, added, again) == (already, "added to stack.md in project _daily", already)
+    assert before == "added to stack.md in project _daily"
+    content = (await space.read_entry("stack", DEFAULT_PROJECT)).content
+    assert content.count("It uses FastAPI now.") == 1 and content.count("And SQLite.") == 1
+
+
+async def test_a_text_that_replaced_an_entrys_in_an_editor_is_not_added_when_it_is_filed(space, root):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    path = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    # Saved from an editor: the text is another, the marks in the front matter are the old ones.
+    path.write_text(path.read_text(encoding="utf-8").replace("It uses Flask.", "It uses FastAPI now."), encoding="utf-8")
+
+    same = await space.submit(_commission(id="c-2"), _lesson("Stack", "It uses FastAPI now."))
+
+    assert same == "already in stack.md in project _daily, word for word; nothing was added"
+    assert (await space.read_entry("stack", DEFAULT_PROJECT)).content.count("It uses FastAPI now.") == 1

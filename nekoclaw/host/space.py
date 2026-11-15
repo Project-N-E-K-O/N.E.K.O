@@ -351,12 +351,13 @@ def _said_already(document: _Document, content: str) -> bool:
     (``texts`` in its front matter), not by where its dated headings are:
     a note can have such a heading inside it, and a shorter note can be
     the end of a longer one. The text must still be there as well, so one
-    the user took out by hand is added again. An entry that keeps no marks
-    (one written by hand) has a text already only when it is all it says.
+    the user took out by hand is added again. A text that is all the
+    entry says is there already whatever the marks are: the entry may
+    have been written by hand, or its text replaced in an editor.
     """
+    if document.body.strip() == content.strip():
+        return True
     marks = [item.strip() for item in document.get("texts").split(",") if item.strip()]
-    if not marks:
-        return document.body.strip() == content.strip()
     return _digest(content) in marks and content.strip() in document.body
 
 
@@ -962,6 +963,8 @@ class TaskAgentSpace:
                     document.set("type", _entry_type(kind))
                 if content is not None:
                     document.body = content
+                    # What it says now is this text, and nothing that was filed before.
+                    document.set("texts", _digest(content))
                 document.set("updated", _date(self._clock()))
                 return _render_document(document)
 
