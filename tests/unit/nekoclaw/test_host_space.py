@@ -3198,3 +3198,51 @@ async def test_a_text_is_told_again_whatever_its_line_ends_are(space, root, cloc
         assert reply == "already in checks.md in project _daily, word for word; nothing was added"
 
     assert (await space.read_entry("checks", DEFAULT_PROJECT)).content.count("Then lint.") == 1
+
+
+# ---------------------------------------------------------------------------
+# The thirty-first review round
+# ---------------------------------------------------------------------------
+
+
+def test_a_text_with_too_many_parts_or_too_much_to_mark_is_not_looked_through(monkeypatch):
+    from nekoclaw.host import space as module
+    from nekoclaw.host.space import _standing_marks
+
+    body = "one\n\ntwo\n\nthree\n\nfour"
+    monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 4)
+    assert len(_standing_marks(body)) == 10
+    monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 3)
+    assert _standing_marks(body) is None
+    monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 4)
+    # Four parts, each marked with all that follows it.
+    monkeypatch.setattr(module, "_STANDING_CHARACTERS_MAX", 4 * len(body))
+    assert len(_standing_marks(body)) == 10
+    monkeypatch.setattr(module, "_STANDING_CHARACTERS_MAX", 4 * len(body) - 1)
+    assert _standing_marks(body) is None
+
+
+async def test_the_marks_of_an_entry_all_stay_when_the_text_the_console_gives_is_too_long_to_look_through(
+    space, root, clock, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    await space.submit(_commission(id="c-1"), _lesson("Notes", "A note"))
+    path = root / "projects" / DEFAULT_PROJECT / "memory" / "notes.md"
+
+    def marks() -> list[str]:
+        line = next(item for item in path.read_text(encoding="utf-8").splitlines() if item.startswith("texts:"))
+        return [item.strip() for item in line.removeprefix("texts:").split(",") if item.strip()]
+
+    first = marks()
+    assert len(first) == 1
+    monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 3)
+    # Four parts: not looked through. The note is not in it any more, and its mark stays all the same.
+    await space.edit_entry("notes", DEFAULT_PROJECT, content="one\n\ntwo\n\nthree\n\nfour")
+    assert marks()[:1] == first and len(marks()) == 2
+    # Which does no harm: the note is not there, so it is added.
+    clock.now += 86400
+    assert await space.submit(_commission(id="c-2"), _lesson("Notes", "A note")) == "added to notes.md in project _daily"
+    # Three parts: looked through again, and only what stands is kept.
+    await space.edit_entry("notes", DEFAULT_PROJECT, content="one\n\nA note\n\nthree")
+    assert len(marks()) == 2 and marks()[:1] == first

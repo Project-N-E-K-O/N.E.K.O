@@ -403,7 +403,15 @@ def _lines_as_text(lines: list[str]) -> str:
     return result if result.endswith("\n") else result + "\n"
 
 
-def _standing_marks(body: str) -> set[str]:
+# How much of a text given in the console is looked through for what still
+# stands in it. Every part is marked with all that follows it, so the work
+# grows with the square of the parts: about a third of a second at these
+# limits. The text itself has no limit; it is the user's.
+_STANDING_PARTS_MAX = 500
+_STANDING_CHARACTERS_MAX = 200_000_000
+
+
+def _standing_marks(body: str) -> set[str] | None:
     """Return the marks of every text that stands in an entry by itself: one part of it, or several in a row.
 
     A part is what stands between blank lines, which is how
@@ -412,11 +420,16 @@ def _standing_marks(body: str) -> set[str]:
     of a text that is no longer there is dropped, or the marks would grow
     with every change; one of a text that still stands, with more written
     around it, is kept, or the same text would be added once more.
+
+    None when the text is too long to look through while every other
+    change to the space waits.
     """
     lines = body.split("\n")
     firsts = [
         number for number, line in enumerate(lines) if line.strip() and (number == 0 or not lines[number - 1].strip())
     ]
+    if len(firsts) > _STANDING_PARTS_MAX or len(firsts) * len(body) > _STANDING_CHARACTERS_MAX:
+        return None
     lasts = {
         number
         for number, line in enumerate(lines)
@@ -1184,8 +1197,13 @@ class TaskAgentSpace:
                     # The marks of what still stands in the new text stay:
                     # what was filed before may be in it word for word. The
                     # others go, and the new text as a whole gets a mark.
+                    # In a text too long to look through they all stay: one
+                    # of a text that is gone does no harm, as a text must
+                    # stand in the entry as well to count as said.
                     standing = _standing_marks(content)
-                    marks = [mark for mark in _marks_of(document) if mark in standing]
+                    marks = _marks_of(document)
+                    if standing is not None:
+                        marks = [mark for mark in marks if mark in standing]
                     document.body = content
                     if _digest(content) not in marks:
                         marks.append(_digest(content))
