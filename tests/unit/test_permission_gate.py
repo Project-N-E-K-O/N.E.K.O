@@ -2,7 +2,9 @@
 
 Covers the six things the brief asks for: every cell of the matrix, the group rule
 that takes the lower band, a tool that never declared a risk, the BLOCKED band, and a
-confirm that times out.
+confirm that times out. Plus the two rules the rollout needs: identity arrives only on
+the turn (a claim written on the call is ignored), and observe mode -- the shipped
+default -- records a decision without intercepting the call.
 
 The cell tests are driven from the table itself instead of a hand-written list. A
 hand-written list keeps passing when someone deletes a row, and totality is exactly
@@ -21,15 +23,53 @@ from config import permission_settings as ps
 from config.permission_settings import (
     DEFAULT_BAND,
     PermissionAction,
+    PermissionMode,
     ToolRisk,
     TrustBand,
     decide,
     lower_band,
 )
 from main_logic import tool_permissions as gate
+from utils.turn_actor import (
+    TurnActor,
+    actor_from_inbound,
+    current_turn_actor,
+    turn_for_message,
+    turn_scope,
+)
 
 BANDS = list(TrustBand)
 RISKS = list(ToolRisk)
+
+
+@contextlib.contextmanager
+def _mode(mode):
+    """Run one test in a given gate mode, then put the default back."""
+    saved = gate.PERMISSION_GATE_MODE
+    gate.PERMISSION_GATE_MODE = mode
+    try:
+        yield
+    finally:
+        gate.PERMISSION_GATE_MODE = saved
+
+
+@contextlib.contextmanager
+def _speaker(account="qq:A1", group=None, kind="private", channel="open"):
+    """Stand one speaker at the microphone for the block.
+
+    This is the only way identity reaches the gate: the turn carrier, written by host
+    code. Tests use it because the production writers use it, not because it is
+    convenient -- a test that set ``provider_meta`` would prove the wrong property.
+    """
+    user_id = account.split(":", 1)[1] if ":" in account else account
+    actor = TurnActor(
+        user_id=user_id,
+        group_id=(group.split(":", 1)[1] if group and ":" in group else (group or "")),
+        message_type=kind,
+        channel=channel,
+    )
+    with turn_scope(actor):
+        yield actor
 
 
 @contextlib.contextmanager
@@ -207,7 +247,7 @@ def test_denied_call_never_reaches_the_handler():
     registry.register(ToolDefinition(
         name="write_tool", description="", risk="write",
         handler=lambda _args: called.append(1)))
-    with _captured_logs() as records:
+    with _mode(PermissionMode.ENFORCE), _speaker("qq:A1"), _captured_logs() as records:
         result = asyncio.run(registry.execute(
             ToolCall(name="write_tool", arguments={}, call_id="c1")))
     assert called == []
@@ -215,7 +255,7 @@ def test_denied_call_never_reaches_the_handler():
     assert result.output["error"] == "permission_denied"
     assert result.output["band"] == "stranger"
     assert result.output["risk"] == "write"
-    assert any("deny" in line for line in records)
+    assert any(" deny " in line for line in records), records
 
 
 def test_allowed_call_runs_the_handler():
@@ -224,10 +264,9 @@ def test_allowed_call_runs_the_handler():
     registry = ToolRegistry()
     registry.register(ToolDefinition(name="peek", description="", risk="read",
                                      handler=lambda _args: {"ok": 1}))
-    with _captured_logs() as records:
-        result = asyncio.run(registry.execute(ToolCall(
-            name="peek", arguments={}, call_id="c2",
-            provider_meta={"actor": _actor("qq:ANYONE")})))
+    with _mode(PermissionMode.ENFORCE), _speaker("qq:ANYONE"), _captured_logs() as records:
+        result = asyncio.run(registry.execute(
+            ToolCall(name="peek", arguments={}, call_id="c2")))
     assert result.is_error is False
     assert result.output == {"ok": 1}
     assert records == [], "an allow must not add log noise"
@@ -239,23 +278,26 @@ def test_blocked_speaker_is_denied_a_read():
     registry = ToolRegistry()
     registry.register(ToolDefinition(name="peek", description="", risk="read",
                                      handler=lambda _args: "ran"))
-    with _bands(blocked=("qq:TROLL",)):
-        result = asyncio.run(registry.execute(ToolCall(
-            name="peek", arguments={}, call_id="c3",
-            provider_meta={"actor": _actor("qq:TROLL", group="qq:G1", kind="group")})))
+    with _mode(PermissionMode.ENFORCE), _bands(blocked=("qq:TROLL",)):
+        with _speaker("qq:TROLL", group="qq:G1", kind="group"):
+            result = asyncio.run(registry.execute(
+                ToolCall(name="peek", arguments={}, call_id="c3")))
     assert result.is_error is True
     assert result.output["band"] == "blocked"
 
 
-def test_confirm_without_an_approver_channel_degrades_to_deny():
-    decision = asyncio.run(gate.enforce("t", "external", _actor("qq:FRIEND")))
+def test_confirm_without_an_approver_channel_degrades_to_deny(monkeypatch):
+    monkeypatch.setattr(gate, "PERMISSION_APPROVER_ENABLED", False)
+    with _mode(PermissionMode.ENFORCE):
+        decision = asyncio.run(gate.enforce("t", "external", _actor("qq:FRIEND")))
     assert decision.action is PermissionAction.DENY
+    assert decision.blocks is True
 
 
 def test_confirm_times_out_as_deny(monkeypatch):
     monkeypatch.setattr(gate, "PERMISSION_APPROVER_ENABLED", True)
     monkeypatch.setattr(gate, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 0.05)
-    with _bands(trusted=("qq:FRIEND",)):
+    with _mode(PermissionMode.ENFORCE), _bands(trusted=("qq:FRIEND",)):
         # TRUSTED x external is the CONFIRM cell. An unmapped account would be
         # STRANGER and deny outright, which would test the table, not the timeout.
         assert decide(TrustBand.TRUSTED, ToolRisk.EXTERNAL) is PermissionAction.CONFIRM
@@ -282,10 +324,11 @@ def test_confirm_resolved_yes_allows(monkeypatch):
                 break
         return await task
 
-    with _bands(trusted=("qq:FRIEND",)):
+    with _mode(PermissionMode.ENFORCE), _bands(trusted=("qq:FRIEND",)):
         decision = asyncio.run(go())
     assert decision.action is PermissionAction.ALLOW
     assert "confirmed" in decision.reason
+    assert decision.blocks is False
     assert gate.approvals.pending_count() == 0
 
 
@@ -304,9 +347,75 @@ def test_confirm_resolved_no_denies(monkeypatch):
                 break
         return await task
 
-    with _bands(trusted=("qq:FRIEND",)):
+    with _mode(PermissionMode.ENFORCE), _bands(trusted=("qq:FRIEND",)):
         decision = asyncio.run(go())
     assert decision.action is PermissionAction.DENY
+
+
+# ------------------------------------------------------------------ gate mode
+
+
+def test_observe_mode_records_a_deny_and_runs_the_tool():
+    """The default. A stranger's write tool must still work while nobody is stamped."""
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolRegistry
+
+    called = []
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(
+        name="write_tool", description="", risk="write",
+        handler=lambda _args: called.append(1) or "done"))
+    assert gate.PERMISSION_GATE_MODE is PermissionMode.OBSERVE, "the shipped default"
+    with _speaker("qq:A1"), _captured_logs() as records:
+        result = asyncio.run(registry.execute(
+            ToolCall(name="write_tool", arguments={}, call_id="m1")))
+    assert called == [1], "observe must not intercept"
+    assert result.is_error is False
+    assert any("would-deny" in line and "mode=observe" in line for line in records), records
+
+
+def test_observe_mode_never_parks_a_confirm(monkeypatch):
+    """A question nobody can act on is a stall, so observe must not ask it."""
+    monkeypatch.setattr(gate, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(gate, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 30.0)
+    with _bands(trusted=("qq:FRIEND",)):
+        with _captured_logs() as records:
+            decision = asyncio.run(gate.enforce(
+                "external_tool", "external", _actor("qq:FRIEND")))
+    assert decision.action is PermissionAction.CONFIRM
+    assert decision.blocks is False
+    assert gate.approvals.pending_count() == 0
+    assert any("would-confirm" in line for line in records), records
+
+
+def test_enforce_mode_blocks_the_same_call_the_default_only_records():
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolRegistry
+
+    called = []
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(
+        name="write_tool", description="", risk="write",
+        handler=lambda _args: called.append(1)))
+    with _speaker("qq:A1"):
+        with _mode(PermissionMode.ENFORCE):
+            asyncio.run(registry.execute(ToolCall(
+                name="write_tool", arguments={}, call_id="m2")))
+    assert called == []
+
+
+def test_a_bad_mode_value_is_refused_not_defaulted(monkeypatch):
+    """A typo must not boot a deployment into observe while it means enforce."""
+    monkeypatch.setattr(gate, "PERMISSION_GATE_MODE", "sideways")
+    with pytest.raises(ValueError):
+        gate._mode()
+    monkeypatch.setenv("NEKO_PERMISSION_MODE", "enforce")
+    assert ps._mode_from_env() is PermissionMode.ENFORCE
+    monkeypatch.setenv("NEKO_PERMISSION_MODE", "EnForce")
+    assert ps._mode_from_env() is PermissionMode.ENFORCE
+    monkeypatch.setenv("NEKO_PERMISSION_MODE", "off")
+    with pytest.raises(ValueError):
+        ps._mode_from_env()
+    monkeypatch.delenv("NEKO_PERMISSION_MODE", raising=False)
+    assert ps._mode_from_env() is PermissionMode.OBSERVE
 
 
 # ------------------------------------------------------------------ audit shape
@@ -338,3 +447,116 @@ def test_registration_can_be_a_stranger_free_path():
     registry = ToolRegistry()
     registry.register(ToolDefinition(name="ok", description="", risk="self"))
     assert registry.get("ok").risk is ToolRisk.SELF
+
+
+# ------------------------------------------------------------------ turn carrier
+
+
+def test_group_turn_names_both_the_speaker_and_the_conversation():
+    message = {"message_type": "group", "channel": "open",
+               "user_id": "OPENID-USER", "group_id": "GROUP-1"}
+    with turn_scope(actor_from_inbound(message)) as actor:
+        assert actor.account_id == "qq:OPENID-USER"
+        assert actor.group_account_id == "qq:GROUP-1"
+        assert actor.is_group is True
+        assert current_turn_actor() is actor
+    assert current_turn_actor() is None, "the scope must not outlive the turn"
+
+
+def test_private_turn_carries_no_conversation():
+    message = {"message_type": "private", "channel": "open",
+               "user_id": "OPENID-USER", "group_id": ""}
+    with turn_scope(actor_from_inbound(message)) as actor:
+        assert actor.account_id == "qq:OPENID-USER"
+        assert actor.group_account_id == ""
+        assert actor.is_group is False
+
+
+def test_a_message_with_no_speaker_declares_no_actor():
+    # A poke notice is not a request to run a tool, and an empty user id is not an
+    # identity. Both must clear the carrier instead of inheriting the last speaker.
+    for message in (
+        {"message_type": "notice", "channel": "open", "user_id": "OPERATOR"},
+        {"message_type": "private", "channel": "open", "user_id": ""},
+        {"message_type": "private", "channel": "open"},
+        "not a message",
+        None,
+    ):
+        assert actor_from_inbound(message) is None, message
+
+
+def test_an_unmapped_channel_produces_no_account_id():
+    """No prefix means no lookup, which means DEFAULT_BAND. A guess is worse."""
+    actor = TurnActor(user_id="X", message_type="private", channel="carrier-pigeon")
+    assert actor.account_id == ""
+    band, account, _group = gate.resolve_band(actor.as_dict())
+    assert band is DEFAULT_BAND
+    assert account == ""
+
+
+def test_nested_scopes_put_the_outer_speaker_back():
+    outer = TurnActor(user_id="OUT", message_type="private", channel="open")
+    inner = TurnActor(user_id="IN", message_type="private", channel="open")
+    with turn_scope(outer):
+        with turn_scope(inner):
+            assert current_turn_actor() is inner
+        assert current_turn_actor() is outer
+
+
+def test_a_claim_on_the_call_cannot_raise_a_band():
+    """The rule that makes the carrier worth having: the speaker cannot pick a band.
+
+    OWNER is the highest claim a caller could invent, against a write tool an unmapped
+    speaker may not touch. The claim is ignored and said out loud, because a silent
+    ignore would read as a broken table.
+    """
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolRegistry
+
+    called = []
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(
+        name="write_tool", description="", risk="write",
+        handler=lambda _args: called.append(1)))
+    claim = {"account_id": "qq:BOSS", "message_type": "private", "group_id": ""}
+    with _mode(PermissionMode.ENFORCE), _bands(owners=("qq:BOSS",)):
+        with _captured_logs() as records:
+            result = asyncio.run(registry.execute(ToolCall(
+                name="write_tool", arguments={}, call_id="k1",
+                provider_meta={"actor": claim})))
+    assert called == []
+    assert result.is_error is True
+    assert result.output["band"] == "stranger", "the claim must not be believed"
+    assert any("ignored an actor claim" in line for line in records), records
+
+
+def test_the_sink_delivery_is_the_stamp_point():
+    """What the connector guarantees: inside a sink, this turn has a speaker.
+
+    Driven through the real seam (ConnectionBase._run_inbound_sink) rather than a
+    hand-built TurnActor, so the test breaks if the stamp is moved or dropped.
+    """
+    import types
+
+    from utils.connection.base import ConnectionBase
+
+    seen = {}
+    message = {"message_type": "group", "channel": "open",
+               "user_id": "OPENID-USER", "group_id": "GROUP-1"}
+
+    async def sink(payload):
+        seen["inside"] = current_turn_actor()
+
+    asyncio.run(ConnectionBase._run_inbound_sink(
+        types.SimpleNamespace(), sink, message))
+    assert seen["inside"] is not None
+    assert seen["inside"].account_id == "qq:OPENID-USER"
+    assert current_turn_actor() is None
+
+
+def test_a_pulled_message_can_be_bound_by_the_consumer():
+    """The pull path gets the same rule, through the one public binding API."""
+    message = {"message_type": "private", "channel": "onebot", "user_id": "U9"}
+    assert current_turn_actor() is None
+    with turn_for_message(message) as actor:
+        assert actor.account_id == "qq:U9"
+    assert current_turn_actor() is None

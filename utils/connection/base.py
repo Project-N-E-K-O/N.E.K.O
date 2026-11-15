@@ -14,6 +14,8 @@ import collections
 from abc import ABC, abstractmethod
 from typing import Any, Literal, Optional, Protocol, TypedDict, runtime_checkable
 
+from utils.turn_actor import actor_from_inbound, turn_scope
+
 
 class InboundMessage(TypedDict, total=False):
     """The normalized dict every ``receive_message()`` returns.
@@ -90,7 +92,14 @@ class ConnectionBase(ABC):
 
     @abstractmethod
     async def receive_message(self, timeout: float = 1.0) -> Optional[dict[str, Any]]:
-        """Blocking-receive one message; returns the normalized dict or None on timeout."""
+        """Blocking-receive one message; returns the normalized dict or None on timeout.
+
+        A consumer that pulls here instead of registering a sink starts its turn outside
+        any scope this layer controls, so it must bind the speaker itself: wrap the work
+        in ``utils.turn_actor.turn_for_message(message)``. Do not set the context
+        variable inside this method: the pull loop's task would carry the last speaker's
+        band into the next message's handling.
+        """
         ...
 
     @abstractmethod
@@ -299,11 +308,20 @@ class ConnectionBase(ABC):
         tasks.clear()
 
     async def _run_inbound_sink(self, sink: Any, message: dict[str, Any]) -> None:
-        """Run one sink call; swallow any failure so the broadcast never raises."""
+        """Run one sink call; swallow any failure so the broadcast never raises.
+
+        The ``turn_scope`` around the sink is the connector's one identity stamp. The
+        permission gate reads the speaker from there (utils/turn_actor.py), so a plugin
+        or a route never declares a band: it inherits the one this layer learned from
+        the transport. A task the sink creates copies the context, so the stamp covers
+        the reply the message triggers, not just this call. A message with no speaker
+        (a notice) clears the scope rather than inheriting the last speaker.
+        """
         try:
-            result = sink(message)
-            if hasattr(result, "__await__"):
-                await result
+            with turn_scope(actor_from_inbound(message)):
+                result = sink(message)
+                if hasattr(result, "__await__"):
+                    await result
         except Exception:
             logger = getattr(self, "logger", None)
             if logger:
