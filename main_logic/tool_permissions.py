@@ -29,10 +29,22 @@ Three rules, one seam.
 3. The decision is one table lookup. This module contains no policy of its own, so a
    review of the feature is a review of that table.
 
+Three rules sit OUTSIDE that table, and a reviewer has to read this file to find them.
+Saying "the policy is one table" without this list would be the misleading kind of
+simplification:
+
+- channel rule: a registration from the wire may carry no label, and an unlabelled tool
+  is refused at call time. That lives in ``ToolRegistry.register``.
+- error rule: a gate that cannot compute an answer denies, and denies as if the mode were
+  enforce. That lives in ``enforce``.
+- mode rule: observe records a decision without acting on it, and skips the confirm wait.
+  That lives in ``_enforce`` and ``Decision.blocks``.
+
 ``PERMISSION_GATE_MODE`` decides whether a deny stops the call (enforce) or only gets
 written down (observe, the default). Observe exists because an entry point that never
 declares a speaker reads as a stranger, and a stranger is denied ``write`` and
-``external``: an enforcing gate on such a build switches off the app's own tools.
+``external``: an enforcing gate on such a build switches off the app's own tools. Note
+the one exception above: a gate that cannot read its own configuration still blocks.
 
 Fail-closed everywhere. An unreadable actor is a stranger. A risk value that does not
 parse is a refusal. A confirm nobody answers is a deny. An exception inside the gate
@@ -216,10 +228,14 @@ def audit(decision: Decision, tool_name: str, *, outcome: str = "") -> None:
         label = f"would-{label}"
     where = f"group={decision.group_id} " if decision.group_id else ""
     logger.warning(
-        "[permission] %s tool=%s band=%s risk=%s account=%s %s %s (mode=%s)",
+        "[permission] %s tool=%s band=%s risk=%s account=%s %s %s%s (mode=%s)",
         label, tool_name, _s(decision.band) or "(none)",
         _s(decision.risk) if decision.risk is not None else "unlabelled",
         decision.account_id or "(unknown)", where, decision.reason or "",
+        # The outcome suffix carries the request id of a parked call. Leave it out and
+        # the operator reads "confirm" with no way to answer it, which is worse than no
+        # log at all: it makes the one feature that waits on a human look like a hang.
+        (f" {outcome}" if outcome else ""),
         _s(decision.mode) or "(none)",
     )
 

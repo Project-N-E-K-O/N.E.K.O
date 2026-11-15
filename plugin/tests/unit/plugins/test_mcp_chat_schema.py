@@ -72,3 +72,49 @@ async def test_unsafe_schema_never_reaches_shared_tool_registry():
     assert result is False
     assert registrations == []
     assert plugin._pending_chat_tools == {}
+
+
+def _adapter_for_risk(servers_config):
+    """An adapter with just enough state for the risk lookup.
+
+    Deliberately narrow. The injection path that consumes this value needs the gateway
+    and a live tool list, and pretending otherwise would test the harness, not the rule.
+    The rule under test is one line at the registration site: the pin if there is one,
+    otherwise `external`.
+    """
+    plugin = object.__new__(MCPAdapterPlugin)
+    plugin._servers_config = servers_config
+    warnings = []
+    plugin.ctx = SimpleNamespace(logger=SimpleNamespace(warning=lambda *a: warnings.append(a)))
+    return plugin, warnings
+
+
+def test_a_pinned_server_risk_is_read_from_the_startup_config_copy():
+    """The pin lives in ``_servers_config``, not in ``self.ctx.config``.
+
+    ``self.ctx.config`` does not exist on a plugin, and the broad except that used to
+    wrap it turned every pin into a silent miss: the value fell through to the blanket
+    default while the comment promised an override. A dead knob that looks configured is
+    worse than no knob, so this reads the same object the server loop reads.
+    """
+    plugin, warnings = _adapter_for_risk({
+        "fs": {"tool_risk": "Read", "enabled": True},
+        "payments": {"enabled": True},
+        "typo": {"tool_risk": "readonly"},
+    })
+    assert plugin._server_tool_risk("fs") == "read"
+    assert plugin._server_tool_risk("payments") == ""
+    assert plugin._server_tool_risk("typo") == ""
+    assert len(warnings) == 1, "an ignored pin has to be said out loud"
+    assert "readonly" in str(warnings[0])
+
+    # The registration rule, stated once: a pin wins, anything else is external.
+    assert str(plugin._server_tool_risk("fs") or "external") == "read"
+    assert str(plugin._server_tool_risk("payments") or "external") == "external"
+
+
+def test_a_missing_server_entry_never_invents_a_class():
+    plugin, warnings = _adapter_for_risk({})
+    assert plugin._server_tool_risk("absent") == ""
+    assert warnings == []
+    assert str(plugin._server_tool_risk("absent") or "external") == "external"

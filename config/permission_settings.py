@@ -120,6 +120,12 @@ PERMISSION_SOURCE_BANDS: dict[str, TrustBand] = {
     # The local UI is the owner's own machine. Anything not listed here and not listed
     # as an owner account is a stranger, including a platform that was once mapped and
     # then removed.
+    #
+    # Not reachable yet, and stated rather than implied: no code stamps a turn with the
+    # "webui" channel today, so this row decides nothing until the UI entry point is
+    # stamped (step 2, main_logic/core/streaming.py). It is kept because the maintainer
+    # ruled that the local UI counts as the owner, and a row with that ruling written
+    # down is easier to review than a sentence in a PR.
     "webui": TrustBand.OWNER,
 }
 """Per-source default. A per-account entry in PERMISSION_OWNER/TRUSTED maps wins."""
@@ -237,6 +243,11 @@ PERMISSION_CHANNEL_PLATFORMS: dict[str, str] = {
     # (``memory/speaker_trust.stable_speaker_id``: ``platform:actor``).
     "open": "qq",
     "onebot": "qq",
+    # The local UI. No writer produces this channel yet, so this row is the shape step 2
+    # will stamp into, not a live path. Without it a stamped UI turn would build no
+    # account id and would land on STRANGER even though PERMISSION_SOURCE_BANDS calls
+    # "webui" the owner: the two maps have to agree or the ruling is dead config.
+    "webui": "webui",
 }
 """Channel -> platform prefix. A channel missing here produces no account id.
 

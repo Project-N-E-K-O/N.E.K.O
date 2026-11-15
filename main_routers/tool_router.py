@@ -735,7 +735,11 @@ def replay_remote_tools(mgr: Any, role_name: str) -> List[str]:
                 continue
         elif entry.role != role_name:
             continue
-        registry.register(entry.tool, replace=True)
+        # A ledger entry is a wire registration restored, so it gets the wire rule.
+        # With the strict default here, every plugin tool that had no risk label would
+        # vanish the first time a role was rebuilt -- silently, and in observe mode too,
+        # because the refusal happens at registration, where the gate mode is not read.
+        registry.register(entry.tool, replace=True, risk_required=False)
         replayed.append(entry.tool.name)
     replayed = list(dict.fromkeys(replayed))
     if replayed:

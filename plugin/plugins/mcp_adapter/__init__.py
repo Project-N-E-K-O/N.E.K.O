@@ -93,6 +93,13 @@ class MCPServerConfig:
     headers: Dict[str, str] = field(default_factory=dict)
 
 
+#: The four risk classes the host permission gate accepts. Repeated here on purpose,
+#: the same way plugin/core/communication.py does: this file runs in the plugin process,
+#: and a local set is cheaper than a cross-package import for four words. A drift shows up
+#: as the host refusing the value, not as a silent pass.
+_TOOL_RISK_CLASSES = frozenset({"read", "self", "write", "external"})
+
+
 @dataclass
 class MCPTool:
     """MCP Tool information"""
@@ -1582,17 +1589,33 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
     def _server_tool_risk(self, server_name: str) -> str:
         """The operator's pinned risk class for one MCP server, or "" if unpinned.
 
-        Read from the server config so a deployment can narrow the blanket default
-        (``external``) for a server it has actually inspected. Unset means the
-        default, never an inferred value.
+        Read from ``self._servers_config``, the startup copy of the plugin's own
+        ``mcp_servers`` block. Not ``self.ctx.config``: that attribute does not exist, and
+        the broad ``except`` below would have swallowed the AttributeError forever,
+        leaving every server on the blanket default while the comment claimed an override
+        was available. The config schema declares ``mcp_servers`` as an open object (no
+        ``additionalProperties: false``), so an extra per-server key is legal here.
+
+        Unset means the default, never an inferred value: guessing a class from a tool
+        description would invent a label no author reviewed.
         """
+        entry = {}
         try:
-            servers = self.ctx.config.get("servers") or {}
+            servers = getattr(self, "_servers_config", None) or {}
             entry = servers.get(server_name) or {}
-            value = entry.get("tool_risk") if isinstance(entry, dict) else None
         except Exception:
+            entry = {}
+        value = entry.get("tool_risk") if isinstance(entry, dict) else None
+        risk = str(value or "").strip().lower()
+        if risk and risk not in _TOOL_RISK_CLASSES:
+            # A typo here must not silently become the strictest class or the loosest one.
+            # Say what was ignored, then apply the default.
+            self.ctx.logger.warning(
+                f"Ignoring unknown tool_risk={value!r} for MCP server '{server_name}'; "
+                f"expected one of {sorted(_TOOL_RISK_CLASSES)}, using 'external'"
+            )
             return ""
-        return str(value or "").strip().lower()
+        return risk
 
     async def _remote_unregister_llm_tool(self, llm_name: str) -> str:
         """Synchronously call main_server directly to unregister an LLM tool.

@@ -31,8 +31,11 @@ class _Mgr:
         self.lanlan_name = name
         self.tool_registry = ToolRegistry()
 
-    async def register_tool_and_sync(self, tool, *, replace=True):
-        self.tool_registry.register(tool, replace=replace)
+    async def register_tool_and_sync(self, tool, *, replace=True, risk_required=True):
+        # The router passes risk_required=False for wire registrations. A stub that
+        # ignores it would keep the test off the real path, and a stub that cannot
+        # accept it fails with TypeError before the ledger is even consulted.
+        self.tool_registry.register(tool, replace=replace, risk_required=risk_required)
 
     async def unregister_tool_and_sync(self, name):
         return self.tool_registry.unregister(name)
@@ -75,6 +78,42 @@ async def _register(name, *, role=None, source="plugin:mc", description="", port
             host_process_started_at=1 if host_id else None,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_an_unlabelled_plugin_tool_survives_a_rebuild(monkeypatch):
+    """The rule that keeps this feature from becoming an outage.
+
+    Every installed plugin registers without a risk label today. If replay used the strict
+    host rule, the tool would come back as a registration error, and the failure would
+    look nothing like a permission decision: a role reload, and the plugin's tools are
+    simply gone. Observe mode would not save it either, because a registration refusal
+    never consults the mode.
+    """
+    _use_managers(monkeypatch, _Mgr("Alpha"), _Mgr("Beta"))
+    result = await _register("legacy_plugin_tool", description="no label sent")
+    assert result["ok"] is True
+    assert "failed_roles" not in result or not result["failed_roles"]
+
+    fresh = _rebuilt("Alpha")
+    assert tr.replay_remote_tools(fresh, "Alpha") == ["legacy_plugin_tool"]
+    tool = fresh.tool_registry.get("legacy_plugin_tool")
+    assert tool is not None
+    assert tool.risk is None, "replay must not invent a class the author never declared"
+
+
+@pytest.mark.asyncio
+async def test_a_declared_label_survives_a_rebuild(monkeypatch):
+    """The other half: a label that was sent comes back as the same class, not as None."""
+    _use_managers(monkeypatch, _Mgr("Alpha"))
+    request = tr.ToolRegisterRequest(
+        name="labelled_tool", description="", callback_url="http://127.0.0.1:9001/cb",
+        role=None, source="plugin:mc", risk="external",
+    )
+    assert (await tr.register_tool(request))["ok"] is True
+    fresh = _rebuilt("Alpha")
+    tr.replay_remote_tools(fresh, "Alpha")
+    assert str(fresh.tool_registry.get("labelled_tool").risk) == "external"
 
 
 def _rebuilt(name):

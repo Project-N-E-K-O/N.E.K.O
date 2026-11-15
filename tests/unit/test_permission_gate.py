@@ -837,3 +837,23 @@ def test_the_sdk_accepts_a_missing_label_and_refuses_a_wrong_one():
         return None
 
     assert getattr(_labelled, LLM_TOOL_META_ATTR).risk == "write"
+
+
+def test_a_parked_request_logs_the_id_needed_to_answer_it(monkeypatch):
+    """The confirm line is useless without the id, so the id is in it.
+
+    An operator reading "[permission] confirm tool=x" has nothing to act on: the answer
+    endpoint takes a request id. The request id used to be passed to ``audit`` and
+    dropped on the floor there, which turns the one feature that waits on a human into
+    what looks like a hang.
+    """
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(ps, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 0.05)
+    with _mode(PermissionMode.ENFORCE), _bands(trusted=("qq:FRIEND",)):
+        with _captured_logs() as records:
+            asyncio.run(gate.enforce("external_tool", "external", _actor("qq:FRIEND")))
+    assert any("confirm" in line for line in records), records
+    ids = [part for line in records for part in line.split() if part.startswith("(request")]
+    assert ids, records
+    # The parked row is gone by now, so the id in the log is the only trace left of it.
+    assert gate.approvals.pending_count() == 0
