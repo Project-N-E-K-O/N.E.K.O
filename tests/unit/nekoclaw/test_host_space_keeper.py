@@ -146,6 +146,21 @@ class World:
         return [event.payload for event in await self.ledger.events(commission_id) if event.type == "review"]
 
 
+# The real one, for the tests of it.
+_CONFIRMED_LINE = SpaceKeeper.__dict__["_confirmed_line"]
+
+
+@pytest.fixture(autouse=True)
+def _what_is_old_is_removed_at_once(monkeypatch):
+    """Take what is old by the clock of a round as confirmed in that round.
+
+    Old sessions are cleaned a round after they were noted to be old (the
+    tests under "The clock" are of that). Everything else about cleaning is
+    tested here in one round.
+    """
+    monkeypatch.setattr(SpaceKeeper, "_confirmed_line", staticmethod(lambda state, now, due: (due, True)))
+
+
 @pytest.fixture
 async def world(tmp_path: Path) -> Any:
     made = World(tmp_path, FakeLLM())
@@ -679,7 +694,7 @@ def test_the_parts_of_a_review_fit_its_cap_so_that_none_is_cut_off_at_the_end():
         + settings.DISPATCH_USER_TEXT_MAX_TOKENS
         + settings.TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS
         + settings.TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS
-        + 120  # what was already filed during the commission
+        + settings.TASK_AGENT_REVIEW_FILED_MAX_TOKENS
         + settings.TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS
         + 2 * settings.TASK_AGENT_REVIEW_INDEX_MAX_TOKENS
         + settings.SPACE_PROJECT_NAME_MAX_TOKENS
@@ -1599,8 +1614,8 @@ async def test_without_a_model_projects_that_cannot_be_moved_do_not_use_up_the_r
 
 
 async def test_a_summary_is_written_from_the_newest_reviews_read_in_one_pass(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_ARCHIVE_REVIEWS as _ARCHIVE_REVIEWS
     from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
-    from nekoclaw.host.space_keeper import _ARCHIVE_REVIEWS
 
     await world.space.touch_project("Budget app")
     for number in range(_ARCHIVE_REVIEWS + 3):
@@ -1665,7 +1680,8 @@ async def test_an_answer_that_cannot_be_read_is_said_in_the_log_without_what_it_
     last = (await world.reviews(commission.id))[-1]
     assert (last["status"], last["reason"]) == ("failed", "unreadable")
     said = [record.getMessage() for record in caplog.records if "could not be read" in record.getMessage()]
-    assert len(said) == 1 and commission.id in said[0] and "characters came back" in said[0]
+    assert len(said) == 1 and commission.id in said[0] and "(63 characters)" in said[0]
+    assert "recorded as failed" in said[0]
     assert not any("cut off" in record.getMessage() for record in caplog.records)
 
 
@@ -2002,3 +2018,477 @@ async def test_a_project_a_commission_is_filed_under_late_while_its_summary_is_w
     home = world.root / "archive" / archived.archive_year / "Budget app"
     assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "A project, with it.\n"
     assert world.llm.count(TIER_ARCHIVE) == 2
+
+
+# ---------------------------------------------------------------------------
+# After the main session's reading of the PR
+# ---------------------------------------------------------------------------
+
+
+async def test_with_reviews_switched_off_no_review_is_made_and_the_rest_goes_on(world, monkeypatch):
+    from config import nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_REVIEW_ENABLED", False)
+    await world.space.touch_project("Budget app")
+    done = await world.finished()
+    failed = await world.finished("another task with other words", status="failed")
+
+    assert await world.keeper.review(done.id) == "not_due"
+    world.clock.now += settings.SPACE_PROJECT_IDLE_SECONDS + 60
+    assert await world.keeper.tidy(force=True) is True
+
+    # No review now, none a day later, and no model call for one.
+    assert await world.reviews(done.id) == [] and await world.reviews(failed.id) == []
+    assert world.llm.count(TIER_REVIEW) == 0
+    assert not (world.root / "projects" / DEFAULT_PROJECT / "reviews").exists()
+    # The space is still tidied: the idle project was archived.
+    assert world.llm.count(TIER_ARCHIVE) == 1
+    assert [item.status for item in await world.space.list_projects() if item.name == "Budget app"] == ["archived"]
+
+
+def test_which_model_reviews_and_which_summarises_is_said_in_the_settings(monkeypatch):
+    import utils.config_manager as config_manager
+    import utils.llm_client as llm_client
+    from config import nekoclaw_settings as settings
+    from nekoclaw.host import decision
+
+    asked: list[str] = []
+
+    class Manager:
+        def get_model_api_config(self, slot: str) -> dict[str, Any]:
+            asked.append(slot)
+            return {"api_key": "k", "base_url": "http://127.0.0.1:1/v1", "model": slot, "provider_type": "openai"}
+
+    async def create(**_kwargs: Any) -> Any:
+        return object()
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda migrate=False: Manager())
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", create)
+    tiers = (TIER_REVIEW, TIER_ARCHIVE, decision.TIER_FINE, decision.TIER_COARSE)
+
+    async def run() -> None:
+        llm = decision.ConfiguredDecisionLLM()
+        for tier in tiers:
+            await llm._client(tier, 100)
+
+    asyncio.run(run())
+    assert asked == ["summary", "summary", "summary", "emotion"]
+
+    asked.clear()
+    monkeypatch.setattr(settings, "TASK_AGENT_REVIEW_MODEL_SLOT", "emotion")
+    asyncio.run(run())
+    assert asked == ["emotion", "summary", "summary", "emotion"]
+
+    asked.clear()
+    monkeypatch.setattr(settings, "SPACE_ARCHIVE_MODEL_SLOT", "emotion")
+    asyncio.run(run())
+    assert asked == ["emotion", "emotion", "summary", "emotion"]
+
+
+async def test_what_its_task_agents_did_is_part_of_a_commission_and_is_told_in_its_review(world):
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "Its task agent wrote the parser.", "project": "Budget app", "project_description": "tracks spending"}
+    ]
+    parent = await world.file("build the budget app")
+    # It did nothing itself but start a task agent, which did the work and filed a note.
+    await world.work(parent.id, 0)
+    child = await world.file("write the parser", parent_id=parent.id, source="task_agent")
+    await world.ledger.append_event(parent.id, "subagent_started", {"name": "parser", "commission_id": child.id})
+    await world.work(child.id, 3, tool="edit")
+    filed = await world.space.submit(
+        await world.ledger.get(child.id),
+        {"title": "Parser", "content": "Dates are ISO.", "category": "lesson", "scope": "project"},
+    )
+    assert filed == "kept in project _daily as parser.md"
+    await world.end(child.id)
+    # The end of a task agent's own commission starts nothing.
+    assert world.llm.count(TIER_REVIEW) == 0
+
+    await world.end(parent.id)
+
+    # Reviewed, though it made no tool call itself: its task agent's count.
+    assert world.llm.count(TIER_REVIEW) == 1
+    _system, user = (message["content"] for message in world.llm.last(TIER_REVIEW))
+    assert (
+        "said: I will look at the folder first.\n"
+        "started task agent parser\n"
+        "  [parser] said: I will look at the folder first.\n"
+        '  [parser] edit({"command": "step 0"}) -> ok: result 0\n'
+    ) in user
+    # What its task agent filed is on file for it, and goes with it to its project.
+    assert "Already filed during the commission:\n- Parser\n" in user
+    (review,) = await world.reviews(parent.id)
+    assert (review["status"], review["project"], review["refiled"]) == ("written", "Budget app", ["Budget app/parser"])
+    assert [entry.id for entry in await world.space.list_entries("Budget app")] == ["parser"]
+    assert await world.space.list_entries(DEFAULT_PROJECT) == []
+    # Its own commission gets no review.
+    assert await world.reviews(child.id) == []
+
+
+async def test_a_commission_that_did_too_little_with_its_task_agents_is_still_skipped(world):
+    parent = await world.file("look at the folder")
+    await world.work(parent.id, 1)
+    child = await world.file("count the files", parent_id=parent.id, source="task_agent")
+    await world.ledger.append_event(parent.id, "subagent_started", {"name": "counter", "commission_id": child.id})
+    await world.work(child.id, 1)
+    await world.end(child.id)
+
+    await world.end(parent.id)
+
+    assert await world.reviews(parent.id) == [{"status": "skipped", "reason": "short", "tool_calls": 2}]
+    assert world.llm.count(TIER_REVIEW) == 0
+
+
+def test_what_is_whole_of_an_answer_that_was_cut_off_is_kept():
+    from nekoclaw.host.space_keeper import _salvage
+
+    cut = '{"review": "It went \\"well\\".", "entries": [{"title": "A", "content": "One."}, {"title": "B", "content": "Two'
+    assert _salvage(cut, "review") == {"review": 'It went "well".', "entries": [{"title": "A", "content": "One."}]}
+    # The text itself was being written: nothing of it can be used.
+    assert _salvage('{"review": "It was cut off in the middle of a sente', "review") is None
+    assert _salvage('{"entries": [{"title": "A", "content": "One."}]', "review") is None
+    assert _salvage('{"review": "  ", "entries": [', "review") is None
+    assert _salvage('{"review": 3, "entries": [', "review") is None
+    assert _salvage("", "review") is None
+    # Cut off before the entries, or between two of them.
+    assert _salvage('{"review": "Done.", "proj', "review") == {"review": "Done.", "entries": []}
+    assert _salvage('{"review": "Done.", "entries": [{"title": "A"}, ', "review") == {
+        "review": "Done.",
+        "entries": [{"title": "A"}],
+    }
+    assert _salvage('{"review": "Done.", "entries": ["not an entry", {"title": "A"}', "review") == {"review": "Done.", "entries": []}
+    # The other texts that are whole come along.
+    cut = '{"summary": "A project.", "line": "a project", "entries": [{"title": "X", "con'
+    assert _salvage(cut, "summary", ("line",)) == {"summary": "A project.", "line": "a project", "entries": []}
+    assert _salvage('{"summary": "A project.", "line": "a proj', "summary", ("line",)) == {"summary": "A project.", "entries": []}
+
+
+async def test_a_review_that_was_cut_off_keeps_its_text_and_the_entries_that_are_whole(world):
+    world.llm.answers[TIER_REVIEW] = [
+        '{"review": "It was done.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}, '
+        '{"title": "Second", "content": "It was cut he'
+    ]
+
+    commission = await world.finished()
+
+    assert await world.reviews(commission.id) == [
+        {"status": "written", "project": DEFAULT_PROJECT, "entries": ["_daily/photo-dates"]}
+    ]
+    assert [entry.id for entry in await world.space.list_entries(DEFAULT_PROJECT)] == ["photo-dates"]
+    path = world.root / "projects" / DEFAULT_PROJECT / "reviews" / f"{commission.id}.md"
+    assert "It was done." in path.read_text(encoding="utf-8")
+
+
+async def test_a_summary_that_was_cut_off_is_used_as_far_as_it_is_whole(world):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    world.llm.answers[TIER_ARCHIVE] = [
+        '{"summary": "An app that tracks spending.", "line": "spending tracker", "entries": [{"title": "X", "con'
+    ]
+    await world.space.touch_project("Budget app")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    await world.keeper.tidy(force=True)
+
+    (archived,) = [item for item in await world.space.list_projects() if item.status == "archived"]
+    home = world.root / "archive" / archived.archive_year / "Budget app"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "An app that tracks spending.\n"
+    assert "— spending tracker" in (world.root / "MEMORY.md").read_text(encoding="utf-8")
+    assert world.llm.count(TIER_ARCHIVE) == 1
+
+
+async def test_the_review_of_a_commission_the_user_stopped_files_no_entries(world):
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It was stopped.", "entries": [{"title": "Photo dates", "content": "Use the EXIF date."}]}
+    ]
+
+    stopped = await world.finished(status="cancelled")
+
+    system = world.llm.last(TIER_REVIEW)[0]["content"]
+    assert "entries: at most 0, and usually none." in system
+    # Its review is written; what the model made of it all the same is not kept.
+    assert await world.reviews(stopped.id) == [{"status": "written", "project": DEFAULT_PROJECT, "entries": []}]
+    assert await world.space.list_entries(DEFAULT_PROJECT) == []
+
+    done = await world.finished("another task with other words")
+
+    assert "entries: at most 3, and usually none." in world.llm.last(TIER_REVIEW)[0]["content"]
+    assert (await world.reviews(done.id))[0]["entries"] == ["_daily/photo-dates"]
+
+
+async def test_the_review_is_not_shown_a_note_that_was_not_kept_nor_a_project_in_the_archive(world):
+    await world.space.touch_project("Budget app", description="tracks spending")
+    await world.space.touch_project("Old thing", description="long over")
+    await world.space.archive_project("Old thing", summary="s")
+    commission = await world.file()
+    await world.work(commission.id)
+    await world.ledger.append_event(commission.id, "lesson", {"title": "Kept", "kept": True})
+    await world.ledger.append_event(commission.id, "lesson", {"title": "Not kept", "kept": False, "reason": "cap"})
+    # One from before notes said whether they were kept: it was.
+    await world.ledger.append_event(commission.id, "lesson", {"title": "From before"})
+
+    await world.end(commission.id)
+
+    user = world.llm.last(TIER_REVIEW)[1]["content"]
+    filed = user.split("Already filed during the commission:\n", 1)[1].split("\n\nKnown projects:\n", 1)[0]
+    assert filed == "- Kept\n- From before"
+    projects = user.split("\n\nKnown projects:\n", 1)[1].split("\n\nIndex, all projects:\n", 1)[0]
+    assert projects == "- Budget app: tracks spending"
+
+
+async def test_a_review_whose_project_cannot_be_opened_is_kept_where_the_commission_is(world, monkeypatch):
+    world.llm.answers[TIER_REVIEW] = [{"review": "It was done.", "project": "Budget app"}]
+
+    async def unreadable(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("the record of the project cannot be read")
+
+    monkeypatch.setattr(world.space, "open_project", unreadable)
+
+    commission = await world.finished()
+
+    assert await world.reviews(commission.id) == [{"status": "written", "project": DEFAULT_PROJECT, "entries": []}]
+    assert (world.root / "projects" / DEFAULT_PROJECT / "reviews" / f"{commission.id}.md").is_file()
+
+
+async def test_an_entry_of_a_review_is_cut_to_its_own_cap(world):
+    from config.nekoclaw_settings import TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    world.llm.answers[TIER_REVIEW] = [
+        {"review": "It was done.", "entries": [{"title": "Photo dates", "content": "use the date " * 400}]}
+    ]
+
+    await world.finished()
+
+    content = (await world.space.read_entry("photo-dates", DEFAULT_PROJECT)).content
+    assert TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS - 3 <= count_tokens(content) <= TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
+
+
+def test_what_may_be_kept_of_a_review_fits_into_what_the_model_may_write():
+    from config import nekoclaw_settings as settings
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    def words(tokens: int) -> str:
+        return truncate_to_tokens("lesson " * (2 * tokens), tokens)
+
+    assert count_tokens(words(40)) == 40
+    answer = {
+        "review": words(settings.TASK_AGENT_REVIEW_TEXT_MAX_TOKENS),
+        "entries": [
+            {
+                "title": words(settings.SPACE_ENTRY_TITLE_MAX_TOKENS),
+                "description": words(settings.SPACE_ENTRY_DESCRIPTION_MAX_TOKENS),
+                "type": "reflection",
+                "scope": "project",
+                "content": words(settings.TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
+            }
+        ]
+        * settings.TASK_AGENT_REVIEW_MAX_ENTRIES,
+        "project": words(settings.SPACE_PROJECT_NAME_MAX_TOKENS),
+        "project_description": words(settings.SPACE_PROJECT_DESCRIPTION_MAX_TOKENS),
+    }
+
+    assert count_tokens(json.dumps(answer)) <= settings.TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS
+
+
+async def test_the_account_of_a_commission_is_made_off_the_event_loop(world, monkeypatch):
+    import threading
+
+    from nekoclaw.host import space_keeper as module
+
+    on_the_loop: list[bool] = []
+    real = module.account
+
+    def recorded(*args: Any, **kwargs: Any) -> str:
+        on_the_loop.append(threading.current_thread() is threading.main_thread())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, "account", recorded)
+
+    await world.finished()
+
+    assert on_the_loop == [False]
+
+
+async def test_late_reviews_take_the_oldest_first_and_one_too_short_does_not_use_a_place(world):
+    from config.nekoclaw_settings import TASK_AGENT_REVIEWS_PER_UPKEEP
+
+    await world.keeper.tidy(force=True)
+    # A day on which many commissions failed as they began, and then some after real work.
+    short = [await world.finished(f"failed at once {number} n{number}", calls=0, status="failed") for number in range(6)]
+    real = []
+    for number in range(TASK_AGENT_REVIEWS_PER_UPKEEP + 1):
+        world.clock.now += 60
+        real.append(await world.finished(f"failed after work {number} w{number}", status="failed"))
+    world.clock.now += DAY + 60
+
+    await world.keeper.tidy(force=True)
+
+    # Every one that was too short is done with, at no cost.
+    for commission in short:
+        assert [item["status"] for item in await world.reviews(commission.id)] == ["skipped"]
+    assert world.llm.count(TIER_REVIEW) == TASK_AGENT_REVIEWS_PER_UPKEEP
+    # The oldest were written about; the newest waits for the next round.
+    statuses = [[item["status"] for item in await world.reviews(commission.id)] for commission in real]
+    assert statuses == [*[["written"]] * TASK_AGENT_REVIEWS_PER_UPKEEP, []]
+
+    world.clock.now += 60
+    await world.keeper.tidy(force=True)
+
+    assert [item["status"] for item in await world.reviews(real[-1].id)] == ["written"]
+
+
+async def test_a_round_looks_at_so_many_commissions_for_a_late_review(world, monkeypatch):
+    from config import nekoclaw_settings as settings
+
+    monkeypatch.setattr(settings, "TASK_AGENT_REVIEWS_LOOKED_AT_PER_UPKEEP", 4)
+    await world.keeper.tidy(force=True)
+    short = []
+    for number in range(6):
+        world.clock.now += 60
+        short.append(await world.finished(f"failed at once {number} n{number}", calls=0, status="failed"))
+    world.clock.now += DAY + 600
+
+    await world.keeper.tidy(force=True)
+
+    looked_at = [bool(await world.reviews(commission.id)) for commission in short]
+    assert looked_at == [True, True, True, True, False, False]
+
+
+# -- the clock -------------------------------------------------------------
+
+
+async def test_a_last_round_whose_time_is_still_to_come_does_not_keep_tidying_waiting(world):
+    from config.nekoclaw_settings import SPACE_UPKEEP_INTERVAL_SECONDS
+
+    # Written while the clock was a year ahead; it has been set back since.
+    await world.space.write_state(upkeep_at=world.clock.now + 365 * DAY)
+
+    assert await world.keeper.tidy() is True
+
+    assert (await world.space.read_state())["upkeep_at"] == world.clock.now
+    # A round that was made is not made again before its time.
+    world.clock.now += SPACE_UPKEEP_INTERVAL_SECONDS - 1
+    assert await world.keeper.tidy() is False
+    # The same while the host runs: the clock goes back a month.
+    world.clock.now -= 30 * DAY
+    assert await world.keeper.tidy() is True
+    assert (await world.space.read_state())["upkeep_at"] == world.clock.now
+
+
+def test_what_is_old_is_confirmed_by_a_round_an_interval_after_it_was_noted():
+    from config.nekoclaw_settings import SPACE_UPKEEP_INTERVAL_SECONDS as INTERVAL
+
+    now, due = 10_000_000.0, 9_000_000.0
+    line = _CONFIRMED_LINE.__func__
+
+    # Nothing noted yet, or not what this writes: noted now, nothing removed.
+    assert line({}, now, due) == (None, True)
+    assert line({"sessions_due_until": due}, now, due) == (None, True)
+    assert line({"sessions_due_until": "x", "sessions_due_seen_at": now - INTERVAL}, now, due) == (None, True)
+    assert line({"sessions_due_until": True, "sessions_due_seen_at": now - INTERVAL}, now, due) == (None, True)
+    # Noted an interval ago or longer: what is old by both readings.
+    assert line({"sessions_due_until": due - 500, "sessions_due_seen_at": now - INTERVAL}, now, due) == (due - 500, True)
+    assert line({"sessions_due_until": due + 500, "sessions_due_seen_at": now - 9 * INTERVAL}, now, due) == (due, True)
+    # Noted too short a while ago: nothing removed, and the note stays as it is.
+    assert line({"sessions_due_until": due - 500, "sessions_due_seen_at": now - INTERVAL + 1}, now, due) == (None, False)
+    assert line({"sessions_due_until": due - 500, "sessions_due_seen_at": now}, now, due) == (None, False)
+    # Noted at a time that is still to come: by a clock that was ahead. Not used, and noted anew.
+    assert line({"sessions_due_until": due + 500, "sessions_due_seen_at": now + 1}, now, due) == (None, True)
+
+
+async def test_old_sessions_are_removed_a_round_after_they_were_noted_to_be_old(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS, SPACE_UPKEEP_INTERVAL_SECONDS
+
+    monkeypatch.setattr(SpaceKeeper, "_confirmed_line", _CONFIRMED_LINE)
+    commission = await world.finished(calls=0)
+    directory = world.paths.session_dir(commission.id)
+    _fill_session(directory)
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+
+    # The first round only notes what is old by its clock.
+    assert await world.keeper.tidy(force=True) is True
+    noted_at = world.clock.now
+    assert (directory / "transcript.jsonl").is_file() and (directory / "outputs").is_dir()
+    state = await world.space.read_state()
+    assert (state["sessions_due_until"], state["sessions_due_seen_at"]) == (noted_at - SPACE_TRANSCRIPT_KEPT_SECONDS, noted_at)
+
+    # A round before an interval has passed removes nothing, and does not begin the wait anew.
+    world.clock.now += SPACE_UPKEEP_INTERVAL_SECONDS - 1
+    await world.keeper.tidy(force=True)
+    assert (directory / "transcript.jsonl").is_file()
+    assert (await world.space.read_state())["sessions_due_seen_at"] == noted_at
+
+    # An interval after the note, it is removed; the working directory is not.
+    world.clock.now += 1
+    await world.keeper.tidy(force=True)
+    assert not (directory / "transcript.jsonl").exists() and not (directory / "outputs").exists()
+    assert (directory / "work" / "sub" / "result.txt").is_file()
+    assert [event.type for event in await world.ledger.events(commission.id)].count("session_cleaned") == 1
+
+
+async def test_a_clock_that_was_a_month_ahead_for_a_while_removes_nothing(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS, SPACE_UPKEEP_INTERVAL_SECONDS
+
+    monkeypatch.setattr(SpaceKeeper, "_confirmed_line", _CONFIRMED_LINE)
+    commission = await world.finished(calls=0)
+    directory = world.paths.session_dir(commission.id)
+    _fill_session(directory)
+    # A round by the right clock, a day later: nothing is old.
+    world.clock.now += DAY
+    await world.keeper.tidy(force=True)
+
+    # The date is set forty days ahead, and a commission ends: a round runs.
+    world.clock.now += 40 * DAY
+    await world.keeper.tidy(force=True)
+    # Old by this reading, not by the one before: it stays.
+    assert (directory / "transcript.jsonl").is_file()
+
+    # The date is set right again; rounds go on as they do.
+    world.clock.now -= 40 * DAY
+    for _round in range(3):
+        world.clock.now += SPACE_UPKEEP_INTERVAL_SECONDS
+        await world.keeper.tidy(force=True)
+        assert (directory / "transcript.jsonl").is_file()
+    assert [event.type for event in await world.ledger.events(commission.id)].count("session_cleaned") == 0
+
+    # When it is old in earnest, it goes: noted in one round, removed in the next.
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS
+    await world.keeper.tidy(force=True)
+    assert (directory / "transcript.jsonl").is_file()
+    world.clock.now += SPACE_UPKEEP_INTERVAL_SECONDS
+    await world.keeper.tidy(force=True)
+    assert not (directory / "transcript.jsonl").exists()
+
+
+# -- shutting down -----------------------------------------------------------
+
+
+async def test_once_stood_down_the_end_of_a_commission_starts_nothing(world):
+    commission = await world.file()
+    await world.work(commission.id)
+
+    await world.keeper.stand_down()
+    # What shutting down does to a commission that is at work.
+    moved = await world.ledger.transition(commission.id, "failed", reason="the host is shutting down")
+
+    assert moved.applied
+    assert world.keeper._tasks == set()
+    assert await world.keeper.tidy() is False
+    assert world.llm.calls == []
+    assert "upkeep_at" not in await world.space.read_state()
+
+
+async def test_work_that_waits_to_begin_is_dropped_when_the_host_stands_down(world):
+    world.keeper._review_delay = 0.05
+    commission = await world.file()
+    await world.work(commission.id)
+    await world.ledger.transition(commission.id, "done", reason="test")
+    assert len(world.keeper._tasks) == 1
+
+    # Shutting down begins while the review waits for its moment.
+    await world.keeper.stand_down()
+    await world.keeper.settle()
+
+    assert world.llm.calls == [] and await world.reviews(commission.id) == []
+    assert "upkeep_at" not in await world.space.read_state()

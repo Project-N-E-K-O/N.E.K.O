@@ -361,8 +361,16 @@ def _listed(document: _Document, key: str) -> list[str]:
 
 
 def _points_at(line: str, marks: tuple[str, str]) -> bool:
-    """Whether a line of an index has one of the marks of a target in it."""
-    return any(mark in line for mark in marks)
+    """Whether the link a line of an index begins with is one of the marks of a target.
+
+    The first link of the line, not any link in it: what follows the link
+    is the entry's description, which can quote the link of another entry
+    (a task agent sees the index written just so). Told by a mark anywhere
+    in it, such a line would be taken for the other entry's and be changed
+    or removed with it.
+    """
+    first = line.find("](")
+    return first >= 0 and any(line.startswith(mark, first) for mark in marks)
 
 
 def _with_line_first(lines: list[str], line: str) -> list[str]:
@@ -485,6 +493,12 @@ def _index_line(title: str, target: str, description: str) -> str:
     return f"{line} — {description}" if description else line
 
 
+# How many commissions the count of notes added is kept for at one time.
+_COUNTED_COMMISSIONS = 512
+# Room for the line that says a part was cut, when a part is cut further.
+_BRIEF_CUT_ROOM = 12
+
+
 class SpaceError(RuntimeError):
     """Something asked of the space cannot be done: an unknown entry, an unusable name."""
 
@@ -521,6 +535,10 @@ class TaskAgentSpace:
         self._ledger = ledger
         self._clock = clock
         self._lock: asyncio.Lock | None = None
+        # How many notes each commission added with ``note_lesson``, by the
+        # commission she gave (its task agents' count with its own). Kept
+        # while the host runs; the oldest go when there are many.
+        self._added_by: dict[str, int] = {}
 
     # -- plumbing ---------------------------------------------------------
 
@@ -957,11 +975,35 @@ class TaskAgentSpace:
 
         ``feedback`` never arrives here: it is a task preference.
         """
+        from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+        from config.prompts.prompts_nekoclaw_space import SPACE_LESSONS_CAP_REACHED
+
         scope = str(lesson.get("scope") or "project").strip().lower()
         kind = str(lesson.get("category") or "")
         # How a project stands is the project's own, whatever scope came with it.
         everywhere = scope == "global" and _entry_type(kind) != "progress"
         project = None if everywhere else (commission.project or DEFAULT_PROJECT)
+        # What a task agent files goes into an index as it is, and the newest
+        # lines of an index are what later task agents are shown. One
+        # commission adds so many and no more, so that one that was led
+        # astray cannot fill that window with lines of its own. Counted for
+        # the commission she gave: a task agent it started adds to its
+        # count, not to one of its own.
+        counted = commission.parent_id or commission.id
+        added = self._added_by.get(counted, 0)
+        if added >= SPACE_LESSONS_PER_COMMISSION:
+            await self._note_unkept(commission, lesson, "cap")
+            return SPACE_LESSONS_CAP_REACHED.format(count=SPACE_LESSONS_PER_COMMISSION)
+        # Taken before the files are written (two of its task agents can
+        # file at one moment), and given back when nothing is added.
+        self._added_by[counted] = added + 1
+        while len(self._added_by) > _COUNTED_COMMISSIONS:
+            del self._added_by[next(iter(self._added_by))]
+
+        def give_back() -> None:
+            if self._added_by.get(counted, 0) > 0:
+                self._added_by[counted] -= 1
+
         try:
             entry, how = await self._write(
                 lambda: self._file_entry(
@@ -973,10 +1015,16 @@ class TaskAgentSpace:
                 )
             )
         except (SpaceError, ValueError) as exc:
+            give_back()
+            await self._note_unkept(commission, lesson, "refused")
             return f"not kept: {exc}"
         except OSError as exc:
+            give_back()
             logger.warning("a lesson could not be written into the task agent space (%s)", type(exc).__name__)
+            await self._note_unkept(commission, lesson, "unwritable")
             return "not kept: the files of the task agent space could not be written"
+        if how == _THERE:
+            give_back()
         if self._ledger is not None:
             # On the commission's record too, so the board can show it.
             await self._ledger.append_event(
@@ -984,6 +1032,7 @@ class TaskAgentSpace:
                 "lesson",
                 {
                     **dict(lesson),
+                    "kept": True,
                     "entry": entry.id,
                     "project": project,
                     "created": how == _CREATED,
@@ -997,6 +1046,22 @@ class TaskAgentSpace:
             return f"added to {entry.id}.md in {where}"
         # Said as it is: the task agent is not told something was kept that was not.
         return f"already in {entry.id}.md in {where}, word for word; nothing was added"
+
+    async def _note_unkept(self, commission: Commission, lesson: dict[str, Any], reason: str) -> None:
+        """Put a note that was not kept on the commission's record.
+
+        What the task agent wrote is not lost with the files that could not
+        be written: it is in the ledger, as every note was before there was
+        a space, and marked as not kept.
+        """
+        if self._ledger is None:
+            return
+        try:
+            await self._ledger.append_event(
+                commission.id, "lesson", {**dict(lesson), "kept": False, "reason": reason}
+            )
+        except Exception:  # noqa: BLE001 - the task agent is still told what became of its note
+            logger.warning("a note that was not kept could not be put on its commission's record", exc_info=True)
 
     async def file_entry(
         self,
@@ -1019,13 +1084,17 @@ class TaskAgentSpace:
             raise SpaceError(str(exc)) from exc
         return entry, how == _CREATED
 
-    async def refile_entries(self, commission_id: str, source: str, target: str) -> list[str]:
+    async def refile_entries(
+        self, commission_id: str, source: str, target: str, *, also: Iterable[str] = ()
+    ) -> list[str]:
         """Move what one commission alone filed under a project to another project. Returns the ids there.
 
         For a commission found to belong to a project after it ended: what
         it filed while it was one of ``_daily`` goes with it, or the
-        project's index would not have it. An entry other commissions
-        added to stays where it is, and so does every entry of theirs.
+        project's index would not have it. ``also`` are the commissions of
+        the task agents it started: what they filed is its own. An entry
+        other commissions added to stays where it is, and so does every
+        entry of theirs.
         The files are moved as they are, each under a name that is free,
         and so are their lines in the index: a line the user reworded goes
         along as it is, but for the file it points at. Raises OSError, with
@@ -1041,8 +1110,9 @@ class TaskAgentSpace:
             # one made anew, and theirs removed once the index reads again.
             self._text_to_change(paths.index(source))
             moved: list[str] = []
+            own = {commission_id, *also}
             for entry in self._entries(origin, source):
-                if entry.sources != (commission_id,):
+                if not entry.sources or not set(entry.sources) <= own:
                     continue
                 old = origin / f"{entry.id}.md"
                 name = self._free_name(destination, entry.id)
@@ -1331,7 +1401,12 @@ class TaskAgentSpace:
         archived_at = data.get("archived_at")
         pending = data.get("pending_archive")
         return Project(
-            name=str(data.get("name") or directory.name),
+            # A project in use is called what its directory is called, which
+            # is how it is made and how it is found: a name changed by hand
+            # in its file would be one nothing finds it by, and renaming the
+            # directory renames the project. An archived one can be in a
+            # directory with a number after its name, so its file says.
+            name=str(data.get("name") or directory.name) if archive_year is not None else directory.name,
             description=_one_line(data.get("description")),
             workdir=str(data["workdir"]) if isinstance(data.get("workdir"), str) and data["workdir"] else None,
             status=PROJECT_ARCHIVED if archive_year is not None else PROJECT_ACTIVE,
@@ -1355,7 +1430,9 @@ class TaskAgentSpace:
         not written over (``_project_to_change``).
         """
         try:
-            data = json.loads((directory / SpacePaths.PROJECT_FILE).read_text(encoding="utf-8"))
+            # With or without the mark some editors put at the beginning of a
+            # file they save: the user may have changed the description there.
+            data = json.loads((directory / SpacePaths.PROJECT_FILE).read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return None, True
         except (OSError, ValueError):
@@ -1399,6 +1476,9 @@ class TaskAgentSpace:
         paths = self._paths()
         if project.archive_year is not None:
             return paths.archived_dir(project.archive_year, project.directory or project.name)
+        if project.directory:
+            # The directory it was read from, whatever it is called.
+            return paths.projects_dir() / project.directory
         return paths.project_dir(project.name)
 
     def _revive(self, project: str | None) -> None:
@@ -1931,10 +2011,15 @@ class TaskAgentSpace:
 
     def _review_directories(self) -> list[tuple[Path, str, str | None]]:
         """Return the ``reviews`` directory of every project: (directory, project, archive year)."""
-        directories = [
-            (self._directory_of(project) / SpacePaths.REVIEWS_DIR, project.name, project.archive_year)
-            for project in (*self._active_projects(), *self._archived_projects())
-        ]
+        directories: list[tuple[Path, str, str | None]] = []
+        for project in (*self._active_projects(), *self._archived_projects()):
+            try:
+                home = self._directory_of(project)
+            except ValueError:
+                # A directory someone made by hand under a name that cannot
+                # be a project's. The reviews of the others are still found.
+                continue
+            directories.append((home / SpacePaths.REVIEWS_DIR, project.name, project.archive_year))
         return directories
 
     async def list_reviews(
@@ -2063,22 +2148,43 @@ class TaskAgentSpace:
         except (OSError, ValueError):
             logger.warning("the task agent space could not be read for a task agent's instructions", exc_info=True)
             return ""
-        parts: list[str] = []
-        for header, text, cap, is_index in sections:
-            text = text.strip()
-            if not text:
-                continue
+        kept = [(header, text.strip(), cap, is_index) for header, text, cap, is_index in sections if text.strip()]
+        if not kept:
+            return ""
+        note = texts.SPACE_BRIEF_NOTE.format(root=root, project=name)
+
+        def part(header: str, text: str, cap: int, is_index: bool) -> str:
             if count_tokens(text) > cap:
                 if is_index:
                     # Whole lines, so no line ends in half a link.
                     lines, _dropped = take_lines_within_token_budget(text.split("\n"), cap)
                     text = "\n".join(lines)
-                text = f"{truncate_to_tokens(text, cap).rstrip()}\n{texts.SPACE_BRIEF_CUT_NOTE}"
-            parts.append(f"{header}\n{text}")
-        if not parts:
-            return ""
-        note = texts.SPACE_BRIEF_NOTE.format(root=root, project=name)
-        return truncate_to_tokens("\n\n".join([note, *parts]), SPACE_BRIEF_MAX_TOKENS)
+                text = f"{truncate_to_tokens(text, cap).rstrip()}\n{texts.SPACE_BRIEF_CUT_NOTE}".lstrip("\n")
+            return f"{header}\n{text}"
+
+        caps = [cap for _header, _text, cap, _is_index in kept]
+
+        def whole() -> str:
+            return "\n\n".join(
+                [note, *(part(header, text, cap, is_index) for (header, text, _cap, is_index), cap in zip(kept, caps, strict=True))]
+            )
+
+        brief = whole()
+        # The parts have caps that leave room for the headings and the note.
+        # The note names the directory of the space, though, and the headings
+        # the project: with a long path or name the whole is over its cap.
+        # What is over comes off the parts, the last first, so that each
+        # still ends at a whole line and says that it was cut; cut off at
+        # the end of the whole, the last part would end anywhere and say
+        # nothing.
+        for position in reversed(range(len(kept))):
+            over = count_tokens(brief) - SPACE_BRIEF_MAX_TOKENS
+            if over <= 0:
+                break
+            used = min(caps[position], count_tokens(kept[position][1]))
+            caps[position] = max(0, used - over - _BRIEF_CUT_ROOM)
+            brief = whole()
+        return truncate_to_tokens(brief, SPACE_BRIEF_MAX_TOKENS)
 
     async def contains(self, path: str) -> bool:
         """Whether a path lies inside the space, links resolved."""
@@ -2125,7 +2231,7 @@ class TaskAgentSpace:
         commissions are reviewed.
         """
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return {}
         except ValueError:

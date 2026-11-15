@@ -182,6 +182,7 @@ def _check_plugin_toml_schema(
         "dependency",
         "dependencies",
         "previous_ids",
+        "shared",
     }
     _warn_unknown_keys(plugin_table, allowed_plugin_keys, "[plugin]", issues)
 
@@ -206,6 +207,7 @@ def _check_plugin_toml_schema(
     _check_author_table(plugin_table.get("author"), issues)
     _check_sdk_table(plugin_table.get("sdk"), issues)
     _check_store_table(plugin_table.get("store"), issues)
+    _check_shared_table(plugin_table.get("shared"), issues)
     _check_i18n_table(plugin_dir, plugin_table.get("i18n"), issues)
     _check_install_table(plugin_dir, plugin_table.get("install"), issues)
     _check_safety_table(plugin_table.get("safety"), issues)
@@ -415,6 +417,17 @@ def _check_store_table(value: object, issues: list[tuple[str, str]]) -> None:
     backend = value.get("backend")
     if backend is not None:
         _check_enum(backend, "[plugin.store].backend", {"file", "sqlite", "memory"}, issues)
+
+
+def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
+    """Check ``[plugin.shared]``: the plugins whose shared files this one reads."""
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        issues.append(("error", "[plugin.shared] must be a table"))
+        return
+    _warn_unknown_keys(value, {"reads"}, "[plugin.shared]", issues)
+    _check_string_list(value.get("reads"), "[plugin.shared].reads", issues, required=False)
 
 
 def _check_i18n_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:

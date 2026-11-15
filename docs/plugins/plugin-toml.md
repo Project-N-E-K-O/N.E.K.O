@@ -213,10 +213,11 @@ reads = ["weather"]
 
 Every plugin has a shared directory, `<user data root>/plugin_shared/<plugin id>/`, for files it wants other plugins to be able to read. The plugin that owns it writes there through `self.shared_path(...)`. To read what another plugin published, list that plugin's id under `reads` and call `self.shared_path_of("weather", ...)`; without the declaration the call raises `ValidationError`.
 
-Two things to know:
+Three things to know:
 
 - **It is an agreement, not a security boundary.** Plugins are not sandboxed from each other, so nothing stops a plugin from writing into another plugin's directory. The declaration only keeps the dependency visible in the manifest. Treat another plugin's files as read-only, and never put secrets in your shared directory.
 - **It is not part of the plugin's private state.** The shared directory stays when the plugin that published it is removed, and it moves with the user's data when the storage location is changed.
+- **Keep links out of it.** Because the directory moves with the user's data, a symbolic link or junction anywhere inside it (a virtual environment, a git checkout, `node_modules`) makes a change of the storage location fail as a whole. Publish plain files and directories only.
 
 Publishing needs no declaration. If your plugin neither publishes nor reads shared files, leave this section out.
 

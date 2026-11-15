@@ -34,7 +34,7 @@ from tests.unit.nekoclaw.host_fakes import (
     wait_until,
 )
 
-SPACE_NOTE = "Notes kept from earlier commissions follow."
+SPACE_NOTE = "From the task agent space."
 
 
 @pytest.fixture
@@ -644,3 +644,20 @@ async def test_a_shell_command_that_changes_into_the_directory_above_first_is_re
     refused = await host.task_agents._cb_permission("no-such-session", payload)
 
     assert refused["allow"] is False and "note_lesson" in refused["reason"]
+
+
+async def test_shutting_down_stands_the_space_down_before_the_task_agents_are_stopped(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+    stood_down: list[bool] = []
+    stop = host.task_agents.shutdown
+
+    async def shutdown() -> None:
+        # Every commission that is at work is ended here, as failed.
+        stood_down.append(host.space_keeper._closed)
+        await stop()
+
+    host.task_agents.shutdown = shutdown
+
+    await host.shutdown()
+
+    assert stood_down == [True]

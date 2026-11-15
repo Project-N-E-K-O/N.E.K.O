@@ -202,6 +202,14 @@ def _has_transcript(session_dir: Any) -> bool:
         return False
 
 
+def _has_files(session_dir: Any) -> bool:
+    """Whether a session directory holds anything but a transcript: a working directory, say. Blocking."""
+    try:
+        return any(item.name != TRANSCRIPT_NAME for item in session_dir.iterdir())
+    except OSError:
+        return False
+
+
 def default_runtime_factory(on_event: Callable[[dict[str, Any]], None], host: Any) -> Any:
     """Return the built-in runtime in a child process."""
     from nekoclaw.runtime import SubprocessRuntime
@@ -1799,6 +1807,12 @@ class TaskAgentManager:
         if recorded is None:
             return current
         if not _has_transcript(recorded) and _has_transcript(current):
+            return current
+        if not recorded.exists() and _has_files(current):
+            # Moved by hand as above, and what was said there has been
+            # removed since, being old (``SpaceKeeper``): the session is
+            # still where its working directory is, not at the place on
+            # record, which is gone.
             return current
         return recorded
 

@@ -362,6 +362,9 @@ class NekoClawHost:
 
     async def _shutdown_steps(self) -> None:
         steps = (
+            # Before the task agents are stopped: every commission that ends
+            # by that would start work for the space that is then cut off.
+            ("task agent space, no new work", self.space_keeper.stand_down),
             ("task brain", self.brain.close),
             ("task_agents", self.task_agents.shutdown),
             ("built-in tools", self._release_builtins),

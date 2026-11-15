@@ -24,8 +24,11 @@ on has ended, it
   away; a failed one only when it was left failed for a day, because a failed
   commission is often taken up again and the review would miss how it ended.
   A commission with next to no tool calls is not reviewed at all, nor is one
-  a plugin entry did, nor one a task agent started for itself (its work is
-  part of its parent's).
+  a plugin entry did, nor one a task agent started for itself: what that
+  one did is told in the review of the commission that started it, its
+  steps among the steps of its parent, and what it filed is its parent's.
+  Reviews can be switched off in the settings; nothing of this paragraph
+  happens then.
 * then, at most every few hours, **tidies**: archives projects nothing was
   commissioned for in a month (one model call for the summary), removes what
   was said in sessions that ended a month ago (never a working directory),
@@ -42,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import time
@@ -59,8 +63,6 @@ logger = logging.getLogger(__name__)
 # Statuses in which a commission is over for good, or left as it is.
 _REVIEWED_AT_ONCE = frozenset({"done", "cancelled"})
 _REVIEWABLE = frozenset({"done", "cancelled", "failed"})
-# Tool calls that say nothing about how much work a commission was.
-_NOT_WORK = frozenset({"report", "note_lesson", "todo_write"})
 _OUTPUTS_NAME = "outputs"
 # Statuses in which what was said in a session is no longer needed once it is old.
 _CLEANABLE = frozenset({"done", "failed", "cancelled"})
@@ -68,8 +70,8 @@ _CLEANABLE = frozenset({"done", "failed", "cancelled"})
 _REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
 _EVENT_PAGE = 500
 _CLEAN_BATCH = 200
-# How many of a project's reviews, the newest, its summary is written from.
-_ARCHIVE_REVIEWS = 12
+# Reviews that had a model write: the ones a round of tidying makes so many of.
+_MODEL_WROTE = frozenset({"written", "failed"})
 # Sorts after every commission id (ids are hex digits).
 _AFTER_EVERY_ID = "~"
 _LANGUAGES = {
@@ -114,23 +116,101 @@ def _parse_object(raw: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _salvage(raw: str, text_key: str, more: tuple[str, ...] = ()) -> dict[str, Any] | None:
+    """Return what is whole of an answer that was cut off, or None when its text is not.
+
+    An answer that reaches the cap on what the model may write ends in the
+    middle of the object, and is no JSON. Its text (``text_key``) comes
+    first and is usually whole; so are the entries before the one that was
+    being written. Kept, they are worth more than nothing, and it is the
+    commissions with the most to say whose answers are cut off.
+    """
+    text = str(raw or "")
+    decoder = json.JSONDecoder()
+
+    def string_of(key: str) -> str | None:
+        found = re.search(rf'"{re.escape(key)}"\s*:\s*(?=")', text)
+        if found is None:
+            return None
+        try:
+            value, _end = decoder.raw_decode(text, found.end())
+        except ValueError:
+            return None
+        return value if isinstance(value, str) else None
+
+    main = string_of(text_key)
+    if main is None or not main.strip():
+        return None
+    data: dict[str, Any] = {text_key: main, "entries": []}
+    for key in more:
+        value = string_of(key)
+        if value is not None:
+            data[key] = value
+    listed = re.search(r'"entries"\s*:\s*\[', text)
+    position = listed.end() if listed is not None else len(text)
+    while position < len(text):
+        while position < len(text) and text[position] in " \t\r\n,":
+            position += 1
+        if position >= len(text) or text[position] != "{":
+            break
+        try:
+            item, position = decoder.raw_decode(text, position)
+        except ValueError:
+            break
+        if isinstance(item, dict):
+            data["entries"].append(item)
+    return data
+
+
 def tool_calls(events: list[LedgerEvent]) -> int:
     """Return how many tool calls of a commission were work (not reports, lessons or the todo list)."""
+    from config.nekoclaw_settings import TASK_AGENT_REVIEW_UNCOUNTED_TOOLS
+
     return sum(
         1
         for event in events
-        if event.type == "tool_start" and str(event.payload.get("tool_name") or "") not in _NOT_WORK
+        if event.type == "tool_start"
+        and str(event.payload.get("tool_name") or "") not in TASK_AGENT_REVIEW_UNCOUNTED_TOOLS
     )
 
 
-def account(events: list[LedgerEvent], max_tokens: int, line_max_tokens: int) -> str:
+def account(
+    events: list[LedgerEvent],
+    max_tokens: int,
+    line_max_tokens: int,
+    children: dict[str, list[LedgerEvent]] | None = None,
+) -> str:
     """Return what a task agent did, one line per step, within ``max_tokens``.
 
     Of a longer account the beginning (a third of the room) and the end are
-    kept: how it set out, and how it ended.
+    kept: how it set out, and how it ended. ``children`` are the events of
+    the task agents it started, by commission: the steps of each follow the
+    line that says it was started, marked as its own.
     """
     from config.prompts.prompts_nekoclaw_space import TASK_AGENT_REVIEW_PROCESS_GAP
     from utils.tokenize import count_tokens
+
+    lines = _steps(events, line_max_tokens, children or {})
+    if not lines:
+        return ""
+    sizes = [count_tokens(line) + 1 for line in lines]
+    if sum(sizes) <= max_tokens:
+        return "\n".join(lines)
+    head_room, used, head = max_tokens // 3, 0, 0
+    while head < len(lines) and used + sizes[head] <= head_room:
+        used += sizes[head]
+        head += 1
+    tail_room, used, tail = max_tokens - head_room - 12, 0, len(lines)
+    while tail > head and used + sizes[tail - 1] <= tail_room:
+        used += sizes[tail - 1]
+        tail -= 1
+    gap = TASK_AGENT_REVIEW_PROCESS_GAP.format(count=tail - head)
+    return "\n".join([*lines[:head], gap, *lines[tail:]])
+
+
+def _steps(events: list[LedgerEvent], line_max_tokens: int, children: dict[str, list[LedgerEvent]]) -> list[str]:
+    """Return the steps of one commission, one line each; see ``account``."""
+    from config.nekoclaw_settings import TASK_AGENT_REVIEW_UNCOUNTED_TOOLS
 
     half = max(8, line_max_tokens // 2)
     arguments: dict[str, str] = {}
@@ -158,7 +238,7 @@ def account(events: list[LedgerEvent], max_tokens: int, line_max_tokens: int) ->
             arguments[str(payload.get("tool_call_id") or "")] = args
         elif kind == "tool_end":
             name = str(payload.get("tool_name") or "tool")
-            if name in _NOT_WORK:
+            if name in TASK_AGENT_REVIEW_UNCOUNTED_TOOLS:
                 continue
             args = arguments.pop(str(payload.get("tool_call_id") or ""), "")
             outcome = "error" if payload.get("is_error") else "ok"
@@ -170,25 +250,16 @@ def account(events: list[LedgerEvent], max_tokens: int, line_max_tokens: int) ->
         elif kind == "error":
             lines.append(f"error: {_cut(payload.get('message'), line_max_tokens)}")
         elif kind == "subagent_started":
-            lines.append(f"started task agent {payload.get('name')}")
+            name = payload.get("name")
+            lines.append(f"started task agent {name}")
+            # What it did, where it was started. One it started in turn is
+            # only named: a task agent's task agents are its own business.
+            for line in _steps(children.get(str(payload.get("commission_id") or ""), []), line_max_tokens, {}):
+                lines.append(f"  [{name}] {line}")
         elif kind == "capability_denied":
             lines.append(f"denied: {_cut(payload.get('capability'), half)}")
     flush_said()
-    if not lines:
-        return ""
-    sizes = [count_tokens(line) + 1 for line in lines]
-    if sum(sizes) <= max_tokens:
-        return "\n".join(lines)
-    head_room, used, head = max_tokens // 3, 0, 0
-    while head < len(lines) and used + sizes[head] <= head_room:
-        used += sizes[head]
-        head += 1
-    tail_room, used, tail = max_tokens - head_room - 12, 0, len(lines)
-    while tail > head and used + sizes[tail - 1] <= tail_room:
-        used += sizes[tail - 1]
-        tail -= 1
-    gap = TASK_AGENT_REVIEW_PROCESS_GAP.format(count=tail - head)
-    return "\n".join([*lines[:head], gap, *lines[tail:]])
+    return lines
 
 
 class SpaceKeeper:
@@ -255,11 +326,13 @@ class SpaceKeeper:
         Runs on the event loop after the change is stored. It only starts a
         task: nothing here is awaited by whoever changed the commission.
         """
+        from config.nekoclaw_settings import TASK_AGENT_REVIEW_ENABLED
+
         if self._closed or previous is None or commission.parent_id is not None:
             return
         if commission.status not in ENDED_STATUSES:
             return
-        review = reviewable(commission) and commission.status in _REVIEWED_AT_ONCE
+        review = TASK_AGENT_REVIEW_ENABLED and reviewable(commission) and commission.status in _REVIEWED_AT_ONCE
         self._spawn(self._after_end(commission.id, review=review))
 
     def _spawn(self, work: Any) -> None:
@@ -274,6 +347,9 @@ class SpaceKeeper:
             delay = TASK_AGENT_REVIEW_DELAY_SECONDS if self._review_delay is None else self._review_delay
             if delay > 0:
                 await asyncio.sleep(delay)
+            if self._closed:
+                # The host began to shut down meanwhile.
+                return
             if review:
                 await self.review(commission_id)
             await self.tidy()
@@ -281,6 +357,16 @@ class SpaceKeeper:
             raise
         except Exception:  # noqa: BLE001 - background work; the next commission tries again
             logger.exception("work for the task agent space after a commission failed")
+
+    async def stand_down(self) -> None:
+        """Start nothing more. The first step of shutting the host down; ``aclose`` is a later one.
+
+        Shutting down ends the commissions that are at work, as failed, and
+        every one of those ends would start work here that the rest of the
+        shutdown then cuts off: a round of tidying that counts as made and
+        did nothing, with a model call sent for it.
+        """
+        self._closed = True
 
     async def settle(self) -> None:
         """Wait until everything started so far is done. For tests."""
@@ -339,8 +425,10 @@ class SpaceKeeper:
         commission's; it is thrown away and nothing is recorded, so the end
         the commission comes to is the one that is reviewed.
         """
-        from config.nekoclaw_settings import TASK_AGENT_REVIEW_MIN_TOOL_CALLS
+        from config.nekoclaw_settings import TASK_AGENT_REVIEW_ENABLED, TASK_AGENT_REVIEW_MIN_TOOL_CALLS
 
+        if not TASK_AGENT_REVIEW_ENABLED:
+            return "not_due"
         async with self._lock():
             commission = await self._ledger.get(commission_id)
             if commission is None or not reviewable(commission) or commission.status not in _REVIEWABLE:
@@ -348,7 +436,12 @@ class SpaceKeeper:
             events = await self._events(commission_id)
             if any(event.type == "review" for event in events):
                 return "already"
-            calls = tool_calls(events)
+            # The task agents it started are part of it: what they did
+            # counts as its work and is told in its review.
+            children = {
+                child.id: await self._events(child.id) for child in await self._ledger.select(parent_id=commission_id)
+            }
+            calls = tool_calls(events) + sum(tool_calls(theirs) for theirs in children.values())
             if calls < TASK_AGENT_REVIEW_MIN_TOOL_CALLS:
 
                 async def skipped() -> dict[str, Any]:
@@ -360,20 +453,21 @@ class SpaceKeeper:
             data: dict[str, Any] | None = None
             problem = ""
             try:
-                raw = await self._llm.complete(TIER_REVIEW, await self._review_messages(commission, events))
+                raw = await self._llm.complete(TIER_REVIEW, await self._review_messages(commission, events, children))
                 data = _parse_object(raw)
                 if data is None:
                     # Cut off at the cap on what the model may write, or not
-                    # the object that was asked for. Said here, because the
-                    # commission is not reviewed again; how much came back,
-                    # not what it was.
+                    # the object that was asked for. What is whole of it is
+                    # kept: the commission is not reviewed again.
+                    data = _salvage(raw, "review")
                     logger.warning(
-                        "the review of commission %s could not be read (%d characters came back); "
-                        "it is recorded as failed",
+                        "the review of commission %s could not be read as it came (%d characters); %s",
                         commission_id,
                         len(str(raw)),
+                        "what was whole of it is kept" if data is not None else "it is recorded as failed",
                     )
-                    problem = "unreadable"
+                    if data is None:
+                        problem = "unreadable"
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - recorded, and not tried again
@@ -384,7 +478,7 @@ class SpaceKeeper:
                 if problem or data is None:
                     return {"status": "failed", "reason": problem or "unreadable"}
                 try:
-                    return await self._keep_review(commission, data)
+                    return await self._keep_review(commission, data, tuple(children))
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - recorded, and not tried again
@@ -425,13 +519,28 @@ class SpaceKeeper:
             if holding and self._release_session is not None:
                 self._release_session(commission.id)
 
-    async def _review_messages(self, commission: Commission, events: list[LedgerEvent]) -> list[dict[str, str]]:
+    @staticmethod
+    def _entries_allowed(commission: Commission) -> int:
+        """Return how many entries the review of a commission may file."""
+        from config.nekoclaw_settings import TASK_AGENT_REVIEW_ENTRIES_WHEN_STOPPED, TASK_AGENT_REVIEW_MAX_ENTRIES
+
+        if commission.status == "cancelled":
+            return min(TASK_AGENT_REVIEW_ENTRIES_WHEN_STOPPED, TASK_AGENT_REVIEW_MAX_ENTRIES)
+        return TASK_AGENT_REVIEW_MAX_ENTRIES
+
+    async def _review_messages(
+        self,
+        commission: Commission,
+        events: list[LedgerEvent],
+        children: dict[str, list[LedgerEvent]] | None = None,
+    ) -> list[dict[str, str]]:
         from config.nekoclaw_settings import (
             DISPATCH_TEXT_MAX_TOKENS,
             DISPATCH_USER_TEXT_MAX_TOKENS,
+            SPACE_ENTRY_TITLE_MAX_TOKENS,
+            TASK_AGENT_REVIEW_FILED_MAX_TOKENS,
             TASK_AGENT_REVIEW_INDEX_MAX_TOKENS,
             TASK_AGENT_REVIEW_INPUT_MAX_TOKENS,
-            TASK_AGENT_REVIEW_MAX_ENTRIES,
             TASK_AGENT_REVIEW_PROCESS_LINE_MAX_TOKENS,
             TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS,
             TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS,
@@ -440,21 +549,31 @@ class SpaceKeeper:
         from config.prompts import prompts_nekoclaw_space as texts
         from utils.tokenize import count_tokens, truncate_to_tokens
 
+        children = children or {}
         nothing = texts.TASK_AGENT_REVIEW_NOTHING
         project = commission.project or DEFAULT_PROJECT
+        # What it and its task agents filed and the space kept. A note that
+        # was not kept is not on file: the review may still make it one.
         filed = [
-            f"- {_cut(event.payload.get('title'), 24)}"
-            for event in events
-            if event.type in ("lesson", "feedback") and event.payload.get("title")
+            f"- {_cut(event.payload.get('title'), SPACE_ENTRY_TITLE_MAX_TOKENS)}"
+            for event in [*events, *(event for theirs in children.values() for event in theirs)]
+            if event.type in ("lesson", "feedback") and event.payload.get("title") and event.payload.get("kept", True)
         ]
+        # The ones in use only: the name of an archived project is not
+        # taken from a review, so it is not offered to one.
         projects = [
             f"- {item.name}: {item.description}" if item.description else f"- {item.name}"
-            for item in await self._space.list_projects()
+            for item in await self._space.list_projects(include_archived=False)
             if item.name != DEFAULT_PROJECT
         ]
         system = texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT.format(
             language=_LANGUAGES.get(commission.lang or "", "the language of the commission"),
-            max_entries=TASK_AGENT_REVIEW_MAX_ENTRIES,
+            max_entries=self._entries_allowed(commission),
+        )
+        # Every step is cut by tokens: off the event loop, which a long
+        # commission would otherwise hold while she is waiting to dispatch.
+        process = await asyncio.to_thread(
+            account, events, TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS, TASK_AGENT_REVIEW_PROCESS_LINE_MAX_TOKENS, children
         )
         user = texts.TASK_AGENT_REVIEW_USER_TEMPLATE.format(
             dispatch_text=truncate_to_tokens(commission.dispatch_text, DISPATCH_TEXT_MAX_TOKENS),
@@ -462,9 +581,8 @@ class SpaceKeeper:
             status=commission.status,
             result=truncate_to_tokens(commission.result_summary or nothing, TASK_AGENT_RESULT_SUMMARY_MAX_TOKENS),
             project=nothing if project == DEFAULT_PROJECT else project,
-            process=account(events, TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS, TASK_AGENT_REVIEW_PROCESS_LINE_MAX_TOKENS)
-            or nothing,
-            filed=truncate_to_tokens("\n".join(filed), 120) or nothing,
+            process=process or nothing,
+            filed=truncate_to_tokens("\n".join(filed), TASK_AGENT_REVIEW_FILED_MAX_TOKENS) or nothing,
             projects=truncate_to_tokens("\n".join(projects), TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS) or nothing,
             global_index=truncate_to_tokens(
                 (await self._space.read_index(None)).strip(), TASK_AGENT_REVIEW_INDEX_MAX_TOKENS
@@ -520,28 +638,44 @@ class SpaceKeeper:
         )
         return project.name if project is not None else current
 
-    async def _keep_review(self, commission: Commission, data: dict[str, Any]) -> dict[str, Any]:
-        """Keep what the model answered: the review, its entries, the project. Returns the ``review`` event."""
-        from config.nekoclaw_settings import TASK_AGENT_REVIEW_MAX_ENTRIES, TASK_AGENT_REVIEW_TEXT_MAX_TOKENS
+    async def _keep_review(
+        self, commission: Commission, data: dict[str, Any], children: tuple[str, ...] = ()
+    ) -> dict[str, Any]:
+        """Keep what the model answered: the review, its entries, the project. Returns the ``review`` event.
+
+        ``children`` are the commissions of the task agents it started.
+        """
+        from config.nekoclaw_settings import (
+            TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS,
+            TASK_AGENT_REVIEW_TEXT_MAX_TOKENS,
+        )
         from utils.tokenize import truncate_to_tokens
 
         text = truncate_to_tokens(str(data.get("review") or "").strip(), TASK_AGENT_REVIEW_TEXT_MAX_TOKENS)
         if not text:
             return {"status": "failed", "reason": "empty"}
         current = commission.project or DEFAULT_PROJECT
-        project = await self._target_project(commission, data)
+        try:
+            project = await self._target_project(commission, data)
+        except (SpaceError, OSError, ValueError) as exc:
+            # The project it names cannot be opened (its record cannot be
+            # read, say). The review is not lost over that: it is kept
+            # where the commission is.
+            logger.warning("the project a review names could not be opened (%s); it stays where it is", type(exc).__name__)
+            project = current
         refiled: list[str] = []
         if project != current:
-            # It belongs to a project after all. What it filed itself while
-            # it was one of ``_daily`` goes with it: the model was told not
-            # to repeat that, so it would be in no index of the project.
+            # It belongs to a project after all. What it and its task agents
+            # filed while it was one of ``_daily`` goes with it: the model
+            # was told not to repeat that, so it would be in no index of the
+            # project.
             try:
-                refiled = await self._space.refile_entries(commission.id, current, project)
+                refiled = await self._space.refile_entries(commission.id, current, project, also=children)
             except (SpaceError, OSError) as exc:
                 logger.warning("what a commission filed could not be moved to its project (%s)", type(exc).__name__)
         kept: list[str] = []
         entries = data.get("entries")
-        for item in (entries if isinstance(entries, list) else [])[:TASK_AGENT_REVIEW_MAX_ENTRIES]:
+        for item in (entries if isinstance(entries, list) else [])[: self._entries_allowed(commission)]:
             if not isinstance(item, dict):
                 continue
             kind = str(item.get("type") or "").strip().lower()
@@ -550,7 +684,9 @@ class SpaceKeeper:
                 entry, _created = await self._space.file_entry(
                     None if everywhere else project,
                     title=str(item.get("title") or ""),
-                    content=str(item.get("content") or ""),
+                    content=truncate_to_tokens(
+                        str(item.get("content") or "").strip(), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
+                    ),
                     kind=kind if kind in ENTRY_TYPES else "lesson",
                     description=str(item.get("description") or ""),
                     source=commission.id,
@@ -570,7 +706,7 @@ class SpaceKeeper:
             "SELECT c.id FROM commissions c WHERE c.route = 'task_agent' AND c.parent_id IS NULL "
             "AND c.status IN ('done', 'failed', 'cancelled') AND c.updated_at >= ? AND c.updated_at <= ? "
             "AND NOT EXISTS (SELECT 1 FROM events e WHERE e.commission_id = c.id AND e.type = 'review') "
-            "ORDER BY c.updated_at DESC LIMIT ?",
+            "ORDER BY c.updated_at ASC LIMIT ?",
             (since, before, limit),
         ).fetchall()
         return [str(row["id"]) for row in rows]
@@ -579,21 +715,33 @@ class SpaceKeeper:
         """Review commissions that ended a day ago and have no review: failed ones, and ones a shutdown cut off."""
         from config.nekoclaw_settings import (
             SPACE_TRANSCRIPT_KEPT_SECONDS,
+            TASK_AGENT_REVIEW_ENABLED,
             TASK_AGENT_REVIEW_FAILED_AFTER_SECONDS,
+            TASK_AGENT_REVIEWS_LOOKED_AT_PER_UPKEEP,
             TASK_AGENT_REVIEWS_PER_UPKEEP,
         )
 
-        if self._llm is None:
+        if self._llm is None or not TASK_AGENT_REVIEW_ENABLED:
             return
         earliest = max(since, now - SPACE_TRANSCRIPT_KEPT_SECONDS)
         before = now - TASK_AGENT_REVIEW_FAILED_AFTER_SECONDS
         if before < earliest:
             return
+        # The oldest first: they are the ones that would otherwise be too
+        # old for a review by the next round. A round looks at more of them
+        # than it has a model write about, because one that is too short to
+        # review is done with at no cost; taken with the newest first and
+        # counted alike, a day on which many commissions failed at once
+        # would keep the ones worth a review waiting until they are too old.
         due = await self._ledger.run(
-            lambda conn: self._unreviewed(conn, earliest, before, TASK_AGENT_REVIEWS_PER_UPKEEP)
+            lambda conn: self._unreviewed(conn, earliest, before, TASK_AGENT_REVIEWS_LOOKED_AT_PER_UPKEEP)
         )
+        written = 0
         for commission_id in due:
-            await self.review(commission_id)
+            if written >= TASK_AGENT_REVIEWS_PER_UPKEEP:
+                break
+            if await self.review(commission_id) in _MODEL_WROTE:
+                written += 1
 
     # -- tidying ----------------------------------------------------------
 
@@ -616,6 +764,11 @@ class SpaceKeeper:
             if self._last_upkeep is None:
                 stored = state.get("upkeep_at")
                 self._last_upkeep = float(stored) if isinstance(stored, (int, float)) else 0.0
+            if self._last_upkeep > now:
+                # The clock was ahead when that was written and has been set
+                # back since. Waited out, nothing would be tidied until the
+                # time catches up with it.
+                self._last_upkeep = 0.0
             if not force and now - self._last_upkeep < SPACE_UPKEEP_INTERVAL_SECONDS:
                 return False
             since = state.get("since")
@@ -649,9 +802,13 @@ class SpaceKeeper:
 
     async def _archive_messages(self, project: Project) -> list[dict[str, str]]:
         from config.nekoclaw_settings import (
+            SPACE_ARCHIVE_INDEX_MAX_TOKENS,
             SPACE_ARCHIVE_INPUT_MAX_TOKENS,
+            SPACE_ARCHIVE_MAX_ENTRIES,
+            SPACE_ARCHIVE_REVIEW_MAX_TOKENS,
+            SPACE_ARCHIVE_REVIEWS,
+            SPACE_ARCHIVE_REVIEWS_MAX_TOKENS,
             TASK_AGENT_REVIEW_INDEX_MAX_TOKENS,
-            TASK_AGENT_REVIEW_MAX_ENTRIES,
         )
         from config.prompts import prompts_nekoclaw_space as texts
         from nekoclaw.host.space import _date
@@ -659,12 +816,12 @@ class SpaceKeeper:
 
         nothing = texts.TASK_AGENT_REVIEW_NOTHING
         reviews = [
-            f"- {review.title} ({review.status}): {_cut(review.content, 150)}"
-            for review in await self._space.list_reviews(project.name, with_content=True, limit=_ARCHIVE_REVIEWS)
+            f"- {review.title} ({review.status}): {_cut(review.content, SPACE_ARCHIVE_REVIEW_MAX_TOKENS)}"
+            for review in await self._space.list_reviews(project.name, with_content=True, limit=SPACE_ARCHIVE_REVIEWS)
         ]
         system = texts.SPACE_ARCHIVE_SYSTEM_PROMPT.format(
             language="the language its index and reviews are written in",
-            max_entries=min(2, TASK_AGENT_REVIEW_MAX_ENTRIES),
+            max_entries=SPACE_ARCHIVE_MAX_ENTRIES,
         )
         user = texts.SPACE_ARCHIVE_USER_TEMPLATE.format(
             name=project.name,
@@ -672,8 +829,9 @@ class SpaceKeeper:
             workdir=project.workdir or nothing,
             commissions=project.commissions,
             last=_date(project.last_commission_at),
-            index=truncate_to_tokens((await self._space.read_index(project.name)).strip(), 600) or nothing,
-            reviews=truncate_to_tokens("\n".join(reviews), 1500) or nothing,
+            index=truncate_to_tokens((await self._space.read_index(project.name)).strip(), SPACE_ARCHIVE_INDEX_MAX_TOKENS)
+            or nothing,
+            reviews=truncate_to_tokens("\n".join(reviews), SPACE_ARCHIVE_REVIEWS_MAX_TOKENS) or nothing,
             global_index=truncate_to_tokens(
                 (await self._space.read_index(None)).strip(), TASK_AGENT_REVIEW_INDEX_MAX_TOKENS
             )
@@ -689,7 +847,9 @@ class SpaceKeeper:
         """Return the model's summary of a project, or None when it gave nothing usable."""
         async with self._lock():
             try:
-                data = _parse_object(await self._llm.complete(TIER_ARCHIVE, await self._archive_messages(project)))
+                raw = await self._llm.complete(TIER_ARCHIVE, await self._archive_messages(project))
+                # Of an answer that was cut off, what is whole is kept.
+                data = _parse_object(raw) or _salvage(raw, "summary", ("line",))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - counted, and tried again by a later round
@@ -703,6 +863,8 @@ class SpaceKeeper:
         """Archive the projects nothing was commissioned for in a while."""
         from config.nekoclaw_settings import (
             SPACE_ARCHIVE_MAX_ATTEMPTS,
+            SPACE_ARCHIVE_MAX_ENTRIES,
+            SPACE_ARCHIVE_SUMMARY_MAX_TOKENS,
             SPACE_ARCHIVES_PER_UPKEEP,
             SPACE_PROJECT_DESCRIPTION_MAX_TOKENS,
             SPACE_PROJECT_IDLE_SECONDS,
@@ -768,7 +930,9 @@ class SpaceKeeper:
                     if attempts < SPACE_ARCHIVE_MAX_ATTEMPTS:
                         # Left where it is; a later round asks again.
                         continue
-            summary = truncate_to_tokens(str((data or {}).get("summary") or "").strip(), 400)
+            summary = truncate_to_tokens(
+                str((data or {}).get("summary") or "").strip(), SPACE_ARCHIVE_SUMMARY_MAX_TOKENS
+            )
             line = _cut((data or {}).get("line"), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
             if held is not None:
                 _written_at, _commissions, summary, line = held
@@ -779,7 +943,7 @@ class SpaceKeeper:
             # a later try uses the summary that was kept and asks nothing,
             # so nothing is filed twice and nothing the model gave is lost.
             entries = (data or {}).get("entries")
-            for item in (entries if isinstance(entries, list) else [])[:2]:
+            for item in (entries if isinstance(entries, list) else [])[:SPACE_ARCHIVE_MAX_ENTRIES]:
                 if not isinstance(item, dict):
                     continue
                 kind = str(item.get("type") or "").strip().lower()
@@ -900,6 +1064,35 @@ class SpaceKeeper:
             if self._release_session is not None:
                 self._release_session(commission.id)
 
+    @staticmethod
+    def _confirmed_line(state: dict[str, Any], now: float, due: float) -> tuple[float | None, bool]:
+        """Return up to when sessions may be cleaned in this round (None: nothing yet), and whether to note anew.
+
+        What is removed here cannot be brought back, and whether a session
+        is old is read off the clock of the computer. A clock that jumps a
+        month ahead (the user sets the date, or the board's battery is
+        flat) makes every session look old at once. So one reading is not
+        enough: a round only notes what is old by its clock, and a later
+        round, one interval of tidying after it at the least, removes what
+        is old by both. A clock that was wrong for a moment is right again
+        by then, and what it called old is not; one that went back is seen
+        by the note being of a time still to come, and the note is not used.
+
+        A note that is too new to be used stays as it is, so that rounds
+        in quick succession do not keep putting off the one that uses it.
+        """
+        from config.nekoclaw_settings import SPACE_UPKEEP_INTERVAL_SECONDS
+
+        noted, seen_at = state.get("sessions_due_until"), state.get("sessions_due_seen_at")
+        if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in (noted, seen_at)):
+            return None, True
+        if seen_at > now:
+            # By a clock that was ahead of this one.
+            return None, True
+        if seen_at > now - SPACE_UPKEEP_INTERVAL_SECONDS:
+            return None, False
+        return min(float(noted), due), True
+
     async def _clean_sessions(self, now: float, state: dict[str, Any]) -> None:
         """Remove what was said in sessions whose commission ended long ago."""
         from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
@@ -913,7 +1106,13 @@ class SpaceKeeper:
         # when all of them are done with.
         stored_id = state.get("sessions_cleaned_id")
         after_id = stored_id if isinstance(stored_id, str) else ""
-        until = now - SPACE_TRANSCRIPT_KEPT_SECONDS
+        due = now - SPACE_TRANSCRIPT_KEPT_SECONDS
+        until, note = self._confirmed_line(state, now, due)
+        if note:
+            # What is old by the clock of this round, for a later one to confirm.
+            await self._space.write_state(sessions_due_until=due, sessions_due_seen_at=now)
+        if until is None:
+            return
         # Looked at is not cleaned. A session whose files could not be
         # removed (held open by another program) is remembered by itself
         # and tried again every round, while the scan moves on: holding the

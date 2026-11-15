@@ -3457,6 +3457,37 @@ async def test_the_place_on_record_gives_way_only_to_a_session_that_has_somethin
     assert host.task_agents._session_dir_of(older) == current
 
 
+async def test_a_session_whose_transcript_was_cleaned_is_found_where_its_files_are(hosts, tmp_path):
+    import shutil
+
+    host = _host(hosts, tmp_path, ScriptedLLM([_report("ready", "done")]))
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan", title="sort", dispatch_text="sort the photos", source="dispatch", route="task_agent"
+    )
+    # The data folder was moved by hand: the session came along, and the place on record is gone.
+    recorded, current = tmp_path / "where it was" / commission.id, _sessions(tmp_path) / commission.id
+    await host.ledger.update(commission.id, session_dir=str(recorded), workdir=str(recorded / "work"))
+    kept = await host.ledger.get(commission.id)
+    (current / "work").mkdir(parents=True)
+    (current / "work" / "result.txt").write_text("the user's file", encoding="utf-8")
+    (current / "transcript.jsonl").write_text('{"type": "session"}\n', encoding="utf-8")
+    assert host.task_agents._session_dir_of(kept) == current
+
+    # Old by now: what was said in it is removed, as the keeper of the space does.
+    (current / "transcript.jsonl").unlink()
+
+    # Taken up again, it goes on where its files are, not in a new, empty directory at the old place.
+    assert host.task_agents._session_dir_of(kept) == current
+    assert host.task_agents._workdir_of(kept, current) == current / "work"
+    # With nothing left but an empty directory there is nothing to tell by: the place on record.
+    shutil.rmtree(current / "work")
+    assert host.task_agents._session_dir_of(kept) == recorded
+    # And a place on record that is there is the place, whatever is below the root of now.
+    (current / "work").mkdir()
+    recorded.mkdir(parents=True)
+    assert host.task_agents._session_dir_of(kept) == recorded
+
+
 def test_the_host_and_the_runtime_call_the_transcript_by_the_same_name():
     from nekoclaw.host.paths import TRANSCRIPT_NAME
     from nekoclaw.runtime.session import TRANSCRIPT_FILE

@@ -459,6 +459,26 @@ def test_symlink_validation_prunes_the_excluded_root_directories(tmp_path, monke
     assert issues == []
 
 
+def test_validate_plugin_dir_knows_the_shared_table(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    manifest = plugin_dir / "plugin.toml"
+    plain = manifest.read_text(encoding="utf-8")
+
+    def issues_with(shared: str) -> list[str]:
+        manifest.write_text(plain.replace("[plugin.sdk]", shared + "\n[plugin.sdk]"), encoding="utf-8")
+        return [f"{level}: {message}" for level, message in validate_plugin_dir(plugin_dir) if "shared" in message]
+
+    # As the documents say to write it: nothing to say about it.
+    assert issues_with('[plugin.shared]\nreads = ["weather", "calendar"]\n') == []
+    assert issues_with("[plugin.shared]\n") == []
+    assert issues_with('[plugin.shared]\nreads = "weather"\n') == ["error: [plugin.shared].reads must be a list of strings"]
+    assert issues_with('[plugin.shared]\nreads = ["weather", ""]\n') == [
+        "error: [plugin.shared].reads[1] must be a non-empty string"
+    ]
+    (unknown,) = issues_with('[plugin.shared]\nreads = ["weather"]\nwrites = ["weather"]\n')
+    assert unknown.startswith("warning:") and "[plugin.shared]" in unknown and "writes" in unknown
+
+
 def test_validate_plugin_dir_accepts_install_declaration_and_i18n_directory(
     tmp_path: Path,
 ) -> None:
