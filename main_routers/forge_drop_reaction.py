@@ -78,8 +78,8 @@ async def react_to_credit_drop(request: Request):
         "event": "agent_task_callback", "origin": "event", "channel": "forge_drop",
         "task_id": event_id, "status": "completed", "success": True,
         "source_kind": "system", "source_name": "forge_drop",
-        # Both text and voice render the summary; detail can be omitted.
-        "summary": f"{guidance}\n{json.dumps(facts, ensure_ascii=False)}",
+        # Both chat modes read the summary. Enqueue truncates its tail, so put the facts first.
+        "summary": f"{json.dumps(facts, ensure_ascii=False)}\n{guidance}",
         "detail": "",
         "delivery_mode": "proactive", "context_type": "forge_drop",
         "metadata": {"context_type": "forge_drop", "event_id": event_id},
