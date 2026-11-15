@@ -521,3 +521,38 @@ def test_install_plans_keep_failed_project_ids_reserved(tmp_path, monkeypatch, b
         raise ServerDomainError(code="PROJECT_STORE_INVALID", message="broken store", status_code=500)
     monkeypatch.setattr(store, "list_records", unreadable)
     assert service._plan_install_sync(package=str(package), plugins_root=None, profiles_root=None)["action"] == "install"
+
+
+@pytest.mark.parametrize("broken", ["missing", "manifest"])
+def test_install_plans_reserve_ids_of_broken_kebab_projects(tmp_path, monkeypatch, broken):
+    """A broken `demo-plugin/` project must still reserve `demo_plugin` (#3724).
+
+    The manifest cannot be inspected, so the directory name is the only identity
+    left; it has to be matched with the loader's rule instead of an exact string
+    compare, otherwise a conflicting package can be installed over it.
+    """
+    from plugin.neko_plugin_cli.core.build import PluginBuilder
+    from plugin.server.application.plugin_cli.service import PluginCliService
+
+    policy = PluginCliPathPolicy(
+        builtin_plugins_root=tmp_path / "builtin", user_plugins_root=tmp_path / "user",
+        package_artifacts_root=tmp_path / "packages", package_profiles_root=tmp_path / "profiles",
+    )
+    package_source = scaffold(tmp_path / "package-source", "demo_plugin")
+    package = policy.package_artifacts_root / "demo_plugin.neko-plugin"
+    PluginBuilder(source_only_roots=(package_source,)).build_plugin(package_source, package)
+    project = tmp_path / "projects" / "demo-plugin"
+    if broken == "manifest":
+        project.mkdir(parents=True)
+        (project / "plugin.toml").write_text("invalid TOML [", encoding="utf-8")
+    store.add_record(project)
+    monkeypatch.setattr(PluginCliService, "_path_policy", lambda self: policy)
+    monkeypatch.setattr(PluginCliService, "_apply_installed_package_identity", lambda self, plan, **kwargs: plan)
+
+    service = PluginCliService()
+    result = service._plan_install_sync(package=str(package), plugins_root=None, profiles_root=None)
+
+    assert result["action"] == "blocked"
+    assert result["reason"] == "project_source_conflict"
+    assert result["project_sources"] == [str(project)]
+    assert not (policy.user_plugins_root / "demo_plugin").exists()
