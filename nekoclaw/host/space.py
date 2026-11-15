@@ -665,12 +665,16 @@ class TaskAgentSpace:
         Read once more. When it holds what was written, the change is in
         it and is not made a second time: not every change is one that
         leaves alone a text that has it already. One that still cannot be
-        read (held by another program) is taken to hold it.
+        read (held by another program) is taken to hold it. One that is
+        not text, or is gone, does not: something else happened to it.
         """
         try:
-            return self._text_to_change(path) == _plain_lines(text)
+            there = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+        except (UnicodeError, FileNotFoundError):
+            return False
         except OSError:
             return True
+        return there == _plain_lines(text)
 
     # -- the index --------------------------------------------------------
 

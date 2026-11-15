@@ -3502,3 +3502,89 @@ async def test_the_line_of_an_archived_project_goes_when_it_is_brought_back_whic
         f"- [archived project: Budget app](<archive/{year}/Budget app/SUMMARY.md>) — the first",
     ]
     assert (await space.get_project("Budget app")).description == "the second"
+
+
+async def test_bringing_back_an_archived_project_leaves_the_line_of_one_whose_directory_begins_alike(space, root, clock):
+    await space.touch_project("Budget app")
+    clock.now += 2 * 86400
+    first = await space.archive_project("Budget app", summary="first", description="the first")
+    # The second is archived as of the day before, so that the first is the one archived last.
+    clock.now -= 86400
+    await space.touch_project("Budget app")
+    second = await space.archive_project("Budget app", summary="second", description="the second")
+    index = root / "MEMORY.md"
+    year = first.archive_year
+    assert second.archive_year == year
+    assert (first.directory, second.directory) == ("Budget app", "Budget app-2")
+
+    await space.use_project("Budget app")
+
+    assert (await space.get_project("Budget app")).description == "the first"
+    # ``Budget app-2`` begins like ``Budget app``, and is another directory: its line stays.
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        f"- [archived project: Budget app](<archive/{year}/Budget app-2/SUMMARY.md>) — the second",
+        "- [project: Budget app](<projects/Budget app/MEMORY.md>) — the first",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The thirty-sixth review round
+# ---------------------------------------------------------------------------
+
+
+def _held_then(monkeypatch, path, then):
+    """Make the three looks at a file right after it was replaced fail, and do ``then`` at the last of them.
+
+    The file is read once before it is replaced.
+    """
+    read = Path.read_text
+    reads: list[int] = []
+
+    def read_text(self, *args, **kwargs):
+        if self == path:
+            reads.append(1)
+            if len(reads) == 4:
+                then()
+            if 2 <= len(reads) <= 4:
+                raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return reads
+
+
+def test_a_file_saved_over_with_what_is_not_text_while_it_could_not_be_looked_at_is_not_said_to_be_changed(
+    space, root, monkeypatch
+):
+    root.mkdir(parents=True)
+    path = root / "notes.md"
+    path.write_text("one\n", encoding="utf-8")
+    reads = _held_then(monkeypatch, path, lambda: path.write_bytes(b"\xff\xfe\x00"))
+
+    with pytest.raises(OSError, match="not text"):
+        space._edit_text(path, lambda text: text + "more\n")
+
+    monkeypatch.undo()
+    # Read once more after the looks, and once again to make the change from: that is where it stops.
+    assert len(reads) == 6
+    assert path.read_bytes() == b"\xff\xfe\x00"
+
+
+def test_a_file_that_went_while_it_could_not_be_looked_at_is_written_again(space, root, monkeypatch):
+    root.mkdir(parents=True)
+    path = root / "notes.md"
+    path.write_text("one\n", encoding="utf-8")
+    reads = _held_then(monkeypatch, path, path.unlink)
+    given: list[str] = []
+
+    def change(text: str) -> str:
+        given.append(text)
+        return text if "more" in text else text + "more\n"
+
+    changed = space._edit_text(path, change)
+
+    monkeypatch.undo()
+    assert changed is True and len(reads) >= 7
+    # Not there any more when it was read again: the change is made to an empty file.
+    assert given == ["one\n", ""]
+    assert path.read_text(encoding="utf-8") == "more\n"
