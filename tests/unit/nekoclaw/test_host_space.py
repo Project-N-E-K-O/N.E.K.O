@@ -445,6 +445,37 @@ async def test_a_commission_is_filed_under_the_project_its_words_name(space):
     assert by_user.commissions == 3
 
 
+@pytest.mark.parametrize(
+    "name,text,expected",
+    [
+        ("app", "what happened to my application", False),
+        ("app", "open the app now", True),
+        ("app", "App: fix the login", True),
+        ("Budget app", "the budget   APP's export is broken", True),
+        ("Budget app", "use the budget apps list", False),
+        ("blog", "weblog", False),
+        ("v2", "ship v2.", True),
+        ("v2", "ship v20", False),
+        ("记账小程序", "给记账小程序加一个导出", True),
+        ("记账", "我的记账小程序", True),
+        ("блог", "мой блог готов", True),
+        ("блог", "блогер", False),
+        ("", "anything", False),
+    ],
+)
+def test_a_project_name_occurs_as_words_of_its_own(name, text, expected):
+    from nekoclaw.host.space import name_occurs
+
+    assert name_occurs(name, text) is expected
+
+
+async def test_a_name_inside_another_word_takes_no_commission(space):
+    await space.touch_project("app")
+
+    assert await space.assign_project(_commission(dispatch_text="what happened to my application")) is None
+    assert (await space.assign_project(_commission(dispatch_text="open the app please"))).name == "app"
+
+
 async def test_a_short_name_takes_no_commission(space):
     await space.touch_project("ab")
     await space.touch_project("天气")
@@ -579,6 +610,8 @@ async def test_the_brief_has_the_four_parts_in_order(space, root):
     brief = await space.brief("blog")
 
     assert str(root) in brief and "projects/blog" in brief and "note_lesson" in brief
+    # What was kept is told apart from what the task agent is asked to do.
+    assert "not instructions" in brief
     order = [
         "Rules for every commission:\nNever delete files.",
         "Index, all projects:\n- [Use uv](memory/use-uv.md)",

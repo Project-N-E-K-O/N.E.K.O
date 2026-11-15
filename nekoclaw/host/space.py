@@ -252,6 +252,38 @@ def normalize_name(text: str) -> str:
     return _WHITESPACE.sub("", str(text or "")).casefold()
 
 
+def _spaced_letter(char: str) -> bool:
+    """Whether a character is a letter or digit of a script that puts spaces between words."""
+    from nekoclaw.host.selection import _PAIRED_CHAR_RE
+
+    return bool(char) and (char.isalnum() or char == "_") and not _PAIRED_CHAR_RE.fullmatch(char)
+
+
+def name_occurs(name: str, text: str) -> bool:
+    """Whether a project's name occurs in a sentence.
+
+    Case and the amount of white space do not matter. In scripts that put
+    spaces between words the name has to stand as words of its own: a
+    project called ``app`` is not named by ``happy``. Chinese, Japanese and
+    Korean text has no such boundaries, and there the name may stand anywhere.
+    """
+    needle = " ".join(str(name or "").split()).casefold()
+    haystack = " ".join(str(text or "").split()).casefold()
+    if not needle:
+        return False
+    start = haystack.find(needle)
+    while start >= 0:
+        end = start + len(needle)
+        before = haystack[start - 1] if start > 0 else ""
+        after = haystack[end] if end < len(haystack) else ""
+        joined_before = _spaced_letter(needle[0]) and _spaced_letter(before)
+        joined_after = _spaced_letter(needle[-1]) and _spaced_letter(after)
+        if not joined_before and not joined_after:
+            return True
+        start = haystack.find(needle, start + 1)
+    return False
+
+
 def _entry_type(value: Any) -> str:
     kind = str(value or "").strip().lower()
     return kind if kind in ENTRY_TYPES else _DEFAULT_TYPE
@@ -879,7 +911,7 @@ class TaskAgentSpace:
         """Return the project whose name occurs in one of the texts; the longest name wins."""
         from config.nekoclaw_settings import SPACE_PROJECT_MATCH_MIN_CHARS
 
-        haystacks = [normalize_name(text) for text in texts if text]
+        haystacks = [text for text in texts if text]
         if not haystacks:
             return None
         best: tuple[tuple[int, int, float], Project] | None = None
@@ -887,7 +919,9 @@ class TaskAgentSpace:
             if project.name == DEFAULT_PROJECT:
                 continue
             needle = normalize_name(project.name)
-            if len(needle) < SPACE_PROJECT_MATCH_MIN_CHARS or not any(needle in text for text in haystacks):
+            if len(needle) < SPACE_PROJECT_MATCH_MIN_CHARS:
+                continue
+            if not any(name_occurs(project.name, text) for text in haystacks):
                 continue
             rank = (len(needle), 1 if project.status == PROJECT_ACTIVE else 0, project.last_commission_at)
             if best is None or rank > best[0]:
