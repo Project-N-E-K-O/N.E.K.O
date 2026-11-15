@@ -87,7 +87,10 @@ class LlmToolMeta:
 
     name: str
     description: str
-    risk: str
+    #: The declared risk class, or None when the author declared none. See ``llm_tool``'s
+    #: risk entry: a wrong value is refused here, a missing one travels to the host, where
+    #: it is logged and then refused at call time.
+    risk: str | None = None
     parameters: dict[str, Any] = field(default_factory=lambda: {"type": "object", "properties": {}})
     timeout_seconds: float = 30.0
     role: str | None = None
@@ -125,7 +128,7 @@ def llm_tool(
     *,
     name: str | None = None,
     description: str = "",
-    risk: str,
+    risk: str | None = None,
     parameters: dict[str, Any] | None = None,
     timeout: float = 30.0,
     role: str | None = None,
@@ -165,12 +168,15 @@ def llm_tool(
         The model-visible tool name. Defaults to the decorated method's
         ``__name__``. Must match ``[A-Za-z0-9_.\\-]{1,64}``.
     risk:
-        Required, no default: ``read``, ``self``, ``write`` or ``external``. It says
-        what the tool does to the world, which is the input the host permission gate
-        needs (config/permission_settings.py). Required at decoration rather than at
-        registration, because the registration hop is fire-and-forget on an IPC queue
-        and a refusal there is swallowed by the consumer: the author would see a tool
-        that quietly never appeared instead of an error in their own file.
+        ``read``, ``self``, ``write`` or ``external``: what the tool does to the world,
+        which is the input the host permission gate weighs
+        (config/permission_settings.py). Declare it. A wrong value raises here, in your
+        own file, at the line that wrote it. A missing value is accepted so an
+        already-installed plugin still loads, and the host then logs the gap at
+        registration and refuses the call whenever the gate runs in enforce mode -- so
+        omitting it costs the tool its function, quietly at first and then completely.
+        The host, not the plugin, decides what an unlabelled tool may do; a plugin cannot
+        talk its way into a milder class.
     description:
         Free-text description shown to the LLM. Be specific about what
         the tool does and what arguments it expects — the model uses
@@ -259,11 +265,23 @@ def llm_tool(
         if not isinstance(params, dict):
             raise TypeError(f"@llm_tool parameters must be a dict, got {type(params).__name__}")
 
-        # Fail at decoration time, in the plugin author's own process.
-        if not isinstance(risk, str) or risk.strip().lower() not in _RISK_VALUES:
+        # Risk is what the permission gate weighs. A wrong value fails here, in the
+        # plugin author's own process, at the line that wrote it.
+        #
+        # A MISSING value does not fail here, on purpose. Installed plugins predate this
+        # keyword, and a required argument raises at import: the plugin would not load at
+        # all, tools and features included. That is a bigger break than an unlabelled
+        # tool, and the host already refuses an unlabelled tool at the strictest level
+        # (ToolRegistry.register logs the gap, and the gate denies the call under enforce
+        # mode). So the decorator accepts None, and the consequence stays visible at
+        # registration instead of arriving as a load failure.
+        if risk is not None and (
+            not isinstance(risk, str) or risk.strip().lower() not in _RISK_VALUES
+        ):
             raise ValueError(
-                f"@llm_tool on {func.__name__!r} must declare risk as one of "
-                f"{', '.join(sorted(_RISK_VALUES))}, got {risk!r}"
+                f"@llm_tool on {func.__name__!r} declares risk={risk!r}; use one of "
+                f"{', '.join(sorted(_RISK_VALUES))}, or omit it to leave the tool "
+                f"unlabelled (the gate then refuses it)"
             )
 
         timeout_seconds = float(timeout)
@@ -273,7 +291,7 @@ def llm_tool(
         meta = LlmToolMeta(
             name=resolved_name,
             description=description,
-            risk=risk.strip().lower(),
+            risk=risk.strip().lower() if isinstance(risk, str) else None,
             parameters=params,
             timeout_seconds=timeout_seconds,
             role=role,

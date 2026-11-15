@@ -258,14 +258,26 @@ attention for minutes. There is no fake clock that can drive a real loop timer
 than patching ``time``.
 """
 
-PERMISSION_APPROVER_ENABLED: bool = False
+_TRUE_WORDS = {"1", "true", "yes", "on"}
+
+
+def _approver_from_env() -> bool:
+    """Read ``NEKO_PERMISSION_APPROVER``. Unset means off.
+
+    The gate reads this value at call time, not once at import: an operator who flips a
+    config constant while the process runs must change behaviour, not just the source.
+    """
+    return str(os.environ.get("NEKO_PERMISSION_APPROVER") or "").strip().lower() in _TRUE_WORDS
+
+
+PERMISSION_APPROVER_ENABLED: bool = _approver_from_env()
 """Whether a CONFIRM may actually ask someone.
 
 False means CONFIRM degrades to DENY, and says so in the log. Today no host code knows
 who the owner is or how to reach them: no owner roster exists, and the nearest
 park-and-resume implementation (nekoclaw) is fenced off by the layering gate
 (scripts/check_module_layering.py FORBIDDEN_EDGES). Fail-closed is the honest default;
-flip this once an approver channel is wired.
+flip this (or set ``NEKO_PERMISSION_APPROVER=1``) once an approver channel is wired.
 """
 
 # ------------------------------------------------------------------ helpers
@@ -284,6 +296,23 @@ def lower_band(left: TrustBand, right: TrustBand) -> TrustBand:
     group, and taking the lower one is the brief's rule.
     """
     return left if band_order(left) >= band_order(right) else right
+
+
+def _as_band(value: object) -> TrustBand:
+    """Coerce a map value to a band member, or fall back to DEFAULT_BAND.
+
+    Import validation rejects a plain string in the maps, but a deployment can add one
+    later (a config reload, a test, a hot patch). ``lower_band`` compares through
+    ``_BAND_ORDER.index``, which accepts an equal string and then hands that string back,
+    and the gate reads ``.value`` on the result. Coercing here keeps a late typo on the
+    safe side instead of raising inside a tool call.
+    """
+    if type(value) is TrustBand:
+        return value
+    try:
+        return TrustBand(str(value).strip().lower())
+    except ValueError:
+        return DEFAULT_BAND
 
 
 def band_for_account(account_id: object) -> TrustBand:
@@ -306,7 +335,7 @@ def band_for_account(account_id: object) -> TrustBand:
     if text in PERMISSION_NORMAL_ACCOUNTS:
         return TrustBand.NORMAL
     source = text.split(":", 1)[0] if ":" in text else ""
-    return PERMISSION_SOURCE_BANDS.get(source, DEFAULT_BAND)
+    return _as_band(PERMISSION_SOURCE_BANDS.get(source, DEFAULT_BAND))
 
 
 def band_for_group(group_id: object) -> TrustBand:
@@ -314,7 +343,7 @@ def band_for_group(group_id: object) -> TrustBand:
     text = str(group_id or "").strip()
     if not text:
         return DEFAULT_BAND
-    return PERMISSION_GROUP_BANDS.get(text, DEFAULT_BAND)
+    return _as_band(PERMISSION_GROUP_BANDS.get(text, DEFAULT_BAND))
 
 
 def decide(band: TrustBand, risk: ToolRisk) -> PermissionAction:
@@ -327,11 +356,24 @@ def decide(band: TrustBand, risk: ToolRisk) -> PermissionAction:
 
 
 def _validate_matrix() -> None:
-    """Reject an incomplete or misspelled table at import, not at first call."""
+    """Reject an incomplete or misspelled table at import, not at first call.
+
+    Membership tests are ``type(x) is Member``, not ``x in set(Enum)``. StrEnum members
+    hash and compare by value on this interpreter, so ``'deny' in set(PermissionAction)``
+    answers True -- and a plain string cell then survives import only to crash later, when
+    the gate reads ``decision.action.value`` or parks a DENY as if it were a CONFIRM. The
+    type check is the only one that keeps that class of typo at boot.
+    """
     for band in _BAND_ORDER:
         row = PERMISSION_MATRIX.get(band)
         if row is None:
             raise ValueError(f"permission matrix has no row for band {band.value!r}")
+        if set(row) != set(ToolRisk):
+            extra = {str(k) for k in set(row) - set(ToolRisk)}
+            raise ValueError(
+                f"permission matrix row {band.value!r} has columns outside the risk "
+                f"vocabulary: {sorted(extra) or '(none)'}"
+            )
         for risk in ToolRisk:
             action = row.get(risk)
             if action is None:
@@ -339,17 +381,26 @@ def _validate_matrix() -> None:
                     f"permission matrix has no cell for band {band.value!r} "
                     f"risk {risk.value!r}"
                 )
-            if action not in set(PermissionAction):
+            if type(action) is not PermissionAction:
                 raise ValueError(
-                    f"permission matrix cell {band.value}/{risk.value} is {action!r}, "
-                    f"not an PermissionAction"
+                    f"permission matrix cell {band.value}/{risk.value} is "
+                    f"{action!r} ({type(action).__name__}), not a PermissionAction member"
                 )
     if set(PERMISSION_MATRIX) != set(_BAND_ORDER):
         extra = set(PERMISSION_MATRIX) - set(_BAND_ORDER)
         raise ValueError(f"permission matrix has rows for unknown bands: {extra}")
-    for key, value in PERMISSION_SOURCE_BANDS.items():
-        if not str(key).strip() or value not in set(TrustBand):
-            raise ValueError(f"bad source band mapping {key!r} -> {value!r}")
+    for name, mapping in (
+        ("source", PERMISSION_SOURCE_BANDS),
+        ("group", PERMISSION_GROUP_BANDS),
+    ):
+        for key, value in mapping.items():
+            if not str(key).strip():
+                raise ValueError(f"blank {name} band mapping key for {value!r}")
+            if type(value) is not TrustBand:
+                raise ValueError(
+                    f"{name} band mapping {key!r} -> {value!r} "
+                    f"({type(value).__name__}), not a TrustBand member"
+                )
     for name, accounts in (
         ("owner", PERMISSION_OWNER_ACCOUNTS),
         ("trusted", PERMISSION_TRUSTED_ACCOUNTS),

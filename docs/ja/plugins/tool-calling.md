@@ -32,6 +32,7 @@ class WeatherPlugin(NekoPluginBase):
     @llm_tool(
         name="get_weather",
         description="指定都市の天気を検索する。",
+        risk="read",
         parameters={
             "type": "object",
             "properties": {
@@ -325,6 +326,7 @@ async def handle_get_weather(args: dict) -> dict:
 mgr.register_tool(ToolDefinition(
     name="get_weather",
     description="指定都市の天気を検索する",
+    risk="read",                            # read / self / write / external（後述の `risk` 節）
     parameters={...},
     handler=handle_get_weather,             # in-process callable
     metadata={"source": "builtin_weather"}, # source タグは metadata へ
@@ -371,6 +373,7 @@ wire 同期完了まで `await` したい場合は
     *,
     name: str | None = None,        # デフォルトはメソッドの __name__
     description: str = "",          # LLM に見せる説明
+    risk: str | None = None,        # read / self / write / external（下の `risk` 節）
     parameters: dict | None = None, # JSON Schema、デフォルトは引数なし
     timeout: float = 30.0,          # 1 回の呼び出しタイムアウト（秒、≤ 300）
     role: str | None = None,        # None = 全グローバル、または特定キャラ名
@@ -382,13 +385,46 @@ wire 同期完了まで `await` したい場合は
 呼ばれた時に即エラーになります：
 
 ```python
-@llm_tool(name="search", parameters={...})
+@llm_tool(name="search", risk="read", parameters={...})
 async def search(self, *, query: str, limit: int = 10):
     ...
 ```
 
 `name` は `[A-Za-z0-9_.\-]{1,64}` にマッチする必要があります — エンコード
 無しでコールバック URL のパスセグメントに直接埋め込めるようにするためです。
+
+### `risk` — ツールの危険度の宣言
+
+`@llm_tool` と `register_llm_tool` は `risk` キーワード引数を取ります。そのツールが
+何をするかの宣言で、ホストの permission gate がツール側から読む唯一の入力です。
+値は 4 つで、定義は `config/permission_settings.py` の `ToolRisk` にあります。
+
+| `risk` | 意味 |
+|---|---|
+| `read` | 何かを検索する。プロセスの外側の状態は変わらない |
+| `self` | 猫娘自身の状態に作用する。話し手の世界には作用しない |
+| `write` | 話し手またはオーナーが観察・喪失しうるものを変える |
+| `external` | マシンの外に出る。または誰かの代わりに第三者と通信する |
+
+宣言してください。4 つ以外の値（例: `readonly`）は、デコレーターの適用時または
+`register_llm_tool` の呼び出し時に `ValueError` になります。エラーはプラグイン作者
+自身のファイルの、その行で出ます。
+
+`risk` を省略しても読み込みは壊れません。プラグインはロードされ、ツールは登録され、
+ホストはツール名を書いたログ行を出します。ただし gate はラベルなしツールを最も
+厳しく扱います。enforce モードではそのツールの呼び出しは拒否されます。出荷時の
+デフォルトである observe モードでは呼び出しは実行され、ログに `would-deny` と
+記録されます。
+
+ラベルなしツールの扱いを決めるのはホストです。プラグインは自分の信頼 band を
+選べません。1 ターンの話し手はホスト（connector）が決定します。band は
+OWNER > TRUSTED > NORMAL > STRANGER > BLOCKED の順です。グループのターンはグループ
+band と話し手 band の低い方を使い、マップに無いアカウントは STRANGER です。
+
+ゲートのモード（observe / enforce）はホストの設定です（`PERMISSION_GATE_MODE`、
+環境変数 `NEKO_PERMISSION_MODE`）。プラグイン作者が切り替えるものではありません。
+「ツールを動かすためにモードを切り替えろ」とユーザーに書くドキュメントを出しては
+いけません。
 
 ### `NekoPluginBase` インスタンスメソッド
 
@@ -399,6 +435,7 @@ async def search(self, *, query: str, limit: int = 10):
 self.register_llm_tool(
     name="custom_tool",
     description="...",
+    risk="read",
     parameters={"type": "object", "properties": {...}},
     handler=my_async_callable,
     timeout=30.0,

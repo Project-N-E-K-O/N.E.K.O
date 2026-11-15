@@ -192,7 +192,7 @@ Hosted TSX uses the exported `ui` namespace plus manifest surfaces; see [Hosted 
 
 #### LLM tool methods
 
-`register_llm_tool(...)`, `unregister_llm_tool(name)`, and `list_llm_tools()` are the imperative counterparts to `@llm_tool`. They register conversation-time tools, not user-plugin Agent entries. See [LLM Tool Calling](./tool-calling).
+`register_llm_tool(...)`, `unregister_llm_tool(name)`, and `list_llm_tools()` are the imperative counterparts to `@llm_tool`. They register conversation-time tools, not user-plugin Agent entries. See [LLM Tool Calling](./tool-calling). Every registered tool declares its [risk class](./tool-calling#risk-classes).
 
 #### `run_update(**kwargs) -> object` (async)
 

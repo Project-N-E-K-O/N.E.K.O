@@ -21,8 +21,11 @@ Three rules, one seam.
    band and the speaker band. The speaker comes from the turn
    (``utils/turn_actor.py``), which only host code writes: a call that carries its own
    identity claim is ignored, so no plugin can raise its own band.
-2. The risk comes from the tool's own declaration. There is no fallback class: an
-   unlabelled tool is refused at registration, in ``ToolRegistry.register``.
+2. The risk comes from the tool's own declaration. There is no fallback class, and no
+   class is guessed from a name. A host-side registration without a label is refused by
+   ``ToolRegistry.register``. A tool that arrives over the wire without one registers, is
+   logged by name, and then gets the strictest answer this module can give at call time:
+   see ``actor_for_call`` and the unusable-risk branch in ``enforce``.
 3. The decision is one table lookup. This module contains no policy of its own, so a
    review of the feature is a review of that table.
 
@@ -45,11 +48,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from config import permission_settings as ps
 from config.permission_settings import (
     DEFAULT_BAND,
-    PERMISSION_APPROVER_ENABLED,
-    PERMISSION_CONFIRM_TIMEOUT_SECONDS,
-    PERMISSION_GATE_MODE,
     PermissionAction,
     PermissionMode,
     ToolRisk,
@@ -62,6 +63,27 @@ from config.permission_settings import (
 from utils.turn_actor import current_actor_payload
 
 logger = logging.getLogger(__name__)
+
+
+def _mode() -> PermissionMode:
+    """The gate mode, read at call time.
+
+    Read through the module, not through an imported copy: an operator who sets
+    ``permission_settings.PERMISSION_GATE_MODE`` while the process runs must change what
+    the gate does, not only what the file says. The same rule covers the approver flag and
+    the timeout below.
+
+    A value that is not a mode raises here rather than behaving like observe. ``enforce``
+    turns that raise into a deny, so a bad runtime value fails closed and says so.
+    """
+    raw = str(ps.PERMISSION_GATE_MODE).strip().lower()
+    try:
+        return PermissionMode(raw)
+    except ValueError:
+        raise PermissionConfigError(
+            f"PERMISSION_GATE_MODE is {ps.PERMISSION_GATE_MODE!r}; expected "
+            f"{', '.join(m.value for m in PermissionMode)}"
+        ) from None
 
 # The key a caller would have to use to claim an identity on the call itself. The gate
 # reads it for one purpose: to say out loud that it ignored the claim. Identity comes
@@ -93,12 +115,19 @@ class Decision:
     account_id: str = ""
     group_id: str = ""
     reason: str = ""
-    mode: PermissionMode = PERMISSION_GATE_MODE
+    mode: PermissionMode = field(default_factory=_mode)
 
     @property
     def blocks(self) -> bool:
-        """True only when the call must not run: a deny in enforce mode."""
-        return self.mode is PermissionMode.ENFORCE and self.action is PermissionAction.DENY
+        """True only when the call must not run: a deny in enforce mode.
+
+        Compared by value, not by identity. A Decision built with the plain strings
+        ``"enforce"`` / ``"deny"`` (a replay, a payload from another process) must block
+        exactly like the members, because the fail-open direction here is a string that
+        does not match and therefore runs the tool.
+        """
+        return (_s(self.mode).lower() == PermissionMode.ENFORCE.value
+                and _s(self.action).lower() == PermissionAction.DENY.value)
 
 
 def parse_risk(value: Any) -> ToolRisk:
@@ -144,14 +173,15 @@ def resolve_band(actor: Any) -> tuple[TrustBand, str, str]:
     return lower_band(band_for_group(group_id), speaker), account_id, group_id
 
 
-def _mode() -> PermissionMode:
-    """The gate mode, read at call time so one assignment can flip it.
+def _s(value: Any) -> str:
+    """The text of an enum member or of a plain string, without assuming which arrived.
 
-    Re-parsed rather than trusted: a deployment that set the module attribute to a bare
-    string still gets the enum, and a value that is not a mode raises here instead of
-    behaving like observe.
+    Decisions reach here from three builders (the table, a replay, an HTTP payload), and
+    a replay can legitimately carry strings. Every log line and model-visible message
+    goes through this so a string cannot raise ``AttributeError`` on ``.value`` in the
+    middle of a turn -- the registry promises it never raises.
     """
-    return PermissionMode(str(PERMISSION_GATE_MODE).strip().lower())
+    return str(getattr(value, "value", value) or "").strip()
 
 
 def decide_for(actor: Any, risk: ToolRisk) -> Decision:
@@ -160,7 +190,7 @@ def decide_for(actor: Any, risk: ToolRisk) -> Decision:
     action = decide(band, risk)
     return Decision(
         action=action, band=band, risk=risk,
-        account_id=account_id, group_id=group_id, mode=_mode(),
+        account_id=account_id, group_id=group_id,
     )
 
 
@@ -178,18 +208,19 @@ def audit(decision: Decision, tool_name: str, *, outcome: str = "") -> None:
     thing (memory/trust_store.py: signals are keyed by id, content stays out), and a
     permission log is exactly where someone would look for other people's messages.
     """
-    if decision.action is PermissionAction.ALLOW and not outcome:
+    action = _s(decision.action)
+    if action == PermissionAction.ALLOW.value and not outcome:
         return
-    label = decision.action.value
-    if decision.mode is PermissionMode.OBSERVE:
+    label = action
+    if _s(decision.mode).lower() == PermissionMode.OBSERVE.value:
         label = f"would-{label}"
     where = f"group={decision.group_id} " if decision.group_id else ""
     logger.warning(
         "[permission] %s tool=%s band=%s risk=%s account=%s %s %s (mode=%s)",
-        label, tool_name, decision.band.value,
-        decision.risk.value if decision.risk is not None else "unlabelled",
+        label, tool_name, _s(decision.band) or "(none)",
+        _s(decision.risk) if decision.risk is not None else "unlabelled",
         decision.account_id or "(unknown)", where, decision.reason or "",
-        decision.mode.value,
+        _s(decision.mode) or "(none)",
     )
 
 
@@ -198,7 +229,14 @@ def audit(decision: Decision, tool_name: str, *, outcome: str = "") -> None:
 
 @dataclass
 class PendingApproval:
-    """One parked call, waiting for an OWNER."""
+    """One parked call, waiting for an OWNER.
+
+    ``outcome`` is the single record of how the wait ended: empty while pending, then
+    ``approved`` / ``refused`` / ``timed_out`` / ``cancelled``. It replaces the two
+    booleans this used to guess from: with ``approved=False`` and ``timed_out=False`` an
+    owner's no printed as "(confirm cancelled)", and the model read a refusal as a system
+    glitch worth retrying.
+    """
 
     request_id: str
     tool_name: str
@@ -207,7 +245,7 @@ class PendingApproval:
     _event: asyncio.Event = field(default=None, repr=False)  # type: ignore[assignment]
     approved: bool | None = None
     resolved_at: float | None = None
-    timed_out: bool = False
+    outcome: str = ""
 
     @property
     def age(self) -> float:
@@ -220,6 +258,11 @@ class ApprovalQueue:
     Deliberately tiny. It parks a call and hands the answer back; it does not decide
     what to do with an unanswered request, because that is ``request_approval``'s job
     (timeout means deny).
+
+    An entry lives only while a waiter lives: ``resolve`` removes it, and the waiting
+    coroutine removes it in its own ``finally``. That is what keeps ``snapshot`` honest,
+    because that list is what an operator reads before switching to enforce, and a row
+    for a call nobody will ever run is worse than no row.
 
     The delivery half is not here. No host code knows who the owner is or how to reach
     them, so ``PERMISSION_APPROVER_ENABLED`` stays False until something can carry the
@@ -242,12 +285,19 @@ class ApprovalQueue:
         return entry
 
     def resolve(self, request_id: str, approve: bool) -> bool:
-        """Answer one request. Returns False when nothing is waiting under that id."""
-        entry = self._pending.get(str(request_id or ""))
+        """Answer one request. Returns False when nothing is waiting under that id.
+
+        The entry leaves the queue here, not later: an answered row is a stale row, and
+        the waiter is about to finish with it.
+        """
+        key = str(request_id or "")
+        entry = self._pending.get(key)
         if entry is None or entry.approved is not None:
             return False
         entry.approved = bool(approve)
+        entry.outcome = "approved" if approve else "refused"
         entry.resolved_at = time.monotonic()
+        self._pending.pop(key, None)
         try:
             entry._event.set()
         except RuntimeError:  # a loop already gone means the caller is gone too
@@ -260,8 +310,8 @@ class ApprovalQueue:
             {
                 "request_id": e.request_id,
                 "tool": e.tool_name,
-                "band": e.decision.band.value,
-                "risk": e.decision.risk.value,
+                "band": _s(e.decision.band),
+                "risk": _s(e.decision.risk),
                 "account_id": e.decision.account_id,
                 "group_id": e.decision.group_id,
                 "age_seconds": round(e.age, 3),
@@ -284,33 +334,96 @@ approvals = ApprovalQueue()
 
 
 async def request_approval(entry: PendingApproval, *, timeout: float | None = None) -> bool:
-    """Wait for an OWNER. Timeout, cancellation and any error all mean deny.
+    """Wait for an OWNER. Timeout and any error mean deny; cancellation keeps propagating.
 
     The one await the gate performs, so it is the one place the deny-by-default rule is
-    written down: every exit path that is not an explicit yes becomes False.
+    written down: every exit path that is not an explicit yes records a failing outcome
+    and returns False.
+
+    Cancellation is re-raised rather than swallowed. A cancelled turn is the task being
+    torn down, and a coroutine that returns normally there tells asyncio the cancel never
+    happened -- which leaves the caller's cleanup, and the reply turn above it, running on
+    a task its owner already gave up on.
     """
     wait_for = (
-        PERMISSION_CONFIRM_TIMEOUT_SECONDS if timeout is None else float(timeout)
+        float(ps.PERMISSION_CONFIRM_TIMEOUT_SECONDS) if timeout is None else float(timeout)
     )
     try:
         await asyncio.wait_for(entry._event.wait(), timeout=wait_for)
     except asyncio.TimeoutError:
         entry.approved = False
-        entry.timed_out = True
+        entry.outcome = "timed_out"
         return False
-    except (asyncio.CancelledError, RuntimeError):
-        # Cancellation is the turn ending. The call never happened, so it must not be
-        # remembered as approved; re-raise nothing, report deny.
+    except asyncio.CancelledError:
         entry.approved = False
+        entry.outcome = "cancelled"
+        raise
+    except RuntimeError:
+        # A dead loop or a dead waiter: the answer can no longer reach anyone.
+        entry.approved = False
+        entry.outcome = "cancelled"
         return False
     finally:
         approvals.forget(entry.request_id)
+    if entry.approved is True:
+        entry.outcome = "approved"
+    elif not entry.outcome:
+        entry.outcome = "refused"
     return bool(entry.approved)
+
+
+# The end of a wait, in the words the model and the log get. One table, so an owner's no
+# can never be reported as a system glitch. The fallback is deliberately NOT a refusal
+# word: if some future path ends a wait without setting an outcome, the log must show an
+# unattributed deny rather than borrow "(owner refused)".
+_OUTCOME_REASON = {
+    "approved": "(owner confirmed)",
+    "refused": "(owner refused)",
+    "timed_out": "(confirm timed out)",
+    "cancelled": "(confirm cancelled)",
+    "": "(confirm ended with no recorded outcome)",
+}
 
 
 async def enforce(tool_name: str, declared_risk: Any, actor: Any,
                   *, timeout: float | None = None) -> Decision:
     """The gate. Returns the decision; ``decision.blocks`` says whether to stop.
+
+    This wrapper is what makes the module's fail-closed promise real. Anything that
+    raises inside -- a config constant flipped to garbage at runtime, a band map with a
+    typo added after import, a table hole -- becomes a deny with the error in the reason,
+    not an exception out of ``ToolRegistry.execute``. The alternative is a gate whose
+    first bug takes the whole tool path with it.
+
+    Cancellation is the one thing that passes through: it is not a gate failure, and
+    swallowing it would leave a dead turn looking alive (see :func:`request_approval`).
+    """
+    try:
+        return await _enforce(tool_name, declared_risk, actor, timeout=timeout)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - every failure here must become a deny
+        logger.exception("[permission] gate error for tool=%s", tool_name)
+        # mode is pinned to ENFORCE, and not by accident. The default comes from
+        # ``_mode()``, which is the very reader that just failed -- leaving it out would
+        # raise again from inside the handler and take the tool path down anyway. A gate
+        # that cannot read its own configuration is not in a position to let anything
+        # through, so it blocks.
+        decision = Decision(
+            action=PermissionAction.DENY, band=DEFAULT_BAND, risk=None,
+            reason=f"(gate error: {type(exc).__name__}: {exc})",
+            mode=PermissionMode.ENFORCE,
+        )
+        try:
+            audit(decision, tool_name, outcome="gate error")
+        except Exception:  # pragma: no cover - logging must not become a second failure
+            pass
+        return decision
+
+
+async def _enforce(tool_name: str, declared_risk: Any, actor: Any,
+                   *, timeout: float | None = None) -> Decision:
+    """The policy run itself. Every decision here comes from the table in config.
 
     ``declared_risk`` is re-parsed here rather than trusted, because the registry and
     this function can be reached from paths that built the value independently (the
@@ -348,7 +461,7 @@ async def enforce(tool_name: str, declared_risk: Any, actor: Any,
         audit(decision, tool_name)
         return decision
 
-    if not PERMISSION_APPROVER_ENABLED:
+    if not ps.PERMISSION_APPROVER_ENABLED:
         # A CONFIRM with nowhere to go is a deny. Say so, so the operator sees the
         # difference between "the policy denied this" and "the approver channel is off".
         denied = Decision(
@@ -361,21 +474,25 @@ async def enforce(tool_name: str, declared_risk: Any, actor: Any,
         return denied
 
     entry = approvals.open(tool_name, decision)
-    audit(decision, tool_name, outcome=f"(request {entry.request_id})")
-    approved = await request_approval(entry, timeout=timeout)
+    try:
+        audit(decision, tool_name, outcome=f"(request {entry.request_id})")
+        approved = await request_approval(entry, timeout=timeout)
+    finally:
+        # The entry must not outlive this span for any reason, including a raise between
+        # opening the request and awaiting it: ``snapshot`` is what an operator reads
+        # before switching to enforce, and a row that nobody will ever answer makes that
+        # reading wrong.
+        approvals.forget(entry.request_id)
     if approved:
         return Decision(
             action=PermissionAction.ALLOW, band=decision.band, risk=decision.risk,
             account_id=decision.account_id, group_id=decision.group_id,
-            reason="(owner confirmed)", mode=mode,
+            reason=_OUTCOME_REASON.get(entry.outcome, _OUTCOME_REASON[""]), mode=mode,
         )
-    reason = "(confirm timed out)" if entry.timed_out else (
-        "(confirm cancelled)" if entry.approved is False and not entry.timed_out
-        else "(owner refused)")
     denied = Decision(
         action=PermissionAction.DENY, band=decision.band, risk=decision.risk,
         account_id=decision.account_id, group_id=decision.group_id,
-        reason=reason, mode=mode,
+        reason=_OUTCOME_REASON.get(entry.outcome, _OUTCOME_REASON[""]), mode=mode,
     )
     audit(denied, tool_name)
     return denied
@@ -395,10 +512,11 @@ def permission_denied_result(call: Any, decision: Decision) -> Any:
     """
     from main_logic.tool_calling import ToolResult
 
-    risk = decision.risk.value if decision.risk is not None else "unlabelled"
+    risk = _s(decision.risk) if decision.risk is not None else "unlabelled"
+    band = _s(decision.band) or DEFAULT_BAND.value
     message = (
         f"tool '{call.name}' denied by the permission gate "
-        f"(band={decision.band.value}, risk={risk}){decision.reason}"
+        f"(band={band}, risk={risk}){decision.reason}"
     )
     return ToolResult(
         call_id=getattr(call, "call_id", "") or "",
@@ -406,7 +524,7 @@ def permission_denied_result(call: Any, decision: Decision) -> Any:
         output={
             "error": "permission_denied",
             "tool": call.name,
-            "band": decision.band.value,
+            "band": band,
             "risk": risk,
         },
         is_error=True,
@@ -417,15 +535,24 @@ def permission_denied_result(call: Any, decision: Decision) -> Any:
 def actor_for_call(call: Any) -> Any:
     """The speaker of the turn that produced this call, or None.
 
-    One source: the turn carrier (utils/turn_actor.py), written only by host code --
-    today the connection layer's inbound sink. A turn that declares nobody resolves to
-    DEFAULT_BAND, so "unknown" is a stranger and never an owner.
+    One source: the turn carrier (utils/turn_actor.py), written only by host code. A turn
+    that declares nobody resolves to DEFAULT_BAND, so "unknown" is a stranger and never an
+    owner.
+
+    What is covered today, stated plainly: the connection layer's inbound sink (step 1).
+    That is the seam where the platform's own words about the speaker enter the host, so
+    it is the right place to stamp, but no tool call in this repo runs inside it yet -- the
+    connectors have no consumer in main, and the dialog paths (the local UI socket, the
+    realtime session task, the proactive and greeting turns) start elsewhere. Every gated
+    call therefore resolves to DEFAULT_BAND today, which is why the gate ships in observe
+    mode: the log will read "stranger would-deny" until each entry point stamps its own
+    speaker. Step 2 is that stamping, one entry point at a time.
 
     ``call.provider_meta[CLAIMED_ACTOR_KEY]`` is deliberately not a source. The call
     object is reachable from plugin-facing paths, and a speaker that could name its own
-    band would set OWNER. A claim found there is reported once per call and ignored, so
-    a mistaken writer sees the reason in the log instead of wondering why a stranger was
-    allowed through or an owner was stopped.
+    band would set OWNER. A claim found there is reported and ignored, so a mistaken
+    writer sees the reason in the log instead of wondering why a stranger was allowed
+    through or an owner was stopped.
     """
     actor = current_actor_payload()
     meta = getattr(call, "provider_meta", None)

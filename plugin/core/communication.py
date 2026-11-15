@@ -1034,16 +1034,28 @@ class PluginCommunicationResourceManager:
             if role is not None and not isinstance(role, str):
                 role = None
 
-            # Refuse a label-less tool here rather than forwarding it. main_server
-            # would reject the registration and this consumer has always swallowed that
+            # A wrong label is the author's typo, so refuse it here: main_server would
+            # reject the registration and this consumer has always swallowed that
             # rejection into a log, so the author would only see a missing tool.
-            risk = str(msg.get("risk") or "").strip().lower()
-            if risk not in _LLM_TOOL_RISKS:
+            # A MISSING label is different, and it is the normal state of every plugin
+            # installed before the permission gate existed. Forward it as None and let
+            # the host decide: the host logs the gap at registration and refuses the call
+            # whenever the gate runs in enforce mode. Dropping the tool here would put
+            # the plugin process in charge of how strict the host is.
+            raw_risk = msg.get("risk")
+            risk = str(raw_risk or "").strip().lower() or None
+            if risk is not None and risk not in _LLM_TOOL_RISKS:
                 self.logger.warning(
-                    "LLM_TOOL_REGISTER {} carries no usable risk label ({}); "
-                    "the tool was not registered", name, msg.get("risk"),
+                    "LLM_TOOL_REGISTER {} declares an unusable risk label ({}); "
+                    "the tool was not registered", name, raw_risk,
                 )
                 return
+            if risk is None:
+                self.logger.warning(
+                    "LLM_TOOL_REGISTER {} carries no risk label; registering it "
+                    "unlabelled, so the host permission gate refuses its calls as soon "
+                    "as it runs in enforce mode", name,
+                )
 
             await register_remote_tool(
                 plugin_id=self.plugin_id,

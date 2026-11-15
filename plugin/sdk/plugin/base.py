@@ -553,12 +553,12 @@ class NekoPluginBase(_SharedNekoPluginBase):
         *,
         name: str,
         description: str,
-        risk: str,
         parameters: dict[str, Any] | None,
         handler: Any,
         timeout: float = 30.0,
         role: str | None = None,
         reply_tail: bool = False,
+        risk: str | None = None,
     ) -> bool:
         """Register an LLM tool at runtime.
 
@@ -586,23 +586,28 @@ class NekoPluginBase(_SharedNekoPluginBase):
             Optional role/character to scope to. ``None`` is global.
 
         risk:
-            Required, no default. Same four classes the ``@llm_tool`` decorator takes.
+            One of ``read``, ``self``, ``write``, ``external``. Same rule as the
+            ``@llm_tool`` decorator: a wrong value raises here, a missing one registers
+            the tool unlabelled and the host then refuses the call under enforce mode.
         Returns ``True`` on success. Raises ``ValueError`` for invalid
         names, an unusable ``risk``, and ``EntryConflictError`` for duplicates.
         """
         validate_tool_name(name)
-        # Same rule as the decorator: the caller that creates a tool at runtime owns
-        # its risk class. Runtime registration is exactly where an unlabelled tool
-        # could otherwise slip in, because there is no decorator line to review.
-        if not isinstance(risk, str) or risk.strip().lower() not in _LLM_TOOL_RISKS:
+        # Same rule as the decorator. A wrong label is the author's own typo, so it
+        # raises in their file; a missing one is the state every already-installed
+        # plugin is in, so it must not break the plugin -- the host logs the gap and the
+        # gate gives that tool its strictest answer.
+        if risk is not None and (
+            not isinstance(risk, str) or risk.strip().lower() not in _LLM_TOOL_RISKS
+        ):
             raise ValueError(
-                f"register_llm_tool({name!r}) must declare risk as one of "
-                f"{', '.join(sorted(_LLM_TOOL_RISKS))}, got {risk!r}"
+                f"register_llm_tool({name!r}) declares risk={risk!r}; use one of "
+                f"{', '.join(sorted(_LLM_TOOL_RISKS))}, or None to leave it unlabelled"
             )
         meta = LlmToolMeta(
             name=name,
             description=description or "",
-            risk=risk.strip().lower(),
+            risk=risk.strip().lower() if isinstance(risk, str) else None,
             parameters=dict(parameters) if isinstance(parameters, dict) else {"type": "object", "properties": {}},
             timeout_seconds=float(timeout),
             role=role,

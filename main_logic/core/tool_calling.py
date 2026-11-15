@@ -97,7 +97,8 @@ class ToolCallingMixin:
         self.tool_registry.register(tool, replace=replace)
         self._fire_task(self._sync_tools_to_active_session())
 
-    async def register_tool_and_sync(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    async def register_tool_and_sync(self, tool: ToolDefinition, *, replace: bool = True,
+                                     risk_required: bool = True) -> None:
         """The awaitable version of ``register_tool``: registers, then waits for the session sync push to finish.
 
         For remote entries like HTTP `/api/tools/register` — by the time the
@@ -111,7 +112,7 @@ class ToolCallingMixin:
         wire, propagate the exception upward, so HTTP /api/tools doesn't return a
         false ok=true.
         """
-        self.tool_registry.register(tool, replace=replace)
+        self.tool_registry.register(tool, replace=replace, risk_required=risk_required)
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
     def unregister_tool(self, name: str) -> bool:

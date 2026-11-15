@@ -2,6 +2,34 @@
 
 **Current-source status (verified 2026-07-16)**: available in the public plugin SDK; no related API is deprecated on this page. This is a capability note, not a promise about a particular release train.
 
+## Update (2026-11-15): the `risk` field
+
+The LLM tool API gained a `risk` field. `@llm_tool` and `register_llm_tool`
+both accept it. It says what the tool does to the world. The host permission
+gate weighs that value. The definitions live in
+`config/permission_settings.py` (class `ToolRisk`). Pick one of four values:
+
+* `read`: the tool looks something up. Nothing outside the process changes.
+* `self`: the tool acts on the character's own state, not on the speaker's world.
+* `write`: the tool changes something the speaker or the owner can observe or lose.
+* `external`: the tool leaves the machine, or talks to a third party on someone's behalf.
+
+```python
+@llm_tool(name="get_weather", description="Look up the weather in a given city.", risk="read")
+async def get_weather(self, *, city: str):
+    return {"city": city, "temp_c": 22}
+```
+
+Declare the value. A wrong value (for example `readonly`) raises at the
+decorator or at the `register_llm_tool` call, in your own file. A missing
+value does not stop loading. The plugin loads, the tool registers, and the
+host logs a line that names the tool. The gate then treats the tool as the
+most restricted thing it can. The host decides this, not the plugin. A
+plugin cannot pick its own trust band. Under the shipped observe mode the
+call still runs and the log says `would-deny`. Under enforce mode the gate
+refuses it. The gate mode is a host setting. Plugin authors do not switch
+it.
+
 ## Summary
 
 The plugin SDK now exposes a one-line way to register a model-callable

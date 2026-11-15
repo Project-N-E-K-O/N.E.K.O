@@ -33,6 +33,7 @@ class WeatherPlugin(NekoPluginBase):
     @llm_tool(
         name="get_weather",
         description="Look up the weather in a given city.",
+        risk="read",
         parameters={
             "type": "object",
             "properties": {
@@ -61,6 +62,36 @@ the end of this page covers the resilience pattern in detail.
 
 The rest of this document explains the underlying HTTP contract and
 when you might need to reach for it directly.
+
+## Risk classes
+
+Every tool declares what it does with the `risk` keyword. `ToolRisk` in
+`config/permission_settings.py` owns the four values and their meaning:
+
+| Value | What the tool does |
+|---|---|
+| `read` | Looks something up. |
+| `self` | Acts on the character's own state. |
+| `write` | Changes something the speaker or owner can observe or lose. |
+| `external` | Leaves the machine or talks to a third party. |
+
+Declare `risk`. A wrong value (for example `readonly`) raises at decoration or at the
+imperative call. The error lands in the plugin author's own file.
+
+A missing value does not break loading. The plugin loads and the tool registers. The
+host logs a line that names the tool. The permission gate then treats the tool as the
+most restricted class it can. Under enforce mode the gate refuses such a call. Under
+the shipped observe mode the call runs and the log says `would-deny`.
+
+The host, not the plugin, decides what an unlabelled tool may do. A plugin cannot pick
+its own trust band. The speaker of a turn comes from the host (the connector). The
+bands are, highest first: OWNER > TRUSTED > NORMAL > STRANGER > BLOCKED. A group turn
+uses the lower of the group band and the speaker band. Anything unmapped is STRANGER.
+
+The gate mode is a host setting (`PERMISSION_GATE_MODE`, or the `NEKO_PERMISSION_MODE`
+environment variable). It belongs to the operator, not to the plugin. A plugin cannot
+raise its own band or switch the gate off, so declaring `risk` is the only action
+available to a tool author.
 
 ## Architecture
 
@@ -337,6 +368,7 @@ mgr.register_tool(ToolDefinition(
     parameters={...},
     handler=handle_get_weather,             # in-process callable
     metadata={"source": "builtin_weather"}, # source goes into metadata
+    risk="read",                            # declare it; see "Risk classes"
 ))
 ```
 
@@ -383,6 +415,7 @@ top-level: `from plugin.sdk.plugin import llm_tool`.
     *,
     name: str | None = None,        # defaults to the method's __name__
     description: str = "",          # shown to the LLM
+    risk: str | None = None,        # read | self | write | external; declare it
     parameters: dict | None = None, # JSON Schema; default = no args
     timeout: float = 30.0,          # per-call timeout (seconds, ≤ 300)
     role: str | None = None,        # None = global, or specific neko name
@@ -394,7 +427,7 @@ keyword arguments. Use `*` in the signature so accidental positional
 args fail loudly:
 
 ```python
-@llm_tool(name="search", parameters={...})
+@llm_tool(name="search", risk="read", parameters={...})
 async def search(self, *, query: str, limit: int = 10):
     ...
 ```
@@ -415,6 +448,7 @@ self.register_llm_tool(
     handler=my_async_callable,
     timeout=30.0,
     role=None,
+    risk="read",   # read | self | write | external; see "Risk classes"
 )
 ```
 
