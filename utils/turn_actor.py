@@ -29,11 +29,15 @@ every turn in the app; the same fact already travels this way for reply attribut
 
 ``asyncio.create_task`` copies the current context, so a scope set before a turn starts
 covers the whole task tree that turn spawns -- the connector's inbound sink, the reply
-it triggers, and every tool call in it. It does not cross a process boundary: a plugin
-that relays a message to Main over HTTP arrives in a task of Main's own, with no actor.
-Such a turn reads as STRANGER, which is the correct answer for an identity Main cannot
-check, and the reason a claimed identity needs a host-issued grant before it can raise
-a band. That grant is not implemented here; nothing in this module accepts one.
+it triggers, and every tool call in it. Two limits follow, and both are live today.
+
+It does not cross a process boundary or an event loop. The connectors run wherever their
+consumer runs, and nothing in main imports them, so the sink stamp reaches no tool call
+in this repo yet. It does not reach a task that started earlier: the dialog clients'
+``handle_messages`` loop is long-lived and was born before any message arrived, so a
+scope opened after that does not cover it. Both are step 2 work -- stamp the actor where
+the turn is consumed, in the process that executes tools. Until that lands, every gated
+call resolves to DEFAULT_BAND, which is exactly why the gate ships in observe mode.
 """
 
 from __future__ import annotations

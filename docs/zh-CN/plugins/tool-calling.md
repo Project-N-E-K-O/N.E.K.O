@@ -28,6 +28,7 @@ class WeatherPlugin(NekoPluginBase):
     @llm_tool(
         name="get_weather",
         description="查询指定城市的天气。",
+        risk="read",
         parameters={
             "type": "object",
             "properties": {
@@ -97,6 +98,34 @@ HTTP server，或者从非 NekoPluginBase 上下文（如外部脚本）注册�
 HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 `@plugin_entry` 完全一致）回到插件。
 
+## 风险等级（Risk classes）
+
+`@llm_tool(...)` 和 `register_llm_tool(...)` 的 `risk` 参数声明这个工具对外界
+做了什么，宿主的权限闸门（permission gate）据此决定放不放行这一次调用。四类
+值的含义定义在 `config/permission_settings.py`（`ToolRisk`）：
+
+| 值 | 含义 |
+|---|---|
+| `read` | 查询某样东西，不改变进程之外的状态 |
+| `self` | 只作用于猫娘自己的状态，不碰说话人的世界 |
+| `write` | 改变说话人或主人能观察到、或会失去的东西 |
+| `external` | 离开这台机器，或代某人和第三方通信 |
+
+声明规则：
+
+- **要写**。写错的值（例如 `readonly`）会在装饰器处或 `register_llm_tool(...)`
+  调用处直接报错，报错位置就在你插件自己的文件里。
+- **漏写不会挡住加载**。插件照常加载，工具照常注册，宿主打一条点名该工具的
+  日志，之后闸门把它当作限制最严的情形处理：enforce 模式下这类调用被拦下；
+  出厂默认的 observe 模式下它照常执行，日志记 `would-deny`。
+- **能做什么由宿主决定，不由插件决定**。插件选不了自己的信任档位（trust
+  band）：本轮说话人由宿主（连接器）给出，档位从高到低为
+  OWNER > TRUSTED > NORMAL > STRANGER > BLOCKED；群聊一轮取群档位与说话人档位
+  中较低的那个；任何没有映射的对象按 STRANGER 处理。
+- **闸门模式是宿主设置**（`PERMISSION_GATE_MODE`，或环境变量
+  `NEKO_PERMISSION_MODE`）。插件作者不切换它，插件文档也不得教用户为了让某个
+  工具能用去切换闸门模式。
+
 ## 注册接口
 
 所有端点都挂在 `MAIN_SERVER_PORT`（默认 `48911`），并强制 `verify_local_access`
@@ -116,6 +145,7 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
     "required": ["city"]
   },
   "callback_url": "http://127.0.0.1:<plugin_port>/tool_invoke",
+  "risk": "read",
   "role": null,
   "source": "my_plugin",
   "timeout_seconds": 30
@@ -128,6 +158,7 @@ HTTP 调用；main_server 的 dispatch 也走同一套 IPC trigger 管线（与
 | `description` | 描述给 LLM 看，决定它什么时候调用 |
 | `parameters` | JSON Schema（OpenAI 风格） |
 | `callback_url` | LLM 触发调用时 main_server POST 到的地址 |
+| `risk` | 风险等级：`read` / `self` / `write` / `external`，见「风险等级（Risk classes）」 |
 | `role` | `null` = 注册到所有猫娘；指定字符串 = 只给那个猫娘用 |
 | `source` | 自定义来源标签，方便后续按来源批量 `clear` |
 | `timeout_seconds` | 单次调用超时（≤300，默认 30） |
@@ -223,6 +254,7 @@ async def register_with_retry():
             "required": ["city"],
         },
         "callback_url": f"http://127.0.0.1:{MY_PORT}/tool_invoke",
+        "risk": "read",
         "role": None,
         "source": "my_plugin",
         "timeout_seconds": 30,
@@ -306,6 +338,7 @@ mgr.register_tool(ToolDefinition(
     description="查询指定城市的天气",
     parameters={...},
     handler=handle_get_weather,             # in-process callable
+    risk="read",                            # 见「风险等级（Risk classes）」
     metadata={"source": "builtin_weather"}, # source 标签塞 metadata
 ))
 ```
@@ -344,6 +377,7 @@ mgr.register_tool(ToolDefinition(
     *,
     name: str | None = None,        # 默认取方法的 __name__
     description: str = "",          # 给 LLM 看的
+    risk: str | None = None,        # read / self / write / external；见「风险等级（Risk classes）」
     parameters: dict | None = None, # JSON Schema；默认无参数
     timeout: float = 30.0,          # 单次调用超时（秒，≤ 300）
     role: str | None = None,        # None = 全局，或指定猫娘名
@@ -354,7 +388,7 @@ mgr.register_tool(ToolDefinition(
 keyword-only，万一传进位置参数会立刻报错：
 
 ```python
-@llm_tool(name="search", parameters={...})
+@llm_tool(name="search", risk="read", parameters={...})
 async def search(self, *, query: str, limit: int = 10):
     ...
 ```
@@ -374,6 +408,7 @@ self.register_llm_tool(
     handler=my_async_callable,
     timeout=30.0,
     role=None,
+    risk="read",  # 按工具实际行为从 read / self / write / external 里选
 )
 ```
 

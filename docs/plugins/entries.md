@@ -2,7 +2,7 @@
 
 An entry point is a callable operation a loaded plugin exposes to Plugin Manager, other plugins, and the Agent (NekoClaw). It is identified by the runtime `entry_id` from `@plugin_entry(id=...)`.
 
-Do not confuse this with `[plugin].entry` in `plugin.toml`, which is the `module.path:ClassName` used by the host to import the plugin class. Also do not confuse it with `@llm_tool`: LLM tools are registered with main_server's `/api/tools` registry and are called by the main dialogue model during a conversation, while the Agent selects a plugin runtime entry when a task has been handed over to it.
+Do not confuse this with `[plugin].entry` in `plugin.toml`, which is the `module.path:ClassName` used by the host to import the plugin class. Also do not confuse it with `@llm_tool`: LLM tools are registered with main_server's `/api/tools` registry and are called by the main dialogue model during a conversation, while the Agent selects a plugin runtime entry when a task has been handed over to it. Every `@llm_tool` declares a [risk class](./tool-calling#risk-classes).
 
 The Agent filters plugins first and looks at entry metadata afterwards. The fine selection must return an exact `plugin_id` and `entry_id`; an unknown or missing ID is not asked about again and no entry is called directly: the task goes to a task agent, or is reported as not doable when none is available. See [How the Agent calls an entry](#how-the-agent-calls-an-entry) for when entries are called, by whom, and what happens to their results.
 

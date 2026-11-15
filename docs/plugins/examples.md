@@ -1,5 +1,7 @@
 # Plugin Examples
 
+Every `@llm_tool` registration snippet must declare its [risk class](./tool-calling#risk-classes).
+
 ## Basic plugin with Result types
 
 ```python

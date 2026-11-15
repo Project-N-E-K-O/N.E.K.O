@@ -776,7 +776,8 @@ async def test_actual_tool_dispatch_syncs_complete_reply_text(
         return {"value": "Synthetic tool result050"}
 
     definition = ToolDefinition(
-        name="acceptance_echo050", description="Synthetic read-only echo", handler=echo
+        name="acceptance_echo050", description="Synthetic read-only echo", handler=echo,
+        risk="read",
     )
     manager = _make_manager()
     manager.tool_registry = ToolRegistry()

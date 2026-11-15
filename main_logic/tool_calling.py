@@ -566,7 +566,8 @@ class ToolRegistry:
 
     # ---- registration ---------------------------------------------------
 
-    def register(self, tool: ToolDefinition, *, replace: bool = True) -> None:
+    def register(self, tool: ToolDefinition, *, replace: bool = True,
+                 risk_required: bool = True) -> None:
         if not tool.name:
             raise ToolRegistryError("ToolDefinition.name must be non-empty")
         # This is the enforcement point the brief asks for. It sits here rather than in
@@ -575,23 +576,47 @@ class ToolRegistry:
         # replay_remote_tools) -- write the registry directly and would walk past a
         # higher check. Normalising on the way in means the gate at execute() can trust
         # the value without re-parsing it per call.
+        #
+        # ``risk_required`` is about WHO is registering, and it is set from the code path,
+        # never from a field in the payload (a caller that can name its own source can
+        # name itself anything). True is the host's own registrations: builtin tools,
+        # in-tree plugins, anything calling this directly. There the PR author owns the
+        # label and a missing one is a bug to fail on.
+        #
+        # False is the two wire paths, where third-party plugins arrive. Refusing them at
+        # import or at registration switches off working features: on this machine 29
+        # installed plugin packages define tools and none of them has the keyword yet. An
+        # unlabelled plugin tool instead registers, logs the gap by name, and meets the
+        # strictest answer the gate can give at call time -- deny in enforce, a recorded
+        # would-deny in observe. A missing label is the most restricted shape there is, so
+        # this is not a way to escape the rule; it only moves when the refusal lands.
         try:
             tool.risk = tool_permissions.parse_risk(
                 tool.risk if tool.risk is not None else tool.metadata.get("risk")
             )
         except tool_permissions.PermissionConfigError as exc:
-            raise ToolRegistryError(
-                f"tool '{tool.name}' has no usable risk label: {exc}. Declare one of "
-                f"read, self, write, external at the tool's own registration site."
-            ) from None
+            if risk_required:
+                raise ToolRegistryError(
+                    f"tool '{tool.name}' has no usable risk label: {exc}. Declare one of "
+                    f"read, self, write, external at the tool's own registration site."
+                ) from None
+            tool.risk = None
+            logger.warning(
+                "ToolRegistry: tool '%s' (source=%s) declares no risk label; it stays "
+                "registered and the permission gate treats it as the highest class it "
+                "can get no answer for. Ask the plugin author to declare one of "
+                "read, self, write, external.",
+                tool.name, tool.metadata.get("source", "unknown"),
+            )
         if not replace and tool.name in self._tools:
             raise ToolRegistryError(f"tool '{tool.name}' already registered")
         self._tools[tool.name] = tool
         logger.info(
-            "ToolRegistry: registered '%s' (handler=%s, source=%s)",
+            "ToolRegistry: registered '%s' (handler=%s, source=%s, risk=%s)",
             tool.name,
             "local" if tool.handler else "remote",
             tool.metadata.get("source", "unknown"),
+            tool.risk.value if tool.risk is not None else "unlabelled",
         )
 
     def unregister(self, name: str) -> bool:

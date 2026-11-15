@@ -10,7 +10,7 @@ This is a text presentation contract, not an audio playback completion contract.
 ```python
 from plugin.sdk.plugin import llm_tool
 
-@llm_tool(name="choose_image", reply_tail=True)
+@llm_tool(name="choose_image", reply_tail=True, risk="write")
 async def choose_image(self, _ctx=None):
     original = (_ctx or {}).get("host_reply")
     if original is None:

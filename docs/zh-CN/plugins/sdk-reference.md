@@ -200,7 +200,7 @@ Hosted TSX 使用导出的 `ui` namespace 和 manifest surface，详见 [Hosted 
 
 #### LLM 工具方法
 
-`register_llm_tool(...)`、`unregister_llm_tool(name)` 和 `list_llm_tools()` 是 `@llm_tool` 的命令式对应接口。它们注册对话期工具，不是用户插件 Agent 入口。详见 [LLM Tool Calling](./tool-calling)。
+`register_llm_tool(...)`、`unregister_llm_tool(name)` 和 `list_llm_tools()` 是 `@llm_tool` 的命令式对应接口。它们注册对话期工具，不是用户插件 Agent 入口。注册时用 `risk` 声明工具的风险等级（`read` / `self` / `write` / `external`）；漏标不会挡住加载，但闸门会按最严的一档处理该工具。详见 [LLM Tool Calling](./tool-calling) 的「风险等级（Risk classes）」。
 
 #### `run_update(**kwargs) -> object`（异步）
 

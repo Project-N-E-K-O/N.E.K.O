@@ -184,13 +184,19 @@ class ToolRegisterRequest(BaseModel):
     callback_url: str = Field(..., min_length=1)
     role: Optional[str] = None  # None = global
     source: str = "external"
-    # Required, no default, and a Literal rather than a str with a permissive
-    # validator: a misspelled "Read" must be a 422 at the wire instead of silently
-    # becoming some middle class, the same discipline config/memory_settings.py states
-    # for speaker_tier. This is also the breaking edge of the feature: anything already
-    # POSTing here without a risk field starts failing at registration rather than
-    # registering an unlabelled tool.
-    risk: Literal["read", "self", "write", "external"]
+    # A Literal, not a str with a permissive validator: a misspelled "Read" must be a
+    # 422 at the wire instead of silently becoming some middle class, the same discipline
+    # config/memory_settings.py states for speaker_tier.
+    #
+    # Optional is deliberate, and it is about who calls here. This endpoint is how
+    # third-party plugins arrive, and their code predates the risk field: on one machine
+    # 29 installed plugin packages define tools, none with a label. A required field
+    # would 422 them all and switch off working features -- the same outage the observe
+    # mode exists to prevent, reached by a different door. So a missing label registers,
+    # logs the gap, and meets the gate's strictest answer at call time. ``risk_required``
+    # in ToolRegistry.register carries that rule; host-side registration stays strict.
+    # A wrong value is still a 422: guessing an author's typo is not the host's job.
+    risk: Optional[Literal["read", "self", "write", "external"]] = None
     # Bound values: huge timeouts block entire tool-call path and model turns;
     # synchronous tools longer than five minutes should be split into plugin tasks,
     # never hold main_server long-term.
@@ -832,7 +838,12 @@ async def register_tool(req: ToolRegisterRequest) -> Dict[str, Any]:
             # so when caller gets ok=True, active/pending session tools
             # are current, avoiding success responses followed by model calls
             # unable to see tools.
-            await mgr.register_tool_and_sync(tool, replace=True)
+            await mgr.register_tool_and_sync(
+                tool, replace=True,
+                # The wire is where unlabelled third-party tools arrive. See
+                # ToolRegisterRequest.risk for why the refusal lands at call time here.
+                risk_required=False,
+            )
             affected.append(role_name)
         except Exception as e:
             err_text = f"{type(e).__name__}: {e}"

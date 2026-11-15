@@ -45,12 +45,12 @@ RISKS = list(ToolRisk)
 @contextlib.contextmanager
 def _mode(mode):
     """Run one test in a given gate mode, then put the default back."""
-    saved = gate.PERMISSION_GATE_MODE
-    gate.PERMISSION_GATE_MODE = mode
+    saved = ps.PERMISSION_GATE_MODE
+    ps.PERMISSION_GATE_MODE = mode
     try:
         yield
     finally:
-        gate.PERMISSION_GATE_MODE = saved
+        ps.PERMISSION_GATE_MODE = saved
 
 
 @contextlib.contextmanager
@@ -287,16 +287,146 @@ def test_blocked_speaker_is_denied_a_read():
 
 
 def test_confirm_without_an_approver_channel_degrades_to_deny(monkeypatch):
-    monkeypatch.setattr(gate, "PERMISSION_APPROVER_ENABLED", False)
-    with _mode(PermissionMode.ENFORCE):
-        decision = asyncio.run(gate.enforce("t", "external", _actor("qq:FRIEND")))
+    """A CONFIRM with nowhere to ask must become a deny, and say which one it was.
+
+    The speaker has to sit in TRUSTED for this to test anything: an unmapped account is
+    a STRANGER, the table denies it in the EXTERNAL column, and the degrade block below
+    that never runs -- which is how this test passed while the code path it names was
+    dead (review round: "unreachable from any test").
+    """
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", False)
+    with _mode(PermissionMode.ENFORCE), _bands(trusted=("qq:FRIEND",)):
+        assert decide(TrustBand.TRUSTED, ToolRisk.EXTERNAL) is PermissionAction.CONFIRM
+        with _captured_logs() as records:
+            decision = asyncio.run(gate.enforce("t", "external", _actor("qq:FRIEND")))
     assert decision.action is PermissionAction.DENY
     assert decision.blocks is True
+    assert "PERMISSION_APPROVER_ENABLED is false" in decision.reason, decision.reason
+    assert gate.approvals.pending_count() == 0, "a degrade must not park the call"
+    assert any("deny" in line for line in records), records
+
+
+def test_an_owner_refusal_is_not_reported_as_a_cancellation(monkeypatch):
+    """The model reads this string. "cancelled" invites a retry; "refused" does not."""
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(ps, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 5.0)
+
+    async def go():
+        task = asyncio.ensure_future(gate.enforce(
+            "external_tool", "external", _actor("qq:FRIEND")))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            pending = gate.approvals.snapshot()
+            if pending:
+                gate.approvals.resolve(pending[0]["request_id"], False)
+                break
+        return await task
+
+    with _mode(PermissionMode.ENFORCE), _bands(trusted=("qq:FRIEND",)):
+        decision = asyncio.run(go())
+    assert decision.action is PermissionAction.DENY
+    assert "(owner refused)" in decision.reason, decision.reason
+
+
+def test_an_answered_request_leaves_the_pending_queue(monkeypatch):
+    """A row nobody will ever answer makes the operator's reading of the log wrong."""
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(ps, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 5.0)
+
+    async def go():
+        task = asyncio.ensure_future(gate.enforce(
+            "external_tool", "external", _actor("qq:FRIEND")))
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            pending = gate.approvals.snapshot()
+            if pending:
+                assert gate.approvals.resolve(pending[0]["request_id"], True) is True
+                # resolve hands the answer to the waiter and drops the row at once.
+                assert gate.approvals.snapshot() == []
+                assert gate.approvals.resolve(pending[0]["request_id"], True) is False
+                break
+        return await task
+
+    with _mode(PermissionMode.ENFORCE), _bands(trusted=("qq:FRIEND",)):
+        asyncio.run(go())
+    assert gate.approvals.pending_count() == 0
+
+
+def test_resolving_an_orphan_row_still_deletes_it():
+    """The pop inside ``resolve`` is the only cleaner for a row nobody waits on.
+
+    A live waiter removes its own entry in ``request_approval``'s finally, so deleting on
+    answer looks redundant until a task dies between the two. Then the row would sit in
+    the map for the life of the process and keep ageing in ``snapshot``, which is the
+    table an operator reads before switching to enforce. ``_pending`` is the queue's own
+    storage, and this test is of that queue, so it is the honest thing to assert on.
+    """
+    orphan = gate.approvals.open("orphan_tool", gate.Decision(
+        action=PermissionAction.CONFIRM, band=TrustBand.NORMAL, risk=ToolRisk.WRITE))
+    assert gate.approvals.pending_count() == 1
+    assert gate.approvals.resolve(orphan.request_id, True) is True
+    assert gate.approvals.pending_count() == 0
+    assert gate.approvals._pending == {}, "an answered row must not linger"
+
+
+def test_a_gate_error_denies_instead_of_taking_the_tool_path_down(monkeypatch):
+    """The never-raises promise, tested at the gate rather than assumed in a docstring.
+
+    A garbage mode is the reachable way to break the gate from configuration. The old
+    code let that raise out of ToolRegistry.execute, which would have failed every tool
+    call in the app instead of the one call that hit it.
+    """
+    monkeypatch.setattr(ps, "PERMISSION_GATE_MODE", "sideways")
+    with _captured_logs() as records:
+        decision = asyncio.run(gate.enforce("t", "read", _actor("qq:A1")))
+    assert decision.action is PermissionAction.DENY
+    assert decision.blocks is True
+    assert "gate error" in decision.reason, decision.reason
+    assert any("gate error" in line for line in records), records
+
+
+def test_a_late_group_map_entry_never_raises_inside_a_turn():
+    """A map edited after import lands on a band or on DEFAULT_BAND, never on a crash.
+
+    Import validation is for the shipped file. A deployment or a test that adds an entry
+    later cannot be caught at boot, so ``_as_band`` decides: a name that IS a band gets
+    honoured (a string that reads "trusted" means trusted, and refusing it would be
+    pedantry that surprises nobody), and anything else falls back to DEFAULT_BAND. The
+    thing under test here is that neither shape reaches ``.value`` on a bare string,
+    which is what used to blow up mid-turn.
+    """
+    ps.PERMISSION_GROUP_BANDS["qq:GOK"] = "trusted"
+    ps.PERMISSION_GROUP_BANDS["qq:GBAD"] = "kinda-trusted"
+    ps.PERMISSION_GROUP_BANDS["qq:GBLANK"] = ""
+    try:
+        assert ps.band_for_group("qq:GOK") is TrustBand.TRUSTED
+        assert ps.band_for_group("qq:GBAD") is DEFAULT_BAND
+        assert ps.band_for_group("qq:GBLANK") is DEFAULT_BAND
+        # And the resolver, which is the caller inside a turn, keeps working on both.
+        assert gate.resolve_band(_actor("qq:A1", group="qq:GBAD", kind="group"))[0] \
+            is DEFAULT_BAND
+    finally:
+        for key in ("qq:GOK", "qq:GBAD", "qq:GBLANK"):
+            ps.PERMISSION_GROUP_BANDS.pop(key, None)
+
+
+def test_a_decision_built_from_strings_still_blocks():
+    """Replays and payloads carry plain strings; a string deny must behave like the member.
+
+    The fail-open direction here is silent: comparing with ``is`` against a member would
+    let a string DENY through as "not a deny", and the tool would run.
+    """
+    decision = gate.Decision(
+        action="deny", band="stranger", risk="write", mode="enforce")
+    assert decision.blocks is True
+    with _captured_logs() as records:
+        gate.audit(decision, "some_tool")
+    assert records and "deny" in records[0], records
 
 
 def test_confirm_times_out_as_deny(monkeypatch):
-    monkeypatch.setattr(gate, "PERMISSION_APPROVER_ENABLED", True)
-    monkeypatch.setattr(gate, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(ps, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 0.05)
     with _mode(PermissionMode.ENFORCE), _bands(trusted=("qq:FRIEND",)):
         # TRUSTED x external is the CONFIRM cell. An unmapped account would be
         # STRANGER and deny outright, which would test the table, not the timeout.
@@ -310,8 +440,8 @@ def test_confirm_times_out_as_deny(monkeypatch):
 
 
 def test_confirm_resolved_yes_allows(monkeypatch):
-    monkeypatch.setattr(gate, "PERMISSION_APPROVER_ENABLED", True)
-    monkeypatch.setattr(gate, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(ps, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 5.0)
 
     async def go():
         task = asyncio.ensure_future(gate.enforce(
@@ -333,8 +463,8 @@ def test_confirm_resolved_yes_allows(monkeypatch):
 
 
 def test_confirm_resolved_no_denies(monkeypatch):
-    monkeypatch.setattr(gate, "PERMISSION_APPROVER_ENABLED", True)
-    monkeypatch.setattr(gate, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(ps, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 5.0)
 
     async def go():
         task = asyncio.ensure_future(gate.enforce(
@@ -364,7 +494,7 @@ def test_observe_mode_records_a_deny_and_runs_the_tool():
     registry.register(ToolDefinition(
         name="write_tool", description="", risk="write",
         handler=lambda _args: called.append(1) or "done"))
-    assert gate.PERMISSION_GATE_MODE is PermissionMode.OBSERVE, "the shipped default"
+    assert ps.PERMISSION_GATE_MODE is PermissionMode.OBSERVE, "the shipped default"
     with _speaker("qq:A1"), _captured_logs() as records:
         result = asyncio.run(registry.execute(
             ToolCall(name="write_tool", arguments={}, call_id="m1")))
@@ -375,8 +505,8 @@ def test_observe_mode_records_a_deny_and_runs_the_tool():
 
 def test_observe_mode_never_parks_a_confirm(monkeypatch):
     """A question nobody can act on is a stall, so observe must not ask it."""
-    monkeypatch.setattr(gate, "PERMISSION_APPROVER_ENABLED", True)
-    monkeypatch.setattr(gate, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 30.0)
+    monkeypatch.setattr(ps, "PERMISSION_APPROVER_ENABLED", True)
+    monkeypatch.setattr(ps, "PERMISSION_CONFIRM_TIMEOUT_SECONDS", 30.0)
     with _bands(trusted=("qq:FRIEND",)):
         with _captured_logs() as records:
             decision = asyncio.run(gate.enforce(
@@ -404,7 +534,7 @@ def test_enforce_mode_blocks_the_same_call_the_default_only_records():
 
 def test_a_bad_mode_value_is_refused_not_defaulted(monkeypatch):
     """A typo must not boot a deployment into observe while it means enforce."""
-    monkeypatch.setattr(gate, "PERMISSION_GATE_MODE", "sideways")
+    monkeypatch.setattr(ps, "PERMISSION_GATE_MODE", "sideways")
     with pytest.raises(ValueError):
         gate._mode()
     monkeypatch.setenv("NEKO_PERMISSION_MODE", "enforce")
@@ -560,3 +690,150 @@ def test_a_pulled_message_can_be_bound_by_the_consumer():
     with turn_for_message(message) as actor:
         assert actor.account_id == "qq:U9"
     assert current_turn_actor() is None
+
+
+# ----------------------------------------------------------- pinned table values
+
+
+#: The policy, written by hand. Every other test in this file asks the table what it
+#: says; this one says what the table must say. Without it, flipping a cell in config
+#: keeps the suite green: the parametrized cell test compares decide() against the same
+#: table it reads, so it tests routing, not values. Nine of the twenty cells had no
+#: independent expectation at all (review round: "7 of 20 cells are unprotected"; the
+#: external column is covered only as "not a silent allow", which both CONFIRM and DENY
+#: satisfy). Change a cell here only together with the brief that fixed it.
+EXPECTED_POLICIES: dict[str, dict[str, str]] = {
+    "owner": {"read": "allow", "self": "allow", "write": "allow", "external": "allow"},
+    "trusted": {"read": "allow", "self": "allow", "write": "allow",
+                "external": "confirm"},
+    "normal": {"read": "allow", "self": "allow", "write": "confirm",
+               "external": "confirm"},
+    "stranger": {"read": "allow", "self": "deny", "write": "deny", "external": "deny"},
+    "blocked": {"read": "deny", "self": "deny", "write": "deny", "external": "deny"},
+}
+
+
+def test_the_table_says_exactly_these_twenty_things():
+    assert set(EXPECTED_POLICIES) == {b.value for b in TrustBand}
+    for band in TrustBand:
+        assert set(EXPECTED_POLICIES[band.value]) == {r.value for r in ToolRisk}
+        for risk in ToolRisk:
+            want = EXPECTED_POLICIES[band.value][risk.value]
+            got = ps.PERMISSION_MATRIX[band][risk]
+            assert type(got) is PermissionAction, (band, risk, type(got).__name__)
+            assert got.value == want, f"{band.value}/{risk.value}: {got.value} != {want}"
+            assert decide(band, risk).value == want
+
+
+def test_a_plain_string_cell_in_the_table_is_a_startup_error():
+    """The type check is the only thing that catches this class of typo.
+
+    StrEnum members compare and hash by value on this interpreter, so ``"deny" in
+    set(PermissionAction)`` answers True and an equality check lets a bare string into
+    the table -- where it survives import and then raises on ``.value`` inside a turn,
+    or worse gets read as neither a deny nor a confirm.
+    """
+    row = ps.PERMISSION_MATRIX[TrustBand.NORMAL]
+    saved = dict(row)
+    try:
+        row[ToolRisk.WRITE] = "allow"
+        with pytest.raises(ValueError, match="not a PermissionAction member"):
+            ps._validate_matrix()
+    finally:
+        ps.PERMISSION_MATRIX[TrustBand.NORMAL] = saved
+        ps._validate_matrix()
+
+
+def test_a_stray_column_or_a_group_map_string_is_a_startup_error():
+    row = ps.PERMISSION_MATRIX[TrustBand.OWNER]
+    saved = dict(row)
+    saved_groups = dict(ps.PERMISSION_GROUP_BANDS)
+    try:
+        row["reads"] = PermissionAction.ALLOW
+        with pytest.raises(ValueError, match="columns outside the risk vocabulary"):
+            ps._validate_matrix()
+        del row["reads"]
+        ps.PERMISSION_GROUP_BANDS["qq:G1"] = "owner"
+        with pytest.raises(ValueError, match="not a TrustBand member"):
+            ps._validate_matrix()
+    finally:
+        ps.PERMISSION_MATRIX[TrustBand.OWNER] = saved
+        ps.PERMISSION_GROUP_BANDS.clear()
+        ps.PERMISSION_GROUP_BANDS.update(saved_groups)
+        ps._validate_matrix()
+
+
+# ------------------------------------------------- unlabelled third-party tools
+
+
+def test_an_unlabelled_plugin_tool_registers_and_is_refused_at_call_time():
+    """The fleet rule, in one test.
+
+    29 installed plugin packages define tools and none of them has the keyword yet. A
+    required label at import or at registration switches those plugins off; the gate
+    reaching the same answer at call time does not. The label stays mandatory in
+    effect -- an unlabelled tool is the most restricted thing in the system.
+    """
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolRegistry
+
+    called = []
+    registry = ToolRegistry()
+    tool = ToolDefinition(
+        name="legacy_tool", description="", handler=lambda _a: called.append(1),
+        metadata={"source": "plugin:legacy"})
+    registry.register(tool, risk_required=False)  # the wire path
+    assert tool.risk is None
+
+    with _mode(PermissionMode.ENFORCE), _speaker("qq:A1"):
+        result = asyncio.run(registry.execute(ToolCall(
+            name="legacy_tool", arguments={}, call_id="u1")))
+    assert called == [], "enforce must refuse an unlabelled tool"
+    assert result.is_error is True
+    assert result.output["risk"] == "unlabelled"
+
+    called.clear()
+    with _speaker("qq:A1"):  # observe is the shipped default
+        result = asyncio.run(registry.execute(ToolCall(
+            name="legacy_tool", arguments={}, call_id="u2")))
+    assert called == [1], "observe records the refusal, it does not apply it"
+    assert result.is_error is False
+
+
+def test_a_host_registration_still_refuses_an_unlabelled_tool():
+    """The other half of the rule: the lenient path is the wire, and only the wire."""
+    from main_logic.tool_calling import ToolDefinition, ToolRegistry, ToolRegistryError
+
+    registry = ToolRegistry()
+    with pytest.raises(ToolRegistryError):
+        registry.register(ToolDefinition(name="host_tool", description=""))
+    with pytest.raises(ToolRegistryError):
+        registry.register(
+            ToolDefinition(name="host_tool", description="",
+                           metadata={"source": "plugin:x"}),
+            risk_required=True)
+
+
+def test_the_sdk_accepts_a_missing_label_and_refuses_a_wrong_one():
+    """Decoration must not break an old plugin, and must not invent a class either."""
+    from plugin.sdk.plugin.llm_tool import LLM_TOOL_META_ATTR, LlmToolMeta, llm_tool
+
+    @llm_tool(name="legacy_decorated", description="no label here")
+    def _legacy(args):  # pragma: no cover - never called
+        return None
+
+    legacy_meta = getattr(_legacy, LLM_TOOL_META_ATTR, None)
+    assert isinstance(legacy_meta, LlmToolMeta)
+    assert legacy_meta.risk is None
+    assert legacy_meta.to_ipc_payload(plugin_id="p").get("risk") is None
+
+    with pytest.raises(ValueError, match="unusable|risk"):
+        @llm_tool(name="typo_decorated", description="bad label", risk="readonly")
+        def _typo(args):  # pragma: no cover
+            return None
+
+    # A declared label still travels unchanged, lower-cased.
+    @llm_tool(name="labelled", description="ok", risk="Write")
+    def _labelled(args):  # pragma: no cover
+        return None
+
+    assert getattr(_labelled, LLM_TOOL_META_ATTR).risk == "write"

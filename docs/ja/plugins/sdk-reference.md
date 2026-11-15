@@ -187,7 +187,7 @@ Hosted TSX は exported `ui` namespace と manifest surface を使います。�
 
 #### LLM tool method
 
-`register_llm_tool(...)`、`unregister_llm_tool(name)`、`list_llm_tools()` は `@llm_tool` の imperative API です。conversation-time tool を登録し、user-plugin Agent entry とは別です。[LLM Tool Calling](./tool-calling) を参照してください。
+`register_llm_tool(...)`、`unregister_llm_tool(name)`、`list_llm_tools()` は `@llm_tool` の imperative API です。conversation-time tool を登録し、user-plugin Agent entry とは別です。両 API は `risk` キーワード（`read` / `self` / `write` / `external`）を取ります。宣言しないツールは permission gate で最も厳しく扱われます。[LLM Tool Calling](./tool-calling) を参照してください。
 
 #### `run_update(**kwargs) -> object` (async)
 
