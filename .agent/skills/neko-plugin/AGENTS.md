@@ -16,20 +16,24 @@ is a snapshot taken when this plugin was scaffolded; the N.E.K.O repository's
 
 - Edit only inside this directory. Treat the N.E.K.O checkout (when present)
   as read context; platform changes need an explicit request.
+- The skill calls the plugin workspace `plugin/plugins/<plugin_id>/` because
+  that is its default location inside a N.E.K.O checkout. For this plugin,
+  read that path as this directory, wherever it lives, and prefer the commands
+  below over the skill's ID-only examples.
 - Runtime-triggered `@plugin_entry` handlers must be `async def` and return
   `Ok(...)` / `Err(...)`.
 - Keep `plugin.toml`'s `[plugin].id` and `[plugin].entry` stable; they are the
   plugin's identity.
 - Declare Python dependencies in `pyproject.toml`, then materialize them with
-  `neko-plugin sync {plugin_id} --clean`; never add `requirements.txt`.
+  `{sync_command}`; never add `requirements.txt`.
 
 ## Commands
 
-In a N.E.K.O source checkout, run from the repository root:
+{command_context}
 
 ```bash
-uv run neko-plugin check {plugin_id}
-uv run neko-plugin build {plugin_id}
+{check_command}
+{build_command}
 ```
 
 In the packaged app, use the plugin workbench (插件制作工作台) in the plugin

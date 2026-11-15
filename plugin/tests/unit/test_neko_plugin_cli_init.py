@@ -267,6 +267,12 @@ def test_init_uses_exact_custom_output_and_custom_directory_commands(
     assert "neko-plugin check -r ." in readme
     assert "From this plugin repository root" in readme
     assert "N.E.K.O/plugin/plugins/custom_output" not in readme
+    agents_md = (output / "AGENTS.md").read_text(encoding="utf-8")
+    assert "From this directory:" in agents_md
+    assert "neko-plugin check ." in agents_md
+    assert "neko-plugin build ." in agents_md
+    assert "neko-plugin sync . --clean" in agents_md
+    assert "neko-plugin check custom_output" not in agents_md
     assert neko_plugin_cli.main(["check", str(output)]) == 0
     assert "does not match directory name" not in capsys.readouterr().out
 

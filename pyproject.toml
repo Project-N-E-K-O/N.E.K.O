@@ -166,6 +166,11 @@ exclude = [
   "main_logic/asr_client/speaker_shadow/models/*.part",
 ]
 
+[tool.hatch.build.targets.wheel.force-include]
+# The authored neko-plugin skill lives outside the package tree; ship it where
+# plugin/neko_plugin_cli/templates/agent_kit.py looks for installed data.
+".agent/skills/neko-plugin" = "plugin/neko_plugin_cli/agent_kit"
+
 [tool.hatch.build.targets.sdist]
 include = [
   "app",
@@ -184,6 +189,8 @@ include = [
   "templates",
   "assets",
   "launcher.py",
+  # Source of the wheel's plugin/neko_plugin_cli/agent_kit (force-include above).
+  ".agent/skills/neko-plugin",
   "README.MD",
   "LICENSE",
 ]

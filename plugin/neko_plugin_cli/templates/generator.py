@@ -177,7 +177,7 @@ def render_plugin_files(
         files[Path(".github/workflows/verify.yml")] = render_verify_workflow(spec)
         files[Path(".github/workflows/release.yml")] = render_release_workflow(spec)
     if spec.create_agent_kit:
-        files[Path("AGENTS.md")] = agent_kit.render_agents_md(spec.plugin_id)
+        files[Path("AGENTS.md")] = _render_agents_md(spec, layout)
         files[Path("CLAUDE.md")] = agent_kit.render_claude_md()
         files.update(agent_kit.skill_files())
     return files
@@ -534,6 +534,35 @@ dependencies = []
 # ---------------------------------------------------------------------------
 # Repository support files
 # ---------------------------------------------------------------------------
+
+def _render_agents_md(
+    spec: PluginSpec,
+    layout: PluginDevelopmentLayout,
+) -> str:
+    # Mirror the README: ID commands only resolve under plugin/plugins, so
+    # projects elsewhere get path-based commands.
+    if layout.repo_root_from_workspace is None:
+        def command(name: str, suffix: str = "") -> str:
+            return f"uv run neko-plugin {name} <path-to-this-directory>{suffix}"
+
+        context = "From a N.E.K.O source checkout, pass this directory's path:"
+    else:
+        def command(name: str, suffix: str = "") -> str:
+            return layout.readme_plugin_command(name, suffix=suffix)
+
+        context = (
+            "From the N.E.K.O repository root:"
+            if layout.is_default_source
+            else "From this directory:"
+        )
+    return agent_kit.render_agents_md(
+        spec.plugin_id,
+        command_context=context,
+        check_command=command("check"),
+        build_command=command("build"),
+        sync_command=command("sync", " --clean"),
+    )
+
 
 def _render_readme_md(
     spec: PluginSpec,
