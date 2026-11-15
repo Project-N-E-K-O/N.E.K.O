@@ -28,13 +28,18 @@ query($endCursor: String) {
       reviewThreads(first: 100, after: $endCursor) {
         totalCount
         pageInfo { hasNextPage endCursor }
-        nodes { id isResolved comments(first: 1) { totalCount nodes { databaseId path body } } }
+        nodes {
+          id isResolved
+          first: comments(first: 1) { totalCount nodes { databaseId path body } }
+          last: comments(last: 1) { nodes { databaseId author { login } } }
+        }
       }
     }
   }
 }'
 ```
 
+- `first` 是线程的根评论（回复、去重都按它的 id），`last` 是线程最后一条评论（判断处理过没有时比的是它）。
 - ⚠️ 变量名必须叫 `$endCursor`，`gh` 按这个名字注入游标。写成别的名字会无限重拉第一页、不退出、白烧额度，所以外面套 `timeout`。
 - `reviewThreads(last: 100)` 或不分页的 `first: 100`，在线程超过 100 个的 PR 上会静默漏掉一批。
 - 顺带看 `totalCount`，和上次比有没有变多。
