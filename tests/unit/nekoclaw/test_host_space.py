@@ -538,6 +538,14 @@ async def test_an_archived_project_does_not_replace_one_of_its_name_that_is_in_u
     home = root / "archive" / archived.archive_year / "Budget app"
     assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "old summary\n"
     assert not (root / "projects" / "Budget app" / "SUMMARY.md").exists()
+    # Matching prefers the one in use, so restoring is not even tried above.
+    # Were it tried (two commissions racing), it gives way to the one in use
+    # rather than move a directory onto it.
+    stored = [item for item in await space.list_projects() if item.status == "archived"]
+    kept = await asyncio.to_thread(space._restore, stored[0])
+    assert (kept.description, kept.status) == ("the new one", "active")
+    assert (home / "SUMMARY.md").is_file()
+    assert (root / "projects" / "Budget app" / "memory" / "stack.md").is_file()
 
 
 async def test_open_project_brings_an_archived_one_back_instead_of_making_a_second(space, root):
