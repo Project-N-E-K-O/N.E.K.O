@@ -89,7 +89,11 @@ def _bands(blocked=(), trusted=(), owners=()):
 
 @contextlib.contextmanager
 def _captured_logs():
-    logger = logging.getLogger("main_logic.tool_permissions")
+    # The module logs through get_module_logger, so the name is the service path,
+    # not "main_logic.tool_permissions". Capture whatever the module actually
+    # holds, or this suite would read a logger nobody writes to and pass on
+    # an empty list.
+    logger = gate.logger
     records: list[str] = []
 
     class _Handler(logging.Handler):

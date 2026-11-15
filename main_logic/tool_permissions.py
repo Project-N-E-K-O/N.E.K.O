@@ -54,7 +54,6 @@ is a deny, because the alternative is a gate that opens when it breaks.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -72,9 +71,16 @@ from config.permission_settings import (
     decide,
     lower_band,
 )
+from utils.logger_config import get_module_logger
 from utils.turn_actor import current_actor_payload
 
-logger = logging.getLogger(__name__)
+# The audit line IS the deliverable of observe mode, so it has to land in the file
+# operators are told to read. `logging.getLogger(__name__)` propagates to the root
+# logger, and `setup_logging(service_name="Main")` attaches the file handlers to
+# `N.E.K.O.Main`, not to root: the whole permission history would go to stderr and
+# vanish from the persisted log. This is the same call `main_logic/tool_calling.py`
+# and `main_routers/tool_router.py` make.
+logger = get_module_logger(__name__, "Main")
 
 
 def _mode() -> PermissionMode:
