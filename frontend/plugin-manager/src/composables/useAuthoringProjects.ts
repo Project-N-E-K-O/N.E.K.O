@@ -67,14 +67,21 @@ const CODES_WITH_SERVER_DETAIL: ReadonlySet<string> = new Set([
   'REPO_CREATE_FAILED',
 ])
 
+/**
+ * Physical folder name of a project's source directory.
+ *
+ * The CLI resolves workbench projects by their folder name, not by plugin ID:
+ * a cloned repository keeps a kebab-case folder (`hello-world`) while the plugin
+ * ID and package stay snake_case (`hello_world`), so callers must not substitute
+ * one for the other. Handles both Windows (`\`) and POSIX (`/`) separators.
+ */
+export function projectDirectoryName(project: AuthoringProject): string {
+  return project.source_dir.split(/[\\/]/).filter(Boolean).pop() || project.source_dir
+}
+
 /** Display name; unreadable projects fall back to their folder name. */
 export function projectTitle(project: AuthoringProject): string {
-  return (
-    project.name ||
-    project.plugin_id ||
-    project.source_dir.split(/[\\/]/).filter(Boolean).pop() ||
-    project.source_dir
-  )
+  return project.name || project.plugin_id || projectDirectoryName(project)
 }
 
 /**

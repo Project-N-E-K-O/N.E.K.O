@@ -1285,6 +1285,31 @@ describe('authoring workbench backed by the server project list', () => {
     expect(document.body.textContent).toContain(en.buildPackageDone)
   })
 
+  it.each([
+    ['E:/Projects/hello-world'],
+    ['E:\\Projects\\hello-world'],
+  ])('builds a kebab-case project folder (source_dir=%s)', async (sourceDir) => {
+    // A cloned repository keeps its kebab-case folder while the plugin ID stays
+    // snake_case; the CLI resolves projects by folder name, not by ID.
+    api.route.query = { project: 'p1' }
+    api.listPluginProjects.mockResolvedValue([{ ...listed, source_dir: sourceDir }])
+    api.buildPluginCli.mockResolvedValue({
+      built: [{ package_path: 'D:/packages/hello-world.neko-plugin' }],
+      built_count: 1,
+      failed: [],
+      failed_count: 0,
+      ok: true,
+    })
+
+    await mount()
+    await click(en.buildPackage)
+
+    expect(api.buildPluginCli).toHaveBeenCalledWith({
+      mode: 'single',
+      plugin_ref: { root_id: 'project', directory_name: 'hello-world' },
+    }, { timeout: 300_000 })
+  })
+
   it('reports a failed build and downloads nothing', async () => {
     api.route.query = { project: 'p1' }
     api.listPluginProjects.mockResolvedValue([listed])
