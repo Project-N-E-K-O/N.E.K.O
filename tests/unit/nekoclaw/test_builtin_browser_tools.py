@@ -978,6 +978,36 @@ async def test_an_agreement_given_for_one_call_opens_the_browser_for_no_other(to
     assert outcome.success and len(world.connected) == 2
 
 
+async def test_an_agreement_stands_for_the_closing_it_was_given_for_and_not_for_the_next(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    # Two tasks asked, and the user agreed to both.
+    first, second = tools.reopen_agreed(), tools.reopen_agreed()
+    assert (await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=first), 10.0)).success
+
+    # The window is back, and the user closes it once more before the second call has had its turn.
+    world.browser.disconnect()
+    late = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=second), 10.0)
+
+    # What they agreed to was the closing of before: this one is asked about anew.
+    assert late == BuiltinOutcome(False, CLOSED_BY_USER) and len(world.connected) == 2
+
+
+async def test_an_agreement_that_is_not_needed_any_more_does_not_keep_a_call_from_the_open_browser(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    first, second = tools.reopen_agreed(), tools.reopen_agreed()
+    assert (await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=first), 10.0)).success
+
+    outcome = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=second), 10.0)
+
+    assert outcome.success and len(world.connected) == 2
+
+
 async def test_an_agreement_is_used_once(tools: BrowserTools, world: BrowserWorld) -> None:
     await on_the_order_form(tools)
     world.browser.disconnect()
@@ -1032,21 +1062,6 @@ async def test_an_agreement_that_opened_the_browser_leaves_nothing_to_end(tools:
     tools.reopen_agreement_over()
 
     assert tools.closed_by_user() is False and (await call(tools, "take_snapshot")).success
-
-
-async def test_an_agreement_brought_to_a_browser_that_is_open_is_not_used(tools: BrowserTools, world: BrowserWorld) -> None:
-    await on_the_order_form(tools)
-    world.browser.disconnect()
-    assert (await agreed_call(tools, "take_snapshot")).success
-    # Another call was agreed to while the browser was closed, and finds it open.
-    spare = tools.reopen_agreed()
-    assert (await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=spare), 10.0)).success
-    world.browser.disconnect()
-
-    # It was not needed, and is still that call's: handed back when the call is over.
-    tools.reopen_agreement_over(spare)
-    late = await asyncio.wait_for(tools.call(TOOL_PREFIX + "take_snapshot", {}, reopen_agreement=spare), 10.0)
-    assert late == BuiltinOutcome(False, CLOSED_BY_USER)
 
 
 async def test_a_call_that_was_let_open_the_browser_and_opened_none_leaves_it_closed(

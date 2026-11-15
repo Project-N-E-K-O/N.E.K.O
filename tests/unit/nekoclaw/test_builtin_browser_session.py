@@ -4102,6 +4102,64 @@ async def test_a_call_that_was_let_open_the_browser_and_lost_it_leaves_it_on_rec
     assert session.closed_by_user is True
 
 
+async def test_a_browser_whose_windows_are_closed_while_it_is_being_connected_to_is_given_none_in_their_place(
+    make_session: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.unit.nekoclaw.fake_cdp_browser import FakeConnection
+
+    _left_running(world)
+    send = FakeConnection.send
+    closed: list[int] = []
+
+    async def closed_meanwhile(self: Any, method: str, params: Any = None, **options: Any) -> dict[str, Any]:
+        if method == "Target.attachToTarget" and not closed:
+            # What was open is being seen to, and the user closes every window at this moment.
+            closed.append(1)
+            for page in list(world.browser.pages.values()):
+                world.browser.remove_page(page)
+        return await send(self, method, params, **options)
+
+    monkeypatch.setattr(FakeConnection, "send", closed_meanwhile)
+    session = make_session(own_ports=lambda: OWN)
+
+    with pytest.raises(BrowserError, match="closed by the user while it was being connected to"):
+        await session.start()
+
+    # No page was opened to make up for them, and the next call is one to ask the user about.
+    assert closed == [1] and world.browser.pages == {}
+    assert world.browser.of("Target.createTarget") == []
+    assert session.connected and session.closed_by_user is True
+
+
+@pytest.mark.parametrize("settings", [{"headless": True}, {"mode": "attach"}])
+async def test_a_browser_nobody_could_have_closed_or_the_users_own_gets_its_page_all_the_same(
+    make_session: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch, settings: dict[str, Any]
+) -> None:
+    from tests.unit.nekoclaw.fake_cdp_browser import FakeConnection
+
+    world.settings(**settings)
+    world.browser.add_page(ORDER, "Order form")
+    send = FakeConnection.send
+    closed: list[int] = []
+
+    async def closed_meanwhile(self: Any, method: str, params: Any = None, **options: Any) -> dict[str, Any]:
+        if method in ("Target.attachToTarget", "Target.createTarget") and not closed:
+            # After its tabs were looked up, and before the start is over.
+            closed.append(1)
+            for page in list(world.browser.pages.values()):
+                world.browser.remove_page(page)
+        return await send(self, method, params, **options)
+
+    monkeypatch.setattr(FakeConnection, "send", closed_meanwhile)
+    session = make_session(own_ports=lambda: OWN)
+
+    await session.start()
+
+    # Without a window nobody closed anything by hand, and their own browser is theirs to close: the
+    # start goes through as it always did.
+    assert closed == [1] and session.connected and session.closed_by_user is False
+
+
 async def test_an_agreement_is_what_lets_a_call_open_the_browser_and_nothing_else(make_session: Any, world: BrowserWorld) -> None:
     session = make_session(own_ports=lambda: OWN)
     await session.start()
@@ -4427,7 +4485,9 @@ async def test_the_last_tab_closed_while_the_browser_is_asked_about_what_is_open
     # The user closes its last window meanwhile; the browser runs on in the background.
     world.browser.remove_page(world.browser.page("target-1"))
     waiting.release()
-    await starting
+    # The call that was connecting to it ends there: it is not for it to put a window back.
+    with pytest.raises(BrowserError, match="closed by the user while it was being connected to"):
+        await starting
     assert session.connected and session.pages() == [] and session._tabs == set()
     # Taken for one with a window, it would be left open, unseen, when the tasks are stopped.
     assert session.shows_a_window is False

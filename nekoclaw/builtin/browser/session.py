@@ -572,6 +572,7 @@ class BrowserSession:
             for info in targets.get("targetInfos") or ():
                 self._note_target(info)
             self._tabs_known = True
+            had_a_window = bool(self._tabs)
             if was_running and browser.owned:
                 await self._ask_whether_headless(connection, browser)
             if self._blocked_everywhere:
@@ -580,6 +581,16 @@ class BrowserSession:
                 # extension greets its user with) may be there before this
                 # connection is.
                 await self._keep_what_was_open(connection, targets.get("targetInfos") or ())
+            if had_a_window and not self._tabs and browser.owned and browser.headless is not True:
+                # Its windows were there a moment ago, and are closed now:
+                # the user closed them while it was being connected to. No
+                # page is opened in their place. The call ends here, and
+                # the next one asks them (``closed_by_user``).
+                raise BrowserError(
+                    "The browser was closed by the user while it was being connected to. Nothing was done. Call "
+                    "the tool again when you still need the browser: the user is then asked whether it may be "
+                    "opened again."
+                )
             if attach or not self._pages:
                 # A browser the user is using: their own tabs are left as they
                 # are, and the work gets a tab of its own where that can be had.
@@ -1102,8 +1113,11 @@ class BrowserSession:
         self._tabs.add(target_id)
         # There is a window again: what was on record of its having been
         # closed is over, and closed once more, it is asked about once more.
+        # Agreements that are still unused were given for that closing, and
+        # do not stand for the next.
         self._reopening = False
         self._closed_by_user_noted = False
+        self._reopen_agreements.clear()
         url = str(info.get("url") or "")
         if not is_web_page(url) or (self._blocked_ports and port_of(url) in self._blocked_ports):
             # Not a page of the web, or one of this application's own pages
