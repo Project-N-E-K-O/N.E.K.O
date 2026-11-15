@@ -1309,6 +1309,15 @@ class TaskAgentSpace:
         now = self._clock()
         year = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y")
         root = paths.archive_dir() / year
+        archived = replace(
+            project,
+            description=project.description or _one_line(description),
+            status=PROJECT_ARCHIVED,
+            archived_at=now,
+            archive_year=year,
+            pending_archive=None,
+        )
+        ahead = False
         try:
             if summary.strip():
                 self._put_text(source / paths.SUMMARY_NAME, redact(summary).strip() + "\n")
@@ -1318,6 +1327,14 @@ class TaskAgentSpace:
             while target.exists():
                 target = root / f"{source.name}-{number}"
                 number += 1
+            if readable:
+                # Its record says when it was archived before it is moved,
+                # so a process stopped right after the move leaves a record
+                # that is whole: by that time the project is told from an
+                # older one of its name in the archive. While it is still
+                # among the projects, that time in its record means nothing.
+                self._put_project(source, archived)
+                ahead = True
             _move(source, target)
         except OSError as exc:
             logger.warning("a project could not be moved to the archive (%s); it stays where it is", type(exc).__name__)
@@ -1326,23 +1343,15 @@ class TaskAgentSpace:
                 "summary": redact(summary).strip(),
                 "line": _one_line(redact(description)),
             }
-            if pending["summary"] and readable and project.pending_archive != pending:
+            back = replace(project, pending_archive=pending) if pending["summary"] else project
+            if readable and (ahead or back != project):
+                # As it was, with a summary that came to nothing kept for the next try.
                 try:
-                    self._put_project(source, replace(project, pending_archive=pending))
+                    self._put_project(source, back)
                 except OSError:
-                    logger.warning("the summary of a project that could not be archived could not be kept", exc_info=True)
+                    logger.warning("the record of a project that could not be archived could not be put back", exc_info=True)
             return None
-        archived = replace(
-            project,
-            description=project.description or _one_line(description),
-            status=PROJECT_ARCHIVED,
-            archived_at=now,
-            archive_year=year,
-            directory=target.name,
-            pending_archive=None,
-        )
-        if readable:
-            self._put_project(target, archived)
+        archived = replace(archived, directory=target.name)
         _line, link = self._project_line(project)
         self._index_remove(paths.index(None), link)
         archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME}"

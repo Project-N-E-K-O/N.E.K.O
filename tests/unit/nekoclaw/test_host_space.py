@@ -1670,3 +1670,36 @@ async def test_an_entry_that_keeps_being_saved_while_it_moves_stays_where_it_was
     assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["stack"]
     assert "stack.md" in (root / "projects" / DEFAULT_PROJECT / "MEMORY.md").read_text(encoding="utf-8")
     assert [entry.id for entry in await space.list_entries("Budget app")] == ["stack"]
+
+
+async def test_a_project_archived_right_before_the_process_stopped_is_the_one_that_comes_back(space, root, clock, monkeypatch):
+    await space.touch_project("Blog")
+    await space.file_entry("Blog", title="Old stack", content="Jekyll.")
+    await space.archive_project("Blog", summary="the first")
+    clock.now += 86400
+    await space.touch_project("Blog")
+    await space.file_entry("Blog", title="New stack", content="Hugo.")
+    clock.now += 60
+
+    def stopped(self, index, target):
+        raise RuntimeError("the process stopped here")
+
+    # The directory is moved, and the process stops before anything after that is written.
+    monkeypatch.setattr(TaskAgentSpace, "_index_remove", stopped)
+    with pytest.raises(RuntimeError):
+        await space.archive_project("Blog", summary="the second")
+    monkeypatch.undo()
+
+    # Started again. The record went with the directory, and says when.
+    again = TaskAgentSpace(lambda: SpacePaths(root), clock=clock)
+    projects = await again.list_projects()
+    assert [(item.name, item.status, item.directory) for item in projects] == [
+        ("Blog", "archived", "Blog"),
+        ("Blog", "archived", "Blog-2"),
+    ]
+    assert projects[1].archived_at == clock.now and projects[0].archived_at == clock.now - 86460
+    # What comes back by the name is the one archived last, not the older one of the name.
+    await again.file_entry("Blog", title="Deploy", content="Push to main.")
+    assert sorted(entry.id for entry in await again.list_entries("Blog")) == ["deploy", "new-stack"]
+    index = (root / "MEMORY.md").read_text(encoding="utf-8")
+    assert index.count("[project: Blog](projects/Blog/MEMORY.md)") == 1
