@@ -123,6 +123,14 @@ class World:
             rows.append(("tool_end", {"tool_call_id": call_id, "tool_name": tool, "is_error": False, "text": f"result {number}"}))
         await self.ledger.append_events(commission_id, rows)
 
+    async def work_more(self, commission_id: str, calls: int) -> None:
+        rows: list[tuple[str, dict[str, Any]]] = []
+        for number in range(calls):
+            call_id = f"more-{number}"
+            rows.append(("tool_start", {"tool_call_id": call_id, "tool_name": "bash", "args": {"command": f"more {number}"}}))
+            rows.append(("tool_end", {"tool_call_id": call_id, "tool_name": "bash", "is_error": False, "text": "ok"}))
+        await self.ledger.append_events(commission_id, rows)
+
     async def end(self, commission_id: str, status: str = "done", summary: str = "sorted 12 photos") -> Any:
         moved = await self.ledger.transition(commission_id, status, reason="test", result_summary=summary)
         assert moved.applied, moved.refusal
@@ -417,6 +425,31 @@ async def test_a_failed_commission_in_use_gets_no_stale_review_and_one_reviewed_
     assert held == [free.id] and released == [free.id]
     # A commission that is done cannot be taken up again and is not held at all.
     assert (await world.reviews(done.id))[0]["status"] == "written"
+
+
+async def test_a_short_commission_taken_up_again_meanwhile_is_not_marked_as_skipped(world):
+    await world.keeper.tidy(force=True)
+    commission = await world.finished(calls=1, status="failed")
+    world.clock.now += DAY + 60
+    read = world.keeper._events
+
+    async def events(commission_id: str) -> Any:
+        found = await read(commission_id)
+        # Taken up again while what it did was being read.
+        await world.ledger.transition(commission_id, "working", reason="taken up again")
+        return found
+
+    world.keeper._events = events
+
+    assert await world.keeper.review(commission.id) == "stale"
+    assert await world.reviews(commission.id) == []
+
+    # It goes on to do real work, and that is what is reviewed.
+    world.keeper._events = read
+    await world.work_more(commission.id, 3)
+    await world.end(commission.id, "done")
+
+    assert [event["status"] for event in await world.reviews(commission.id)] == ["written"]
 
 
 async def test_a_blocked_commission_is_not_reviewed(world):

@@ -251,6 +251,34 @@ async def test_a_commission_taken_up_again_keeps_the_project_it_started_in(hosts
     assert done.project is None and done.session_dir == blocked.session_dir
 
 
+async def test_taking_up_a_commission_of_a_project_keeps_the_project_from_being_archived_under_it(hosts, tmp_path):
+    first = ScriptedLLM([_report("blocked", "need the password")])
+    second = ScriptedLLM([_report()])
+    models = [first, second]
+    host = _host(hosts, tmp_path, lambda spec: models.pop(0))
+    await host.space.touch_project("Budget app")
+    await host.space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+    receipt = await _dispatch(host, "deploy the budget app")
+    blocked = await wait_status(host, receipt.commission_id, "blocked")
+    assert blocked.project == "Budget app"
+    looked_at = (await host.space.get_project("Budget app")).last_commission_at
+    # The project is archived all the same (it was looked at a moment too early).
+    assert (await host.space.archive_project("Budget app", summary="s")) is not None
+
+    assert await host.tell(receipt.commission_id, "the password is in the vault")
+    await wait_status(host, receipt.commission_id, "done")
+
+    # Brought back before the task agent was handed its notes, and marked as in use.
+    assert "Index of project Budget app:\n- [Stack](memory/stack.md)" in _system(second)
+    project = await host.space.get_project("Budget app")
+    assert project is not None and project.last_commission_at > looked_at
+    assert not (_space_root(tmp_path) / "archive" / str(project.archive_year or "")).exists() or not any(
+        (_space_root(tmp_path) / "archive").rglob("project.json")
+    )
+    # A summary asked for before it was taken up no longer archives it.
+    assert await host.space.archive_project("Budget app", unless_touched_since=looked_at) is None
+
+
 async def test_a_child_task_agent_is_of_its_parents_project_and_gets_its_notes(hosts, tmp_path):
     parent = ScriptedLLM(
         [

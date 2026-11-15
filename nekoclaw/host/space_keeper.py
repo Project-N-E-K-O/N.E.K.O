@@ -333,10 +333,11 @@ class SpaceKeeper:
                 return "already"
             calls = tool_calls(events)
             if calls < TASK_AGENT_REVIEW_MIN_TOOL_CALLS:
-                await self._ledger.append_event(
-                    commission_id, "review", {"status": "skipped", "reason": "short", "tool_calls": calls}
-                )
-                return "skipped"
+
+                async def skipped() -> dict[str, Any]:
+                    return {"status": "skipped", "reason": "short", "tool_calls": calls}
+
+                return await self._conclude(commission, skipped)
             if self._llm is None:
                 return "no_model"
             data: dict[str, Any] | None = None
@@ -351,38 +352,51 @@ class SpaceKeeper:
             except Exception as exc:  # noqa: BLE001 - recorded, and not tried again
                 logger.warning("reviewing commission %s failed (%s)", commission_id, type(exc).__name__)
                 problem = type(exc).__name__
-            # A commission that is done or was stopped stays so. A failed one
-            # can be taken up again at any moment: it is held against that
-            # while the review is kept, and looked up again once it is held.
-            holding = False
-            if commission.status not in _REVIEWED_AT_ONCE and self._hold_session is not None:
-                if not self._hold_session(commission_id):
-                    return "stale"
-                holding = True
-            try:
-                if commission.status not in _REVIEWED_AT_ONCE:
-                    current = await self._ledger.get(commission_id)
-                    same = current is not None and (current.status, current.updated_at) == (
-                        commission.status,
-                        commission.updated_at,
-                    )
-                    if not same:
-                        return "stale"
+
+            async def reviewed() -> dict[str, Any]:
                 if problem or data is None:
-                    outcome = {"status": "failed", "reason": problem or "unreadable"}
-                else:
-                    try:
-                        outcome = await self._keep_review(commission, data)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - recorded, and not tried again
-                        logger.warning("keeping the review of %s failed (%s)", commission_id, type(exc).__name__)
-                        outcome = {"status": "failed", "reason": type(exc).__name__}
-                await self._ledger.append_event(commission_id, "review", outcome)
-                return str(outcome["status"])
-            finally:
-                if holding and self._release_session is not None:
-                    self._release_session(commission_id)
+                    return {"status": "failed", "reason": problem or "unreadable"}
+                try:
+                    return await self._keep_review(commission, data)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - recorded, and not tried again
+                    logger.warning("keeping the review of %s failed (%s)", commission_id, type(exc).__name__)
+                    return {"status": "failed", "reason": type(exc).__name__}
+
+            return await self._conclude(commission, reviewed)
+
+    async def _conclude(self, commission: Commission, outcome_of: Callable[[], Any]) -> str:
+        """Write down what became of a commission's review, if the commission is still as it was read.
+
+        Whatever the conclusion (written, failed, skipped), it is final: a
+        commission with a ``review`` event is not reviewed again. A
+        commission that is done or was stopped stays so. A failed one can
+        be taken up again at any moment, so it is held against that while
+        the conclusion is written, and looked up again once it is held: one
+        that was taken up, or ended anew, since it was read gets nothing
+        written (``stale``), and the end it comes to is reviewed.
+        """
+        holding = False
+        if commission.status not in _REVIEWED_AT_ONCE and self._hold_session is not None:
+            if not self._hold_session(commission.id):
+                return "stale"
+            holding = True
+        try:
+            if commission.status not in _REVIEWED_AT_ONCE:
+                current = await self._ledger.get(commission.id)
+                same = current is not None and (current.status, current.updated_at) == (
+                    commission.status,
+                    commission.updated_at,
+                )
+                if not same:
+                    return "stale"
+            outcome = await outcome_of()
+            await self._ledger.append_event(commission.id, "review", outcome)
+            return str(outcome["status"])
+        finally:
+            if holding and self._release_session is not None:
+                self._release_session(commission.id)
 
     async def _review_messages(self, commission: Commission, events: list[LedgerEvent]) -> list[dict[str, str]]:
         from config.nekoclaw_settings import (

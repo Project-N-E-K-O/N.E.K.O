@@ -615,6 +615,98 @@ async def test_a_project_a_commission_was_filed_under_meanwhile_is_not_archived(
     assert (await space.archive_project("Budget app", unless_touched_since=current.last_commission_at)).status == "archived"
 
 
+async def test_a_project_in_use_says_so_and_is_not_archived_under_the_commission(space, root, clock):
+    project = await space.touch_project("Budget app")
+    seen = project.last_commission_at
+    clock.now += 40 * 86400
+
+    # A commission of it is taken up again: nothing is filed, the ledger does not show it yet.
+    await space.use_project("Budget app")
+
+    current = await space.get_project("Budget app")
+    assert (current.last_commission_at, current.commissions) == (clock.now, 1)
+    # Archiving looked at the project before that, and finds it changed when it comes to move it.
+    assert await space.archive_project("Budget app", summary="s", unless_touched_since=seen) is None
+    assert (root / "projects" / "Budget app").is_dir()
+
+
+async def test_using_a_project_brings_it_back_from_the_archive(space, root, clock):
+    await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+    await space.archive_project("Budget app", summary="s")
+    clock.now += 100
+
+    await space.use_project("Budget app")
+
+    current = await space.get_project("Budget app")
+    assert (current.status, current.last_commission_at) == ("active", clock.now)
+    assert (root / "projects" / "Budget app" / "memory" / "stack.md").is_file()
+
+
+async def test_using_a_project_that_is_not_there_makes_nothing(space, root):
+    await space.use_project("No such project")
+    await space.use_project(DEFAULT_PROJECT)
+
+    assert not root.exists()
+    with pytest.raises(ValueError):
+        await space.use_project("../outside")
+
+
+def test_a_copy_to_another_volume_is_published_whole_or_not_at_all(tmp_path, monkeypatch):
+    import errno
+    import os
+    import shutil
+
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "archive" / "2026" / "Budget app", tmp_path / "projects" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    (source / "project.json").write_text("{}", encoding="utf-8")
+    target.parent.mkdir()
+    rename = os.replace
+
+    def other_volume(first, second):
+        if str(first) == str(source):
+            raise OSError(errno.EXDEV, "cross-device link")
+        return rename(first, second)
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    copy = shutil.copytree
+
+    def volume_full(first, second, *args, **kwargs):
+        # Half of it arrives, then the volume is full.
+        os.makedirs(second)
+        shutil.copy(os.path.join(first, "project.json"), second)
+        raise OSError(errno.ENOSPC, "no space left on device")
+
+    monkeypatch.setattr(shutil, "copytree", volume_full)
+
+    with pytest.raises(OSError):
+        _move(source, target)
+
+    # Nothing under the project's name, nothing left of the copy, the source whole.
+    assert sorted(item.name for item in target.parent.iterdir()) == []
+    assert (source / "memory" / "stack.md").is_file() and (source / "project.json").is_file()
+
+    monkeypatch.setattr(shutil, "copytree", copy)
+    _move(source, target)
+
+    assert (target / "memory" / "stack.md").read_text(encoding="utf-8") == "Flask."
+    assert not source.exists()
+    assert sorted(item.name for item in target.parent.iterdir()) == ["Budget app"]
+
+
+async def test_a_copy_that_was_cut_off_is_not_taken_for_a_project(space, root):
+    await space.touch_project("Budget app")
+    # Left by a process that was killed while it copied.
+    (root / "projects" / ".unfinished-Blog").mkdir()
+    (root / "archive" / "2026" / ".unfinished-Old").mkdir(parents=True)
+
+    assert [item.name for item in await space.list_projects()] == ["Budget app"]
+    assert await space.assign_project(_commission(dispatch_text="the .unfinished-Blog thing")) is None
+
+
 async def test_what_is_written_under_an_archived_project_brings_it_back_instead_of_splitting_it(space, root):
     await space.touch_project("Budget app", description="tracks spending")
     await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
@@ -697,7 +789,7 @@ def test_a_directory_that_cannot_be_renamed_is_not_copied_and_removed_instead(tm
         raise PermissionError(13, "a file in it is held open")
 
     monkeypatch.setattr(os, "replace", in_use)
-    monkeypatch.setattr("shutil.move", lambda *args: attempts.append("copy"))
+    monkeypatch.setattr("shutil.copytree", lambda *args, **kwargs: attempts.append("copy"))
 
     with pytest.raises(PermissionError):
         _move(source, target)
@@ -707,10 +799,14 @@ def test_a_directory_that_cannot_be_renamed_is_not_copied_and_removed_instead(tm
     assert (source / "memory" / "stack.md").is_file() and not target.exists()
 
     # Another volume is the one case renaming cannot work in: then it is copied.
-    def other_volume(first, second):
-        raise OSError(errno.EXDEV, "cross-device link")
-
     monkeypatch.undo()
+    rename = os.replace
+
+    def other_volume(first, second):
+        if str(first) == str(source):
+            raise OSError(errno.EXDEV, "cross-device link")
+        return rename(first, second)
+
     monkeypatch.setattr(os, "replace", other_volume)
     _move(source, target)
     assert (target / "memory" / "stack.md").is_file() and not source.exists()

@@ -74,6 +74,9 @@ _PROJECT_FILE_VERSION = 1
 _STATE_FILE_VERSION = 1
 _SLUG_MAX_CHARS = 60
 _WRITE_ATTEMPTS = 3
+# The name a directory has while it is copied to another volume; not a
+# project's name (a name cannot begin with a dot).
+_UNFINISHED_PREFIX = ".unfinished-"
 _WRITE_RETRY_SECONDS = 0.05
 # Characters that cannot be in a file name, white space, and what Markdown
 # would read as part of a link.
@@ -819,7 +822,7 @@ class TaskAgentSpace:
 
     def _active_projects(self) -> list[Project]:
         try:
-            directories = sorted(item for item in self._paths().projects_dir().iterdir() if item.is_dir())
+            directories = sorted(item for item in self._paths().projects_dir().iterdir() if _is_project(item))
         except OSError:
             return []
         return [self._project_from(item) for item in directories]
@@ -832,7 +835,7 @@ class TaskAgentSpace:
             return []
         for year in years:
             try:
-                directories = sorted(item for item in year.iterdir() if item.is_dir())
+                directories = sorted(item for item in year.iterdir() if _is_project(item))
             except OSError:
                 continue
             projects.extend(self._project_from(item, archive_year=year.name) for item in directories)
@@ -982,6 +985,32 @@ class TaskAgentSpace:
         line, link = self._project_line(restored)
         self._index_add(paths.index(None), line, link)
         return restored
+
+    async def use_project(self, name: str) -> None:
+        """Note that a commission of a project is being taken up, before its notes are read.
+
+        The project is brought back when it was archived, and its idle time
+        starts anew. This runs under the lock archiving moves a directory
+        under, and archiving looks at that time there: a project is either
+        archived before this (and brought back by it) or not archived at
+        all, never moved away under a commission that just started on it.
+        A commission taken up again is counted for the project already.
+        """
+        if name == DEFAULT_PROJECT:
+            return
+        safe_segment(name, "project")
+
+        def work() -> None:
+            self._revive(name)
+            directory = self._paths().project_dir(name)
+            if not (directory / SpacePaths.PROJECT_FILE).is_file():
+                return
+            project = self._project_from(directory)
+            now = self._clock()
+            if now > project.last_commission_at:
+                self._put_project(directory, replace(project, last_commission_at=now))
+
+        await self._write(work)
 
     async def open_project(
         self, name: str, *, description: str = "", workdir: str | None = None, at: float | None = None
@@ -1342,6 +1371,33 @@ class TaskAgentSpace:
         return await self._read(lambda: self._paths().root.is_dir())
 
 
+def _is_project(directory: Path) -> bool:
+    """Whether a directory among the projects is one: not a copy still being made (``_copy_across``)."""
+    return directory.is_dir() and not directory.name.startswith(_UNFINISHED_PREFIX)
+
+
+def _copy_across(source: Path, target: Path) -> None:
+    """Move a directory to another volume: copied whole under another name, then given its name.
+
+    A copy that stops half way (the volume is full) is removed again and
+    the source stays as it is; ``target`` is never there unless it is
+    complete. The source is removed last: if that fails, the project is at
+    the target, whole, and what is left of the source is left where it is.
+    """
+    unfinished = target.with_name(f"{_UNFINISHED_PREFIX}{target.name}")
+    shutil.rmtree(unfinished, ignore_errors=True)
+    try:
+        shutil.copytree(source, unfinished)
+        os.replace(unfinished, target)
+    except BaseException:
+        shutil.rmtree(unfinished, ignore_errors=True)
+        raise
+    try:
+        shutil.rmtree(source)
+    except OSError:
+        logger.warning("a project was copied to another volume, but its old directory could not be removed", exc_info=True)
+
+
 def _move(source: Path, target: Path) -> None:
     """Move a directory by renaming it, trying again for a moment while Windows says it is in use.
 
@@ -1360,7 +1416,7 @@ def _move(source: Path, target: Path) -> None:
         except OSError as exc:
             last = exc
             if exc.errno == errno.EXDEV:
-                shutil.move(str(source), str(target))
+                _copy_across(source, target)
                 return
             if not source.exists():
                 raise

@@ -484,6 +484,22 @@ class TaskAgentManager:
             logger.warning("reading the task agent space for a task agent failed", exc_info=True)
             return ""
 
+    async def _use_project(self, commission: Commission) -> None:
+        """Tell the space that a commission of a project is being taken up; see ``TaskAgentSpace.use_project``.
+
+        Before its instructions are put together and long before the ledger
+        says it is working: a project that just now looked idle is not
+        archived under it.
+        """
+        if self._space is None or not commission.project:
+            return
+        try:
+            await self._space.use_project(commission.project)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - it starts all the same
+            logger.warning("noting that a project is in use failed", exc_info=True)
+
     async def _file_under_project(self, commission: Commission) -> Commission:
         """File a commission that starts for the first time under the project its words name.
 
@@ -552,6 +568,7 @@ class TaskAgentManager:
             if not config or not config.get("model"):
                 raise RuntimeError("no model is configured for task agents")
             commission = await self._file_under_project(commission)
+            await self._use_project(commission)
             from nekoclaw.runtime import TaskAgentSpec, ModelConfig
             from nekoclaw.runtime.protocol import GatewaySpec
 
