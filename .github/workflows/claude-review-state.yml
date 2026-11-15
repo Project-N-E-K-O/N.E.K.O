@@ -1,20 +1,30 @@
 name: Claude review state
 
-# Re-open the automated Claude review when a converged PR gets new commits.
-# Swaps the `claude-converged` label back to `claude-review`; the hourly
-# review dispatcher then runs another round on the new head.
+# Keeps the automated Claude review labels honest.
 #
-# pull_request_target is required so the job can edit labels on PRs from
-# forks. It is safe here: the job never checks out or runs PR code.
+# reopen-review: when a converged PR gets new commits, swap `claude-converged`
+# back to `claude-review`; the hourly review dispatcher then runs another round
+# on the new head. A push that lands while a review round is still running
+# skips this job (the PR still carries claude-review). The review session
+# therefore re-reads the PR head before applying claude-converged and only
+# converges when it matches the commit it just reviewed.
 #
-# A push that lands while a review round is still running skips this job
-# (the PR still carries claude-review). The review session therefore re-reads
-# the PR head before applying claude-converged and only converges when it
-# matches the commit it just reviewed, so such a push is never hidden.
+# require-codex: a PR may only be marked converged after Codex has reviewed its
+# current head. When `claude-converged` is added and no Codex code review of
+# the head exists, the label is swapped back to `claude-review`; the
+# dispatcher then asks Codex to review. Accepted Codex evidence for the head:
+#   - a PR review by chatgpt-codex-connector on that commit,
+#   - a Codex code-review receipt naming that commit (a "Codex Review" heading
+#     plus "Reviewed commit: `<sha>`"; security-review receipts do not count),
+#   - a Codex review-state comment whose code_review is completed on that commit.
+#
+# pull_request_target is required so the jobs can edit labels on PRs from
+# forks. It is safe here: the jobs never check out or run PR code. Label edits
+# made with github.token do not trigger further workflow runs.
 
 on:
   pull_request_target:
-    types: [synchronize]
+    types: [synchronize, labeled]
 
 permissions:
   issues: write
@@ -22,7 +32,9 @@ permissions:
 
 jobs:
   reopen-review:
-    if: contains(github.event.pull_request.labels.*.name, 'claude-converged')
+    if: >-
+      github.event.action == 'synchronize' &&
+      contains(github.event.pull_request.labels.*.name, 'claude-converged')
     runs-on: ubuntu-latest
     steps:
       - name: Swap claude-converged back to claude-review
@@ -31,3 +43,57 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: gh pr edit "$PR" --repo "$REPO" --remove-label claude-converged --add-label claude-review
+
+  require-codex:
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'claude-converged'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Revert claude-converged unless Codex reviewed the head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          CODEX: chatgpt-codex-connector[bot]
+        run: |
+          set -euo pipefail
+          revert() {
+            gh pr edit "$PR" --repo "$REPO" --remove-label claude-converged --add-label claude-review
+          }
+          # Retry transient API failures. If GitHub still cannot be read, fail
+          # closed: revert the label (a PR must never stay converged unverified)
+          # and fail the job so the error is visible instead of silent.
+          fetch() {
+            local out
+            for _ in 1 2 3; do
+              if out=$("$@"); then
+                printf '%s\n' "$out"
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          if ! head=$(fetch gh api "repos/$REPO/pulls/$PR" --jq .head.sha) ||
+             ! reviews=$(fetch gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+                 --jq '.[] | select(.user.login == env.CODEX) | .commit_id') ||
+             ! comments=$(fetch gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                 --jq '.[] | select(.user.login == env.CODEX) | .body
+                       | ((select(test("(?m)^\\s*(Codex Review:|#+\\s*\\S*\\s*Codex Review\\s*$)"))
+                           | capture("Reviewed commit:[*` ]*(?<s>[0-9a-f]{7,40})") | .s) // empty),
+                         ((capture("codex-review-state:v1 (?<j>\\{.*?\\}\\})") | .j | fromjson
+                           | .code_review | select(.status == "completed") | .commit_sha) // empty)'); then
+            echo "::error::Could not read the PR or its Codex reviews; reverting claude-converged to be safe."
+            revert
+            exit 1
+          fi
+          shas=$(printf '%s\n%s\n' "$reviews" "$comments" | grep -E '^[0-9a-f]{7,40}$' || true)
+          for sha in $shas; do
+            if [[ "$head" == "$sha"* ]]; then
+              echo "Codex reviewed head $head; keeping claude-converged."
+              exit 0
+            fi
+          done
+          echo "::warning::No Codex review of head $head; reverting claude-converged."
+          revert
