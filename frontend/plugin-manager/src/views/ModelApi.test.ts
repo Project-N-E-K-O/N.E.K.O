@@ -177,18 +177,19 @@ describe('Plugin API page', () => {
     expect(container.textContent).toContain('Realtime voice endpoint — plugin chat calls not supported')
     expect(container.textContent).not.toContain('Main app API not configured')
   })
-  it('flags a host-follow slot whose main-app API is not configured', async () => {
-    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_not_configured' }, bound_by: [] }
+  it('flags a host-follow slot whose main-app API is not configured with the translated label', async () => {
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_not_configured', message: 'Configure the main app API before using this slot' }, bound_by: [] }
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
     const container = await mount()
     expect(container.textContent).toContain('Main app API not configured')
+    expect(container.textContent).not.toContain('Configure the main app API before using this slot')
     expect(container.textContent).not.toContain('Realtime voice endpoint')
   })
-  it('surfaces an actionable defaults mismatch and caps the temperature editor at the resolved protocol', async () => {
-    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', defaults: { temperature: 1.5, max_output_tokens: null }, host_status: { configured: false, error_code: 'model_defaults_incompatible', message: 'Lower the default temperature to 1 or below for Anthropic.' }, bound_by: [] }
+  it('falls back to the server message only for unknown error codes', async () => {
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', defaults: { temperature: 1.5, max_output_tokens: null }, host_status: { configured: false, error_code: 'future_error_code', message: 'An actionable server explanation.' }, bound_by: [] }
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
     const container = await mount()
-    expect(container.textContent).toContain('Lower the default temperature to 1 or below for Anthropic.')
+    expect(container.textContent).toContain('An actionable server explanation.')
     expect(container.textContent).not.toContain('Main app API not configured')
   })
   it('removes a stale plugin usage binding and enables slot deletion after refreshing', async () => {

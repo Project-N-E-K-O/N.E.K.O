@@ -172,11 +172,11 @@ const errorMessage = (error: unknown) => formatHttpError(error) || t('messages.r
 const protocolLabel = (protocol: string) => protocol === 'openai_chat' ? 'OpenAI Chat' : 'Anthropic'
 const hostSlotModelLabel = (slot: ModelSlot) => {
   if (slot.host_status?.configured) return slot.host_status.model
-  // A realtime (WebSocket) core endpoint is configured but cannot serve chat;
-  // saying "not configured" there would send users to check working settings.
-  if (slot.host_status?.error_code === 'host_api_unsupported') return t('modelApi.hostUnsupported')
-  // Other failures (e.g. defaults incompatible with the resolved protocol)
-  // carry an actionable server message; show it instead of a misleading label.
+  const code = slot.host_status?.error_code
+  // Known states use translated labels; the server message is English and
+  // only serves as a fallback for codes this UI does not know yet.
+  if (code === 'host_api_unsupported') return t('modelApi.hostUnsupported')
+  if (!code || code === 'host_api_not_configured') return t('modelApi.hostNotConfigured')
   return slot.host_status?.message || t('modelApi.hostNotConfigured')
 }
 // A host-follow slot may resolve to Anthropic at any time; its editor stays

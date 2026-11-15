@@ -328,15 +328,33 @@ def notify_install_committed(result: dict) -> dict:
             continue
         threading.Thread(
             target=_auto_bind_host_models_safe,
-            args=(plugin_id,),
+            args=(plugin_id, str(installed.get("target_dir") or "")),
             daemon=True,
             name=f"host-model-autobind-{plugin_id}",
         ).start()
     return result
 
 
-def _auto_bind_host_models_safe(plugin_id: str) -> None:
+def _auto_bind_host_models_safe(plugin_id: str, target_dir: str) -> None:
     try:
+        # target_plugin_id is the directory name; load_model_requirements
+        # demands the manifest's plugin.id. Resolve it the same way the
+        # install gate does, falling back to the directory name.
+        if target_dir:
+            from plugin.server.application.install_source.scanner import PluginDirectoryScanner
+
+            declared = PluginDirectoryScanner._load_plugin_id(Path(target_dir))
+            if declared and declared != plugin_id:
+                logger.info(
+                    "Host model auto-bind uses manifest id: dir_id={}, manifest_id={}",
+                    plugin_id, declared,
+                )
+                plugin_id = declared
+            elif not declared:
+                logger.warning(
+                    "Host model auto-bind: manifest id unreadable, using directory id: plugin_id={}",
+                    plugin_id,
+                )
         _auto_bind_host_models(plugin_id)
     except Exception as exc:
         logger.warning(

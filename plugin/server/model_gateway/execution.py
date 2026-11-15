@@ -19,6 +19,9 @@ from .observation import AttemptObservation
 
 _FALLBACK_ERRORS = frozenset({
     "upstream_connection_error", "upstream_timeout", "upstream_rate_limited", "upstream_error",
+    # The primary was rejected before any upstream request or output, so a
+    # configured (e.g. paid manual) backup can safely serve the call instead.
+    "agent_quota_exceeded",
 })
 # With a fallback slot, the primary may use only this share of the total budget,
 # so a stalled primary still leaves time to switch within the same deadline.

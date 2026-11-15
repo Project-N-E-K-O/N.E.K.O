@@ -684,3 +684,46 @@ def test_legacy_high_temperature_document_stays_readable_and_updatable(config_en
     assert error.value.code == "MODEL_SLOT_INVALID"
     fixed = service.update_slot(slot_id, {"defaults": {"temperature": 0.7}})
     assert fixed["defaults"]["temperature"] == 0.7
+
+
+def test_install_hook_auto_bind_uses_manifest_id_over_directory_name(monkeypatch, tmp_path):
+    import threading
+
+    from plugin.server.application.plugins import capability_analysis_service as module
+
+    (tmp_path / "plugin.toml").write_text('[plugin]\nid = "declared_id"\n', encoding="utf-8")
+    seen: dict[str, str] = {}
+    done = threading.Event()
+
+    def fake_bind(plugin_id):
+        seen["id"] = plugin_id
+        done.set()
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": str(tmp_path), "target_plugin_id": "directory_name"}]},
+    })
+    assert done.wait(5)
+    assert seen["id"] == "declared_id"
+
+
+def test_install_hook_auto_bind_falls_back_to_directory_id_without_manifest(monkeypatch, tmp_path):
+    import threading
+
+    from plugin.server.application.plugins import capability_analysis_service as module
+
+    seen: dict[str, str] = {}
+    done = threading.Event()
+
+    def fake_bind(plugin_id):
+        seen["id"] = plugin_id
+        done.set()
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": str(tmp_path), "target_plugin_id": "directory_name"}]},
+    })
+    assert done.wait(5)
+    assert seen["id"] == "directory_name"

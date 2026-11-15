@@ -1186,3 +1186,30 @@ async def test_legacy_high_default_document_reads_and_explicit_temperature_calls
     response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
     assert response.status_code == 200, response.text
     assert consumed == ["plugin:alpha:analysis"]
+
+
+async def test_exhausted_free_primary_falls_back_to_paid_manual_backup(http_client, setup_gateway, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access"}
+
+        async def aconsume_free_daily_quota(self, source="", units=1):
+            return False, {"used": 500, "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    # The default auto-bind shape: usage bound to the free host slot, with the
+    # user's paid manual slot configured as its backup for exactly this case.
+    bind_host_slot(setup_gateway)
+    setup_gateway.config.slots[HOST_SLOT_ID].fallback_slot_id = SLOT_ID
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200, response.text
+    # Only the paid backup reached upstream; the exhausted primary sent nothing.
+    assert len(setup_gateway.calls) == 1
+    attempts = setup_gateway.records[0]["attempts"]
+    assert attempts[0]["slot_id"] == HOST_SLOT_ID
+    assert attempts[0]["upstream_started"] is False
+    assert attempts[0]["error_code"] == "agent_quota_exceeded"
+    assert attempts[-1]["slot_id"] == SLOT_ID
+    assert attempts[-1]["status"] == "success"

@@ -96,10 +96,12 @@ consumes one unit of the shared free daily quota with source
 `plugin:<plugin_id>:<usage_id>` immediately before its upstream request —
 primary attempts, host-follow fallback attempts and connection-test probes
 alike, each judged on the exact credential snapshot it will send. Exhaustion
-returns `agent_quota_exceeded` (429). This metering is independent of which
-Agent model the main app uses: a paid Agent model does not exempt free-tier
-plugin calls. User-supplied keys, whether in manual slots or a paid main-app
-API, are never metered.
+returns `agent_quota_exceeded` (429); because the primary was rejected before
+any upstream request or output, a configured fallback slot (for example the
+user's paid manual slot) still serves the call. This metering is independent
+of which Agent model the main app uses: a paid Agent model does not exempt
+free-tier plugin calls. User-supplied keys, whether in manual slots or a paid
+main-app API, are never metered.
 
 After a committed install, `notify_install_committed` binds still-unbound
 declared usages to a shared host-follow assist slot (reused across plugins,
