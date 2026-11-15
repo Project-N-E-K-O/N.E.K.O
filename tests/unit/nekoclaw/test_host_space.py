@@ -2615,9 +2615,10 @@ def test_a_copy_that_does_not_hold_what_was_saved_last_does_not_let_the_original
     monkeypatch.setattr(os, "replace", other_volume)
     monkeypatch.setattr(shutil, "copytree", copied)
 
-    with pytest.raises(OSError, match="does not hold what was saved last"):
+    with pytest.raises(OSError, match="could not be put back; it is at .removing-Budget app") as raised:
         _move(source, target)
 
+    assert "does not hold what was saved last" in str(raised.value.__cause__)
     kept = source.parent / ".removing-Budget app"
     assert (kept / "memory" / "export.md").read_text(encoding="utf-8") == "CSV."
 
@@ -2737,7 +2738,8 @@ def test_what_a_move_set_aside_and_did_not_look_at_is_never_removed_by_a_later_m
     assert sorted(item.name for item in source.parent.iterdir()) == [".removing-Budget app"]
 
 
-def test_what_an_earlier_move_left_half_removed_is_cleared_away_by_the_next(tmp_path, monkeypatch):
+@pytest.mark.parametrize("name", ["Budget app", "notes [draft]", "C# (v2)"])
+def test_what_an_earlier_move_left_half_removed_is_cleared_away_by_the_next(tmp_path, monkeypatch, name):
     import errno
     import os
 
@@ -2747,9 +2749,9 @@ def test_what_an_earlier_move_left_half_removed_is_cleared_away_by_the_next(tmp_
     (source / "memory").mkdir(parents=True)
     (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
     target.parent.mkdir()
-    # Left by a move whose removing stopped half way: known to be of no use.
-    (source.parent / ".gone-Budget app" / "memory").mkdir(parents=True)
-    (source.parent / ".gone-Budget app-2").mkdir()
+    # Left by moves whose removing stopped half way: known to be of no use, whatever they were called.
+    (source.parent / f".gone-{name}" / "memory").mkdir(parents=True)
+    (source.parent / f".gone-{name}-2").mkdir()
     rename = os.replace
 
     def other_volume(first, second):
@@ -2843,3 +2845,159 @@ def test_a_change_that_was_written_counts_as_made_though_the_file_could_not_be_r
     assert path.read_text(encoding="utf-8") == "- one - two"
     # A change that changes nothing is not one.
     assert space._edit_text(path, lambda text: text) is False
+
+
+# ---------------------------------------------------------------------------
+# The twenty-eighth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_note_with_a_dated_heading_is_added_once_to_an_entry_written_by_hand(space, root, clock):
+    directory = root / "projects" / DEFAULT_PROJECT / "memory"
+    directory.mkdir(parents=True)
+    path = directory / "stack.md"
+    path.write_text("first note by hand\n", encoding="utf-8")
+    note = "Before the change.\n## 2026-11-15\nAfter the change."
+
+    replies = []
+    for number in range(3):
+        clock.now += 86400
+        replies.append(await space.submit(_commission(id=f"c-{number}"), _lesson("stack", note)))
+
+    assert replies[0] == "added to stack.md in project _daily"
+    assert replies[1] == replies[2] == "already in stack.md in project _daily, word for word; nothing was added"
+    assert path.read_text(encoding="utf-8").count("Before the change.") == 1
+
+
+async def test_the_marks_of_an_entry_do_not_grow_with_every_change_in_the_console(space, root, clock):
+    await space.submit(_commission(id="c-1"), _lesson("Notes", "A note"))
+    clock.now += 86400
+    await space.submit(_commission(id="c-2"), _lesson("Notes", "B note"))
+    path = root / "projects" / DEFAULT_PROJECT / "memory" / "notes.md"
+
+    def marks() -> list[str]:
+        line = next(item for item in path.read_text(encoding="utf-8").splitlines() if item.startswith("texts:"))
+        return [item.strip() for item in line.removeprefix("texts:").split(",") if item.strip()]
+
+    assert len(marks()) == 2
+    whole = (await space.read_entry("notes", DEFAULT_PROJECT)).content
+    for number in range(8):
+        whole = whole.replace("A note", "A note!") if number else whole.replace("A note", "A note fixed")
+        await space.edit_entry("notes", DEFAULT_PROJECT, content=whole)
+
+    # The one for what was added and still stands, and the one for the text as it is now.
+    assert len(marks()) == 2
+    assert "already in" in await space.submit(_commission(id="c-3"), _lesson("Notes", "B note"))
+    assert "already in" in await space.submit(_commission(id="c-4"), _lesson("Notes", whole))
+
+
+def test_what_is_behind_a_link_to_a_directory_is_part_of_what_a_directory_holds(tmp_path):
+    from nekoclaw.host.space import _bring_up_to, _files_of
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "shared.md").write_text("Behind the link.", encoding="utf-8")
+    original = tmp_path / "original"
+    (original / "memory").mkdir(parents=True)
+    (original / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    try:
+        (original / "linked").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("links cannot be made here")
+
+    assert [name for name, _written, _size in _files_of(original)] == ["linked/shared.md", "memory/stack.md"]
+
+    copy = tmp_path / "copy"
+    (copy / "memory").mkdir(parents=True)
+    (copy / "memory" / "old.md").write_text("Gone from the original.", encoding="utf-8")
+    _bring_up_to(copy, original)
+
+    # What was behind the link was copied, and is not taken for something to remove.
+    assert sorted(path.relative_to(copy).as_posix() for path in copy.rglob("*") if path.is_file()) == [
+        "linked/shared.md",
+        "memory/stack.md",
+    ]
+
+
+async def test_nothing_is_written_under_the_name_of_a_project_that_was_left_set_aside(space, root, monkeypatch):
+    import errno
+    import os
+    import shutil
+
+    await space.touch_project("Budget app", description="tracks spending")
+    await space.file_entry("Budget app", title="Stack", content="Flask.")
+    source = root / "projects" / "Budget app"
+    target = root / "archive" / "2027" / "Budget app"
+    rename, copy = os.replace, shutil.copytree
+
+    def other_volume(first, second):
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        if Path(first).name.startswith(".removing-") and str(second) == str(source):
+            # Something took its name while it was out of sight.
+            source.mkdir()
+            (source / "other.txt").write_text("not the project", encoding="utf-8")
+            raise PermissionError(13, "something has its name by now")
+        return rename(first, second)
+
+    def copied(first, second, *args, **kwargs):
+        if kwargs.get("dirs_exist_ok"):
+            raise OSError(28, "no space left on the device")
+        result = copy(first, second, *args, **kwargs)
+        if Path(first) == source:
+            (source / "memory" / "stack.md").write_text("changed", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    monkeypatch.setattr(shutil, "copytree", copied)
+
+    assert await space.archive_project("Budget app", summary="An app.") is None
+
+    monkeypatch.undo()
+    # What has its name now is as it was: no record of the project was written into it.
+    assert sorted(item.name for item in source.iterdir()) == ["other.txt"]
+    assert (root / "projects" / ".removing-Budget app" / "memory" / "stack.md").read_text(encoding="utf-8") == "changed"
+
+
+def test_an_original_written_to_while_its_copy_is_brought_up_to_it_is_not_let_go(tmp_path, monkeypatch):
+    import errno
+    import os
+    import shutil
+
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    target.parent.mkdir()
+    rename, copy = os.replace, shutil.copytree
+    aside = source.parent / ".removing-Budget app"
+
+    def other_volume(first, second):
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        if Path(first).name.startswith(".removing-") and str(second) == str(source):
+            raise PermissionError(13, "something has its name by now")
+        return rename(first, second)
+
+    def copied(first, second, *args, **kwargs):
+        result = copy(first, second, *args, **kwargs)
+        if kwargs.get("dirs_exist_ok"):
+            # A program that had the file open before it was set aside writes to it: as long as before.
+            written = aside / "memory" / "stack.md"
+            at = written.stat().st_mtime_ns + 2_000_000_000
+            written.write_text("Redis.", encoding="utf-8")
+            os.utime(written, ns=(at, at))
+        elif Path(first) == source:
+            (source / "memory" / "export.md").write_text("CSV.", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    monkeypatch.setattr(shutil, "copytree", copied)
+
+    with pytest.raises(OSError, match="could not be put back") as raised:
+        _move(source, target)
+
+    assert "was written to while its copy was brought up to it" in str(raised.value.__cause__)
+    # What was written last is still there, under the name nothing removes.
+    assert (aside / "memory" / "stack.md").read_text(encoding="utf-8") == "Redis."

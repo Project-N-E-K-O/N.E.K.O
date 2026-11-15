@@ -374,6 +374,44 @@ def _points_at(line: str, marks: tuple[str, str]) -> bool:
     return any(mark in line for mark in marks)
 
 
+def _with_line_first(lines: list[str], line: str) -> list[str]:
+    """Return the lines of an index with ``line`` before the first entry it lists.
+
+    When it lists nothing yet: after whatever it holds, before the blank
+    lines it ends in.
+    """
+    position = next((number for number, item in enumerate(lines) if item.startswith("- ")), None)
+    if position is None:
+        position = len(lines)
+        while position > 0 and not lines[position - 1].strip():
+            position -= 1
+    return [*lines[:position], line, *lines[position:]]
+
+
+def _lines_as_text(lines: list[str]) -> str:
+    """Return lines as the text of a file, which ends in a line end."""
+    result = "\n".join(lines)
+    return result if result.endswith("\n") else result + "\n"
+
+
+def _standing_marks(body: str) -> set[str]:
+    """Return the marks of every text that stands in an entry between dated headings: one part, or several in a row.
+
+    For telling which of an entry's marks still mean something once its
+    text was replaced: a mark of a text that is no longer there is dropped,
+    or the marks would grow with every change.
+    """
+    headings = [(found.start(), found.end()) for found in _DATED_HEADING.finditer(body)]
+    starts = [0, *[stop for _start, stop in headings]]
+    stops = [*[start for start, _stop in headings], len(body)]
+    marks: set[str] = set()
+    for first, start in enumerate(starts):
+        for stop in stops[first:]:
+            if body[start:stop].strip():
+                marks.add(_digest(body[start:stop]))
+    return marks
+
+
 def _said_already(document: _Document, content: str) -> bool:
     """Whether an entry has ``content`` word for word, as what it said first or as one of its additions.
 
@@ -388,8 +426,11 @@ def _said_already(document: _Document, content: str) -> bool:
     """
     if document.body.strip() == content.strip():
         return True
-    if _digest(content) not in _marks_of(document):
+    kept = _listed(document, "texts")
+    if kept and _digest(content) not in kept:
         return False
+    # An entry that keeps no marks (one written by hand) cannot say what it
+    # was given: what stands in it by itself is taken to have been.
     # Still there as a text of its own, between blank lines or at an end of
     # the entry: found inside another sentence, it is not what was filed.
     alone = r"(?:\A|\n[ \t]*\n)" + re.escape(content.strip()) + r"(?:[ \t]*\n[ \t]*\n|\s*\Z)"
@@ -414,6 +455,10 @@ class SpaceError(RuntimeError):
 
 class _NotAsWritten(OSError):
     """A file was replaced, and what it holds afterwards is not what was written, or cannot be read."""
+
+
+class _LeftAside(OSError):
+    """A directory could not be moved to another volume and is not where it was: it has the name it was set aside under."""
 
 
 # ---------------------------------------------------------------------------
@@ -566,18 +611,9 @@ class TaskAgentSpace:
 
         def change(text: str) -> str:
             lines = text.split("\n") if text else []
-            if any(mark in item for item in lines for mark in marks):
+            if any(_points_at(item, marks) for item in lines):
                 return text
-            position = next((number for number, item in enumerate(lines) if item.startswith("- ")), None)
-            if position is None:
-                # No list yet: after whatever the file holds, before the
-                # blank lines it ends in.
-                position = len(lines)
-                while position > 0 and not lines[position - 1].strip():
-                    position -= 1
-            lines.insert(position, line)
-            result = "\n".join(lines)
-            return result if result.endswith("\n") else result + "\n"
+            return _lines_as_text(_with_line_first(lines, line))
 
         self._edit_text(index, change)
 
@@ -601,15 +637,7 @@ class TaskAgentSpace:
                 elif not placed:
                     kept.append(line)
                     placed = True
-            if not placed:
-                position = next((number for number, item in enumerate(kept) if item.startswith("- ")), None)
-                if position is None:
-                    position = len(kept)
-                    while position > 0 and not kept[position - 1].strip():
-                        position -= 1
-                kept.insert(position, line)
-            result = "\n".join(kept)
-            return result if result.endswith("\n") else result + "\n"
+            return _lines_as_text(kept if placed else _with_line_first(kept, line))
 
         self._edit_text(index, change)
 
@@ -627,8 +655,7 @@ class TaskAgentSpace:
             if any(_points_at(item, marks) for item in lines):
                 return text
             lines.insert(min(max(position, 0), len(lines)), line)
-            result = "\n".join(lines)
-            return result if result.endswith("\n") else result + "\n"
+            return _lines_as_text(lines)
 
         self._edit_text(index, change)
 
@@ -639,7 +666,7 @@ class TaskAgentSpace:
         def change(text: str) -> str:
             lines = text.split("\n") if text else []
             for number, item in enumerate(lines):
-                if any(mark in item for mark in marks):
+                if _points_at(item, marks):
                     lines[number] = line
                     return "\n".join(lines)
             return text
@@ -651,7 +678,7 @@ class TaskAgentSpace:
     def _index_line_in(text: str, target: str) -> str | None:
         """Return the line of an index's text that points at ``target``, as it is written there, or None."""
         marks = _index_marks(target)
-        return next((item for item in text.split(chr(10)) if any(mark in item for mark in marks)), None)
+        return next((item for item in text.split("\n") if _points_at(item, marks)), None)
 
     def _index_remove(self, index: Path, target: str) -> None:
         marks = _index_marks(target)
@@ -659,7 +686,7 @@ class TaskAgentSpace:
         def change(text: str) -> str:
             if not text:
                 return text
-            return "\n".join(item for item in text.split("\n") if not any(mark in item for mark in marks))
+            return "\n".join(item for item in text.split("\n") if not _points_at(item, marks))
 
         if index.exists():
             self._edit_text(index, change)
@@ -1096,13 +1123,14 @@ class TaskAgentSpace:
                 if kind is not None:
                     document.set("type", _entry_type(kind))
                 if content is not None:
-                    # The marks it has stay: what was filed before may still
-                    # be in the new text, word for word. The new text as a
-                    # whole gets a mark too.
-                    marks = _marks_of(document)
+                    # The marks of what still stands in the new text stay:
+                    # what was filed before may be in it word for word. The
+                    # others go, and the new text as a whole gets a mark.
+                    standing = _standing_marks(content)
+                    marks = [mark for mark in _marks_of(document) if mark in standing]
                     document.body = content
                     if _digest(content) not in marks:
-                        marks = [*marks, _digest(content)]
+                        marks.append(_digest(content))
                     document.set("texts", ", ".join(marks))
                 document.set("updated", _date(self._clock()))
                 return _render_document(document)
@@ -1611,6 +1639,11 @@ class TaskAgentSpace:
                 self._put_project(source, replace(archived, pending_archive=using))
                 ahead = True
             _move(source, target)
+        except _LeftAside:
+            # Not where it was. Whatever has its name now is another thing:
+            # nothing is written there.
+            logger.warning("a project could not be archived and is not where it was", exc_info=True)
+            return None
         except OSError as exc:
             logger.warning("a project could not be moved to the archive (%s); it stays where it is", type(exc).__name__)
             back = replace(project, pending_archive=using) if using is not None else project
@@ -1998,9 +2031,15 @@ def _remove_set_aside(aside: Path, source: Path) -> None:
 
     Given the name of what can go first, in one step: removing can stop
     half way, and what is left is then told from what must stay. What
-    earlier moves left under such a name is cleared away with it.
+    earlier moves left under such a name is cleared away with it,
+    whatever it was called before: all of it can go. Told by how the name
+    begins, not by a pattern: a project's name can have ``[`` or ``*`` in it.
     """
-    for left in source.parent.glob(f"{_GONE_PREFIX}{source.name}*"):
+    try:
+        left_over = [item for item in source.parent.iterdir() if item.name.startswith(_GONE_PREFIX)]
+    except OSError:
+        left_over = []
+    for left in left_over:
         shutil.rmtree(left, ignore_errors=True)
     gone = _free_beside(source, _GONE_PREFIX)
     try:
@@ -2014,13 +2053,16 @@ def _remove_set_aside(aside: Path, source: Path) -> None:
 def _bring_up_to(copy: Path, original: Path) -> None:
     """Make a copy of a directory hold what the original holds now: files written anew, and none that are gone.
 
-    Raises OSError when the copy does not hold the same files in the end;
-    the original is then the only place that has them all.
+    Raises OSError when the copy does not hold the same files in the end,
+    or when the original was written to meanwhile (a program that had a
+    file of it open before it was set aside can still write to it); the
+    original is then the only place that has it all.
     """
+    before = _files_of(original)
     # What is a file in the one and a directory in the other is taken out
     # of the copy first: copied over a directory of its name, a file would
     # land inside it.
-    for directory, directories, names in os.walk(original):
+    for directory, directories, names in os.walk(original, followlinks=True):
         inside = copy / Path(directory).relative_to(original)
         for name in names:
             if (inside / name).is_dir() and not (inside / name).is_symlink():
@@ -2035,6 +2077,8 @@ def _bring_up_to(copy: Path, original: Path) -> None:
             (copy / name).unlink()
     if {name: size for name, _written, size in _files_of(copy)} != held:
         raise OSError(f"the copy of {original.name} does not hold what was saved last")
+    if _files_of(original) != before:
+        raise OSError(f"{original.name} was written to while its copy was brought up to it")
 
 
 def _files_of(root: Path) -> list[tuple[str, int, int]]:
@@ -2049,7 +2093,9 @@ def _files_of(root: Path) -> list[tuple[str, int, int]]:
         raise error
 
     found: list[tuple[str, int, int]] = []
-    for directory, _directories, names in os.walk(root, onerror=fail):
+    # Links to directories are gone into: copying goes into them too, and
+    # what is behind one would otherwise be in the copy and not in this list.
+    for directory, _directories, names in os.walk(root, onerror=fail, followlinks=True):
         for name in names:
             path = Path(directory) / name
             stat = path.stat()
@@ -2128,7 +2174,12 @@ def _copy_across(source: Path, target: Path) -> None:
             # the move is done after all. If that cannot be done either,
             # what was set aside stays as it is: nothing removes it.
             logger.warning("a project that changed while it was copied could not be put back", exc_info=True)
-            _bring_up_to(target, aside)
+            try:
+                _bring_up_to(target, aside)
+            except OSError as exc:
+                raise _LeftAside(
+                    f"{source.name} changed while it was copied and could not be put back; it is at {aside.name}"
+                ) from exc
         else:
             take_back()
             raise OSError(f"{source.name} was changed while it was copied to another volume; it stays where it was")
