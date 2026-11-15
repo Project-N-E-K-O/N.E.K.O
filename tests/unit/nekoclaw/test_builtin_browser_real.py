@@ -141,6 +141,38 @@ REACHING_FRAME = """<!doctype html><html><head><title>Frame</title></head><body>
 <script>fetch('__OWN__/by-frame-of-another-site', {mode: 'no-cors'}).catch(function () {});</script>
 </body></html>"""
 
+# Goes on reaching for a port of this application for as long as it is open,
+# from everything a page can run: its own script, a worker, a shared worker,
+# a service worker, and a page of another site embedded in it with a worker
+# of its own. Each also tells the site that it is still at it.
+TICK = """function tick(tag) {
+  setInterval(function () {
+    fetch('__OWN__/by-' + tag, {mode: 'no-cors'}).catch(function () {});
+    fetch('__SITE__/alive-' + tag, {mode: 'no-cors'}).catch(function () {});
+  }, 200);
+}
+"""
+
+LINGERING = """<!doctype html><html><head><title>Lingering</title></head><body>
+<p>Lingering</p>
+<iframe src="__OTHER_SITE__/lingering-frame" title="Frame of another site"></iframe>
+<script>
+__TICK__
+tick('page');
+new Worker('/lingering.js?tag=worker');
+new SharedWorker('/lingering.js?tag=shared');
+navigator.serviceWorker.register('/lingering.js?tag=service');
+</script>
+</body></html>"""
+
+LINGERING_FRAME = """<!doctype html><html><head><title>Frame</title></head><body>
+<script>
+__TICK__
+tick('frame');
+new Worker('/lingering.js?tag=frameworker');
+</script>
+</body></html>"""
+
 DRAFT = """<!doctype html><html><head><title>Draft</title></head><body>
 <label>Message <input name="message"></label>
 <script>
@@ -180,7 +212,23 @@ CHECKED = """<!doctype html><html><head><title>Checked</title></head><body>
 class _Site(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - the name the base class calls
         url = urllib.parse.urlsplit(self.path)
-        if url.path == "/":
+        kind = "text/html"
+        if url.path.startswith("/alive-"):
+            getattr(self.server, "alive", []).append(url.path[len("/alive-") :])
+            body = ""
+        elif url.path in ("/lingering", "/lingering-frame", "/lingering.js"):
+            port = self.server.server_address[1]
+            if url.path == "/lingering.js":
+                kind = "text/javascript"
+                body = TICK + f"tick({(urllib.parse.parse_qs(url.query).get('tag') or [''])[0]!r});\n"
+            else:
+                body = (LINGERING if url.path == "/lingering" else LINGERING_FRAME).replace("__TICK__", TICK)
+            body = (
+                body.replace("__OTHER_SITE__", f"http://localhost:{port}")
+                .replace("__SITE__", f"http://127.0.0.1:{port}")
+                .replace("__OWN__", f"http://127.0.0.1:{getattr(self.server, 'own_port', 9)}")
+            )
+        elif url.path == "/":
             body = FORM
         elif url.path == "/card":
             body = CARD
@@ -221,7 +269,7 @@ class _Site(http.server.BaseHTTPRequestHandler):
             return
         encoded = body.encode("utf-8")
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", f"{kind}; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -630,6 +678,107 @@ async def test_the_browser_is_kept_from_the_ports_of_this_application(tmp_path: 
                 server.server_close()
             for thread in threads:
                 thread.join(5)
+
+
+async def test_what_was_open_in_a_browser_that_is_taken_over_is_kept_from_the_ports_of_this_application(
+    tmp_path: Path,
+) -> None:
+    own = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Own)
+    own.reached = []  # type: ignore[attr-defined]
+    served = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Site)
+    served.own_port = own.server_address[1]  # type: ignore[attr-defined]
+    served.alive = []  # type: ignore[attr-defined]
+    threads = [threading.Thread(target=server.serve_forever, daemon=True) for server in (own, served)]
+    for thread in threads:
+        thread.start()
+    site = f"http://127.0.0.1:{served.server_address[1]}"
+    store = BrowserSettingsStore(tmp_path / "nekoclaw")
+    store.save(BrowserSettings(headless=True))
+    profile = store.profile_dir()
+    everything = {"page", "worker", "shared", "service", "frame", "frameworker"}
+
+    def reaching() -> set[str]:
+        return {path.removeprefix("/by-") for path in own.reached}
+
+    async def quiet_for(seconds: float) -> tuple[set[str], set[str]]:
+        """Who reached the port, and who was at it at all, over ``seconds`` that begin once what was under way is over."""
+        await asyncio.sleep(1.0)
+        own.reached.clear()
+        served.alive.clear()
+        await asyncio.sleep(seconds)
+        return reaching(), set(served.alive)
+
+    first = BrowserTools(BrowserSession(settings=store, own_ports=lambda: {own.server_address[1]}))
+    second = BrowserTools(BrowserSession(settings=store, own_ports=lambda: {own.server_address[1]}))
+    try:
+        opened = await call(first, "navigate_page", url=site + "/lingering")
+        assert opened.success, opened.text
+        # Everything on the page is at it, and none of it gets through.
+        deadline = time.monotonic() + 30.0
+        while set(served.alive) != everything and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+        assert set(served.alive) == everything, served.alive
+        reached, alive = await quiet_for(2.0)
+        assert reached == set() and alive == everything
+        browser_process = await asyncio.to_thread(launcher.browser_process_on, profile)
+        assert browser_process is not None
+
+        # The connection is lost (the process that drove the browser went; the browser runs on).
+        await first.session._drop_connection()
+        deadline = time.monotonic() + 20.0
+        while reaching() != everything and time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+        # Nothing holds its requests now: every one of them gets through.
+        assert reaching() == everything, own.reached
+
+        # Another process finds it running on the profile and takes it over.
+        listed = await call(second, "list_pages")
+        assert listed.success and site + "/lingering" in listed.text, listed.text
+        # The same browser, with the page it had open.
+        assert await asyncio.to_thread(launcher.browser_process_on, profile) == browser_process
+        reached, alive = await quiet_for(3.0)
+        # The page, its worker, the page of the other site and that one's worker are all still at it,
+        # and none of them gets through any more. (The shared worker was closed; the service worker
+        # may have been stopped by the browser meanwhile.)
+        assert {"page", "worker", "frame", "frameworker"} <= alive, alive
+        assert reached == set(), own.reached
+        assert "shared" not in alive
+        # It was started by the session before; this one asked it, and it has no window.
+        taken_over = second.session._browser
+        assert taken_over is not None and taken_over.process is None and taken_over.headless is True
+        assert second.session.shows_a_window is False
+        # What draws over its window finds it by the process the browser names.
+        assert second.window() is not None and second.window()["pid"] == browser_process
+    finally:
+        try:
+            await second.aclose()
+            await first.aclose()
+            deadline = time.monotonic() + 15.0
+            while not await asyncio.to_thread(_browser_gone, profile) and time.monotonic() < deadline:
+                await asyncio.sleep(0.2)
+            gone = await asyncio.to_thread(_browser_gone, profile)
+        finally:
+            await asyncio.to_thread(launcher.kill_tree, await asyncio.to_thread(launcher.browser_process_on, profile))
+            for server in (own, served):
+                server.shutdown()
+                server.server_close()
+            for thread in threads:
+                thread.join(5)
+    assert gone, "the browser the test started was still running after it was closed"
+
+
+async def test_the_process_the_window_belongs_to_is_the_browser_that_runs_on_the_profile(
+    tools: BrowserTools, site: str, tmp_path: Path
+) -> None:
+    opened = await call(tools, "navigate_page", url=site + "/terms")
+    assert opened.success, opened.text
+    profile = BrowserSettingsStore(tmp_path / "nekoclaw").profile_dir()
+    window = tools.window()
+    # Not the process that was started where the browser handed over to another (Edge does).
+    assert window is not None and window["pid"] == await asyncio.to_thread(launcher.browser_process_on, profile)
+    # Started by this session without a window: known without asking.
+    assert tools.session._browser is not None and tools.session._browser.headless is True
+    assert tools.shows_a_window() is False
 
 
 async def _collected(tools: BrowserTools, weak_reference: str) -> bool:

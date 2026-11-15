@@ -327,6 +327,30 @@ class BuiltinToolProvider:
         if self._browser is not None:
             await self._browser.aclose()
 
+    def browser_no_longer_wanted(self) -> None:
+        """The user has said the browser is not to be used any more; ``close_browser`` follows. Does not block.
+
+        For whoever closes it from a task in the background (the browser
+        tools were switched off, their settings changed): such a task may be
+        stopped before it has begun, by the user stopping every task, and
+        that must then still close the browser (``browser_window_stays``).
+        """
+        if self._browser is not None:
+            self._browser.no_longer_wanted()
+
+    def browser_window_stays(self) -> bool:
+        """Whether there is a browser window that is left open when the tasks are stopped.
+
+        Stopping the tasks is not saying that the browser is not wanted: the
+        user may want to go on reading what is on its pages. A browser this
+        process started stays as a task that ended leaves it, with its window
+        and the connection to it, unless it was said not to be wanted
+        (``browser_no_longer_wanted``, ``close_browser``). False for
+        everything that is closed or let go of as before: a browser without a
+        window, the user's own, one whose connection is lost, none at all.
+        """
+        return self._browser is not None and self._browser.shows_a_window()
+
     def kill_browser(self) -> None:
         """Kill the browser this process started without waiting for anything. Blocking.
 

@@ -68,11 +68,13 @@ Both answer `{"enabled":true,"ready":true|false,"reasons":[...],"provider":"neko
 
 ### `GET /builtin/activity`
 
-Returns `{"activity":[...]}` with one item for each group that a commission occupies right now, and an empty list when neither is in use. An item is `{"group":"keyboard_mouse"|"browser","state":"started","commission_id":"...","window":null}`. For the browser, `window` is `{"browser":"...","pid":...,"window_id":...,"bounds":{...}}` once the window being driven is known; for the keyboard and mouse it is always `null`, since the whole desktop is meant. The items have the shape of the `builtin_activity` events, so a display that starts late can catch up.
+Returns `{"activity":[...]}` with one item for each group that a commission occupies right now, and an empty list when neither is in use. An item is `{"group":"keyboard_mouse"|"browser","state":"started","commission_id":"...","window":null}`. For the browser, `window` is `{"browser":"...","pid":...,"window_id":...,"bounds":{...}}` once the window being driven is known; `pid` is the browser process the window belongs to, as the browser itself reports it; when the browser does not report it, it is the process the application started, or `null` when there is none. For the keyboard and mouse `window` is always `null`, since the whole desktop is meant. The items have the shape of the `builtin_activity` events, so a display that starts late can catch up.
 
 ### `POST /builtin/stop`
 
 Body: optional `{"group":"keyboard_mouse"}` or `{"group":"browser"}`; without `group` both are stopped. An unknown group returns `400`. The response is `{"success":true,"stopped":["<commission id>", ...]}`, and the list is empty when nothing was occupied. Stopping does what `POST /tasks/{task_id}/cancel` does for that commission: the status is written first, the call under way is cancelled, and the desktop or the browser is freed.
+
+The body may also carry `commission_id`, the commission the stop is meant for (the `builtin_activity` events carry it). With it, a group is stopped only when that commission is the one occupying it. A group occupied by another commission is left alone, and the response then has `not_stopped`: `[{"group":"browser","commission_id":"<the commission occupying it>"}, ...]`, an empty list when there is none. A stop request can be delayed on its way; by the time it arrives, the commission it was meant for may have ended and another may be using the group, and `commission_id` keeps that one from being stopped by mistake. Without `commission_id`, or with it set to `null`, the behaviour and the response are unchanged. Any other value that is not a non-empty string (an empty string, a number, a list) returns `400`.
 
 ### `GET /builtin/browser/settings`
 

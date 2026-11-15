@@ -27,14 +27,36 @@ What the gateway serves:
   call, and stopping the commission cancels the run;
 * MCP tools of the servers the user configured (through the ``mcp_adapter``
   plugin, see ``capabilities.py``);
-* the built-in tools (keyboard and mouse, browser) while they are available,
-  always listed up front and within a budget of their own
-  (``GATEWAY_BUILTIN_TOOL_LIST_MAX_TOKENS``). A call is one small step,
-  carried out by the provider the host was given; stopping the commission
-  stops it. The commission occupies the desktop or the browser from its
-  first call (``leases.py``), and a result may carry pictures (screenshots)
-  next to its text. A tool that hands back pictures is offered only to a
-  task agent whose model can see them;
+* the built-in tools (keyboard and mouse, browser) while they are available.
+  They come in groups and are never listed up front: their definitions would
+  be sent with every request of every task agent, whether it touches a
+  browser or not. The search tool's description carries one line about each
+  group on offer, with the group's first call. A group is handed over, how
+  it is used and then the definitions of its tools (within
+  ``GATEWAY_TOOL_GROUP_MAX_TOKENS``), in one of three ways, and its tools
+  are from then on called by name through ``capability_call``:
+  ``capability_search`` with ``group`` hands it over by itself; the group's
+  first call (going to an address, taking a screenshot, and nothing else
+  the same tool can do) is
+  carried out and, when it went well, answered with the group in front of
+  its result, so that a task which starts that way spends no request on
+  loading (one that failed is answered as any failed call, and the group is
+  still to be handed over); any other call
+  to a tool of a group this token has not been handed is not carried out
+  and is answered with the group, so that nothing but that first step is
+  done before the task agent has read how the tools are used, and it can
+  call again at once. Read, not just sent: a model writes all the calls
+  of one reply before any of their answers reaches it, so a group handed
+  over by one of them is in hand only from the next reply on, and the
+  calls after it in the same reply (but the first call) are not carried
+  out either. The runtime names the reply with every call
+  (``GATEWAY_REPLY_META_KEY``); a client that names none is taken to
+  have read what it was sent. A call is one small step, carried out by the
+  provider the host was given; stopping the commission stops it. The
+  commission occupies the desktop or the browser from its first call
+  (``leases.py``), and a result may carry pictures (screenshots) next to its
+  text. A tool that hands back pictures is offered only to a task agent
+  whose model can see them;
 * two tools of its own, ``capability_search`` and ``capability_call``. Only
   the entries the task brain picked as candidates are listed up front, within
   ``GATEWAY_TOOL_LIST_MAX_TOKENS``; the rest are found and called through
@@ -147,12 +169,48 @@ class Grant:
     candidate_plugin_ids: tuple[str, ...] = ()
     # Whether the model of this commission's task agent can see pictures.
     supports_images: bool = False
+    # The groups of built-in tools that were handed over through this token:
+    # how they are used and their tools' definitions. A new token starts
+    # without any, as the session it is for may no longer hold them.
+    loaded_groups: set[str] = field(default_factory=set)
+    # The model reply during which each of them was handed over, as the
+    # client names its replies (``GATEWAY_REPLY_META_KEY``); nothing for a
+    # group handed to a client that names none.
+    handed_in: dict[str, int | str] = field(default_factory=dict)
     calls: int = 0
     in_flight: set[asyncio.Task[Any]] = field(default_factory=set)
 
 
 def _text(text: str, *, error: bool = False) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": error}
+
+
+def _reply_of(params: dict[str, Any]) -> int | str | None:
+    """Return the model reply a ``tools/call`` says it was written in, if it names one."""
+    from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
+
+    meta = params.get("_meta")
+    reply = meta.get(GATEWAY_REPLY_META_KEY) if isinstance(meta, dict) else None
+    if isinstance(reply, bool) or not isinstance(reply, (int, str)):
+        return None
+    return reply
+
+
+def _in_hand(grant: Grant, group: str, reply: int | str | None) -> bool:
+    """Whether a call was written with a group in hand: handed over, and not in the reply the call is of."""
+    if group not in grant.loaded_groups:
+        return False
+    return reply is None or grant.handed_in.get(group) != reply
+
+
+def _hand_over(grant: Grant, group: str, reply: int | str | None) -> None:
+    """Note that a group goes back with the answer to a call of ``reply``."""
+    if group in grant.loaded_groups:
+        # Handed over before (loaded a second time): when it first was stands.
+        return
+    grant.loaded_groups.add(group)
+    if reply is not None:
+        grant.handed_in[group] = reply
 
 
 def _text_and_images(text: str, images: Any, *, error: bool = False) -> dict[str, Any]:
@@ -163,7 +221,106 @@ def _text_and_images(text: str, images: Any, *, error: bool = False) -> dict[str
     return {"content": content, "isError": error}
 
 
-_GROUP_NAMES = {"keyboard_mouse": "desktop", "browser": "browser"}
+def _group_name(group: str) -> str:
+    """Return a group of built-in tools by the name a model knows it by."""
+    from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_NAMES
+
+    return BUILTIN_GROUP_NAMES.get(group, group)
+
+
+def _groups_of(capabilities: list[Capability]) -> list[str]:
+    """Return the groups of the built-in tools among ``capabilities``, in the order a model is told of them."""
+    from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_NAMES
+
+    # Only a built-in tool has a group.
+    present = {item.group for item in capabilities if item.group}
+    return [group for group in BUILTIN_GROUP_NAMES if group in present]
+
+
+def _first_call(group: str, capabilities: list[Capability]) -> tuple[Capability, dict[str, Any]] | None:
+    """Return the tool a group is started with and what is written of that call, if the tool is among ``capabilities``."""
+    from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_FIRST_CALLS
+
+    first = BUILTIN_GROUP_FIRST_CALLS.get(group)
+    if first is None:
+        return None
+    for item in capabilities:
+        if item.group == group and item.tool_name == first["name"]:
+            return item, first
+    return None
+
+
+def _search_tool_definition(capabilities: list[Capability]) -> dict[str, Any]:
+    """Return the search tool as offered to a task agent that can call ``capabilities``.
+
+    Without a built-in tool among them it is the plain search tool, word
+    for word. With some, its description ends in one line about each of
+    their groups, with the group's first call, which is all a request
+    carries of a group that was not loaded, and it takes ``group``.
+    """
+    groups = _groups_of(capabilities)
+    if not groups:
+        return _SEARCH_TOOL_DEFINITION
+    from config.prompts.prompts_nekoclaw_builtin import (
+        BUILTIN_GROUP_SUMMARIES,
+        TOOL_GROUP_ARGUMENT,
+        TOOL_GROUP_FIRST_CALL,
+        TOOL_GROUPS_INTRO,
+    )
+
+    lines = [str(_SEARCH_TOOL_DEFINITION["description"]), TOOL_GROUPS_INTRO.format(call_tool=CALL_TOOL)]
+    for group in groups:
+        # Told only when the tool is there to be called.
+        found = _first_call(group, capabilities)
+        how = TOOL_GROUP_FIRST_CALL.format(name=found[0].tool_name, example=found[1]["example"]) if found else ""
+        lines.append(f"- {_group_name(group)}: {BUILTIN_GROUP_SUMMARIES[group]}{how}")
+    return {
+        "name": SEARCH_TOOL,
+        "description": "\n".join(lines),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What the capability should do."},
+                "group": {
+                    "type": "string",
+                    "enum": [_group_name(group) for group in groups],
+                    "description": TOOL_GROUP_ARGUMENT,
+                },
+            },
+        },
+    }
+
+
+def _is_first_call(capability: Capability, arguments: dict[str, Any]) -> bool:
+    """Whether a call is the first call of its group: the one carried out although the group was not loaded."""
+    found = _first_call(capability.group or "", [capability])
+    if found is None:
+        return False
+    first = found[1]
+    # Only the step itself: the tool can do more under the same name.
+    if any(arguments.get(key) not in allowed for key, allowed in first["arguments"].items()):
+        return False
+    return all(isinstance(arguments.get(key), str) and arguments[key].strip() for key in first["given"])
+
+
+def _group_text(group: str, tools: list[Capability]) -> str:
+    """Return what loading a group hands over: how it is used, then its tools' definitions."""
+    from config.nekoclaw_settings import GATEWAY_TOOL_GROUP_MAX_TOKENS
+    from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_GUIDANCE, TOOL_GROUP_LOADED_HEADER
+    from utils.tokenize import truncate_to_tokens
+
+    parts = [
+        TOOL_GROUP_LOADED_HEADER.format(name=_group_name(group), call_tool=CALL_TOOL),
+        BUILTIN_GROUP_GUIDANCE[group],
+        "\n".join(json.dumps(_definition(capability), ensure_ascii=False) for capability in tools),
+    ]
+    text = "\n\n".join(parts)
+    cut = truncate_to_tokens(text, GATEWAY_TOOL_GROUP_MAX_TOKENS)
+    if len(cut) < len(text):
+        # Ours never are (a test keeps them inside the cap); said for a
+        # provider whose definitions are larger.
+        logger.warning("the tools of the group %s do not fit what loading a group may hand over; cut", group)
+    return cut
 
 
 def _definition(capability: Capability) -> dict[str, Any]:
@@ -475,7 +632,9 @@ class CapabilityGateway:
             if not isinstance(name, str) or not name:
                 raise JsonRpcError(-32602, "tools/call needs a tool name")
             arguments = params.get("arguments")
-            return await self.call_tool(grant, name, arguments if isinstance(arguments, dict) else {})
+            return await self.call_tool(
+                grant, name, arguments if isinstance(arguments, dict) else {}, reply=_reply_of(params)
+            )
         raise JsonRpcError(-32601, f"unknown method {method}")
 
     # -- tools ------------------------------------------------------------
@@ -483,12 +642,13 @@ class CapabilityGateway:
     async def tool_definitions(self, grant: Grant) -> list[dict[str, Any]]:
         """Return the tools one commission is offered up front.
 
-        The built-in tools that are available, within their own budget; the
-        entries of its candidate plugins as far as the budget for those
-        reaches; and the search and call tools when anything is left that
-        was not listed.
+        The entries of its candidate plugins as far as their budget reaches,
+        and the search and call tools when anything is left that was not
+        listed. The built-in tools are never listed: the search tool's
+        description tells of their groups, and a group is handed over when
+        it is first used.
         """
-        from config.nekoclaw_settings import GATEWAY_BUILTIN_TOOL_LIST_MAX_TOKENS, GATEWAY_TOOL_LIST_MAX_TOKENS
+        from config.nekoclaw_settings import GATEWAY_TOOL_LIST_MAX_TOKENS
         from utils.tokenize import count_tokens
 
         callable_now = self._offered(grant, await self._registry.callable_by_task_agents())
@@ -496,25 +656,21 @@ class CapabilityGateway:
             return []
         candidates = set(grant.candidate_plugin_ids)
         listed: list[dict[str, Any]] = []
-        # The two kinds are counted apart: neither can push the other off the list.
-        used = {True: 0, False: 0}
-        budget = {True: GATEWAY_BUILTIN_TOOL_LIST_MAX_TOKENS, False: GATEWAY_TOOL_LIST_MAX_TOKENS}
-        for capability in sorted(callable_now, key=lambda item: item.kind != KIND_BUILTIN):
-            builtin = capability.kind == KIND_BUILTIN
-            # Built-in tools always; plugin entries, and MCP tools when the
-            # adapter was among the candidates.
-            if not builtin and capability.plugin_id not in candidates:
+        used = 0
+        for capability in callable_now:
+            # Plugin entries, and MCP tools when the adapter was among the
+            # candidates. (A built-in tool belongs to no plugin, so it is
+            # never one of them.)
+            if capability.plugin_id not in candidates:
                 continue
             definition = _definition(capability)
             cost = count_tokens(json.dumps(definition, ensure_ascii=False))
-            if used[builtin] + cost > budget[builtin]:
-                if builtin:
-                    logger.warning("built-in tool %s left out of the list: over the budget", capability.tool_name)
+            if used + cost > GATEWAY_TOOL_LIST_MAX_TOKENS:
                 continue
             listed.append(definition)
-            used[builtin] += cost
+            used += cost
         if len(listed) < len(callable_now):
-            listed.extend([_SEARCH_TOOL_DEFINITION, _CALL_TOOL_DEFINITION])
+            listed.extend([_search_tool_definition(callable_now), _CALL_TOOL_DEFINITION])
         return listed
 
     @staticmethod
@@ -524,10 +680,20 @@ class CapabilityGateway:
             return capabilities
         return [item for item in capabilities if not item.needs_images]
 
-    async def call_tool(self, grant: Grant, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        """Carry out one ``tools/call`` and return its MCP result."""
+    async def call_tool(
+        self, grant: Grant, name: str, arguments: dict[str, Any], *, reply: int | str | None = None
+    ) -> dict[str, Any]:
+        """Carry out one ``tools/call`` and return its MCP result.
+
+        ``reply`` is the model reply the call was written in, as the client
+        names it (``GATEWAY_REPLY_META_KEY``), ``None`` for a client that
+        names none.
+        """
         grant.calls += 1
         if name == SEARCH_TOOL:
+            group = arguments.get("group")
+            if isinstance(group, str) and group.strip():
+                return await self._load_group(grant, group.strip(), reply)
             return _text(await self._search(grant, str(arguments.get("query") or "")))
         if name == CALL_TOOL:
             target = arguments.get("name")
@@ -549,21 +715,126 @@ class CapabilityGateway:
         commission = await self._ledger.get(grant.commission_id)
         if commission is None or not commission.active:
             return _text("this commission is no longer under way", error=True)
-        return await self._call_capability(commission, capability, arguments)
+        group = capability.group
+        if not group or _in_hand(grant, group, reply):
+            return await self._call_capability(commission, capability, arguments)
+        # A tool of a group the task agent did not have in hand when it
+        # wrote this call: how the group is used has not been read, and but
+        # for the group's first call, which the task agent was shown, the
+        # arguments were written without the tool's definition. Either way
+        # the group goes back with the answer, so the calls of the replies
+        # after this one go through.
+        from config.prompts.prompts_nekoclaw_builtin import (
+            TOOL_GROUP_FIRST_RESULT,
+            TOOL_GROUP_NOT_LOADED,
+            TOOL_GROUP_NOT_READ,
+        )
+
+        first = _is_first_call(capability, arguments)
+        if group in grant.loaded_groups:
+            # Handed over by an earlier call of this same reply (the calls
+            # of one reply are carried out one after the other): the model
+            # wrote this call before that answer reached it. The first call
+            # needs no reading; anything else waits for the next reply, and
+            # the group is not sent again.
+            if first:
+                return await self._call_capability(commission, capability, arguments)
+            return _text(TOOL_GROUP_NOT_READ.format(tool=name, name=_group_name(group)), error=True)
+        handed_over = _group_text(group, [item for item in self._offered(grant, callable_now) if item.group == group])
+        if not first:
+            # Not carried out: nothing is asked of the user, nothing is occupied.
+            _hand_over(grant, group, reply)
+            refusal = TOOL_GROUP_NOT_LOADED.format(tool=name, name=_group_name(group))
+            return _text(f"{refusal}\n\n{handed_over}", error=True)
+        # The first call (going to an address, taking a screenshot) is
+        # carried out like any call, the user asked first and the group
+        # occupied. The group is put in front of what it returns, as
+        # a block of its own: each is capped by itself, and the runtime
+        # keeps them apart (``GatewayResult.parts``), so that when it cuts
+        # old results down the group stays whole next to a long page.
+        result = await self._call_capability(commission, capability, arguments)
+        if result.get("isError"):
+            # A first call that failed (declined, the browser occupied, a
+            # page that would not load) comes back as any failed call does,
+            # and the group is still to be handed over: a runtime keeps an
+            # error as one text, in which the group would be cut together
+            # with whatever the error says.
+            return result
+        # Only now, with the answer on its way: a call that was stopped
+        # handed nothing over.
+        _hand_over(grant, group, reply)
+        opening = {"type": "text", "text": f"{handed_over}\n\n{TOOL_GROUP_FIRST_RESULT}"}
+        return {**result, "content": [opening, *result["content"]]}
+
+    async def _load_group(self, grant: Grant, asked: str, reply: int | str | None = None) -> dict[str, Any]:
+        """Hand a group of built-in tools over: how it is used and its tools' definitions.
+
+        ``asked`` is the group as a model names it (the name the search
+        tool's description gives it; the host's own name for it is taken
+        too). What is handed over are the tools this commission's model can
+        make something of. ``reply`` is the model reply the load was
+        written in (see ``call_tool``): the group is in hand from the next.
+        """
+        from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_NAMES
+
+        wanted = asked.lower()
+        group = next((key for key, known in BUILTIN_GROUP_NAMES.items() if wanted in (key, known)), None)
+        callable_now = await self._registry.callable_by_task_agents()
+        if group is None:
+            on_offer = ", ".join(_group_name(item) for item in _groups_of(self._offered(grant, callable_now)))
+            return _text(f"no tool group named {asked}; the groups on offer: {on_offer or 'none'}", error=True)
+        name = _group_name(group)
+        tools = [item for item in callable_now if item.group == group]
+        if not tools:
+            # A group there is, but none of its tools can be called now.
+            reason = next((item.unavailable_reason for item in self._registry.builtins() if item.group == group), "")
+            return _text(
+                f"The {name} tools are not available right now: {reason or 'switched off'}. "
+                "Go on without them, or report that the task needs them.",
+                error=True,
+            )
+        offered = self._offered(grant, tools)
+        if not offered:
+            return _text(
+                f"The {name} tools work from pictures, and the model in use does not take pictures: they cannot "
+                "be used in this task. Go on without them, or report that the task needs a model that can see.",
+                error=True,
+            )
+        _hand_over(grant, group, reply)
+        return _text(_group_text(group, offered))
 
     async def _search(self, grant: Grant, query: str) -> str:
         from config.nekoclaw_settings import GATEWAY_RESULT_MAX_TOKENS, GATEWAY_SEARCH_RESULTS
+        from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_SUMMARIES, TOOL_GROUP_POINTER
         from utils.tokenize import truncate_to_tokens
 
         capabilities = self._offered(grant, await self._registry.callable_by_task_agents())
         if not capabilities:
             return "No capabilities are available."
-        scores = bm25_scores(query, [f"{item.title} {item.description} {item.tool_name}" for item in capabilities])
-        ranked = sorted(zip(scores, capabilities, strict=True), key=lambda pair: pair[0], reverse=True)
-        matches = [capability for score, capability in ranked if score > 0][:GATEWAY_SEARCH_RESULTS]
+        # A built-in tool is not found on its own: its definition is of no
+        # use without how its group is used, and the rest of the group is
+        # needed with it. A group is searched as one thing, by all its tools
+        # say, and a match names the group and how to load it.
+        found: list[Capability | str] = [item for item in capabilities if not item.group]
+        searched = [f"{item.title} {item.description} {item.tool_name}" for item in found]
+        for group in _groups_of(capabilities):
+            tools = [item for item in capabilities if item.group == group]
+            found.append(group)
+            said = [_group_name(group), BUILTIN_GROUP_SUMMARIES[group]]
+            said.extend(f"{item.tool_name} {item.description}" for item in tools)
+            searched.append(" ".join(said))
+        ranked = sorted(zip(bm25_scores(query, searched), found, strict=True), key=lambda pair: pair[0], reverse=True)
+        matches = [item for score, item in ranked if score > 0][:GATEWAY_SEARCH_RESULTS]
         if not matches:
             return f"No capability matches {query!r}."
-        blocks = [json.dumps(_definition(capability), ensure_ascii=False) for capability in matches]
+        blocks = [
+            TOOL_GROUP_POINTER.format(
+                name=_group_name(item), summary=BUILTIN_GROUP_SUMMARIES[item], search_tool=SEARCH_TOOL
+            )
+            if isinstance(item, str)
+            else json.dumps(_definition(item), ensure_ascii=False)
+            for item in matches
+        ]
         return truncate_to_tokens("\n".join(blocks), GATEWAY_RESULT_MAX_TOKENS)
 
     async def _call_capability(
@@ -688,7 +959,7 @@ class CapabilityGateway:
                 await self._ledger.append_event(
                     commission.id, "builtin_occupied", {"capability": capability.id, "by": in_the_way.team}
                 )
-                what = _GROUP_NAMES.get(group, group)
+                what = _group_name(group)
                 return _text(
                     f"The {what} is in use by another task ({in_the_way.title or 'no title'}) and did not come "
                     "free in time. Nothing was done. Go on with what does not need it, try again later, or "

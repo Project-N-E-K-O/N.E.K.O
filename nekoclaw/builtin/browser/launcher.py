@@ -356,6 +356,10 @@ class RunningBrowser:
     # When ``process`` was created, as the system tells it; None when that
     # could not be asked. A number alone does not name a process for good.
     started: float | None = None
+    # Whether it runs without a window. Known for one this module started;
+    # None for one that was already running (found on its profile, or the
+    # user's own), until whoever drives it has asked it.
+    headless: bool | None = None
 
     @property
     def pid(self) -> int | None:
@@ -442,6 +446,7 @@ def _start(
                 owned=True,
                 user_data_dir=user_data_dir,
                 started=started if child is not None else None,
+                headless=headless,
             )
         time.sleep(0.1)
     exited = process.poll() is not None

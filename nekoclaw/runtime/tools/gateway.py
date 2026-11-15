@@ -21,7 +21,9 @@ ones; a call is forwarded to the gateway and its text comes back as the tool
 result, followed by the pictures it carries (a screenshot of the desktop or
 of a page). Plugin entries, MCP tools and the keyboard, mouse and browser
 tools reach a task agent this way, so they are implemented once for every
-runtime.
+runtime. Not all of them are in the list: the gateway's own search tool finds
+the rest and loads a group of built-in tools, and its call tool calls any of
+them by name.
 
 This is a small MCP client: JSON-RPC 2.0 over HTTP POST, one request per
 message, with ``initialize``, ``tools/list`` and ``tools/call``. It reads an
@@ -38,6 +40,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
 from nekoclaw.runtime.loop.messages import ImageContent, TextContent
 from nekoclaw.runtime.loop.tools import AgentTool, AgentToolResult
 from nekoclaw.runtime.tools.base import ToolCallInfo, ToolError, define_tool, run_cancellable
@@ -69,6 +72,12 @@ class GatewayResult:
     # Pictures the tool handed back (screenshots), in the order it gave them.
     images: tuple[ImageContent, ...]
     is_error: bool
+    # The text as the blocks it came in, when it came in more than one;
+    # ``text`` is these joined by line breaks. Kept apart because the runtime
+    # caps a result, and cuts an old one down, with its first block apart
+    # from the rest: what has to stay whole (a group of tools handed over in
+    # front of what a call returned) comes first, however long what follows.
+    parts: tuple[str, ...] = ()
 
 
 class GatewayClient:
@@ -79,6 +88,8 @@ class GatewayClient:
         self._token = token
         self._next_id = 0
         self._protocol_version: str | None = None
+        # Which reply of the model the calls being made were written in.
+        self._reply = 0
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -148,9 +159,20 @@ class GatewayClient:
         tools = listed.get("tools") if isinstance(listed, dict) else None
         return [tool for tool in tools or [] if isinstance(tool, dict) and tool.get("name")]
 
+    def next_reply(self) -> None:
+        """Note that the model has answered: the calls made from now on were written in that reply.
+
+        Every call names its reply to the gateway. What a call's answer
+        hands the model (a group of tools and how they are used) was not
+        there to be read when the calls after it in the same reply were
+        written, and the gateway tells those apart by this.
+        """
+        self._reply += 1
+
     async def call(self, name: str, arguments: dict[str, Any]) -> GatewayResult:
         """Call one tool and return its text and pictures; waits as long as the tool takes."""
-        result = await self.request("tools/call", {"name": name, "arguments": arguments}, read_timeout=None)
+        params = {"name": name, "arguments": arguments, "_meta": {GATEWAY_REPLY_META_KEY: self._reply}}
+        result = await self.request("tools/call", params, read_timeout=None)
         if not isinstance(result, dict):
             return GatewayResult("", (), False)
         parts: list[str] = []
@@ -178,7 +200,10 @@ class GatewayClient:
         if dropped:
             # Said rather than silently lost: the model may be waiting for a picture.
             parts.append(f"[{dropped} picture(s) of this result could not be passed on.]")
-        return GatewayResult("\n".join(part for part in parts if part), tuple(images), bool(result.get("isError")))
+        said = tuple(part for part in parts if part)
+        return GatewayResult(
+            "\n".join(said), tuple(images), bool(result.get("isError")), said if len(said) > 1 else ()
+        )
 
     async def aclose(self) -> None:
         """Nothing to release: every request uses a connection of its own."""
@@ -247,11 +272,17 @@ def _forwarder(client: GatewayClient, name: str) -> Any:
         if result.is_error:
             raise ToolError(result.text or f"{name} failed")
         text = result.text or "(no output)"
-        if not result.images:
+        if not result.images and not result.parts:
             return text
+        if result.parts:
+            # One block for each, reading as ``text`` does when put together.
+            blocks = [TextContent(text=f"{part}\n") for part in result.parts[:-1]]
+            blocks.append(TextContent(text=result.parts[-1]))
+        else:
+            blocks = [TextContent(text=text)]
         # The model adapter decides how the pictures travel (or leaves a
         # placeholder for a model that cannot see them).
-        return AgentToolResult(content=[TextContent(text=text), *result.images])
+        return AgentToolResult(content=[*blocks, *result.images])
 
     return forward
 
