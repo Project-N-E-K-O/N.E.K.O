@@ -86,10 +86,12 @@ ALLOWED_URL_SCHEMES = ("http://", "https://")
 # the page is left: on a page that changes without ever loading anew they
 # would pile up from task to task.
 OBJECT_GROUP = "nekoclaw-action"
-# What a browser that was already running has to be asked about one by one
-# for its requests to be held (``BrowserSession._keep_what_was_open``), and
-# how long each answer is waited for.
-_HELD_ONE_BY_ONE = frozenset({"page", "iframe", "service_worker", "shared_worker"})
+# What is open in a browser before it is connected to has to be asked about
+# one by one for its requests to be held
+# (``BrowserSession._keep_what_was_open``), and how long each answer is
+# waited for. The background page of an extension is a page like any other
+# to the browser; the browser's own interface (``browser_ui``) is not asked.
+_HELD_ONE_BY_ONE = frozenset({"page", "iframe", "service_worker", "shared_worker", "background_page"})
 _KEEP_OPEN_TIMEOUT_SECONDS = 5.0
 # What the browser answers a command about a target with when there is no
 # such target (it was closed meanwhile).
@@ -338,6 +340,14 @@ class BrowserSession:
         # list of pages while it is there; back on a page of the web it is
         # the same page to the model, and still one that may be closed.
         self._own_pages: dict[str, int] = {}
+        # Every tab that is open, by target id, those that are not listed
+        # as pages included (the browser's own pages, a file): a browser
+        # with none left has no window to leave open (``shows_a_window``).
+        self._tabs: set[str] = set()
+        # What was open before the browser was connected to and could not be
+        # kept from this application's own ports (``_keep_what_was_open``),
+        # by target id. A page among them is not worked on as it is.
+        self._not_kept: set[str] = set()
         self._selected: str | None = None
         self._next_page_id = 1
         self._next_snapshot_id = 1
@@ -522,8 +532,12 @@ class BrowserSession:
             targets = await connection.send("Target.getTargets")
             if was_running and browser.owned:
                 await self._ask_whether_headless(connection, browser)
-                if self._blocked_everywhere:
-                    await self._keep_what_was_open(connection, targets.get("targetInfos") or ())
+            if self._blocked_everywhere:
+                # One that was started just now, too: what it opens of its
+                # own as it comes up (the pages of extensions, a page an
+                # extension greets its user with) may be there before this
+                # connection is.
+                await self._keep_what_was_open(connection, targets.get("targetInfos") or ())
             for info in targets.get("targetInfos") or ():
                 self._note_target(info)
             if attach or not self._pages:
@@ -584,9 +598,12 @@ class BrowserSession:
         whatever comes into being from then on. What is there already goes on
         reaching the ports until it loads anew: a page, an embedded page of
         another site, a service worker (tested with Chrome 156 and Edge 157).
-        That is a browser found running on its profile: the connection to it
-        was lost, or the process that drove it is gone and this one took it
-        over.
+        In a browser found running on its profile (the connection to it was
+        lost, or the process that drove it is gone and this one took it
+        over) that is everything the work before left open. In one that
+        was started just now it is what the browser opened of its own
+        before it could be connected to, the pages of its extensions above
+        all.
 
         Asked once of such a target itself, the browser takes hold of it,
         and goes on holding it for the whole browser when the target is let
@@ -597,10 +614,12 @@ class BrowserSession:
         like everything new.
 
         One of them that is still there and could not be dealt with (it
-        refused, or did not answer, twice) goes on reaching the ports. The
-        browser is then not taken for one that is kept from them as a whole:
-        every page is kept from them itself when it is worked on, as in a
-        browser that cannot hold requests for all of it.
+        refused, or did not answer, twice) goes on reaching the ports, and
+        is remembered (``_not_kept``). A page among them is not taken for
+        one that is kept from them: when it is worked on it is asked once
+        more, and worked on only once that took (``_attached``). What is not
+        a page, and a page nobody works on, stay as they are until they
+        load anew.
         """
         patterns = {"patterns": self._block_patterns()}
 
@@ -630,9 +649,10 @@ class BrowserSession:
             try:
                 await connection.send("Fetch.enable", patterns, session_id=session_id, timeout=_KEEP_OPEN_TIMEOUT_SECONDS)
                 return True
-            except CdpError as exc:
-                return exc.code == SESSION_GONE_CODE
-            except CdpTimeout:
+            except (CdpError, CdpTimeout):
+                # Also when the session went while it was asked: a session
+                # can go with its target still there. Tried again, a target
+                # that is gone says so when it is attached to.
                 return False
             finally:
                 await self._send_quietly(connection, "Target.detachFromTarget", {"sessionId": session_id}, None)
@@ -646,30 +666,17 @@ class BrowserSession:
             logger.warning("a %s that was open before could not be kept from this application's own ports", kind)
             return False
 
+        there = [
+            (str(info.get("type")), str(info.get("targetId")))
+            for info in infos
+            if info.get("type") in _HELD_ONE_BY_ONE and info.get("targetId")
+        ]
         # All at once: one that does not answer must not hold up the others.
-        outcomes = await asyncio.gather(
-            *(
-                keep(str(info.get("type")), str(info.get("targetId") or ""))
-                for info in infos
-                if info.get("type") in _HELD_ONE_BY_ONE and info.get("targetId")
-            ),
-            return_exceptions=True,
-        )
+        outcomes = await asyncio.gather(*(keep(kind, target_id) for kind, target_id in there), return_exceptions=True)
         for outcome in outcomes:
             if isinstance(outcome, BaseException):
                 raise outcome  # The connection went: there is no browser to drive.
-        if not all(outcomes):
-            # Something that is still open reaches the ports: this is not a
-            # browser that is kept from them as a whole. Taken for one, a page
-            # that is worked on later would not be kept from them itself
-            # (``_attached``), the one that could not be taken hold of here
-            # among them. What is neither worked on nor loaded anew stays as
-            # it is, as in a browser that cannot hold requests for all of it.
-            self._blocked_everywhere = False
-            logger.warning(
-                "not everything that was open in the browser could be kept from this application's own ports; "
-                "each page is, when it is worked on"
-            )
+        self._not_kept = {target_id for (_kind, target_id), kept in zip(there, outcomes) if not kept}
 
     @staticmethod
     async def _ask_whether_headless(connection: CdpConnection, browser: launcher.RunningBrowser) -> None:
@@ -778,6 +785,8 @@ class BrowserSession:
         connection, self._connection = self._connection, None
         self._pages.clear()
         self._own_pages.clear()
+        self._tabs.clear()
+        self._not_kept.clear()
         self._handles.clear()
         self._selected = None
         self._window_pid = None
@@ -810,9 +819,22 @@ class BrowserSession:
         Left open by mistake, a browser without a window is a process nobody
         sees until the tools are switched off or the application quits;
         closed by mistake, it is a window taken from the user.
+
+        One with no tab left has none either: the user closed its windows
+        and the browser runs on in the background (for its extensions, or
+        as an application does that stays up without a window). A tab
+        that is not listed as a page still is one: the window it is in is
+        there for the user.
         """
         browser = self._browser
-        return browser is not None and browser.owned and browser.headless is not True and self.connected and not self._unwanted
+        return (
+            browser is not None
+            and browser.owned
+            and browser.headless is not True
+            and self.connected
+            and bool(self._tabs)
+            and not self._unwanted
+        )
 
     async def close(self) -> None:
         """Drop the connection and close the browser if this process started it."""
@@ -925,6 +947,7 @@ class BrowserSession:
         target_id = str(info.get("targetId") or "")
         if not target_id:
             return
+        self._tabs.add(target_id)
         url = str(info.get("url") or "")
         if not is_web_page(url) or (self._blocked_ports and port_of(url) in self._blocked_ports):
             # Not a page of the web, or one of this application's own pages
@@ -985,6 +1008,8 @@ class BrowserSession:
             self._note_target(params.get("targetInfo") or {})
             return
         if method == "Target.targetDestroyed":
+            self._tabs.discard(str(params.get("targetId") or ""))
+            self._not_kept.discard(str(params.get("targetId") or ""))
             self._own_pages.pop(str(params.get("targetId") or ""), None)
             self._forget_page(str(params.get("targetId") or ""))
             return
@@ -1085,10 +1110,22 @@ class BrowserSession:
         # repeated). Taken for ready because its session is known, the page
         # would be driven without being kept from this application's ports.
         await connection.send("Page.enable", session_id=session_id)
-        if self._blocked_ports and not self._blocked_everywhere:
+        # One that was open before the browser was connected to and could
+        # not be kept from the ports then: it reaches them as it is.
+        not_kept = page.target_id in self._not_kept
+        if self._blocked_ports and (not self._blocked_everywhere or not_kept):
             try:
                 await connection.send("Fetch.enable", {"patterns": self._block_patterns()}, session_id=session_id)
-            except CdpError:
+                self._not_kept.discard(page.target_id)
+            except CdpError as exc:
+                if not_kept:
+                    # Known to reach them, and nothing else keeps it from
+                    # them: not worked on. (Asked again by the next call.)
+                    raise BrowserError(
+                        "This page was open before the browser was connected to, and it could not be kept from "
+                        "this application's own services, so it is not worked on. Open the address in a new tab "
+                        "with browser_new_page instead."
+                    ) from exc
                 logger.warning("a page cannot be kept from this application's own ports", exc_info=True)
         try:
             # A window nobody looks at still behaves as the focused one.

@@ -2748,11 +2748,17 @@ async def test_the_whole_browser_it_started_is_kept_from_the_ports_of_this_appli
     session = make_session(own_ports=lambda: {48915, 48911, 48911})
     await session.start()
     # Once, for the browser as a whole, before any page is looked at.
-    assert world.browser.fetch_enabled == [(None, ["*://*:48911/*", "*://*:48915/*"])]
+    assert world.browser.fetch_enabled[0] == (None, ["*://*:48911/*", "*://*:48915/*"])
     assert world.browser.methods().index("Fetch.enable") < world.browser.methods().index("Target.setDiscoverTargets")
+    # Then what the browser had opened of its own before it could be connected to, once each.
+    assert sorted(world.browser.fetch_enabled[1:]) == [
+        ("target-1", ["*://*:48911/*", "*://*:48915/*"]),
+        ("worker-1", ["*://*:48911/*", "*://*:48915/*"]),
+    ]
     page = session.selected()
+    asked = len(world.browser.fetch_enabled)
     await session.navigate(page, "url", ORDER)
-    assert len(world.browser.fetch_enabled) == 1
+    assert len(world.browser.fetch_enabled) == asked
     # A request a page makes to one of them is failed; any other the browser holds is let on.
     blocked = world.browser.hold_request("http://127.0.0.1:48911/api/config")
     other = world.browser.hold_request("http://127.0.0.1:3000/")
@@ -3775,8 +3781,9 @@ async def test_what_was_open_in_a_browser_found_running_is_kept_from_the_ports_o
     await session.start()
     # The whole browser first, which holds what comes into being from now on.
     assert world.browser.fetch_enabled[0] == (None, OWN_PATTERNS)
-    # Then every page, embedded page of another site and service worker that was there already, once each.
-    there_before = ["target-1", shop.target_id, "worker-1", "frame-9"]
+    # Then every page, embedded page of another site, service worker and background page of an extension
+    # that was there already, once each.
+    there_before = ["target-1", shop.target_id, "worker-1", "frame-9", "extension-1"]
     assert sorted(world.browser.fetch_enabled[1:]) == sorted((target, OWN_PATTERNS) for target in there_before)
     # Let go of right away: a page is attached to when it is worked on, as ever.
     assert sorted(world.browser.detached_from) == sorted(there_before)
@@ -3788,6 +3795,7 @@ async def test_what_was_open_in_a_browser_found_running_is_kept_from_the_ports_o
     # Working on one of them later asks nothing of the kind again.
     asked = len(world.browser.fetch_enabled)
     await session.navigate(session.selected(), "url", ORDER)
+    await session.take_snapshot(session.page_by_id(2))
     assert len(world.browser.fetch_enabled) == asked
 
 
@@ -3807,16 +3815,28 @@ async def test_a_request_of_what_was_open_before_is_failed_while_it_is_being_tak
     await starting
 
 
-async def test_a_browser_this_process_started_is_not_asked_about_what_is_open_in_it(
+async def test_a_browser_this_process_started_is_asked_about_what_it_opened_before_it_was_connected_to(
     make_session: Any, world: BrowserWorld
 ) -> None:
-    world.browser.other_targets.append({"targetId": "frame-9", "type": "iframe", "url": "https://ads.example/", "title": ""})
+    # As it comes up, a browser opens things of its own: the pages of its extensions, a page an extension
+    # greets its user with. Some of it is there before the connection is.
+    greeting = world.browser.add_page("https://extension.example/welcome", "Thanks for installing")
+    world.browser.other_targets.extend(
+        [
+            {"targetId": "extension-1", "type": "background_page", "url": "chrome-extension://abc/background.html", "title": ""},
+            {"targetId": "shared-1", "type": "shared_worker", "url": "https://extension.example/sync.js", "title": ""},
+            # The browser's own interface is not asked.
+            {"targetId": "ui-1", "type": "browser_ui", "url": "chrome://omnibox-popup.top-chrome/", "title": ""},
+        ]
+    )
     session = make_session(own_ports=lambda: OWN)
     await session.start()
-    # It came up with this connection: there is nothing in it from before.
-    assert world.browser.fetch_enabled == [(None, OWN_PATTERNS)]
-    assert world.browser.detached_from == [] and world.browser.closed_targets == []
-    # Nor what it is: it was started with a window or without one, and that is known.
+    assert world.browser.fetch_enabled[0] == (None, OWN_PATTERNS)
+    there_before = ["target-1", greeting.target_id, "worker-1", "extension-1"]
+    assert sorted(world.browser.fetch_enabled[1:]) == sorted((target, OWN_PATTERNS) for target in there_before)
+    assert sorted(world.browser.detached_from) == sorted(there_before)
+    assert world.browser.closed_targets == ["shared-1"]
+    # What it is, is not asked: it was started with a window or without one, and that is known.
     assert world.browser.of("Browser.getVersion") == []
 
 
@@ -3856,16 +3876,13 @@ async def test_one_of_what_was_open_that_is_gone_by_then_does_not_keep_the_other
     with caplog.at_level("WARNING", logger="nekoclaw.builtin.browser.session"):
         await session.start()
     assert sorted(target for target, _patterns in world.browser.fetch_enabled[1:]) == sorted(
-        ["target-1", shop.target_id, "worker-1"]
+        ["target-1", shop.target_id, "worker-1", "extension-1"]
     )
     # What is gone has nothing left to reach the ports with: not a failure, not tried again, nothing said.
     assert [command.params["targetId"] for command in world.browser.of("Target.attachToTarget")].count("frame-9") == 1
     assert len(world.browser.of("Target.closeTarget")) == 1
     assert [record.getMessage() for record in caplog.records if "could not be kept from" in record.getMessage()] == []
-    # The whole browser is kept from the ports, as it was asked to be: a page worked on is not asked again.
-    asked = len(world.browser.fetch_enabled)
-    await session.navigate(session.selected(), "url", ORDER)
-    assert len(world.browser.fetch_enabled) == asked
+    assert session._not_kept == set()
 
 
 def _refusing(world: BrowserWorld, target: Any, times: int, error: Exception) -> list[int]:
@@ -3892,7 +3909,7 @@ def _refusing(world: BrowserWorld, target: Any, times: int, error: Exception) ->
         CdpError("Fetch.enable", -32602, "Invalid parameters"),
     ],
 )
-async def test_a_page_that_is_still_open_and_cannot_be_taken_hold_of_leaves_the_browser_kept_page_by_page(
+async def test_a_page_that_is_still_open_and_could_not_be_taken_hold_of_is_kept_from_the_ports_when_it_is_worked_on(
     make_session: Any, world: BrowserWorld, caplog: Any, error: Exception
 ) -> None:
     shop = _left_running(world)
@@ -3904,13 +3921,11 @@ async def test_a_page_that_is_still_open_and_cannot_be_taken_hold_of_leaves_the_
     assert len(failed) == 2
     assert world.browser.detached_from.count(shop.target_id) == 2 and shop.sessions == set()
     assert (shop.target_id, OWN_PATTERNS) not in world.browser.fetch_enabled
-    # Said, by its kind only (an address may carry a token), and that the browser is not kept as a whole.
-    said = [record.getMessage() for record in caplog.records]
-    assert "a page that was open before could not be kept from this application's own ports" in said
-    assert any("not everything that was open in the browser could be kept" in line for line in said)
-    assert not any("shop.test" in line for line in said)
-    # It still reaches the ports. Taken for a browser that is kept from them as a whole, it would be
-    # driven without being kept from them itself: each page is, when it is worked on.
+    # Said, by its kind only (an address may carry a token).
+    said = [record.getMessage() for record in caplog.records if "could not be kept from" in record.getMessage()]
+    assert said == ["a page that was open before could not be kept from this application's own ports"]
+    # It still reaches the ports, and is not taken for one that does not: worked on, it is asked once
+    # more before anything else is done with it.
     page = session.page_by_id(2)
     assert page.url == ORDER
     await session.take_snapshot(page)
@@ -3919,10 +3934,12 @@ async def test_a_page_that_is_still_open_and_cannot_be_taken_hold_of_leaves_the_
     held = world.browser.hold_request("http://127.0.0.1:48911/api/config", shop)
     await _until(lambda: world.browser.fetch_answers)
     assert world.browser.fetch_answers == [(held, "BlockedByClient", page.session_id)]
-    # So is any other page that is worked on from now on.
-    other = session.page_by_id(1)
-    await session.navigate(other, "url", THANKS)
-    assert (other.target_id, OWN_PATTERNS) in world.browser.fetch_enabled[-2:]
+    # That took: it is a page like any other from now on.
+    assert session._not_kept == set()
+    # The pages that were taken hold of are not asked again: the browser is kept from the ports as a whole.
+    asked = len(world.browser.fetch_enabled)
+    await session.navigate(session.page_by_id(1), "url", THANKS)
+    assert len(world.browser.fetch_enabled) == asked
 
 
 async def test_a_page_that_answers_the_second_time_is_taken_hold_of_like_the_others(
@@ -3944,50 +3961,153 @@ async def test_a_page_that_answers_the_second_time_is_taken_hold_of_like_the_oth
     assert len(world.browser.fetch_enabled) == asked
 
 
+async def test_a_page_whose_session_went_while_it_was_asked_is_asked_again(
+    make_session: Any, world: BrowserWorld, caplog: Any
+) -> None:
+    from nekoclaw.builtin.browser.cdp import SESSION_GONE_CODE
+
+    shop = _left_running(world)
+    # A session can go with its target still there (it was detached from for whatever reason).
+    failed = _refusing(world, shop, 1, CdpError("Fetch.enable", SESSION_GONE_CODE, "Session with given id not found."))
+    session = make_session(own_ports=lambda: OWN)
+    with caplog.at_level("WARNING", logger="nekoclaw.builtin.browser.session"):
+        await session.start()
+    assert len(failed) == 1
+    assert world.browser.fetch_enabled.count((shop.target_id, OWN_PATTERNS)) == 1
+    assert [record.getMessage() for record in caplog.records if "could not be kept" in record.getMessage()] == []
+    assert session._not_kept == set()
+
+
 async def test_a_page_that_went_while_it_was_asked_is_no_failure(make_session: Any, world: BrowserWorld, caplog: Any) -> None:
     from nekoclaw.builtin.browser.cdp import SESSION_GONE_CODE
 
     shop = _left_running(world)
-    failed = _refusing(world, shop, 5, CdpError("Fetch.enable", SESSION_GONE_CODE, "Session with given id not found."))
+    _refusing(world, shop, 5, CdpError("Fetch.enable", SESSION_GONE_CODE, "Session with given id not found."))
+    attach = world.browser._do_Target_attachToTarget
+    attached: list[int] = []
+
+    def gone_the_second_time(command: Sent, target: Any) -> dict[str, Any]:
+        if command.params.get("targetId") == shop.target_id:
+            attached.append(1)
+            if len(attached) > 1:
+                # The tab was closed: that is what the session going meant.
+                raise CdpError(command.method, -32602, "No target with given id found")
+        return attach(command, target)
+
+    world.browser._do_Target_attachToTarget = gone_the_second_time  # type: ignore[method-assign]
     session = make_session(own_ports=lambda: OWN)
     with caplog.at_level("WARNING", logger="nekoclaw.builtin.browser.session"):
         await session.start()
-    # Closed between being attached to and being asked: not tried again, nothing said, the browser kept as a whole.
-    assert len(failed) == 1
+    assert len(attached) == 2
     assert [record.getMessage() for record in caplog.records if "could not be kept" in record.getMessage()] == []
-    asked = len(world.browser.fetch_enabled)
-    await session.navigate(session.selected(), "url", THANKS)
-    assert len(world.browser.fetch_enabled) == asked
+    assert session._not_kept == set()
+
+
+async def test_a_page_whose_session_goes_every_time_it_is_asked_counts_as_one_that_reaches_the_ports(
+    make_session: Any, world: BrowserWorld, caplog: Any
+) -> None:
+    from nekoclaw.builtin.browser.cdp import SESSION_GONE_CODE
+
+    shop = _left_running(world)
+    failed = _refusing(world, shop, 2, CdpError("Fetch.enable", SESSION_GONE_CODE, "Session with given id not found."))
+    session = make_session(own_ports=lambda: OWN)
+    with caplog.at_level("WARNING", logger="nekoclaw.builtin.browser.session"):
+        await session.start()
+    # Still there, and never asked to the end: not taken for one that is kept from the ports.
+    assert len(failed) == 2
+    assert session._not_kept == {shop.target_id}
+    assert [record.getMessage() for record in caplog.records if "could not be kept" in record.getMessage()] == [
+        "a page that was open before could not be kept from this application's own ports"
+    ]
+
+
+async def test_a_page_that_reaches_the_ports_and_cannot_be_kept_from_them_is_not_worked_on(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    shop = _left_running(world)
+    # It refuses for good.
+    _refusing(world, shop, 1000, CdpError("Fetch.enable", -32000, "Fetch domain is not available"))
+    session = make_session(own_ports=lambda: OWN)
+    await session.start()
+    page = session.page_by_id(2)
+    for attempt in (session.take_snapshot(page), session.navigate(page, "url", THANKS), session.take_snapshot(page)):
+        sent = await refused(world, attempt, "could not be kept from this application's own services, so it is not worked on")
+        # Asked once more each time, and nothing is done with the page: it is neither read nor sent anywhere.
+        assert [command.method for command in sent if command.method not in ("Target.attachToTarget", "Page.enable")] == [
+            "Fetch.enable"
+        ]
+    assert world.page_of(page).url == ORDER
+    assert session._not_kept == {shop.target_id}
+    # The other pages are worked on as ever, and a new tab can be opened for the address.
+    other = session.page_by_id(1)
+    await session.navigate(other, "url", THANKS)
+    assert other.url == THANKS
+    # Once the user has closed it, nothing is remembered of it.
+    world.browser.remove_page(shop)
+    assert session._not_kept == set()
+
+
+async def test_a_page_that_is_not_known_to_reach_the_ports_is_worked_on_though_it_cannot_be_asked(
+    make_session: Any, world: BrowserWorld, caplog: Any
+) -> None:
+    # The user's own browser, where each page is kept from the ports when it is worked on, and this one
+    # refuses. As before: said loudly, and the page is worked on. (Not worked on is only a page that was
+    # open before the connection in a browser of ours, which is known to reach the ports as it is.)
+    world.settings(mode="attach")
+    world.browser.refuse("Fetch.enable", "Fetch domain is not available")
+    session = make_session(own_ports=lambda: OWN)
+    with caplog.at_level("WARNING", logger="nekoclaw.builtin.browser.session"):
+        await session.start()
+        page = session.selected()
+        await session.navigate(page, "url", ORDER)
+    assert page.url == ORDER and world.page_of(page).url == ORDER
+    assert "a page cannot be kept from this application's own ports" in [record.getMessage() for record in caplog.records]
+
+
+async def test_what_could_not_be_kept_from_the_ports_is_forgotten_with_the_connection(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    shop = _left_running(world)
+    _refusing(world, shop, 2, CdpError("Fetch.enable", -32000, "Fetch domain is not available"))
+    session = make_session(own_ports=lambda: OWN)
+    await session.start()
+    assert session._not_kept == {shop.target_id}
+    world.browser.disconnect()
+    # Connected to anew, everything is asked afresh, and this time it takes.
+    await session.start()
+    assert session._not_kept == set()
+    assert world.browser.fetch_enabled.count((shop.target_id, OWN_PATTERNS)) == 1
 
 
 @pytest.mark.parametrize(
-    ("method", "error", "kind"),
+    ("method", "error", "not_kept"),
     [
-        # A target that is there and cannot be attached to.
-        ("Target.attachToTarget", CdpError("Target.attachToTarget", -32000, "Not allowed"), "page"),
-        ("Target.attachToTarget", CdpTimeout("Target.attachToTarget was not answered in 5s"), "page"),
+        # Targets that are there and cannot be attached to: every one that is asked about.
+        ("Target.attachToTarget", CdpError("Target.attachToTarget", -32000, "Not allowed"), 5),
+        ("Target.attachToTarget", CdpTimeout("Target.attachToTarget was not answered in 5s"), 5),
         # A shared worker that is there and cannot be closed.
-        ("Target.closeTarget", CdpError("Target.closeTarget", -32000, "Not allowed"), "shared_worker"),
-        ("Target.closeTarget", CdpTimeout("Target.closeTarget was not answered in 5s"), "shared_worker"),
+        ("Target.closeTarget", CdpError("Target.closeTarget", -32000, "Not allowed"), 1),
+        ("Target.closeTarget", CdpTimeout("Target.closeTarget was not answered in 5s"), 1),
     ],
 )
-async def test_whatever_is_still_there_and_could_not_be_dealt_with_leaves_the_browser_kept_page_by_page(
-    make_session: Any, world: BrowserWorld, caplog: Any, method: str, error: Exception, kind: str
+async def test_whatever_is_still_there_and_could_not_be_dealt_with_is_remembered_as_reaching_the_ports(
+    make_session: Any, world: BrowserWorld, caplog: Any, method: str, error: Exception, not_kept: int
 ) -> None:
     _left_running(world)
     world.browser.failures[method] = error
     session = make_session(own_ports=lambda: OWN)
     with caplog.at_level("WARNING", logger="nekoclaw.builtin.browser.session"):
         await session.start()
-    said = [record.getMessage() for record in caplog.records]
-    assert f"a {kind} that was open before could not be kept from this application's own ports" in said
-    # Tried twice each.
-    wanted = 2 if kind == "shared_worker" else 8
-    assert len(world.browser.of(method)) == wanted
+    # Tried twice each, said once each, and remembered.
+    assert len(world.browser.of(method)) == 2 * not_kept
+    said = [record.getMessage() for record in caplog.records if "could not be kept from" in record.getMessage()]
+    assert len(said) == not_kept
+    assert len(session._not_kept) == not_kept
+    assert ("shared-1" in session._not_kept) is (method == "Target.closeTarget")
+    # The browser is still kept from the ports as a whole: what comes into being from now on is held.
     world.browser.failures.pop(method)
-    page = session.selected()
-    await session.navigate(page, "url", THANKS)
-    assert world.browser.fetch_enabled[-1] == (page.target_id, OWN_PATTERNS)
+    made = await session.new_page(THANKS)
+    assert (made.target_id, OWN_PATTERNS) not in world.browser.fetch_enabled
 
 
 async def test_a_browser_that_goes_away_while_what_was_open_is_asked_is_not_driven(
@@ -4072,6 +4192,42 @@ async def test_only_a_browser_of_ours_that_is_connected_to_counts_as_showing_a_w
     theirs = make_session()
     await theirs.start()
     assert theirs.connected and theirs.shows_a_window is False
+
+
+async def test_a_browser_with_no_tab_left_has_no_window_to_leave_open(make_session: Any, world: BrowserWorld) -> None:
+    session = make_session()
+    await session.start()
+    assert session.shows_a_window is True
+    # A tab that is not listed as a page (the browser's own settings) is a tab all the same: the window
+    # it is in is there for the user.
+    settings = world.browser.add_page("chrome://settings/", "Settings")
+    world.browser.remove_page(world.browser.page("target-1"))
+    assert session.pages() == [] and session.shows_a_window is True
+    # The user closes that one too. The browser runs on in the background (for its extensions, say):
+    # connected to as ever, with nothing left to look at.
+    world.browser.remove_page(settings)
+    assert session.connected and session.shows_a_window is False
+    # A tab that is opened again is a window again.
+    world.browser.add_page(MAIL, "Inbox")
+    assert session.shows_a_window is True
+
+
+async def test_the_tabs_of_a_browser_are_counted_afresh_when_it_is_connected_to_anew(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    session = make_session()
+    await session.start()
+    world.browser.disconnect()
+    assert session.shows_a_window is False
+    # What only an extension keeps open is no tab.
+    world.browser.other_targets.append(
+        {"targetId": "extension-1", "type": "background_page", "url": "chrome-extension://abc/background.html", "title": ""}
+    )
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    world.browser.can_create_tabs = False
+    await session.start()
+    assert session.connected and session.shows_a_window is False
 
 
 async def test_a_browser_that_is_no_longer_wanted_does_not_count_until_one_is_connected_to_anew(

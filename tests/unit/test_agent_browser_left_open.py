@@ -212,7 +212,8 @@ async def test_the_browser_that_was_left_open_stays_kept_from_the_ports_of_this_
             break
         await asyncio.sleep(0.005)
     assert world.browser.fetch_answers == [(held, "BlockedByClient", None)]
-    assert world.browser.fetch_enabled == [(None, OWN_PATTERNS)]
+    # For the browser as a whole, as from its start.
+    assert world.browser.fetch_enabled[0] == (None, OWN_PATTERNS)
 
 
 async def test_the_next_task_drives_the_browser_that_was_left_open(stage: Any, world: BrowserWorld) -> None:
@@ -302,6 +303,34 @@ async def test_the_users_own_browser_is_let_go_of_when_every_task_is_stopped(sta
     assert connection.closed and not stage.session.connected
     assert [browser.owned for browser, _connection in world.closed] == [False]
     assert world.browser.close_requests == 0 and mail.target_id in world.browser.pages
+
+
+async def test_a_browser_whose_windows_the_user_closed_is_closed_when_every_task_is_stopped(
+    stage: Any, world: BrowserWorld
+) -> None:
+    await _on_the_order_form(stage)
+    # The user closes its last window, and the browser runs on in the background: still connected to,
+    # with no window for anyone to look at or to close.
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    assert stage.session.connected and stage.provider.browser_window_stays() is False
+
+    await api_routes.admin_control(dict(END_ALL))
+
+    assert len(world.closed) == 1 and not stage.session.holds_a_browser
+
+
+async def test_a_model_that_stops_answering_closes_a_browser_whose_windows_the_user_closed(
+    stage: Any, world: BrowserWorld
+) -> None:
+    await _on_the_order_form(stage)
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    stage.state.model_probe = Probe((False, "AGENT_LLM_UNREACHABLE"))
+
+    await capabilities._fire_agent_llm_connectivity_check()
+
+    assert len(world.closed) == 1 and not stage.session.holds_a_browser
 
 
 async def test_a_browser_whose_connection_is_lost_is_closed_when_every_task_is_stopped(
