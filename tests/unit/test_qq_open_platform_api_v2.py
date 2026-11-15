@@ -1188,6 +1188,39 @@ def test_member_list_reports_when_a_cap_leaves_members_unread():
     assert conn._member_pages_state["G1"]["next_cursor"] == "c2"
 
 
+def test_member_list_stops_at_the_safety_cap_when_the_cursor_is_stuck():
+    # greptile r4577011460, CodeRabbit r4577024272, wehos r4577285950. The bound used to
+    # be `len(out) // 30 >= cap`. A page with no members grows neither term of that
+    # expression, so an endpoint that keeps handing back the same cursor paged until the
+    # request failed or something outside the loop cancelled it. The stuck-cursor case is
+    # exactly the case the safety cap exists for, and it did not fire.
+    conn = _conn([
+        _Response({"members": [], "next_cursor": "same"})
+        for _ in range(mod._MEMBER_PAGES_SAFETY_CAP + 5)
+    ])
+    out = run(conn.get_group_member_list("G1"))
+    assert out == []
+    # Scripted five extra pages so an over-run is visible as a count mismatch instead of
+    # as a silently shorter list.
+    assert len(conn._http.calls) == mod._MEMBER_PAGES_SAFETY_CAP
+    assert conn._member_pages_state["G1"]["next_cursor"] == "same"
+
+
+def test_member_list_counts_short_pages_as_requests_not_members():
+    # Same root, other direction: `len(out) // 30 >= 2` is a member count, so a cap of
+    # two pages kept running until 60 members arrived. wehos r4577285950 measured six
+    # requests for max_pages=2 at ten members a page. A page cap is a promise about
+    # requests, because the request is the thing that costs.
+    conn = _conn([
+        _Response({"members": [{"member_openid": f"A{i}"}], "next_cursor": f"c{i + 1}"})
+        for i in range(6)
+    ])
+    out = run(conn.get_group_member_list("G1", max_pages=2))
+    assert len(out) == 2
+    assert len(conn._http.calls) == 2
+    assert conn._member_pages_state["G1"]["next_cursor"] == "c2"
+
+
 def test_held_copy_is_re_judged_after_the_identity_is_learned():
     # CodeRabbit r4576780342: M1 waits unattributed. M2 then proves the group's bot
     # openid through is_you. Releasing M1 with its stored verdict would keep calling a

@@ -158,17 +158,15 @@ _ATTRIBUTION_HOLD_MAX = 8
 #: pass more; the operation batches rather than dropping the tail.
 _BLACKLIST_BATCH = 20
 
-#: Ceiling on member-list paging when a caller asks for a cap. Pages are 30 members,
-#: so 20 pages is 600 members: beyond that a caller gets `truncated` plus the cursor.
+#: Ceiling on member-list paging when a caller asks for a cap. It counts REQUESTS, not
+#: members: the endpoint decides how many members one page carries, so a bound stated in
+#: members is a bound nobody can check (20 pages of a 1-member page is 20 members).
 _MEMBER_PAGES_HARD_CAP = 20
 
-#: Ceiling for a caller who asks for no cap at all. Pages of 30, so 200 pages is 6,000
-#: members: past any real group, and low enough that a server stuck handing back the
-#: same cursor cannot spin inside one tool call.
+#: Ceiling for a caller who asks for no cap at all. Same unit: requests. High enough to
+#: pass any real group, low enough that a server stuck handing back a cursor cannot spin
+#: inside one tool call.
 _MEMBER_PAGES_SAFETY_CAP = 200
-#: Page size the v2 member endpoint returns. The paging bound counts members per page,
-#: so it lives with the page size instead of as a magic division.
-_MEMBER_PAGE_SIZE = 30
 
 # ==========================================
 # R11 identity scope: resolved
@@ -2976,7 +2974,11 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         return await self._api("GET", f"/v2/groups/{gid}/members/{member}")
 
     async def get_group_member_list(self, group_id: str = "", **kw: Any) -> list:
-        """Page through members until the cursor runs out, or until a page cap says stop."""
+        """Page through members until the cursor runs out or the request cap says stop.
+
+        ``max_pages`` bounds requests sent, never members collected: the endpoint decides
+        how many members a page carries, so only the request count is ours to promise.
+        """
         gid = str(group_id or "").strip()
         if not gid:
             return self._missing_argument("get_group_member_list", "group_id", empty=list)
@@ -2993,13 +2995,21 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         out: list = []
         cursor = ""
         truncated = False
+        # One counter for requests, and it is the only thing the caps are compared
+        # against. The previous version derived a page count from len(out) // 30, which
+        # broke in both directions: a short page let max_pages=2 run six pages, and an
+        # empty page never grew len(out), so the stuck-cursor bound could not fire and
+        # the call paged until something outside it failed (r4577011460, r4577024272,
+        # r4577285950).
+        requested = 0
         while True:
             data = await self._api("GET", f"/v2/groups/{gid}/members", params={"cursor": cursor})
+            requested += 1
             out.extend(data.get("members") or [])
             cursor = str(data.get("next_cursor") or "")
             if not cursor:
                 break
-            if len(out) // _MEMBER_PAGE_SIZE >= cap:
+            if requested >= cap:
                 truncated = True
                 break
         if truncated:
@@ -3010,8 +3020,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             self._member_pages_state[gid] = {"next_cursor": cursor, "count": len(out)}
             if self.logger:
                 self.logger.warning(
-                    f"[QQOpenPlatform] 群 {gid} 成员列表读到 {len(out)} 人就停在上限 "
-                    f"{cap} 页，仍有 next_cursor，返回结果不完整")
+                    f"[QQOpenPlatform] 群 {gid} 成员列表请求 {requested} 页、读到 {len(out)} "
+                    f"人就停在上限 {cap} 页，仍有 next_cursor，返回结果不完整")
             return out
         self._member_pages_state.pop(gid, None)
         return out
