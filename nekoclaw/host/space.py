@@ -785,11 +785,8 @@ class TaskAgentSpace:
         base = Project(name=directory.name, archive_year=archive_year, directory=directory.name)
         if archive_year is not None:
             base = replace(base, status=PROJECT_ARCHIVED)
-        try:
-            data = json.loads((directory / SpacePaths.PROJECT_FILE).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return base
-        if not isinstance(data, dict):
+        data, _readable = self._project_data(directory)
+        if data is None:
             return base
 
         def number(key: str, default: float = 0.0) -> float:
@@ -811,14 +808,44 @@ class TaskAgentSpace:
             directory=directory.name,
         )
 
-    def _put_project(self, directory: Path, project: Project) -> None:
+    @staticmethod
+    def _project_data(directory: Path) -> tuple[dict[str, Any] | None, bool]:
+        """Return what a project's file holds, and whether the file could be read.
+
+        ``(None, True)`` when there is no file. ``(None, False)`` when there
+        is one and it cannot be read or is not what this writes: the
+        project then shows by its directory's name alone, and its file is
+        not written over (``_put_project``).
+        """
+        try:
+            data = json.loads((directory / SpacePaths.PROJECT_FILE).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None, True
+        except (OSError, ValueError):
+            return None, False
+        return (data, True) if isinstance(data, dict) else (None, False)
+
+    def _put_project(self, directory: Path, project: Project, *, must: bool = False) -> bool:
+        """Write a project's file. Returns whether it was written.
+
+        A file that is there and cannot be read is left as it is: what was
+        read from it were defaults, and written back they would replace the
+        project's working directory and description with nothing. With
+        ``must`` that raises OSError instead of returning False.
+        """
         from utils.file_utils import atomic_write_json
 
+        if not self._project_data(directory)[1]:
+            if must:
+                raise OSError(f"the file of project {directory.name} cannot be read; it is left as it is")
+            logger.warning("the file of a project cannot be read; it is left as it is")
+            return False
         data = project.to_json()
         data.pop("archive_year", None)
         data.pop("directory", None)
         directory.mkdir(parents=True, exist_ok=True)
         atomic_write_json(directory / SpacePaths.PROJECT_FILE, {"version": _PROJECT_FILE_VERSION, **data}, ensure_ascii=False, indent=2)
+        return True
 
     def _active_projects(self) -> list[Project]:
         try:
@@ -924,7 +951,9 @@ class TaskAgentSpace:
             archive_year=None,
             archive_attempts=0,
         )
-        self._put_project(directory, project)
+        # A commission is about to be filed under it: without its record
+        # (where its files are) that must not go ahead.
+        self._put_project(directory, project, must=True)
         if not known and name != DEFAULT_PROJECT:
             line, target = self._project_line(project)
             self._index_add(paths.index(None), line, target)

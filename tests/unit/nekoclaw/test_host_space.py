@@ -643,6 +643,39 @@ async def test_using_a_project_brings_it_back_from_the_archive(space, root, cloc
     assert (root / "projects" / "Budget app" / "memory" / "stack.md").is_file()
 
 
+async def test_a_project_record_that_cannot_be_read_is_never_written_over(space, root, clock):
+    await space.touch_project("Budget app", description="tracks spending", workdir="D:/w")
+    record = root / "projects" / "Budget app" / "project.json"
+    # Held open by another program, or cut off by a crash: not what this can read.
+    unreadable = b"{ \"name\": \"Budget app\", \"workdir\": \"D:/w\""
+    record.write_bytes(unreadable)
+
+    # A commission of it is taken up again.
+    await space.use_project("Budget app")
+    assert record.read_bytes() == unreadable
+
+    # A commission is not filed under a project whose record is unknown.
+    with pytest.raises(OSError):
+        await space.touch_project("Budget app")
+    with pytest.raises(OSError):
+        await space.assign_project(_commission(dispatch_text="go on with the budget app"))
+    assert record.read_bytes() == unreadable
+    assert await space.note_archive_attempt("Budget app") == 1
+    assert record.read_bytes() == unreadable
+
+    # Archived and brought back, its record travels as it is.
+    archived = await space.archive_project("Budget app", summary="s")
+    moved = root / "archive" / archived.archive_year / "Budget app" / "project.json"
+    assert moved.read_bytes() == unreadable
+    await space.use_project("Budget app")
+    assert record.read_bytes() == unreadable
+
+    # Put right by the user, it is a project with its files again.
+    record.write_text('{"name": "Budget app", "workdir": "D:/w", "description": "tracks spending"}', encoding="utf-8")
+    project = await space.touch_project("Budget app")
+    assert (project.workdir, project.description) == ("D:/w", "tracks spending")
+
+
 async def test_using_a_project_that_is_not_there_makes_nothing(space, root):
     await space.use_project("No such project")
     await space.use_project(DEFAULT_PROJECT)
