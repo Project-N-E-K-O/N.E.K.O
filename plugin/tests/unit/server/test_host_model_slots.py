@@ -109,7 +109,10 @@ def test_status_reports_unconfigured_host(monkeypatch):
     assert "WebSocket" in status["message"]
 
 def test_anthropic_resolution_rejects_temperature_above_one(monkeypatch):
-    slot = host_slot(defaults={"temperature": 1.5})
+    # Saving now rejects >1 for host-follow slots; only a legacy document can
+    # still carry it, and resolution must fail before any upstream request.
+    slot = host_slot(defaults={"temperature": 1.0})
+    object.__setattr__(slot.defaults, "temperature", 1.5)
     config = {"model": "m", "base_url": "https://api.test/v1", "api_key": "k", "provider_type": "anthropic"}
     with pytest.raises(ModelGatewayError) as error:
         materialize_host_slot(slot, config)
@@ -118,7 +121,7 @@ def test_anthropic_resolution_rejects_temperature_above_one(monkeypatch):
     # Within the Anthropic range the snapshot resolves normally.
     ok = materialize_host_slot(host_slot(defaults={"temperature": 1.0}), config)
     assert ok.protocol == "anthropic_messages"
-    # OpenAI resolution keeps the higher default.
+    # OpenAI resolution keeps the legacy default untouched.
     openai = materialize_host_slot(slot, {**config, "provider_type": "openai_compatible"})
     assert openai.defaults.temperature == 1.5
 
@@ -131,7 +134,9 @@ def test_status_surfaces_defaults_mismatch_with_message(monkeypatch):
             return {"model": "m", "base_url": "https://api.test/v1", "api_key": "k", "provider_type": "anthropic"}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
-    status = host_slot_status(host_slot(defaults={"temperature": 1.5}))
+    legacy = host_slot(defaults={"temperature": 1.0})
+    object.__setattr__(legacy.defaults, "temperature", 1.5)
+    status = host_slot_status(legacy)
     assert status["configured"] is False
     assert status["error_code"] == "model_defaults_incompatible"
     assert "temperature" in status["message"]

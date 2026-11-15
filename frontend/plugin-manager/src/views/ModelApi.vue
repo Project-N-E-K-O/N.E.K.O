@@ -179,8 +179,8 @@ const hostSlotModelLabel = (slot: ModelSlot) => {
   // carry an actionable server message; show it instead of a misleading label.
   return slot.host_status?.message || t('modelApi.hostNotConfigured')
 }
-// A host-follow slot executes with the main app's resolved protocol; without a
-// known resolution the editor stays within both protocols' shared range.
+// A host-follow slot may resolve to Anthropic at any time; its editor stays
+// within both protocols' shared range, matching the server-side save limit.
 const temperatureMax = computed(() => temperatureLimit(form, editingSlot.value))
 const slotName = (id: string) => slots.value.find(slot => slot.id === id)?.name ?? id
 const duration = (ms: number) => `${(ms / 1000).toFixed(1)} s`

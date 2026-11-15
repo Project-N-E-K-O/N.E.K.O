@@ -67,7 +67,13 @@ class ModelSlot(BaseModel):
     @model_validator(mode="after")
     def validate_protocol_defaults(self) -> ModelSlot:
         temperature = self.defaults.temperature
-        if self.protocol == "anthropic_messages" and temperature is not None and temperature > 1:
+        if self.source == "host_follow":
+            # The executing protocol belongs to the main app and may resolve to
+            # Anthropic later; only the intersection of both ranges is safe to
+            # save, so a successful save can never fail every call.
+            if temperature is not None and temperature > 1:
+                raise ValueError("A host-follow default temperature must not exceed 1 (the main app may resolve to Anthropic)")
+        elif self.protocol == "anthropic_messages" and temperature is not None and temperature > 1:
             raise ValueError("Anthropic default temperature must not exceed 1")
         return self
 

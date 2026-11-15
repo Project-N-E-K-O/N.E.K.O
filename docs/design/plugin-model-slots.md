@@ -75,13 +75,15 @@ providers resolve to the `anthropic_messages` protocol automatically.
 An unconfigured main-app API returns `host_api_not_configured` (409). Most
 realtime core providers use WebSocket endpoints, which cannot serve chat
 requests; those return `host_api_unsupported` (409) rather than silently
-substituting the assist API. A saved default temperature above 1 combined with
-an Anthropic-resolved provider returns `model_defaults_incompatible` (409)
-before any upstream request or quota reservation; the editor caps the
-temperature at the resolved protocol's range. Slot views include a read-only
-`host_status` summary (configured flag, resolved model, protocol, free-tier
-flag, or an error code with an actionable message) that never contains
-credentials. Connection tests resolve host-follow slots the same way.
+substituting the assist API. A host-follow slot's default temperature is
+limited to the protocol intersection (0–1) at save time, because the main app
+may resolve to Anthropic at any moment; the editor enforces the same limit. A
+legacy document that still carries a higher default fails resolution with
+`model_defaults_incompatible` (409) before any upstream request or quota
+reservation. Slot views include a read-only `host_status` summary (configured
+flag, resolved model, protocol, free-tier flag, or an error code with an
+actionable message) that never contains credentials. Connection tests resolve
+host-follow slots the same way.
 
 A host-follow fallback slot stays unresolved until a fallback actually runs,
 so an unusable backup (for example a WebSocket core) cannot reject a healthy

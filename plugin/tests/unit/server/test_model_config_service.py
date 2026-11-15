@@ -640,3 +640,19 @@ def test_install_hook_auto_bind_failure_is_swallowed(monkeypatch):
     })
     assert result["install"]["installed_plugins"][0]["target_plugin_id"] == "probe"
     assert done.wait(5)
+
+
+def test_host_follow_save_rejects_temperature_above_protocol_intersection(config_env):
+    _, service, _ = config_env
+    # A successful save must never produce a slot that fails every call once
+    # the main app resolves to Anthropic: >1 is rejected at save time.
+    with pytest.raises(ServerDomainError) as error:
+        service.create_slot(host_payload(defaults={"temperature": 1.5}))
+    assert error.value.code == "MODEL_SLOT_INVALID"
+    created = service.create_slot(host_payload(defaults={"temperature": 1.0}))
+    with pytest.raises(ServerDomainError) as error:
+        service.update_slot(created["id"], {"defaults": {"temperature": 2}})
+    assert error.value.code == "MODEL_SLOT_INVALID"
+    # Manual OpenAI slots keep their own 0–2 range.
+    manual = service.create_slot(slot_payload(defaults={"temperature": 1.5}))
+    assert manual["defaults"]["temperature"] == 1.5

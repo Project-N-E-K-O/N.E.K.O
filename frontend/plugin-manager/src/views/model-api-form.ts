@@ -46,12 +46,12 @@ export function needsModelKeyUpdate(form: ModelSlotForm, slot: ModelSlot | null)
     && (form.protocol !== slot.protocol || endpoint(form.base_url) !== endpoint(slot.base_url)))
 }
 
-// A host-follow slot executes with the main app's resolved protocol. Without a
-// known resolution, only the intersection of both protocols' ranges is safe;
-// once the host resolves (host_status), its protocol governs the limit.
-export function temperatureLimit(form: ModelSlotForm, slot: ModelSlot | null): number {
-  if (form.source !== 'host_follow') return form.protocol === 'anthropic_messages' ? 1 : 2
-  return slot?.host_status?.protocol === 'openai_chat' ? 2 : 1
+// A host-follow slot executes with the main app's resolved protocol, which may
+// change to Anthropic at any time; only the intersection of both protocols'
+// ranges (≤1) is safe to save. The server enforces the same limit.
+export function temperatureLimit(form: ModelSlotForm, _slot: ModelSlot | null): number {
+  if (form.source === 'host_follow') return 1
+  return form.protocol === 'anthropic_messages' ? 1 : 2
 }
 
 export function modelSlotPayload(form: ModelSlotForm): ModelSlotInput {

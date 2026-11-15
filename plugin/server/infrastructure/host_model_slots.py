@@ -50,8 +50,8 @@ def materialize_host_slot(slot: ModelSlot, config: dict[str, Any]) -> ModelSlot:
     protocol = "anthropic_messages" if config.get("provider_type") == "anthropic" else "openai_chat"
     temperature = slot.defaults.temperature
     if protocol == "anthropic_messages" and temperature is not None and temperature > 1:
-        # The stored protocol is openai_chat, so saving accepted up to 2. Fail
-        # before any upstream request (and before quota) with an actionable fix.
+        # Saving already rejects this intersection; only a legacy document can
+        # reach here. Fail before any upstream request (and before quota).
         raise ModelGatewayError(
             "model_defaults_incompatible",
             "The main app API resolved to Anthropic, which allows temperature up to 1; "

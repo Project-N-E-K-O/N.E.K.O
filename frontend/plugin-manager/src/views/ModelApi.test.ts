@@ -103,15 +103,13 @@ describe('model slot credentials', () => {
     expect(needsModelKeyUpdate(form, saved)).toBe(false)
     expect(modelSlotPayload(form).api_key).toBeUndefined()
   })
-  it('caps a host-follow temperature at the protocol intersection until the host resolution is known', () => {
+  it('caps a host-follow temperature at the protocol intersection regardless of the current resolution', () => {
     const form = modelSlotForm()
     form.source = 'host_follow'
-    // New slot: no resolution yet — only ≤1 is safe for both protocols.
+    // The main app may switch to Anthropic at any time: ≤1 is always the limit.
     expect(temperatureLimit(form, null)).toBe(1)
     const hostSlot: ModelSlot = { ...saved, source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', host_status: { configured: true, model: 'm', protocol: 'openai_chat', free: false } }
-    expect(temperatureLimit(modelSlotForm(hostSlot), hostSlot)).toBe(2)
-    const anthropic: ModelSlot = { ...hostSlot, host_status: { configured: true, model: 'm', protocol: 'anthropic_messages', free: false } }
-    expect(temperatureLimit(modelSlotForm(anthropic), anthropic)).toBe(1)
+    expect(temperatureLimit(modelSlotForm(hostSlot), hostSlot)).toBe(1)
     // Manual slots keep their own protocol's range.
     const manual = modelSlotForm(saved)
     expect(temperatureLimit(manual, saved)).toBe(2)

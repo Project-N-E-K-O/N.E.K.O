@@ -1118,7 +1118,9 @@ async def test_anthropic_host_with_high_default_temperature_fails_before_quota(h
         "model": "real-model", "base_url": "https://upstream.test/v1",
         "api_key": "free-access", "provider_type": "anthropic",
     })
-    bind_host_slot(setup_gateway, defaults={"temperature": 1.5})
+    # Saving rejects >1 now; simulate a legacy document that still carries it.
+    bind_host_slot(setup_gateway, defaults={"temperature": 1.0})
+    object.__setattr__(setup_gateway.config.slots[HOST_SLOT_ID].defaults, "temperature", 1.5)
     response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "model_defaults_incompatible"
