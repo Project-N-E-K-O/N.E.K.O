@@ -294,8 +294,12 @@ async def test_an_index_that_cannot_be_read_is_not_written_over(space, root):
 
     message = await space.submit(_commission(), _lesson("Photo dates", "Use the EXIF date."))
 
-    assert message == "not kept: the files of the task agent space could not be written"
     assert index.read_bytes() == unreadable
+    # The entry is a file by then, and is told as what it is: kept, with no line that lists it.
+    assert (index.parent / "memory" / "photo-dates.md").is_file()
+    assert message == (
+        "kept in project _daily as photo-dates.md; the index could not be written, so no line there lists it yet"
+    )
 
 
 async def test_an_entry_that_cannot_be_read_is_not_written_over(space, root):
@@ -1320,6 +1324,16 @@ async def test_a_summary_that_cannot_be_saved_is_kept_in_the_projects_record(spa
         "cat {unix}/AGENTS.md",
         "cd {root} && ls",
         "rm -rf '{root}'",
+        # With steps that lead nowhere.
+        "rm {parent}/./task_agent_space/MEMORY.md",
+        "cat {parent}/././/task_agent_space/AGENTS.md",
+        "type {parent_backslashes}\\.\\task_agent_space\\MEMORY.md",
+        "cat {parent}/elsewhere/../task_agent_space/MEMORY.md",
+        "cat {parent}/a/b/../../task_agent_space/MEMORY.md",
+        "cat {root}/projects/../MEMORY.md",
+        "rm -rf {root}/projects/..",
+        # As it is written it points into the space, wherever its steps back lead from there.
+        "ls {root}/../elsewhere",
     ],
 )
 async def test_a_command_that_points_at_the_space_is_seen_however_its_path_is_written(tmp_path, command):
@@ -1333,6 +1347,8 @@ async def test_a_command_that_points_at_the_space_is_seen_however_its_path_is_wr
         upper=root.upper(),
         doubled=root.replace("/", "\\\\"),
         unix=unix,
+        parent=home.parent.as_posix(),
+        parent_backslashes=home.parent.as_posix().replace("/", "\\"),
     )
 
     assert await space.named_in(command) is True
@@ -3900,7 +3916,9 @@ async def test_a_project_in_use_is_called_what_its_directory_is_called(space, ro
     assert (await space.get_project("Household")).description == "tracks spending"
 
 
-async def test_what_its_task_agents_filed_goes_with_a_commission_to_its_project(space, root):
+async def test_what_its_task_agents_filed_goes_with_a_commission_to_its_project(space, root, monkeypatch):
+    # More notes than one commission may add: what is looked at here is whose they are.
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_LESSONS_PER_COMMISSION", 10)
     await space.submit(_commission(id="c-1"), _lesson("Own", "Filed by the commission."))
     await space.submit(_commission(id="c-1-a", parent_id="c-1"), _lesson("By a task agent", "Filed by one it started."))
     await space.submit(_commission(id="c-1"), _lesson("By both", "First."))
@@ -3911,6 +3929,9 @@ async def test_what_its_task_agents_filed_goes_with_a_commission_to_its_project(
     # One the user wrote by hand: no commission filed it.
     (root / "projects" / DEFAULT_PROJECT / "memory" / "by-hand.md").write_text("Written by hand.\n", encoding="utf-8")
     await space.touch_project("Budget app")
+    # Filed by the two of them, and by another commission and one of its task agents.
+    filed = {entry.id: entry.sources for entry in await space.list_entries(DEFAULT_PROJECT)}
+    assert filed["by-both"] == ("c-1", "c-1-a") and filed["shared"] == ("c-9", "c-1-a")
 
     moved = await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app", also=("c-1-a",))
 
@@ -4157,17 +4178,17 @@ async def test_the_rules_give_way_only_when_the_indexes_are_used_up(space, root,
 async def test_the_tokens_of_the_brief_are_not_counted_on_the_event_loop(space, root, monkeypatch):
     import threading
 
-    import utils.tokenize as tokenize
+    from utils.tokenize import count_tokens as count
 
     await space.write_rules("Never delete files.")
     (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n" * 2000, encoding="utf-8")
-    count, loop_thread, counted_on = tokenize.count_tokens, threading.get_ident(), []
+    loop_thread, counted_on = threading.get_ident(), []
 
     def counting(text: str, *args, **kwargs) -> int:
         counted_on.append(threading.get_ident())
         return count(text, *args, **kwargs)
 
-    monkeypatch.setattr(tokenize, "count_tokens", counting)
+    monkeypatch.setattr("utils.tokenize.count_tokens", counting)
 
     brief = await space.brief(None)
 
@@ -4224,8 +4245,6 @@ async def test_an_index_whose_first_line_alone_is_over_shows_no_half_of_it(space
 
 
 async def test_a_note_that_was_stopped_before_its_turn_to_be_written_uses_no_place(root, clock):
-    import asyncio
-
     from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
 
     space = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
@@ -4239,8 +4258,8 @@ async def test_a_note_that_was_stopped_before_its_turn_to_be_written_uses_no_pla
 
     # The session is stopped while it waits.
     waiting.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await waiting
+    (outcome,) = await asyncio.gather(waiting, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError)
     space._lock.release()
 
     assert not (root / "projects" / DEFAULT_PROJECT / "memory" / "never-written.md").exists()
@@ -4252,7 +4271,6 @@ async def test_a_note_that_was_stopped_before_its_turn_to_be_written_uses_no_pla
 
 
 async def test_a_note_that_was_written_while_its_session_was_stopped_has_used_its_place(root, clock, monkeypatch):
-    import asyncio
     import threading
 
     from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
@@ -4273,8 +4291,8 @@ async def test_a_note_that_was_written_while_its_session_was_stopped_has_used_it
     # Stopped in the middle of the writing, which is finished all the same.
     written.cancel()
     go_on.set()
-    with pytest.raises(asyncio.CancelledError):
-        await written
+    (outcome,) = await asyncio.gather(written, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError)
     monkeypatch.setattr(space, "_file_entry", file_entry)
 
     assert (root / "projects" / DEFAULT_PROJECT / "memory" / "written-all-the-same.md").is_file()
@@ -4297,8 +4315,94 @@ async def test_a_note_that_was_written_while_its_session_was_stopped_has_used_it
     assert await asyncio.to_thread(writing.wait, 10)
     same.cancel()
     go_on.set()
-    with pytest.raises(asyncio.CancelledError):
-        await same
+    (outcome,) = await asyncio.gather(same, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError)
     monkeypatch.setattr(again, "_file_entry", file_entry)
     for number in range(SPACE_LESSONS_PER_COMMISSION):
         assert not (await again.submit(commission, _lesson(f"Later {number}", f"More {number}."))).startswith("not kept")
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 2
+# ---------------------------------------------------------------------------
+
+
+async def test_a_note_whose_index_could_not_be_written_is_kept_and_counted(root, clock):
+    ledger = _Events()
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=ledger, clock=clock)
+    index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    memory = index.parent / "memory"
+    index.parent.mkdir(parents=True)
+    unreadable = "- 我自己的笔记\n".encode("utf-16")
+    index.write_bytes(unreadable)
+    commission = _commission(id="c-1")
+    unlisted = "; the index could not be written, so no line there lists it yet"
+
+    replies = [
+        await space.submit(commission, _lesson("First", "One.")),
+        # Added to an entry that is there.
+        await space.submit(commission, _lesson("First", "More of one.")),
+        # There already, word for word: nothing is added, and it uses no place.
+        await space.submit(commission, _lesson("First", "One.")),
+        await space.submit(commission, _lesson("Second", "Two.")),
+        await space.submit(commission, _lesson("Third", "Three.")),
+    ]
+
+    assert replies[:4] == [
+        f"kept in project _daily as first.md{unlisted}",
+        f"added to first.md in project _daily{unlisted}",
+        "already in first.md in project _daily, word for word; nothing was added",
+        f"kept in project _daily as second.md{unlisted}",
+    ]
+    # Each of the three that were added is a file, or in one, and used a place: the fourth has none.
+    assert replies[4].startswith("not kept: this commission has added 3 notes already")
+    assert sorted(item.name for item in memory.iterdir()) == ["first.md", "second.md"]
+    assert "More of one." in (memory / "first.md").read_text(encoding="utf-8")
+    assert index.read_bytes() == unreadable
+    assert [
+        (payload["kept"], payload.get("entry"), payload.get("listed"), payload.get("reason"))
+        for _who, _kind, payload in ledger.rows
+    ] == [
+        (True, "first", False, None),
+        (True, "first", False, None),
+        (True, "first", False, None),
+        (True, "second", False, None),
+        (False, None, None, "cap"),
+    ]
+
+    # The index can be read again. The next time something is filed about the entry, its line is put there.
+    index.write_text("- a line of the user\n", encoding="utf-8")
+    again = await space.submit(_commission(id="c-2"), _lesson("Second", "Two."))
+    assert again == "already in second.md in project _daily, word for word; nothing was added"
+    assert index.read_text(encoding="utf-8").split("\n")[:2] == ["- [Second](memory/second.md) — Two.", "- a line of the user"]
+    assert ledger.rows[-1][2].get("listed") is None
+
+
+async def test_a_note_kept_without_its_line_has_used_its_place_though_its_session_was_stopped(root, clock, monkeypatch):
+    import threading
+
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
+    index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    index.parent.mkdir(parents=True)
+    index.write_bytes("- 我自己的笔记\n".encode("utf-16"))
+    commission = _commission(id="c-1")
+    file_entry, writing, go_on = space._file_entry, threading.Event(), threading.Event()
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        writing.set()
+        assert go_on.wait(10)
+        return file_entry(*args, **kwargs)
+
+    monkeypatch.setattr(space, "_file_entry", slow)
+    stopped = asyncio.create_task(space.submit(commission, _lesson("Kept all the same", "The file is written.")))
+    assert await asyncio.to_thread(writing.wait, 10)
+    stopped.cancel()
+    go_on.set()
+    (outcome,) = await asyncio.gather(stopped, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError)
+    monkeypatch.setattr(space, "_file_entry", file_entry)
+
+    assert (index.parent / "memory" / "kept-all-the-same.md").is_file()
+    assert (await space.submit(commission, _lesson("Two", "Two."))).startswith("kept in project _daily as two.md")
+    assert (await space.submit(commission, _lesson("Three", "Three."))).startswith("kept in project _daily as three.md")
+    assert (await space.submit(commission, _lesson("Four", "Four."))).startswith("not kept: this commission has added 3")

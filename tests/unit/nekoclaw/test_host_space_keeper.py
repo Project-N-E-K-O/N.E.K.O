@@ -2663,20 +2663,24 @@ def test_two_or_three_sentences_as_the_prompt_asks_for_are_kept_whole():
 
     assert "content is self-contained, two or three sentences of 80 words at most in all" in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
     assert "review: three to six sentences, 150 words at most." in texts.TASK_AGENT_REVIEW_SYSTEM_PROMPT
-    entries = [
-        # Three sentences each, as long as they come; the Chinese one is longer than any the free tier wrote.
+    # Three sentences each, as long as they come; the Chinese one is longer than any the free tier wrote.
+    chinese = (
         "当任务明确禁止执行命令时，应完全依赖 write、read 等文件系统工具进行开发，并在写入后逐个读回确认。"
         "这样可以保证在受控环境下安全生成代码，避免触发任何未预期的运行动作。"
-        "凡是委托里写明不用命令行的都适用，并在报告里说明核对过哪些文件，免得下一件委托重复核对。",
+        "凡是委托里写明不用命令行的都适用，并在报告里说明核对过哪些文件，免得下一件委托重复核对。"
+    )
+    english = (
         "When a task forbids running commands, rely on the write and read tools for every file operation and verify "
         "each file after writing it. This keeps the work inside the controlled environment and avoids triggering "
         "actions nobody asked for. Apply it whenever the commission says not to use a shell, and say in the report "
-        "which files were checked so the next commission does not repeat the verification work again later on.",
+        "which files were checked so the next commission does not repeat the verification work again later on."
+    )
+    japanese = (
         "タスクでコマンドの実行が禁止されている場合は、write や read などのファイル操作ツールだけで開発を進め、"
         "書き込み後に一つずつ読み戻して確認すること。これにより管理された環境の中で安全にコードを生成でき、"
-        "意図しない動作を引き起こさない。シェルを使わないよう指示された依頼すべてに当てはまる。",
-    ]
-    for entry in entries:
+        "意図しない動作を引き起こさない。シェルを使わないよう指示された依頼すべてに当てはまる。"
+    )
+    for entry in (chinese, english, japanese):
         assert _whole_sentences(entry, settings.TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS) == entry
     review = " ".join(["The folder was sorted by the date each photo was taken, as the user had asked for it."] * 6)
     assert len(review.split()) <= 150

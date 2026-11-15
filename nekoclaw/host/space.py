@@ -497,6 +497,11 @@ def _index_line(title: str, target: str, description: str) -> str:
 _COUNTED_COMMISSIONS = 512
 # Room for the line that says a part was cut, when a part is cut further.
 _BRIEF_CUT_ROOM = 12
+# In a path with forward slashes: a step that stays where it is, and a name
+# with the step back that undoes it. How many steps back are followed.
+_STEP_IN_PLACE = re.compile(r"/\.(?=/)")
+_STEP_BACK = re.compile(r"/(?!\.\.?/)[^/\s\"']+/\.\.(?=/|[\s\"']|$)")
+_STEPS_BACK_MAX = 64
 
 
 class SpaceError(RuntimeError):
@@ -505,6 +510,15 @@ class SpaceError(RuntimeError):
 
 class _NotAsWritten(OSError):
     """A file was replaced, and what it holds afterwards is not what was written."""
+
+
+class _LineNotAdded(OSError):
+    """An entry is in its file, and its index could not be read or written, so no line was added for it."""
+
+    def __init__(self, entry_id: str, how: str) -> None:
+        super().__init__(f"the index has no line for {entry_id}")
+        self.entry_id = entry_id
+        self.how = how
 
 
 class _LeftAside(OSError):
@@ -916,15 +930,20 @@ class TaskAgentSpace:
                 return _render_document(document)
 
             self._edit_text(path, add)
+            how = _ADDED if fresh_text and fresh_text[0] else _THERE
             # Its line in the index is left as it is (the user may have
             # reworded it); only a missing one is put back.
-            self._index_add(
-                paths.index(project),
-                _index_line(existing.title, f"{paths.MEMORY_DIR}/{existing.id}.md", existing.description),
-                f"{paths.MEMORY_DIR}/{existing.id}.md",
-            )
+            try:
+                self._index_add(
+                    paths.index(project),
+                    _index_line(existing.title, f"{paths.MEMORY_DIR}/{existing.id}.md", existing.description),
+                    f"{paths.MEMORY_DIR}/{existing.id}.md",
+                )
+            except OSError as exc:
+                # What was added is in the entry all the same.
+                raise _LineNotAdded(existing.id, how) from exc
             entry = self._entry_from(path, project, with_content=True)
-            return entry or existing, _ADDED if fresh_text and fresh_text[0] else _THERE
+            return entry or existing, how
         try:
             wanted = slug(title)
         except ValueError:
@@ -953,7 +972,11 @@ class TaskAgentSpace:
             # would be a file that no index lists.
             logger.warning("a new entry does not hold what was written right after it was written", exc_info=True)
         target = f"{paths.MEMORY_DIR}/{name}.md"
-        self._index_add(paths.index(project), _index_line(title, target, description), target)
+        try:
+            self._index_add(paths.index(project), _index_line(title, target, description), target)
+        except OSError as exc:
+            # The entry is a file by now, and is not taken away again.
+            raise _LineNotAdded(name, _CREATED) from exc
         entry = self._entry_from(path, project, with_content=True)
         if entry is None:
             # Held by another program just now: told as it was written.
@@ -1007,19 +1030,24 @@ class TaskAgentSpace:
         # What became of the note, once the files were written or looked at.
         became: list[str] = []
 
-        def work() -> tuple[Entry, str]:
-            entry, how = self._file_entry(
-                project,
-                title=str(lesson.get("title") or ""),
-                content=str(lesson.get("content") or ""),
-                kind=kind,
-                source=commission.id,
-            )
+        def work() -> tuple[str, str]:
+            try:
+                entry, how = self._file_entry(
+                    project,
+                    title=str(lesson.get("title") or ""),
+                    content=str(lesson.get("content") or ""),
+                    kind=kind,
+                    source=commission.id,
+                )
+            except _LineNotAdded as exc:
+                became.append(exc.how)
+                raise
             became.append(how)
-            return entry, how
+            return entry.id, how
 
+        listed = True
         try:
-            entry, how = await self._write(work)
+            entry_id, how = await self._write(work)
         except asyncio.CancelledError:
             # The session was stopped while the note waited for its turn to
             # be written, or while it was written (the writing is finished
@@ -1033,6 +1061,15 @@ class TaskAgentSpace:
             give_back()
             await self._note_unkept(commission, lesson, "refused")
             return f"not kept: {exc}"
+        except _LineNotAdded as exc:
+            # The note is in its file, and stays there: it is told and
+            # counted as what it is, kept. Said to be not kept, its place
+            # would be given back with the file left behind, and a
+            # commission could add more files than it may. Only its line in
+            # the index is missing; that is put there the next time
+            # something is added to the entry.
+            logger.warning("a lesson is kept, and the index could not be given a line for it", exc_info=True)
+            entry_id, how, listed = exc.entry_id, exc.how, False
         except OSError as exc:
             give_back()
             logger.warning("a lesson could not be written into the task agent space (%s)", type(exc).__name__)
@@ -1048,19 +1085,21 @@ class TaskAgentSpace:
                 {
                     **dict(lesson),
                     "kept": True,
-                    "entry": entry.id,
+                    "entry": entry_id,
                     "project": project,
                     "created": how == _CREATED,
                     "added": how != _THERE,
+                    **({} if listed else {"listed": False}),
                 },
             )
         where = "the space of every project" if project is None else f"project {project}"
+        unlisted = "" if listed else "; the index could not be written, so no line there lists it yet"
         if how == _CREATED:
-            return f"kept in {where} as {entry.id}.md"
+            return f"kept in {where} as {entry_id}.md{unlisted}"
         if how == _ADDED:
-            return f"added to {entry.id}.md in {where}"
+            return f"added to {entry_id}.md in {where}{unlisted}"
         # Said as it is: the task agent is not told something was kept that was not.
-        return f"already in {entry.id}.md in {where}, word for word; nothing was added"
+        return f"already in {entry_id}.md in {where}, word for word; nothing was added"
 
     async def _note_unkept(self, commission: Commission, lesson: dict[str, Any], reason: str) -> None:
         """Put a note that was not kept on the commission's record.
@@ -2264,6 +2303,9 @@ class TaskAgentSpace:
         one, as the name occurs in the sources of the application, which a
         task agent may well be working on.
 
+        A path with steps that lead nowhere in it is seen as well: ``/./``,
+        and ``/name/..``, which is read as the path without the two.
+
         Not seen: a path relative to where the command runs, one that is
         put together from variables or wildcards, one whose spaces are
         escaped, a directory above the space. Those are left to whoever
@@ -2273,22 +2315,40 @@ class TaskAgentSpace:
         def plain(text: str) -> str:
             return re.sub(r"/+", "/", text.replace("\\", "/")).casefold()
 
+        def straight(text: str) -> str:
+            # Without the steps that lead nowhere. Read off the text alone:
+            # where a link is one of the names this is another place than
+            # the real one, and the worst of that is a question too many.
+            text = _STEP_IN_PLACE.sub("", text)
+            for _step in range(_STEPS_BACK_MAX):
+                shorter = _STEP_BACK.sub("", text, count=1)
+                if shorter == text:
+                    break
+                text = shorter
+            return text
+
         def work() -> bool:
             root = self._paths().root
             places = {root}
             try:
                 places.add(root.resolve())
             except OSError:
+                # Not to be resolved (its drive is gone, say): the path as
+                # it is configured is still looked for.
                 pass
             said = plain(command)
+            # As it was written, and as it reads without such steps.
+            texts = {said, straight(said)}
             for place in places:
-                form = plain(str(place)).rstrip("/")
-                if not form:
-                    continue
-                if form in said:
-                    return True
-                if len(form) > 2 and form[1] == ":" and form[0].isalpha() and f"/{form[0]}{form[2:]}" in said:
-                    return True
+                written = plain(str(place)).rstrip("/")
+                for form in {written, straight(written)}:
+                    if not form:
+                        continue
+                    if any(form in text for text in texts):
+                        return True
+                    if len(form) > 2 and form[1] == ":" and form[0].isalpha():
+                        if any(f"/{form[0]}{form[2:]}" in text for text in texts):
+                            return True
             return False
 
         try:

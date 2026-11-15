@@ -471,7 +471,10 @@ def test_validate_plugin_dir_knows_the_shared_table(tmp_path: Path) -> None:
     # As the documents say to write it: nothing to say about it.
     assert issues_with('[plugin.shared]\nreads = ["weather", "calendar"]\n') == []
     assert issues_with("[plugin.shared]\n") == []
-    assert issues_with('[plugin.shared]\nreads = "weather"\n') == ["error: [plugin.shared].reads must be a list of strings"]
+    # One id without the brackets is what the plugin is run with, too.
+    assert issues_with('[plugin.shared]\nreads = "weather"\n') == []
+    assert issues_with('[plugin.shared]\nreads = ""\n') == ["error: [plugin.shared].reads[0] must be a non-empty string"]
+    assert issues_with("[plugin.shared]\nreads = 5\n") == ["error: [plugin.shared].reads must be a list of strings"]
     assert issues_with('[plugin.shared]\nreads = ["weather", ""]\n') == [
         "error: [plugin.shared].reads[1] must be a non-empty string"
     ]

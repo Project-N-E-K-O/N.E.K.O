@@ -427,7 +427,11 @@ def _check_shared_table(value: object, issues: list[tuple[str, str]]) -> None:
         issues.append(("error", "[plugin.shared] must be a table"))
         return
     _warn_unknown_keys(value, {"reads"}, "[plugin.shared]", issues)
-    _check_string_list(value.get("reads"), "[plugin.shared].reads", issues, required=False)
+    reads = value.get("reads")
+    if isinstance(reads, str):
+        # One id may be written without the brackets; the plugin is run with it read so.
+        reads = [reads]
+    _check_string_list(reads, "[plugin.shared].reads", issues, required=False)
 
 
 def _check_i18n_table(plugin_dir: Path, value: object, issues: list[tuple[str, str]]) -> None:
