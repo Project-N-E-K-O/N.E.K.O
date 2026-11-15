@@ -937,6 +937,19 @@ class BrowserSession:
         self._reopen_agreed = True
         self._closed_by_user_noted = False
 
+    def reopen_agreement_over(self) -> None:
+        """The call the user agreed for is over: an agreement that opened no browser is not kept. Does not block.
+
+        The call may have ended before it got to the browser (it was
+        stopped, or the browser was in use by another task for too long).
+        Kept, the agreement would let some later task open the browser
+        without asking. A browser that is connected to keeps it until it has
+        a tab again.
+        """
+        if self._reopen_agreed and not self.connected:
+            self._reopen_agreed = False
+            self._closed_by_user_noted = True
+
     async def close(self) -> None:
         """Drop the connection and close the browser if this process started it."""
         self.no_longer_wanted()

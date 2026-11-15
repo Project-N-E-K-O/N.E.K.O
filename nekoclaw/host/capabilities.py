@@ -470,6 +470,16 @@ class CapabilityRegistry:
         if agreed is not None:
             agreed()
 
+    def browser_reopen_agreement_over(self) -> None:
+        """Tell the provider that the call the user agreed for is over."""
+        over = getattr(self._builtins, "browser_reopen_agreement_over", None)
+        if over is None:
+            return
+        try:
+            over()
+        except Exception:  # noqa: BLE001 - the call's own outcome stands
+            logger.warning("ending the agreement to open the browser again failed", exc_info=True)
+
     async def builtin_released(self, group: str, commission_id: str) -> None:
         """Tell the provider that a commission no longer occupies a group."""
         released = getattr(self._builtins, "released", None)

@@ -238,6 +238,10 @@ class BrowserTools:
         """The user agreed to the browser being opened again; see ``BrowserSession.reopen_agreed``."""
         self._session.reopen_agreed()
 
+    def reopen_agreement_over(self) -> None:
+        """The call the user agreed for is over; see ``BrowserSession.reopen_agreement_over``."""
+        self._session.reopen_agreement_over()
+
     def shows_a_window(self) -> bool:
         """Whether stopping the tasks leaves the browser as it is; see ``BrowserSession.shows_a_window``."""
         return self._session.shows_a_window

@@ -863,6 +863,13 @@ class CapabilityGateway:
                 refusal = await self._ask_before_reopening(commission, capability, just_asked=decision.asked)
                 if refusal is not None:
                     return refusal
+                try:
+                    return await self._call_builtin(commission, capability, arguments)
+                finally:
+                    # What the user agreed to was this call opening the
+                    # browser. If it ended without (stopped, or the browser
+                    # stayed in use by another task), the next one asks.
+                    self._registry.browser_reopen_agreement_over()
             return await self._call_builtin(commission, capability, arguments)
 
         async def run_created(run_id: str) -> None:

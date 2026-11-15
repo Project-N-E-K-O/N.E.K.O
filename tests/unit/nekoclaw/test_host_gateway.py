@@ -938,6 +938,12 @@ class Builtins:
         self.agreed += 1
         self.closed_by_user = False
 
+    # What had been carried out each time a call of a browser tool was said to be over.
+    over: list[int] = []
+
+    def browser_reopen_agreement_over(self) -> None:
+        self.over = [*self.over, len(self.calls)]
+
 
 @pytest.fixture
 async def builtin_host(server: FakePluginServer, tmp_path: Any) -> Any:
@@ -2011,6 +2017,39 @@ async def test_a_browser_the_user_closed_stays_closed_when_they_do_not_agree(bui
         event.payload for event in await builtin_host.ledger.events(commission.id) if event.type == "capability_denied"
     ]
     assert denied == [{"capability": "builtin:browser:browser_navigate_page", "reason": reason}]
+
+
+async def test_the_provider_is_told_when_a_call_of_a_browser_tool_is_over_however_it_ended(builtin_host, short_wait):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    await builtin_host.permission_store.set_mode("keyboard_mouse", "allow")
+    builtin_host.permissions.set_asker(Asker("once"))
+    first = await _commission(builtin_host)
+    grant = _grant(builtin_host, first, images=True)
+    builtin_host.provider.closed_by_user = True
+
+    await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+    assert builtin_host.provider.over == [1]
+
+    # The desktop is none of the browser's business.
+    await _call(builtin_host, grant, "computer", {"action": "screenshot"})
+    assert builtin_host.provider.over == [1]
+
+    # Another task's call, which the user agrees to and which never gets the browser: it stays in use.
+    other = await _commission(builtin_host, title="book the hotel")
+    other_grant = _grant(builtin_host, other, images=True)
+    builtin_host.provider.closed_by_user = True
+    result = await _call(builtin_host, other_grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    assert result["isError"] is True and "in use by another task" in _text(result)
+    assert builtin_host.provider.agreed == 2 and len(builtin_host.provider.calls) == 2
+    # Said to be over all the same, with nothing carried out for it.
+    assert builtin_host.provider.over == [1, 2]
+
+    # A call that is refused before anything is agreed to is not one to end.
+    builtin_host.permissions.set_asker(Asker("deny"))
+    builtin_host.provider.closed_by_user = True
+    await _call(builtin_host, other_grant, "browser_navigate_page", {"url": "https://example.com"})
+    assert builtin_host.provider.over == [1, 2]
 
 
 async def test_the_browser_forbidden_in_the_settings_while_the_user_was_asked_stays_closed(builtin_host):

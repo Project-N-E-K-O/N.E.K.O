@@ -954,6 +954,50 @@ async def test_a_browser_the_user_closed_is_not_opened_again_until_they_agree(to
     assert await call(tools, "take_snapshot") == BuiltinOutcome(False, CLOSED_BY_USER)
 
 
+async def test_an_agreement_that_opened_no_browser_is_not_kept_for_a_later_call(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    tools.reopen_agreed()
+    assert tools.closed_by_user() is False
+
+    # The call the user agreed for never got to the browser (it was stopped while it waited its turn).
+    tools.reopen_agreement_over()
+
+    assert tools.closed_by_user() is True
+    assert await call(tools, "take_snapshot") == BuiltinOutcome(False, CLOSED_BY_USER)
+    assert len(world.connected) == 1
+
+
+async def test_an_agreement_that_opened_the_browser_is_used_up_and_nothing_is_left_to_end(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    tools.reopen_agreed()
+    assert (await call(tools, "take_snapshot")).success
+
+    tools.reopen_agreement_over()
+    # Never agreed to anything, too: nothing changes.
+    tools.reopen_agreement_over()
+
+    assert tools.closed_by_user() is False and (await call(tools, "take_snapshot")).success
+
+
+async def test_an_agreement_for_a_browser_that_is_still_connected_to_lasts_until_it_has_a_tab_again(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    tools.reopen_agreed()
+
+    # The call the user agreed for looked at the list of pages, and opened none.
+    tools.reopen_agreement_over()
+
+    assert tools.closed_by_user() is False
+    assert (await call(tools, "new_page", url=ORDER)).success
+
+
 async def test_a_browser_whose_last_window_the_user_closed_is_not_given_another_until_they_agree(
     tools: BrowserTools, world: BrowserWorld
 ) -> None:
