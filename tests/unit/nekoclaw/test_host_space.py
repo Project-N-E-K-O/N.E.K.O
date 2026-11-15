@@ -3440,3 +3440,65 @@ def test_the_last_try_counts_as_written_when_the_file_was_replaced_and_could_not
     assert changed is True
     assert given == ["one\n"] * 3
     assert path.read_text(encoding="utf-8") == "one\nmore\n"
+
+
+# ---------------------------------------------------------------------------
+# The thirty-fifth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_the_line_of_a_project_archived_without_a_summary_points_at_its_index(space, root):
+    await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Stack", content="Flask.")
+    index = root / "MEMORY.md"
+
+    archived = await space.archive_project("Budget app", description="paused")
+
+    year = archived.archive_year
+    home = root / "archive" / year / "Budget app"
+    assert not (home / "SUMMARY.md").exists()
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        f"- [archived project: Budget app](<archive/{year}/Budget app/MEMORY.md>) — paused"
+    ]
+    # What the line points at is there, and leads to what was kept.
+    assert "(memory/stack.md)" in (home / "MEMORY.md").read_text(encoding="utf-8")
+
+    # Brought back, its line takes the place of that one; what it was archived as stays its description.
+    await space.use_project("Budget app")
+
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        "- [project: Budget app](<projects/Budget app/MEMORY.md>) — paused"
+    ]
+
+
+async def test_the_line_of_an_archived_project_goes_when_it_is_brought_back_whichever_file_it_points_at(
+    space, root, clock
+):
+    await space.touch_project("Budget app")
+    first = await space.archive_project("Budget app", summary="first", description="the first")
+    # A day later, so that the second is the one archived last.
+    clock.now += 86400
+    await space.touch_project("Budget app")
+    second = await space.archive_project("Budget app", description="the second")
+    index = root / "MEMORY.md"
+    year = first.archive_year
+    assert second.archive_year == year
+    assert (first.directory, second.directory) == ("Budget app", "Budget app-2")
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        f"- [archived project: Budget app](<archive/{year}/Budget app-2/MEMORY.md>) — the second",
+        f"- [archived project: Budget app](<archive/{year}/Budget app/SUMMARY.md>) — the first",
+    ]
+    # The user points the line of the second at another of its files, and writes it without the brackets.
+    text = index.read_text(encoding="utf-8")
+    pointed = text.replace(f"(<archive/{year}/Budget app-2/MEMORY.md>)", f"(archive/{year}/Budget%20app-2/AGENTS.md)")
+    index.write_text(pointed.replace("Budget%20app-2", "Budget app-2"), encoding="utf-8")
+
+    # The one archived last is the one brought back.
+    await space.use_project("Budget app")
+
+    # Its line went, in its place the line of the project; the line of the other archive is as it was.
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        "- [project: Budget app](<projects/Budget app/MEMORY.md>) — the second",
+        f"- [archived project: Budget app](<archive/{year}/Budget app/SUMMARY.md>) — the first",
+    ]
+    assert (await space.get_project("Budget app")).description == "the second"

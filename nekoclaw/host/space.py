@@ -686,15 +686,19 @@ class TaskAgentSpace:
 
         self._edit_text(index, change)
 
-    def _index_swap(self, index: Path, old: str, line: str, new: str) -> None:
+    def _index_swap(self, index: Path, old: str, line: str, new: str, *, below: bool = False) -> None:
         """Put ``line``, which points at ``new``, in the place of the line that points at ``old``: in one write.
 
         Taking the one out and adding the other in two writes could stop
         between them, with neither line there. Without a line that points
         at ``old`` the new one is added like any other; when one points at
         ``new`` already, the old one is only taken out.
+
+        With ``below``, ``old`` is a directory, written with the ``/`` it
+        ends in, and the line to go is the one that points at anything in it.
         """
-        gone, there = _index_marks(old), _index_marks(new)
+        gone = (f"]({old}", f"](<{old}") if below else _index_marks(old)
+        there = _index_marks(new)
 
         def change(text: str) -> str:
             lines = text.split("\n") if text else []
@@ -1564,8 +1568,11 @@ class TaskAgentSpace:
             self._put_project(target, restored)
         try:
             line, link = self._project_line(restored)
+            # Whichever of its files the line of the archived project points
+            # at: its summary, its index when it has none, or another one
+            # the user chose.
             self._index_swap(
-                paths.index(None), f"archive/{project.archive_year}/{source.name}/{paths.SUMMARY_NAME}", line, link
+                paths.index(None), f"archive/{project.archive_year}/{source.name}/", line, link, below=True
             )
         except OSError:
             # The project is back all the same, and is used.
@@ -1764,7 +1771,12 @@ class TaskAgentSpace:
                 logger.warning("the record of an archived project still holds the summary it was archived with", exc_info=True)
         _line, link = self._project_line(project)
         try:
-            archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME}"
+            # At its summary. One archived without a summary (no model, or
+            # none that gave one) has no such file: its line points at its
+            # index, as the line of a project in use does, so that whoever
+            # follows it comes to the notes that were kept.
+            has_summary = (target / paths.SUMMARY_NAME).is_file()
+            archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME if has_summary else paths.INDEX_NAME}"
             self._index_swap(
                 paths.index(None),
                 link,
