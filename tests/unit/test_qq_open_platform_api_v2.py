@@ -806,37 +806,163 @@ def test_explicit_file_name_survives_to_the_upload_body():
 
 # ---- round 7: what the self-check found still open -------------------------
 
-def test_at_frame_without_is_you_still_teaches_the_group_bot_openid():
-    # Greptile r4559361506 asked for learning from the event that confirms the mention;
-    # CodeRabbit r4559434694 and wehos r4571618096 point 2 asked for the same fallback.
-    # Counting alone left the group teaching nothing, so every later inline-only full
-    # push answered is_at_bot=False and a direct summon was ignored.
+def test_at_frame_never_learns_the_bot_from_a_remaining_mention():
+    # The v2 event page defines mentions as the users @-ed *excluding the bot itself*,
+    # and content with the bot's own @ prefix already removed. So the target left in an
+    # AT frame is a human. Caching it as this bot's openid made the bot answer that
+    # human's conversations, read real summons as is_at_bot=False, and -- because a
+    # learned openid also disarms the attribution hold and the one-shot diagnostic --
+    # do all of it without a log line.
     conn = _conn()
     msg = conn._convert_event("GROUP_AT_MESSAGE_CREATE", {
-        "id": "m-learn", "group_openid": "G3", "content": "<@LEARNME000000000> 在吗",
+        "id": "m-at", "group_openid": "G3", "content": "<@AAAAAAAAAAAAAAAA> 看这个",
         "author": {"member_openid": "H"},
     })
-    assert msg["is_at_bot"] is True
-    assert conn._remembered_bot_openid("G3") == "LEARNME000000000"
+    assert msg["is_at_bot"] is True                    # the event type says so
+    assert msg["mentions_other_user"] is True          # and the target is somebody else
+    assert conn._remembered_bot_openid("G3") == ""     # nothing guessed
 
     later = conn._convert_event("GROUP_MESSAGE_CREATE", {
-        "id": "m-later", "group_openid": "G3", "content": "再喊一次 <@LEARNME000000000>",
+        "id": "m-later", "group_openid": "G3", "content": "还找 <@AAAAAAAAAAAAAAAA>",
         "author": {"member_openid": "H"},
     })
-    assert later["is_at_bot"] is True
-    assert later["mentions_other_user"] is False
+    assert later["is_at_bot"] is False
+    assert later["mentions_other_user"] is True
 
 
-def test_at_frame_with_two_mentions_does_not_learn_the_wrong_id():
+def test_at_frame_with_is_you_false_does_not_learn_that_item():
     conn = _conn()
     conn._convert_event("GROUP_AT_MESSAGE_CREATE", {
-        "id": "m-two", "group_openid": "G4",
-        "content": "<@AAAAAAAAAAAAAAAA> <@BBBBBBBBBBBBBBBB>",
+        "id": "m-no", "group_openid": "G5", "content": "hi",
         "author": {"member_openid": "H"},
+        "mentions": [{"member_openid": "BBBBBBBBBBBBBBBB", "is_you": False}],
     })
-    # Ambiguous: two targets, no is_you. Guessing here would poison the group's
-    # attribution for good, so nothing is recorded.
-    assert conn._remembered_bot_openid("G4") == ""
+    assert conn._remembered_bot_openid("G5") == ""
+
+
+def test_is_you_true_is_still_the_learning_path():
+    conn = _conn()
+    conn._convert_event("GROUP_MESSAGE_CREATE", {
+        "id": "m-yes", "group_openid": "G6", "content": "hi",
+        "author": {"member_openid": "H"},
+        "mentions": [{"member_openid": "CCCCCCCCCCCCCCCC", "is_you": True}],
+    })
+    assert conn._remembered_bot_openid("G6") == "CCCCCCCCCCCCCCCC"
+
+
+def test_proactive_permission_comes_from_bot_state_when_it_answers():
+    # An absent key stays unknown. A present key overwrites what an older notice
+    # wrote, or group_proactive_allowed() reports a previous session.
+    conn = _conn([_Response({"recv_msg_setting": "only_mention", "member_role": "member",
+                             "member_openid": "BOT1", "allow_proactive_msg": False})])
+    conn._proactive_allowed_by_group["G1"] = True      # an earlier RECEIVE notice
+    run(conn.get_group_bot_state("G1"))
+    assert conn.group_proactive_allowed("G1") is False
+
+    conn2 = _conn([_Response({"recv_msg_setting": "all", "member_role": "member"})])
+    run(conn2.get_group_bot_state("G1"))
+    assert conn2.group_proactive_allowed("G1") is None  # not answered, not defaulted
+
+
+def test_card_send_records_its_id_so_a_quote_is_recognised():
+    # Cards were the only send path that never registered its id, and the method
+    # returns a bool so no caller could either. A user quoting a bot card read as
+    # chatter and lost the queue priority addressed messages get.
+    conn = _conn([_Response({"id": "card-1"})])
+    ok = run(conn.send_group_ark_card("G1", {"ark": {"kv": [
+        {"key": "#TITLE#", "value": "状态"}, {"key": "#DESC#", "value": "ok"},
+        {"key": "#URL#", "value": "http://a.example/x"},
+        {"key": "#IMG#", "value": "http://i/y"}]}}))
+    assert ok is True
+    assert "card-1" in conn.sent_message_ids
+
+    quoted = conn._convert_event("GROUP_MESSAGE_CREATE", {
+        "id": "m-quote", "group_openid": "G1", "content": "这个状态还在吗",
+        "author": {"member_openid": "H"},
+        "message_reference": {"message_id": "card-1"},
+    })
+    assert quoted["is_reply_to_bot"] is True
+    assert quoted["quoted_message_id"] == "card-1"
+
+
+def test_hold_skips_a_message_the_frame_already_decided():
+    # A legacy <@!uin> payload whose id matches _self_id is already attributed.
+    # Holding it would add latency and reorder the group for no information.
+    import asyncio
+
+    conn = _conn()
+    conn._self_id = "7788"
+
+    async def go():
+        await conn._dispatch_event("GROUP_MESSAGE_CREATE", {
+            "id": "m-decided", "group_openid": "G7", "content": "<@!7788> 在吗",
+            "author": {"member_openid": "H"},
+        }, "e1")
+        await asyncio.sleep(0)
+        return conn._message_queue.qsize(), dict(conn._attribution_hold)
+
+    loop = asyncio.new_event_loop()
+    try:
+        size, holds = loop.run_until_complete(go())
+    finally:
+        loop.close()
+    assert holds == {}
+    assert size == 1
+
+
+def test_at_frame_cancels_the_waiting_full_copy():
+    import asyncio
+
+    conn = _conn()
+    full = {
+        "id": "m-pair", "group_openid": "G8", "content": "几点开会 <@DDDDDDDDDDDDDDDD>",
+        "author": {"member_openid": "H"},
+    }
+    at = dict(full, content="几点开会")
+
+    async def go():
+        await conn._dispatch_event("GROUP_MESSAGE_CREATE", full, "e1")
+        await asyncio.sleep(0)
+        held = dict(conn._attribution_hold)
+        await conn._dispatch_event("GROUP_AT_MESSAGE_CREATE", at, "e2")
+        await asyncio.sleep(0)
+        return held, dict(conn._attribution_hold), conn._message_queue.qsize()
+
+    loop = asyncio.new_event_loop()
+    try:
+        held_before, held_after, queued = loop.run_until_complete(go())
+    finally:
+        loop.close()
+    assert "m-pair" in held_before            # the full copy waited
+    assert held_after == {}                   # the AT frame took ownership
+    assert queued == 1                        # exactly one delivery
+    msg = conn._message_queue.get_nowait()
+    assert msg["is_at_bot"] is True
+
+
+def test_hold_saturates_instead_of_piling_up(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr("utils.connection.qq.open_platform._ATTRIBUTION_HOLD_MAX", 2)
+    conn = _conn()
+
+    async def go():
+        for i in range(5):
+            await conn._dispatch_event("GROUP_MESSAGE_CREATE", {
+                "id": "m-sat-" + str(i), "group_openid": "G9",
+                "content": "喂 <@EEEEEEEEEEEEEEEE" + str(i) + ">",
+                "author": {"member_openid": "H"},
+            }, "e")
+            await asyncio.sleep(0)
+        return len(conn._attribution_hold), conn._message_queue.qsize()
+
+    loop = asyncio.new_event_loop()
+    try:
+        held, queued = loop.run_until_complete(go())
+    finally:
+        loop.close()
+    assert held == 2                          # capped
+    assert queued == 3                        # the rest went straight in
 
 
 def test_identify_clears_the_probed_setting_as_well_as_the_observed_proof():

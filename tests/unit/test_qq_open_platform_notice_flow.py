@@ -375,31 +375,21 @@ def test_hold_is_flushed_on_disconnect_rather_than_dropped():
     assert size == 1                           # and nothing lost
 
 
-def test_merge_upgrades_the_ownership_flag_too(monkeypatch):
-    # An AT frame that arrives for a still-queued full copy also settles
-    # mentions_other_user: without this the consumer reads "summoned me AND
-    # somebody else" for a message that named only the bot.
-    import asyncio
-
+def test_merge_upgrades_the_ownership_flag_too():
+    # The merge is a queue-level rule, reached when the full copy is already queued:
+    # hold saturated, or a frame the hold rule does not catch. So drive it at the queue
+    # level, which is where it lives, instead of through _dispatch_event.
     conn = _conn()
-    full = {
-        "id": "summon-9", "group_openid": "G1", "content": "喂 <@JJJJJJJJJJJJJJJJ>",
-        "author": {"member_openid": "MA"},
-    }
-    at = dict(full, mentions=[{"member_openid": "JJJJJJJJJJJJJJJJ", "is_you": True}])
-
-    async def go():
-        await conn._dispatch_event("GROUP_MESSAGE_CREATE", full, "e1")
-        await asyncio.sleep(0)
-        await conn._dispatch_event("GROUP_AT_MESSAGE_CREATE", at, "e2")
-        await asyncio.sleep(0)
-        return conn._message_queue
-
-    queue = asyncio.run(go())
-    assert queue.qsize() == 1
-    msg = queue.get_nowait()
-    assert msg["is_at_bot"] is True
-    assert msg["mentions_other_user"] is False
+    full = {"message_id": "sum-1", "is_at_bot": False, "mentions_other_user": True,
+            "mentioned_user_ids": ["HHHHHHHHHHHHHHHH"], "content": "x"}
+    at = {"message_id": "sum-1", "is_at_bot": True, "mentions_other_user": False,
+          "mentioned_user_ids": ["JJJJJJJJJJJJJJJJ"], "content": "x"}
+    assert conn._enqueue_inbound(full) is None
+    # "merged", not "duplicate": the second frame changed what the queued copy says.
+    assert conn._enqueue_inbound(at) == "merged"
+    queued = conn._message_queue.get_nowait()
+    assert queued["is_at_bot"] is True
+    assert queued["mentions_other_user"] is False
 
 
 def test_quoted_reply_is_not_evicted_as_chatter():
@@ -444,4 +434,56 @@ def test_coroutine_sink_is_not_called_before_its_task_runs():
     called_after_dispatch, tasks = run(go())
     assert called_after_dispatch == []
     assert tasks == 1
+
+def test_full_queue_reject_does_not_leak_a_sink_coroutine(recwarn):
+    # Greptile r4575301768: a synchronous sink that returns a coroutine, rejected by the
+    # task cap, used to close only the wrapper. The real coroutine stayed alive
+    # unawaited and emitted a RuntimeWarning per dropped notification.
+    conn = _conn()
+
+    def sync_sink_returning_coroutine(event_type, payload):
+        async def body():
+            import asyncio
+            await asyncio.sleep(5)
+        return body()
+
+    conn.add_event_sink(sync_sink_returning_coroutine)
+
+    async def go():
+        for i in range(40):
+            await conn._dispatch_event("FRIEND_ADD", {"user_openid": "U" + str(i)}, "e")
+        return len(conn._sink_tasks)
+
+    pending = run(go())
+    assert pending == _max_tasks()
+    leaked = [str(w.message) for w in recwarn.list if "never awaited" in str(w.message)]
+    assert leaked == []
+
+
+def _max_tasks():
+    from utils.connection.qq import open_platform as op
+    return op._NOTICE_SINK_MAX_TASKS
+
+
+def test_disconnect_before_first_step_leaks_nothing(recwarn):
+    # CodeRabbit r4575321815: dispatch, yield nothing, disconnect. The task is cancelled
+    # before its first step, so any coroutine created outside the task would be
+    # destroyed without ever running.
+    import asyncio
+
+    conn = _conn()
+
+    async def sink(event_type, payload):
+        await asyncio.sleep(5)
+
+    conn.add_event_sink(sink)
+
+    async def go():
+        await conn._dispatch_event("FRIEND_ADD", {"user_openid": "U1"}, "e1")
+        created = list(conn._sink_tasks)
+        await conn.disconnect()
+        await asyncio.sleep(0)                 # deliver the cancellation
+        return created
+    leaked = [str(w.message) for w in recwarn.list if "never awaited" in str(w.message)]
+    assert leaked == []
 

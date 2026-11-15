@@ -148,6 +148,11 @@ _SHUT_RULE_TTL_SECONDS = 300.0
 #: back-to-back in every observation so far.
 _AT_MERGE_WINDOW_SECONDS = 0.5
 
+#: How many unattributed messages may wait at once. Past this they are delivered
+#: immediately: the window is a courtesy to a frame that usually arrives
+#: milliseconds later, not a queue of its own.
+_ATTRIBUTION_HOLD_MAX = 8
+
 # ==========================================
 # R11 identity scope: resolved
 # (docs/design/speaker-trust-entity-semantics.md §2.15.4)
@@ -433,7 +438,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         #: Full-push copies whose @ could not be attributed, waiting one window for
         #: the AT frame. See ``_hold_for_at_frame``.
         self._attribution_hold: dict[str, dict] = {}
-        self._attribution_hold_tasks: set = set()
+        self._attribution_hold_tasks: dict[str, object] = {}
+        self._hold_saturated_warned: set = set()
         #: Inbound ids accepted recently -> the monotonic time they arrived. Guards
         #: against the platform delivering one message twice (see ``_enqueue_inbound``).
         self._seen_inbound_ids: dict[str, float] = {}
@@ -700,7 +706,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         # message, so flush what is waiting before the tasks go away.
         for held_id in list(self._mutable("_attribution_hold", dict)):
             self._release_attribution_hold(held_id)
-        for task in list(self._mutable("_attribution_hold_tasks", set)):
+        for task in list(self._mutable("_attribution_hold_tasks", dict).values()):
             task.cancel()
         self._attribution_hold_tasks.clear()
         # Detached notice sinks belong to this connection: leaving them running past a
@@ -848,9 +854,16 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             if not msg:
                 return
             self._remember_group(msg.get("group_id") or "")
-            if event_type == "GROUP_MESSAGE_CREATE" and self._attribution_ambiguous(data):
+            if (event_type == "GROUP_MESSAGE_CREATE"
+                    and not msg.get("is_at_bot")
+                    and self._attribution_ambiguous(data)):
                 self._hold_for_at_frame(msg)
                 return
+            if event_type == "GROUP_AT_MESSAGE_CREATE":
+                # This frame is the authoritative copy of a message whose full-push twin
+                # may still be waiting out the attribution window. Drop the waiting copy
+                # now instead of letting it flush as a duplicate.
+                self._drop_attribution_hold(str(msg.get("message_id") or "").strip())
             refusal = self._enqueue_inbound(msg)
             if refusal == "duplicate" and self.logger:
                 # Same message already queued from another event type: routine, but it
@@ -931,57 +944,69 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         still runs inline, since by definition it already returned.
         """
         for sink in list(self._mutable("_event_sinks", list)):
-            if asyncio.iscoroutinefunction(sink):
-                # The call happens inside the task. Calling first and wrapping after
-                # leaves a coroutine object that no one awaits when the task is
-                # cancelled before its first step -- a shutdown-under-traffic warning
-                # on every such notification, and the notice vanishes without a log.
-                self._spawn_notice_sink(sink, event_type, payload)
-                continue
-            try:
-                result = sink(event_type, payload)
-            except Exception as exc:  # a broken consumer must not drop the transport
-                if self.logger:
-                    self.logger.warning(f"[QQOpenPlatform] 事件监听器异常({event_type}): {exc}")
-                continue
-            if not asyncio.iscoroutine(result):
-                continue
-            self._adopt_notice_sink(self._await_notice_sink(result, event_type), event_type)
+            self._adopt_notice_sink(sink, event_type, payload)
 
-    def _spawn_notice_sink(self, sink, event_type: str, payload: dict) -> None:
-        """Schedule a coroutine sink so the call itself happens inside the task."""
-        async def _call_and_await():
-            # The sink call happens here, inside the task. Awaiting the returned
-            # coroutine keeps a cancelled task from destroying an un-awaited
-            # coroutine object.
-            result = sink(event_type, payload)
-            if asyncio.iscoroutine(result):
-                await result
+    def _adopt_notice_sink(self, sink, event_type: str, payload: dict) -> None:
+        """Hand one notification to a sink without the receive loop waiting on it.
 
-        self._adopt_notice_sink(_call_and_await(), event_type)
+        Exactly one coroutine object crosses the task boundary, and the task owns it
+        from birth. Two earlier shapes leaked an un-awaited coroutine each: calling the
+        sink first and wrapping its result (a cancel before the first step destroyed
+        it), and wrapping a call coroutine inside an awaiter coroutine (the outer task
+        could be cancelled while the inner object had never started). Both produced a
+        ``RuntimeWarning`` per shutdown under traffic, and the reject path closed only
+        the outer object.
 
-    def _adopt_notice_sink(self, coro, event_type: str) -> None:
+        A coroutine function is therefore called *inside* the task. A plain callable is
+        still invoked inline, because it already returned and its exceptions belong to
+        this frame; if what it returned is a coroutine, that coroutine becomes the
+        task's own, so there is nothing left over to leak. The inline branch gets no
+        deadline: giving it one would mean wrapping it again, which is the leak this
+        method exists to remove.
+        """
         tasks = self._mutable("_sink_tasks", set)
         if len(tasks) >= _NOTICE_SINK_MAX_TASKS:
             # Bounded on purpose: a sink that never finishes must not turn a traffic
             # burst into an unbounded task pile. Dropping the newest notification is
-            # visible in the log; blocking the loop is not.
-            coro.close()
+            # visible in the log; blocking the loop is not. Nothing has been created
+            # yet on this path, so nothing can leak here either.
             if self.logger:
                 self.logger.warning(
                     f"[QQOpenPlatform] 事件监听任务已满（{_NOTICE_SINK_MAX_TASKS}），"
                     f"丢弃 {event_type} 的一次通知"
                 )
             return
-        task = asyncio.create_task(self._await_notice_sink(coro, event_type))
+        if asyncio.iscoroutinefunction(sink):
+            task = asyncio.create_task(self._run_notice_sink(sink, event_type, payload))
+        else:
+            try:
+                result = sink(event_type, payload)
+            except Exception as exc:  # a broken consumer must not drop the transport
+                if self.logger:
+                    self.logger.warning(
+                        f"[QQOpenPlatform] 事件监听器异常({event_type}): {exc}")
+                return
+            if not asyncio.iscoroutine(result):
+                return
+            task = asyncio.create_task(result)
+            task.add_done_callback(
+                lambda t, et=event_type: self._note_sink_task_failure(et, t))
         tasks.add(task)
         task.add_done_callback(tasks.discard)
 
-    async def _await_notice_sink(self, coro, event_type: str) -> None:
-        """Await one detached sink with its own deadline."""
+    def _note_sink_task_failure(self, event_type: str, task) -> None:
+        """Log what a bare sink coroutine raised, so its failure is not silent."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None and self.logger:
+            self.logger.warning(f"[QQOpenPlatform] 事件监听器异常({event_type}): {exc}")
+
+    async def _run_notice_sink(self, sink, event_type: str, payload: dict) -> None:
+        """Call a coroutine sink, await it, and bound it, all inside this task."""
         try:
             async with asyncio.timeout(_NOTICE_SINK_TIMEOUT_SECONDS):
-                await coro
+                await sink(event_type, payload)
         except asyncio.TimeoutError:
             if self.logger:
                 self.logger.warning(
@@ -1037,22 +1062,64 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         copy goes out unchanged, which is what happened before this existed.
         """
         mid = str(msg.get("message_id") or "").strip()
-        if not mid:
+        holds = self._mutable("_attribution_hold", dict)
+        if not mid or len(holds) >= _ATTRIBUTION_HOLD_MAX:
+            # Bounded. Holding is a courtesy to the AT frame, not a reason to park an
+            # unbounded queue of messages: past the cap, deliver immediately and say so
+            # once per group, so a group whose openid never gets learned does not turn
+            # every mention-bearing message into a delayed one.
             self._enqueue_inbound(msg)
+            self._note_hold_saturation()
             return
-        self._mutable("_attribution_hold", dict)[mid] = msg
+        holds[mid] = msg
         task = asyncio.create_task(self._flush_attribution_hold(mid))
-        tasks = self._mutable("_attribution_hold_tasks", set)
-        tasks.add(task)
-        task.add_done_callback(tasks.discard)
+        self._mutable("_attribution_hold_tasks", dict)[mid] = task
+        task.add_done_callback(
+            lambda _t, key=mid: self._mutable("_attribution_hold_tasks", dict).pop(key, None))
+
+    def _note_hold_saturation(self) -> None:
+        if not self.logger or self._mutable("_hold_saturated_warned", set):
+            return
+        # Recorded so the operator can see the window is being skipped, without turning
+        # a busy group into a log flood.
+        self._mutable("_hold_saturated_warned", set).add(True)
+        self.logger.warning(
+            f"[QQOpenPlatform] 归因等待已满 {_ATTRIBUTION_HOLD_MAX} 条，"
+            "后续未归因消息直接入队（该群尚未学到机器人 member_openid）")
+
+    def _drop_attribution_hold(self, mid: str) -> None:
+        """Discard a waiting full-push copy because the AT frame has taken over."""
+        if not mid:
+            return
+        msg = self._mutable("_attribution_hold", dict).pop(mid, None)
+        task = self._mutable("_attribution_hold_tasks", dict).pop(mid, None)
+        if task is not None:
+            task.cancel()
+        if msg is not None and self.logger:
+            self.logger.info(
+                f"[QQOpenPlatform] 点名帧到达，撤销等待中的全量副本 {mid!r}")
 
     async def _flush_attribution_hold(self, mid: str) -> None:
-        """Deliver a held copy if no better-attributed frame took over first."""
+        """Deliver a held copy if no better-attributed frame took over first.
+
+        Two costs of this window, stated here because both are real:
+
+        - ordering: the held message enters the queue after any later message from the
+          same group, so a "question then self-answer" pair can reach the consumer in
+          reverse order, up to 0.5 s apart;
+        - persistence: the window ends early only when an AT frame arrives. Learning
+          the group's bot openid needs ``is_you`` or ``bot_state``, and neither the
+          receive loop nor any caller probes ``bot_state`` today, so in a group whose
+          frames carry no ``is_you`` every inline-mention message waits the full window
+          until the cap above takes over. The durable fix is on the host layer, where
+          the reply decision can consume the AT frame instead of the connector guessing
+          twice.
+        """
         try:
             await asyncio.sleep(_AT_MERGE_WINDOW_SECONDS)
         except asyncio.CancelledError:
-            self._release_attribution_hold(mid)
-            raise
+            # A cancellation means the AT frame took ownership of this message id.
+            return
         self._release_attribution_hold(mid)
 
     def _release_attribution_hold(self, mid: str) -> None:
@@ -1875,7 +1942,14 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
             data = await self._api(
                 "POST", f"/v2/groups/{group_id}/messages",
                 payload={"msg_type": 8, "card": self._card_message_payload(ark_obj)})
-            return bool(data.get("id"))
+            # Record it like every other send. The id is what quote detection matches
+            # against, and this method hands back only a bool, so nobody else can
+            # register it: without this line a user quoting a bot-sent card reads as
+            # ordinary chatter and loses both the reply signal and the queue priority.
+            mid = str(data.get("id") or "")
+            if mid:
+                self.record_sent_message_id(mid)
+            return bool(mid)
         except Exception as e:
             if self.logger:
                 self.logger.warning(f"[QQOpenPlatform] 发送图文卡片失败: {e}")
@@ -2116,15 +2190,19 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                 elif isinstance(item, str) and item.strip():
                     if item.strip() not in mentioned_ids:
                         mentioned_ids.append(item.strip())
-            if event_type == "GROUP_AT_MESSAGE_CREATE" and not at_bot_by_payload:
-                # The platform only emits this event when *this* bot was addressed, so a
-                # single mention here is the bot -- that is as authoritative as is_you,
-                # and it is the only source that works if the flag turns out to be
-                # absent in the wild (still unconfirmed on a live bot). Learning, not
-                # just counting: without the id every later full push in this group
-                # answers is_at_bot=False and silently ignores a direct summon.
-                if len(mentioned_ids) == 1 and not self._remembered_bot_openid(group_id):
-                    self._learn_bot_openid(group_id, mentioned_ids[0])
+            # No fallback learning here. The v2 event page for
+            # GROUP_AT_MESSAGE_CREATE defines ``mentions`` as the list of users @-ed
+            # *excluding the bot itself*, and ``content`` as the text with the bot's own
+            # @ prefix already removed. So every target left in an AT frame is somebody
+            # else, and caching the sole target as this bot's openid would do more
+            # damage than the miss it tried to fix: the bot would answer other people's
+            # conversations, real summons would read is_at_bot=False, and because a
+            # learned id also disarms the attribution hold and the one-shot diagnostic,
+            # the wrong answer would arrive with no log at all.
+            #
+            # Two sources remain, and both are honest: an ``is_you`` mention item, and
+            # ``bot_state``'s ``member_openid``. If the platform never sends is_you,
+            # attribution comes from bot_state probes, not from guessing.
             clean_content = _AT_OPENID_RE.sub("", _AT_LEGACY_RE.sub("", content))
             clean_content = clean_content.replace("<@all>", "").strip()
             mentions_all = "<@all>" in content
@@ -2138,10 +2216,10 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                 # The bot can be named in this list -- judge precisely.
                 mentions_other_user = any(mid not in bot_ids for mid in mentioned_ids)
             elif event_type == "GROUP_AT_MESSAGE_CREATE":
-                # The platform only sends this event when the bot is mentioned, so the
-                # bot is in the list even while its own id is still unknown; more than
-                # one mention therefore means someone else was named too.
-                mentions_other_user = len(mentioned_ids) > 1
+                # The bot is not in this list by definition (see the note above), so any
+                # surviving target is somebody else. "len > 1" was wrong for the common
+                # "@bot @alice" case: one target left, and it is a human.
+                mentions_other_user = any(mid not in bot_ids for mid in mentioned_ids)
             else:
                 # Full-message event with no known bot openid: any @ target could be
                 # someone else. Erring towards True keeps the bot from butting into
@@ -2272,7 +2350,7 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
                     # the media senders catch only the classified type, so a public
                     # voice send raised instead of answering its documented None.
                     raise QQOpenPlatformAPIError(
-                        method="POST", path=path,
+                        method=method, path=path,
                         message=f"token refresh failed: {exc}") from exc
             return await self._api(
                 method, path, params=params, payload=payload, retry_on_token=False)
@@ -2722,6 +2800,13 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         learned = str(state.get("member_openid") or "").strip()
         if learned:
             self._learn_bot_openid(gid, learned)
+        # bot_state is the authoritative answer for proactive sending too. Writing it
+        # here keeps group_proactive_allowed() from returning a stale value that an
+        # older notice set, or None right after a probe that did answer. An absent key
+        # stays unknown rather than defaulting to allowed.
+        if "allow_proactive_msg" in state:
+            self._mutable("_proactive_allowed_by_group", dict)[gid] = bool(
+                state.get("allow_proactive_msg"))
         return state
 
     async def get_group_member_info(self, group_id: str = "", user_id: str = "", **_: Any) -> dict:
