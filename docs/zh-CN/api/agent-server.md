@@ -88,7 +88,7 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 
 ### `POST /builtin/browser/settings`
 
-请求体：`mode`、`executable`、`headless` 中的任意几项，没带的字段保持原值。`mode` 未知，或 `executable` 指向的文件不存在，返回 `400`。响应和 `GET` 相同，另加 `"success":true`。浏览器工具自己启动的浏览器会被关掉，下一次调用按新设置重新启动。
+请求体：`mode`、`executable`、`headless` 中的任意几项，没带的字段保持原值。`mode` 未知，或 `executable` 指向的文件不存在，返回 `400`。响应和 `GET` 相同，另加 `"success":true`。存下的设置和原来不一样时，浏览器工具自己启动的浏览器会被关掉，下一次调用按新设置重新启动；一样时不动它。
 
 ## ZeroMQ 事件面
 

@@ -123,7 +123,7 @@
 
 ### `POST /api/agent/builtin/browser/settings`
 
-请求体：`mode`、`executable`、`headless` 中的任意几项，没带的字段保持原值。响应是上面的对象再加 `"success":true`。`mode` 未知，或 `executable` 指向的文件不存在，返回 `400`。改动从下一次启动浏览器起生效：浏览器工具自己启动的浏览器会被关掉。
+请求体：`mode`、`executable`、`headless` 中的任意几项，没带的字段保持原值。响应是上面的对象再加 `"success":true`。`mode` 未知，或 `executable` 指向的文件不存在，返回 `400`。改动从下一次启动浏览器起生效：浏览器工具自己启动的浏览器会被关掉。存下的设置和原来一样时不动它。
 
 ## UI 辅助路由
 

@@ -860,12 +860,12 @@ class BrowserSession:
 
         The state a task that ended leaves it in: the window open for the
         user to look at, the connection up and with it the browser kept from
-        this application's own ports. Whoever stops the tasks, as opposed to
-        switching the browser off, leaves such a browser as it is.
+        this application's own ports. Whoever stops the tasks or switches the
+        tools off leaves such a browser as it is.
 
         One that is not known to be without a window counts as having one.
         Left open by mistake, a browser without a window is a process nobody
-        sees until the tools are switched off or the application quits;
+        sees until the application quits;
         closed by mistake, it is a window taken from the user.
 
         One with no tab left has none either: the user closed its windows
