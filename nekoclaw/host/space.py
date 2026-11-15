@@ -498,9 +498,11 @@ _COUNTED_COMMISSIONS = 512
 # Room for the line that says a part was cut, when a part is cut further.
 _BRIEF_CUT_ROOM = 12
 # In a path with forward slashes: a step that stays where it is, and a name
-# with the step back that undoes it. How many steps back are followed.
+# with the step back that undoes it. How many steps back are followed. A
+# name may hold spaces: between quotation marks it is one name, and where it
+# is not, reading it as one asks a question too many at the worst.
 _STEP_IN_PLACE = re.compile(r"/\.(?=/)")
-_STEP_BACK = re.compile(r"/(?!\.\.?/)[^/\s\"']+/\.\.(?=/|[\s\"']|$)")
+_STEP_BACK = re.compile(r"/(?!\.\.?/)[^/\"']+/\.\.(?=/|[\s\"']|$)")
 _STEPS_BACK_MAX = 64
 
 

@@ -1330,6 +1330,9 @@ async def test_a_summary_that_cannot_be_saved_is_kept_in_the_projects_record(spa
         "type {parent_backslashes}\\.\\task_agent_space\\MEMORY.md",
         "cat {parent}/elsewhere/../task_agent_space/MEMORY.md",
         "cat {parent}/a/b/../../task_agent_space/MEMORY.md",
+        # A step back from a directory with a space in its name, the path between quotation marks.
+        "rm '{parent}/临时 目录/../task_agent_space/MEMORY.md'",
+        'type "{parent_backslashes}\\old notes\\..\\task_agent_space\\MEMORY.md"',
         "cat {root}/projects/../MEMORY.md",
         "rm -rf {root}/projects/..",
         # As it is written it points into the space, wherever its steps back lead from there.
