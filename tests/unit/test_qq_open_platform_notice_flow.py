@@ -440,11 +440,11 @@ def test_full_queue_reject_does_not_leak_a_sink_coroutine(recwarn):
     # task cap, used to close only the wrapper. The real coroutine stayed alive
     # unawaited and emitted a RuntimeWarning per dropped notification.
     conn = _conn()
+    release = asyncio.Event()
 
     def sync_sink_returning_coroutine(event_type, payload):
         async def body():
-            import asyncio
-            await asyncio.sleep(5)
+            await release.wait()
         return body()
 
     conn.add_event_sink(sync_sink_returning_coroutine)
@@ -456,6 +456,15 @@ def test_full_queue_reject_does_not_leak_a_sink_coroutine(recwarn):
 
     pending = run(go())
     assert pending == _max_tasks()
+
+    async def drain():
+        # Let the accepted tasks finish inside the same loop, so the shutdown stays
+        # quiet: this test asserts the absence of a leak, not the presence of noise.
+        release.set()
+        for task in list(conn._sink_tasks):
+            await task
+
+    run(drain())
     leaked = [str(w.message) for w in recwarn.list if "never awaited" in str(w.message)]
     assert leaked == []
 
@@ -466,11 +475,10 @@ def _max_tasks():
 
 
 def test_disconnect_before_first_step_leaks_nothing(recwarn):
-    # CodeRabbit r4575321815: dispatch, yield nothing, disconnect. The task is cancelled
-    # before its first step, so any coroutine created outside the task would be
-    # destroyed without ever running.
-    import asyncio
-
+    # CodeRabbit r4575321815 / r4576525885, wehos r4576541311, greptile r4576493238:
+    # this test used to define go() and never run it, so it asserted nothing and the
+    # regression it guards would have passed anyway. It now dispatches, disconnects
+    # without yielding, and checks both the task state and the warning list.
     conn = _conn()
 
     async def sink(event_type, payload):
@@ -484,6 +492,104 @@ def test_disconnect_before_first_step_leaks_nothing(recwarn):
         await conn.disconnect()
         await asyncio.sleep(0)                 # deliver the cancellation
         return created
+
+    async def checked():
+        got = await go()
+        # Checked before the loop can close: a closing loop cancels pending tasks and
+        # would make this pass without the disconnect actually doing anything.
+        return bool(got) and all(x.cancelled() or x.done() for x in got)
+
+    loop = asyncio.new_event_loop()
+    try:
+        ok = loop.run_until_complete(checked())
+    finally:
+        loop.close()
+    assert ok, "the sink task was never scheduled or never cancelled by disconnect()"
     leaked = [str(w.message) for w in recwarn.list if "never awaited" in str(w.message)]
     assert leaked == []
 
+
+def test_future_returning_sink_is_timed_out_not_parked_forever(monkeypatch):
+    # greptile r4576493234 / CodeRabbit r4576525889 / wehos r4576541138: a plain
+    # callable that returns an awaitable (``lambda et, p: gate.wait()`` gives a Future,
+    # not a coroutine) used to be scheduled without any deadline. Hung listeners then
+    # kept their slots for the life of the connection.
+    monkeypatch.setattr(mod, "_NOTICE_SINK_TIMEOUT_SECONDS", 0.05)
+    conn = _conn()
+    gate = asyncio.Event()
+
+    conn.add_event_sink(lambda event_type, payload: gate.wait())
+
+    async def go():
+        await conn._dispatch_event("FRIEND_ADD", {"user_openid": "U1"}, "e1")
+        tasks = list(conn._sink_tasks)
+        await asyncio.sleep(0.2)               # five times the deadline
+        # Decided here, while the loop is still open: closing the loop cancels pending
+        # tasks on its own, and that would hide a missing deadline.
+        return (bool(tasks), all(t.cancelled() or t.done() for t in tasks),
+                set(conn._sink_tasks), list(conn.logger.warnings))
+
+    scheduled, settled, remaining, warnings = run(go())
+    assert scheduled, "no task was scheduled, so the deadline had nothing to bound"
+    assert settled, "the awaitable outlived its deadline: no timeout was applied"
+    assert remaining == set()                  # the slot came back
+    assert any("超时" in line for line in warnings)
+
+
+def test_saturation_does_not_starve_a_synchronous_sink(monkeypatch):
+    # wehos r4576541138, problem 2: the slot check used to sit in front of the branch,
+    # so a saturated pool also skipped listeners that never create a task at all.
+    monkeypatch.setattr(mod, "_NOTICE_SINK_MAX_TASKS", 2)
+    conn = _conn()
+    gate = asyncio.Event()
+    calls = []
+
+    conn.add_event_sink(lambda event_type, payload: gate.wait())     # hangs, takes slots
+    conn.add_event_sink(lambda event_type, payload: calls.append(event_type))
+
+    async def go():
+        for i in range(6):
+            await conn._dispatch_event("FRIEND_ADD", {"user_openid": "U" + str(i)}, "e")
+        return len(conn._sink_tasks), list(calls)
+
+    tasks, seen = run(go())
+    assert tasks == 2                          # pool capped
+    assert len(seen) == 6                      # the sync listener still saw everything
+
+    async def drain():
+        # Release and await the held tasks inside one open loop, so the shutdown of the
+        # next one is not filled with "Task was destroyed but it is pending".
+        gate.set()
+        await asyncio.gather(*list(conn._sink_tasks), return_exceptions=True)
+
+    run(drain())
+    assert conn._sink_tasks == set()
+
+
+def test_repeated_unattributed_copy_keeps_one_timer():
+    # CodeRabbit r4576525899: re-registering the same message id left an orphan timer
+    # that neither the AT frame nor disconnect() could cancel, and whose completion
+    # callback discarded the live registration instead of its own.
+    conn = _conn()
+    payload = {
+        "id": "m-twice", "group_openid": "G12", "content": "喂 <@KKKKKKKKKKKKKKKK>",
+        "author": {"member_openid": "H"},
+    }
+
+    async def go():
+        await conn._dispatch_event("GROUP_MESSAGE_CREATE", payload, "e1")
+        await asyncio.sleep(0)
+        await conn._dispatch_event("GROUP_MESSAGE_CREATE", payload, "e2")
+        await asyncio.sleep(0)
+        return len(conn._attribution_hold_tasks), dict(conn._attribution_hold)
+
+    tasks, holds = run(go())
+    assert tasks == 1
+    assert list(holds) == ["m-twice"]
+
+    async def take_over():
+        await conn._dispatch_event("GROUP_AT_MESSAGE_CREATE", dict(payload, content="喂"), "e3")
+        await asyncio.sleep(0)
+        return dict(conn._attribution_hold_tasks)
+
+    assert run(take_over()) == {}              # the one timer is the one that cancels

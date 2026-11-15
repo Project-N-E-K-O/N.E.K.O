@@ -161,6 +161,23 @@ def test_open_platform_group_mentions_distinguish_bot_from_other_users():
     """
     conn = _mention_conn()
 
+    # Aligned to the v2 field definition, which r4571618096 got wrong and r4575495931
+    # corrected: GROUP_AT_MESSAGE_CREATE's ``mentions`` lists the users @-ed *excluding
+    # the bot*, and ``content`` already has the bot's own @ prefix removed. So an AT
+    # frame can only name the bot through evidence -- the structured is_you item, or
+    # this group's learned bot openid -- and an unattributed target is somebody else by
+    # definition. The dedupe and "who else was named" guarantees below are unchanged.
+    evidenced = conn._convert_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        _mention_payload(f"<@{BOT_OPENID}> hello",
+                         mentions=[_mention(BOT_OPENID, is_you=True)]),
+    )
+    assert evidenced["mentioned_user_ids"] == [BOT_OPENID]
+    assert evidenced["content"] == "hello"
+    assert evidenced["mentions_other_user"] is False
+    assert evidenced["is_at_bot"] is True
+
+    # Same group, same target, now provable from the learned openid alone.
     bot_only = conn._convert_event(
         "GROUP_AT_MESSAGE_CREATE",
         _mention_payload(f"<@{BOT_OPENID}> hello"),
@@ -558,7 +575,7 @@ async def test_capability_flags_flip_after_first_full_group_message():
     """The probe flips inside ``_receive_loop``, driven by a real dispatch frame.
 
     This goes through the actual loop deliberately: an earlier version of this test
-    assigned ``_received_full_group_message`` by hand, which meant it would still pass
+    assigned the reception proof by hand, which meant it would still pass
     after the probe code in the loop was deleted -- it proved nothing.
     """
     import asyncio
@@ -784,7 +801,7 @@ def test_connect_does_not_touch_the_probe_before_the_handshake(monkeypatch):
     conn._sandbox = None                              # read by _resolve_api_base
     conn.logger = None                                # keeps connect() quiet
     conn._closing = True
-    conn._received_full_group_message = True          # stale from the last session
+    conn._all_messages_observed_groups = {"g-stale"}   # stale from the last session
 
     def _stop_before_network(*args, **kwargs):
         raise RuntimeError("stop before any network I/O")
@@ -796,8 +813,9 @@ def test_connect_does_not_touch_the_probe_before_the_handshake(monkeypatch):
     with pytest.raises(RuntimeError, match="stop before any network I/O"):
         asyncio.run(conn.connect())
 
-    # Nothing was negotiated, so the flag is left alone.
-    assert conn._received_full_group_message is True
+    # Nothing was negotiated, so the proof is left alone.
+    assert conn.receives_all_messages is True
+    assert conn._all_messages_observed_groups == {"g-stale"}
 
 
 async def test_successful_resume_keeps_the_full_group_message_probe():
@@ -810,11 +828,13 @@ async def test_successful_resume_keeps_the_full_group_message_probe():
     import asyncio
 
     conn = _handshake_connection([_hello(), {"op": 0, "t": "RESUMED", "d": {}}])
-    conn._received_full_group_message = True
+    conn._all_messages_observed_groups = {"g1"}
 
     await asyncio.wait_for(conn._handshake(is_reconnect=True), timeout=5.0)
 
-    assert conn._received_full_group_message is True
+    # Proof is per group now; a resumed session still keeps what it had proved.
+    assert conn._all_messages_observed_groups == {"g1"}
+    assert conn.receives_all_messages is True
     assert [frame.get("op") for frame in conn._ws.sent] == [6]   # Resume only, no Identify
 
 
@@ -832,11 +852,11 @@ async def test_resume_falling_back_to_identify_resets_the_probe():
         {"op": 9, "d": False},        # Resume rejected (invalid session)
         _ready(),                     # Identify accepted
     ])
-    conn._received_full_group_message = True
+    conn._all_messages_observed_groups = {"g1"}
 
     await asyncio.wait_for(conn._handshake(is_reconnect=True), timeout=5.0)
 
-    assert conn._received_full_group_message is False
+    assert conn._all_messages_observed_groups == set()
     assert conn.receives_all_messages is False
     assert conn.needs_attention is False
     assert [frame.get("op") for frame in conn._ws.sent] == [6, 2]  # Resume, then Identify
@@ -847,11 +867,14 @@ async def test_first_handshake_resets_the_probe():
     import asyncio
 
     conn = _handshake_connection([_hello(), _ready()])
-    conn._received_full_group_message = True
+    conn._all_messages_observed_groups = {"g1"}
 
     await asyncio.wait_for(conn._handshake(is_reconnect=False), timeout=5.0)
 
-    assert conn._received_full_group_message is False
+    # The proof lives per group now. Identify still wipes all of it: a new session may
+    # find the privilege withdrawn while the connection was down.
+    assert conn._all_messages_observed_groups == set()
+    assert conn.receives_all_messages is False
     assert [frame.get("op") for frame in conn._ws.sent] == [2]
 
 
@@ -906,6 +929,15 @@ def test_repeated_mention_of_the_same_account_is_not_someone_else():
     aimed at a third party.
     """
     conn = _mention_conn()
+    # Establish this group's bot openid first (see the note in
+    # test_open_platform_group_mentions_distinguish_bot_from_other_users). Without it
+    # the sole target is correctly read as "somebody else", and the thing under test
+    # here is the count, not the ownership.
+    conn._convert_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        _mention_payload(f"<@{BOT_OPENID}> hi",
+                         mentions=[_mention(BOT_OPENID, is_you=True)]),
+    )
 
     duplicated = conn._convert_event(
         "GROUP_AT_MESSAGE_CREATE",

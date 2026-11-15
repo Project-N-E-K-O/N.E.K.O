@@ -97,20 +97,23 @@ def test_capability_flags_follow_the_v2_surface():
     assert conn.needs_attention is False
 
 
-def test_needs_attention_follows_reception_rather_than_a_constant():
+def test_needs_attention_follows_proved_reception_not_a_setting():
+    # #3706's rule, kept through the per-group rework: only an actually delivered
+    # GROUP_MESSAGE_CREATE is evidence. A setting, a probe or a subscription is not,
+    # because the intents bitmap is ours to submit while the privilege is a human's to
+    # grant -- per group.
     conn = _conn()
     conn._recv_msg_setting_by_group["G1"] = "all"
+    assert conn.receives_all_messages is False
+    assert conn.group_receives_all_messages("G1") is False
+    assert conn.group_recv_msg_setting("G1") == "all"    # still reported, never believed
+
+    conn._all_messages_observed_groups.add("G1")
     assert conn.receives_all_messages is True
     assert conn.needs_attention is True
     assert conn.group_receives_all_messages("G1") is True
-    # A second group that never said "all" must not inherit the first one's privilege.
+    # A second group that pushed nothing must not inherit the first one's proof.
     assert conn.group_receives_all_messages("G2") is False
-
-    conn2 = _conn()
-    conn2._all_messages_observed_groups.add("G1")   # an actual push is proof by itself
-    assert conn2.receives_all_messages is True
-    assert conn2.group_receives_all_messages("G1") is True
-    assert conn2.group_receives_all_messages("G9") is False
 
 
 def test_one_group_push_change_does_not_answer_for_every_group():

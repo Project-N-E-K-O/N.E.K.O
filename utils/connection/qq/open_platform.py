@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect as _inspect
 import json
 import os
 import time
@@ -318,6 +319,14 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     #: This assignment has to sit **after** the class docstring: placed before it, the
     #: string is just a discarded expression statement and `__doc__` is None.
     CHANNEL: str = "open"
+
+    #: Tolerance for instances built through ``__new__`` (the harnesses in
+    #: tests/unit/test_qq_open_plat_convert_event.py construct them on purpose, to pin
+    #: that a partially built connection cannot raise inside event handling). Every
+    #: read below has a class-level answer, so a missing instance attribute is a
+    #: default, not an AttributeError that the receive loop would report as a
+    #: disconnect -- which would read as an unstable connection instead of a bug.
+    logger: Any = None
 
     #: Defaults for the v2 reception state. Instances are sometimes built through
     #: ``__new__`` (test harnesses, partial reconstruction), and a missing attribute
@@ -687,7 +696,9 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         await self._ws.send(json.dumps({
             "op": 2, "d": {
                 "token": f"QQBot {self._access_token}",
-                "intents": self._intents,
+                # getattr keeps a __new__-built instance usable; BASE_INTENTS is the
+                # documented default set, and extra_intents only ever adds to it.
+                "intents": getattr(self, "_intents", BASE_INTENTS),
                 "shard": [0, 1],
             },
         }))
@@ -968,42 +979,89 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         ``RuntimeWarning`` per shutdown under traffic, and the reject path closed only
         the outer object.
 
-        A coroutine function is therefore called *inside* the task. A plain callable is
-        still invoked inline, because it already returned and its exceptions belong to
-        this frame; if what it returned is a coroutine, that coroutine becomes the
-        task's own, so there is nothing left over to leak. The inline branch gets no
-        deadline: giving it one would mean wrapping it again, which is the leak this
-        method exists to remove.
+        A coroutine function is called *inside* the task. A plain callable is invoked
+        inline, because it already returned and its exception belongs to this frame; if
+        what it returned is awaitable, that coroutine becomes the task's own, so
+        nothing is left over to leak, and the deadline is attached with a timer rather
+        than a second coroutine (r4576525889 / r4576493234: the wrapper-free shape had
+        dropped the timeout, and a hung listener then held its slot forever).
+
+        The slot check sits with the code that takes a slot. Checking it up front meant
+        a saturated pool also skipped plain synchronous listeners, which never create a
+        task and never needed a slot -- a silent loss of every other consumer the moment
+        one listener hung (r4576541138, problem 2).
         """
-        tasks = self._mutable("_sink_tasks", set)
-        if len(tasks) >= _NOTICE_SINK_MAX_TASKS:
-            # Bounded on purpose: a sink that never finishes must not turn a traffic
-            # burst into an unbounded task pile. Dropping the newest notification is
-            # visible in the log; blocking the loop is not. Nothing has been created
-            # yet on this path, so nothing can leak here either.
+        if asyncio.iscoroutinefunction(sink):
+            if not self._sink_slot_available(event_type):
+                return
+            task = asyncio.create_task(self._run_notice_sink(sink, event_type, payload))
+            self._track_sink_task(task)
+            return
+        try:
+            result = sink(event_type, payload)
+        except Exception as exc:  # a broken consumer must not drop the transport
             if self.logger:
                 self.logger.warning(
-                    f"[QQOpenPlatform] 事件监听任务已满（{_NOTICE_SINK_MAX_TASKS}），"
-                    f"丢弃 {event_type} 的一次通知"
-                )
+                    f"[QQOpenPlatform] 事件监听器异常({event_type}): {exc}")
             return
-        if asyncio.iscoroutinefunction(sink):
-            task = asyncio.create_task(self._run_notice_sink(sink, event_type, payload))
-        else:
-            try:
-                result = sink(event_type, payload)
-            except Exception as exc:  # a broken consumer must not drop the transport
-                if self.logger:
-                    self.logger.warning(
-                        f"[QQOpenPlatform] 事件监听器异常({event_type}): {exc}")
-                return
-            if not asyncio.iscoroutine(result):
-                return
-            task = asyncio.create_task(result)
-            task.add_done_callback(
-                lambda t, et=event_type: self._note_sink_task_failure(et, t))
+        if not _inspect.isawaitable(result):
+            return
+        if not self._sink_slot_available(event_type):
+            # The awaitable has been created by the call above and this task would own
+            # it; refusing here would strand it un-awaited, so the slot is decided
+            # before the task and the awaitable both go. Only a coroutine can be
+            # closed: a Future belongs to whoever made it and is left alone.
+            if asyncio.iscoroutine(result):
+                result.close()
+            return
+        # create_task takes a coroutine only. An awaitable sink result can also be a
+        # bare Future or a Task-like (the shape a reviewer reproduced: a plain
+        # ``lambda et, p: gate.wait()``), so ensure_future decides, and the timeout
+        # below then works on either kind.
+        task = asyncio.ensure_future(result)
+        task.add_done_callback(
+            lambda t, et=event_type: self._note_sink_task_failure(et, t))
+        self._track_sink_task(task)
+        self._bound_sink_task(task, event_type)
+
+    def _sink_slot_available(self, event_type: str) -> bool:
+        """Whether a notification may still take a task slot, with the reason logged."""
+        # Bounded on purpose: a sink that never finishes must not turn a traffic burst
+        # into an unbounded task pile. Dropping the newest notification is visible in
+        # the log; blocking the loop is not.
+        if len(self._mutable("_sink_tasks", set)) < _NOTICE_SINK_MAX_TASKS:
+            return True
+        if self.logger:
+            self.logger.warning(
+                f"[QQOpenPlatform] 事件监听任务已满（{_NOTICE_SINK_MAX_TASKS}），"
+                f"丢弃 {event_type} 的一次通知"
+            )
+        return False
+
+    def _track_sink_task(self, task) -> None:
+        tasks = self._mutable("_sink_tasks", set)
         tasks.add(task)
         task.add_done_callback(tasks.discard)
+
+    def _bound_sink_task(self, task, event_type: str) -> None:
+        """Give an already-created coroutine task its deadline, without wrapping it.
+
+        ``call_later`` + ``Task.cancel`` needs no second coroutine object, and a task
+        cancelled before its first step gets the cancellation thrown into it, so the
+        coroutine is closed by asyncio rather than left un-awaited.
+        """
+        deadline = asyncio.get_running_loop().call_later(
+            _NOTICE_SINK_TIMEOUT_SECONDS, self._timeout_sink_task, task, event_type)
+        task.add_done_callback(lambda _t, d=deadline: d.cancel())
+
+    def _timeout_sink_task(self, task, event_type: str) -> None:
+        if task.done():
+            return
+        task.cancel()
+        if self.logger:
+            self.logger.warning(
+                f"[QQOpenPlatform] 事件监听器超时({event_type}, "
+                f"{_NOTICE_SINK_TIMEOUT_SECONDS}s)，已取消该通知任务")
 
     def _note_sink_task_failure(self, event_type: str, task) -> None:
         """Log what a bare sink coroutine raised, so its failure is not silent."""
@@ -1074,6 +1132,13 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         """
         mid = str(msg.get("message_id") or "").strip()
         holds = self._mutable("_attribution_hold", dict)
+        if mid and mid in holds:
+            # One window per message id. Re-registering here would leave the earlier
+            # timer running with nothing left to cancel it (drop and disconnect only
+            # reach the newest registration), and its completion callback would then
+            # discard the newer task's entry instead of its own (r4576525899).
+            holds[mid] = msg
+            return
         if not mid or len(holds) >= _ATTRIBUTION_HOLD_MAX:
             # Bounded. Holding is a courtesy to the AT frame, not a reason to park an
             # unbounded queue of messages: past the cap, deliver immediately and say so
@@ -1085,8 +1150,11 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         holds[mid] = msg
         task = asyncio.create_task(self._flush_attribution_hold(mid))
         self._mutable("_attribution_hold_tasks", dict)[mid] = task
-        task.add_done_callback(
-            lambda _t, key=mid: self._mutable("_attribution_hold_tasks", dict).pop(key, None))
+        # Pop only when the registration still points at this task, so a stale timer can
+        # never orphan the live one.
+        task.add_done_callback(lambda _t, key=mid, own=task: (
+            self._mutable("_attribution_hold_tasks", dict).pop(key, None)
+            if self._mutable("_attribution_hold_tasks", dict).get(key) is own else None))
 
     def _note_hold_saturation(self) -> None:
         if not self.logger or self._mutable("_hold_saturated_warned", set):
