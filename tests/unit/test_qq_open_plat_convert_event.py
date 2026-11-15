@@ -161,6 +161,23 @@ def test_open_platform_group_mentions_distinguish_bot_from_other_users():
     """
     conn = _mention_conn()
 
+    # Aligned to the v2 field definition, which r4571618096 got wrong and r4575495931
+    # corrected: GROUP_AT_MESSAGE_CREATE's ``mentions`` lists the users @-ed *excluding
+    # the bot*, and ``content`` already has the bot's own @ prefix removed. So an AT
+    # frame can only name the bot through evidence -- the structured is_you item, or
+    # this group's learned bot openid -- and an unattributed target is somebody else by
+    # definition. The dedupe and "who else was named" guarantees below are unchanged.
+    evidenced = conn._convert_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        _mention_payload(f"<@{BOT_OPENID}> hello",
+                         mentions=[_mention(BOT_OPENID, is_you=True)]),
+    )
+    assert evidenced["mentioned_user_ids"] == [BOT_OPENID]
+    assert evidenced["content"] == "hello"
+    assert evidenced["mentions_other_user"] is False
+    assert evidenced["is_at_bot"] is True
+
+    # Same group, same target, now provable from the learned openid alone.
     bot_only = conn._convert_event(
         "GROUP_AT_MESSAGE_CREATE",
         _mention_payload(f"<@{BOT_OPENID}> hello"),
@@ -558,7 +575,7 @@ async def test_capability_flags_flip_after_first_full_group_message():
     """The probe flips inside ``_receive_loop``, driven by a real dispatch frame.
 
     This goes through the actual loop deliberately: an earlier version of this test
-    assigned ``_received_full_group_message`` by hand, which meant it would still pass
+    assigned the reception proof by hand, which meant it would still pass
     after the probe code in the loop was deleted -- it proved nothing.
     """
     import asyncio
@@ -784,7 +801,7 @@ def test_connect_does_not_touch_the_probe_before_the_handshake(monkeypatch):
     conn._sandbox = None                              # read by _resolve_api_base
     conn.logger = None                                # keeps connect() quiet
     conn._closing = True
-    conn._received_full_group_message = True          # stale from the last session
+    conn._all_messages_observed_groups = {"g-stale"}   # stale from the last session
 
     def _stop_before_network(*args, **kwargs):
         raise RuntimeError("stop before any network I/O")
@@ -796,8 +813,9 @@ def test_connect_does_not_touch_the_probe_before_the_handshake(monkeypatch):
     with pytest.raises(RuntimeError, match="stop before any network I/O"):
         asyncio.run(conn.connect())
 
-    # Nothing was negotiated, so the flag is left alone.
-    assert conn._received_full_group_message is True
+    # Nothing was negotiated, so the proof is left alone.
+    assert conn.receives_all_messages is True
+    assert conn._all_messages_observed_groups == {"g-stale"}
 
 
 async def test_successful_resume_keeps_the_full_group_message_probe():
@@ -810,11 +828,13 @@ async def test_successful_resume_keeps_the_full_group_message_probe():
     import asyncio
 
     conn = _handshake_connection([_hello(), {"op": 0, "t": "RESUMED", "d": {}}])
-    conn._received_full_group_message = True
+    conn._all_messages_observed_groups = {"g1"}
 
     await asyncio.wait_for(conn._handshake(is_reconnect=True), timeout=5.0)
 
-    assert conn._received_full_group_message is True
+    # Proof is per group now; a resumed session still keeps what it had proved.
+    assert conn._all_messages_observed_groups == {"g1"}
+    assert conn.receives_all_messages is True
     assert [frame.get("op") for frame in conn._ws.sent] == [6]   # Resume only, no Identify
 
 
@@ -832,11 +852,11 @@ async def test_resume_falling_back_to_identify_resets_the_probe():
         {"op": 9, "d": False},        # Resume rejected (invalid session)
         _ready(),                     # Identify accepted
     ])
-    conn._received_full_group_message = True
+    conn._all_messages_observed_groups = {"g1"}
 
     await asyncio.wait_for(conn._handshake(is_reconnect=True), timeout=5.0)
 
-    assert conn._received_full_group_message is False
+    assert conn._all_messages_observed_groups == set()
     assert conn.receives_all_messages is False
     assert conn.needs_attention is False
     assert [frame.get("op") for frame in conn._ws.sent] == [6, 2]  # Resume, then Identify
@@ -847,11 +867,14 @@ async def test_first_handshake_resets_the_probe():
     import asyncio
 
     conn = _handshake_connection([_hello(), _ready()])
-    conn._received_full_group_message = True
+    conn._all_messages_observed_groups = {"g1"}
 
     await asyncio.wait_for(conn._handshake(is_reconnect=False), timeout=5.0)
 
-    assert conn._received_full_group_message is False
+    # The proof lives per group now. Identify still wipes all of it: a new session may
+    # find the privilege withdrawn while the connection was down.
+    assert conn._all_messages_observed_groups == set()
+    assert conn.receives_all_messages is False
     assert [frame.get("op") for frame in conn._ws.sent] == [2]
 
 
@@ -906,6 +929,15 @@ def test_repeated_mention_of_the_same_account_is_not_someone_else():
     aimed at a third party.
     """
     conn = _mention_conn()
+    # Establish this group's bot openid first (see the note in
+    # test_open_platform_group_mentions_distinguish_bot_from_other_users). Without it
+    # the sole target is correctly read as "somebody else", and the thing under test
+    # here is the count, not the ownership.
+    conn._convert_event(
+        "GROUP_AT_MESSAGE_CREATE",
+        _mention_payload(f"<@{BOT_OPENID}> hi",
+                         mentions=[_mention(BOT_OPENID, is_you=True)]),
+    )
 
     duplicated = conn._convert_event(
         "GROUP_AT_MESSAGE_CREATE",
@@ -1065,3 +1097,249 @@ def test_learned_bot_openid_is_scoped_per_group():
     assert stranger["is_at_bot"] is False
     # Group A's cached openid must not be treated as "self" here.
     assert stranger["mentions_other_user"] is True
+
+
+# ── step 1 of the host-channel design: port #3706 onto #3709 ───────────────
+#
+# Three things the single-slot version could not do: honour the platform's own
+# ``is_you`` marker, keep one group's bot openid away from another group, and
+# refuse to deliver the same message twice. All three are @-attribution, and all
+# three failed silently: the bot either ignored a real @ or answered one message
+# twice.
+
+def _bare_connection() -> QQOpenPlatformConnection:
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._self_id = ""
+    conn.logger = None
+    return conn
+
+
+def test_is_you_marks_the_bot_even_when_another_member_is_named_too():
+    conn = _bare_connection()
+    msg = conn._convert_event(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "m", "group_openid": "G1",
+            "content": "<@0123456789ABCDEF> 和 <@FEDCBA9876543210> 看一下",
+            "author": {"member_openid": "speaker"},
+            "mentions": [
+                {"member_openid": "0123456789ABCDEF", "is_you": True, "bot": True},
+                {"member_openid": "FEDCBA9876543210"},
+            ],
+        },
+    )
+    assert msg["is_at_bot"] is True
+    # The other openid is a second target, so this is not "only me".
+    assert msg["mentions_other_user"] is True
+    # Learning happened, and it landed under this group only.
+    assert conn._bot_openid_by_group == {"G1": "0123456789ABCDEF"}
+
+
+def test_a_flag_for_another_bot_does_not_summon_this_one():
+    # ``bot: true`` says the target is *some* bot. In a group with two bots, @-ing
+    # the neighbour must not make this bot answer.
+    conn = _bare_connection()
+    msg = conn._convert_event(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "m2", "group_openid": "G1", "content": "<@AAAAAAAAAAAAAAAA>",
+            "author": {"member_openid": "speaker"},
+            "mentions": [{"member_openid": "AAAAAAAAAAAAAAAA", "bot": True}],
+        },
+    )
+    assert msg["is_at_bot"] is False
+    assert conn._bot_openid_by_group == {}
+
+
+def test_one_groups_learned_openid_does_not_answer_for_another_group():
+    conn = _bare_connection()
+    conn._convert_event(
+        "GROUP_MESSAGE_CREATE",
+        {
+            "id": "a", "group_openid": "G1", "content": "hi <@BBBBBBBBBBBBBBBB>",
+            "author": {"member_openid": "s"},
+            "mentions": [{"member_openid": "BBBBBBBBBBBBBBBB", "is_you": True}],
+        },
+    )
+    inline_only_g2 = conn._convert_event(
+        "GROUP_MESSAGE_CREATE",
+        {"id": "b", "group_openid": "G2", "content": "hi <@BBBBBBBBBBBBBBBB>",
+         "author": {"member_openid": "s"}},
+    )
+    # G1 learned its own openid; G2 gets a different conversation openid, so the
+    # same token there is not proof this bot was summoned.
+    assert inline_only_g2["is_at_bot"] is False
+    assert conn._remembered_bot_openid("G1") == "BBBBBBBBBBBBBBBB"
+    assert conn._remembered_bot_openid("G2") == ""
+    # Once G2 sees its own is_you, later inline-only payloads resolve per group.
+    conn._convert_event(
+        "GROUP_MESSAGE_CREATE",
+        {"id": "c", "group_openid": "G2", "content": "hi <@CCCCCCCCCCCCCCCC>",
+         "author": {"member_openid": "s"},
+         "mentions": [{"member_openid": "CCCCCCCCCCCCCCCC", "is_you": True}]},
+    )
+    after = conn._convert_event(
+        "GROUP_MESSAGE_CREATE",
+        {"id": "d", "group_openid": "G2", "content": "hi <@CCCCCCCCCCCCCCCC>",
+         "author": {"member_openid": "s"}},
+    )
+    assert after["is_at_bot"] is True
+    assert conn._convert_event(
+        "GROUP_MESSAGE_CREATE",
+        {"id": "e", "group_openid": "G1", "content": "hi <@CCCCCCCCCCCCCCCC>",
+         "author": {"member_openid": "s"}},
+    )["is_at_bot"] is False
+
+
+def test_repeated_inline_at_is_counted_as_one_target():
+    conn = _bare_connection()
+    conn._learn_bot_openid("G1", "DDDDDDDDDDDDDDDD")
+    msg = conn._convert_event(
+        "GROUP_MESSAGE_CREATE",
+        {"id": "f", "group_openid": "G1", "content": "<@DDDDDDDDDDDDDDDD> <@DDDDDDDDDDDDDDDD>",
+         "author": {"member_openid": "s"}},
+    )
+    # Two occurrences of the same target are one target: otherwise "summoned only
+    # me, twice" reads as "named me and someone else".
+    assert msg["mentioned_user_ids"] == ["DDDDDDDDDDDDDDDD"]
+    assert msg["is_at_bot"] is True
+    assert msg["mentions_other_user"] is False
+
+
+import asyncio
+
+
+def _queue_connection(size: int) -> QQOpenPlatformConnection:
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._self_id = ""
+    conn.logger = None
+    conn._message_queue = asyncio.Queue(maxsize=size)
+    return conn
+
+
+def _msg(message_id: str, *, at_bot: bool) -> dict:
+    return {"message_id": message_id, "is_at_bot": at_bot, "content": message_id}
+
+
+def test_a_redelivered_id_is_queued_once():
+    conn = _queue_connection(4)
+    assert conn._enqueue_inbound(_msg("m1", at_bot=True)) is None
+    assert conn._enqueue_inbound(_msg("m1", at_bot=True)) == "duplicate"
+    assert conn._message_queue.qsize() == 1
+
+
+def test_an_evicted_message_is_forgotten_so_its_redelivery_still_counts():
+    conn = _queue_connection(1)
+    assert conn._enqueue_inbound(_msg("old", at_bot=False)) is None
+    # The @bot arrival pushes "old" out. "old" must stop being remembered: a
+    # redelivery of it is then the only remaining chance to process it, and
+    # suppressing it while it is pending nowhere would lose it for good.
+    assert conn._enqueue_inbound(_msg("new", at_bot=True)) is None
+    assert conn._is_duplicate_inbound("old") is False
+    # With a free slot, the redelivery lands.
+    conn._message_queue.get_nowait()
+    assert conn._enqueue_inbound(_msg("old", at_bot=False)) is None
+    assert conn._message_queue.get_nowait()["message_id"] == "old"
+
+
+def test_a_full_queue_of_at_messages_is_not_cleared_by_ordinary_chatter():
+    conn = _queue_connection(2)
+    assert conn._enqueue_inbound(_msg("summon-1", at_bot=True)) is None
+    assert conn._enqueue_inbound(_msg("summon-2", at_bot=True)) is None
+    # Every queued message is an @ and the arrival is chatter: refuse the arrival
+    # rather than trade a queued summon for it.
+    assert conn._enqueue_inbound(_msg("chatter", at_bot=False)) == "queue_full"
+    queued = [conn._message_queue.get_nowait()["message_id"] for _ in range(2)]
+    assert queued == ["summon-1", "summon-2"]
+
+
+def test_ordinary_chatter_yields_to_an_incoming_at():
+    conn = _queue_connection(2)
+    conn._enqueue_inbound(_msg("chatter-1", at_bot=False))
+    conn._enqueue_inbound(_msg("chatter-2", at_bot=False))
+    assert conn._enqueue_inbound(_msg("summon", at_bot=True)) is None
+    queued = [conn._message_queue.get_nowait()["message_id"] for _ in range(2)]
+    assert "summon" in queued
+    assert "chatter-1" not in queued       # the oldest chatter went first
+
+
+def test_full_message_first_does_not_swallow_the_later_at_signal():
+    # Greptile r4574476364: with the privilege on, GROUP_MESSAGE_CREATE can land
+    # first and read is_at_bot=False because this group's bot openid is not known
+    # yet. Dropping the AT frame as a plain duplicate then dropped the summon,
+    # and the bot never answered a direct @.
+    import asyncio
+
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._self_id = ""
+    conn.logger = None
+    conn._message_queue = asyncio.Queue(maxsize=8)
+    payload = {
+        "id": "summon-1", "group_openid": "G9",
+        "content": "喂 <@EEEEEEEEEEEEEEEE>",
+        "author": {"member_openid": "MA"},
+    }
+    at_payload = dict(payload)
+    at_payload["mentions"] = [{"member_openid": "EEEEEEEEEEEEEEEE", "is_you": True}]
+
+    async def drive(event_type, body):
+        await conn._dispatch_event(event_type, body, "e1")
+        await asyncio.sleep(0)
+
+    asyncio.run(drive("GROUP_MESSAGE_CREATE", payload))
+    asyncio.run(drive("GROUP_AT_MESSAGE_CREATE", at_payload))
+
+    assert conn._message_queue.qsize() == 1          # still delivered once
+    queued = conn._message_queue.get_nowait()
+    assert queued["is_at_bot"] is True               # ... and the @ survived
+    assert queued["mentions_other_user"] is False    # ... with correct ownership
+    assert "EEEEEEEEEEEEEEEE" in queued["mentioned_user_ids"]
+
+
+def test_at_frame_first_stays_correct_when_the_full_copy_arrives_after():
+    import asyncio
+
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._self_id = ""
+    conn.logger = None
+    conn._message_queue = asyncio.Queue(maxsize=8)
+    payload = {
+        "id": "summon-2", "group_openid": "G9", "content": "喂 <@FFFFFFFFFFFFFFFF>",
+        "author": {"member_openid": "MA"},
+        "mentions": [{"member_openid": "FFFFFFFFFFFFFFFF", "is_you": True}],
+    }
+
+    async def drive(body):
+        await conn._dispatch_event("GROUP_AT_MESSAGE_CREATE", body, "e1")
+        await asyncio.sleep(0)
+
+    asyncio.run(drive(payload))
+    asyncio.run(drive(dict(payload, mentions=None)))
+    assert conn._message_queue.qsize() == 1
+    assert conn._message_queue.get_nowait()["is_at_bot"] is True
+
+
+def test_full_mode_and_at_event_for_one_message_deliver_once():
+    # With the group privilege on, the platform can push both
+    # GROUP_AT_MESSAGE_CREATE and GROUP_MESSAGE_CREATE for the same msg_id. Two
+    # queue entries mean two replies and a burned passive-reply msg_seq slot.
+    import asyncio
+
+    conn = QQOpenPlatformConnection.__new__(QQOpenPlatformConnection)
+    conn._self_id = ""
+    conn.logger = None
+    conn._message_queue = asyncio.Queue(maxsize=8)
+    payload = {
+        "id": "same-msg", "group_openid": "G1",
+        "content": "<@BBBBBBBBBBBBBBBB> 在吗",
+        "author": {"member_openid": "MA"},
+        "mentions": [{"member_openid": "BBBBBBBBBBBBBBBB", "is_you": True}],
+    }
+
+    async def drive(event_type):
+        await conn._dispatch_event(event_type, payload, "e1")
+        await asyncio.sleep(0)
+
+    asyncio.run(drive("GROUP_AT_MESSAGE_CREATE"))
+    asyncio.run(drive("GROUP_MESSAGE_CREATE"))
+    assert conn._message_queue.qsize() == 1

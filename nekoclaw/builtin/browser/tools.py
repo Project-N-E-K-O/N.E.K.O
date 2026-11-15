@@ -94,6 +94,11 @@ MAX_TIMEOUT_SECONDS = 120.0
 # was typed before the key, when one of its modifiers went down, when the
 # pointer moved over the element): what stopped it follows in the same
 # answer, the dialog with its text or that the page has closed.
+# What a call is told that would open a browser the user has closed.
+CLOSED_BY_USER = (
+    "The browser was closed by the user. Nothing was done. Call the tool again when you still need the browser: "
+    "the user is then asked whether it may be opened again."
+)
 _STOPPED_TAKING_INPUT = "the page stopped taking input (it opened a dialog, or closed)"
 _NOT_PRESSED = f"was NOT pressed: {_STOPPED_TAKING_INPUT} before the key could be sent."
 _NOT_COMPLETED = f"was NOT completed: {_STOPPED_TAKING_INPUT} before the button was pressed and released."
@@ -143,12 +148,19 @@ class BrowserTools:
         return self._session
 
     async def call(
-        self, tool_name: str, arguments: dict[str, Any], *, refused: Callable[[], str | None] | None = None
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        refused: Callable[[], str | None] | None = None,
+        reopen_agreement: int | None = None,
     ) -> BuiltinOutcome:
         """Carry out one call and return its answer; failures come back as text for the model.
 
         ``refused`` is asked once the call's turn has come and returns why
-        it is not to be carried out after all, or None.
+        it is not to be carried out after all, or None. ``reopen_agreement``
+        is the user's agreement to this call opening a browser they closed
+        (``reopen_agreed``); without it such a browser stays closed.
         """
         handler = self._handlers.get(tool_name[len(TOOL_PREFIX) :] if tool_name.startswith(TOOL_PREFIX) else "")
         if handler is None:
@@ -157,6 +169,11 @@ class BrowserTools:
             why = refused() if refused is not None else None
             if why:
                 return BuiltinOutcome(False, why)
+            if self._session.closed_by_user and not self._session.use_reopen_agreement(reopen_agreement):
+                # The host asks the user before a call gets here; this one
+                # came without their agreement (the browser was closed after
+                # the host looked, or the agreement is another call's).
+                return BuiltinOutcome(False, CLOSED_BY_USER)
             try:
                 await self._session.start()
                 outcome = await handler(arguments)
@@ -165,6 +182,8 @@ class BrowserTools:
             except BrowserError as exc:
                 return BuiltinOutcome(False, str(exc))
             except CdpClosed:
+                if self._session.closed_by_user:
+                    return BuiltinOutcome(False, CLOSED_BY_USER)
                 return BuiltinOutcome(False, "The browser was closed. Call the tool again to start it anew.")
             except CdpTimeout as exc:
                 return BuiltinOutcome(False, f"The browser did not answer in time ({exc}). The page may be busy; try again.")
@@ -174,6 +193,10 @@ class BrowserTools:
                 # However the call ended, stopped included: what it held of
                 # the page is let go of (see ``OBJECT_GROUP``). Under the
                 # lock, so that the next call's handles are not among them.
+                # (What the call was let do for the user's agreement is over
+                # first: nothing is awaited before that, so a call that is
+                # stopped once more while it lets go still ends it.)
+                self._session.reopening_over()
                 await self._session.release_handles()
 
     async def released(self) -> None:
@@ -184,7 +207,23 @@ class BrowserTools:
     def window(self) -> dict[str, Any] | None:
         return self._session.window()
 
-    async def aclose(self) -> None:
+    async def aclose(self, *, keep_window: bool = False) -> None:
+        """Close the browser; with ``keep_window``, only one that shows no window the user could go on using.
+
+        ``keep_window`` is for when the tools stop being used and nothing
+        was said against the browser itself (they were switched off, or the
+        agent model stopped answering). What a call under way leaves is what
+        counts: it is waited for, and a browser it is still starting is not
+        told to give up.
+        """
+        if keep_window:
+            async with self._lock:
+                if not self._session.shows_a_window:
+                    await self._session.close()
+            return
+        # Not wanted from here on, and not only once its turn has come: see
+        # ``BrowserSession.no_longer_wanted``.
+        self._session.no_longer_wanted()
         # A call that is starting the browser holds the tools until it is up:
         # it is told to give up, so that closing does not wait that long.
         self._session.stop_starting()
@@ -198,6 +237,26 @@ class BrowserTools:
     def holds_a_browser(self) -> bool:
         """Whether a browser is still held: after ``aclose``, one that could not be closed."""
         return self._session.holds_a_browser
+
+    def no_longer_wanted(self) -> None:
+        """The browser is to be closed by an ``aclose`` that follows; see ``BrowserSession.no_longer_wanted``."""
+        self._session.no_longer_wanted()
+
+    def closed_by_user(self) -> bool:
+        """Whether the user closed the browser and it has no window since; see ``BrowserSession.closed_by_user``."""
+        return self._session.closed_by_user
+
+    def reopen_agreed(self) -> int:
+        """The user agreed to the browser being opened again; see ``BrowserSession.reopen_agreed``."""
+        return self._session.reopen_agreed()
+
+    def reopen_agreement_over(self, agreement: int | None = None) -> None:
+        """The call the user agreed for is over; see ``BrowserSession.reopen_agreement_over``."""
+        self._session.reopen_agreement_over(agreement)
+
+    def shows_a_window(self) -> bool:
+        """Whether stopping the tasks leaves the browser as it is; see ``BrowserSession.shows_a_window``."""
+        return self._session.shows_a_window
 
     # -- building answers --------------------------------------------------
 

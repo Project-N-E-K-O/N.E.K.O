@@ -446,12 +446,58 @@ class CapabilityRegistry:
             return []
 
     async def run_builtin(
-        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]
+        self, capability: Capability, *, commission_id: str, arguments: dict[str, Any], reopen_agreement: Any = None
     ) -> BuiltinOutcome:
-        """Carry out one call of a built-in tool through the provider."""
+        """Carry out one call of a built-in tool through the provider.
+
+        ``reopen_agreement`` is what the provider called the user's
+        agreement to this call opening a browser they closed
+        (``browser_reopen_agreed``); only a provider that gave one is handed
+        it back.
+        """
         if self._builtins is None:
             return BuiltinOutcome(False, "this capability is not offered by this process")
-        return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
+        if reopen_agreement is None:
+            return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
+        return await self._builtins.run(
+            capability, commission_id=commission_id, arguments=arguments, reopen_agreement=reopen_agreement
+        )
+
+    def browser_closed_by_user(self) -> bool:
+        """Whether the user closed the browser the built-in tools started and it has no window since. Must not block."""
+        closed = getattr(self._builtins, "browser_closed_by_user", None)
+        if closed is None:
+            return False
+        try:
+            return bool(closed())
+        except Exception:  # noqa: BLE001 - not known: the call goes on as it always did
+            logger.warning("asking whether the browser was closed by the user failed", exc_info=True)
+            return False
+
+    def browser_reopen_agreed(self) -> Any:
+        """Tell the provider that the user agreed to the browser being opened again.
+
+        Returns what the provider calls this agreement (or None), to be
+        handed back with ``browser_reopen_agreement_over``.
+        """
+        agreed = getattr(self._builtins, "browser_reopen_agreed", None)
+        if agreed is None:
+            return None
+        try:
+            return agreed()
+        except Exception:  # noqa: BLE001 - the call is then refused by the browser tools, and says so
+            logger.warning("telling the provider that the browser may be opened again failed", exc_info=True)
+            return None
+
+    def browser_reopen_agreement_over(self, agreement: Any = None) -> None:
+        """Tell the provider that the call the user agreed for is over; ``agreement`` is what it called that agreement."""
+        over = getattr(self._builtins, "browser_reopen_agreement_over", None)
+        if over is None:
+            return
+        try:
+            over(agreement)
+        except Exception:  # noqa: BLE001 - the call's own outcome stands
+            logger.warning("ending the agreement to open the browser again failed", exc_info=True)
 
     async def builtin_released(self, group: str, commission_id: str) -> None:
         """Tell the provider that a commission no longer occupies a group."""

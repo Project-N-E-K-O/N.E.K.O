@@ -309,8 +309,10 @@ async def set_agent_flags(payload: Dict[str, Any]):
         else:
             Modules.agent_flags["browser_use_enabled"] = False
 
-    # Explicit disable and automatic gate demotion both close the browser
-    # the tools started, at once.
+    # Explicit disable and automatic gate demotion: a browser the tools
+    # started that shows no window is closed; one with a window is left to
+    # the user as it is, connected to (so kept from this application's own
+    # ports), and no call of the tools is carried out while they are off.
     if bf is False or (
         old_flags.get("browser_use_enabled", False)
         and not Modules.agent_flags.get("browser_use_enabled", False)
@@ -319,6 +321,7 @@ async def set_agent_flags(payload: Dict[str, Any]):
             _close_browser(
                 capability_reason=browser_use_close_reason,
                 expected_lifecycle_seq=browser_use_lifecycle_seq,
+                leave_window=True,
             )
         )
 
@@ -927,6 +930,46 @@ async def list_tasks():
     return {"tasks": items, "debug": {"total_returned": len(items)}}
 
 
+async def _close_browser_at_end_all() -> None:
+    """Close what the browser tools started when every task is stopped and it is not to stay open.
+
+    That is: a browser without a window, which nobody could close by hand;
+    and one that was started with browser settings the user has changed
+    since (the task that closes it then is a tracked one and may have been
+    cancelled by the drain of ``end_all``). Within a time of its own: its
+    steps add up to
+    more than the page waits for the request.
+    """
+    from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
+
+    # From before the closing begins until the kill, if it comes to one, is
+    # on record: a browser call of a new task that waits its turn behind the
+    # closing gets it the moment the closing is given up, which is before
+    # this request has asked for the kill. Let through, it would start a
+    # browser for the kill to take.
+    with builtin_provider.stopping_browser():
+        closed_in_time = True
+        try:
+            await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
+        except asyncio.TimeoutError:
+            closed_in_time = False
+            logger.warning("[Agent] end_all: the browser did not close in time; killing it")
+        if closed_in_time and builtin_provider.browser_unclosed():
+            # Asked in time, and closing it failed: it would be kept to be
+            # closed some other time, and run on meanwhile although the user
+            # stopped everything.
+            closed_in_time = False
+            logger.warning("[Agent] end_all: the browser could not be closed; killing it")
+        if not closed_in_time:
+            # Not waited for: killing waits for the processes to be gone,
+            # which takes seconds more, and the answer to this request does
+            # not depend on it. A browser call that comes meanwhile waits
+            # until the kill is over (the provider sees to it): the kill
+            # takes what it finds when its turn comes, and must not find a
+            # browser that a later task has started.
+            builtin_provider.kill_browser_unwaited()
+
+
 @app.post("/admin/control")
 async def admin_control(payload: Dict[str, Any]):
     action = (payload or {}).get("action")
@@ -979,39 +1022,17 @@ async def admin_control(payload: Dict[str, Any]):
                 logger.warning(f"[Agent] Error releasing held keys during end_all: {e}")
 
         releasing_keys = asyncio.ensure_future(_release_keys())
-        # The browser the tools started is closed as well, so nothing they
-        # opened outlives end_all (a disable-triggered close is itself
-        # tracked above and may have been cancelled by this drain). Within a
-        # time of its own: its steps add up to more than the page waits for
-        # this request.
-        from config.nekoclaw_settings import BROWSER_CLOSE_AT_END_ALL_SECONDS
-
-        # From before the closing begins until the kill, if it comes to one,
-        # is on record: a browser call of a new task that waits its turn
-        # behind the closing gets it the moment the closing is given up,
-        # which is before this request has asked for the kill. Let through,
-        # it would start a browser for the kill to take.
-        with builtin_provider.stopping_browser():
-            closed_in_time = True
-            try:
-                await asyncio.wait_for(_close_browser(update_capability=False), timeout=BROWSER_CLOSE_AT_END_ALL_SECONDS)
-            except asyncio.TimeoutError:
-                closed_in_time = False
-                logger.warning("[Agent] end_all: the browser did not close in time; killing it")
-            if closed_in_time and builtin_provider.browser_unclosed():
-                # Asked in time, and closing it failed: it would be kept to be
-                # closed some other time, and run on meanwhile although the user
-                # stopped everything.
-                closed_in_time = False
-                logger.warning("[Agent] end_all: the browser could not be closed; killing it")
-            if not closed_in_time:
-                # Not waited for: killing waits for the processes to be gone,
-                # which takes seconds more, and the answer to this request does
-                # not depend on it. A browser call that comes meanwhile waits
-                # until the kill is over (the provider sees to it): the kill
-                # takes what it finds when its turn comes, and must not find a
-                # browser that a later task has started.
-                builtin_provider.kill_browser_unwaited()
+        # Stopping the tasks is not saying that the browser is not wanted,
+        # nor is switching the master switch off (which comes through
+        # here). A window of it that the user can see stays open, as it
+        # does after a task that ended, for them to go on reading what is
+        # in it; it stays connected to, and so kept from this application's
+        # own ports. (Nothing is awaited between asking and acting on the
+        # answer.)
+        if builtin_provider.browser_window_stays():
+            logger.info("[Agent] end_all: the browser window is left open")
+        else:
+            await _close_browser_at_end_all()
         await releasing_keys
         return {"success": True, "message": "all tasks terminated and cleared"}
     elif action == "enable_analyzer":

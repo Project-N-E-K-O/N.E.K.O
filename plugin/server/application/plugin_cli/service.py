@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
+from plugin.core.entry_points import plugin_package_matches_directory
 from plugin.core.plugin_layout import resolve_plugin_layout
 from plugin.core.package_limits import MAX_PLUGIN_PACKAGE_BYTES
 from plugin.logging_config import get_logger
@@ -2118,7 +2119,17 @@ class PluginCliService:
                 projects, failures = [], []
             conflicts = [item.source_dir for item in projects if item.plugin_id in incoming_ids]
             # Registered directories reserve their ID even while their source is invalid.
-            conflicts.extend(item.source_dir for item in failures if item.source_dir.name in incoming_ids)
+            # Their manifest is unreadable, so the directory name is all we have: match it
+            # with the loader's rule instead of an exact string compare, or a broken
+            # `foo-bar/` project would stop reserving `foo_bar` (#3724).
+            conflicts.extend(
+                item.source_dir
+                for item in failures
+                if any(
+                    plugin_package_matches_directory(incoming_id, item.source_dir.name)
+                    for incoming_id in incoming_ids
+                )
+            )
             if conflicts:
                 plan = replace(plan, action="blocked", confirmation_token="", reason="project_source_conflict")
                 result = asdict(plan)

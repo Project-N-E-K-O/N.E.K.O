@@ -3143,8 +3143,8 @@ async def test_a_model_found_to_take_no_pictures_loses_the_picture_tools_in_the_
     commission, runtime = await _started(host, runtimes)
     grant = host.gateway._by_commission[commission.id]
     assert grant.supports_images is True
-    listed = [tool["name"] for tool in await host.gateway.tool_definitions(grant)]
-    assert "computer" in listed
+    loaded = await host.gateway.call_tool(grant, "capability_search", {"group": "desktop"})
+    assert loaded["isError"] is False and '"name": "computer"' in loaded["content"][0]["text"]
 
     runtime.say(
         commission.id, "model_capability", supports_images=False, reason="This model does not support image input."
@@ -3152,8 +3152,11 @@ async def test_a_model_found_to_take_no_pictures_loses_the_picture_tools_in_the_
     await host.task_agents.settle()
 
     # Its screenshots no longer reach the model: it would go on clicking a screen it cannot see.
+    # Having loaded the group does not keep the tool for it, and the group cannot be loaded again.
     assert grant.supports_images is False
-    assert "computer" not in [tool["name"] for tool in await host.gateway.tool_definitions(grant)]
+    again = await host.gateway.call_tool(grant, "capability_search", {"group": "desktop"})
+    assert again["isError"] is True
+    assert again["content"][0]["text"].startswith("The desktop tools work from pictures")
     refused = await host.gateway.call_tool(grant, "computer", {"action": "click", "x": 1, "y": 1})
     assert refused["isError"] is True
     assert refused["content"][0]["text"].startswith("computer works from pictures, and the model in use does not take pictures")

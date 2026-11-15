@@ -176,12 +176,15 @@ def test_the_prompt_has_no_unrendered_placeholders_and_no_banned_words() -> None
             assert banned not in text
 
 
-def test_the_desktop_and_browser_paragraphs_match_the_snapshot_and_appear_only_with_their_tools() -> None:
+def test_the_tools_of_the_host_gateway_add_nothing_to_the_system_prompt() -> None:
     # The keyboard-and-mouse tool and the browser tools are not tools of the
-    # runtime: the host's gateway offers them, by these names.
+    # runtime, and a session is not offered them: the host's gateway hands a
+    # group over, with how it is used, when a task agent loads it. So the
+    # system prompt is the same with the gateway's tools as without, and
+    # would be even if those tools were listed by their own names.
     from config.prompts.prompts_nekoclaw_builtin import (
-        BROWSER_SNAPSHOT_TOOL_NAME,
         BROWSER_TOOL_NAMES,
+        BUILTIN_GROUP_GUIDANCE,
         COMPUTER_TOOL_NAME,
     )
 
@@ -196,26 +199,13 @@ def test_the_desktop_and_browser_paragraphs_match_the_snapshot_and_appear_only_w
             tool_names=[*own, *offered_by_the_gateway], workdir=workdir, platform=platform, **variant
         )
 
-    with_both = prompt(COMPUTER_TOOL_NAME, *BROWSER_TOOL_NAMES)
-    _check(SNAPSHOTS / "system-prompt.win32-builtin-tools.expected.md", with_both + "\n")
-
-    paragraphs = {name: text for name, _triggers, text in texts.TOOL_GUIDANCE_SECTIONS}
-    computer, browser = "\n\n" + paragraphs["computer"], "\n\n" + paragraphs["browser"]
     assert prompt() == without
-    # Two paragraphs more than without the tools, each there once and nothing else changed.
-    assert with_both.count(computer) == 1 and with_both.count(browser) == 1
-    assert with_both.replace(computer, "").replace(browser, "") == without
-    # Each comes with its own tool, whatever else is offered.
-    assert prompt(COMPUTER_TOOL_NAME) == with_both.replace(browser, "")
-    assert prompt(BROWSER_SNAPSHOT_TOOL_NAME) == with_both.replace(computer, "")
-    assert prompt(*BROWSER_TOOL_NAMES) == with_both.replace(computer, "")
-    # Only the tool a paragraph is tied to brings it: other browser tools on
-    # their own do not, nor do names that merely look alike.
-    for name in ("browser_take_screenshot", "browser_click", "browser", "computer_use", "plugin__computer__run"):
-        assert prompt(name) == without
-    # Without a single tool of the runtime's own they still follow theirs.
-    bare = build_system_prompt(tool_names=[COMPUTER_TOOL_NAME, BROWSER_SNAPSHOT_TOOL_NAME], workdir="/w", platform="linux")
-    assert computer in bare and browser in bare
+    assert prompt("capability_search", "capability_call", "plugin__weather__today") == without
+    assert prompt(COMPUTER_TOOL_NAME, *BROWSER_TOOL_NAMES) == without
+    for guidance in BUILTIN_GROUP_GUIDANCE.values():
+        assert guidance not in without
+    # The snapshot that held the two paragraphs is gone with them.
+    assert not (SNAPSHOTS / "system-prompt.win32-builtin-tools.expected.md").exists()
 
 
 def test_dsh_paragraph_variants_follow_the_offered_tools() -> None:

@@ -59,13 +59,16 @@ class Browser:
 
     def __init__(self) -> None:
         self.closes = 0
+        # Whether each of them was to leave a window the user can see as it is.
+        self.kept_window: list[bool] = []
         self.close_started = asyncio.Event()
         # Set to make closing take until the test lets it finish.
         self.hold: asyncio.Event | None = None
         self.fails = False
 
-    async def close(self) -> None:
+    async def close(self, *, keep_window: bool = False) -> None:
         self.closes += 1
+        self.kept_window.append(keep_window)
         self.close_started.set()
         if self.hold is not None:
             await self.hold.wait()

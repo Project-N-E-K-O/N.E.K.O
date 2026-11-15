@@ -761,6 +761,77 @@ async def test_a_browser_counts_as_unclosed_only_while_the_browser_tools_still_h
     assert bare.browser_unclosed() is False
 
 
+async def test_a_browser_window_stays_only_where_the_browser_tools_say_they_show_one() -> None:
+    bare = BuiltinToolProvider(state=Switches())
+    # No browser tools were made: there is no window to leave open, and none are made to ask.
+    assert bare.browser_window_stays() is False and bare._browser is None
+
+    class Showing:
+        shows = True
+
+        def shows_a_window(self) -> bool:
+            return self.shows
+
+    tools = Showing()
+    bare._browser = tools  # type: ignore[assignment]
+    assert bare.browser_window_stays() is True
+    tools.shows = False
+    assert bare.browser_window_stays() is False
+
+
+async def test_saying_the_browser_is_no_longer_wanted_is_passed_on_and_closes_nothing() -> None:
+    bare = BuiltinToolProvider(state=Switches())
+    # Said of a browser that was never started: nothing to say it to, and no browser tools are made for it.
+    bare.browser_no_longer_wanted()
+    assert bare._browser is None
+
+    class Told:
+        def __init__(self) -> None:
+            self.told = 0
+            self.closed = 0
+
+        def no_longer_wanted(self) -> None:
+            self.told += 1
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    tools = Told()
+    bare._browser = tools  # type: ignore[assignment]
+    bare.browser_no_longer_wanted()
+    # Said at once, without a turn of the event loop; the closing is whoever said it to do.
+    assert (tools.told, tools.closed) == (1, 0)
+
+
+async def test_a_browser_the_provider_made_itself_is_left_open_until_it_is_said_not_to_be_wanted(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    from tests.unit.nekoclaw.fake_cdp_browser import ORDER, BrowserWorld, serve_shop
+
+    world = BrowserWorld(monkeypatch, tmp_path)
+    serve_shop(world.browser)
+    provider = BuiltinToolProvider(state=Switches())
+    provider._browser = tools_module.BrowserTools(world.session())
+    try:
+        assert provider.browser_window_stays() is False
+        outcome = await provider.run(
+            next(item for item in provider.available() if item.tool_name == "browser_navigate_page"),
+            commission_id="commission-1",
+            arguments={"url": ORDER},
+        )
+        assert outcome.success, outcome.text
+        assert provider.browser_window_stays() is True
+        # A task that ended gives it back: the window stays.
+        await provider.released(BUILTIN_GROUP_BROWSER, "commission-1")
+        assert provider.browser_window_stays() is True
+        provider.browser_no_longer_wanted()
+        assert provider.browser_window_stays() is False and world.closed == []
+        await provider.close_browser()
+        assert len(world.closed) == 1 and provider.browser_window_stays() is False
+    finally:
+        await provider.close_browser()
+
+
 async def test_browser_calls_that_overlap_are_reported_until_the_last_of_them_is_over(rig: Rig) -> None:
     rig.browser.gate = asyncio.Event()
     # Two calls of one commission, as a task agent makes them side by side.

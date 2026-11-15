@@ -153,11 +153,21 @@ async def _close_browser(
     capability_reason: Optional[str] = None,
     expected_lifecycle_seq: Optional[int] = None,
     update_capability: bool = True,
+    leave_window: bool = False,
 ) -> None:
     """Close the browser the browser tools started, if they started one.
 
     A browser the user is using (attach mode) is only let go of. The
     provider waits for a call under way before it closes anything.
+
+    ``leave_window`` is for when the tools stop being used (the user
+    switched them off, or the agent model stopped answering and the switch
+    was put off for them): a browser window they can see is left open and
+    connected to, as it is after a task that ended, and they may go on
+    reading what is in it. It is closed when they close it, when they
+    change the browser settings, or when the application quits. One without
+    a window is closed all the same. Decided once a call that is under way
+    is over.
     """
     from .nekoclaw_builtins import provider
 
@@ -166,7 +176,10 @@ async def _close_browser(
 
     cancelled = False
     try:
-        await provider.close_browser()
+        if leave_window:
+            await provider.close_browser(keep_window=True)
+        else:
+            await provider.close_browser()
     except asyncio.CancelledError:
         cancelled = True
         raise
@@ -309,7 +322,9 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 if _shared.Modules.agent_flags.get("browser_use_enabled"):
                     _shared.Modules.agent_flags["browser_use_enabled"] = False
                     _shared.Modules.notification = json.dumps({"code": "AGENT_AUTO_DISABLED_BROWSER", "details": {"reason_code": reason}})
-                    await _close_browser(capability_reason=reason)
+                    # Put off for the user, not by them: a window they can
+                    # see is not taken from them.
+                    await _close_browser(capability_reason=reason, leave_window=True)
 
             _bump_state_revision()
             await _emit_agent_status_update()
@@ -326,7 +341,7 @@ async def _fire_agent_llm_connectivity_check(*, queue: bool = False) -> None:
                 _shared.Modules.agent_flags["computer_use_enabled"] = False
             if _shared.Modules.agent_flags.get("browser_use_enabled"):
                 _shared.Modules.agent_flags["browser_use_enabled"] = False
-                await _close_browser(capability_reason="AGENT_LLM_UNREACHABLE")
+                await _close_browser(capability_reason="AGENT_LLM_UNREACHABLE", leave_window=True)
             _shared.Modules.notification = json.dumps({"code": "AGENT_LLM_CHECK_ERROR"})
             _bump_state_revision()
             await _emit_agent_status_update()

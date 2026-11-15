@@ -1510,6 +1510,73 @@ async def test_the_host_is_given_the_tools_and_tells_this_process_who_uses_them(
     assert {event["activity"]["commission_id"] for event in activity} == {commission.id}
 
 
+async def test_stopping_every_task_gives_the_browser_back_and_leaves_its_window_open(
+    wiring, server, builtins, tmp_path, monkeypatch
+):
+    from nekoclaw.host import mount
+    from plugin.core.state import state as plugin_state
+
+    monkeypatch.setattr(plugin_state.bus_change_hub, "subscribe", lambda bus, callback: lambda: None)
+    monkeypatch.setattr(wiring.mount_module, "_unsubscribe", None)
+    mount.reset_for_tests()
+    wiring.mount_module.mount_nekoclaw_host()
+    mount.configure(
+        **dict(mount._options), root=tmp_path / "nekoclaw", client_factory=server.client, decision_llm=wiring.llm
+    )
+    host = mount.get_host()
+    commission, _ = await host.ledger.create(lanlan_name="Lan", title="订票", dispatch_text="订票", source="dispatch")
+    await host.ledger.transition(commission.id, "working", route="task_agent")
+
+    class Window:
+        """Stands in for the browser tools with a browser of ours open, window and all."""
+
+        def __init__(self) -> None:
+            self.forgot = 0
+            self.closed = 0
+
+        def shows_a_window(self) -> bool:
+            return True
+
+        def window(self) -> Any:
+            return {"browser": "Google Chrome", "pid": 4242, "window_id": 7, "bounds": {"left": 0, "top": 0}}
+
+        async def released(self) -> None:
+            self.forgot += 1
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+        def holds_a_browser(self) -> bool:
+            return True
+
+        def kill(self) -> None:
+            raise AssertionError("a window that is left open is not killed")
+
+    tools = Window()
+    monkeypatch.setattr(builtins.provider, "_browser", tools)
+    assert await host.leases.acquire(BROWSER, commission.id, title="订票") is None
+    assert builtins.module.occupant(BROWSER) == commission.id
+    # The banner is up.
+    await asyncio.gather(*list(builtins.modules._background_tasks))
+
+    answer = await wiring.routes.admin_control({"action": "end_all"})
+
+    assert answer["success"] is True
+    assert (await host.ledger.get(commission.id)).status == "cancelled"
+    await host.leases.settle()
+    await asyncio.gather(*list(builtins.modules._background_tasks))
+    # The browser was given back, and the banner is told to come down, as when any task ends ...
+    assert builtins.module.occupant(BROWSER) is None
+    activity = [event["activity"] for event in wiring.of("builtin_activity")]
+    assert [(item["group"], item["state"], item["commission_id"]) for item in activity] == [
+        (BROWSER, "started", commission.id),
+        (BROWSER, "ended", commission.id),
+    ]
+    assert await wiring.runtime.builtin_activity() == {"activity": []}
+    # ... with what the stopped task knew of its pages forgotten, and the window left as it is.
+    assert tools.forgot == 1 and tools.closed == 0
+
+
 # ---------------------------------------------------------------------------
 # The banner's routes: who is using the tools, and stopping them with Esc
 # ---------------------------------------------------------------------------
@@ -1653,6 +1720,106 @@ async def test_a_commission_that_had_already_ended_is_not_reported_as_stopped(wi
 
     assert answer == {"success": True, "stopped": []}
     assert (await host.ledger.get(finished)).status == "done"
+
+
+@pytest.mark.parametrize("payload", [{"group": BROWSER}, {}])
+async def test_a_stop_that_names_the_commission_it_is_meant_for_stops_that_one(wiring, builtins, monkeypatch, payload):
+    host = wiring.host_mount.get_host()
+    booking = await _working(host, "订票")
+    builtins.module._in_use[BROWSER] = booking
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    answer = await wiring.runtime.stop_builtin({**payload, "commission_id": booking})
+
+    # Nothing was left alone, and the answer says that too.
+    assert answer == {"success": True, "stopped": [booking], "not_stopped": []}
+    assert aborted == [(booking, "Stopped with Esc")]
+    assert (await host.ledger.get(booking)).status == "cancelled"
+
+
+async def test_a_stop_meant_for_a_commission_that_no_longer_uses_the_group_leaves_the_one_that_does_alone(
+    wiring, builtins, monkeypatch
+):
+    host = wiring.host_mount.get_host()
+    # The banner was up for the booking. Esc was pressed, and the request took its time: by now the booking
+    # has ended and another task has the browser.
+    booking, shopping = await _working(host, "订票"), await _working(host, "比价")
+    await host.ledger.transition(booking, "done")
+    builtins.module._in_use[BROWSER] = shopping
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    answer = await wiring.runtime.stop_builtin({"group": BROWSER, "commission_id": booking})
+
+    assert answer == {
+        "success": True,
+        "stopped": [],
+        "not_stopped": [{"group": BROWSER, "commission_id": shopping}],
+    }
+    assert aborted == []
+    assert (await host.ledger.get(shopping)).status == "working"
+    assert (await host.ledger.get(booking)).status == "done"
+
+
+async def test_a_stop_meant_for_one_commission_stops_it_where_it_is_and_says_where_another_is(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    typing, booking = await _working(host, "填表"), await _working(host, "订票")
+    builtins.module._in_use.update({KEYBOARD: typing, BROWSER: booking})
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    # No group named: both are looked at, and only the one the stop is meant for is stopped.
+    answer = await wiring.runtime.stop_builtin({"commission_id": booking})
+
+    assert answer == {
+        "success": True,
+        "stopped": [booking],
+        "not_stopped": [{"group": KEYBOARD, "commission_id": typing}],
+    }
+    assert aborted == [(booking, "Stopped with Esc")]
+    assert (await host.ledger.get(typing)).status == "working"
+
+
+async def test_a_stop_meant_for_a_commission_says_nothing_of_a_group_nobody_uses(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    booking = await _working(host, "订票")
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    # It had let go of the browser by the time the request arrived, and nobody took it.
+    answer = await wiring.runtime.stop_builtin({"group": BROWSER, "commission_id": booking})
+
+    assert answer == {"success": True, "stopped": [], "not_stopped": []}
+    assert aborted == []
+    assert (await host.ledger.get(booking)).status == "working"
+
+
+@pytest.mark.parametrize("meant", ["", 7, ["c1"], {"id": "c1"}, False])
+async def test_a_stop_that_names_its_commission_with_something_that_is_no_name_is_refused(
+    wiring, builtins, monkeypatch, meant
+):
+    from fastapi import HTTPException
+
+    host = wiring.host_mount.get_host()
+    booking = await _working(host, "订票")
+    builtins.module._in_use[BROWSER] = booking
+    aborted = _spy_on_abort(host, monkeypatch)
+
+    # Taken for "no commission named", it would stop whoever uses the group.
+    with pytest.raises(HTTPException) as raised:
+        await wiring.runtime.stop_builtin({"group": BROWSER, "commission_id": meant})
+
+    assert raised.value.status_code == 400
+    assert aborted == []
+    assert (await host.ledger.get(booking)).status == "working"
+
+
+async def test_a_stop_without_a_commission_named_answers_as_it_always_did(wiring, builtins, monkeypatch):
+    host = wiring.host_mount.get_host()
+    booking = await _working(host, "订票")
+    builtins.module._in_use[BROWSER] = booking
+
+    # ``None`` is "not named", as when the key is missing.
+    answer = await wiring.runtime.stop_builtin({"group": BROWSER, "commission_id": None})
+
+    assert answer == {"success": True, "stopped": [booking]}
 
 
 # ---------------------------------------------------------------------------
