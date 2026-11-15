@@ -2151,9 +2151,14 @@ async def test_a_text_that_replaced_an_entrys_in_an_editor_is_not_added_when_it_
     path.write_text(path.read_text(encoding="utf-8").replace("It uses Flask.", "It uses FastAPI now."), encoding="utf-8")
 
     same = await space.submit(_commission(id="c-2"), _lesson("Stack", "It uses FastAPI now."))
+    # Something else is added, and then the text from the editor is filed once more, by the same commission too.
+    added = await space.submit(_commission(id="c-3"), _lesson("Stack", "And SQLite."))
+    again = await space.submit(_commission(id="c-2"), _lesson("Stack", "It uses FastAPI now."))
 
-    assert same == "already in stack.md in project _daily, word for word; nothing was added"
-    assert (await space.read_entry("stack", DEFAULT_PROJECT)).content.count("It uses FastAPI now.") == 1
+    already = "already in stack.md in project _daily, word for word; nothing was added"
+    assert (same, added, again) == (already, "added to stack.md in project _daily", already)
+    content = (await space.read_entry("stack", DEFAULT_PROJECT)).content
+    assert content.count("It uses FastAPI now.") == 1 and content.count("And SQLite.") == 1
 
 
 # ---------------------------------------------------------------------------

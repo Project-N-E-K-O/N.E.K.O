@@ -666,13 +666,18 @@ class TaskAgentSpace:
                 # an entry two commissions filed is not one commission's own.
                 known = [item.strip() for item in document.get("sources").split(",") if item.strip()]
                 another = bool(source) and source not in known
-                if not fresh and not another:
+                # The text is in the entry now, added or there already, so
+                # its mark is kept: one that was put there in an editor has
+                # none yet, and would not be known again once the entry
+                # says more than it.
+                marks = [item.strip() for item in document.get("texts").split(",") if item.strip()]
+                unmarked = _digest(content) not in marks
+                if not fresh and not another and not unmarked:
                     return text
                 if fresh:
                     document.set("updated", today)
-                    marks = [item.strip() for item in document.get("texts").split(",") if item.strip()]
-                    if _digest(content) not in marks:
-                        document.set("texts", ", ".join([*marks, _digest(content)]))
+                if unmarked:
+                    document.set("texts", ", ".join([*marks, _digest(content)]))
                 if another:
                     document.set("sources", ", ".join([*known, source]))
                 return _render_document(document)
