@@ -16,7 +16,7 @@ from scripts.check_nuitka_dist import (
     _check_plugin_tomls,
     _plugin_manifest_id,
 )
-from scripts.prepare_nuitka_plugins import install_plugins, prepare_plugins
+from scripts.prepare_nuitka_plugins import install_plugins, prepare_plugins, stage_agent_kit
 
 
 def _write(path: Path, content: str = "runtime\n") -> None:
@@ -323,6 +323,46 @@ def test_desktop_workflows_use_filtered_plugin_stage() -> None:
         assert "--include-data-dir=plugin/plugins=plugin/plugins" not in workflow
         assert 'NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=plugin.plugins"' not in workflow
         assert "set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=plugin.plugins" not in workflow_lines
+
+
+def test_desktop_workflows_bundle_the_staged_agent_kit() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    include_line = (
+        "--include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit"
+    )
+    expectations = {
+        ".github/workflows/build-desktop.yml": 2,  # unix and windows legs
+        ".github/workflows/build-desktop-linux.yml": 1,
+    }
+
+    for relative, count in expectations.items():
+        workflow = (repo_root / relative).read_text(encoding="utf-8")
+        assert "scripts/prepare_nuitka_plugins.py prepare" in workflow
+        assert workflow.count(include_line) == count
+
+
+def test_stage_agent_kit_copies_authored_skill_without_caches(tmp_path: Path) -> None:
+    project_root = tmp_path / "repo"
+    source = project_root / ".agent" / "skills" / "neko-plugin"
+    _write(source / "SKILL.md", "skill\n")
+    _write(source / "AGENTS.md", "guide for {plugin_id}\n")
+    _write(source / "references" / "topic.md", "reference\n")
+    _write(source / "__pycache__" / "junk.pyc", "cache\n")
+    staged_before = project_root / "plugin" / "neko_plugin_cli" / "agent_kit"
+    _write(staged_before / "stale.md", "stale\n")
+
+    destination = stage_agent_kit(project_root=project_root)
+
+    assert destination == staged_before.resolve()
+    assert (destination / "SKILL.md").read_text(encoding="utf-8") == "skill\n"
+    assert (destination / "references" / "topic.md").is_file()
+    assert not (destination / "stale.md").exists()
+    assert not (destination / "__pycache__").exists()
+
+
+def test_stage_agent_kit_requires_authored_source(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="agent kit source"):
+        stage_agent_kit(project_root=tmp_path)
 
 
 def test_prepare_helper_is_directly_executable_without_pythonpath(tmp_path: Path) -> None:

@@ -108,6 +108,9 @@ __pycache__/
 .kiro/
 # Local Windows Nuitka build script — maintainer-only, not for repo
 build_nuitka.bat
+# Generated agent-kit staging (scripts/prepare_nuitka_plugins.py prepare);
+# the authored source lives in .agent/skills/neko-plugin/
+/plugin/neko_plugin_cli/agent_kit/
 # Playwright browsers cache (used by build_nuitka.bat, not for repo)
 playwright_browsers/
 .playwright-browsers/
@@ -126,6 +129,8 @@ data/embedding_models/
 .kilo/
 plans/
 CLAUDE.md
+# The scaffolded CLAUDE.md pointer is authored kit content, not a local scratch file.
+!.agent/skills/neko-plugin/CLAUDE.md
 /.workbuddy/
 
 # Rust: ignore target and cargo artifacts

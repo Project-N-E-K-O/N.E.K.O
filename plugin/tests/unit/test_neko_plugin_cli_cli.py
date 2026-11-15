@@ -2406,7 +2406,7 @@ def test_release_check_rejects_a_scaffold_without_any_commit(
     assert neko_plugin_cli.main(["init", "fresh_demo", "--output", str(plugin_dir)]) == 0
 
     assert _release_check(plugin_dir, tmp_path / "target") == 1
-    assert "[ERROR] git working tree has uncommitted or untracked files: .github/" in capsys.readouterr().err
+    assert "[ERROR] git working tree has uncommitted or untracked files: .agents/" in capsys.readouterr().err
 
 
 def test_repository_diagnosis_only_warns_without_own_repository(tmp_path: Path) -> None:

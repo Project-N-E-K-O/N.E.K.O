@@ -105,12 +105,19 @@ def test_init_creates_complete_plugin_source_by_default(
         "ruff.toml",
         ".github/workflows/verify.yml",
         ".github/workflows/release.yml",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".agents/skills/neko-plugin/SKILL.md",
+        ".agents/skills/neko-plugin/references/core-plugin-contract.md",
         ".git/HEAD",
     } <= {
         path.relative_to(repo).as_posix()
         for path in repo.rglob("*")
     }
     assert _git(repo, "branch", "--show-current") == "main"
+    agents_md = (repo / "AGENTS.md").read_text(encoding="utf-8")
+    assert "neko-plugin check market_demo" in agents_md
+    assert "{plugin_id}" not in agents_md
     assert "plugin-market-verify.yml@main" in (
         repo / ".github/workflows/verify.yml"
     ).read_text(encoding="utf-8")

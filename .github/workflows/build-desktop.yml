@@ -457,6 +457,9 @@ jobs:
           # Data directories
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=assets=assets"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=templates=templates"
+          # Agent kit staged by prepare_nuitka_plugins.py prepare; the frozen
+          # CLI copies it into every scaffolded plugin (see templates/agent_kit.py).
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit"
           # Plugin manager UI (vite dist; gitignored)
           if [ -d "frontend/plugin-manager/dist" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist"
@@ -621,6 +624,9 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=config/surveys=config/surveys
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=assets=assets
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=templates=templates
+          rem Agent kit staged by prepare_nuitka_plugins.py prepare; the frozen
+          rem CLI copies it into every scaffolded plugin (see templates/agent_kit.py).
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit
           if not exist "frontend\plugin-manager\dist" echo [WARNING] frontend\plugin-manager\dist missing; /ui will be empty in bundle.
           if exist "frontend\plugin-manager\dist" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist
           rem Built-in plugin payload is copied from the filtered stage after Nuitka.

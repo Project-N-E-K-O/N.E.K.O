@@ -14,6 +14,7 @@ from plugin._types.plugin_types import (
 )
 
 from ..core.build_rules import VENDOR_SYNC_GLOBS
+from . import agent_kit
 
 _PYTHON_PLUGIN_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MARKET_REPO_PREFIX = "n.e.k.o_plugin_"
@@ -51,6 +52,7 @@ class PluginSpec:
     create_gitignore: bool = True
     create_vscode: bool = True
     create_github_actions: bool = False
+    create_agent_kit: bool = True
     quick_start: bool = False
 
     @property
@@ -174,6 +176,10 @@ def render_plugin_files(
         files[Path("ruff.toml")] = render_ruff_config()
         files[Path(".github/workflows/verify.yml")] = render_verify_workflow(spec)
         files[Path(".github/workflows/release.yml")] = render_release_workflow(spec)
+    if spec.create_agent_kit:
+        files[Path("AGENTS.md")] = agent_kit.render_agents_md(spec.plugin_id)
+        files[Path("CLAUDE.md")] = agent_kit.render_claude_md()
+        files.update(agent_kit.skill_files())
     return files
 
 
