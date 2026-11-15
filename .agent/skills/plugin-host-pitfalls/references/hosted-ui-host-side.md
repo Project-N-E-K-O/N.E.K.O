@@ -39,7 +39,8 @@ hosted TSX surface 跑在沙箱 iframe 的 `srcdoc` 里，自包含，没有模�
 cd frontend/plugin-manager
 npm run test:unit          # CI 会跑，含 hosted 目录下的 vitest
 npm run test:hosted-script # 检查脚本自己的 node:test
-npm run check-hosted-tsx -- plugin/plugins/<带 TSX surface 的插件>
+npm run check-hosted-tsx -- plugin/plugins/<带 TSX surface 的插件>   # 路径相对仓库根，脚本自己解析
+cd ../..                   # 回到仓库根再跑 Python 测试
 uv run pytest plugin/tests/unit/server/test_plugin_ui_query_service.py -q
 ```
 

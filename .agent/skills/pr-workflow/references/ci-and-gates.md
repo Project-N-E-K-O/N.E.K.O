@@ -29,9 +29,10 @@
   gh workflow run analyze.yml --ref <分支>
   gh workflow run unit-tests.yml --ref <分支>
   gh workflow run unit-test-shards.yml --ref <分支>
+  gh workflow run plugin-tests.yml --ref <分支>
   ```
 
-  这三个有 `workflow_dispatch`。`plugin-tests.yml` 和 `pr-report-gate.yml` 没有，只能等 base 改回 main。
+  这四个有 `workflow_dispatch`。`plugin-tests.yml` 在 PR 上按路径过滤，手动触发不过滤，所以只在改了插件相关的东西时才需要触发它。`pr-report-gate.yml` 没有 `workflow_dispatch`，只能等 base 改回 main，在那之前用下面「PR 描述门禁」一节的命令本地预验。
 - 手动触发时，`analyze.yml` 里和 base 比差异的几步不跑（`check_i18n_sync.py`、`check_docstring_no_cjk.py`、`check_prompt_zh_tw.py`、`check_no_nonascii_asset_names.py` 的 `--base`）。要在本地对 PR 的 base 和 `origin/main` 各跑一遍。
 - 汇报时不要把「PR 页面没有红」说成 CI 通过。写明手动触发了哪几个、结果如何。
 - 上游 PR 合并后把 base 改成 main，之后每次推送自动跑全部工作流。
