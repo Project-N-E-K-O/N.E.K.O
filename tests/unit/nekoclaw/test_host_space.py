@@ -1703,3 +1703,86 @@ async def test_a_project_archived_right_before_the_process_stopped_is_the_one_th
     assert sorted(entry.id for entry in await again.list_entries("Blog")) == ["deploy", "new-stack"]
     index = (root / "MEMORY.md").read_text(encoding="utf-8")
     assert index.count("[project: Blog](projects/Blog/MEMORY.md)") == 1
+
+
+# ---------------------------------------------------------------------------
+# The fifteenth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_summary_in_use_is_still_kept_when_the_process_stops_before_the_move(space, root, clock, monkeypatch):
+    await space.touch_project("Budget app", description="tracks spending", workdir="D:/w")
+
+    def stopped(source, target):
+        raise RuntimeError("the process stopped here")
+
+    # Its record is written ahead of the move; the process stops before the move.
+    monkeypatch.setattr("nekoclaw.host.space._move", stopped)
+    with pytest.raises(RuntimeError):
+        await space.archive_project("Budget app", summary="An app.", description="paused")
+    monkeypatch.undo()
+
+    again = TaskAgentSpace(lambda: SpacePaths(root), clock=clock)
+    project = await again.get_project("Budget app")
+    # Still among the projects, with what it had, and the summary is not to be asked for again.
+    assert (project.status, project.workdir, project.archived_at) == ("active", "D:/w", None)
+    assert project.kept_summary() == ("An app.", "paused")
+
+    archived = await again.archive_project("Budget app")
+
+    home = root / "archive" / archived.archive_year / "Budget app"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "An app.\n"
+    assert "pending_archive" not in (home / "project.json").read_text(encoding="utf-8")
+    assert "— paused" in (root / "MEMORY.md").read_text(encoding="utf-8")
+
+
+async def test_a_project_brought_back_keeps_no_summary_from_when_it_was_archived(space, root, clock, monkeypatch):
+    await space.touch_project("Budget app")
+    put = TaskAgentSpace._put_project
+
+    def stopped_after_the_move(self, directory, project):
+        # The directory is in the archive; the process stops before its record is tidied.
+        if "archive" in directory.parts:
+            raise RuntimeError("the process stopped here")
+        return put(self, directory, project)
+
+    monkeypatch.setattr(TaskAgentSpace, "_put_project", stopped_after_the_move)
+    with pytest.raises(RuntimeError):
+        await space.archive_project("Budget app", summary="An app.")
+    monkeypatch.undo()
+    again = TaskAgentSpace(lambda: SpacePaths(root), clock=clock)
+    (archived,) = await again.list_projects()
+    assert (archived.status, archived.kept_summary()) == ("archived", ("An app.", ""))
+
+    # A lesson of a commission that ended late brings it back; nothing was commissioned for it.
+    await again.file_entry("Budget app", title="Deploy", content="Push to main.")
+
+    back = await again.get_project("Budget app")
+    assert (back.status, back.kept_summary()) == ("active", None)
+
+
+async def test_entries_are_not_moved_while_the_index_that_lists_them_cannot_be_read(space, root, monkeypatch):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    daily.write_text("- [What it is built on](memory/stack.md) — my own words\n", encoding="utf-8")
+    await space.touch_project("Budget app")
+    read = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == daily:
+            raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(OSError):
+        await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app")
+
+    monkeypatch.undo()
+    # Nothing moved, and the line the user wrote is where it was.
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["stack"]
+    assert await space.list_entries("Budget app") == []
+    assert daily.read_text(encoding="utf-8") == "- [What it is built on](memory/stack.md) — my own words\n"
+    # Once it reads again, the entry goes with the user's line.
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+    assert "- [What it is built on](memory/stack.md) — my own words" in await space.read_index("Budget app")

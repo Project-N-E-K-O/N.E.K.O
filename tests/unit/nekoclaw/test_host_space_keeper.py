@@ -1820,7 +1820,6 @@ async def test_an_entry_moved_to_a_project_that_has_one_of_its_name_keeps_both(w
 
 async def test_a_summary_that_can_be_kept_nowhere_on_disk_is_still_asked_for_once(world, monkeypatch):
     from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
-    from nekoclaw.host.space import _move as move
 
     await world.space.touch_project("Alpha")
     world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
@@ -1844,8 +1843,9 @@ async def test_a_summary_that_can_be_kept_nowhere_on_disk_is_still_asked_for_onc
         alpha = await world.space.get_project("Alpha")
         assert (alpha.status, alpha.kept_summary()) == ("active", None)
 
-    # Once it can be moved, it goes with what the model wrote that one time.
-    monkeypatch.setattr("nekoclaw.host.space._move", move)
+    # A project whose record cannot be written is not moved either. Once both can be,
+    # it goes with what the model wrote that one time.
+    monkeypatch.undo()
     await world.keeper.tidy(force=True)
 
     assert world.llm.count(TIER_ARCHIVE) == 1
@@ -1883,3 +1883,22 @@ async def test_a_summary_held_for_a_project_is_dropped_once_the_project_is_used(
     await world.keeper.tidy(force=True)
 
     assert world.llm.count(TIER_ARCHIVE) == 2
+
+
+async def test_a_review_is_kept_though_what_the_commission_filed_could_not_be_moved(world, monkeypatch):
+    commission = await world.file("build me a budget app")
+    await world.work(commission.id)
+    await world.space.submit(commission, {"title": "Stack", "content": "It uses Flask.", "category": "lesson"})
+
+    async def cannot(*args: Any, **kwargs: Any) -> Any:
+        raise PermissionError(13, "the index is in use")
+
+    monkeypatch.setattr(world.space, "refile_entries", cannot)
+    world.llm.answers[TIER_REVIEW] = [{"review": "It set the app up.", "project": "Budget app"}]
+
+    await world.end(commission.id)
+
+    last = (await world.reviews(commission.id))[-1]
+    assert (last["status"], last["project"]) == ("written", "Budget app") and "refiled" not in last
+    assert (await world.space.read_review(commission.id)).project == "Budget app"
+    assert [entry.id for entry in await world.space.list_entries(DEFAULT_PROJECT)] == ["stack"]

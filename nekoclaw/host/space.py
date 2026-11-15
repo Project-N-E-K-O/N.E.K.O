@@ -511,10 +511,10 @@ class TaskAgentSpace:
         if not self._edit_text(index, change):
             self._index_add(index, line, target)
 
-    def _index_line_of(self, index: Path, target: str) -> str | None:
-        """Return the line of an index that points at ``target``, as it is written there, or None."""
+    @staticmethod
+    def _index_line_in(text: str, target: str) -> str | None:
+        """Return the line of an index's text that points at ``target``, as it is written there, or None."""
         marks = _index_marks(target)
-        text = self._read_text(index) or ""
         return next((item for item in text.split(chr(10)) if any(mark in item for mark in marks)), None)
 
     def _index_remove(self, index: Path, target: str) -> None:
@@ -737,13 +737,18 @@ class TaskAgentSpace:
         added to stays where it is, and so does every entry of theirs.
         The files are moved as they are, each under a name that is free,
         and so are their lines in the index: a line the user reworded goes
-        along as it is, but for the file it points at.
+        along as it is, but for the file it points at. Raises OSError, with
+        nothing moved, when the index they are listed in cannot be read.
         """
 
         def work() -> list[str]:
             paths = self._paths()
             self._revive(target)
             origin, destination = paths.memory_dir(source), paths.memory_dir(target)
+            # Read before anything moves, and not taken for empty when it
+            # cannot be read: a line the user reworded would be replaced by
+            # one made anew, and theirs removed once the index reads again.
+            listed = self._text_to_change(paths.index(source))
             moved: list[str] = []
             for entry in self._entries(origin, source):
                 if entry.sources != (commission_id,):
@@ -767,7 +772,7 @@ class TaskAgentSpace:
                     continue
                 link = f"{paths.MEMORY_DIR}/{name}.md"
                 was = f"{paths.MEMORY_DIR}/{entry.id}.md"
-                line = self._index_line_of(paths.index(source), was)
+                line = self._index_line_in(listed, was)
                 if line is None:
                     line = _index_line(entry.title, link, entry.description)
                 else:
@@ -1184,6 +1189,7 @@ class TaskAgentSpace:
                 archive_year=None,
                 archive_attempts=0,
                 directory=target.name,
+                pending_archive=None,
             )
             self._put_project(target, restored)
         self._index_remove(paths.index(None), f"archive/{project.archive_year}/{source.name}/{paths.SUMMARY_NAME}")
@@ -1317,6 +1323,16 @@ class TaskAgentSpace:
             archive_year=year,
             pending_archive=None,
         )
+        # The summary this try goes by. It stays in the record until the
+        # directory has moved: stopped in between, the project is still
+        # among the projects and its summary is not asked for again.
+        using: dict[str, Any] | None = {
+            "for": project.last_commission_at,
+            "summary": redact(summary).strip(),
+            "line": _one_line(redact(description)),
+        }
+        if not using["summary"]:
+            using = None
         ahead = False
         try:
             if summary.strip():
@@ -1333,17 +1349,12 @@ class TaskAgentSpace:
                 # that is whole: by that time the project is told from an
                 # older one of its name in the archive. While it is still
                 # among the projects, that time in its record means nothing.
-                self._put_project(source, archived)
+                self._put_project(source, replace(archived, pending_archive=using))
                 ahead = True
             _move(source, target)
         except OSError as exc:
             logger.warning("a project could not be moved to the archive (%s); it stays where it is", type(exc).__name__)
-            pending = {
-                "for": project.last_commission_at,
-                "summary": redact(summary).strip(),
-                "line": _one_line(redact(description)),
-            }
-            back = replace(project, pending_archive=pending) if pending["summary"] else project
+            back = replace(project, pending_archive=using) if using is not None else project
             if readable and (ahead or back != project):
                 # As it was, with a summary that came to nothing kept for the next try.
                 try:
@@ -1352,6 +1363,12 @@ class TaskAgentSpace:
                     logger.warning("the record of a project that could not be archived could not be put back", exc_info=True)
             return None
         archived = replace(archived, directory=target.name)
+        if readable and using is not None:
+            # Moved: the summary is in ``SUMMARY.md`` and has done its work.
+            try:
+                self._put_project(target, archived)
+            except OSError:
+                logger.warning("the record of an archived project still holds the summary it was archived with", exc_info=True)
         _line, link = self._project_line(project)
         self._index_remove(paths.index(None), link)
         archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME}"
