@@ -1205,8 +1205,10 @@ async def test_a_project_that_cannot_be_moved_stays_and_its_summary_is_kept_for_
 
     monkeypatch.setattr(module, "_move", held_open)
 
-    # Asked by hand, without a summary: there is nothing to keep.
+    # Asked by hand, without a summary: there is nothing to keep, and nothing is written.
+    untouched = (root / "projects" / "Budget app" / "project.json").read_bytes()
     assert await space.archive_project("Budget app") is None
+    assert (root / "projects" / "Budget app" / "project.json").read_bytes() == untouched
     assert (await space.get_project("Budget app")).kept_summary() is None
     # With a summary, which a model was asked for: kept in the project's record.
     assert await space.archive_project("Budget app", summary="An app.", description="spending tracker, paused") is None
