@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 import anyio
@@ -172,7 +172,10 @@ class ModelGatewayService:
         except httpx.HTTPError as exc:
             raise ModelGatewayError("upstream_connection_error", "Could not complete the model provider request", 502) from exc
 
-    async def stream(self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None) -> AsyncIterator[bytes]:
+    async def stream(
+        self, slot: ModelSlot, body: object, *, observation: AttemptObservation | None = None,
+        before_send: Callable[[], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[bytes]:
         httpx = await ensure_httpx()
         slot = slot.model_copy(deep=True)
         endpoint = _endpoint(slot)
@@ -232,6 +235,10 @@ class ModelGatewayService:
                 _, payload, headers, _ = await asyncio.to_thread(
                     _prepare, slot, body, streaming=True, inject_stream_usage=False,
                 )
+                if before_send is not None:
+                    # The retry is a second real upstream send with the same
+                    # free credentials; it must reserve quota again or fail.
+                    await before_send()
             yield b"data: [DONE]\n\n"
         except httpx.TimeoutException as exc:
             raise ModelGatewayError("upstream_timeout", "Model provider stream timed out", 504) from exc

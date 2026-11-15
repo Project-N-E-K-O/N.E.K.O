@@ -807,3 +807,46 @@ def test_observation_detaches_counters_and_rejects_malformed_replacements():
         observation.observe(replacement, reported=True)
         assert observation.usage == {**USAGE, "prompt_tokens_details": {"cached_tokens": 4}}
         assert observation.usage_status == "partial"
+
+
+async def test_stream_options_retry_reserves_quota_again_via_before_send():
+    bodies = []
+    reservations = []
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unsupported"}})
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=ByteStream(event_bytes(openai_events()[:-1], done=True)))
+
+    async def before_send():
+        reservations.append(len(bodies))
+
+    gateway, _ = gateway_for(upstream)
+    parts = [part async for part in gateway.stream(make_slot(), request_body(stream=True), before_send=before_send)]
+    assert parts[-1] == b"data: [DONE]\n\n"
+    # The retry is a second real send: the hook ran again right before it.
+    assert reservations == [1]
+    assert ["stream_options" in body for body in bodies] == [True, False]
+
+
+async def test_stream_options_retry_rejected_when_quota_exhausted():
+    bodies = []
+
+    async def upstream(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if "stream_options" in body:
+            return httpx.Response(400, json={"error": {"message": "unsupported"}})
+        pytest.fail("the exhausted retry must never reach upstream")
+
+    async def before_send():
+        raise ModelGatewayError("agent_quota_exceeded", "Free agent daily quota exceeded (500/500)", 429)
+
+    gateway, _ = gateway_for(upstream)
+    with pytest.raises(ModelGatewayError) as error:
+        _ = [part async for part in gateway.stream(make_slot(), request_body(stream=True), before_send=before_send)]
+    assert error.value.code == "agent_quota_exceeded"
+    assert len(bodies) == 1  # only the first send happened

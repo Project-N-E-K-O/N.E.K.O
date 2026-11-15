@@ -73,7 +73,7 @@ class Gateway:
         finally:
             self.closed.set()
 
-    async def stream(self, model_slot, request, *, observation):
+    async def stream(self, model_slot, request, *, observation, before_send=None):
         prepare_chat_request(model_slot, request)
         self.calls.append(model_slot.model)
         observation.upstream_started = True

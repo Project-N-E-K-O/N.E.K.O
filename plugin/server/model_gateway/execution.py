@@ -391,7 +391,13 @@ class ModelExecutor:
                         await call_before_attempt(slot_id, slot)
                     if stream is None:
                         return await self.gateway.complete(slot, body, observation=observation)
-                    upstream = self.gateway.stream(slot, body, observation=observation)
+                    before_send = None
+                    if call_before_attempt is not None:
+                        async def before_send() -> None:
+                            # Covers internal re-sends (stream_options retry):
+                            # every real upstream send reserves quota again.
+                            await call_before_attempt(slot_id, slot)
+                    upstream = self.gateway.stream(slot, body, observation=observation, before_send=before_send)
                     try:
                         async for chunk in upstream:
                             if chunk:
