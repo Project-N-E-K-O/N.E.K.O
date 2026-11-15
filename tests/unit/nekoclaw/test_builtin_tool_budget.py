@@ -168,9 +168,11 @@ def _as_sent(tools: list[dict[str, Any]]) -> str:
     return json.dumps([[tool["name"], tool["description"], tool["inputSchema"]] for tool in tools], ensure_ascii=False)
 
 
-def _runtime_tool_names() -> set[str]:
-    """Every tool name the runtime can have itself, whatever the platform, the model and the host."""
-    names = set(DSH_TOOL_SCHEMAS) | set(NEKOCLAW_TOOL_SCHEMAS)
+PLATFORMS = (("win32", "C:\\work"), ("linux", "/work"))
+
+
+def _own_tools(platform: str, workdir: str, *, images: bool = True) -> list[Any]:
+    """The runtime's own tools as a task agent started by the host has them: every host call on offer."""
 
     class Host:
         capabilities = frozenset(HOST_CALLS)
@@ -178,22 +180,28 @@ def _runtime_tool_names() -> set[str]:
         async def call(self, session_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
             raise AssertionError("no host call is made while building tools")
 
-    for platform, workdir in (("win32", "C:\\work"), ("linux", "/work")):
-        context = ToolContext(
-            session_id="names",
-            workdir=Path(workdir),
-            spill=SpillStore(Path(workdir) / "outputs"),
-            host=Host(),
-            limits=RuntimeLimits(),
-            supports_images=True,
-            platform=platform,
-            inbox=SessionInbox(),
-            jobs=JobRegistry(lambda job: None),
-            todos=TodoState(),
-            goals=GoalState(default_rounds=20, max_rounds=100),
-            emit_report=lambda payload: None,
-        )
-        names |= {tool.name for tool in build_tools(context)}
+    context = ToolContext(
+        session_id="names",
+        workdir=Path(workdir),
+        spill=SpillStore(Path(workdir) / "outputs"),
+        host=Host(),
+        limits=RuntimeLimits(),
+        supports_images=images,
+        platform=platform,
+        inbox=SessionInbox(),
+        jobs=JobRegistry(lambda job: None),
+        todos=TodoState(),
+        goals=GoalState(default_rounds=20, max_rounds=100),
+        emit_report=lambda payload: None,
+    )
+    return build_tools(context)
+
+
+def _runtime_tool_names() -> set[str]:
+    """Every tool name the runtime can have itself, whatever the platform, the model and the host."""
+    names = set(DSH_TOOL_SCHEMAS) | set(NEKOCLAW_TOOL_SCHEMAS)
+    for platform, workdir in PLATFORMS:
+        names |= {tool.name for tool in _own_tools(platform, workdir)}
     return names
 
 
@@ -298,6 +306,47 @@ async def test_a_loaded_group_is_small_enough_never_to_lose_its_middle_to_the_ru
     for group, tool in (("browser", "browser_click"), ("desktop", COMPUTER_TOOL_NAME)):
         refused = await host.gateway.call_tool(await _grant(host, images=True), tool, {})
         assert count_tokens(refused["content"][0]["text"]) <= policy.prune_threshold_tokens, group
+
+
+async def test_in_every_window_that_can_hold_a_loaded_group_the_cap_on_one_result_holds_it_whole(host):
+    # The cap on one result is a quarter of the model's window. A group
+    # loaded by its name, or handed over in place of a call, comes as one
+    # text, so in a window small enough it would arrive cut (4096: a cap of
+    # 1024 against a group of up to 2000). No such window holds a task agent
+    # that uses the group, though: what every request carries before a word
+    # is said, and the group next to it, come to more than the size at which
+    # a conversation is summarized. This finds the smallest window in which
+    # they do fit, for the smallest fixed text a task agent of the host has,
+    # and holds the cap there against a group at its largest.
+    listed = await _listed(host, images=False)
+
+    def fixed_text(platform: str, workdir: str) -> int:
+        own = _own_tools(platform, workdir, images=False)
+        served = build_gateway_tools(
+            GatewayClient("http://127.0.0.1:1/mcp", "token"), listed, reserved={tool.name for tool in own}
+        )
+        tools = sorted([*own, *served], key=lambda tool: tool.name)
+        system = build_system_prompt(tool_names=[tool.name for tool in tools], workdir=workdir, platform=platform)
+        definitions = [[tool.name, tool.description, dict(tool.parameters)] for tool in tools]
+        return count_tokens(system + json.dumps(definitions, ensure_ascii=False))
+
+    fixed = min(fixed_text(platform, workdir) for platform, workdir in PLATFORMS)
+    # The least a model may be given to answer in: the most room for the conversation.
+    least_output = ModelConfig(model="any", api_key="key", max_output_tokens=256).max_output_tokens
+    window = next(
+        size
+        for size in range(4_000, 400_000, 16)
+        if ContextPolicy(window=size, max_output=least_output).threshold >= fixed + GATEWAY_TOOL_GROUP_MAX_TOKENS
+    )
+    policy = ContextPolicy(window=window, max_output=least_output)
+    # What is said in front of a group handed over in place of a call.
+    said = count_tokens(TOOL_GROUP_NOT_LOADED.format(tool=BROWSER_SCREENSHOT_TOOL_NAME, name="browser")) + 4
+
+    assert policy.result_cap >= GATEWAY_TOOL_GROUP_MAX_TOKENS + said, (
+        f"a window of {window} tokens holds the fixed text of a task agent ({fixed}) and a loaded group "
+        f"({GATEWAY_TOOL_GROUP_MAX_TOKENS}), but the cap on one result there is {policy.result_cap}: a group "
+        "loaded by its name would arrive cut"
+    )
 
 
 def test_how_the_two_groups_are_used_stays_under_its_ceiling():
