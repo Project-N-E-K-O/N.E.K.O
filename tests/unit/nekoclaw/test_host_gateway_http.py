@@ -26,6 +26,7 @@ import httpx
 import pytest
 
 from config.prompts import prompts_nekoclaw as texts
+from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_GUIDANCE
 from nekoclaw.host.capabilities import (
     BUILTIN_GROUP_BROWSER,
     BUILTIN_GROUP_KEYBOARD_MOUSE,
@@ -232,15 +233,22 @@ async def test_runtime_client_gets_the_pictures_of_a_builtin_tool_only_if_its_mo
 
     definitions = await client.connect()
     names = [definition["name"] for definition in definitions]
+    click = {"name": "computer", "arguments": {"action": "click"}}
 
+    # Neither group's tools are listed: they are loaded and called through these two.
+    assert names == ["capability_search", "capability_call"]
+    groups = definitions[0]["inputSchema"]["properties"]["group"]["enum"]
+    loaded = await client.call("capability_search", {"group": "desktop"})
     if sees_pictures:
-        assert names == ["computer", "browser_take_snapshot"]
-        result = await client.call("computer", {"action": "click"})
+        assert groups == ["browser", "desktop"]
+        assert not loaded.is_error and _guidance("keyboard_mouse") in loaded.text
+        result = await client.call("capability_call", click)
         # The picture arrives as the runtime hands it to its model.
         assert result == GatewayResult("did click", (ImageContent(data="QUJD", mime_type="image/jpeg"),), False)
     else:
-        assert names == ["browser_take_snapshot"]
-        result = await client.call("computer", {"action": "click"})
+        assert groups == ["browser"]
+        assert loaded.is_error and loaded.text.startswith("The desktop tools work from pictures")
+        result = await client.call("capability_call", click)
         assert result.is_error and result.text.startswith("computer works from pictures")
         assert result.images == ()
 
@@ -406,9 +414,22 @@ async def test_mcp_tool_asks_the_user_through_the_commission(server, hosts, tmp_
 # ---------------------------------------------------------------------------
 
 
-def _guidance(name: str) -> str:
-    """The paragraph of the system prompt that goes with a group of built-in tools."""
-    return next(text for section, _triggers, text in texts.TOOL_GUIDANCE_SECTIONS if section == name)
+def _guidance(group: str) -> str:
+    """How a group of built-in tools is used, as it is handed over when the group is loaded."""
+    return BUILTIN_GROUP_GUIDANCE[group]
+
+
+def _offered(llm: ScriptedLLM) -> dict[str, dict[str, Any]]:
+    """The tools the model was offered with its first request, by name."""
+    return {tool["function"]["name"]: tool["function"] for tool in llm.overrides[0]["tools"]}
+
+
+def _tool_result(request: list[dict[str, Any]], call_id: str) -> str:
+    """The text of one tool result in a model request."""
+    content = next(message for message in request if message.get("tool_call_id") == call_id)["content"]
+    if isinstance(content, str):
+        return content
+    return "".join(part.get("text", "") for part in content if part.get("type") == "text")
 
 
 def _pictures(request: list[dict[str, Any]]) -> list[str]:
@@ -431,9 +452,16 @@ async def test_task_agent_works_the_desktop_step_by_step_and_lets_go_of_it_when_
     monkeypatch.setattr(settings, "TASK_AGENT_SCREENSHOTS_KEPT", 1)
     llm = ScriptedLLM(
         [
-            [call("computer", {"action": "screenshot"}), finish("tool_calls")],
-            [call("computer", {"action": "click"}, "c2"), finish("tool_calls")],
-            [call("report", {"status": "ready", "summary": "pressed the button"}, "c3"), finish("tool_calls")],
+            [call("capability_search", {"group": "desktop"}), finish("tool_calls")],
+            [
+                call("capability_call", {"name": "computer", "arguments": {"action": "screenshot"}}, "c2"),
+                finish("tool_calls"),
+            ],
+            [
+                call("capability_call", {"name": "computer", "arguments": {"action": "click"}}, "c3"),
+                finish("tool_calls"),
+            ],
+            [call("report", {"status": "ready", "summary": "pressed the button"}, "c4"), finish("tool_calls")],
         ]
     )
     desk = Desk()
@@ -446,7 +474,8 @@ async def test_task_agent_works_the_desktop_step_by_step_and_lets_go_of_it_when_
     receipt = await host.dispatch("press the big button on the screen", lanlan_name="Lan", lang="en")
     commission_id = receipt.commission_id
 
-    # Asked before the first step, with nothing touched and nothing occupied yet.
+    # Loading the group asked nobody anything. Asked before the first step,
+    # with nothing touched and nothing occupied yet.
     waiting = await wait_status(host, commission_id, "waiting_user")
     question = waiting.question()
     assert (question["kind"], question["category"], question["detail"]["tool"]) == (
@@ -468,16 +497,26 @@ async def test_task_agent_works_the_desktop_step_by_step_and_lets_go_of_it_when_
     assert desk.observed == [{"keyboard_mouse": commission_id}, {"keyboard_mouse": commission_id}]
     statuses = [event.payload["to"] for event in await host.ledger.events(commission_id) if event.type == "status"]
     assert statuses == ["working", "waiting_user", "working", "done"]
-    # The model was offered the tools by their own names, with the paragraphs written for them.
-    offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
-    assert {"computer", "browser_take_snapshot"} <= set(offered)
+    # The model was offered neither group's tools, only the two they are
+    # loaded and called through, and one line about each group.
+    offered = _offered(llm)
+    assert {"capability_search", "capability_call"} <= set(offered)
+    assert "computer" not in offered and "browser_take_snapshot" not in offered
+    assert "- browser:" in offered["capability_search"]["description"]
+    assert "- desktop:" in offered["capability_search"]["description"]
+    # How a group is used came with the group it loaded, and with that one
+    # only: it is in no request's system prompt.
     system = llm.requests[0][0]["content"]
-    assert _guidance("computer") in system and _guidance("browser") in system
+    assert _guidance("keyboard_mouse") not in system and _guidance("browser") not in system
+    assert all(request[0]["content"] == system for request in llm.requests)
+    loaded = _tool_result(llm.requests[1], "call-1")
+    assert _guidance("keyboard_mouse") in loaded and '"name": "computer"' in loaded
+    assert all(_guidance("browser") not in str(request) for request in llm.requests)
     # It saw each step's screenshot after the step's text, and only the newest one stayed.
-    assert llm.requests[1][-2] == {"role": "tool", "tool_call_id": "call-1", "content": "did screenshot"}
-    assert _pictures(llm.requests[1]) == ["data:image/jpeg;base64,QUJD"]
-    assert len(_pictures(llm.requests[2])) == 1
-    earlier = next(message for message in llm.requests[2] if message.get("tool_call_id") == "call-1")
+    assert llm.requests[2][-2] == {"role": "tool", "tool_call_id": "c2", "content": "did screenshot"}
+    assert _pictures(llm.requests[2]) == ["data:image/jpeg;base64,QUJD"]
+    assert len(_pictures(llm.requests[3])) == 1
+    earlier = next(message for message in llm.requests[3] if message.get("tool_call_id") == "c2")
     assert earlier["content"] == f"did screenshot{texts.IMAGE_OMITTED_PLACEHOLDER}"
     # With the run over the desktop is free, the provider was told, and the
     # next run has to be allowed again.
@@ -494,8 +533,9 @@ async def test_task_agent_whose_model_takes_no_pictures_gets_the_browser_but_not
 ):
     llm = ScriptedLLM(
         [
-            [call("browser_take_snapshot", {}), finish("tool_calls")],
-            [call("report", {"status": "ready", "summary": "open nine to five"}, "c2"), finish("tool_calls")],
+            [call("capability_search", {"group": "browser"}), finish("tool_calls")],
+            [call("capability_call", {"name": "browser_take_snapshot", "arguments": {}}, "c2"), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "open nine to five"}, "c3"), finish("tool_calls")],
         ]
     )
     desk = Desk()
@@ -507,11 +547,86 @@ async def test_task_agent_whose_model_takes_no_pictures_gets_the_browser_but_not
     receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
     await wait_status(host, receipt.commission_id, "done")
 
-    offered = [tool["function"]["name"] for tool in llm.overrides[0]["tools"]]
-    assert "browser_take_snapshot" in offered
-    # Neither the tool that works from screenshots nor the runtime's own picture tool.
-    assert "computer" not in offered and "read_image" not in offered
+    offered = _offered(llm)
+    # It is told of the browser, and not of the group that works from
+    # screenshots; nor has it the runtime's own picture tool.
+    description = offered["capability_search"]["description"]
+    assert "- browser:" in description and "- desktop:" not in description
+    assert offered["capability_search"]["parameters"]["properties"]["group"]["enum"] == ["browser"]
+    assert "read_image" not in offered
     system = llm.requests[0][0]["content"]
-    assert _guidance("browser") in system and _guidance("computer") not in system
+    assert _guidance("browser") not in system and _guidance("keyboard_mouse") not in system
+    loaded = _tool_result(llm.requests[1], "call-1")
+    assert _guidance("browser") in loaded and '"name": "browser_take_snapshot"' in loaded
     assert desk.calls == [("browser_take_snapshot", receipt.commission_id, {})]
-    assert llm.requests[1][-1] == {"role": "tool", "tool_call_id": "call-1", "content": "heading: Opening hours"}
+    assert llm.requests[2][-1] == {"role": "tool", "tool_call_id": "c2", "content": "heading: Opening hours"}
+
+
+async def test_task_agent_that_starts_with_the_first_call_of_a_group_gets_the_group_with_its_result(
+    server, hosts, tmp_path
+):
+    llm = ScriptedLLM(
+        [
+            # The call the line about the desktop names, with nothing loaded before it.
+            [
+                call("capability_call", {"name": "computer", "arguments": {"action": "screenshot"}}),
+                finish("tool_calls"),
+            ],
+            [
+                call("capability_call", {"name": "computer", "arguments": {"action": "click"}}, "c2"),
+                finish("tool_calls"),
+            ],
+            [call("report", {"status": "ready", "summary": "pressed the button"}, "c3"), finish("tool_calls")],
+        ]
+    )
+    desk = Desk()
+    host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
+    await host.permission_store.set_mode("keyboard_mouse", "allow")
+
+    receipt = await host.dispatch("press the big button on the screen", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "done")
+
+    # No request went on loading: three requests, one a step. The first step
+    # was carried out, and its answer brought the group, then what the step
+    # returned, then its screenshot.
+    assert len(llm.requests) == 3
+    first = _tool_result(llm.requests[1], "call-1")
+    assert first.startswith("The desktop tools follow, one definition per line.")
+    assert _guidance("keyboard_mouse") in first and '"name": "computer"' in first
+    assert first.endswith("This first call returned:\ndid screenshot")
+    assert _pictures(llm.requests[1]) == ["data:image/jpeg;base64,QUJD"]
+    # The next step came back as itself.
+    assert _tool_result(llm.requests[2], "c2") == "did click"
+    assert desk.calls == [
+        ("computer", receipt.commission_id, {"action": "screenshot"}),
+        ("computer", receipt.commission_id, {"action": "click"}),
+    ]
+
+
+async def test_task_agent_that_calls_a_tool_before_loading_its_group_is_handed_the_group_and_goes_on(
+    server, hosts, tmp_path
+):
+    snapshot = {"name": "browser_take_snapshot", "arguments": {}}
+    llm = ScriptedLLM(
+        [
+            # Straight to the tool, by a name it was never given a definition for.
+            [call("capability_call", snapshot), finish("tool_calls")],
+            [call("capability_call", snapshot, "c2"), finish("tool_calls")],
+            [call("report", {"status": "ready", "summary": "open nine to five"}, "c3"), finish("tool_calls")],
+        ]
+    )
+    desk = Desk()
+    host = _task_agent_host(hosts, tmp_path, server, llm, builtins=desk)
+    await host.permission_store.set_mode("browser", "allow")
+
+    receipt = await host.dispatch("read the opening hours off the page", lanlan_name="Lan", lang="en")
+    await wait_status(host, receipt.commission_id, "done")
+
+    # The first call did nothing and came back with the group: how it is
+    # used and the definition the call was written without.
+    refused = _tool_result(llm.requests[1], "call-1")
+    assert "Nothing was done: browser_take_snapshot is one of the browser tools, which were not loaded yet." in refused
+    assert _guidance("browser") in refused and '"name": "browser_take_snapshot"' in refused
+    # The same call again went through, once.
+    assert desk.calls == [("browser_take_snapshot", receipt.commission_id, {})]
+    assert llm.requests[2][-1] == {"role": "tool", "tool_call_id": "c2", "content": "heading: Opening hours"}

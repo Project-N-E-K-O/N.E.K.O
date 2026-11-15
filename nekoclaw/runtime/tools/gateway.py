@@ -21,7 +21,9 @@ ones; a call is forwarded to the gateway and its text comes back as the tool
 result, followed by the pictures it carries (a screenshot of the desktop or
 of a page). Plugin entries, MCP tools and the keyboard, mouse and browser
 tools reach a task agent this way, so they are implemented once for every
-runtime.
+runtime. Not all of them are in the list: the gateway's own search tool finds
+the rest and loads a group of built-in tools, and its call tool calls any of
+them by name.
 
 This is a small MCP client: JSON-RPC 2.0 over HTTP POST, one request per
 message, with ``initialize``, ``tools/list`` and ``tools/call``. It reads an
