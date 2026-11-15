@@ -93,6 +93,10 @@ OBJECT_GROUP = "nekoclaw-action"
 # to the browser; the browser's own interface (``browser_ui``) is not asked.
 _HELD_ONE_BY_ONE = frozenset({"page", "iframe", "service_worker", "shared_worker", "background_page"})
 _KEEP_OPEN_TIMEOUT_SECONDS = 5.0
+# How long all of them together are given. Each is asked up to four things,
+# and tried twice: without this, one that never answers holds the first call
+# of a task up for some twenty seconds.
+_KEEP_OPEN_TOTAL_SECONDS = 8.0
 # What the browser answers a command about a target with when there is no
 # such target (it was closed meanwhile).
 _NO_SUCH_TARGET_CODE = -32602
@@ -620,7 +624,8 @@ class BrowserSession:
         like everything new.
 
         One of them that is still there and could not be dealt with (it
-        refused, or did not answer, twice) goes on reaching the ports, and
+        refused, or did not answer, twice, or was not done with by the time
+        all of them together are given) goes on reaching the ports, and
         is remembered (``_not_kept``). A page among them is not taken for
         one that is kept from them: when it is worked on it is asked once
         more, and worked on only once that took (``_attached``). What is not
@@ -677,12 +682,36 @@ class BrowserSession:
             for info in infos
             if info.get("type") in _HELD_ONE_BY_ONE and info.get("targetId")
         ]
+        if not there:
+            self._not_kept = set()
+            return
         # All at once: one that does not answer must not hold up the others.
-        outcomes = await asyncio.gather(*(keep(kind, target_id) for kind, target_id in there), return_exceptions=True)
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException):
-                raise outcome  # The connection went: there is no browser to drive.
-        self._not_kept = {target_id for (_kind, target_id), kept in zip(there, outcomes) if not kept}
+        keeping = [asyncio.ensure_future(keep(kind, target_id)) for kind, target_id in there]
+        try:
+            _done, late = await asyncio.wait(keeping, timeout=_KEEP_OPEN_TOTAL_SECONDS)
+            if late:
+                for task in late:
+                    task.cancel()
+                # Each lets go of what it had attached to before it ends.
+                await asyncio.gather(*late, return_exceptions=True)
+                logger.warning(
+                    "%d of what was open before could not be kept from this application's own ports in time", len(late)
+                )
+        except asyncio.CancelledError:
+            for task in keeping:
+                task.cancel()
+            raise
+        not_kept: set[str] = set()
+        for (_kind, target_id), task in zip(there, keeping):
+            if task.cancelled():
+                not_kept.add(target_id)
+                continue
+            failure = task.exception()
+            if failure is not None:
+                raise failure  # The connection went: there is no browser to drive.
+            if not task.result():
+                not_kept.add(target_id)
+        self._not_kept = not_kept
 
     @staticmethod
     async def _ask_whether_headless(connection: CdpConnection, browser: launcher.RunningBrowser) -> None:

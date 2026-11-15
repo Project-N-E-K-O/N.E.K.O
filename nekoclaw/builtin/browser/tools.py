@@ -184,7 +184,20 @@ class BrowserTools:
     def window(self) -> dict[str, Any] | None:
         return self._session.window()
 
-    async def aclose(self) -> None:
+    async def aclose(self, *, keep_window: bool = False) -> None:
+        """Close the browser; with ``keep_window``, only one that shows no window the user could go on using.
+
+        ``keep_window`` is for when the tools stop being used and nothing
+        was said against the browser itself (they were switched off, or the
+        agent model stopped answering). What a call under way leaves is what
+        counts: it is waited for, and a browser it is still starting is not
+        told to give up.
+        """
+        if keep_window:
+            async with self._lock:
+                if not self._session.shows_a_window:
+                    await self._session.close()
+            return
         # Not wanted from here on, and not only once its turn has come: see
         # ``BrowserSession.no_longer_wanted``.
         self._session.no_longer_wanted()

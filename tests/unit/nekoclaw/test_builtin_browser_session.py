@@ -3978,6 +3978,42 @@ async def test_a_page_whose_session_went_while_it_was_asked_is_asked_again(
     assert session._not_kept == set()
 
 
+async def test_what_was_open_is_given_a_time_as_a_whole_to_be_kept_from_the_ports(
+    make_session: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch, caplog: Any
+) -> None:
+    from tests.unit.nekoclaw.fake_cdp_browser import FakeConnection
+
+    shop = _left_running(world)
+    send = FakeConnection.send
+    never_answered: list[int] = []
+
+    async def never_for_the_shop(self: Any, method: str, params: Any = None, **options: Any) -> dict[str, Any]:
+        if method == "Fetch.enable" and options.get("session_id") in shop.sessions:
+            # Whatever time the command itself was given: the page is one that never answers.
+            never_answered.append(1)
+            await asyncio.Event().wait()
+        return await send(self, method, params, **options)
+
+    monkeypatch.setattr(FakeConnection, "send", never_for_the_shop)
+    monkeypatch.setattr(session_module, "_KEEP_OPEN_TOTAL_SECONDS", 0.2)
+    session = make_session(own_ports=lambda: OWN)
+    with caplog.at_level("WARNING", logger="nekoclaw.builtin.browser.session"):
+        # The first call of a task is not held up for longer than that.
+        await asyncio.wait_for(session.start(), 5.0)
+
+    assert never_answered == [1]
+    # Given up on, and let go of: no session is left on a page nobody works on.
+    assert world.browser.detached_from.count(shop.target_id) == 1 and shop.sessions == set()
+    said = [record.getMessage() for record in caplog.records if "could not be kept from" in record.getMessage()]
+    assert said == ["1 of what was open before could not be kept from this application's own ports in time"]
+    # It is remembered as one that still reaches the ports, and the others were dealt with all the same.
+    assert session._not_kept == {shop.target_id}
+    assert [command.params["targetId"] for command in world.browser.of("Target.attachToTarget")].count("frame-9") == 1
+    assert "shared-1" in world.browser.closed_targets
+    # The browser is driven, with the page that was started for it.
+    assert session.connected and session.page_by_id(2).url == ORDER
+
+
 async def test_a_page_that_went_while_it_was_asked_is_no_failure(make_session: Any, world: BrowserWorld, caplog: Any) -> None:
     from nekoclaw.builtin.browser.cdp import SESSION_GONE_CODE
 

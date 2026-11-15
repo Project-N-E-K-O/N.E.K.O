@@ -346,27 +346,131 @@ async def test_a_browser_whose_connection_is_lost_is_closed_when_every_task_is_s
 
 
 # ---------------------------------------------------------------------------
-# The user said the browser is not wanted, and then stopped every task
+# The user switched the browser tools, or the master switch, off
 # ---------------------------------------------------------------------------
 
 
-async def test_switching_the_browser_tools_off_closes_the_browser(stage: Any, world: BrowserWorld) -> None:
+async def _switch_the_master_off(how: str) -> None:
+    if how == "admin_control":
+        await api_routes.admin_control({"action": "disable_analyzer"})
+    else:
+        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": False, "_persist_intent": False})
+
+
+async def test_switching_the_browser_tools_off_leaves_the_browser_window_open(stage: Any, world: BrowserWorld) -> None:
     await _on_the_order_form(stage)
+    connection = world.connection
+    asked = world.browser.mark()
 
     await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
     await stage.settled()
 
-    assert len(world.closed) == 1 and world.closed[0][0].owned is True
-    assert not stage.session.connected and not stage.session.holds_a_browser
+    # Not asked to close, not killed, not let go of: the user may go on reading what is in it.
+    assert world.closed == [] and world.browser.close_requests == 0 and stage.killed == []
+    assert stage.session.connected and world.connection is connection and not connection.closed
+    assert [page.url for page in stage.session.pages()] == [ORDER]
+    # Nothing at all was said to the browser.
+    assert world.browser.since(asked) == []
+    # And nothing is done in it for a task agent while the tools are off.
+    assert stage.state.agent_flags["browser_use_enabled"] is False
+    refused = await stage.browse(url=THANKS)
+    assert not refused.success and "browser control is" in refused.text
+    assert [page.url for page in stage.session.pages()] == [ORDER]
 
 
-async def test_stopping_every_task_right_after_the_browser_tools_were_switched_off_still_closes_the_browser(
+async def test_the_window_left_open_when_the_tools_were_switched_off_stays_kept_from_the_ports_of_this_application(
     stage: Any, world: BrowserWorld
 ) -> None:
     await _on_the_order_form(stage)
 
     await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
-    # The task that closes it has not had a turn yet, and is stopped with everything else in the background.
+    await stage.settled()
+
+    held = world.browser.hold_request("http://127.0.0.1:48911/api/config")
+    for _ in range(200):
+        if world.browser.fetch_answers:
+            break
+        await asyncio.sleep(0.005)
+    assert world.browser.fetch_answers == [(held, "BlockedByClient", None)]
+
+
+async def test_switching_the_browser_tools_off_closes_a_browser_without_a_window(stage: Any, world: BrowserWorld) -> None:
+    world.settings(headless=True)
+    await _on_the_order_form(stage)
+
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await stage.settled()
+
+    # Nobody could see it, let alone close it by hand.
+    assert len(world.closed) == 1 and world.closed[0][0].owned is True
+    assert not stage.session.connected and not stage.session.holds_a_browser
+
+
+async def test_switching_the_browser_tools_off_closes_a_browser_whose_windows_the_user_closed(
+    stage: Any, world: BrowserWorld
+) -> None:
+    await _on_the_order_form(stage)
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await stage.settled()
+
+    assert len(world.closed) == 1 and not stage.session.holds_a_browser
+
+
+async def test_switching_the_browser_tools_off_lets_go_of_the_users_own_browser(stage: Any, world: BrowserWorld) -> None:
+    world.settings(mode="attach")
+    await _on_the_order_form(stage)
+    connection = world.connection
+
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await stage.settled()
+
+    # As before: theirs is never closed, and never stays connected to once the tools are off.
+    assert connection.closed and not stage.session.connected
+    assert [browser.owned for browser, _connection in world.closed] == [False]
+    assert world.browser.close_requests == 0
+
+
+async def test_switching_the_tools_on_again_drives_the_window_that_was_left_open(stage: Any, world: BrowserWorld) -> None:
+    await _on_the_order_form(stage)
+    connection = world.connection
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await stage.settled()
+
+    await api_routes.set_agent_flags({"browser_use_enabled": True, "_persist_intent": False})
+    await stage.settled()
+    outcome = await stage.browse(url=THANKS)
+
+    assert outcome.success, outcome.text
+    # The same browser, over the same connection: none was started, none connected to anew.
+    assert len(world.launched) == 1 and len(world.connected) == 1 and world.connection is connection
+    assert world.closed == []
+
+
+async def test_stopping_every_task_right_after_the_browser_tools_were_switched_off_leaves_the_window_open(
+    stage: Any, world: BrowserWorld
+) -> None:
+    await _on_the_order_form(stage)
+
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    # What looks at the browser for the switch has not had a turn yet, and is stopped with everything
+    # else in the background.
+    (looking,) = stage.state._background_tasks
+    await api_routes.admin_control(dict(END_ALL))
+
+    assert looking.cancelled()
+    assert world.closed == [] and stage.session.connected and stage.killed == []
+
+
+async def test_stopping_every_task_right_after_a_browser_without_a_window_was_switched_off_closes_it(
+    stage: Any, world: BrowserWorld
+) -> None:
+    world.settings(headless=True)
+    await _on_the_order_form(stage)
+
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
     (closing,) = stage.state._background_tasks
     assert world.closed == []
     await api_routes.admin_control(dict(END_ALL))
@@ -376,9 +480,10 @@ async def test_stopping_every_task_right_after_the_browser_tools_were_switched_o
     assert stage.killed == []
 
 
-async def test_stopping_every_task_while_the_switched_off_browser_is_being_closed_closes_it_again(
+async def test_stopping_every_task_while_a_switched_off_browser_without_a_window_is_being_closed_closes_it_again(
     stage: Any, world: BrowserWorld
 ) -> None:
+    world.settings(headless=True)
     await _on_the_order_form(stage)
     world.close_gate = asyncio.Event()
 
@@ -389,7 +494,7 @@ async def test_stopping_every_task_while_the_switched_off_browser_is_being_close
             break
         await asyncio.sleep(0.005)
     assert len(world.closed) == 1
-    # Half way through: the browser is still driven and connected to, as one that is merely not in use.
+    # Half way through: the browser is still driven and connected to.
     stopping = asyncio.ensure_future(api_routes.admin_control(dict(END_ALL)))
     for _ in range(400):
         if len(world.closed) == 2:
@@ -402,6 +507,161 @@ async def test_stopping_every_task_while_the_switched_off_browser_is_being_close
     # The same browser, asked to close once more by the stopping itself.
     assert len(world.closed) == 2 and world.closed[0][0] is world.closed[1][0]
     assert not stage.session.holds_a_browser and stage.killed == []
+
+
+@pytest.mark.parametrize("how", ["switched off", "switched off with the other switch"])
+async def test_a_switch_put_off_says_nothing_against_the_browser_window(
+    stage: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch, how: str
+) -> None:
+    # What the routes leave to the background is kept from ever having a turn: the user stopping every
+    # task at that very moment stops it before it has begun.
+    kept: list[Any] = []
+    monkeypatch.setattr(api_routes, "_create_tracked_task", kept.append)
+    await _on_the_order_form(stage)
+
+    if how == "switched off":
+        await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    else:
+        # The agent model is no longer configured, and the user asks for the keyboard and mouse.
+        monkeypatch.setattr(
+            api_routes,
+            "_check_agent_api_gate",
+            lambda: {"ready": False, "reasons": ["AGENT_ENDPOINT_NOT_CONFIGURED"], "is_free_version": False},
+        )
+        await api_routes.set_agent_flags({"computer_use_enabled": True, "_persist_intent": False})
+
+    try:
+        assert len(kept) == 1 and stage.state.agent_flags["browser_use_enabled"] is False
+        assert stage.provider.browser_window_stays() is True
+        await api_routes.admin_control(dict(END_ALL))
+        assert world.closed == [] and stage.session.connected
+    finally:
+        for coro in kept:
+            coro.close()
+
+
+@pytest.mark.parametrize("how", ["admin_control", "agent_command"])
+async def test_switching_the_master_switch_off_leaves_the_browser_window_open(
+    stage: Any, world: BrowserWorld, how: str
+) -> None:
+    await _on_the_order_form(stage)
+    connection = world.connection
+
+    await _switch_the_master_off(how)
+
+    # It runs through the stopping of every task, with the switch of the browser tools left on.
+    assert stage.state.analyzer_enabled is False and stage.state.agent_flags["browser_use_enabled"] is True
+    assert world.closed == [] and stage.killed == []
+    assert stage.session.connected and world.connection is connection
+    assert [page.url for page in stage.session.pages()] == [ORDER]
+
+
+@pytest.mark.parametrize("how", ["admin_control", "agent_command"])
+async def test_switching_the_master_switch_off_closes_a_browser_without_a_window(
+    stage: Any, world: BrowserWorld, how: str
+) -> None:
+    world.settings(headless=True)
+    await _on_the_order_form(stage)
+
+    await _switch_the_master_off(how)
+
+    assert len(world.closed) == 1 and not stage.session.holds_a_browser
+    assert stage.killed == []
+
+
+async def test_a_browser_that_a_call_was_starting_when_the_tools_were_switched_off_is_left_open_once_it_is_up(
+    stage: Any, world: BrowserWorld
+) -> None:
+    # A call of a task is connecting to the browser it started.
+    world.connect_gate = asyncio.Event()
+    calling = asyncio.ensure_future(stage.browse(url=ORDER))
+    for _ in range(400):
+        if world.connected:
+            break
+        await asyncio.sleep(0.005)
+    assert world.connected and not stage.session.connected
+
+    # The user switches the browser tools off. There is no window to speak of yet: what the call
+    # leaves is what counts, and it is not told to give the start up.
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await asyncio.sleep(0.05)
+    assert world.closed == []
+    world.connect_gate.set()
+    outcome = await calling
+    await stage.settled()
+
+    assert outcome.success, outcome.text
+    assert world.closed == [] and stage.session.connected
+    assert [page.url for page in stage.session.pages()] == [ORDER]
+
+
+async def test_a_browser_without_a_window_that_could_not_be_closed_when_switched_off_is_killed_when_every_task_is_stopped(
+    stage: Any, world: BrowserWorld
+) -> None:
+    world.settings(headless=True)
+    await _on_the_order_form(stage)
+    world.close_error = RuntimeError("the process would not die")
+    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await stage.settled()
+    assert stage.session.holds_a_browser and stage.killed == []
+
+    await api_routes.admin_control(dict(END_ALL))
+    for _ in range(400):
+        if stage.killed:
+            break
+        await asyncio.sleep(0.005)
+
+    # As before: one that was to be closed does not run on because closing it failed.
+    assert stage.killed == [1]
+
+
+# ---------------------------------------------------------------------------
+# The user changed the browser settings
+# ---------------------------------------------------------------------------
+
+
+async def test_saving_the_browser_settings_closes_the_browser(stage: Any, world: BrowserWorld) -> None:
+    await _on_the_order_form(stage)
+
+    await api_runtime.set_browser_settings({"headless": True})
+    await stage.settled()
+
+    # It was started with the settings before, and the new ones only take with the next one.
+    assert len(world.closed) == 1 and not stage.session.holds_a_browser
+
+
+@pytest.mark.parametrize("payload", [{}, {"headless": False}, {"mode": "own_profile", "executable": None}])
+async def test_saving_the_browser_settings_as_they_were_leaves_the_browser_alone(
+    stage: Any, world: BrowserWorld, payload: dict[str, Any]
+) -> None:
+    await _on_the_order_form(stage)
+    asked = world.browser.mark()
+
+    result = await api_runtime.set_browser_settings(dict(payload))
+    # Nothing was left to the background, and nothing said against the browser.
+    assert stage.state._background_tasks == set()
+    await stage.settled()
+
+    assert result["success"] is True
+    assert result["settings"] == {"mode": "own_profile", "executable": None, "headless": False}
+    assert world.closed == [] and stage.session.connected and world.browser.since(asked) == []
+    assert stage.provider.browser_window_stays() is True
+
+
+async def test_saving_the_browser_settings_a_second_time_does_not_close_the_browser_that_was_started_since(
+    stage: Any, world: BrowserWorld
+) -> None:
+    await _on_the_order_form(stage)
+    await api_runtime.set_browser_settings({"headless": True})
+    await stage.settled()
+    assert len(world.closed) == 1
+    await _on_the_order_form(stage)
+
+    # The page saves what it shows once more.
+    await api_runtime.set_browser_settings({"headless": True})
+    await stage.settled()
+
+    assert len(world.launched) == 2 and len(world.closed) == 1 and stage.session.connected
 
 
 async def test_stopping_every_task_right_after_the_browser_settings_were_saved_still_closes_the_browser(
@@ -435,39 +695,17 @@ async def test_stopping_every_task_right_after_the_browser_settings_were_saved_s
     assert not stage.session.holds_a_browser and stage.killed == []
 
 
-async def test_saving_the_browser_settings_closes_the_browser(stage: Any, world: BrowserWorld) -> None:
-    await _on_the_order_form(stage)
-
-    await api_runtime.set_browser_settings({"headless": True})
-    await stage.settled()
-
-    assert len(world.closed) == 1 and not stage.session.holds_a_browser
-
-
-@pytest.mark.parametrize("how", ["switched off", "switched off with the other switch", "settings saved"])
-async def test_the_browser_is_not_one_to_leave_open_from_the_moment_the_user_said_so(
-    stage: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch, how: str
+async def test_the_browser_is_not_one_to_leave_open_from_the_moment_its_settings_were_changed(
+    stage: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # What the routes leave to the background is kept from ever having a turn: the user stopping every
+    # What the route leaves to the background is kept from ever having a turn: the user stopping every
     # task at that very moment stops it before it has begun.
     kept: list[Any] = []
-    monkeypatch.setattr(api_routes, "_create_tracked_task", kept.append)
     monkeypatch.setattr(api_runtime, "_create_tracked_task", kept.append)
     await _on_the_order_form(stage)
     assert stage.provider.browser_window_stays() is True
 
-    if how == "switched off":
-        await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
-    elif how == "switched off with the other switch":
-        # The agent model is no longer configured, and the user asks for the keyboard and mouse.
-        monkeypatch.setattr(
-            api_routes,
-            "_check_agent_api_gate",
-            lambda: {"ready": False, "reasons": ["AGENT_ENDPOINT_NOT_CONFIGURED"], "is_free_version": False},
-        )
-        await api_routes.set_agent_flags({"computer_use_enabled": True, "_persist_intent": False})
-    else:
-        await api_runtime.set_browser_settings({"headless": True})
+    await api_runtime.set_browser_settings({"headless": True})
 
     try:
         assert len(kept) == 1
@@ -481,110 +719,37 @@ async def test_the_browser_is_not_one_to_leave_open_from_the_moment_the_user_sai
             coro.close()
 
 
-@pytest.mark.parametrize("how", ["admin_control", "agent_command"])
-async def test_switching_the_master_switch_off_closes_the_browser(stage: Any, world: BrowserWorld, how: str) -> None:
-    await _on_the_order_form(stage)
-
-    if how == "admin_control":
-        await api_routes.admin_control({"action": "disable_analyzer"})
-    else:
-        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": False, "_persist_intent": False})
-
-    # It runs through the stopping of every task, with the switch of the browser tools left on.
-    assert stage.state.agent_flags["browser_use_enabled"] is True
-    assert len(world.closed) == 1 and not stage.session.holds_a_browser
-    assert stage.killed == []
-
-
-@pytest.mark.parametrize("how", ["admin_control", "agent_command"])
-async def test_the_master_switch_put_on_again_while_the_tasks_are_being_stopped_does_not_keep_the_browser_open(
-    stage: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch, how: str
+async def test_switching_the_tools_off_does_not_leave_open_a_browser_whose_settings_were_changed(
+    stage: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    kept: list[Any] = []
+    monkeypatch.setattr(api_runtime, "_create_tracked_task", kept.append)
     await _on_the_order_form(stage)
+    await api_runtime.set_browser_settings({"headless": True})
 
-    async def stop_everything(reason: str = "") -> int:
-        # Stopping the tasks takes a while, and another request puts the master switch on again meanwhile.
-        stage.state.analyzer_enabled = True
-        return 0
-
-    monkeypatch.setattr(api_routes, "stop_everything", stop_everything)
-
-    if how == "admin_control":
-        await api_routes.admin_control({"action": "disable_analyzer"})
-    else:
-        await api_routes.agent_command({"command": "set_agent_enabled", "enabled": False, "_persist_intent": False})
-
-    # The user said the browser is not wanted when they put the switch off, and that stands.
-    assert stage.state.analyzer_enabled is True
-    assert len(world.closed) == 1 and not stage.session.holds_a_browser
-
-
-async def test_a_call_that_was_starting_the_browser_when_it_was_switched_off_does_not_leave_it_open(
-    stage: Any, world: BrowserWorld
-) -> None:
-    # A call of a task is connecting to the browser it started.
-    world.connect_gate = asyncio.Event()
-    calling = asyncio.ensure_future(stage.browse(url=ORDER))
-    for _ in range(400):
-        if world.connected:
-            break
-        await asyncio.sleep(0.005)
-    assert world.connected
-
-    # The user switches the browser tools off; the closing waits its turn behind that call.
-    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
-    (closing,) = stage.state._background_tasks
-    world.connect_gate.set()
-    for _ in range(400):
-        if stage.session.connected:
-            break
-        await asyncio.sleep(0.005)
-    assert stage.session.connected and world.closed == []
-    # Then they stop every task, and with it the closing, before its turn came.
-    calling.cancel()
-    closing.cancel()
-    await asyncio.gather(calling, closing, return_exceptions=True)
-    stage.state._background_tasks.clear()
-    assert stage.provider.browser_window_stays() is False
-    await api_routes.admin_control(dict(END_ALL))
-
-    assert len(world.closed) == 1 and not stage.session.holds_a_browser
+    try:
+        # The closing for the settings never had a turn; the switch is put off next.
+        await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+        await stage.settled()
+        assert len(world.closed) == 1 and not stage.session.holds_a_browser
+    finally:
+        for coro in kept:
+            coro.close()
 
 
 async def test_a_browser_that_is_driven_again_after_it_was_closed_is_left_open_like_any_other(
     stage: Any, world: BrowserWorld
 ) -> None:
     await _on_the_order_form(stage)
-    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+    await api_runtime.set_browser_settings({"headless": True})
     await stage.settled()
     assert len(world.closed) == 1
-    await api_routes.set_agent_flags({"browser_use_enabled": True, "_persist_intent": False})
-    await stage.settled()
 
     await _on_the_order_form(stage)
     await api_routes.admin_control(dict(END_ALL))
 
-    # That it was not wanted once says nothing about the one that was started since.
+    # That the one before was not wanted says nothing about the one that was started since.
     assert len(world.launched) == 2 and len(world.closed) == 1 and stage.session.connected
-
-
-async def test_a_browser_that_could_not_be_closed_when_switched_off_is_killed_when_every_task_is_stopped(
-    stage: Any, world: BrowserWorld
-) -> None:
-    await _on_the_order_form(stage)
-    world.close_error = RuntimeError("the process would not die")
-    await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
-    await stage.settled()
-    assert stage.session.holds_a_browser and stage.killed == []
-
-    await api_routes.admin_control(dict(END_ALL))
-    for _ in range(400):
-        if stage.killed:
-            break
-        await asyncio.sleep(0.005)
-
-    # As before: one the user wanted closed does not run on because closing it failed.
-    assert stage.killed == [1]
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +812,7 @@ async def test_the_window_left_open_for_a_model_that_stopped_answering_survives_
     assert world.closed == [] and stage.session.connected
 
 
-async def test_the_window_left_open_for_a_model_that_stopped_answering_is_closed_by_the_master_switch(
+async def test_the_window_left_open_for_a_model_that_stopped_answering_survives_the_master_switch(
     stage: Any, world: BrowserWorld
 ) -> None:
     await _on_the_order_form(stage)
@@ -656,7 +821,7 @@ async def test_the_window_left_open_for_a_model_that_stopped_answering_is_closed
 
     await api_routes.admin_control({"action": "disable_analyzer"})
 
-    assert len(world.closed) == 1 and not stage.session.holds_a_browser
+    assert world.closed == [] and stage.session.connected and stage.killed == []
 
 
 async def test_switching_the_tools_on_again_after_the_model_is_back_drives_the_window_that_was_left_open(
