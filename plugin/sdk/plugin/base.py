@@ -30,6 +30,7 @@ from .llm_tool import (
     LlmToolMeta,
     collect_llm_tool_methods,
     entry_id_for_tool,
+    _LLM_TOOL_RISKS,
     validate_tool_name,
 )
 
@@ -552,6 +553,7 @@ class NekoPluginBase(_SharedNekoPluginBase):
         *,
         name: str,
         description: str,
+        risk: str,
         parameters: dict[str, Any] | None,
         handler: Any,
         timeout: float = 30.0,
@@ -583,13 +585,24 @@ class NekoPluginBase(_SharedNekoPluginBase):
         role:
             Optional role/character to scope to. ``None`` is global.
 
+        risk:
+            Required, no default. Same four classes the ``@llm_tool`` decorator takes.
         Returns ``True`` on success. Raises ``ValueError`` for invalid
-        names and ``EntryConflictError`` for duplicates.
+        names, an unusable ``risk``, and ``EntryConflictError`` for duplicates.
         """
         validate_tool_name(name)
+        # Same rule as the decorator: the caller that creates a tool at runtime owns
+        # its risk class. Runtime registration is exactly where an unlabelled tool
+        # could otherwise slip in, because there is no decorator line to review.
+        if not isinstance(risk, str) or risk.strip().lower() not in _LLM_TOOL_RISKS:
+            raise ValueError(
+                f"register_llm_tool({name!r}) must declare risk as one of "
+                f"{', '.join(sorted(_LLM_TOOL_RISKS))}, got {risk!r}"
+            )
         meta = LlmToolMeta(
             name=name,
             description=description or "",
+            risk=risk.strip().lower(),
             parameters=dict(parameters) if isinstance(parameters, dict) else {"type": "object", "properties": {}},
             timeout_seconds=float(timeout),
             role=role,

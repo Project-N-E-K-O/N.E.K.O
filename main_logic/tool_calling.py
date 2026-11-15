@@ -45,6 +45,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 from PIL import Image
 
+from config.permission_settings import PermissionAction
+from main_logic import tool_permissions
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
@@ -107,6 +109,12 @@ class ToolDefinition:
     # Free-form metadata: e.g. {"source": "plugin", "plugin_id": "...", "version": "..."}
     # Used by the cross-process RPC layer to route remote calls.
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # What this tool does, from config.permission_settings.ToolRisk. There is no
+    # default risk on purpose: the field's default None means "not declared", and
+    # ToolRegistry.register refuses such a tool. A permissive default here would make
+    # every unlabelled tool look read-only, which is the one mistake a permission
+    # system must not make.
+    risk: Optional[Any] = None
 
     def to_openai_chat(self) -> Dict[str, Any]:
         """OpenAI Chat Completions / StepFun Realtime / Qwen-text format
@@ -562,6 +570,21 @@ class ToolRegistry:
     def register(self, tool: ToolDefinition, *, replace: bool = True) -> None:
         if not tool.name:
             raise ToolRegistryError("ToolDefinition.name must be non-empty")
+        # This is the enforcement point the brief asks for. It sits here rather than in
+        # LLMSessionManager.register_tool because the two other producers -- the HTTP
+        # register endpoint and the ledger replay at startup (main_routers/tool_router.py
+        # replay_remote_tools) -- write the registry directly and would walk past a
+        # higher check. Normalising on the way in means the gate at execute() can trust
+        # the value without re-parsing it per call.
+        try:
+            tool.risk = tool_permissions.parse_risk(
+                tool.risk if tool.risk is not None else tool.metadata.get("risk")
+            )
+        except tool_permissions.PermissionConfigError as exc:
+            raise ToolRegistryError(
+                f"tool '{tool.name}' has no usable risk label: {exc}. Declare one of "
+                f"read, self, write, external at the tool's own registration site."
+            ) from None
         if not replace and tool.name in self._tools:
             raise ToolRegistryError(f"tool '{tool.name}' already registered")
         self._tools[tool.name] = tool
@@ -620,6 +643,22 @@ class ToolRegistry:
                 is_error=True,
                 error_message=msg,
             )
+
+        # Permission gate. One place, ahead of both the local handler and the remote
+        # dispatcher, because this is the only function every model tool call passes
+        # through (main_logic/core/tool_calling.py:187 is its single caller). A gate
+        # placed at the session level would leave the ledger replay and any future
+        # executor outside it.
+        #
+        # Denied calls answer as a normal error result rather than raising: this
+        # function's contract is "never raises", and the model recovers from a tool
+        # error string. Changing that contract to make a point would break turns that
+        # call an unrelated tool in the same breath.
+        decision = await tool_permissions.enforce(
+            call.name, tool.risk, tool_permissions.actor_from_call(call),
+        )
+        if decision.action is not PermissionAction.ALLOW:
+            return tool_permissions.permission_denied_result(call, decision)
 
         start = time.time()
         try:

@@ -66,6 +66,14 @@ def _resolve_plugin_server_base_url() -> str:
 _PLANE_DROP_WARN_THROTTLE_SECONDS = 60.0
 
 
+# The four risk classes the host permission gate accepts, duplicated here on purpose:
+# the plugin process must not import host config to validate a wire field it can check
+# itself, and the layering gate would refuse it anyway (scripts/check_module_layering.py
+# FORBIDDEN_EDGES). A drift between this set and the host enum is caught by the host
+# refusal, not silently accepted.
+_LLM_TOOL_RISKS = frozenset({"read", "self", "write", "external"})
+
+
 @dataclass
 class PluginCommunicationResourceManager:
     """Host-side communication manager backed by ZMQ transport.
@@ -1026,10 +1034,22 @@ class PluginCommunicationResourceManager:
             if role is not None and not isinstance(role, str):
                 role = None
 
+            # Refuse a label-less tool here rather than forwarding it. main_server
+            # would reject the registration and this consumer has always swallowed that
+            # rejection into a log, so the author would only see a missing tool.
+            risk = str(msg.get("risk") or "").strip().lower()
+            if risk not in _LLM_TOOL_RISKS:
+                self.logger.warning(
+                    "LLM_TOOL_REGISTER {} carries no usable risk label ({}); "
+                    "the tool was not registered", name, msg.get("risk"),
+                )
+                return
+
             await register_remote_tool(
                 plugin_id=self.plugin_id,
                 name=name,
                 description=str(description),
+                risk=risk,
                 parameters=parameters,
                 timeout_seconds=float(timeout_seconds),
                 role=role,

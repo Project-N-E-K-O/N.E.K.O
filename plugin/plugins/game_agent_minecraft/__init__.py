@@ -339,6 +339,9 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
     # ------------------------------------------------------------------
 
     @llm_tool(
+        # Hands a task to another process that acts in a game world on someone's
+        # behalf: outside this process, with effects the speaker cannot walk back.
+        risk="external",
         name="minecraft_task",
         description=MINECRAFT_TASK_DESCRIPTION,
         parameters=MINECRAFT_TASK_SCHEMA,
