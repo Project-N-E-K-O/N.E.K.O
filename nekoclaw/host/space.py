@@ -2442,7 +2442,9 @@ class TaskAgentSpace:
             # the shell reads the path the same. A path that is in single
             # ones is not put together by the shell; taken for one that is,
             # it is asked about once too often.
-            bare = said.replace('"', "").replace("'", "")
+            # Made plain once more: where a mark stood between two slashes
+            # they are doubled now.
+            bare = plain(said.replace('"', "").replace("'", ""))
             # As it was written, and as it reads without steps that lead nowhere.
             texts = {said, straight(said), bare, straight(bare)}
             for place in places:

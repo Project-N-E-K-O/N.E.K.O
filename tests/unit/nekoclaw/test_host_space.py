@@ -1333,6 +1333,8 @@ async def test_a_summary_that_cannot_be_saved_is_kept_in_the_projects_record(spa
         # Quotation marks that end in the middle of the path.
         'cat "{parent}"/task_agent_space/MEMORY.md',
         "rm '{parent}/old/..'/task_agent_space/MEMORY.md",
+        # A slash on either side of the mark: two of them once the mark is gone.
+        'rm -f "{parent}/"/task_agent_space/MEMORY.md',
         # A step back from a directory with a space in its name, the path between quotation marks.
         "rm '{parent}/临时 目录/../task_agent_space/MEMORY.md'",
         'type "{parent_backslashes}\\old notes\\..\\task_agent_space\\MEMORY.md"',
