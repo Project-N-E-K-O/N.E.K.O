@@ -4561,3 +4561,16 @@ async def test_of_more_commissions_than_are_counted_the_one_that_filed_last_stay
     assert (await space.submit(early, _lesson("Backups", "Nothing is deleted before it is copied."))).startswith("not kept: this commission")
     # Turned down, it is still at work: the other one is the next to be forgotten.
     assert list(space._added_by) == ["c-third", "c-early"]
+
+
+async def test_with_no_note_allowed_at_all_a_note_is_turned_down_like_any_other(root, clock, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_LESSONS_PER_COMMISSION", 0)
+    ledger = _Events()
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=ledger, clock=clock)
+
+    reply = await space.submit(_commission(id="c-1"), _lesson("Photo dates", "Use the EXIF date."))
+
+    # Turned down as one over the most a commission may add, not with an error; and on the record.
+    assert reply.startswith("not kept: this commission has added 0 notes already")
+    assert [(who, payload["kept"], payload["reason"]) for who, _kind, payload in ledger.rows] == [("c-1", False, "cap")]
+    assert space._added_by == {} and not (root / "projects").exists()

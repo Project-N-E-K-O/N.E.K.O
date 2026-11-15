@@ -1044,8 +1044,11 @@ class TaskAgentSpace:
         counted = commission.parent_id or commission.id
         added = self._added_by.get(counted, 0)
         if added >= SPACE_LESSONS_PER_COMMISSION:
-            # Still at work, as it shows: it is not the one to be forgotten next.
-            self._added_by[counted] = self._added_by.pop(counted)
+            # Still at work, as it shows: it is not the one to be forgotten
+            # next. One that has added none is not counted (the most a
+            # commission may add can be set to none at all).
+            if counted in self._added_by:
+                self._added_by[counted] = self._added_by.pop(counted)
             await self._note_unkept(commission, lesson, "cap")
             return SPACE_LESSONS_CAP_REACHED.format(count=SPACE_LESSONS_PER_COMMISSION)
         # Taken before the files are written (two of its task agents can
