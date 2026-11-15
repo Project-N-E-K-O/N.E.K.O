@@ -219,6 +219,15 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
         except Exception:
             pass  # already in degraded mode
 
+    # Default host-follow slots exist before the first panel open. Best-effort:
+    # ensure_default_slots never raises; list_slots seeds lazily as a fallback.
+    try:
+        from plugin.server.application.model_config_service import ModelConfigService
+
+        await asyncio.to_thread(ModelConfigService().ensure_default_slots)
+    except Exception as exc:
+        logger.warning("default model slot seeding failed at startup: err_type={}", type(exc).__name__)
+
     # Write bridge token file for Market frontend / URI handler
     try:
         from plugin.server.routes.market_bridge import write_bridge_token_file

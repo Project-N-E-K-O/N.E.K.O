@@ -1,6 +1,7 @@
 """Model-slot CRUD and manifest-owned plugin bindings; no model calls."""
 from __future__ import annotations
 
+import hashlib
 import tomllib
 from collections.abc import Callable
 from uuid import uuid4
@@ -22,6 +23,17 @@ from utils.http.url import same_endpoint
 
 Requirements = dict[PluginModelUsageId, PluginModelRequirementSchema]
 _requirements_adapter = TypeAdapter(Requirements)
+
+# Default slots every user gets without manual setup: one shared assist slot
+# (bindable out of the box) and one core slot (usable once the main app's core
+# API is an HTTP chat endpoint). Deterministic IDs keep seeding idempotent
+# across processes; the persisted seed_version keeps deleted defaults deleted.
+HOST_SLOT_SEED_VERSION = 1
+HOST_SLOT_SEEDS = (("assist", "Host assist API"), ("core", "Host core API"))
+
+
+def host_slot_seed_id(host_api: str) -> str:
+    return "slot_" + hashlib.md5(f"neko-host-follow:{host_api}".encode()).hexdigest()
 
 
 def load_model_requirements(plugin_id: str) -> Requirements:
@@ -87,9 +99,50 @@ class ModelConfigService:
             result["host_status"] = host_slot_status(slot)
         return result
 
+    @staticmethod
+    def _seed_default_slots(config: PluginModelsConfig) -> None:
+        """Create the default host-follow slots once, inside a write transaction."""
+        if config.seed_version >= HOST_SLOT_SEED_VERSION:
+            return
+        for host_api, name in HOST_SLOT_SEEDS:
+            slot_id = host_slot_seed_id(host_api)
+            if slot_id in config.slots:
+                continue
+            if any(slot.source == "host_follow" and slot.host_api == host_api for slot in config.slots.values()):
+                # The user already keeps a slot for this host API; a seeded
+                # duplicate would only clutter the panel.
+                continue
+            config.slots[slot_id] = ModelSlot(
+                name=name, source="host_follow", host_api=host_api,
+                capabilities=["text", "streaming"],
+            )
+        config.seed_version = HOST_SLOT_SEED_VERSION
+
     def list_slots(self) -> dict:
         config = self.store.read()
+        if config.seed_version < HOST_SLOT_SEED_VERSION:
+            # First panel open (or an older document): seed under the store's
+            # write lock so concurrent readers cannot create duplicate slots.
+            config = self.store.update(self._seed_change)
         return {"schema_version": config.schema_version, "slots": [self._view(config, key) for key in config.slots]}
+
+    def _seed_change(self, config: PluginModelsConfig) -> PluginModelsConfig:
+        self._seed_default_slots(config)
+        return config
+
+    def ensure_default_slots(self) -> dict:
+        """Best-effort startup seeding so the panel shows defaults on first open.
+
+        Never raises: a read-only storage window (maintenance) or an unreadable
+        document must not block server startup; list_slots retries lazily.
+        """
+        try:
+            if self.store.read().seed_version >= HOST_SLOT_SEED_VERSION:
+                return {"seeded": False}
+            self.store.update(self._seed_change)
+            return {"seeded": True}
+        except Exception:
+            return {"seeded": False}
 
     def get_slot(self, slot_id: str) -> dict:
         config = self.store.read()
@@ -265,12 +318,15 @@ class ModelConfigService:
             return {"bound": [], "slot_id": None}
 
         def change(config):
-            existing_slot_ids = set(config.slots)
+            # An install can be the first model-config write ever; seed the
+            # default slots here too so the shared assist slot has a stable ID.
+            self._seed_default_slots(config)
             slot_id = next(
                 (key for key, slot in config.slots.items()
                  if slot.source == "host_follow" and slot.host_api == "assist"),
                 None,
             )
+            created_slot = slot_id is None
             if slot_id is None:
                 slot_id = "slot_" + uuid4().hex
                 config.slots[slot_id] = ModelSlot(
@@ -280,7 +336,6 @@ class ModelConfigService:
             slot = config.slots[slot_id]
             bindings = config.bindings.setdefault(plugin_id, {})
             bound = []
-            created_slot = slot_id not in existing_slot_ids
             for usage_id, requirement in requirements.items():
                 if usage_id in bindings:
                     continue
@@ -293,7 +348,7 @@ class ModelConfigService:
             if not bindings:
                 config.bindings.pop(plugin_id, None)
             if created_slot and not bound:
-                # Nothing could use the new shared slot; do not leave an orphan.
+                # Defensive only: seeding normally provides the assist slot.
                 del config.slots[slot_id]
                 slot_id = None
             return {"bound": bound, "slot_id": slot_id}

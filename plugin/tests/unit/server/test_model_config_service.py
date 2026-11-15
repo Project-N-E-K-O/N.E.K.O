@@ -9,6 +9,7 @@ import pytest
 from plugin.config.schema import PluginModelRequirementSchema
 from plugin.server.application.model_config_service import (
     ModelConfigService,
+    host_slot_seed_id,
     load_model_requirements,
 )
 from plugin.server.domain.errors import ServerDomainError
@@ -37,7 +38,19 @@ class TempConfigManager:
 
 
 @pytest.fixture
-def config_env(tmp_path, monkeypatch):
+def host_api_unconfigured(monkeypatch):
+    """Keep host_status resolution deterministic without touching real config."""
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+
+
+@pytest.fixture
+def config_env(tmp_path, monkeypatch, host_api_unconfigured):
     import utils.cloudsave_runtime as cloudsave
 
     cm = TempConfigManager(tmp_path)
@@ -76,11 +89,24 @@ def slot_payload(**updates):
     }
 
 
-def test_missing_config_is_empty_and_read_does_not_write(config_env):
+def test_first_list_seeds_default_host_slots_and_read_stays_read(config_env):
     cm, service, _ = config_env
-    assert service.list_slots() == {"schema_version": 1, "slots": []}
-    assert not cm.get_runtime_config_path(CONFIG_FILENAME).exists()
-    assert not cm.transactions
+    listed = service.list_slots()
+    assert listed["schema_version"] == 1
+    seeded = {slot["id"]: slot for slot in listed["slots"]}
+    assert set(seeded) == {host_slot_seed_id("assist"), host_slot_seed_id("core")}
+    for slot in seeded.values():
+        assert slot["source"] == "host_follow"
+        assert slot["base_url"] == slot["model"] == slot["api_key"] == ""
+        assert slot["capabilities"] == ["text", "streaming"]
+        assert slot["host_status"] == {"configured": False, "error_code": "host_api_not_configured"}
+    assert seeded[host_slot_seed_id("assist")]["host_api"] == "assist"
+    assert seeded[host_slot_seed_id("core")]["host_api"] == "core"
+    assert cm.get_runtime_config_path(CONFIG_FILENAME).exists()
+    # Seeding is a one-time write; later lists never touch the store again.
+    writes = len(cm.transactions)
+    assert service.list_slots() == listed
+    assert len(cm.transactions) == writes
     assert service.get_bindings("legacy")["ready"] is True
 
 
@@ -190,7 +216,9 @@ def test_delete_requires_explicit_unbind_and_stale_binding_can_be_cleaned(config
     service.delete_binding("alpha", "analysis", 1)
     service.delete_slot(slot_id)
     assert service.store.read().bindings == {}
-    assert service.list_slots()["slots"] == []
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
 
 
 def test_fallback_references_cannot_dangle_cycle_or_lose_capabilities(config_env):
@@ -316,7 +344,9 @@ def test_store_with_real_config_manager_and_write_transaction(tmp_path, monkeypa
         fresh.delete_slot("not-a-slot")
     assert error.value.code == "MODEL_SLOT_NOT_FOUND"
     fresh.delete_slot(slot_id)
-    assert fresh.list_slots()["slots"] == []
+    assert {slot["id"] for slot in fresh.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
 
 
 @pytest.mark.parametrize("key,preview", [
@@ -325,13 +355,14 @@ def test_store_with_real_config_manager_and_write_transaction(tmp_path, monkeypa
     ("short", "******"),
     ("", ""),
 ])
-def test_slot_returns_only_masked_preview(config_env, key, preview):
+def test_slot_returns_only_masked_preview(config_env, key, preview, host_api_unconfigured):
     _, service, _ = config_env
     created = service.create_slot(slot_payload(api_key=key))
     assert created["api_key_preview"] == preview
     assert created["api_key"] == (SECRET_MASK if key else "")
     assert service.get_slot(created["id"])["api_key_preview"] == preview
-    assert service.list_slots()["slots"][0]["api_key_preview"] == preview
+    listed = next(slot for slot in service.list_slots()["slots"] if slot["id"] == created["id"])
+    assert listed["api_key_preview"] == preview
     if key:
         service.update_slot(created["id"], {"name": "Renamed"})
         assert service.store.read().slots[created["id"]].api_key == key
@@ -346,7 +377,7 @@ def test_output_default_limit_is_validated_before_saving(config_env):
     with pytest.raises(ServerDomainError) as error:
         service.create_slot(slot_payload(defaults={"max_output_tokens": MAX_OUTPUT_TOKENS + 1}))
     assert error.value.code == "MODEL_SLOT_INVALID"
-    assert service.list_slots()["slots"] == []
+    assert all(slot["source"] == "host_follow" for slot in service.list_slots()["slots"])
     created = service.create_slot(slot_payload(defaults={"max_output_tokens": MAX_OUTPUT_TOKENS}))
     with pytest.raises(ServerDomainError):
         service.update_slot(created["id"], {"defaults": {"max_output_tokens": MAX_OUTPUT_TOKENS + 1}})
@@ -425,16 +456,87 @@ def test_ensure_host_follow_binding_creates_shared_slot_and_binds_compatible_usa
     assert second["slot_id"] == slot_id
     assert second["bound"] == []  # alpha requires image_input, the shared slot is text+streaming
     assert service.get_bindings("beta")["bindings"]["analysis"] != slot_id
-    assert len(service.list_slots()["slots"]) == 2
+    # The two seeded defaults plus the manual slot beta was rebound to.
+    assert len(service.list_slots()["slots"]) == 3
 
 
 def test_ensure_host_follow_binding_is_idempotent_and_skips_undeclared_plugins(config_env):
     _, service, _ = config_env
     assert service.ensure_host_follow_binding("legacy") == {"bound": [], "slot_id": None}
-    assert service.list_slots()["slots"] == []
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
     first = service.ensure_host_follow_binding("beta")
     again = service.ensure_host_follow_binding("beta")
     assert again == {"bound": [], "slot_id": first["slot_id"]}
-    assert len(service.list_slots()["slots"]) == 1
+    assert len(service.list_slots()["slots"]) == 2
     version = service.get_bindings("beta")["requirements"]["analysis"]["version"]
     assert version == 1
+
+
+def test_deleted_default_slots_are_not_resurrected(config_env):
+    _, service, _ = config_env
+    service.list_slots()
+    service.delete_slot(host_slot_seed_id("core"))
+    remaining = {slot["id"] for slot in service.list_slots()["slots"]}
+    assert remaining == {host_slot_seed_id("assist")}
+    # A later install must not resurrect the deleted default either.
+    service.ensure_host_follow_binding("beta")
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == remaining
+
+
+def test_install_before_first_list_seeds_defaults_and_binds_shared_assist(config_env):
+    _, service, _ = config_env
+    result = service.ensure_host_follow_binding("beta")
+    assert result["slot_id"] == host_slot_seed_id("assist")
+    assert result["bound"] == ["analysis"]
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
+    assert service.get_bindings("beta")["bindings"] == {"analysis": host_slot_seed_id("assist")}
+
+
+def test_existing_assist_slot_is_reused_without_duplicate_seed(config_env):
+    _, service, _ = config_env
+    manual_assist = service.create_slot(host_payload(name="My own assist"))["id"]
+    result = service.ensure_host_follow_binding("beta")
+    assert result["slot_id"] == manual_assist
+    slots = {slot["id"]: slot for slot in service.list_slots()["slots"]}
+    assert host_slot_seed_id("assist") not in slots  # no duplicate assist slot
+    assert host_slot_seed_id("core") in slots
+    assert service.get_bindings("beta")["bindings"] == {"analysis": manual_assist}
+
+
+def test_ensure_default_slots_is_idempotent_and_never_raises(config_env, monkeypatch):
+    cm, service, _ = config_env
+    assert service.ensure_default_slots() == {"seeded": True}
+    assert service.ensure_default_slots() == {"seeded": False}
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {
+        host_slot_seed_id("assist"), host_slot_seed_id("core"),
+    }
+    # A read-only storage window must degrade to lazy seeding, not raise.
+    import utils.cloudsave_runtime as cloudsave
+
+    fresh = ModelConfigService(ModelConfigStore(TempConfigManager(cm.config_dir.parent / "other")))
+
+    @contextmanager
+    def blocked(*args, **kwargs):
+        raise cloudsave.MaintenanceModeError("maintenance_readonly")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", blocked)
+    assert fresh.ensure_default_slots() == {"seeded": False}
+
+
+def test_concurrent_first_lists_seed_exactly_once(config_env):
+    cm, _, _ = config_env
+
+    def list_slots(_index):
+        return ModelConfigService(ModelConfigStore(cm)).list_slots()
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = list(executor.map(list_slots, range(12)))
+    expected = {host_slot_seed_id("assist"), host_slot_seed_id("core")}
+    for result in results:
+        assert {slot["id"] for slot in result["slots"]} == expected
+    assert set(ModelConfigStore(cm).read().slots) == expected

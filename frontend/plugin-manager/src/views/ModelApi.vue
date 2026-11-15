@@ -16,7 +16,7 @@
               <div class="slot-heading"><h2>{{ slot.name }}</h2><el-tag size="small" effect="plain">{{ slot.source === 'host_follow' ? t(`modelApi.hostApi.${slot.host_api}`) : protocolLabel(slot.protocol) }}</el-tag></div>
             </template>
             <template v-if="slot.source === 'host_follow'">
-              <div class="slot-model">{{ slot.host_status?.configured ? slot.host_status.model : t('modelApi.hostNotConfigured') }}</div>
+              <div class="slot-model">{{ hostSlotModelLabel(slot) }}</div>
               <p class="endpoint">{{ t('modelApi.hostManagedHint') }}</p>
             </template>
             <template v-else>
@@ -170,6 +170,12 @@ const knownTokens = computed(() => {
 })
 const errorMessage = (error: unknown) => formatHttpError(error) || t('messages.requestFailed')
 const protocolLabel = (protocol: string) => protocol === 'openai_chat' ? 'OpenAI Chat' : 'Anthropic'
+const hostSlotModelLabel = (slot: ModelSlot) => {
+  if (slot.host_status?.configured) return slot.host_status.model
+  // A realtime (WebSocket) core endpoint is configured but cannot serve chat;
+  // saying "not configured" there would send users to check working settings.
+  return t(slot.host_status?.error_code === 'host_api_unsupported' ? 'modelApi.hostUnsupported' : 'modelApi.hostNotConfigured')
+}
 const slotName = (id: string) => slots.value.find(slot => slot.id === id)?.name ?? id
 const duration = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 const tokenValue = (attempt: ModelUsageAttempt, field: 'prompt_tokens' | 'completion_tokens' | 'total_tokens') => attempt.usage_status === 'unknown' ? '—' : (attempt.usage?.[field]?.toLocaleString() ?? '—')

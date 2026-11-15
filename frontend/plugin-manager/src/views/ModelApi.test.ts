@@ -157,11 +157,19 @@ describe('Plugin API page', () => {
     expect(container.textContent).toContain('Managed by the main app')
     expect(container.textContent).not.toContain('__NEKO_SECRET_MASKED__')
   })
-  it('flags a host-follow slot whose main-app API is not configured', async () => {
+  it('flags a realtime core endpoint as unsupported, not as unconfigured', async () => {
     const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host core', source: 'host_follow', host_api: 'core', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_unsupported' }, bound_by: [] }
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
     const container = await mount()
+    expect(container.textContent).toContain('Realtime voice endpoint — plugin chat calls not supported')
+    expect(container.textContent).not.toContain('Main app API not configured')
+  })
+  it('flags a host-follow slot whose main-app API is not configured', async () => {
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', host_status: { configured: false, error_code: 'host_api_not_configured' }, bound_by: [] }
+    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
+    const container = await mount()
     expect(container.textContent).toContain('Main app API not configured')
+    expect(container.textContent).not.toContain('Realtime voice endpoint')
   })
   it('removes a stale plugin usage binding and enables slot deletion after refreshing', async () => {
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...saved, bound_by: [{ plugin_id: 'uninstalled_plugin', usage_id: 'removed_usage', version: 0 }] }] })

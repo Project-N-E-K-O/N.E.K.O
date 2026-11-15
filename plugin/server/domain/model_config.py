@@ -122,6 +122,9 @@ class PluginModelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     schema_version: Literal[1] = 1
+    # Highest default-slot seeding generation already applied. Persisted so a
+    # user-deleted default slot is never resurrected by a later list call.
+    seed_version: int = Field(default=0, ge=0)
     slots: dict[SlotId, ModelSlot] = Field(default_factory=dict)
     bindings: dict[PluginId, dict[PluginModelUsageId, SlotId]] = Field(default_factory=dict)
 

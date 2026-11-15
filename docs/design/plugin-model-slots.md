@@ -50,8 +50,9 @@ Existing plugins without declarations continue to work.
 
 ## Storage and management API
 
-The version-1 document contains `slots` keyed by host-generated stable IDs and
-`bindings` keyed by plugin ID, then usage ID. Each binding points to one slot ID.
+The version-1 document contains `slots` keyed by host-generated stable IDs,
+`bindings` keyed by plugin ID, then usage ID, and a `seed_version` recording
+which default-slot seeding generation has been applied. Each binding points to one slot ID.
 A slot contains `name`, `source`, `protocol` (`openai_chat` or `anthropic_messages`),
 `base_url`, `model`, `api_key`, `capabilities`, `defaults`, `timeout_seconds`, and
 an optional `fallback_slot_id`. Defaults validate temperature against the selected protocol (0–1 for Anthropic,
@@ -85,10 +86,20 @@ When a host-follow call resolves to the built-in free credentials
 paid main-app API, are never metered.
 
 After a committed install, `notify_install_committed` binds still-unbound
-declared usages to a shared host-follow assist slot (created lazily, reused
-across plugins, `text` + `streaming` capabilities). Existing bindings are never
-overwritten; usages the shared slot cannot serve stay unbound for explicit
-user choice. Auto-bind failures only log a warning and never fail the install.
+declared usages to a shared host-follow assist slot (reused across plugins,
+`text` + `streaming` capabilities). Existing bindings are never overwritten;
+usages the shared slot cannot serve stay unbound for explicit user choice.
+Auto-bind failures only log a warning and never fail the install.
+
+Two default host-follow slots — "Host assist API" (assist) and "Host core API"
+(core), both `text` + `streaming` — are seeded so the panel is usable without
+manual setup. Seeding runs best-effort at plugin-server startup and lazily on
+the first slot list or install commit, under the store's write transaction.
+Seed IDs are deterministic and the document records a `seed_version`, so
+seeding happens exactly once: a deleted default is never resurrected, and a
+host API the user already covers with their own host-follow slot is not
+duplicated. The core default reports `host_api_unsupported` until the main
+app's core API is an HTTP chat endpoint; that is expected, not an error.
 
 All endpoints are served by the plugin HTTP app under `/api/model-config` and
 use its existing management access policy.
