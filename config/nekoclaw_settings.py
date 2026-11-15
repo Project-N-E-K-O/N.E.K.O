@@ -172,6 +172,124 @@ DEFERRED_COMMISSION_SECONDS = 3600.0
 """How long a deferred plugin result may stay open before the commission fails."""
 
 # ---------------------------------------------------------------------------
+# Task agent space (design section 12.1; ``nekoclaw/host/space.py``)
+# ---------------------------------------------------------------------------
+
+SPACE_BRIEF_GLOBAL_RULES_MAX_TOKENS = 250
+"""Cap on the rules for every task agent (``AGENTS.md`` of the space) as they
+are appended to a task agent's system prompt."""
+
+SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS = 350
+"""Cap on the index of the space (``MEMORY.md``) in a task agent's system
+prompt. New lines go to the top of an index, so what is cut is the oldest."""
+
+SPACE_BRIEF_PROJECT_RULES_MAX_TOKENS = 250
+"""Cap on the rules of the commission's project in a task agent's system prompt."""
+
+SPACE_BRIEF_PROJECT_INDEX_MAX_TOKENS = 350
+"""Cap on the index of the commission's project in a task agent's system prompt."""
+
+SPACE_BRIEF_MAX_TOKENS = 1400
+"""Cap on everything the space adds to a task agent's system prompt: the four
+parts above (1200 together), their headings and the lines that say where the
+files are (under 200). It is paid with every request of the session. Nothing
+is added while the space holds nothing for the commission."""
+
+SPACE_ENTRY_TITLE_MAX_TOKENS = 24
+SPACE_ENTRY_DESCRIPTION_MAX_TOKENS = 40
+"""Caps on an entry's title and on its line in an index."""
+
+SPACE_ENTRY_CONTENT_MAX_TOKENS = 600
+"""Cap on what one ``note_lesson`` call, or one review, adds to an entry."""
+
+SPACE_SAME_TOPIC_SIMILARITY = 0.6
+"""Token-set similarity of two titles at or above which a new entry is taken
+to be about the topic of an existing one, and is added to it instead of
+becoming a file of its own."""
+
+SPACE_PROJECT_NAME_MAX_TOKENS = 12
+SPACE_PROJECT_DESCRIPTION_MAX_TOKENS = 40
+"""Caps on a project's name and on its one-line description."""
+
+SPACE_PROJECT_MATCH_MIN_CHARS = 3
+"""Least length of a project's name (white space removed) for a commission to
+be filed under it because the name occurs in what was dispatched. Shorter
+names are too likely to occur by chance."""
+
+SPACE_PROJECT_IDLE_SECONDS = 30 * 24 * 3600.0
+"""How long after its last commission a project is archived."""
+
+SPACE_TRANSCRIPT_KEPT_SECONDS = 30 * 24 * 3600.0
+"""How long after a commission ended what was said in its session
+(``transcript.jsonl`` and ``outputs/``) is kept. Its working directory is
+never removed, nor are its review and the entries made from it."""
+
+SPACE_UPKEEP_INTERVAL_SECONDS = 6 * 3600.0
+"""Least time between two rounds of tidying the space (archiving idle
+projects, removing old transcripts, reviewing failed commissions nobody took
+up again). A round is started after a commission has ended, never at startup."""
+
+SPACE_ARCHIVES_PER_UPKEEP = 2
+"""Most projects one round of tidying archives; each costs one model call."""
+
+SPACE_ARCHIVE_MAX_ATTEMPTS = 3
+"""How many times a summary is asked for before an idle project is archived
+without one."""
+
+TASK_AGENT_REVIEW_DELAY_SECONDS = 2.0
+"""How long after a commission ended its review is started: the report to her
+goes out first, and the last events of the session are in the ledger."""
+
+TASK_AGENT_REVIEW_MIN_TOOL_CALLS = 3
+"""A commission whose task agent made fewer tool calls than this (reports,
+lessons and the todo list not counted) is not reviewed: there is too little
+to learn from, and a review costs one model call."""
+
+TASK_AGENT_REVIEW_FAILED_AFTER_SECONDS = 24 * 3600.0
+"""How long a failed commission is left alone before it is reviewed. A failed
+commission is often taken up again; reviewed at once, the review would miss
+how it ended, and every commission is reviewed once at most."""
+
+TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 4000
+"""Cap on everything sent to the model for one review, the instructions
+included."""
+
+TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 2000
+"""Cap on the account of what the task agent did within that input. Of a
+longer one the beginning and the end are kept."""
+
+TASK_AGENT_REVIEW_PROCESS_LINE_MAX_TOKENS = 60
+"""Cap on one line of that account (one tool call, or one thing said)."""
+
+TASK_AGENT_REVIEW_INDEX_MAX_TOKENS = 250
+"""Cap on each of the two indexes (the space's and the project's) shown to
+the review, so it adds to an existing entry instead of repeating it."""
+
+TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS = 200
+"""Cap on the list of projects shown to the review."""
+
+TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS = 800
+"""``max_completion_tokens`` of a review: the review itself, up to
+``TASK_AGENT_REVIEW_MAX_ENTRIES`` entries and the project."""
+
+TASK_AGENT_REVIEW_TEXT_MAX_TOKENS = 300
+"""Cap on the review as it is kept."""
+
+TASK_AGENT_REVIEW_MAX_ENTRIES = 3
+"""Most entries one review may file."""
+
+TASK_AGENT_REVIEWS_PER_UPKEEP = 3
+"""Most late reviews one round of tidying makes (failed commissions nobody
+took up again, and reviews a shutdown cut off)."""
+
+SPACE_ARCHIVE_INPUT_MAX_TOKENS = 3000
+"""Cap on everything sent to the model for the summary of a project that is
+archived."""
+
+SPACE_ARCHIVE_OUTPUT_MAX_TOKENS = 600
+"""``max_completion_tokens`` of that summary."""
+
+# ---------------------------------------------------------------------------
 # Capability gateway
 # ---------------------------------------------------------------------------
 

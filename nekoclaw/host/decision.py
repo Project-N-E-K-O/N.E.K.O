@@ -80,6 +80,13 @@ TIER_TURN_CHECK = "turn_check"
 # A short description for a plugin whose manifest has none: the small model,
 # once per plugin and description, in the background.
 TIER_SHORT_DESCRIPTION = "short_description"
+# The task agent space (``space_keeper.py``): the review of a finished
+# commission, and the summary of a project that is archived. Both run in the
+# background on the summary model and are metered under names of their own.
+TIER_REVIEW = "review"
+TIER_ARCHIVE = "archive"
+_SUMMARY_TIERS = frozenset({TIER_FINE, TIER_REVIEW, TIER_ARCHIVE})
+_CALL_TYPES = {TIER_REVIEW: "task_agent_review", TIER_ARCHIVE: "task_agent_archive"}
 _FINE_ATTEMPTS = 3
 _FINE_RETRY_DELAYS = (1.0, 2.0)
 
@@ -175,7 +182,7 @@ class DecisionLLM(Protocol):
     """The model tiers the lexical decision model uses."""
 
     async def complete(self, tier: str, messages: list[dict[str, Any]]) -> str:
-        """Return the text of one completion from ``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK`` or ``TIER_SHORT_DESCRIPTION``."""
+        """Return the text of one completion of a tier (``TIER_COARSE``, ``TIER_FINE``, ``TIER_TURN_CHECK``, ``TIER_SHORT_DESCRIPTION``, ``TIER_REVIEW``, ``TIER_ARCHIVE``)."""
 
 
 class DecisionModel(Protocol):
@@ -215,9 +222,10 @@ class ConfiguredDecisionLLM:
     """``DecisionLLM`` on the models the analyzer used.
 
     The coarse screen, the turn check and short descriptions run on the small
-    latency-sensitive tier (``emotion``), the fine selection on the ``summary``
-    tier. Endpoints come from the user's configuration as they are,
-    ``http://`` addresses included.
+    latency-sensitive tier (``emotion``); the fine selection, the reviews of
+    finished commissions and the summaries of archived projects on the
+    ``summary`` tier. Endpoints come from the user's configuration as they
+    are, ``http://`` addresses included.
     """
 
     def __init__(self) -> None:
@@ -227,7 +235,7 @@ class ConfiguredDecisionLLM:
         from utils.config_manager import get_config_manager
         from utils.llm_client import create_chat_llm_async
 
-        slot = "summary" if tier == TIER_FINE else "emotion"
+        slot = "summary" if tier in _SUMMARY_TIERS else "emotion"
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
         client = self._clients.get(key)
@@ -249,14 +257,21 @@ class ConfiguredDecisionLLM:
         from config import AGENT_PLUGIN_COARSE_MAX_TOKENS, AGENT_PLUGIN_FULL_MAX_TOKENS, AGENT_PLUGIN_SHORTDESC_MAX_TOKENS
         from utils.token_tracker import set_call_type
 
-        # Same usage bucket as the analyzer it takes over from.
-        set_call_type("agent")
-        from config.nekoclaw_settings import TURN_CHECK_OUTPUT_MAX_TOKENS
+        # Same usage bucket as the analyzer it takes over from; what the
+        # task agent space asks is counted apart.
+        set_call_type(_CALL_TYPES.get(tier, "agent"))
+        from config.nekoclaw_settings import (
+            SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
+            TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
+            TURN_CHECK_OUTPUT_MAX_TOKENS,
+        )
 
         budget = {
             TIER_COARSE: AGENT_PLUGIN_COARSE_MAX_TOKENS,
             TIER_TURN_CHECK: TURN_CHECK_OUTPUT_MAX_TOKENS,
             TIER_SHORT_DESCRIPTION: AGENT_PLUGIN_SHORTDESC_MAX_TOKENS,
+            TIER_REVIEW: TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS,
+            TIER_ARCHIVE: SPACE_ARCHIVE_OUTPUT_MAX_TOKENS,
         }.get(tier, AGENT_PLUGIN_FULL_MAX_TOKENS)
         client = await self._client(tier, budget)
         response = await client.ainvoke(messages)

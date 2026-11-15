@@ -46,6 +46,11 @@ class FakeDecisionLLM:
         # Answers for short descriptions (strings or exceptions), in order.
         self.short: list[Any] = []
         self.short_calls: list[list[dict[str, Any]]] = []
+        # Answers of the task agent space's own calls (the review of a
+        # finished commission, the summary of an archived project): dicts,
+        # strings or exceptions, in order; the last one repeats.
+        self.space: dict[str, list[Any]] = {"review": [], "archive": []}
+        self.space_calls: list[tuple[str, list[dict[str, Any]]]] = []
 
     def count(self, tier: str | None = None) -> int:
         return sum(1 for called, _ in self.calls if tier is None or called == tier)
@@ -66,6 +71,17 @@ class FakeDecisionLLM:
             if isinstance(answer, BaseException):
                 raise answer
             return answer
+        if tier in self.space:
+            # Made in the background after a commission ended; kept apart
+            # like the short descriptions. Answers nothing usable unless a
+            # test sets ``space``.
+            self.space_calls.append((tier, [dict(message) for message in messages]))
+            answers = self.space[tier]
+            made = sum(1 for called, _ in self.space_calls if called == tier)
+            answer = answers[min(made - 1, len(answers) - 1)] if answers else ""
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
         self.calls.append((tier, [dict(message) for message in messages]))
         if self.gate is not None:
             await self.gate.wait()

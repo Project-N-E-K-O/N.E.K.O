@@ -17,7 +17,8 @@
 ``NekoClawHost`` builds the parts and connects them. Building it does no
 work: no file is opened, no thread or process is started, nothing listens and
 nothing is fetched. The ledger file is opened by the first dispatch or query,
-the runtime and the gateway are started by the first task agent.
+the runtime and the gateway are started by the first task agent, and the task
+agent space is first read when a task agent starts.
 
 Whoever embeds the host supplies what it cannot know by itself, all optional:
 
@@ -69,6 +70,8 @@ from nekoclaw.host.plugin_runs import ClientFactory, PluginCatalog, PluginRunner
 from nekoclaw.host.preferences import PreferenceStore
 from nekoclaw.host.reports import CHANNEL_PLUGIN, CHANNEL_TASK_AGENT, Reporter
 from nekoclaw.host.short_descriptions import ShortDescriptions
+from nekoclaw.host.space import TaskAgentSpace
+from nekoclaw.host.space_keeper import SpaceKeeper
 from nekoclaw.host.task_brain import ProgressListener, QueryAnswer, Receipt, TaskBrain, TurnCheck
 
 logger = logging.getLogger(__name__)
@@ -148,6 +151,9 @@ class NekoClawHost:
             on_released=self.registry.builtin_released,
         )
         self.model_capabilities = ModelCapabilityStore(self.paths.model_capabilities_json)
+        # What task agents keep for later commissions. The console reads and
+        # edits it through this object.
+        self.space = TaskAgentSpace(self.paths.space, ledger=self.ledger)
         self.gateway = CapabilityGateway(
             registry=self.registry,
             runner=self.runner,
@@ -172,7 +178,17 @@ class NekoClawHost:
             meter=task_agent_meter,
             leases=self.leases,
             model_capabilities=self.model_capabilities,
+            space=self.space,
         )
+        # Reviews of finished commissions and the tidying of the space, in
+        # the background; started by a commission ending, never at startup.
+        self.space_keeper = SpaceKeeper(
+            space=self.space,
+            ledger=self.ledger,
+            llm=self._decision_llm,
+            session_dir_of=self.task_agents.session_dir_of,
+        )
+        self.ledger.subscribe(self.space_keeper.watch)
         # A plugin's request for confirmation is put to the user by the
         # gateway, through the same waiting the task agents' own questions use.
         self.gateway.set_ask_user(self.task_agents.ask_user)
@@ -350,6 +366,7 @@ class NekoClawHost:
             ("gateway", self.gateway.stop),
             ("plugin runs", self.runner.aclose),
             ("short descriptions", self.short_descriptions.aclose),
+            ("task agent space", self.space_keeper.aclose),
             ("outbox", self.outbox.close),
         )
         for name, step in steps:
