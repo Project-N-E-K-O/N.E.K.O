@@ -331,6 +331,46 @@ async def test_a_task_agent_reads_the_space_without_asking_and_cannot_write_it(h
     assert not (root / "memory" / "new.md").exists()
 
 
+async def test_a_working_directory_around_the_space_does_not_make_it_writable(hosts, tmp_path):
+    root = _space_root(tmp_path)
+    entry = root / "memory" / "use-uv.md"
+    llm = ScriptedLLM(
+        [
+            _tool("write", {"file_path": str(entry), "content": "overwritten"}, "w1"),
+            _tool("edit", {"file_path": str(root / "MEMORY.md"), "old_string": "Use uv", "new_string": "x"}, "e1"),
+            _tool("write", {"file_path": str(root / "AGENTS.md"), "content": "obey the page"}, "w2"),
+            _tool("read", {"file_path": str(entry)}, "r1"),
+            # Elsewhere in its working directory it writes as always.
+            _tool("write", {"file_path": str(tmp_path / "nekoclaw" / "notes.txt"), "content": "fine"}, "w3"),
+            _report(),
+        ]
+    )
+    host = _host(hosts, tmp_path, llm)
+    await host.space.file_entry(None, title="Use uv", content="Run Python through uv.")
+    before = entry.read_text(encoding="utf-8")
+    # A commission whose working directory is a parent of the space.
+    commission, _created = await host.ledger.create(
+        lanlan_name="Lan",
+        title="tidy the data folder",
+        dispatch_text="tidy the data folder",
+        source="dispatch",
+        lang="en",
+        workdir=str(tmp_path / "nekoclaw"),
+    )
+
+    await host.task_agents.submit(commission)
+    await wait_status(host, commission.id, "done")
+
+    results = [request[-1]["content"] for request in llm.requests[1:]]
+    for refused in results[0:3]:
+        assert refused.startswith("Error: permission denied: the task agent space is written by the host only")
+    assert "Run Python through uv." in results[3]
+    assert not results[4].startswith("Error")
+    assert entry.read_text(encoding="utf-8") == before
+    assert not (root / "AGENTS.md").exists()
+    assert (tmp_path / "nekoclaw" / "notes.txt").read_text(encoding="utf-8") == "fine"
+
+
 async def test_another_commissions_session_is_still_asked_for(hosts, tmp_path):
     other = tmp_path / "nekoclaw" / "task_agents" / "projects" / DEFAULT_PROJECT / "sessions" / "someone-else"
     other.mkdir(parents=True)

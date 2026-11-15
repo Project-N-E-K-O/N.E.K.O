@@ -1533,18 +1533,25 @@ class TaskAgentManager:
 
     async def _cb_permission(self, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         detail = {key: payload.get(key) for key in ("tool", "path", "command", "cwd") if payload.get(key)}
+        from nekoclaw.runtime.permissions import WRITE_TOOL_NAMES
+
         category = str(payload.get("category") or "other")
         path = payload.get("path")
+        writes = payload.get("tool") in WRITE_TOOL_NAMES
+        # A path outside the working directory, or one a tool is about to
+        # write: the space may lie inside a working directory that is one of
+        # its parents, and writing it is then a write "inside the working
+        # directory" as far as the category goes.
         if (
             self._space is not None
-            and category in ("outside_read", "outside_write")
+            and (category in ("outside_read", "outside_write") or (writes and category == "workdir_files"))
             and isinstance(path, str)
             and path
             and await self._space.contains(path)
         ):
-            if category == "outside_write":
+            if writes or category == "outside_write":
                 # Only the host writes the space, whatever the settings allow
-                # outside a working directory.
+                # and wherever the working directory is.
                 from config.prompts.prompts_nekoclaw_space import SPACE_WRITE_REFUSED
 
                 return {"allow": False, "reason": SPACE_WRITE_REFUSED}
