@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 
 from config.prompts.prompts_forge_drop import build_forge_drop_chat_context
+from main_logic.core import LLMSessionManager
 from main_logic.core.callback_render import (
     _build_callback_instruction,
     _render_pending_extra_replies_by_origin,
@@ -17,7 +18,6 @@ from main_logic.core.callback_render import (
 from main_logic.proactive_delivery import CALLBACK_EXPIRES_AT_KEY, ProactiveDeliveryManager
 from main_routers import forge_drop_reaction as reaction
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
-from tests.unit.test_hot_swap_cancellation import _make_swap_manager
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -140,8 +140,9 @@ async def test_russian_drop_facts_survive_enqueue_without_tokenizer(environment,
     guidance = build_forge_drop_chat_context("ru")
     if long_guidance:
         monkeypatch.setattr(reaction, "build_forge_drop_chat_context", lambda _language: guidance * 2)
-    queue = _make_swap_manager()
+    queue = object.__new__(LLMSessionManager)
     queue.pending_agent_callbacks = []
+    queue.pending_extra_replies = []
     drop = {**payload(), "rarity": "SSR", "active_count": 100000, "expires_at": "2026-11-14T00:00:00Z"}
 
     async with client(app) as http:
@@ -187,13 +188,34 @@ async def test_invalid_drop_and_missing_csrf_cannot_inject_chat_context(environm
     manager.submit_proactive_callback.assert_not_called()
 
 
-async def test_stale_character_and_missing_frontend_do_not_receive_drop(environment):
+async def test_stale_character_does_not_receive_drop(environment):
     app, manager = environment
     async with client(app) as http:
         assert (await http.post("/api/card-drop/credits/react", json={**payload(), "lanlan_name": "Other"})).json()["skipped"] == "character_changed"
-        manager.websocket = None
-        assert (await http.post("/api/card-drop/credits/react", json=payload())).json()["skipped"] == "no_frontend"
     manager.submit_proactive_callback.assert_not_called()
+
+
+@pytest.mark.parametrize("manager_missing", [False, True])
+async def test_drop_retries_until_frontend_is_connected(environment, monkeypatch, manager_missing):
+    app, manager = environment
+    sessions = {} if manager_missing else {"Lan": manager}
+    monkeypatch.setattr(reaction, "get_session_manager", lambda: sessions)
+    manager.websocket = None
+    body = payload()
+
+    async with client(app) as http:
+        unavailable = await http.post("/api/card-drop/credits/react", json=body)
+        assert unavailable.status_code == 409
+        assert unavailable.json()["detail"] == "no_frontend"
+        manager.submit_proactive_callback.assert_not_called()
+
+        sessions["Lan"] = manager
+        manager.websocket = object()
+        assert (await http.post("/api/card-drop/credits/react", json=body)).json()["queued"]
+        assert (await http.post("/api/card-drop/credits/react", json=body)).json()["skipped"] == "duplicate"
+
+    manager.submit_proactive_callback.assert_called_once()
+    assert manager.submit_proactive_callback.call_args.args[0]["task_id"] == body["event_id"]
 
 
 async def test_untrusted_reason_and_counts_cannot_supply_model_instructions(environment):

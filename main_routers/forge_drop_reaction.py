@@ -52,7 +52,8 @@ async def react_to_credit_drop(request: Request):
     manager = get_session_manager().get(current)
     submit = getattr(manager, "submit_proactive_callback", None)
     if not callable(submit) or not getattr(manager, "websocket", None):
-        return {"ok": True, "skipped": "no_frontend"}
+        # The client retries 409 with the same event ID while chat reconnects.
+        raise HTTPException(409, "no_frontend")
     # Only supported drop fields enter the context; callers cannot supply a reply or prompt.
     reason = data.get("reason")
     facts = {

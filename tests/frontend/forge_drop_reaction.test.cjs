@@ -189,6 +189,20 @@ test('temporary startup conflicts retry the same event', async () => {
   assert.equal(h.requests[1].body.event_id, eventId);
 });
 
+test('a drop waits for chat to reconnect and stops retrying after delivery', async () => {
+  const h = harness();
+  h.respondNext(409, { detail: 'no_frontend' });
+  h.respondNext(409, { detail: 'no_frontend' });
+  h.drop();
+  await h.advance(500);
+  await h.advance(1000);
+  assert.equal(h.requests.length, 2);
+  await h.advance(2000);
+  assert.deepEqual(h.requests.map(request => request.body.event_id), [eventId, eventId, eventId]);
+  await h.advance(5000);
+  assert.equal(h.requests.length, 3);
+});
+
 test('invalid drop requests remain terminal', async () => {
   const h = harness();
   h.respondNext(400, { detail: 'invalid_event_id' });
