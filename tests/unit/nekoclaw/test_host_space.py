@@ -533,6 +533,64 @@ async def test_archiving_does_not_write_over_an_archived_project_of_the_same_nam
     assert second.name == "Budget app"
 
 
+async def test_a_second_archive_of_a_name_is_reached_by_its_directory(space, root):
+    await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="First", content="Of the first one.")
+    first = await space.archive_project("Budget app", summary="first")
+    await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Second", content="Of the second one.")
+    await space.write_review("Budget app", _commission(id="late"), "Of the second one too.")
+    second = await space.archive_project("Budget app", summary="second")
+
+    year = first.archive_year
+    assert (first.directory, second.directory) == ("Budget app", "Budget app-2")
+    # Its review is found where it is, not looked for in the first one's directory.
+    assert (await space.read_review("late")).content.endswith("Of the second one too.")
+    assert [item.commission_id for item in await space.list_reviews()] == ["late"]
+    assert [entry.id for entry in await space.list_entries(first.directory, archive_year=year)] == ["first"]
+    assert [entry.id for entry in await space.list_entries(second.directory, archive_year=year)] == ["second"]
+    assert (await space.read_entry("second", second.directory, archive_year=year)).content == "Of the second one."
+    assert await space.read_entry("second", first.directory, archive_year=year) is None
+    listed = [(item.name, item.directory) for item in await space.list_projects() if item.status == "archived"]
+    assert listed == [("Budget app", "Budget app"), ("Budget app", "Budget app-2")]
+
+
+async def test_a_project_a_commission_was_filed_under_meanwhile_is_not_archived(space, root, clock):
+    project = await space.touch_project("Budget app")
+    seen = project.last_commission_at
+    clock.now += 40 * 86400
+    # While its summary was being written, a commission that names it started.
+    await space.assign_project(_commission(dispatch_text="go on with the budget app"))
+
+    assert await space.archive_project("Budget app", summary="s", unless_touched_since=seen) is None
+    assert (root / "projects" / "Budget app").is_dir() and not (root / "archive").exists()
+    assert not (root / "projects" / "Budget app" / "SUMMARY.md").exists()
+    # Untouched since it was looked at, it is archived.
+    current = await space.get_project("Budget app")
+    assert (await space.archive_project("Budget app", unless_touched_since=current.last_commission_at)).status == "archived"
+
+
+async def test_what_is_written_under_an_archived_project_brings_it_back_instead_of_splitting_it(space, root):
+    await space.touch_project("Budget app", description="tracks spending")
+    await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+    archived = await space.archive_project("Budget app", summary="s")
+    home = root / "archive" / archived.archive_year / "Budget app"
+
+    # A commission of the project files a lesson a moment after the project was moved.
+    await space.submit(_commission(project="Budget app"), _lesson("Export", "CSV with a BOM."))
+
+    assert not home.exists()
+    assert sorted(entry.id for entry in await space.list_entries("Budget app")) == ["export", "stack"]
+    assert [(item.name, item.status) for item in await space.list_projects()] == [("Budget app", "active")]
+
+    again = await space.archive_project("Budget app", summary="s2")
+    await space.write_review("Budget app", _commission(id="late"), "It finished late.")
+
+    assert not (root / "archive" / again.archive_year / "Budget app").exists()
+    assert (root / "projects" / "Budget app" / "reviews" / "late.md").is_file()
+    assert (root / "projects" / "Budget app" / "memory" / "stack.md").is_file()
+
+
 async def test_the_daily_project_is_never_archived(space):
     await space.touch_project(DEFAULT_PROJECT)
 

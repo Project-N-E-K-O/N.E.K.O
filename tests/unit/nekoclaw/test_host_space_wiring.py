@@ -360,6 +360,62 @@ async def test_forbidding_working_directory_files_forbids_reading_the_space_too(
 
 
 # ---------------------------------------------------------------------------
+# Old sessions are cleaned without getting in the way of a commission taken up again
+# ---------------------------------------------------------------------------
+
+
+async def test_a_commission_at_work_cannot_be_held_for_cleaning(hosts, tmp_path):
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    llm = ScriptedLLM([[wait, *_report()]])
+    host = _host(hosts, tmp_path, llm)
+
+    receipt = await _dispatch(host, "sort the photos")
+    await wait_until(lambda: host.task_agents.running == [receipt.commission_id], what="the session being opened")
+
+    assert host.task_agents.hold_session(receipt.commission_id) is False
+
+    release.set()
+    await wait_status(host, receipt.commission_id, "done")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    assert host.task_agents.hold_session(receipt.commission_id) is True
+    # Held once: a second cleaner does not get it.
+    assert host.task_agents.hold_session(receipt.commission_id) is False
+    host.task_agents.release_session(receipt.commission_id)
+    assert host.task_agents.hold_session(receipt.commission_id) is True
+    host.task_agents.release_session(receipt.commission_id)
+
+
+async def test_taking_a_commission_up_again_waits_while_its_old_session_is_cleaned(hosts, tmp_path):
+    import asyncio
+
+    first = ScriptedLLM([_report("failed", "the site was down")])
+    second = ScriptedLLM([_report("ready", "published")])
+    models = [first, second]
+    host = _host(hosts, tmp_path, lambda spec: models.pop(0))
+    receipt = await _dispatch(host, "publish the newsletter")
+    await wait_status(host, receipt.commission_id, "failed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+
+    assert host.task_agents.hold_session(receipt.commission_id) is True
+    told = asyncio.ensure_future(host.tell(receipt.commission_id, "the site is back, try again"))
+    await asyncio.sleep(0.3)
+
+    # Its session is not opened, and its model not asked, while the files are being removed.
+    assert second.requests == [] and not told.done()
+
+    host.task_agents.release_session(receipt.commission_id)
+    assert await told is True
+    await wait_status(host, receipt.commission_id, "done")
+    assert len(second.requests) == 1
+
+
+# ---------------------------------------------------------------------------
 # From the end of a commission to its review
 # ---------------------------------------------------------------------------
 

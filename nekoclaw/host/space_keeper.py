@@ -62,6 +62,10 @@ _REVIEWABLE = frozenset({"done", "cancelled", "failed"})
 # Tool calls that say nothing about how much work a commission was.
 _NOT_WORK = frozenset({"report", "note_lesson", "todo_write"})
 _OUTPUTS_NAME = "outputs"
+# Statuses in which what was said in a session is no longer needed once it is old.
+_CLEANABLE = frozenset({"done", "failed", "cancelled"})
+# What became of one session that was looked at.
+_REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
 _EVENT_PAGE = 500
 _CLEAN_BATCH = 200
 _LANGUAGES = {
@@ -190,6 +194,9 @@ class SpaceKeeper:
     ``TIER_ARCHIVE``; without one nothing is reviewed and projects are
     archived without a summary. ``session_dir_of`` returns where a
     commission's session is kept (blocking; ``TaskAgentManager.session_dir_of``).
+    ``hold_session`` and ``release_session`` are the manager's: while a
+    session is held for cleaning, its commission is not taken up again, and
+    one that is in use is not held.
     """
 
     def __init__(
@@ -199,6 +206,8 @@ class SpaceKeeper:
         ledger: Ledger,
         llm: Any = None,
         session_dir_of: Callable[[Commission], Path] | None = None,
+        hold_session: Callable[[str], bool] | None = None,
+        release_session: Callable[[str], None] | None = None,
         clock: Callable[[], float] = time.time,
         review_delay: float | None = None,
     ) -> None:
@@ -206,6 +215,8 @@ class SpaceKeeper:
         self._ledger = ledger
         self._llm = llm
         self._session_dir_of = session_dir_of
+        self._hold_session = hold_session
+        self._release_session = release_session
         self._clock = clock
         self._review_delay = review_delay
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -585,10 +596,14 @@ class SpaceKeeper:
         ]
         if not idle:
             return
-        busy = {item.project for item in await self._ledger.select(statuses=ACTIVE_STATUSES)}
+
+        async def busy() -> set[Any]:
+            return {item.project for item in await self._ledger.select(statuses=ACTIVE_STATUSES)}
+
+        in_use = await busy()
         archived = 0
         for project in idle:
-            if project.name in busy or archived >= SPACE_ARCHIVES_PER_UPKEEP:
+            if project.name in in_use or archived >= SPACE_ARCHIVES_PER_UPKEEP:
                 continue
             archived += 1
             data = None
@@ -614,7 +629,15 @@ class SpaceKeeper:
                     )
                 except (SpaceError, OSError) as exc:
                     logger.warning("an entry of a project's summary could not be kept (%s)", type(exc).__name__)
-            moved = await self._space.archive_project(project.name, summary=summary, description=line)
+            # The summary took a while. A commission taken up again meanwhile
+            # shows in the ledger; one filed under the project meanwhile
+            # shows in the project's own record, which the space looks at
+            # under the same lock it moves the directory under.
+            if project.name in await busy():
+                continue
+            moved = await self._space.archive_project(
+                project.name, summary=summary, description=line, unless_touched_since=project.last_commission_at
+            )
             if moved is not None:
                 logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary))
 
@@ -626,21 +649,24 @@ class SpaceKeeper:
         ).fetchall()
 
     @staticmethod
-    def _clean_session(directory: Path, commission_id: str) -> bool:
+    def _clean_session(directory: Path, commission_id: str) -> str:
         """Remove what was said in a session; its working directory is not touched. Blocking.
 
         Only in a directory that is a session's by its place and name, and
-        only the two things the runtime writes there.
+        only the two things the runtime writes there. Returns ``removed``,
+        ``nothing`` (there was nothing to remove) or ``not_removed``
+        (something is still there: held open by another program, say).
         """
         if directory.name != commission_id or directory.parent.name != "sessions":
-            return False
-        removed = False
+            return _NOTHING
+        removed = failed = False
         transcript = directory / TRANSCRIPT_NAME
         try:
             if transcript.is_file() and not transcript.is_symlink():
                 transcript.unlink()
                 removed = True
         except OSError:
+            failed = True
             logger.warning("an old transcript could not be removed", exc_info=True)
         outputs = directory / _OUTPUTS_NAME
         try:
@@ -648,8 +674,34 @@ class SpaceKeeper:
                 shutil.rmtree(outputs)
                 removed = True
         except OSError:
+            failed = True
             logger.warning("old tool output could not be removed", exc_info=True)
-        return removed
+        if failed:
+            return _NOT_REMOVED
+        return _REMOVED if removed else _NOTHING
+
+    async def _clean_one(self, commission: Commission, until: float) -> str:
+        """Clean the session of one commission the query found, if it is still to be cleaned.
+
+        Held against being taken up again for as long as its files are
+        removed, and looked up again once it is held: a commission that was
+        taken up between the query and now is at work on that very transcript.
+        """
+        if self._hold_session is not None and not self._hold_session(commission.id):
+            # In use, or on its way to be: it comes round again once it has ended and aged.
+            return _NOTHING
+        try:
+            current = await self._ledger.get(commission.id)
+            if current is None or current.status not in _CLEANABLE or current.updated_at > until:
+                return _NOTHING
+            directory = await asyncio.to_thread(self._session_dir_of, current)
+            return await asyncio.to_thread(self._clean_session, Path(directory), current.id)
+        except (OSError, ValueError):
+            logger.warning("the session of an old commission could not be looked at", exc_info=True)
+            return _NOT_REMOVED
+        finally:
+            if self._release_session is not None:
+                self._release_session(commission.id)
 
     async def _clean_sessions(self, now: float, state: dict[str, Any]) -> None:
         """Remove what was said in sessions whose commission ended long ago."""
@@ -665,15 +717,17 @@ class SpaceKeeper:
             return
         rows = await self._ledger.run(lambda conn: [_commission(row) for row in self._ended_long_ago(conn, after, until)])
         commissions = [item for item in rows if item is not None]
+        retry_from: float | None = None
         for commission in commissions:
-            try:
-                directory = await asyncio.to_thread(self._session_dir_of, commission)
-                removed = await asyncio.to_thread(self._clean_session, Path(directory), commission.id)
-            except (OSError, ValueError):
-                logger.warning("the session of an old commission could not be looked at", exc_info=True)
-                continue
-            if removed:
+            outcome = await self._clean_one(commission, until)
+            if outcome == _REMOVED:
                 await self._ledger.append_event(commission.id, "session_cleaned", {})
+            elif outcome == _NOT_REMOVED and retry_from is None:
+                retry_from = commission.updated_at
         # A full batch leaves the rest to the next round, which goes on where this one stopped.
         reached = commissions[-1].updated_at if len(commissions) >= _CLEAN_BATCH else until
+        if retry_from is not None:
+            # Looked at is not cleaned: the next round starts again at the
+            # first session whose files could not be removed.
+            reached = min(reached, retry_from - 0.001)
         await self._space.write_state(sessions_cleaned_until=reached)

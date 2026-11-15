@@ -300,6 +300,9 @@ class TaskAgentManager:
         # Being queued to be taken up again, while that status is written.
         self._requeueing: set[str] = set()
         self._candidates: dict[str, tuple[str, ...]] = {}
+        # Commissions whose old session files are being removed right now
+        # (``hold_session``); a start of one of them waits for that.
+        self._held: dict[str, asyncio.Event] = {}
         self._starting: set[asyncio.Task[Any]] = set()
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
@@ -536,6 +539,11 @@ class TaskAgentManager:
         session.carried = [prompt] if prompt is not None else []
         carried: list[str] = []
         try:
+            held = self._held.get(commission_id)
+            if held is not None:
+                # What was said in its session long ago is being removed
+                # this moment; the session is opened once that is done.
+                await held.wait()
             commission = await self._ledger.get(commission_id)
             if commission is None or commission.status not in ("queued", "blocked", "failed", "waiting_user"):
                 self._discard(commission_id)
@@ -1695,6 +1703,31 @@ class TaskAgentManager:
     def session_dir_of(self, commission: Commission) -> Any:
         """Return where a commission's session is kept. Blocking; see ``_session_dir_of``."""
         return self._session_dir_of(commission)
+
+    def hold_session(self, commission_id: str) -> bool:
+        """Claim a commission's session files for removal. False when the commission is in use.
+
+        In use means it holds a session, waits for a place, or is being
+        taken up again. Looking and claiming happen with no await in
+        between. Until ``release_session``, a start of the commission waits
+        instead of opening files that are being removed under it.
+        """
+        if (
+            commission_id in self._sessions
+            or commission_id in self._queue
+            or commission_id in self._taking_up
+            or commission_id in self._requeueing
+            or commission_id in self._held
+        ):
+            return False
+        self._held[commission_id] = asyncio.Event()
+        return True
+
+    def release_session(self, commission_id: str) -> None:
+        """Give back what ``hold_session`` claimed; a start that waited goes on."""
+        held = self._held.pop(commission_id, None)
+        if held is not None:
+            held.set()
 
     def _session_dir_of(self, commission: Commission) -> Any:
         """Return where a commission's session is kept. Blocking: it looks at files.

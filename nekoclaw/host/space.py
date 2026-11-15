@@ -139,6 +139,10 @@ class Project:
     archive_year: str | None = None
     # How many times a summary for archiving it could not be written.
     archive_attempts: int = 0
+    # The name of its directory. An archived project is addressed by this and
+    # its year: a second project of a name archived in one year is kept in a
+    # directory named after it with a number.
+    directory: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -537,6 +541,7 @@ class TaskAgentSpace:
         )
 
         paths = self._paths()
+        self._revive(project)
         title = _cut(_one_line(redact(title)), SPACE_ENTRY_TITLE_MAX_TOKENS)
         content = _cut(redact(content), SPACE_ENTRY_CONTENT_MAX_TOKENS)
         if not title or not content:
@@ -654,12 +659,17 @@ class TaskAgentSpace:
         paths = self._paths()
         if archive_year is not None:
             if project is None:
-                raise SpaceError("an archived project needs its name")
+                raise SpaceError("an archived project needs its directory")
+            # ``project`` is the directory's name here (``Project.directory``).
             return paths.archived_dir(archive_year, project)
         return paths.scope_dir(project)
 
     async def list_entries(self, project: str | None = None, *, archive_year: str | None = None) -> list[Entry]:
-        """Return the entries of the space (``project`` None) or of a project, without their text."""
+        """Return the entries of the space (``project`` None) or of a project, without their text.
+
+        For an archived project give its year and, as ``project``, the name
+        of its directory (``Project.directory``).
+        """
 
         def work() -> list[Entry]:
             return self._entries(self._scope(project, archive_year) / SpacePaths.MEMORY_DIR, project)
@@ -750,7 +760,7 @@ class TaskAgentSpace:
 
     def _project_from(self, directory: Path, *, archive_year: str | None = None) -> Project:
         """Read a project's file; a directory without a readable one is a project of its name."""
-        base = Project(name=directory.name, archive_year=archive_year)
+        base = Project(name=directory.name, archive_year=archive_year, directory=directory.name)
         if archive_year is not None:
             base = replace(base, status=PROJECT_ARCHIVED)
         try:
@@ -776,6 +786,7 @@ class TaskAgentSpace:
             archived_at=float(archived_at) if isinstance(archived_at, (int, float)) and archive_year is not None else None,
             archive_year=archive_year,
             archive_attempts=int(number("archive_attempts")),
+            directory=directory.name,
         )
 
     def _put_project(self, directory: Path, project: Project) -> None:
@@ -783,6 +794,7 @@ class TaskAgentSpace:
 
         data = project.to_json()
         data.pop("archive_year", None)
+        data.pop("directory", None)
         directory.mkdir(parents=True, exist_ok=True)
         atomic_write_json(directory / SpacePaths.PROJECT_FILE, {"version": _PROJECT_FILE_VERSION, **data}, ensure_ascii=False, indent=2)
 
@@ -810,19 +822,23 @@ class TaskAgentSpace:
     def _directory_of(self, project: Project) -> Path:
         paths = self._paths()
         if project.archive_year is not None:
-            return self._archived_directory(project.archive_year, project.name)
+            return paths.archived_dir(project.archive_year, project.directory or project.name)
         return paths.project_dir(project.name)
 
-    def _archived_directory(self, year: str, name: str) -> Path:
-        """Return the directory of an archived project, whose directory may be named after it with a number."""
-        root = self._paths().archive_dir() / safe_segment(year, "year")
-        try:
-            for item in sorted(root.iterdir()):
-                if item.is_dir() and self._project_from(item, archive_year=year).name == name:
-                    return item
-        except OSError:
-            pass
-        return root / safe_segment(name, "project")
+    def _revive(self, project: str | None) -> None:
+        """Bring a project back from the archive when something is about to be written under it.
+
+        A project is archived only while nothing is under way in it, but a
+        commission can still finish, or file a lesson, a moment after its
+        project was moved. Written to a new directory of the same name,
+        that would split the project in two.
+        """
+        if project is None or project == DEFAULT_PROJECT or self._paths().project_dir(project).is_dir():
+            return
+        wanted = normalize_name(project)
+        archived = next((item for item in self._archived_projects() if normalize_name(item.name) == wanted), None)
+        if archived is not None:
+            self._restore(archived)
 
     async def list_projects(self, *, include_archived: bool = True) -> list[Project]:
         """Return the projects, the archived ones last."""
@@ -939,7 +955,9 @@ class TaskAgentSpace:
             return self._project_from(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         _move(source, target)
-        restored = replace(project, status=PROJECT_ACTIVE, archived_at=None, archive_year=None, archive_attempts=0)
+        restored = replace(
+            project, status=PROJECT_ACTIVE, archived_at=None, archive_year=None, archive_attempts=0, directory=target.name
+        )
         self._put_project(target, restored)
         self._index_remove(paths.index(None), f"archive/{project.archive_year}/{source.name}/{paths.SUMMARY_NAME}")
         line, link = self._project_line(restored)
@@ -989,13 +1007,22 @@ class TaskAgentSpace:
 
     # -- archiving --------------------------------------------------------
 
-    def _archive(self, name: str, summary: str, description: str) -> Project | None:
-        """Move a project to the archive, with its summary. Returns it, or None when it could not be moved."""
+    def _archive(
+        self, name: str, summary: str, description: str, unless_touched_since: float | None = None
+    ) -> Project | None:
+        """Move a project to the archive, with its summary. Returns it, or None when it was not moved.
+
+        With ``unless_touched_since``, a project a commission was filed under
+        after that time stays where it is. Filing and this run under the same
+        lock, so the look and the move are one step.
+        """
         paths = self._paths()
         source = paths.project_dir(name)
         if not source.is_dir():
             return None
         project = self._project_from(source)
+        if unless_touched_since is not None and project.last_commission_at > unless_touched_since:
+            return None
         now = self._clock()
         year = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y")
         if summary.strip():
@@ -1018,6 +1045,7 @@ class TaskAgentSpace:
             status=PROJECT_ARCHIVED,
             archived_at=now,
             archive_year=year,
+            directory=target.name,
         )
         self._put_project(target, archived)
         _line, link = self._project_line(project)
@@ -1030,11 +1058,18 @@ class TaskAgentSpace:
         )
         return archived
 
-    async def archive_project(self, name: str, *, summary: str = "", description: str = "") -> Project | None:
+    async def archive_project(
+        self,
+        name: str,
+        *,
+        summary: str = "",
+        description: str = "",
+        unless_touched_since: float | None = None,
+    ) -> Project | None:
         """Archive a project; see ``_archive``."""
         if name == DEFAULT_PROJECT:
             return None
-        return await self._write(lambda: self._archive(name, summary, description))
+        return await self._write(lambda: self._archive(name, summary, description, unless_touched_since))
 
     async def note_archive_attempt(self, name: str) -> int:
         """Count a summary that could not be written for a project; returns the count."""
@@ -1081,6 +1116,7 @@ class TaskAgentSpace:
 
         def work() -> Review:
             paths = self._paths()
+            self._revive(project)
             path = paths.review(project, commission.id)
             document = _Document(
                 meta=[

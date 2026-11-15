@@ -187,6 +187,8 @@ class NekoClawHost:
             ledger=self.ledger,
             llm=self._decision_llm,
             session_dir_of=self.task_agents.session_dir_of,
+            hold_session=self.task_agents.hold_session,
+            release_session=self.task_agents.release_session,
         )
         self.ledger.subscribe(self.space_keeper.watch)
         # A plugin's request for confirmation is put to the user by the

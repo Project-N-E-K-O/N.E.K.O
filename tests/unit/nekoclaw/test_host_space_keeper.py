@@ -69,6 +69,9 @@ class FakeLLM:
             await asyncio.sleep(0)
             answers = self.answers[tier]
             answer = answers[min(self.count(tier) - 1, len(answers) - 1)]
+            if callable(answer):
+                # Something happens while the model is thinking.
+                answer = await answer()
             if isinstance(answer, BaseException):
                 raise answer
             return answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
@@ -750,6 +753,45 @@ async def test_a_project_with_a_commission_under_way_is_not_archived(world):
     assert [(item.name, item.status) for item in await world.space.list_projects()] == [("Budget app", "active")]
 
 
+async def test_a_project_that_gets_a_commission_while_its_summary_is_written_is_not_archived(world):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    await world.space.touch_project("Budget app")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    async def meanwhile() -> dict[str, Any]:
+        # A commission that names the project starts before the model answers.
+        await world.space.assign_project(await world.file("go on with the budget app"))
+        return {"summary": "A project.", "line": "a project"}
+
+    world.llm.answers[TIER_ARCHIVE] = [meanwhile]
+
+    await world.keeper.tidy(force=True)
+
+    assert world.llm.count(TIER_ARCHIVE) == 1
+    assert [(item.name, item.status) for item in await world.space.list_projects()] == [("Budget app", "active")]
+    assert not (world.root / "archive").exists()
+
+
+async def test_a_project_whose_commission_is_taken_up_while_its_summary_is_written_is_not_archived(world):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    await world.space.touch_project("Budget app")
+    failed = await world.finished("add an export", calls=0, status="failed", project="Budget app")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    async def meanwhile() -> dict[str, Any]:
+        # Taken up again where it failed: no commission is filed, the ledger alone shows it.
+        await world.ledger.transition(failed.id, "working", reason="taken up again")
+        return {"summary": "A project.", "line": "a project"}
+
+    world.llm.answers[TIER_ARCHIVE] = [meanwhile]
+
+    await world.keeper.tidy(force=True)
+
+    assert [(item.name, item.status) for item in await world.space.list_projects()] == [("Budget app", "active")]
+
+
 async def test_the_daily_project_is_never_archived(world):
     from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
 
@@ -860,6 +902,120 @@ async def test_old_sessions_lose_what_was_said_and_keep_their_working_directory(
     await world.keeper.tidy(force=True)
     assert not (world.paths.session_dir(young.id) / "transcript.jsonl").exists()
     assert (world.paths.session_dir(young.id) / "work" / "sub" / "result.txt").is_file()
+
+
+async def test_a_commission_taken_up_again_since_the_query_keeps_its_transcript(world):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    resumed = await world.finished("failed long ago", calls=0, status="failed")
+    other = await world.finished("done long ago", calls=0)
+    for commission in (resumed, other):
+        _fill_session(world.paths.session_dir(commission.id))
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    found = world.keeper._ended_long_ago
+
+    def query(conn: Any, after: float, until: float) -> Any:
+        rows = found(conn, after, until)
+        # Between the query and the removal the user's words take the failed one up again.
+        conn.execute("UPDATE commissions SET status = 'working' WHERE id = ?", (resumed.id,))
+        return rows
+
+    world.keeper._ended_long_ago = query
+
+    await world.keeper.tidy(force=True)
+
+    assert (world.paths.session_dir(resumed.id) / "transcript.jsonl").is_file()
+    assert (world.paths.session_dir(resumed.id) / "outputs" / "1.txt").is_file()
+    assert not (world.paths.session_dir(other.id) / "transcript.jsonl").exists()
+
+
+async def test_a_session_in_use_is_not_cleaned_and_a_cleaned_one_is_held_meanwhile(world):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    in_use = await world.finished("in use", calls=0)
+    free = await world.finished("free", calls=0)
+    for commission in (in_use, free):
+        _fill_session(world.paths.session_dir(commission.id))
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    held: list[str] = []
+    released: list[str] = []
+    seen_held_while_removing: list[bool] = []
+    remove = world.keeper._clean_session
+
+    def hold(commission_id: str) -> bool:
+        if commission_id == in_use.id:
+            return False
+        held.append(commission_id)
+        return True
+
+    def removing(directory: Path, commission_id: str) -> str:
+        seen_held_while_removing.append(commission_id in held and commission_id not in released)
+        return remove(directory, commission_id)
+
+    world.keeper._hold_session = hold
+    world.keeper._release_session = released.append
+    world.keeper._clean_session = removing
+
+    await world.keeper.tidy(force=True)
+
+    assert (world.paths.session_dir(in_use.id) / "transcript.jsonl").is_file()
+    assert not (world.paths.session_dir(free.id) / "transcript.jsonl").exists()
+    assert held == [free.id] and released == [free.id]
+    assert seen_held_while_removing == [True]
+
+
+async def test_a_session_whose_files_could_not_be_removed_is_tried_again_next_round(world):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    stuck = await world.finished("its transcript is open in an editor", calls=0)
+    world.clock.now += 100
+    later = await world.finished("ended later", calls=0)
+    for commission in (stuck, later):
+        _fill_session(world.paths.session_dir(commission.id))
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    remove = world.keeper._clean_session
+    busy = {"yes": True}
+
+    def removing(directory: Path, commission_id: str) -> str:
+        if commission_id == stuck.id and busy["yes"]:
+            return "not_removed"
+        return remove(directory, commission_id)
+
+    world.keeper._clean_session = removing
+
+    await world.keeper.tidy(force=True)
+
+    assert (world.paths.session_dir(stuck.id) / "transcript.jsonl").is_file()
+    assert not (world.paths.session_dir(later.id) / "transcript.jsonl").exists()
+    # Not passed over: the next round starts again at it.
+    assert (await world.space.read_state())["sessions_cleaned_until"] < stuck.updated_at
+    assert "session_cleaned" not in [event.type for event in await world.ledger.events(stuck.id)]
+
+    busy["yes"] = False
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    assert not (world.paths.session_dir(stuck.id) / "transcript.jsonl").exists()
+    assert (await world.space.read_state())["sessions_cleaned_until"] == world.clock.now - SPACE_TRANSCRIPT_KEPT_SECONDS
+
+
+def test_removing_says_when_something_is_still_there(tmp_path, monkeypatch):
+    import shutil
+
+    directory = tmp_path / "sessions" / "c1"
+    _fill_session(directory)
+
+    def refuse(path: Any, *args: Any, **kwargs: Any) -> None:
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(shutil, "rmtree", refuse)
+
+    assert SpaceKeeper._clean_session(directory, "c1") == "not_removed"
+    assert (directory / "outputs" / "1.txt").is_file() and not (directory / "transcript.jsonl").exists()
+    monkeypatch.undo()
+    assert SpaceKeeper._clean_session(directory, "c1") == "removed"
+    assert SpaceKeeper._clean_session(directory, "c1") == "nothing"
+    assert SpaceKeeper._clean_session(tmp_path / "elsewhere" / "c1", "c1") == "nothing"
 
 
 async def test_a_directory_that_is_not_a_session_is_left_alone(world, tmp_path):
