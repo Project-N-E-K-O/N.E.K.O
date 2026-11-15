@@ -1039,3 +1039,82 @@ def test_connection_wide_flags_answer_when_every_group_agrees():
     conn._recv_msg_setting_by_group["G3"] = "only_mention"
     assert conn.recv_msg_setting == ""              # disagreement is not
 
+# ── round 10: base64 measure, card reply anchors, blacklist batching ───────
+
+def test_base64_at_the_exact_limit_is_not_refused_by_the_measure(monkeypatch):
+    # greptile r4574585087. len()*3//4 counts the "=" padding as payload, so any size
+    # whose encoding pads measures one byte over the ceiling and is refused: 209715200
+    # bytes encodes to 279620268 characters with one pad, and the rough form calls that
+    # 209715201. A trailing newline does the same to smaller payloads.
+    import base64 as _b64
+
+    monkeypatch.setattr(mod, "UPLOAD_HARD_MAX_BYTES", 2)
+    padded = _b64.b64encode(b"ab").decode()              # "YWI=" -> 2 bytes, one pad
+    conn = _conn([_Response({"file_info": "FI"}), _Response({"id": "m"})])
+    assert run(conn._upload_media(scope="groups", owner_id="G1",
+                                  source="base64://" + padded, file_type=3)) == "FI"
+
+    wrapped = padded + chr(10)
+    conn2 = _conn([_Response({"file_info": "FI2"}), _Response({"id": "m2"})])
+    assert run(conn2._upload_media(scope="groups", owner_id="G1",
+                                   source="base64://" + wrapped, file_type=3)) == "FI2"
+
+    # One byte over the ceiling is still refused, and refused before decoding.
+    conn3 = _conn([_Response({"file_info": "FI3"})])
+    assert run(conn3._upload_media(scope="groups", owner_id="G1",
+                                   source="base64://" + _b64.b64encode(b"abc").decode(),
+                                   file_type=3)) == ""
+    assert conn3._http.calls == []
+
+
+def test_card_send_keeps_the_passive_reply_anchor():
+    # Codex r4576712126: the translation replaced the whole body, so msg_id/msg_seq
+    # carried by the caller were dropped and the card left as a proactive send --
+    # refused in groups that disable proactive messages, and charged against the
+    # active quota where it is allowed.
+    conn = _conn([_Response({"id": "card-2"})])
+    assert run(conn.send_group_ark_card(
+        "G1", {"ark": {"kv": [{"key": "#TITLE#", "value": "t"}]}},
+        reply_message_id="M-1")) is True
+    body = conn._http.calls[-1][2]
+    assert body["msg_type"] == 8
+    assert body["msg_id"] == "M-1"
+    assert body["msg_seq"] == 1
+    assert "event_id" not in body
+
+    conn2 = _conn([_Response({"id": "card-3"})])
+    run(conn2.send_group_ark_card("G1", {
+        "ark": {"kv": [{"key": "#TITLE#", "value": "t"}]},
+        "msg_id": "M-2", "msg_seq": 3}))
+    assert conn2._http.calls[-1][2]["msg_id"] == "M-2"
+    assert conn2._http.calls[-1][2]["msg_seq"] == 3
+
+
+def test_card_send_keeps_the_event_anchor():
+    conn = _conn([_Response({"id": "card-4"})])
+    run(conn.send_group_ark_card(
+        "G1", {"ark": {"kv": [{"key": "#TITLE#", "value": "t"}]}}, event_id="E-9"))
+    body = conn._http.calls[-1][2]
+    assert body["event_id"] == "E-9"
+    assert "msg_seq" not in body
+
+
+def test_blacklist_batches_instead_of_dropping_the_tail():
+    # greptile r4574519956: ``[:20]`` answered a 21-member call as success while the
+    # platform had only ever seen 20, so the extra member stayed off the list and
+    # nothing upstream retried.
+    ids = ["M%02d" % i for i in range(21)]
+    conn = _conn([_Response({"status": "ok"}), _Response({"status": "ok2"})])
+    out = run(conn.operate_group_member_blacklist("G1", ids, op="add"))
+    posts = [c for c in conn._http.calls if c[0] == "POST"]
+    assert len(posts) == 2
+    assert len(posts[0][2]["member_openids"]) == 20
+    assert posts[1][2]["member_openids"] == ["M20"]
+    assert out["processed"] == 21
+    assert out["batches"] == 2
+
+    single = _conn([_Response({"status": "ok"})])
+    out2 = run(single.operate_group_member_blacklist("G1", ids[:20], op="del"))
+    assert len([c for c in single._http.calls if c[0] == "POST"]) == 1
+    assert "processed" not in out2
+

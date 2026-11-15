@@ -17,8 +17,8 @@ import websockets
 
 from ..base import ConnectionBase
 from .open_platform_media import (
-    QQOpenPlatformMediaMixin, _BASE64_PREFIX, _brief, _decode_base64_source,
-    _digests, _local_path)
+    QQOpenPlatformMediaMixin, _BASE64_PREFIX, _base64_decoded_size, _brief,
+    _decode_base64_source, _digests, _local_path)
 
 _CQ_CODE_RE = _re.compile(r"\[CQ:(\w+),([^\]]+)\]")
 
@@ -153,6 +153,10 @@ _AT_MERGE_WINDOW_SECONDS = 0.5
 #: immediately: the window is a courtesy to a frame that usually arrives
 #: milliseconds later, not a queue of its own.
 _ATTRIBUTION_HOLD_MAX = 8
+
+#: Most member openids the group blacklist endpoint accepts in one call. Callers may
+#: pass more; the operation batches rather than dropping the tail.
+_BLACKLIST_BATCH = 20
 
 # ==========================================
 # R11 identity scope: resolved
@@ -2007,7 +2011,8 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         )
 
     async def send_group_ark_card(
-        self, group_id: str, ark_obj: dict[str, Any], **_: Any
+        self, group_id: str, ark_obj: dict[str, Any], *,
+        reply_message_id: str = "", event_id: str = "", **_: Any,
     ) -> bool:
         """Send a group card. v2 has no ark on the send side, so this builds an image-text card.
 
@@ -2017,10 +2022,25 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         input and a plain ``{"title": ..., "description": ...}`` are accepted, because
         the qq_auto_reply plugin still assembles the former.
         """
+        payload: dict[str, Any] = {
+            "msg_type": 8, "card": self._card_message_payload(ark_obj)}
+        # Keep the passive-reply anchors. The card build replaced the whole body, so
+        # ``msg_id`` / ``msg_seq`` / ``event_id`` carried in ark_obj (or passed as
+        # keywords) were dropped and the card went out as a proactive send: it then
+        # either consumed the active-message quota or was refused outright in a group
+        # that disabled proactive messages (r4576712126).
+        anchor = str(reply_message_id or ark_obj.get("msg_id") or "").strip()
+        if anchor:
+            payload["msg_id"] = anchor
+            seq = _to_int(ark_obj.get("msg_seq"))
+            payload["msg_seq"] = seq if seq > 0 else self._next_msg_seq(anchor)
+        else:
+            ev = str(event_id or ark_obj.get("event_id") or "").strip()
+            if ev:
+                payload["event_id"] = ev
         try:
             data = await self._api(
-                "POST", f"/v2/groups/{group_id}/messages",
-                payload={"msg_type": 8, "card": self._card_message_payload(ark_obj)})
+                "POST", f"/v2/groups/{group_id}/messages", payload=payload)
             # Record it like every other send. The id is what quote detection matches
             # against, and this method hands back only a bool, so nobody else can
             # register it: without this line a user quoting a bot-sent card reads as
@@ -2464,7 +2484,12 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
         else:
             if source.startswith(_BASE64_PREFIX):
                 encoded = source[len(_BASE64_PREFIX):]
-                predicted = len(encoded) * 3 // 4
+                # Reuse the mixin's measure instead of len()*3//4. The rough form
+                # counted the ``=`` padding and any embedded newlines as payload, so an
+                # exactly-at-limit file measured one byte over and was refused, and a
+                # line-wrapped encoding refused files even further below the ceiling
+                # (r4574585087).
+                predicted = _base64_decoded_size(encoded)
                 if predicted > UPLOAD_HARD_MAX_BYTES:
                     # Refuse on the encoded length, before decoding. Decoding first to
                     # measure the result allocates the whole payload plus its
@@ -3008,9 +3033,27 @@ class QQOpenPlatformConnection(QQOpenPlatformMediaMixin, ConnectionBase):
     async def operate_group_member_blacklist(
         self, group_id: str, member_openids: list, *, op: str = "add") -> dict:
         gid = str(group_id or "").strip()
-        ids = [str(x).strip() for x in (member_openids or []) if str(x).strip()][:20]
+        ids = [str(x).strip() for x in (member_openids or []) if str(x).strip()]
         if not gid or not ids or op not in ("add", "del"):
             return self._missing_argument("operate_group_member_blacklist", "group_id/member_openids/op", empty=dict)
+        # The interface takes at most 20 openids per call. Truncating here answered the
+        # caller's 21st member as if it had been handled: the send succeeded, so
+        # nothing upstream retried, and the extra members quietly stayed off the
+        # blacklist (r4574519956). Batch instead, and return the last batch's answer
+        # with the count actually processed.
+        if len(ids) <= _BLACKLIST_BATCH:
+            return await self._api(
+                "POST", f"/v2/groups/{gid}/blacklist",
+                payload={"op": op, "member_openids": ids})
+        result: dict[str, Any] = {}
+        for start in range(0, len(ids), _BLACKLIST_BATCH):
+            chunk = ids[start:start + _BLACKLIST_BATCH]
+            result = await self._api(
+                "POST", f"/v2/groups/{gid}/blacklist",
+                payload={"op": op, "member_openids": chunk})
+        result["processed"] = len(ids)
+        result["batches"] = (len(ids) + _BLACKLIST_BATCH - 1) // _BLACKLIST_BATCH
+        return result
         return await self._api(
             "POST", f"/v2/groups/{gid}/member_blacklist", payload={"op": op, "member_openids": ids})
 
