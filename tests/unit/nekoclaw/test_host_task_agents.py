@@ -1939,7 +1939,7 @@ async def test_feedback_becomes_a_task_preference_after_the_second_time(hosts, t
 
 
 @pytest.mark.parametrize("category", ["lesson", "reflection", "reference", "progress"])
-async def test_other_lessons_go_to_the_lesson_sink(hosts, tmp_path, category):
+async def test_other_lessons_go_to_the_task_agent_space(hosts, tmp_path, category):
     llm = ScriptedLLM([_note(category, "Photo dates", "EXIF dates are more reliable than file dates"), _report("ready", "done")])
     host = _host(hosts, tmp_path, llm)
 
@@ -1950,7 +1950,9 @@ async def test_other_lessons_go_to_the_lesson_sink(hosts, tmp_path, category):
     assert lesson.payload["category"] == category
     assert lesson.payload["title"] == "Photo dates"
     assert await host.preferences.list() == []
-    assert "lesson submitted. recorded" in llm.requests[1][-1]["content"]
+    assert "lesson submitted. kept in project _daily as photo-dates.md" in llm.requests[1][-1]["content"]
+    (entry,) = await host.space.list_entries("_daily")
+    assert (entry.title, entry.type, entry.sources) == ("Photo dates", category, (receipt.commission_id,))
 
 
 async def test_lesson_sink_can_be_replaced(hosts, tmp_path):

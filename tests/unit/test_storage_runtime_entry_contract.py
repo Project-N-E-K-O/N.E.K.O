@@ -486,3 +486,9 @@ def test_the_plain_files_of_nekoclaw_move_one_by_one():
     # Neither the directory as a whole nor the two directories with links in them.
     assert "nekoclaw" not in MIGRATED_RUNTIME_ENTRY_NAMES
     assert not {"task_agents", "browser_profile"} & migrated
+    # What task agents keep for later commissions is plain text in a directory
+    # of its own, apart from their session directories, and moves as a whole.
+    space = paths.space().root
+    assert space.parent == root and space.name in migrated
+    assert root / "task_agents" not in (space, *space.parents)
+    assert space not in paths.session_dir("c1", "a project").parents

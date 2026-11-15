@@ -204,6 +204,24 @@ Don't need storage? Just don't include this section (disabled by default).
 
 ---
 
+### `[plugin.shared]` — Reading another plugin's shared files
+
+```toml
+[plugin.shared]
+reads = ["weather"]
+```
+
+Every plugin has a shared directory, `<user data root>/plugin_shared/<plugin id>/`, for files it wants other plugins to be able to read. The plugin that owns it writes there through `self.shared_path(...)`. To read what another plugin published, list that plugin's id under `reads` and call `self.shared_path_of("weather", ...)`; without the declaration the call raises `ValidationError`.
+
+Two things to know:
+
+- **It is an agreement, not a security boundary.** Plugins are not sandboxed from each other, so nothing stops a plugin from writing into another plugin's directory. The declaration only keeps the dependency visible in the manifest. Treat another plugin's files as read-only, and never put secrets in your shared directory.
+- **It is not part of the plugin's private state.** The shared directory stays when the plugin that published it is removed, and it moves with the user's data when the storage location is changed.
+
+Publishing needs no declaration. If your plugin neither publishes nor reads shared files, leave this section out.
+
+---
+
 ### `[plugin.ui]` — Custom UI
 
 ```toml
@@ -277,6 +295,8 @@ Writable state is separate from the source or installed executable directory:
 ├── config/plugin.toml      ← effective runtime configuration
 ├── data/                   ← self.data_path()
 └── cache/                  ← self.cache_path()
+
+<user data root>/plugin_shared/smart_notes/   ← self.shared_path(), for plugins that declare they read it
 ```
 
 Only `plugin.toml` and the importable Python module named by `[plugin].entry` are required. The module does not have to be `__init__.py`, although that is the common layout. Installed package code remains separate from this writable state.

@@ -63,6 +63,8 @@ CATEGORIES: tuple[str, ...] = (
 _READ_TOOLS = {"read": "file_path", "read_image": "file_path", "glob": "path", "grep": "path"}
 _WRITE_TOOLS = {"write": "file_path", "edit": "file_path"}
 _COMMAND_TOOLS = frozenset({"pwsh", "bash"})
+# The tools that write a file, for a host that rules on a path by itself.
+WRITE_TOOL_NAMES: frozenset[str] = frozenset(_WRITE_TOOLS)
 _CANCEL_POLL_SECONDS = 0.05
 
 NO_APPROVER_REASON = (
