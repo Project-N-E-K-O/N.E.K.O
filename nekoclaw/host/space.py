@@ -504,8 +504,20 @@ _BRIEF_CUT_ROOM = 12
 _STEP_IN_PLACE = re.compile(r"/\.(?=/)")
 _STEP_BACK = re.compile(r"/(?!\.\.?/)[^/\"']+/\.\.(?=/|[\s\"']|$)")
 _STEPS_BACK_MAX = 64
-# How a command writes the home directory: a shell of the Unix world, cmd, PowerShell.
-_HOME_NAMES = ("~", "$HOME", "${HOME}", "%USERPROFILE%", "$env:USERPROFILE", "$env:HOME")
+# How a command writes the home directory: a shell of the Unix world (on
+# Windows as well, where it has the variable of Windows too), cmd, PowerShell.
+_HOME_NAMES = (
+    "~",
+    "$HOME",
+    "${HOME}",
+    "$USERPROFILE",
+    "${USERPROFILE}",
+    "%USERPROFILE%",
+    "$env:USERPROFILE",
+    "${env:USERPROFILE}",
+    "$env:HOME",
+    "${env:HOME}",
+)
 
 
 class SpaceError(RuntimeError):
@@ -1032,6 +1044,8 @@ class TaskAgentSpace:
         counted = commission.parent_id or commission.id
         added = self._added_by.get(counted, 0)
         if added >= SPACE_LESSONS_PER_COMMISSION:
+            # Still at work, as it shows: it is not the one to be forgotten next.
+            self._added_by[counted] = self._added_by.pop(counted)
             await self._note_unkept(commission, lesson, "cap")
             return SPACE_LESSONS_CAP_REACHED.format(count=SPACE_LESSONS_PER_COMMISSION)
         # Taken before the files are written (two of its task agents can
@@ -1041,12 +1055,21 @@ class TaskAgentSpace:
         # and is still at work.
         self._added_by.pop(counted, None)
         self._added_by[counted] = added + 1
-        while len(self._added_by) > _COUNTED_COMMISSIONS:
-            del self._added_by[next(iter(self._added_by))]
+
+        def keep() -> None:
+            # Counted for good. Only now is another commission forgotten for
+            # it: a note that adds nothing is not to cost one its count.
+            while len(self._added_by) > _COUNTED_COMMISSIONS:
+                del self._added_by[next(iter(self._added_by))]
 
         def give_back() -> None:
-            if self._added_by.get(counted, 0) > 0:
-                self._added_by[counted] -= 1
+            left = self._added_by.get(counted, 0) - 1
+            if left > 0:
+                self._added_by[counted] = left
+            else:
+                # None added: it is not counted at all, and takes the place
+                # of no commission that has added some.
+                self._added_by.pop(counted, None)
 
         # What became of the note, once the files were written or looked at.
         became: list[str] = []
@@ -1077,6 +1100,8 @@ class TaskAgentSpace:
             # other task agents one short for nothing.
             if not became or became[0] == _THERE:
                 give_back()
+            else:
+                keep()
             raise
         except (SpaceError, ValueError) as exc:
             give_back()
@@ -1098,6 +1123,8 @@ class TaskAgentSpace:
             return "not kept: the files of the task agent space could not be written"
         if how == _THERE:
             give_back()
+        else:
+            keep()
         if self._ledger is not None:
             # On the commission's record too, so the board can show it.
             await self._ledger.append_event(
@@ -1114,13 +1141,15 @@ class TaskAgentSpace:
                 },
             )
         where = "the space of every project" if project is None else f"project {project}"
-        unlisted = "" if listed else "; the index could not be written, so no line there lists it yet"
+        # Of an entry that was there before it is not known whether a line
+        # lists it: the index may be one that cannot be read.
+        unlisted = "" if listed else "; the index could not be read or written, so it may have no line there yet"
         if how == _CREATED:
             return f"kept in {where} as {entry_id}.md{unlisted}"
         if how == _ADDED:
             return f"added to {entry_id}.md in {where}{unlisted}"
         # Said as it is: the task agent is not told something was kept that was not.
-        return f"already in {entry_id}.md in {where}, word for word; nothing was added"
+        return f"already in {entry_id}.md in {where}, word for word; nothing was added{unlisted}"
 
     async def _note_unkept(self, commission: Commission, lesson: dict[str, Any], reason: str) -> None:
         """Put a note that was not kept on the commission's record.
@@ -2352,9 +2381,9 @@ class TaskAgentSpace:
         write a path below the user's own directory.
 
         Not seen: a path relative to where the command runs, one that is
-        put together from variables or wildcards, one whose spaces are
-        escaped, a directory above the space. Those are left to whoever
-        approves commands; there is no sandbox.
+        put together from other variables or from wildcards, one whose
+        spaces are escaped, a directory above the space. Those are left to
+        whoever approves commands; there is no sandbox.
         """
 
         def plain(text: str) -> str:

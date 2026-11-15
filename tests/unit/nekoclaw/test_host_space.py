@@ -298,7 +298,7 @@ async def test_an_index_that_cannot_be_read_is_not_written_over(space, root):
     # The entry is a file by then, and is told as what it is: kept, with no line that lists it.
     assert (index.parent / "memory" / "photo-dates.md").is_file()
     assert message == (
-        "kept in project _daily as photo-dates.md; the index could not be written, so no line there lists it yet"
+        "kept in project _daily as photo-dates.md; the index could not be read or written, so it may have no line there yet"
     )
 
 
@@ -4340,7 +4340,7 @@ async def test_a_note_whose_index_could_not_be_written_is_kept_and_counted(root,
     unreadable = "- 我自己的笔记\n".encode("utf-16")
     index.write_bytes(unreadable)
     commission = _commission(id="c-1")
-    unlisted = "; the index could not be written, so no line there lists it yet"
+    unlisted = "; the index could not be read or written, so it may have no line there yet"
 
     replies = [
         await space.submit(commission, _lesson("First", "One.")),
@@ -4355,7 +4355,8 @@ async def test_a_note_whose_index_could_not_be_written_is_kept_and_counted(root,
     assert replies[:4] == [
         f"kept in project _daily as first.md{unlisted}",
         f"added to first.md in project _daily{unlisted}",
-        "already in first.md in project _daily, word for word; nothing was added",
+        # Told of the index as well: the record of the note says the same.
+        f"already in first.md in project _daily, word for word; nothing was added{unlisted}",
         f"kept in project _daily as second.md{unlisted}",
     ]
     # Each of the three that were added is a file, or in one, and used a place: the fourth has none.
@@ -4451,6 +4452,10 @@ async def test_an_entry_filed_while_the_index_cannot_be_written_is_handed_back_a
         ('cat "${HOME}/data/nekoclaw/task_agent_space/MEMORY.md"', True),
         ("type %USERPROFILE%\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
         ("Get-Content $env:USERPROFILE\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
+        ("gc ${env:USERPROFILE}\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
+        # As a shell of the Unix world writes it on Windows.
+        ("cat $USERPROFILE/data/nekoclaw/task_agent_space/MEMORY.md", True),
+        ('cat "${USERPROFILE}/data/nekoclaw/task_agent_space/MEMORY.md"', True),
         ("ls ~/Data/NekoClaw/Task_Agent_Space", True),
         # With steps that lead nowhere, as for a path written in full.
         ("ls ~/data/./nekoclaw/old/../task_agent_space", True),
@@ -4547,5 +4552,12 @@ async def test_of_more_commissions_than_are_counted_the_one_that_filed_last_stay
 
     # The one that has not filed for longest went, not the one that began first.
     assert space._added_by == {"c-early": 2, "c-third": 1}
+    # One whose note was there already, word for word, added none: it is not counted, and takes no place.
+    assert (await space.submit(_commission(id="c-same"), _lesson("Blog theme", "Plain, one column."))).startswith("already in")
+    assert space._added_by == {"c-early": 2, "c-third": 1}
     assert (await space.submit(early, _lesson("Camera drive", "It is E: on this computer."))).startswith("kept in project _daily")
+    await space.submit(_commission(id="c-third"), _lesson("Blog fonts", "One serif."))
+    assert list(space._added_by) == ["c-early", "c-third"]
     assert (await space.submit(early, _lesson("Backups", "Nothing is deleted before it is copied."))).startswith("not kept: this commission")
+    # Turned down, it is still at work: the other one is the next to be forgotten.
+    assert list(space._added_by) == ["c-third", "c-early"]
