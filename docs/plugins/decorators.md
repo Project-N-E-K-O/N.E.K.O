@@ -1,6 +1,6 @@
 # Decorators
 
-All decorators are imported from `plugin.sdk.plugin`. The `@llm_tool` decorator registers conversation-time tools and declares its [risk class](./tool-calling#risk-classes).
+All decorators are imported from `plugin.sdk.plugin`.
 
 ```python
 from plugin.sdk.plugin import (
