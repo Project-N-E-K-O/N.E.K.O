@@ -68,11 +68,13 @@ Agent Server 还通过 ZeroMQ 与主服务器异步交换会话和任务事件�
 
 ### `GET /builtin/activity`
 
-返回 `{"activity":[...]}`：现在被委托占用的每一组一项，两组都没人用时是空列表。每项是 `{"group":"keyboard_mouse"|"browser","state":"started","commission_id":"...","window":null}`。浏览器这一组在被操作的窗口确定之后，`window` 是 `{"browser":"...","pid":...,"window_id":...,"bounds":{...}}`；键鼠这一组指的是整个桌面，`window` 始终为 `null`。每项的结构和 `builtin_activity` 事件相同，供启动较晚、没收到事件的显示方补上现状。
+返回 `{"activity":[...]}`：现在被委托占用的每一组一项，两组都没人用时是空列表。每项是 `{"group":"keyboard_mouse"|"browser","state":"started","commission_id":"...","window":null}`。浏览器这一组在被操作的窗口确定之后，`window` 是 `{"browser":"...","pid":...,"window_id":...,"bounds":{...}}`；`pid` 是这个窗口所属的浏览器进程，由浏览器自己报出；浏览器不报时是应用启动的那个进程，没有就是 `null`。键鼠这一组指的是整个桌面，`window` 始终为 `null`。每项的结构和 `builtin_activity` 事件相同，供启动较晚、没收到事件的显示方补上现状。
 
 ### `POST /builtin/stop`
 
 请求体：可选的 `{"group":"keyboard_mouse"}` 或 `{"group":"browser"}`；不带 `group` 就两组都停。未知的 group 返回 `400`。响应是 `{"success":true,"stopped":["<委托号>", ...]}`，没有委托占用时列表为空。叫停和对这件委托调用 `POST /tasks/{task_id}/cancel` 做的事一样：先写状态，再取消正在做的调用，桌面或浏览器随即放开。
+
+请求体里可以再带 `commission_id`，指明这次叫停冲着哪件委托（`builtin_activity` 事件里带着它）。带了以后，只有这件委托正占着被问到的那一组才停；那一组被别的委托占着时不停，响应里多一个 `not_stopped`：`[{"group":"browser","commission_id":"<占着它的委托号>"}, ...]`，没有这种情况时是空列表。叫停请求可能在路上耽搁，送到时原来那件委托已经结束、这一组换了别的委托在用，带上 `commission_id` 就不会误停后者。不带 `commission_id` 时行为和响应都不变。`commission_id` 不是非空字符串时返回 `400`。
 
 ### `GET /builtin/browser/settings`
 

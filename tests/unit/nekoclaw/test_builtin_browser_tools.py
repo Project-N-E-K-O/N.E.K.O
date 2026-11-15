@@ -32,6 +32,7 @@ from nekoclaw.builtin.browser.cdp import CdpClosed, CdpError, CdpTimeout
 from nekoclaw.builtin.browser.tools import SCREENSHOT_MAX_BYTES, TOOL_PREFIX, BrowserTools, cap_lines
 from nekoclaw.host.capabilities import BuiltinOutcome
 from tests.unit.nekoclaw.fake_cdp_browser import (
+    BROWSER_PID,
     ORDER,
     SHOP,
     SLOW,
@@ -967,11 +968,48 @@ async def test_the_window_of_the_browser_is_known_after_a_call(tools: BrowserToo
     await on_the_order_form(tools)
     assert tools.window() == {
         "browser": "Google Chrome",
-        "pid": None,
+        "pid": BROWSER_PID,
         "window_id": 7,
         "bounds": world.browser.window["bounds"],
     }
     assert tools.session.window() == tools.window()
+
+
+async def test_the_tools_say_whether_stopping_the_tasks_leaves_the_browser_open(tools: BrowserTools, world: BrowserWorld) -> None:
+    # None was started yet.
+    assert tools.shows_a_window() is False
+    await on_the_order_form(tools)
+    assert tools.shows_a_window() is True
+    # Another commission may use it next: the uids are forgotten, the window stays.
+    await tools.released()
+    assert tools.shows_a_window() is True
+    tools.no_longer_wanted()
+    assert tools.shows_a_window() is False
+    assert world.closed == []
+
+
+async def test_a_browser_is_not_one_to_leave_open_from_the_moment_its_closing_is_asked_for(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    # A call is under way and holds the tools: the closing waits its turn behind it.
+    reading = world.browser.hold("Accessibility.getFullAXTree")
+    calling = asyncio.ensure_future(call(tools, "take_snapshot"))
+    await asyncio.wait_for(reading.reached.wait(), 10.0)
+    closing = asyncio.ensure_future(tools.aclose())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert world.closed == [] and not closing.done()
+    assert tools.shows_a_window() is False
+    # The user stops every task, and with them what runs in the background: the closing, before its turn came.
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    reading.release()
+    assert (await calling).success
+    # Driven and connected to as ever, and still one that is to be closed.
+    assert world.closed == [] and tools.session.connected
+    assert tools.shows_a_window() is False
 
 
 async def test_closing_closes_the_browser_and_a_later_call_starts_it_again(tools: BrowserTools, world: BrowserWorld) -> None:

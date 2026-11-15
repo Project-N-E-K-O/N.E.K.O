@@ -915,6 +915,15 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     without it both are stopped. Stopping is what cancelling the task from
     the task window does: the status is written first, the call under way is
     cancelled, and the desktop or the browser is given back.
+
+    ``commission_id`` names the commission the stop is meant for, the one
+    the banner was up for (the ``builtin_activity`` events carry it). A
+    request can be on its way for a while; when it arrives, that commission
+    may have ended and another may be using the group. That one is left
+    alone, and the answer says so: ``not_stopped`` lists each group that
+    was asked about and is used by another commission, with the commission
+    that uses it. Without ``commission_id`` whoever uses the group is
+    stopped, as before, and the answer has no ``not_stopped``.
     """
     from nekoclaw.host.capabilities import BUILTIN_GROUPS
 
@@ -923,17 +932,28 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     group = (payload or {}).get("group")
     if group is not None and group not in BUILTIN_GROUPS:
         raise HTTPException(400, "unknown group")
+    meant = (payload or {}).get("commission_id")
+    if meant is not None and (not isinstance(meant, str) or not meant):
+        raise HTTPException(400, "commission_id must be a non-empty string")
     host = peek_host()
     stopped = []
+    not_stopped = []
     for name in ([group] if group else list(BUILTIN_GROUPS)):
         commission_id = occupant(name)
         if not commission_id or commission_id in stopped or host is None:
+            continue
+        if meant is not None and commission_id != meant:
+            not_stopped.append({"group": name, "commission_id": commission_id})
+            logger.info("[Agent] Esc was meant for task %s; %s is used by task %s, which is left alone", meant, name, commission_id)
             continue
         commission = await host.abort(commission_id, reason="Stopped with Esc")
         if commission is not None and commission.status == "cancelled":
             stopped.append(commission_id)
             logger.info("[Agent] Task %s stopped with Esc (%s)", commission_id, name)
-    return {"success": True, "stopped": stopped}
+    answer: Dict[str, Any] = {"success": True, "stopped": stopped}
+    if meant is not None:
+        answer["not_stopped"] = not_stopped
+    return answer
 
 
 def _browser_settings_view() -> Dict[str, Any]:
@@ -999,6 +1019,9 @@ async def set_browser_settings(payload: Dict[str, Any]):
     from .capabilities import _browser_dependency_status, _forget_browser_search
 
     _forget_browser_search()
+    # Said before the task that closes it has had a turn: stopping every
+    # task stops that one too, and must then close the browser itself.
+    builtin_provider.browser_no_longer_wanted()
     _create_tracked_task(_close_browser(update_capability=False))
     # With a model that answers, whether there is a browser to drive is all
     # the browser tools depend on, and that may just have changed: said at
