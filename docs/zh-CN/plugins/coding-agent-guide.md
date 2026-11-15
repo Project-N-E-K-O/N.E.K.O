@@ -1,15 +1,13 @@
 ---
-title: 图文实操：Codex 与 DeepSeek Harness
-description: N.E.K.O 插件零基础保姆级图文实操教程：以 DeepSeek Harness 与 OpenAI Codex 为例，演示从新建空文件夹、粘贴 Setup Prompt 到通过检查并运行插件的完整步骤。
+title: 各 Agent 上手教程
+description: 汇总 Codex、DeepSeek Harness、Claude Code、Cursor、Trae、Qoder / 通义灵码、CodeBuddy、VS Code 等 Coding Agent 的官方入门教程，并附 N.E.K.O 插件管理的真实界面截图。
 ---
 
-# 图文实操：Codex 与 DeepSeek Harness
+# 各 Agent 上手教程
 
-本页挑选两款有代表性的工具——国内开源的 **DeepSeek Harness 桌面版** 与国际常用的 **OpenAI Codex**，手把手演示如何从**一个空文件夹**出发，做出一个完整的**「喝水提醒（`water_reminder`）」**插件。
+从下面挑一个你顺手的 Coding Agent，按官方教程装好、登录并打开一个空文件夹，然后回到 [用 Coding Agent 零基础做插件](/zh-CN/plugins/coding-agents) 复制 Setup Prompt 发给 AI，剩下的交给它。
 
-> 如果你用的是 Trae、Claude Code、Cursor、Qoder / 通义灵码、CodeBuddy 或 VS Code，请先在 [用 Coding Agent 零基础做插件](/zh-CN/plugins/coding-agents) 选择对应工具复制 Setup Prompt；粘贴之后的对话过程与下方完全一致。
-
-<CodingAgentWalkthrough />
+<CodingAgentTutorials />
 
 ## 跑起来之后，怎样继续用大白话让 AI 升级插件？
 

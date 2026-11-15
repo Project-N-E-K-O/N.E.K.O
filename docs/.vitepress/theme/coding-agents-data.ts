@@ -5,6 +5,12 @@ export interface AgentStep {
   isPromptStep?: boolean
 }
 
+export interface AgentTutorial {
+  label: string
+  url: string
+  kind: 'docs' | 'video'
+}
+
 export interface AgentConfig {
   id: string
   label: string
@@ -13,7 +19,7 @@ export interface AgentConfig {
   tagline: string
   websiteUrl: string
   websiteLabel: string
-  walkthroughAgent?: 'codex' | 'dsh'
+  tutorials?: AgentTutorial[]
   steps: AgentStep[]
 }
 
@@ -32,7 +38,7 @@ export interface OnboardingCopy {
   tabHeading: string
   tabHint: string
   stepsHeading: string
-  walkthroughBadge: string
+  tutorialsHeading: string
   promptStepTitle: string
   promptStepDesc: string
   ideaLabel: string
@@ -41,10 +47,9 @@ export interface OnboardingCopy {
   copiedPrompt: string
   showPrompt: string
   hidePrompt: string
-  walkthroughCtaTitle: string
-  walkthroughCtaDesc: string
-  walkthroughCtaCodex: string
-  walkthroughCtaDsh: string
+  tutorialsCtaTitle: string
+  tutorialsCtaDesc: string
+  tutorialsCtaLabel: string
   fallbacks: FallbackSection[]
   agents: AgentConfig[]
 }
@@ -141,8 +146,8 @@ uv run pytest plugin/plugins/<plugin_id>/tests
 
 ## 5. 运行验证与打包交付（全部由你完成，我只负责点按钮）
 检查全部通过后，由你直接完成验证与交付——给我的说明只能是「在哪个界面点哪个按钮」级别的操作：
-- 打包导入（默认推荐，适合 Steam / 桌面安装版 N.E.K.O 或分享给他人）：你自行运行 \`uv run neko-plugin build <plugin_id> --out target/<plugin_id>.neko-plugin\`，然后告诉我生成的文件在哪个文件夹，以及在 N.E.K.O「插件中心」里依次点哪些按钮导入它（不要使用已禁用的 \`neko-plugin install\`）。
-- 源码版直接运行（如果我用的是源码版 N.E.K.O）：你自行在后台启动 \`uv run python launcher.py\`（带上 \`NEKO_PLUGIN_HOT_RELOAD=true\` 开启自动热重载），然后告诉我在插件页面点「刷新 → 启动」（后续修改点「重载」）。
+- 打包导入（默认推荐，适合 Steam / 桌面安装版 N.E.K.O 或分享给他人）：你自行运行 \`uv run neko-plugin build <plugin_id> --out target/<plugin_id>.neko-plugin\`，然后告诉我生成的文件在哪个文件夹，以及在 N.E.K.O「插件管理」页面点哪个按钮（「导入」→ 选择该文件）就能加载它（不要使用已禁用的 \`neko-plugin install\`）。
+- 源码版直接运行（如果我用的是源码版 N.E.K.O）：你自行在后台启动 \`uv run python launcher.py\`（带上 \`NEKO_PLUGIN_HOT_RELOAD=true\` 开启自动热重载），然后告诉我在「插件管理」页面点「刷新 → 启动」（后续修改点「重载」）。
 
 ## 6. 我的插件需求
 ${requirementBlock}`
@@ -205,8 +210,8 @@ uv run pytest plugin/plugins/<plugin_id>/tests
 
 ## 5. 動作確認とパッケージ出力（すべてあなたが実行し、私はボタンを押すだけ）
 チェック通過後は、あなた自身で検証と引き渡しまで完了してください。私への案内は「どの画面のどのボタンを押すか」だけにしてください：
-- パッケージを出力して導入（既定のおすすめ。Steam / デスクトップ版 N.E.K.O や配布用）：あなた自身で \`uv run neko-plugin build <plugin_id> --out target/<plugin_id>.neko-plugin\` を実行し、生成されたファイルの場所と、N.E.K.O の Plugin Center で押すべきボタンの順番を教えてください（無効化されている \`neko-plugin install\` は使わない）。
-- ソース版でそのまま起動（私がソース版 N.E.K.O を使っている場合）：あなた自身で \`uv run python launcher.py\` をバックグラウンド起動（自動ホットリロード用に \`NEKO_PLUGIN_HOT_RELOAD=true\` を付ける）し、Plugins 画面で「Refresh → Start」（変更後は「Reload」）を押すよう案内してください。
+- パッケージを出力して導入（既定のおすすめ。Steam / デスクトップ版 N.E.K.O や配布用）：あなた自身で \`uv run neko-plugin build <plugin_id> --out target/<plugin_id>.neko-plugin\` を実行し、生成されたファイルの場所と、N.E.K.O の「プラグイン管理」画面で押すべきボタンの順番（「インポート」→ ファイル選択）を教えてください（無効化されている \`neko-plugin install\` は使わない）。
+- ソース版でそのまま起動（私がソース版 N.E.K.O を使っている場合）：あなた自身で \`uv run python launcher.py\` をバックグラウンド起動（自動ホットリロード用に \`NEKO_PLUGIN_HOT_RELOAD=true\` を付ける）し、「プラグイン管理」画面で「再読み込み → 起動」（変更後は「リロード」）を押すよう案内してください。
 
 ## 6. 作りたいプラグインの要件
 ${requirementBlock}`
@@ -269,7 +274,7 @@ uv run pytest plugin/plugins/<plugin_id>/tests
 
 ## 5. Run or package for delivery (you do everything — I only click buttons)
 Once checks pass, finish verification and delivery yourself — any instructions you give me must be click-level only (which screen, which button):
-- Build and import a package (recommended default; for Steam / desktop N.E.K.O installs or sharing): run \`uv run neko-plugin build <plugin_id> --out target/<plugin_id>.neko-plugin\` yourself, then tell me which folder the file is in and which buttons to click in the N.E.K.O Plugin Center to import it (never use the disabled \`neko-plugin install\` command).
+- Build and import a package (recommended default; for Steam / desktop N.E.K.O installs or sharing): run \`uv run neko-plugin build <plugin_id> --out target/<plugin_id>.neko-plugin\` yourself, then tell me which folder the file is in and which buttons to click on the Plugins page in N.E.K.O Plugin Manager (Import, then pick the file) to load it (never use the disabled \`neko-plugin install\` command).
 - Run directly from source (if I use a source checkout of N.E.K.O): start \`uv run python launcher.py\` yourself in the background (with \`NEKO_PLUGIN_HOT_RELOAD=true\` for automatic hot reload on save), then tell me to click Refresh -> Start on the Plugins page (and Reload after edits).
 
 ## 6. My plugin request
@@ -285,7 +290,13 @@ const zhAgents: AgentConfig[] = [
     tagline: 'DeepSeek 开源的插件化编程智能体，官方桌面应用开箱即用，界面直观好上手。',
     websiteUrl: 'https://github.com/deepseek-ai/deepseek-harness/releases',
     websiteLabel: '下载桌面版',
-    walkthroughAgent: 'dsh',
+    tutorials: [
+      {
+        label: '官方 GitHub 仓库（README 与桌面版指南）',
+        url: 'https://github.com/deepseek-ai/deepseek-harness',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '从官方发布页下载并安装 DeepSeek Harness 桌面版，打开应用。' },
       { text: '打开「Settings → Models」，填入你的 DeepSeek API Key 并保存。' },
@@ -305,7 +316,18 @@ const zhAgents: AgentConfig[] = [
     tagline: '登录 ChatGPT 账号即可让 AI 自动完成环境准备、代码编写与自检全流程。',
     websiteUrl: 'https://openai.com/codex/',
     websiteLabel: '官方网站',
-    walkthroughAgent: 'codex',
+    tutorials: [
+      {
+        label: '官方快速上手：3 步开始 Codex（英文）',
+        url: 'https://chatgpt.com/features/codex-get-started/',
+        kind: 'docs',
+      },
+      {
+        label: 'OpenAI 帮助中心：Codex 使用指南（英文）',
+        url: 'https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '从官网下载安装 Codex 桌面应用，用 ChatGPT 账号登录。' },
       { text: '在 Codex 中打开一个空工作文件夹（或你电脑上已有的 N.E.K.O 源码目录）。' },
@@ -314,7 +336,7 @@ const zhAgents: AgentConfig[] = [
         isPromptStep: true,
       },
       { text: '当 Codex 请求执行操作时点击允许，等待它自动写完代码并通过检查。' },
-      { text: '按 Codex 给出的说明在 N.E.K.O 插件页面点「刷新 → 启动」，或在插件中心导入 .neko-plugin 安装包。' },
+      { text: '按 Codex 给出的说明在 N.E.K.O「插件管理」页面点「刷新 → 启动」，或点「导入」选择 .neko-plugin 安装包。' },
     ],
   },
   {
@@ -325,6 +347,18 @@ const zhAgents: AgentConfig[] = [
     tagline: '图形化代码编辑器，内置 Builder / SOLO 全流程模式，对零基础新手非常友好。',
     websiteUrl: 'https://www.trae.cn/',
     websiteLabel: '官方网站',
+    tutorials: [
+      {
+        label: '官方文档：快速开始 TRAE 桌面端',
+        url: 'https://docs.trae.cn/ide_get-started-with-trae',
+        kind: 'docs',
+      },
+      {
+        label: '官方文档：Agent 窗口快速开始',
+        url: 'https://docs.trae.cn/ide_get-started-with-the-agent-window',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '从官网下载并安装 Trae 客户端，登录后点击「打开文件夹」选一个空文件夹（或 N.E.K.O 目录）。' },
       { text: '在右侧 AI 对话面板顶部切换到「Builder」或「SOLO」智能体模式。' },
@@ -333,7 +367,7 @@ const zhAgents: AgentConfig[] = [
         isPromptStep: true,
       },
       { text: 'AI 请求执行操作时点击「运行 / 允许」，等待 Trae 自动完成插件初始化与自检。' },
-      { text: '在 N.E.K.O 插件管理页面点击「刷新 → 启动」，或导入生成的 .neko-plugin 安装包体验效果。' },
+      { text: '在 N.E.K.O「插件管理」页面点「刷新 → 启动」，或点「导入」选择生成的 .neko-plugin 安装包体验效果。' },
     ],
   },
   {
@@ -344,6 +378,18 @@ const zhAgents: AgentConfig[] = [
     tagline: '擅长多步工具链执行与自主排错，能非常稳定地跑完插件初始化、测试与打包全流程。',
     websiteUrl: 'https://claude.ai/download',
     websiteLabel: '官方网站',
+    tutorials: [
+      {
+        label: '官方文档：桌面版快速上手（英文）',
+        url: 'https://code.claude.com/docs/en/desktop-quickstart',
+        kind: 'docs',
+      },
+      {
+        label: '官方文档：Code 标签页完整指南（英文）',
+        url: 'https://code.claude.com/docs/en/desktop',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '下载安装 Claude 桌面应用并登录，切换到「Code」标签页打开你的工作文件夹。' },
       {
@@ -362,6 +408,13 @@ const zhAgents: AgentConfig[] = [
     tagline: '可视化文件树配合右侧 Agent 面板，可直观查看 AI 生成的 plugin.toml 与 Python 源码。',
     websiteUrl: 'https://www.cursor.com/',
     websiteLabel: '官方网站',
+    tutorials: [
+      {
+        label: '官方 Quickstart（英文）',
+        url: 'https://cursor.com/docs/get-started/quickstart',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '打开 Cursor，点击「Open Folder」打开一个空工作文件夹（或已有的 N.E.K.O 源码目录）。' },
       { text: '按 Ctrl+I（macOS 按 Cmd+I）唤出右侧面板，确认左下角模式已设为「Agent」。' },
@@ -370,7 +423,7 @@ const zhAgents: AgentConfig[] = [
         isPromptStep: true,
       },
       { text: 'AI 请求执行操作时点击允许，完成后点击「Keep / Accept」保存文件改动。' },
-      { text: '按提示在 N.E.K.O 插件页面点「刷新 → 启动」，或将生成的 .neko-plugin 包导入插件中心。' },
+      { text: '按提示在 N.E.K.O「插件管理」页点「刷新 → 启动」，或点「导入」选择生成的 .neko-plugin 包。' },
     ],
   },
   {
@@ -381,6 +434,18 @@ const zhAgents: AgentConfig[] = [
     tagline: '国内网络开箱即用；既可用独立 Qoder IDE，也可在已有 VS Code / PyCharm 中装通义灵码插件。',
     websiteUrl: 'https://qoder.com/',
     websiteLabel: '官方网站',
+    tutorials: [
+      {
+        label: '通义灵码官方：下载和安装教程',
+        url: 'https://lingma.aliyun.com/lingma/download',
+        kind: 'docs',
+      },
+      {
+        label: '阿里云帮助中心：Qoder CN IDE 快速入门',
+        url: 'https://help.aliyun.com/zh/lingma/lingma-ide-get-started',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '打开 Qoder IDE（或在 VS Code / PyCharm 中安装并登录「通义灵码」扩展），打开你的工作文件夹。' },
       { text: '在对话侧边栏切换到「智能体 / Agent（或 Quest）」模式，允许它读写文件并执行操作。' },
@@ -399,6 +464,18 @@ const zhAgents: AgentConfig[] = [
     tagline: '支持混元与 DeepSeek 模型协同，提供独立 IDE 及 VS Code / JetBrains 插件形态。',
     websiteUrl: 'https://copilot.tencent.com/',
     websiteLabel: '官方网站',
+    tutorials: [
+      {
+        label: '官方中文文档：安装和登录',
+        url: 'https://www.codebuddy.cn/docs/ide/Getting-Started/Installation',
+        kind: 'docs',
+      },
+      {
+        label: '官方中文文档：快速开始',
+        url: 'https://www.codebuddy.cn/docs/ide/Getting-Started/Quickstart',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '下载安装 CodeBuddy IDE（或在现有编辑器安装腾讯云代码助手 CodeBuddy 插件），打开工作文件夹。' },
       { text: '进入侧边栏「Craft 智能体」对话面板。' },
@@ -417,6 +494,18 @@ const zhAgents: AgentConfig[] = [
     tagline: '如果你电脑里已经装了 VS Code，装一个开源 Cline 扩展或开启 Copilot Agent 模式即可直接上手。',
     websiteUrl: 'https://code.visualstudio.com/',
     websiteLabel: '官方网站',
+    tutorials: [
+      {
+        label: 'Cline 官方上手指南（英文）',
+        url: 'https://docs.cline.bot/getting-started/for-new-coders',
+        kind: 'docs',
+      },
+      {
+        label: 'VS Code 官方文档：Copilot Agent 模式（英文）',
+        url: 'https://code.visualstudio.com/docs/copilot/chat/chat-agent-mode',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '在 VS Code 扩展市场安装「Cline」（填任意模型 API Key）或打开内置「GitHub Copilot Chat」。' },
       { text: '打开空工作文件夹，将 Cline 设为「Act」模式（或将 Copilot Chat 切换为「Agent」模式）。' },
@@ -442,7 +531,7 @@ const zhAgents: AgentConfig[] = [
         isPromptStep: true,
       },
       { text: '告诉 Agent 你的插件点子，等待它完成编码并通过检查。' },
-      { text: '按 Agent 的提示在 N.E.K.O 插件页面点按钮加载，或让它生成 .neko-plugin 安装包导入插件中心。' },
+      { text: '按 Agent 的提示在 N.E.K.O「插件管理」页点按钮加载，或让它生成 .neko-plugin 安装包后点「导入」。' },
     ],
   },
 ]
@@ -456,7 +545,18 @@ const enAgents: AgentConfig[] = [
     tagline: 'Sign in with ChatGPT in the Codex desktop app and let it handle setup, coding, and checks for you.',
     websiteUrl: 'https://openai.com/codex/',
     websiteLabel: 'Official site',
-    walkthroughAgent: 'codex',
+    tutorials: [
+      {
+        label: 'Official: Get started with Codex',
+        url: 'https://chatgpt.com/features/codex-get-started/',
+        kind: 'docs',
+      },
+      {
+        label: 'OpenAI Help: Using Codex with your ChatGPT plan',
+        url: 'https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Download the Codex desktop app from the official site and sign in with your ChatGPT account.' },
       { text: 'Point Codex at an empty workspace folder (or your existing N.E.K.O repository folder).' },
@@ -465,7 +565,7 @@ const enAgents: AgentConfig[] = [
         isPromptStep: true,
       },
       { text: 'Click Allow whenever Codex asks to run something, and wait for it to pass the plugin checks.' },
-      { text: 'Follow Codex\'s clicks-only instructions to start the plugin in N.E.K.O or import the .neko-plugin package in Plugin Center.' },
+      { text: 'Follow Codex\'s clicks-only instructions to start the plugin in N.E.K.O or click Import on the Plugins page to load the .neko-plugin package.' },
     ],
   },
   {
@@ -476,7 +576,13 @@ const enAgents: AgentConfig[] = [
     tagline: 'An MIT-licensed local coding agent from DeepSeek, now available as a ready-to-use desktop app.',
     websiteUrl: 'https://github.com/deepseek-ai/deepseek-harness/releases',
     websiteLabel: 'Download app',
-    walkthroughAgent: 'dsh',
+    tutorials: [
+      {
+        label: 'Official GitHub repo (README & desktop app guide)',
+        url: 'https://github.com/deepseek-ai/deepseek-harness',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Download and install DeepSeek Harness Desktop from the official releases page, then open it.' },
       { text: 'Open Settings -> Models, enter your DeepSeek or compatible API key, and save.' },
@@ -496,6 +602,18 @@ const enAgents: AgentConfig[] = [
     tagline: 'Strong multi-step execution that reliably scaffolds, tests, and packages plugins end-to-end.',
     websiteUrl: 'https://claude.ai/download',
     websiteLabel: 'Official site',
+    tutorials: [
+      {
+        label: 'Get started with the Claude desktop app',
+        url: 'https://code.claude.com/docs/en/desktop-quickstart',
+        kind: 'docs',
+      },
+      {
+        label: 'Claude Code Desktop reference',
+        url: 'https://code.claude.com/docs/en/desktop',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Install the Claude desktop app, sign in, and open your workspace folder from the Code tab.' },
       {
@@ -514,6 +632,13 @@ const enAgents: AgentConfig[] = [
     tagline: 'Visual file tree plus Agent mode so you can watch plugin.toml and Python entries take shape.',
     websiteUrl: 'https://www.cursor.com/',
     websiteLabel: 'Official site',
+    tutorials: [
+      {
+        label: 'Official Cursor Quickstart',
+        url: 'https://cursor.com/docs/get-started/quickstart',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Open Cursor and click Open Folder on an empty workspace directory (or your N.E.K.O checkout).' },
       { text: 'Press Ctrl+I (or Cmd+I on macOS) and make sure the chat mode is set to Agent.' },
@@ -522,7 +647,7 @@ const enAgents: AgentConfig[] = [
         isPromptStep: true,
       },
       { text: 'Click Allow when the AI asks to run something, and click Keep / Accept when it finishes.' },
-      { text: 'Refresh and start the plugin in N.E.K.O, or import the packaged .neko-plugin in Plugin Center.' },
+      { text: 'Refresh and start the plugin in N.E.K.O, or click Import on the Plugins page to load the packaged .neko-plugin.' },
     ],
   },
   {
@@ -533,6 +658,13 @@ const enAgents: AgentConfig[] = [
     tagline: 'Beginner-friendly visual IDE with autonomous Builder and SOLO modes that handle everything for you.',
     websiteUrl: 'https://www.trae.ai/',
     websiteLabel: 'Official site',
+    tutorials: [
+      {
+        label: 'Official docs: Get started with TRAE Desktop',
+        url: 'https://docs.trae.ai/ide/get-started-with-trae-desktop',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Install Trae, sign in, and open an empty workspace folder (or your N.E.K.O checkout).' },
       { text: 'Switch the right-hand AI panel to Builder or SOLO mode.' },
@@ -551,6 +683,18 @@ const enAgents: AgentConfig[] = [
     tagline: 'Install the open-source Cline extension (bring any API key) or switch GitHub Copilot Chat to Agent mode.',
     websiteUrl: 'https://code.visualstudio.com/',
     websiteLabel: 'Official site',
+    tutorials: [
+      {
+        label: 'Cline docs: installing and your first session',
+        url: 'https://docs.cline.bot/getting-started/for-new-coders',
+        kind: 'docs',
+      },
+      {
+        label: 'VS Code docs: Copilot agent mode',
+        url: 'https://code.visualstudio.com/docs/copilot/chat/chat-agent-mode',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'In VS Code, install Cline (or open GitHub Copilot Chat) and open an empty workspace folder.' },
       { text: 'Set Cline to Act mode, or switch GitHub Copilot Chat to Agent mode.' },
@@ -569,6 +713,13 @@ const enAgents: AgentConfig[] = [
     tagline: 'Repo-aware agentic IDE (Qoder) and IDE plugin with autonomous multi-step editing.',
     websiteUrl: 'https://qoder.com/',
     websiteLabel: 'Official site',
+    tutorials: [
+      {
+        label: 'Official docs: Qoder Quick Start',
+        url: 'https://docs.qoder.com/product-series/quick-start',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Open your workspace folder in Qoder IDE (or enable the Lingma Agent panel in VS Code / PyCharm).' },
       { text: 'Switch the assistant to Agent / Quest mode and allow it to edit files and run actions.' },
@@ -587,6 +738,18 @@ const enAgents: AgentConfig[] = [
     tagline: 'Standalone AI IDE and editor extension featuring Craft autonomous agent workflows.',
     websiteUrl: 'https://www.codebuddy.ai/',
     websiteLabel: 'Official site',
+    tutorials: [
+      {
+        label: 'Official docs: Installation & login',
+        url: 'https://www.codebuddy.ai/docs/ide/Getting-Started/Installation',
+        kind: 'docs',
+      },
+      {
+        label: 'Official docs: Quick Start',
+        url: 'https://www.codebuddy.ai/docs/ide/Getting-Started/Quickstart',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Open your workspace folder in CodeBuddy IDE (or open the CodeBuddy extension in your editor).' },
       { text: 'Switch to the Craft agent panel.' },
@@ -626,7 +789,18 @@ const jaAgents: AgentConfig[] = [
     tagline: 'ChatGPT アカウントでログインするだけで、環境準備から実装・チェックまで自動で任せられます。',
     websiteUrl: 'https://openai.com/codex/',
     websiteLabel: '公式サイト',
-    walkthroughAgent: 'codex',
+    tutorials: [
+      {
+        label: '公式：Codex をはじめる（英語）',
+        url: 'https://chatgpt.com/features/codex-get-started/',
+        kind: 'docs',
+      },
+      {
+        label: 'OpenAI ヘルプ：Codex の使い方（英語）',
+        url: 'https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '公式サイトから Codex デスクトップアプリをインストールし、ChatGPT アカウントでログインします。' },
       { text: '空の作業フォルダ（または既存の N.E.K.O リポジトリ）をワークスペースとして開きます。' },
@@ -635,7 +809,7 @@ const jaAgents: AgentConfig[] = [
         isPromptStep: true,
       },
       { text: 'AI が操作の実行を求めてきたら「許可」を押し、チェック完了を待ちます。' },
-      { text: '案内に従って N.E.K.O の画面でプラグインを起動するか、.neko-plugin を Plugin Center から読み込みます。' },
+      { text: '案内に従って N.E.K.O の「プラグイン管理」でプラグインを起動するか、「インポート」から .neko-plugin を読み込みます。' },
     ],
   },
   {
@@ -646,7 +820,13 @@ const jaAgents: AgentConfig[] = [
     tagline: 'DeepSeek 製のローカル Coding Agent。公式デスクトップアプリをインストールするだけで使えます。',
     websiteUrl: 'https://github.com/deepseek-ai/deepseek-harness/releases',
     websiteLabel: 'アプリをダウンロード',
-    walkthroughAgent: 'dsh',
+    tutorials: [
+      {
+        label: '公式 GitHub リポジトリ（README とデスクトップ版ガイド）',
+        url: 'https://github.com/deepseek-ai/deepseek-harness',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: '公式リリースページから DeepSeek Harness デスクトップ版をダウンロード・インストールして開きます。' },
       { text: '「Settings → Models」で DeepSeek などの API キーを入力して保存します。' },
@@ -666,6 +846,18 @@ const jaAgents: AgentConfig[] = [
     tagline: '複数ステップの自律実行や自動テスト修正に強く、プラグイン開発を安定して完走できます。',
     websiteUrl: 'https://claude.ai/download',
     websiteLabel: '公式サイト',
+    tutorials: [
+      {
+        label: '公式：デスクトップアプリを始める',
+        url: 'https://code.claude.com/docs/ja/desktop-quickstart',
+        kind: 'docs',
+      },
+      {
+        label: '公式：Code タブ完全ガイド',
+        url: 'https://code.claude.com/docs/ja/desktop',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Claude デスクトップアプリをインストールしてログインし、「Code」タブで作業フォルダを開きます。' },
       {
@@ -684,6 +876,13 @@ const jaAgents: AgentConfig[] = [
     tagline: 'ファイルツリーを見ながら右側の Agent パネルで開発を進められます。',
     websiteUrl: 'https://www.cursor.com/',
     websiteLabel: '公式サイト',
+    tutorials: [
+      {
+        label: '公式 Quickstart（英語）',
+        url: 'https://cursor.com/docs/get-started/quickstart',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Cursor で「Open Folder」から空の作業フォルダ（または既存の N.E.K.O フォルダ）を開きます。' },
       { text: 'Ctrl+I（macOS は Cmd+I）でパネルを開き、モードが「Agent」になっていることを確認します。' },
@@ -702,6 +901,13 @@ const jaAgents: AgentConfig[] = [
     tagline: '初心者でも使いやすい GUI ベースのエディタです。',
     websiteUrl: 'https://www.trae.ai/',
     websiteLabel: '公式サイト',
+    tutorials: [
+      {
+        label: '公式ドキュメント：TRAE Desktop をはじめる（英語）',
+        url: 'https://docs.trae.ai/ide/get-started-with-trae-desktop',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Trae をインストールし、空の作業フォルダ（または N.E.K.O フォルダ）を開きます。' },
       { text: '右側の AI パネルを「Builder」または「SOLO」モードに切り替えます。' },
@@ -720,6 +926,18 @@ const jaAgents: AgentConfig[] = [
     tagline: 'Cline 拡張機能や GitHub Copilot の Agent モードですぐに始められます。',
     websiteUrl: 'https://code.visualstudio.com/',
     websiteLabel: '公式サイト',
+    tutorials: [
+      {
+        label: 'Cline 公式ガイド（英語）',
+        url: 'https://docs.cline.bot/getting-started/for-new-coders',
+        kind: 'docs',
+      },
+      {
+        label: 'VS Code 公式ドキュメント：Copilot エージェントモード（英語）',
+        url: 'https://code.visualstudio.com/docs/copilot/chat/chat-agent-mode',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'VS Code に「Cline」を入れるか「GitHub Copilot Chat」を開き、空の作業フォルダを開きます。' },
       { text: 'Cline を「Act」モード（または Copilot Chat を「Agent」モード）にします。' },
@@ -738,6 +956,13 @@ const jaAgents: AgentConfig[] = [
     tagline: 'リポジトリ理解と自律タスク実行を備えた AI IDE です。',
     websiteUrl: 'https://qoder.com/',
     websiteLabel: '公式サイト',
+    tutorials: [
+      {
+        label: '公式ドキュメント：Qoder Quick Start（英語）',
+        url: 'https://docs.qoder.com/product-series/quick-start',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'Qoder で作業フォルダを開き、アシスタントを Agent / Quest モードに切り替えて操作を許可します。' },
       {
@@ -755,6 +980,18 @@ const jaAgents: AgentConfig[] = [
     tagline: 'スタンドアロン IDE とエディタ拡張の両方で使える自律型エージェントです。',
     websiteUrl: 'https://www.codebuddy.ai/',
     websiteLabel: '公式サイト',
+    tutorials: [
+      {
+        label: '公式ドキュメント：インストールとログイン（英語）',
+        url: 'https://www.codebuddy.ai/docs/ide/Getting-Started/Installation',
+        kind: 'docs',
+      },
+      {
+        label: '公式ドキュメント：Quick Start（英語）',
+        url: 'https://www.codebuddy.ai/docs/ide/Getting-Started/Quickstart',
+        kind: 'docs',
+      },
+    ],
     steps: [
       { text: 'CodeBuddy で作業フォルダを開き、「Craft」エージェントパネルを開きます。' },
       {
@@ -791,7 +1028,7 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     tabHeading: '选择你正在使用的 Coding Agent',
     tabHint: '不局限于以下工具，任意能在你的电脑上读写文件并执行操作的 AI 编程工具均可使用',
     stepsHeading: '开始步骤',
-    walkthroughBadge: '含完整截图演示',
+    tutorialsHeading: '官方上手教程',
     promptStepTitle: 'N.E.K.O 插件 Setup Prompt（专为 neko-plugin CLI 定制）',
     promptStepDesc: '内置环境检查、neko-plugin init/check/build 规范与最新 SDK 防踩坑护栏。',
     ideaLabel: '可选：用一句话写下你想做的插件（留空也能直接复制，粘进去后再跟 AI 聊）',
@@ -800,10 +1037,9 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     copiedPrompt: '已复制 Setup Prompt',
     showPrompt: '查看完整 Prompt 内容',
     hidePrompt: '收起 Prompt 内容',
-    walkthroughCtaTitle: '第一次用 Coding Agent，不确定界面怎么点？',
-    walkthroughCtaDesc: '我们准备了 Codex 与 DeepSeek Harness (dsh) 从空文件夹到插件跑起来的完整分步图文演示。',
-    walkthroughCtaCodex: '查看 Codex 图文演示',
-    walkthroughCtaDsh: '查看 DeepSeek Harness 图文演示',
+    tutorialsCtaTitle: '想看每个 Agent 的官方上手教程？',
+    tutorialsCtaDesc: '我们汇总了全部支持工具的官方入门文档，并附上 N.E.K.O 插件管理的真实界面截图。',
+    tutorialsCtaLabel: '打开各 Agent 上手教程',
     fallbacks: [
       {
         title: '我平时用的是 Steam 版 / 桌面安装版 N.E.K.O，怎么加载 AI 做好的插件？',
@@ -812,7 +1048,7 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
           {
             label: '方式一：导入 .neko-plugin 安装包（最省心）',
             description:
-              '让 AI 生成 .neko-plugin 安装包并告诉你文件位置，然后打开桌面版 N.E.K.O 的「插件中心」，点击「导入」选中该文件即可。',
+              '让 AI 生成 .neko-plugin 安装包并告诉你文件位置，然后打开桌面版 N.E.K.O 的「插件管理」，点右上「导入」选中该文件即可。',
           },
           {
             label: '方式二：在「插件制作工作台」直接挂载目录（适合反复改代码实时重载）',
@@ -831,7 +1067,7 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     tabHeading: 'Choose your coding agent',
     tabHint: 'Works with any AI coding tool that can edit files and run actions on your computer',
     stepsHeading: 'Setup steps',
-    walkthroughBadge: 'Step-by-step screenshots available',
+    tutorialsHeading: 'Official tutorials',
     promptStepTitle: 'N.E.K.O Plugin Setup Prompt (built around neko-plugin CLI)',
     promptStepDesc: 'Includes repo setup, neko-plugin init/check/build commands, and current SDK guardrails.',
     ideaLabel: 'Optional: describe your plugin idea in one sentence (or leave blank and chat after pasting)',
@@ -840,10 +1076,9 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     copiedPrompt: 'Copied Setup Prompt',
     showPrompt: 'Preview full prompt',
     hidePrompt: 'Hide full prompt',
-    walkthroughCtaTitle: 'New to coding agents and want to see every screen?',
-    walkthroughCtaDesc: 'Follow our visual walkthroughs for OpenAI Codex and DeepSeek Harness (dsh) from an empty folder to a running plugin.',
-    walkthroughCtaCodex: 'Open Codex Walkthrough',
-    walkthroughCtaDsh: 'Open DeepSeek Harness Walkthrough',
+    tutorialsCtaTitle: 'Want the official getting-started guides?',
+    tutorialsCtaDesc: 'Official tutorials for every supported agent, plus real screenshots of the N.E.K.O plugin manager.',
+    tutorialsCtaLabel: 'Open agent tutorials',
     fallbacks: [
       {
         title: 'Using the Steam or desktop installer build of N.E.K.O? How to load your plugin',
@@ -852,7 +1087,7 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
           {
             label: 'Option 1: Import the .neko-plugin package (easiest)',
             description:
-              'Let the agent build the .neko-plugin package and tell you where the file is, then open N.E.K.O Plugin Center, click Import, and pick that file.',
+              'Let the agent build the .neko-plugin package and tell you where the file is, then open the Plugins page in N.E.K.O Plugin Manager, click Import, and pick that file.',
           },
           {
             label: 'Option 2: Register the folder in Plugin studio for fast reload',
@@ -871,7 +1106,7 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     tabHeading: '使用する Coding Agent を選択',
     tabHint: 'ここにあるツール以外でも、パソコン上でファイル編集と操作の実行ができる AI ツールなら利用できます',
     stepsHeading: '導入ステップ',
-    walkthroughBadge: '画面付きガイドあり',
+    tutorialsHeading: '公式チュートリアル',
     promptStepTitle: 'N.E.K.O プラグイン Setup Prompt（neko-plugin CLI 対応）',
     promptStepDesc: '環境確認、neko-plugin init / check / build 手順、最新 SDK ルールを含んでいます。',
     ideaLabel: '任意：作りたいプラグインを 1 文で入力（空欄のままコピーして後で伝えても OK）',
@@ -880,10 +1115,9 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     copiedPrompt: 'コピーしました',
     showPrompt: 'Prompt 全文を表示',
     hidePrompt: 'Prompt 全文を閉じる',
-    walkthroughCtaTitle: '実際の操作画面を順番に見たい方へ',
-    walkthroughCtaDesc: '空のフォルダから最初のプラグインが動くまでを、Codex と DeepSeek Harness (dsh) の画面付きで解説しています。',
-    walkthroughCtaCodex: 'Codex 画面付きガイドへ',
-    walkthroughCtaDsh: 'DeepSeek Harness ガイドへ',
+    tutorialsCtaTitle: '各 Agent の公式チュートリアルを見たい方へ',
+    tutorialsCtaDesc: '対応ツールすべての公式入門ガイドと、N.E.K.O プラグイン管理の実際の画面スクリーンショットをまとめています。',
+    tutorialsCtaLabel: 'エージェント別チュートリアルを開く',
     fallbacks: [
       {
         title: 'Steam 版 / デスクトップ版 N.E.K.O で作成したプラグインを使うには？',
@@ -892,16 +1126,102 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
           {
             label: '方法 1：.neko-plugin パッケージを読み込む（一番かんたん）',
             description:
-              'AI に .neko-plugin パッケージを作ってもらい、場所を教えてもらったら、N.E.K.O の Plugin Center で「インポート」を押してそのファイルを選ぶだけです。',
+              'AI に .neko-plugin パッケージを作ってもらい、場所を教えてもらったら、N.E.K.O の「プラグイン管理」で「インポート」を押してそのファイルを選ぶだけです。',
           },
           {
-            label: '方法 2：Plugin studio にフォルダを登録して即リロードする',
+            label: '方法 2：「プラグイン制作」にフォルダを登録して即リロードする',
             description:
-              'プラグインマネージャー左側の「Plugin studio」→「Add existing project」から N.E.K.O/plugin/plugins/<plugin_id> を選択すると、編集後に Reload だけですぐ反映されます。',
+              'プラグインマネージャー左側の「プラグイン制作」→「既存のプロジェクトを追加」から N.E.K.O/plugin/plugins/<plugin_id> を選択すると、編集後に「リロード」を押すだけですぐ反映されます。',
           },
         ],
       },
     ],
     agents: jaAgents,
+  },
+}
+
+export interface NekoShotStep {
+  title: string
+  description: string
+  image: string
+  alt: string
+}
+
+export interface TutorialsCopy {
+  pageIntro: string
+  nekoHeading: string
+  nekoIntro: string
+  nekoSteps: NekoShotStep[]
+}
+
+export const TUTORIALS_COPY: Record<DocsLocale, TutorialsCopy> = {
+  'zh-CN': {
+    pageIntro:
+      '下面汇总了每个 Coding Agent 的官方上手指南。任选一个顺手的工具按官方教程装好、登录并打开一个空文件夹，然后回到「选择你的 Coding Agent」页复制 Setup Prompt 发给 AI 即可。',
+    nekoHeading: '最后一步：在 N.E.K.O 里加载插件',
+    nekoIntro:
+      '插件写好后，AI 会在自己的环境里完成打包或后台启动，你需要做的只是在 N.E.K.O 插件管理里点按钮。以下是真实界面截图：',
+    nekoSteps: [
+      {
+        title: '在「插件管理」页刷新并启动插件',
+        description:
+          '左侧进入「插件管理」，点上方「刷新」找到新插件，再点插件卡片上的「启动」。之后 AI 每改完一版代码，点「重载」即可生效。',
+        image: 'neko-plugins-list.png',
+        alt: 'N.E.K.O 插件管理页面截图：左侧导航选中「插件管理」，右上角有「刷新」与「导入」按钮，下方是插件卡片列表',
+      },
+      {
+        title: '导入 .neko-plugin 安装包',
+        description:
+          'AI 打包后会告诉你 .neko-plugin 文件在哪个文件夹。点「插件管理」页右上「导入」，把文件拖进弹窗（或点「选择文件」选中），再点「导入」即完成安装。',
+        image: 'neko-import-dialog.png',
+        alt: '「导入插件包」弹窗截图：可将 .neko-plugin 或 .neko-bundle 文件拖入虚线框，或点击选择文件后导入',
+      },
+    ],
+  },
+  en: {
+    pageIntro:
+      'Below are the official getting-started guides for every supported coding agent. Pick one, install it, sign in, and open an empty folder — then head back to Choose Your Coding Agent and paste the Setup Prompt.',
+    nekoHeading: 'Final step: load the plugin in N.E.K.O',
+    nekoIntro:
+      'Once the agent finishes, it packages the plugin or starts N.E.K.O itself. All you do is click buttons in the plugin manager — here is the real UI:',
+    nekoSteps: [
+      {
+        title: 'Refresh and start the plugin on the Plugins page',
+        description:
+          'Open Plugins in the sidebar, click Refresh to see the new plugin, then click Start on its card. After the agent makes new edits, click Reload to apply them.',
+        image: 'neko-plugins-list-en.png',
+        alt: 'N.E.K.O Plugin Manager Plugins page: sidebar shows Plugins selected, the toolbar has Refresh and Import buttons, and plugin cards fill the grid',
+      },
+      {
+        title: 'Import a .neko-plugin package',
+        description:
+          'The agent tells you which folder holds the .neko-plugin file. Click Import on the Plugins page, drop the file into the dialog (or click Choose File), then click Import again to install it.',
+        image: 'neko-import-dialog-en.png',
+        alt: 'Import plugin package dialog: drop a .neko-plugin or .neko-bundle file into the dashed area or click to choose a file, then Import',
+      },
+    ],
+  },
+  ja: {
+    pageIntro:
+      '各 Coding Agent の公式入門ガイドをまとめました。お好みのツールを公式チュートリアルどおりにインストール・ログインして空のフォルダを開いたら、「Coding Agent を選ぶ」ページに戻って Setup Prompt を AI に貼り付けてください。',
+    nekoHeading: '最後のステップ：N.E.K.O でプラグインを読み込む',
+    nekoIntro:
+      'プラグインが完成したら、パッケージ作成や N.E.K.O の起動は AI が自分で行います。あなたはプラグイン管理画面でボタンを押すだけです。実際の画面はこちら：',
+    nekoSteps: [
+      {
+        title: '「プラグイン管理」で再読み込みして起動',
+        description:
+          '左側の「プラグイン管理」を開き、上の「再読み込み」で新しいプラグインを表示して、カードの「起動」を押します。AI がコードを更新した後は「リロード」を押すだけで反映されます。',
+        image: 'neko-plugins-list-ja.png',
+        alt: 'N.E.K.O プラグイン管理画面のスクリーンショット：左ナビで「プラグイン管理」を選択、右上に「再読み込み」と「インポート」ボタン、下にプラグインカード一覧',
+      },
+      {
+        title: '.neko-plugin パッケージをインポート',
+        description:
+          'AI が .neko-plugin ファイルの場所を教えてくれます。「プラグイン管理」の「インポート」を押し、ファイルをダイアログにドラッグ（または「ファイルを選択」）して、「インポート」を押せば完了です。',
+        image: 'neko-import-dialog-ja.png',
+        alt: '「プラグインパッケージをインポート」ダイアログ：.neko-plugin / .neko-bundle ファイルを点線枠にドロップするか、クリックしてファイルを選択',
+      },
+    ],
   },
 }

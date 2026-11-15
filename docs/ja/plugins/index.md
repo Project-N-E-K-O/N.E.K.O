@@ -63,7 +63,7 @@ Coding Agent（Codex、DeepSeek Harness、Claude Code、Cursor、Trae など）�
 ## クイックリンク
 
 - [Coding Agent でゼロからプラグインを作る](./coding-agents) — お使いの Agent を選び、`neko-plugin` CLI 用 Setup Prompt をコピー
-- [画面付きガイド：Codex と DeepSeek Harness](./coding-agent-guide) — 空のフォルダから起動確認までの画面付き手順
+- [エージェント別チュートリアル](./coding-agent-guide) — 各ツールの公式入門ガイドと N.E.K.O の実画面スクリーンショット
 - [プラグイン開発入門ガイド](./plugin-development) — プラグインの構成と、最初のプラグインを作る流れを理解する
 - [クイックスタート](./quick-start) — 手順に沿って最初のプラグインを作成
 - [プラグインを公開](/ja/plugins/cli) — GitHub へ upload し、審査提出と新 version の公開を行う

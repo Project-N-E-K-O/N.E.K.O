@@ -63,7 +63,7 @@ Read [Build Plugins with Coding Agents](./coding-agents) if you want an AI codin
 ## Quick Links
 
 - [Build Plugins with Coding Agents](./coding-agents) — Pick your coding agent and copy a ready-made `neko-plugin` CLI setup prompt
-- [Agent Walkthroughs: Codex & DeepSeek Harness](./coding-agent-guide) — Step-by-step screenshots from an empty folder to a running plugin
+- [Agent Tutorials](./coding-agent-guide) — Official getting-started guides for every agent, plus real N.E.K.O screenshots
 - [Getting Started with Plugin Development](./plugin-development) — Understand what a plugin contains and how to build one
 - [Quick Start](./quick-start) — Create your first plugin step by step
 - [Publish a Plugin](/plugins/cli) — Upload to GitHub, submit for review, and publish new versions

@@ -18,6 +18,6 @@ Python フレームワークの細かな知識がなくても、普段使って�
 
 ## 次のステップ
 
-- 画面ごとの操作手順を確認したい場合は [画面付きガイド：Codex と DeepSeek Harness](/ja/plugins/coding-agent-guide) をご覧ください。
+- 各ツールの公式チュートリアルと N.E.K.O の実画面スクリーンショットは [エージェント別チュートリアル](/ja/plugins/coding-agent-guide) をご覧ください。
 - 生成されるファイルの役割を知りたい場合は [プラグイン開発入門ガイド](/ja/plugins/plugin-development) または手動手順の [クイックスタート](/ja/plugins/quick-start) を参照してください。
 - 完成したプラグインを公開する場合は [プラグインを Market に公開する](/ja/plugins/cli) へ進みます。

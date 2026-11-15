@@ -20,6 +20,6 @@ description: 面向零基础开发者的 N.E.K.O 插件 AI 辅助入门：选择
 
 ## 下一步去哪看？
 
-- 想看每一步界面长什么样？打开 [图文实操：Codex 与 DeepSeek Harness](/zh-CN/plugins/coding-agent-guide)。
+- 想看各工具官方上手教程和 N.E.K.O 真实界面截图？打开 [各 Agent 上手教程](/zh-CN/plugins/coding-agent-guide)。
 - 想自己看懂生成的两个核心文件？阅读 [插件开发入门文档](/zh-CN/plugins/plugin-development) 或手动版 [快速开始](/zh-CN/plugins/quick-start)。
 - 插件做好了想分享给所有玩家？前往 [把插件发布到 N.E.K.O 插件市场](/zh-CN/plugins/cli)。

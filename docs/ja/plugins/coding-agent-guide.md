@@ -1,15 +1,13 @@
 ---
-title: 画面付きガイド：Codex と DeepSeek Harness
-description: OpenAI Codex と DeepSeek Harness を使い、空の作業フォルダから最初の N.E.K.O プラグインを作成・検証・起動するまでの手順を画面付きでわかりやすく解説します。
+title: エージェント別チュートリアル
+description: Codex・DeepSeek Harness・Claude Code・Cursor・Trae・Qoder・CodeBuddy・VS Code など、対応する Coding Agent の公式入門チュートリアルを一覧化し、N.E.K.O プラグイン管理の実画面スクリーンショットも掲載しています。
 ---
 
-# 画面付きガイド：Codex と DeepSeek Harness
+# エージェント別チュートリアル
 
-このページでは代表的な 2 つの Coding Agent — **OpenAI Codex**（公式デスクトップアプリ）と **DeepSeek Harness**（公式デスクトップアプリ）を使い、空のフォルダから**「水分補給リマインダー（`water_reminder`）」**プラグインを完成させるまでの流れを順番に紹介します。
+下の一覧から使いたい Coding Agent を選び、公式チュートリアルの手順でインストール・ログインして空のフォルダを開きます。そのあとは [Coding Agent でゼロからプラグインを作る](/ja/plugins/coding-agents) に戻って Setup Prompt を AI に貼り付けるだけです。
 
-> Claude Code・Cursor・Trae・Qoder・CodeBuddy・VS Code をお使いの場合は、[Coding Agent でゼロからプラグインを作る](/ja/plugins/coding-agents) から各ツールの導入ステップと Setup Prompt をコピーしてください。貼り付けた後の進め方は同じです。
-
-<CodingAgentWalkthrough />
+<CodingAgentTutorials />
 
 ## 動いたあとに機能を追加するには？
 

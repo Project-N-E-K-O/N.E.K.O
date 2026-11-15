@@ -63,7 +63,7 @@ N.E.K.O. 插件系统是一个基于 Python 的插件框架，建立在**进程�
 ## 快速链接
 
 - [用 Coding Agent 零基础做插件](./coding-agents) — 按工具选择步骤，一键复制 `neko-plugin` CLI 专用 Setup Prompt
-- [图文实操：Codex 与 DeepSeek Harness](./coding-agent-guide) — 从新建空文件夹到插件跑起来的分步截图演示
+- [各 Agent 上手教程](./coding-agent-guide) — 每个工具官方入门教程汇总，附 N.E.K.O 真实界面截图
 - [插件开发入门文档](./plugin-development) — 先了解插件由什么组成，以及怎样完成第一个插件
 - [快速开始](./quick-start) — 按步骤创建你的第一个插件
 - [发布插件](/zh-CN/plugins/cli) — 上传 GitHub、提交审核并持续发布新版本

@@ -152,13 +152,6 @@ onBeforeUnmount(() => {
           </div>
           <div class="NekoAgentOnboarding-cardActions">
             <a
-              v-if="activeAgent.walkthroughAgent"
-              class="NekoAgentOnboarding-walkthroughPill"
-              :href="`${guideBaseUrl}?agent=${activeAgent.walkthroughAgent}`"
-            >
-              {{ copy.walkthroughBadge }} →
-            </a>
-            <a
               class="NekoAgentOnboarding-siteBtn"
               :href="resolveAgentUrl(activeAgent.websiteUrl)"
               :target="isExternalUrl(activeAgent.websiteUrl) ? '_blank' : undefined"
@@ -228,6 +221,27 @@ onBeforeUnmount(() => {
           </li>
         </ol>
 
+        <div
+          v-if="activeAgent.tutorials?.length"
+          class="NekoAgentOnboarding-tutorials"
+        >
+          <div class="NekoAgentOnboarding-tutorialsLabel">{{ copy.tutorialsHeading }}</div>
+          <div class="NekoAgentOnboarding-tutorialsRow">
+            <a
+              v-for="tutorial in activeAgent.tutorials"
+              :key="tutorial.url"
+              class="NekoAgentOnboarding-tutorialBtn"
+              :href="tutorial.url"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <span aria-hidden="true">{{ tutorial.kind === 'video' ? '▶' : '📄' }}</span>
+              <span>{{ tutorial.label }}</span>
+              <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </div>
+
         <div class="NekoAgentOnboarding-fallbacks">
           <details
             v-for="(fb, fIdx) in copy.fallbacks"
@@ -255,15 +269,12 @@ onBeforeUnmount(() => {
 
     <div class="NekoAgentOnboarding-walkthroughBanner">
       <div class="NekoAgentOnboarding-walkthroughCopy">
-        <div class="NekoAgentOnboarding-walkthroughTitle">{{ copy.walkthroughCtaTitle }}</div>
-        <div class="NekoAgentOnboarding-walkthroughDesc">{{ copy.walkthroughCtaDesc }}</div>
+        <div class="NekoAgentOnboarding-walkthroughTitle">{{ copy.tutorialsCtaTitle }}</div>
+        <div class="NekoAgentOnboarding-walkthroughDesc">{{ copy.tutorialsCtaDesc }}</div>
       </div>
       <div class="NekoAgentOnboarding-walkthroughLinks">
-        <a class="NekoAgentOnboarding-ctaLink is-primary" :href="`${guideBaseUrl}?agent=codex`">
-          {{ copy.walkthroughCtaCodex }} →
-        </a>
-        <a class="NekoAgentOnboarding-ctaLink" :href="`${guideBaseUrl}?agent=dsh`">
-          {{ copy.walkthroughCtaDsh }} →
+        <a class="NekoAgentOnboarding-ctaLink is-primary" :href="guideBaseUrl">
+          {{ copy.tutorialsCtaLabel }} →
         </a>
       </div>
     </div>
@@ -438,22 +449,42 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.NekoAgentOnboarding-walkthroughPill {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 12px;
-  border: 1px solid var(--vp-c-brand-1);
-  border-radius: 999px;
-  background: var(--vp-c-brand-soft);
-  color: var(--vp-c-brand-1) !important;
-  font-size: 12.5px;
-  font-weight: 600;
-  text-decoration: none !important;
+.NekoAgentOnboarding-tutorials {
+  margin-top: 16px;
 }
 
-.NekoAgentOnboarding-walkthroughPill:hover {
-  background: var(--vp-c-brand-1);
-  color: #fff !important;
+.NekoAgentOnboarding-tutorialsLabel {
+  margin-bottom: 8px;
+  color: var(--vp-c-text-1);
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.NekoAgentOnboarding-tutorialsRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.NekoAgentOnboarding-tutorialBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 999px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1) !important;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-decoration: none !important;
+  transition: border-color 0.18s ease, color 0.18s ease;
+}
+
+.NekoAgentOnboarding-tutorialBtn:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1) !important;
 }
 
 .NekoAgentOnboarding-siteBtn {

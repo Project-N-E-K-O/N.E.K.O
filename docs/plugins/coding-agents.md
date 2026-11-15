@@ -16,10 +16,10 @@ When you paste the Setup Prompt, your agent follows the same workflow as experie
 1. **Environment & repository check** — verifies `git` and `uv` (installing them itself when missing), clones or reuses `Project-N-E-K-O/N.E.K.O`, syncs dependencies, and confirms the `neko-plugin` tooling is ready.
 2. **Official scaffolding** — uses the official `neko-plugin` scaffold to create `plugin/plugins/<plugin_id>/` with `plugin.toml`, `config.example.toml`, `__init__.py`, tests, and GitHub workflows.
 3. **SDK-compliant implementation** — reads the local documentation under `docs/plugins/` and implements async `@plugin_entry` or `@llm_tool` handlers on `plugin.sdk.plugin`.
-4. **Automated verification & packaging** — runs the plugin checks, lint, and tests until zero errors remain, and builds a `.neko-plugin` archive whenever you want to import it into Plugin Center.
+4. **Automated verification & packaging** — runs the plugin checks, lint, and tests until zero errors remain, and builds a `.neko-plugin` archive whenever you want to import it on the Plugins page.
 
 ## Next steps
 
-- Want to see every screen in detail? Open the [Codex & DeepSeek Harness Walkthroughs](/plugins/coding-agent-guide).
+- Want your agent's official getting-started guide plus real N.E.K.O screenshots? Open [Agent Tutorials](/plugins/coding-agent-guide).
 - Curious what the generated files mean? Read [Getting Started with Plugin Development](/plugins/plugin-development) or the manual [CLI Quick Start](/plugins/quick-start).
 - Ready to share your plugin with everyone? Follow [Publish a Plugin to the Market](/plugins/cli).
