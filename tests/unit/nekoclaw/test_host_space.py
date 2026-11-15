@@ -2150,8 +2150,9 @@ async def test_a_text_that_replaced_an_entrys_in_an_editor_is_not_added_when_it_
     # Saved from an editor: the text is another, the marks in the front matter are the old ones.
     path.write_text(path.read_text(encoding="utf-8").replace("It uses Flask.", "It uses FastAPI now."), encoding="utf-8")
 
-    same = await space.submit(_commission(id="c-2"), _lesson("Stack", "It uses FastAPI now."))
-    # Something else is added, and then the text from the editor is filed once more, by the same commission too.
+    # Filed by the commission the entry is from already: nothing of the entry changes but the mark of the text.
+    same = await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses FastAPI now."))
+    # Something else is added, and then the text from the editor is filed once more.
     added = await space.submit(_commission(id="c-3"), _lesson("Stack", "And SQLite."))
     again = await space.submit(_commission(id="c-2"), _lesson("Stack", "It uses FastAPI now."))
 
