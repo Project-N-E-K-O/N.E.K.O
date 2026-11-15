@@ -2484,3 +2484,65 @@ async def test_archiving_does_not_make_an_empty_project_of_one_that_is_set_aside
     # No directory of its name with nothing in it but a record.
     assert not source.exists()
     assert (root / "projects" / ".removing-Budget app" / "memory" / "stack.md").read_text(encoding="utf-8") == "changed"
+
+
+# ---------------------------------------------------------------------------
+# The twenty-fifth review round
+# ---------------------------------------------------------------------------
+
+
+def test_a_directory_that_cannot_be_looked_through_after_it_was_copied_stays_where_it_was(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from nekoclaw.host.space import _files_of, _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "AGENTS.md").write_text("Rules.", encoding="utf-8")
+    target.parent.mkdir()
+    rename = os.replace
+    looks: list[Path] = []
+
+    def other_volume(first, second):
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        return rename(first, second)
+
+    def cannot_look_the_second_time(root):
+        looks.append(Path(root))
+        if len(looks) == 2:
+            # A directory in it cannot be listed for a moment: maybe the one the user just saved a first note into.
+            raise PermissionError(13, "the directory cannot be listed")
+        return _files_of(root)
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    monkeypatch.setattr("nekoclaw.host.space._files_of", cannot_look_the_second_time)
+
+    with pytest.raises(OSError, match="was changed while it was copied"):
+        _move(source, target)
+
+    assert len(looks) == 2
+    assert (source / "AGENTS.md").read_text(encoding="utf-8") == "Rules."
+    assert sorted(item.name for item in target.parent.iterdir()) == []
+
+
+def test_what_a_directory_holds_is_not_told_when_part_of_it_cannot_be_looked_at(tmp_path, monkeypatch):
+    import os
+
+    from nekoclaw.host.space import _files_of
+
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    assert [name for name, _written, _size in _files_of(tmp_path)] == ["memory/stack.md"]
+    scan = os.scandir
+
+    def cannot_list(path):
+        if Path(path).name == "memory":
+            raise PermissionError(13, "the directory cannot be listed")
+        return scan(path)
+
+    monkeypatch.setattr(os, "scandir", cannot_list)
+
+    with pytest.raises(OSError):
+        _files_of(tmp_path)

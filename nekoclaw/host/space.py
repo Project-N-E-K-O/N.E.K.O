@@ -1499,13 +1499,21 @@ class TaskAgentSpace:
     # -- archiving --------------------------------------------------------
 
     def _archive(
-        self, name: str, summary: str, description: str, unless_touched_since: float | None = None
+        self,
+        name: str,
+        summary: str,
+        description: str,
+        unless_touched_since: float | None = None,
+        commissions: int | None = None,
     ) -> Project | None:
         """Move a project to the archive, with its summary. Returns it, or None when it was not moved.
 
         With ``unless_touched_since``, a project a commission was filed under
-        after that time stays where it is. Filing and this run under the same
-        lock, so the look and the move are one step.
+        after that time stays where it is; with ``commissions``, so does one
+        that has another number of commissions by now (one that ended
+        earlier can be filed under it late, and leaves the time as it was).
+        Filing and this run under the same lock, so the look and the move
+        are one step.
 
         A project that cannot be moved (on Windows, while a file in it is
         held open) stays where it is. A summary that came with it is kept
@@ -1525,6 +1533,8 @@ class TaskAgentSpace:
             # Moved all the same when the caller says so; its file goes along as it is.
             project, readable = self._project_from(source), False
         if unless_touched_since is not None and (not readable or project.last_commission_at > unless_touched_since):
+            return None
+        if commissions is not None and (not readable or project.commissions != commissions):
             return None
         if not summary.strip():
             kept = project.kept_summary()
@@ -1611,11 +1621,14 @@ class TaskAgentSpace:
         summary: str = "",
         description: str = "",
         unless_touched_since: float | None = None,
+        commissions: int | None = None,
     ) -> Project | None:
         """Archive a project; see ``_archive``."""
         if name == DEFAULT_PROJECT:
             return None
-        return await self._write(lambda: self._archive(name, summary, description, unless_touched_since))
+        return await self._write(
+            lambda: self._archive(name, summary, description, unless_touched_since, commissions)
+        )
 
     async def note_archive_attempt(self, name: str) -> int:
         """Count a summary that could not be written for a project; returns the count."""
@@ -1962,15 +1975,21 @@ def _bring_up_to(copy: Path, original: Path) -> None:
 
 
 def _files_of(root: Path) -> list[tuple[str, int, int]]:
-    """Return what a directory holds: every file's path in it, when it was last written and its size."""
+    """Return what a directory holds: every file's path in it, when it was last written and its size.
+
+    Raises OSError when a directory in it cannot be listed or a file
+    cannot be looked at: left out, two such lists could be the same though
+    the directories are not.
+    """
+
+    def fail(error: OSError) -> None:
+        raise error
+
     found: list[tuple[str, int, int]] = []
-    for directory, _directories, names in os.walk(root):
+    for directory, _directories, names in os.walk(root, onerror=fail):
         for name in names:
             path = Path(directory) / name
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
+            stat = path.stat()
             found.append((path.relative_to(root).as_posix(), stat.st_mtime_ns, stat.st_size))
     return sorted(found)
 
@@ -2028,7 +2047,12 @@ def _copy_across(source: Path, target: Path) -> None:
     # Out of sight, nothing is saved into it any more. A file the user saved
     # from an editor while it was copied is not in the copy: the directory
     # goes back to where it was, and the copy is taken back.
-    if _files_of(aside) != before:
+    try:
+        after: list[tuple[str, int, int]] | None = _files_of(aside)
+    except OSError:
+        # Not known to be what was copied: taken for changed.
+        after = None
+    if after != before:
         try:
             os.replace(aside, source)
         except OSError:

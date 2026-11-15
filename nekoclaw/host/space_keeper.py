@@ -801,7 +801,11 @@ class SpaceKeeper:
                 continue
             try:
                 archived = await self._space.archive_project(
-                    project.name, summary=summary, description=line, unless_touched_since=project.last_commission_at
+                    project.name,
+                    summary=summary,
+                    description=line,
+                    unless_touched_since=project.last_commission_at,
+                    commissions=project.commissions,
                 )
             except (SpaceError, OSError) as exc:
                 # This project's trouble is not the next one's.

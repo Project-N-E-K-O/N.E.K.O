@@ -1973,3 +1973,32 @@ async def test_a_round_that_could_not_write_its_state_is_not_counted_as_done(wor
     # Not six hours later: the next time it is asked.
     assert await world.keeper.tidy() is True
     assert (await world.space.read_state())["upkeep_at"] == world.clock.now
+
+
+async def test_a_project_a_commission_is_filed_under_late_while_its_summary_is_written_is_not_archived(world):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    await world.space.touch_project("Budget app")
+    last = (await world.space.get_project("Budget app")).last_commission_at
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+    async def meanwhile() -> dict[str, Any]:
+        # A review, late, files a commission under it that ended before the last one: the time stays as it was.
+        project = await world.space.open_project("Budget app", at=last - 3600)
+        assert (project.last_commission_at, project.commissions) == (last, 2)
+        return {"summary": "A project, before that commission.", "line": "a project"}
+
+    world.llm.answers[TIER_ARCHIVE] = [meanwhile, {"summary": "A project, with it.", "line": "a project"}]
+
+    await world.keeper.tidy(force=True)
+
+    # Not archived with a summary that was written before the commission was counted.
+    assert [(item.name, item.status) for item in await world.space.list_projects()] == [("Budget app", "active")]
+    assert (await world.space.get_project("Budget app")).kept_summary() is None
+
+    await world.keeper.tidy(force=True)
+
+    (archived,) = await world.space.list_projects()
+    home = world.root / "archive" / archived.archive_year / "Budget app"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "A project, with it.\n"
+    assert world.llm.count(TIER_ARCHIVE) == 2
