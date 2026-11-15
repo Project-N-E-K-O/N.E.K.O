@@ -680,7 +680,10 @@ class CapabilityGateway:
         # The first call only looks (it opens a page, it takes a screenshot)
         # and is carried out like any call, the user asked first and the
         # group occupied. The group is put in front of what it returns, as
-        # a block of its own: each is capped by itself.
+        # a block of its own: each is capped by itself, and the runtime
+        # keeps them apart (``GatewayResult.parts``), so that when it cuts
+        # old results down the group stays whole next to a long page.
+
         result = await self._call_capability(commission, capability, arguments)
         # Only now, with the answer on its way: a call that was stopped
         # handed nothing over.

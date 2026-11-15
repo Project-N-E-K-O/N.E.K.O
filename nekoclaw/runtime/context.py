@@ -297,9 +297,26 @@ def prune_text(text: str, policy: ContextPolicy) -> str | None:
     )
 
 
-def _with_text(message: ToolResultMessage, text: str) -> ToolResultMessage:
-    images = [block for block in message.content if isinstance(block, ImageContent)]
-    return message.model_copy(update={"content": [TextContent(text=text), *images]})
+def prune_result(message: ToolResultMessage, policy: ContextPolicy) -> ToolResultMessage | None:
+    """Cut the large text blocks of a tool result to head and tail; ``None`` when none is large.
+
+    Block by block. A result can come as several blocks of text (the
+    host's gateway hands a group of tools over in front of what the call
+    that started the group returned), and a block that is small enough
+    stays whole however long the block next to it: cut as one text, such a
+    result would lose the tool definitions in its middle.
+    """
+    changed = False
+    content: list[TextContent | ImageContent] = []
+    for block in message.content:
+        if isinstance(block, TextContent):
+            pruned = prune_text(block.text, policy)
+
+            if pruned is not None:
+                block = block.model_copy(update={"text": pruned})
+                changed = True
+        content.append(block)
+    return message.model_copy(update={"content": content}) if changed else None
 
 
 def prune_rows(rows: Sequence[Row], policy: ContextPolicy, *, include_latest: bool) -> list[Row] | None:
@@ -319,9 +336,9 @@ def prune_rows(rows: Sequence[Row], policy: ContextPolicy, *, include_latest: bo
             isinstance(message, ToolResultMessage)
             and (include_latest or index < last_assistant)
         ):
-            pruned = prune_text(message.text, policy)
+            pruned = prune_result(message, policy)
             if pruned is not None:
-                out.append(Row(row.entry_id, row.kind, _with_text(message, pruned)))
+                out.append(Row(row.entry_id, row.kind, pruned))
                 changed = True
                 continue
         out.append(row)
@@ -640,10 +657,9 @@ def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> 
     for row in region:
         message = row.message
         if isinstance(message, ToolResultMessage):
-            pruned = prune_text(message.text, policy)
-            if pruned is not None:
-                message = _with_text(message, pruned)
+            message = prune_result(message, policy) or message
         messages.append(message)
+
     sizes = [estimate_tokens(message, policy.image_tokens) for message in messages]
     start = 0
     total = sum(sizes)

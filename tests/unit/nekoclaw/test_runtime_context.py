@@ -177,6 +177,63 @@ def test_pruning_cuts_old_results_and_spares_the_newest_batch() -> None:
     assert forced is not None and texts.PRUNED_MIDDLE_MARKER in forced[6].message.text
 
 
+def _old_result(*content: TextContent | ImageContent) -> list[Row]:
+
+    """A conversation in which a tool result of these blocks is no longer the newest."""
+    result = ToolResultMessage(tool_call_id="call-1", tool_name="capability_call", content=list(content))
+    opening = AssistantMessage(content=[ToolCall(id="call-1", name="capability_call", arguments={})])
+    return _rows([UserMessage(content="open it"), opening, result, *_call_turn(2, "small")])
+
+
+def test_pruning_cuts_a_result_block_by_block_and_a_small_block_stays_whole() -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    # What the host's gateway sends with the call that starts a group of
+    # tools: the group, then what the call returned, then its picture.
+    group = "GROUP-START " + _words(400, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(6_000) + " PAGE-END"
+    shot = ImageContent(data="QUJD", mime_type="image/jpeg")
+    assert count_tokens(group) < policy.prune_threshold_tokens < count_tokens(page)
+    rows = _old_result(TextContent(text=group), TextContent(text=page), shot)
+
+    pruned = prune_rows(rows, policy, include_latest=False)
+
+    assert pruned is not None
+    first, second, third = pruned[2].message.content
+    # The small block to the letter, although the result as one text is far
+    # over the size above which old results are cut.
+    assert first == TextContent(text=group)
+    assert second.text.startswith("PAGE-START") and second.text.endswith("PAGE-END")
+    assert texts.PRUNED_MIDDLE_MARKER in second.text
+    assert count_tokens(second.text) <= policy.prune_threshold_tokens
+    # The picture where it was.
+    assert third == shot
+    assert pruned[2].entry_id == "e2" and pruned[2].message.tool_call_id == "call-1"
+    assert prune_rows(pruned, policy, include_latest=False) is None
+
+
+def test_pruning_cuts_every_large_block_and_leaves_a_result_of_small_ones_alone() -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    small = _words(400, "tool")
+    large = "START " + _words(6_000) + " END"
+    assert count_tokens(small) < policy.prune_threshold_tokens < count_tokens(small * 3)
+
+    both = prune_rows(
+        _old_result(TextContent(text=large), TextContent(text=large)), policy, include_latest=False
+    )
+    untouched = prune_rows(
+        _old_result(TextContent(text=small), TextContent(text=small), TextContent(text=small)),
+        policy,
+        include_latest=False,
+    )
+
+    assert both is not None
+    for block in both[2].message.content:
+        assert block.text.startswith("START") and block.text.endswith("END")
+        assert texts.PRUNED_MIDDLE_MARKER in block.text
+    # No block is large by itself: nothing to cut, whatever they come to together.
+    assert untouched is None
+
+
 def test_only_the_newest_images_of_a_tool_stay_in_context() -> None:
     def shot(index: int) -> ToolResultMessage:
         return ToolResultMessage(

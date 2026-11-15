@@ -20,13 +20,14 @@ These tests open a loopback socket, so they run in the serial shard.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
 import pytest
 
 from config.prompts import prompts_nekoclaw as texts
-from config.prompts.prompts_nekoclaw_builtin import BUILTIN_GROUP_GUIDANCE
+from config.prompts.prompts_nekoclaw_builtin import BROWSER_TOOL_NAMES, BROWSER_TOOLS, BUILTIN_GROUP_GUIDANCE
 from nekoclaw.host.capabilities import (
     BUILTIN_GROUP_BROWSER,
     BUILTIN_GROUP_KEYBOARD_MOUSE,
@@ -253,7 +254,80 @@ async def test_runtime_client_gets_the_pictures_of_a_builtin_tool_only_if_its_mo
         assert result.images == ()
 
 
+class ShippedBrowser:
+    """The browser tools as they are shipped; every call answers with the page it was given."""
+
+    def __init__(self, page: str) -> None:
+        self.page = page
+
+    def available(self) -> list[Any]:
+        return [builtin_tool(BUILTIN_GROUP_BROWSER, definition) for definition in BROWSER_TOOLS]
+
+    async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+        return BuiltinOutcome(True, self.page)
+
+    async def released(self, group: str, commission_id: str) -> None:
+        return None
+
+
+async def test_the_tools_handed_over_with_a_long_first_page_are_whole_after_the_runtime_cut_old_results(
+    server, hosts, tmp_path
+):
+    from nekoclaw.runtime.context import ContextPolicy, Row, kind_of, prune_rows
+    from nekoclaw.runtime.loop.messages import AssistantMessage, TextContent, ToolCall, ToolResultMessage, UserMessage
+    from nekoclaw.runtime.protocol import ModelConfig
+    from nekoclaw.runtime.tools.gateway import build_gateway_tools
+    from utils.tokenize import count_tokens
+
+    # A page snapshot longer than the gateway lets a result be.
+    page = "PAGE-START " + " ".join(f'uid=1_{n} link "item {n}"' for n in range(1500))
+    host = make_host(tmp_path, server, builtins=ShippedBrowser(page))
+    hosts.append(host)
+    host.permissions.set_asker(_allow_once)
+    url = await host.gateway.start()
+    commission = await _working_commission(host)
+    client = GatewayClient(url, host.gateway.issue(commission.id, supports_images=True))
+    tools = {tool.name: tool for tool in build_gateway_tools(client, await client.connect())}
+    opened = {"name": "browser_navigate_page", "arguments": {"url": "https://example.com"}}
+
+    # The call the line about the browser names, made the way the runtime's own tool makes it.
+    outcome = await tools["capability_call"].execute("call-1", opened)
+
+    # It comes back as two blocks: the group, and what the call returned.
+    group = (await client.call("capability_search", {"group": "browser"})).text
+    handed_over, returned = outcome.content
+    assert handed_over == TextContent(text=f"{group}\n\nThis first call returned:\n")
+    assert returned.text.startswith("PAGE-START")
+    # Together they are far over what the runtime leaves of an old result,
+    # the group by itself is under it.
+    model = ModelConfig(model="any", api_key="key")
+    policy = ContextPolicy(window=model.context_window, max_output=model.max_output_tokens)
+    assert count_tokens(handed_over.text) < policy.prune_threshold_tokens < count_tokens(returned.text)
+
+    # The conversation has gone on, and old results are cut down.
+    messages = [
+        UserMessage(content="open the page"),
+        AssistantMessage(content=[ToolCall(id="call-1", name="capability_call", arguments=opened)]),
+        ToolResultMessage(tool_call_id="call-1", tool_name="capability_call", content=outcome.content),
+        AssistantMessage(content=[TextContent(text="The page is open.")]),
+    ]
+    rows = [Row(f"e{index}", kind_of(message), message) for index, message in enumerate(messages)]
+    pruned = prune_rows(rows, policy, include_latest=False)
+
+    assert pruned is not None
+    kept, cut = pruned[2].message.content
+    # How the group is used and every definition are there to the letter;
+    # only the page lost its middle.
+    assert kept == handed_over
+    definitions = kept.text.split("\n\n")[2]
+    assert [json.loads(line)["name"] for line in definitions.splitlines()] == list(BROWSER_TOOL_NAMES)
+    assert BUILTIN_GROUP_GUIDANCE["browser"] in kept.text
+    assert cut.text.startswith("PAGE-START") and texts.PRUNED_MIDDLE_MARKER in cut.text
+    assert count_tokens(cut.text) <= policy.prune_threshold_tokens
+
+
 async def test_revoked_token_stops_working(server, hosts, tmp_path):
+
     _weather(server)
     host = make_host(tmp_path, server)
     hosts.append(host)

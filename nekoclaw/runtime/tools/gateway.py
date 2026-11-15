@@ -71,6 +71,12 @@ class GatewayResult:
     # Pictures the tool handed back (screenshots), in the order it gave them.
     images: tuple[ImageContent, ...]
     is_error: bool
+    # The text as the blocks it came in, when it came in more than one;
+    # ``text`` is these joined by line breaks. Kept apart because the runtime
+    # cuts an old result block by block: what has to stay whole (a group of
+    # tools handed over in front of what a call returned) is a block of its
+    # own, however long the block next to it.
+    parts: tuple[str, ...] = ()
 
 
 class GatewayClient:
@@ -180,7 +186,10 @@ class GatewayClient:
         if dropped:
             # Said rather than silently lost: the model may be waiting for a picture.
             parts.append(f"[{dropped} picture(s) of this result could not be passed on.]")
-        return GatewayResult("\n".join(part for part in parts if part), tuple(images), bool(result.get("isError")))
+        said = tuple(part for part in parts if part)
+        return GatewayResult(
+            "\n".join(said), tuple(images), bool(result.get("isError")), said if len(said) > 1 else ()
+        )
 
     async def aclose(self) -> None:
         """Nothing to release: every request uses a connection of its own."""
@@ -249,11 +258,18 @@ def _forwarder(client: GatewayClient, name: str) -> Any:
         if result.is_error:
             raise ToolError(result.text or f"{name} failed")
         text = result.text or "(no output)"
-        if not result.images:
+        if not result.images and not result.parts:
             return text
+        if result.parts:
+            # One block for each, reading as ``text`` does when put together.
+            blocks = [TextContent(text=f"{part}\n") for part in result.parts[:-1]]
+            blocks.append(TextContent(text=result.parts[-1]))
+        else:
+            blocks = [TextContent(text=text)]
         # The model adapter decides how the pictures travel (or leaves a
         # placeholder for a model that cannot see them).
-        return AgentToolResult(content=[TextContent(text=text), *result.images])
+        return AgentToolResult(content=[*blocks, *result.images])
+
 
     return forward
 
