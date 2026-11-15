@@ -48,7 +48,14 @@ from typing import Any, Protocol
 from nekoclaw.host.capabilities import CapabilityRegistry
 from nekoclaw.host.ledger import ACTIVE_STATUSES, Commission, Ledger
 from nekoclaw.host.paths import TRANSCRIPT_NAME, HostPaths
-from nekoclaw.host.permissions import CHOICES, PermissionAsk, PermissionGate
+from nekoclaw.host.permissions import (
+    CHOICES,
+    DENIED_BY_SETTINGS,
+    SPACE_COMMAND,
+    PermissionAsk,
+    PermissionDecision,
+    PermissionGate,
+)
 from nekoclaw.host.plugin_runs import PluginRunner
 from nekoclaw.host.preferences import PreferenceStore, feedback_text
 from nekoclaw.host.reports import CHANNEL_TASK_AGENT, Reporter
@@ -198,6 +205,14 @@ def _has_transcript(session_dir: Any) -> bool:
     """Whether something was ever said in a session directory. Blocking."""
     try:
         return (session_dir / TRANSCRIPT_NAME).stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _has_files(session_dir: Any) -> bool:
+    """Whether a session directory holds anything but a transcript: a working directory, say. Blocking."""
+    try:
+        return any(item.name != TRANSCRIPT_NAME for item in session_dir.iterdir())
     except OSError:
         return False
 
@@ -1592,16 +1607,22 @@ class TaskAgentManager:
             if (isinstance(command, str) and await self._space.named_in(command)) or (
                 isinstance(cwd, str) and cwd and await self._space.contains(cwd)
             ):
-                # What a shell command does is not looked into, so one that
-                # names the space's directory, or runs inside it, is refused
-                # whole, whatever the settings allow: an approval of
-                # commands must not be a way to write past the host. A
-                # command that puts the name together itself (a variable,
-                # a wildcard) is not seen here; that is left to whoever
-                # approves the command. There is no sandbox.
-                from config.prompts.prompts_nekoclaw_space import SPACE_COMMAND_REFUSED
-
-                return {"allow": False, "reason": SPACE_COMMAND_REFUSED}
+                # What a shell command does is not looked into. One that
+                # points at the directory of the space, or runs inside it,
+                # may change what task agents keep for good, past the host.
+                # The user is asked about every such command, and told that
+                # it is one: an approval of commands given before, for good
+                # or for the session, does not cover it, and nothing is kept
+                # of the answer. Commands the settings forbid stay forbidden.
+                # A command that reaches the space another way (a relative
+                # path, a variable) is not seen here; there is no sandbox.
+                if await self._permissions.forbidden("run_command"):
+                    return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
+                decision = await self._permissions.ask_each_time(session_id, SPACE_COMMAND, detail=detail)
+                if decision.allow and await self._permissions.forbidden("run_command"):
+                    # Forbidden while the question was open.
+                    return PermissionDecision(False, DENIED_BY_SETTINGS).to_json()
+                return decision.to_json()
         decision = await self._permissions.check(session_id, category, detail=detail)
         return decision.to_json()
 
@@ -1799,6 +1820,12 @@ class TaskAgentManager:
         if recorded is None:
             return current
         if not _has_transcript(recorded) and _has_transcript(current):
+            return current
+        if not recorded.exists() and _has_files(current):
+            # Moved by hand as above, and what was said there has been
+            # removed since, being old (``SpaceKeeper``): the session is
+            # still where its working directory is, not at the place on
+            # record, which is gone.
             return current
         return recorded
 

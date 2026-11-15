@@ -173,6 +173,12 @@ DEFERRED_COMMISSION_SECONDS = 3600.0
 
 # ---------------------------------------------------------------------------
 # Task agent space (design section 12.1; ``nekoclaw/host/space.py``)
+#
+# Everything about it that is likely to be tuned is here: what is added to a
+# task agent's instructions and how much, whether commissions are reviewed
+# and which are skipped, which model does it, how its input is cut, and how
+# much one commission may add. The texts are in
+# ``config/prompts/prompts_nekoclaw_space.py``.
 # ---------------------------------------------------------------------------
 
 SPACE_BRIEF_GLOBAL_RULES_MAX_TOKENS = 250
@@ -200,7 +206,15 @@ SPACE_ENTRY_DESCRIPTION_MAX_TOKENS = 40
 """Caps on an entry's title and on its line in an index."""
 
 SPACE_ENTRY_CONTENT_MAX_TOKENS = 600
-"""Cap on what one ``note_lesson`` call, or one review, adds to an entry."""
+"""Cap on what one ``note_lesson`` call adds to an entry."""
+
+SPACE_LESSONS_PER_COMMISSION = 3
+"""Most notes one commission may add with ``note_lesson``, the ones of the
+task agents it started counted with its own. What a task agent files goes
+into an index as it is, and the newest lines of an index are what the next
+task agents are shown: without a limit one commission that was led astray by
+a page it read could fill that window with its own lines. Three lines are
+about two thirds of it."""
 
 SPACE_SAME_TOPIC_SIMILARITY = 0.6
 """Token-set similarity of two titles at or above which a new entry is taken
@@ -236,14 +250,32 @@ SPACE_ARCHIVE_MAX_ATTEMPTS = 3
 """How many times a summary is asked for before an idle project is archived
 without one."""
 
+TASK_AGENT_REVIEW_ENABLED = True
+"""Whether finished commissions are reviewed at all. With False no review is
+written and no entry is made from one, so that model call is never made;
+what task agents file themselves is still kept, and idle projects are still
+archived."""
+
+TASK_AGENT_REVIEW_MODEL_SLOT = "summary"
+"""Which of the user's configured models writes reviews: ``summary`` (the
+cheap one) or ``emotion``."""
+
+SPACE_ARCHIVE_MODEL_SLOT = "summary"
+"""Which of the user's configured models summarises a project that is
+archived; as above."""
+
 TASK_AGENT_REVIEW_DELAY_SECONDS = 2.0
 """How long after a commission ended its review is started: the report to her
 goes out first, and the last events of the session are in the ledger."""
 
 TASK_AGENT_REVIEW_MIN_TOOL_CALLS = 3
-"""A commission whose task agent made fewer tool calls than this (reports,
-lessons and the todo list not counted) is not reviewed: there is too little
-to learn from, and a review costs one model call."""
+"""A commission whose task agents made fewer tool calls than this (the ones
+in ``TASK_AGENT_REVIEW_UNCOUNTED_TOOLS`` not counted) is not reviewed: there
+is too little to learn from, and a review costs one model call. The calls of
+the task agents it started count with its own."""
+
+TASK_AGENT_REVIEW_UNCOUNTED_TOOLS = ("report", "note_lesson", "todo_write")
+"""Tool calls that say nothing about how much work a commission was."""
 
 TASK_AGENT_REVIEW_FAILED_AFTER_SECONDS = 24 * 3600.0
 """How long a failed commission is left alone before it is reviewed. A failed
@@ -254,7 +286,7 @@ TASK_AGENT_REVIEW_INPUT_MAX_TOKENS = 4000
 """Cap on everything sent to the model for one review, the instructions
 included."""
 
-TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 1700
+TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS = 1640
 """Cap on the account of what the task agent did within that input. Of a
 longer one the beginning and the end are kept. With every other part at its
 own cap the whole still fits in ``TASK_AGENT_REVIEW_INPUT_MAX_TOKENS``, so
@@ -270,23 +302,72 @@ the review, so it adds to an existing entry instead of repeating it."""
 TASK_AGENT_REVIEW_PROJECTS_MAX_TOKENS = 200
 """Cap on the list of projects shown to the review."""
 
+TASK_AGENT_REVIEW_FILED_MAX_TOKENS = 120
+"""Cap on the list of what the commission filed itself, shown to the review
+so that it does not file the same again."""
+
 TASK_AGENT_REVIEW_OUTPUT_MAX_TOKENS = 800
 """``max_completion_tokens`` of a review: the review itself, up to
-``TASK_AGENT_REVIEW_MAX_ENTRIES`` entries and the project."""
+``TASK_AGENT_REVIEW_MAX_ENTRIES`` entries and the project. What may be kept
+of an answer (the caps below, and those of a title, a description and a
+project) fits into it with the JSON around it; a test keeps it so. An
+answer that is cut off all the same is not thrown away whole: the review
+and the entries that are complete are kept."""
 
-TASK_AGENT_REVIEW_TEXT_MAX_TOKENS = 300
-"""Cap on the review as it is kept."""
+TASK_AGENT_REVIEW_TEXT_MAX_TOKENS = 250
+"""Cap on the review as it is kept. Its prompt asks for 150 words at most,
+which is within it; a longer one is ended where a sentence ends."""
 
-TASK_AGENT_REVIEW_MAX_ENTRIES = 3
-"""Most entries one review may file."""
+TASK_AGENT_REVIEW_MAX_ENTRIES = 2
+"""Most entries one review may file. Together with the cap on the text of
+one, this is what the cap on the answer leaves room for: three entries
+would have to be a sentence or two each."""
+
+TASK_AGENT_REVIEW_ENTRIES_WHEN_STOPPED = 0
+"""Most entries the review of a commission the user stopped may file. A
+commission is often stopped because it went wrong, and what it did then is
+not what later commissions should learn from; its review is still written."""
+
+TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS = 130
+"""Cap on the text of one entry a review files. Its prompt asks for two or
+three sentences of 80 words at most: some 90 tokens of English or Chinese,
+some 110 of Japanese, some 130 of Russian. A longer one is ended where a
+sentence ends, since the entry stays in the space and is read by later task
+agents."""
 
 TASK_AGENT_REVIEWS_PER_UPKEEP = 3
-"""Most late reviews one round of tidying makes (failed commissions nobody
-took up again, and reviews a shutdown cut off)."""
+"""Most late reviews one round of tidying has a model write (failed
+commissions nobody took up again, and reviews a shutdown cut off). One whose
+commission was taken up again while the model wrote is thrown away and not
+counted, though the model was asked: that is rare, and counting it would
+keep a commission that is due waiting for the next round."""
+
+TASK_AGENT_REVIEWS_LOOKED_AT_PER_UPKEEP = 20
+"""Most commissions one round of tidying looks at for a late review, the
+oldest first. One that is too short to review costs no model call and does
+not use up ``TASK_AGENT_REVIEWS_PER_UPKEEP``."""
 
 SPACE_ARCHIVE_INPUT_MAX_TOKENS = 3000
 """Cap on everything sent to the model for the summary of a project that is
 archived."""
+
+SPACE_ARCHIVE_REVIEWS = 12
+"""How many of a project's reviews, the newest, its summary is written from."""
+
+SPACE_ARCHIVE_REVIEW_MAX_TOKENS = 150
+"""Cap on each of those reviews within that input."""
+
+SPACE_ARCHIVE_REVIEWS_MAX_TOKENS = 1500
+"""Cap on all of them together."""
+
+SPACE_ARCHIVE_INDEX_MAX_TOKENS = 600
+"""Cap on the project's index within that input."""
+
+SPACE_ARCHIVE_SUMMARY_MAX_TOKENS = 400
+"""Cap on the summary as it is kept."""
+
+SPACE_ARCHIVE_MAX_ENTRIES = 2
+"""Most entries the summary of a project may file for every project."""
 
 SPACE_ARCHIVE_OUTPUT_MAX_TOKENS = 600
 """``max_completion_tokens`` of that summary."""

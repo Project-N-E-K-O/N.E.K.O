@@ -38,6 +38,7 @@ class Clock:
 def _commission(**values: Any) -> Any:
     base = {
         "id": "c1",
+        "parent_id": None,
         "project": None,
         "title": "Sort photos",
         "dispatch_text": "sort the photos",
@@ -64,6 +65,15 @@ def root(tmp_path: Path) -> Path:
 @pytest.fixture
 def space(root: Path, clock: Clock) -> TaskAgentSpace:
     return TaskAgentSpace(lambda: SpacePaths(root), clock=clock)
+
+
+async def _waiting_to_write(space: TaskAgentSpace, notes: int) -> None:
+    """Return once so many writes wait for the lock of a space that is held."""
+    for _turn in range(2000):
+        if len(space._lock._waiters or ()) >= notes:
+            return
+        await asyncio.sleep(0.001)
+    raise AssertionError(f"{notes} writes were to wait for the lock of the space")
 
 
 def _lesson(title: str, content: str, category: str = "lesson", scope: str = "project") -> dict[str, Any]:
@@ -293,8 +303,12 @@ async def test_an_index_that_cannot_be_read_is_not_written_over(space, root):
 
     message = await space.submit(_commission(), _lesson("Photo dates", "Use the EXIF date."))
 
-    assert message == "not kept: the files of the task agent space could not be written"
     assert index.read_bytes() == unreadable
+    # The entry is a file by then, and is told as what it is: kept, with no line that lists it.
+    assert (index.parent / "memory" / "photo-dates.md").is_file()
+    assert message == (
+        "kept in project _daily as photo-dates.md; the index could not be read or written, so it may have no line there yet"
+    )
 
 
 async def test_an_entry_that_cannot_be_read_is_not_written_over(space, root):
@@ -1313,21 +1327,46 @@ async def test_a_summary_that_cannot_be_saved_is_kept_in_the_projects_record(spa
         "printf 'x' >> {root}/MEMORY.md",
         "printf 'x' >> {backslashes}\\MEMORY.md",
         'Add-Content "{upper}/memory/a.md" x',
-        "cat /d/Documents/data/nekoclaw/task_agent_space/AGENTS.md",
-        "echo x > nekoclaw/task_agent_space/AGENTS.md",
-        "echo x > nekoclaw\\\\task_agent_space\\\\AGENTS.md",
-        "cd ~/data/NekoClaw/Task_Agent_Space && ls",
-        # First into the directory above, then a path from there.
-        "cd ../../../nekoclaw && printf x > task_agent_space/MEMORY.md",
-        "cd nekoclaw; cd task_agent_space; echo x > AGENTS.md",
-        # Only a mention of the name: refused with the rest.
-        "grep -rn task_agent_space nekoclaw/",
+        # With its backslashes doubled, as inside a quoted string.
+        "type {doubled}\\\\MEMORY.md",
+        # As a shell from the Unix world writes a Windows drive.
+        "cat {unix}/AGENTS.md",
+        "cd {root} && ls",
+        "rm -rf '{root}'",
+        # With steps that lead nowhere.
+        "rm {parent}/./task_agent_space/MEMORY.md",
+        "cat {parent}/././/task_agent_space/AGENTS.md",
+        "type {parent_backslashes}\\.\\task_agent_space\\MEMORY.md",
+        "cat {parent}/elsewhere/../task_agent_space/MEMORY.md",
+        "cat {parent}/a/b/../../task_agent_space/MEMORY.md",
+        # Quotation marks that end in the middle of the path.
+        'cat "{parent}"/task_agent_space/MEMORY.md',
+        "rm '{parent}/old/..'/task_agent_space/MEMORY.md",
+        # A slash on either side of the mark: two of them once the mark is gone.
+        'rm -f "{parent}/"/task_agent_space/MEMORY.md',
+        # A step back from a directory with a space in its name, the path between quotation marks.
+        "rm '{parent}/临时 目录/../task_agent_space/MEMORY.md'",
+        'type "{parent_backslashes}\\old notes\\..\\task_agent_space\\MEMORY.md"',
+        "cat {root}/projects/../MEMORY.md",
+        "rm -rf {root}/projects/..",
+        # As it is written it points into the space, wherever its steps back lead from there.
+        "ls {root}/../elsewhere",
     ],
 )
-async def test_a_command_that_names_the_space_is_seen_however_the_path_is_written(tmp_path, command):
-    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "nekoclaw" / "task_agent_space"))
-    root = (tmp_path / "nekoclaw" / "task_agent_space").as_posix()
-    command = command.format(root=root, backslashes=root.replace("/", "\\"), upper=root.upper())
+async def test_a_command_that_points_at_the_space_is_seen_however_its_path_is_written(tmp_path, command):
+    home = tmp_path / "nekoclaw" / "task_agent_space"
+    space = TaskAgentSpace(lambda: SpacePaths(home))
+    root = home.as_posix()
+    unix = f"/{root[0].lower()}{root[2:]}" if root[1:2] == ":" else root
+    command = command.format(
+        root=root,
+        backslashes=root.replace("/", "\\"),
+        upper=root.upper(),
+        doubled=root.replace("/", "\\\\"),
+        unix=unix,
+        parent=home.parent.as_posix(),
+        parent_backslashes=home.parent.as_posix().replace("/", "\\"),
+    )
 
     assert await space.named_in(command) is True
 
@@ -1338,14 +1377,33 @@ async def test_a_command_that_names_the_space_is_seen_however_the_path_is_writte
         "ls",
         "python -m pytest tests/unit/nekoclaw/test_host_space.py",
         "cat nekoclaw/task_agents/projects/_daily/sessions/1/work/notes.txt",
-        "echo task-agent-space taskagentspace task_agent",
+        # Only the name of the directory, as it occurs in the sources of the application.
+        "grep -rn task_agent_space nekoclaw/",
+        "echo task-agent-space taskagentspace task_agent Task_Agent_Space",
+        # A directory of that name somewhere else.
+        "cat /somewhere/else/nekoclaw/task_agent_space/AGENTS.md",
+        # Known not to be seen: a path relative to where the command runs.
+        "echo x > nekoclaw/task_agent_space/AGENTS.md",
+        # A directory of that name below the home directory, where the space is not.
+        "cd ~/data/NekoClaw/Task_Agent_Space && ls",
+        "cd ../../../nekoclaw && printf x > task_agent_space/MEMORY.md",
         "",
     ],
 )
-async def test_a_command_about_something_else_is_not_taken_for_one_about_the_space(tmp_path, command):
+async def test_a_command_that_does_not_point_at_the_space_is_not_taken_for_one_that_does(tmp_path, command):
     space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "nekoclaw" / "task_agent_space"))
 
     assert await space.named_in(command) is False
+
+
+async def test_the_path_the_space_resolves_to_counts_as_well(tmp_path):
+    home = tmp_path / "nekoclaw" / "task_agent_space"
+    # Configured by a way round; a command may write it either way.
+    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "elsewhere" / ".." / "nekoclaw" / "task_agent_space"))
+
+    assert await space.named_in(f"cat {home.as_posix()}/MEMORY.md") is True
+    assert await space.named_in(f"cat {tmp_path.as_posix()}/elsewhere/../nekoclaw/task_agent_space/MEMORY.md") is True
+    assert await space.named_in(f"cat {tmp_path.as_posix()}/elsewhere/MEMORY.md") is False
 
 
 # ---------------------------------------------------------------------------
@@ -3695,3 +3753,1017 @@ async def test_the_line_of_a_project_archived_with_neither_a_summary_nor_an_inde
     assert index.read_text(encoding="utf-8").splitlines() == [
         "- [project: Budget app](<projects/Budget app/MEMORY.md>) — paused"
     ]
+
+
+# ---------------------------------------------------------------------------
+# After the main session's reading of the PR
+# ---------------------------------------------------------------------------
+
+
+class _Events:
+    """Stands in for the ledger: keeps the events that are appended."""
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def append_event(self, commission_id: str, kind: str, payload: dict[str, Any]) -> None:
+        self.rows.append((commission_id, kind, payload))
+
+
+async def test_a_line_that_quotes_the_link_of_another_entry_is_not_taken_for_that_entry(space, root):
+    await space.file_entry(None, title="Stack", content="It uses Flask.")
+    # Its line in the index begins with its own link, and quotes the other's: what a task agent
+    # that read the index would write.
+    await space.file_entry(None, title="Database", content="See [Stack](memory/stack.md) first; then SQLite.")
+    index = root / "MEMORY.md"
+    quoting = "- [Database](memory/database.md) — See [Stack](memory/stack.md) first; then SQLite."
+    assert index.read_text(encoding="utf-8").splitlines() == [quoting, "- [Stack](memory/stack.md) — It uses Flask."]
+
+    await space.edit_entry("stack", title="What it is built on")
+
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        quoting,
+        "- [What it is built on](memory/stack.md) — It uses Flask.",
+    ]
+
+    assert await space.delete_entry("stack") is True
+
+    # The line that only quoted it is still there, and is the line of its own entry.
+    assert index.read_text(encoding="utf-8").splitlines() == [quoting]
+    assert await space.delete_entry("database") is True
+    assert index.read_text(encoding="utf-8").strip() == ""
+
+
+async def test_a_commission_adds_so_many_notes_and_no_more(root, clock):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    ledger = _Events()
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=ledger, clock=clock)
+    assert SPACE_LESSONS_PER_COMMISSION == 3
+    commission = _commission(id="c-1")
+    # One of the task agents it started: what it adds counts for the commission she gave.
+    child = _commission(id="c-1-child", parent_id="c-1")
+
+    replies = [
+        await space.submit(commission, _lesson("First", "One.")),
+        # Said already: nothing is added, and it does not count.
+        await space.submit(commission, _lesson("First", "One.")),
+        await space.submit(child, _lesson("Second", "Two.")),
+        await space.submit(commission, _lesson("Third", "Three.", scope="global")),
+        await space.submit(commission, _lesson("Fourth", "Four.")),
+        await space.submit(child, _lesson("Fifth", "Five.")),
+    ]
+
+    assert replies[0] == "kept in project _daily as first.md"
+    assert replies[1].startswith("already in first.md")
+    assert replies[2] == "kept in project _daily as second.md"
+    assert replies[3] == "kept in the space of every project as third.md"
+    refused = (
+        "not kept: this commission has added 3 notes already, or is adding them, which is the most one commission may add. "
+        "Put what matters into your report instead."
+    )
+    assert replies[4] == replies[5] == refused
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["first", "second"]
+    assert not (root / "projects" / DEFAULT_PROJECT / "memory" / "fourth.md").exists()
+    # Another commission has a count of its own.
+    assert await space.submit(_commission(id="c-2"), _lesson("Sixth", "Six.")) == "kept in project _daily as sixth.md"
+    # What was not kept is on the record of the commission that wrote it, and marked.
+    unkept = [(who, payload) for who, kind, payload in ledger.rows if kind == "lesson" and not payload["kept"]]
+    assert [(who, payload["title"], payload["content"], payload["reason"]) for who, payload in unkept] == [
+        ("c-1", "Fourth", "Four.", "cap"),
+        ("c-1-child", "Fifth", "Five.", "cap"),
+    ]
+    assert sum(1 for _who, kind, payload in ledger.rows if kind == "lesson" and payload["kept"]) == 5
+
+
+async def test_a_note_that_could_not_be_written_is_on_the_record_and_does_not_count(root, clock, monkeypatch):
+    ledger = _Events()
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=ledger, clock=clock)
+    commission = _commission(id="c-1")
+    filing = TaskAgentSpace._file_entry
+
+    def held(self, *args, **kwargs):
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", held)
+    for _number in range(5):
+        reply = await space.submit(commission, _lesson("Stack", "It uses Flask."))
+        assert reply == "not kept: the files of the task agent space could not be written"
+
+    def refused(self, *args, **kwargs):
+        raise SpaceError("an entry needs a title and a text")
+
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", refused)
+    assert await space.submit(commission, _lesson("", "")) == "not kept: an entry needs a title and a text"
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", filing)
+
+    # None of those was added, so none of them was counted: three are still kept.
+    for title in ("One", "Two", "Three"):
+        assert (await space.submit(commission, _lesson(title, f"{title}."))).startswith("kept in project _daily")
+    assert [(payload["kept"], payload.get("reason")) for _who, _kind, payload in ledger.rows] == [
+        *[(False, "unwritable")] * 5,
+        (False, "refused"),
+        *[(True, None)] * 3,
+    ]
+    # The words of the note that could not be written are not lost.
+    assert ledger.rows[0][2]["content"] == "It uses Flask."
+
+
+async def test_the_count_of_notes_is_kept_for_so_many_commissions(space, monkeypatch):
+    from nekoclaw.host import space as module
+
+    monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 2)
+    for number in range(3):
+        await space.submit(_commission(id=f"c-{number}"), _lesson(f"Topic {number} t{number}", "Text."))
+
+    # The oldest went.
+    assert list(space._added_by) == ["c-1", "c-2"]
+
+
+async def test_a_file_saved_with_a_mark_at_its_beginning_is_read(space, root, clock):
+    project = await space.touch_project("Budget app", description="tracks spending")
+    record = root / "projects" / "Budget app" / "project.json"
+    # Saved from an editor that puts a byte order mark first, with the description changed.
+    text = record.read_text(encoding="utf-8").replace("tracks spending", "tracks what is spent")
+    record.write_text(text, encoding="utf-8-sig")
+    assert record.read_bytes().startswith(b"\xef\xbb\xbf")
+
+    listed = await space.get_project("Budget app")
+
+    assert (listed.name, listed.description, listed.commissions) == ("Budget app", "tracks what is spent", project.commissions)
+    # And it can be changed: it is not a file that cannot be read.
+    clock.now += 60
+    again = await space.touch_project("Budget app")
+    assert again.commissions == project.commissions + 1 and again.description == "tracks what is spent"
+
+    state = root / "state.json"
+    state.write_text('{"version": 1, "upkeep_at": 12.5}', encoding="utf-8-sig")
+    assert (await space.read_state())["upkeep_at"] == 12.5
+    await space.write_state(since=3.0)
+    assert await space.read_state() == {"version": 1, "upkeep_at": 12.5, "since": 3.0}
+
+
+async def test_a_project_in_use_is_called_what_its_directory_is_called(space, root):
+    import json
+
+    await space.touch_project("Budget app", description="tracks spending")
+    await space.write_review("Budget app", _commission(id="c-1"), "It went well.")
+    await space.write_review("Other", _commission(id="c-2"), "So did this.")
+    record = root / "projects" / "Budget app" / "project.json"
+    data = json.loads(record.read_text(encoding="utf-8"))
+
+    # The name is changed by hand in the file, to one that could be a directory and to one that could not.
+    for name in ("Spending", "a/b:c*"):
+        data["name"] = name
+        record.write_text(json.dumps(data), encoding="utf-8")
+
+        assert [item.name for item in await space.list_projects()] == ["Budget app", "Other"]
+        assert (await space.get_project("Budget app")).description == "tracks spending"
+        # The reviews of every project are still found, this one's among them.
+        assert sorted(item.commission_id for item in await space.list_reviews()) == ["c-1", "c-2"]
+        assert (await space.read_review("c-1")).project == "Budget app"
+
+    # Its file says its name again once it is written.
+    await space.touch_project("Budget app")
+    assert json.loads(record.read_text(encoding="utf-8"))["name"] == "Budget app"
+
+    # Renamed in the file manager, it is the project of the new name, with what it holds.
+    (root / "projects" / "Budget app").rename(root / "projects" / "Household")
+    assert [item.name for item in await space.list_projects()] == ["Household", "Other"]
+    assert (await space.read_review("c-1")).project == "Household"
+    assert (await space.get_project("Household")).description == "tracks spending"
+
+
+async def test_what_its_task_agents_filed_goes_with_a_commission_to_its_project(space, root, monkeypatch):
+    # More notes than one commission may add: what is looked at here is whose they are.
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_LESSONS_PER_COMMISSION", 10)
+    await space.submit(_commission(id="c-1"), _lesson("Own", "Filed by the commission."))
+    await space.submit(_commission(id="c-1-a", parent_id="c-1"), _lesson("By a task agent", "Filed by one it started."))
+    await space.submit(_commission(id="c-1"), _lesson("By both", "First."))
+    await space.submit(_commission(id="c-1-a", parent_id="c-1"), _lesson("By both", "Second."))
+    await space.submit(_commission(id="c-9"), _lesson("Of another", "Filed by another commission."))
+    await space.submit(_commission(id="c-9"), _lesson("Shared", "First."))
+    await space.submit(_commission(id="c-1-a", parent_id="c-1"), _lesson("Shared", "Second."))
+    # One the user wrote by hand: no commission filed it.
+    (root / "projects" / DEFAULT_PROJECT / "memory" / "by-hand.md").write_text("Written by hand.\n", encoding="utf-8")
+    await space.touch_project("Budget app")
+    # Filed by the two of them, and by another commission and one of its task agents.
+    filed = {entry.id: entry.sources for entry in await space.list_entries(DEFAULT_PROJECT)}
+    assert filed["by-both"] == ("c-1", "c-1-a") and filed["shared"] == ("c-9", "c-1-a")
+
+    moved = await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app", also=("c-1-a",))
+
+    assert sorted(moved) == ["by-a-task-agent", "by-both", "own"]
+    assert sorted(entry.id for entry in await space.list_entries("Budget app")) == ["by-a-task-agent", "by-both", "own"]
+    # What another commission filed, or added to, stays; so does what nobody filed.
+    assert sorted(entry.id for entry in await space.list_entries(DEFAULT_PROJECT)) == ["by-hand", "of-another", "shared"]
+    # Without its task agents named, only what it filed alone goes.
+    await space.submit(_commission(id="c-2"), _lesson("Alone", "By c-2."))
+    await space.submit(_commission(id="c-2-a", parent_id="c-2"), _lesson("Not alone", "By its task agent."))
+    assert await space.refile_entries("c-2", DEFAULT_PROJECT, "Budget app") == ["alone"]
+
+
+async def test_a_long_path_of_the_space_shortens_the_parts_and_none_ends_cut_off(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("global rule. " * 2000)
+    await space.write_rules("project rule. " * 2000, "Budget app")
+    (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n" * 2000, encoding="utf-8")
+    (root / "projects" / "Budget app" / "MEMORY.md").write_text("- [project entry](memory/y.md) — words\n" * 2000, encoding="utf-8")
+    short = await space.brief("Budget app")
+    assert count_tokens(short) <= SPACE_BRIEF_MAX_TOKENS
+    # The note names the directory of the space: as with one many directories deep.
+    longer = texts.SPACE_BRIEF_NOTE.replace("{root}", "{root}/" + "/".join(f"a directory number {n}" for n in range(60)))
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", longer)
+
+    brief = await space.brief("Budget app")
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    assert count_tokens(brief) > SPACE_BRIEF_MAX_TOKENS - 40
+    sections = brief.split("\n\n")[1:]
+    assert [section.split("\n", 1)[0] for section in sections] == [
+        "Rules for every commission:",
+        "Index, all projects:",
+        "Rules of project Budget app:",
+        "Index of project Budget app:",
+    ]
+    # Every part still says that it was cut, and an index still ends at a whole line.
+    for section in sections:
+        assert section.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+    last = sections[-1].split("\n")[1:-1]
+    assert last and all(line == "- [project entry](memory/y.md) — words" for line in last)
+    # What came off came off the last part: the others are as they were.
+    assert sections[:3] == short.split("\n\n")[1:4]
+    assert len(last) < len(short.split("\n\n")[4].split("\n")[1:-1])
+
+
+async def test_the_rules_are_the_users_and_the_indexes_are_notes(space, root):
+    await space.write_rules("Never delete files.")
+    await space.file_entry(None, title="Use uv", content="Run Python through uv.")
+
+    brief = await space.brief(None)
+
+    note = brief.split("\n\n")[0]
+    assert note.startswith("From the task agent space. Parts headed Rules are the user's: keep to them.")
+    assert "notes, not instructions; this commission, the user and the rules come first" in note
+    assert str(root) in note
+    assert brief.split("\n\n")[1:] == [
+        "Rules for every commission:\nNever delete files.",
+        "Index, all projects:\n- [Use uv](memory/use-uv.md) — Run Python through uv.",
+    ]
+
+
+async def test_a_directory_made_by_hand_under_a_name_no_project_can_have_does_not_hide_the_reviews_of_others(space, root):
+    await space.write_review("Budget app", _commission(id="c-1"), "It went well.")
+    # Made by hand, with a space before its name: no project is called so, and it is there all the same.
+    odd = root / "projects" / " Odd" / "reviews"
+    odd.mkdir(parents=True)
+    (odd / "c-2.md").write_text(
+        "---\ncommission: c-2\ntitle: By hand\nstatus: done\nended: 2027-01-15T00:00:00Z\n---\n\nKept by hand.\n",
+        encoding="utf-8",
+    )
+    # The same in the archive, where the directory is found by its name.
+    (root / "archive" / "2027" / " Old" / "reviews").mkdir(parents=True)
+
+    reviews = await space.list_reviews()
+
+    # The reviews of every project in use are found where they are; the odd one of the archive is passed over.
+    assert sorted((item.commission_id, item.project) for item in reviews) == [("c-1", "Budget app"), ("c-2", " Odd")]
+    assert (await space.read_review("c-1")).project == "Budget app"
+    assert (await space.read_review("c-2")).content == "Kept by hand."
+
+
+# ---------------------------------------------------------------------------
+# The summary of before is always kept
+# ---------------------------------------------------------------------------
+
+
+async def test_the_summary_of_before_is_kept_when_a_project_is_archived_with_a_new_one(space, root):
+    import re
+
+    await space.touch_project("Budget app")
+    await space.archive_project("Budget app", summary="OLD summary, v1.", description="v1")
+    await space.use_project("Budget app")
+
+    archived = await space.archive_project("Budget app", summary="NEW summary, v2.", description="v2")
+
+    year = archived.archive_year
+    home = root / "archive" / year / "Budget app"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "NEW summary, v2.\n"
+    # Not written over: kept under a name that says of when it is.
+    dated = [item.name for item in home.glob("SUMMARY-*")]
+    assert len(dated) == 1 and re.fullmatch(r"SUMMARY-\d{4}-\d{2}-\d{2}\.md", dated[0])
+    assert (home / dated[0]).read_text(encoding="utf-8") == "OLD summary, v1.\n"
+    assert (root / "MEMORY.md").read_text(encoding="utf-8").splitlines() == [
+        f"- [archived project: Budget app](<archive/{year}/Budget app/SUMMARY.md>) — v2"
+    ]
+
+
+async def test_a_project_is_not_archived_with_a_summary_while_the_one_of_before_cannot_be_set_aside(
+    space, root, monkeypatch
+):
+    await space.touch_project("Budget app")
+    await space.archive_project("Budget app", summary="OLD summary, v1.")
+    await space.use_project("Budget app")
+    rename = Path.rename
+
+    def held(self, target):
+        if self.name == "SUMMARY.md":
+            raise PermissionError(13, "in use")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", held)
+
+    assert await space.archive_project("Budget app", summary="NEW summary, v2.") is None
+
+    monkeypatch.undo()
+    # Nothing was written over. The project stays, and the new summary is kept for the next try.
+    assert (root / "projects" / "Budget app" / "SUMMARY.md").read_text(encoding="utf-8") == "OLD summary, v1.\n"
+    project = await space.get_project("Budget app")
+    assert project.status == "active" and project.kept_summary()[0] == "NEW summary, v2."
+
+    # Let go of, the next try sets it aside and archives the project with the summary that was kept.
+    archived = await space.archive_project("Budget app")
+
+    home = root / "archive" / archived.archive_year / "Budget app"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "NEW summary, v2.\n"
+    (dated,) = [item for item in home.glob("SUMMARY-*")]
+    assert dated.read_text(encoding="utf-8") == "OLD summary, v1.\n"
+
+
+async def test_a_summary_written_by_a_try_that_could_not_move_the_project_is_not_set_aside_by_the_next(
+    space, root, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    await space.touch_project("Budget app")
+    move = module._move
+
+    def stuck(source, target):
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(module, "_move", stuck)
+    assert await space.archive_project("Budget app", summary="The summary.") is None
+    monkeypatch.setattr(module, "_move", move)
+    assert (root / "projects" / "Budget app" / "SUMMARY.md").read_text(encoding="utf-8") == "The summary.\n"
+
+    archived = await space.archive_project("Budget app", summary="The summary.")
+
+    # The same summary, written for this archiving: there is no summary of before to keep.
+    home = root / "archive" / archived.archive_year / "Budget app"
+    assert sorted(item.name for item in home.glob("SUMMARY*")) == ["SUMMARY.md"]
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "The summary.\n"
+
+
+# ---------------------------------------------------------------------------
+# After the main session's reading of the fixes
+# ---------------------------------------------------------------------------
+
+
+def _a_note_that_puts_the_brief_over(texts, brief: str, over: int) -> str:
+    """Return the note of the brief with a path of the space so long that ``brief`` is ``over`` tokens over its cap."""
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    wanted = SPACE_BRIEF_MAX_TOKENS - count_tokens(brief) + over
+    directories: list[str] = []
+    while count_tokens("/".join(directories)) < wanted:
+        directories.append(f"a directory number {len(directories)}")
+    return texts.SPACE_BRIEF_NOTE.replace("{root}", "{root}/" + "/".join(directories))
+
+
+async def test_what_is_over_comes_off_the_indexes_before_it_comes_off_the_rules(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("global rule. " * 2000)
+    await space.write_rules("project rule. " * 2000, "Budget app")
+    (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n" * 2000, encoding="utf-8")
+    # The index of the project is short: there is next to nothing to take off it.
+    (root / "projects" / "Budget app" / "MEMORY.md").write_text("- [project entry](memory/y.md) — words\n", encoding="utf-8")
+    as_it_was = await space.brief("Budget app")
+    short = as_it_was.split("\n\n")[1:]
+    # The note names the directory of the space: as with one so many directories deep that the whole is over.
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 150))
+
+    brief = await space.brief("Budget app")
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    sections = brief.split("\n\n")[1:]
+    assert [section.split("\n", 1)[0] for section in sections] == [
+        "Rules for every commission:",
+        "Index, all projects:",
+        "Rules of project Budget app:",
+        "Index of project Budget app:",
+    ]
+    # The rules are the user's own words: both are as they were, the project's as well, though it
+    # stands after the index of all projects.
+    assert sections[0] == short[0] and sections[2] == short[2]
+    # What was over came off the index of all projects, which still ends at a whole line.
+    lines = sections[1].split("\n")[1:-1]
+    assert lines and all(line == "- [global entry](memory/x.md) — words" for line in lines)
+    assert len(lines) < len(short[1].split("\n")[1:-1])
+    assert sections[1].endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+
+
+async def test_the_rules_give_way_only_when_the_indexes_are_used_up(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("global rule. " * 2000)
+    await space.write_rules("project rule. " * 2000, "Budget app")
+    (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n", encoding="utf-8")
+    (root / "projects" / "Budget app" / "MEMORY.md").write_text("- [project entry](memory/y.md) — words\n", encoding="utf-8")
+    as_it_was = await space.brief("Budget app")
+    short = as_it_was.split("\n\n")[1:]
+    # The note names the directory of the space: as with one so many directories deep that the whole is over.
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 150))
+
+    brief = await space.brief("Budget app")
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    sections = brief.split("\n\n")[1:]
+    # Both indexes gave what little they had; the rest came off the rules, the project's first.
+    assert sections[0] == short[0]
+    assert len(sections[2]) < len(short[2]) and sections[2].endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+    assert sections[2].startswith("Rules of project Budget app:\nproject rule. project rule.")
+
+
+async def test_the_tokens_of_the_brief_are_not_counted_on_the_event_loop(space, root, monkeypatch):
+    import threading
+
+    from utils.tokenize import count_tokens as count
+
+    await space.write_rules("Never delete files.")
+    (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n" * 2000, encoding="utf-8")
+    loop_thread, counted_on = threading.get_ident(), []
+
+    def counting(text: str, *args, **kwargs) -> int:
+        counted_on.append(threading.get_ident())
+        return count(text, *args, **kwargs)
+
+    monkeypatch.setattr("utils.tokenize.count_tokens", counting)
+
+    brief = await space.brief(None)
+
+    assert "Index, all projects:" in brief
+    # An index has no cap on its length; counting it is not done where everything else waits for it.
+    assert counted_on and loop_thread not in counted_on
+
+
+async def test_a_project_is_not_made_when_only_one_that_is_there_is_wanted(space, root):
+    await space.touch_project("Budget app", description="tracks spending")
+
+    assert await space.open_project("Photo sorter", description="sorts photos", unless_new=True) is None
+    assert not (root / "projects" / "Photo sorter").exists()
+    assert await space.get_project("Photo sorter") is None
+    # One that is there is used, however its name is spelled, and the commission counted for it.
+    before = (await space.get_project("Budget app")).commissions
+    opened = await space.open_project("budget APP", unless_new=True)
+    assert opened is not None and opened.name == "Budget app" and opened.commissions == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 1
+# ---------------------------------------------------------------------------
+
+
+async def test_an_index_whose_first_line_alone_is_over_shows_no_half_of_it(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS, SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("Never delete files.")
+    line = "- [a long entry](memory/a-long-entry.md) — " + "word " * 200
+    (root / "MEMORY.md").write_text(line.rstrip() + "\n- [second](memory/second.md) — short\n", encoding="utf-8")
+    assert 150 < count_tokens(line) < SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS
+    as_it_was = await space.brief(None)
+    assert as_it_was.split("\n\n")[2] == "Index, all projects:\n" + line.rstrip() + "\n- [second](memory/second.md) — short"
+    # The path of the space is so long that the index is left less than its first line takes.
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 100))
+
+    brief = await space.brief(None)
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    rules, index = brief.split("\n\n")[1:]
+    assert rules == "Rules for every commission:\nNever delete files."
+    # Not the beginning of the line with half of its link: nothing of it, and that it was cut.
+    assert index == "Index, all projects:\n" + texts.SPACE_BRIEF_CUT_NOTE
+
+    # The same for a first line that is over the cap an index has to begin with.
+    monkeypatch.undo()
+    longer = "- [a longer entry](memory/a-longer-entry.md) — " + "word " * 600
+    (root / "MEMORY.md").write_text(longer.rstrip() + "\n- [second](memory/second.md) — short\n", encoding="utf-8")
+    assert count_tokens(longer) > SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS
+    assert (await space.brief(None)).split("\n\n")[2] == "Index, all projects:\n" + texts.SPACE_BRIEF_CUT_NOTE
+
+
+async def test_a_note_that_was_stopped_before_its_turn_to_be_written_uses_no_place(root, clock):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
+    commission, child = _commission(id="c-1"), _commission(id="c-1-child", parent_id="c-1")
+    # Something else is writing: the note of the task agent waits for its turn.
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    waiting = asyncio.create_task(space.submit(child, _lesson("Never written", "The session was stopped first.")))
+    await _waiting_to_write(space, 1)
+    assert not waiting.done()
+
+    # The session is stopped while it waits.
+    waiting.cancel()
+    (outcome,) = await asyncio.gather(waiting, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError)
+    space._lock.release()
+
+    assert not (root / "projects" / DEFAULT_PROJECT / "memory" / "never-written.md").exists()
+    # The commission and its task agents still have every place.
+    for number in range(SPACE_LESSONS_PER_COMMISSION):
+        reply = await space.submit(commission if number else child, _lesson(f"Note {number}", f"Text {number}."))
+        assert reply == f"kept in project _daily as note-{number}.md"
+    assert (await space.submit(commission, _lesson("One too many", "Dropped."))).startswith("not kept: this commission has added 3")
+
+
+async def test_a_note_that_was_written_while_its_session_was_stopped_has_used_its_place(root, clock, monkeypatch):
+    import threading
+
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
+    commission = _commission(id="c-1")
+    file_entry, writing, go_on = space._file_entry, threading.Event(), threading.Event()
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        writing.set()
+        assert go_on.wait(10)
+        return file_entry(*args, **kwargs)
+
+    monkeypatch.setattr(space, "_file_entry", slow)
+    written = asyncio.create_task(space.submit(commission, _lesson("Written all the same", "The writing is finished.")))
+    assert await asyncio.to_thread(writing.wait, 10)
+
+    # Stopped in the middle of the writing, which is finished all the same.
+    written.cancel()
+    go_on.set()
+    (outcome,) = await asyncio.gather(written, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError)
+    monkeypatch.setattr(space, "_file_entry", file_entry)
+
+    assert (root / "projects" / DEFAULT_PROJECT / "memory" / "written-all-the-same.md").is_file()
+    # It was added: one place fewer is left.
+    for number in range(SPACE_LESSONS_PER_COMMISSION - 1):
+        assert (await space.submit(commission, _lesson(f"Note {number}", f"Text {number}."))).startswith("kept in project _daily")
+    assert (await space.submit(commission, _lesson("One too many", "Dropped."))).startswith("not kept: this commission has added 3")
+
+    # One that was there already, word for word, uses none, stopped or not.
+    again = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
+    file_entry, writing, go_on = again._file_entry, threading.Event(), threading.Event()
+
+    def slow_again(*args: Any, **kwargs: Any) -> Any:
+        writing.set()
+        assert go_on.wait(10)
+        return file_entry(*args, **kwargs)
+
+    monkeypatch.setattr(again, "_file_entry", slow_again)
+    same = asyncio.create_task(again.submit(commission, _lesson("Written all the same", "The writing is finished.")))
+    assert await asyncio.to_thread(writing.wait, 10)
+    same.cancel()
+    go_on.set()
+    (outcome,) = await asyncio.gather(same, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError)
+    monkeypatch.setattr(again, "_file_entry", file_entry)
+    for number in range(SPACE_LESSONS_PER_COMMISSION):
+        assert not (await again.submit(commission, _lesson(f"Later {number}", f"More {number}."))).startswith("not kept")
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 2
+# ---------------------------------------------------------------------------
+
+
+async def test_a_note_whose_index_could_not_be_written_is_kept_and_counted(root, clock):
+    ledger = _Events()
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=ledger, clock=clock)
+    index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    memory = index.parent / "memory"
+    index.parent.mkdir(parents=True)
+    unreadable = "- 我自己的笔记\n".encode("utf-16")
+    index.write_bytes(unreadable)
+    commission = _commission(id="c-1")
+    unlisted = "; the index could not be read or written, so it may have no line there yet"
+
+    replies = [
+        await space.submit(commission, _lesson("First", "One.")),
+        # Added to an entry that is there.
+        await space.submit(commission, _lesson("First", "More of one.")),
+        # There already, word for word: nothing is added, and it uses no place.
+        await space.submit(commission, _lesson("First", "One.")),
+        await space.submit(commission, _lesson("Second", "Two.")),
+        await space.submit(commission, _lesson("Third", "Three.")),
+    ]
+
+    assert replies[:4] == [
+        f"kept in project _daily as first.md{unlisted}",
+        f"added to first.md in project _daily{unlisted}",
+        # Told of the index as well: the record of the note says the same.
+        f"already in first.md in project _daily, word for word; nothing was added{unlisted}",
+        f"kept in project _daily as second.md{unlisted}",
+    ]
+    # Each of the three that were added is a file, or in one, and used a place: the fourth has none.
+    assert replies[4].startswith("not kept: this commission has added 3 notes already")
+    assert sorted(item.name for item in memory.iterdir()) == ["first.md", "second.md"]
+    assert "More of one." in (memory / "first.md").read_text(encoding="utf-8")
+    assert index.read_bytes() == unreadable
+    assert [
+        (payload["kept"], payload.get("entry"), payload.get("listed"), payload.get("reason"))
+        for _who, _kind, payload in ledger.rows
+    ] == [
+        (True, "first", False, None),
+        (True, "first", False, None),
+        (True, "first", False, None),
+        (True, "second", False, None),
+        (False, None, None, "cap"),
+    ]
+
+    # The index can be read again. The next time something is filed about the entry, its line is put there.
+    index.write_text("- a line of the user\n", encoding="utf-8")
+    again = await space.submit(_commission(id="c-2"), _lesson("Second", "Two."))
+    assert again == "already in second.md in project _daily, word for word; nothing was added"
+    assert index.read_text(encoding="utf-8").split("\n")[:2] == ["- [Second](memory/second.md) — Two.", "- a line of the user"]
+    assert ledger.rows[-1][2].get("listed") is None
+
+
+async def test_a_note_kept_without_its_line_has_used_its_place_though_its_session_was_stopped(root, clock, monkeypatch):
+    import threading
+
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
+    index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    index.parent.mkdir(parents=True)
+    index.write_bytes("- 我自己的笔记\n".encode("utf-16"))
+    commission = _commission(id="c-1")
+    file_entry, writing, go_on = space._file_entry, threading.Event(), threading.Event()
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        writing.set()
+        assert go_on.wait(10)
+        return file_entry(*args, **kwargs)
+
+    monkeypatch.setattr(space, "_file_entry", slow)
+    stopped = asyncio.create_task(space.submit(commission, _lesson("Kept all the same", "The file is written.")))
+    assert await asyncio.to_thread(writing.wait, 10)
+    stopped.cancel()
+    go_on.set()
+    (outcome,) = await asyncio.gather(stopped, return_exceptions=True)
+    assert isinstance(outcome, asyncio.CancelledError)
+    monkeypatch.setattr(space, "_file_entry", file_entry)
+
+    assert (index.parent / "memory" / "kept-all-the-same.md").is_file()
+    assert (await space.submit(commission, _lesson("Two", "Two."))).startswith("kept in project _daily as two.md")
+    assert (await space.submit(commission, _lesson("Three", "Three."))).startswith("kept in project _daily as three.md")
+    assert (await space.submit(commission, _lesson("Four", "Four."))).startswith("not kept: this commission has added 3")
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 4
+# ---------------------------------------------------------------------------
+
+
+async def test_an_entry_filed_while_the_index_cannot_be_written_is_handed_back_as_kept(space, root):
+    index = root / "MEMORY.md"
+    index.parent.mkdir(parents=True)
+    unreadable = "- 我自己的笔记\n".encode("utf-16")
+    index.write_bytes(unreadable)
+
+    entry, created = await space.file_entry(None, title="Use uv", content="Run Python through uv.")
+
+    # In its file, and handed back as what it is; the index is as it was.
+    assert (entry.id, entry.content, created) == ("use-uv", "Run Python through uv.", True)
+    assert (root / "memory" / "use-uv.md").is_file() and index.read_bytes() == unreadable
+    # Added to, the same.
+    entry, created = await space.file_entry(None, title="Use uv", content="Also for pytest.")
+    assert (entry.id, created) == ("use-uv", False) and "Also for pytest." in entry.content
+
+    # The index can be written again: the next filing about the entry puts its line there.
+    index.write_text("- a line of the user\n", encoding="utf-8")
+    await space.file_entry(None, title="Use uv", content="Run Python through uv.")
+    assert index.read_text(encoding="utf-8").split("\n")[0] == "- [Use uv](memory/use-uv.md) — Run Python through uv."
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 5 (the owner's automatic review)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "seen"),
+    [
+        ("rm -rf ~/data/nekoclaw/task_agent_space/projects", True),
+        ("cat $HOME/data/nekoclaw/task_agent_space/MEMORY.md", True),
+        ('cat "${HOME}/data/nekoclaw/task_agent_space/MEMORY.md"', True),
+        ("type %USERPROFILE%\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
+        ("Get-Content $env:USERPROFILE\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
+        ("gc ${env:USERPROFILE}\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
+        ("gc $env:HOME/data/nekoclaw/task_agent_space/MEMORY.md", True),
+        ("gc ${env:HOME}/data/nekoclaw/task_agent_space/MEMORY.md", True),
+        # As a shell of the Unix world writes it on Windows.
+        ("cat $USERPROFILE/data/nekoclaw/task_agent_space/MEMORY.md", True),
+        ('cat "${USERPROFILE}/data/nekoclaw/task_agent_space/MEMORY.md"', True),
+        # Quotation marks round the variable alone: the shell reads the same path.
+        ('cat "$HOME"/data/nekoclaw/task_agent_space/MEMORY.md', True),
+        ('rm -rf "${HOME}"/data/nekoclaw/task_agent_space', True),
+        ('rm -rf "$USERPROFILE"/data/nekoclaw/"task_agent_space"/projects', True),
+        # In single ones the shell does not put the path together: asked about all the same.
+        ("cat '$HOME'/data/nekoclaw/task_agent_space/MEMORY.md", True),
+        ("ls ~/Data/NekoClaw/Task_Agent_Space", True),
+        # With steps that lead nowhere, as for a path written in full.
+        ("ls ~/data/./nekoclaw/old/../task_agent_space", True),
+        # Below the home directory, and not the space.
+        ("ls ~/data/nekoclaw/task_agents", False),
+        ("ls ~/elsewhere/nekoclaw/task_agent_space", False),
+        ("cd ~ && ls", False),
+        ("echo $HOME", False),
+    ],
+)
+async def test_a_path_written_from_the_home_directory_is_seen(tmp_path, monkeypatch, command, seen):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "data" / "nekoclaw" / "task_agent_space"))
+
+    assert await space.named_in(command) is seen
+
+
+async def test_a_space_that_is_not_below_the_home_directory_is_not_written_from_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home" / "user"))
+    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "data" / "nekoclaw" / "task_agent_space"))
+
+    assert await space.named_in("ls ~/data/nekoclaw/task_agent_space") is False
+    # Nor is a directory of its name right below the home directory taken for it.
+    assert await space.named_in("ls ~/task_agent_space") is False
+    assert await space.named_in(f"ls {(tmp_path / 'data' / 'nekoclaw' / 'task_agent_space').as_posix()}") is True
+
+    # A home directory that cannot be told keeps nothing from being seen as it is written in full.
+    def no_home(cls):
+        raise RuntimeError("no home directory")
+
+    monkeypatch.setattr(Path, "home", classmethod(no_home))
+    assert await space.named_in(f"ls {(tmp_path / 'data' / 'nekoclaw' / 'task_agent_space').as_posix()}") is True
+
+
+async def test_an_index_that_was_over_its_cap_gives_a_line_before_the_rules_give_anything(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS, SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("Never delete files. " * 30)
+    line = ("- [an entry](memory/an-entry.md) — " + "word " * 34).rstrip()
+    (root / "MEMORY.md").write_text((line + "\n") * 9, encoding="utf-8")
+    as_it_was = await space.brief(None)
+    rules, index = as_it_was.split("\n\n")[1:]
+    lines = index.split("\n")[1:-1]
+    # Over its own cap, the index ends at a whole line well below it: there is room it does not use.
+    shown = count_tokens("\n".join(lines))
+    assert len(lines) == 7 and index.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+    assert SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS - shown > 25
+    # The path of the space is a little too long for the whole.
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 5))
+
+    brief = await space.brief(None)
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    rules_now, index_now = brief.split("\n\n")[1:]
+    # The index gave a line; the rules, which are the user's, are as they were.
+    assert rules_now == rules
+    assert index_now.split("\n")[1:-1] == [line] * 6 and index_now.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+
+
+async def test_a_summary_with_a_bare_carriage_return_is_known_again_as_the_one_of_this_archiving(space, root, monkeypatch):
+    from nekoclaw.host import space as module
+
+    await space.touch_project("Budget app")
+    move = module._move
+
+    def stuck(source, target):
+        raise PermissionError(13, "in use")
+
+    summary = "What it is for.\rHow it stands."
+    monkeypatch.setattr(module, "_move", stuck)
+    assert await space.archive_project("Budget app", summary=summary) is None
+    monkeypatch.setattr(module, "_move", move)
+    # Kept with the line ends every text is kept with.
+    assert (root / "projects" / "Budget app" / "SUMMARY.md").read_text(encoding="utf-8") == "What it is for.\nHow it stands.\n"
+
+    archived = await space.archive_project("Budget app", summary=summary)
+
+    home = root / "archive" / archived.archive_year / "Budget app"
+    assert sorted(item.name for item in home.glob("SUMMARY*")) == ["SUMMARY.md"]
+
+
+async def test_of_more_commissions_than_are_counted_the_one_that_filed_last_stays(space, monkeypatch):
+    from nekoclaw.host import space as module
+
+    monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 2)
+    early = _commission(id="c-early")
+    await space.submit(early, _lesson("Photo dates", "Use the EXIF date."))
+    await space.submit(_commission(id="c-other"), _lesson("Budget file", "Kept as JSON."))
+    # It began first and is still at work.
+    await space.submit(early, _lesson("Folder names", "One folder a month."))
+    await space.submit(_commission(id="c-third"), _lesson("Blog theme", "Plain, one column."))
+
+    # The one that has not filed for longest went, not the one that began first.
+    assert space._added_by == {"c-early": 2, "c-third": 1}
+    # One whose note was there already, word for word, added none: it is not counted, and takes no place.
+    assert (await space.submit(_commission(id="c-same"), _lesson("Blog theme", "Plain, one column."))).startswith("already in")
+    assert space._added_by == {"c-early": 2, "c-third": 1}
+    assert (await space.submit(early, _lesson("Camera drive", "It is E: on this computer."))).startswith("kept in project _daily")
+    await space.submit(_commission(id="c-third"), _lesson("Blog fonts", "One serif."))
+    assert list(space._added_by) == ["c-early", "c-third"]
+    assert (await space.submit(early, _lesson("Backups", "Nothing is deleted before it is copied."))).startswith("not kept: this commission")
+    # Turned down, it is still at work: the other one is the next to be forgotten.
+    assert list(space._added_by) == ["c-third", "c-early"]
+
+
+async def test_with_no_note_allowed_at_all_a_note_is_turned_down_like_any_other(root, clock, monkeypatch):
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_LESSONS_PER_COMMISSION", 0)
+    ledger = _Events()
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=ledger, clock=clock)
+
+    reply = await space.submit(_commission(id="c-1"), _lesson("Photo dates", "Use the EXIF date."))
+
+    # Turned down as one over the most a commission may add, not with an error; and on the record.
+    assert reply.startswith("not kept: this commission has added 0 notes already")
+    assert [(who, payload["kept"], payload["reason"]) for who, _kind, payload in ledger.rows] == [("c-1", False, "cap")]
+    assert space._added_by == {} and not (root / "projects").exists()
+
+
+async def test_a_note_that_waits_to_be_written_costs_no_other_commission_its_count(space, monkeypatch):
+    from nekoclaw.host import space as module
+
+    monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 2)
+    await space.submit(_commission(id="c-a"), _lesson("Photo dates", "Use the EXIF date."))
+    await space.submit(_commission(id="c-b"), _lesson("Folder names", "One folder a month."))
+    assert space._added_by == {"c-a": 1, "c-b": 1}
+    # Something else is writing. Two notes wait for their turn: one that is new, and one that is
+    # there already, word for word.
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    new = asyncio.create_task(space.submit(_commission(id="c-c"), _lesson("Camera drive", "It is E: on this computer.")))
+    same = asyncio.create_task(space.submit(_commission(id="c-d"), _lesson("Folder names", "One folder a month.")))
+    await _waiting_to_write(space, 2)
+    assert not new.done() and not same.done()
+    space._lock.release()
+    replies = await asyncio.gather(new, same)
+
+    assert replies[0].startswith("kept in project _daily") and replies[1].startswith("already in folder-names.md")
+    # One note was added, so one commission is forgotten for it: the one that waited and added
+    # nothing took the place of none.
+    assert space._added_by == {"c-b": 1, "c-c": 1}
+    assert space._adding == {}
+
+
+async def test_two_notes_of_one_commission_that_wait_together_count_together(space):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    commission, child = _commission(id="c-1"), _commission(id="c-1-child", parent_id="c-1")
+    for number in range(SPACE_LESSONS_PER_COMMISSION - 1):
+        await space.submit(commission, _lesson(f"Note {number} n{number}", f"Text {number}."))
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    # Two of its task agents file at one moment, with one place left.
+    first = asyncio.create_task(space.submit(child, _lesson("Camera drive", "It is E: on this computer.")))
+    await _waiting_to_write(space, 1)
+    try:
+        # Answered at once: it does not get as far as waiting for its turn to be written.
+        second = await asyncio.wait_for(
+            space.submit(commission, _lesson("Backups", "Nothing is deleted before it is copied.")), 2
+        )
+    finally:
+        space._lock.release()
+
+    # The one that came second is turned down while the first still waits to be written.
+    assert second.startswith(f"not kept: this commission has added {SPACE_LESSONS_PER_COMMISSION} notes already, or is adding them")
+    assert (await first).startswith("kept in project _daily")
+    assert space._added_by == {"c-1": SPACE_LESSONS_PER_COMMISSION} and space._adding == {}
+
+
+async def test_a_note_that_fails_in_a_way_nobody_expected_leaves_its_place_free(space, monkeypatch):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    commission = _commission(id="c-1")
+    filing = TaskAgentSpace._file_entry
+
+    def broken(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("not one of the errors a write ends in")
+
+    ledger = _Events()
+    space._ledger = ledger
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", broken)
+    for _number in range(SPACE_LESSONS_PER_COMMISSION + 1):
+        with pytest.raises(RuntimeError):
+            await space.submit(commission, _lesson("Photo dates", "Use the EXIF date."))
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", filing)
+
+    # No place is left taken by a note that came to nothing.
+    assert space._adding == {} and space._added_by == {}
+    # What the task agent wrote is on the record of its commission, marked as not kept.
+    assert [(payload["kept"], payload["reason"], payload["content"]) for _who, _kind, payload in ledger.rows] == [
+        (False, "error", "Use the EXIF date.")
+    ] * (SPACE_LESSONS_PER_COMMISSION + 1)
+    assert (await space.submit(commission, _lesson("Photo dates", "Use the EXIF date."))).startswith("kept in project _daily")
+
+
+async def test_a_commission_whose_note_waits_is_not_forgotten_for_the_notes_of_others(space, monkeypatch):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+    from nekoclaw.host import space as module
+
+    monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 2)
+    waiting = _commission(id="c-x")
+    await space.submit(waiting, _lesson("Photo dates", "Use the EXIF date."))
+    await space.submit(waiting, _lesson("Folder names", "One folder a month."))
+    await space.submit(_commission(id="c-y"), _lesson("Budget file", "Kept as JSON."))
+    assert space._added_by == {"c-x": 2, "c-y": 1}
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    # A note of another commission is written first, while the third of this one waits behind it.
+    other = asyncio.create_task(space.submit(_commission(id="c-z"), _lesson("Blog theme", "Plain, one column.")))
+    await _waiting_to_write(space, 1)
+    third = asyncio.create_task(space.submit(waiting, _lesson("Camera drive", "It is E: on this computer.")))
+    await _waiting_to_write(space, 2)
+    space._lock.release()
+    replies = await asyncio.gather(other, third)
+
+    assert all(reply.startswith("kept in project _daily") for reply in replies)
+    # The one that filed longest ago and has nothing on its way was forgotten: not the one whose note waited.
+    assert space._added_by == {"c-z": 1, "c-x": SPACE_LESSONS_PER_COMMISSION}
+    turned_down = f"not kept: this commission has added {SPACE_LESSONS_PER_COMMISSION} notes already"
+    assert (await space.submit(waiting, _lesson("Backups", "Copied first."))).startswith(turned_down)
+
+
+async def test_a_commission_whose_note_waits_is_kept_though_it_is_the_only_one_that_could_go(space, monkeypatch):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+    from nekoclaw.host import space as module
+
+    # Counted: one commission, and no more.
+    monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 1)
+    waiting = _commission(id="c-x")
+    await space.submit(waiting, _lesson("Photo dates", "Use the EXIF date."))
+    await space.submit(waiting, _lesson("Folder names", "One folder a month."))
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    other = asyncio.create_task(space.submit(_commission(id="c-z"), _lesson("Blog theme", "Plain, one column.")))
+    await _waiting_to_write(space, 1)
+    third = asyncio.create_task(space.submit(waiting, _lesson("Camera drive", "It is E: on this computer.")))
+    await _waiting_to_write(space, 2)
+    space._lock.release()
+    await other
+
+    # One more than is counted, for as long as its note waits: it is not the one to be forgotten.
+    assert space._added_by == {"c-x": 2, "c-z": 1}
+    assert (await third).startswith("kept in project _daily")
+    # Its note is written: now the other one, which has nothing on its way, is forgotten.
+    assert space._added_by == {"c-x": SPACE_LESSONS_PER_COMMISSION} and space._adding == {}
+
+
+async def test_a_place_is_free_again_before_the_record_of_a_note_that_failed_is_written(root, clock, monkeypatch):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    class SlowEvents(_Events):
+        """Writing an event takes a while, as writing the ledger does."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.writing = asyncio.Event()
+            self.go_on = asyncio.Event()
+
+        async def append_event(self, commission_id: str, kind: str, payload: dict[str, Any]) -> None:
+            if not payload.get("kept"):
+                self.writing.set()
+                await self.go_on.wait()
+            await super().append_event(commission_id, kind, payload)
+
+    ledger = SlowEvents()
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=ledger, clock=clock)
+    commission, child = _commission(id="c-1"), _commission(id="c-1-child", parent_id="c-1")
+    for number in range(SPACE_LESSONS_PER_COMMISSION - 1):
+        await space.submit(commission, _lesson(f"Note {number} n{number}", f"Text {number}."))
+    filing = TaskAgentSpace._file_entry
+
+    def held(self, *args: Any, **kwargs: Any) -> Any:
+        raise PermissionError(13, "in use")
+
+    # The last place is taken by a note that cannot be written; that it was not kept is being put on record.
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", held)
+    failing = asyncio.create_task(space.submit(child, _lesson("Camera drive", "It is E: on this computer.")))
+    await asyncio.wait_for(ledger.writing.wait(), 5)
+    monkeypatch.setattr(TaskAgentSpace, "_file_entry", filing)
+
+    try:
+        # Its place is free by then: another task agent of the commission is not turned down for it.
+        reply = await asyncio.wait_for(space.submit(commission, _lesson("Backups", "Copied first.")), 5)
+    finally:
+        ledger.go_on.set()
+    assert reply.startswith("kept in project _daily")
+    assert (await failing) == "not kept: the files of the task agent space could not be written"
+    assert space._added_by == {"c-1": SPACE_LESSONS_PER_COMMISSION} and space._adding == {}

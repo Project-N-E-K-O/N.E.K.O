@@ -235,7 +235,13 @@ class ConfiguredDecisionLLM:
         from utils.config_manager import get_config_manager
         from utils.llm_client import create_chat_llm_async
 
-        slot = "summary" if tier in _SUMMARY_TIERS else "emotion"
+        from config.nekoclaw_settings import SPACE_ARCHIVE_MODEL_SLOT, TASK_AGENT_REVIEW_MODEL_SLOT
+
+        # The two tiers of the task agent space say in the settings which
+        # model they use, so that it is changed there and nowhere else.
+        slot = {TIER_REVIEW: TASK_AGENT_REVIEW_MODEL_SLOT, TIER_ARCHIVE: SPACE_ARCHIVE_MODEL_SLOT}.get(
+            tier, "summary" if tier in _SUMMARY_TIERS else "emotion"
+        )
         config = await asyncio.to_thread(get_config_manager(migrate=False).get_model_api_config, slot)
         key = (slot, config.get("api_key"), config.get("base_url"), config.get("model"), config.get("provider_type"), budget)
         client = self._clients.get(key)
