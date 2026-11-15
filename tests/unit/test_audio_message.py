@@ -142,6 +142,51 @@ async def test_audio_message_rechecks_independent_asr_after_startup(asr_settings
     assert socket.send_json.await_args.args[0]["code"] == "independent_asr_unavailable"
 
 
+@pytest.mark.parametrize("save_local", [True, False])
+@pytest.mark.asyncio
+async def test_replacement_chat_receives_only_local_history_changes(isolated_history, save_local):
+    manager = Manager()
+    original = SimpleNamespace(send_json=AsyncMock())
+    replacement = SimpleNamespace(send_json=AsyncMock())
+    manager.websocket = original
+    payload = message()
+    request_id = payload["request_id"]
+    snapshots = []
+
+    async def observe_history(event):
+        assert event == {"type": "chat_audio_changed", "character": "YUI"}
+        row = await asyncio.to_thread(isolated_history.receipt, request_id)
+        snapshots.append((row["state"], row["transcript"]))
+
+    replacement.send_json.side_effect = observe_history
+
+    async def submit(*_args, is_current, on_accepted, on_transcript):
+        assert is_current()
+        await on_accepted()
+        manager.websocket = replacement
+        row = await asyncio.to_thread(isolated_history.receipt, request_id)
+        assert row["state"] == "accepted"
+        assert row["transcript"] == ""
+        assert not is_current()
+        assert await on_transcript("Late transcription")
+
+    manager.client.submit_audio_message.side_effect = submit
+    await manager.submit_audio_message(
+        payload, original, is_current=lambda: manager.websocket is original, save_local=save_local,
+    )
+
+    if save_local:
+        assert snapshots == [("accepted", "Late transcription"), ("accepted_unconfirmed", "Late transcription")]
+        assert replacement.send_json.await_count == 2
+    else:
+        replacement.send_json.assert_not_awaited()
+    manager.client.submit_audio_message.assert_awaited_once()
+    manager.handle_input_transcript.assert_not_awaited()
+    assert original.send_json.await_args.args[0] == {
+        "type": "audio_message_result", "request_id": request_id, "state": "failed", "code": "unconfirmed",
+    }
+
+
 @pytest.mark.asyncio
 async def test_interrupted_audio_submit_does_not_retire_a_replacement_connection():
     manager, socket = Manager(), SimpleNamespace(send_json=AsyncMock())

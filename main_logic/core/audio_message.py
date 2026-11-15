@@ -61,11 +61,16 @@ class AudioMessageMixin:
         character = self.lanlan_name
 
         async def history_changed() -> None:
+            # Persisted history belongs to the character. The request receipt
+            # and the live turn still belong to the submitting connection.
+            viewer = websocket
             if not is_current():
-                return
+                viewer = getattr(self, "websocket", None)
+                if viewer is None or viewer is websocket:
+                    return
             try:
                 async with asyncio.timeout(1):
-                    await websocket.send_json({"type": "chat_audio_changed", "character": character})
+                    await viewer.send_json({"type": "chat_audio_changed", "character": character})
             except Exception:
                 pass
 
