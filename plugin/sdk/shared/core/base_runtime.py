@@ -10,6 +10,7 @@ The maintainer emphatically forbids reintroducing loguru here. Lint: scripts/che
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -101,7 +102,24 @@ def resolve_plugin_shared_dir(plugin_id: object) -> Path:
     ``<data root>/plugin_shared/<plugin id>/``, next to the plugins' private
     state and outside it: removing a plugin leaves what it published.
     """
-    return resolve_runtime_data_root() / PLUGIN_SHARED_DIRNAME / _safe_plugin_dirname(plugin_id)
+    return resolve_runtime_data_root() / PLUGIN_SHARED_DIRNAME / _shared_dirname(plugin_id)
+
+
+def _shared_dirname(plugin_id: object) -> str:
+    """Return the directory name a plugin id publishes under; two ids never get the same one.
+
+    An id that is a plain directory name already is used as it is. Any
+    other is made one the way private state does it, and that drops
+    characters: ``weather_`` and ``weather`` would end up in one directory
+    and write over each other's files. Such an id gets a few characters of
+    its hash appended. (Private state keeps its mapping: its paths are a
+    contract with what is on users' disks.)
+    """
+    raw = str(plugin_id or "").strip()
+    safe = _safe_plugin_dirname(raw)
+    if raw == safe:
+        return safe
+    return f"{safe}-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _declared_shared_reads(plugin_section: object) -> frozenset[str] | None:

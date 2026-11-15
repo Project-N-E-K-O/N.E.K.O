@@ -155,6 +155,27 @@ def test_one_id_as_a_string_is_accepted(root, tmp_path) -> None:
     assert resolve_shared_reads(travel.ctx) == frozenset({"weather"})
 
 
+@pytest.mark.parametrize(
+    "first,second",
+    [("weather", "weather_"), ("weather", ".weather"), ("a b", "a_b"), ("a/b", "a_b"), ("weather_", "weather.")],
+)
+def test_two_plugin_ids_never_publish_into_one_directory(root, first, second) -> None:
+    one, other = resolve_plugin_shared_dir(first), resolve_plugin_shared_dir(second)
+
+    assert one != other
+    assert one.parent == other.parent == root / "plugin_shared"
+
+
+@pytest.mark.parametrize("plugin_id", ["weather", "memo_reminder", "mcp-adapter", "a.b", "Plugin2"])
+def test_an_ordinary_plugin_id_is_its_own_directory_name(root, plugin_id) -> None:
+    assert resolve_plugin_shared_dir(plugin_id) == root / "plugin_shared" / plugin_id
+
+
+def test_private_state_keeps_its_directory_names(root, tmp_path) -> None:
+    # Only the shared directory tells such ids apart; private paths are as they were.
+    assert _plugin(tmp_path, "weather_").storage_dir == root / "plugins" / "weather"
+
+
 def test_the_shared_directory_follows_the_data_root(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "elsewhere"))
 

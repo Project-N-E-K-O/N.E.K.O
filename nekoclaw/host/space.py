@@ -366,6 +366,21 @@ class TaskAgentSpace:
             return None
 
     @staticmethod
+    def _text_to_change(path: Path) -> str:
+        """Return the text of a file that is about to be changed; empty when there is no file.
+
+        Raises OSError when the file is there and cannot be read (held open
+        by another program, not text): taken for empty, it would be written
+        over with the little that is being added.
+        """
+        try:
+            return path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+        except FileNotFoundError:
+            return ""
+        except UnicodeError as exc:
+            raise OSError(f"{path.name} is not text this can read; it is left as it is") from exc
+
+    @staticmethod
     def _put_text(path: Path, text: str) -> None:
         """Replace a file atomically and check that what is there is what was written.
 
@@ -405,7 +420,7 @@ class TaskAgentSpace:
         """
         for _attempt in range(_WRITE_ATTEMPTS):
             before = self._signature(path)
-            text = self._read_text(path) or ""
+            text = self._text_to_change(path)
             changed = change(text)
             if changed == text:
                 return False
@@ -623,6 +638,9 @@ class TaskAgentSpace:
             )
         except (SpaceError, ValueError) as exc:
             return f"not kept: {exc}"
+        except OSError as exc:
+            logger.warning("a lesson could not be written into the task agent space (%s)", type(exc).__name__)
+            return "not kept: the files of the task agent space could not be written"
         if self._ledger is not None:
             # On the commission's record too, so the board can show it.
             await self._ledger.append_event(

@@ -295,10 +295,15 @@ class SpaceKeeper:
 
         Returns what became of it: ``written``, ``skipped`` (too little was
         done), ``failed`` (the model gave nothing usable), ``already``,
-        ``not_due`` (not ended, or not a commission that is reviewed) or
-        ``no_model``. All but the last three are recorded as a ``review``
-        event of the commission, and a commission with such an event is
-        never reviewed again.
+        ``not_due`` (not ended, or not a commission that is reviewed),
+        ``no_model`` or ``stale``. The first three are recorded as a
+        ``review`` event of the commission, and a commission with such an
+        event is never reviewed again.
+
+        ``stale``: a failed commission was taken up again while the model
+        was writing. What came back is about an end that is no longer the
+        commission's; it is thrown away and nothing is recorded, so the end
+        the commission comes to is the one that is reviewed.
         """
         from config.nekoclaw_settings import TASK_AGENT_REVIEW_MIN_TOOL_CALLS
 
@@ -317,15 +322,50 @@ class SpaceKeeper:
                 return "skipped"
             if self._llm is None:
                 return "no_model"
+            data: dict[str, Any] | None = None
+            problem = ""
             try:
-                outcome = await self._write_review(commission, events)
+                data = _parse_object(
+                    await self._llm.complete(TIER_REVIEW, await self._review_messages(commission, events))
+                )
+                problem = "" if data is not None else "unreadable"
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - recorded, and not tried again
                 logger.warning("reviewing commission %s failed (%s)", commission_id, type(exc).__name__)
-                outcome = {"status": "failed", "reason": type(exc).__name__}
-            await self._ledger.append_event(commission_id, "review", outcome)
-            return str(outcome["status"])
+                problem = type(exc).__name__
+            # A commission that is done or was stopped stays so. A failed one
+            # can be taken up again at any moment: it is held against that
+            # while the review is kept, and looked up again once it is held.
+            holding = False
+            if commission.status not in _REVIEWED_AT_ONCE and self._hold_session is not None:
+                if not self._hold_session(commission_id):
+                    return "stale"
+                holding = True
+            try:
+                if commission.status not in _REVIEWED_AT_ONCE:
+                    current = await self._ledger.get(commission_id)
+                    same = current is not None and (current.status, current.updated_at) == (
+                        commission.status,
+                        commission.updated_at,
+                    )
+                    if not same:
+                        return "stale"
+                if problem or data is None:
+                    outcome = {"status": "failed", "reason": problem or "unreadable"}
+                else:
+                    try:
+                        outcome = await self._keep_review(commission, data)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - recorded, and not tried again
+                        logger.warning("keeping the review of %s failed (%s)", commission_id, type(exc).__name__)
+                        outcome = {"status": "failed", "reason": type(exc).__name__}
+                await self._ledger.append_event(commission_id, "review", outcome)
+                return str(outcome["status"])
+            finally:
+                if holding and self._release_session is not None:
+                    self._release_session(commission_id)
 
     async def _review_messages(self, commission: Commission, events: list[LedgerEvent]) -> list[dict[str, str]]:
         from config.nekoclaw_settings import (
@@ -420,14 +460,11 @@ class SpaceKeeper:
         )
         return project.name
 
-    async def _write_review(self, commission: Commission, events: list[LedgerEvent]) -> dict[str, Any]:
+    async def _keep_review(self, commission: Commission, data: dict[str, Any]) -> dict[str, Any]:
+        """Keep what the model answered: the review, its entries, the project. Returns the ``review`` event."""
         from config.nekoclaw_settings import TASK_AGENT_REVIEW_MAX_ENTRIES, TASK_AGENT_REVIEW_TEXT_MAX_TOKENS
         from utils.tokenize import truncate_to_tokens
 
-        messages = await self._review_messages(commission, events)
-        data = _parse_object(await self._llm.complete(TIER_REVIEW, messages))
-        if data is None:
-            return {"status": "failed", "reason": "unreadable"}
         text = truncate_to_tokens(str(data.get("review") or "").strip(), TASK_AGENT_REVIEW_TEXT_MAX_TOKENS)
         if not text:
             return {"status": "failed", "reason": "empty"}

@@ -350,6 +350,75 @@ async def test_a_failed_commission_taken_up_again_is_reviewed_once_when_it_is_do
     assert [event["status"] for event in await world.reviews(commission.id)] == ["written"]
 
 
+async def test_a_review_of_a_commission_taken_up_again_meanwhile_is_thrown_away(world):
+    await world.keeper.tidy(force=True)
+    commission = await world.finished(status="failed")
+    world.clock.now += DAY + 60
+
+    async def meanwhile() -> dict[str, Any]:
+        # The user's words take it up again while the model is writing about its failure.
+        await world.ledger.transition(commission.id, "working", reason="taken up again")
+        return {"review": "It failed.", "entries": [{"title": "Stale", "content": "From the failure."}], "project": "Stale project"}
+
+    world.llm.answers[TIER_REVIEW] = [meanwhile, {"review": "It was done in the end."}]
+
+    await world.keeper.tidy(force=True)
+
+    # Nothing of the stale answer was kept, and nothing says it was reviewed.
+    assert await world.reviews(commission.id) == []
+    assert await world.space.list_reviews() == [] and await world.space.list_entries(DEFAULT_PROJECT) == []
+    assert [item.name for item in await world.space.list_projects()] == []
+
+    await world.end(commission.id, "done")
+
+    assert [event["status"] for event in await world.reviews(commission.id)] == ["written"]
+    assert (await world.space.read_review(commission.id)).content.endswith("It was done in the end.")
+
+
+async def test_a_review_of_a_commission_that_failed_anew_meanwhile_is_thrown_away(world):
+    await world.keeper.tidy(force=True)
+    commission = await world.finished(status="failed")
+    world.clock.now += DAY + 60
+
+    async def meanwhile() -> dict[str, Any]:
+        # Taken up again and failed again: failed as before, but it is another end.
+        await world.ledger.transition(commission.id, "working", reason="taken up again")
+        world.clock.now += 5
+        await world.ledger.transition(commission.id, "failed", reason="failed again")
+        return {"review": "It failed the first time."}
+
+    world.llm.answers[TIER_REVIEW] = [meanwhile]
+
+    assert await world.keeper.review(commission.id) == "stale"
+    assert await world.reviews(commission.id) == [] and await world.space.list_reviews() == []
+
+
+async def test_a_failed_commission_in_use_gets_no_stale_review_and_one_reviewed_is_held_meanwhile(world):
+    await world.keeper.tidy(force=True)
+    in_use = await world.finished("in use by the time the model answers", status="failed")
+    free = await world.finished("left failed", status="failed")
+    done = await world.finished("done")
+    held: list[str] = []
+    released: list[str] = []
+
+    def hold(commission_id: str) -> bool:
+        if commission_id == in_use.id:
+            return False
+        held.append(commission_id)
+        return True
+
+    world.keeper._hold_session = hold
+    world.keeper._release_session = released.append
+
+    assert await world.keeper.review(in_use.id) == "stale"
+    assert await world.keeper.review(free.id) == "written"
+
+    assert await world.reviews(in_use.id) == []
+    assert held == [free.id] and released == [free.id]
+    # A commission that is done cannot be taken up again and is not held at all.
+    assert (await world.reviews(done.id))[0]["status"] == "written"
+
+
 async def test_a_blocked_commission_is_not_reviewed(world):
     await world.keeper.tidy(force=True)
     commission = await world.finished(status="blocked")

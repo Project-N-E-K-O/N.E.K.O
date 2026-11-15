@@ -284,6 +284,49 @@ async def test_what_the_user_saves_while_the_host_writes_is_not_written_over(spa
     assert "- [Second](memory/second.md) — Two." in lines and "- [First](memory/first.md) — One." in lines
 
 
+async def test_an_index_that_cannot_be_read_is_not_written_over(space, root):
+    index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    index.parent.mkdir(parents=True)
+    # Saved by some editor in an encoding this does not read.
+    unreadable = "- 我自己的笔记\n".encode("utf-16")
+    index.write_bytes(unreadable)
+
+    message = await space.submit(_commission(), _lesson("Photo dates", "Use the EXIF date."))
+
+    assert message == "not kept: the files of the task agent space could not be written"
+    assert index.read_bytes() == unreadable
+
+
+async def test_an_entry_that_cannot_be_read_is_not_written_over(space, root):
+    await space.submit(_commission(), _lesson("Photo dates", "Use the EXIF date."))
+    entry = root / "projects" / DEFAULT_PROJECT / "memory" / "photo-dates.md"
+    unreadable = b"\xff\xfe\xff not text at all \x80\x81"
+    entry.write_bytes(unreadable)
+
+    # It cannot be told what it is about, so what comes in gets a file of its own.
+    made, created = await space.file_entry(DEFAULT_PROJECT, title="photo-dates", content="Videos differ.")
+
+    assert entry.read_bytes() == unreadable
+    assert (created, made.id) == (True, "photo-dates-2")
+    assert (entry.parent / "photo-dates-2.md").is_file()
+
+
+def test_changing_a_file_that_cannot_be_read_is_refused(space, root):
+    path = root / "MEMORY.md"
+    path.parent.mkdir(parents=True)
+    unreadable = b"\xff\xfe\xff not text at all \x80\x81"
+    path.write_bytes(unreadable)
+
+    with pytest.raises(OSError):
+        space._edit_text(path, lambda text: text + "- a new line\n")
+
+    assert path.read_bytes() == unreadable
+    # A file that is not there is started from nothing.
+    fresh = root / "projects" / "blog" / "MEMORY.md"
+    assert space._edit_text(fresh, lambda text: text + "- a new line\n") is True
+    assert fresh.read_text(encoding="utf-8") == "- a new line\n"
+
+
 async def test_a_file_in_use_is_tried_again(space, root, monkeypatch):
     import utils.file_utils as file_utils
 
