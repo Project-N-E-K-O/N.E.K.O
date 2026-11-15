@@ -80,13 +80,13 @@ NAMES: list[str] = [definition["name"] for definition in DEFINITIONS]
 # The shipped tools of each group, by the name a model is given for the group.
 SHIPPED = {"browser": BROWSER_TOOLS, "desktop": (COMPUTER_TOOL,)}
 # What every request of a task agent may carry of the two groups: the search
-# and the call tool, with the line about each group. Measured at 331 when
+# and the call tool, with the line about each group. Measured at 329 when
 # this was written; before the groups were loaded on demand the definitions
 # and the guidance took 2227 in every request.
 UP_FRONT_MAX_TOKENS = 350
 # Of that, the part the groups add to a search tool that is offered anyway
 # (a task agent with plugin entries it was not all listed has it already).
-# Measured at 173.
+# Measured at 171.
 GROUP_LINES_MAX_TOKENS = 190
 GUIDANCE_MAX_TOKENS = 360
 
