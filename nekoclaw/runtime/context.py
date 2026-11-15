@@ -307,7 +307,8 @@ def cap_result_blocks(blocks: Sequence[str], cap: int, spill: SpillStore, hint: 
     out: list[str] = []
     for index, block in enumerate(blocks):
         room = left if index == 0 else max(left, _LATER_BLOCK_MIN_TOKENS)
-        kept = cap_result_text(block, room, spill, f"{hint}-{index + 1}")
+        # (The store numbers what it saves, so two blocks of one result never share a file.)
+        kept = cap_result_text(block, room, spill, hint)
         if kept is None:
             kept = block
         elif block.endswith("\n"):
