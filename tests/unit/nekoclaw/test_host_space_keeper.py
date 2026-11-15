@@ -1056,8 +1056,10 @@ async def test_a_session_whose_files_could_not_be_removed_is_tried_again_next_ro
 
     assert (world.paths.session_dir(stuck.id) / "transcript.jsonl").is_file()
     assert not (world.paths.session_dir(later.id) / "transcript.jsonl").exists()
-    # Not passed over: the next round starts again at it.
-    assert (await world.space.read_state())["sessions_cleaned_until"] < stuck.updated_at
+    # Not forgotten: it is remembered by itself, and the scan has moved on.
+    state = await world.space.read_state()
+    assert state["sessions_to_retry"] == [stuck.id]
+    assert state["sessions_cleaned_until"] == world.clock.now - SPACE_TRANSCRIPT_KEPT_SECONDS
     assert "session_cleaned" not in [event.type for event in await world.ledger.events(stuck.id)]
 
     busy["yes"] = False
@@ -1065,7 +1067,67 @@ async def test_a_session_whose_files_could_not_be_removed_is_tried_again_next_ro
     await world.keeper.tidy(force=True)
 
     assert not (world.paths.session_dir(stuck.id) / "transcript.jsonl").exists()
-    assert (await world.space.read_state())["sessions_cleaned_until"] == world.clock.now - SPACE_TRANSCRIPT_KEPT_SECONDS
+    state = await world.space.read_state()
+    assert state["sessions_to_retry"] == []
+    assert state["sessions_cleaned_until"] == world.clock.now - SPACE_TRANSCRIPT_KEPT_SECONDS
+    assert [event.type for event in await world.ledger.events(stuck.id)][-1] == "session_cleaned"
+
+
+async def test_a_session_that_never_lets_go_does_not_hold_the_later_ones_back(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    monkeypatch.setattr("nekoclaw.host.space_keeper._CLEAN_BATCH", 2)
+    commissions = []
+    for number in range(5):
+        commissions.append(await world.finished(f"old task number {number} words{number}", calls=0))
+        world.clock.now += 10
+    for commission in commissions:
+        _fill_session(world.paths.session_dir(commission.id))
+    stuck = commissions[0]
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    remove = world.keeper._clean_session
+    tried: list[str] = []
+
+    def removing(directory: Path, commission_id: str) -> str:
+        if commission_id == stuck.id:
+            tried.append(commission_id)
+            return "not_removed"
+        return remove(directory, commission_id)
+
+    world.keeper._clean_session = removing
+
+    for _round in range(4):
+        await world.keeper.tidy(force=True)
+
+    # Two a round: every other session was reached, though the first never let go.
+    for commission in commissions[1:]:
+        assert not (world.paths.session_dir(commission.id) / "transcript.jsonl").exists(), commission.title
+    assert (world.paths.session_dir(stuck.id) / "transcript.jsonl").is_file()
+    # Tried once a round, not once per session of the round.
+    assert tried == [stuck.id] * 4
+    assert (await world.space.read_state())["sessions_to_retry"] == [stuck.id]
+
+
+async def test_a_remembered_session_that_was_taken_up_again_is_let_go(world):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    stuck = await world.finished("failed long ago", calls=0, status="failed")
+    _fill_session(world.paths.session_dir(stuck.id))
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    remove = world.keeper._clean_session
+    world.keeper._clean_session = lambda directory, commission_id: "not_removed"
+    await world.keeper.tidy(force=True)
+    assert (await world.space.read_state())["sessions_to_retry"] == [stuck.id]
+
+    # Taken up again and done: its transcript is in use, and young again.
+    await world.ledger.transition(stuck.id, "working", reason="taken up again")
+    await world.end(stuck.id, "done")
+    world.keeper._clean_session = remove
+    world.clock.now += 3600
+    await world.keeper.tidy(force=True)
+
+    assert (world.paths.session_dir(stuck.id) / "transcript.jsonl").is_file()
+    assert (await world.space.read_state())["sessions_to_retry"] == []
 
 
 def test_removing_says_when_something_is_still_there(tmp_path, monkeypatch):

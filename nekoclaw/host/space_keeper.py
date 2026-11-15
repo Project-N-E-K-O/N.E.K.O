@@ -68,6 +68,8 @@ _CLEANABLE = frozenset({"done", "failed", "cancelled"})
 _REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
 _EVENT_PAGE = 500
 _CLEAN_BATCH = 200
+# Most sessions whose files could not be removed that are remembered to be tried again.
+_RETRY_KEPT = 500
 _LANGUAGES = {
     "zh": "Simplified Chinese",
     "zh-CN": "Simplified Chinese",
@@ -750,21 +752,35 @@ class SpaceKeeper:
         stored = state.get("sessions_cleaned_until")
         after = float(stored) if isinstance(stored, (int, float)) else 0.0
         until = now - SPACE_TRANSCRIPT_KEPT_SECONDS
-        if until <= after:
-            return
-        rows = await self._ledger.run(lambda conn: [_commission(row) for row in self._ended_long_ago(conn, after, until)])
-        commissions = [item for item in rows if item is not None]
-        retry_from: float | None = None
-        for commission in commissions:
+        # Looked at is not cleaned. A session whose files could not be
+        # removed (held open by another program) is remembered by itself
+        # and tried again every round, while the scan moves on: holding the
+        # scan back at it would keep every later session waiting behind a
+        # file that may never let go.
+        remembered = state.get("sessions_to_retry")
+        waiting = [str(item) for item in remembered if isinstance(item, str)] if isinstance(remembered, list) else []
+        still: list[str] = []
+
+        async def clean(commission: Commission) -> None:
             outcome = await self._clean_one(commission, until)
             if outcome == _REMOVED:
                 await self._ledger.append_event(commission.id, "session_cleaned", {})
-            elif outcome == _NOT_REMOVED and retry_from is None:
-                retry_from = commission.updated_at
-        # A full batch leaves the rest to the next round, which goes on where this one stopped.
-        reached = commissions[-1].updated_at if len(commissions) >= _CLEAN_BATCH else until
-        if retry_from is not None:
-            # Looked at is not cleaned: the next round starts again at the
-            # first session whose files could not be removed.
-            reached = min(reached, retry_from - 0.001)
-        await self._space.write_state(sessions_cleaned_until=reached)
+            elif outcome == _NOT_REMOVED:
+                still.append(commission.id)
+
+        for commission_id in waiting:
+            commission = await self._ledger.get(commission_id)
+            if commission is not None:
+                await clean(commission)
+        reached = after
+        if until > after:
+            rows = await self._ledger.run(
+                lambda conn: [_commission(row) for row in self._ended_long_ago(conn, after, until)]
+            )
+            commissions = [item for item in rows if item is not None and item.id not in waiting]
+            for commission in commissions:
+                await clean(commission)
+            # A full batch leaves the rest to the next round, which goes on where this one stopped.
+            reached = rows[-1].updated_at if len(rows) >= _CLEAN_BATCH and rows[-1] is not None else until
+        if reached != after or still != waiting:
+            await self._space.write_state(sessions_cleaned_until=reached, sessions_to_retry=still[-_RETRY_KEPT:])
