@@ -4186,3 +4186,119 @@ async def test_a_project_is_not_made_when_only_one_that_is_there_is_wanted(space
     before = (await space.get_project("Budget app")).commissions
     opened = await space.open_project("budget APP", unless_new=True)
     assert opened is not None and opened.name == "Budget app" and opened.commissions == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 1
+# ---------------------------------------------------------------------------
+
+
+async def test_an_index_whose_first_line_alone_is_over_shows_no_half_of_it(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS, SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("Never delete files.")
+    line = "- [a long entry](memory/a-long-entry.md) — " + "word " * 200
+    (root / "MEMORY.md").write_text(line.rstrip() + "\n- [second](memory/second.md) — short\n", encoding="utf-8")
+    assert 150 < count_tokens(line) < SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS
+    as_it_was = await space.brief(None)
+    assert as_it_was.split("\n\n")[2] == "Index, all projects:\n" + line.rstrip() + "\n- [second](memory/second.md) — short"
+    # The path of the space is so long that the index is left less than its first line takes.
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 100))
+
+    brief = await space.brief(None)
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    rules, index = brief.split("\n\n")[1:]
+    assert rules == "Rules for every commission:\nNever delete files."
+    # Not the beginning of the line with half of its link: nothing of it, and that it was cut.
+    assert index == "Index, all projects:\n" + texts.SPACE_BRIEF_CUT_NOTE
+
+    # The same for a first line that is over the cap an index has to begin with.
+    monkeypatch.undo()
+    longer = "- [a longer entry](memory/a-longer-entry.md) — " + "word " * 600
+    (root / "MEMORY.md").write_text(longer.rstrip() + "\n- [second](memory/second.md) — short\n", encoding="utf-8")
+    assert count_tokens(longer) > SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS
+    assert (await space.brief(None)).split("\n\n")[2] == "Index, all projects:\n" + texts.SPACE_BRIEF_CUT_NOTE
+
+
+async def test_a_note_that_was_stopped_before_its_turn_to_be_written_uses_no_place(root, clock):
+    import asyncio
+
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
+    commission, child = _commission(id="c-1"), _commission(id="c-1-child", parent_id="c-1")
+    # Something else is writing: the note of the task agent waits for its turn.
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    waiting = asyncio.create_task(space.submit(child, _lesson("Never written", "The session was stopped first.")))
+    await asyncio.sleep(0.01)
+    assert not waiting.done()
+
+    # The session is stopped while it waits.
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    space._lock.release()
+
+    assert not (root / "projects" / DEFAULT_PROJECT / "memory" / "never-written.md").exists()
+    # The commission and its task agents still have every place.
+    for number in range(SPACE_LESSONS_PER_COMMISSION):
+        reply = await space.submit(commission if number else child, _lesson(f"Note {number}", f"Text {number}."))
+        assert reply == f"kept in project _daily as note-{number}.md"
+    assert (await space.submit(commission, _lesson("One too many", "Dropped."))).startswith("not kept: this commission has added 3")
+
+
+async def test_a_note_that_was_written_while_its_session_was_stopped_has_used_its_place(root, clock, monkeypatch):
+    import asyncio
+    import threading
+
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+
+    space = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
+    commission = _commission(id="c-1")
+    file_entry, writing, go_on = space._file_entry, threading.Event(), threading.Event()
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        writing.set()
+        assert go_on.wait(10)
+        return file_entry(*args, **kwargs)
+
+    monkeypatch.setattr(space, "_file_entry", slow)
+    written = asyncio.create_task(space.submit(commission, _lesson("Written all the same", "The writing is finished.")))
+    assert await asyncio.to_thread(writing.wait, 10)
+
+    # Stopped in the middle of the writing, which is finished all the same.
+    written.cancel()
+    go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await written
+    monkeypatch.setattr(space, "_file_entry", file_entry)
+
+    assert (root / "projects" / DEFAULT_PROJECT / "memory" / "written-all-the-same.md").is_file()
+    # It was added: one place fewer is left.
+    for number in range(SPACE_LESSONS_PER_COMMISSION - 1):
+        assert (await space.submit(commission, _lesson(f"Note {number}", f"Text {number}."))).startswith("kept in project _daily")
+    assert (await space.submit(commission, _lesson("One too many", "Dropped."))).startswith("not kept: this commission has added 3")
+
+    # One that was there already, word for word, uses none, stopped or not.
+    again = TaskAgentSpace(lambda: SpacePaths(root), ledger=_Events(), clock=clock)
+    file_entry, writing, go_on = again._file_entry, threading.Event(), threading.Event()
+
+    def slow_again(*args: Any, **kwargs: Any) -> Any:
+        writing.set()
+        assert go_on.wait(10)
+        return file_entry(*args, **kwargs)
+
+    monkeypatch.setattr(again, "_file_entry", slow_again)
+    same = asyncio.create_task(again.submit(commission, _lesson("Written all the same", "The writing is finished.")))
+    assert await asyncio.to_thread(writing.wait, 10)
+    same.cancel()
+    go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await same
+    monkeypatch.setattr(again, "_file_entry", file_entry)
+    for number in range(SPACE_LESSONS_PER_COMMISSION):
+        assert not (await again.submit(commission, _lesson(f"Later {number}", f"More {number}."))).startswith("not kept")

@@ -1004,16 +1004,31 @@ class TaskAgentSpace:
             if self._added_by.get(counted, 0) > 0:
                 self._added_by[counted] -= 1
 
-        try:
-            entry, how = await self._write(
-                lambda: self._file_entry(
-                    project,
-                    title=str(lesson.get("title") or ""),
-                    content=str(lesson.get("content") or ""),
-                    kind=kind,
-                    source=commission.id,
-                )
+        # What became of the note, once the files were written or looked at.
+        became: list[str] = []
+
+        def work() -> tuple[Entry, str]:
+            entry, how = self._file_entry(
+                project,
+                title=str(lesson.get("title") or ""),
+                content=str(lesson.get("content") or ""),
+                kind=kind,
+                source=commission.id,
             )
+            became.append(how)
+            return entry, how
+
+        try:
+            entry, how = await self._write(work)
+        except asyncio.CancelledError:
+            # The session was stopped while the note waited for its turn to
+            # be written, or while it was written (the writing is finished
+            # all the same). Only a note that was added has used a place:
+            # one that never got as far would leave the commission and its
+            # other task agents one short for nothing.
+            if not became or became[0] == _THERE:
+                give_back()
+            raise
         except (SpaceError, ValueError) as exc:
             give_back()
             await self._note_unkept(commission, lesson, "refused")
@@ -2186,9 +2201,13 @@ class TaskAgentSpace:
                 header, text, _cap, is_index = kept[position]
                 if sizes[position] > cap:
                     if is_index:
-                        # Whole lines, so no line ends in half a link.
+                        # Whole lines, so no line ends in half a link. The
+                        # first line is handed back even when it alone is
+                        # over: then no line is shown, only that it was cut.
                         lines, _dropped = take_lines_within_token_budget(text.split("\n"), cap)
                         text = "\n".join(lines)
+                        if count_tokens(text) > cap:
+                            text = ""
                     text = f"{truncate_to_tokens(text, cap).rstrip()}\n{texts.SPACE_BRIEF_CUT_NOTE}".lstrip("\n")
                 return f"{header}\n{text}"
 
