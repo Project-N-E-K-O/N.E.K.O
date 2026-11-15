@@ -2069,3 +2069,52 @@ async def test_an_entry_stays_listed_where_it_was_when_the_index_of_where_it_goe
     assert daily.read_text(encoding="utf-8") == "- [What it is built on](memory/stack.md) — my own words\n"
     assert await space.list_entries("Budget app") == []
     assert not (root / "projects" / "Budget app" / "memory" / "stack.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# The twentieth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_text_that_is_the_end_of_a_note_with_a_dated_heading_is_another_text(space, root, clock):
+    note = "Setup\n\n## 2026-11-15\n\nUse pytest"
+    await space.submit(_commission(id="c-1"), _lesson("Running the tests", note))
+    clock.now += 86400
+
+    # What comes after the heading inside that note, filed by itself: not what the entry said, nor an addition to it.
+    second = await space.submit(_commission(id="c-2"), _lesson("Running the tests", "Use pytest"))
+    third = await space.submit(_commission(id="c-3"), _lesson("Running the tests", "Use pytest"))
+    fourth = await space.submit(_commission(id="c-4"), _lesson("Running the tests", note))
+
+    assert second == "added to running-the-tests.md in project _daily"
+    assert third == fourth == "already in running-the-tests.md in project _daily, word for word; nothing was added"
+    entry = await space.read_entry("running-the-tests", DEFAULT_PROJECT)
+    assert entry.content.count("Use pytest") == 2 and entry.content.count("Setup") == 1
+
+
+async def test_a_text_the_user_took_out_of_an_entry_is_added_when_it_is_filed_again(space, root, clock):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    clock.now += 86400
+    await space.submit(_commission(id="c-2"), _lesson("Stack", "It uses SQLite."))
+    path = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    # The user removes what was added, in an editor.
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text[: text.index("## ")], encoding="utf-8")
+
+    again = await space.submit(_commission(id="c-3"), _lesson("Stack", "It uses SQLite."))
+
+    assert again == "added to stack.md in project _daily"
+    assert (await space.read_entry("stack", DEFAULT_PROJECT)).content.count("It uses SQLite.") == 1
+
+
+async def test_an_entry_written_by_hand_has_a_text_already_only_when_that_is_all_it_says(space, root):
+    directory = root / "projects" / DEFAULT_PROJECT / "memory"
+    directory.mkdir(parents=True)
+    (directory / "stack.md").write_text("It uses Flask.\n", encoding="utf-8")
+
+    same = await space.submit(_commission(id="c-1"), _lesson("stack", "It uses Flask."))
+    other = await space.submit(_commission(id="c-2"), _lesson("stack", "It uses"))
+
+    assert same == "already in stack.md in project _daily, word for word; nothing was added"
+    assert other == "added to stack.md in project _daily"
+    assert (directory / "stack.md").read_text(encoding="utf-8").count("It uses") == 2

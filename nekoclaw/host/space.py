@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -317,8 +318,6 @@ def _entry_type(value: Any) -> str:
     return kind if kind in ENTRY_TYPES else _DEFAULT_TYPE
 
 
-# The heading of what was added to an entry on a later day.
-_DATE_HEADING = r"## \d{4}-\d{2}-\d{2}[ \t]*"
 # What became of an entry that was filed: a new file, added to one, or there already.
 _CREATED, _ADDED, _THERE = "created", "added", "there"
 
@@ -340,17 +339,25 @@ def _link(target: str) -> str:
     return target if _PLAIN_TARGET.fullmatch(target) else f"<{target}>"
 
 
-def _said_already(body: str, content: str) -> bool:
-    """Whether an entry's text has ``content`` word for word: as what it said first, or as one of its additions.
+def _digest(content: str) -> str:
+    """Return a short mark of a text that was filed, to tell later that the same text is filed again."""
+    return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()[:12]
 
-    Looked for as a whole between the headings the host puts above an
-    addition, not by cutting the text at such headings: a note that has a
-    heading like that inside it is still one note.
+
+def _said_already(document: _Document, content: str) -> bool:
+    """Whether an entry has ``content`` word for word, as what it said first or as one of its additions.
+
+    Told by the marks the entry keeps of every text that was filed
+    (``texts`` in its front matter), not by where its dated headings are:
+    a note can have such a heading inside it, and a shorter note can be
+    the end of a longer one. The text must still be there as well, so one
+    the user took out by hand is added again. An entry that keeps no marks
+    (one written by hand) has a text already only when it is all it says.
     """
-    whole = (
-        r"(?:\A|\n" + _DATE_HEADING + r"\n+)" + re.escape(content.strip()) + r"\s*(?:\n" + _DATE_HEADING + r"(?:\n|\Z)|\Z)"
-    )
-    return re.search(whole, body.strip()) is not None
+    marks = [item.strip() for item in document.get("texts").split(",") if item.strip()]
+    if not marks:
+        return document.body.strip() == content.strip()
+    return _digest(content) in marks and content.strip() in document.body
 
 
 def _index_marks(target: str) -> tuple[str, str]:
@@ -642,7 +649,7 @@ class TaskAgentSpace:
 
             def add(text: str) -> str:
                 document = _parse_document(text)
-                fresh = not _said_already(document.body, content)
+                fresh = not _said_already(document, content)
                 fresh_text[:] = [fresh]
                 if fresh:
                     addition = f"## {today}\n\n{content}"
@@ -657,6 +664,9 @@ class TaskAgentSpace:
                     return text
                 if fresh:
                     document.set("updated", today)
+                    marks = [item.strip() for item in document.get("texts").split(",") if item.strip()]
+                    if _digest(content) not in marks:
+                        document.set("texts", ", ".join([*marks, _digest(content)]))
                 if another:
                     document.set("sources", ", ".join([*known, source]))
                 return _render_document(document)
@@ -684,6 +694,8 @@ class TaskAgentSpace:
                 ("created", today),
                 ("updated", today),
                 ("sources", source or ""),
+                # A mark of every text filed; see ``_said_already``.
+                ("texts", _digest(content)),
             ],
             body=content,
             has_meta=True,
