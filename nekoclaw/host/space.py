@@ -355,27 +355,9 @@ def _digest(content: str) -> str:
     return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()[:12]
 
 
-# The heading the host puts above what is added to an entry on a later day.
-_DATED_HEADING = re.compile(r"(?m)^## \d{4}-\d{2}-\d{2}[ \t]*$")
-
-
 def _listed(document: _Document, key: str) -> list[str]:
     """Return what a line of the front matter lists, separated by commas."""
     return [item.strip() for item in document.get(key).split(",") if item.strip()]
-
-
-def _marks_of(document: _Document) -> list[str]:
-    """Return the marks of the texts an entry was given.
-
-    The ones it keeps in its front matter. An entry that keeps none (one
-    the user wrote by hand, with or without front matter) is taken to have
-    been given what stands between its dated headings: without that, the
-    same text would be added to it every time it is filed.
-    """
-    marks = _listed(document, "texts")
-    if marks:
-        return marks
-    return [_digest(part) for part in _DATED_HEADING.split(document.body) if part.strip()]
 
 
 def _points_at(line: str, marks: tuple[str, str]) -> bool:
@@ -404,10 +386,11 @@ def _lines_as_text(lines: list[str]) -> str:
 
 
 # How much of a text given in the console is looked through for what still
-# stands in it. Every part is marked with all that follows it, so the work
-# grows with the square of the parts: about a third of a second at these
-# limits. The text itself has no limit; it is the user's.
-_STANDING_PARTS_MAX = 500
+# stands in it. Every part is marked with all that follows it, line by
+# line, so the work is the parts times the lines, and the parts times the
+# characters: about a third of a second at either limit. The text itself
+# has no limit; it is the user's.
+_STANDING_STEPS_MAX = 1_000_000
 _STANDING_CHARACTERS_MAX = 200_000_000
 
 
@@ -431,7 +414,7 @@ def _standing_marks(body: str, marks: Iterable[str]) -> set[str] | None:
     firsts = [
         number for number, line in enumerate(lines) if line.strip() and (number == 0 or not lines[number - 1].strip())
     ]
-    if len(firsts) > _STANDING_PARTS_MAX or len(firsts) * len(body) > _STANDING_CHARACTERS_MAX:
+    if len(firsts) * len(lines) > _STANDING_STEPS_MAX or len(firsts) * len(body) > _STANDING_CHARACTERS_MAX:
         return None
     lasts = {
         number
@@ -468,8 +451,14 @@ def _said_already(document: _Document, content: str) -> bool:
     the end of a longer one. The text must still be there as well, so one
     the user took out by hand is added again. A text that is all the
     entry says is there already whatever the marks are: the entry may
-    have been written by hand, or its text replaced in an editor. For an
-    entry that keeps no marks see ``_marks_of``.
+    have been written by hand, or its text replaced in an editor.
+
+    An entry that keeps no marks (one the user wrote by hand, with or
+    without front matter) cannot say what it was given: whatever stands
+    in it by itself is taken to have been. It is never given marks
+    either. Which of its parts were texts of their own cannot be told,
+    and with marks for some of them the others would count as never said
+    from then on, and be added a second time.
     """
     if document.body.strip() == content.strip():
         return True
@@ -501,7 +490,7 @@ class SpaceError(RuntimeError):
 
 
 class _NotAsWritten(OSError):
-    """A file was replaced, and what it holds afterwards is not what was written, or cannot be read."""
+    """A file was replaced, and what it holds afterwards is not what was written."""
 
 
 class _LeftAside(OSError):
@@ -581,11 +570,17 @@ class TaskAgentSpace:
             raise OSError(f"{path.name} is not text this can read; it is left as it is") from exc
 
     @staticmethod
-    def _put_text(path: Path, text: str) -> None:
+    def _put_text(path: Path, text: str) -> bool:
         """Replace a file atomically and check that what is there is what was written.
 
         On Windows a file held open by another program (an editor, a virus
         scanner) refuses to be replaced for a moment: tried again a few times.
+
+        Returns whether it was looked at afterwards. A file that was
+        replaced and cannot be read for a while (a virus scanner looks at
+        every new file) is written all the same: that says nothing against
+        what it holds, and it is not said to have failed. Raises
+        ``_NotAsWritten`` when it holds something else.
         """
         from utils.file_utils import atomic_write_text
 
@@ -605,14 +600,21 @@ class TaskAgentSpace:
             for look in range(_WRITE_ATTEMPTS):
                 try:
                     there = path.read_text(encoding="utf-8")
-                except (OSError, UnicodeError) as exc:
+                except UnicodeError as exc:
+                    # Not text: not what was written.
+                    raise _NotAsWritten(f"{path.name} does not hold what was written") from exc
+                except OSError as exc:
                     last = exc
                     time.sleep(_WRITE_RETRY_SECONDS * (look + 1))
                     continue
                 if there == text:
-                    return
+                    return True
                 raise _NotAsWritten(f"{path.name} does not hold what was written")
-            raise _NotAsWritten(f"{path.name} could not be read after it was written") from last
+            logger.warning(
+                "a file of the task agent space could not be read back after it was written (%s)",
+                type(last).__name__,
+            )
+            return False
         raise last if last is not None else OSError("the file could not be written")
 
     @staticmethod
@@ -628,33 +630,47 @@ class TaskAgentSpace:
 
         Read, changed and written back; when the file was written by someone
         else in between (the user saving it in an editor), it is read again,
-        so their change is not written over. So it is when the file could
-        not be looked at right after it was replaced: when it holds what was
-        written, that is all; when it holds something else, the change is
-        made again to what is there then.
+        so their change is not written over. So it is when the file holds
+        something else right after it was replaced: the change is made
+        again to what is there then. A file that could not be looked at
+        after it was replaced is read once more: when it holds what was
+        written, or still cannot be read, the change is in it.
         """
-        put: str | None = None
+        written = False
+        # What was written and could not be looked at, as it is read here.
+        unseen: str | None = None
         for _attempt in range(_WRITE_ATTEMPTS):
             before = self._signature(path)
-            text = self._text_to_change(path)
-            if put is not None and text == put:
+            try:
+                text = self._text_to_change(path)
+            except OSError:
+                if unseen is None:
+                    raise
+                # Replaced a moment ago and still held by another program:
+                # written, as far as can be told.
+                return True
+            if unseen is not None and text == unseen:
                 # It holds what was written a moment ago, so the change is
                 # in it. Not made a second time: not every change is one
                 # that leaves alone a text that has it already.
                 return True
+            unseen = None
             changed = change(text)
             if changed == text:
                 # Nothing to change, or it holds the change already.
-                return put is not None
+                return written
             if self._signature(path) != before:
                 continue
             try:
-                self._put_text(path, changed)
+                seen = self._put_text(path, changed)
             except _NotAsWritten:
-                # As ``_put_text`` wrote it, which is how it is read here.
-                put = _plain_lines(changed)
+                # Something else was saved right after it.
+                written = True
                 continue
-            return True
+            if seen:
+                return True
+            written = True
+            unseen = _plain_lines(changed)
         raise OSError(f"{path.name} kept changing while it was being written")
 
     # -- the index --------------------------------------------------------
@@ -857,9 +873,10 @@ class TaskAgentSpace:
                 # The text is in the entry now, added or there already, so
                 # its mark is kept: one that was put there in an editor has
                 # none yet, and would not be known again once the entry
-                # says more than it.
-                marks = _marks_of(document)
-                unmarked = _digest(content) not in marks
+                # says more than it. Only in an entry that keeps marks; see
+                # ``_said_already``.
+                marks = _listed(document, "texts")
+                unmarked = bool(marks) and _digest(content) not in marks
                 if not fresh and not another and not unmarked:
                     return text
                 if fresh:
@@ -900,22 +917,18 @@ class TaskAgentSpace:
             has_meta=True,
         )
         path = directory / f"{name}.md"
-        unread = False
         try:
             self._put_text(path, _render_document(document))
         except _NotAsWritten:
-            # In place, and not looked at (held by another program for a
-            # moment). It gets its line all the same: without one it would
-            # be a file that no index lists.
-            logger.warning("a new entry could not be read back right after it was written", exc_info=True)
-            unread = True
+            # In place, and saved over at that very moment. It is a file of
+            # the directory all the same and gets its line: without one it
+            # would be a file that no index lists.
+            logger.warning("a new entry does not hold what was written right after it was written", exc_info=True)
         target = f"{paths.MEMORY_DIR}/{name}.md"
         self._index_add(paths.index(project), _index_line(title, target, description), target)
         entry = self._entry_from(path, project, with_content=True)
         if entry is None:
-            if not unread:
-                raise SpaceError("the entry could not be read back")
-            # Still held: told as it was written.
+            # Held by another program just now: told as it was written.
             entry = Entry(
                 id=name,
                 project=project,
@@ -1206,15 +1219,18 @@ class TaskAgentSpace:
                     # others go, and the new text as a whole gets a mark.
                     # In a text too long to look through they all stay: one
                     # of a text that is gone does no harm, as a text must
-                    # stand in the entry as well to count as said.
-                    marks = _marks_of(document)
-                    standing = _standing_marks(content, marks)
-                    if standing is not None:
-                        marks = [mark for mark in marks if mark in standing]
+                    # stand in the entry as well to count as said. An entry
+                    # that keeps no marks is not given any; see
+                    # ``_said_already``.
+                    marks = _listed(document, "texts")
+                    if marks:
+                        standing = _standing_marks(content, marks)
+                        if standing is not None:
+                            marks = [mark for mark in marks if mark in standing]
+                        if _digest(content) not in marks:
+                            marks.append(_digest(content))
+                        document.set("texts", ", ".join(marks))
                     document.body = content
-                    if _digest(content) not in marks:
-                        marks.append(_digest(content))
-                    document.set("texts", ", ".join(marks))
                 document.set("updated", _date(self._clock()))
                 return _render_document(document)
 
@@ -1842,7 +1858,17 @@ class TaskAgentSpace:
             self._put_text(path, _render_document(document))
             review = self._review_from(path, project, None, with_content=True)
             if review is None:
-                raise SpaceError("the review could not be read back")
+                # Held by another program just now: told as it was written.
+                review = Review(
+                    commission_id=path.stem,
+                    project=project,
+                    archive_year=None,
+                    title=document.get("title"),
+                    status=document.get("status"),
+                    ended=document.get("ended"),
+                    entries=tuple(entries),
+                    content=document.body.strip(),
+                )
             return review
 
         return await self._write(work)
@@ -2210,10 +2236,12 @@ def _copy_across(source: Path, target: Path) -> None:
     project behind, which would be taken for the project itself. And there
     is no moment at which the directory is under its name in neither
     place. A process stopped anywhere on the way leaves it whole at the
-    source, at the target, or at both, and whatever has a name that begins
-    with a dot is a leftover nothing depends on. (Setting the source aside
-    before the copy has its name would, stopped there, leave both out of
-    sight, and the next move would remove them as leftovers.)
+    source, at the target, or at both. What has a name that begins with a
+    dot is no project: a copy that stopped half way and what was known to
+    be of no use can go, while what was set aside and not looked at yet
+    may hold what the target lacks, and is never removed. (Setting the
+    source aside before the copy has its name would, stopped there, leave
+    both out of sight.)
     """
     unfinished = target.with_name(f"{_UNFINISHED_PREFIX}{target.name}")
     shutil.rmtree(unfinished, ignore_errors=True)

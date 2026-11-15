@@ -3008,15 +3008,16 @@ def test_an_original_written_to_while_its_copy_is_brought_up_to_it_is_not_let_go
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("end", ["\n", "\r\n"])
+@pytest.mark.parametrize(("end", "looks"), [("\n", 3), ("\r\n", 3), ("\n", 8)])
 def test_a_change_that_went_in_is_not_made_a_second_time_when_the_file_could_not_be_read_back(
-    space, root, monkeypatch, end
+    space, root, monkeypatch, end, looks
 ):
     root.mkdir(parents=True)
     path = root / "notes.md"
     path.write_text("one\n", encoding="utf-8")
-    # Read once to make the change from; the looks at it after it was replaced fail.
-    reads = _not_read_back(monkeypatch, path, before=1)
+    # Read once to make the change from; the looks at it after it was replaced fail,
+    # and with eight of them so does the read that follows.
+    reads = _not_read_back(monkeypatch, path, before=1, looks=looks)
     given: list[str] = []
 
     def change(text: str) -> str:
@@ -3245,11 +3246,12 @@ def test_a_text_with_too_many_parts_or_too_much_to_mark_is_not_looked_through(mo
 
     body = "one\n\ntwo\n\nthree\n\nfour"
     wanted = [_digest("three\n\nfour")]
-    monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 4)
+    # Four parts in seven lines, each looked through to the last line.
+    monkeypatch.setattr(module, "_STANDING_STEPS_MAX", 4 * 7)
     assert _standing_marks(body, wanted) == set(wanted)
-    monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 3)
+    monkeypatch.setattr(module, "_STANDING_STEPS_MAX", 4 * 7 - 1)
     assert _standing_marks(body, wanted) is None
-    monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 4)
+    monkeypatch.setattr(module, "_STANDING_STEPS_MAX", 4 * 7)
     # Four parts, each marked with all that follows it.
     monkeypatch.setattr(module, "_STANDING_CHARACTERS_MAX", 4 * len(body))
     assert _standing_marks(body, wanted) == set(wanted)
@@ -3271,13 +3273,131 @@ async def test_the_marks_of_an_entry_all_stay_when_the_text_the_console_gives_is
 
     first = marks()
     assert len(first) == 1
-    monkeypatch.setattr(module, "_STANDING_PARTS_MAX", 3)
-    # Four parts: not looked through. The note is not in it any more, and its mark stays all the same.
+    monkeypatch.setattr(module, "_STANDING_STEPS_MAX", 4 * 7 - 1)
+    # Four parts in seven lines: not looked through. The note is not in it any more, and its mark stays all the same.
     await space.edit_entry("notes", DEFAULT_PROJECT, content="one\n\ntwo\n\nthree\n\nfour")
     assert marks()[:1] == first and len(marks()) == 2
     # Which does no harm: the note is not there, so it is added.
     clock.now += 86400
     assert await space.submit(_commission(id="c-2"), _lesson("Notes", "A note")) == "added to notes.md in project _daily"
-    # Three parts: looked through again, and only what stands is kept.
+    # Three parts in five lines: looked through again, and only what stands is kept.
     await space.edit_entry("notes", DEFAULT_PROJECT, content="one\n\nA note\n\nthree")
     assert len(marks()) == 2 and marks()[:1] == first
+
+
+# ---------------------------------------------------------------------------
+# The thirty-third review round
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("order", [("P2", "P1"), ("P1", "P2"), ("New.", "P1", "P2", "New.")])
+async def test_an_entry_written_by_hand_is_never_given_marks_and_each_part_of_it_counts_as_said(
+    space, root, clock, order
+):
+    directory = root / "projects" / DEFAULT_PROJECT / "memory"
+    directory.mkdir(parents=True)
+    path = directory / "stack.md"
+    # With front matter, and without the line of marks the host writes.
+    path.write_text("---\nname: Stack\ndescription: by hand\n---\n\nP1\n\nP2\n", encoding="utf-8")
+
+    replies = []
+    for number, text in enumerate(order):
+        clock.now += 86400
+        replies.append(await space.submit(_commission(id=f"c-{number}"), _lesson("Stack", text)))
+
+    there = "already in stack.md in project _daily, word for word; nothing was added"
+    expected = ["added to stack.md in project _daily" if text == "New." and number == 0 else there for number, text in enumerate(order)]
+    assert replies == expected
+    text = path.read_text(encoding="utf-8")
+    assert "texts:" not in text
+    content = (await space.read_entry("stack", DEFAULT_PROJECT)).content
+    assert content.count("P1") == 1 and content.count("P2") == 1 and content.count("New.") <= 1
+    # Who filed what is there is noted all the same.
+    assert "sources: c-0, c-1" in text
+
+
+async def test_an_entry_written_by_hand_is_not_given_marks_when_its_text_is_replaced_in_the_console(space, root, clock):
+    directory = root / "projects" / DEFAULT_PROJECT / "memory"
+    directory.mkdir(parents=True)
+    path = directory / "stack.md"
+    path.write_text("first note by hand\n", encoding="utf-8")
+
+    await space.edit_entry("stack", DEFAULT_PROJECT, content="P1\n\nP2")
+
+    text = path.read_text(encoding="utf-8")
+    # Given the front matter an entry has, and no marks.
+    assert text.startswith("---\n") and "texts:" not in text
+    clock.now += 86400
+    there = "already in stack.md in project _daily, word for word; nothing was added"
+    assert await space.submit(_commission(id="c-1"), _lesson("stack", "P2")) == there
+    assert await space.submit(_commission(id="c-2"), _lesson("stack", "P1")) == there
+    assert (await space.read_entry("stack", DEFAULT_PROJECT)).content == "P1\n\nP2"
+
+
+def test_a_file_that_is_not_text_after_it_was_replaced_does_not_hold_what_was_written(tmp_path, monkeypatch):
+    from nekoclaw.host.space import _NotAsWritten
+
+    path = tmp_path / "MEMORY.md"
+    read = Path.read_text
+    looks: list[int] = []
+
+    def read_text(self, *args, **kwargs):
+        if self == path:
+            looks.append(1)
+            # Saved over with something that is not text, right after it was replaced.
+            path.write_bytes(b"\xff\xfe\x00")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(_NotAsWritten, match="does not hold what was written"):
+        TaskAgentSpace._put_text(path, "- one\n")
+
+    monkeypatch.undo()
+    # Looked at once, and not written a second time.
+    assert looks == [1]
+    assert path.read_bytes() == b"\xff\xfe\x00"
+
+
+def test_a_file_that_cannot_be_looked_at_after_it_was_replaced_is_written_and_said_not_to_be_seen(tmp_path, monkeypatch):
+    path = tmp_path / "AGENTS.md"
+    reads = _not_read_back(monkeypatch, path, before=0, looks=8)
+    monkeypatch.setattr("nekoclaw.host.space._WRITE_RETRY_SECONDS", 0)
+
+    seen = TaskAgentSpace._put_text(path, "Be brief.\n")
+
+    monkeypatch.undo()
+    assert seen is False and len(reads) == 3
+    assert path.read_text(encoding="utf-8") == "Be brief.\n"
+    assert TaskAgentSpace._put_text(path, "Be brief.\n") is True
+
+
+async def test_a_review_that_cannot_be_read_back_is_kept_and_told_as_it_was_written(space, root, monkeypatch):
+    commission = _commission(id="c-1")
+    path = root / "projects" / "Budget app" / "reviews" / "c-1.md"
+    reads = _not_read_back(monkeypatch, path, before=0, looks=8)
+
+    review = await space.write_review("Budget app", commission, "It went well.", entries=("stack",))
+
+    monkeypatch.undo()
+    assert len(reads) >= 4
+    assert review.commission_id == "c-1" and review.project == "Budget app" and review.entries == ("stack",)
+    assert review.content.endswith("It went well.")
+    kept = await space.read_review("c-1")
+    assert kept is not None and kept.content == review.content and kept.title == review.title
+    assert kept.status == review.status and kept.ended == review.ended
+
+
+async def test_a_line_is_added_to_an_index_that_cannot_be_looked_at_for_long_after_it_was_replaced(space, root, monkeypatch):
+    await space.file_entry(None, title="First", content="One.")
+    index = root / "MEMORY.md"
+    # Read once to add the line to; from then on it cannot be read while this goes on.
+    reads = _not_read_back(monkeypatch, index, before=1, looks=50)
+
+    entry, created = await space.file_entry(None, title="Second", content="Two.")
+
+    monkeypatch.undo()
+    assert len(reads) >= 5
+    assert created is True and entry.id == "second"
+    lines = index.read_text(encoding="utf-8").splitlines()
+    assert lines == ["- [Second](memory/second.md) — Two.", "- [First](memory/first.md) — One."]
