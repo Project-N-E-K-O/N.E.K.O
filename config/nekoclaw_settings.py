@@ -315,22 +315,32 @@ answer that is cut off all the same is not thrown away whole: the review
 and the entries that are complete are kept."""
 
 TASK_AGENT_REVIEW_TEXT_MAX_TOKENS = 250
-"""Cap on the review as it is kept."""
+"""Cap on the review as it is kept. Its prompt asks for 150 words at most,
+which is within it; a longer one is ended where a sentence ends."""
 
-TASK_AGENT_REVIEW_MAX_ENTRIES = 3
-"""Most entries one review may file."""
+TASK_AGENT_REVIEW_MAX_ENTRIES = 2
+"""Most entries one review may file. Together with the cap on the text of
+one, this is what the cap on the answer leaves room for: three entries
+would have to be a sentence or two each."""
 
 TASK_AGENT_REVIEW_ENTRIES_WHEN_STOPPED = 0
 """Most entries the review of a commission the user stopped may file. A
 commission is often stopped because it went wrong, and what it did then is
 not what later commissions should learn from; its review is still written."""
 
-TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS = 65
-"""Cap on the text of one entry a review files: two or three sentences."""
+TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS = 130
+"""Cap on the text of one entry a review files. Its prompt asks for two or
+three sentences of 80 words at most: some 90 tokens of English or Chinese,
+some 110 of Japanese, some 130 of Russian. A longer one is ended where a
+sentence ends, since the entry stays in the space and is read by later task
+agents."""
 
 TASK_AGENT_REVIEWS_PER_UPKEEP = 3
 """Most late reviews one round of tidying has a model write (failed
-commissions nobody took up again, and reviews a shutdown cut off)."""
+commissions nobody took up again, and reviews a shutdown cut off). One whose
+commission was taken up again while the model wrote is thrown away and not
+counted, though the model was asked: that is rare, and counting it would
+keep a commission that is due waiting for the next round."""
 
 TASK_AGENT_REVIEWS_LOOKED_AT_PER_UPKEEP = 20
 """Most commissions one round of tidying looks at for a late review, the

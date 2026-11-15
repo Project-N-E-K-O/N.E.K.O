@@ -98,6 +98,42 @@ def _cut(text: Any, max_tokens: int) -> str:
     return truncate_to_tokens(" ".join(str(text or "").split()), max_tokens)
 
 
+# Where a sentence ends: its mark, and what closes a quotation or a bracket
+# after it. A full stop counts when no letter or digit follows it, so not the
+# one inside a number or a file name.
+_SENTENCE_END = re.compile(r"""(?:[。！？!?…]+|\.+(?![0-9A-Za-z_]))["'”’」』）)\]]*""")
+# Put at the end of a text that was cut where no sentence ends, and the
+# tokens left free for it.
+_CUT_MARK = "…"
+_CUT_MARK_ROOM = 2
+
+
+def _whole_sentences(text: Any, max_tokens: int) -> str:
+    """Return a text within a cap on its tokens; one that is cut ends where a sentence ends.
+
+    What is kept of a review stays in the space and is read by later task
+    agents. Cut off in the middle of a sentence it would say something its
+    writer did not, and nothing would show that it was cut. A text in whose
+    second half no sentence ends is cut where the cap falls, and marked.
+    """
+    from utils.tokenize import count_tokens, truncate_to_tokens
+
+    whole = str(text or "").strip()
+    if count_tokens(whole) <= max_tokens:
+        return whole
+    cut = truncate_to_tokens(whole, max_tokens)
+    # As far as the two agree: the last character of what was cut may be half of one.
+    limit = next((at for at, (one, other) in enumerate(zip(cut, whole, strict=False)) if one != other), len(cut))
+    end = 0
+    for match in _SENTENCE_END.finditer(whole):
+        if match.end() > limit:
+            break
+        end = match.end()
+    if end * 2 >= limit > 0:
+        return whole[:end]
+    return truncate_to_tokens(whole, max(max_tokens - _CUT_MARK_ROOM, 0)).rstrip() + _CUT_MARK
+
+
 def _parse_object(raw: str) -> dict[str, Any] | None:
     """Return the JSON object a model answered with, or None."""
     from utils.file_utils import robust_json_loads
@@ -628,13 +664,17 @@ class SpaceKeeper:
             return current
         # Whether the name is an archived project's is looked at by the
         # space, under its lock: a listing read here could be of a moment
-        # before the project was archived.
+        # before the project was archived. A commission the user stopped
+        # joins a project that is there and makes none: it was often stopped
+        # because it went wrong, and the line a new project gets in the index
+        # of all projects would be what a model made of that.
         project = await self._space.open_project(
             name,
             description=str(data.get("project_description") or ""),
             workdir=commission.workdir,
             at=commission.ended_at,
             unless_archived=True,
+            unless_new=commission.status == "cancelled",
         )
         return project.name if project is not None else current
 
@@ -649,9 +689,7 @@ class SpaceKeeper:
             TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS,
             TASK_AGENT_REVIEW_TEXT_MAX_TOKENS,
         )
-        from utils.tokenize import truncate_to_tokens
-
-        text = truncate_to_tokens(str(data.get("review") or "").strip(), TASK_AGENT_REVIEW_TEXT_MAX_TOKENS)
+        text = _whole_sentences(data.get("review"), TASK_AGENT_REVIEW_TEXT_MAX_TOKENS)
         if not text:
             return {"status": "failed", "reason": "empty"}
         current = commission.project or DEFAULT_PROJECT
@@ -684,9 +722,7 @@ class SpaceKeeper:
                 entry, _created = await self._space.file_entry(
                     None if everywhere else project,
                     title=str(item.get("title") or ""),
-                    content=truncate_to_tokens(
-                        str(item.get("content") or "").strip(), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS
-                    ),
+                    content=_whole_sentences(item.get("content"), TASK_AGENT_REVIEW_ENTRY_CONTENT_MAX_TOKENS),
                     kind=kind if kind in ENTRY_TYPES else "lesson",
                     description=str(item.get("description") or ""),
                     source=commission.id,
@@ -702,6 +738,14 @@ class SpaceKeeper:
         return outcome
 
     def _unreviewed(self, conn: sqlite3.Connection, since: float, before: float, limit: int) -> list[str]:
+        """Return the oldest commissions that ended between two times and have no review. Blocking.
+
+        It reads every commission once and, of each one that ended between
+        the two times, its events until a review is found. That is as much
+        as a round of tidying reads anyway, it is done once a round and not
+        on the event loop, and the times are no further apart than sessions
+        are kept. So it is left without an index of its own.
+        """
         rows = conn.execute(
             "SELECT c.id FROM commissions c WHERE c.route = 'task_agent' AND c.parent_id IS NULL "
             "AND c.status IN ('done', 'failed', 'cancelled') AND c.updated_at >= ? AND c.updated_at <= ? "
@@ -869,8 +913,6 @@ class SpaceKeeper:
             SPACE_PROJECT_DESCRIPTION_MAX_TOKENS,
             SPACE_PROJECT_IDLE_SECONDS,
         )
-        from utils.tokenize import truncate_to_tokens
-
         idle = [
             project
             for project in await self._space.list_projects(include_archived=False)
@@ -930,9 +972,7 @@ class SpaceKeeper:
                     if attempts < SPACE_ARCHIVE_MAX_ATTEMPTS:
                         # Left where it is; a later round asks again.
                         continue
-            summary = truncate_to_tokens(
-                str((data or {}).get("summary") or "").strip(), SPACE_ARCHIVE_SUMMARY_MAX_TOKENS
-            )
+            summary = _whole_sentences((data or {}).get("summary"), SPACE_ARCHIVE_SUMMARY_MAX_TOKENS)
             line = _cut((data or {}).get("line"), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
             if held is not None:
                 _written_at, _commissions, summary, line = held
@@ -1113,6 +1153,14 @@ class SpaceKeeper:
             await self._space.write_state(sessions_due_until=due, sessions_due_seen_at=now)
         if until is None:
             return
+        if after > until:
+            # The scan stands beyond what is old by now: it got there by a
+            # clock that was ahead (or sessions are kept longer than they
+            # were). Commissions that ended since, by the clock as it is
+            # now, lie before where it stands and would never be come by.
+            # So it begins anew; what it comes by a second time has nothing
+            # left to remove.
+            after, after_id = 0.0, ""
         # Looked at is not cleaned. A session whose files could not be
         # removed (held open by another program) is remembered by itself
         # and tried again every round, while the scan moves on: holding the

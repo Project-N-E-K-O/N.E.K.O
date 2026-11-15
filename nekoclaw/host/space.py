@@ -1702,15 +1702,17 @@ class TaskAgentSpace:
         workdir: str | None = None,
         at: float | None = None,
         unless_archived: bool = False,
+        unless_new: bool = False,
     ) -> Project | None:
         """Return the project of a name for a commission filed under it now.
 
         A project of the name, however the name is spelled, is used; one
-        that is not there is made; the commission is counted for it. One
-        that is archived is moved back, or, with ``unless_archived``, left
-        where it is and None is returned. Looking and what follows are one
-        step under the lock archiving runs under, so a project archived a
-        moment ago is seen as archived.
+        that is not there is made, or, with ``unless_new``, not made and
+        None is returned; the commission is counted for it. One that is
+        archived is moved back, or, with ``unless_archived``, left where it
+        is and None is returned. Looking and what follows are one step under
+        the lock archiving runs under, so a project archived a moment ago is
+        seen as archived.
         """
         safe_segment(name, "project")
 
@@ -1724,6 +1726,8 @@ class TaskAgentSpace:
                 if unless_archived:
                     return None
                 return self._ensure_project(self._restore(archived).name, at=at)
+            if unless_new:
+                return None
             return self._ensure_project(name, description=description, workdir=workdir, at=at)
 
         return await self._write(work)
@@ -2172,38 +2176,51 @@ class TaskAgentSpace:
             return ""
         note = texts.SPACE_BRIEF_NOTE.format(root=root, project=name)
 
-        def part(header: str, text: str, cap: int, is_index: bool) -> str:
-            if count_tokens(text) > cap:
-                if is_index:
-                    # Whole lines, so no line ends in half a link.
-                    lines, _dropped = take_lines_within_token_budget(text.split("\n"), cap)
-                    text = "\n".join(lines)
-                text = f"{truncate_to_tokens(text, cap).rstrip()}\n{texts.SPACE_BRIEF_CUT_NOTE}".lstrip("\n")
-            return f"{header}\n{text}"
+        def compose() -> str:
+            # An index has no cap on its length, and counting its tokens
+            # takes as long as it is long: every text is counted once, and
+            # not on the event loop.
+            sizes = [count_tokens(text) for _header, text, _cap, _is_index in kept]
 
-        caps = [cap for _header, _text, cap, _is_index in kept]
+            def part(position: int, cap: int) -> str:
+                header, text, _cap, is_index = kept[position]
+                if sizes[position] > cap:
+                    if is_index:
+                        # Whole lines, so no line ends in half a link.
+                        lines, _dropped = take_lines_within_token_budget(text.split("\n"), cap)
+                        text = "\n".join(lines)
+                    text = f"{truncate_to_tokens(text, cap).rstrip()}\n{texts.SPACE_BRIEF_CUT_NOTE}".lstrip("\n")
+                return f"{header}\n{text}"
 
-        def whole() -> str:
-            return "\n\n".join(
-                [note, *(part(header, text, cap, is_index) for (header, text, _cap, is_index), cap in zip(kept, caps, strict=True))]
-            )
+            parts = [part(position, cap) for position, (_header, _text, cap, _is_index) in enumerate(kept)]
 
-        brief = whole()
-        # The parts have caps that leave room for the headings and the note.
-        # The note names the directory of the space, though, and the headings
-        # the project: with a long path or name the whole is over its cap.
-        # What is over comes off the parts, the last first, so that each
-        # still ends at a whole line and says that it was cut; cut off at
-        # the end of the whole, the last part would end anywhere and say
-        # nothing.
-        for position in reversed(range(len(kept))):
-            over = count_tokens(brief) - SPACE_BRIEF_MAX_TOKENS
-            if over <= 0:
-                break
-            used = min(caps[position], count_tokens(kept[position][1]))
-            caps[position] = max(0, used - over - _BRIEF_CUT_ROOM)
+            def whole() -> str:
+                return "\n\n".join([note, *parts])
+
             brief = whole()
-        return truncate_to_tokens(brief, SPACE_BRIEF_MAX_TOKENS)
+            # The parts have caps that leave room for the headings and the
+            # note. The note names the directory of the space, though, and
+            # the headings the project: with a long path or name the whole
+            # is over its cap. What is over comes off the parts, so that
+            # each still ends at a whole line and says that it was cut; cut
+            # off at the end of the whole, the last part would end anywhere
+            # and say nothing. It comes off the indexes first, the last
+            # first, and off the rules only when the indexes are used up:
+            # the rules are the user's own words, the indexes were written
+            # by task agents and reviews and point at files that hold the
+            # rest.
+            positions = list(reversed(range(len(kept))))
+            indexes_first = [at for at in positions if kept[at][3]] + [at for at in positions if not kept[at][3]]
+            for position in indexes_first:
+                over = count_tokens(brief) - SPACE_BRIEF_MAX_TOKENS
+                if over <= 0:
+                    break
+                used = min(kept[position][2], sizes[position])
+                parts[position] = part(position, max(0, used - over - _BRIEF_CUT_ROOM))
+                brief = whole()
+            return truncate_to_tokens(brief, SPACE_BRIEF_MAX_TOKENS)
+
+        return await asyncio.to_thread(compose)
 
     async def contains(self, path: str) -> bool:
         """Whether a path lies inside the space, links resolved."""

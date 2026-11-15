@@ -4076,3 +4076,113 @@ async def test_a_summary_written_by_a_try_that_could_not_move_the_project_is_not
     home = root / "archive" / archived.archive_year / "Budget app"
     assert sorted(item.name for item in home.glob("SUMMARY*")) == ["SUMMARY.md"]
     assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "The summary.\n"
+
+
+# ---------------------------------------------------------------------------
+# After the main session's reading of the fixes
+# ---------------------------------------------------------------------------
+
+
+def _a_note_that_puts_the_brief_over(texts, brief: str, over: int) -> str:
+    """Return the note of the brief with a path of the space so long that ``brief`` is ``over`` tokens over its cap."""
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from utils.tokenize import count_tokens
+
+    wanted = SPACE_BRIEF_MAX_TOKENS - count_tokens(brief) + over
+    directories: list[str] = []
+    while count_tokens("/".join(directories)) < wanted:
+        directories.append(f"a directory number {len(directories)}")
+    return texts.SPACE_BRIEF_NOTE.replace("{root}", "{root}/" + "/".join(directories))
+
+
+async def test_what_is_over_comes_off_the_indexes_before_it_comes_off_the_rules(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("global rule. " * 2000)
+    await space.write_rules("project rule. " * 2000, "Budget app")
+    (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n" * 2000, encoding="utf-8")
+    # The index of the project is short: there is next to nothing to take off it.
+    (root / "projects" / "Budget app" / "MEMORY.md").write_text("- [project entry](memory/y.md) — words\n", encoding="utf-8")
+    as_it_was = await space.brief("Budget app")
+    short = as_it_was.split("\n\n")[1:]
+    # The note names the directory of the space: as with one so many directories deep that the whole is over.
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 150))
+
+    brief = await space.brief("Budget app")
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    sections = brief.split("\n\n")[1:]
+    assert [section.split("\n", 1)[0] for section in sections] == [
+        "Rules for every commission:",
+        "Index, all projects:",
+        "Rules of project Budget app:",
+        "Index of project Budget app:",
+    ]
+    # The rules are the user's own words: both are as they were, the project's as well, though it
+    # stands after the index of all projects.
+    assert sections[0] == short[0] and sections[2] == short[2]
+    # What was over came off the index of all projects, which still ends at a whole line.
+    lines = sections[1].split("\n")[1:-1]
+    assert lines and all(line == "- [global entry](memory/x.md) — words" for line in lines)
+    assert len(lines) < len(short[1].split("\n")[1:-1])
+    assert sections[1].endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+
+
+async def test_the_rules_give_way_only_when_the_indexes_are_used_up(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("global rule. " * 2000)
+    await space.write_rules("project rule. " * 2000, "Budget app")
+    (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n", encoding="utf-8")
+    (root / "projects" / "Budget app" / "MEMORY.md").write_text("- [project entry](memory/y.md) — words\n", encoding="utf-8")
+    as_it_was = await space.brief("Budget app")
+    short = as_it_was.split("\n\n")[1:]
+    # The note names the directory of the space: as with one so many directories deep that the whole is over.
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 150))
+
+    brief = await space.brief("Budget app")
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    sections = brief.split("\n\n")[1:]
+    # Both indexes gave what little they had; the rest came off the rules, the project's first.
+    assert sections[0] == short[0]
+    assert len(sections[2]) < len(short[2]) and sections[2].endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+    assert sections[2].startswith("Rules of project Budget app:\nproject rule. project rule.")
+
+
+async def test_the_tokens_of_the_brief_are_not_counted_on_the_event_loop(space, root, monkeypatch):
+    import threading
+
+    import utils.tokenize as tokenize
+
+    await space.write_rules("Never delete files.")
+    (root / "MEMORY.md").write_text("- [global entry](memory/x.md) — words\n" * 2000, encoding="utf-8")
+    count, loop_thread, counted_on = tokenize.count_tokens, threading.get_ident(), []
+
+    def counting(text: str, *args, **kwargs) -> int:
+        counted_on.append(threading.get_ident())
+        return count(text, *args, **kwargs)
+
+    monkeypatch.setattr(tokenize, "count_tokens", counting)
+
+    brief = await space.brief(None)
+
+    assert "Index, all projects:" in brief
+    # An index has no cap on its length; counting it is not done where everything else waits for it.
+    assert counted_on and loop_thread not in counted_on
+
+
+async def test_a_project_is_not_made_when_only_one_that_is_there_is_wanted(space, root):
+    await space.touch_project("Budget app", description="tracks spending")
+
+    assert await space.open_project("Photo sorter", description="sorts photos", unless_new=True) is None
+    assert not (root / "projects" / "Photo sorter").exists()
+    assert await space.get_project("Photo sorter") is None
+    # One that is there is used, however its name is spelled, and the commission counted for it.
+    before = (await space.get_project("Budget app")).commissions
+    opened = await space.open_project("budget APP", unless_new=True)
+    assert opened is not None and opened.name == "Budget app" and opened.commissions == before + 1
