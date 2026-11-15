@@ -92,7 +92,7 @@ from typing import Any
 from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, KIND_BUILTIN, Capability, CapabilityRegistry
 from nekoclaw.host.leases import BuiltinLeases
 from nekoclaw.host.ledger import Commission, Ledger
-from nekoclaw.host.permissions import BROWSER_REOPEN, DENIED_BY_USER, PermissionGate
+from nekoclaw.host.permissions import BROWSER_REOPEN, DENIED_BY_SETTINGS, DENIED_BY_USER, PermissionGate
 from nekoclaw.host.plugin_runs import (
     PluginRunner,
     describe_result,
@@ -976,6 +976,14 @@ class CapabilityGateway:
                     "was done.",
                     error=True,
                 )
+            # The answer may have been long in coming, and the permission to
+            # operate the browser was decided before the question: forbidden
+            # in the settings since, it stays forbidden.
+            if await self._permissions.forbidden(capability.permission, capability.permission_key):
+                await self._ledger.append_event(
+                    commission.id, "capability_denied", {"capability": capability.id, "reason": DENIED_BY_SETTINGS}
+                )
+                return _text(DENIED_BY_SETTINGS, error=True)
         self._registry.browser_reopen_agreed()
         return None
 

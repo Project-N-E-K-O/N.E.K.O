@@ -4014,6 +4014,98 @@ async def test_what_was_open_is_given_a_time_as_a_whole_to_be_kept_from_the_port
     assert session.connected and session.page_by_id(2).url == ORDER
 
 
+async def test_what_was_given_up_on_is_not_waited_for_when_letting_go_of_it_is_not_answered_either(
+    make_session: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.unit.nekoclaw.fake_cdp_browser import FakeConnection
+
+    shop = _left_running(world)
+    send = FakeConnection.send
+    unanswered: list[str] = []
+    over = asyncio.Event()
+
+    async def nothing_for_the_shop(self: Any, method: str, params: Any = None, **options: Any) -> dict[str, Any]:
+        of_the_shop = options.get("session_id") in shop.sessions or (params or {}).get("sessionId") in shop.sessions
+        if of_the_shop and method in ("Fetch.enable", "Target.detachFromTarget"):
+            unanswered.append(method)
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if method == "Fetch.enable":
+                    raise
+                # Letting go is not answered for as long as the test lasts.
+                await over.wait()
+        return await send(self, method, params, **options)
+
+    monkeypatch.setattr(FakeConnection, "send", nothing_for_the_shop)
+    monkeypatch.setattr(session_module, "_KEEP_OPEN_TOTAL_SECONDS", 0.2)
+    monkeypatch.setattr(session_module, "_KEEP_OPEN_LET_GO_SECONDS", 0.2)
+    session = make_session(own_ports=lambda: OWN)
+
+    began = asyncio.get_running_loop().time()
+    await asyncio.wait_for(session.start(), 5.0)
+    took = asyncio.get_running_loop().time() - began
+
+    # Both times together, not the ten seconds a command that is let go of quietly is given.
+    assert took < 2.0, took
+    assert unanswered == ["Fetch.enable", "Target.detachFromTarget"]
+    assert session._not_kept == {shop.target_id} and session.connected
+    over.set()
+    await asyncio.sleep(0.05)
+
+
+async def test_a_browser_that_is_closed_while_it_is_being_set_up_is_one_the_user_closed(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    from tests.unit.nekoclaw.fake_cdp_browser import FakeConnection
+
+    session = make_session(own_ports=lambda: OWN)
+    await session.start()
+    world.browser.disconnect()
+    assert session.closed_by_user is True
+    session.reopen_agreed()
+    await session.start()
+    assert session.closed_by_user is False
+
+    # Closed once more, and the user agrees once more; this time they close it again while it is
+    # being connected to.
+    world.browser.disconnect()
+    assert session.closed_by_user is True
+    session.reopen_agreed()
+    send = FakeConnection.send
+
+    async def closed_meanwhile(self: Any, method: str, params: Any = None, **options: Any) -> dict[str, Any]:
+        if method == "Target.getTargets":
+            # A tab had been seen, so the agreement is used up; then the window is closed.
+            session._note_target({"targetId": "seen", "type": "page", "url": "about:blank", "title": ""})
+            world.browser.disconnect()
+            raise CdpClosed("the connection to the browser is closed")
+        return await send(self, method, params, **options)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(FakeConnection, "send", closed_meanwhile)
+        with pytest.raises(BrowserError, match="did not answer"):
+            await session.start()
+
+    # The connection was dropped, and it is still known that the user closed it.
+    assert not session.connected and session.closed_by_user is True
+    session.reopen_agreed()
+    assert session.closed_by_user is False
+
+
+async def test_a_browser_that_does_not_answer_while_it_is_being_set_up_is_not_one_the_user_closed(
+    make_session: Any, world: BrowserWorld
+) -> None:
+    world.browser.refuse("Target.getTargets", "Not supported")
+    session = make_session(own_ports=lambda: OWN)
+
+    with pytest.raises(BrowserError, match="did not answer"):
+        await session.start()
+
+    # It is there and refused: nobody closed it, and the next call tries again without asking.
+    assert session.closed_by_user is False
+
+
 async def test_a_page_that_went_while_it_was_asked_is_no_failure(make_session: Any, world: BrowserWorld, caplog: Any) -> None:
     from nekoclaw.builtin.browser.cdp import SESSION_GONE_CODE
 

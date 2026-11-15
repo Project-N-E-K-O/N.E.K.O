@@ -97,6 +97,10 @@ _KEEP_OPEN_TIMEOUT_SECONDS = 5.0
 # and tried twice: without this, one that never answers holds the first call
 # of a task up for some twenty seconds.
 _KEEP_OPEN_TOTAL_SECONDS = 8.0
+# How long those that were given up on are waited for to let go of what they
+# had attached to. One whose letting go is not answered either ends by
+# itself later, with nobody waiting for it.
+_KEEP_OPEN_LET_GO_SECONDS = 1.0
 # What the browser answers a command about a target with when there is no
 # such target (it was closed meanwhile).
 _NO_SUCH_TARGET_CODE = -32602
@@ -564,6 +568,11 @@ class BrowserSession:
             if self._selected is None and self._pages:
                 self._selected = next(iter(self._pages))
         except (CdpError, CdpClosed, CdpTimeout) as exc:
+            if connection.closed and self.closed_by_user:
+                # It went while it was being set up, and with the connection
+                # dropped nothing else would say so: the user closed it, and
+                # the next call asks before it starts another.
+                self._closed_by_user_noted = True
             await self._drop_connection()
             raise BrowserError(f"The browser did not answer ({exc}).") from exc
         except asyncio.CancelledError:
@@ -699,8 +708,12 @@ class BrowserSession:
             if late:
                 for task in late:
                     task.cancel()
-                # Each lets go of what it had attached to before it ends.
-                await asyncio.gather(*late, return_exceptions=True)
+                    # Should it end only after nobody waits for it any more.
+                    task.add_done_callback(lambda done: done.cancelled() or done.exception())
+                # Each lets go of what it had attached to before it ends,
+                # and that is waited for a moment only: the browser may not
+                # answer that either.
+                await asyncio.wait(late, timeout=_KEEP_OPEN_LET_GO_SECONDS)
                 logger.warning(
                     "%d of what was open before could not be kept from this application's own ports in time", len(late)
                 )
@@ -710,7 +723,7 @@ class BrowserSession:
             raise
         not_kept: set[str] = set()
         for (_kind, target_id), task in zip(there, keeping):
-            if task.cancelled():
+            if not task.done() or task.cancelled():
                 not_kept.add(target_id)
                 continue
             failure = task.exception()

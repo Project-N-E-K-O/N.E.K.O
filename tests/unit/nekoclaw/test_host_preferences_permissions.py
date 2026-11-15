@@ -550,6 +550,18 @@ async def test_what_is_asked_each_time_is_refused_when_nobody_can_be_asked(store
     assert (failed.allow, failed.reason) == (False, DENIED_NO_ANSWER)
 
 
+async def test_whether_the_settings_forbid_something_is_told_without_asking(store):
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+
+    before = [await gate.forbidden("browser"), await gate.forbidden("plugin_entry")]
+    await store.set_mode("browser", "deny")
+
+    assert before == [False, False]
+    assert await gate.forbidden("browser") is True and await gate.forbidden("keyboard_mouse") is False
+    assert asker.asked == []
+
+
 async def test_a_decision_says_whether_the_user_was_asked_for_it(store):
     asker = Asker("session")
     gate = PermissionGate(store, asker)

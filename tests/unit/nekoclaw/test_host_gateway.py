@@ -2013,6 +2013,37 @@ async def test_a_browser_the_user_closed_stays_closed_when_they_do_not_agree(bui
     assert denied == [{"capability": "builtin:browser:browser_navigate_page", "reason": reason}]
 
 
+async def test_the_browser_forbidden_in_the_settings_while_the_user_was_asked_stays_closed(builtin_host):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        # The answer is long in coming, and the settings are changed meanwhile.
+        await builtin_host.permission_store.set_mode("browser", "deny")
+        return "once"
+
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    builtin_host.provider.closed_by_user = True
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    assert result["isError"] is True
+    assert _text(result) == "permission denied: the permission settings forbid this"
+    # The newer setting wins over the answer: nothing was carried out, and nothing agreed to.
+    assert builtin_host.provider.calls == [] and builtin_host.provider.agreed == 0
+    assert builtin_host.provider.closed_by_user is True
+    denied = [
+        event.payload for event in await builtin_host.ledger.events(commission.id) if event.type == "capability_denied"
+    ]
+    assert denied == [
+        {
+            "capability": "builtin:browser:browser_navigate_page",
+            "reason": "permission denied: the permission settings forbid this",
+        }
+    ]
+
+
 async def test_the_permission_for_the_browser_given_in_the_same_call_stands_for_opening_it_again(builtin_host):
     asker = Asker("once")
     builtin_host.permissions.set_asker(asker)

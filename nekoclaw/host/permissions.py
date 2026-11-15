@@ -421,6 +421,16 @@ class PermissionGate:
             run.add(slot)
         return PermissionDecision(True, asked=True)
 
+    async def forbidden(self, category: str, key: str | None = None) -> bool:
+        """Whether the settings forbid this as of now; nobody is asked.
+
+        For after a question of another kind that the user may have taken
+        long to answer: the settings may have been changed meanwhile, and a
+        ``deny`` set since wins, as it does over the answer to a permission
+        question.
+        """
+        return await self._store.mode(category, key) == "deny"
+
     async def ask_each_time(
         self, commission_id: str, category: str, *, detail: dict[str, Any] | None = None
     ) -> PermissionDecision:
