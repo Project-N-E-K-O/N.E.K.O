@@ -1757,7 +1757,7 @@
   },
   "schema_version": 4,
   "sdk_version": "0.1.0",
-  "source_bytes": 333887,
+  "source_bytes": 335235,
   "source_files": [
     "__init__.py",
     "chat_schema.py",
@@ -1779,5 +1779,5 @@
     "transport.py",
     "ui/panel.tsx"
   ],
-  "source_sha256": "2bbe228e3e21d19385beacd5ebaf960944b16c7962b47bbf39340076d872fd40"
+  "source_sha256": "49fcfd8ddfaa5288f0211f5939f671aa19bdc1b0cdc6fb456167a71a464b0b9e"
 }
