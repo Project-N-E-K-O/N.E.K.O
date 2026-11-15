@@ -506,10 +506,11 @@ async def test_a_review_a_shutdown_cut_off_is_made_by_a_later_round(world):
 
 
 async def test_commissions_that_ended_before_the_space_was_first_tidied_are_not_reviewed_after_the_fact(world):
-    # Ended while no keeper was listening: a build from before the space.
+    # Ended before this host was started: a build from before the space.
     world.keeper._closed = True
     old = await world.finished()
-    world.keeper._closed = False
+    world.clock.now += 60
+    world.keeper = world.new_keeper()
     world.clock.now += 3 * DAY
 
     await world.keeper.tidy(force=True)
@@ -1722,3 +1723,91 @@ async def test_a_count_that_cannot_be_written_does_not_end_the_round_and_is_not_
         ("Alpha", "active"),
         ("Beta", "archived"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# The eleventh review round
+# ---------------------------------------------------------------------------
+
+
+async def test_the_commission_whose_end_starts_the_first_round_is_looked_after_too(world):
+    started = world.clock.now
+    # The host has been up for a while when the first commission of all fails.
+    world.clock.now += 600
+    world.keeper._closed = True
+    commission = await world.finished(status="failed")
+    world.keeper._closed = False
+    # What follows the end of a commission comes a moment after it.
+    world.clock.now += 2
+
+    assert await world.keeper.tidy() is True
+
+    assert (await world.space.read_state())["since"] == started
+    world.clock.now += DAY + 60
+    await world.keeper.tidy(force=True)
+    assert [event["status"] for event in await world.reviews(commission.id)] == ["written"]
+
+
+async def test_what_a_commission_filed_goes_with_it_to_the_project_its_review_names(world):
+    other = await world.file("another small thing")
+    await world.space.submit(other, {"title": "Unrelated", "content": "Nothing to do with it.", "category": "lesson"})
+    await world.space.submit(other, {"title": "Shared", "content": "From the other one.", "category": "lesson"})
+    commission = await world.file("build me a budget app")
+    await world.work(commission.id)
+    assert "kept in project _daily" in await world.space.submit(
+        commission, {"title": "Stack", "content": "It uses Flask and SQLite.", "category": "reference"}
+    )
+    await world.space.submit(commission, {"title": "Shared", "content": "From this one.", "category": "lesson"})
+    await world.space.submit(
+        commission, {"title": "Everywhere", "content": "Holds everywhere.", "category": "lesson", "scope": "global"}
+    )
+    # The model was told what is filed already, and repeats none of it.
+    world.llm.answers[TIER_REVIEW] = [{"review": "It set the app up.", "project": "Budget app", "entries": []}]
+
+    await world.end(commission.id)
+
+    (stack,) = await world.space.list_entries("Budget app")
+    stack = await world.space.read_entry(stack.id, "Budget app")
+    assert (stack.id, stack.title, stack.type, stack.sources) == ("stack", "Stack", "reference", (commission.id,))
+    assert stack.content.strip() == "It uses Flask and SQLite."
+    assert "- [Stack](memory/stack.md) — It uses Flask and SQLite." in await world.space.read_index("Budget app")
+    # Only what it alone filed went: not another commission's, not one both added to.
+    assert sorted(entry.id for entry in await world.space.list_entries(DEFAULT_PROJECT)) == ["shared", "unrelated"]
+    assert "stack.md" not in await world.space.read_index(DEFAULT_PROJECT)
+    assert [entry.id for entry in await world.space.list_entries()] == ["everywhere"]
+    last = (await world.reviews(commission.id))[-1]
+    assert (last["status"], last["project"], last["entries"], last["refiled"]) == (
+        "written",
+        "Budget app",
+        [],
+        ["Budget app/stack"],
+    )
+    # The next commission of the project is handed it.
+    assert "- [Stack](memory/stack.md)" in await world.space.brief("Budget app")
+
+
+async def test_what_a_commission_filed_stays_when_its_review_names_no_project(world):
+    commission = await world.file("sort the photos")
+    await world.work(commission.id)
+    await world.space.submit(commission, {"title": "Dates", "content": "Use the EXIF date.", "category": "lesson"})
+    world.llm.answers[TIER_REVIEW] = [{"review": "It sorted them.", "project": ""}]
+
+    await world.end(commission.id)
+
+    assert [entry.id for entry in await world.space.list_entries(DEFAULT_PROJECT)] == ["dates"]
+    assert "refiled" not in (await world.reviews(commission.id))[-1]
+
+
+async def test_an_entry_moved_to_a_project_that_has_one_of_its_name_keeps_both(world):
+    await world.space.touch_project("Budget app")
+    await world.space.file_entry("Budget app", title="Stack", content="The old stack.")
+    commission = await world.file("go on with that thing")
+    await world.work(commission.id)
+    await world.space.submit(commission, {"title": "Stack", "content": "FastAPI now.", "category": "lesson"})
+    world.llm.answers[TIER_REVIEW] = [{"review": "It changed the stack.", "project": "Budget app"}]
+
+    await world.end(commission.id)
+
+    entries = {entry.id: (await world.space.read_entry(entry.id, "Budget app")).content.strip() for entry in await world.space.list_entries("Budget app")}
+    assert entries == {"stack": "The old stack.", "stack-2": "FastAPI now."}
+    assert await world.space.list_entries(DEFAULT_PROJECT) == []

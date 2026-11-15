@@ -714,6 +714,44 @@ class TaskAgentSpace:
         except ValueError as exc:
             raise SpaceError(str(exc)) from exc
 
+    async def refile_entries(self, commission_id: str, source: str, target: str) -> list[str]:
+        """Move what one commission alone filed under a project to another project. Returns the ids there.
+
+        For a commission found to belong to a project after it ended: what
+        it filed while it was one of ``_daily`` goes with it, or the
+        project's index would not have it. An entry other commissions
+        added to stays where it is, and so does every entry of theirs.
+        The files are moved as they are, each under a name that is free.
+        """
+
+        def work() -> list[str]:
+            paths = self._paths()
+            self._revive(target)
+            origin, destination = paths.memory_dir(source), paths.memory_dir(target)
+            moved: list[str] = []
+            for entry in self._entries(origin, source):
+                if entry.sources != (commission_id,):
+                    continue
+                old = origin / f"{entry.id}.md"
+                text = self._read_text(old)
+                if text is None:
+                    continue
+                name = self._free_name(destination, entry.id)
+                # Written where it goes before it is removed where it was.
+                self._put_text(destination / f"{name}.md", text)
+                link = f"{paths.MEMORY_DIR}/{name}.md"
+                self._index_add(paths.index(target), _index_line(entry.title, link, entry.description), link)
+                try:
+                    old.unlink()
+                except OSError:
+                    logger.warning("an entry moved to another project could not be removed where it was", exc_info=True)
+                else:
+                    self._index_remove(paths.index(source), f"{paths.MEMORY_DIR}/{entry.id}.md")
+                moved.append(name)
+            return moved
+
+        return await self._write(work)
+
     # -- for the console: entries -----------------------------------------
 
     def _scope(self, project: str | None, archive_year: str | None = None) -> Path:

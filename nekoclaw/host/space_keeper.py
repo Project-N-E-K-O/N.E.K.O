@@ -223,6 +223,10 @@ class SpaceKeeper:
         self._release_session = release_session
         self._clock = clock
         self._review_delay = review_delay
+        # From when on commissions are looked after: the first round of
+        # tidying ever takes this, not its own time, which is a moment after
+        # the end of the commission that started it.
+        self._watching_since = clock()
         self._tasks: set[asyncio.Task[Any]] = set()
         # What closing did not wait for to its end; kept referenced until done.
         self._lingering: set[asyncio.Task[Any]] = set()
@@ -518,7 +522,17 @@ class SpaceKeeper:
         text = truncate_to_tokens(str(data.get("review") or "").strip(), TASK_AGENT_REVIEW_TEXT_MAX_TOKENS)
         if not text:
             return {"status": "failed", "reason": "empty"}
+        current = commission.project or DEFAULT_PROJECT
         project = await self._target_project(commission, data)
+        refiled: list[str] = []
+        if project != current:
+            # It belongs to a project after all. What it filed itself while
+            # it was one of ``_daily`` goes with it: the model was told not
+            # to repeat that, so it would be in no index of the project.
+            try:
+                refiled = await self._space.refile_entries(commission.id, current, project)
+            except (SpaceError, OSError) as exc:
+                logger.warning("what a commission filed could not be moved to its project (%s)", type(exc).__name__)
         kept: list[str] = []
         entries = data.get("entries")
         for item in (entries if isinstance(entries, list) else [])[:TASK_AGENT_REVIEW_MAX_ENTRIES]:
@@ -540,7 +554,10 @@ class SpaceKeeper:
                 continue
             kept.append(entry.id if everywhere else f"{project}/{entry.id}")
         await self._space.write_review(project, commission, text, entries=tuple(kept))
-        return {"status": "written", "project": project, "entries": kept}
+        outcome: dict[str, Any] = {"status": "written", "project": project, "entries": kept}
+        if refiled:
+            outcome["refiled"] = [f"{project}/{entry_id}" for entry_id in refiled]
+        return outcome
 
     def _unreviewed(self, conn: sqlite3.Connection, since: float, before: float, limit: int) -> list[str]:
         rows = conn.execute(
@@ -592,9 +609,10 @@ class SpaceKeeper:
             self._last_upkeep = now
             since = state.get("since")
             if not isinstance(since, (int, float)):
-                # The first round ever: commissions that ended before it are
-                # not reviewed after the fact.
-                since = now
+                # The first round ever: commissions that ended before this
+                # host was started are not reviewed after the fact. The ones
+                # it saw end are, among them the one this round follows.
+                since = self._watching_since
             await self._space.write_state(upkeep_at=now, since=since)
             for name, step in (
                 ("late reviews", lambda: self._late_reviews(now, float(since))),
