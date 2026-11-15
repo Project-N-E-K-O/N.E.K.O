@@ -45,7 +45,6 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 from PIL import Image
 
-from config.permission_settings import PermissionAction
 from main_logic import tool_permissions
 from utils.logger_config import get_module_logger
 
@@ -654,10 +653,14 @@ class ToolRegistry:
         # function's contract is "never raises", and the model recovers from a tool
         # error string. Changing that contract to make a point would break turns that
         # call an unrelated tool in the same breath.
+        #
+        # ``blocks`` and "the policy said deny" differ on purpose: in observe mode the
+        # decision is recorded and the call runs, so the switch changes behaviour
+        # without changing what the table concluded.
         decision = await tool_permissions.enforce(
-            call.name, tool.risk, tool_permissions.actor_from_call(call),
+            call.name, tool.risk, tool_permissions.actor_for_call(call),
         )
-        if decision.action is not PermissionAction.ALLOW:
+        if decision.blocks:
             return tool_permissions.permission_denied_result(call, decision)
 
         start = time.time()

@@ -18,11 +18,18 @@ Three rules, one seam.
 
 1. The band comes from ``config.permission_settings`` maps and is never inferred from a
    name, a nickname or a co-occurrence. A group message takes the lower of the group
-   band and the speaker band.
+   band and the speaker band. The speaker comes from the turn
+   (``utils/turn_actor.py``), which only host code writes: a call that carries its own
+   identity claim is ignored, so no plugin can raise its own band.
 2. The risk comes from the tool's own declaration. There is no fallback class: an
    unlabelled tool is refused at registration, in ``ToolRegistry.register``.
 3. The decision is one table lookup. This module contains no policy of its own, so a
    review of the feature is a review of that table.
+
+``PERMISSION_GATE_MODE`` decides whether a deny stops the call (enforce) or only gets
+written down (observe, the default). Observe exists because an entry point that never
+declares a speaker reads as a stranger, and a stranger is denied ``write`` and
+``external``: an enforcing gate on such a build switches off the app's own tools.
 
 Fail-closed everywhere. An unreadable actor is a stranger. A risk value that does not
 parse is a refusal. A confirm nobody answers is a deny. An exception inside the gate
@@ -42,7 +49,9 @@ from config.permission_settings import (
     DEFAULT_BAND,
     PERMISSION_APPROVER_ENABLED,
     PERMISSION_CONFIRM_TIMEOUT_SECONDS,
+    PERMISSION_GATE_MODE,
     PermissionAction,
+    PermissionMode,
     ToolRisk,
     TrustBand,
     band_for_account,
@@ -50,13 +59,14 @@ from config.permission_settings import (
     decide,
     lower_band,
 )
+from utils.turn_actor import current_actor_payload
 
 logger = logging.getLogger(__name__)
 
-# The carrier key for speaker identity. ``ToolCall.provider_meta`` already exists as
-# the opaque per-call dict that no provider sees, so identity rides there instead of
-# adding a field that every construction site (and every test fixture) must fill.
-ACTOR_KEY = "actor"
+# The key a caller would have to use to claim an identity on the call itself. The gate
+# reads it for one purpose: to say out loud that it ignored the claim. Identity comes
+# from the turn (utils/turn_actor.py), which only host code can write.
+CLAIMED_ACTOR_KEY = "actor"
 
 
 class PermissionConfigError(ValueError):
@@ -70,6 +80,11 @@ class Decision:
     Mutable, and deliberately so: the confirm path annotates ``reason`` after waiting.
     A frozen record would force a second object per decision and lose the thread of
     what the caller was actually told.
+
+    ``action`` is what the policy says. ``blocks`` is what the caller does about it, and
+    the two differ only in observe mode. Read ``blocks``, never ``action``, to decide
+    whether to run the tool: a deny that does not block must still be reported as a
+    deny, because that is the number the operator is watching.
     """
 
     action: PermissionAction
@@ -78,6 +93,12 @@ class Decision:
     account_id: str = ""
     group_id: str = ""
     reason: str = ""
+    mode: PermissionMode = PERMISSION_GATE_MODE
+
+    @property
+    def blocks(self) -> bool:
+        """True only when the call must not run: a deny in enforce mode."""
+        return self.mode is PermissionMode.ENFORCE and self.action is PermissionAction.DENY
 
 
 def parse_risk(value: Any) -> ToolRisk:
@@ -123,13 +144,23 @@ def resolve_band(actor: Any) -> tuple[TrustBand, str, str]:
     return lower_band(band_for_group(group_id), speaker), account_id, group_id
 
 
+def _mode() -> PermissionMode:
+    """The gate mode, read at call time so one assignment can flip it.
+
+    Re-parsed rather than trusted: a deployment that set the module attribute to a bare
+    string still gets the enum, and a value that is not a mode raises here instead of
+    behaving like observe.
+    """
+    return PermissionMode(str(PERMISSION_GATE_MODE).strip().lower())
+
+
 def decide_for(actor: Any, risk: ToolRisk) -> Decision:
     """band -> table -> action. The whole policy, one call."""
     band, account_id, group_id = resolve_band(actor)
     action = decide(band, risk)
     return Decision(
         action=action, band=band, risk=risk,
-        account_id=account_id, group_id=group_id,
+        account_id=account_id, group_id=group_id, mode=_mode(),
     )
 
 
@@ -139,18 +170,26 @@ def audit(decision: Decision, tool_name: str, *, outcome: str = "") -> None:
     ALLOW is not logged. A per-character session that allows most calls would bury the
     two lines that matter, and the registry already logs registration.
 
+    In observe mode the verb is ``would-deny`` / ``would-confirm``, and ``mode=`` says
+    why. Without that prefix the same log means "we stopped it" on one build and "we
+    would have" on another, and the operator cannot read the numbers either way.
+
     The arguments are never logged. The identity layer's privacy rule says the same
     thing (memory/trust_store.py: signals are keyed by id, content stays out), and a
     permission log is exactly where someone would look for other people's messages.
     """
     if decision.action is PermissionAction.ALLOW and not outcome:
         return
+    label = decision.action.value
+    if decision.mode is PermissionMode.OBSERVE:
+        label = f"would-{label}"
     where = f"group={decision.group_id} " if decision.group_id else ""
     logger.warning(
-        "[permission] %s tool=%s band=%s risk=%s account=%s %s%s",
-        decision.action.value, tool_name, decision.band.value,
+        "[permission] %s tool=%s band=%s risk=%s account=%s %s %s (mode=%s)",
+        label, tool_name, decision.band.value,
         decision.risk.value if decision.risk is not None else "unlabelled",
         decision.account_id or "(unknown)", where, decision.reason or "",
+        decision.mode.value,
     )
 
 
@@ -271,12 +310,18 @@ async def request_approval(entry: PendingApproval, *, timeout: float | None = No
 
 async def enforce(tool_name: str, declared_risk: Any, actor: Any,
                   *, timeout: float | None = None) -> Decision:
-    """The gate. Returns the decision it applied; the caller turns a deny into a result.
+    """The gate. Returns the decision; ``decision.blocks`` says whether to stop.
 
     ``declared_risk`` is re-parsed here rather than trusted, because the registry and
     this function can be reached from paths that built the value independently (the
     HTTP register endpoint, a plugin SDK payload, a ledger replay).
+
+    Observe mode changes what happens, never what is concluded: the table is consulted
+    the same way, the log line is written the same way with a ``would-`` verb, and only
+    the parking wait is skipped. A confirm that parks for two minutes on a build that
+    will ignore the answer is a stall with no benefit.
     """
+    mode = _mode()
     try:
         risk = parse_risk(declared_risk)
     except PermissionConfigError as exc:
@@ -284,15 +329,22 @@ async def enforce(tool_name: str, declared_risk: Any, actor: Any,
         # stands, so a broken label can never be reported as some specific class.
         decision = Decision(
             action=PermissionAction.DENY, band=DEFAULT_BAND, risk=None,
-            reason=f"(unusable risk: {exc})",
+            reason=f"(unusable risk: {exc})", mode=mode,
         )
         audit(decision, tool_name, outcome="refused")
         return decision
 
     decision = decide_for(actor, risk)
+    decision.mode = mode
     if decision.action is PermissionAction.ALLOW:
         return decision
     if decision.action is PermissionAction.DENY:
+        audit(decision, tool_name)
+        return decision
+
+    if mode is PermissionMode.OBSERVE:
+        # The call runs. The line still says what the table wanted, which is the whole
+        # point of the observation pass.
         audit(decision, tool_name)
         return decision
 
@@ -303,6 +355,7 @@ async def enforce(tool_name: str, declared_risk: Any, actor: Any,
             action=PermissionAction.DENY, band=decision.band, risk=decision.risk,
             account_id=decision.account_id, group_id=decision.group_id,
             reason="(confirm requested, but PERMISSION_APPROVER_ENABLED is false)",
+            mode=mode,
         )
         audit(denied, tool_name)
         return denied
@@ -314,7 +367,7 @@ async def enforce(tool_name: str, declared_risk: Any, actor: Any,
         return Decision(
             action=PermissionAction.ALLOW, band=decision.band, risk=decision.risk,
             account_id=decision.account_id, group_id=decision.group_id,
-            reason="(owner confirmed)",
+            reason="(owner confirmed)", mode=mode,
         )
     reason = "(confirm timed out)" if entry.timed_out else (
         "(confirm cancelled)" if entry.approved is False and not entry.timed_out
@@ -322,7 +375,7 @@ async def enforce(tool_name: str, declared_risk: Any, actor: Any,
     denied = Decision(
         action=PermissionAction.DENY, band=decision.band, risk=decision.risk,
         account_id=decision.account_id, group_id=decision.group_id,
-        reason=reason,
+        reason=reason, mode=mode,
     )
     audit(denied, tool_name)
     return denied
@@ -361,15 +414,25 @@ def permission_denied_result(call: Any, decision: Decision) -> Any:
     )
 
 
-def actor_from_call(call: Any) -> Any:
-    """The identity a caller attached to one tool call, or None.
+def actor_for_call(call: Any) -> Any:
+    """The speaker of the turn that produced this call, or None.
 
-    None is a real answer and a common one today: nothing in the host populates this
-    yet, because nothing in the host consumes the QQ connector -- the dialog path is
-    the local UI, and group traffic arrives through an out-of-tree plugin. Treat it as
-    the question "who is asking?", not as a bug to paper over with OWNER.
+    One source: the turn carrier (utils/turn_actor.py), written only by host code --
+    today the connection layer's inbound sink. A turn that declares nobody resolves to
+    DEFAULT_BAND, so "unknown" is a stranger and never an owner.
+
+    ``call.provider_meta[CLAIMED_ACTOR_KEY]`` is deliberately not a source. The call
+    object is reachable from plugin-facing paths, and a speaker that could name its own
+    band would set OWNER. A claim found there is reported once per call and ignored, so
+    a mistaken writer sees the reason in the log instead of wondering why a stranger was
+    allowed through or an owner was stopped.
     """
+    actor = current_actor_payload()
     meta = getattr(call, "provider_meta", None)
-    if not isinstance(meta, dict):
-        return None
-    return meta.get(ACTOR_KEY)
+    if isinstance(meta, dict) and meta.get(CLAIMED_ACTOR_KEY) is not None:
+        logger.warning(
+            "[permission] ignored an actor claim on tool=%s: identity comes from the "
+            "turn, not from the call (a plugin cannot raise its own band)",
+            getattr(call, "name", "?"),
+        )
+    return actor

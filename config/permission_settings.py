@@ -32,6 +32,7 @@ Two deliberate refusals:
   model already applies to ``speaker_tier`` (config/memory_settings.py:443).
 """
 
+import os
 from enum import StrEnum
 
 # ------------------------------------------------------------------ vocabulary
@@ -74,6 +75,20 @@ class PermissionAction(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     CONFIRM = "confirm"
+
+
+class PermissionMode(StrEnum):
+    """Whether a decision stops the call, or only gets written down.
+
+    observe   decide and log every call, then let it run. Nothing is blocked.
+    enforce   a deny stops the call, a confirm parks it.
+
+    There is no "off" value. A gate that can be silenced has the same failure mode as
+    one that was never built, and observe already costs one log line per refusal.
+    """
+
+    OBSERVE = "observe"
+    ENFORCE = "enforce"
 
 
 # Highest first. ``StrEnum`` gives no ordering, and comparing band *names* would sort
@@ -174,6 +189,61 @@ PERMISSION_MATRIX: dict[TrustBand, dict[ToolRisk, PermissionAction]] = {
         ToolRisk.EXTERNAL: PermissionAction.DENY,
     },
 }
+
+# ------------------------------------------------------------------ gate mode
+
+
+def _mode_from_env() -> PermissionMode:
+    """Read ``NEKO_PERMISSION_MODE``. An unset or blank value keeps observe.
+
+    A value that is set and wrong raises instead of falling back. A deployment that
+    means enforce and typos the name must not boot into observe, because observe is
+    indistinguishable from a working gate in every log line except the one that would
+    have said ``deny``.
+    """
+    raw = str(os.environ.get("NEKO_PERMISSION_MODE") or "").strip().lower()
+    if not raw:
+        return PermissionMode.OBSERVE
+    try:
+        return PermissionMode(raw)
+    except ValueError:
+        raise ValueError(
+            f"NEKO_PERMISSION_MODE is {raw!r}; expected "
+            f"{', '.join(m.value for m in PermissionMode)}"
+        ) from None
+
+
+PERMISSION_GATE_MODE: PermissionMode = _mode_from_env()
+"""Decide and log, or decide and stop.
+
+OBSERVE is the default on purpose, and it is a rollout rule rather than a soft policy:
+no host entry point stamps the speaker on every turn yet, so an enforcing gate would
+read the owner's own chat as a stranger and deny every ``write`` and ``external`` tool.
+That turns a permission feature into an outage. Run observe, read the
+``[permission] would-deny`` lines, and switch to enforce once the entry points that
+matter are covered and the operator signs off on the default.
+
+An unknown value is rejected at import below, so a typo cannot silently select observe
+on a deployment that means enforce.
+"""
+
+# ------------------------------------------------------------------ id grammar
+
+
+PERMISSION_CHANNEL_PLATFORMS: dict[str, str] = {
+    # The transport label an inbound message carries (``InboundMessage.channel``,
+    # stamped by the connectors: "open" for the QQ Official Open Platform, "onebot" for
+    # a OneBot v11 implementation) mapped to the account-grammar prefix
+    # (``memory/speaker_trust.stable_speaker_id``: ``platform:actor``).
+    "open": "qq",
+    "onebot": "qq",
+}
+"""Channel -> platform prefix. A channel missing here produces no account id.
+
+That produces STRANGER, not a guess. Two connectors land on ``qq`` because both speak to
+QQ here; a future bridge for another platform needs its own entry, and the missing entry
+fails closed until someone adds it on purpose.
+"""
 
 # ------------------------------------------------------------------ confirm
 
@@ -293,6 +363,14 @@ def _validate_matrix() -> None:
                 )
     if PERMISSION_CONFIRM_TIMEOUT_SECONDS <= 0:
         raise ValueError("PERMISSION_CONFIRM_TIMEOUT_SECONDS must be positive")
+    if str(PERMISSION_GATE_MODE).strip().lower() not in {m.value for m in PermissionMode}:
+        raise ValueError(
+            f"PERMISSION_GATE_MODE is {PERMISSION_GATE_MODE!r}, not one of "
+            f"{', '.join(m.value for m in PermissionMode)}"
+        )
+    for channel, platform in PERMISSION_CHANNEL_PLATFORMS.items():
+        if not str(channel).strip() or not str(platform).strip():
+            raise ValueError(f"bad channel mapping {channel!r} -> {platform!r}")
 
 
 _validate_matrix()
