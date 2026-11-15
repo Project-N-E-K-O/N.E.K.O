@@ -388,6 +388,13 @@ class BrowserSession:
         # while a browser is being started and connected to, it is said of
         # that browser, and connecting to it must not take it back.
         self._unwanted_said = 0
+        # True once the user has agreed to a browser they closed being
+        # opened again (``closed_by_user``), until there is a tab again.
+        self._reopen_agreed = False
+        # True from when what such a browser left was cleared away
+        # (``close``) until the user agrees: with nothing of it held any
+        # more, nothing else says that it was the user who closed it.
+        self._closed_by_user_noted = False
         # The process the browser's windows belong to, as the browser tells
         # it, asked once per connection.
         self._window_pid: int | None = None
@@ -838,6 +845,12 @@ class BrowserSession:
         them), and the browser must not pass for one that is merely not in
         use meanwhile (``shows_a_window``).
         """
+        if self.closed_by_user:
+            # What is left of it is cleared away by that closing (every
+            # task was stopped, the tools were switched off, the settings
+            # changed): that the user closed it is kept, and the next task
+            # still asks before it opens one.
+            self._closed_by_user_noted = True
         self._unwanted = True
         self._unwanted_said += 1
 
@@ -870,6 +883,40 @@ class BrowserSession:
             and bool(self._tabs)
             and not self._unwanted
         )
+
+    @property
+    def closed_by_user(self) -> bool:
+        """Whether a browser of ours with a window went without this process closing it, and nobody agreed to another.
+
+        The user closed its window, as far as can be told: the connection
+        to it is lost (a browser that crashed looks the same, and is taken
+        for one that was closed), or it is still connected to and has no tab
+        left. Opening it again puts a window on their screen that they have
+        just put away, so they are asked first (``reopen_agreed``); the
+        host does the asking, and a call that comes without it is refused.
+
+        Not one this process is closing or has closed, nor one without a
+        window (nobody can have closed that by hand), nor the user's own.
+        """
+        if self._reopen_agreed:
+            return False
+        if self._closed_by_user_noted:
+            return True
+        browser = self._browser
+        connection = self._connection
+        return (
+            browser is not None
+            and browser.owned
+            and browser.headless is not True
+            and not self._unwanted
+            and connection is not None
+            and (connection.closed or not self._tabs)
+        )
+
+    def reopen_agreed(self) -> None:
+        """The user agreed to the browser they closed being opened again. Does not block."""
+        self._reopen_agreed = True
+        self._closed_by_user_noted = False
 
     async def close(self) -> None:
         """Drop the connection and close the browser if this process started it."""
@@ -983,6 +1030,8 @@ class BrowserSession:
         if not target_id:
             return
         self._tabs.add(target_id)
+        # There is a window again: closed once more, it is asked about once more.
+        self._reopen_agreed = False
         url = str(info.get("url") or "")
         if not is_web_page(url) or (self._blocked_ports and port_of(url) in self._blocked_ports):
             # Not a page of the web, or one of this application's own pages

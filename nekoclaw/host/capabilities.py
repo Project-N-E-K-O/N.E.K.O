@@ -453,6 +453,23 @@ class CapabilityRegistry:
             return BuiltinOutcome(False, "this capability is not offered by this process")
         return await self._builtins.run(capability, commission_id=commission_id, arguments=arguments)
 
+    def browser_closed_by_user(self) -> bool:
+        """Whether the user closed the browser the built-in tools started and has not agreed to another. Must not block."""
+        closed = getattr(self._builtins, "browser_closed_by_user", None)
+        if closed is None:
+            return False
+        try:
+            return bool(closed())
+        except Exception:  # noqa: BLE001 - not known: the call goes on as it always did
+            logger.warning("asking whether the browser was closed by the user failed", exc_info=True)
+            return False
+
+    def browser_reopen_agreed(self) -> None:
+        """Tell the provider that the user agreed to the browser being opened again."""
+        agreed = getattr(self._builtins, "browser_reopen_agreed", None)
+        if agreed is not None:
+            agreed()
+
     async def builtin_released(self, group: str, commission_id: str) -> None:
         """Tell the provider that a commission no longer occupies a group."""
         released = getattr(self._builtins, "released", None)

@@ -94,6 +94,11 @@ MAX_TIMEOUT_SECONDS = 120.0
 # was typed before the key, when one of its modifiers went down, when the
 # pointer moved over the element): what stopped it follows in the same
 # answer, the dialog with its text or that the page has closed.
+# What a call is told that would open a browser the user has closed.
+CLOSED_BY_USER = (
+    "The browser was closed by the user. Nothing was done. Call the tool again when you still need the browser: "
+    "the user is then asked whether it may be opened again."
+)
 _STOPPED_TAKING_INPUT = "the page stopped taking input (it opened a dialog, or closed)"
 _NOT_PRESSED = f"was NOT pressed: {_STOPPED_TAKING_INPUT} before the key could be sent."
 _NOT_COMPLETED = f"was NOT completed: {_STOPPED_TAKING_INPUT} before the button was pressed and released."
@@ -157,6 +162,10 @@ class BrowserTools:
             why = refused() if refused is not None else None
             if why:
                 return BuiltinOutcome(False, why)
+            if self._session.closed_by_user:
+                # The host asks the user before a call gets here; this one
+                # came without (the browser was closed after it looked).
+                return BuiltinOutcome(False, CLOSED_BY_USER)
             try:
                 await self._session.start()
                 outcome = await handler(arguments)
@@ -165,6 +174,8 @@ class BrowserTools:
             except BrowserError as exc:
                 return BuiltinOutcome(False, str(exc))
             except CdpClosed:
+                if self._session.closed_by_user:
+                    return BuiltinOutcome(False, CLOSED_BY_USER)
                 return BuiltinOutcome(False, "The browser was closed. Call the tool again to start it anew.")
             except CdpTimeout as exc:
                 return BuiltinOutcome(False, f"The browser did not answer in time ({exc}). The page may be busy; try again.")
@@ -218,6 +229,14 @@ class BrowserTools:
     def no_longer_wanted(self) -> None:
         """The browser is to be closed by an ``aclose`` that follows; see ``BrowserSession.no_longer_wanted``."""
         self._session.no_longer_wanted()
+
+    def closed_by_user(self) -> bool:
+        """Whether the user closed the browser and has not agreed to another; see ``BrowserSession.closed_by_user``."""
+        return self._session.closed_by_user
+
+    def reopen_agreed(self) -> None:
+        """The user agreed to the browser being opened again; see ``BrowserSession.reopen_agreed``."""
+        self._session.reopen_agreed()
 
     def shows_a_window(self) -> bool:
         """Whether stopping the tasks leaves the browser as it is; see ``BrowserSession.shows_a_window``."""

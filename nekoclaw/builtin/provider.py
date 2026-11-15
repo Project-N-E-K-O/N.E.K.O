@@ -338,6 +338,19 @@ class BuiltinToolProvider:
         else:
             await self._browser.aclose()
 
+    def browser_closed_by_user(self) -> bool:
+        """Whether the user closed the browser this process started, and has not agreed to it being opened again.
+
+        Asked by the host before a call of the browser tools: it puts the
+        question to the user then (``browser_reopen_agreed``).
+        """
+        return self._browser is not None and self._browser.closed_by_user()
+
+    def browser_reopen_agreed(self) -> None:
+        """The user agreed to the browser they closed being opened again: the next call starts it."""
+        if self._browser is not None:
+            self._browser.reopen_agreed()
+
     def browser_no_longer_wanted(self) -> None:
         """The user has said the browser is not to be used any more; ``close_browser`` follows. Does not block.
 

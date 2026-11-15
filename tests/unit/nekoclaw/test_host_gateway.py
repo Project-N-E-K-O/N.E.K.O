@@ -909,6 +909,17 @@ class Builtins:
     async def released(self, group: str, commission_id: str) -> None:
         return None
 
+    # Whether the user closed the browser and has not agreed to another, as the real provider tells it.
+    closed_by_user = False
+    agreed = 0
+
+    def browser_closed_by_user(self) -> bool:
+        return self.closed_by_user
+
+    def browser_reopen_agreed(self) -> None:
+        self.agreed += 1
+        self.closed_by_user = False
+
 
 @pytest.fixture
 async def builtin_host(server: FakePluginServer, tmp_path: Any) -> Any:
@@ -1242,6 +1253,124 @@ async def test_the_desktop_and_the_browser_are_asked_about_separately(builtin_ho
     # Once for each group, not once for each tool.
     assert [ask.category for _cid, ask in asker.asked] == ["browser", "keyboard_mouse"]
     assert len(builtin_host.provider.calls) == 3
+
+
+async def test_a_browser_the_user_closed_is_asked_about_before_a_call_opens_it_again(builtin_host):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+    assert asker.asked == []
+
+    builtin_host.provider.closed_by_user = True
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com/next"})
+
+    # Asked although the browser is allowed for good, with the two answers there are to this.
+    assert [(cid, ask.category, ask.options) for cid, ask in asker.asked] == [
+        (commission.id, "browser_reopen", ("once", "deny"))
+    ]
+    assert asker.asked[0][1].detail == {
+        "tool": "browser_navigate_page",
+        "capability": "builtin:browser:browser_navigate_page",
+    }
+    assert result.get("isError") is not True and builtin_host.provider.agreed == 1
+    assert len(builtin_host.provider.calls) == 2
+    # Open again, it is a browser like before: not asked about until it is closed again.
+    await _call(builtin_host, grant, "browser_take_screenshot")
+    assert len(asker.asked) == 1 and len(builtin_host.provider.calls) == 3
+    builtin_host.provider.closed_by_user = True
+    await _call(builtin_host, grant, "browser_take_screenshot")
+    assert [ask.category for _cid, ask in asker.asked] == ["browser_reopen", "browser_reopen"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "told", "reason"),
+    [
+        ("deny", "does not want it opened again", "permission denied: the user declined"),
+        (
+            RuntimeError("the commission has no session"),
+            "could not be asked whether it may be opened again",
+            "permission denied: the request for approval could not be answered",
+        ),
+    ],
+)
+async def test_a_browser_the_user_closed_stays_closed_when_they_do_not_agree(builtin_host, answer, told, reason):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+
+    async def asker(commission_id: str, ask: Any) -> str:
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    builtin_host.permissions.set_asker(asker)
+    commission = await _commission(builtin_host)
+    grant = _grant(builtin_host, commission, images=True)
+    builtin_host.provider.closed_by_user = True
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    assert result["isError"] is True and told in _text(result)
+    assert _text(result).startswith("The user closed the browser")
+    # Nothing was carried out, the browser was not occupied, and it is still one to ask about.
+    assert builtin_host.provider.calls == [] and builtin_host.provider.agreed == 0
+    assert builtin_host.provider.closed_by_user is True
+    assert builtin_host.leases.holder(BUILTIN_GROUP_BROWSER) is None
+    denied = [
+        event.payload for event in await builtin_host.ledger.events(commission.id) if event.type == "capability_denied"
+    ]
+    assert denied == [{"capability": "builtin:browser:browser_navigate_page", "reason": reason}]
+
+
+async def test_the_permission_for_the_browser_given_in_the_same_call_stands_for_opening_it_again(builtin_host):
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+    builtin_host.provider.closed_by_user = True
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    # One question, not two in a row.
+    assert [ask.category for _cid, ask in asker.asked] == ["browser"]
+    assert result.get("isError") is not True and builtin_host.provider.agreed == 1
+    assert len(builtin_host.provider.calls) == 1
+
+
+async def test_a_refused_permission_for_the_browser_is_not_followed_by_a_question_about_opening_it(builtin_host):
+    asker = Asker("deny")
+    builtin_host.permissions.set_asker(asker)
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+    builtin_host.provider.closed_by_user = True
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    assert result["isError"] is True and [ask.category for _cid, ask in asker.asked] == ["browser"]
+    assert builtin_host.provider.agreed == 0 and builtin_host.provider.calls == []
+
+
+async def test_the_desktop_is_not_asked_about_for_a_browser_the_user_closed(builtin_host):
+    await builtin_host.permission_store.set_mode("keyboard_mouse", "allow")
+    asker = Asker("deny")
+    builtin_host.permissions.set_asker(asker)
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+    builtin_host.provider.closed_by_user = True
+
+    result = await _call(builtin_host, grant, "computer", {"action": "screenshot"})
+
+    assert result.get("isError") is not True and asker.asked == []
+    assert builtin_host.provider.closed_by_user is True
+
+
+async def test_a_provider_that_does_not_say_whether_the_browser_was_closed_is_called_as_before(builtin_host, monkeypatch):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    monkeypatch.delattr(Builtins, "browser_closed_by_user")
+    monkeypatch.delattr(Builtins, "browser_reopen_agreed")
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    assert result.get("isError") is not True and len(builtin_host.provider.calls) == 1
 
 
 async def test_a_group_allowed_once_is_not_asked_about_again_until_the_run_is_over(builtin_host):

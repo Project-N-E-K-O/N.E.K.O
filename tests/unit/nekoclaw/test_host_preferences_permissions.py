@@ -501,6 +501,69 @@ async def test_each_mcp_server_is_asked_about_separately(store):
     assert await store.mode("mcp_server", "mail") == "first_ask"
 
 
+async def test_what_is_asked_each_time_is_asked_whatever_the_settings_and_earlier_answers(store):
+    from nekoclaw.host.permissions import BROWSER_REOPEN
+
+    await store.set_mode("browser", "allow")
+    asker = Asker("once")
+    gate = PermissionGate(store, asker)
+
+    first = await gate.ask_each_time("c1", BROWSER_REOPEN, detail={"tool": "browser_click"})
+    second = await gate.ask_each_time("c1", BROWSER_REOPEN)
+
+    assert (first.allow, first.asked, second.allow) == (True, True, True)
+    # Asked both times, with two answers on offer, and nothing was kept of either.
+    assert [(cid, ask.category, ask.key, ask.options) for cid, ask in asker.asked] == [
+        ("c1", BROWSER_REOPEN, None, ("once", "deny")),
+        ("c1", BROWSER_REOPEN, None, ("once", "deny")),
+    ]
+    assert asker.asked[0][1].detail == {"tool": "browser_click"}
+    assert await store.mode(BROWSER_REOPEN) == "always_ask"
+
+
+@pytest.mark.parametrize(
+    ("choice", "allow", "reason"),
+    [
+        ("once", True, None),
+        # Wider than what was offered: it covers this once.
+        ("always", True, None),
+        ("session", True, None),
+        ("deny", False, DENIED_BY_USER),
+        ("maybe", False, DENIED_BY_USER),
+    ],
+)
+async def test_what_is_asked_each_time_is_allowed_only_by_an_approval(store, choice, allow, reason):
+    decision = await PermissionGate(store, Asker(choice)).ask_each_time("c1", "browser_reopen")
+
+    assert (decision.allow, decision.reason, decision.asked) == (allow, reason, allow)
+    assert await store.mode("browser_reopen") == "always_ask"
+
+
+async def test_what_is_asked_each_time_is_refused_when_nobody_can_be_asked(store):
+    async def broken(commission_id: str, ask: Any) -> str:
+        raise RuntimeError("the commission has no session")
+
+    nobody = await PermissionGate(store).ask_each_time("c1", "browser_reopen")
+    failed = await PermissionGate(store, broken).ask_each_time("c1", "browser_reopen")
+
+    assert (nobody.allow, nobody.reason) == (False, DENIED_NO_ANSWER)
+    assert (failed.allow, failed.reason) == (False, DENIED_NO_ANSWER)
+
+
+async def test_a_decision_says_whether_the_user_was_asked_for_it(store):
+    asker = Asker("session")
+    gate = PermissionGate(store, asker)
+
+    asked = await gate.check("c1", "browser")
+    covered = await gate.check("c1", "browser")
+    by_settings = await gate.check("c1", "plugin_entry")
+
+    assert (asked.allow, asked.asked) == (True, True)
+    assert (covered.allow, covered.asked) == (True, False)
+    assert (by_settings.allow, by_settings.asked) == (True, False)
+    assert "asked" not in asked.to_json()
+
+
 async def test_nobody_to_ask_means_no(store):
     decision = await PermissionGate(store).check("c1", "run_command")
 
@@ -932,3 +995,24 @@ async def test_a_session_answer_for_the_browser_outlasts_the_run(store):
     assert (await gate.check("c1", "browser")).allow
     assert len(asker.asked) == 2
 
+
+
+@pytest.mark.parametrize("lang", ["zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"])
+def test_the_question_about_opening_the_browser_again_is_worded_in_every_language(lang):
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_CATEGORY_TEXTS, PERMISSION_OPTION_NAMES
+    from nekoclaw.host.permissions import BROWSER_REOPEN, CHOICES_ALWAYS_ASK, PermissionAsk
+    from nekoclaw.host.reports import render_question
+
+    ask = PermissionAsk(
+        category=BROWSER_REOPEN, key=None, detail={"tool": "browser_click"}, options=CHOICES_ALWAYS_ASK
+    ).to_json()
+    words = PERMISSION_CATEGORY_TEXTS[lang]
+
+    text = render_question("plan the trip", ask, lang)
+
+    # Its own words, not those of "something else", and not those of operating the browser as such.
+    assert words[BROWSER_REOPEN] in text and words[BROWSER_REOPEN] != words["browser"]
+    assert "{" not in text and "browser_click" not in text
+    names = PERMISSION_OPTION_NAMES[lang]
+    assert names["once"] in text and names["deny"] in text
+    assert names["always"] not in text and names["session"] not in text

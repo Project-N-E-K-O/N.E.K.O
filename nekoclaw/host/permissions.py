@@ -93,6 +93,10 @@ DENIED_BY_SETTINGS = "permission denied: the permission settings forbid this"
 DENIED_BY_USER = "permission denied: the user declined"
 DENIED_NO_ANSWER = "permission denied: the request for approval could not be answered"
 
+# Not a category of the settings: asked each time it comes up, whatever the
+# settings say of the browser (``PermissionGate.ask_each_time``).
+BROWSER_REOPEN = "browser_reopen"
+
 _FILE_VERSION = 1
 # The mode of every category while an existing file cannot be read.
 _UNREADABLE_MODE = "deny"
@@ -106,6 +110,8 @@ class PermissionFileError(RuntimeError):
 class PermissionDecision:
     allow: bool
     reason: str | None = None
+    # Whether the user was asked for this very decision and approved.
+    asked: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return {"allow": self.allow, "reason": self.reason}
@@ -413,7 +419,34 @@ class PermissionGate:
             session.add(slot)
         elif run is not None:
             run.add(slot)
-        return PermissionDecision(True)
+        return PermissionDecision(True, asked=True)
+
+    async def ask_each_time(
+        self, commission_id: str, category: str, *, detail: dict[str, Any] | None = None
+    ) -> PermissionDecision:
+        """Ask the user about something no setting answers, and that no earlier answer covers.
+
+        For what is asked about as an event rather than as a kind of action
+        (``BROWSER_REOPEN``: the user closed the browser, and a task wants
+        it again). The answers on offer are to allow it this once or to
+        refuse; nothing is kept of either.
+        """
+        if self._asker is None:
+            return PermissionDecision(False, DENIED_NO_ANSWER)
+        ask = PermissionAsk(category=category, key=None, detail=dict(detail or {}), options=CHOICES_ALWAYS_ASK)
+        try:
+            choice = await self._asker(commission_id, ask)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - no answer is a refusal
+            logger.warning("asking the user failed: %s", type(exc).__name__)
+            return PermissionDecision(False, DENIED_NO_ANSWER)
+        if choice in ("always", "session"):
+            # Approved, though more widely than was offered: it covers this once.
+            choice = "once"
+        if choice != "once":
+            return PermissionDecision(False, DENIED_BY_USER)
+        return PermissionDecision(True, asked=True)
 
     async def _decide_again(self, category: str, key: str | None) -> PermissionDecision:
         """Decide a request the user approved after the settings changed under the question.

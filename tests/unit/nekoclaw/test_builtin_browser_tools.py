@@ -29,7 +29,7 @@ from PIL import Image
 from config.prompts.prompts_nekoclaw_builtin import BROWSER_TOOL_NAMES, BROWSER_TOOLS
 from nekoclaw.builtin.browser import tools as tools_module
 from nekoclaw.builtin.browser.cdp import CdpClosed, CdpError, CdpTimeout
-from nekoclaw.builtin.browser.tools import SCREENSHOT_MAX_BYTES, TOOL_PREFIX, BrowserTools, cap_lines
+from nekoclaw.builtin.browser.tools import CLOSED_BY_USER, SCREENSHOT_MAX_BYTES, TOOL_PREFIX, BrowserTools, cap_lines
 from nekoclaw.host.capabilities import BuiltinOutcome
 from tests.unit.nekoclaw.fake_cdp_browser import (
     BROWSER_PID,
@@ -926,18 +926,131 @@ async def test_a_browser_that_does_not_answer_in_time_is_a_failed_outcome(tools:
     )
 
 
-async def test_after_the_browser_went_away_the_next_call_says_so_and_the_one_after_starts_it_anew(
-    tools: BrowserTools, world: BrowserWorld
-) -> None:
+async def test_a_browser_the_user_closed_is_not_opened_again_until_they_agree(tools: BrowserTools, world: BrowserWorld) -> None:
+    assert tools.closed_by_user() is False
     await on_the_order_form(tools)
+    assert tools.closed_by_user() is False
     world.browser.disconnect()
-    # The session notices at the start of the next call and connects again by itself.
+    assert tools.closed_by_user() is True
+    sent = world.browser.mark()
+
+    # However often it is called: nothing is started, nothing connected to, nothing sent.
+    assert await call(tools, "take_snapshot") == BuiltinOutcome(False, CLOSED_BY_USER)
+    assert await call(tools, "navigate_page", url=THANKS) == BuiltinOutcome(False, CLOSED_BY_USER)
+    assert len(world.launched) == 1 and len(world.connected) == 1 and world.browser.since(sent) == []
+
+    tools.reopen_agreed()
+    assert tools.closed_by_user() is False
     outcome = await call(tools, "take_snapshot")
     assert outcome.success and len(world.connected) == 2
     assert snapshot_of(outcome.text)[0].endswith('RootWebArea "Order form"')
     # The uids of before the break are of the old connection's snapshot.
     stale = await call(tools, "click", uid="1_4")
     assert not stale.success and "not found on page 2" in stale.text
+    # Agreed to once, not for good: closed once more, it is asked about once more.
+    assert tools.closed_by_user() is False
+    world.browser.disconnect()
+    assert tools.closed_by_user() is True
+    assert await call(tools, "take_snapshot") == BuiltinOutcome(False, CLOSED_BY_USER)
+
+
+async def test_a_browser_whose_last_window_the_user_closed_is_not_given_another_until_they_agree(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    # The browser runs on in the background, still connected to.
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    assert tools.session.connected and tools.closed_by_user() is True
+    sent = world.browser.mark()
+
+    assert await call(tools, "new_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
+    assert world.browser.since(sent) == [] and world.browser.pages == {}
+
+    tools.reopen_agreed()
+    outcome = await call(tools, "new_page", url=ORDER)
+    assert outcome.success, outcome.text
+    assert len(world.browser.pages) == 1 and len(world.connected) == 1
+    # With a window again, it is one that can be closed again.
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    assert tools.closed_by_user() is True
+
+
+@pytest.mark.parametrize("settings", [{"headless": True}, {"mode": "attach"}])
+async def test_a_browser_nobody_closed_by_hand_or_the_users_own_is_gone_back_to_without_asking(
+    tools: BrowserTools, world: BrowserWorld, settings: dict[str, Any]
+) -> None:
+    # Without a window there is nothing the user could have closed (it crashed); and their own browser
+    # is theirs to close and to start.
+    world.settings(**settings)
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    assert tools.closed_by_user() is False
+
+    outcome = await call(tools, "take_snapshot")
+
+    assert outcome.success and len(world.connected) == 2
+
+
+async def test_a_browser_this_process_closed_is_started_again_without_asking(tools: BrowserTools, world: BrowserWorld) -> None:
+    await on_the_order_form(tools)
+    await tools.aclose()
+    assert tools.closed_by_user() is False
+
+    outcome = await call(tools, "navigate_page", url=ORDER)
+
+    assert outcome.success and len(world.launched) == 2
+
+
+async def test_a_browser_that_is_being_closed_by_this_process_is_not_taken_for_one_the_user_closed(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    # Its settings were changed; the closing has not had its turn, and the connection goes meanwhile.
+    tools.no_longer_wanted()
+    world.browser.disconnect()
+
+    assert tools.closed_by_user() is False
+
+
+@pytest.mark.parametrize("keep_window", [False, True])
+async def test_that_the_user_closed_the_browser_is_kept_when_what_it_left_is_cleared_away(
+    tools: BrowserTools, world: BrowserWorld, keep_window: bool
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    # Every task is stopped, or the tools are switched off: what is left of the browser is closed.
+    await tools.aclose(keep_window=keep_window)
+    assert not tools.holds_a_browser()
+
+    assert tools.closed_by_user() is True
+    assert await call(tools, "navigate_page", url=ORDER) == BuiltinOutcome(False, CLOSED_BY_USER)
+    assert len(world.launched) == 1
+    tools.reopen_agreed()
+    outcome = await call(tools, "navigate_page", url=ORDER)
+    assert outcome.success and len(world.launched) == 2 and tools.closed_by_user() is False
+
+
+@pytest.mark.parametrize("headless", [False, True])
+async def test_a_call_during_which_the_browser_is_closed_says_what_the_next_one_does(
+    tools: BrowserTools, world: BrowserWorld, monkeypatch: Any, headless: bool
+) -> None:
+    world.settings(headless=headless)
+    await on_the_order_form(tools)
+
+    async def closed_meanwhile(*_args: Any, **_kwargs: Any) -> Any:
+        world.browser.disconnect()
+        raise CdpClosed("the connection to the browser is closed")
+
+    monkeypatch.setattr(tools.session, "take_snapshot", closed_meanwhile)
+
+    outcome = await call(tools, "take_snapshot")
+
+    if headless:
+        assert outcome == BuiltinOutcome(False, "The browser was closed. Call the tool again to start it anew.")
+    else:
+        assert outcome == BuiltinOutcome(False, CLOSED_BY_USER)
 
 
 # ---------------------------------------------------------------------------

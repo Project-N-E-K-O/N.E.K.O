@@ -874,3 +874,52 @@ async def test_closing_with_the_window_to_be_left_closes_one_that_is_no_longer_w
     await capabilities._close_browser(capability_reason="AGENT_LLM_UNREACHABLE", leave_window=True)
 
     assert len(world.closed) == 1 and not stage.session.holds_a_browser
+
+
+# ---------------------------------------------------------------------------
+# The user closed the browser
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("then", ["nothing", "every task stopped", "tools switched off and on", "master switch off and on"])
+async def test_a_browser_the_user_closed_is_one_to_ask_about_whatever_was_stopped_or_switched_since(
+    stage: Any, world: BrowserWorld, then: str
+) -> None:
+    await _on_the_order_form(stage)
+    assert stage.provider.browser_closed_by_user() is False
+    world.browser.disconnect()
+
+    if then == "every task stopped":
+        await api_routes.admin_control(dict(END_ALL))
+    elif then == "tools switched off and on":
+        await api_routes.set_agent_flags({"browser_use_enabled": False, "_persist_intent": False})
+        await stage.settled()
+        await api_routes.set_agent_flags({"browser_use_enabled": True, "_persist_intent": False})
+        await stage.settled()
+    elif then == "master switch off and on":
+        await api_routes.admin_control({"action": "disable_analyzer"})
+        await api_routes.admin_control({"action": "enable_analyzer"})
+    if then != "nothing":
+        # What was left of it was cleared away.
+        assert len(world.closed) == 1 and not stage.session.holds_a_browser
+
+    assert stage.provider.browser_closed_by_user() is True
+    refused = await stage.browse(url=THANKS)
+    assert not refused.success and refused.text.startswith("The browser was closed by the user.")
+    assert len(world.launched) == 1 and len(world.connected) == 1
+
+    stage.provider.browser_reopen_agreed()
+    assert stage.provider.browser_closed_by_user() is False
+    outcome = await stage.browse(url=THANKS)
+    assert outcome.success, outcome.text
+
+
+async def test_a_browser_closed_for_changed_settings_is_started_again_without_asking(stage: Any, world: BrowserWorld) -> None:
+    await _on_the_order_form(stage)
+    await api_runtime.set_browser_settings({"headless": True})
+    await stage.settled()
+    assert len(world.closed) == 1
+
+    assert stage.provider.browser_closed_by_user() is False
+    outcome = await stage.browse(url=THANKS)
+    assert outcome.success and len(world.launched) == 2
