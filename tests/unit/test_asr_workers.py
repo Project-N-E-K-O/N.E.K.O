@@ -4013,7 +4013,7 @@ async def test_soniox_provider_endpoint_aggregates_stable_tokens(monkeypatch) ->
     assert "api_key" not in config
     assert config["language_hints"] == ["en", "ja", "es"]
     assert config == {
-        "model": "stt-rt-v5",
+        "model": "stt-rt-v6",
         "audio_format": "pcm_s16le",
         "sample_rate": 16_000,
         "num_channels": 1,

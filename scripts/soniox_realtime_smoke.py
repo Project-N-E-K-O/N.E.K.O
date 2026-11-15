@@ -121,7 +121,7 @@ async def transcribe_file(
             await websocket.send(
                 json.dumps(
                     {
-                        "model": "stt-rt-v5",
+                        "model": "stt-rt-v6",
                         "audio_format": "pcm_s16le",
                         "sample_rate": sample_rate,
                         "num_channels": channels,

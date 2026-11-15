@@ -146,7 +146,7 @@ async def test_bad_wav_returns_a_result_without_stopping_valid_file(
     assert calls[0][0] == smoke.REGION_URLS["us"]
     assert calls[0][1]["additional_headers"] == {"Authorization": "Bearer key"}
     assert json.loads(sent[0]) == {
-        "model": "stt-rt-v5",
+        "model": "stt-rt-v6",
         "audio_format": "pcm_s16le",
         "sample_rate": 16_000,
         "num_channels": 1,

@@ -130,7 +130,7 @@ def _soniox_config(config: AsrSessionConfig) -> dict[str, Any]:
     language = config.language.split("-", 1)[0].lower()
     language_hints = ["en", "ja", "es"] if language == "auto" else [language]
     return {
-        "model": "stt-rt-v5",
+        "model": "stt-rt-v6",
         "audio_format": "pcm_s16le",
         "sample_rate": 16_000,
         "num_channels": 1,
