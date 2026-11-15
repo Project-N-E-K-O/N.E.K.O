@@ -2827,3 +2827,19 @@ async def test_a_line_goes_with_its_entry_though_the_index_could_not_be_read_bac
     assert "- [What it is built on](memory/stack.md) — my own words" in await space.read_index("Budget app")
     assert await space.list_entries(DEFAULT_PROJECT) == []
     assert daily.read_text(encoding="utf-8").strip() == ""
+
+
+def test_a_change_that_was_written_counts_as_made_though_the_file_could_not_be_read_back_at_once(space, tmp_path, monkeypatch):
+    path = tmp_path / "MEMORY.md"
+    path.write_text("- one", encoding="utf-8")
+    reads = _not_read_back(monkeypatch, path, before=1)
+
+    changed = space._edit_text(path, lambda text: text if "- two" in text else text + " - two")
+
+    monkeypatch.undo()
+    assert len(reads) >= 5
+    # Written the first time; made again to what the file holds, there was nothing left to do.
+    assert changed is True
+    assert path.read_text(encoding="utf-8") == "- one - two"
+    # A change that changes nothing is not one.
+    assert space._edit_text(path, lambda text: text) is False
