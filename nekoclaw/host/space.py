@@ -1814,10 +1814,15 @@ class TaskAgentSpace:
             using = None
         ahead = False
         try:
-            if summary.strip():
-                self._put_text(source / paths.SUMMARY_NAME, redact(summary).strip() + "\n")
-            else:
-                self._set_old_summary_aside(source)
+            written = redact(summary).strip() + "\n" if summary.strip() else None
+            # The summary of an earlier archiving is neither written over
+            # nor left under the name of this one: nothing of the user's
+            # space is removed by itself.
+            aside = self._set_old_summary_aside(source, unless=written)
+            if written is not None:
+                if not aside:
+                    raise OSError("the summary the project was archived with before could not be set aside")
+                self._put_text(source / paths.SUMMARY_NAME, written)
             root.mkdir(parents=True, exist_ok=True)
             target = root / source.name
             number = 2
@@ -1888,19 +1893,30 @@ class TaskAgentSpace:
         return archived
 
     @staticmethod
-    def _set_old_summary_aside(directory: Path) -> None:
-        """Give the summary a project was archived with before another name, when it is archived without one now.
+    def _set_old_summary_aside(directory: Path, *, unless: str | None = None) -> bool:
+        """Give the summary a project was archived with before another name. Returns whether its name is free now.
 
         A project that was brought back keeps the summary it was archived
         with then. Left under that name it would pass for the summary of
-        this archiving; under a name with its date it says what it is.
+        this archiving, or be written over by it; under a name with its
+        date it says what it is, and stays. ``unless`` is the summary of
+        this archiving: a file that holds just that was written by an
+        earlier try at it that could not move the project, and is no
+        summary of before.
         """
         old = directory / SpacePaths.SUMMARY_NAME
         try:
             written = _date(old.stat().st_mtime)
         except OSError:
             # None there.
-            return
+            return True
+        if unless is not None:
+            try:
+                if old.read_text(encoding="utf-8-sig").replace("\r\n", "\n") == unless:
+                    return True
+            except (OSError, UnicodeError):
+                # Not told apart from one of before: kept as one.
+                pass
         aside = old.with_name(f"{old.stem}-{written}{old.suffix}")
         number = 2
         while aside.exists():
@@ -1909,9 +1925,12 @@ class TaskAgentSpace:
         try:
             old.rename(aside)
         except OSError:
-            # Held by another program. It stays, and the line of the project
-            # does not point at it.
+            # Held by another program. It stays; a project archived without
+            # a summary is archived all the same and its line does not point
+            # at it, one archived with a summary waits for the next round.
             logger.warning("the summary a project was archived with before could not be given another name", exc_info=True)
+            return False
+        return True
 
     async def archive_project(
         self,
@@ -2199,19 +2218,42 @@ class TaskAgentSpace:
             return False
 
     async def named_in(self, command: str) -> bool:
-        """Whether a shell command names the space: the name of its directory occurs in it.
+        """Whether a shell command points at the space: the path of its directory occurs in it.
 
-        Only the directory's own name (``task_agent_space``), in any case,
-        so that a path from any starting point is seen: with the drive
-        written another way, from the home directory, relative to a
-        working directory above the space, or after the command changed
-        into the directory above. The odd command that only mentions the
-        name is refused with them. A command that puts the name together
-        itself (a variable, a wildcard) is not seen.
+        The path as it is configured and as it resolves, with either kind
+        of slash, single or doubled, in any case, and as a shell from the
+        Unix world writes a Windows drive (``/d/...``). What is to be kept
+        from commands is the files task agents keep for good, not a word:
+        a command that only mentions the name of the directory is not
+        one, as the name occurs in the sources of the application, which a
+        task agent may well be working on.
+
+        Not seen: a path relative to where the command runs, one that is
+        put together from variables or wildcards, one whose spaces are
+        escaped, a directory above the space. Those are left to whoever
+        approves commands; there is no sandbox.
         """
 
+        def plain(text: str) -> str:
+            return re.sub(r"/+", "/", text.replace("\\", "/")).casefold()
+
         def work() -> bool:
-            return self._paths().root.name.casefold() in command.casefold()
+            root = self._paths().root
+            places = {root}
+            try:
+                places.add(root.resolve())
+            except OSError:
+                pass
+            said = plain(command)
+            for place in places:
+                form = plain(str(place)).rstrip("/")
+                if not form:
+                    continue
+                if form in said:
+                    return True
+                if len(form) > 2 and form[1] == ":" and form[0].isalpha() and f"/{form[0]}{form[2:]}" in said:
+                    return True
+            return False
 
         try:
             return await self._read(work)

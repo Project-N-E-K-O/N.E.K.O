@@ -1314,21 +1314,26 @@ async def test_a_summary_that_cannot_be_saved_is_kept_in_the_projects_record(spa
         "printf 'x' >> {root}/MEMORY.md",
         "printf 'x' >> {backslashes}\\MEMORY.md",
         'Add-Content "{upper}/memory/a.md" x',
-        "cat /d/Documents/data/nekoclaw/task_agent_space/AGENTS.md",
-        "echo x > nekoclaw/task_agent_space/AGENTS.md",
-        "echo x > nekoclaw\\\\task_agent_space\\\\AGENTS.md",
-        "cd ~/data/NekoClaw/Task_Agent_Space && ls",
-        # First into the directory above, then a path from there.
-        "cd ../../../nekoclaw && printf x > task_agent_space/MEMORY.md",
-        "cd nekoclaw; cd task_agent_space; echo x > AGENTS.md",
-        # Only a mention of the name: refused with the rest.
-        "grep -rn task_agent_space nekoclaw/",
+        # With its backslashes doubled, as inside a quoted string.
+        "type {doubled}\\\\MEMORY.md",
+        # As a shell from the Unix world writes a Windows drive.
+        "cat {unix}/AGENTS.md",
+        "cd {root} && ls",
+        "rm -rf '{root}'",
     ],
 )
-async def test_a_command_that_names_the_space_is_seen_however_the_path_is_written(tmp_path, command):
-    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "nekoclaw" / "task_agent_space"))
-    root = (tmp_path / "nekoclaw" / "task_agent_space").as_posix()
-    command = command.format(root=root, backslashes=root.replace("/", "\\"), upper=root.upper())
+async def test_a_command_that_points_at_the_space_is_seen_however_its_path_is_written(tmp_path, command):
+    home = tmp_path / "nekoclaw" / "task_agent_space"
+    space = TaskAgentSpace(lambda: SpacePaths(home))
+    root = home.as_posix()
+    unix = f"/{root[0].lower()}{root[2:]}" if root[1:2] == ":" else root
+    command = command.format(
+        root=root,
+        backslashes=root.replace("/", "\\"),
+        upper=root.upper(),
+        doubled=root.replace("/", "\\\\"),
+        unix=unix,
+    )
 
     assert await space.named_in(command) is True
 
@@ -1339,14 +1344,32 @@ async def test_a_command_that_names_the_space_is_seen_however_the_path_is_writte
         "ls",
         "python -m pytest tests/unit/nekoclaw/test_host_space.py",
         "cat nekoclaw/task_agents/projects/_daily/sessions/1/work/notes.txt",
-        "echo task-agent-space taskagentspace task_agent",
+        # Only the name of the directory, as it occurs in the sources of the application.
+        "grep -rn task_agent_space nekoclaw/",
+        "echo task-agent-space taskagentspace task_agent Task_Agent_Space",
+        # A directory of that name somewhere else.
+        "cat /somewhere/else/nekoclaw/task_agent_space/AGENTS.md",
+        # Known not to be seen: a path relative to where the command runs, or to the home directory.
+        "echo x > nekoclaw/task_agent_space/AGENTS.md",
+        "cd ~/data/NekoClaw/Task_Agent_Space && ls",
+        "cd ../../../nekoclaw && printf x > task_agent_space/MEMORY.md",
         "",
     ],
 )
-async def test_a_command_about_something_else_is_not_taken_for_one_about_the_space(tmp_path, command):
+async def test_a_command_that_does_not_point_at_the_space_is_not_taken_for_one_that_does(tmp_path, command):
     space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "nekoclaw" / "task_agent_space"))
 
     assert await space.named_in(command) is False
+
+
+async def test_the_path_the_space_resolves_to_counts_as_well(tmp_path):
+    home = tmp_path / "nekoclaw" / "task_agent_space"
+    # Configured by a way round; a command may write it either way.
+    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "elsewhere" / ".." / "nekoclaw" / "task_agent_space"))
+
+    assert await space.named_in(f"cat {home.as_posix()}/MEMORY.md") is True
+    assert await space.named_in(f"cat {tmp_path.as_posix()}/elsewhere/../nekoclaw/task_agent_space/MEMORY.md") is True
+    assert await space.named_in(f"cat {tmp_path.as_posix()}/elsewhere/MEMORY.md") is False
 
 
 # ---------------------------------------------------------------------------
@@ -3971,3 +3994,85 @@ async def test_a_directory_made_by_hand_under_a_name_no_project_can_have_does_no
     assert sorted((item.commission_id, item.project) for item in reviews) == [("c-1", "Budget app"), ("c-2", " Odd")]
     assert (await space.read_review("c-1")).project == "Budget app"
     assert (await space.read_review("c-2")).content == "Kept by hand."
+
+
+# ---------------------------------------------------------------------------
+# The summary of before is always kept
+# ---------------------------------------------------------------------------
+
+
+async def test_the_summary_of_before_is_kept_when_a_project_is_archived_with_a_new_one(space, root):
+    import re
+
+    await space.touch_project("Budget app")
+    await space.archive_project("Budget app", summary="OLD summary, v1.", description="v1")
+    await space.use_project("Budget app")
+
+    archived = await space.archive_project("Budget app", summary="NEW summary, v2.", description="v2")
+
+    year = archived.archive_year
+    home = root / "archive" / year / "Budget app"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "NEW summary, v2.\n"
+    # Not written over: kept under a name that says of when it is.
+    dated = [item.name for item in home.glob("SUMMARY-*")]
+    assert len(dated) == 1 and re.fullmatch(r"SUMMARY-\d{4}-\d{2}-\d{2}\.md", dated[0])
+    assert (home / dated[0]).read_text(encoding="utf-8") == "OLD summary, v1.\n"
+    assert (root / "MEMORY.md").read_text(encoding="utf-8").splitlines() == [
+        f"- [archived project: Budget app](<archive/{year}/Budget app/SUMMARY.md>) — v2"
+    ]
+
+
+async def test_a_project_is_not_archived_with_a_summary_while_the_one_of_before_cannot_be_set_aside(
+    space, root, monkeypatch
+):
+    await space.touch_project("Budget app")
+    await space.archive_project("Budget app", summary="OLD summary, v1.")
+    await space.use_project("Budget app")
+    rename = Path.rename
+
+    def held(self, target):
+        if self.name == "SUMMARY.md":
+            raise PermissionError(13, "in use")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", held)
+
+    assert await space.archive_project("Budget app", summary="NEW summary, v2.") is None
+
+    monkeypatch.undo()
+    # Nothing was written over. The project stays, and the new summary is kept for the next try.
+    assert (root / "projects" / "Budget app" / "SUMMARY.md").read_text(encoding="utf-8") == "OLD summary, v1.\n"
+    project = await space.get_project("Budget app")
+    assert project.status == "active" and project.kept_summary()[0] == "NEW summary, v2."
+
+    # Let go of, the next try sets it aside and archives the project with the summary that was kept.
+    archived = await space.archive_project("Budget app")
+
+    home = root / "archive" / archived.archive_year / "Budget app"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "NEW summary, v2.\n"
+    (dated,) = [item for item in home.glob("SUMMARY-*")]
+    assert dated.read_text(encoding="utf-8") == "OLD summary, v1.\n"
+
+
+async def test_a_summary_written_by_a_try_that_could_not_move_the_project_is_not_set_aside_by_the_next(
+    space, root, monkeypatch
+):
+    from nekoclaw.host import space as module
+
+    await space.touch_project("Budget app")
+    move = module._move
+
+    def stuck(source, target):
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(module, "_move", stuck)
+    assert await space.archive_project("Budget app", summary="The summary.") is None
+    monkeypatch.setattr(module, "_move", move)
+    assert (root / "projects" / "Budget app" / "SUMMARY.md").read_text(encoding="utf-8") == "The summary.\n"
+
+    archived = await space.archive_project("Budget app", summary="The summary.")
+
+    # The same summary, written for this archiving: there is no summary of before to keep.
+    home = root / "archive" / archived.archive_year / "Budget app"
+    assert sorted(item.name for item in home.glob("SUMMARY*")) == ["SUMMARY.md"]
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "The summary.\n"

@@ -605,45 +605,163 @@ async def test_shutting_down_does_not_wait_for_a_review(hosts, tmp_path):
     assert not (_space_root(tmp_path) / "projects").exists()
 
 
-async def test_a_shell_command_that_names_the_space_or_runs_inside_it_is_refused_whatever_is_allowed(hosts, tmp_path):
+class _Asker:
+    """Answers every permission question the same way, and keeps what was asked."""
+
+    def __init__(self, choice: str) -> None:
+        self.choice = choice
+        self.asked: list[Any] = []
+
+    async def __call__(self, commission_id: str, ask: Any) -> str:
+        self.asked.append(ask)
+        return self.choice
+
+
+def _command(command: str, cwd: Path) -> dict[str, Any]:
+    return {"tool": "bash", "category": "run_command", "command": command, "cwd": str(cwd)}
+
+
+async def test_a_shell_command_that_points_at_the_space_or_runs_inside_it_is_asked_about_every_time(hosts, tmp_path):
+    from nekoclaw.host.permissions import DENIED_BY_SETTINGS, DENIED_BY_USER, DENIED_NO_ANSWER, SPACE_COMMAND
+
     root = _space_root(tmp_path)
     host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
     await host.space.file_entry(None, title="Use uv", content="Run Python through uv.")
-    # The user allowed every command; that is no way to write the space past the host.
+    # The user allowed every command, for good. That does not cover these.
     await host.permission_store.set_mode("run_command", "allow")
+    reading = f"cat '{root.as_posix()}/MEMORY.md'"
 
-    async def decide(command: str, cwd: Path) -> dict[str, Any]:
-        payload = {"tool": "bash", "category": "run_command", "command": command, "cwd": str(cwd)}
-        return await host.task_agents._cb_permission("no-such-session", payload)
+    async def decide(command: str, cwd: Path = tmp_path) -> dict[str, Any]:
+        return await host.task_agents._cb_permission("no-such-session", _command(command, cwd))
 
-    named = await decide(f"printf 'x' >> '{root.as_posix()}/MEMORY.md'", tmp_path)
-    relative = await decide("echo x > nekoclaw/task_agent_space/AGENTS.md", tmp_path)
+    # Nobody to ask (a commission that is not there): not run.
+    unanswered = await decide(reading)
+    assert (unanswered["allow"], unanswered["reason"]) == (False, DENIED_NO_ANSWER)
+
+    asker = _Asker("once")
+    host.permissions.set_asker(asker)
+    named = await decide(f"printf 'x' >> '{root.as_posix()}/MEMORY.md'")
     inside = await decide("echo x > AGENTS.md", root / "memory")
-    # From the directory right above the space, by a path relative to it.
-    above = await decide("printf x > task_agent_space/AGENTS.md", tmp_path / "nekoclaw")
+    again = await decide(f"printf 'x' >> '{root.as_posix()}/MEMORY.md'")
 
-    for refused in (named, relative, inside, above):
-        assert refused["allow"] is False
-        assert refused["reason"].startswith("a command that names the task agent space, or runs inside it, is not run")
-        assert "note_lesson" in refused["reason"]
-    # Any other command goes the way the settings say.
-    assert (await decide("ls", tmp_path))["allow"] is True
+    # Allowed this once, each after a question of its own: the very same command is asked about again.
+    assert [item["allow"] for item in (named, inside, again)] == [True, True, True]
+    assert [(ask.category, ask.options) for ask in asker.asked] == [(SPACE_COMMAND, ("once", "deny"))] * 3
+    assert asker.asked[0].detail["command"].endswith("/MEMORY.md'")
+    assert asker.asked[1].detail["cwd"] == str(root / "memory")
+
+    # Any other command goes the way the settings say, unasked: one that only mentions the name among them.
+    for command in ("ls", "grep -rn task_agent_space nekoclaw/"):
+        assert (await decide(command))["allow"] is True
+    assert len(asker.asked) == 3
+
+    # The user says no. Reading is asked about like writing: a command is not looked into.
+    asker.choice = "deny"
+    refused = await decide(reading)
+    assert (refused["allow"], refused["reason"]) == (False, DENIED_BY_USER)
+    # An answer wider than what was offered covers this once, and nothing is kept of it.
+    asker.choice = "always"
+    assert (await decide(reading))["allow"] is True
+    asker.choice = "deny"
+    assert (await decide(reading))["allow"] is False
+    assert len(asker.asked) == 6
+
+    # Commands the settings forbid stay forbidden, and nobody is asked.
+    await host.permission_store.set_mode("run_command", "deny")
+    forbidden = await decide(reading)
+    assert (forbidden["allow"], forbidden["reason"]) == (False, DENIED_BY_SETTINGS)
+    assert len(asker.asked) == 6
 
 
-async def test_a_shell_command_that_changes_into_the_directory_above_first_is_refused_too(hosts, tmp_path):
+async def test_commands_allowed_for_the_session_do_not_cover_one_that_points_at_the_space(hosts, tmp_path):
+    from nekoclaw.host.permissions import SPACE_COMMAND
+
+    root = _space_root(tmp_path)
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+    await host.space.file_entry(None, title="Use uv", content="Run Python through uv.")
+    await host.permission_store.set_mode("run_command", "first_ask")
+    asker = _Asker("session")
+    host.permissions.set_asker(asker)
+
+    async def decide(command: str) -> dict[str, Any]:
+        return await host.task_agents._cb_permission("no-such-session", _command(command, tmp_path))
+
+    # Commands are allowed for the rest of the session at the first question.
+    assert (await decide("ls"))["allow"] is True
+    assert (await decide("ls -la"))["allow"] is True
+    assert [ask.category for ask in asker.asked] == ["run_command"]
+
+    assert (await decide(f"cat '{root.as_posix()}/MEMORY.md'"))["allow"] is True
+    assert (await decide(f"cat '{root.as_posix()}/MEMORY.md'"))["allow"] is True
+
+    # Asked about each time all the same, and with the two answers only.
+    assert [ask.category for ask in asker.asked] == ["run_command", SPACE_COMMAND, SPACE_COMMAND]
+    assert asker.asked[-1].options == ("once", "deny")
+    # And that answer did nothing for other commands, which were allowed already.
+    assert (await decide("ls"))["allow"] is True and len(asker.asked) == 3
+
+
+async def test_commands_forbidden_while_the_question_was_open_are_not_run(hosts, tmp_path):
+    from nekoclaw.host.permissions import DENIED_BY_SETTINGS
+
+    root = _space_root(tmp_path)
     host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
     await host.space.file_entry(None, title="Use uv", content="Run Python through uv.")
     await host.permission_store.set_mode("run_command", "allow")
-    payload = {
-        "tool": "bash",
-        "category": "run_command",
-        "command": "cd ../nekoclaw && printf x > task_agent_space/MEMORY.md",
-        "cwd": str(tmp_path / "elsewhere"),
+
+    async def slow(commission_id: str, ask: Any) -> str:
+        # The user forbids commands in the settings, and then says yes to the question.
+        await host.permission_store.set_mode("run_command", "deny")
+        return "once"
+
+    host.permissions.set_asker(slow)
+
+    decided = await host.task_agents._cb_permission(
+        "no-such-session", _command(f"cat '{root.as_posix()}/MEMORY.md'", tmp_path)
+    )
+
+    assert (decided["allow"], decided["reason"]) == (False, DENIED_BY_SETTINGS)
+
+
+async def test_a_command_that_reaches_the_space_by_a_relative_path_is_not_seen(hosts, tmp_path):
+    """A known limit: only the path of the directory itself is looked for, and where the command runs."""
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+    await host.space.file_entry(None, title="Use uv", content="Run Python through uv.")
+    await host.permission_store.set_mode("run_command", "allow")
+    asker = _Asker("deny")
+    host.permissions.set_asker(asker)
+    payload = _command("cd ../nekoclaw && printf x > task_agent_space/MEMORY.md", tmp_path / "elsewhere")
+
+    decided = await host.task_agents._cb_permission("no-such-session", payload)
+
+    # It goes the way the settings say of commands; whoever approves commands is the only guard there.
+    assert decided["allow"] is True and asker.asked == []
+
+
+def test_the_question_about_such_a_command_says_what_it_touches():
+    from config.prompts.prompts_nekoclaw_brain import PERMISSION_CATEGORY_TEXTS
+    from nekoclaw.host.reports import describe_permission
+
+    question = {
+        "category": "space_command",
+        "key": None,
+        "detail": {"tool": "bash", "command": "del D:/data/nekoclaw/task_agent_space/MEMORY.md"},
+        "options": ["once", "deny"],
     }
 
-    refused = await host.task_agents._cb_permission("no-such-session", payload)
-
-    assert refused["allow"] is False and "note_lesson" in refused["reason"]
+    assert describe_permission(question, "zh-CN") == (
+        "运行命令 del D:/data/nekoclaw/task_agent_space/MEMORY.md（这条命令会碰到使魔的长期记忆文件） (本次允许 / 拒绝)"
+    )
+    assert describe_permission(question, "en") == (
+        "run the command del D:/data/nekoclaw/task_agent_space/MEMORY.md, which touches the familiars' "
+        "long-term memory files (allow this once / deny)"
+    )
+    # In every language it has words of its own, and shows the command.
+    assert all("space_command" in texts for texts in PERMISSION_CATEGORY_TEXTS.values())
+    for lang in PERMISSION_CATEGORY_TEXTS:
+        said = describe_permission(question, lang)
+        assert "del D:/data/nekoclaw/task_agent_space/MEMORY.md" in said
+        assert said != describe_permission({**question, "category": "run_command"}, lang)
 
 
 async def test_shutting_down_stands_the_space_down_before_the_task_agents_are_stopped(hosts, tmp_path):

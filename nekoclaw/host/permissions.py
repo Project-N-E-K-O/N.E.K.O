@@ -97,6 +97,12 @@ DENIED_NO_ANSWER = "permission denied: the request for approval could not be ans
 # settings say of the browser (``PermissionGate.ask_each_time``).
 BROWSER_REOPEN = "browser_reopen"
 
+# Not a category of the settings either: a shell command that points at the
+# task agent space, the files task agents keep for good, is asked about each
+# time, whatever was allowed for commands (``PermissionGate.ask_each_time``).
+# Commands the settings forbid stay forbidden.
+SPACE_COMMAND = "space_command"
+
 _FILE_VERSION = 1
 # The mode of every category while an existing file cannot be read.
 _UNREADABLE_MODE = "deny"
