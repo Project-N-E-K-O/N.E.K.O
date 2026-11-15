@@ -59,10 +59,26 @@ def clean_required(repo):
 
 def official_required(repo):
     # Validate the configured identity before Git applies transport rewrites.
-    url = git(repo, "config", "--get", "remote.origin.url")
+    # fetch uses the first configured URL; refuse ambiguity instead of guessing.
+    urls = git(repo, "config", "--get-all", "remote.origin.url").splitlines()
+    if len(urls) != 1:
+        raise ValueError("origin must have exactly one configured URL.")
+    url = urls[0]
     if url.rstrip("/").removesuffix(".git") != OFFICIAL_URL.removesuffix(".git"):
         raise ValueError(f"origin is not the configured official repository: {url}")
 
+
+def index_flags_required(repo):
+    """Reject index entries whose working-tree changes Git deliberately hides."""
+    raw = subprocess.check_output(["git", "ls-files", "-v", "-z"], cwd=repo)
+    for entry in raw.split(b"\0"):
+        if not entry:
+            continue
+        tag, name = entry[:1].decode("ascii"), os.fsdecode(entry[2:])
+        if tag.islower() or tag == "S":
+            raise ValueError(
+                f"Clear assume-unchanged/skip-worktree before backup or verification: {name}"
+            )
 
 
 def untracked_files(repo):
@@ -84,6 +100,7 @@ def untracked_files(repo):
 def backup(repo, destination=None):
     if git(repo, "ls-files", "--unmerged", "-z"):
         raise ValueError("Resolve or abort merge conflicts before creating a backup.")
+    index_flags_required(repo)
     names = untracked_files(repo)
     root = Path(destination).resolve() if destination else state_dir(repo) / "backups"
     if destination and root.is_relative_to(repo.resolve()):
@@ -103,9 +120,19 @@ def backup(repo, destination=None):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
+    # Ignore user diff settings (external helpers, textconv, colour, prefixes)
+    # so both patches stay restorable with plain git apply.
+    patch_options = [
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+    ]
     for name, args in (
-        ("staged.patch", ["diff", "--cached", "--binary"]),
-        ("working.patch", ["diff", "--binary"]),
+        ("staged.patch", ["diff", "--cached", *patch_options]),
+        ("working.patch", ["diff", *patch_options]),
     ):
         (folder / name).write_bytes(subprocess.check_output(["git", *args], cwd=repo))
     with tarfile.open(folder / "untracked.tar.gz", "w:gz") as archive:
@@ -215,6 +242,7 @@ def verification_suites(repo, policy_path):
 
 
 def source_snapshot(repo):
+    index_flags_required(repo)
     untracked = {}
     for name in untracked_files(repo):
         path = repo / name
@@ -232,7 +260,15 @@ def source_snapshot(repo):
         ).hexdigest(),
         "diff_sha256": hashlib.sha256(
             subprocess.check_output(
-                ["git", "diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv"],
+                [
+                    "git",
+                    "diff",
+                    "HEAD",
+                    "--binary",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-color",
+                ],
                 cwd=repo,
             )
         ).hexdigest(),

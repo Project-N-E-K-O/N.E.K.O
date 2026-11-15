@@ -19,6 +19,14 @@ maintain = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(maintain)
 
 
+def extract_archive(archive, destination):
+    # Extraction filters only exist from Python 3.11.4 onwards.
+    if hasattr(tarfile, "data_filter"):
+        archive.extractall(destination, filter="data")
+    else:
+        archive.extractall(destination)
+
+
 class MaintenanceTests(unittest.TestCase):
     def test_verify_uses_portable_example_without_a_personal_policy(self):
         policy = self.repo / "local-desktop-ui/regression.example.json"
@@ -276,7 +284,7 @@ class MaintenanceTests(unittest.TestCase):
                     check=True,
                 )
         with tarfile.open(saved / "untracked.tar.gz") as archive:
-            archive.extractall(restored, filter="data")
+            extract_archive(archive, restored)
         self.assertEqual(
             subprocess.check_output(["git", "show", ":app/main.py"], cwd=restored),
             b"staged\n",
@@ -344,7 +352,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(os.fsencode(receipt["untracked"][0]), b"raw-\xff.txt")
         restored = self.root / "restored"
         with tarfile.open(saved / "untracked.tar.gz") as archive:
-            archive.extractall(restored, filter="data")
+            extract_archive(archive, restored)
         self.assertEqual((restored / name).read_bytes(), b"preserved")
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
         self.commit("raw filename")
@@ -512,6 +520,74 @@ class MaintenanceTests(unittest.TestCase):
                 self.commit("clean whitespace")
                 self.git("update-ref", "refs/remotes/origin/main", "HEAD")
 
+    def test_backup_patches_ignore_user_diff_settings(self):
+        for key, value in (
+            ("diff.external", "true"),
+            ("color.ui", "always"),
+            ("diff.noprefix", "true"),
+            ("diff.mnemonicPrefix", "true"),
+        ):
+            self.git("config", key, value)
+        path = self.repo / "app/main.py"
+        path.write_text("staged\n")
+        self.git("add", "app/main.py")
+        path.write_text("working\n")
+        saved = maintain.backup(self.repo, self.root / "backups")
+        restored = self.root / "restored"
+        subprocess.run(
+            ["git", "clone", str(saved / "history.bundle"), str(restored)],
+            check=True,
+            capture_output=True,
+        )
+        for filename, options in (("staged.patch", ["--index"]), ("working.patch", [])):
+            self.assertGreater((saved / filename).stat().st_size, 0, filename)
+            subprocess.run(
+                ["git", "apply", *options, str(saved / filename)],
+                cwd=restored,
+                check=True,
+            )
+        self.assertEqual(
+            subprocess.check_output(["git", "show", ":app/main.py"], cwd=restored),
+            b"staged\n",
+        )
+        self.assertEqual((restored / "app/main.py").read_text(), "working\n")
+
+    def test_hidden_index_flags_are_rejected_before_backup_or_verify(self):
+        destination = self.root / "backups"
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag):
+                self.git("update-index", flag, "app/main.py")
+                (self.repo / "app/main.py").write_text("hidden edit\n")
+                with self.assertRaisesRegex(ValueError, "skip-worktree"):
+                    maintain.backup(self.repo, destination)
+                self.assertFalse(destination.exists())
+                with self.assertRaisesRegex(ValueError, "skip-worktree"):
+                    maintain.source_snapshot(self.repo)
+                self.git("update-index", flag.replace("--", "--no-", 1), "app/main.py")
+                self.git("checkout", "--", "app/main.py")
+
+    def test_verify_rejects_hidden_index_flag_set_during_suite(self):
+        policy = self.policy(
+            "import subprocess; from pathlib import Path; "
+            "subprocess.run(['git', 'update-index', '--skip-worktree', "
+            "'app/main.py'], check=True); "
+            "Path('app/main.py').write_text('changed by suite')"
+        )
+        with self.assertRaisesRegex(ValueError, "skip-worktree"):
+            maintain.verify(self.repo, policy)
+        self.assertFalse((maintain.state_dir(self.repo) / "verified.json").exists())
+
+    def test_official_identity_rejects_multiple_origin_urls(self):
+        self.git(
+            "config",
+            "--replace-all",
+            "remote.origin.url",
+            "https://github.com/other/N.E.K.O.git",
+        )
+        self.git("config", "--add", "remote.origin.url", maintain.OFFICIAL_URL)
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            maintain.official_required(self.repo)
+
     def test_nested_untracked_repo_is_rejected_before_backup_or_verify(self):
         nested = self.repo / "nested"
         subprocess.run(["git", "init", "-q", str(nested)], check=True)
@@ -528,7 +604,8 @@ class MaintenanceTests(unittest.TestCase):
             (_ROOT / "local-desktop-ui/regression.example.json").read_text()
         )
         command = next(
-            suite["command"] for suite in policy["suites"]
+            suite["command"]
+            for suite in policy["suites"]
             if suite["name"] == "whitespace-staged"
         )
         self.git("switch", "-c", "official")
@@ -539,14 +616,18 @@ class MaintenanceTests(unittest.TestCase):
         self.commit("local work")
         result = subprocess.run(
             ["git", "merge", "--no-ff", "--no-commit", "official"],
-            cwd=self.repo, capture_output=True,
+            cwd=self.repo,
+            capture_output=True,
         )
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertNotEqual(
-            subprocess.run(["git", "diff", "--cached", "--check"],
-                           cwd=self.repo, capture_output=True).returncode, 0
+            subprocess.run(
+                ["git", "diff", "--cached", "--check"],
+                cwd=self.repo,
+                capture_output=True,
+            ).returncode,
+            0,
         )
         self.assertEqual(
             subprocess.run(command, cwd=self.repo, capture_output=True).returncode, 0
         )
-
