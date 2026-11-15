@@ -55,10 +55,11 @@ SPACE_WRITE_REFUSED = (
 )
 
 # What a task agent is told when its commission has added as many notes as
-# one commission may. Rendered with str.format: count.
+# one commission may, the ones that are being written at that moment counted
+# in. Rendered with str.format: count.
 SPACE_LESSONS_CAP_REACHED = (
-    "not kept: this commission has added {count} notes already, which is the most one commission "
-    "may add. Put what matters into your report instead."
+    "not kept: this commission has added {count} notes already, or is adding them, which is the "
+    "most one commission may add. Put what matters into your report instead."
 )
 
 # ---------------------------------------------------------------------------

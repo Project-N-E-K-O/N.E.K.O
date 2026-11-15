@@ -1330,6 +1330,9 @@ async def test_a_summary_that_cannot_be_saved_is_kept_in_the_projects_record(spa
         "type {parent_backslashes}\\.\\task_agent_space\\MEMORY.md",
         "cat {parent}/elsewhere/../task_agent_space/MEMORY.md",
         "cat {parent}/a/b/../../task_agent_space/MEMORY.md",
+        # Quotation marks that end in the middle of the path.
+        'cat "{parent}"/task_agent_space/MEMORY.md',
+        "rm '{parent}/old/..'/task_agent_space/MEMORY.md",
         # A step back from a directory with a space in its name, the path between quotation marks.
         "rm '{parent}/临时 目录/../task_agent_space/MEMORY.md'",
         'type "{parent_backslashes}\\old notes\\..\\task_agent_space\\MEMORY.md"',
@@ -3805,7 +3808,7 @@ async def test_a_commission_adds_so_many_notes_and_no_more(root, clock):
     assert replies[2] == "kept in project _daily as second.md"
     assert replies[3] == "kept in the space of every project as third.md"
     refused = (
-        "not kept: this commission has added 3 notes already, which is the most one commission may add. "
+        "not kept: this commission has added 3 notes already, or is adding them, which is the most one commission may add. "
         "Put what matters into your report instead."
     )
     assert replies[4] == replies[5] == refused
@@ -4453,9 +4456,17 @@ async def test_an_entry_filed_while_the_index_cannot_be_written_is_handed_back_a
         ("type %USERPROFILE%\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
         ("Get-Content $env:USERPROFILE\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
         ("gc ${env:USERPROFILE}\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
+        ("gc $env:HOME/data/nekoclaw/task_agent_space/MEMORY.md", True),
+        ("gc ${env:HOME}/data/nekoclaw/task_agent_space/MEMORY.md", True),
         # As a shell of the Unix world writes it on Windows.
         ("cat $USERPROFILE/data/nekoclaw/task_agent_space/MEMORY.md", True),
         ('cat "${USERPROFILE}/data/nekoclaw/task_agent_space/MEMORY.md"', True),
+        # Quotation marks round the variable alone: the shell reads the same path.
+        ('cat "$HOME"/data/nekoclaw/task_agent_space/MEMORY.md', True),
+        ('rm -rf "${HOME}"/data/nekoclaw/task_agent_space', True),
+        ('rm -rf "$USERPROFILE"/data/nekoclaw/"task_agent_space"/projects', True),
+        # In single ones the shell does not put the path together: asked about all the same.
+        ("cat '$HOME'/data/nekoclaw/task_agent_space/MEMORY.md", True),
         ("ls ~/Data/NekoClaw/Task_Agent_Space", True),
         # With steps that lead nowhere, as for a path written in full.
         ("ls ~/data/./nekoclaw/old/../task_agent_space", True),
@@ -4621,7 +4632,7 @@ async def test_two_notes_of_one_commission_that_wait_together_count_together(spa
         space._lock.release()
 
     # The one that came second is turned down while the first still waits to be written.
-    assert second.startswith("not kept: this commission has added 3 notes already")
+    assert second.startswith(f"not kept: this commission has added {SPACE_LESSONS_PER_COMMISSION} notes already, or is adding them")
     assert (await first).startswith("kept in project _daily")
     assert space._added_by == {"c-1": SPACE_LESSONS_PER_COMMISSION} and space._adding == {}
 
@@ -4635,6 +4646,8 @@ async def test_a_note_that_fails_in_a_way_nobody_expected_leaves_its_place_free(
     def broken(self, *args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("not one of the errors a write ends in")
 
+    ledger = _Events()
+    space._ledger = ledger
     monkeypatch.setattr(TaskAgentSpace, "_file_entry", broken)
     for _number in range(SPACE_LESSONS_PER_COMMISSION + 1):
         with pytest.raises(RuntimeError):
@@ -4643,4 +4656,34 @@ async def test_a_note_that_fails_in_a_way_nobody_expected_leaves_its_place_free(
 
     # No place is left taken by a note that came to nothing.
     assert space._adding == {} and space._added_by == {}
+    # What the task agent wrote is on the record of its commission, marked as not kept.
+    assert [(payload["kept"], payload["reason"], payload["content"]) for _who, _kind, payload in ledger.rows] == [
+        (False, "error", "Use the EXIF date.")
+    ] * (SPACE_LESSONS_PER_COMMISSION + 1)
     assert (await space.submit(commission, _lesson("Photo dates", "Use the EXIF date."))).startswith("kept in project _daily")
+
+
+async def test_a_commission_whose_note_waits_is_not_forgotten_for_the_notes_of_others(space, monkeypatch):
+    from config.nekoclaw_settings import SPACE_LESSONS_PER_COMMISSION
+    from nekoclaw.host import space as module
+
+    monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 2)
+    waiting = _commission(id="c-x")
+    await space.submit(waiting, _lesson("Photo dates", "Use the EXIF date."))
+    await space.submit(waiting, _lesson("Folder names", "One folder a month."))
+    await space.submit(_commission(id="c-y"), _lesson("Budget file", "Kept as JSON."))
+    assert space._added_by == {"c-x": 2, "c-y": 1}
+    space._lock = asyncio.Lock()
+    await space._lock.acquire()
+    # A note of another commission is written first, while the third of this one waits behind it.
+    other = asyncio.create_task(space.submit(_commission(id="c-z"), _lesson("Blog theme", "Plain, one column.")))
+    await asyncio.sleep(0.01)
+    third = asyncio.create_task(space.submit(waiting, _lesson("Camera drive", "It is E: on this computer.")))
+    await asyncio.sleep(0.01)
+    space._lock.release()
+    replies = await asyncio.gather(other, third)
+
+    assert all(reply.startswith("kept in project _daily") for reply in replies)
+    # The one that filed longest ago and has nothing on its way was forgotten: not the one whose note waited.
+    assert space._added_by == {"c-z": 1, "c-x": SPACE_LESSONS_PER_COMMISSION}
+    assert (await space.submit(waiting, _lesson("Backups", "Copied first."))).startswith("not kept: this commission has added 3")

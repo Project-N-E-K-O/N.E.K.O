@@ -566,12 +566,11 @@ class TaskAgentSpace:
         self._ledger = ledger
         self._clock = clock
         self._lock: asyncio.Lock | None = None
-        # How many notes each commission added with ``note_lesson``, by the
+        # How many notes each commission has added with ``note_lesson``,
+        # and how many of its notes are on their way to be written; by the
         # commission she gave (its task agents' count with its own). Kept
-        # while the host runs; the oldest go when there are many.
-        # How many notes each commission has added, and how many of its
-        # notes are on their way to be written. Kept apart: only what was
-        # added is what commissions are forgotten by.
+        # while the host runs. Kept apart: only what was added is what
+        # commissions are forgotten by when there are many.
         self._added_by: dict[str, int] = {}
         self._adding: dict[str, int] = {}
 
@@ -1058,8 +1057,12 @@ class TaskAgentSpace:
             await self._note_unkept(commission, lesson, "cap")
             return SPACE_LESSONS_CAP_REACHED.format(count=SPACE_LESSONS_PER_COMMISSION)
         # A place is taken before the files are written, and settled when
-        # it is known what became of the note.
+        # it is known what became of the note. A commission that is counted
+        # is put last now as well: while its note waits, it is not the one
+        # to be forgotten for the notes of others.
         self._adding[counted] = self._adding.get(counted, 0) + 1
+        if counted in self._added_by:
+            self._added_by[counted] = self._added_by.pop(counted)
 
         def settle(was_added: bool) -> None:
             left = self._adding.get(counted, 0) - 1
@@ -1102,16 +1105,7 @@ class TaskAgentSpace:
         listed = True
         try:
             entry_id, how = await self._write(work)
-        except asyncio.CancelledError:
-            # The session was stopped while the note waited for its turn to
-            # be written, or while it was written (the writing is finished
-            # all the same). Only a note that was added has used a place:
-            # one that never got as far would leave the commission and its
-            # other task agents one short for nothing.
-            settle(bool(became) and became[0] != _THERE)
-            raise
         except (SpaceError, ValueError) as exc:
-            settle(False)
             await self._note_unkept(commission, lesson, "refused")
             return f"not kept: {exc}"
         except _LineNotAdded as exc:
@@ -1124,17 +1118,22 @@ class TaskAgentSpace:
             logger.warning("a lesson is kept, and the index could not be given a line for it", exc_info=True)
             entry_id, how, listed = exc.entry_id, exc.how, False
         except OSError as exc:
-            settle(False)
             logger.warning("a lesson could not be written into the task agent space (%s)", type(exc).__name__)
             await self._note_unkept(commission, lesson, "unwritable")
             return "not kept: the files of the task agent space could not be written"
         except Exception:
-            # Nothing that is expected. The place is settled all the same,
-            # or the commission would be one short for as long as the host
-            # runs.
-            settle(bool(became) and became[0] != _THERE)
+            # Nothing that is expected. What the task agent wrote is put on
+            # the record of its commission before the failure goes on.
+            await self._note_unkept(commission, lesson, "error")
             raise
-        settle(how != _THERE)
+        finally:
+            # However it ended, the place is settled here and nowhere else:
+            # refused, unwritable, a failure nobody expected, or the session
+            # stopped while the note waited for its turn or was written (the
+            # writing is finished all the same). Only a note that was added
+            # has used a place; one that never got as far would leave the
+            # commission and its other task agents one short for nothing.
+            settle(bool(became) and became[0] != _THERE)
         if self._ledger is not None:
             # On the commission's record too, so the board can show it.
             await self._ledger.append_event(
@@ -2438,8 +2437,14 @@ class TaskAgentSpace:
                 # it is configured is still looked for.
                 pass
             said = plain(command)
-            # As it was written, and as it reads without such steps.
-            texts = {said, straight(said)}
+            # Without its quotation marks as well: they are put round a part
+            # of a path as often as round all of it (``"$HOME"/...``), and
+            # the shell reads the path the same. A path that is in single
+            # ones is not put together by the shell; taken for one that is,
+            # it is asked about once too often.
+            bare = said.replace('"', "").replace("'", "")
+            # As it was written, and as it reads without steps that lead nowhere.
+            texts = {said, straight(said), bare, straight(bare)}
             for place in places:
                 written = plain(str(place)).rstrip("/")
                 for form in {written, straight(written), *from_home(place)}:
