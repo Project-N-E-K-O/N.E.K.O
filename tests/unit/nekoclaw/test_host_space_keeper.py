@@ -1183,8 +1183,9 @@ async def test_a_cleaning_that_is_cancelled_holds_the_session_until_the_removing
     assert (world.paths.session_dir(commission.id) / "outputs").exists()
 
     go_on.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    (outcome,) = await asyncio.gather(task, return_exceptions=True)
+    # Cancelled, as it was told to be, once the thread was done.
+    assert isinstance(outcome, asyncio.CancelledError)
     assert released == [commission.id]
     assert not (world.paths.session_dir(commission.id) / "transcript.jsonl").exists()
 
