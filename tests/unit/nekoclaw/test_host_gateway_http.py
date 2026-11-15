@@ -259,11 +259,15 @@ class ShippedBrowser:
 
     def __init__(self, page: str) -> None:
         self.page = page
+        # Set to what a call is to fail with.
+        self.error: str | None = None
 
     def available(self) -> list[Any]:
         return [builtin_tool(BUILTIN_GROUP_BROWSER, definition) for definition in BROWSER_TOOLS]
 
     async def run(self, capability: Any, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+        if self.error is not None:
+            return BuiltinOutcome(False, self.error)
         return BuiltinOutcome(True, self.page)
 
     async def released(self, group: str, commission_id: str) -> None:
@@ -324,6 +328,49 @@ async def test_the_tools_handed_over_with_a_long_first_page_are_whole_after_the_
     assert BUILTIN_GROUP_GUIDANCE["browser"] in kept.text
     assert cut.text.startswith("PAGE-START") and texts.PRUNED_MIDDLE_MARKER in cut.text
     assert count_tokens(cut.text) <= policy.prune_threshold_tokens
+
+
+async def test_a_first_call_that_fails_with_a_long_error_brings_no_group_and_the_next_one_brings_it_whole(
+    server, hosts, tmp_path
+):
+    from nekoclaw.runtime.tools.base import ToolError
+    from nekoclaw.runtime.tools.gateway import build_gateway_tools
+    from utils.tokenize import count_tokens
+
+    browser = ShippedBrowser("PAGE-START the page")
+    # An error that quotes what it was given, as long as that was: far more
+    # than the runtime leaves of an old result.
+    browser.error = "This address cannot be opened: https://example.com/" + "/".join(f"part{n}" for n in range(1500))
+    assert count_tokens(browser.error) > 2_048
+    host = make_host(tmp_path, server, builtins=browser)
+    hosts.append(host)
+    host.permissions.set_asker(_allow_once)
+    url = await host.gateway.start()
+    commission = await _working_commission(host)
+    token = host.gateway.issue(commission.id, supports_images=True)
+    client = GatewayClient(url, token)
+    tools = {tool.name: tool for tool in build_gateway_tools(client, await client.connect())}
+    opened = {"name": "browser_navigate_page", "arguments": {"url": "https://example.com"}}
+
+    with pytest.raises(ToolError) as failed:
+        await tools["capability_call"].execute("call-1", opened)
+
+    # The error and nothing else. The runtime keeps an error as one text:
+    # with the group in front of it, the group would be cut along with it.
+    assert str(failed.value).startswith("This address cannot be opened:")
+    assert "tools follow" not in str(failed.value)
+    assert BUILTIN_GROUP_GUIDANCE["browser"] not in str(failed.value)
+    assert host.gateway._grant(token).loaded_groups == set()
+
+    # The call that goes well brings the group, as a block of its own.
+    browser.error = None
+    outcome = await tools["capability_call"].execute("call-2", opened)
+
+    handed_over, returned = outcome.content
+    assert handed_over.text.startswith("The browser tools follow, one definition per line.")
+    assert BUILTIN_GROUP_GUIDANCE["browser"] in handed_over.text
+    assert returned.text == "PAGE-START the page"
+    assert host.gateway._grant(token).loaded_groups == {"browser"}
 
 
 async def test_revoked_token_stops_working(server, hosts, tmp_path):
