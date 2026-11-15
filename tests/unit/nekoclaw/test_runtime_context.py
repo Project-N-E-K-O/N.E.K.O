@@ -299,8 +299,8 @@ async def test_a_text_small_enough_never_to_be_pruned_is_not_capped_either_whate
     (saved,) = (tmp_path / "outputs").iterdir()
     assert saved.read_text(encoding="utf-8") == cut.text
     # In a window whose quarter is more than that, the quarter is the cap as before.
-    wide = _blocks_manager(tmp_path / "wide", 32_000)
-    assert wide.policy.result_cap == 8_000 > count_tokens(cut.text)
+    wide = _blocks_manager(tmp_path / "wide", 64_000)
+    assert wide.policy.result_cap == 12_500 > count_tokens(cut.text)
     assert await wide.cap_tool_result("bash", "c3", cut) is cut
 
 
