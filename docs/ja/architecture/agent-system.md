@@ -45,6 +45,17 @@ Main Server                                   Agent Server (:48915)
 
 task agent は、組み込みの agent runtime（`nekoclaw/runtime/`）の一つのセッションです。agent runtime は必要になったときに起動するサブプロセスで動きます。依頼一件につきセッション一つで、同時に動くのは最大 10 個、残りの依頼は `queued` のまま待ちます。task agent は agent モデルを使い、会話履歴ではなく、任された一文とユーザーの元の発言を受け取ります。自分の task agent をさらに起動することもできます。task agent がユーザーに質問したり権限の承認を求めたりすると、依頼は `waiting_user` になり、キャラクターが `dispatch_task` で回答を伝えるまで待ちます。
 
+### task agent 空間
+
+task agent が後の依頼のために残すものは `<データルート>/nekoclaw/task_agent_space/`（`nekoclaw/host/space.py`）にあります。すべてプレーンテキストで、書き込むのはホストだけです。ユーザーごとに 1 つで、すべての task agent が共有します。中身は、ユーザーが書くルール（`AGENTS.md`）、1 行 1 項目の索引（`MEMORY.md`）、そして 1 項目 1 ファイルのエントリ（`memory/*.md`）です。エントリには、再利用できる知見、うまくいかなかった点の振り返り、何がどこにあるかの参照、プロジェクトの進捗があります。全体用に 1 組、プロジェクトごとに 1 組（`projects/<プロジェクト>/`）あり、どのプロジェクトにも属さない依頼は `_daily` に入ります。
+
+- **task agent の開始時**、ルールと 2 つの索引が指示の末尾に追加されます。合計で最大 1400 token です。空間に何もなければ何も追加されません。エントリの本文は必要になったときに読みます。task agent は空間内のファイルを確認なしで読めますが、書き込むことはできません。残したい内容は `note_lesson` ツールで提出します。ユーザーからの訂正や承認はここには置かず、タスクの好みとして記録します。
+- **依頼がどのプロジェクトに入るか**：キャラクターが dispatch した一文、またはユーザー自身の言葉にプロジェクト名が含まれていれば、そのプロジェクトに入ります。この判断にモデルは使いません。
+- **依頼の終了後**、summary モデルを 1 回呼び出して振り返り（`projects/<プロジェクト>/reviews/<依頼 ID>.md`）を書き、最大 3 件のエントリを残し、その依頼が属するプロジェクトを示すこともあります。報告が保存されたあとにバックグラウンドで実行され、依頼 1 件につき最大 1 回です。ツール呼び出しが 3 回未満の依頼、プラグインを直接呼んだ依頼、他の task agent が起動した task agent は振り返りの対象外です。失敗した依頼は、再開されることが多いため、失敗のまま 1 日経ってから振り返ります。
+- **整理**は依頼の終了に続いて行われ、最大でも 6 時間に 1 回で、起動時には実行されません。30 日間依頼のなかったプロジェクトは、要約（モデル呼び出し 1 回）とともに `archive/<年>/<プロジェクト>/` へ移され、依頼で再び名前が出たときに戻されます。セッションの会話記録と保存されたツール出力は、依頼の終了から 30 日後に削除されます。作業ディレクトリは削除されません。
+
+セッションディレクトリ（`<データルート>/nekoclaw/task_agents/projects/<プロジェクト>/sessions/<依頼 ID>/`）は、意図的に別のツリーに置かれています。作業ディレクトリにはリンクが多く、保存場所を変更してもそのまま残ります。一方、task agent 空間はユーザーの他のデータと一緒に移動します。
+
 ### 能力ゲートウェイと権限
 
 task agent は、自前のファイル・コマンド系ツール以外の機能を、能力ゲートウェイ（`nekoclaw/host/gateway.py`）経由で使います。ゲートウェイはループバックアドレス上の MCP サービスで、最初にそれを必要とする task agent が起動した時点で待ち受けを始め、依頼ごとにトークンを一つ発行します。提供するものは次のとおりです。
@@ -146,6 +157,7 @@ Manager と Agent Server は構築時にすべてオフです。ただし最初�
 | プラグインの選択と判断モデル | `nekoclaw/host/selection.py`、`decision.py` |
 | 台帳、outbox、報告 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
 | task agent と agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
+| task agent 空間：エントリ、索引、振り返り、アーカイブ | `nekoclaw/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekoclaw_space.py` |
 | 能力一覧、ゲートウェイ、権限 | `nekoclaw/host/capabilities.py`、`gateway.py`、`permissions.py` |
 | キーボード・マウスとブラウザーのツール | `nekoclaw/builtin/`、`config/prompts/prompts_nekoclaw_builtin.py` |
 | デスクトップとブラウザーの占有、画像を扱えるモデルの記録 | `nekoclaw/host/leases.py`、`model_capabilities.py` |

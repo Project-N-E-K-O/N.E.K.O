@@ -45,6 +45,17 @@ The handlers call `POST /nekoclaw/dispatch` and `POST /nekoclaw/query` on the Ag
 
 A task agent is one session of the built-in agent runtime (`nekoclaw/runtime/`), which runs in a subprocess started on demand. Each commission gets its own session. At most ten work at the same time; further commissions stay `queued`. A task agent runs on the agent model, receives the dispatched sentence and the user's own words rather than the conversation history, and can start task agents of its own. When it asks the user a question or needs a permission, the commission is `waiting_user` until the character passes the answer on with `dispatch_task`.
 
+### Task agent space
+
+What task agents keep for later commissions is in `<data root>/nekoclaw/task_agent_space/` (`nekoclaw/host/space.py`): plain text that only the host writes, one copy per user, shared by every task agent. It holds rules the user writes (`AGENTS.md`), an index with one line per entry (`MEMORY.md`), and the entries themselves, one file each (`memory/*.md`): reusable findings, reflections on what went wrong, pointers to where something is found, and how a project stands. There is one such set for all projects and one per project (`projects/<project>/`); commissions that belong to no project are filed under `_daily`.
+
+- **When a task agent starts**, the rules and the two indexes are appended to its instructions, within 1400 tokens in total. Nothing is added while the space holds nothing. The entries are read when they are needed: a task agent reads anything in the space without asking and cannot write there. What it wants kept goes through its `note_lesson` tool; corrections and approvals from the user become task preferences instead.
+- **A commission is filed under a project** when the dispatched sentence or the user's own words contain the project's name. No model is asked for this.
+- **After a commission ends**, one call of the summary model writes a review (`projects/<project>/reviews/<commission id>.md`), files up to three entries, and may name the project the commission belongs to. It runs in the background once the report has been stored, and at most once per commission. A commission with fewer than three tool calls, a direct plugin call, and a task agent started by another task agent are not reviewed; a failed commission is reviewed only after it has stayed failed for a day, because it is often taken up again.
+- **Tidying** follows the end of a commission, at most every six hours, and never runs at startup. A project with no commission for 30 days is moved to `archive/<year>/<project>/` with a summary (one model call) and comes back when a commission names it again. The transcript and the stored tool output of a session are removed 30 days after its commission ended; its working directory is never removed.
+
+The session directories (`<data root>/nekoclaw/task_agents/projects/<project>/sessions/<commission id>/`) are a separate tree on purpose: a working directory is full of links and stays where it is when the storage location is changed, while the space moves with the rest of the user's data.
+
 ### Capability gateway and permissions
 
 Besides its own file and command tools, a task agent reaches everything through the capability gateway (`nekoclaw/host/gateway.py`): an MCP service on the loopback address, started when the first task agent needs it, with one token per commission. It serves:
@@ -146,6 +157,7 @@ Managers and the Agent Server initialize these switches off. Persisted runtime i
 | Plugin selection and the decision model | `nekoclaw/host/selection.py`, `decision.py` |
 | Ledger, outbox, reports | `nekoclaw/host/ledger.py`, `outbox.py`, `reports.py` |
 | Task agents and the agent runtime | `nekoclaw/host/task_agents.py`, `nekoclaw/runtime/` |
+| Task agent space: entries, indexes, reviews, archiving | `nekoclaw/host/space.py`, `space_keeper.py`, `config/prompts/prompts_nekoclaw_space.py` |
 | Capability list, gateway, permissions | `nekoclaw/host/capabilities.py`, `gateway.py`, `permissions.py` |
 | Keyboard-and-mouse and browser tools | `nekoclaw/builtin/`, `config/prompts/prompts_nekoclaw_builtin.py` |
 | Occupation of the desktop and the browser; which models see pictures | `nekoclaw/host/leases.py`, `model_capabilities.py` |

@@ -41,6 +41,11 @@ Modules:
   Written to the outbox first; ``outbox`` sends and retries.
 * ``task_agents``    - starts and drives task agents; the host side of the
   runtime's callbacks.
+* ``space``        - the task agent space: what task agents keep for later
+  commissions (rules, indexes, entries, reviews, projects), as plain text.
+* ``space_keeper`` - the review written after a commission, and the tidying
+  of the space (archiving idle projects, removing old transcripts), in the
+  background.
 * ``gateway``      - the MCP service on the loopback address that hands
   plugin entries, MCP tools and the built-in tools to task agents.
 * ``paths``        - where the host keeps its files.

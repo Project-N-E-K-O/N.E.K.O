@@ -45,6 +45,17 @@
 
 一个 task agent 是内置 agent runtime（`nekoclaw/runtime/`）里的一个会话；agent runtime 跑在子进程里，用到时才拉起。一件委托一个会话，同时最多 10 个在办，其余的委托停在 `queued`。task agent 用 agent 模型，拿到的是她派发的那句话和用户原话，不是对话历史；它还可以再开自己的 task agent。task agent 向用户提问或需要权限批准时，委托进入 `waiting_user`，直到她用 `dispatch_task` 把回答转达过来。
 
+### task agent 空间
+
+task agent 留给以后委托用的东西（界面上叫使魔空间）放在 `<数据根>/nekoclaw/task_agent_space/`（`nekoclaw/host/space.py`）：全是明文，只有宿主写，按用户一份，所有 task agent 共用。里面有用户自己写的守则（`AGENTS.md`）、一行一条的索引（`MEMORY.md`）和一条一个文件的条目（`memory/*.md`）：可复用的经验、对出错之处的反思、东西在哪的参考、项目进度。全局一套，每个项目一套（`projects/<项目>/`）；不属于任何项目的委托归在 `_daily` 下。
+
+- **task agent 开工时**，守则和两份索引追加在给它的交代后面，合计不超过 1400 token；空间里什么都没有时不加任何东西。条目正文用到再读：task agent 读空间里的任何文件都不用问，但不能往里写。它想留下的东西经 `note_lesson` 工具提交；用户的纠正与认可不放这里，记成任务偏好。
+- **委托归到哪个项目**：角色派发的那句话或用户原话里出现了项目的名字，就归到那个项目。这一步不问模型。
+- **委托收工后**，调一次 summary 模型写复盘（`projects/<项目>/reviews/<委托号>.md`），最多提炼三条条目，并可以说明这件委托属于哪个项目。它在汇报存好之后在后台跑，每件委托最多一次。工具调用少于三次的委托、直达插件的委托、由别的 task agent 起的 task agent 都不复盘；没办成的委托要保持没办成满一天才复盘，因为它常被接着办。
+- **整理**跟在委托收工之后，最多每六小时一次，从不在启动时跑。30 天没有新委托的项目连同一份总结（一次模型调用）搬到 `archive/<年>/<项目>/`，再有委托提到它时取回。会话的对话记录和落盘的工具输出在委托结束 30 天后删除；工作目录从不删除。
+
+会话目录（`<数据根>/nekoclaw/task_agents/projects/<项目>/sessions/<委托号>/`）故意放在另一棵目录树里：工作目录里有大量链接，更换存储位置时留在原处；使魔空间则跟着用户的其他数据一起搬。
+
 ### 能力网关与权限
 
 除了自带的文件和命令工具，task agent 用到的其它能力都经能力网关（`nekoclaw/host/gateway.py`）取得。网关是回环地址上的一个 MCP 服务，第一个需要它的 task agent 启动时才开始监听，一件委托一个令牌。它提供：
@@ -146,6 +157,7 @@ Manager 和智能体服务器构造时这些开关均为关闭。首次真实 `g
 | 插件筛选和决策模型 | `nekoclaw/host/selection.py`、`decision.py` |
 | 台账、outbox、汇报 | `nekoclaw/host/ledger.py`、`outbox.py`、`reports.py` |
 | task agent 和 agent runtime | `nekoclaw/host/task_agents.py`、`nekoclaw/runtime/` |
+| task agent 空间：条目、索引、复盘、归档 | `nekoclaw/host/space.py`、`space_keeper.py`、`config/prompts/prompts_nekoclaw_space.py` |
 | 能力清单、网关、权限 | `nekoclaw/host/capabilities.py`、`gateway.py`、`permissions.py` |
 | 键鼠和浏览器工具 | `nekoclaw/builtin/`、`config/prompts/prompts_nekoclaw_builtin.py` |
 | 桌面和浏览器的占用；哪些模型能看图 | `nekoclaw/host/leases.py`、`model_capabilities.py` |
