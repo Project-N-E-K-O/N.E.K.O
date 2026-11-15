@@ -96,6 +96,52 @@ it('loads a fifth recording page when each request meets its timeout', async () 
   expect(result.current.loadOlderStatus).toBe('idle');
 });
 
+it('keeps loaded recordings and allows retry when an older page times out reading JSON', async () => {
+  vi.useFakeTimers();
+  const timedOut = vi.fn();
+  const older = { ...historyRow, request_id: 'older', created_at: 500 };
+  const firstPage = () => Response.json({ messages: [historyRow], next_before: 2 });
+  const fetchHistory = vi.fn()
+    .mockImplementationOnce(async () => firstPage())
+    .mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(firstPage()), 1200)))
+    .mockImplementationOnce(async (_url: string, { signal }: RequestInit) => {
+      const response = historyPage([older]);
+      vi.spyOn(response, 'json').mockImplementation(() => new Promise((_resolve, reject) => {
+        signal!.addEventListener('abort', () => {
+          timedOut();
+          reject(signal!.reason);
+        }, { once: true });
+      }));
+      return response;
+    })
+    .mockImplementationOnce(async () => firstPage())
+    .mockImplementationOnce(async () => historyPage([older]));
+  vi.stubGlobal('fetch', fetchHistory);
+  const { result } = renderHook(() => useChatAudioHistory('YUI', 'You'));
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  const loaded = result.current.messages;
+
+  act(() => { result.current.onLoadOlder?.(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(6199); });
+  expect(result.current.loadOlderStatus).toBe('loading');
+  expect(timedOut).not.toHaveBeenCalled();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(timedOut).toHaveBeenCalledOnce();
+  expect(result.current.loadOlderStatus).toBe('failed');
+  expect(result.current.messages).toEqual(loaded);
+  expect(result.current.onLoadOlder).toBeDefined();
+
+  await act(async () => {
+    result.current.onLoadOlder?.();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(result.current.messages.map(message => message.id)).toEqual([
+    'audio-message:test-request', 'audio-message:older',
+  ]);
+  expect(result.current.loadOlderStatus).toBe('idle');
+});
+
 it('keeps a confirmed recording playable when the history refresh times out', async () => {
   vi.useFakeTimers();
   const fetchHistory = vi.fn().mockResolvedValueOnce(historyPage());
