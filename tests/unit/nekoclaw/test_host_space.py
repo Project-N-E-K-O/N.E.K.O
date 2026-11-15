@@ -3476,9 +3476,10 @@ async def test_the_line_of_an_archived_project_goes_when_it_is_brought_back_whic
 ):
     await space.touch_project("Budget app")
     first = await space.archive_project("Budget app", summary="first", description="the first")
-    # A day later, so that the second is the one archived last.
+    # A day later, so that the second is the one archived last. It has an index: something was filed under it.
     clock.now += 86400
     await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Stack", content="Flask.")
     second = await space.archive_project("Budget app", description="the second")
     index = root / "MEMORY.md"
     year = first.archive_year
@@ -3626,6 +3627,7 @@ async def test_the_line_goes_by_the_summary_of_this_archiving_when_the_one_of_be
     space, root, monkeypatch
 ):
     await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Stack", content="Flask.")
     await space.archive_project("Budget app", summary="OLD summary, v1.", description="v1")
     await space.use_project("Budget app")
     rename = Path.rename
@@ -3663,3 +3665,33 @@ async def test_summaries_of_before_set_aside_on_one_day_each_keep_a_name_of_thei
     kept = sorted((item.name for item in home.glob("SUMMARY*")), key=len)
     assert len(kept) == 2 and kept[0].removesuffix(".md") + "-2.md" == kept[1]
     assert [(home / name).read_text(encoding="utf-8") for name in kept] == ["first\n", "second\n"]
+
+
+# ---------------------------------------------------------------------------
+# The thirty-eighth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_the_line_of_a_project_archived_with_neither_a_summary_nor_an_index_points_at_its_directory(space, root):
+    # Nothing was ever filed under it: it has reviews, and no index.
+    await space.write_review("Budget app", _commission(id="c-1"), "It went well.")
+    assert not (root / "projects" / "Budget app" / "MEMORY.md").exists()
+    index = root / "MEMORY.md"
+
+    archived = await space.archive_project("Budget app", description="paused")
+
+    year = archived.archive_year
+    home = root / "archive" / year / "Budget app"
+    assert not (home / "MEMORY.md").exists() and not (home / "SUMMARY.md").exists()
+    # What the line points at is there.
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        f"- [archived project: Budget app](<archive/{year}/Budget app/>) — paused"
+    ]
+    assert (home / "reviews" / "c-1.md").is_file()
+
+    # Brought back, its line takes the place of that one.
+    await space.use_project("Budget app")
+
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        "- [project: Budget app](<projects/Budget app/MEMORY.md>) — paused"
+    ]

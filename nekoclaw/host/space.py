@@ -1786,9 +1786,16 @@ class TaskAgentSpace:
             # follows it comes to the notes that were kept. Told by the
             # summary of this archiving, not by the file: a project that
             # was brought back may still have the one it was archived
-            # with before.
-            has_summary = bool(summary.strip())
-            archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME if has_summary else paths.INDEX_NAME}"
+            # with before. One that has no index either (nothing was ever
+            # filed under it) is pointed at as a directory: what there is
+            # of it, its reviews or its rules, is in there.
+            if summary.strip():
+                pointed = paths.SUMMARY_NAME
+            elif (target / paths.INDEX_NAME).is_file():
+                pointed = paths.INDEX_NAME
+            else:
+                pointed = ""
+            archive_link = f"archive/{year}/{target.name}/{pointed}"
             self._index_swap(
                 paths.index(None),
                 link,
