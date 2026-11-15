@@ -748,7 +748,7 @@ class TaskAgentSpace:
             # Read before anything moves, and not taken for empty when it
             # cannot be read: a line the user reworded would be replaced by
             # one made anew, and theirs removed once the index reads again.
-            listed = self._text_to_change(paths.index(source))
+            self._text_to_change(paths.index(source))
             moved: list[str] = []
             for entry in self._entries(origin, source):
                 if entry.sources != (commission_id,):
@@ -772,11 +772,34 @@ class TaskAgentSpace:
                     continue
                 link = f"{paths.MEMORY_DIR}/{name}.md"
                 was = f"{paths.MEMORY_DIR}/{entry.id}.md"
-                line = self._index_line_in(listed, was)
+                marks = _index_marks(was)
+                taken: list[str] = []
+
+                def take(text: str, marks: tuple[str, str] = marks, taken: list[str] = taken) -> str:
+                    lines = text.split(chr(10))
+                    taken[:] = [item for item in lines if any(mark in item for mark in marks)]
+                    return chr(10).join(item for item in lines if not any(mark in item for mark in marks))
+
+                line = None
+                try:
+                    if same:
+                        # Its line goes with it: taken out of the index as
+                        # the index is at that moment, so one the user
+                        # reworded while the file was copied goes along as
+                        # they left it.
+                        self._edit_text(paths.index(source), take)
+                        line = taken[0] if taken else None
+                    else:
+                        line = self._index_line_in(self._text_to_change(paths.index(source)), was)
+                except OSError:
+                    # The index cannot be read any more, or keeps being
+                    # saved: nothing of it is touched, the entry stays
+                    # there as well.
+                    same = False
                 if line is None:
                     line = _index_line(entry.title, link, entry.description)
                 else:
-                    for mark in _index_marks(was):
+                    for mark in marks:
                         line = line.replace(mark, f"]({_link(link)})")
                 self._index_add(paths.index(target), line, link)
                 moved.append(name)
@@ -788,8 +811,9 @@ class TaskAgentSpace:
                     old.unlink()
                 except OSError:
                     logger.warning("an entry moved to another project could not be removed where it was", exc_info=True)
-                else:
-                    self._index_remove(paths.index(source), f"{paths.MEMORY_DIR}/{entry.id}.md")
+                    if taken:
+                        # Still there, so its line is put back.
+                        self._index_add(paths.index(source), taken[0], was)
             return moved
 
         return await self._write(work)

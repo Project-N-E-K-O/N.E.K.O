@@ -1786,3 +1786,62 @@ async def test_entries_are_not_moved_while_the_index_that_lists_them_cannot_be_r
     # Once it reads again, the entry goes with the user's line.
     assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
     assert "- [What it is built on](memory/stack.md) — my own words" in await space.read_index("Budget app")
+
+
+# ---------------------------------------------------------------------------
+# The sixteenth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_line_the_user_rewords_while_its_entry_moves_goes_along_as_they_left_it(space, root):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.touch_project("Budget app")
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    old = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    real = space._signature
+    saved = {"done": False}
+
+    def signature(checked):
+        if Path(checked) == old:
+            if getattr(signature, "seen", False) and not saved["done"]:
+                # The entry is copied; before it is removed the user rewords its line and saves the index.
+                saved["done"] = True
+                daily.write_text("# Mine\n\n- [What it is built on](memory/stack.md) — reworded just now\n", encoding="utf-8")
+            signature.seen = True
+        return real(checked)
+
+    space._signature = signature
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+
+    del space._signature
+    assert saved["done"]
+    assert "- [What it is built on](memory/stack.md) — reworded just now" in await space.read_index("Budget app")
+    # Only that line went; what else the user wrote there stays.
+    assert daily.read_text(encoding="utf-8") == "# Mine\n\n"
+    assert await space.list_entries(DEFAULT_PROJECT) == []
+
+
+async def test_an_entry_that_cannot_be_removed_where_it_was_keeps_its_line_there(space, root, monkeypatch):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.touch_project("Budget app")
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    old = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    before = daily.read_text(encoding="utf-8")
+    unlink = Path.unlink
+
+    def held_open(self, *args, **kwargs):
+        if self == old:
+            raise PermissionError(13, "in use")
+        return unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", held_open)
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+
+    monkeypatch.undo()
+    # It is in both places, listed in both: nothing is lost, nothing is out of sight.
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["stack"]
+    assert daily.read_text(encoding="utf-8") == before
+    assert [entry.id for entry in await space.list_entries("Budget app")] == ["stack"]
+    assert "- [Stack](memory/stack.md) — It uses Flask." in await space.read_index("Budget app")
