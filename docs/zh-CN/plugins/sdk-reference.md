@@ -159,7 +159,7 @@ preview_path = self.cache_path("preview.png")
 
 #### `shared_path(*parts) -> Path`
 
-获取本插件共享目录下的路径，这个目录里的文件是发布给别的插件读的。目录不会自动创建；插件被删除后目录会保留。
+获取本插件共享目录下的路径，这个目录里的文件是发布给别的插件读的。目录不会自动创建；插件被删除后目录会保留。目录以插件 id 命名；id 里小写字母、数字、`_`、`-` 以外的字符在目录名里会被转义，所以路径请始终从这个方法取。
 
 ```python
 cities = self.shared_path("cities.json")

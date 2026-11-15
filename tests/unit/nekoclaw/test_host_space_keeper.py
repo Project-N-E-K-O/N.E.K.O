@@ -1108,6 +1108,77 @@ async def test_a_session_that_never_lets_go_does_not_hold_the_later_ones_back(wo
     assert (await world.space.read_state())["sessions_to_retry"] == [stuck.id]
 
 
+async def test_every_session_that_could_not_be_cleaned_stays_remembered_however_many(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    monkeypatch.setattr("nekoclaw.host.space_keeper._CLEAN_BATCH", 2)
+    commissions = []
+    for number in range(5):
+        commissions.append(await world.finished(f"old task number {number} words{number}", calls=0))
+        world.clock.now += 10
+    for commission in commissions:
+        _fill_session(world.paths.session_dir(commission.id))
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    remove = world.keeper._clean_session
+    world.keeper._clean_session = lambda directory, commission_id: "not_removed"
+
+    for _round in range(4):
+        await world.keeper.tidy(force=True)
+
+    # More than a round can try, and none of them dropped.
+    state = await world.space.read_state()
+    assert sorted(state["sessions_to_retry"]) == sorted(commission.id for commission in commissions)
+    assert state["sessions_cleaned_until"] == world.clock.now - SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    # The files let go: a batch a round, the ones that waited longest first.
+    world.keeper._clean_session = remove
+    for _round in range(3):
+        await world.keeper.tidy(force=True)
+
+    for commission in commissions:
+        assert not (world.paths.session_dir(commission.id) / "transcript.jsonl").exists(), commission.title
+    assert (await world.space.read_state())["sessions_to_retry"] == []
+
+
+async def test_a_cleaning_that_is_cancelled_holds_the_session_until_the_removing_is_done(world):
+    import threading
+
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    commission = await world.finished(calls=0)
+    _fill_session(world.paths.session_dir(commission.id))
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    removing = threading.Event()
+    go_on = threading.Event()
+    remove = world.keeper._clean_session
+    released: list[str] = []
+
+    def slow(directory: Path, commission_id: str) -> str:
+        removing.set()
+        go_on.wait(10)
+        return remove(directory, commission_id)
+
+    world.keeper._clean_session = slow
+    world.keeper._hold_session = lambda commission_id: True
+    world.keeper._release_session = released.append
+
+    task = asyncio.ensure_future(world.keeper.tidy(force=True))
+    await asyncio.to_thread(removing.wait, 10)
+    # The host shuts down while the thread is at the files.
+    task.cancel()
+    await asyncio.sleep(0.2)
+
+    # A thread cannot be stopped: the hold stays, and so does the wait, until it is done.
+    assert released == [] and not task.done()
+    assert (world.paths.session_dir(commission.id) / "outputs").exists()
+
+    go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert released == [commission.id]
+    assert not (world.paths.session_dir(commission.id) / "transcript.jsonl").exists()
+
+
 async def test_a_remembered_session_that_was_taken_up_again_is_let_go(world):
     from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
 

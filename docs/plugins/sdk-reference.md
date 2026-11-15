@@ -151,7 +151,7 @@ preview_path = self.cache_path("preview.png")
 
 #### `shared_path(*parts) -> Path`
 
-Get a path under the directory this plugin publishes for other plugins to read. The directory is not created for you, and it is kept when the plugin is removed.
+Get a path under the directory this plugin publishes for other plugins to read. The directory is not created for you, and it is kept when the plugin is removed. The directory is named after the plugin id; characters other than lower-case letters, digits, `_` and `-` are escaped in the name, so always take the path from this method.
 
 ```python
 cities = self.shared_path("cities.json")

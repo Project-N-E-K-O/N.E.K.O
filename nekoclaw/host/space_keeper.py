@@ -68,8 +68,6 @@ _CLEANABLE = frozenset({"done", "failed", "cancelled"})
 _REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
 _EVENT_PAGE = 500
 _CLEAN_BATCH = 200
-# Most sessions whose files could not be removed that are remembered to be tried again.
-_RETRY_KEPT = 500
 _LANGUAGES = {
     "zh": "Simplified Chinese",
     "zh-CN": "Simplified Chinese",
@@ -726,6 +724,8 @@ class SpaceKeeper:
         removed, and looked up again once it is held: a commission that was
         taken up between the query and now is at work on that very transcript.
         """
+        from utils.asyncio_executor import to_thread_through_cancellation
+
         if self._hold_session is not None and not self._hold_session(commission.id):
             # In use, or on its way to be: it comes round again once it has ended and aged.
             return _NOTHING
@@ -734,7 +734,11 @@ class SpaceKeeper:
             if current is None or current.status not in _CLEANABLE or current.updated_at > until:
                 return _NOTHING
             directory = await asyncio.to_thread(self._session_dir_of, current)
-            return await asyncio.to_thread(self._clean_session, Path(directory), current.id)
+            # A thread cannot be stopped. Cancelled (the host shutting down),
+            # this still waits for the removing to finish before the hold
+            # below is given back and before shutting down goes on: nothing
+            # opens the session while its files are still being removed.
+            return await to_thread_through_cancellation(self._clean_session, Path(directory), current.id)
         except (OSError, ValueError):
             logger.warning("the session of an old commission could not be looked at", exc_info=True)
             return _NOT_REMOVED
@@ -759,7 +763,10 @@ class SpaceKeeper:
         # file that may never let go.
         remembered = state.get("sessions_to_retry")
         waiting = [str(item) for item in remembered if isinstance(item, str)] if isinstance(remembered, list) else []
-        still: list[str] = []
+        # Every one of them stays remembered until its files are gone; a
+        # round tries a batch of them, and those that fail again go to the
+        # back, so the others get their turn.
+        still: list[str] = waiting[_CLEAN_BATCH:]
 
         async def clean(commission: Commission) -> None:
             outcome = await self._clean_one(commission, until)
@@ -768,7 +775,7 @@ class SpaceKeeper:
             elif outcome == _NOT_REMOVED:
                 still.append(commission.id)
 
-        for commission_id in waiting:
+        for commission_id in waiting[:_CLEAN_BATCH]:
             commission = await self._ledger.get(commission_id)
             if commission is not None:
                 await clean(commission)
@@ -783,4 +790,4 @@ class SpaceKeeper:
             # A full batch leaves the rest to the next round, which goes on where this one stopped.
             reached = rows[-1].updated_at if len(rows) >= _CLEAN_BATCH and rows[-1] is not None else until
         if reached != after or still != waiting:
-            await self._space.write_state(sessions_cleaned_until=reached, sessions_to_retry=still[-_RETRY_KEPT:])
+            await self._space.write_state(sessions_cleaned_until=reached, sessions_to_retry=still)

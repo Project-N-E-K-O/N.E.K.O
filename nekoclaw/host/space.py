@@ -1233,6 +1233,19 @@ class TaskAgentSpace:
 
         name = project or DEFAULT_PROJECT
 
+        def archived_meanwhile() -> bool:
+            return name != DEFAULT_PROJECT and not self._paths().project_dir(name).is_dir()
+
+        try:
+            if await self._read(archived_meanwhile):
+                # A commission of a project that was idle long is taken up
+                # again at the moment the project is archived: the project
+                # is brought back, or the task agent would start without
+                # its rules and its index.
+                await self._write(lambda: self._revive(name))
+        except (OSError, ValueError):
+            logger.warning("a project of the task agent space could not be brought back", exc_info=True)
+
         def work() -> tuple[str, list[tuple[str, str, int, bool]]]:
             # Heading, text, cap, and whether it is an index.
             paths = self._paths()

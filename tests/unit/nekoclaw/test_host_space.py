@@ -579,6 +579,7 @@ async def test_archiving_does_not_write_over_an_archived_project_of_the_same_nam
 async def test_a_second_archive_of_a_name_is_reached_by_its_directory(space, root):
     await space.touch_project("Budget app")
     await space.file_entry("Budget app", title="First", content="Of the first one.")
+    await space.write_review("Budget app", _commission(id="early", ended_at=1_800_000_000.0), "Of the first one too.")
     first = await space.archive_project("Budget app", summary="first")
     await space.touch_project("Budget app")
     await space.file_entry("Budget app", title="Second", content="Of the second one.")
@@ -587,9 +588,10 @@ async def test_a_second_archive_of_a_name_is_reached_by_its_directory(space, roo
 
     year = first.archive_year
     assert (first.directory, second.directory) == ("Budget app", "Budget app-2")
-    # Its review is found where it is, not looked for in the first one's directory.
+    # Each review is found where it is, and listed once.
+    assert (await space.read_review("early")).content.endswith("Of the first one too.")
     assert (await space.read_review("late")).content.endswith("Of the second one too.")
-    assert [item.commission_id for item in await space.list_reviews()] == ["late"]
+    assert sorted(item.commission_id for item in await space.list_reviews()) == ["early", "late"]
     assert [entry.id for entry in await space.list_entries(first.directory, archive_year=year)] == ["first"]
     assert [entry.id for entry in await space.list_entries(second.directory, archive_year=year)] == ["second"]
     assert (await space.read_entry("second", second.directory, archive_year=year)).content == "Of the second one."
@@ -723,6 +725,21 @@ async def test_the_brief_has_the_four_parts_in_order(space, root):
     daily = await space.brief(None)
     assert "Rules of project" not in daily and "Index of project" not in daily
     assert "Rules for every commission:" in daily
+
+
+async def test_a_project_archived_a_moment_ago_is_brought_back_before_its_notes_are_read(space, root):
+    await space.touch_project("Budget app")
+    await space.write_rules("Use Flask.", "Budget app")
+    await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+    # Archived just as a commission of it is taken up again.
+    await space.archive_project("Budget app", summary="s")
+
+    brief = await space.brief("Budget app")
+
+    assert "Rules of project Budget app:\nUse Flask." in brief
+    assert "Index of project Budget app:\n- [Stack](memory/stack.md)" in brief
+    assert [(item.name, item.status) for item in await space.list_projects()] == [("Budget app", "active")]
+    assert not (root / "archive" / "2027").exists() or not any((root / "archive").rglob("project.json"))
 
 
 async def test_every_part_of_the_brief_has_its_cap_and_so_has_the_whole(space, root):

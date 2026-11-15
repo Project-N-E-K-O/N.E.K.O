@@ -10,7 +10,6 @@ The maintainer emphatically forbids reintroducing loguru here. Lint: scripts/che
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -105,21 +104,39 @@ def resolve_plugin_shared_dir(plugin_id: object) -> Path:
     return resolve_runtime_data_root() / PLUGIN_SHARED_DIRNAME / _shared_dirname(plugin_id)
 
 
+_SHARED_PLAIN_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"} | {f"{prefix}{digit}" for prefix in ("com", "lpt") for digit in "123456789"}
+)
+
+
 def _shared_dirname(plugin_id: object) -> str:
     """Return the directory name a plugin id publishes under; two ids never get the same one.
 
-    An id that is a plain directory name already is used as it is. Any
-    other is made one the way private state does it, and that drops
-    characters: ``weather_`` and ``weather`` would end up in one directory
-    and write over each other's files. Such an id gets a few characters of
-    its hash appended. (Private state keeps its mapping: its paths are a
-    contract with what is on users' disks.)
+    Lower-case letters, digits, ``_`` and ``-`` stand for themselves, so an
+    ordinary id is its own directory name. Every other character is written
+    as ``~`` and the two hex digits of each of its bytes: upper-case letters
+    too, because ``Weather`` and ``weather`` are one directory on Windows
+    and macOS. A plugin id cannot contain ``~``, so an escaped name is never
+    another plugin's plain one, and the mapping can be read backwards.
+
+    The mapping private state uses (``_safe_plugin_dirname``) drops
+    characters instead: ``weather_`` and ``weather`` end up in one
+    directory there. It is kept as it is, being a contract with what is on
+    users' disks; here two plugins would write over each other's files.
     """
     raw = str(plugin_id or "").strip()
-    safe = _safe_plugin_dirname(raw)
-    if raw == safe:
-        return safe
-    return f"{safe}-{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:8]}"
+    if not raw:
+        return "~"
+    name = "".join(
+        char if char in _SHARED_PLAIN_CHARACTERS else "".join(f"~{byte:02x}" for byte in char.encode("utf-8"))
+        for char in raw
+    )
+    if name in _WINDOWS_DEVICE_NAMES:
+        # Windows reads these as devices, not as directories. Two tildes
+        # cannot come from an escaped character, which is one tilde and hex.
+        return f"~~{name}"
+    return name
 
 
 def _declared_shared_reads(plugin_section: object) -> frozenset[str] | None:

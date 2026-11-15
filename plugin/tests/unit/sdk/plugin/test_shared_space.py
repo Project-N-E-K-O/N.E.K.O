@@ -157,18 +157,66 @@ def test_one_id_as_a_string_is_accepted(root, tmp_path) -> None:
 
 @pytest.mark.parametrize(
     "first,second",
-    [("weather", "weather_"), ("weather", ".weather"), ("a b", "a_b"), ("a/b", "a_b"), ("weather_", "weather.")],
+    [
+        ("weather", "weather_"),
+        ("weather", "_weather"),
+        ("weather", ".weather"),
+        ("a b", "a_b"),
+        ("a/b", "a_b"),
+        ("weather_", "weather."),
+        # What an earlier mapping gave one id is a valid id of another plugin.
+        ("weather_", "weather-15a3e0c2"),
+        # One directory on Windows and macOS, were they left as they are.
+        ("Weather", "weather"),
+        ("WEATHER", "Weather"),
+        # Nor is an escaped name the plain name of anything.
+        ("Weather", "~57eather"),
+        ("nul", "~~nul"),
+    ],
 )
 def test_two_plugin_ids_never_publish_into_one_directory(root, first, second) -> None:
     one, other = resolve_plugin_shared_dir(first), resolve_plugin_shared_dir(second)
 
-    assert one != other
+    assert one.name.lower() != other.name.lower()
     assert one.parent == other.parent == root / "plugin_shared"
 
 
-@pytest.mark.parametrize("plugin_id", ["weather", "memo_reminder", "mcp-adapter", "a.b", "Plugin2"])
+@pytest.mark.parametrize("plugin_id", ["weather", "memo_reminder", "mcp-adapter", "plugin2", "weather_", "_x", "-"])
 def test_an_ordinary_plugin_id_is_its_own_directory_name(root, plugin_id) -> None:
     assert resolve_plugin_shared_dir(plugin_id) == root / "plugin_shared" / plugin_id
+
+
+@pytest.mark.parametrize(
+    "plugin_id,name",
+    [
+        ("Weather", "~57eather"),
+        ("a b", "a~20b"),
+        (".weather", "~2eweather"),
+        ("a.b", "a~2eb"),
+        ("天气", "~e5~a4~a9~e6~b0~94"),
+        ("nul", "~~nul"),
+        ("com1", "~~com1"),
+        ("", "~"),
+    ],
+)
+def test_other_characters_are_escaped(root, plugin_id, name) -> None:
+    assert resolve_plugin_shared_dir(plugin_id).name == name
+
+
+@pytest.mark.parametrize(
+    "plugin_id", ["weather", "weather_", "Weather", "MCP-Adapter_2", "a b", "../x", "天气", "nul", "a~b", "~57eather"]
+)
+def test_the_directory_name_reads_backwards_to_the_id(root, plugin_id) -> None:
+    import re
+
+    name = resolve_plugin_shared_dir(plugin_id).name
+    if name.startswith("~~"):
+        name = name[2:]
+    raw = re.sub(r"((?:~[0-9a-f]{2})+)", lambda match: bytes.fromhex(match.group(1).replace("~", "")).decode("utf-8"), name)
+
+    assert raw == plugin_id
+    # A single safe directory name, on any system.
+    assert re.fullmatch(r"[a-z0-9_~-]+", resolve_plugin_shared_dir(plugin_id).name)
 
 
 def test_private_state_keeps_its_directory_names(root, tmp_path) -> None:
