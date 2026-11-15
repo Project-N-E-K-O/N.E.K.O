@@ -958,6 +958,14 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     return answer
 
 
+# Held while the browser settings are read, changed and saved: two requests
+# that save at the same time must not each compare against what the other is
+# about to replace (the later one would take its settings for unchanged and
+# leave open a browser that was started with the other's). Taken in the
+# worker thread, never on the event loop.
+_browser_settings_lock = threading.Lock()
+
+
 def _browser_settings_view() -> Dict[str, Any]:
     """Return the browser settings with the browsers found on this computer. Blocking (file checks)."""
     from nekoclaw.builtin.browser.launcher import find_browsers
@@ -1015,8 +1023,12 @@ async def set_browser_settings(payload: Dict[str, Any]):
         store.save(wanted)
         return _browser_settings_view(), wanted != current
 
+    def apply_alone() -> tuple[Dict[str, Any], bool]:
+        with _browser_settings_lock:
+            return apply()
+
     try:
-        view, changed = await asyncio.to_thread(apply)
+        view, changed = await asyncio.to_thread(apply_alone)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     # A browser named in the settings may be one the search does not find,

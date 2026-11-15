@@ -4093,6 +4093,33 @@ async def test_a_browser_that_is_closed_while_it_is_being_set_up_is_one_the_user
     assert session.closed_by_user is False
 
 
+async def test_a_browser_whose_tabs_have_not_been_looked_up_yet_is_not_one_the_user_closed(
+    make_session: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.unit.nekoclaw.fake_cdp_browser import FakeConnection
+
+    session = make_session(own_ports=lambda: OWN)
+    send = FakeConnection.send
+    seen: list[bool] = []
+
+    async def settings_changed_meanwhile(self: Any, method: str, params: Any = None, **options: Any) -> dict[str, Any]:
+        if method == "Fetch.enable" and options.get("session_id") is None:
+            # Connected to, and no tab known yet. The settings are changed at this very moment.
+            seen.append(session.closed_by_user)
+            session.no_longer_wanted()
+        return await send(self, method, params, **options)
+
+    # A browser was driven and closed before: what was known of its tabs says nothing of the next one's.
+    await session.start()
+    await session.close()
+    monkeypatch.setattr(FakeConnection, "send", settings_changed_meanwhile)
+    await session.start()
+    await session.close()
+
+    # It was this process that closed it: the next call starts one without asking.
+    assert seen == [False] and session.closed_by_user is False
+
+
 async def test_a_browser_that_does_not_answer_while_it_is_being_set_up_is_not_one_the_user_closed(
     make_session: Any, world: BrowserWorld
 ) -> None:

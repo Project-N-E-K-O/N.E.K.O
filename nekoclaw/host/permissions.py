@@ -466,4 +466,4 @@ class PermissionGate:
         """
         if await self._store.mode(category, key) == "deny":
             return PermissionDecision(False, DENIED_BY_SETTINGS)
-        return PermissionDecision(True)
+        return PermissionDecision(True, asked=True)

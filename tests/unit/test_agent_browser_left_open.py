@@ -648,6 +648,33 @@ async def test_saving_the_browser_settings_as_they_were_leaves_the_browser_alone
     assert stage.provider.browser_window_stays() is True
 
 
+async def test_the_browser_settings_are_read_changed_and_saved_by_one_request_at_a_time(
+    stage: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from nekoclaw.builtin.browser.settings import BrowserSettingsStore
+
+    held: list[bool] = []
+    load, save = BrowserSettingsStore.load, BrowserSettingsStore.save
+
+    def loading(self: Any) -> Any:
+        held.append(api_runtime._browser_settings_lock.locked())
+        return load(self)
+
+    def saving(self: Any, settings: Any) -> None:
+        held.append(api_runtime._browser_settings_lock.locked())
+        save(self, settings)
+
+    monkeypatch.setattr(BrowserSettingsStore, "load", loading)
+    monkeypatch.setattr(BrowserSettingsStore, "save", saving)
+
+    await api_runtime.set_browser_settings({"headless": True})
+    await stage.settled()
+
+    # What the save is compared with cannot be replaced by another request in between.
+    assert held[:2] == [True, True]
+    assert not api_runtime._browser_settings_lock.locked()
+
+
 async def test_saving_the_browser_settings_a_second_time_does_not_close_the_browser_that_was_started_since(
     stage: Any, world: BrowserWorld
 ) -> None:
@@ -748,7 +775,8 @@ async def test_a_browser_that_is_driven_again_after_it_was_closed_is_left_open_l
     await _on_the_order_form(stage)
     await api_routes.admin_control(dict(END_ALL))
 
-    # That the one before was not wanted says nothing about the one that was started since.
+    # That the one before was not wanted says nothing about the one that was started since. (This
+    # one has a window: the fake browser reads settings of its own, not the ones saved above.)
     assert len(world.launched) == 2 and len(world.closed) == 1 and stage.session.connected
 
 

@@ -399,6 +399,10 @@ class BrowserSession:
         # (``close``) until the user agrees: with nothing of it held any
         # more, nothing else says that it was the user who closed it.
         self._closed_by_user_noted = False
+        # Whether the tabs of the browser that is connected to have been
+        # looked up yet: until then, none being known does not mean that
+        # there is none.
+        self._tabs_known = False
         # The process the browser's windows belong to, as the browser tells
         # it, asked once per connection.
         self._window_pid: int | None = None
@@ -553,6 +557,7 @@ class BrowserSession:
             # has.
             for info in targets.get("targetInfos") or ():
                 self._note_target(info)
+            self._tabs_known = True
             if was_running and browser.owned:
                 await self._ask_whether_headless(connection, browser)
             if self._blocked_everywhere:
@@ -841,6 +846,7 @@ class BrowserSession:
         self._pages.clear()
         self._own_pages.clear()
         self._tabs.clear()
+        self._tabs_known = False
         self._not_kept.clear()
         self._handles.clear()
         self._selected = None
@@ -923,7 +929,7 @@ class BrowserSession:
             and browser.headless is not True
             and not self._unwanted
             and connection is not None
-            and (connection.closed or not self._tabs)
+            and (connection.closed or (self._tabs_known and not self._tabs))
         )
 
     def reopen_agreed(self) -> None:

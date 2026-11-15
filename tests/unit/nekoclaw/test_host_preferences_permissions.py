@@ -550,6 +550,17 @@ async def test_what_is_asked_each_time_is_refused_when_nobody_can_be_asked(store
     assert (failed.allow, failed.reason) == (False, DENIED_NO_ANSWER)
 
 
+async def test_an_approval_given_while_the_settings_changed_still_says_the_user_was_asked(store):
+    async def asker(commission_id: str, ask: Any) -> str:
+        # Another setting is changed while the question waits.
+        await store.set_mode("run_command", "allow")
+        return "once"
+
+    decision = await PermissionGate(store, asker).check("c1", "browser")
+
+    assert (decision.allow, decision.asked) == (True, True)
+
+
 async def test_whether_the_settings_forbid_something_is_told_without_asking(store):
     asker = Asker("once")
     gate = PermissionGate(store, asker)
