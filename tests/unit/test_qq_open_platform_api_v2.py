@@ -1223,4 +1223,33 @@ def test_held_copy_is_re_judged_after_the_identity_is_learned():
     assert by_id["M1"]["is_at_bot"] is True          # re-judged with the new identity
     assert by_id["M1"]["mentions_other_user"] is False
 
+def test_base64_padding_across_a_newline_is_measured_like_the_decoder():
+    # CodeRabbit r4576821307. ``_decode_base64_source`` drops ASCII whitespace before
+    # decoding, so padding separated by a newline belongs to the same quartet. The old
+    # measure subtracted only the contiguous run of "=" at the very end: it estimated
+    # two bytes for a one-byte payload, and the pre-decode size check refused content
+    # that was in fact inside the limit.
+    import base64
 
+    from utils.connection.qq.open_platform_media import _base64_decoded_size
+
+    for raw in (b"a", b"ab", b"abc", b"abcd", b"abcde", b"abcdef"):
+        encoded = base64.b64encode(raw).decode()
+        assert _base64_decoded_size(encoded) == len(raw), encoded
+        # Same payload, MIME-wrapped: the measure must not grow with the line breaks.
+        wrapped = encoded[:2] + chr(10) + encoded[2:]
+        assert _base64_decoded_size(wrapped) == len(raw), wrapped
+
+    assert _base64_decoded_size("YQ=" + chr(10) + "=") == 1
+
+    import utils.connection.qq.open_platform as op
+
+    conn = _conn([_Response({"file_info": "FIx"}), _Response({"id": "mx"})])
+    original = op.UPLOAD_HARD_MAX_BYTES
+    op.UPLOAD_HARD_MAX_BYTES = 1
+    try:
+        assert run(conn._upload_media(
+            scope="groups", owner_id="G1",
+            source="base64://YQ=" + chr(10) + "=", file_type=3)) == "FIx"
+    finally:
+        op.UPLOAD_HARD_MAX_BYTES = original
