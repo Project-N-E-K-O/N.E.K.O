@@ -455,6 +455,41 @@ async def test_taking_a_commission_up_again_waits_while_its_old_session_is_clean
     assert len(second.requests) == 1
 
 
+async def test_queueing_a_commission_again_waits_for_a_hold_too(hosts, tmp_path):
+    import asyncio
+
+    release = asyncio.Event()
+
+    async def wait() -> None:
+        await release.wait()
+
+    failing = ScriptedLLM([_report("failed", "the site was down")])
+    occupying = ScriptedLLM([[wait, *_report()]])
+    models = [failing, occupying]
+    # One place only: taken up again, the failed one has to queue.
+    host = _host(hosts, tmp_path, lambda spec: models.pop(0), max_task_agents=1)
+    failed = await _dispatch(host, "publish the newsletter")
+    await wait_status(host, failed.commission_id, "failed")
+    await wait_until(lambda: host.task_agents.running == [], what="the session being released")
+    busy = await _dispatch(host, "sort the photos")
+    await wait_until(lambda: host.task_agents.running == [busy.commission_id], what="the other one taking the place")
+
+    # Its review is being written down.
+    assert host.task_agents.hold_session(failed.commission_id) is True
+    told = asyncio.ensure_future(host.tell(failed.commission_id, "the site is back, try again"))
+    await asyncio.sleep(0.3)
+
+    # Not queued meanwhile: its status is what the review was written about.
+    assert (await host.ledger.get(failed.commission_id)).status == "failed"
+    assert host.task_agents.queued == [] and not told.done()
+
+    host.task_agents.release_session(failed.commission_id)
+    assert await told is True
+    assert (await host.ledger.get(failed.commission_id)).status == "queued"
+    assert host.task_agents.queued == [failed.commission_id]
+    release.set()
+
+
 # ---------------------------------------------------------------------------
 # From the end of a commission to its review
 # ---------------------------------------------------------------------------

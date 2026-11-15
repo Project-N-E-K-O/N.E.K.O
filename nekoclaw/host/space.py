@@ -45,6 +45,7 @@ after a commission, and archiving, are in ``space_keeper.py``.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import os
@@ -1342,7 +1343,15 @@ class TaskAgentSpace:
 
 
 def _move(source: Path, target: Path) -> None:
-    """Move a directory, trying again for a moment while Windows says it is in use."""
+    """Move a directory by renaming it, trying again for a moment while Windows says it is in use.
+
+    A directory that cannot be renamed stays where it is, whole, and the
+    error is raised. It is not copied and then removed: with a file in it
+    held open, the removing would stop half way, and the project would be
+    in two places with neither of them complete. Only when the target is on
+    another volume (a link somewhere in between), where renaming cannot
+    work at all, is it copied.
+    """
     last: OSError | None = None
     for attempt in range(_WRITE_ATTEMPTS):
         try:
@@ -1350,11 +1359,10 @@ def _move(source: Path, target: Path) -> None:
             return
         except OSError as exc:
             last = exc
+            if exc.errno == errno.EXDEV:
+                shutil.move(str(source), str(target))
+                return
             if not source.exists():
                 raise
             time.sleep(_WRITE_RETRY_SECONDS * (attempt + 1))
-    try:
-        # Another volume (a link in between): copied and then removed.
-        shutil.move(str(source), str(target))
-    except OSError:
-        raise last if last is not None else OSError("the directory could not be moved") from None
+    raise last if last is not None else OSError("the directory could not be moved")

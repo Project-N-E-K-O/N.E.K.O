@@ -1330,6 +1330,15 @@ class TaskAgentManager:
         """
         if self._closed:
             return False
+        held = self._held.get(commission_id)
+        if held is not None:
+            # Its review is being written down, or its old session files are
+            # being removed, this moment. Queueing it changes its status as
+            # starting it does, so both wait: what is written is about the
+            # commission as it was, and is finished before it goes on.
+            await held.wait()
+            if self._closed:
+                return False
         if commission_id in self._taking_up or commission_id in self._requeueing:
             # An earlier sentence is taking it up again or queueing it right
             # now: this one goes along with that rather than starting or

@@ -680,6 +680,42 @@ async def test_an_archived_project_does_not_replace_one_of_its_name_that_is_in_u
     assert (root / "projects" / "Budget app" / "memory" / "stack.md").is_file()
 
 
+def test_a_directory_that_cannot_be_renamed_is_not_copied_and_removed_instead(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    target.parent.mkdir()
+    attempts: list[str] = []
+
+    def in_use(first, second):
+        attempts.append("rename")
+        raise PermissionError(13, "a file in it is held open")
+
+    monkeypatch.setattr(os, "replace", in_use)
+    monkeypatch.setattr("shutil.move", lambda *args: attempts.append("copy"))
+
+    with pytest.raises(PermissionError):
+        _move(source, target)
+
+    # Tried again a few times, never copied: the source is whole and there is no target.
+    assert attempts == ["rename"] * 3
+    assert (source / "memory" / "stack.md").is_file() and not target.exists()
+
+    # Another volume is the one case renaming cannot work in: then it is copied.
+    def other_volume(first, second):
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.undo()
+    monkeypatch.setattr(os, "replace", other_volume)
+    _move(source, target)
+    assert (target / "memory" / "stack.md").is_file() and not source.exists()
+
+
 async def test_open_project_brings_an_archived_one_back_instead_of_making_a_second(space, root):
     await space.touch_project("Budget app", description="tracks spending")
     await space.archive_project("Budget app", summary="s")

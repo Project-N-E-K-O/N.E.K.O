@@ -385,6 +385,15 @@ stops every task (``end_all``); killed after that. Asking it to close has
 several steps that each have a time of their own and add up to more than the
 page waits for an answer to that request (5 seconds)."""
 
+SPACE_KEEPER_CLOSE_WAIT_SECONDS = 1.0
+"""How long shutting down waits for what the task agent space does in the
+background (a review, a round of tidying). A model call is cancelled at
+once. Removing the files of an old session runs in a thread, which cannot
+be stopped; it takes milliseconds, but a storage that does not answer must
+not keep the outbox and the ledger from being closed. Past this time the
+thread is left to finish by itself, and the session it works on stays
+claimed until it has."""
+
 HOST_CLOSE_STOP_WAIT_SECONDS = 1.5
 """How long closing the task brain waits for stops that are under way.
 A stop writes the status first; what is left is one local request to the

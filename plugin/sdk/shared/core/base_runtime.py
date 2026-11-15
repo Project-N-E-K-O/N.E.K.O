@@ -113,7 +113,7 @@ _WINDOWS_DEVICE_NAMES = frozenset(
 # and an escaped character takes three. A longer name keeps its beginning
 # and ends in a hash of the whole id.
 _SHARED_NAME_MAX_CHARS = 120
-_SHARED_NAME_KEPT_CHARS = 96
+_SHARED_NAME_KEPT_CHARS = 80
 
 
 def _shared_dirname(plugin_id: object) -> str:
@@ -145,7 +145,10 @@ def _shared_dirname(plugin_id: object) -> str:
     if len(name) > _SHARED_NAME_MAX_CHARS:
         # ``~h`` cannot come from an escaped character either (``h`` is no
         # hex digit), so a shortened name is never another id's full one.
-        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        # Two long ids share a name only when 128 bits of their hashes
+        # agree: no name of bounded length can tell every id of unbounded
+        # length apart, and this is as close as it gets.
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
         return f"{name[:_SHARED_NAME_KEPT_CHARS]}~h{digest}"
     return name
 

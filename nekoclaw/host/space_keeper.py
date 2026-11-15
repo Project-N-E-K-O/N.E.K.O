@@ -222,6 +222,8 @@ class SpaceKeeper:
         self._clock = clock
         self._review_delay = review_delay
         self._tasks: set[asyncio.Task[Any]] = set()
+        # What closing did not wait for to its end; kept referenced until done.
+        self._lingering: set[asyncio.Task[Any]] = set()
         # One model call of the space at a time.
         self._working: asyncio.Lock | None = None
         self._tidying = False
@@ -269,13 +271,26 @@ class SpaceKeeper:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
     async def aclose(self) -> None:
-        """Stop what is under way. A review cut off here is made by a later round of tidying."""
+        """Stop what is under way. A review cut off here is made by a later round of tidying.
+
+        Waits ``SPACE_KEEPER_CLOSE_WAIT_SECONDS`` at most. What is not done
+        by then is a thread still removing the files of an old session; it
+        goes on by itself, and the session stays claimed until it is done.
+        """
+        from config.nekoclaw_settings import SPACE_KEEPER_CLOSE_WAIT_SECONDS
+
         self._closed = True
         tasks, self._tasks = list(self._tasks), set()
         for task in tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if not tasks:
+            return
+        _done, pending = await asyncio.wait(tasks, timeout=SPACE_KEEPER_CLOSE_WAIT_SECONDS)
+        for task in pending:
+            self._lingering.add(task)
+            task.add_done_callback(self._lingering.discard)
+        if pending:
+            logger.warning("closing the task agent space did not wait for %d task(s) still removing files", len(pending))
 
     def _lock(self) -> asyncio.Lock:
         if self._working is None:

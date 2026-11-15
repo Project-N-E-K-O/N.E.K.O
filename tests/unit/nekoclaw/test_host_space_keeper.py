@@ -1247,6 +1247,47 @@ async def test_a_session_of_exactly_the_time_the_scan_reached_is_looked_at_once(
     assert looked_at == [commission.id]
 
 
+async def test_closing_waits_a_bounded_time_for_a_thread_that_removes_files(world, monkeypatch):
+    import threading
+
+    from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
+
+    monkeypatch.setattr("config.nekoclaw_settings.SPACE_KEEPER_CLOSE_WAIT_SECONDS", 0.2)
+    commission = await world.finished(calls=0)
+    _fill_session(world.paths.session_dir(commission.id))
+    world.clock.now += SPACE_TRANSCRIPT_KEPT_SECONDS + 60
+    removing = threading.Event()
+    go_on = threading.Event()
+    remove = world.keeper._clean_session
+    released: list[str] = []
+
+    def stuck(directory: Path, commission_id: str) -> str:
+        # A storage that does not answer.
+        removing.set()
+        go_on.wait(20)
+        return remove(directory, commission_id)
+
+    world.keeper._clean_session = stuck
+    world.keeper._hold_session = lambda commission_id: True
+    world.keeper._release_session = released.append
+    world.keeper._spawn(world.keeper.tidy(force=True))
+    await asyncio.to_thread(removing.wait, 10)
+
+    # Shutting down goes on: the outbox and the ledger are closed after this.
+    await asyncio.wait_for(world.keeper.aclose(), timeout=3)
+
+    # The thread is still at the files, so the session stays claimed.
+    assert released == [] and len(world.keeper._lingering) == 1
+
+    go_on.set()
+    for _attempt in range(200):
+        if not world.keeper._lingering:
+            break
+        await asyncio.sleep(0.02)
+    assert released == [commission.id] and not world.keeper._lingering
+    assert not (world.paths.session_dir(commission.id) / "transcript.jsonl").exists()
+
+
 async def test_a_remembered_session_that_was_taken_up_again_is_let_go(world):
     from config.nekoclaw_settings import SPACE_TRANSCRIPT_KEPT_SECONDS
 
