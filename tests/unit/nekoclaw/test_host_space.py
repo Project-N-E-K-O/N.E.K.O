@@ -598,14 +598,12 @@ async def test_the_daily_project_is_never_archived(space):
 
 
 async def test_a_project_that_cannot_be_moved_stays(space, root, monkeypatch):
-    import nekoclaw.host.space as module
-
     await space.touch_project("Budget app")
 
     def stuck(source, target):
         raise PermissionError(13, "in use")
 
-    monkeypatch.setattr(module, "_move", stuck)
+    monkeypatch.setattr("nekoclaw.host.space._move", stuck)
 
     assert await space.archive_project("Budget app", summary="s") is None
     assert (root / "projects" / "Budget app" / "project.json").is_file()

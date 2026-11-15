@@ -517,11 +517,11 @@ async def test_what_is_sent_for_a_review_stays_within_its_cap(world):
 
 
 async def test_the_whole_of_a_review_is_capped_whatever_its_parts_are(world, monkeypatch):
-    import config.nekoclaw_settings as settings
+    from config.nekoclaw_settings import TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
     from utils.tokenize import count_tokens
 
     # A part that outgrows the room it was meant to have.
-    monkeypatch.setattr(settings, "TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS", 50_000)
+    monkeypatch.setattr("config.nekoclaw_settings.TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS", 50_000)
     commission = await world.file()
     await world.ledger.transition(commission.id, "working", reason="test")
     rows: list[tuple[str, dict[str, Any]]] = []
@@ -533,7 +533,7 @@ async def test_the_whole_of_a_review_is_capped_whatever_its_parts_are(world, mon
     await world.end(commission.id)
 
     system, user = (message["content"] for message in world.llm.last(TIER_REVIEW))
-    assert count_tokens(system) + count_tokens(user) <= settings.TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
+    assert count_tokens(system) + count_tokens(user) <= TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
     assert "steps left out" not in user
 
 
