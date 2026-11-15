@@ -1368,8 +1368,9 @@ async def test_a_command_that_points_at_the_space_is_seen_however_its_path_is_wr
         "echo task-agent-space taskagentspace task_agent Task_Agent_Space",
         # A directory of that name somewhere else.
         "cat /somewhere/else/nekoclaw/task_agent_space/AGENTS.md",
-        # Known not to be seen: a path relative to where the command runs, or to the home directory.
+        # Known not to be seen: a path relative to where the command runs.
         "echo x > nekoclaw/task_agent_space/AGENTS.md",
+        # A directory of that name below the home directory, where the space is not.
         "cd ~/data/NekoClaw/Task_Agent_Space && ls",
         "cd ../../../nekoclaw && printf x > task_agent_space/MEMORY.md",
         "",
@@ -4435,3 +4436,116 @@ async def test_an_entry_filed_while_the_index_cannot_be_written_is_handed_back_a
     index.write_text("- a line of the user\n", encoding="utf-8")
     await space.file_entry(None, title="Use uv", content="Run Python through uv.")
     assert index.read_text(encoding="utf-8").split("\n")[0] == "- [Use uv](memory/use-uv.md) — Run Python through uv."
+
+
+# ---------------------------------------------------------------------------
+# Review of the follow-up, round 5 (the owner's automatic review)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("command", "seen"),
+    [
+        ("rm -rf ~/data/nekoclaw/task_agent_space/projects", True),
+        ("cat $HOME/data/nekoclaw/task_agent_space/MEMORY.md", True),
+        ('cat "${HOME}/data/nekoclaw/task_agent_space/MEMORY.md"', True),
+        ("type %USERPROFILE%\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
+        ("Get-Content $env:USERPROFILE\\data\\nekoclaw\\task_agent_space\\MEMORY.md", True),
+        ("ls ~/Data/NekoClaw/Task_Agent_Space", True),
+        # With steps that lead nowhere, as for a path written in full.
+        ("ls ~/data/./nekoclaw/old/../task_agent_space", True),
+        # Below the home directory, and not the space.
+        ("ls ~/data/nekoclaw/task_agents", False),
+        ("ls ~/elsewhere/nekoclaw/task_agent_space", False),
+        ("cd ~ && ls", False),
+        ("echo $HOME", False),
+    ],
+)
+async def test_a_path_written_from_the_home_directory_is_seen(tmp_path, monkeypatch, command, seen):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "data" / "nekoclaw" / "task_agent_space"))
+
+    assert await space.named_in(command) is seen
+
+
+async def test_a_space_that_is_not_below_the_home_directory_is_not_written_from_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home" / "user"))
+    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "data" / "nekoclaw" / "task_agent_space"))
+
+    assert await space.named_in("ls ~/data/nekoclaw/task_agent_space") is False
+    # Nor is a directory of its name right below the home directory taken for it.
+    assert await space.named_in("ls ~/task_agent_space") is False
+    assert await space.named_in(f"ls {(tmp_path / 'data' / 'nekoclaw' / 'task_agent_space').as_posix()}") is True
+
+    # A home directory that cannot be told keeps nothing from being seen as it is written in full.
+    def no_home(cls):
+        raise RuntimeError("no home directory")
+
+    monkeypatch.setattr(Path, "home", classmethod(no_home))
+    assert await space.named_in(f"ls {(tmp_path / 'data' / 'nekoclaw' / 'task_agent_space').as_posix()}") is True
+
+
+async def test_an_index_that_was_over_its_cap_gives_a_line_before_the_rules_give_anything(space, root, monkeypatch):
+    from config.nekoclaw_settings import SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS, SPACE_BRIEF_MAX_TOKENS
+    from config.prompts import prompts_nekoclaw_space as texts
+    from utils.tokenize import count_tokens
+
+    await space.write_rules("Never delete files. " * 30)
+    line = ("- [an entry](memory/an-entry.md) — " + "word " * 34).rstrip()
+    (root / "MEMORY.md").write_text((line + "\n") * 9, encoding="utf-8")
+    as_it_was = await space.brief(None)
+    rules, index = as_it_was.split("\n\n")[1:]
+    lines = index.split("\n")[1:-1]
+    # Over its own cap, the index ends at a whole line well below it: there is room it does not use.
+    shown = count_tokens("\n".join(lines))
+    assert len(lines) == 7 and index.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+    assert SPACE_BRIEF_GLOBAL_INDEX_MAX_TOKENS - shown > 25
+    # The path of the space is a little too long for the whole.
+    monkeypatch.setattr(texts, "SPACE_BRIEF_NOTE", _a_note_that_puts_the_brief_over(texts, as_it_was, 5))
+
+    brief = await space.brief(None)
+
+    assert count_tokens(brief) <= SPACE_BRIEF_MAX_TOKENS
+    rules_now, index_now = brief.split("\n\n")[1:]
+    # The index gave a line; the rules, which are the user's, are as they were.
+    assert rules_now == rules
+    assert index_now.split("\n")[1:-1] == [line] * 6 and index_now.endswith("\n" + texts.SPACE_BRIEF_CUT_NOTE)
+
+
+async def test_a_summary_with_a_bare_carriage_return_is_known_again_as_the_one_of_this_archiving(space, root, monkeypatch):
+    from nekoclaw.host import space as module
+
+    await space.touch_project("Budget app")
+    move = module._move
+
+    def stuck(source, target):
+        raise PermissionError(13, "in use")
+
+    summary = "What it is for.\rHow it stands."
+    monkeypatch.setattr(module, "_move", stuck)
+    assert await space.archive_project("Budget app", summary=summary) is None
+    monkeypatch.setattr(module, "_move", move)
+    # Kept with the line ends every text is kept with.
+    assert (root / "projects" / "Budget app" / "SUMMARY.md").read_text(encoding="utf-8") == "What it is for.\nHow it stands.\n"
+
+    archived = await space.archive_project("Budget app", summary=summary)
+
+    home = root / "archive" / archived.archive_year / "Budget app"
+    assert sorted(item.name for item in home.glob("SUMMARY*")) == ["SUMMARY.md"]
+
+
+async def test_of_more_commissions_than_are_counted_the_one_that_filed_last_stays(space, monkeypatch):
+    from nekoclaw.host import space as module
+
+    monkeypatch.setattr(module, "_COUNTED_COMMISSIONS", 2)
+    early = _commission(id="c-early")
+    await space.submit(early, _lesson("Photo dates", "Use the EXIF date."))
+    await space.submit(_commission(id="c-other"), _lesson("Budget file", "Kept as JSON."))
+    # It began first and is still at work.
+    await space.submit(early, _lesson("Folder names", "One folder a month."))
+    await space.submit(_commission(id="c-third"), _lesson("Blog theme", "Plain, one column."))
+
+    # The one that has not filed for longest went, not the one that began first.
+    assert space._added_by == {"c-early": 2, "c-third": 1}
+    assert (await space.submit(early, _lesson("Camera drive", "It is E: on this computer."))).startswith("kept in project _daily")
+    assert (await space.submit(early, _lesson("Backups", "Nothing is deleted before it is copied."))).startswith("not kept: this commission")

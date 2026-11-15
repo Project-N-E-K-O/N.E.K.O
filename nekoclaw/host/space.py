@@ -504,6 +504,8 @@ _BRIEF_CUT_ROOM = 12
 _STEP_IN_PLACE = re.compile(r"/\.(?=/)")
 _STEP_BACK = re.compile(r"/(?!\.\.?/)[^/\"']+/\.\.(?=/|[\s\"']|$)")
 _STEPS_BACK_MAX = 64
+# How a command writes the home directory: a shell of the Unix world, cmd, PowerShell.
+_HOME_NAMES = ("~", "$HOME", "${HOME}", "%USERPROFILE%", "$env:USERPROFILE", "$env:HOME")
 
 
 class SpaceError(RuntimeError):
@@ -1033,7 +1035,11 @@ class TaskAgentSpace:
             await self._note_unkept(commission, lesson, "cap")
             return SPACE_LESSONS_CAP_REACHED.format(count=SPACE_LESSONS_PER_COMMISSION)
         # Taken before the files are written (two of its task agents can
-        # file at one moment), and given back when nothing is added.
+        # file at one moment), and given back when nothing is added. Put
+        # last, so that of more commissions than are counted the ones that
+        # have not filed for longest are forgotten, not one that began early
+        # and is still at work.
+        self._added_by.pop(counted, None)
         self._added_by[counted] = added + 1
         while len(self._added_by) > _COUNTED_COMMISSIONS:
             del self._added_by[next(iter(self._added_by))]
@@ -1996,7 +2002,8 @@ class TaskAgentSpace:
             return True
         if unless is not None:
             try:
-                if old.read_text(encoding="utf-8-sig").replace("\r\n", "\n") == unless:
+                # As it is kept: with the line ends a text is written with.
+                if _plain_lines(old.read_text(encoding="utf-8-sig")) == _plain_lines(unless):
                     return True
             except (OSError, UnicodeError):
                 # Not told apart from one of before: kept as one.
@@ -2262,6 +2269,9 @@ class TaskAgentSpace:
             # not on the event loop.
             sizes = [count_tokens(text) for _header, text, _cap, _is_index in kept]
 
+            # How many tokens of its text each part shows, as it stands.
+            shown = list(sizes)
+
             def part(position: int, cap: int) -> str:
                 header, text, _cap, is_index = kept[position]
                 if sizes[position] > cap:
@@ -2273,7 +2283,9 @@ class TaskAgentSpace:
                         text = "\n".join(lines)
                         if count_tokens(text) > cap:
                             text = ""
-                    text = f"{truncate_to_tokens(text, cap).rstrip()}\n{texts.SPACE_BRIEF_CUT_NOTE}".lstrip("\n")
+                    text = truncate_to_tokens(text, cap).rstrip()
+                    shown[position] = count_tokens(text)
+                    text = f"{text}\n{texts.SPACE_BRIEF_CUT_NOTE}".lstrip("\n")
                 return f"{header}\n{text}"
 
             parts = [part(position, cap) for position, (_header, _text, cap, _is_index) in enumerate(kept)]
@@ -2299,8 +2311,11 @@ class TaskAgentSpace:
                 over = count_tokens(brief) - SPACE_BRIEF_MAX_TOKENS
                 if over <= 0:
                     break
-                used = min(kept[position][2], sizes[position])
-                parts[position] = part(position, max(0, used - over - _BRIEF_CUT_ROOM))
+                # Off what the part shows, not off its cap: an index that
+                # was over its cap ends at a whole line some way below it,
+                # and a cap brought down by less than that leaves it as
+                # long as it was, with the rules to give way in its place.
+                parts[position] = part(position, max(0, shown[position] - over - _BRIEF_CUT_ROOM))
                 brief = whole()
             return truncate_to_tokens(brief, SPACE_BRIEF_MAX_TOKENS)
 
@@ -2330,7 +2345,11 @@ class TaskAgentSpace:
         task agent may well be working on.
 
         A path with steps that lead nowhere in it is seen as well: ``/./``,
-        and ``/name/..``, which is read as the path without the two.
+        and ``/name/..``, which is read as the path without the two. So is
+        one written from the home directory when the space is below it:
+        ``~/...``, ``$HOME/...``, ``%USERPROFILE%``, as a shell or
+        PowerShell writes it. That is how a command is most likely to
+        write a path below the user's own directory.
 
         Not seen: a path relative to where the command runs, one that is
         put together from variables or wildcards, one whose spaces are
@@ -2353,6 +2372,23 @@ class TaskAgentSpace:
                 text = shorter
             return text
 
+        def from_home(place: Path) -> set[str]:
+            # The place as it is written from the home directory, when it is below it.
+            forms: set[str] = set()
+            try:
+                homes = {Path.home(), Path.home().resolve()}
+            except (OSError, RuntimeError):
+                return forms
+            for home in homes:
+                try:
+                    below = place.relative_to(home).as_posix()
+                except ValueError:
+                    continue
+                if below in ("", "."):
+                    continue
+                forms.update(plain(f"{name}/{below}").rstrip("/") for name in _HOME_NAMES)
+            return forms
+
         def work() -> bool:
             root = self._paths().root
             places = {root}
@@ -2367,7 +2403,7 @@ class TaskAgentSpace:
             texts = {said, straight(said)}
             for place in places:
                 written = plain(str(place)).rstrip("/")
-                for form in {written, straight(written)}:
+                for form in {written, straight(written), *from_home(place)}:
                     if not form:
                         continue
                     if any(form in text for text in texts):
