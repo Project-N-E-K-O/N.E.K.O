@@ -120,10 +120,11 @@ def backup(repo, destination=None):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
-    # Ignore user diff settings (external helpers, textconv, colour, prefixes)
-    # so both patches stay restorable with plain git apply.
+    # Ignore user diff settings (external helpers, textconv, colour, prefixes,
+    # context size) so both patches stay restorable with plain git apply.
     patch_options = [
         "--binary",
+        "--unified=3",
         "--no-ext-diff",
         "--no-textconv",
         "--no-color",

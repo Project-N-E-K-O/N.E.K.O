@@ -526,12 +526,19 @@ class MaintenanceTests(unittest.TestCase):
             ("color.ui", "always"),
             ("diff.noprefix", "true"),
             ("diff.mnemonicPrefix", "true"),
+            ("diff.context", "0"),
         ):
             self.git("config", key, value)
         path = self.repo / "app/main.py"
-        path.write_text("staged\n")
+        lines = [f"line {number}\n" for number in range(9)]
+        path.write_text("".join(lines))
+        self.commit("multi-line base")
+        # Change a middle line so a zero-context patch would not apply.
+        staged = "".join(lines[:4] + ["staged\n"] + lines[5:])
+        working = "".join(lines[:4] + ["working\n"] + lines[5:])
+        path.write_text(staged)
         self.git("add", "app/main.py")
-        path.write_text("working\n")
+        path.write_text(working)
         saved = maintain.backup(self.repo, self.root / "backups")
         restored = self.root / "restored"
         subprocess.run(
@@ -548,9 +555,9 @@ class MaintenanceTests(unittest.TestCase):
             )
         self.assertEqual(
             subprocess.check_output(["git", "show", ":app/main.py"], cwd=restored),
-            b"staged\n",
+            staged.encode(),
         )
-        self.assertEqual((restored / "app/main.py").read_text(), "working\n")
+        self.assertEqual((restored / "app/main.py").read_text(), working)
 
     def test_hidden_index_flags_are_rejected_before_backup_or_verify(self):
         destination = self.root / "backups"
