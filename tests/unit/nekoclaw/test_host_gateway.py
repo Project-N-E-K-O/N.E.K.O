@@ -2056,6 +2056,23 @@ async def test_the_provider_is_told_when_a_call_of_a_browser_tool_is_over_howeve
     assert builtin_host.provider.over == [1, 3]
 
 
+async def test_a_provider_that_fails_when_told_of_the_agreement_does_not_fail_the_call(builtin_host, monkeypatch):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    builtin_host.permissions.set_asker(Asker("once"))
+
+    def broken(self: Any) -> None:
+        raise RuntimeError("the provider is in a bad way")
+
+    monkeypatch.setattr(Builtins, "browser_reopen_agreed", broken)
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True)
+    builtin_host.provider.closed_by_user = True
+
+    result = await _call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"})
+
+    # The call goes on to the provider, whose own word it then is.
+    assert result.get("isError") is not True and len(builtin_host.provider.calls) == 1
+
+
 async def test_the_browser_forbidden_in_the_settings_while_the_user_was_asked_stays_closed(builtin_host):
     await builtin_host.permission_store.set_mode("browser", "allow")
 

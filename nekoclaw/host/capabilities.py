@@ -467,8 +467,12 @@ class CapabilityRegistry:
     def browser_reopen_agreed(self) -> None:
         """Tell the provider that the user agreed to the browser being opened again."""
         agreed = getattr(self._builtins, "browser_reopen_agreed", None)
-        if agreed is not None:
+        if agreed is None:
+            return
+        try:
             agreed()
+        except Exception:  # noqa: BLE001 - the call is then refused by the browser tools, and says so
+            logger.warning("telling the provider that the browser may be opened again failed", exc_info=True)
 
     def browser_reopen_agreement_over(self) -> None:
         """Tell the provider that the call the user agreed for is over."""
