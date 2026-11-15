@@ -193,8 +193,11 @@ class BrowserTools:
                 # However the call ended, stopped included: what it held of
                 # the page is let go of (see ``OBJECT_GROUP``). Under the
                 # lock, so that the next call's handles are not among them.
-                await self._session.release_handles()
+                # (What the call was let do for the user's agreement is over
+                # first: nothing is awaited before that, so a call that is
+                # stopped once more while it lets go still ends it.)
                 self._session.reopening_over()
+                await self._session.release_handles()
 
     async def released(self) -> None:
         """Another commission may use the browser next: the uids handed out so far stop working."""
@@ -240,7 +243,7 @@ class BrowserTools:
         self._session.no_longer_wanted()
 
     def closed_by_user(self) -> bool:
-        """Whether the user closed the browser and has not agreed to another; see ``BrowserSession.closed_by_user``."""
+        """Whether the user closed the browser and it has no window since; see ``BrowserSession.closed_by_user``."""
         return self._session.closed_by_user
 
     def reopen_agreed(self) -> int:

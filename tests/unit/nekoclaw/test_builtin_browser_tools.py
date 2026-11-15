@@ -1134,6 +1134,25 @@ async def test_the_window_that_could_not_be_given_back_leaves_the_browser_closed
     assert await call(tools, "list_pages") == BuiltinOutcome(False, CLOSED_BY_USER)
 
 
+async def test_what_the_agreed_call_was_let_do_is_over_even_when_it_is_stopped_while_it_lets_go(
+    tools: BrowserTools, world: BrowserWorld, monkeypatch: Any
+) -> None:
+    await on_the_order_form(tools)
+    for page in list(world.browser.pages.values()):
+        world.browser.remove_page(page)
+    world.browser.refuse("Target.createTarget", "Not supported")
+
+    async def stopped_again() -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(tools.session, "release_handles", stopped_again)
+
+    with pytest.raises(asyncio.CancelledError):
+        await tools.call(TOOL_PREFIX + "list_pages", {}, reopen_agreement=tools.reopen_agreed())
+
+    assert tools.session._reopening is False
+
+
 async def test_the_page_the_agreed_call_asks_for_is_opened_next_to_the_blank_one(tools: BrowserTools, world: BrowserWorld) -> None:
     await on_the_order_form(tools)
     for page in list(world.browser.pages.values()):

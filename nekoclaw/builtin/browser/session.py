@@ -400,9 +400,9 @@ class BrowserSession:
         self._reopen_agreement = 0
         # True while such a call is under way and no window has come of it.
         self._reopening = False
-        # True from when what such a browser left was cleared away
-        # (``close``) until the user agrees: with nothing of it held any
-        # more, nothing else says that it was the user who closed it.
+        # True where nothing else says that it was the user who closed the
+        # browser: what it left was cleared away (``close``), or a call
+        # they agreed to is opening it. Until there is a window again.
         self._closed_by_user_noted = False
         # Whether the tabs of the browser that is connected to have been
         # looked up yet: until then, none being known does not mean that
@@ -581,11 +581,13 @@ class BrowserSession:
                 # extension greets its user with) may be there before this
                 # connection is.
                 await self._keep_what_was_open(connection, targets.get("targetInfos") or ())
-            if had_a_window and not self._tabs and browser.owned and browser.headless is not True:
+            if was_running and had_a_window and not self._tabs and browser.owned and browser.headless is not True:
                 # Its windows were there a moment ago, and are closed now:
                 # the user closed them while it was being connected to. No
                 # page is opened in their place. The call ends here, and
-                # the next one asks them (``closed_by_user``).
+                # the next one asks them (``closed_by_user``). Not for one
+                # that was started just now: what a browser does with its
+                # first tab as it comes up is not the user closing a window.
                 raise BrowserError(
                     "The browser was closed by the user while it was being connected to. Nothing was done. Call "
                     "the tool again when you still need the browser: the user is then asked whether it may be "

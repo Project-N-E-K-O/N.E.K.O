@@ -464,7 +464,7 @@ class CapabilityRegistry:
         )
 
     def browser_closed_by_user(self) -> bool:
-        """Whether the user closed the browser the built-in tools started and has not agreed to another. Must not block."""
+        """Whether the user closed the browser the built-in tools started and it has no window since. Must not block."""
         closed = getattr(self._builtins, "browser_closed_by_user", None)
         if closed is None:
             return False

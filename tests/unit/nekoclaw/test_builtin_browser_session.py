@@ -4131,6 +4131,32 @@ async def test_a_browser_whose_windows_are_closed_while_it_is_being_connected_to
     assert session.connected and session.closed_by_user is True
 
 
+async def test_a_browser_that_was_started_just_now_and_drops_its_first_tab_gets_a_page_all_the_same(
+    make_session: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.unit.nekoclaw.fake_cdp_browser import FakeConnection
+
+    send = FakeConnection.send
+    dropped: list[int] = []
+
+    async def first_tab_dropped(self: Any, method: str, params: Any = None, **options: Any) -> dict[str, Any]:
+        if method == "Target.attachToTarget" and not dropped:
+            # A browser that puts another tab in the place of the one it came up with.
+            dropped.append(1)
+            for page in list(world.browser.pages.values()):
+                world.browser.remove_page(page)
+        return await send(self, method, params, **options)
+
+    monkeypatch.setattr(FakeConnection, "send", first_tab_dropped)
+    session = make_session(own_ports=lambda: OWN)
+
+    await session.start()
+
+    # Not taken for the user closing a window: the start goes through, with a page to work on.
+    assert dropped == [1] and len(world.browser.of("Target.createTarget")) == 1
+    assert session.connected and len(session.pages()) == 1 and session.closed_by_user is False
+
+
 @pytest.mark.parametrize("settings", [{"headless": True}, {"mode": "attach"}])
 async def test_a_browser_nobody_could_have_closed_or_the_users_own_gets_its_page_all_the_same(
     make_session: Any, world: BrowserWorld, monkeypatch: pytest.MonkeyPatch, settings: dict[str, Any]

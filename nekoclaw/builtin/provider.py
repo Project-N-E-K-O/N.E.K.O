@@ -357,7 +357,7 @@ class BuiltinToolProvider:
             await self._browser.aclose()
 
     def browser_closed_by_user(self) -> bool:
-        """Whether the user closed the browser this process started, and has not agreed to it being opened again.
+        """Whether the user closed the browser this process started, and it has no window since.
 
         Asked by the host before a call of the browser tools: it puts the
         question to the user then (``browser_reopen_agreed``).
