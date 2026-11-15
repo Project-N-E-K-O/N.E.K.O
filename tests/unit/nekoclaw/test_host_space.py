@@ -3570,7 +3570,7 @@ def test_a_file_saved_over_with_what_is_not_text_while_it_could_not_be_looked_at
     assert path.read_bytes() == b"\xff\xfe\x00"
 
 
-def test_a_file_that_went_while_it_could_not_be_looked_at_is_written_again(space, root, monkeypatch):
+def test_a_file_that_was_taken_away_while_it_could_not_be_looked_at_is_not_brought_back(space, root, monkeypatch):
     root.mkdir(parents=True)
     path = root / "notes.md"
     path.write_text("one\n", encoding="utf-8")
@@ -3584,7 +3584,82 @@ def test_a_file_that_went_while_it_could_not_be_looked_at_is_written_again(space
     changed = space._edit_text(path, change)
 
     monkeypatch.undo()
-    assert changed is True and len(reads) >= 7
-    # Not there any more when it was read again: the change is made to an empty file.
-    assert given == ["one\n", ""]
-    assert path.read_text(encoding="utf-8") == "more\n"
+    # Written, and then taken away: the change is not made again to an empty file,
+    # which would bring back a piece of what was removed.
+    assert changed is True and len(reads) == 5
+    assert given == ["one\n"]
+    assert not path.exists()
+
+
+# ---------------------------------------------------------------------------
+# The thirty-seventh review round
+# ---------------------------------------------------------------------------
+
+
+async def test_the_line_of_a_project_archived_again_without_a_summary_does_not_point_at_the_summary_of_before(space, root):
+    import re
+
+    await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Stack", content="Flask.")
+    await space.archive_project("Budget app", summary="OLD summary, v1.", description="v1")
+    await space.use_project("Budget app")
+    # Brought back with the summary it was archived with.
+    assert (root / "projects" / "Budget app" / "SUMMARY.md").read_text(encoding="utf-8") == "OLD summary, v1.\n"
+    await space.file_entry("Budget app", title="Database", content="SQLite.")
+
+    archived = await space.archive_project("Budget app", description="v2")
+
+    year = archived.archive_year
+    home = root / "archive" / year / "Budget app"
+    assert (root / "MEMORY.md").read_text(encoding="utf-8").splitlines() == [
+        f"- [archived project: Budget app](<archive/{year}/Budget app/MEMORY.md>) — v2"
+    ]
+    assert "(memory/database.md)" in (home / "MEMORY.md").read_text(encoding="utf-8")
+    # The summary of before is kept, under a name that says of when it is.
+    assert not (home / "SUMMARY.md").exists()
+    dated = sorted(item.name for item in home.glob("SUMMARY*"))
+    assert len(dated) == 1 and re.fullmatch(r"SUMMARY-\d{4}-\d{2}-\d{2}\.md", dated[0])
+    assert (home / dated[0]).read_text(encoding="utf-8") == "OLD summary, v1.\n"
+
+
+async def test_the_line_goes_by_the_summary_of_this_archiving_when_the_one_of_before_cannot_be_renamed(
+    space, root, monkeypatch
+):
+    await space.touch_project("Budget app")
+    await space.archive_project("Budget app", summary="OLD summary, v1.", description="v1")
+    await space.use_project("Budget app")
+    rename = Path.rename
+
+    def held(self, target):
+        if self.name == "SUMMARY.md":
+            raise PermissionError(13, "in use")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", held)
+
+    archived = await space.archive_project("Budget app", description="v2")
+
+    monkeypatch.undo()
+    year = archived.archive_year
+    home = root / "archive" / year / "Budget app"
+    # Archived all the same. The file of before is still there, and the line does not point at it.
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "OLD summary, v1.\n"
+    assert (root / "MEMORY.md").read_text(encoding="utf-8").splitlines() == [
+        f"- [archived project: Budget app](<archive/{year}/Budget app/MEMORY.md>) — v2"
+    ]
+
+
+async def test_summaries_of_before_set_aside_on_one_day_each_keep_a_name_of_their_own(space, root):
+    await space.touch_project("Budget app")
+    for text in ("first", "second"):
+        await space.archive_project("Budget app", summary=text)
+        await space.use_project("Budget app")
+        archived = await space.archive_project("Budget app")
+        await space.use_project("Budget app")
+
+    home = root / "projects" / "Budget app"
+    assert archived is not None and not (home / "SUMMARY.md").exists()
+    # The shorter name first: the one without a number.
+    kept = sorted((item.name for item in home.glob("SUMMARY*")), key=len)
+    assert len(kept) == 2 and kept[0].removesuffix(".md") + "-2.md" == kept[1]
+    assert [(home / name).read_text(encoding="utf-8") for name in kept] == ["first\n", "second\n"]

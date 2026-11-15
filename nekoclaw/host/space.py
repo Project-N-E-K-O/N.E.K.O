@@ -665,12 +665,15 @@ class TaskAgentSpace:
         Read once more. When it holds what was written, the change is in
         it and is not made a second time: not every change is one that
         leaves alone a text that has it already. One that still cannot be
-        read (held by another program) is taken to hold it. One that is
-        not text, or is gone, does not: something else happened to it.
+        read (held by another program) is taken to hold it. So is one that
+        is gone: it was taken away after it was written, and making the
+        change again to an empty file would bring back a piece of what was
+        removed. One that is not text does not hold it: something else was
+        saved over it.
         """
         try:
             there = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
-        except (UnicodeError, FileNotFoundError):
+        except UnicodeError:
             return False
         except OSError:
             return True
@@ -1104,10 +1107,10 @@ class TaskAgentSpace:
                     else:
                         line = self._index_line_in(self._text_to_change(paths.index(source)), was)
                 except OSError:
-                    # The index cannot be read any more, keeps being saved,
-                    # or was written and could not be read back: the entry
-                    # stays there as well. A line that was taken out is put
-                    # back, and it is the line that goes along.
+                    # The index cannot be read any more, or keeps being
+                    # saved: the entry stays there as well. A line that was
+                    # taken out is put back, and it is the line that goes
+                    # along.
                     same = False
                     if taken:
                         line = taken[0]
@@ -1733,6 +1736,8 @@ class TaskAgentSpace:
         try:
             if summary.strip():
                 self._put_text(source / paths.SUMMARY_NAME, redact(summary).strip() + "\n")
+            else:
+                self._set_old_summary_aside(source)
             root.mkdir(parents=True, exist_ok=True)
             target = root / source.name
             number = 2
@@ -1778,8 +1783,11 @@ class TaskAgentSpace:
             # At its summary. One archived without a summary (no model, or
             # none that gave one) has no such file: its line points at its
             # index, as the line of a project in use does, so that whoever
-            # follows it comes to the notes that were kept.
-            has_summary = (target / paths.SUMMARY_NAME).is_file()
+            # follows it comes to the notes that were kept. Told by the
+            # summary of this archiving, not by the file: a project that
+            # was brought back may still have the one it was archived
+            # with before.
+            has_summary = bool(summary.strip())
             archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME if has_summary else paths.INDEX_NAME}"
             self._index_swap(
                 paths.index(None),
@@ -1791,6 +1799,32 @@ class TaskAgentSpace:
             # The project is archived all the same; it is not said to have failed.
             logger.warning("a project was archived, but its line in the index of the space was not changed", exc_info=True)
         return archived
+
+    @staticmethod
+    def _set_old_summary_aside(directory: Path) -> None:
+        """Give the summary a project was archived with before another name, when it is archived without one now.
+
+        A project that was brought back keeps the summary it was archived
+        with then. Left under that name it would pass for the summary of
+        this archiving; under a name with its date it says what it is.
+        """
+        old = directory / SpacePaths.SUMMARY_NAME
+        try:
+            written = _date(old.stat().st_mtime)
+        except OSError:
+            # None there.
+            return
+        aside = old.with_name(f"{old.stem}-{written}{old.suffix}")
+        number = 2
+        while aside.exists():
+            aside = old.with_name(f"{old.stem}-{written}-{number}{old.suffix}")
+            number += 1
+        try:
+            old.rename(aside)
+        except OSError:
+            # Held by another program. It stays, and the line of the project
+            # does not point at it.
+            logger.warning("the summary a project was archived with before could not be given another name", exc_info=True)
 
     async def archive_project(
         self,
