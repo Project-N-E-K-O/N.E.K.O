@@ -52,14 +52,7 @@ from typing import Any
 from nekoclaw.host.decision import TIER_ARCHIVE, TIER_REVIEW
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger, LedgerEvent
 from nekoclaw.host.paths import DEFAULT_PROJECT, TRANSCRIPT_NAME, safe_segment
-from nekoclaw.host.space import (
-    ENTRY_TYPES,
-    PROJECT_ARCHIVED,
-    Project,
-    SpaceError,
-    TaskAgentSpace,
-    normalize_name,
-)
+from nekoclaw.host.space import ENTRY_TYPES, Project, SpaceError, TaskAgentSpace
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +231,11 @@ class SpaceKeeper:
         self._tidying = False
         self._last_upkeep: float | None = None
         self._closed = False
+        # Projects whose record could not be written when a summary that
+        # came to nothing was to be counted. Left alone until the host is
+        # started again: asked about in every round otherwise, with nothing
+        # to say when to stop.
+        self._archive_unasked: set[str] = set()
 
     # -- listening --------------------------------------------------------
 
@@ -500,21 +498,17 @@ class SpaceKeeper:
             safe_segment(name, "project")
         except ValueError:
             return current
-        wanted = normalize_name(name)
-        # The active ones come first: an active project of the name wins.
-        for known in await self._space.list_projects():
-            if normalize_name(known.name) == wanted:
-                if known.status == PROJECT_ARCHIVED:
-                    return current
-                name = known.name
-                break
+        # Whether the name is an archived project's is looked at by the
+        # space, under its lock: a listing read here could be of a moment
+        # before the project was archived.
         project = await self._space.open_project(
             name,
             description=str(data.get("project_description") or ""),
             workdir=commission.workdir,
             at=commission.ended_at,
+            unless_archived=True,
         )
-        return project.name
+        return project.name if project is not None else current
 
     async def _keep_review(self, commission: Commission, data: dict[str, Any]) -> dict[str, Any]:
         """Keep what the model answered: the review, its entries, the project. Returns the ``review`` event."""
@@ -702,7 +696,7 @@ class SpaceKeeper:
         for project in idle:
             if moved >= SPACE_ARCHIVES_PER_UPKEEP:
                 break
-            if project.name in in_use:
+            if project.name in in_use or project.name in self._archive_unasked:
                 continue
             # A summary written in an earlier round, when the project could
             # not be moved (a file in it was held open): the space kept it
@@ -715,9 +709,17 @@ class SpaceKeeper:
             if ask:
                 asked += 1
                 data = await self._summarize(project)
-                if data is None and await self._space.note_archive_attempt(project.name) < SPACE_ARCHIVE_MAX_ATTEMPTS:
-                    # Left where it is; a later round asks again.
-                    continue
+                if data is None:
+                    try:
+                        attempts = await self._space.note_archive_attempt(project.name)
+                    except (SpaceError, OSError) as exc:
+                        # This project's trouble is not the next one's.
+                        logger.warning("an attempt to archive a project could not be counted (%s)", type(exc).__name__)
+                        self._archive_unasked.add(project.name)
+                        continue
+                    if attempts < SPACE_ARCHIVE_MAX_ATTEMPTS:
+                        # Left where it is; a later round asks again.
+                        continue
             summary = truncate_to_tokens(str((data or {}).get("summary") or "").strip(), 400)
             line = _cut((data or {}).get("line"), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
             # What the summary says holds beyond the project is filed when

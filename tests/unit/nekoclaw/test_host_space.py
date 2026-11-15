@@ -1372,6 +1372,80 @@ def test_at_every_step_of_a_move_to_another_volume_the_directory_is_whole_under_
     assert whole(target) and not source.exists()
 
 
+async def test_a_move_to_another_volume_cut_off_before_the_source_was_set_aside_leaves_the_project_in_use(
+    space, root, clock, monkeypatch
+):
+    import errno
+    import os
+
+    from nekoclaw.host.space import _move
+
+    await space.touch_project("Budget app", description="tracks spending", workdir="D:/w")
+    await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+    await space.file_entry("Budget app", title="Export", content="CSV with a BOM.")
+    year = "2027"
+    source, target = root / "projects" / "Budget app", root / "archive" / year / "Budget app"
+    target.parent.mkdir(parents=True)
+    rename = os.replace
+    stopped: list[bool] = []
+
+    class Stopped(BaseException):
+        """The process is gone: nothing after this happens."""
+
+    def other_volume_and_then_stopped(first, second):
+        if stopped:
+            raise Stopped()
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        if Path(second).name.startswith(".removing-"):
+            # Stopped right before the source is set aside: the copy has its name already.
+            stopped.append(True)
+            raise Stopped()
+        return rename(first, second)
+
+    monkeypatch.setattr(os, "replace", other_volume_and_then_stopped)
+    with pytest.raises(Stopped):
+        _move(source, target)
+    monkeypatch.undo()
+
+    # Started again: the project is where it was, whole, and is the one in use.
+    again = TaskAgentSpace(lambda: SpacePaths(root), clock=clock)
+    assert [(item.name, item.status) for item in await again.list_projects()] == [
+        ("Budget app", "active"),
+        ("Budget app", "archived"),
+    ]
+    await again.use_project("Budget app")
+    assert sorted(entry.id for entry in await again.list_entries("Budget app")) == ["export", "stack"]
+    assert (await again.get_project("Budget app")).workdir == "D:/w"
+    assert "- [Stack](memory/stack.md)" in await again.brief("Budget app")
+
+    # It is archived later like any other, and what comes back then is that later one.
+    await again.file_entry("Budget app", title="Import", content="From CSV.")
+    clock.now += 86400
+    later = await again.archive_project("Budget app", summary="later")
+    assert (later.archive_year, later.directory) == (year, "Budget app-2")
+    await again.use_project("Budget app")
+    assert sorted(entry.id for entry in await again.list_entries("Budget app")) == ["export", "import", "stack"]
+
+
+async def test_opening_a_project_leaves_an_archived_one_archived_when_told_to(space, root):
+    await space.touch_project("Budget app", description="tracks spending")
+    archived = await space.archive_project("Budget app", summary="s")
+
+    assert await space.open_project("budget APP", unless_archived=True) is None
+
+    assert [(item.name, item.status, item.commissions) for item in await space.list_projects()] == [
+        ("Budget app", "archived", 1)
+    ]
+    assert not (root / "projects").exists() or list((root / "projects").iterdir()) == []
+    assert (root / "archive" / archived.archive_year / "Budget app").is_dir()
+    # A new name is made, an active one is used, whatever was said about archived ones.
+    assert (await space.open_project("Blog", unless_archived=True)).name == "Blog"
+    assert (await space.open_project("BLOG", unless_archived=True)).commissions == 2
+    # Without it the archived one comes back, as before.
+    assert (await space.open_project("budget app")).status == "active"
+
+
 async def test_of_two_archived_projects_of_a_name_the_one_archived_last_comes_back(space, root, clock):
     await space.touch_project("Blog")
     await space.file_entry("Blog", title="Old stack", content="Jekyll.")

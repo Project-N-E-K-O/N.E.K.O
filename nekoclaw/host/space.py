@@ -1133,20 +1133,35 @@ class TaskAgentSpace:
         await self._write(work)
 
     async def open_project(
-        self, name: str, *, description: str = "", workdir: str | None = None, at: float | None = None
-    ) -> Project:
+        self,
+        name: str,
+        *,
+        description: str = "",
+        workdir: str | None = None,
+        at: float | None = None,
+        unless_archived: bool = False,
+    ) -> Project | None:
         """Return the project of a name for a commission filed under it now.
 
-        One that is archived is moved back, one that is not there is made;
-        the commission is counted for it.
+        A project of the name, however the name is spelled, is used; one
+        that is not there is made; the commission is counted for it. One
+        that is archived is moved back, or, with ``unless_archived``, left
+        where it is and None is returned. Looking and what follows are one
+        step under the lock archiving runs under, so a project archived a
+        moment ago is seen as archived.
         """
         safe_segment(name, "project")
 
-        def work() -> Project:
-            if not self._paths().project_dir(name).is_dir():
-                archived = self._archived_of(name)
-                if archived is not None:
-                    return self._ensure_project(self._restore(archived).name, at=at)
+        def work() -> Project | None:
+            wanted = normalize_name(name)
+            active = next((item for item in self._active_projects() if normalize_name(item.name) == wanted), None)
+            if active is not None:
+                return self._ensure_project(active.name, description=description, workdir=workdir, at=at)
+            archived = self._archived_of(name)
+            if archived is not None:
+                if unless_archived:
+                    return None
+                return self._ensure_project(self._restore(archived).name, at=at)
             return self._ensure_project(name, description=description, workdir=workdir, at=at)
 
         return await self._write(work)

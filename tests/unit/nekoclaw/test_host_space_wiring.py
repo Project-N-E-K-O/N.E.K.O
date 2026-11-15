@@ -619,8 +619,10 @@ async def test_a_shell_command_that_names_the_space_or_runs_inside_it_is_refused
     named = await decide(f"printf 'x' >> '{root.as_posix()}/MEMORY.md'", tmp_path)
     relative = await decide("echo x > nekoclaw/task_agent_space/AGENTS.md", tmp_path)
     inside = await decide("echo x > AGENTS.md", root / "memory")
+    # From the directory right above the space, by a path relative to it.
+    above = await decide("printf x > task_agent_space/AGENTS.md", tmp_path / "nekoclaw")
 
-    for refused in (named, relative, inside):
+    for refused in (named, relative, inside, above):
         assert refused["allow"] is False
         assert refused["reason"].startswith("a command that names the task agent space, or runs inside it, is not run")
         assert "note_lesson" in refused["reason"]

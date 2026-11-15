@@ -1668,3 +1668,59 @@ async def test_an_answer_that_cannot_be_read_is_said_in_the_log_without_what_it_
     said = [record.getMessage() for record in caplog.records if "could not be read" in record.getMessage()]
     assert len(said) == 1 and commission.id in said[0] and "characters came back" in said[0]
     assert not any("cut off" in record.getMessage() for record in caplog.records)
+
+
+async def test_a_review_does_not_bring_back_a_project_archived_after_the_projects_were_listed(world, monkeypatch):
+    await world.space.touch_project("Budget app")
+    stale = await world.space.list_projects()
+    await world.space.archive_project("Budget app", summary="s")
+    listing = world.space.list_projects
+
+    async def listed_a_moment_ago(*args: Any, **kwargs: Any) -> Any:
+        # What was read before the project was archived: it still shows as active.
+        return stale if not args and not kwargs else await listing(*args, **kwargs)
+
+    monkeypatch.setattr(world.space, "list_projects", listed_a_moment_ago)
+    world.llm.answers[TIER_REVIEW] = [{"review": "It went on with it.", "project": "Budget app"}]
+
+    commission = await world.finished("go on with that thing")
+
+    monkeypatch.undo()
+    assert [(item.name, item.status) for item in await world.space.list_projects() if item.name != DEFAULT_PROJECT] == [
+        ("Budget app", "archived")
+    ]
+    assert (await world.space.read_review(commission.id)).project == DEFAULT_PROJECT
+
+
+async def test_a_count_that_cannot_be_written_does_not_end_the_round_and_is_not_asked_about_again(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    await world.space.touch_project("Alpha")
+    await world.space.touch_project("Beta")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    # The model gives nothing usable for Alpha, and Alpha's record can be read but not replaced.
+    world.llm.answers[TIER_ARCHIVE] = [RuntimeError("no connection"), {"summary": "A project.", "line": "a project"}]
+    note = world.space.note_archive_attempt
+
+    async def cannot_write(name: str) -> int:
+        if name == "Alpha":
+            raise PermissionError(13, "the record cannot be replaced")
+        return await note(name)
+
+    monkeypatch.setattr(world.space, "note_archive_attempt", cannot_write)
+
+    await world.keeper.tidy(force=True)
+
+    assert [(item.name, item.status) for item in await world.space.list_projects()] == [
+        ("Alpha", "active"),
+        ("Beta", "archived"),
+    ]
+    assert world.llm.count(TIER_ARCHIVE) == 2
+    # With nothing to say when to stop, Alpha is left alone until the host is started again.
+    await world.keeper.tidy(force=True)
+    await world.keeper.tidy(force=True)
+    assert world.llm.count(TIER_ARCHIVE) == 2
+    assert [(item.name, item.status) for item in await world.space.list_projects()] == [
+        ("Alpha", "active"),
+        ("Beta", "archived"),
+    ]
