@@ -511,6 +511,12 @@ class TaskAgentSpace:
         if not self._edit_text(index, change):
             self._index_add(index, line, target)
 
+    def _index_line_of(self, index: Path, target: str) -> str | None:
+        """Return the line of an index that points at ``target``, as it is written there, or None."""
+        marks = _index_marks(target)
+        text = self._read_text(index) or ""
+        return next((item for item in text.split(chr(10)) if any(mark in item for mark in marks)), None)
+
     def _index_remove(self, index: Path, target: str) -> None:
         marks = _index_marks(target)
 
@@ -613,18 +619,23 @@ class TaskAgentSpace:
 
             def add(text: str) -> str:
                 document = _parse_document(text)
-                if content in document.body:
+                fresh = content not in document.body
+                if fresh:
+                    addition = f"## {today}\n\n{content}"
+                    document.body = f"{document.body.rstrip()}\n\n{addition}\n"
+                if not document.has_meta:
+                    return document.body if fresh else text
+                # Who filed it is noted even when the text is there already:
+                # an entry two commissions filed is not one commission's own.
+                known = [item.strip() for item in document.get("sources").split(",") if item.strip()]
+                another = bool(source) and source not in known
+                if not fresh and not another:
                     return text
-                addition = f"## {today}\n\n{content}"
-                document.body = f"{document.body.rstrip()}\n\n{addition}\n"
-                if document.has_meta:
+                if fresh:
                     document.set("updated", today)
-                    if source:
-                        known = [item.strip() for item in document.get("sources").split(",") if item.strip()]
-                        if source not in known:
-                            document.set("sources", ", ".join([*known, source]))
-                    return _render_document(document)
-                return document.body
+                if another:
+                    document.set("sources", ", ".join([*known, source]))
+                return _render_document(document)
 
             self._edit_text(path, add)
             # Its line in the index is left as it is (the user may have
@@ -668,14 +679,17 @@ class TaskAgentSpace:
         ``feedback`` never arrives here: it is a task preference.
         """
         scope = str(lesson.get("scope") or "project").strip().lower()
-        project = None if scope == "global" else (commission.project or DEFAULT_PROJECT)
+        kind = str(lesson.get("category") or "")
+        # How a project stands is the project's own, whatever scope came with it.
+        everywhere = scope == "global" and _entry_type(kind) != "progress"
+        project = None if everywhere else (commission.project or DEFAULT_PROJECT)
         try:
             entry, created = await self._write(
                 lambda: self._file_entry(
                     project,
                     title=str(lesson.get("title") or ""),
                     content=str(lesson.get("content") or ""),
-                    kind=str(lesson.get("category") or ""),
+                    kind=kind,
                     source=commission.id,
                 )
             )
@@ -721,7 +735,9 @@ class TaskAgentSpace:
         it filed while it was one of ``_daily`` goes with it, or the
         project's index would not have it. An entry other commissions
         added to stays where it is, and so does every entry of theirs.
-        The files are moved as they are, each under a name that is free.
+        The files are moved as they are, each under a name that is free,
+        and so are their lines in the index: a line the user reworded goes
+        along as it is, but for the file it points at.
         """
 
         def work() -> list[str]:
@@ -740,7 +756,14 @@ class TaskAgentSpace:
                 # Written where it goes before it is removed where it was.
                 self._put_text(destination / f"{name}.md", text)
                 link = f"{paths.MEMORY_DIR}/{name}.md"
-                self._index_add(paths.index(target), _index_line(entry.title, link, entry.description), link)
+                was = f"{paths.MEMORY_DIR}/{entry.id}.md"
+                line = self._index_line_of(paths.index(source), was)
+                if line is None:
+                    line = _index_line(entry.title, link, entry.description)
+                else:
+                    for mark in _index_marks(was):
+                        line = line.replace(mark, f"]({_link(link)})")
+                self._index_add(paths.index(target), line, link)
                 try:
                     old.unlink()
                 except OSError:
@@ -806,22 +829,28 @@ class TaskAgentSpace:
         def work() -> Entry | None:
             scope = self._scope(project, archive_year)
             path = scope / SpacePaths.MEMORY_DIR / f"{safe_segment(entry_id)}.md"
-            text = self._read_text(path)
-            if text is None:
+            if not path.is_file():
                 return None
-            document = _parse_document(text)
-            if not document.has_meta:
-                document = _Document(meta=[("name", path.stem)], body=document.body, has_meta=True)
-            if title is not None and _one_line(title):
-                document.set("name", _one_line(title))
-            if description is not None:
-                document.set("description", _one_line(description))
-            if kind is not None:
-                document.set("type", _entry_type(kind))
-            if content is not None:
-                document.body = content
-            document.set("updated", _date(self._clock()))
-            self._put_text(path, _render_document(document))
+
+            def change(text: str) -> str:
+                document = _parse_document(text)
+                if not document.has_meta:
+                    document = _Document(meta=[("name", path.stem)], body=document.body, has_meta=True)
+                if title is not None and _one_line(title):
+                    document.set("name", _one_line(title))
+                if description is not None:
+                    document.set("description", _one_line(description))
+                if kind is not None:
+                    document.set("type", _entry_type(kind))
+                if content is not None:
+                    document.body = content
+                document.set("updated", _date(self._clock()))
+                return _render_document(document)
+
+            # Made to the file as it is at the moment it is replaced: what
+            # was saved from an editor meanwhile stays, but for what is
+            # changed here.
+            self._edit_text(path, change)
             entry = self._entry_from(path, project, with_content=True)
             if entry is not None and (title is not None or description is not None):
                 target = f"{SpacePaths.MEMORY_DIR}/{entry.id}.md"
@@ -1106,7 +1135,13 @@ class TaskAgentSpace:
             rank = (len(needle), 1 if project.status == PROJECT_ACTIVE else 0, project.last_commission_at)
             if best is None or rank > best[0]:
                 best = (rank, project)
-        return best[1] if best is not None else None
+        if best is None:
+            return None
+        project = best[1]
+        if project.status == PROJECT_ARCHIVED:
+            # Of several archived projects of the name, the one archived last.
+            return self._archived_of(project.name) or project
+        return project
 
     def _restore(self, project: Project) -> Project:
         """Move an archived project back among the projects."""

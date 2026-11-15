@@ -240,6 +240,12 @@ class SpaceKeeper:
         # started again: asked about in every round otherwise, with nothing
         # to say when to stop.
         self._archive_unasked: set[str] = set()
+        # What a model wrote for a project that could not be moved then:
+        # (the last_commission_at it was written at, the summary, the line).
+        # The space keeps that in the project's record; this is for when the
+        # record cannot be written either, so that the model is still asked
+        # once and not once a round.
+        self._summaries: dict[str, tuple[float, str, str]] = {}
 
     # -- listening --------------------------------------------------------
 
@@ -720,7 +726,17 @@ class SpaceKeeper:
             # not be moved (a file in it was held open): the space kept it
             # and uses it, so the model is asked once, not once a round.
             kept = project.kept_summary() is not None
-            ask = not kept and self._llm is not None and project.archive_attempts < SPACE_ARCHIVE_MAX_ATTEMPTS
+            held = self._summaries.get(project.name)
+            if held is not None and (kept or held[0] != project.last_commission_at):
+                # In the record after all, or the project was used since.
+                del self._summaries[project.name]
+                held = None
+            ask = (
+                not kept
+                and held is None
+                and self._llm is not None
+                and project.archive_attempts < SPACE_ARCHIVE_MAX_ATTEMPTS
+            )
             if ask and asked >= SPACE_ARCHIVES_PER_UPKEEP:
                 continue
             data = None
@@ -740,6 +756,10 @@ class SpaceKeeper:
                         continue
             summary = truncate_to_tokens(str((data or {}).get("summary") or "").strip(), 400)
             line = _cut((data or {}).get("line"), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
+            if held is not None:
+                _written_at, summary, line = held
+            elif summary:
+                self._summaries[project.name] = (project.last_commission_at, summary, line)
             # What the summary says holds beyond the project is filed when
             # the summary is written, whether or not the project then moves:
             # a later try uses the summary that was kept and asks nothing,
@@ -778,6 +798,7 @@ class SpaceKeeper:
                 # kept the summary for the next try.
                 continue
             moved += 1
+            self._summaries.pop(project.name, None)
             logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary) or kept)
 
     def _ended_long_ago(

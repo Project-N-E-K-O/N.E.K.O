@@ -1397,8 +1397,9 @@ def test_at_every_step_of_a_move_to_another_volume_the_directory_is_whole_under_
     assert whole(target) and not source.exists()
 
 
+@pytest.mark.parametrize("named", ["taken up again", "in what was dispatched"])
 async def test_a_move_to_another_volume_cut_off_before_the_source_was_set_aside_leaves_the_project_in_use(
-    space, root, clock, monkeypatch
+    space, root, clock, monkeypatch, named
 ):
     import errno
     import os
@@ -1449,7 +1450,12 @@ async def test_a_move_to_another_volume_cut_off_before_the_source_was_set_aside_
     clock.now += 86400
     later = await again.archive_project("Budget app", summary="later")
     assert (later.archive_year, later.directory) == (year, "Budget app-2")
-    await again.use_project("Budget app")
+    # No commission was filed in between, so both archived ones were used last at the same time.
+    if named == "taken up again":
+        await again.use_project("Budget app")
+    else:
+        back = await again.assign_project(_commission(dispatch_text="go on with the budget app"))
+        assert (back.name, back.status) == ("Budget app", "active")
     assert sorted(entry.id for entry in await again.list_entries("Budget app")) == ["export", "import", "stack"]
 
 
@@ -1508,3 +1514,102 @@ async def test_a_link_to_a_project_with_a_plain_name_is_written_as_it_is(space, 
     await space.touch_project(name)
 
     assert (root / "MEMORY.md").read_text(encoding="utf-8") == f"- [project: {name}](projects/{name}/MEMORY.md)\n"
+
+
+# ---------------------------------------------------------------------------
+# The twelfth review round
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("category", ["progress", " Progress "])
+async def test_how_a_project_stands_is_kept_in_the_project_whatever_scope_it_came_with(space, root, category):
+    kept = await space.submit(
+        _commission(project="Budget app"), _lesson("Where it stands", "The export is half done.", category, "global")
+    )
+
+    assert "project Budget app" in kept
+    assert await space.list_entries() == []
+    (entry,) = await space.list_entries("Budget app")
+    assert (entry.id, entry.type) == ("where-it-stands", "progress")
+    # Anything else that is for every project still goes there.
+    await space.submit(_commission(project="Budget app"), _lesson("Use uv", "Run Python through uv.", "lesson", "global"))
+    assert [item.id for item in await space.list_entries()] == ["use-uv"]
+
+
+async def test_what_the_user_saves_while_an_entry_is_changed_is_not_written_over(space, root):
+    await space.file_entry(None, title="Stack", content="Flask.")
+    path = root / "memory" / "stack.md"
+    real = space._signature
+    saved = {"done": False}
+
+    def signature(checked):
+        if Path(checked) == path:
+            if getattr(signature, "seen", False) and not saved["done"]:
+                # Right before the file is replaced: the user saves another text from an editor.
+                saved["done"] = True
+                path.write_text(path.read_text(encoding="utf-8").replace("Flask.", "FastAPI now."), encoding="utf-8")
+            signature.seen = True
+        return real(checked)
+
+    space._signature = signature
+
+    entry = await space.edit_entry("stack", title="The stack")
+
+    assert saved["done"]
+    assert (entry.title, entry.content.strip()) == ("The stack", "FastAPI now.")
+    assert "- [The stack](memory/stack.md)" in (root / "MEMORY.md").read_text(encoding="utf-8")
+
+
+async def test_changing_an_entry_that_is_not_there_makes_nothing(space, root):
+    assert await space.edit_entry("nothing", title="x") is None
+    assert not root.exists()
+
+
+async def test_who_filed_an_entry_is_noted_even_when_its_text_is_there_already(space, root, clock):
+    first, second = _commission(id="c-first"), _commission(id="c-second")
+    await space.submit(first, _lesson("Dates of photos", "Use the EXIF date."))
+    before = (root / "projects" / DEFAULT_PROJECT / "memory" / "dates-of-photos.md").read_text(encoding="utf-8")
+    clock.now += 86400
+
+    await space.submit(second, _lesson("Dates of photos", "Use the EXIF date."))
+
+    (entry,) = await space.list_entries(DEFAULT_PROJECT)
+    full = await space.read_entry(entry.id, DEFAULT_PROJECT)
+    assert full.sources == ("c-first", "c-second")
+    # Nothing else of it changed: no second copy of the text, no new date.
+    assert full.content.count("Use the EXIF date.") == 1 and full.updated == entry.created
+    # The same commission again changes nothing at all.
+    now = (root / "projects" / DEFAULT_PROJECT / "memory" / "dates-of-photos.md").read_text(encoding="utf-8")
+    await space.submit(second, _lesson("Dates of photos", "Use the EXIF date."))
+    assert (root / "projects" / DEFAULT_PROJECT / "memory" / "dates-of-photos.md").read_text(encoding="utf-8") == now
+    assert now != before
+
+    # So it is not the first commission's own, and does not go with it to a project.
+    await space.touch_project("Budget app")
+    assert await space.refile_entries("c-first", DEFAULT_PROJECT, "Budget app") == []
+    assert [item.id for item in await space.list_entries(DEFAULT_PROJECT)] == ["dates-of-photos"]
+
+
+async def test_a_line_the_user_reworded_goes_with_its_entry_to_another_project(space, root):
+    commission = _commission(id="c-1")
+    await space.submit(commission, _lesson("Stack", "It uses Flask and SQLite."))
+    await space.submit(commission, _lesson("Export", "CSV with a BOM."))
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    daily.write_text(
+        daily.read_text(encoding="utf-8").replace(
+            "- [Stack](memory/stack.md) — It uses Flask and SQLite.", "- [What it is built on](memory/stack.md) — my own words"
+        ),
+        encoding="utf-8",
+    )
+    await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Stack", content="An older note.")
+
+    moved = await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app")
+
+    assert sorted(moved) == ["export", "stack-2"]
+    lines = (root / "projects" / "Budget app" / "MEMORY.md").read_text(encoding="utf-8").splitlines()
+    # The user's wording, pointing at the file under its new name; the other line as the host wrote it.
+    assert "- [What it is built on](memory/stack-2.md) — my own words" in lines
+    assert "- [Export](memory/export.md) — CSV with a BOM." in lines
+    assert "- [Stack](memory/stack.md) — An older note." in lines
+    assert daily.read_text(encoding="utf-8").strip() == ""

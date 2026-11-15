@@ -1811,3 +1811,75 @@ async def test_an_entry_moved_to_a_project_that_has_one_of_its_name_keeps_both(w
     entries = {entry.id: (await world.space.read_entry(entry.id, "Budget app")).content.strip() for entry in await world.space.list_entries("Budget app")}
     assert entries == {"stack": "The old stack.", "stack-2": "FastAPI now."}
     assert await world.space.list_entries(DEFAULT_PROJECT) == []
+
+
+# ---------------------------------------------------------------------------
+# The twelfth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_summary_that_can_be_kept_nowhere_on_disk_is_still_asked_for_once(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+    from nekoclaw.host.space import _move as move
+
+    await world.space.touch_project("Alpha")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    put = TaskAgentSpace._put_project
+
+    def held_open(source, target):
+        raise PermissionError(13, "a file in it is held open")
+
+    def record_cannot_be_replaced(self, directory, project):
+        # Read, but not written: the summary cannot be kept in it.
+        if project.pending_archive is not None:
+            raise PermissionError(13, "the record cannot be replaced")
+        return put(self, directory, project)
+
+    monkeypatch.setattr("nekoclaw.host.space._move", held_open)
+    monkeypatch.setattr(TaskAgentSpace, "_put_project", record_cannot_be_replaced)
+
+    for _round in range(3):
+        await world.keeper.tidy(force=True)
+        assert world.llm.count(TIER_ARCHIVE) == 1
+        alpha = await world.space.get_project("Alpha")
+        assert (alpha.status, alpha.kept_summary()) == ("active", None)
+
+    # Once it can be moved, it goes with what the model wrote that one time.
+    monkeypatch.setattr("nekoclaw.host.space._move", move)
+    await world.keeper.tidy(force=True)
+
+    assert world.llm.count(TIER_ARCHIVE) == 1
+    (archived,) = await world.space.list_projects()
+    assert archived.status == "archived"
+    home = world.root / "archive" / archived.archive_year / "Alpha"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "A project.\n"
+    assert "[archived project: Alpha]" in await world.space.read_index() and "— a project" in await world.space.read_index()
+    assert world.keeper._summaries == {}
+
+
+async def test_a_summary_held_for_a_project_is_dropped_once_the_project_is_used(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    await world.space.touch_project("Alpha")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    put = TaskAgentSpace._put_project
+
+    def held_open(source, target):
+        raise PermissionError(13, "a file in it is held open")
+
+    def record_cannot_keep_it(self, directory, project):
+        if project.pending_archive is not None:
+            raise PermissionError(13, "the record cannot be replaced")
+        return put(self, directory, project)
+
+    monkeypatch.setattr("nekoclaw.host.space._move", held_open)
+    monkeypatch.setattr(TaskAgentSpace, "_put_project", record_cannot_keep_it)
+    await world.keeper.tidy(force=True)
+    assert world.llm.count(TIER_ARCHIVE) == 1
+
+    # Used again, and idle again a month later: it is another project that is summed up.
+    await world.space.touch_project("Alpha")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    await world.keeper.tidy(force=True)
+
+    assert world.llm.count(TIER_ARCHIVE) == 2
