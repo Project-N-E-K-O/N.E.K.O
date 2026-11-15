@@ -30,7 +30,7 @@
 
     // locale 资源版本（用于 cache-busting，避免客户端长期缓存旧语言包导致新增 key 不生效）
     // 合并主线与语音消息语言包，刷新客户端缓存。
-    const LOCALE_VERSION = '2026-11-15-chat-audio-main-rebase-4';
+    const LOCALE_VERSION = '2026-11-15-chat-audio-independent-asr';
     function initDecorativeImageDragGuard() {
         const markImage = (img) => {
             if (!(img instanceof HTMLImageElement)) return;

@@ -180,6 +180,30 @@ app.whenReady().then(async () => {
     }
     trace(mode + ' chat mounted');
     const before = received.length;
+    await win.webContents.executeJavaScript(`(async () => {
+      const host = window.__appReactChatWindowParts;
+      const root = document.getElementById('root');
+      Object.assign(appState, { independentAsrAuthoritative: true, independentAsrEnabled: true,
+        coreApiSupportsIndependentAsr: true });
+      const applyCapability = () => {
+        Object.assign(audioSmokeProps, {
+          audioMessageIndependentAsrBlocked: host.buildRenderProps().audioMessageIndependentAsrBlocked,
+        });
+        window.NekoChatWindow.mountChatWindow(root, audioSmokeProps);
+      };
+      applyCapability();
+      try {
+        await audioSmokeProps.onComposerAudioMessage({ target: 'YUI' });
+        throw new Error('Expected voice message to be rejected');
+      } catch (error) {
+        if (error.name !== 'AudioMessageRejected' || error.message !== 'independent_asr_unavailable') throw error;
+      }
+      window.applyAudioSmokeCapability = applyCapability;
+    })()`);
+    await waitFor(win, "document.querySelector('.audio-message-mic')?.disabled && document.querySelector('.audio-message-mic').title.includes('Omni')");
+    assert.equal(received.length, before);
+    await win.webContents.executeJavaScript("appState.coreApiSupportsIndependentAsr = false; applyAudioSmokeCapability();");
+    await waitFor(win, "document.querySelector('.audio-message-mic')?.disabled === false");
     await win.webContents.executeJavaScript(`(() => {
       delete window.showStatusToast;
       const getUserMedia = navigator.mediaDevices.getUserMedia;

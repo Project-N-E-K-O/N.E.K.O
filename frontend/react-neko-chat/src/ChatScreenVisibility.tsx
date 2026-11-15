@@ -3,6 +3,7 @@ import { i18n } from './i18n';
 import { hasVisibleMessageContent, type ChatMessage } from './message-schema';
 
 const EMPTY_HIDDEN_IDS: ReadonlySet<string> = new Set();
+const EMPTY_AUDIO_CLEAR_TIMES: ReadonlyMap<string, number> = new Map();
 const ChatScreenVisibilityContext = createContext({
   hiddenMessageIds: EMPTY_HIDDEN_IDS,
   isMessageHidden: (_message: ChatMessage): boolean => false,
@@ -35,7 +36,7 @@ export function ChatScreenVisibilityProvider({ messages, audioHistoryTarget, old
   const captionTurnRef = useRef('');
   const [hiddenMessageIds, setHiddenMessageIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
   const [hiddenTurnIds, setHiddenTurnIds] = useState<ReadonlySet<string>>(EMPTY_HIDDEN_IDS);
-  const [audioHistoryClearedAt, setAudioHistoryClearedAt] = useState<ReadonlyMap<string, number>>(new Map());
+  const [audioHistoryClearedAt, setAudioHistoryClearedAt] = useState(EMPTY_AUDIO_CLEAR_TIMES);
   useEffect(() => {
     // A real host reset starts a new conversation; a visual clear never emits it.
     const reset = (event: Event) => {
@@ -47,7 +48,7 @@ export function ChatScreenVisibilityProvider({ messages, audioHistoryTarget, old
       captionTurnRef.current = '';
       setHiddenMessageIds(EMPTY_HIDDEN_IDS);
       setHiddenTurnIds(EMPTY_HIDDEN_IDS);
-      setAudioHistoryClearedAt(new Map());
+      setAudioHistoryClearedAt(EMPTY_AUDIO_CLEAR_TIMES);
     };
     const rememberCaptionTurn = (event: Event) => {
       const turnId = (event as CustomEvent).detail?.turnId;

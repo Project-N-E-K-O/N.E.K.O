@@ -47,6 +47,16 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
     let available: HistoryAvailability;
     let latest: Promise<HistoryAvailability>;
 
+    function publishRows(rows: AudioRow[], before: number | null) {
+      const ids = new Set(rows.map(row => row.request_id));
+      const visibleRows = rows.filter(row => row.created_at > clearedAt);
+      canLoadOlder = before !== null && visibleRows.length === rows.length;
+      setLoaded({ target: character, rows: visibleRows, more: canLoadOlder });
+      // Once history has shown a row, only history can display it again.
+      setPending(entries => entries.filter(entry => entry.target !== character || !ids.has(entry.row.request_id)));
+      available = true;
+    }
+
     function refresh(): Promise<HistoryAvailability> {
       const requestedPages = pages + Number(olderStatus !== 'idle');
       if (olderStatus === 'failed') {
@@ -62,6 +72,11 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
         const rows: AudioRow[] = [];
         let before: number | null = null;
         for (let index = 0; index < requestedPages; index++) {
+          // Publish the refreshed window even if the additional history page fails.
+          if (index === pages) {
+            if (signal.aborted || disposed) return undefined;
+            publishRows(rows, before);
+          }
           const url = chatAudioUrl(character) + (before === null ? '' : `&before=${before}`);
           const response = await fetch(url, { signal, cache: 'no-store' });
           if (!response.ok) {
@@ -79,18 +94,12 @@ export function useChatAudioHistory(target: string | undefined, author: string, 
           if (before === null) break;
         }
         if (signal.aborted || disposed) return undefined;
-        const ids = new Set(rows.map(row => row.request_id));
-        const visibleRows = rows.filter(row => row.created_at > clearedAt);
         pages = requestedPages;
         if (olderStatus === 'loading') {
           olderStatus = 'idle';
           setPagination({ target: character, status: olderStatus });
         }
-        canLoadOlder = before !== null && visibleRows.length === rows.length;
-        setLoaded({ target: character, rows: visibleRows, more: canLoadOlder });
-        // Once history has shown a row, only history can display it again.
-        setPending(entries => entries.filter(entry => entry.target !== character || !ids.has(entry.row.request_id)));
-        available = true;
+        publishRows(rows, before);
         return available;
       })().catch(() => undefined).then(result => {
         // A replacement refresh inherits the requested page and owns its result.

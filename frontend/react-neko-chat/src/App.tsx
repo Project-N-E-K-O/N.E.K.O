@@ -904,6 +904,7 @@ export default function ChatWindowRoot(props: ChatWindowProps) {
   const send = props.onComposerAudioMessage;
   const audioComposer = useAudioMessageComposer({
     target: send ? target : undefined,
+    independentAsrBlocked: props.audioMessageIndependentAsrBlocked,
     disabled: !!props.composerDisabled || !!props.composerHidden || audioGuideLocked,
     send: send ? payload => submit(payload, send) : undefined,
   });

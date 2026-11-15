@@ -294,6 +294,7 @@ export const chatWindowPropsSchema = z.object({
   userName: z.string().trim().min(1).optional(),
   assistantName: z.string().trim().min(1).optional(),
   audioMessageTarget: z.string().optional(),
+  audioMessageIndependentAsrBlocked: z.boolean().optional(),
   onComposerAudioMessage: z.function().args(z.object({
     requestId: z.string(), target: z.string(), audio: z.string(), sampleRateHz: z.number(), saveLocal: z.boolean().optional(),
   })).returns(z.promise(z.unknown())).optional(),

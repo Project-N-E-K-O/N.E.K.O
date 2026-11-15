@@ -32,7 +32,11 @@ def message(pcm=b"\x01\x00" * 8000):
 class Manager(AudioMessageMixin):
     def __init__(self):
         self.lanlan_name = "YUI"
-        self._config_manager = object()
+        self.core_api_type = "qwen"
+        self._config_manager = SimpleNamespace(
+            aget_core_config=AsyncMock(return_value={"CORE_API_TYPE": self.core_api_type}),
+            aget_model_api_config=AsyncMock(return_value={"api_type": self.core_api_type}),
+        )
         self.session = None
         self._audio_message_records = {}
         self._audio_message_lock = asyncio.Lock()
@@ -65,10 +69,77 @@ def ordinary_route(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def asr_settings(monkeypatch):
+    settings = AsyncMock(return_value={})
+    monkeypatch.setattr("main_logic.core.aload_global_conversation_settings", settings)
+    return settings
+
+
+@pytest.fixture(autouse=True)
 def isolated_history(tmp_path, monkeypatch):
     history = ChatAudioHistory(tmp_path, "local-yui")
     monkeypatch.setattr("main_logic.core.audio_message.history_for_character", AsyncMock(return_value=history))
     return history
+
+
+@pytest.mark.parametrize("settings_unreadable", [False, True])
+@pytest.mark.asyncio
+async def test_independent_asr_rejects_before_start_and_allows_same_id_retry(
+    asr_settings, isolated_history, settings_unreadable,
+):
+    manager, socket = Manager(), SimpleNamespace(send_json=AsyncMock())
+    payload = message()
+    if settings_unreadable:
+        asr_settings.side_effect = OSError("preferences unavailable")
+    else:
+        asr_settings.return_value = {"independentAsrEnabled": True}
+
+    await manager.submit_audio_message(payload, socket, is_current=lambda: True, save_local=True)
+
+    asr_settings.assert_awaited_once_with(strict=True)
+    result = socket.send_json.await_args.args[0]
+    assert (result["state"], result["code"]) == ("rejected", "independent_asr_unavailable")
+    assert manager.starts == 0
+    manager.client.submit_audio_message.assert_not_awaited()
+    assert isolated_history.receipt(payload["request_id"]) is None
+    assert payload["request_id"] not in manager._audio_message_records
+
+    asr_settings.side_effect = None
+    asr_settings.return_value = {"independentAsrEnabled": False}
+    await manager.submit_audio_message(payload, socket, is_current=lambda: True, save_local=True)
+    assert manager.starts == 1
+    manager.client.submit_audio_message.assert_awaited_once()
+    assert socket.send_json.await_args.args[0]["state"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_audio_message_native_only_core_ignores_independent_asr_setting(asr_settings):
+    manager, socket = Manager(), SimpleNamespace(send_json=AsyncMock())
+    manager.core_api_type = "free"
+    manager._config_manager.aget_model_api_config.return_value = {"api_type": "free"}
+    asr_settings.return_value = {"independentAsrEnabled": True}
+
+    await manager.submit_audio_message(message(), socket, is_current=lambda: True)
+
+    asr_settings.assert_not_awaited()
+    assert manager.starts == 1
+    manager.client.submit_audio_message.assert_awaited_once()
+    assert socket.send_json.await_args.args[0]["state"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_audio_message_rechecks_independent_asr_after_startup(asr_settings, isolated_history):
+    manager, socket = Manager(), SimpleNamespace(send_json=AsyncMock())
+    payload = message()
+    asr_settings.side_effect = [{"independentAsrEnabled": False}, {"independentAsrEnabled": True}]
+
+    await manager.submit_audio_message(payload, socket, is_current=lambda: True, save_local=True)
+
+    assert manager.starts == 1
+    manager.client.submit_audio_message.assert_not_awaited()
+    manager.request_end_session.assert_called_once_with(by_server=True)
+    assert isolated_history.receipt(payload["request_id"]) is None
+    assert socket.send_json.await_args.args[0]["code"] == "independent_asr_unavailable"
 
 
 @pytest.mark.asyncio

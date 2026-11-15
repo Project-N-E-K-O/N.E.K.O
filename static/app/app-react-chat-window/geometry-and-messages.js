@@ -1340,9 +1340,15 @@
         return getConfiguredAssistantName() || 'Neko';
     }
 
+    function audioMessageIndependentAsrBlocked() {
+        const state = window.appState;
+        return state?.independentAsrAuthoritative === true && state.independentAsrEnabled === true
+            && state.coreApiSupportsIndependentAsr !== false;
+    }
+
     async function sendComposerAudioMessage(payload) {
-        function rejectBeforeSend() {
-            const error = new Error('busy');
+        function rejectBeforeSend(code = 'busy') {
+            const error = new Error(code);
             error.name = 'AudioMessageRejected';
             return error;
         }
@@ -1361,6 +1367,7 @@
                 || !socket || socket.readyState !== WebSocket.OPEN) {
             throw rejectBeforeSend();
         }
+        if (audioMessageIndependentAsrBlocked()) throw rejectBeforeSend('independent_asr_unavailable');
         // Keep the exact socket and message ID. A timeout or disconnect never
         // replays the recording, since the provider may already have it.
         return new Promise(function (resolve, reject) {
@@ -1673,6 +1680,7 @@
             userName: getConfiguredUserName() || undefined,
             assistantName: getConfiguredAssistantName() || undefined,
             audioMessageTarget: !visitOwnsComposer ? window.lanlan_config?.lanlan_name || undefined : undefined,
+            audioMessageIndependentAsrBlocked: audioMessageIndependentAsrBlocked(),
             onComposerAudioMessage: sendComposerAudioMessage,
             composerAttachments: I.state.composerAttachments,
             rollbackDraft: I.state.rollbackDraft || undefined,

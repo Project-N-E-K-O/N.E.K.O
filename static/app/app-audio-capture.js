@@ -3960,6 +3960,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     markVoiceSettingsPending(activeRouteSnapshot);
                     updateVoiceRecognitionUi();
                     persistVoiceSettingChange();
+                    window.dispatchEvent(new Event('neko:independent-asr-preference-changed'));
                 }
             );
             var voicePanelId = (popupId || 'neko-mic')

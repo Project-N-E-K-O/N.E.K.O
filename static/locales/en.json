@@ -777,6 +777,7 @@
         "audioMessageSending": "Sending…",
         "audioMessageCancel": "Discard recording",
         "audioMessageManualUnavailable": "The voice provider could not confirm recording support. You can retry or change providers.",
+        "audioMessageIndependentAsrUnavailable": "Voice messages require Omni speech recognition. Turn off independent ASR or check your ASR settings.",
         "audioMessageClosePreview": "Close preview",
         "audioMessageMicrophoneError": "Microphone unavailable. Check its permission and try again.",
         "exportAudioOmitted": "Voice messages and their transcripts are not included. You can view them in chat history.",

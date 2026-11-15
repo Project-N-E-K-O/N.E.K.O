@@ -11,6 +11,7 @@ from uuid import uuid4
 from services.chat_audio_history import history_for_character
 from utils.external_route_registry import is_external_route_active
 from utils.theater_activity import is_theater_active
+from main_logic.asr_client import get_asr_core_capabilities
 from main_logic.audio_message_payload import (
     AUDIO_MESSAGE_MODE,
     AudioMessageManualModeUnconfirmed,
@@ -18,6 +19,24 @@ from main_logic.audio_message_payload import (
     decode_audio_message,
 )
 from main_logic.session_state import session_reply_in_progress
+
+from main_logic import core as _core_facade
+
+
+class _AudioMessageIndependentAsrUnavailable(Exception):
+    """The recording must not be submitted to native recognition."""
+
+
+async def _ensure_native_audio_message_allowed(core_type: str) -> None:
+    capabilities = get_asr_core_capabilities(core_type)
+    if capabilities is not None and not capabilities.supports_independent_asr:
+        return
+    try:
+        settings = await _core_facade.aload_global_conversation_settings(strict=True)
+    except Exception as exc:
+        raise _AudioMessageIndependentAsrUnavailable from exc
+    if settings.get("independentAsrEnabled", False):
+        raise _AudioMessageIndependentAsrUnavailable
 
 
 class AudioMessageMixin:
@@ -177,8 +196,13 @@ class AudioMessageMixin:
                     self._audio_message_records.pop(request_id, None)
                     record.state, record.code = "rejected", "storage"
                     return
-                if save_local:
-                    await history_changed()
+                try:
+                    core_config = await self._config_manager.aget_core_config()
+                    realtime_config = await self._config_manager.aget_model_api_config("realtime", core_config=core_config)
+                except Exception as exc:
+                    raise _AudioMessageIndependentAsrUnavailable from exc
+                core_type = realtime_config.get("api_type") or core_config.get("CORE_API_TYPE", "")
+                await _ensure_native_audio_message_allowed(core_type)
                 if (
                     not is_current() or self._starting_session_count > 0
                     or session_reply_in_progress(self.session)
@@ -203,11 +227,17 @@ class AudioMessageMixin:
                 target = self.session
                 if target is not None:
                     target_connection_generation = target._connection_generation
+                if save_local:
+                    await history_changed()
                 # Shares the admission lock with proactive/context delivery.
                 async with self._voice_proactive_inject_lock:
+                    # Startup can reload the effective Core or overlap a settings change.
+                    await _ensure_native_audio_message_allowed(self.core_api_type)
                     if (
                         not is_current() or not self.session_ready
                         or self.input_mode != AUDIO_MESSAGE_MODE or target is None
+                        or self.session is not target or self._session_generation != operation.generation
+                        or target._connection_generation != target_connection_generation
                         or is_external_route_active(self.lanlan_name)
                         or is_theater_active(self.lanlan_name)
                     ):
@@ -250,7 +280,7 @@ class AudioMessageMixin:
                 and target._connection_generation == target_connection_generation
             ):
                 self.request_end_session(by_server=True)
-            if isinstance(exc, AudioMessageManualModeUnconfirmed):
+            if isinstance(exc, (AudioMessageManualModeUnconfirmed, _AudioMessageIndependentAsrUnavailable)):
                 try:
                     released = await asyncio.to_thread(history.release_unsent, request_id)
                 except (OSError, SQLiteError):
@@ -258,7 +288,11 @@ class AudioMessageMixin:
                 if released:
                     reserved = False
                     self._audio_message_records.pop(request_id, None)
-                    record.state, record.code = "rejected", "manual_unavailable"
+                    record.state = "rejected"
+                    record.code = (
+                        "independent_asr_unavailable" if isinstance(exc, _AudioMessageIndependentAsrUnavailable)
+                        else "manual_unavailable"
+                    )
                     if save_local:
                         await history_changed()
             if isinstance(exc, asyncio.CancelledError):

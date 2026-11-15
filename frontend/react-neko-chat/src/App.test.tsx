@@ -328,13 +328,17 @@ describe('App', () => {
     }
   });
 
-  it.each(['full', 'compact'] as const)('recovers a failed recording page on refresh in the %s chat', async mode => {
+  it.each([
+    ['full', 'refresh'],
+    ['compact', 'retry'],
+  ] as const)('recovers a failed recording page in the %s chat by %s', async (mode, recovery) => {
     const row = (id: string, time: number) => ({
       request_id: id, created_at: time, duration_ms: 500, state: 'sent', transcript: '',
     });
     let nextPageCalls = 0;
+    let transcript = "";
     const fetchHistory = vi.fn(async (url: string, options: RequestInit) => {
-      if (!url.includes('&before=')) return Response.json({ messages: [row('latest', 2)], next_before: 2 });
+      if (!url.includes('&before=')) return Response.json({ messages: [{ ...row('latest', 2), transcript }], next_before: 2 });
       nextPageCalls++;
       if (nextPageCalls === 1) {
         return new Promise<Response>((_resolve, reject) => {
@@ -355,18 +359,20 @@ describe('App', () => {
       fireEvent.click(olderButton());
       await waitFor(() => expect(nextPageCalls).toBe(1));
       expect(screen.getByRole('button', { name: 'Loading...' })).toBeDisabled();
-      act(() => {
+      const refresh = () => act(() => {
         socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({
           type: 'chat_audio_changed', character: 'Yui',
         }) }));
       });
+      transcript = 'Updated transcript during failed paging';
+      refresh();
       expect(await screen.findByText('Load failed')).toHaveAttribute('role', 'alert');
       expect(olderButton()).toBeEnabled();
-      act(() => {
-        socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({
-          type: 'chat_audio_changed', character: 'Yui',
-        }) }));
-      });
+      fireEvent.click(screen.getByRole('button', { name: 'Recording actions' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Transcript' }));
+      expect(screen.getByText(transcript)).toBeVisible();
+      if (recovery === 'refresh') refresh();
+      else fireEvent.click(olderButton());
       await waitFor(() => expect(nextPageCalls).toBe(3));
       await waitFor(() => expect(container.querySelectorAll('.message-audio-play')).toHaveLength(2));
       expect(nextPageCalls).toBe(3);

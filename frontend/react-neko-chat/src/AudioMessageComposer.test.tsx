@@ -144,7 +144,19 @@ describe('recording draft submission', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['busy', 'storage', 'manual_unavailable'])('keeps the same recording ID and disables retries while blocked after %s', async reason => {
+  it.each(['full', 'compact'] as const)('explains the independent ASR restriction in the %s chat', mode => {
+    const { rerender } = render(<App chatSurfaceMode={mode} audioMessageTarget="YUI"
+      onComposerAudioMessage={vi.fn()} audioMessageIndependentAsrBlocked />);
+    const button = screen.getByRole('button', { name: 'Record a voice message' });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(/Voice messages require Omni/);
+    fireEvent.click(button);
+    expect(screen.queryByRole('button', { name: /Stop/ })).not.toBeInTheDocument();
+    rerender(<App chatSurfaceMode={mode} audioMessageTarget="YUI" onComposerAudioMessage={vi.fn()} />);
+    expect(button).toBeEnabled();
+  });
+
+  it.each(['busy', 'storage', 'manual_unavailable', 'independent_asr_unavailable'])('keeps the same recording ID and disables retries while blocked after %s', async reason => {
     const rejected = new Error(reason);
     rejected.name = 'AudioMessageRejected';
     let rejectSend!: (error: Error) => void;
@@ -158,6 +170,9 @@ describe('recording draft submission', () => {
     await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
     view.rerender(<AudioMessageComposer {...props} disabled />);
     await act(async () => { rejectSend(rejected); });
+    if (reason === 'independent_asr_unavailable') {
+      expect(screen.getByRole('alert')).toHaveTextContent('Voice messages require Omni');
+    }
     if (reason === 'manual_unavailable') {
       expect(screen.getByRole('alert')).toHaveTextContent('could not confirm recording support');
     }

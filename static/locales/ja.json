@@ -777,6 +777,7 @@
         "audioMessageSending": "送信中…",
         "audioMessageCancel": "録音を破棄",
         "audioMessageManualUnavailable": "音声サービスが録音メッセージへの対応を確認できませんでした。再試行するか、サービスを切り替えてください。",
+        "audioMessageIndependentAsrUnavailable": "音声メッセージは Omni の標準音声認識が必要です。独立 ASR をオフにするか、音声認識の設定を確認してください。",
         "audioMessageClosePreview": "プレビューを閉じる",
         "audioMessageMicrophoneError": "マイクを使用できません。権限を確認して再試行してください。",
         "exportAudioOmitted": "音声メッセージと文字起こしはエクスポートに含まれません。チャット履歴で確認できます。",
