@@ -3001,3 +3001,90 @@ def test_an_original_written_to_while_its_copy_is_brought_up_to_it_is_not_let_go
     assert "was written to while its copy was brought up to it" in str(raised.value.__cause__)
     # What was written last is still there, under the name nothing removes.
     assert (aside / "memory" / "stack.md").read_text(encoding="utf-8") == "Redis."
+
+
+# ---------------------------------------------------------------------------
+# The twenty-ninth review round
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("end", ["\n", "\r\n"])
+def test_a_change_that_went_in_is_not_made_a_second_time_when_the_file_could_not_be_read_back(
+    space, root, monkeypatch, end
+):
+    root.mkdir(parents=True)
+    path = root / "notes.md"
+    path.write_text("one\n", encoding="utf-8")
+    # Read once to make the change from; the looks at it after it was replaced fail.
+    reads = _not_read_back(monkeypatch, path, before=1)
+    given: list[str] = []
+
+    def change(text: str) -> str:
+        # Not one that leaves alone a text that has it already. Its line
+        # ends may be the ones of a text typed into the console.
+        given.append(text)
+        return text + "more" + end
+
+    changed = space._edit_text(path, change)
+
+    monkeypatch.undo()
+    assert len(reads) >= 5
+    assert changed is True
+    assert given == ["one\n"]
+    assert path.read_text(encoding="utf-8") == "one\nmore\n"
+
+
+async def test_a_note_with_a_dated_heading_is_added_once_to_an_entry_by_hand_that_could_not_be_read_back(
+    space, root, monkeypatch
+):
+    directory = root / "projects" / DEFAULT_PROJECT / "memory"
+    directory.mkdir(parents=True)
+    path = directory / "stack.md"
+    path.write_text("first note by hand\n", encoding="utf-8")
+    note = "Setup\n\n## 2026-11-15\n\nUse pytest"
+    # Read once to find the entry of the topic, once to make the change from.
+    reads = _not_read_back(monkeypatch, path, before=2)
+
+    reply = await space.submit(_commission(id="c-1"), _lesson("stack", note))
+
+    monkeypatch.undo()
+    assert len(reads) >= 6
+    assert reply == "added to stack.md in project _daily"
+    text = path.read_text(encoding="utf-8")
+    assert text.count("Use pytest") == 1 and text.count("Setup") == 1
+    assert text.startswith("first note by hand\n")
+
+
+@pytest.mark.parametrize("looks", [3, 8])
+async def test_a_new_entry_that_could_not_be_read_back_is_kept_and_has_its_line(space, root, monkeypatch, looks):
+    path = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    # Not there before it is written: every read of it is one after.
+    reads = _not_read_back(monkeypatch, path, before=0, looks=looks)
+
+    reply = await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+
+    monkeypatch.undo()
+    assert len(reads) >= 4
+    assert reply == "kept in project _daily as stack.md"
+    index = (root / "projects" / DEFAULT_PROJECT / "MEMORY.md").read_text(encoding="utf-8")
+    assert index.count("(memory/stack.md)") == 1
+    entry = await space.read_entry("stack", DEFAULT_PROJECT)
+    assert entry.content == "It uses Flask." and entry.sources == ("c-1",)
+
+
+async def test_a_new_entry_that_could_not_be_written_is_not_kept_and_has_no_line(space, root, monkeypatch):
+    from utils import file_utils
+
+    def refuse(path, text, *args, **kwargs):
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(file_utils, "atomic_write_text", refuse)
+    monkeypatch.setattr("nekoclaw.host.space._WRITE_RETRY_SECONDS", 0)
+
+    reply = await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+
+    monkeypatch.undo()
+    assert reply is not None and not reply.startswith("kept in")
+    assert not (root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md").exists()
+    index = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    assert not index.exists() or "stack.md" not in index.read_text(encoding="utf-8")

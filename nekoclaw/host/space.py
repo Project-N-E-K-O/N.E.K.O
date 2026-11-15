@@ -581,24 +581,31 @@ class TaskAgentSpace:
 
         Read, changed and written back; when the file was written by someone
         else in between (the user saving it in an editor), it is read again,
-        so their change is not written over. So it is when the file does not
-        hold what was written right after it was replaced: the change is
+        so their change is not written over. So it is when the file could
+        not be looked at right after it was replaced: when it holds what was
+        written, that is all; when it holds something else, the change is
         made again to what is there then.
         """
-        written = False
+        put: str | None = None
         for _attempt in range(_WRITE_ATTEMPTS):
             before = self._signature(path)
             text = self._text_to_change(path)
+            if put is not None and text == put:
+                # It holds what was written a moment ago, so the change is
+                # in it. Not made a second time: not every change is one
+                # that leaves alone a text that has it already.
+                return True
             changed = change(text)
             if changed == text:
                 # Nothing to change, or it holds the change already.
-                return written
+                return put is not None
             if self._signature(path) != before:
                 continue
             try:
                 self._put_text(path, changed)
             except _NotAsWritten:
-                written = True
+                # As ``_put_text`` wrote it, which is how it is read here.
+                put = changed.replace("\r\n", "\n").replace("\r", "\n")
                 continue
             return True
         raise OSError(f"{path.name} kept changing while it was being written")
@@ -846,12 +853,33 @@ class TaskAgentSpace:
             has_meta=True,
         )
         path = directory / f"{name}.md"
-        self._put_text(path, _render_document(document))
+        unread = False
+        try:
+            self._put_text(path, _render_document(document))
+        except _NotAsWritten:
+            # In place, and not looked at (held by another program for a
+            # moment). It gets its line all the same: without one it would
+            # be a file that no index lists.
+            logger.warning("a new entry could not be read back right after it was written", exc_info=True)
+            unread = True
         target = f"{paths.MEMORY_DIR}/{name}.md"
         self._index_add(paths.index(project), _index_line(title, target, description), target)
         entry = self._entry_from(path, project, with_content=True)
         if entry is None:
-            raise SpaceError("the entry could not be read back")
+            if not unread:
+                raise SpaceError("the entry could not be read back")
+            # Still held: told as it was written.
+            entry = Entry(
+                id=name,
+                project=project,
+                title=title,
+                description=description,
+                type=_entry_type(kind),
+                created=today,
+                updated=today,
+                sources=(source,) if source else (),
+                content=content.strip(),
+            )
         return entry, _CREATED
 
     async def submit(self, commission: Commission, lesson: dict[str, Any]) -> str | None:
