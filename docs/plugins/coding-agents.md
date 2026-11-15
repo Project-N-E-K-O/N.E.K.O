@@ -11,31 +11,7 @@ You do not need to write code. Pick an AI coding agent, copy one message to it, 
 
 ## 1. Pick a route
 
-<div class="neko-route-cards">
-
-<div class="neko-route-card neko-route-card--recommended">
-
-### Route A: let the AI do it all (recommended)
-
-- You need: a coding agent
-- The AI prepares a source build of N.E.K.O itself, can check its own code, and changes reload automatically
-- The first setup downloads a lot, so it takes a while
-- It does not affect the N.E.K.O already installed on your computer (the first time the web page opens you fill in a model API key once in the UI)
-
-</div>
-
-<div class="neko-route-card">
-
-### Route B: use your installed Steam / desktop app, click yourself
-
-- You need: an installed N.E.K.O + [Git](https://git-scm.com/downloads) (install it with the official installer)
-- Quick to start
-- The AI cannot run checks or read logs, so when something fails you paste the error back to it
-- After every change you click Reload on the plugin page yourself
-
-</div>
-
-</div>
+<CodingAgentOnboarding section="routes" />
 
 ## 2. Choose your agent
 

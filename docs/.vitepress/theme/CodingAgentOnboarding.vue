@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useData } from 'vitepress'
-import { selectedAgentId, selectedRoute } from './agent-selection'
+import {
+  resetSharedStateForSSR,
+  selectedAgentId,
+  selectedRoute,
+} from './agent-selection'
 import {
   ONBOARDING_COPY,
   buildSetupPrompt,
@@ -9,9 +13,14 @@ import {
   normalizeDocsLocale,
 } from './coding-agents-data'
 
-const props = withDefaults(defineProps<{ section?: 'agent' | 'prompt' }>(), {
-  section: 'agent',
-})
+const props = withDefaults(
+  defineProps<{ section?: 'agent' | 'prompt' | 'routes' }>(),
+  {
+    section: 'agent',
+  },
+)
+
+resetSharedStateForSSR()
 
 const { lang } = useData()
 
@@ -31,6 +40,23 @@ const activeAgent = computed(() => {
 const generatedPrompt = computed(() =>
   buildSetupPrompt(locale.value, pluginIdea.value, selectedRoute.value),
 )
+
+const GIT_URL = 'https://git-scm.com/downloads'
+
+const routeStatusLine = computed(() => {
+  const card = copy.value.routeCards.find((c) => c.id === selectedRoute.value)
+  return copy.value.routeStatusText.replace('{route}', card?.short ?? '')
+})
+
+function pointParts(point: string): { before: string; after: string } | null {
+  if (!point.includes('{git}')) return null
+  const [before, after] = point.split('{git}')
+  return { before, after }
+}
+
+function selectRoute(id: 'A' | 'B') {
+  selectedRoute.value = id
+}
 
 watch(
   locale,
@@ -93,7 +119,48 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="section === 'agent'" class="NekoAgentOnboarding">
+  <div v-if="section === 'routes'" class="NekoRoutePicker">
+    <div
+      class="NekoRoutePicker-cards"
+      role="radiogroup"
+      :aria-label="copy.routesHeading"
+    >
+      <div
+        v-for="card in copy.routeCards"
+        :key="card.id"
+        role="radio"
+        tabindex="0"
+        class="NekoRoutePicker-card"
+        :class="{ 'is-selected': selectedRoute === card.id }"
+        :aria-checked="selectedRoute === card.id"
+        @click="selectRoute(card.id)"
+        @keydown.enter.prevent="selectRoute(card.id)"
+        @keydown.space.prevent="selectRoute(card.id)"
+      >
+        <span class="NekoRoutePicker-cardHeader">
+          <span class="NekoRoutePicker-cardTitle">{{ card.title }}</span>
+          <span v-if="card.badge" class="NekoRoutePicker-badge">{{ card.badge }}</span>
+        </span>
+        <span class="NekoRoutePicker-points">
+          <span v-for="(point, i) in card.points" :key="i" class="NekoRoutePicker-point">
+            <template v-if="pointParts(point)">
+              {{ pointParts(point)!.before
+              }}<a
+                :href="GIT_URL"
+                target="_blank"
+                rel="noopener noreferrer"
+                @click.stop
+                >Git</a
+              >{{ pointParts(point)!.after }}
+            </template>
+            <template v-else>{{ point }}</template>
+          </span>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div v-else-if="section === 'agent'" class="NekoAgentOnboarding">
     <div class="NekoAgentOnboarding-shell">
       <div class="NekoAgentOnboarding-tabHeader">
         <span class="NekoAgentOnboarding-tabTitle">{{ copy.tabHeading }}</span>
@@ -247,6 +314,7 @@ onBeforeUnmount(() => {
 
       <pre v-if="promptExpanded" class="NekoAgentOnboarding-promptPre"><code>{{ generatedPrompt }}</code></pre>
     </div>
+    <div class="NekoAgentPrompt-routeStatus">{{ routeStatusLine }}</div>
   </div>
 </template>
 
@@ -608,46 +676,86 @@ onBeforeUnmount(() => {
 }
 </style>
 
-<!-- Route cards written in the markdown pages live outside this component,
-     so their styles must be unscoped. -->
 <style>
-.neko-route-cards {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+.NekoRoutePicker {
   margin: 12px 0 4px;
 }
 
-.neko-route-card {
+.NekoRoutePicker-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.NekoRoutePicker-card {
+  display: block;
   padding: 14px 16px;
   border: 1px solid var(--vp-c-divider);
   border-radius: 12px;
   background: var(--vp-c-bg-soft);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
-.neko-route-card--recommended {
+.NekoRoutePicker-card:hover {
   border-color: var(--vp-c-brand-1);
 }
 
-.neko-route-card h3 {
-  margin: 0 0 8px;
-  padding: 0;
-  border: 0;
+.NekoRoutePicker-card.is-selected {
+  border-color: var(--vp-c-brand-1);
+  box-shadow: 0 0 0 1px var(--vp-c-brand-1);
+}
+
+.NekoRoutePicker-cardHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.NekoRoutePicker-cardTitle {
   color: var(--vp-c-text-1);
   font-size: 15px;
   font-weight: 700;
 }
 
-.neko-route-card ul {
-  margin: 0;
-  padding-left: 18px;
+.NekoRoutePicker-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--vp-c-brand-1);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.NekoRoutePicker-points {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   color: var(--vp-c-text-2);
   font-size: 13.5px;
   line-height: 1.7;
 }
 
+.NekoRoutePicker-point::before {
+  content: '• ';
+  color: var(--vp-c-text-3);
+}
+
+.NekoRoutePicker-point a {
+  color: var(--vp-c-brand-1);
+  text-decoration: underline;
+}
+
+.NekoAgentPrompt-routeStatus {
+  margin-top: 8px;
+  color: var(--vp-c-text-2);
+  font-size: 12.5px;
+}
+
 @media (max-width: 720px) {
-  .neko-route-cards {
+  .NekoRoutePicker-cards {
     grid-template-columns: 1fr;
   }
 }

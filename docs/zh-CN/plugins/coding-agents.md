@@ -11,31 +11,7 @@ description: 不会写代码也能做 N.E.K.O 插件：选一个 Coding Agent，
 
 ## 1. 选一条路
 
-<div class="neko-route-cards">
-
-<div class="neko-route-card neko-route-card--recommended">
-
-### 路线 A：全交给 AI（推荐）
-
-- 需要：一个 Coding Agent
-- AI 自己准备源码版 N.E.K.O，能自己检查代码，改完自动重载
-- 第一次准备要下载不少东西，需要等一阵
-- 和你电脑上已装的 N.E.K.O 互不影响（第一次打开网页要在界面里填一次模型 API）
-
-</div>
-
-<div class="neko-route-card">
-
-### 路线 B：用已装好的 Steam / 桌面版，自己点
-
-- 需要：已安装的 N.E.K.O + [Git](https://git-scm.com/downloads)（用官网的安装包装即可）
-- 起步快，马上能做
-- AI 没法自己检查和看日志，出错时要你把报错复制给它
-- 每次改完要回插件页点「重载」
-
-</div>
-
-</div>
+<CodingAgentOnboarding section="routes" />
 
 ## 2. 选你的 Agent
 

@@ -11,31 +11,7 @@ description: コードが書けなくても N.E.K.O プラグインは作れま�
 
 ## 1. ルートを選ぶ
 
-<div class="neko-route-cards">
-
-<div class="neko-route-card neko-route-card--recommended">
-
-### ルート A：全部 AI に任せる（おすすめ）
-
-- 必要なもの：Coding Agent 1 つ
-- AI がソース版 N.E.K.O を自分で用意し、コードのチェックもでき、変更は自動でリロードされる
-- 初回はダウンロードが多く、時間がかかる
-- すでにインストール済みの N.E.K.O には影響しない（初めて Web ページを開いたとき、画面でモデル API を一度入力する）
-
-</div>
-
-<div class="neko-route-card">
-
-### ルート B：インストール済みの Steam / デスクトップ版で自分で押す
-
-- 必要なもの：インストール済みの N.E.K.O + [Git](https://git-scm.com/downloads)（公式インストーラーでインストール）
-- すぐ始められる
-- AI は自分でチェックやログ確認ができないので、エラーが出たらそのまま貼って送る
-- 変更のたびにプラグイン画面で「リロード」を押す
-
-</div>
-
-</div>
+<CodingAgentOnboarding section="routes" />
 
 ## 2. Agent を選ぶ
 

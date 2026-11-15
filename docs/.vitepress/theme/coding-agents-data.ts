@@ -17,7 +17,18 @@ export interface AgentConfig {
   contextNote: string
 }
 
+export interface RouteCard {
+  id: 'A' | 'B'
+  title: string
+  short: string
+  badge?: string
+  points: string[]
+}
+
 export interface OnboardingCopy {
+  routesHeading: string
+  routeCards: RouteCard[]
+  routeStatusText: string
   tabHeading: string
   tabHint: string
   downloadLabel: string
@@ -654,6 +665,33 @@ const jaAgents: AgentConfig[] = [
 
 export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
   'zh-CN': {
+    routesHeading: '选一条路',
+    routeCards: [
+      {
+        id: 'A',
+        title: '路线 A：全交给 AI',
+        short: '路线 A',
+        badge: '推荐',
+        points: [
+          '需要：一个 Coding Agent',
+          'AI 自己准备源码版 N.E.K.O，能自己检查代码，改完自动重载',
+          '第一次准备要下载不少东西，需要等一阵',
+          '和你电脑上已装的 N.E.K.O 互不影响（第一次打开网页要在界面里填一次模型 API）',
+        ],
+      },
+      {
+        id: 'B',
+        title: '路线 B：用已装好的 Steam / 桌面版，自己点',
+        short: '路线 B',
+        points: [
+          '需要：已安装的 N.E.K.O + {git}（用官网的安装包装即可）',
+          '起步快，马上能做',
+          'AI 没法自己检查和看日志，出错时要你把报错复制给它',
+          '每次改完要回插件页点「重载」',
+        ],
+      },
+    ],
+    routeStatusText: '当前：{route} — 步骤见下方对应路线',
     tabHeading: '选择你使用的 Coding Agent',
     tabHint: '不局限于以下工具，任意能读写文件并执行操作的 AI 编程工具均可',
     downloadLabel: '官网下载',
@@ -674,6 +712,33 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     agents: zhAgents,
   },
   en: {
+    routesHeading: 'Pick a route',
+    routeCards: [
+      {
+        id: 'A',
+        title: 'Route A: let the AI do it all',
+        short: 'Route A',
+        badge: 'Recommended',
+        points: [
+          'You need: a coding agent',
+          'The AI prepares a source build of N.E.K.O itself, can check its own code, and changes reload automatically',
+          'The first setup downloads a lot, so it takes a while',
+          'It does not affect the N.E.K.O already installed on your computer (the first time the web page opens, you fill in a model API key once in the UI)',
+        ],
+      },
+      {
+        id: 'B',
+        title: 'Route B: use your installed Steam / desktop app, click yourself',
+        short: 'Route B',
+        points: [
+          'You need: an installed N.E.K.O + {git} (install it with the official installer)',
+          'Quick to start',
+          'The AI cannot run checks or read logs, so when something fails you paste the error back to it',
+          'After every change you click Reload on the plugin page yourself',
+        ],
+      },
+    ],
+    routeStatusText: 'Selected: {route} — follow the matching route steps below',
     tabHeading: 'Choose your coding agent',
     tabHint: 'Any AI coding tool that can edit files and run actions on your computer works',
     downloadLabel: 'Official site',
@@ -694,6 +759,33 @@ export const ONBOARDING_COPY: Record<DocsLocale, OnboardingCopy> = {
     agents: enAgents,
   },
   ja: {
+    routesHeading: 'ルートを選ぶ',
+    routeCards: [
+      {
+        id: 'A',
+        title: 'ルート A：全部 AI に任せる',
+        short: 'ルート A',
+        badge: 'おすすめ',
+        points: [
+          '必要なもの：Coding Agent 1 つ',
+          'AI がソース版 N.E.K.O を自分で用意し、コードのチェックもでき、変更は自動でリロードされる',
+          '初回はダウンロードが多く、時間がかかる',
+          'すでにインストール済みの N.E.K.O には影響しない（初めて Web ページを開いたとき、画面でモデル API を一度入力する）',
+        ],
+      },
+      {
+        id: 'B',
+        title: 'ルート B：インストール済みの Steam / デスクトップ版で自分で押す',
+        short: 'ルート B',
+        points: [
+          '必要なもの：インストール済みの N.E.K.O + {git}（公式インストーラーでインストール）',
+          'すぐ始められる',
+          'AI は自分でチェックやログ確認ができないので、エラーが出たらそのまま貼って送る',
+          '変更のたびにプラグイン画面で「リロード」を押す',
+        ],
+      },
+    ],
+    routeStatusText: '選択中：{route} — 下の該当ルートの手順に進んでください',
     tabHeading: '使用する Coding Agent を選択',
     tabHint: 'この一覧以外でも、ファイル編集と操作の実行ができる AI ツールなら使えます',
     downloadLabel: '公式サイト',
