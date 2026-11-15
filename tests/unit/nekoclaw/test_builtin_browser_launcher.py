@@ -663,6 +663,41 @@ def test_a_browser_already_running_on_the_profile_is_used_and_nothing_is_started
     assert browser.pid is None
 
 
+@pytest.mark.parametrize("asked_for", [False, True])
+def test_whether_a_browser_found_running_has_a_window_is_not_known_from_what_was_asked_for(
+    starter: Starter, asked_for: bool
+) -> None:
+    starter.browser_listens(9555, "/devtools/browser/left-running")
+    starter.process_on_profile = 7001
+    # It was started by an earlier run, with the settings of then.
+    assert launcher._start(CHROME, str(starter.profile), asked_for, ()).headless is None
+
+
+@pytest.mark.parametrize("headless", [False, True])
+def test_a_browser_that_was_started_says_whether_it_was_started_without_a_window(starter: Starter, headless: bool) -> None:
+    starter.on_start.append(lambda: starter.browser_listens(9666))
+    browser = launcher._start(CHROME, str(starter.profile), headless, ())
+    assert browser.headless is headless
+    assert ("--headless=new" in starter.started[-1][0]) is headless
+
+
+def test_a_browser_whose_child_handed_over_still_says_whether_it_was_started_without_a_window(starter: Starter) -> None:
+    def hand_over() -> None:
+        starter.browser_listens(9777)
+        starter.child.returncode = 0
+
+    starter.on_start.append(hand_over)
+    browser = launcher._start(CHROME, str(starter.profile), True, ())
+    # Not our child any more, and yet started by this call: it is not one "found running".
+    assert browser.process is None and browser.headless is True
+
+
+def test_the_users_own_browser_is_not_known_to_have_a_window_or_not(starter: Starter, monkeypatch: Any) -> None:
+    monkeypatch.setattr(launcher, "running_endpoint", lambda profile: "ws://127.0.0.1:9333/devtools/browser/theirs")
+    browser = asyncio.run(launcher.attach(CHROME))
+    assert browser.owned is False and browser.headless is None
+
+
 def test_starting_creates_the_profile_and_waits_for_the_port_the_browser_writes(starter: Starter) -> None:
     assert not starter.profile.exists()
     # The browser needs a moment: its port file appears while the launcher waits.

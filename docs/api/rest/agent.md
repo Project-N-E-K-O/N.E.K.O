@@ -91,7 +91,7 @@ Returns `{"activity":[...]}` with one item for each group in use, and an empty l
 | `group` | `keyboard_mouse` (the whole desktop) or `browser` |
 | `state` | `started` in this response; `started` or `ended` in the WebSocket message below |
 | `commission_id` | The task that occupies the group; the same value as the task's `id` |
-| `window` | For the browser, `{"browser","pid","window_id","bounds"}` once the window being driven is known, otherwise `null`. Always `null` for the keyboard and mouse |
+| `window` | For the browser, `{"browser","pid","window_id","bounds"}` once the window being driven is known, otherwise `null`. `pid` is the browser process the window belongs to, as the browser itself reports it; when the browser does not report it, it is the process the application started, or `null` when there is none. Always `null` for the keyboard and mouse |
 
 A proxy failure returns `502` with an empty `activity` list and an `error`.
 
@@ -100,6 +100,8 @@ The main server sends the same object to every connected page as a WebSocket mes
 ### `POST /api/agent/builtin/stop`
 
 Body: optional `{"group":"keyboard_mouse"}` or `{"group":"browser"}`; without `group`, both are stopped. The response is `{"success":true,"stopped":["<task id>", ...]}`, with an empty list when nothing was in use. It does what `POST /api/agent/tasks/{task_id}/cancel` does for the task that occupies the group. An unknown group returns `400`; `504` means the request reached the Agent Server but its response timed out.
+
+The body may also carry `commission_id`, the task the stop is meant for; it is the value in the `agent_builtin_activity` messages. With it, a group is stopped only when that task is the one using it. A group that another task is using is left alone, and the response then has `not_stopped`: `[{"group":"browser","commission_id":"<the task using it>"}, ...]`, an empty list when there is none. A stop request can be delayed on its way; by the time it arrives, the task it was meant for may have ended and another may be using the group, and `commission_id` keeps that one from being stopped by mistake. Without `commission_id`, or with it set to `null`, the behaviour and the response are unchanged. Any other value that is not a non-empty string (an empty string, a number, a list) returns `400`.
 
 ### `GET /api/agent/builtin/browser/settings`
 

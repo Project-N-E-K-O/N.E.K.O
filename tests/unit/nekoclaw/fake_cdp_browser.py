@@ -64,6 +64,9 @@ from nekoclaw.builtin.browser.session import (
 )
 from nekoclaw.builtin.browser.settings import BrowserSettings, BrowserSettingsStore
 
+# The process the fake browser says its windows belong to.
+BROWSER_PID = 4242
+
 _KIND_OF_ROLE = {
     "textbox": "text",
     "searchbox": "text",
@@ -424,6 +427,22 @@ class FakeBrowser:
         self.close_requests = 0
         self.picture: bytes | None = _tiny_jpeg()
         self.window = {"windowId": 7, "bounds": {"left": 100, "top": 50, "width": 1280, "height": 800, "windowState": "normal"}}
+        # Whether it runs without a window. Only its user agent tells: the
+        # product it names is the same either way, as with a real browser.
+        self.headless = False
+        # What ``SystemInfo.getProcessInfo`` lists: the process the windows
+        # belong to, and those it started for its pages and the like.
+        self.processes: list[dict[str, Any]] = [
+            {"type": "GPU", "id": 4250, "cpuTime": 0.2},
+            {"type": "browser", "id": BROWSER_PID, "cpuTime": 1.5},
+            {"type": "renderer", "id": 4260, "cpuTime": 0.7},
+        ]
+        # session -> target, of the sessions attached to targets that are not pages.
+        self._other_sessions: dict[str, str] = {}
+        # The targets (pages and others) a session was detached from by a command, in order.
+        self.detached_from: list[str] = []
+        # The targets that are not pages and were closed by a command, in order.
+        self.closed_targets: list[str] = []
         self._targets = itertools.count(1)
         self._loaders = itertools.count(1)
         self._sessions = itertools.count(1)
@@ -643,7 +662,7 @@ class FakeBrowser:
         page: FakePage | None = None
         if command.session_id is not None:
             page = self._session_pages.get(command.session_id)
-            if page is None:
+            if page is None and command.session_id not in self._other_sessions:
                 raise CdpError(command.method, -32001, "Session with given id not found.")
         handles_dialog = command.method == "Page.handleJavaScriptDialog"
         if page is not None and page.dialog is not None and not handles_dialog:
@@ -683,13 +702,35 @@ class FakeBrowser:
 
     def _do_Target_attachToTarget(self, command: Sent, page: None) -> dict[str, Any]:
         assert command.params.get("flatten") is True, "the session speaks to pages through flat sessions"
-        target = self.pages.get(str(command.params.get("targetId")))
-        if target is None:
-            raise CdpError(command.method, -32602, "No target with given id found")
+        target_id = str(command.params.get("targetId"))
+        target = self.pages.get(target_id)
         session_id = f"session-{next(self._sessions)}"
+        if target is None:
+            other = next((item for item in self.other_targets if item["targetId"] == target_id), None)
+            if other is None:
+                raise CdpError(command.method, -32602, "No target with given id found")
+            # A real browser attaches to the worker of a page, and then never
+            # answers what is asked of it about its requests.
+            assert other["type"] != "worker", "a worker of a page is not asked on its own: it never answers"
+            self._other_sessions[session_id] = target_id
+            return {"sessionId": session_id}
         target.sessions.add(session_id)
         self._session_pages[session_id] = target
         return {"sessionId": session_id}
+
+    def _do_Target_detachFromTarget(self, command: Sent, page: None) -> dict[str, Any]:
+        session_id = str(command.params.get("sessionId"))
+        target = self._session_pages.pop(session_id, None)
+        if target is not None:
+            target.sessions.discard(session_id)
+            target_id = target.target_id
+        elif session_id in self._other_sessions:
+            target_id = self._other_sessions.pop(session_id)
+        else:
+            raise CdpError(command.method, -32602, "No session with given id")
+        self.detached_from.append(target_id)
+        self._emit("Target.detachedFromTarget", {"sessionId": session_id, "targetId": target_id})
+        return {}
 
     def _do_Target_createTarget(self, command: Sent, page: None) -> dict[str, Any]:
         if not self.can_create_tabs:
@@ -698,13 +739,31 @@ class FakeBrowser:
         return {"targetId": created.target_id}
 
     def _do_Target_closeTarget(self, command: Sent, page: None) -> dict[str, Any]:
-        target = self.pages.get(str(command.params.get("targetId")))
+        target_id = str(command.params.get("targetId"))
+        target = self.pages.get(target_id)
         if target is None:
-            raise CdpError(command.method, -32602, "No target with given id found")
+            other = next((item for item in self.other_targets if item["targetId"] == target_id), None)
+            if other is None:
+                raise CdpError(command.method, -32602, "No target with given id found")
+            self.other_targets.remove(other)
+            self.closed_targets.append(target_id)
+            self._emit("Target.targetDestroyed", {"targetId": target_id})
+            return {"success": True}
         self.remove_page(target)
         return {"success": True}
 
     # Browser
+
+    def _do_Browser_getVersion(self, command: Sent, page: None) -> dict[str, Any]:
+        name = "HeadlessChrome" if self.headless else "Chrome"
+        return {
+            "protocolVersion": "1.3",
+            "product": "Chrome/156.0.8078.80",
+            "userAgent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) {name}/156.0.0.0 Safari/537.36",
+        }
+
+    def _do_SystemInfo_getProcessInfo(self, command: Sent, page: None) -> dict[str, Any]:
+        return {"processInfo": list(self.processes)}
 
     def _do_Browser_getWindowForTarget(self, command: Sent, page: None) -> dict[str, Any]:
         if str(command.params.get("targetId")) not in self.pages:
@@ -885,7 +944,9 @@ class FakeBrowser:
     def _do_Fetch_enable(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
         patterns = [item["urlPattern"] for item in command.params["patterns"]]
         assert patterns, "without patterns every request of the browser would be held"
-        self.fetch_enabled.append((page.target_id if page is not None else None, patterns))
+        # (Of a target that is not a page: an embedded page of another site, a service worker.)
+        target_id = page.target_id if page is not None else self._other_sessions.get(command.session_id or "")
+        self.fetch_enabled.append((target_id, patterns))
         return {}
 
     def _do_Fetch_failRequest(self, command: Sent, page: FakePage | None) -> dict[str, Any]:
@@ -1215,6 +1276,10 @@ class BrowserWorld:
     launch_error: Exception | None = None
     # The browser was up before its start heard that it was to stop.
     launch_ignores_stop: bool = False
+    # The browser was already running on the profile, left by an earlier run
+    # of the application: the launcher then starts nothing and does not know
+    # whether it has a window.
+    found_running: bool = False
     attach_error: Exception | None = None
     connect_error: Exception | None = None
     close_error: Exception | None = None
@@ -1282,7 +1347,14 @@ class BrowserWorld:
         if stop is not None and stop.is_set() and not self.launch_ignores_stop:
             # As the launcher does: it gives up and takes what it started with it.
             raise launcher.BrowserStartError("Google Chrome was not started: the start was stopped")
-        return RunningBrowser(install=install, endpoint=OWN_ENDPOINT, process=None, owned=True, user_data_dir=user_data_dir)
+        return RunningBrowser(
+            install=install,
+            endpoint=OWN_ENDPOINT,
+            process=None,
+            owned=True,
+            user_data_dir=user_data_dir,
+            headless=None if self.found_running else headless,
+        )
 
     async def _attach(self, install: BrowserInstall) -> RunningBrowser:
         self.attached.append(install)

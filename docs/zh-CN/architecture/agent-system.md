@@ -64,6 +64,8 @@
 
 浏览器用的是用户自己装的那个：Chrome、Edge、Brave、Chromium，按这个顺序找；在 Windows 上，系统默认浏览器是其中之一时排在最前。操控走浏览器的调试协议（Chrome DevTools Protocol，一条 WebSocket），不经任何浏览器自动化库。默认给它一份独立的资料目录 `<数据根>/nekoclaw/browser_profile`：在里面登录过的网站会一直保持登录，用户平时的登录状态不在里面。也可以改成直接操控用户正在用的浏览器，这要求 Chrome 144 以上，用户自己在 `chrome://inspect/#remote-debugging` 打开远程调试，每次连接浏览器都会弹窗要用户点允许。选择存在 `<数据根>/nekoclaw/browser.json`；浏览器装在不常见的位置时，在这个文件的 `executable` 里写明路径，或者用环境变量 `NEKO_BROWSER_PATH` 指定。
 
+浏览器工具自己启动的浏览器在任务之间不关：一件任务办完或被叫停，窗口和里面的页面都留着，下一件任务接着用同一个浏览器。应用只在用户表示不再用它时才关：关掉浏览器工具的开关、关掉 Agent 总开关、保存浏览器设置、退出应用。叫停全部任务（`end_all`），或者 agent 模型连不上、开关被自动关掉时，有窗口的浏览器留着，用户可以接着看里面的内容；不开窗口（`headless`）启动的浏览器照旧关掉。应用和留着的浏览器保持连接，所以它照旧碰不到本应用自己的服务端口。直接操控用户正在用的浏览器时，应用任何时候都不关它，只断开连接。
+
 应用不随包附带浏览器，启动时也不下载浏览器。Playwright 只是测试依赖，`browser-use` 不在依赖里。本机找不到可用的浏览器时，浏览器操控不就绪，原因码是 `AGENT_BROWSER_NOT_FOUND`。
 
 `computer` 和 `browser_take_screenshot` 返回的是图片，所以只提供给模型能看图的 task agent。模型默认按能看图处理；厂商因为请求里带图片而拒绝时，这次请求去掉图片重发一遍，并把这个模型记到 `<数据根>/nekoclaw/model_capabilities.json`。task agent 的上下文里，这些工具的截图合在一起只保留最近 3 张。

@@ -185,6 +185,9 @@ class BrowserTools:
         return self._session.window()
 
     async def aclose(self) -> None:
+        # Not wanted from here on, and not only once its turn has come: see
+        # ``BrowserSession.no_longer_wanted``.
+        self._session.no_longer_wanted()
         # A call that is starting the browser holds the tools until it is up:
         # it is told to give up, so that closing does not wait that long.
         self._session.stop_starting()
@@ -198,6 +201,14 @@ class BrowserTools:
     def holds_a_browser(self) -> bool:
         """Whether a browser is still held: after ``aclose``, one that could not be closed."""
         return self._session.holds_a_browser
+
+    def no_longer_wanted(self) -> None:
+        """The browser is to be closed by an ``aclose`` that follows; see ``BrowserSession.no_longer_wanted``."""
+        self._session.no_longer_wanted()
+
+    def shows_a_window(self) -> bool:
+        """Whether stopping the tasks leaves the browser as it is; see ``BrowserSession.shows_a_window``."""
+        return self._session.shows_a_window
 
     # -- building answers --------------------------------------------------
 
