@@ -749,12 +749,22 @@ class TaskAgentSpace:
                 if entry.sources != (commission_id,):
                     continue
                 old = origin / f"{entry.id}.md"
-                text = self._read_text(old)
+                name = self._free_name(destination, entry.id)
+                # Written where it goes before it is removed where it was,
+                # and removed there only as the file that was copied: one
+                # the user saved from an editor in between is copied again.
+                same = False
+                for _attempt in range(_WRITE_ATTEMPTS):
+                    before = self._signature(old)
+                    text = self._read_text(old)
+                    if text is None:
+                        break
+                    self._put_text(destination / f"{name}.md", text)
+                    same = self._signature(old) == before
+                    if same:
+                        break
                 if text is None:
                     continue
-                name = self._free_name(destination, entry.id)
-                # Written where it goes before it is removed where it was.
-                self._put_text(destination / f"{name}.md", text)
                 link = f"{paths.MEMORY_DIR}/{name}.md"
                 was = f"{paths.MEMORY_DIR}/{entry.id}.md"
                 line = self._index_line_of(paths.index(source), was)
@@ -764,13 +774,17 @@ class TaskAgentSpace:
                     for mark in _index_marks(was):
                         line = line.replace(mark, f"]({_link(link)})")
                 self._index_add(paths.index(target), line, link)
+                moved.append(name)
+                if not same:
+                    # It kept being saved: it stays where it was as well.
+                    logger.warning("an entry copied to another project kept changing; it is left where it was too")
+                    continue
                 try:
                     old.unlink()
                 except OSError:
                     logger.warning("an entry moved to another project could not be removed where it was", exc_info=True)
                 else:
                     self._index_remove(paths.index(source), f"{paths.MEMORY_DIR}/{entry.id}.md")
-                moved.append(name)
             return moved
 
         return await self._write(work)

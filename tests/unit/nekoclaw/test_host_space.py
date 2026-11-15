@@ -1613,3 +1613,60 @@ async def test_a_line_the_user_reworded_goes_with_its_entry_to_another_project(s
     assert "- [Export](memory/export.md) — CSV with a BOM." in lines
     assert "- [Stack](memory/stack.md) — An older note." in lines
     assert daily.read_text(encoding="utf-8").strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# The thirteenth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_an_entry_the_user_saves_while_it_moves_to_a_project_goes_there_as_saved(space, root):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.touch_project("Budget app")
+    old = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    real = space._signature
+    saved = {"done": False}
+
+    def signature(checked):
+        if Path(checked) == old:
+            if getattr(signature, "seen", False) and not saved["done"]:
+                # After it was read and copied, before it is removed: the user saves another text.
+                saved["done"] = True
+                old.write_text(old.read_text(encoding="utf-8").replace("It uses Flask.", "It uses FastAPI now."), encoding="utf-8")
+            signature.seen = True
+        return real(checked)
+
+    space._signature = signature
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+
+    assert saved["done"]
+    moved = await space.read_entry("stack", "Budget app")
+    assert moved.content.strip() == "It uses FastAPI now."
+    assert not old.exists() and await space.list_entries(DEFAULT_PROJECT) == []
+
+
+async def test_an_entry_that_keeps_being_saved_while_it_moves_stays_where_it_was_too(space, root):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.touch_project("Budget app")
+    old = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    real = space._signature
+    saves: list[int] = []
+
+    def signature(checked):
+        if Path(checked) == old:
+            # Saved again every time it is looked at.
+            saves.append(len(saves) + 1)
+            old.write_text(old.read_text(encoding="utf-8") + f"\nline {saves[-1]}\n", encoding="utf-8")
+        return real(checked)
+
+    space._signature = signature
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+
+    del space._signature
+    # Nothing the user saved is gone: the file is still where it was, with every line.
+    assert old.read_text(encoding="utf-8").count("line ") == len(saves) > 0
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["stack"]
+    assert "stack.md" in (root / "projects" / DEFAULT_PROJECT / "MEMORY.md").read_text(encoding="utf-8")
+    assert [entry.id for entry in await space.list_entries("Budget app")] == ["stack"]
