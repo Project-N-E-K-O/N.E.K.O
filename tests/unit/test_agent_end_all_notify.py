@@ -8,8 +8,10 @@ that, so a card never stays "running" while something slow is torn down. How
 a stopped commission reaches the HUD is covered in
 ``tests/unit/nekoclaw/test_agent_wiring.py``; this file covers what end_all
 itself does around that call: background work that belongs to no commission
-is cancelled, the browser the browser tools started is closed, and keys a
-stopped keyboard-and-mouse call left held are let go of.
+is cancelled, the browser the browser tools started is closed unless it has
+a window that is to stay open for the user, and keys a stopped
+keyboard-and-mouse call left held are let go of. Which browser stays open is
+covered, with the real provider, in ``test_agent_browser_left_open.py``.
 """
 
 from __future__ import annotations
@@ -55,6 +57,11 @@ def srv(monkeypatch: pytest.MonkeyPatch, browser_closes: list[bool]):
     M = agent_srv.Modules
     saved_background = set(M._background_tasks)
     M._background_tasks.clear()
+    # The master switch is on, and there is no browser window to leave open:
+    # what the tools started is one without a window, or one the user has
+    # said is not wanted. (A window that is left open: further down.)
+    monkeypatch.setattr(M, "analyzer_enabled", True)
+    monkeypatch.setattr(agent_srv.builtin_provider, "browser_window_stays", lambda: False)
     # No desktop either: making one would import pyautogui.
     monkeypatch.setattr(agent_srv.builtin_provider, "_desktop", None)
     monkeypatch.setattr(agent_srv, "stop_everything", AsyncMock(return_value=0))
@@ -507,6 +514,91 @@ def test_end_all_kills_a_browser_that_answered_in_time_but_could_not_be_closed(
         assert await asyncio.to_thread(killed.wait, 5.0)
 
     asyncio.run(_scenario())
+
+
+def test_end_all_leaves_a_browser_window_open_and_still_lets_go_of_the_keys(
+    srv, browser_closes, monkeypatch: pytest.MonkeyPatch
+):
+    desktop = _Desktop()
+    asked: list[str] = []
+    killed: list[int] = []
+    stopping: list[int] = []
+    monkeypatch.setattr(srv.builtin_provider, "_desktop", desktop)
+    monkeypatch.setattr(srv.builtin_provider, "browser_window_stays", lambda: asked.append("stays?") or True)
+    monkeypatch.setattr(srv.builtin_provider, "kill_browser", lambda: killed.append(1))
+    monkeypatch.setattr(srv.builtin_provider, "browser_unclosed", lambda: True)
+    monkeypatch.setattr(srv.builtin_provider, "_stopping_browser", 0)
+    really_stopping = srv.builtin_provider.stopping_browser
+    monkeypatch.setattr(srv.builtin_provider, "stopping_browser", lambda: stopping.append(1) or really_stopping())
+
+    async def _scenario() -> dict:
+        result = await asyncio.wait_for(srv.admin_control({"action": "end_all"}), 10.0)
+        await asyncio.sleep(0.1)
+        return result
+
+    result = asyncio.run(_scenario())
+
+    assert result == {"success": True, "message": "all tasks terminated and cleared"}
+    # Stopping the tasks is not saying the browser is not wanted: it is neither closed nor killed (though
+    # it is still held, which after a closing would mean the closing failed), and no browser call is
+    # kept waiting for a closing.
+    assert asked == ["stays?"]
+    assert browser_closes == [] and killed == [] and stopping == []
+    assert desktop.released == 1
+
+
+def test_end_all_asks_whether_the_window_stays_only_after_the_tasks_and_the_background_work_were_stopped(
+    srv, monkeypatch: pytest.MonkeyPatch
+):
+    M = srv.Modules
+    order: list[str] = []
+
+    async def _stop_everything(reason: str = "") -> int:
+        order.append("tasks stopped")
+        return 1
+
+    async def _pending_teardown():
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            order.append("background work stopped")
+            raise
+
+    monkeypatch.setattr(srv, "stop_everything", _stop_everything)
+    monkeypatch.setattr(srv.builtin_provider, "browser_window_stays", lambda: order.append("asked") or True)
+
+    async def _scenario():
+        M._background_tasks.add(asyncio.create_task(_pending_teardown()))
+        await asyncio.sleep(0)
+        await srv.admin_control({"action": "end_all"})
+
+    asyncio.run(_scenario())
+
+    # A task that closes the browser may be among the background work: what it left of the browser
+    # is what is asked about.
+    assert order == ["tasks stopped", "background work stopped", "asked"]
+
+
+def test_end_all_closes_a_browser_window_once_the_master_switch_is_off(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):
+    asked: list[str] = []
+    monkeypatch.setattr(srv.Modules, "analyzer_enabled", False)
+    monkeypatch.setattr(srv.builtin_provider, "browser_window_stays", lambda: asked.append("stays?") or True)
+
+    result = asyncio.run(srv.admin_control({"action": "end_all"}))
+
+    assert result["success"] is True
+    # Switching the master switch off runs through here, and that is the user saying it.
+    assert browser_closes == [True]
+
+
+def test_switching_the_master_switch_off_closes_a_browser_window(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(srv.Modules, "analyzer_profile", {})
+    monkeypatch.setattr(srv.builtin_provider, "browser_window_stays", lambda: True)
+
+    result = asyncio.run(srv.admin_control({"action": "disable_analyzer"}))
+
+    assert result == {"success": True, "analyzer_enabled": False}
+    assert browser_closes == [True]
 
 
 def test_end_all_kills_nothing_when_the_browser_was_closed(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):

@@ -91,7 +91,7 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 | `group` | `keyboard_mouse`（デスクトップ全体）または `browser` |
 | `state` | このレスポンスでは常に `started`。後述の WebSocket メッセージでは `started` または `ended` |
 | `commission_id` | その組を占有しているタスク。タスクオブジェクトの `id` と同じ値 |
-| `window` | ブラウザーの場合、操作対象のウィンドウが分かった後は `{"browser","pid","window_id","bounds"}`、それまでは `null`。キーボード・マウスでは常に `null` |
+| `window` | ブラウザーの場合、操作対象のウィンドウが分かった後は `{"browser","pid","window_id","bounds"}`、それまでは `null`。`pid` はそのウィンドウが属するブラウザープロセスで、ブラウザー自身が報告した値です。ブラウザーが報告しない場合はアプリケーションが起動したプロセスになり、それもなければ `null` です。キーボード・マウスでは常に `null` |
 
 プロキシ障害は `502` で、空の `activity` と `error` を返します。
 
@@ -100,6 +100,8 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 ### `POST /api/agent/builtin/stop`
 
 ボディ: 任意で `{"group":"keyboard_mouse"}` または `{"group":"browser"}`。`group` を省くと両方を中止します。レスポンスは `{"success":true,"stopped":["<タスク ID>", ...]}` で、何も使われていなければリストは空です。処理の内容は、その組を占有しているタスクに対する `POST /api/agent/tasks/{task_id}/cancel` と同じです。不明な group は `400`、リクエスト到達後の応答タイムアウトは `504` です。
+
+ボディには `commission_id` も指定できます。この中止がどのタスクを対象にしているかを示す値で、`agent_builtin_activity` メッセージに入っているものです。指定した場合、そのタスクが対象の組を使っているときだけ中止します。別のタスクが使っている組は中止せず、レスポンスに `not_stopped` が加わります。形は `[{"group":"browser","commission_id":"<使っているタスクの ID>"}, ...]` で、該当がなければ空のリストです。中止リクエストは途中で遅れることがあり、届いた時点では元のタスクが終わって別のタスクがその組を使っている場合があります。`commission_id` を付けておけば、その別のタスクを誤って中止しません。`commission_id` を省いた場合、または `null` を指定した場合、動作とレスポンスは変わりません。それ以外で空でない文字列ではない値（空文字列、数値、リストなど）は `400` を返します。
 
 ### `GET /api/agent/builtin/browser/settings`
 

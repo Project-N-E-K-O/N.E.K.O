@@ -146,6 +146,217 @@ async def test_the_session_caps_tool_results_but_leaves_read_alone(tmp_path: Pat
         await session.close()
 
 
+def _blocks_manager(tmp_path: Path, window: int) -> ContextManager:
+    return _manager(tmp_path, ContextPolicy(window=window, max_output=1_000), [])
+
+
+async def test_a_result_of_several_blocks_is_capped_block_by_block_and_a_short_block_in_front_stays_whole(
+    tmp_path: Path,
+) -> None:
+    # A window so small that the cap on one result is three thousand tokens.
+    manager = _blocks_manager(tmp_path, 12_000)
+    cap = manager.policy.result_cap
+    assert cap == 3_000
+    # What the host's gateway sends with the call that starts a group of
+    # tools: the group, then the page the call opened, then a picture.
+    group = "GROUP-START " + _words(800, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(6_000) + " PAGE-END"
+    shot = ImageContent(data="QUJD", mime_type="image/jpeg")
+    # The group is more than the half of the cap a result cut as one text
+    # keeps of its beginning, and less than the cap.
+    assert cap // 2 < count_tokens(group) < cap < count_tokens(group + page)
+    result = AgentToolResult(content=[TextContent(text=group), TextContent(text=page), shot])
+
+    capped = await manager.cap_tool_result("capability_call", "c1", result)
+
+    first, second, third = capped.content
+    # The group to the letter; the page cut down to what the group left of the cap.
+    assert first == TextContent(text=group)
+    assert second.text.startswith("PAGE-START") and texts.SPILL_GAP in second.text
+    assert "PAGE-END" in second.text and "Full formatted result stored at" in second.text
+    assert third == shot
+    # Together within the cap, give or take the path the notice names.
+    assert count_tokens(first.text) + count_tokens(second.text) <= cap + 64
+    # The page is saved whole, the group is not saved at all.
+    (saved,) = (tmp_path / "outputs").iterdir()
+    assert saved.read_text(encoding="utf-8") == page
+
+
+async def test_blocks_that_fit_together_are_left_as_they_are_and_a_short_one_behind_a_long_one_is_not_cut(
+    tmp_path: Path,
+) -> None:
+    manager = _blocks_manager(tmp_path, 12_000)
+    cap = manager.policy.result_cap
+    small = AgentToolResult(content=[TextContent(text="clicked\n"), TextContent(text="the window moved")])
+    note = "[1 picture(s) of this result could not be passed on.]"
+    long = "START " + _words(6_000) + " END\n"
+    behind = AgentToolResult(content=[TextContent(text=long), TextContent(text=note)])
+
+    assert await manager.cap_tool_result("capability_call", "c1", small) is small
+    capped = await manager.cap_tool_result("capability_call", "c2", behind)
+
+    first, second = capped.content
+    # The long block alone is cut to the cap, and still ends where the next begins.
+    assert first.text.startswith("START") and texts.SPILL_GAP in first.text and first.text.endswith("\n")
+    assert count_tokens(first.text) <= cap + 64
+    # The line after it had nothing left of the cap, and is whole all the same.
+    assert second == TextContent(text=note)
+    assert [path.read_text(encoding="utf-8") for path in (tmp_path / "outputs").iterdir()] == [long]
+
+
+async def test_every_block_too_long_for_what_is_left_is_cut_and_saved_under_a_name_of_its_own(
+    tmp_path: Path,
+) -> None:
+    manager = _blocks_manager(tmp_path, 12_000)
+    cap = manager.policy.result_cap
+    one = "ONE-START " + _words(3_000, "a") + " ONE-END\n"
+    two = "TWO-START " + _words(3_000, "b") + " TWO-END"
+
+    capped = await manager.cap_tool_result(
+        "capability_call", "c1", AgentToolResult(content=[TextContent(text=one), TextContent(text=two)])
+    )
+
+    first, second = capped.content
+    assert first.text.startswith("ONE-START") and second.text.startswith("TWO-START")
+    assert texts.SPILL_GAP in first.text and texts.SPILL_GAP in second.text
+    # The first took the cap but what was kept back for the second, and the two together stay within it.
+    assert count_tokens(second.text) <= 256 + 64
+    assert count_tokens(first.text) + count_tokens(second.text) <= cap + 64
+    saved = sorted(path.name for path in (tmp_path / "outputs").iterdir())
+    assert len(saved) == 2 and saved[0] != saved[1]
+    assert {path.read_text(encoding="utf-8") for path in (tmp_path / "outputs").iterdir()} == {one, two}
+
+
+async def test_a_result_of_many_short_blocks_is_two_texts_within_the_cap(tmp_path: Path) -> None:
+    manager = _blocks_manager(tmp_path, 12_000)
+    cap = manager.policy.result_cap
+    # Forty blocks, none of them long, four times the cap together.
+    blocks = [TextContent(text=f"BLOCK{n} " + _words(100, f"w{n}x") + "\n") for n in range(40)]
+    result = AgentToolResult(content=blocks)
+    assert max(count_tokens(block.text) for block in blocks) < 512 and count_tokens(result.text) > 4 * cap
+
+    capped = await manager.cap_tool_result("capability_call", "c1", result)
+
+    # However many blocks there were: the first, and all the rest as one
+    # text, cut to what the first left of the cap.
+    first, rest = capped.content
+    assert first == blocks[0]
+    assert rest.text.startswith("BLOCK1 ") and texts.SPILL_GAP in rest.text and "BLOCK39 " in rest.text
+    assert count_tokens(capped.text) <= cap + 64
+    (saved,) = (tmp_path / "outputs").iterdir()
+    assert saved.read_text(encoding="utf-8") == "".join(block.text for block in blocks[1:])
+
+
+async def test_a_first_block_small_enough_never_to_be_pruned_arrives_whole_whatever_the_cap(tmp_path: Path) -> None:
+    # The smallest window there can be: the cap on one result is a quarter of it.
+    manager = _blocks_manager(tmp_path, 4_096)
+    cap, never_pruned = manager.policy.result_cap, manager.policy.prune_threshold_tokens
+    assert (cap, never_pruned) == (1_024, 2_048)
+    group = "GROUP-START " + _words(800, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(3_000) + " PAGE-END"
+    assert cap < count_tokens(group) < never_pruned
+
+    capped = await manager.cap_tool_result(
+        "capability_call", "c1", AgentToolResult(content=[TextContent(text=group), TextContent(text=page)])
+    )
+
+    # Over the cap, and whole: what was handed over in front must not arrive cut.
+    first, rest = capped.content
+    assert first == TextContent(text=group)
+    assert rest.text.startswith("PAGE-START") and texts.SPILL_GAP in rest.text
+    # The page got what the group left of the length one text may have.
+    left = never_pruned - count_tokens(group)
+    assert left > 256 and count_tokens(rest.text) <= left + 64
+
+    # A first block over that size is cut down to it, like any text.
+    huge = "HUGE-START " + _words(3_000, "h") + " HUGE-END\n"
+    capped = await manager.cap_tool_result(
+        "capability_call", "c2", AgentToolResult(content=[TextContent(text=huge), TextContent(text="a note")])
+    )
+
+    first, rest = capped.content
+    assert first.text.startswith("HUGE-START") and texts.SPILL_GAP in first.text
+    assert count_tokens(first.text) <= never_pruned + 64
+    assert rest == TextContent(text="a note")
+
+
+async def test_what_follows_a_first_block_gets_what_it_left_of_the_length_one_text_may_have(tmp_path: Path) -> None:
+    # The smallest window there can be. One text may be as long as an old
+    # result is left whole at, which is twice a quarter of this window.
+    manager = _blocks_manager(tmp_path, 4_096)
+    cap, never_pruned = manager.policy.result_cap, manager.policy.prune_threshold_tokens
+    assert (cap, never_pruned) == (1_024, 2_048)
+    # A group handed over with a first call that is alone over a quarter of
+    # the window, and a page behind it longer than what is kept back for
+    # the text after a first block whatever that block took.
+    group = "GROUP-START " + _words(750, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(150) + " PAGE-END"
+    assert cap < count_tokens(group) and 256 < count_tokens(page)
+    assert count_tokens(group + page) <= never_pruned
+    whole = AgentToolResult(content=[TextContent(text=group), TextContent(text=page)])
+
+    # Together no longer than one text may be: whole, as that text would be.
+    single = AgentToolResult(content=group + page)
+    assert await manager.cap_tool_result("capability_call", "c1", whole) is whole
+    assert await manager.cap_tool_result("bash", "c2", single) is single
+    assert not (tmp_path / "outputs").exists() or not list((tmp_path / "outputs").iterdir())
+
+    # A longer page is cut to what the group left of that length, not to
+    # what is kept back for it.
+    long = "PAGE-START " + _words(3_000) + " PAGE-END"
+    capped = await manager.cap_tool_result(
+        "capability_call", "c3", AgentToolResult(content=[TextContent(text=group), TextContent(text=long)])
+    )
+
+    first, rest = capped.content
+    left = never_pruned - count_tokens(group)
+    assert first == TextContent(text=group)
+    assert rest.text.startswith("PAGE-START") and texts.SPILL_GAP in rest.text and "PAGE-END" in rest.text
+    assert 256 + 64 < count_tokens(rest.text) <= left + 64
+    assert count_tokens(first.text) + count_tokens(rest.text) <= never_pruned + 64
+
+    # With a first block that leaves next to nothing, the text after it
+    # still has what is kept back for it, and that is all a result is ever
+    # over the length one text may have.
+    full = "GROUP-START " + _words(1_000, "tool") + " GROUP-END\n"
+    assert never_pruned - 256 < count_tokens(full) <= never_pruned
+    capped = await manager.cap_tool_result(
+        "capability_call", "c4", AgentToolResult(content=[TextContent(text=full), TextContent(text=long)])
+    )
+
+    first, rest = capped.content
+    assert first == TextContent(text=full)
+    assert rest.text.startswith("PAGE-START") and texts.SPILL_GAP in rest.text
+    assert count_tokens(rest.text) <= 256 + 64
+    assert count_tokens(first.text) + count_tokens(rest.text) <= never_pruned + 256 + 64
+
+
+async def test_a_text_small_enough_never_to_be_pruned_is_not_capped_either_whatever_the_window(
+    tmp_path: Path,
+) -> None:
+    # The smallest window there can be: a quarter of it is half of what an old result is left whole at.
+    manager = _blocks_manager(tmp_path, 4_096)
+    cap, never_pruned = manager.policy.result_cap, manager.policy.prune_threshold_tokens
+    assert (cap, never_pruned) == (1_024, 2_048)
+    kept = AgentToolResult(content="GROUP-START " + _words(900, "tool") + " GROUP-END")
+    cut = AgentToolResult(content="LONG-START " + _words(3_000) + " LONG-END")
+    assert cap < count_tokens(kept.text) < never_pruned < count_tokens(cut.text)
+
+    # Over the cap, and whole: a group of tools loaded by its name is such a text.
+    assert await manager.cap_tool_result("capability_search", "c1", kept) is kept
+    # A longer one is cut down to that size, and saved.
+    capped = await manager.cap_tool_result("bash", "c2", cut)
+
+    assert capped.text.startswith("LONG-START") and texts.SPILL_GAP in capped.text
+    assert count_tokens(capped.text) <= never_pruned + 64
+    (saved,) = (tmp_path / "outputs").iterdir()
+    assert saved.read_text(encoding="utf-8") == cut.text
+    # In a window whose quarter is more than that, the quarter is the cap as before.
+    wide = _blocks_manager(tmp_path / "wide", 64_000)
+    assert wide.policy.result_cap == 12_500 > count_tokens(cut.text)
+    assert await wide.cap_tool_result("bash", "c3", cut) is cut
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: pruning
 # ---------------------------------------------------------------------------
@@ -175,6 +386,98 @@ def test_pruning_cuts_old_results_and_spares_the_newest_batch() -> None:
     assert prune_rows(pruned, policy, include_latest=False) is None
     forced = prune_rows(rows, policy, include_latest=True)
     assert forced is not None and texts.PRUNED_MIDDLE_MARKER in forced[6].message.text
+
+
+def _old_result(*content: TextContent | ImageContent) -> list[Row]:
+    """A conversation in which a tool result of these blocks is no longer the newest."""
+    result = ToolResultMessage(tool_call_id="call-1", tool_name="capability_call", content=list(content))
+    opening = AssistantMessage(content=[ToolCall(id="call-1", name="capability_call", arguments={})])
+    return _rows([UserMessage(content="open it"), opening, result, *_call_turn(2, "small")])
+
+
+def test_pruning_cuts_a_result_block_by_block_and_a_small_block_stays_whole() -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    # What the host's gateway sends with the call that starts a group of
+    # tools: the group, then what the call returned, then its picture.
+    group = "GROUP-START " + _words(400, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(6_000) + " PAGE-END"
+    shot = ImageContent(data="QUJD", mime_type="image/jpeg")
+    assert count_tokens(group) < policy.prune_threshold_tokens < count_tokens(page)
+    rows = _old_result(TextContent(text=group), TextContent(text=page), shot)
+
+    pruned = prune_rows(rows, policy, include_latest=False)
+
+    assert pruned is not None
+    first, second, third = pruned[2].message.content
+    # The small block to the letter, although the result as one text is far
+    # over the size above which old results are cut.
+    assert first == TextContent(text=group)
+    assert second.text.startswith("PAGE-START") and second.text.endswith("PAGE-END")
+    assert texts.PRUNED_MIDDLE_MARKER in second.text
+    assert count_tokens(second.text) <= policy.prune_threshold_tokens
+    # The picture where it was.
+    assert third == shot
+    assert pruned[2].entry_id == "e2" and pruned[2].message.tool_call_id == "call-1"
+    assert prune_rows(pruned, policy, include_latest=False) is None
+
+
+def test_pruning_cuts_every_large_block_and_leaves_a_result_of_small_ones_alone() -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    small = _words(400, "tool")
+    large = "START " + _words(6_000) + " END"
+    assert count_tokens(small) < policy.prune_threshold_tokens < count_tokens(small * 3)
+
+    both = prune_rows(
+        _old_result(TextContent(text=large), TextContent(text=large)), policy, include_latest=False
+    )
+    untouched = prune_rows(
+        _old_result(TextContent(text=small), TextContent(text=small), TextContent(text=small)),
+        policy,
+        include_latest=False,
+    )
+
+    assert both is not None
+    for block in both[2].message.content:
+        assert block.text.startswith("START") and block.text.endswith("END")
+        assert texts.PRUNED_MIDDLE_MARKER in block.text
+    # The first block is small, and so is what follows it taken together: nothing to cut.
+    assert untouched is None
+
+
+def test_pruning_takes_all_that_follows_the_first_block_as_one_text() -> None:
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    # Twelve blocks, none of them large by itself.
+    blocks = [TextContent(text=f"BLOCK{n} " + _words(400, f"w{n}x") + "\n") for n in range(12)]
+    assert max(count_tokens(block.text) for block in blocks) < policy.prune_threshold_tokens
+
+    pruned = prune_rows(_old_result(*blocks), policy, include_latest=False)
+
+    # Left block by block, such a result would never be cut at all. It is
+    # two texts: the first block whole, the rest cut as one.
+    assert pruned is not None
+    first, rest = pruned[2].message.content
+    assert first == blocks[0]
+    assert rest.text.startswith("BLOCK1 ") and texts.PRUNED_MIDDLE_MARKER in rest.text
+    assert count_tokens(rest.text) <= policy.prune_threshold_tokens
+    assert prune_rows(pruned, policy, include_latest=False) is None
+
+
+def test_what_the_summarizer_is_handed_is_cut_block_by_block_too() -> None:
+    from nekoclaw.runtime.context import _shrink_for_summary
+
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    group = "GROUP-START " + _words(400, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(6_000) + " PAGE-END"
+    region = _old_result(TextContent(text=group), TextContent(text=page))[1:3]
+
+    _call, handed = _shrink_for_summary(region, policy, 100_000)
+
+    # The summary is written from the group as it was handed over; only the
+    # long block next to it is cut for the summarizer.
+    assert handed.content[0] == TextContent(text=group)
+    assert handed.content[1].text.startswith("PAGE-START") and texts.PRUNED_MIDDLE_MARKER in handed.content[1].text
+    # The conversation itself is left as it is.
+    assert region[1].message.content[1] == TextContent(text=page)
 
 
 def test_only_the_newest_images_of_a_tool_stay_in_context() -> None:

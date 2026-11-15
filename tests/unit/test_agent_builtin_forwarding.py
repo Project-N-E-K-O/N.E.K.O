@@ -378,7 +378,13 @@ def test_the_activity_route_answers_with_no_activity_when_the_agent_process_cann
 
 @pytest.mark.parametrize(
     ("sent", "passed_on"),
-    [({"group": "browser"}, {"group": "browser"}), ({}, {}), (None, {})],
+    [
+        ({"group": "browser"}, {"group": "browser"}),
+        ({}, {}),
+        (None, {}),
+        # The commission the stop is meant for goes on to the agent process, which is the one to check it.
+        ({"group": "browser", "commission_id": "c1"}, {"group": "browser", "commission_id": "c1"}),
+    ],
 )
 def test_the_stop_route_passes_the_group_on_and_returns_what_was_stopped(agent, client, sent, passed_on):
     agent.answer = Answer(200, {"success": True, "stopped": ["c1"]})
@@ -389,6 +395,16 @@ def test_the_stop_route_passes_the_group_on_and_returns_what_was_stopped(agent, 
 
     assert (response.status_code, response.json()) == (200, {"success": True, "stopped": ["c1"]})
     assert agent.requests == [("POST", _agent_url("/builtin/stop"), passed_on)]
+
+
+def test_the_stop_route_returns_what_the_agent_process_left_alone_as_it_is(agent, client):
+    # The stop was meant for a commission that no longer uses the browser; another one does.
+    answer = {"success": True, "stopped": [], "not_stopped": [{"group": "browser", "commission_id": "c2"}]}
+    agent.answer = Answer(200, answer)
+
+    response = client.post("/api/agent/builtin/stop", json={"group": "browser", "commission_id": "c1"})
+
+    assert (response.status_code, response.json()) == (200, answer)
 
 
 def test_the_stop_route_keeps_the_agent_processs_refusal_of_an_unknown_group(agent, client):

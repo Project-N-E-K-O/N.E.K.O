@@ -1,0 +1,43 @@
+{
+  "description": "Portable maintenance smoke checks only. Extend this policy for your local features and every affected upstream path before deployment.",
+  "suites": [
+    {
+      "name": "maintenance",
+      "command": [
+        "uv",
+        "run",
+        "--no-sync",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/unit/test_local_maintenance.py"
+      ]
+    },
+    {
+      "name": "whitespace",
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "origin/main...HEAD"
+      ]
+    },
+    {
+      "name": "whitespace-staged",
+      "command": [
+        "python",
+        "-c",
+        "import subprocess; p=subprocess.run(['git','rev-parse','-q','--verify','MERGE_HEAD'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); args=['git','diff','--cached','--check']+(['MERGE_HEAD'] if p.returncode==0 else []); raise SystemExit(subprocess.run(args).returncode)"
+      ]
+    },
+    {
+      "name": "whitespace-working",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ]
+    }
+  ]
+}

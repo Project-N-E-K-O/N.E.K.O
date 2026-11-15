@@ -308,13 +308,29 @@ GATEWAY_SEARCH_RESULTS = 8
 GATEWAY_RESULT_MAX_TOKENS = 4000
 """Cap on the text of one tool result served by the gateway."""
 
-GATEWAY_BUILTIN_TOOL_LIST_MAX_TOKENS = 2400
-"""Budget for the definitions of the built-in tools (keyboard and mouse,
-browser). They are always listed up front and are counted apart from the
-plugin entries, so a long plugin list cannot push them out and they take
-nothing from ``GATEWAY_TOOL_LIST_MAX_TOKENS``. The definitions are ours
-(``config/prompts/prompts_nekoclaw_builtin.py``); a test keeps them inside
-this budget, so in practice none is ever left out."""
+GATEWAY_REPLY_META_KEY = "nekoclaw/reply"
+"""Where a task agent's runtime names the model reply a ``tools/call`` was
+written in, under the request's ``_meta``: a number that changes with every
+reply. A group of built-in tools handed over while the calls of one reply
+are carried out is in hand from the next reply on, since the calls after it
+in the same reply were written before the group could be read. A client that
+names no reply has a group in hand as soon as it is handed over."""
+
+GATEWAY_TOOL_GROUP_MAX_TOKENS = 2000
+"""Cap on what loading one group of built-in tools (keyboard and mouse,
+browser) hands a task agent: how the group is used, then the definitions of
+its tools. The groups are not listed up front; a task agent loads one when
+it needs it and the text then stays in its conversation, so this is what a
+group costs a task that uses it. The text is ours
+(``config/prompts/prompts_nekoclaw_builtin.py``); a test keeps every group
+inside this cap, so in practice nothing is ever cut. It is kept below the
+size at which the runtime prunes old tool results to their head and tail
+(``ContextPolicy.prune_threshold_tokens``): a loaded group must not lose its
+middle while the task agent still works from it. That holds for a group
+handed over with its first call too: it comes as a block of its own in front
+of what the call returned, and the runtime takes a result's first block
+apart from the rest of its text, both when it caps a result and when it
+prunes an old one."""
 
 BUILTIN_OCCUPIED_WAIT_SECONDS = 120.0
 """How long a call of a built-in tool waits for the desktop or the browser

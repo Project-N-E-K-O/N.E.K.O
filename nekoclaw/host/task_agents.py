@@ -592,9 +592,10 @@ class TaskAgentManager:
             image_pools: dict[str, str] = {}
             if self._gateway is not None:
                 # For every built-in tool that hands pictures back, whether it
-                # can be called right now or not: one that is switched on
-                # while the task agent works is reached through the
-                # gateway's call tool, and its screenshots are limited too.
+                # can be called right now or not: every one of them is
+                # reached through the gateway's call tool, one that is
+                # switched on while the task agent works included, and its
+                # screenshots are limited too.
                 image_retention, image_pools = self._image_retention(self._registry.builtins())
                 callable_now = await self._registry.callable_by_task_agents()
                 if callable_now:
@@ -738,9 +739,11 @@ class TaskAgentManager:
             if capability.needs_images and capability.group:
                 retention[capability.tool_name] = TASK_AGENT_SCREENSHOTS_KEPT
         if retention:
-            # The same tools can be called by name through the gateway's own
-            # call tool, and their screenshots then come back as results of
-            # that tool: counted along.
+            # A task agent calls these tools by name through the gateway's
+            # own call tool (they are loaded a group at a time and never
+            # listed), so their screenshots come back as results of that
+            # tool: counted along. Their own names stay in, for a runtime
+            # that calls the gateway by them.
             retention[CALL_TOOL] = TASK_AGENT_SCREENSHOTS_KEPT
         return retention, {name: SCREENSHOT_POOL for name in retention}
 

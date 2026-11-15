@@ -174,13 +174,66 @@ async def test_call_returns_text_pictures_and_the_error_flag(gateway):
 
     assert await client.call("plugin__weather__today", {"city": "Lyon"}) == GatewayResult("sunny in Lyon", (), False)
     assert await client.call("broken", {}) == GatewayResult("storage offline", (), True)
-    # The text parts joined, and the pictures in the order they came.
+    # The text parts joined, and the pictures in the order they came. Text
+    # that came as more than one block is also kept as it came.
     assert await client.call("mixed", {}) == GatewayResult(
         "clicked\nthe window moved",
         (ImageContent(data="QUJD", mime_type="image/jpeg"), ImageContent(data="REVG", mime_type="image/png")),
         False,
+        ("clicked", "the window moved"),
     )
-    assert gateway.requests[-3]["params"] == {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}
+    assert gateway.requests[-3]["params"] == {
+        "name": "plugin__weather__today",
+        "arguments": {"city": "Lyon"},
+        "_meta": {"nekoclaw/reply": 0},
+    }
+
+
+async def test_every_call_names_the_reply_of_the_model_it_was_written_in(gateway):
+    from config.nekoclaw_settings import GATEWAY_REPLY_META_KEY
+
+    assert GATEWAY_REPLY_META_KEY == "nekoclaw/reply"
+    client = GatewayClient(gateway.url, TOKEN)
+    await client.connect()
+
+    await client.call("plugin__weather__today", {"city": "Lyon"})
+    client.next_reply()
+    await client.call("plugin__weather__today", {"city": "Nice"})
+    await client.call("plugin__weather__today", {"city": "Metz"})
+    client.next_reply()
+    await client.call("plugin__weather__today", {"city": "Brest"})
+
+    named = [body["params"]["_meta"] for body in gateway.requests if body["method"] == "tools/call"]
+    # The calls of one reply name the same reply, those of the next another.
+    assert named == [{"nekoclaw/reply": 0}, {"nekoclaw/reply": 1}, {"nekoclaw/reply": 1}, {"nekoclaw/reply": 2}]
+    # Nothing but the calls names one.
+    assert all("_meta" not in (body.get("params") or {}) for body in gateway.requests if body["method"] != "tools/call")
+
+
+async def test_a_session_tells_the_gateway_which_calls_were_written_in_one_reply(tmp_path, gateway):
+    llm = ScriptedLLM(
+        [
+            # Two calls in one reply, then one in the next.
+            [
+                call("plugin__weather__today", {"city": "Lyon"}, "c1"),
+                call("plugin__weather__today", {"city": "Nice"}, "c2", index=1),
+                finish("tool_calls"),
+            ],
+            [call("plugin__weather__today", {"city": "Metz"}, "c3"), finish("tool_calls")],
+            [say("Sunny everywhere."), finish()],
+        ]
+    )
+    session, events = await open_session(_spec(tmp_path, gateway), llm)
+    try:
+        session.prompt("what is the weather in Lyon, Nice and Metz")
+        await events.wait_ended()
+
+        calls = [body["params"] for body in gateway.requests if body["method"] == "tools/call"]
+        assert [params["arguments"]["city"] for params in calls] == ["Lyon", "Nice", "Metz"]
+        first, second, third = (params["_meta"]["nekoclaw/reply"] for params in calls)
+        assert first == second != third
+    finally:
+        await session.close()
 
 
 async def test_more_pictures_than_a_result_may_carry_are_dropped_and_the_text_says_how_many(gateway):
@@ -194,6 +247,7 @@ async def test_more_pictures_than_a_result_may_carry_are_dropped_and_the_text_sa
     assert MAX_IMAGES_PER_RESULT == 4
     assert [image.data for image in result.images] == ["QUJ0", "QUJ1", "QUJ2", "QUJ3"]
     assert result.text == "six shots\n[2 picture(s) of this result could not be passed on.]"
+    assert result.parts == ("six shots", "[2 picture(s) of this result could not be passed on.]")
     assert result.is_error is False
 
 
@@ -331,7 +385,38 @@ async def test_a_result_of_text_alone_is_a_tool_result_of_text_alone():
     assert (await _forward(GatewayResult("", (), False))).content == [TextContent(text="(no output)")]
 
 
+async def test_a_result_of_several_texts_stays_several_blocks_that_read_as_the_one_text():
+    shot = ImageContent(data="QUJD", mime_type="image/jpeg")
+    parts = ("the tools of a group", "what the call returned", "[1 picture(s) of this result could not be passed on.]")
+    text = "\n".join(parts)
+
+    outcome = await _forward(GatewayResult(text, (shot,), False, parts))
+    wordless = await _forward(GatewayResult(text, (), False, parts))
+
+    # A block each, in the order they came, and the pictures after them: the
+    # runtime cuts an old result block by block.
+    assert outcome.content == [
+        TextContent(text="the tools of a group\n"),
+        TextContent(text="what the call returned\n"),
+        TextContent(text="[1 picture(s) of this result could not be passed on.]"),
+        shot,
+    ]
+    # Put together they read as the one text did.
+    assert outcome.text == text
+    # The same without a picture.
+    assert wordless.content == outcome.content[:3]
+
+
+async def test_an_error_result_of_several_texts_is_raised_with_all_of_them():
+    parts = ("the tools of a group", "the user declined")
+    with pytest.raises(ToolError) as refused:
+        await _forward(GatewayResult("\n".join(parts), (), True, parts))
+
+    assert str(refused.value) == "the tools of a group\nthe user declined"
+
+
 async def test_a_picture_without_a_word_still_gets_a_line_of_text_in_front():
+
     shot = ImageContent(data="QUJD", mime_type="image/jpeg")
 
     outcome = await _forward(GatewayResult("", (shot,), False))
