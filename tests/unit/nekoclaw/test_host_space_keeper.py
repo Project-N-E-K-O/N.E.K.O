@@ -1442,8 +1442,8 @@ async def test_closing_stops_what_is_under_way(world):
 
 
 async def test_a_project_that_cannot_be_moved_is_asked_about_once_and_does_not_hold_up_the_others(world, monkeypatch):
-    import nekoclaw.host.space as module
     from config.nekoclaw_settings import SPACE_ARCHIVES_PER_UPKEEP, SPACE_PROJECT_IDLE_SECONDS
+    from nekoclaw.host.space import _move as move
 
     stuck = [f"Alpha {number}" for number in range(SPACE_ARCHIVES_PER_UPKEEP)]
     for name in (*stuck, "Gamma"):
@@ -1462,7 +1462,6 @@ async def test_a_project_that_cannot_be_moved_is_asked_about_once_and_does_not_h
 
     world.llm.answers[TIER_ARCHIVE] = [summary]
     world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
-    move = module._move
 
     def held_open(source, target):
         # On Windows: a file in it is open in another program.
@@ -1470,7 +1469,7 @@ async def test_a_project_that_cannot_be_moved_is_asked_about_once_and_does_not_h
             raise PermissionError(13, "a file in it is held open")
         return move(source, target)
 
-    monkeypatch.setattr(module, "_move", held_open)
+    monkeypatch.setattr("nekoclaw.host.space._move", held_open)
 
     async def active() -> list[str]:
         return [item.name for item in await world.space.list_projects() if item.status == "active"]
@@ -1503,7 +1502,7 @@ async def test_a_project_that_cannot_be_moved_is_asked_about_once_and_does_not_h
     assert world.llm.count(TIER_ARCHIVE) == asked
 
     # Once the file is let go they are archived, each with the summary written for it.
-    monkeypatch.setattr(module, "_move", move)
+    monkeypatch.setattr("nekoclaw.host.space._move", move)
     await world.keeper.tidy(force=True)
 
     assert world.llm.count(TIER_ARCHIVE) == asked
@@ -1571,8 +1570,8 @@ async def test_archiving_that_fails_outright_does_not_end_the_round(world, monke
 
 
 async def test_without_a_model_projects_that_cannot_be_moved_do_not_use_up_the_round(tmp_path, monkeypatch):
-    import nekoclaw.host.space as module
     from config.nekoclaw_settings import SPACE_ARCHIVES_PER_UPKEEP, SPACE_PROJECT_IDLE_SECONDS
+    from nekoclaw.host.space import _move as move
 
     world = World(tmp_path, None)
     try:
@@ -1580,14 +1579,13 @@ async def test_without_a_model_projects_that_cannot_be_moved_do_not_use_up_the_r
         for name in (*stuck, "Gamma"):
             await world.space.touch_project(name)
         world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
-        move = module._move
 
         def held_open(source, target):
             if source.name in stuck:
                 raise PermissionError(13, "a file in it is held open")
             return move(source, target)
 
-        monkeypatch.setattr(module, "_move", held_open)
+        monkeypatch.setattr("nekoclaw.host.space._move", held_open)
 
         await world.keeper.tidy(force=True)
 

@@ -726,6 +726,33 @@ async def test_a_record_that_could_not_be_read_a_moment_ago_is_not_written_over(
         assert project.commissions == 1
 
 
+async def test_a_record_that_cannot_be_read_when_a_commission_is_filed_under_it_stops_the_filing(space, root, monkeypatch):
+    await space.touch_project("Budget app", description="tracks spending", workdir="D:/w")
+    record = root / "projects" / "Budget app" / "project.json"
+    before = record.read_bytes()
+    read = Path.read_text
+    reads: list[str] = []
+
+    def read_text(self, *args, **kwargs):
+        if self.name == "project.json":
+            reads.append(str(self))
+            if len(reads) == 2:
+                # Listed a moment ago, by its name in what was dispatched; held by another program now.
+                raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(OSError):
+        await space.assign_project(_commission(dispatch_text="go on with the budget app"))
+
+    monkeypatch.undo()
+    # The listing read it, the filing could not: nothing was written, no commission was counted.
+    assert len(reads) == 2
+    assert record.read_bytes() == before
+    assert (await space.get_project("Budget app")).commissions == 1
+
+
 async def test_using_a_project_that_is_not_there_makes_nothing(space, root):
     await space.use_project("No such project")
     await space.use_project(DEFAULT_PROJECT)
@@ -1195,15 +1222,13 @@ async def test_an_entry_of_an_archived_project_is_changed_and_removed_where_it_i
 
 
 async def test_a_project_that_cannot_be_moved_stays_and_its_summary_is_kept_for_the_next_try(space, root, monkeypatch):
-    import nekoclaw.host.space as module
-
     await space.touch_project("Budget app", description="tracks spending", workdir="D:/w")
     await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
 
     def held_open(source, target):
         raise PermissionError(13, "a file in it is held open")
 
-    monkeypatch.setattr(module, "_move", held_open)
+    monkeypatch.setattr("nekoclaw.host.space._move", held_open)
 
     # Asked by hand, without a summary: there is nothing to keep, and nothing is written.
     untouched = (root / "projects" / "Budget app" / "project.json").read_bytes()
@@ -1238,14 +1263,12 @@ async def test_a_project_that_cannot_be_moved_stays_and_its_summary_is_kept_for_
 
 @pytest.mark.parametrize("use", ["a new commission", "taken up again"])
 async def test_a_summary_that_was_kept_no_longer_holds_once_the_project_is_used(space, clock, monkeypatch, use):
-    import nekoclaw.host.space as module
-
     await space.touch_project("Budget app")
 
     def held_open(source, target):
         raise PermissionError(13, "a file in it is held open")
 
-    monkeypatch.setattr(module, "_move", held_open)
+    monkeypatch.setattr("nekoclaw.host.space._move", held_open)
     assert await space.archive_project("Budget app", summary="An app.") is None
     assert (await space.get_project("Budget app")).kept_summary() == ("An app.", "")
     monkeypatch.undo()
