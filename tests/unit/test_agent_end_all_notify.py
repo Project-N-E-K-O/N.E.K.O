@@ -579,7 +579,7 @@ def test_end_all_asks_whether_the_window_stays_only_after_the_tasks_and_the_back
     assert order == ["tasks stopped", "background work stopped", "asked"]
 
 
-def test_end_all_closes_a_browser_window_once_the_master_switch_is_off(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):
+def test_end_all_leaves_a_browser_window_open_with_the_master_switch_off(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):
     asked: list[str] = []
     monkeypatch.setattr(srv.Modules, "analyzer_enabled", False)
     monkeypatch.setattr(srv.builtin_provider, "browser_window_stays", lambda: asked.append("stays?") or True)
@@ -587,18 +587,22 @@ def test_end_all_closes_a_browser_window_once_the_master_switch_is_off(srv, brow
     result = asyncio.run(srv.admin_control({"action": "end_all"}))
 
     assert result["success"] is True
-    # Switching the master switch off runs through here, and that is the user saying it.
-    assert browser_closes == [True]
+    # Switching the master switch off runs through here, and says nothing against the window either.
+    assert asked == ["stays?"] and browser_closes == []
 
 
-def test_switching_the_master_switch_off_closes_a_browser_window(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("stays", [True, False])
+def test_switching_the_master_switch_off_closes_the_browser_only_when_no_window_stays(
+    srv, browser_closes, monkeypatch: pytest.MonkeyPatch, stays: bool
+):
     monkeypatch.setattr(srv.Modules, "analyzer_profile", {})
-    monkeypatch.setattr(srv.builtin_provider, "browser_window_stays", lambda: True)
+    monkeypatch.setattr(srv.builtin_provider, "browser_window_stays", lambda: stays)
 
     result = asyncio.run(srv.admin_control({"action": "disable_analyzer"}))
 
     assert result == {"success": True, "analyzer_enabled": False}
-    assert browser_closes == [True]
+    assert srv.Modules.analyzer_enabled is False
+    assert browser_closes == ([] if stays else [True])
 
 
 def test_end_all_kills_nothing_when_the_browser_was_closed(srv, browser_closes, monkeypatch: pytest.MonkeyPatch):

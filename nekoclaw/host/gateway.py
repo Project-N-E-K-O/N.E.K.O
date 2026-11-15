@@ -89,10 +89,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from nekoclaw.host.capabilities import KIND_BUILTIN, Capability, CapabilityRegistry
+from nekoclaw.host.capabilities import BUILTIN_GROUP_BROWSER, KIND_BUILTIN, Capability, CapabilityRegistry
 from nekoclaw.host.leases import BuiltinLeases
 from nekoclaw.host.ledger import Commission, Ledger
-from nekoclaw.host.permissions import PermissionGate
+from nekoclaw.host.permissions import BROWSER_REOPEN, DENIED_BY_SETTINGS, DENIED_BY_USER, PermissionGate
 from nekoclaw.host.plugin_runs import (
     PluginRunner,
     describe_result,
@@ -859,6 +859,25 @@ class CapabilityGateway:
             return _text(decision.reason or "permission denied", error=True)
 
         if capability.kind == KIND_BUILTIN:
+            if capability.group == BUILTIN_GROUP_BROWSER:
+                refusal, agreement = await self._ask_before_reopening(
+                    commission, capability, just_asked=decision.asked
+                )
+                if refusal is not None:
+                    return refusal
+                if agreement is not None:
+                    try:
+                        # What the user agreed to is this call opening the
+                        # browser: the agreement goes with it, and no other
+                        # call opens the browser on the strength of it.
+                        return await self._call_builtin(
+                            commission, capability, arguments, reopen_agreement=agreement
+                        )
+                    finally:
+                        # Should it have ended before it got to the browser
+                        # (stopped, or the browser stayed in use by another
+                        # task): the agreement ends with it.
+                        self._registry.browser_reopen_agreement_over(agreement)
             return await self._call_builtin(commission, capability, arguments)
 
         async def run_created(run_id: str) -> None:
@@ -938,8 +957,56 @@ class CapabilityGateway:
             return None
         return str(answer.get("text") or "").strip()
 
+    async def _ask_before_reopening(
+        self, commission: Commission, capability: Capability, *, just_asked: bool
+    ) -> tuple[dict[str, Any] | None, Any]:
+        """Ask the user before a browser they closed is opened again.
+
+        Returns what the task agent is told when it is not to be opened (or
+        None), and what the provider calls the user's agreement to this
+        call opening it (None when nothing was to be agreed to).
+
+        The browser the tools started stays open between tasks. When the
+        user has closed it, a call would start it anew and put the window
+        back on their screen: they are asked first, each time it was closed,
+        whatever the permission settings say of the browser. The commission
+        waits for the user meanwhile, as for any approval. ``just_asked``:
+        this very call has just been approved by the user (the permission to
+        operate the browser), and that answer stands for this, too.
+        """
+        if not self._registry.browser_closed_by_user():
+            return None, None
+        if not just_asked:
+            decision = await self._permissions.ask_each_time(
+                commission.id, BROWSER_REOPEN, detail={"tool": capability.tool_name, "capability": capability.id}
+            )
+            if not decision.allow:
+                await self._ledger.append_event(
+                    commission.id, "capability_denied", {"capability": capability.id, "reason": decision.reason}
+                )
+                if decision.reason == DENIED_BY_USER:
+                    return _text(
+                        "The user closed the browser, and does not want it opened again. Nothing was done. Go on "
+                        "without the browser, or report that the task cannot be done without it.",
+                        error=True,
+                    ), None
+                return _text(
+                    "The user closed the browser, and could not be asked whether it may be opened again. Nothing "
+                    "was done.",
+                    error=True,
+                ), None
+            # The answer may have been long in coming, and the permission to
+            # operate the browser was decided before the question: forbidden
+            # in the settings since, it stays forbidden.
+            if await self._permissions.forbidden(capability.permission, capability.permission_key):
+                await self._ledger.append_event(
+                    commission.id, "capability_denied", {"capability": capability.id, "reason": DENIED_BY_SETTINGS}
+                )
+                return _text(DENIED_BY_SETTINGS, error=True), None
+        return None, self._registry.browser_reopen_agreed()
+
     async def _call_builtin(
-        self, commission: Commission, capability: Capability, arguments: dict[str, Any]
+        self, commission: Commission, capability: Capability, arguments: dict[str, Any], *, reopen_agreement: Any = None
     ) -> dict[str, Any]:
         """Carry out one call of a built-in tool for a commission.
 
@@ -973,7 +1040,9 @@ class CapabilityGateway:
                 self._leases.release(commission.id)
                 return _text("this commission is no longer under way", error=True)
         try:
-            outcome = await self._registry.run_builtin(capability, commission_id=commission.id, arguments=arguments)
+            outcome = await self._registry.run_builtin(
+                capability, commission_id=commission.id, arguments=arguments, reopen_agreement=reopen_agreement
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - the task agent is told and decides how to go on

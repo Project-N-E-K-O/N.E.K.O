@@ -93,6 +93,14 @@ OBJECT_GROUP = "nekoclaw-action"
 # to the browser; the browser's own interface (``browser_ui``) is not asked.
 _HELD_ONE_BY_ONE = frozenset({"page", "iframe", "service_worker", "shared_worker", "background_page"})
 _KEEP_OPEN_TIMEOUT_SECONDS = 5.0
+# How long all of them together are given. Each is asked up to four things,
+# and tried twice: without this, one that never answers holds the first call
+# of a task up for some twenty seconds.
+_KEEP_OPEN_TOTAL_SECONDS = 8.0
+# How long those that were given up on are waited for to let go of what they
+# had attached to. One whose letting go is not answered either ends by
+# itself later, with nobody waiting for it.
+_KEEP_OPEN_LET_GO_SECONDS = 1.0
 # What the browser answers a command about a target with when there is no
 # such target (it was closed meanwhile).
 _NO_SUCH_TARGET_CODE = -32602
@@ -384,6 +392,22 @@ class BrowserSession:
         # while a browser is being started and connected to, it is said of
         # that browser, and connecting to it must not take it back.
         self._unwanted_said = 0
+        # The agreements of the user to a browser they closed being opened
+        # again that no call has used yet, each known by its number. An
+        # agreement is for one call: only the call that brings it opens the
+        # browser (``use_reopen_agreement``).
+        self._reopen_agreements: set[int] = set()
+        self._reopen_agreement = 0
+        # True while such a call is under way and no window has come of it.
+        self._reopening = False
+        # True where nothing else says that it was the user who closed the
+        # browser: what it left was cleared away (``close``), or a call
+        # they agreed to is opening it. Until there is a window again.
+        self._closed_by_user_noted = False
+        # Whether the tabs of the browser that is connected to have been
+        # looked up yet: until then, none being known does not mean that
+        # there is none.
+        self._tabs_known = False
         # The process the browser's windows belong to, as the browser tells
         # it, asked once per connection.
         self._window_pid: int | None = None
@@ -401,8 +425,17 @@ class BrowserSession:
         return install.name if install is not None else "browser"
 
     async def start(self) -> None:
-        """Connect to a browser, starting one when needed. Does nothing while connected."""
+        """Connect to a browser, starting one when needed. Does nothing while connected.
+
+        But for one thing: a browser that is connected to and whose windows
+        the user closed gets a window again, in the call they agreed to that
+        for (``use_reopen_agreement``), whatever that call is about: what
+        they agreed to is a window, and it comes with this call or not at
+        all.
+        """
         if self.connected:
+            if self._reopening and self._tabs_known and not self._tabs:
+                await self._open_blank_page()
             return
         said_before = self._unwanted_said
         await self._settle_abandoned()
@@ -538,6 +571,8 @@ class BrowserSession:
             # has.
             for info in targets.get("targetInfos") or ():
                 self._note_target(info)
+            self._tabs_known = True
+            had_a_window = bool(self._tabs)
             if was_running and browser.owned:
                 await self._ask_whether_headless(connection, browser)
             if self._blocked_everywhere:
@@ -546,6 +581,18 @@ class BrowserSession:
                 # extension greets its user with) may be there before this
                 # connection is.
                 await self._keep_what_was_open(connection, targets.get("targetInfos") or ())
+            if was_running and had_a_window and not self._tabs and browser.owned and browser.headless is not True:
+                # Its windows were there a moment ago, and are closed now:
+                # the user closed them while it was being connected to. No
+                # page is opened in their place. The call ends here, and
+                # the next one asks them (``closed_by_user``). Not for one
+                # that was started just now: what a browser does with its
+                # first tab as it comes up is not the user closing a window.
+                raise BrowserError(
+                    "The browser was closed by the user while it was being connected to. Nothing was done. Call "
+                    "the tool again when you still need the browser: the user is then asked whether it may be "
+                    "opened again."
+                )
             if attach or not self._pages:
                 # A browser the user is using: their own tabs are left as they
                 # are, and the work gets a tab of its own where that can be had.
@@ -553,6 +600,11 @@ class BrowserSession:
             if self._selected is None and self._pages:
                 self._selected = next(iter(self._pages))
         except (CdpError, CdpClosed, CdpTimeout) as exc:
+            if connection.closed and self.closed_by_user:
+                # It went while it was being set up, and with the connection
+                # dropped nothing else would say so: the user closed it, and
+                # the next call asks before it starts another.
+                self._closed_by_user_noted = True
             await self._drop_connection()
             raise BrowserError(f"The browser did not answer ({exc}).") from exc
         except asyncio.CancelledError:
@@ -620,7 +672,8 @@ class BrowserSession:
         like everything new.
 
         One of them that is still there and could not be dealt with (it
-        refused, or did not answer, twice) goes on reaching the ports, and
+        refused, or did not answer, twice, or was not done with by the time
+        all of them together are given) goes on reaching the ports, and
         is remembered (``_not_kept``). A page among them is not taken for
         one that is kept from them: when it is worked on it is asked once
         more, and worked on only once that took (``_attached``). What is not
@@ -677,12 +730,40 @@ class BrowserSession:
             for info in infos
             if info.get("type") in _HELD_ONE_BY_ONE and info.get("targetId")
         ]
+        if not there:
+            self._not_kept = set()
+            return
         # All at once: one that does not answer must not hold up the others.
-        outcomes = await asyncio.gather(*(keep(kind, target_id) for kind, target_id in there), return_exceptions=True)
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException):
-                raise outcome  # The connection went: there is no browser to drive.
-        self._not_kept = {target_id for (_kind, target_id), kept in zip(there, outcomes) if not kept}
+        keeping = [asyncio.ensure_future(keep(kind, target_id)) for kind, target_id in there]
+        try:
+            _done, late = await asyncio.wait(keeping, timeout=_KEEP_OPEN_TOTAL_SECONDS)
+            if late:
+                for task in late:
+                    task.cancel()
+                    # Should it end only after nobody waits for it any more.
+                    task.add_done_callback(lambda done: done.cancelled() or done.exception())
+                # Each lets go of what it had attached to before it ends,
+                # and that is waited for a moment only: the browser may not
+                # answer that either.
+                await asyncio.wait(late, timeout=_KEEP_OPEN_LET_GO_SECONDS)
+                logger.warning(
+                    "%d of what was open before could not be kept from this application's own ports in time", len(late)
+                )
+        except asyncio.CancelledError:
+            for task in keeping:
+                task.cancel()
+            raise
+        not_kept: set[str] = set()
+        for (_kind, target_id), task in zip(there, keeping):
+            if not task.done() or task.cancelled():
+                not_kept.add(target_id)
+                continue
+            failure = task.exception()
+            if failure is not None:
+                raise failure  # The connection went: there is no browser to drive.
+            if not task.result():
+                not_kept.add(target_id)
+        self._not_kept = not_kept
 
     @staticmethod
     async def _ask_whether_headless(connection: CdpConnection, browser: launcher.RunningBrowser) -> None:
@@ -792,6 +873,7 @@ class BrowserSession:
         self._pages.clear()
         self._own_pages.clear()
         self._tabs.clear()
+        self._tabs_known = False
         self._not_kept.clear()
         self._handles.clear()
         self._selected = None
@@ -809,6 +891,12 @@ class BrowserSession:
         them), and the browser must not pass for one that is merely not in
         use meanwhile (``shows_a_window``).
         """
+        if self.closed_by_user:
+            # What is left of it is cleared away by that closing (every
+            # task was stopped, the tools were switched off, the settings
+            # changed): that the user closed it is kept, and the next task
+            # still asks before it opens one.
+            self._closed_by_user_noted = True
         self._unwanted = True
         self._unwanted_said += 1
 
@@ -818,12 +906,12 @@ class BrowserSession:
 
         The state a task that ended leaves it in: the window open for the
         user to look at, the connection up and with it the browser kept from
-        this application's own ports. Whoever stops the tasks, as opposed to
-        switching the browser off, leaves such a browser as it is.
+        this application's own ports. Whoever stops the tasks or switches the
+        tools off leaves such a browser as it is.
 
         One that is not known to be without a window counts as having one.
         Left open by mistake, a browser without a window is a process nobody
-        sees until the tools are switched off or the application quits;
+        sees until the application quits;
         closed by mistake, it is a window taken from the user.
 
         One with no tab left has none either: the user closed its windows
@@ -841,6 +929,77 @@ class BrowserSession:
             and bool(self._tabs)
             and not self._unwanted
         )
+
+    @property
+    def closed_by_user(self) -> bool:
+        """Whether a browser of ours with a window went without this process closing it, and has no window since.
+
+        The user closed its window, as far as can be told: the connection
+        to it is lost (a browser that crashed looks the same, and is taken
+        for one that was closed), or it is still connected to and has no tab
+        left. Opening it again puts a window on their screen that they have
+        just put away, so they are asked first (``reopen_agreed``); the
+        host does the asking, and a call that does not bring their
+        agreement is refused.
+
+        Not one this process is closing or has closed, nor one without a
+        window (nobody can have closed that by hand), nor the user's own.
+        """
+        if self._closed_by_user_noted:
+            return True
+        browser = self._browser
+        connection = self._connection
+        return (
+            browser is not None
+            and browser.owned
+            and browser.headless is not True
+            and not self._unwanted
+            and connection is not None
+            and (connection.closed or (self._tabs_known and not self._tabs))
+        )
+
+    def reopen_agreed(self) -> int:
+        """The user agreed to one call opening the browser they closed. Does not block.
+
+        Returns the number of that agreement: the call it was given for
+        brings it along (``use_reopen_agreement``), and hands it back when
+        it is over (``reopen_agreement_over``). Agreeing changes nothing for
+        any other call: to them the browser is as closed as before.
+        """
+        self._reopen_agreement += 1
+        self._reopen_agreements.add(self._reopen_agreement)
+        return self._reopen_agreement
+
+    def use_reopen_agreement(self, agreement: int | None) -> bool:
+        """Whether the call that brings ``agreement`` may open the browser; used up by this. Does not block.
+
+        From here until ``reopening_over`` the call may start the browser,
+        or give one that is still connected to a window again. That the
+        user closed it stays on record until a window is there: a call that
+        opens none leaves the browser as closed as it found it.
+        """
+        if agreement is None or agreement not in self._reopen_agreements:
+            return False
+        self._reopen_agreements.discard(agreement)
+        self._closed_by_user_noted = True
+        self._reopening = True
+        return True
+
+    def reopening_over(self) -> None:
+        """The call that was let open the browser is over. Does not block."""
+        self._reopening = False
+
+    def reopen_agreement_over(self, agreement: int | None = None) -> None:
+        """The call an agreement was given for is over: unused, it is not kept. Does not block.
+
+        The call may have ended before it got to the browser (it was
+        stopped, or the browser stayed in use by another task). Without
+        ``agreement``, every agreement that is still unused ends.
+        """
+        if agreement is None:
+            self._reopen_agreements.clear()
+        else:
+            self._reopen_agreements.discard(agreement)
 
     async def close(self) -> None:
         """Drop the connection and close the browser if this process started it."""
@@ -954,6 +1113,13 @@ class BrowserSession:
         if not target_id:
             return
         self._tabs.add(target_id)
+        # There is a window again: what was on record of its having been
+        # closed is over, and closed once more, it is asked about once more.
+        # Agreements that are still unused were given for that closing, and
+        # do not stand for the next.
+        self._reopening = False
+        self._closed_by_user_noted = False
+        self._reopen_agreements.clear()
         url = str(info.get("url") or "")
         if not is_web_page(url) or (self._blocked_ports and port_of(url) in self._blocked_ports):
             # Not a page of the web, or one of this application's own pages

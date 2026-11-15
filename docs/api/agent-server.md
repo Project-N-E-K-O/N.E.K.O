@@ -88,7 +88,7 @@ Returns `{"settings":{"mode":"own_profile","executable":null,"headless":false},"
 
 ### `POST /builtin/browser/settings`
 
-Body: any of `mode`, `executable`, and `headless`; a field that is left out keeps its value. An unknown `mode`, or an `executable` that is not an existing file, returns `400`. The response is the same object as for `GET`, with `"success":true` added. A browser that the tools started is closed, so the next call starts one with the new settings.
+Body: any of `mode`, `executable`, and `headless`; a field that is left out keeps its value. An unknown `mode`, or an `executable` that is not an existing file, returns `400`. The response is the same object as for `GET`, with `"success":true` added. When the saved settings differ from the ones before, a browser that the tools started is closed, so the next call starts one with the new settings; when they are the same, it is left as it is.
 
 ## ZeroMQ event plane
 

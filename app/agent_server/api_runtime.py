@@ -958,6 +958,14 @@ async def stop_builtin(payload: Optional[Dict[str, Any]] = None):
     return answer
 
 
+# Held while the browser settings are read, changed and saved: two requests
+# that save at the same time must not each compare against what the other is
+# about to replace (the later one would take its settings for unchanged and
+# leave open a browser that was started with the other's). Taken in the
+# worker thread, never on the event loop.
+_browser_settings_lock = threading.Lock()
+
+
 def _browser_settings_view() -> Dict[str, Any]:
     """Return the browser settings with the browsers found on this computer. Blocking (file checks)."""
     from nekoclaw.builtin.browser.launcher import find_browsers
@@ -987,14 +995,16 @@ async def set_browser_settings(payload: Dict[str, Any]):
     ``mode`` is ``own_profile`` (the user's browser with a profile directory
     of its own) or ``attach`` (the browser the user is using, which they
     allow in that browser). The change applies to the next browser that is
-    started: one that is open is closed, so the next call starts anew.
+    started: one that is open is closed, so the next call starts anew. When
+    what is saved is what was there before, nothing changes for the browser
+    that is open, and it is left alone.
     """
     from nekoclaw.builtin.browser.launcher import is_browser_executable
     from nekoclaw.builtin.browser.settings import MODES, BrowserSettings, BrowserSettingsStore
 
     payload = payload or {}
 
-    def apply() -> Dict[str, Any]:
+    def apply() -> tuple[Dict[str, Any], bool]:
         store = BrowserSettingsStore()
         current = store.load()
         mode = payload.get("mode", current.mode)
@@ -1009,11 +1019,16 @@ async def set_browser_settings(payload: Dict[str, Any]):
             # It is started with a debugging port: not any program will do.
             raise ValueError("executable is not a browser the tools can drive (Chrome, Edge, Brave or Chromium)")
         headless = payload.get("headless", current.headless)
-        store.save(BrowserSettings(mode=mode, executable=executable, headless=headless is True))
-        return _browser_settings_view()
+        wanted = BrowserSettings(mode=mode, executable=executable, headless=headless is True)
+        store.save(wanted)
+        return _browser_settings_view(), wanted != current
+
+    def apply_alone() -> tuple[Dict[str, Any], bool]:
+        with _browser_settings_lock:
+            return apply()
 
     try:
-        view = await asyncio.to_thread(apply)
+        view, changed = await asyncio.to_thread(apply_alone)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     # A browser named in the settings may be one the search does not find,
@@ -1021,10 +1036,15 @@ async def set_browser_settings(payload: Dict[str, Any]):
     from .capabilities import _browser_dependency_status, _forget_browser_search
 
     _forget_browser_search()
-    # Said before the task that closes it has had a turn: stopping every
-    # task stops that one too, and must then close the browser itself.
-    builtin_provider.browser_no_longer_wanted()
-    _create_tracked_task(_close_browser(update_capability=False))
+    if changed:
+        # The browser that is open was started with the settings before, and
+        # for as long as it is connected to, no other is started: whichever
+        # of them changed (the program, the window, whose browser it is),
+        # the new one only takes once that browser is closed. Said before
+        # the task that closes it has had a turn: stopping every task stops
+        # that one too, and must then close the browser itself.
+        builtin_provider.browser_no_longer_wanted()
+        _create_tracked_task(_close_browser(update_capability=False))
     # With a model that answers, whether there is a browser to drive is all
     # the browser tools depend on, and that may just have changed: said at
     # once. Left as it was (no browser found, from before one was named

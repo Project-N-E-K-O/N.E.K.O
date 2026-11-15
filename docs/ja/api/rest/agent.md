@@ -123,7 +123,7 @@ revision、flags、capabilities、notification 状態、進行中のタスク（
 
 ### `POST /api/agent/builtin/browser/settings`
 
-ボディ: `mode`、`executable`、`headless` のうち変更したいもの。省いたフィールドは現在の値のままです。レスポンスは上のオブジェクトに `"success":true` を加えたものです。不明な `mode`、または存在しないファイルを指す `executable` は `400` です。変更は次に起動するブラウザーから有効になり、ブラウザーツールが起動していたブラウザーは閉じられます。
+ボディ: `mode`、`executable`、`headless` のうち変更したいもの。省いたフィールドは現在の値のままです。レスポンスは上のオブジェクトに `"success":true` を加えたものです。不明な `mode`、または存在しないファイルを指す `executable` は `400` です。変更は次に起動するブラウザーから有効になり、ブラウザーツールが起動していたブラウザーは閉じられます。保存した設定がそれまでと同じ場合は、そのままです。
 
 ## UI ヘルパールート
 

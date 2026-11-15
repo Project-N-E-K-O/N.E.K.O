@@ -123,7 +123,7 @@ The body may also carry `commission_id`, the task the stop is meant for; it is t
 
 ### `POST /api/agent/builtin/browser/settings`
 
-Body: any of `mode`, `executable`, and `headless`; a field that is left out keeps its value. The response is the object above with `"success":true` added. An unknown `mode`, or an `executable` that is not an existing file, returns `400`. The change applies to the next browser that is started: one that the tools started is closed.
+Body: any of `mode`, `executable`, and `headless`; a field that is left out keeps its value. The response is the object above with `"success":true` added. An unknown `mode`, or an `executable` that is not an existing file, returns `400`. A change applies to the next browser that is started: one that the tools started is closed. When what is saved is the same as before, it is left as it is.
 
 ## UI-helper route
 

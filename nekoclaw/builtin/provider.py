@@ -196,8 +196,19 @@ class BuiltinToolProvider:
 
     # -- calls --------------------------------------------------------------
 
-    async def run(self, capability: Capability, *, commission_id: str, arguments: dict[str, Any]) -> BuiltinOutcome:
-        """Carry out one call. Cancelling it stops what it started."""
+    async def run(
+        self,
+        capability: Capability,
+        *,
+        commission_id: str,
+        arguments: dict[str, Any],
+        reopen_agreement: int | None = None,
+    ) -> BuiltinOutcome:
+        """Carry out one call. Cancelling it stops what it started.
+
+        ``reopen_agreement``: the user's agreement to this call opening a
+        browser they closed (``browser_reopen_agreed``).
+        """
         group = capability.group
         ready, reason = self._ready(group or "")
         if not ready:
@@ -205,7 +216,7 @@ class BuiltinToolProvider:
         if group == BUILTIN_GROUP_KEYBOARD_MOUSE:
             return await self._run_desktop(dict(arguments or {}))
         if group == BUILTIN_GROUP_BROWSER:
-            return await self._run_browser(capability.tool_name, dict(arguments or {}))
+            return await self._run_browser(capability.tool_name, dict(arguments or {}), reopen_agreement)
         return BuiltinOutcome(False, f"unknown tool {capability.tool_name}")
 
     async def _run_desktop(self, arguments: dict[str, Any]) -> BuiltinOutcome:
@@ -256,7 +267,9 @@ class BuiltinToolProvider:
             images = (BuiltinImage(base64.b64encode(result.screenshot).decode("ascii"), result.mime_type),)
         return BuiltinOutcome(True, result.text, images)
 
-    async def _run_browser(self, tool_name: str, arguments: dict[str, Any]) -> BuiltinOutcome:
+    async def _run_browser(
+        self, tool_name: str, arguments: dict[str, Any], reopen_agreement: int | None = None
+    ) -> BuiltinOutcome:
         def still_on() -> str | None:
             # Asked when the call's turn has come: the browser may have been
             # switched off while it waited (or the process begun to shut
@@ -282,7 +295,12 @@ class BuiltinToolProvider:
             while under_way := self._kills_under_way():
                 # Not stopped along with this call, should it be stopped.
                 await asyncio.wait(under_way)
-            outcome = await self.browser().call(tool_name, arguments, refused=still_on)
+            if reopen_agreement is None:
+                outcome = await self.browser().call(tool_name, arguments, refused=still_on)
+            else:
+                outcome = await self.browser().call(
+                    tool_name, arguments, refused=still_on, reopen_agreement=reopen_agreement
+                )
         finally:
             self._end(BUILTIN_GROUP_BROWSER)
         self._tell_window()
@@ -322,27 +340,63 @@ class BuiltinToolProvider:
             return None
         return self._browser.window()
 
-    async def close_browser(self) -> None:
-        """Close the browser this process started and drop the connection; for switching off."""
-        if self._browser is not None:
+    async def close_browser(self, *, keep_window: bool = False) -> None:
+        """Close the browser this process started and drop the connection.
+
+        With ``keep_window``, a browser of ours that shows a window is left
+        as it is, connection and all (``browser_window_stays``), once the
+        call under way is over: for when the tools are switched off or stop
+        being usable, which says nothing against the window the user may
+        still be reading.
+        """
+        if self._browser is None:
+            return
+        if keep_window:
+            await self._browser.aclose(keep_window=True)
+        else:
             await self._browser.aclose()
+
+    def browser_closed_by_user(self) -> bool:
+        """Whether the user closed the browser this process started, and it has no window since.
+
+        Asked by the host before a call of the browser tools: it puts the
+        question to the user then (``browser_reopen_agreed``).
+        """
+        return self._browser is not None and self._browser.closed_by_user()
+
+    def browser_reopen_agreed(self) -> int | None:
+        """The user agreed to one call opening the browser they closed.
+
+        Returns the number of that agreement: handed to ``run`` with the
+        call it was given for, and handed back when that call is over
+        (``browser_reopen_agreement_over``). No other call opens the browser.
+        """
+        if self._browser is None:
+            return None
+        return self._browser.reopen_agreed()
+
+    def browser_reopen_agreement_over(self, agreement: int | None = None) -> None:
+        """The call the user agreed for is over: an agreement that opened no browser is not kept for a later one."""
+        if self._browser is not None:
+            self._browser.reopen_agreement_over(agreement)
 
     def browser_no_longer_wanted(self) -> None:
         """The user has said the browser is not to be used any more; ``close_browser`` follows. Does not block.
 
         For whoever closes it from a task in the background (the browser
-        tools were switched off, their settings changed): such a task may be
-        stopped before it has begun, by the user stopping every task, and
-        that must then still close the browser (``browser_window_stays``).
+        settings were changed, and the browser that is open was started
+        with the ones before): such a task may be stopped before it has
+        begun, by the user stopping every task, and that must then still
+        close the browser (``browser_window_stays``).
         """
         if self._browser is not None:
             self._browser.no_longer_wanted()
 
     def browser_window_stays(self) -> bool:
-        """Whether there is a browser window that is left open when the tasks are stopped.
+        """Whether there is a browser window that is left open when the tasks are stopped or the tools switched off.
 
-        Stopping the tasks is not saying that the browser is not wanted: the
-        user may want to go on reading what is on its pages. A browser this
+        Neither is saying that the browser is not wanted: the user may want
+        to go on reading what is on its pages. A browser this
         process started stays as a task that ended leaves it, with its window
         and the connection to it, unless it was said not to be wanted
         (``browser_no_longer_wanted``, ``close_browser``). False for
