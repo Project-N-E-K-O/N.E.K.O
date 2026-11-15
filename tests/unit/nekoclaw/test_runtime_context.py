@@ -178,7 +178,6 @@ def test_pruning_cuts_old_results_and_spares_the_newest_batch() -> None:
 
 
 def _old_result(*content: TextContent | ImageContent) -> list[Row]:
-
     """A conversation in which a tool result of these blocks is no longer the newest."""
     result = ToolResultMessage(tool_call_id="call-1", tool_name="capability_call", content=list(content))
     opening = AssistantMessage(content=[ToolCall(id="call-1", name="capability_call", arguments={})])
@@ -232,6 +231,24 @@ def test_pruning_cuts_every_large_block_and_leaves_a_result_of_small_ones_alone(
         assert texts.PRUNED_MIDDLE_MARKER in block.text
     # No block is large by itself: nothing to cut, whatever they come to together.
     assert untouched is None
+
+
+def test_what_the_summarizer_is_handed_is_cut_block_by_block_too() -> None:
+    from nekoclaw.runtime.context import _shrink_for_summary
+
+    policy = ContextPolicy(window=32_000, max_output=4_000)
+    group = "GROUP-START " + _words(400, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(6_000) + " PAGE-END"
+    region = _old_result(TextContent(text=group), TextContent(text=page))[1:3]
+
+    _call, handed = _shrink_for_summary(region, policy, 100_000)
+
+    # The summary is written from the group as it was handed over; only the
+    # long block next to it is cut for the summarizer.
+    assert handed.content[0] == TextContent(text=group)
+    assert handed.content[1].text.startswith("PAGE-START") and texts.PRUNED_MIDDLE_MARKER in handed.content[1].text
+    # The conversation itself is left as it is.
+    assert region[1].message.content[1] == TextContent(text=page)
 
 
 def test_only_the_newest_images_of_a_tool_stay_in_context() -> None:

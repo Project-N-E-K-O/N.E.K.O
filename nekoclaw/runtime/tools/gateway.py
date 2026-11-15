@@ -270,7 +270,6 @@ def _forwarder(client: GatewayClient, name: str) -> Any:
         # placeholder for a model that cannot see them).
         return AgentToolResult(content=[*blocks, *result.images])
 
-
     return forward
 
 

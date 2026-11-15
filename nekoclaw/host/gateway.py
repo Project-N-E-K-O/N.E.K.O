@@ -683,7 +683,6 @@ class CapabilityGateway:
         # a block of its own: each is capped by itself, and the runtime
         # keeps them apart (``GatewayResult.parts``), so that when it cuts
         # old results down the group stays whole next to a long page.
-
         result = await self._call_capability(commission, capability, arguments)
         # Only now, with the answer on its way: a call that was stopped
         # handed nothing over.

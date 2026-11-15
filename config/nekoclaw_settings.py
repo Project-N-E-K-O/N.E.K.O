@@ -202,7 +202,6 @@ middle while the task agent still works from it. That holds for a group
 handed over with its first call too: it comes as a block of its own in front
 of what the call returned, and the runtime prunes a result block by block."""
 
-
 BUILTIN_OCCUPIED_WAIT_SECONDS = 120.0
 """How long a call of a built-in tool waits for the desktop or the browser
 while another commission occupies it (``nekoclaw/host/leases.py``). After

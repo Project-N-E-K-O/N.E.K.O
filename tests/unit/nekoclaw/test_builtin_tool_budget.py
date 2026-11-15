@@ -377,7 +377,6 @@ def test_every_group_has_a_name_a_line_and_how_it_is_used():
         TOOL_GROUP_FIRST_RESULT,
         *(first["example"] for first in BUILTIN_GROUP_FIRST_CALLS.values()),
         TOOL_GROUPS_INTRO,
-
         TOOL_GROUP_LOADED_HEADER,
         TOOL_GROUP_NOT_LOADED,
         TOOL_GROUP_POINTER,

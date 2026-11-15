@@ -311,7 +311,6 @@ def prune_result(message: ToolResultMessage, policy: ContextPolicy) -> ToolResul
     for block in message.content:
         if isinstance(block, TextContent):
             pruned = prune_text(block.text, policy)
-
             if pruned is not None:
                 block = block.model_copy(update={"text": pruned})
                 changed = True
@@ -659,7 +658,6 @@ def _shrink_for_summary(region: list[Row], policy: ContextPolicy, room: int) -> 
         if isinstance(message, ToolResultMessage):
             message = prune_result(message, policy) or message
         messages.append(message)
-
     sizes = [estimate_tokens(message, policy.image_tokens) for message in messages]
     start = 0
     total = sum(sizes)

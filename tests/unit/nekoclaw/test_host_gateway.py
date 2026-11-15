@@ -1263,13 +1263,12 @@ async def test_a_group_larger_than_a_loaded_group_may_be_is_cut_and_the_log_says
 ):
     import logging
 
-    import config.nekoclaw_settings as settings
     from utils.tokenize import count_tokens
 
     grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
     whole = _text(await _load(builtin_host, grant, "browser"))
     assert not caplog.records
-    monkeypatch.setattr(settings, "GATEWAY_TOOL_GROUP_MAX_TOKENS", count_tokens(whole) - 1)
+    monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_TOOL_GROUP_MAX_TOKENS", count_tokens(whole) - 1)
 
     with caplog.at_level(logging.WARNING, logger="nekoclaw.host.gateway"):
         cut = _text(await _load(builtin_host, grant, "browser"))
@@ -1556,7 +1555,6 @@ async def test_a_search_finds_a_builtin_tool_as_its_group_and_says_how_to_load_i
 
     by_tool = _text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "screenshot"}))
     by_summary = _text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "operating websites"}))
-
     lamp = _text(await _call(builtin_host, grant, SEARCH_TOOL, {"query": "lamp"}))
 
     pointer = f'Tool group "browser": {BUILTIN_GROUP_SUMMARIES["browser"]} Load it with capability_search, group "browser".'
@@ -1572,10 +1570,8 @@ async def test_a_search_finds_a_builtin_tool_as_its_group_and_says_how_to_load_i
 
 
 async def test_a_group_counts_as_one_of_the_results_a_search_returns(builtin_host, server, monkeypatch):
-    import config.nekoclaw_settings as settings
-
     _catalog(server)
-    monkeypatch.setattr(settings, "GATEWAY_SEARCH_RESULTS", 1)
+    monkeypatch.setattr("config.nekoclaw_settings.GATEWAY_SEARCH_RESULTS", 1)
     grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
 
     # Both groups and a plugin entry match; the best one is all that is returned.
@@ -1605,7 +1601,6 @@ async def test_a_tool_that_needs_pictures_is_kept_from_a_model_that_cannot_see_t
 
     # The desktop's only tool works from pictures: the group is not told of.
     assert search["description"].splitlines()[1:] == [GROUPS_INTRO, GROUP_LINES["browser"]]
-
     assert search["inputSchema"]["properties"]["group"]["enum"] == ["browser"]
     # The browser is handed over without its screenshot tool.
     assert browser["isError"] is False

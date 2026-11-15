@@ -327,7 +327,6 @@ async def test_the_tools_handed_over_with_a_long_first_page_are_whole_after_the_
 
 
 async def test_revoked_token_stops_working(server, hosts, tmp_path):
-
     _weather(server)
     host = make_host(tmp_path, server)
     hosts.append(host)

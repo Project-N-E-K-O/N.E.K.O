@@ -182,7 +182,6 @@ async def test_call_returns_text_pictures_and_the_error_flag(gateway):
         False,
         ("clicked", "the window moved"),
     )
-
     assert gateway.requests[-3]["params"] == {"name": "plugin__weather__today", "arguments": {"city": "Lyon"}}
 
 
@@ -361,7 +360,6 @@ async def test_an_error_result_of_several_texts_is_raised_with_all_of_them():
     parts = ("the tools of a group", "the user declined")
     with pytest.raises(ToolError) as refused:
         await _forward(GatewayResult("\n".join(parts), (), True, parts))
-
 
     assert str(refused.value) == "the tools of a group\nthe user declined"
 
