@@ -150,6 +150,23 @@ class Project:
     # its year: a second project of a name archived in one year is kept in a
     # directory named after it with a number.
     directory: str | None = None
+    # A summary written to archive it at a time it could not be moved:
+    # ``{"for": the last_commission_at it was written at, "summary", "line"}``.
+    pending_archive: dict[str, Any] | None = None
+
+    def kept_summary(self) -> tuple[str, str] | None:
+        """Return the summary and the one line kept from a try to archive it that failed, while they hold.
+
+        They hold as long as no commission was filed under the project
+        since: after that it is another project that would be summed up.
+        """
+        kept = self.pending_archive
+        if not isinstance(kept, dict) or kept.get("for") != self.last_commission_at:
+            return None
+        summary, line = kept.get("summary"), kept.get("line")
+        if not isinstance(summary, str) or not summary.strip():
+            return None
+        return summary, line if isinstance(line, str) else ""
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -300,13 +317,22 @@ def _entry_type(value: Any) -> str:
     return kind if kind in ENTRY_TYPES else _DEFAULT_TYPE
 
 
+# What the target of a link is made of when it can be written as it is:
+# letters and digits of any script, and the few marks the paths here have.
+_PLAIN_TARGET = re.compile(r"[\w./~-]+")
+
+
 def _link(target: str) -> str:
-    """Write the target of a link so that it is one: in angle brackets when it has a space or a bracket in it.
+    """Write the target of a link so that it is one: in angle brackets unless it is plain.
 
     A project's name is part of the path its line points at, and may have
-    both (``My App (v2)``).
+    spaces, brackets, ``#``, ``%`` and the like in it (``My App (v2)``).
+    The path is written as it is and not percent-encoded: a line of an
+    index is read by a task agent before anyone else, and it opens the
+    path it finds there. A viewer still does not follow a target with
+    ``#`` or ``%`` in it rightly.
     """
-    return f"<{target}>" if any(char in target for char in " ()") else target
+    return target if _PLAIN_TARGET.fullmatch(target) else f"<{target}>"
 
 
 def _index_marks(target: str) -> tuple[str, str]:
@@ -839,6 +865,7 @@ class TaskAgentSpace:
             return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else default
 
         archived_at = data.get("archived_at")
+        pending = data.get("pending_archive")
         return Project(
             name=str(data.get("name") or directory.name),
             description=_one_line(data.get("description")),
@@ -851,6 +878,7 @@ class TaskAgentSpace:
             archive_year=archive_year,
             archive_attempts=int(number("archive_attempts")),
             directory=directory.name,
+            pending_archive=pending if isinstance(pending, dict) else None,
         )
 
     @staticmethod
@@ -877,6 +905,8 @@ class TaskAgentSpace:
         data = project.to_json()
         data.pop("archive_year", None)
         data.pop("directory", None)
+        if data.get("pending_archive") is None:
+            data.pop("pending_archive", None)
         directory.mkdir(parents=True, exist_ok=True)
         atomic_write_json(directory / SpacePaths.PROJECT_FILE, {"version": _PROJECT_FILE_VERSION, **data}, ensure_ascii=False, indent=2)
 
@@ -917,10 +947,21 @@ class TaskAgentSpace:
         """
         if project is None or project == DEFAULT_PROJECT or self._paths().project_dir(project).is_dir():
             return
-        wanted = normalize_name(project)
-        archived = next((item for item in self._archived_projects() if normalize_name(item.name) == wanted), None)
+        archived = self._archived_of(project)
         if archived is not None:
             self._restore(archived)
+
+    def _archived_of(self, name: str) -> Project | None:
+        """Return the archived project of a name; of several, the one archived last.
+
+        A name can be in the archive more than once: a project of the name
+        was begun anew after an earlier one was archived, or a move to
+        another volume was cut off after its copy had its name. The one to
+        bring back is the one that was in use last.
+        """
+        wanted = normalize_name(name)
+        found = [item for item in self._archived_projects() if normalize_name(item.name) == wanted]
+        return max(found, key=lambda item: (item.archived_at or 0.0, item.last_commission_at), default=None)
 
     async def list_projects(self, *, include_archived: bool = True) -> list[Project]:
         """Return the projects, the archived ones last."""
@@ -1103,10 +1144,7 @@ class TaskAgentSpace:
 
         def work() -> Project:
             if not self._paths().project_dir(name).is_dir():
-                wanted = normalize_name(name)
-                archived = next(
-                    (item for item in self._archived_projects() if normalize_name(item.name) == wanted), None
-                )
+                archived = self._archived_of(name)
                 if archived is not None:
                     return self._ensure_project(self._restore(archived).name, at=at)
             return self._ensure_project(name, description=description, workdir=workdir, at=at)
@@ -1144,10 +1182,11 @@ class TaskAgentSpace:
         lock, so the look and the move are one step.
 
         A project that cannot be moved (on Windows, while a file in it is
-        held open) stays where it is. When a summary came with it, that is
-        counted in ``archive_attempts``: the summary was asked of a model,
-        and a project that can never be moved must not be asked about in
-        every round.
+        held open) stays where it is. A summary that came with it is kept
+        in the project's record (``Project.kept_summary``), and a later try
+        that brings none uses it: the summary was asked of a model, so a
+        project that cannot be moved is not asked about again in every
+        round, and what the model wrote is not thrown away.
         """
         paths = self._paths()
         source = paths.project_dir(name)
@@ -1161,6 +1200,10 @@ class TaskAgentSpace:
             project, readable = self._project_from(source), False
         if unless_touched_since is not None and (not readable or project.last_commission_at > unless_touched_since):
             return None
+        if not summary.strip():
+            kept = project.kept_summary()
+            if kept is not None:
+                summary, description = kept[0], description or kept[1]
         now = self._clock()
         year = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y")
         root = paths.archive_dir() / year
@@ -1176,11 +1219,16 @@ class TaskAgentSpace:
             _move(source, target)
         except OSError as exc:
             logger.warning("a project could not be moved to the archive (%s); it stays where it is", type(exc).__name__)
-            if summary.strip() and readable:
+            pending = {
+                "for": project.last_commission_at,
+                "summary": redact(summary).strip(),
+                "line": _one_line(redact(description)),
+            }
+            if pending["summary"] and readable and project.pending_archive != pending:
                 try:
-                    self._put_project(source, replace(project, archive_attempts=project.archive_attempts + 1))
+                    self._put_project(source, replace(project, pending_archive=pending))
                 except OSError:
-                    logger.warning("an attempt to archive a project could not be counted", exc_info=True)
+                    logger.warning("the summary of a project that could not be archived could not be kept", exc_info=True)
             return None
         archived = replace(
             project,
@@ -1189,6 +1237,7 @@ class TaskAgentSpace:
             archived_at=now,
             archive_year=year,
             directory=target.name,
+            pending_archive=None,
         )
         if readable:
             self._put_project(target, archived)
@@ -1449,19 +1498,19 @@ class TaskAgentSpace:
             return False
 
     async def named_in(self, command: str) -> bool:
-        """Whether a shell command names the space: the end of the space's path occurs in it.
+        """Whether a shell command names the space: the name of its directory occurs in it.
 
-        The last two parts of the path (``nekoclaw/task_agent_space``), with
-        either slash and in any case. So a path written from another
-        starting point is seen too: with the drive spelled another way
-        (``/d/...``), from the home directory, or relative to a working
-        directory above the space. A command that puts the path together
-        itself is not seen.
+        Only the directory's own name (``task_agent_space``), in any case,
+        so that a path from any starting point is seen: with the drive
+        written another way, from the home directory, relative to a
+        working directory above the space, or after the command changed
+        into the directory above. The odd command that only mentions the
+        name is refused with them. A command that puts the name together
+        itself (a variable, a wildcard) is not seen.
         """
 
         def work() -> bool:
-            root = self._paths().root
-            return _spelled(f"{root.parent.name}/{root.name}") in _spelled(command)
+            return self._paths().root.name.casefold() in command.casefold()
 
         try:
             return await self._read(work)
@@ -1505,11 +1554,6 @@ class TaskAgentSpace:
         return await self._read(lambda: self._paths().root.is_dir())
 
 
-def _spelled(text: str) -> str:
-    """Return a path or a command with one kind of slash and in one case, to look for the one in the other."""
-    return re.sub(r"[\\/]+", "/", text).casefold()
-
-
 def _is_project(directory: Path) -> bool:
     """Whether a directory among the projects is one.
 
@@ -1531,38 +1575,47 @@ def _set_aside_name(source: Path) -> Path:
 
 
 def _copy_across(source: Path, target: Path) -> None:
-    """Move a directory to another volume, so that it is whole in one place at every moment.
+    """Move a directory to another volume, so that it is whole under its name somewhere at every moment.
 
     1. Copied whole under another name on the target's volume. A copy that
        stops half way (the volume is full) is removed again.
-    2. The source is renamed out of sight where it is. That is one step on
+    2. The copy is given the target's name. From here on the directory is
+       whole in both places.
+    3. The source is renamed out of sight where it is. That is one step on
        its own volume: it happens whole or not at all. If it cannot be done
-       (a file in it is held open), the copy is removed and the source stays.
-    3. The copy is given the target's name.
+       (a file in it is held open), the copy is taken out of sight again
+       and removed, and the source stays.
     4. What was set aside is removed. Removing can stop half way; what is
        left then has a name that is no project's.
 
-    So ``target`` is never there unless complete, and the source is never
-    there in part: removing it under its own name could leave half of an
-    active project behind, which would be taken for the project itself.
+    So neither place ever has part of the directory under its name:
+    removing the source under its own name could leave half of an active
+    project behind, which would be taken for the project itself. And there
+    is no moment at which the directory is under its name in neither
+    place. A process stopped anywhere on the way leaves it whole at the
+    source, at the target, or at both, and whatever has a name that begins
+    with a dot is a leftover nothing depends on. (Setting the source aside
+    before the copy has its name would, stopped there, leave both out of
+    sight, and the next move would remove them as leftovers.)
     """
     unfinished = target.with_name(f"{_UNFINISHED_PREFIX}{target.name}")
     shutil.rmtree(unfinished, ignore_errors=True)
-    aside = _set_aside_name(source)
     try:
         shutil.copytree(source, unfinished)
-        os.replace(source, aside)
+        os.replace(unfinished, target)
     except BaseException:
         shutil.rmtree(unfinished, ignore_errors=True)
         raise
+    aside = _set_aside_name(source)
     try:
-        os.replace(unfinished, target)
+        os.replace(source, aside)
     except BaseException:
         try:
-            os.replace(aside, source)
+            os.replace(target, unfinished)
         except OSError:
-            logger.warning("a project set aside to be moved could not be put back", exc_info=True)
-        shutil.rmtree(unfinished, ignore_errors=True)
+            logger.warning("the copy of a project that stays where it was could not be taken back", exc_info=True)
+        else:
+            shutil.rmtree(unfinished, ignore_errors=True)
         raise
     shutil.rmtree(aside, ignore_errors=True)
 

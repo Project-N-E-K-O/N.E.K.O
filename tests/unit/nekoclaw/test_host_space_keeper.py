@@ -1441,24 +1441,26 @@ async def test_closing_stops_what_is_under_way(world):
 # ---------------------------------------------------------------------------
 
 
-async def test_a_project_that_cannot_be_moved_is_asked_about_a_few_times_and_does_not_hold_up_the_others(world, monkeypatch):
+async def test_a_project_that_cannot_be_moved_is_asked_about_once_and_does_not_hold_up_the_others(world, monkeypatch):
     import nekoclaw.host.space as module
-    from config.nekoclaw_settings import (
-        SPACE_ARCHIVE_MAX_ATTEMPTS,
-        SPACE_ARCHIVES_PER_UPKEEP,
-        SPACE_PROJECT_IDLE_SECONDS,
-    )
+    from config.nekoclaw_settings import SPACE_ARCHIVES_PER_UPKEEP, SPACE_PROJECT_IDLE_SECONDS
 
     stuck = [f"Alpha {number}" for number in range(SPACE_ARCHIVES_PER_UPKEEP)]
     for name in (*stuck, "Gamma"):
         await world.space.touch_project(name)
-    world.llm.answers[TIER_ARCHIVE] = [
-        {
-            "summary": "A project.",
-            "line": "a project",
-            "entries": [{"title": "CSV on Windows", "type": "lesson", "content": "Write a BOM."}],
+    answers: list[int] = []
+
+    async def summary() -> dict[str, Any]:
+        # Every answer has words of its own, so one that is filed twice, or not at all, shows.
+        answers.append(len(answers) + 1)
+        number = answers[-1]
+        return {
+            "summary": f"A project, summary {number}.",
+            "line": f"a project, line {number}",
+            "entries": [{"title": "CSV on Windows", "type": "lesson", "content": f"Write a BOM, answer {number}."}],
         }
-    ]
+
+    world.llm.answers[TIER_ARCHIVE] = [summary]
     world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
     move = module._move
 
@@ -1473,37 +1475,48 @@ async def test_a_project_that_cannot_be_moved_is_asked_about_a_few_times_and_doe
     async def active() -> list[str]:
         return [item.name for item in await world.space.list_projects() if item.status == "active"]
 
-    # While they are still asked about, the stuck ones use up the round's summaries.
-    for attempt in range(1, SPACE_ARCHIVE_MAX_ATTEMPTS + 1):
-        await world.keeper.tidy(force=True)
-        assert world.llm.count(TIER_ARCHIVE) == attempt * SPACE_ARCHIVES_PER_UPKEEP
-        assert await active() == [*stuck, "Gamma"]
-        assert [(await world.space.get_project(name)).archive_attempts for name in stuck] == [attempt] * len(stuck)
-        # What a summary says holds everywhere is kept once its project is archived, not before.
-        assert await world.space.list_entries() == []
+    async def lesson() -> str:
+        return (await world.space.read_entry("csv-on-windows")).content
 
-    # Then they are not asked about any more, and the next one has its turn.
+    # The first round asks about the stuck ones, which uses up its summaries.
     await world.keeper.tidy(force=True)
 
-    asked = SPACE_ARCHIVE_MAX_ATTEMPTS * SPACE_ARCHIVES_PER_UPKEEP + 1
+    assert world.llm.count(TIER_ARCHIVE) == len(stuck)
+    assert await active() == [*stuck, "Gamma"]
+    for number, name in enumerate(stuck, start=1):
+        project = await world.space.get_project(name)
+        assert project.kept_summary() == (f"A project, summary {number}.", f"a project, line {number}")
+        assert project.archive_attempts == 0
+        # What the summary said holds everywhere is filed when it is written.
+        assert (await lesson()).count(f"answer {number}.") == 1
+
+    # They are not asked about again: the next one has its turn at once.
+    await world.keeper.tidy(force=True)
+
+    asked = len(stuck) + 1
     assert world.llm.count(TIER_ARCHIVE) == asked
     assert await active() == stuck
     assert "Project: Gamma" in world.llm.last(TIER_ARCHIVE)[1]["content"]
-    assert [entry.id for entry in await world.space.list_entries()] == ["csv-on-windows"]
 
-    # And no round after that asks a model about them again.
+    # And no round after that asks a model about them.
     await world.keeper.tidy(force=True)
     assert world.llm.count(TIER_ARCHIVE) == asked
 
-    # Once the file is let go, they are archived, with the summary written the last time.
+    # Once the file is let go they are archived, each with the summary written for it.
     monkeypatch.setattr(module, "_move", move)
     await world.keeper.tidy(force=True)
 
     assert world.llm.count(TIER_ARCHIVE) == asked
     assert await active() == []
-    (first, *_rest) = [item for item in await world.space.list_projects() if item.name == stuck[0]]
-    home = world.root / "archive" / first.archive_year / stuck[0]
-    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "A project.\n"
+    index = await world.space.read_index()
+    for number, name in enumerate(stuck, start=1):
+        (archived,) = [item for item in await world.space.list_projects() if item.name == name]
+        home = world.root / "archive" / archived.archive_year / name
+        assert (home / "SUMMARY.md").read_text(encoding="utf-8") == f"A project, summary {number}.\n"
+        assert f"[archived project: {name}](<archive/{archived.archive_year}/{name}/SUMMARY.md>) — a project, line {number}" in index
+    # Nothing a model wrote was dropped, and nothing was filed twice.
+    for number in range(1, asked + 1):
+        assert (await lesson()).count(f"answer {number}.") == 1
 
 
 async def test_a_summary_that_cannot_be_saved_does_not_end_the_round(world, monkeypatch):
@@ -1527,7 +1540,11 @@ async def test_a_summary_that_cannot_be_saved_does_not_end_the_round(world, monk
         ("Alpha", "active"),
         ("Beta", "archived"),
     ]
-    assert (await world.space.get_project("Alpha")).archive_attempts == 1
+    alpha = await world.space.get_project("Alpha")
+    assert (alpha.kept_summary(), alpha.archive_attempts) == (("A project.", "a project"), 0)
+    # The next round does not ask about it again.
+    await world.keeper.tidy(force=True)
+    assert world.llm.count(TIER_ARCHIVE) == 2
 
 
 async def test_archiving_that_fails_outright_does_not_end_the_round(world, monkeypatch):
@@ -1638,3 +1655,16 @@ async def test_without_a_model_too_at_most_a_few_projects_are_archived_per_round
     finally:
         await world.keeper.aclose()
         await world.ledger.close()
+
+
+async def test_an_answer_that_cannot_be_read_is_said_in_the_log_without_what_it_was(world, caplog):
+    world.llm.answers[TIER_REVIEW] = ['{"review": "It was cut off at the cap, in the middle of a sente']
+
+    with caplog.at_level("WARNING", logger="nekoclaw.host.space_keeper"):
+        commission = await world.finished()
+
+    last = (await world.reviews(commission.id))[-1]
+    assert (last["status"], last["reason"]) == ("failed", "unreadable")
+    said = [record.getMessage() for record in caplog.records if "could not be read" in record.getMessage()]
+    assert len(said) == 1 and commission.id in said[0] and "characters came back" in said[0]
+    assert not any("cut off" in record.getMessage() for record in caplog.records)

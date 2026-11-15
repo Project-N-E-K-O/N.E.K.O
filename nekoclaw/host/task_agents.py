@@ -1590,11 +1590,12 @@ class TaskAgentManager:
                 isinstance(cwd, str) and cwd and await self._space.contains(cwd)
             ):
                 # What a shell command does is not looked into, so one that
-                # names the space, or runs inside it, is refused whole,
-                # whatever the settings allow: an approval of commands must
-                # not be a way to write past the host. A command that puts
-                # the path together itself is not seen here; that is left
-                # to whoever approves the command.
+                # names the space's directory, or runs inside it, is refused
+                # whole, whatever the settings allow: an approval of
+                # commands must not be a way to write past the host. A
+                # command that puts the name together itself (a variable,
+                # a wildcard) is not seen here; that is left to whoever
+                # approves the command. There is no sandbox.
                 from config.prompts.prompts_nekoclaw_space import SPACE_COMMAND_REFUSED
 
                 return {"allow": False, "reason": SPACE_COMMAND_REFUSED}

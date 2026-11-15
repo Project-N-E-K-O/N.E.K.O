@@ -79,7 +79,9 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     # finds no free place.
     "waiting_user": frozenset({"working", "queued", "failed", "cancelled"}),
     # Blocked and failed commissions can be taken up again: the task agent's
-    # transcript is on disk.
+    # transcript is on disk. That of a failed one is removed 30 days after
+    # the commission last changed (``SpaceKeeper``); taken up after that, it
+    # starts over in its working directory. That of a blocked one stays.
     # Queued again when no task agent place is free to take them up at once.
     "blocked": frozenset({"working", "queued", "failed", "cancelled"}),
     "failed": frozenset({"working", "queued"}),

@@ -626,3 +626,19 @@ async def test_a_shell_command_that_names_the_space_or_runs_inside_it_is_refused
         assert "note_lesson" in refused["reason"]
     # Any other command goes the way the settings say.
     assert (await decide("ls", tmp_path))["allow"] is True
+
+
+async def test_a_shell_command_that_changes_into_the_directory_above_first_is_refused_too(hosts, tmp_path):
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+    await host.space.file_entry(None, title="Use uv", content="Run Python through uv.")
+    await host.permission_store.set_mode("run_command", "allow")
+    payload = {
+        "tool": "bash",
+        "category": "run_command",
+        "command": "cd ../nekoclaw && printf x > task_agent_space/MEMORY.md",
+        "cwd": str(tmp_path / "elsewhere"),
+    }
+
+    refused = await host.task_agents._cb_permission("no-such-session", payload)
+
+    assert refused["allow"] is False and "note_lesson" in refused["reason"]

@@ -352,10 +352,20 @@ class SpaceKeeper:
             data: dict[str, Any] | None = None
             problem = ""
             try:
-                data = _parse_object(
-                    await self._llm.complete(TIER_REVIEW, await self._review_messages(commission, events))
-                )
-                problem = "" if data is not None else "unreadable"
+                raw = await self._llm.complete(TIER_REVIEW, await self._review_messages(commission, events))
+                data = _parse_object(raw)
+                if data is None:
+                    # Cut off at the cap on what the model may write, or not
+                    # the object that was asked for. Said here, because the
+                    # commission is not reviewed again; how much came back,
+                    # not what it was.
+                    logger.warning(
+                        "the review of commission %s could not be read (%d characters came back); "
+                        "it is recorded as failed",
+                        commission_id,
+                        len(str(raw)),
+                    )
+                    problem = "unreadable"
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - recorded, and not tried again
@@ -685,16 +695,20 @@ class SpaceKeeper:
         in_use = await busy()
         # A round asks for so many summaries and moves so many projects. The
         # two are counted apart: a project that is asked about and then
-        # cannot be moved has used a summary, not a move, and one that is no
-        # longer asked about uses neither, so it does not keep the ones
-        # after it from their turn.
+        # cannot be moved has used a summary, not a move, and one whose
+        # summary is there already uses neither until it moves, so it does
+        # not keep the ones after it from their turn.
         asked = moved = 0
         for project in idle:
             if moved >= SPACE_ARCHIVES_PER_UPKEEP:
                 break
             if project.name in in_use:
                 continue
-            ask = self._llm is not None and project.archive_attempts < SPACE_ARCHIVE_MAX_ATTEMPTS
+            # A summary written in an earlier round, when the project could
+            # not be moved (a file in it was held open): the space kept it
+            # and uses it, so the model is asked once, not once a round.
+            kept = project.kept_summary() is not None
+            ask = not kept and self._llm is not None and project.archive_attempts < SPACE_ARCHIVE_MAX_ATTEMPTS
             if ask and asked >= SPACE_ARCHIVES_PER_UPKEEP:
                 continue
             data = None
@@ -706,6 +720,25 @@ class SpaceKeeper:
                     continue
             summary = truncate_to_tokens(str((data or {}).get("summary") or "").strip(), 400)
             line = _cut((data or {}).get("line"), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
+            # What the summary says holds beyond the project is filed when
+            # the summary is written, whether or not the project then moves:
+            # a later try uses the summary that was kept and asks nothing,
+            # so nothing is filed twice and nothing the model gave is lost.
+            entries = (data or {}).get("entries")
+            for item in (entries if isinstance(entries, list) else [])[:2]:
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("type") or "").strip().lower()
+                try:
+                    await self._space.file_entry(
+                        None,
+                        title=str(item.get("title") or ""),
+                        content=str(item.get("content") or ""),
+                        kind=kind if kind in ENTRY_TYPES and kind != "progress" else "lesson",
+                        description=str(item.get("description") or ""),
+                    )
+                except (SpaceError, OSError) as exc:
+                    logger.warning("an entry of a project's summary could not be kept (%s)", type(exc).__name__)
             # The summary took a while. A commission taken up again meanwhile
             # shows in the ledger; one filed under the project meanwhile
             # shows in the project's own record, which the space looks at
@@ -722,27 +755,10 @@ class SpaceKeeper:
                 continue
             if archived is None:
                 # In use after all, or it could not be moved; the space
-                # counted the summary that came to nothing.
+                # kept the summary for the next try.
                 continue
             moved += 1
-            logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary))
-            # Only now, with the project archived: a round that could not
-            # move it would otherwise file the same entries again each time.
-            entries = (data or {}).get("entries")
-            for item in (entries if isinstance(entries, list) else [])[:2]:
-                if not isinstance(item, dict):
-                    continue
-                kind = str(item.get("type") or "").strip().lower()
-                try:
-                    await self._space.file_entry(
-                        None,
-                        title=str(item.get("title") or ""),
-                        content=str(item.get("content") or ""),
-                        kind=kind if kind in ENTRY_TYPES and kind != "progress" else "lesson",
-                        description=str(item.get("description") or ""),
-                    )
-                except (SpaceError, OSError) as exc:
-                    logger.warning("an entry of a project's summary could not be kept (%s)", type(exc).__name__)
+            logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary) or kept)
 
     def _ended_long_ago(
         self, conn: sqlite3.Connection, after: float, after_id: str, until: float
