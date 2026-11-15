@@ -1,25 +1,53 @@
 ---
-title: 用 Coding Agent 零基础做插件
-description: 面向零基础开发者的 N.E.K.O 插件 AI 辅助入门：选择 DeepSeek Harness、Codex、Trae、Claude Code、Cursor、通义灵码或 CodeBuddy，一键复制引导 Prompt 让 AI 自动创建插件。
+title: 用 AI 零基础做插件
+description: 不会写代码也能做 N.E.K.O 插件：在「插件制作工作台」新建项目，把一段话发给任意 AI 编程工具，检查、重载、启动全在界面上点按钮完成。
 ---
 
-# 用 Coding Agent 零基础做插件
+# 用 AI 零基础做插件
 
-即使你没写过完整的 Python 项目，也可以直接用 AI 编程助手做出自己的第一个 N.E.K.O 插件。在下方点选你正在用的工具，复制一段现成的 **Setup Prompt** 粘给它，剩下的环境准备、插件创建和代码自检都会由 AI 自动完成。
+你不需要会写代码。N.E.K.O 建好插件项目、自带写给 AI 看的说明书（AGENTS.md），AI 负责写代码和运行，你只负责点按钮。
 
-<CodingAgentOnboarding />
+**你能做出什么**：比如让猫娘定时提醒你喝水的小插件、她在聊天里能调用的查天气工具、或一个显示今日待办的小面板——只要能用一句话描述，就能做出来。
 
-## 粘贴 Setup Prompt 后，AI 会在后台帮你做哪几件事？
+## 1. 准备两样东西
 
-这段引导词把老手开发插件的标准动作全部打包教给了 Coding Agent：
+- **已安装的 N.E.K.O**：桌面版或 [Steam 版](https://store.steampowered.com/app/4099310/__NEKO/) 均可。
+- **一个 AI 编程工具（Coding Agent）**：从下面挑一个装好登录，不会选就先看它的官方教程。
 
-1. **检查并准备环境** — 自动确认 `git` 与 `uv` 可用（缺了什么它自己装），按需拉取或复用 `Project-N-E-K-O/N.E.K.O` 仓库并同步依赖。
-2. **用官方工具生成标准骨架** — 调用官方 `neko-plugin` 工具在 `plugin/plugins/<plugin_id>/` 下生成 `plugin.toml`、`config.example.toml`、`__init__.py`、测试与发布配置。
-3. **对照本地最新文档写代码** — 直接翻阅仓库内的 `docs/zh-CN/plugins/` 与 `plugin/sdk/plugin/`，按现行规范编写异步 `@plugin_entry` 或对话工具 `@llm_tool`。
-4. **自动跑通校验与打包** — 自动运行插件检查、代码风格校验与测试确保 `0 error(s)`，并可随时生成 `.neko-plugin` 安装包。
+<CodingAgentOnboarding section="agent" />
 
-## 下一步去哪看？
+## 2. 在「插件制作工作台」点「新建插件」
 
-- 想看各工具官方上手教程和 N.E.K.O 真实界面截图？打开 [各 Agent 上手教程](/zh-CN/plugins/coding-agent-guide)。
-- 想自己看懂生成的两个核心文件？阅读 [插件开发入门文档](/zh-CN/plugins/plugin-development) 或手动版 [快速开始](/zh-CN/plugins/quick-start)。
-- 插件做好了想分享给所有玩家？前往 [把插件发布到 N.E.K.O 插件市场](/zh-CN/plugins/cli)。
+打开 N.E.K.O 插件管理，左侧进入「插件制作工作台」，点「新建插件」：填好插件名称和 ID，选好存放的父目录，点「预览项目」能看到它自带 AGENTS.md、CLAUDE.md 等标准文件，然后点「创建插件」。**记住这个项目文件夹的位置**，下一步要用。
+
+![在插件制作工作台新建插件，预览标准文件](/images/plugins/onboarding/neko-studio-new.png)
+
+## 3. 用你的 Agent 打开这个文件夹
+
+按第 1 步所选工具卡里的提示，在它的界面里打开刚才新建的插件文件夹，并允许 AI 读写文件、执行操作。
+
+## 4. 复制这段话发给 AI
+
+<CodingAgentOnboarding section="prompt" />
+
+AI 会自己读完 AGENTS.md、写代码、跑检查。它请求执行操作时你点「允许」就行，遇到问题它也会用大白话问你。
+
+## 5. 回到工作台看效果
+
+在项目详情页点「在插件管理中打开」，插件页右上角点「启动」就能试用；之后每次 AI 改完，点「重载」刷新效果。想验证项目有没有问题，工作台「发布」页签里有「开始检查」；想改功能就继续跟 AI 聊天提要求。
+
+![工作室项目详情页：刷新、打开文件夹、在插件管理中打开](/images/plugins/onboarding/neko-studio-project.png)
+
+![插件页右上角有「启动」「重载」按钮](/images/plugins/onboarding/neko-plugin-detail.png)
+
+## 6. 想分享给别人
+
+工作台里的「打包下载」可以把插件导出成 `.neko-plugin` 安装包发给朋友，对方在「插件管理」页点「导入」就能用；想正式发布到市场，看[发布插件](/zh-CN/plugins/cli)。
+
+![朋友拿到 .neko-plugin 安装包后，在插件管理页点导入](/images/plugins/onboarding/neko-import-dialog.png)
+
+> 如果新建的项目里没有 AGENTS.md，说明你的 N.E.K.O 版本较旧，请先更新到最新版本再重试。
+
+---
+
+**已经会用源码版、想手动开发？** 阅读[插件开发入门文档](/zh-CN/plugins/plugin-development)或[快速开始](/zh-CN/plugins/quick-start)。

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useData, withBase } from 'vitepress'
+import { useData } from 'vitepress'
+import { selectedAgentId } from './agent-selection'
 import {
   ONBOARDING_COPY,
   buildSetupPrompt,
@@ -8,12 +9,15 @@ import {
   normalizeDocsLocale,
 } from './coding-agents-data'
 
+const props = withDefaults(defineProps<{ section?: 'agent' | 'prompt' }>(), {
+  section: 'agent',
+})
+
 const { lang } = useData()
 
 const locale = computed(() => normalizeDocsLocale(lang.value))
 const copy = computed(() => ONBOARDING_COPY[locale.value])
 
-const selectedAgentId = ref<string>('')
 const pluginIdea = ref('')
 const promptExpanded = ref(false)
 const copiedKey = ref<string | null>(null)
@@ -28,12 +32,6 @@ const generatedPrompt = computed(() =>
   buildSetupPrompt(locale.value, pluginIdea.value),
 )
 
-const guideBaseUrl = computed(() => {
-  if (locale.value === 'zh-CN') return withBase('/zh-CN/plugins/coding-agent-guide')
-  if (locale.value === 'ja') return withBase('/ja/plugins/coding-agent-guide')
-  return withBase('/plugins/coding-agent-guide')
-})
-
 watch(
   locale,
   () => {
@@ -44,14 +42,6 @@ watch(
   },
   { immediate: true },
 )
-
-function isExternalUrl(url: string): boolean {
-  return /^https?:\/\//i.test(url)
-}
-
-function resolveAgentUrl(url: string): string {
-  return isExternalUrl(url) ? url : withBase(url)
-}
 
 async function writeClipboard(text: string, key: string) {
   const ok = await copyToClipboard(text)
@@ -89,6 +79,7 @@ function onTabKeydown(event: KeyboardEvent, index: number) {
 }
 
 onMounted(() => {
+  if (props.section !== 'agent') return
   const params = new URLSearchParams(window.location.search)
   const requested = params.get('agent')
   if (requested && copy.value.agents.some((a) => a.id === requested)) {
@@ -102,12 +93,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="NekoAgentOnboarding">
-    <div class="NekoAgentOnboarding-prep">
-      <span class="NekoAgentOnboarding-prepBadge">{{ copy.prepBadge }}</span>
-      <p class="NekoAgentOnboarding-prepText">{{ copy.prepText }}</p>
-    </div>
-
+  <div v-if="section === 'agent'" class="NekoAgentOnboarding">
     <div class="NekoAgentOnboarding-shell">
       <div class="NekoAgentOnboarding-tabHeader">
         <span class="NekoAgentOnboarding-tabTitle">{{ copy.tabHeading }}</span>
@@ -146,86 +132,24 @@ onBeforeUnmount(() => {
       >
         <header class="NekoAgentOnboarding-cardHeader">
           <div class="NekoAgentOnboarding-cardMeta">
-            <span class="NekoAgentOnboarding-eyebrow">{{ activeAgent.eyebrow }}</span>
             <h2 class="NekoAgentOnboarding-agentTitle">{{ activeAgent.title }}</h2>
-            <p class="NekoAgentOnboarding-tagline">{{ activeAgent.tagline }}</p>
           </div>
           <div class="NekoAgentOnboarding-cardActions">
             <a
+              v-if="activeAgent.downloadUrl"
               class="NekoAgentOnboarding-siteBtn"
-              :href="resolveAgentUrl(activeAgent.websiteUrl)"
-              :target="isExternalUrl(activeAgent.websiteUrl) ? '_blank' : undefined"
-              :rel="isExternalUrl(activeAgent.websiteUrl) ? 'noopener noreferrer' : undefined"
+              :href="activeAgent.downloadUrl"
+              target="_blank"
+              rel="noopener noreferrer"
             >
-              {{ activeAgent.websiteLabel }}
-              <span v-if="isExternalUrl(activeAgent.websiteUrl)" aria-hidden="true">↗</span>
+              {{ copy.downloadLabel }}
+              <span aria-hidden="true">↗</span>
             </a>
           </div>
         </header>
 
-        <div class="NekoAgentOnboarding-stepsLabel">{{ copy.stepsHeading }}</div>
-
-        <ol class="NekoAgentOnboarding-steps">
-          <li
-            v-for="(step, sIdx) in activeAgent.steps"
-            :key="`${activeAgent.id}-${sIdx}`"
-            class="NekoAgentOnboarding-step"
-            :class="{ 'NekoAgentOnboarding-step--prompt': step.isPromptStep }"
-          >
-            <div class="NekoAgentOnboarding-stepRow">
-              <span class="NekoAgentOnboarding-stepNum">{{ sIdx + 1 }}</span>
-              <span class="NekoAgentOnboarding-stepText">{{ step.text }}</span>
-            </div>
-
-            <div v-if="step.isPromptStep" class="NekoAgentOnboarding-promptBox">
-              <div class="NekoAgentOnboarding-promptTop">
-                <div class="NekoAgentOnboarding-promptInfo">
-                  <div class="NekoAgentOnboarding-promptTitle">{{ copy.promptStepTitle }}</div>
-                  <div class="NekoAgentOnboarding-promptDesc">{{ copy.promptStepDesc }}</div>
-                </div>
-                <button
-                  type="button"
-                  class="NekoAgentOnboarding-primaryCopy"
-                  :class="{ 'is-copied': copiedKey === 'setup-prompt' }"
-                  @click="writeClipboard(generatedPrompt, 'setup-prompt')"
-                >
-                  <span>{{
-                    copiedKey === 'setup-prompt' ? `✓ ${copy.copiedPrompt}` : copy.copyPrompt
-                  }}</span>
-                </button>
-              </div>
-
-              <label class="NekoAgentOnboarding-ideaField">
-                <span class="NekoAgentOnboarding-ideaLabel">{{ copy.ideaLabel }}</span>
-                <input
-                  v-model="pluginIdea"
-                  type="text"
-                  class="NekoAgentOnboarding-ideaInput"
-                  :placeholder="copy.ideaPlaceholder"
-                />
-              </label>
-
-              <div class="NekoAgentOnboarding-promptFooter">
-                <button
-                  type="button"
-                  class="NekoAgentOnboarding-previewToggle"
-                  :aria-expanded="promptExpanded"
-                  @click="promptExpanded = !promptExpanded"
-                >
-                  {{ promptExpanded ? `${copy.hidePrompt} ▴` : `${copy.showPrompt} ▾` }}
-                </button>
-              </div>
-
-              <pre v-if="promptExpanded" class="NekoAgentOnboarding-promptPre"><code>{{ generatedPrompt }}</code></pre>
-            </div>
-          </li>
-        </ol>
-
-        <div
-          v-if="activeAgent.tutorials?.length"
-          class="NekoAgentOnboarding-tutorials"
-        >
-          <div class="NekoAgentOnboarding-tutorialsLabel">{{ copy.tutorialsHeading }}</div>
+        <div v-if="activeAgent.tutorials?.length" class="NekoAgentOnboarding-tutorials">
+          <div class="NekoAgentOnboarding-fieldLabel">{{ copy.tutorialsHeading }}</div>
           <div class="NekoAgentOnboarding-tutorialsRow">
             <a
               v-for="tutorial in activeAgent.tutorials"
@@ -242,77 +166,72 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="NekoAgentOnboarding-fallbacks">
-          <details
-            v-for="(fb, fIdx) in copy.fallbacks"
-            :key="fIdx"
-            class="NekoAgentOnboarding-fallback"
-          >
-            <summary class="NekoAgentOnboarding-fallbackSummary">
-              <span>{{ fb.title }}</span>
-            </summary>
-            <div class="NekoAgentOnboarding-fallbackBody">
-              <p class="NekoAgentOnboarding-fallbackIntro">{{ fb.intro }}</p>
-              <div
-                v-for="(item, iIdx) in fb.items"
-                :key="iIdx"
-                class="NekoAgentOnboarding-fallbackItem"
-              >
-                <div class="NekoAgentOnboarding-fallbackItemTitle">{{ item.label }}</div>
-                <div class="NekoAgentOnboarding-fallbackItemDesc">{{ item.description }}</div>
-              </div>
-            </div>
-          </details>
-        </div>
+        <dl class="NekoAgentOnboarding-fields">
+          <div class="NekoAgentOnboarding-field">
+            <dt class="NekoAgentOnboarding-fieldLabel">{{ copy.openFolderHeading }}</dt>
+            <dd class="NekoAgentOnboarding-fieldText">{{ activeAgent.openFolder }}</dd>
+          </div>
+          <div class="NekoAgentOnboarding-field">
+            <dt class="NekoAgentOnboarding-fieldLabel">{{ copy.allowActionsHeading }}</dt>
+            <dd class="NekoAgentOnboarding-fieldText">{{ activeAgent.allowActions }}</dd>
+          </div>
+          <div class="NekoAgentOnboarding-field">
+            <dt class="NekoAgentOnboarding-fieldLabel">{{ copy.contextNoteHeading }}</dt>
+            <dd class="NekoAgentOnboarding-fieldText">{{ activeAgent.contextNote }}</dd>
+          </div>
+        </dl>
       </section>
     </div>
+  </div>
 
-    <div class="NekoAgentOnboarding-walkthroughBanner">
-      <div class="NekoAgentOnboarding-walkthroughCopy">
-        <div class="NekoAgentOnboarding-walkthroughTitle">{{ copy.tutorialsCtaTitle }}</div>
-        <div class="NekoAgentOnboarding-walkthroughDesc">{{ copy.tutorialsCtaDesc }}</div>
+  <div v-else class="NekoAgentPrompt">
+    <div class="NekoAgentOnboarding-promptBox">
+      <div class="NekoAgentOnboarding-promptTop">
+        <div class="NekoAgentOnboarding-promptInfo">
+          <div class="NekoAgentOnboarding-promptTitle">{{ copy.promptTitle }}</div>
+          <div class="NekoAgentOnboarding-promptDesc">{{ copy.promptDesc }}</div>
+        </div>
+        <button
+          type="button"
+          class="NekoAgentOnboarding-primaryCopy"
+          :class="{ 'is-copied': copiedKey === 'setup-prompt' }"
+          @click="writeClipboard(generatedPrompt, 'setup-prompt')"
+        >
+          <span>{{
+            copiedKey === 'setup-prompt' ? `✓ ${copy.copiedPrompt}` : copy.copyPrompt
+          }}</span>
+        </button>
       </div>
-      <div class="NekoAgentOnboarding-walkthroughLinks">
-        <a class="NekoAgentOnboarding-ctaLink is-primary" :href="guideBaseUrl">
-          {{ copy.tutorialsCtaLabel }} →
-        </a>
+
+      <label class="NekoAgentOnboarding-ideaField">
+        <span class="NekoAgentOnboarding-ideaLabel">{{ copy.ideaLabel }}</span>
+        <input
+          v-model="pluginIdea"
+          type="text"
+          class="NekoAgentOnboarding-ideaInput"
+          :placeholder="copy.ideaPlaceholder"
+        />
+      </label>
+
+      <div class="NekoAgentOnboarding-promptFooter">
+        <button
+          type="button"
+          class="NekoAgentOnboarding-previewToggle"
+          :aria-expanded="promptExpanded"
+          @click="promptExpanded = !promptExpanded"
+        >
+          {{ promptExpanded ? `${copy.hidePrompt} ▴` : `${copy.showPrompt} ▾` }}
+        </button>
       </div>
+
+      <pre v-if="promptExpanded" class="NekoAgentOnboarding-promptPre"><code>{{ generatedPrompt }}</code></pre>
     </div>
   </div>
 </template>
 
 <style scoped>
 .NekoAgentOnboarding {
-  margin: 20px 0 32px;
-}
-
-.NekoAgentOnboarding-prep {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 18px;
-  margin-bottom: 18px;
-  border: 1px solid var(--vp-c-brand-soft);
-  border-radius: 12px;
-  background: var(--vp-c-brand-soft);
-}
-
-.NekoAgentOnboarding-prepBadge {
-  flex: 0 0 auto;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--vp-c-brand-1);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 20px;
-}
-
-.NekoAgentOnboarding-prepText {
-  margin: 0 !important;
-  color: var(--vp-c-text-1);
-  font-size: 14px;
-  line-height: 1.65;
+  margin: 16px 0 24px;
 }
 
 .NekoAgentOnboarding-shell {
@@ -407,22 +326,13 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding-bottom: 16px;
+  padding-bottom: 14px;
   border-bottom: 1px solid var(--vp-c-divider);
 }
 
 .NekoAgentOnboarding-cardMeta {
   flex: 1 1 320px;
   min-width: 0;
-}
-
-.NekoAgentOnboarding-eyebrow {
-  display: inline-block;
-  margin-bottom: 4px;
-  color: var(--vp-c-brand-1);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
 }
 
 .NekoAgentOnboarding-agentTitle {
@@ -435,13 +345,6 @@ onBeforeUnmount(() => {
   line-height: 1.35 !important;
 }
 
-.NekoAgentOnboarding-tagline {
-  margin: 6px 0 0 !important;
-  color: var(--vp-c-text-2);
-  font-size: 13.5px;
-  line-height: 1.55;
-}
-
 .NekoAgentOnboarding-cardActions {
   display: flex;
   flex-wrap: wrap;
@@ -449,21 +352,35 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.NekoAgentOnboarding-tutorials {
-  margin-top: 16px;
+.NekoAgentOnboarding-siteBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 999px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1) !important;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none !important;
+  transition: border-color 0.18s ease, color 0.18s ease;
 }
 
-.NekoAgentOnboarding-tutorialsLabel {
-  margin-bottom: 8px;
-  color: var(--vp-c-text-1);
-  font-size: 13.5px;
-  font-weight: 700;
+.NekoAgentOnboarding-siteBtn:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1) !important;
+}
+
+.NekoAgentOnboarding-tutorials {
+  margin-top: 14px;
 }
 
 .NekoAgentOnboarding-tutorialsRow {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin-top: 6px;
 }
 
 .NekoAgentOnboarding-tutorialBtn {
@@ -487,94 +404,41 @@ onBeforeUnmount(() => {
   color: var(--vp-c-brand-1) !important;
 }
 
-.NekoAgentOnboarding-siteBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 14px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 999px;
-  background: var(--vp-c-bg-soft);
-  color: var(--vp-c-text-1) !important;
-  font-size: 13px;
-  font-weight: 600;
-  text-decoration: none !important;
-  transition: border-color 0.18s ease, color 0.18s ease;
-}
-
-.NekoAgentOnboarding-siteBtn:hover {
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-brand-1) !important;
-}
-
-.NekoAgentOnboarding-stepsLabel {
-  margin: 16px 0 10px;
-  color: var(--vp-c-text-1);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.NekoAgentOnboarding-steps {
+.NekoAgentOnboarding-fields {
+  margin: 16px 0 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin: 0 !important;
-  padding: 0 !important;
-  list-style: none !important;
-}
-
-.NekoAgentOnboarding-step {
-  margin: 0 !important;
-  padding: 12px 16px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
-  background: var(--vp-c-bg-soft);
-}
-
-.NekoAgentOnboarding-step--prompt {
-  border-color: var(--vp-c-brand-1);
-  background: var(--vp-c-bg);
-  box-shadow: 0 2px 12px rgba(217, 102, 198, 0.08);
-}
-
-.NekoAgentOnboarding-stepRow {
-  display: flex;
-  align-items: center;
   gap: 12px;
 }
 
-.NekoAgentOnboarding-stepNum {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--vp-c-bg-mute);
+.NekoAgentOnboarding-field {
+  margin: 0;
+}
+
+.NekoAgentOnboarding-fieldLabel {
+  margin: 0;
   color: var(--vp-c-text-1);
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 700;
 }
 
-.NekoAgentOnboarding-step--prompt .NekoAgentOnboarding-stepNum {
-  background: var(--vp-c-brand-1);
-  color: #fff;
+.NekoAgentOnboarding-fieldText {
+  margin: 3px 0 0;
+  color: var(--vp-c-text-2);
+  font-size: 13.5px;
+  line-height: 1.6;
 }
 
-.NekoAgentOnboarding-stepText {
-  color: var(--vp-c-text-1);
-  font-size: 14px;
-  line-height: 1.55;
+.NekoAgentPrompt {
+  margin: 16px 0 24px;
 }
 
 .NekoAgentOnboarding-promptBox {
-  margin-top: 12px;
-  margin-left: 36px;
   padding: 14px 16px;
-  border: 1px solid var(--vp-c-divider);
+  border: 1px solid var(--vp-c-brand-1);
   border-radius: 10px;
-  background: var(--vp-c-bg-soft);
+  background: var(--vp-c-bg);
+  box-shadow: 0 2px 12px rgba(217, 102, 198, 0.08);
 }
 
 .NekoAgentOnboarding-promptTop {
@@ -646,7 +510,7 @@ onBeforeUnmount(() => {
   padding: 8px 12px;
   border: 1px solid var(--vp-c-divider);
   border-radius: 8px;
-  background: var(--vp-c-bg);
+  background: var(--vp-c-bg-soft);
   color: var(--vp-c-text-1);
   font-size: 13.5px;
   line-height: 1.4;
@@ -687,131 +551,5 @@ onBeforeUnmount(() => {
   line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.NekoAgentOnboarding-fallbacks {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 18px;
-}
-
-.NekoAgentOnboarding-fallback {
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
-  background: var(--vp-c-bg-soft);
-}
-
-.NekoAgentOnboarding-fallbackSummary {
-  padding: 10px 14px;
-  color: var(--vp-c-text-2);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.NekoAgentOnboarding-fallbackSummary:hover {
-  color: var(--vp-c-brand-1);
-}
-
-.NekoAgentOnboarding-fallbackBody {
-  padding: 4px 14px 14px;
-  border-top: 1px solid var(--vp-c-divider);
-}
-
-.NekoAgentOnboarding-fallbackIntro {
-  margin: 10px 0 !important;
-  color: var(--vp-c-text-2);
-  font-size: 13px;
-}
-
-.NekoAgentOnboarding-fallbackItem {
-  margin-top: 10px;
-}
-
-.NekoAgentOnboarding-fallbackItemTitle {
-  color: var(--vp-c-text-1);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.NekoAgentOnboarding-fallbackItemDesc {
-  margin-top: 2px;
-  color: var(--vp-c-text-2);
-  font-size: 12.5px;
-}
-
-.NekoAgentOnboarding-walkthroughBanner {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-top: 16px;
-  padding: 16px 20px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 14px;
-  background: var(--vp-c-bg-soft);
-}
-
-.NekoAgentOnboarding-walkthroughCopy {
-  flex: 1 1 280px;
-}
-
-.NekoAgentOnboarding-walkthroughTitle {
-  color: var(--vp-c-text-1);
-  font-size: 14.5px;
-  font-weight: 700;
-}
-
-.NekoAgentOnboarding-walkthroughDesc {
-  margin-top: 3px;
-  color: var(--vp-c-text-2);
-  font-size: 13px;
-}
-
-.NekoAgentOnboarding-walkthroughLinks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.NekoAgentOnboarding-ctaLink {
-  display: inline-flex;
-  align-items: center;
-  padding: 8px 14px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
-  background: var(--vp-c-bg);
-  color: var(--vp-c-text-1) !important;
-  font-size: 13px;
-  font-weight: 600;
-  text-decoration: none !important;
-  transition: border-color 0.18s ease, color 0.18s ease;
-}
-
-.NekoAgentOnboarding-ctaLink:hover {
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-brand-1) !important;
-}
-
-.NekoAgentOnboarding-ctaLink.is-primary {
-  border-color: var(--vp-c-brand-1);
-  background: var(--vp-c-brand-soft);
-  color: var(--vp-c-brand-1) !important;
-}
-
-@media (max-width: 640px) {
-  .NekoAgentOnboarding-shell {
-    padding: 14px;
-  }
-
-  .NekoAgentOnboarding-card {
-    padding: 16px;
-  }
-
-  .NekoAgentOnboarding-promptBox {
-    margin-left: 0;
-  }
 }
 </style>

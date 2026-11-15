@@ -62,8 +62,7 @@ Read [Build Plugins with Coding Agents](./coding-agents) if you want an AI codin
 
 ## Quick Links
 
-- [Build Plugins with Coding Agents](./coding-agents) — Pick your coding agent and copy a ready-made `neko-plugin` CLI setup prompt
-- [Agent Tutorials](./coding-agent-guide) — Official getting-started guides for every agent, plus real N.E.K.O screenshots
+- [Build Plugins with Coding Agents](./coding-agents) — Create a project in Plugin studio and let an AI coding agent build it for you
 - [Getting Started with Plugin Development](./plugin-development) — Understand what a plugin contains and how to build one
 - [Quick Start](./quick-start) — Create your first plugin step by step
 - [Publish a Plugin](/plugins/cli) — Upload to GitHub, submit for review, and publish new versions

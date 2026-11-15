@@ -2,7 +2,6 @@ import DefaultTheme from 'vitepress/theme'
 import { h } from 'vue'
 import AnalyticsConsent from './AnalyticsConsent.vue'
 import CodingAgentOnboarding from './CodingAgentOnboarding.vue'
-import CodingAgentTutorials from './CodingAgentTutorials.vue'
 import LocaleSwitch from './LocaleSwitch.vue'
 import {
   createRoutePageViewTracker,
@@ -20,7 +19,6 @@ export default {
   }),
   enhanceApp({ app, router }) {
     app.component('CodingAgentOnboarding', CodingAgentOnboarding)
-    app.component('CodingAgentTutorials', CodingAgentTutorials)
     if (typeof window === 'undefined') return
 
     installSteamCtaClickTracking()
