@@ -462,7 +462,16 @@ async def test_reviews_are_made_one_at_a_time(world):
     commissions = [await world.file(f"task number {number} with words{number}") for number in range(4)]
     for commission in commissions:
         await world.work(commission.id)
+    # The model holds every call until it is let go.
+    world.llm.gate = asyncio.Event()
     await asyncio.gather(*(world.ledger.transition(commission.id, "done", reason="test") for commission in commissions))
+    while not world.llm.calls:
+        await asyncio.sleep(0.01)
+    # Time enough for the other three to reach the model, were they allowed to.
+    await asyncio.sleep(0.3)
+    assert (len(world.llm.calls), world.llm.running) == (1, 1)
+
+    world.llm.gate.set()
     await world.keeper.settle()
 
     assert world.llm.count(TIER_REVIEW) == 4
@@ -502,6 +511,27 @@ async def test_what_is_sent_for_a_review_stays_within_its_cap(world):
     assert process.rstrip().split("\n")[-1].startswith("bash(")
     # With every part at its cap, none was pushed out by another.
     assert "Index of this project:\n- [Daily topic" in user
+
+
+async def test_the_whole_of_a_review_is_capped_whatever_its_parts_are(world, monkeypatch):
+    import config.nekoclaw_settings as settings
+    from utils.tokenize import count_tokens
+
+    # A part that outgrows the room it was meant to have.
+    monkeypatch.setattr(settings, "TASK_AGENT_REVIEW_PROCESS_MAX_TOKENS", 50_000)
+    commission = await world.file()
+    await world.ledger.transition(commission.id, "working", reason="test")
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for number in range(600):
+        call_id = f"call-{number}"
+        rows.append(("tool_start", {"tool_call_id": call_id, "tool_name": "bash", "args": {"command": f"step {number} " * 20}}))
+        rows.append(("tool_end", {"tool_call_id": call_id, "tool_name": "bash", "is_error": False, "text": f"result {number} " * 20}))
+    await world.ledger.append_events(commission.id, rows)
+    await world.end(commission.id)
+
+    system, user = (message["content"] for message in world.llm.last(TIER_REVIEW))
+    assert count_tokens(system) + count_tokens(user) <= settings.TASK_AGENT_REVIEW_INPUT_MAX_TOKENS
+    assert "steps left out" not in user
 
 
 def test_the_parts_of_a_review_fit_its_cap_so_that_none_is_cut_off_at_the_end():
@@ -690,7 +720,8 @@ async def test_what_is_sent_for_a_summary_stays_within_its_cap(world):
     from config.nekoclaw_settings import SPACE_ARCHIVE_INPUT_MAX_TOKENS, SPACE_PROJECT_IDLE_SECONDS
     from utils.tokenize import count_tokens
 
-    await world.space.touch_project("Budget app", description="tracks spending " * 50, workdir="D:/" + "w" * 500)
+    # The path of its files has no cap of its own.
+    await world.space.touch_project("Budget app", description="tracks spending " * 50, workdir="D:/" + "folder/" * 4000)
     for number in range(60):
         await world.space.file_entry("Budget app", title=f"Topic {number} t{number}", content="text " * 300)
         await world.space.file_entry(None, title=f"Global {number} g{number}", content="text " * 300)

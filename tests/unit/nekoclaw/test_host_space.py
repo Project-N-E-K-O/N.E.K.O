@@ -523,6 +523,23 @@ async def test_a_project_that_cannot_be_moved_stays(space, root, monkeypatch):
     assert [item.status for item in await space.list_projects()] == ["active"]
 
 
+async def test_an_archived_project_does_not_replace_one_of_its_name_that_is_in_use(space, root):
+    await space.touch_project("Budget app", description="the old one")
+    archived = await space.archive_project("Budget app", summary="old summary")
+    # A project of the same name was started since, and has an entry of its own.
+    await space.touch_project("Budget app", description="the new one")
+    await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+
+    project = await space.assign_project(_commission(dispatch_text="go on with the budget app"))
+
+    assert (project.name, project.description, project.status) == ("Budget app", "the new one", "active")
+    assert (root / "projects" / "Budget app" / "memory" / "stack.md").is_file()
+    # The archived one stays in the archive, untouched.
+    home = root / "archive" / archived.archive_year / "Budget app"
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "old summary\n"
+    assert not (root / "projects" / "Budget app" / "SUMMARY.md").exists()
+
+
 async def test_open_project_brings_an_archived_one_back_instead_of_making_a_second(space, root):
     await space.touch_project("Budget app", description="tracks spending")
     await space.archive_project("Budget app", summary="s")
