@@ -317,14 +317,26 @@ def notify_install_committed(result: dict) -> dict:
             logger.warning(
                 "Capability job enqueue failed: error={}", type(exc).__name__
             )
-        try:
-            _auto_bind_host_models(str(installed["target_plugin_id"]))
-        except Exception as exc:
-            logger.warning(
-                "Host model auto-bind failed: plugin_id={}, error={}",
-                installed.get("target_plugin_id"), type(exc).__name__,
-            )
+        # Best-effort and off the event loop: the binding write takes the
+        # storage lock and fsyncs, which must never stall async install paths
+        # or in-flight model streams.
+        threading.Thread(
+            target=_auto_bind_host_models_safe,
+            args=(str(installed["target_plugin_id"]),),
+            daemon=True,
+            name=f"host-model-autobind-{installed.get('target_plugin_id')}",
+        ).start()
     return result
+
+
+def _auto_bind_host_models_safe(plugin_id: str) -> None:
+    try:
+        _auto_bind_host_models(plugin_id)
+    except Exception as exc:
+        logger.warning(
+            "Host model auto-bind failed: plugin_id={}, error={}",
+            plugin_id, type(exc).__name__,
+        )
 
 
 def _auto_bind_host_models(plugin_id: str) -> None:

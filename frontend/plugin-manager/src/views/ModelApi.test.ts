@@ -6,7 +6,7 @@ import ElementPlus, { ElMessageBox } from 'element-plus'
 import type { MessageBoxData } from 'element-plus'
 import ModelApi from './ModelApi.vue'
 import { modelApiMessages } from '@/i18n/model-api'
-import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate } from './model-api-form'
+import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate, temperatureLimit } from './model-api-form'
 import type { ModelSlot, ModelUsageResult } from '@/types/model-api'
 
 const api = vi.hoisted(() => ({ listModelSlots: vi.fn(), createModelSlot: vi.fn(), updateModelSlot: vi.fn(), deleteModelSlot: vi.fn(), deleteModelBinding: vi.fn(), testModelSlot: vi.fn(), getModelUsage: vi.fn() }))
@@ -103,6 +103,21 @@ describe('model slot credentials', () => {
     expect(needsModelKeyUpdate(form, saved)).toBe(false)
     expect(modelSlotPayload(form).api_key).toBeUndefined()
   })
+  it('caps a host-follow temperature at the protocol intersection until the host resolution is known', () => {
+    const form = modelSlotForm()
+    form.source = 'host_follow'
+    // New slot: no resolution yet — only ≤1 is safe for both protocols.
+    expect(temperatureLimit(form, null)).toBe(1)
+    const hostSlot: ModelSlot = { ...saved, source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', host_status: { configured: true, model: 'm', protocol: 'openai_chat', free: false } }
+    expect(temperatureLimit(modelSlotForm(hostSlot), hostSlot)).toBe(2)
+    const anthropic: ModelSlot = { ...hostSlot, host_status: { configured: true, model: 'm', protocol: 'anthropic_messages', free: false } }
+    expect(temperatureLimit(modelSlotForm(anthropic), anthropic)).toBe(1)
+    // Manual slots keep their own protocol's range.
+    const manual = modelSlotForm(saved)
+    expect(temperatureLimit(manual, saved)).toBe(2)
+    manual.protocol = 'anthropic_messages'
+    expect(temperatureLimit(manual, saved)).toBe(1)
+  })
 })
 
 describe('Plugin API page', () => {
@@ -170,6 +185,13 @@ describe('Plugin API page', () => {
     const container = await mount()
     expect(container.textContent).toContain('Main app API not configured')
     expect(container.textContent).not.toContain('Realtime voice endpoint')
+  })
+  it('surfaces an actionable defaults mismatch and caps the temperature editor at the resolved protocol', async () => {
+    const hostSlot: ModelSlot = { ...saved, id: 'slot_host', name: 'Host assist', source: 'host_follow', host_api: 'assist', base_url: '', model: '', api_key: '', api_key_preview: '', defaults: { temperature: 1.5, max_output_tokens: null }, host_status: { configured: false, error_code: 'model_defaults_incompatible', message: 'Lower the default temperature to 1 or below for Anthropic.' }, bound_by: [] }
+    api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [hostSlot] })
+    const container = await mount()
+    expect(container.textContent).toContain('Lower the default temperature to 1 or below for Anthropic.')
+    expect(container.textContent).not.toContain('Main app API not configured')
   })
   it('removes a stale plugin usage binding and enables slot deletion after refreshing', async () => {
     api.listModelSlots.mockResolvedValue({ schema_version: 1, slots: [{ ...saved, bound_by: [{ plugin_id: 'uninstalled_plugin', usage_id: 'removed_usage', version: 0 }] }] })

@@ -23,6 +23,7 @@ export interface HostSlotStatus {
   protocol?: ModelProtocol
   free?: boolean
   error_code?: string
+  message?: string
 }
 
 export interface ModelSlot extends ModelSlotInput {

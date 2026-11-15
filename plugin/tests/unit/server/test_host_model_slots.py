@@ -103,4 +103,35 @@ def test_status_reports_unconfigured_host(monkeypatch):
             return {"model": "m", "base_url": "wss://realtime.test/core"}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
-    assert host_slot_status(host_slot(host_api="core")) == {"configured": False, "error_code": "host_api_unsupported"}
+    status = host_slot_status(host_slot(host_api="core"))
+    assert status["configured"] is False
+    assert status["error_code"] == "host_api_unsupported"
+    assert "WebSocket" in status["message"]
+
+def test_anthropic_resolution_rejects_temperature_above_one(monkeypatch):
+    slot = host_slot(defaults={"temperature": 1.5})
+    config = {"model": "m", "base_url": "https://api.test/v1", "api_key": "k", "provider_type": "anthropic"}
+    with pytest.raises(ModelGatewayError) as error:
+        materialize_host_slot(slot, config)
+    assert error.value.code == "model_defaults_incompatible"
+    assert error.value.status_code == 409
+    # Within the Anthropic range the snapshot resolves normally.
+    ok = materialize_host_slot(host_slot(defaults={"temperature": 1.0}), config)
+    assert ok.protocol == "anthropic_messages"
+    # OpenAI resolution keeps the higher default.
+    openai = materialize_host_slot(slot, {**config, "provider_type": "openai_compatible"})
+    assert openai.defaults.temperature == 1.5
+
+
+def test_status_surfaces_defaults_mismatch_with_message(monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "m", "base_url": "https://api.test/v1", "api_key": "k", "provider_type": "anthropic"}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    status = host_slot_status(host_slot(defaults={"temperature": 1.5}))
+    assert status["configured"] is False
+    assert status["error_code"] == "model_defaults_incompatible"
+    assert "temperature" in status["message"]

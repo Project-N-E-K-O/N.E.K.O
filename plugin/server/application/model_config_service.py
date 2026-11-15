@@ -123,7 +123,15 @@ class ModelConfigService:
         if config.seed_version < HOST_SLOT_SEED_VERSION:
             # First panel open (or an older document): seed under the store's
             # write lock so concurrent readers cannot create duplicate slots.
-            config = self.store.update(self._seed_change)
+            try:
+                config = self.store.update(self._seed_change)
+            except Exception as exc:
+                # A read-only storage window (maintenance) must not hide slots
+                # that remain readable; serve this document and retry later.
+                from utils.cloudsave_runtime import MaintenanceModeError
+
+                if not isinstance(exc, MaintenanceModeError):
+                    raise
         return {"schema_version": config.schema_version, "slots": [self._view(config, key) for key in config.slots]}
 
     def _seed_change(self, config: PluginModelsConfig) -> PluginModelsConfig:
@@ -328,6 +336,10 @@ class ModelConfigService:
             )
             created_slot = slot_id is None
             if slot_id is None:
+                if config.seed_version >= HOST_SLOT_SEED_VERSION:
+                    # Seeding already ran and no assist slot remains: the user
+                    # deleted the default. Respect that; leave usages unbound.
+                    return {"bound": [], "slot_id": None}
                 slot_id = "slot_" + uuid4().hex
                 config.slots[slot_id] = ModelSlot(
                     name="Host assist API", source="host_follow", host_api="assist",
@@ -335,18 +347,22 @@ class ModelConfigService:
                 )
             slot = config.slots[slot_id]
             bindings = config.bindings.setdefault(plugin_id, {})
+            versions = config.binding_versions.setdefault(plugin_id, {})
             bound = []
             for usage_id, requirement in requirements.items():
-                if usage_id in bindings:
+                # A recorded version means the user bound or unbound this usage
+                # before; an explicit unbind must survive updates/reinstalls.
+                if usage_id in bindings or versions.get(usage_id, 0) > 0:
                     continue
                 if not set(requirement.capabilities).issubset(slot.capabilities):
                     continue
                 bindings[usage_id] = slot_id
-                versions = config.binding_versions.setdefault(plugin_id, {})
                 versions[usage_id] = versions.get(usage_id, 0) + 1
                 bound.append(usage_id)
             if not bindings:
                 config.bindings.pop(plugin_id, None)
+            if not versions:
+                config.binding_versions.pop(plugin_id, None)
             if created_slot and not bound:
                 # Defensive only: seeding normally provides the assist slot.
                 del config.slots[slot_id]

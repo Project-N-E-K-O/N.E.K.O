@@ -119,7 +119,7 @@
         </template>
         <el-form-item :label="t('modelApi.capabilities')"><el-checkbox-group v-model="form.capabilities" :disabled="saving"><el-checkbox v-for="capability in capabilities" :key="capability" :value="capability" :disabled="capability === 'text'">{{ t(`modelApi.capability.${capability}`) }}</el-checkbox></el-checkbox-group><p class="field-hint">{{ t('modelApi.capabilitiesHint') }}</p></el-form-item>
         <div class="form-pair">
-          <el-form-item :label="t('modelApi.temperature')"><el-input-number v-model="form.temperature" :min="0" :max="form.protocol === 'anthropic_messages' ? 1 : 2" :step="0.1" :precision="2" :disabled="saving" :placeholder="t('modelApi.providerDefault')" /></el-form-item>
+          <el-form-item :label="t('modelApi.temperature')"><el-input-number v-model="form.temperature" :min="0" :max="temperatureMax" :step="0.1" :precision="2" :disabled="saving" :placeholder="t('modelApi.providerDefault')" /></el-form-item>
           <el-form-item :label="t('modelApi.maxTokens')"><el-input-number v-model="form.max_output_tokens" :min="1" :max="1000000" :precision="0" :disabled="saving" placeholder="1024" /></el-form-item>
           <el-form-item :label="t('modelApi.timeout')"><el-input-number v-model="form.timeout_seconds" :min="1" :max="300" :disabled="saving" /><p class="field-hint">{{ t('modelApi.timeoutHint') }}</p></el-form-item>
           <el-form-item :label="t('modelApi.fallback')"><el-select v-model="form.fallback_slot_id" clearable :placeholder="t('modelApi.noFallback')" :disabled="saving"><el-option v-for="slot in fallbackSlots" :key="slot.id" :value="slot.id" :label="slot.name" /></el-select><p class="field-hint">{{ t('modelApi.fallbackHint') }}</p></el-form-item>
@@ -139,7 +139,7 @@ import { createModelSlot, deleteModelBinding, deleteModelSlot, getModelUsage, li
 import { bindingErrorKey } from '@/utils/model-binding-error'
 import { formatHttpError } from '@/utils/request'
 import type { ModelCapability, ModelSlot, ModelUsageAttempt, ModelUsageResult } from '@/types/model-api'
-import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate } from './model-api-form'
+import { maskedKeyCopy, modelSlotForm, modelSlotPayload, needsModelKeyUpdate, temperatureLimit } from './model-api-form'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -174,8 +174,14 @@ const hostSlotModelLabel = (slot: ModelSlot) => {
   if (slot.host_status?.configured) return slot.host_status.model
   // A realtime (WebSocket) core endpoint is configured but cannot serve chat;
   // saying "not configured" there would send users to check working settings.
-  return t(slot.host_status?.error_code === 'host_api_unsupported' ? 'modelApi.hostUnsupported' : 'modelApi.hostNotConfigured')
+  if (slot.host_status?.error_code === 'host_api_unsupported') return t('modelApi.hostUnsupported')
+  // Other failures (e.g. defaults incompatible with the resolved protocol)
+  // carry an actionable server message; show it instead of a misleading label.
+  return slot.host_status?.message || t('modelApi.hostNotConfigured')
 }
+// A host-follow slot executes with the main app's resolved protocol; without a
+// known resolution the editor stays within both protocols' shared range.
+const temperatureMax = computed(() => temperatureLimit(form, editingSlot.value))
 const slotName = (id: string) => slots.value.find(slot => slot.id === id)?.name ?? id
 const duration = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 const tokenValue = (attempt: ModelUsageAttempt, field: 'prompt_tokens' | 'completion_tokens' | 'total_tokens') => attempt.usage_status === 'unknown' ? '—' : (attempt.usage?.[field]?.toLocaleString() ?? '—')
@@ -220,6 +226,7 @@ function copyMaskedKey(event: ClipboardEvent) {
 async function saveSlot() {
   if (saving.value || keyUpdateRequired.value) return
   if (!form.name.trim() || (form.source === 'manual' && (!form.model.trim() || !form.base_url.trim()))) { formError.value = t('modelApi.requiredFields'); return }
+  if (form.temperature !== undefined && form.temperature > temperatureMax.value) { formError.value = t('modelApi.temperatureRange', { max: temperatureMax.value }); return }
   saving.value = true
   formError.value = ''
   try {

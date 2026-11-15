@@ -48,6 +48,16 @@ def materialize_host_slot(slot: ModelSlot, config: dict[str, Any]) -> ModelSlot:
             409, "model",
         )
     protocol = "anthropic_messages" if config.get("provider_type") == "anthropic" else "openai_chat"
+    temperature = slot.defaults.temperature
+    if protocol == "anthropic_messages" and temperature is not None and temperature > 1:
+        # The stored protocol is openai_chat, so saving accepted up to 2. Fail
+        # before any upstream request (and before quota) with an actionable fix.
+        raise ModelGatewayError(
+            "model_defaults_incompatible",
+            "The main app API resolved to Anthropic, which allows temperature up to 1; "
+            "lower this slot's default temperature",
+            409, "model",
+        )
     return slot.model_copy(update={
         "protocol": protocol,
         "base_url": base_url,
@@ -56,9 +66,13 @@ def materialize_host_slot(slot: ModelSlot, config: dict[str, Any]) -> ModelSlot:
     })
 
 
-def is_free_host_config(config: dict[str, Any]) -> bool:
+def is_free_host_key(api_key: str) -> bool:
     """Built-in free-tier credentials are metered; user-supplied keys are not."""
-    return str(config.get("api_key") or "").strip() == "free-access"
+    return str(api_key or "").strip() == "free-access"
+
+
+def is_free_host_config(config: dict[str, Any]) -> bool:
+    return is_free_host_key(str(config.get("api_key") or ""))
 
 
 def host_slot_status(slot: ModelSlot) -> dict[str, Any]:
@@ -71,7 +85,7 @@ def host_slot_status(slot: ModelSlot) -> dict[str, Any]:
         config = get_config_manager().get_model_api_config(_host_model_type(slot))
         materialize_host_slot(slot, config)
     except ModelGatewayError as exc:
-        return {"configured": False, "error_code": exc.code}
+        return {"configured": False, "error_code": exc.code, "message": exc.message}
     except Exception:
         return {"configured": False, "error_code": "host_api_not_configured"}
     return {

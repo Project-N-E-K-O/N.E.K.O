@@ -23,7 +23,8 @@ from plugin.server.application.model_gateway_service import (
     ModelGatewayService,
 )
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.infrastructure.host_model_slots import is_free_host_config, resolve_host_slot
+from plugin.server.domain.model_config import ModelSlot
+from plugin.server.infrastructure.host_model_slots import is_free_host_key, resolve_host_slot
 from plugin.server.infrastructure.model_config_store import ModelConfigStore
 from plugin.server.infrastructure.model_usage_store import ModelUsageRecorder
 from plugin.server.model_gateway.errors import ModelGatewayError
@@ -99,7 +100,10 @@ def _resolve_call(plugin_id: str, usage_id: object) -> ResolvedModelCall:
             plugin_id=plugin_id, usage_id=usage_id, slot_id=slot_id,
             slot=resolve_host_slot(slot).model_copy(deep=True),
             fallback_slot_id=fallback_id,
-            fallback_slot=resolve_host_slot(fallback).model_copy(deep=True) if fallback is not None else None,
+            # Keep a host-follow backup unresolved: the executor materializes it
+            # only when a fallback actually runs, so an unusable backup (e.g. a
+            # wss core) cannot reject a healthy primary before it executes.
+            fallback_slot=fallback.model_copy(deep=True) if fallback is not None else None,
         )
     except ServerDomainError as exc:
         # Translate before crossing asynchronous/context-manager boundaries;
@@ -107,32 +111,32 @@ def _resolve_call(plugin_id: str, usage_id: object) -> ResolvedModelCall:
         raise ModelGatewayError(exc.code.lower(), exc.message, exc.status_code) from None
 
 
-async def _reserve_host_free_quota(call: ResolvedModelCall) -> None:
-    """Meter host-follow calls that resolve to the built-in free credentials.
+def make_free_quota_hook(plugin_id: str, usage_id: str):
+    """Meter each attempt against the credentials it will actually send.
 
-    User-supplied keys (manual slots or a paid main-app API) are not metered.
+    The executor invokes this with the resolved snapshot right before any
+    upstream request, covering the primary, a host-follow fallback and probes
+    alike. User-supplied keys (manual slots or a paid main-app API) are never
+    metered, and the free-tier decision uses the same snapshot as the request,
+    so a provider switch between resolution and execution cannot mis-meter.
     """
-    config = await asyncio.to_thread(config_store.read)
-    stored = config.slots.get(call.slot_id)
-    if stored is None or stored.source != "host_follow":
-        return
-    from utils.config_manager import get_config_manager
 
-    manager = get_config_manager()
-    host_config = await manager.aget_model_api_config(
-        "conversation" if stored.host_api == "assist" else "realtime"
-    )
-    if not is_free_host_config(host_config):
-        return
-    ok, info = await manager.aconsume_agent_daily_quota(
-        source=f"plugin:{call.plugin_id}:{call.usage_id}", units=1,
-    )
-    if not ok:
-        raise ModelGatewayError(
-            "agent_quota_exceeded",
-            f"Free agent daily quota exceeded ({info.get('used', 0)}/{info.get('limit', 500)})",
-            429,
+    async def before_attempt(_slot_id: str, slot: ModelSlot) -> None:
+        if slot.source != "host_follow" or not is_free_host_key(slot.api_key):
+            return
+        from utils.config_manager import get_config_manager
+
+        ok, info = await get_config_manager().aconsume_free_daily_quota(
+            source=f"plugin:{plugin_id}:{usage_id}", units=1,
         )
+        if not ok:
+            raise ModelGatewayError(
+                "agent_quota_exceeded",
+                f"Free agent daily quota exceeded ({info.get('used', 0)}/{info.get('limit', 500)})",
+                429,
+            )
+
+    return before_attempt
 
 
 def _get_executor(request: Request) -> ModelExecutor:
@@ -276,9 +280,12 @@ async def create_chat_completion(request: Request):
             body = await _read_request(request)
             guard.watch_disconnect = True
             call = await asyncio.to_thread(_resolve_call, plugin_id, body.get("model"))
-            await _reserve_host_free_quota(call)
             executor = _get_executor(request)
-            call = replace(call, deadline=asyncio.get_running_loop().time() + call.slot.timeout_seconds)
+            call = replace(
+                call,
+                deadline=asyncio.get_running_loop().time() + call.slot.timeout_seconds,
+                before_attempt=make_free_quota_hook(plugin_id, call.usage_id),
+            )
             if body.get("stream") is True:
                 upstream = executor.stream(call, body)
                 try:

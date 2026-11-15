@@ -952,7 +952,7 @@ def patch_host_config(monkeypatch, config):
         async def aget_model_api_config(self, model_type):
             return self.get_model_api_config(model_type)
 
-        async def aconsume_agent_daily_quota(self, source="", units=1):
+        async def aconsume_free_daily_quota(self, source="", units=1):
             consumed.append(source)
             return True, {"used": len(consumed), "limit": 500}
 
@@ -1003,7 +1003,7 @@ async def test_host_follow_free_quota_exhaustion_rejects_before_upstream(http_cl
         async def aget_model_api_config(self, model_type):
             return self.get_model_api_config(model_type)
 
-        async def aconsume_agent_daily_quota(self, source="", units=1):
+        async def aconsume_free_daily_quota(self, source="", units=1):
             return False, {"used": 500, "limit": 500}
 
     monkeypatch.setattr(config_manager, "get_config_manager", lambda: ExhaustedManager())
@@ -1036,3 +1036,91 @@ async def test_host_follow_websocket_core_is_rejected(http_client, setup_gateway
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "host_api_unsupported"
     assert setup_gateway.calls == []
+
+
+async def test_unusable_host_fallback_does_not_reject_healthy_primary(http_client, setup_gateway, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "realtime"
+            return {"model": "real-model", "base_url": "wss://realtime.test/core", "api_key": "k"}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    unusable = "slot_" + "c" * 32
+    setup_gateway.config.slots[unusable] = ModelSlot(
+        name="Host core API", source="host_follow", host_api="core",
+        capabilities=["text", "image_input", "streaming"],
+    )
+    setup_gateway.config.slots[SLOT_ID].fallback_slot_id = unusable
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    # The wss backup is never resolved because the manual primary succeeds.
+    assert response.status_code == 200
+    assert len(setup_gateway.calls) == 1
+
+
+async def test_free_host_fallback_consumes_quota_after_paid_primary_fails(http_client, setup_gateway, monkeypatch):
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access",
+    })
+    bind_host_slot(setup_gateway)
+    setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
+
+    async def failing_primary(request):
+        if request.headers["authorization"] == "Bearer " + SECRET:
+            return httpx.Response(500, json={"error": "boom"})
+        assert request.headers["authorization"] == "Bearer free-access"
+        return httpx.Response(200, json=reply())
+
+    setup_gateway.upstream.handler = failing_primary
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 200
+    # The fallback executed with free credentials, so it must be metered.
+    assert consumed == ["plugin:alpha:analysis"]
+
+
+async def test_free_host_fallback_quota_exhaustion_is_final(http_client, setup_gateway, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "real-model", "base_url": "https://upstream.test/v1", "api_key": "free-access"}
+
+        async def aconsume_free_daily_quota(self, source="", units=1):
+            return False, {"used": 500, "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    bind_host_slot(setup_gateway)
+    setup_gateway.config.slots[SLOT_ID].fallback_slot_id = HOST_SLOT_ID
+    seen_auth = []
+
+    async def failing_primary(request):
+        seen_auth.append(request.headers["authorization"])
+        if request.headers["authorization"] == "Bearer " + SECRET:
+            return httpx.Response(500, json={"error": "boom"})
+        return httpx.Response(200, json=reply())
+
+    setup_gateway.upstream.handler = failing_primary
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "agent_quota_exceeded"
+    # The exhausted free fallback was never sent upstream: the only recorded
+    # attempt is the fallback slot itself, rejected before any request.
+    assert seen_auth == []
+    assert setup_gateway.calls == []
+    attempts = setup_gateway.records[0]["attempts"]
+    assert [a["slot_id"] for a in attempts] == [HOST_SLOT_ID]
+    assert attempts[0]["upstream_started"] is False
+
+
+async def test_anthropic_host_with_high_default_temperature_fails_before_quota(http_client, setup_gateway, monkeypatch):
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1",
+        "api_key": "free-access", "provider_type": "anthropic",
+    })
+    bind_host_slot(setup_gateway, defaults={"temperature": 1.5})
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body())
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "model_defaults_incompatible"
+    assert setup_gateway.calls == []
+    assert consumed == []  # rejected before any quota reservation

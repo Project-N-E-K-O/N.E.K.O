@@ -73,12 +73,18 @@ async def get_slot(slot_id: str, _: str = require_admin):
 
 def _resolve_probe(slot_id: str) -> ResolvedModelCall:
     from plugin.server.infrastructure.host_model_slots import resolve_host_slot
+    from plugin.server.routes.model_gateway import make_free_quota_hook
 
     config = service.store.read()
     slot = resolve_host_slot(service._slot(config, slot_id)).model_copy(deep=True)
     slot.timeout_seconds = min(slot.timeout_seconds, PROBE_MAX_SECONDS)
     slot.fallback_slot_id = None
-    return ResolvedModelCall(PROBE_IDENTITY, PROBE_USAGE, slot_id, slot)
+    return ResolvedModelCall(
+        PROBE_IDENTITY, PROBE_USAGE, slot_id, slot,
+        # A probe sends a real request with the resolved credentials; free-tier
+        # probes consume the same shared allowance as ordinary calls.
+        before_attempt=make_free_quota_hook(PROBE_IDENTITY, PROBE_USAGE),
+    )
 
 
 async def _probe_disconnect(request: Request, stopped: asyncio.Event) -> None:

@@ -377,3 +377,55 @@ async def test_probe_reports_unconfigured_host_follow_slot(setup_probe, monkeypa
     assert response.status_code == 409
     assert response.headers["X-Error-Code"] == "host_api_not_configured"
     assert not seen
+
+
+async def test_free_host_probe_consumes_shared_quota(setup_probe, monkeypatch):
+    import utils.config_manager as config_manager
+
+    consumed = []
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "saved-model", "base_url": "https://saved.test/v1", "api_key": "free-access"}
+
+        async def aconsume_free_daily_quota(self, source="", units=1):
+            consumed.append(source)
+            return True, {"used": len(consumed), "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+
+    async def free_upstream(request):
+        assert request.headers["authorization"] == "Bearer free-access"
+        return httpx.Response(200, json=response_for("openai_chat"))
+
+    app, store, _, seen, _ = setup_probe(free_upstream, host_follow=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
+        response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
+    assert response.status_code == 200, response.text
+    assert consumed == [f"plugin:{model_config.PROBE_IDENTITY}:{model_config.PROBE_USAGE}"]
+    assert store.config.slots[SLOT_ID].api_key == ""
+
+
+async def test_free_host_probe_quota_exhaustion_rejects_before_upstream(setup_probe, monkeypatch):
+    import utils.config_manager as config_manager
+
+    class Manager:
+        def get_model_api_config(self, model_type):
+            return {"model": "saved-model", "base_url": "https://saved.test/v1", "api_key": "free-access"}
+
+        async def aconsume_free_daily_quota(self, source="", units=1):
+            return False, {"used": 500, "limit": 500}
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: Manager())
+    app, _, _, seen, _ = setup_probe(host_follow=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app, client=("127.0.0.1", 1234)),
+        base_url="http://127.0.0.1:48916",
+    ) as client:
+        response = await client.post(f"/api/model-config/slots/{SLOT_ID}/test")
+    assert response.status_code == 429
+    assert response.headers["X-Error-Code"] == "agent_quota_exceeded"
+    assert not seen

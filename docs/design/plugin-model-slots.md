@@ -75,29 +75,49 @@ providers resolve to the `anthropic_messages` protocol automatically.
 An unconfigured main-app API returns `host_api_not_configured` (409). Most
 realtime core providers use WebSocket endpoints, which cannot serve chat
 requests; those return `host_api_unsupported` (409) rather than silently
-substituting the assist API. Slot views include a read-only `host_status`
-summary (configured flag, resolved model, protocol, free-tier flag) that never
-contains credentials. Connection tests resolve host-follow slots the same way.
+substituting the assist API. A saved default temperature above 1 combined with
+an Anthropic-resolved provider returns `model_defaults_incompatible` (409)
+before any upstream request or quota reservation; the editor caps the
+temperature at the resolved protocol's range. Slot views include a read-only
+`host_status` summary (configured flag, resolved model, protocol, free-tier
+flag, or an error code with an actionable message) that never contains
+credentials. Connection tests resolve host-follow slots the same way.
 
-When a host-follow call resolves to the built-in free credentials
-(`free-access`), it consumes one unit of the agent daily quota with source
-`plugin:<plugin_id>:<usage_id>` before any upstream request; exhaustion returns
-`agent_quota_exceeded` (429). User-supplied keys, whether in manual slots or a
-paid main-app API, are never metered.
+A host-follow fallback slot stays unresolved until a fallback actually runs,
+so an unusable backup (for example a WebSocket core) cannot reject a healthy
+primary. Fallback resolution errors are final and never cascade further.
+
+When an attempt resolves to the built-in free credentials (`free-access`), it
+consumes one unit of the shared free daily quota with source
+`plugin:<plugin_id>:<usage_id>` immediately before its upstream request —
+primary attempts, host-follow fallback attempts and connection-test probes
+alike, each judged on the exact credential snapshot it will send. Exhaustion
+returns `agent_quota_exceeded` (429). This metering is independent of which
+Agent model the main app uses: a paid Agent model does not exempt free-tier
+plugin calls. User-supplied keys, whether in manual slots or a paid main-app
+API, are never metered.
 
 After a committed install, `notify_install_committed` binds still-unbound
 declared usages to a shared host-follow assist slot (reused across plugins,
-`text` + `streaming` capabilities). Existing bindings are never overwritten;
+`text` + `streaming` capabilities) on a background thread, never on the event
+loop. Only usages the user has never bound or unbound are auto-bound: a
+recorded binding version marks prior user intent, so an explicit unbind
+survives updates and reinstalls. Existing bindings are never overwritten;
 usages the shared slot cannot serve stay unbound for explicit user choice.
-Auto-bind failures only log a warning and never fail the install.
+Auto-bind failures only log a warning and never fail the install. Note that a
+freshly installed plugin can therefore call the main app's assist API —
+including a paid user key, which is not metered — without further setup;
+unbinding a usage in the manager opts it out permanently.
 
 Two default host-follow slots — "Host assist API" (assist) and "Host core API"
 (core), both `text` + `streaming` — are seeded so the panel is usable without
 manual setup. Seeding runs best-effort at plugin-server startup and lazily on
-the first slot list or install commit, under the store's write transaction.
-Seed IDs are deterministic and the document records a `seed_version`, so
-seeding happens exactly once: a deleted default is never resurrected, and a
-host API the user already covers with their own host-follow slot is not
+the first slot list or install commit, under the store's write transaction;
+during a read-only maintenance window the list still serves the existing
+document and seeding retries later. Seed IDs are deterministic and the
+document records a `seed_version`, so seeding happens exactly once: a deleted
+default is never resurrected — including by a later install's auto-bind — and
+a host API the user already covers with their own host-follow slot is not
 duplicated. The core default reports `host_api_unsupported` until the main
 app's core API is an HTTP chat endpoint; that is expected, not an error.
 

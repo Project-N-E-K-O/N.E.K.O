@@ -99,7 +99,8 @@ def test_first_list_seeds_default_host_slots_and_read_stays_read(config_env):
         assert slot["source"] == "host_follow"
         assert slot["base_url"] == slot["model"] == slot["api_key"] == ""
         assert slot["capabilities"] == ["text", "streaming"]
-        assert slot["host_status"] == {"configured": False, "error_code": "host_api_not_configured"}
+        assert slot["host_status"]["configured"] is False
+        assert slot["host_status"]["error_code"] == "host_api_not_configured"
     assert seeded[host_slot_seed_id("assist")]["host_api"] == "assist"
     assert seeded[host_slot_seed_id("core")]["host_api"] == "core"
     assert cm.get_runtime_config_path(CONFIG_FILENAME).exists()
@@ -540,3 +541,102 @@ def test_concurrent_first_lists_seed_exactly_once(config_env):
     for result in results:
         assert {slot["id"] for slot in result["slots"]} == expected
     assert set(ModelConfigStore(cm).read().slots) == expected
+
+
+def test_deleted_assist_default_is_not_recreated_by_later_install(config_env):
+    _, service, _ = config_env
+    service.list_slots()
+    service.delete_slot(host_slot_seed_id("assist"))
+    result = service.ensure_host_follow_binding("beta")
+    assert result == {"bound": [], "slot_id": None}
+    assert {slot["id"] for slot in service.list_slots()["slots"]} == {host_slot_seed_id("core")}
+    assert service.get_bindings("beta")["bindings"] == {}
+
+
+def test_list_slots_during_maintenance_serves_existing_document(config_env, monkeypatch):
+    import utils.cloudsave_runtime as cloudsave
+
+    cm, service, _ = config_env
+    # An older document with a manual slot but no seed generation recorded.
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(cm.get_runtime_config_path(CONFIG_FILENAME), {
+        "schema_version": 1,
+        "slots": {"slot_" + "d" * 32: {
+            "name": "Legacy manual", "protocol": "openai_chat",
+            "base_url": "https://legacy.test/v1", "model": "legacy-model", "api_key": "legacy-key",
+        }},
+        "bindings": {}, "binding_versions": {},
+    })
+
+    @contextmanager
+    def writable(manager, **kwargs):
+        yield
+
+    @contextmanager
+    def blocked(*args, **kwargs):
+        raise cloudsave.MaintenanceModeError("maintenance_readonly")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", blocked)
+    listed = service.list_slots()
+    assert [slot["name"] for slot in listed["slots"]] == ["Legacy manual"]
+    # Seeding retries once writes are possible again.
+    monkeypatch.setattr(cloudsave, "cloudsave_writable_transaction", writable)
+    assert {slot["name"] for slot in service.list_slots()["slots"]} == {
+        "Legacy manual", "Host assist API", "Host core API",
+    }
+
+
+def test_explicit_unbind_survives_reinstall_auto_bind(config_env):
+    _, service, _ = config_env
+    first = service.ensure_host_follow_binding("beta")
+    assert first["bound"] == ["analysis"]
+    version = service.get_bindings("beta")["requirements"]["analysis"]["version"]
+    service.delete_binding("beta", "analysis", version)
+    # A later update/reinstall must not silently re-bind the usage the user
+    # explicitly unbound (it may point at the user's paid main-app key).
+    again = service.ensure_host_follow_binding("beta")
+    assert again == {"bound": [], "slot_id": first["slot_id"]}
+    assert service.get_bindings("beta")["bindings"] == {}
+
+
+def test_install_hook_auto_bind_runs_off_the_calling_thread(monkeypatch):
+    import threading
+
+    from plugin.server.application.plugins import capability_analysis_service as module
+
+    caller_thread = threading.get_ident()
+    seen: dict[str, int] = {}
+    done = threading.Event()
+
+    def fake_bind(plugin_id):
+        seen[plugin_id] = threading.get_ident()
+        done.set()
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": "/tmp/x", "target_plugin_id": "probe"}]},
+    })
+    assert done.wait(5), "auto-bind thread did not run"
+    assert seen["probe"] != caller_thread
+
+
+def test_install_hook_auto_bind_failure_is_swallowed(monkeypatch):
+    import threading
+
+    from plugin.server.application.plugins import capability_analysis_service as module
+
+    done = threading.Event()
+
+    def boom(plugin_id):
+        done.set()
+        raise RuntimeError("bind failed")
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", boom)
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    result = module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": "/tmp/x", "target_plugin_id": "probe"}]},
+    })
+    assert result["install"]["installed_plugins"][0]["target_plugin_id"] == "probe"
+    assert done.wait(5)
