@@ -1057,12 +1057,8 @@ class TaskAgentSpace:
             await self._note_unkept(commission, lesson, "cap")
             return SPACE_LESSONS_CAP_REACHED.format(count=SPACE_LESSONS_PER_COMMISSION)
         # A place is taken before the files are written, and settled when
-        # it is known what became of the note. A commission that is counted
-        # is put last now as well: while its note waits, it is not the one
-        # to be forgotten for the notes of others.
+        # it is known what became of the note.
         self._adding[counted] = self._adding.get(counted, 0) + 1
-        if counted in self._added_by:
-            self._added_by[counted] = self._added_by.pop(counted)
 
         def settle(was_added: bool) -> None:
             left = self._adding.get(counted, 0) - 1
@@ -1079,10 +1075,15 @@ class TaskAgentSpace:
             # one that began early and is still at work. Notes that are
             # still on their way are not among what is counted here, so
             # none of them has a commission forgotten before it has added
-            # anything.
+            # anything; and a commission with a note on its way is not
+            # forgotten while that note waits, nor is this one. There are
+            # a few more than are counted for as long as that lasts.
             self._added_by[counted] = self._added_by.pop(counted, 0) + 1
-            while len(self._added_by) > _COUNTED_COMMISSIONS:
-                del self._added_by[next(iter(self._added_by))]
+            over = len(self._added_by) - _COUNTED_COMMISSIONS
+            if over > 0:
+                idle = [key for key in self._added_by if key != counted and key not in self._adding]
+                for key in idle[:over]:
+                    del self._added_by[key]
 
         # What became of the note, once the files were written or looked at.
         became: list[str] = []
@@ -1104,7 +1105,18 @@ class TaskAgentSpace:
 
         listed = True
         try:
-            entry_id, how = await self._write(work)
+            try:
+                entry_id, how = await self._write(work)
+            finally:
+                # However it ended, the place is settled here and nowhere
+                # else, and before anything else is waited for: refused,
+                # unwritable, a failure nobody expected, or the session
+                # stopped while the note waited for its turn or was written
+                # (the writing is finished all the same). Only a note that
+                # was added has used a place; one that never got as far
+                # would leave the commission and its other task agents one
+                # short for nothing.
+                settle(bool(became) and became[0] != _THERE)
         except (SpaceError, ValueError) as exc:
             await self._note_unkept(commission, lesson, "refused")
             return f"not kept: {exc}"
@@ -1126,14 +1138,6 @@ class TaskAgentSpace:
             # the record of its commission before the failure goes on.
             await self._note_unkept(commission, lesson, "error")
             raise
-        finally:
-            # However it ended, the place is settled here and nowhere else:
-            # refused, unwritable, a failure nobody expected, or the session
-            # stopped while the note waited for its turn or was written (the
-            # writing is finished all the same). Only a note that was added
-            # has used a place; one that never got as far would leave the
-            # commission and its other task agents one short for nothing.
-            settle(bool(became) and became[0] != _THERE)
         if self._ledger is not None:
             # On the commission's record too, so the board can show it.
             await self._ledger.append_event(
