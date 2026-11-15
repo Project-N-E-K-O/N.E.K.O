@@ -3709,12 +3709,12 @@ async def _post_market_download_count(
     channel: str | None,
     package_sha256: str | None,
 ) -> None:
-    base_url = _normalized_base_url(MARKET_API_URL)
-    if not base_url:
-        return
-    url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
     started_at = time.monotonic()
     try:
+        base_url = _normalized_base_url(MARKET_API_URL)
+        if not base_url:
+            return
+        url = f"{base_url}/api/v1/plugins/{quote(market_id, safe='')}/download"
         # Phase timeouts do not bound a response that keeps trickling in.
         async with asyncio.timeout(_MARKET_RELEASE_CHECK_TIMEOUT):
             async with _market_catalog_client() as client:
@@ -3752,31 +3752,57 @@ def _record_market_download_best_effort(
 ) -> None:
     """Report a successful plugin-center download without a Market login.
 
+    An override installs the Market package over a bundled copy and counts
+    as an install.
+
     Send the HTTP request in the background so the local operation completes
     independently of Market's response.
     """
 
-    if payload.mode not in ("install", "upgrade", "reinstall"):
-        return
     market_id = _market_numeric_plugin_id(payload.plugin_id)
     if market_id is None:
         return
-    task = asyncio.create_task(
-        _post_market_download_count(
-            market_id,
-            operation=payload.mode,
-            event_id=str(uuid5(NAMESPACE_URL, f"market-download:{task_id}")),
-            version=payload.version,
-            channel=payload.channel,
-            package_sha256=payload.package_sha256,
-        ),
-        name="market-download-count",
+    operation = "install" if payload.mode == "override_builtin" else payload.mode
+    # Repeated reports for the same task must reuse the same event ID.
+    event_id = str(uuid5(NAMESPACE_URL, f"market-download:{task_id}"))
+    request = _post_market_download_count(
+        market_id,
+        operation=operation,
+        event_id=event_id,
+        version=payload.version,
+        channel=payload.channel,
+        package_sha256=payload.package_sha256,
     )
+    try:
+        task = asyncio.create_task(request, name="market-download-count")
+    except Exception as exc:
+        request.close()
+        logger.warning(
+            "[market-download-count] scheduling failed plugin_id={} error={} errno={}",
+            market_id,
+            type(exc).__name__,
+            exc.errno if isinstance(exc, OSError) else None,
+        )
+        return
     _download_count_tasks.add(task)
     task.add_done_callback(_download_count_tasks.discard)
 
 
 async def _report_market_install_best_effort(
+    payload: MarketInstallRequest,
+    task: dict[str, Any],
+) -> None:
+    try:
+        await _report_market_install(payload, task)
+    except Exception as exc:
+        logger.warning(
+            "[market-install-report] unexpected failure error={} errno={}",
+            type(exc).__name__,
+            exc.errno if isinstance(exc, OSError) else None,
+        )
+
+
+async def _report_market_install(
     payload: MarketInstallRequest,
     task: dict[str, Any],
 ) -> None:
@@ -3992,13 +4018,7 @@ async def _execute_install(task_id: str, payload: MarketInstallRequest) -> None:
     else:
         _finalize_task_success(task, started_at, log_ctx)
         _record_market_download_best_effort(payload, task_id)
-        try:
-            await _report_market_install_best_effort(payload, task)
-        except Exception as exc:
-            logger.warning(
-                "[market-install-report] unexpected failure error={}",
-                type(exc).__name__,
-            )
+        await _report_market_install_best_effort(payload, task)
 
 
 # ─── Task error / finalisers ─────────────────────────────────────────

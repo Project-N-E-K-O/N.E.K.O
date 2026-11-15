@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+from inspect import CORO_CLOSED, getcoroutinestate
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -62,8 +65,18 @@ async def _drain_download_tasks() -> None:
         await asyncio.gather(*pending)
 
 
-@pytest.mark.parametrize("mode", ["install", "upgrade", "reinstall"])
-async def test_successful_client_operation_counts_one_download(monkeypatch, mode) -> None:
+@pytest.mark.parametrize(
+    ("mode", "operation"),
+    [
+        ("install", "install"),
+        ("upgrade", "upgrade"),
+        ("reinstall", "reinstall"),
+        ("override_builtin", "install"),
+    ],
+)
+async def test_successful_client_operation_counts_one_download(
+    monkeypatch, mode, operation
+) -> None:
     calls = []
 
     async def post(url, params=None):
@@ -82,32 +95,12 @@ async def test_successful_client_operation_counts_one_download(monkeypatch, mode
     assert url == "https://market.test/api/v1/plugins/21/download"
     event_id = params.pop("event_id")
     assert UUID(event_id).version == 5
-    assert params == _download_params(operation=mode)
+    assert params == _download_params(operation=operation)
 
     calls.clear()
     market_bridge._record_market_download_best_effort(_payload(mode=mode), "task-21")
     await _drain_download_tasks()
-    assert calls == [(url, _download_params(operation=mode, event_id=event_id))]
-
-
-async def test_builtin_override_does_not_count(monkeypatch) -> None:
-    calls = []
-
-    async def post(url, params=None):
-        calls.append(url)
-
-        class Response:
-            status_code = 200
-
-        return Response()
-
-    _install_market_client(monkeypatch, post)
-    market_bridge._record_market_download_best_effort(
-        _payload(mode="override_builtin"), "task-override"
-    )
-    await _drain_download_tasks()
-
-    assert calls == []
+    assert calls == [(url, _download_params(operation=operation, event_id=event_id))]
 
 
 def test_unpaired_surrogate_pairing_code_is_rejected() -> None:
@@ -203,7 +196,12 @@ async def test_market_rejection_or_outage_does_not_fail_the_count_helper(
 
 @pytest.mark.parametrize(
     ("mode", "handler"),
-    [("install", "_do_install"), ("upgrade", "_do_upgrade"), ("reinstall", "_do_upgrade")],
+    [
+        ("install", "_do_install"),
+        ("upgrade", "_do_upgrade"),
+        ("reinstall", "_do_upgrade"),
+        ("override_builtin", "_do_install"),
+    ],
 )
 async def test_failed_or_cancelled_operation_does_not_count(
     monkeypatch, mode, handler
@@ -249,13 +247,20 @@ async def test_failed_or_cancelled_operation_does_not_count(
 
 @pytest.mark.parametrize(
     ("mode", "handler"),
-    [("install", "_do_install"), ("upgrade", "_do_upgrade"), ("reinstall", "_do_upgrade")],
+    [
+        ("install", "_do_install"),
+        ("upgrade", "_do_upgrade"),
+        ("reinstall", "_do_upgrade"),
+        ("override_builtin", "_do_install"),
+    ],
 )
-@pytest.mark.parametrize("login_report_fails", [False, True])
+@pytest.mark.parametrize("download_scheduling_fails", [False, True])
 async def test_successful_task_counts_before_the_login_report(
-    monkeypatch, mode, handler, login_report_fails
+    monkeypatch, mode, handler, download_scheduling_fails
 ) -> None:
     order = []
+    unscheduled = []
+    create_task = asyncio.create_task
 
     async def bind(payload):
         return payload, {}
@@ -264,24 +269,59 @@ async def test_successful_task_counts_before_the_login_report(
         task["message"] = "installed"
         task["result"] = {"install": {}}
 
-    def count(payload, task_id):
-        assert market_bridge._tasks[task_id]["status"] == "completed"
-        order.append(f"count:{payload.plugin_id}:{task_id}")
+    async def post(*_args, **_kwargs):
+        return None
+
+    def schedule(coro, *, name=None):
+        if name == "market-download-count":
+            assert market_bridge._tasks["task-ok"]["status"] == "completed"
+            order.append("count")
+            if download_scheduling_fails:
+                unscheduled.append(coro)
+                raise RuntimeError("could not schedule download report")
+        return create_task(coro, name=name)
 
     async def report(_payload, task):
         assert task["status"] == "completed"
         order.append("report")
-        if login_report_fails:
-            raise PermissionError("cannot write the refreshed token")
 
     monkeypatch.setattr(market_bridge, "_bind_market_package_hash", bind)
     monkeypatch.setattr(market_bridge, handler, install_ok)
-    monkeypatch.setattr(market_bridge, "_record_market_download_best_effort", count)
+    monkeypatch.setattr(market_bridge, "_post_market_download_count", post)
+    monkeypatch.setattr(asyncio, "create_task", schedule)
     monkeypatch.setattr(market_bridge, "_report_market_install_best_effort", report)
     market_bridge._tasks["task-ok"] = {}
     try:
         await market_bridge._execute_install("task-ok", _payload(mode=mode))
-        assert order == ["count:21:task-ok", "report"]
+        await _drain_download_tasks()
+        assert order == ["count", "report"]
         assert market_bridge._tasks["task-ok"]["status"] == "completed"
+        if download_scheduling_fails:
+            [coro] = unscheduled
+            assert getcoroutinestate(coro) == CORO_CLOSED
     finally:
         market_bridge._tasks.pop("task-ok", None)
+
+
+@pytest.mark.parametrize("failure_point", ["_ensure_valid_oauth_token", "ensure_httpx"])
+async def test_install_report_handles_preparation_errors(monkeypatch, failure_point) -> None:
+    messages = []
+
+    def warn(message, *args):
+        messages.append(message.format(*args))
+
+    async def token():
+        return {"access_token": "test-token"}
+
+    async def fail():
+        raise PermissionError(errno.EACCES, "could not read credentials", "/private/auth.json")
+
+    monkeypatch.setattr(market_bridge, "logger", SimpleNamespace(warning=warn))
+    monkeypatch.setattr(market_bridge, "_ensure_valid_oauth_token", token)
+    monkeypatch.setattr(market_bridge, failure_point, fail)
+
+    await market_bridge._report_market_install_best_effort(_payload(), {})
+
+    assert messages == [
+        f"[market-install-report] unexpected failure error=PermissionError errno={errno.EACCES}"
+    ]
