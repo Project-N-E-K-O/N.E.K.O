@@ -8,7 +8,7 @@ trigger: always_on
 
 - 使用 i18n 支持国际化，目前支持 en.json、ja.json、ko.json、zh-CN.json、zh-TW.json、ru.json、es.json、pt.json 八种。每次改 i18n 字符串时必须同步更新全部 8 个 locale 文件，只改部分会被打回。
 - **后端 Python 多语言字符串一律落在 `config/prompts/prompts_*.py`**：无论是平铺 `dict[str, str]` 还是嵌套 `dict[str, dict[K, str]]`，凡键里出现 `'zh' / 'en' / 'ja' / 'ko' / 'ru'` 的语言映射，都必须放在 `config/prompts/prompts_*` 下。`scripts/check_prompt_hygiene.py` 只抓平铺结构，但规范是"加新语言时一次扫 `config/` 即可补全"——嵌套 dict 即使 lint 没抓也算技术债，需自觉搬迁。新增后端模块若有翻译需求，直接在 `config/prompts/prompts_<topic>.py` 加新模块或复用已有模块（如 `prompts_activity.py`、`prompts_proactive.py`、`prompts_memory.py`）。
-- 使用 `uv run` 来运行本项目的任何 Python 程序（pytest、脚本等），不要直接用系统 Python。原因：pyproject.toml 限制了 Python 版本（<3.13），uv 会自动选择合适版本并管理虚拟环境。
+- 使用 `uv run` 来运行本项目的任何 Python 程序（pytest、脚本等），不要直接用系统 Python。原因：pyproject.toml 限制了 Python 版本（3.11），uv 会自动选择合适版本并管理虚拟环境。
 - 任何涉及用户隐私（原始对话）的 log 只能用 `print` 输出，不得使用 `logger`。
 - 翻译 system prompt 时，即使出于其他原因也应当保留 `======以上为`，这是一个水印。
 - **辅助 LLM 调用约定（memory/ + utils/）**：
@@ -24,14 +24,14 @@ trigger: always_on
 
 两条硬性规范，CI 在 PR 上校验（`scripts/check_pr_report.py`，由独立 workflow `.github/workflows/pr-report-gate.yml` 驱动），报告写在 **PR 描述**里（模板 `.github/pull_request_template.md`）：
 
-1. **回归报告**：凡是改动了 `app/`、`main_logic/`、`memory/` 任一目录下的 `*.py`，PR 描述必须有非空的「回归报告」一节，逐项说明——**改动**、**理由 / 必要性**、**前后表现对比**、**潜在回归点**。这三个是项目最高风险模块（会话编排、记忆管线、服务入口）。
+1. **回归报告**：凡是改动了 `app/`、`main_logic/`、`main_routers/`、`memory/` 任一目录下的 `*.py`（以 `scripts/check_pr_report.py` 的 `WATCHED_PREFIXES` 为准），PR 描述必须有非空的「回归报告」一节，逐项说明——**改动**、**理由 / 必要性**、**前后表现对比**、**潜在回归点**。这三个是项目最高风险模块（会话编排、记忆管线、服务入口）。
 2. **不拆分理由**：单个 PR 改动计入上限的文件 > 20 个，PR 描述必须有非空的「不拆分理由」一节，说明为什么不拆成更小的 PR。新增文件、i18n locale 文件（`static/locales/` 与 plugin-manager locale 组）和测试文件（主目录或 `plugin/` 下，按目录 `tests/`、`__tests__/` 或 `test_*.py` / `*_test.py` / `*.test.*` / `*.spec.*` 命名识别）不计入。
 
 要点：
 - CI 只验「区块存在且非空」，**判不了报告质量**——质量由维护者 review 兜底（`app/`、`main_logic/`、`memory/` 经 `.github/CODEOWNERS` 强制指派维护者评审）。所以写报告别糊弄占位符（`不适用` / `无` / `TBD` 在触发条件成立时会被判失败）。
 - 未触发的那一节写「不适用」或删除即可。
 - 维护者可对纯重命名、批量格式化、生成代码等打 `report-exempt` 标签豁免整条门禁。
-- AI agent 在改这三个模块或一次性铺开 >20 个计入上限的文件时，**主动**在 PR 描述里产出对应报告，不要等门禁红了再补。
+- AI agent 在改上面这几个目录或一次性铺开 >20 个计入上限的文件时，**主动**在 PR 描述里产出对应报告，不要等门禁红了再补。
 
 ## API URL 末尾不带斜杠（前后端硬性要求）
 
@@ -151,3 +151,29 @@ NekoClaw（猫爪，`nekoclaw/`）里同一样东西，界面和代码用不同�
 - 「使魔」只出现在界面文案（八种语言）和她说给用户的话里，比如回执「可以交给使魔」、认用户说「告诉使魔」的词表。后端代码、注释、日志、协议和发给模型的提示词里不写 familiar，写 task agent。
 - 不用裸 `agent`：仓库里已有 agent 进程、agent 模型槽、旧的 `brain/`、`agent_task_id` 等，容易撞名。
 - 详见 `docs/design/nekoclaw-rewrite.md` 开头的术语对照和第 3 节。
+
+## 经验文档索引（`.agent/skills/`）
+
+下面这些 skill 记的是实际开发中踩过的坑、读代码不容易看出来的不变式，以及维护者已经定下的取舍。动到对应的地方之前先读那一份的 `SKILL.md`，再按里面的索引读 `references/`。上面的规则是硬性要求；skill 是背景和细节，两者冲突时以上面的规则和当前代码为准。
+
+| skill | 什么时候读 |
+|---|---|
+| `pr-workflow` | 开 PR、往 PR 分支推送、处理评审意见、评审别人的 PR |
+| `maintainer-collaboration` | 要让维护者做决定、写设计方案或 PR 描述、汇报结果 |
+| `testing-pitfalls` | 跑 pytest、写测试、写源码守卫、做变异验证、说「测试通过」之前 |
+| `local-env-pitfalls` | 在 worktree 里干活、借用别的检出的环境、在 Windows 上写 shell 命令、用脚本批量改文件 |
+| `packaging-pitfalls` | 改 Nuitka 参数、打包和校验脚本、构建工作流、内置资源、依赖、`docs/` 站点 |
+| `package-split-contracts` | 改已经拆成包的后端大文件（`main_logic/core`、`app/memory_server`、`utils/config_manager` 等），或要再拆别的大文件 |
+| `frontend-architecture` | 改 `static/`、`templates/`、`frontend/react-neko-chat/`，或排查「网页正常、桌面端不对」 |
+| `avatar-rendering` | 改 Live2D / VRM / MMD 渲染、帧率、形象周边的弹窗和点击穿透、内置模型和动作文件 |
+| `voice-realtime-tts` | 改语音会话启停、热切换、realtime 客户端、外部 TTS、独立 ASR |
+| `llm-providers-and-prompts` | 改厂商参数、接入新的 provider 或网关、写或翻译提示词、改反套话改写 |
+| `memory-system` | 改 `memory/`、`app/memory_server/`、记忆类提示词、记忆落盘和同步、`/new_dialog` 开场链路 |
+| `proactive-chat` | 改主动搭话、防复读、用户禁令、截图授权、开屏问候、凝神，或动隐私模式和首启实验分支 |
+| `plugin-host-pitfalls` | 改插件宿主和插件框架（写插件本身看 `neko-plugin`） |
+| `nekoclaw` | 改 `nekoclaw/`、`app/agent_server/`、主对话的派发和查询工具、键鼠和浏览器工具 |
+| `catgirl-visit` | 改串门相关代码，或处理串门相关的评审意见 |
+| `i18n-pitfalls` | 改 `static/locales`、`config/prompts` 的多语言表、按语言分支的后端代码（前端硬编码中文的替换看 `i18n`） |
+| `feature-notes` | 改区域判定、遥测、版本问卷、角色配置、小游戏、小剧场、卡片锻造、屏幕分享等功能 |
+
+这些文档是对照写入时的代码核对过的。发现和代码对不上时以代码为准，并顺手把文档改掉。
