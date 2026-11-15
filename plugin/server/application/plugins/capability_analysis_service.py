@@ -340,9 +340,11 @@ def _auto_bind_host_models_safe(plugin_id: str, target_dir: str) -> None:
         # target_plugin_id is the directory name; load_model_requirements
         # demands the manifest's plugin.id. Resolve it the same way the
         # install gate does, falling back to the directory name.
+        manifest_path: Path | None = None
         if target_dir:
             from plugin.server.application.install_source.scanner import PluginDirectoryScanner
 
+            candidate = Path(target_dir) / "plugin.toml"
             declared = PluginDirectoryScanner._load_plugin_id(Path(target_dir))
             if declared and declared != plugin_id:
                 logger.info(
@@ -355,7 +357,22 @@ def _auto_bind_host_models_safe(plugin_id: str, target_dir: str) -> None:
                     "Host model auto-bind: manifest id unreadable, using directory id: plugin_id={}",
                     plugin_id,
                 )
-        _auto_bind_host_models(plugin_id)
+            if candidate.is_file():
+                manifest_path = candidate
+        if manifest_path is not None:
+            # The registry may not know this install yet, and the directory
+            # name can differ from plugin.id: pin the manifest actually
+            # installed. ContextVars do not cross threads, so bind in here.
+            from plugin.server.infrastructure.config_access import (
+                ConfigAccessSnapshot,
+                bind_config_access,
+            )
+
+            snapshot = ConfigAccessSnapshot(plugin_id=plugin_id, manifest_path=manifest_path, host=None)
+            with bind_config_access(snapshot):
+                _auto_bind_host_models(plugin_id)
+        else:
+            _auto_bind_host_models(plugin_id)
     except Exception as exc:
         logger.warning(
             "Host model auto-bind failed: plugin_id={}, error={}",

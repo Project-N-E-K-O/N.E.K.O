@@ -727,3 +727,34 @@ def test_install_hook_auto_bind_falls_back_to_directory_id_without_manifest(monk
     })
     assert done.wait(5)
     assert seen["id"] == "directory_name"
+
+
+def test_install_hook_auto_bind_pins_installed_manifest_for_unregistered_plugin(monkeypatch, tmp_path):
+    import threading
+
+    from plugin.server.application.plugins import capability_analysis_service as module
+    from plugin.server.infrastructure.config_paths import get_plugin_manifest_path
+
+    # Directory name differs from the manifest id, and the registry does not
+    # know this install: only the pinned manifest path can resolve it.
+    install_dir = tmp_path / "demo_custom"
+    install_dir.mkdir()
+    (install_dir / "plugin.toml").write_text(
+        '[plugin]\nid = "demo"\n[plugin.models.analysis]\nlabel = "Analysis"\n', encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+    done = threading.Event()
+
+    def fake_bind(plugin_id):
+        seen["id"] = plugin_id
+        seen["manifest"] = get_plugin_manifest_path(plugin_id)
+        done.set()
+
+    monkeypatch.setattr(module, "_auto_bind_host_models", fake_bind)
+    monkeypatch.setattr(module.analysis_service, "installed", lambda path: None)
+    module.notify_install_committed({
+        "install": {"installed_plugins": [{"target_dir": str(install_dir), "target_plugin_id": "demo_custom"}]},
+    })
+    assert done.wait(5)
+    assert seen["id"] == "demo"
+    assert seen["manifest"] == install_dir / "plugin.toml"
