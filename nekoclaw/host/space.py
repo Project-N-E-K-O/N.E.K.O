@@ -344,6 +344,34 @@ def _digest(content: str) -> str:
     return hashlib.sha256(content.strip().encode("utf-8")).hexdigest()[:12]
 
 
+# The heading the host puts above what is added to an entry on a later day.
+_DATED_HEADING = re.compile(r"(?m)^## \d{4}-\d{2}-\d{2}[ \t]*$")
+
+
+def _listed(document: _Document, key: str) -> list[str]:
+    """Return what a line of the front matter lists, separated by commas."""
+    return [item.strip() for item in document.get(key).split(",") if item.strip()]
+
+
+def _marks_of(document: _Document) -> list[str]:
+    """Return the marks of the texts an entry was given.
+
+    The ones it keeps in its front matter. An entry that keeps none (one
+    the user wrote by hand, with or without front matter) is taken to have
+    been given what stands between its dated headings: without that, the
+    same text would be added to it every time it is filed.
+    """
+    marks = _listed(document, "texts")
+    if marks:
+        return marks
+    return [_digest(part) for part in _DATED_HEADING.split(document.body) if part.strip()]
+
+
+def _points_at(line: str, marks: tuple[str, str]) -> bool:
+    """Whether a line of an index has one of the marks of a target in it."""
+    return any(mark in line for mark in marks)
+
+
 def _said_already(document: _Document, content: str) -> bool:
     """Whether an entry has ``content`` word for word, as what it said first or as one of its additions.
 
@@ -353,12 +381,12 @@ def _said_already(document: _Document, content: str) -> bool:
     the end of a longer one. The text must still be there as well, so one
     the user took out by hand is added again. A text that is all the
     entry says is there already whatever the marks are: the entry may
-    have been written by hand, or its text replaced in an editor.
+    have been written by hand, or its text replaced in an editor. For an
+    entry that keeps no marks see ``_marks_of``.
     """
     if document.body.strip() == content.strip():
         return True
-    marks = [item.strip() for item in document.get("texts").split(",") if item.strip()]
-    if _digest(content) not in marks:
+    if _digest(content) not in _marks_of(document):
         return False
     # Still there as a text of its own, between blank lines or at an end of
     # the entry: found inside another sentence, it is not what was filed.
@@ -527,6 +555,57 @@ class TaskAgentSpace:
 
         self._edit_text(index, change)
 
+    def _index_swap(self, index: Path, old: str, line: str, new: str) -> None:
+        """Put ``line``, which points at ``new``, in the place of the line that points at ``old``: in one write.
+
+        Taking the one out and adding the other in two writes could stop
+        between them, with neither line there. Without a line that points
+        at ``old`` the new one is added like any other; when one points at
+        ``new`` already, the old one is only taken out.
+        """
+        gone, there = _index_marks(old), _index_marks(new)
+
+        def change(text: str) -> str:
+            lines = text.split("\n") if text else []
+            placed = any(_points_at(item, there) for item in lines)
+            kept: list[str] = []
+            for item in lines:
+                if not _points_at(item, gone):
+                    kept.append(item)
+                elif not placed:
+                    kept.append(line)
+                    placed = True
+            if not placed:
+                position = next((number for number, item in enumerate(kept) if item.startswith("- ")), None)
+                if position is None:
+                    position = len(kept)
+                    while position > 0 and not kept[position - 1].strip():
+                        position -= 1
+                kept.insert(position, line)
+            result = "\n".join(kept)
+            return result if result.endswith("\n") else result + "\n"
+
+        self._edit_text(index, change)
+
+    def _index_put_back(self, index: Path, line: str, target: str, position: int) -> None:
+        """Put a line that was taken out of an index back where it was, unless one points at ``target`` again.
+
+        Where it was, not first: the first lines of an index are the newest
+        entries, and an index too long for a task agent's instructions is
+        cut at its other end.
+        """
+        marks = _index_marks(target)
+
+        def change(text: str) -> str:
+            lines = text.split("\n") if text else []
+            if any(_points_at(item, marks) for item in lines):
+                return text
+            lines.insert(min(max(position, 0), len(lines)), line)
+            result = "\n".join(lines)
+            return result if result.endswith("\n") else result + "\n"
+
+        self._edit_text(index, change)
+
     def _index_set(self, index: Path, line: str, target: str) -> None:
         """Put a line into an index in place of the one that points at ``target``, or first."""
         marks = _index_marks(target)
@@ -570,7 +649,7 @@ class TaskAgentSpace:
             modified = path.stat().st_mtime
         except OSError:
             modified = self._clock()
-        sources = tuple(item.strip() for item in document.get("sources").split(",") if item.strip())
+        sources = tuple(_listed(document, "sources"))
         return Entry(
             id=path.stem,
             project=project,
@@ -664,13 +743,13 @@ class TaskAgentSpace:
                     return document.body if fresh else text
                 # Who filed it is noted even when the text is there already:
                 # an entry two commissions filed is not one commission's own.
-                known = [item.strip() for item in document.get("sources").split(",") if item.strip()]
+                known = _listed(document, "sources")
                 another = bool(source) and source not in known
                 # The text is in the entry now, added or there already, so
                 # its mark is kept: one that was put there in an editor has
                 # none yet, and would not be known again once the entry
                 # says more than it.
-                marks = [item.strip() for item in document.get("texts").split(",") if item.strip()]
+                marks = _marks_of(document)
                 unmarked = _digest(content) not in marks
                 if not fresh and not another and not unmarked:
                     return text
@@ -841,11 +920,24 @@ class TaskAgentSpace:
                 was = f"{paths.MEMORY_DIR}/{entry.id}.md"
                 marks = _index_marks(was)
                 taken: list[str] = []
+                place: list[int] = []
 
-                def take(text: str, marks: tuple[str, str] = marks, taken: list[str] = taken) -> str:
+                def take(
+                    text: str, marks: tuple[str, str] = marks, taken: list[str] = taken, place: list[int] = place
+                ) -> str:
                     lines = text.split(chr(10))
-                    taken[:] = [item for item in lines if any(mark in item for mark in marks)]
-                    return chr(10).join(item for item in lines if not any(mark in item for mark in marks))
+                    taken[:] = [item for item in lines if _points_at(item, marks)]
+                    place[:] = [number for number, item in enumerate(lines) if _points_at(item, marks)][:1]
+                    return chr(10).join(item for item in lines if not _points_at(item, marks))
+
+                def put_back(taken: list[str] = taken, place: list[int] = place, was: str = was) -> None:
+                    # Where it was, and never in the way of what else is to be done.
+                    if not taken:
+                        return
+                    try:
+                        self._index_put_back(paths.index(source), taken[0], was, place[0] if place else 0)
+                    except OSError:
+                        logger.warning("the line of an entry could not be put back into its index", exc_info=True)
 
                 line = None
                 try:
@@ -866,10 +958,7 @@ class TaskAgentSpace:
                     same = False
                     if taken:
                         line = taken[0]
-                        try:
-                            self._index_add(paths.index(source), taken[0], was)
-                        except OSError:
-                            logger.warning("the line of an entry could not be put back into its index", exc_info=True)
+                        put_back()
                 if line is None:
                     line = _index_line(entry.title, link, entry.description)
                 else:
@@ -881,8 +970,7 @@ class TaskAgentSpace:
                     # The index of where it goes cannot be written: the
                     # entry stays where it was, listed there as it was, and
                     # the copy made of it is taken back.
-                    if taken:
-                        self._index_add(paths.index(source), taken[0], was)
+                    put_back()
                     try:
                         (destination / f"{name}.md").unlink()
                     except OSError:
@@ -894,8 +982,7 @@ class TaskAgentSpace:
                     # the target is no longer what the file says, so the
                     # file stays, and its line is put back.
                     same = False
-                    if taken:
-                        self._index_add(paths.index(source), taken[0], was)
+                    put_back()
                 if not same:
                     # It kept being saved: it stays where it was as well.
                     logger.warning("an entry copied to another project kept changing; it is left where it was too")
@@ -904,9 +991,8 @@ class TaskAgentSpace:
                     old.unlink()
                 except OSError:
                     logger.warning("an entry moved to another project could not be removed where it was", exc_info=True)
-                    if taken:
-                        # Still there, so its line is put back.
-                        self._index_add(paths.index(source), taken[0], was)
+                    # Still there, so its line is put back.
+                    put_back()
             return moved
 
         return await self._write(work)
@@ -979,9 +1065,14 @@ class TaskAgentSpace:
                 if kind is not None:
                     document.set("type", _entry_type(kind))
                 if content is not None:
+                    # The marks it has stay: what was filed before may still
+                    # be in the new text, word for word. The new text as a
+                    # whole gets a mark too.
+                    marks = _marks_of(document)
                     document.body = content
-                    # What it says now is this text, and nothing that was filed before.
-                    document.set("texts", _digest(content))
+                    if _digest(content) not in marks:
+                        marks = [*marks, _digest(content)]
+                    document.set("texts", ", ".join(marks))
                 document.set("updated", _date(self._clock()))
                 return _render_document(document)
 
@@ -1315,11 +1406,10 @@ class TaskAgentSpace:
             )
             self._put_project(target, restored)
         try:
-            self._index_remove(
-                paths.index(None), f"archive/{project.archive_year}/{source.name}/{paths.SUMMARY_NAME}"
-            )
             line, link = self._project_line(restored)
-            self._index_add(paths.index(None), line, link)
+            self._index_swap(
+                paths.index(None), f"archive/{project.archive_year}/{source.name}/{paths.SUMMARY_NAME}", line, link
+            )
         except OSError:
             # The project is back all the same, and is used.
             logger.warning("a project was brought back, but its line in the index of the space was not changed", exc_info=True)
@@ -1483,7 +1573,10 @@ class TaskAgentSpace:
         except OSError as exc:
             logger.warning("a project could not be moved to the archive (%s); it stays where it is", type(exc).__name__)
             back = replace(project, pending_archive=using) if using is not None else project
-            if readable and (ahead or back != project):
+            # Not when the directory is not there: a move that could not be
+            # undone left it under another name, and a record written now
+            # would make an empty project of its name.
+            if readable and source.is_dir() and (ahead or back != project):
                 # As it was, with a summary that came to nothing kept for the next try.
                 try:
                     self._put_project(source, back)
@@ -1499,10 +1592,10 @@ class TaskAgentSpace:
                 logger.warning("the record of an archived project still holds the summary it was archived with", exc_info=True)
         _line, link = self._project_line(project)
         try:
-            self._index_remove(paths.index(None), link)
             archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME}"
-            self._index_add(
+            self._index_swap(
                 paths.index(None),
+                link,
                 _index_line(f"archived project: {name}", archive_link, _one_line(description) or archived.description),
                 archive_link,
             )
@@ -1548,7 +1641,7 @@ class TaskAgentSpace:
         if text is None:
             return None
         document = _parse_document(text)
-        entries = tuple(item.strip() for item in document.get("entries").split(",") if item.strip())
+        entries = tuple(_listed(document, "entries"))
         return Review(
             commission_id=path.stem,
             project=project,
@@ -1836,15 +1929,36 @@ def _is_project(directory: Path) -> bool:
     return directory.is_dir() and not directory.name.startswith(".")
 
 
+# A file in a directory that was set aside and must not be removed: it is
+# the only place that has what the user saved last.
+_KEEP_MARK = ".keep"
+
+
 def _set_aside_name(source: Path) -> Path:
-    """Return a name next to ``source`` that nothing has, for it to be removed under."""
+    """Return a name next to ``source`` that nothing has, for it to be removed under.
+
+    What an earlier move left under such a name is removed first, unless
+    it is marked to be kept (``_copy_across``).
+    """
     aside = source.with_name(f"{_REMOVING_PREFIX}{source.name}")
-    shutil.rmtree(aside, ignore_errors=True)
     number = 2
     while aside.exists():
+        if not (aside / _KEEP_MARK).exists():
+            shutil.rmtree(aside, ignore_errors=True)
+            if not aside.exists():
+                break
         aside = source.with_name(f"{_REMOVING_PREFIX}{source.name}-{number}")
         number += 1
     return aside
+
+
+def _bring_up_to(copy: Path, original: Path) -> None:
+    """Make a copy of a directory hold what the original holds now: files written anew, and none that are gone."""
+    shutil.copytree(original, copy, dirs_exist_ok=True)
+    there = {name for name, _written, _size in _files_of(original)}
+    for name, _written, _size in _files_of(copy):
+        if name not in there:
+            (copy / name).unlink()
 
 
 def _files_of(root: Path) -> list[tuple[str, int, int]]:
@@ -1918,10 +2032,23 @@ def _copy_across(source: Path, target: Path) -> None:
         try:
             os.replace(aside, source)
         except OSError:
+            # It cannot be put back (something has its name by now). What
+            # the user saved last is only in what was set aside, and nothing
+            # is saved into that any more: the copy is brought up to it, and
+            # the move is done after all. If that cannot be done either,
+            # what was set aside is marked, so that nothing removes it.
             logger.warning("a project that changed while it was copied could not be put back", exc_info=True)
+            try:
+                _bring_up_to(target, aside)
+            except BaseException:
+                try:
+                    (aside / _KEEP_MARK).touch()
+                except OSError:
+                    logger.warning("a directory that holds what was saved last could not be marked", exc_info=True)
+                raise
         else:
             take_back()
-        raise OSError(f"{source.name} was changed while it was copied to another volume; it stays where it was")
+            raise OSError(f"{source.name} was changed while it was copied to another volume; it stays where it was")
     shutil.rmtree(aside, ignore_errors=True)
 
 

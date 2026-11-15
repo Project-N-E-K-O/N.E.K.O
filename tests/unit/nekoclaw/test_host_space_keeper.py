@@ -1955,3 +1955,21 @@ async def test_a_summary_held_is_dropped_for_a_commission_filed_late_that_leaves
 
     # What was written before that commission is not what the project is archived with.
     assert world.llm.count(TIER_ARCHIVE) == 2
+
+
+async def test_a_round_that_could_not_write_its_state_is_not_counted_as_done(world, monkeypatch):
+    write = world.space.write_state
+    failed: list[bool] = []
+
+    async def cannot_once(**values: Any) -> None:
+        if not failed:
+            failed.append(True)
+            raise PermissionError(13, "in use")
+        await write(**values)
+
+    monkeypatch.setattr(world.space, "write_state", cannot_once)
+
+    assert await world.keeper.tidy() is False
+    # Not six hours later: the next time it is asked.
+    assert await world.keeper.tidy() is True
+    assert (await world.space.read_state())["upkeep_at"] == world.clock.now

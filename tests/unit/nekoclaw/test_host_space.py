@@ -2265,3 +2265,222 @@ async def test_a_line_taken_out_of_an_index_that_could_not_be_read_back_is_not_l
     assert words in await space.read_index("Budget app")
     assert words in daily.read_text(encoding="utf-8")
     assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["stack"]
+
+
+# ---------------------------------------------------------------------------
+# The twenty-fourth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_text_is_added_once_to_an_entry_the_user_wrote_without_front_matter(space, root, clock):
+    await space.file_entry(DEFAULT_PROJECT, title="Use pytest", content="Use pytest.")
+    path = root / "projects" / DEFAULT_PROJECT / "memory" / "use-pytest.md"
+    # The user writes the file anew by hand: no front matter, so no marks can be kept in it.
+    path.write_text("first note by hand\n", encoding="utf-8")
+
+    replies = []
+    for number in range(3):
+        clock.now += 86400
+        replies.append(await space.submit(_commission(id=f"c-{number}"), _lesson("Use pytest", "run tests with -n 4")))
+
+    assert replies[0] == "added to use-pytest.md in project _daily"
+    assert replies[1] == replies[2] == "already in use-pytest.md in project _daily, word for word; nothing was added"
+    text = path.read_text(encoding="utf-8")
+    assert text.count("run tests with -n 4") == 1 and text.startswith("first note by hand")
+    # What the user wrote is there already too; a part of a line of it is not.
+    assert "already in" in await space.submit(_commission(id="c-9"), _lesson("Use pytest", "first note by hand"))
+    assert "added to" in await space.submit(_commission(id="c-9"), _lesson("Use pytest", "first note"))
+
+
+async def test_what_was_filed_is_still_known_after_the_entry_was_changed_in_the_console(space, root, clock):
+    await space.submit(_commission(id="c-1"), _lesson("Notes", "A note"))
+    clock.now += 86400
+    await space.submit(_commission(id="c-2"), _lesson("Notes", "B note"))
+    whole = (await space.read_entry("notes", DEFAULT_PROJECT)).content
+    assert "A note" in whole and "B note" in whole
+
+    # The user corrects what it said first; what was added stays as it was.
+    await space.edit_entry("notes", DEFAULT_PROJECT, content=whole.replace("A note", "A note fixed"))
+    again = await space.submit(_commission(id="c-3"), _lesson("Notes", "B note"))
+
+    assert again == "already in notes.md in project _daily, word for word; nothing was added"
+    assert (await space.read_entry("notes", DEFAULT_PROJECT)).content.count("B note") == 1
+    # What was corrected away is added when it is filed again.
+    assert "added to" in await space.submit(_commission(id="c-4"), _lesson("Notes", "A note"))
+
+
+async def test_the_line_of_a_project_keeps_its_place_when_it_is_archived_and_brought_back(space, root, clock):
+    for name in ("first", "Budget app", "last"):
+        await space.touch_project(name)
+    index = root / "MEMORY.md"
+    assert [line.split("]")[0] for line in index.read_text(encoding="utf-8").splitlines()] == [
+        "- [project: last",
+        "- [project: Budget app",
+        "- [project: first",
+    ]
+
+    archived = await space.archive_project("Budget app", summary="s", description="paused")
+
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        "- [project: last](projects/last/MEMORY.md)",
+        f"- [archived project: Budget app](<archive/{archived.archive_year}/Budget app/SUMMARY.md>) — paused",
+        "- [project: first](projects/first/MEMORY.md)",
+    ]
+
+    await space.use_project("Budget app")
+
+    # With the one line it was archived with: it had no description before.
+    assert index.read_text(encoding="utf-8").splitlines() == [
+        "- [project: last](projects/last/MEMORY.md)",
+        "- [project: Budget app](<projects/Budget app/MEMORY.md>) — paused",
+        "- [project: first](projects/first/MEMORY.md)",
+    ]
+
+
+async def test_the_line_of_an_entry_that_stays_is_put_back_where_it_was(space, root, monkeypatch):
+    await space.submit(_commission(id="c-0"), _lesson("Older", "An older one."))
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.submit(_commission(id="c-2"), _lesson("Newer", "A newer one."))
+    await space.touch_project("Budget app")
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    old = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    before = daily.read_text(encoding="utf-8")
+    assert [line.split("]")[0] for line in before.splitlines()] == ["- [Newer", "- [Stack", "- [Older"]
+    unlink = Path.unlink
+
+    def held_open(self, *args, **kwargs):
+        if self == old:
+            raise PermissionError(13, "in use")
+        return unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", held_open)
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+
+    monkeypatch.undo()
+    # Between the newer and the older one, as before: not the newest of the index all of a sudden.
+    assert daily.read_text(encoding="utf-8") == before
+
+
+async def test_the_copy_is_taken_back_though_the_line_cannot_be_put_back(space, root, monkeypatch):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.touch_project("Budget app")
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    there = root / "projects" / "Budget app" / "MEMORY.md"
+    edit = TaskAgentSpace._edit_text
+    edits: list[Path] = []
+
+    def held_open(self, path, change):
+        edits.append(path)
+        # The index of where it goes cannot be written, and after that neither can the one it came from.
+        if path == there or (path == daily and there in edits):
+            raise PermissionError(13, "in use")
+        return edit(self, path, change)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", held_open)
+
+    with pytest.raises(PermissionError):
+        await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app")
+
+    monkeypatch.undo()
+    assert not (root / "projects" / "Budget app" / "memory" / "stack.md").exists()
+    assert [entry.id for entry in await space.list_entries(DEFAULT_PROJECT)] == ["stack"]
+
+
+def _two_volumes(monkeypatch, source, target, *, after_the_copy, put_back_fails=True, bring_up_fails=False):
+    """Make moving ``source`` to ``target`` a move to another volume during which the user saves something."""
+    import errno
+    import os
+    import shutil
+
+    rename, copy = os.replace, shutil.copytree
+
+    def other_volume(first, second):
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        if put_back_fails and Path(first).name.startswith(".removing-") and str(second) == str(source):
+            raise PermissionError(13, "something has its name by now")
+        return rename(first, second)
+
+    def copied_and_then_saved(first, second, *args, **kwargs):
+        if kwargs.get("dirs_exist_ok") and bring_up_fails:
+            raise OSError(28, "no space left on the device")
+        result = copy(first, second, *args, **kwargs)
+        if Path(first) == source:
+            after_the_copy()
+        return result
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    monkeypatch.setattr(shutil, "copytree", copied_and_then_saved)
+
+
+def test_a_directory_that_changed_and_cannot_be_put_back_is_moved_with_what_was_saved_last(tmp_path, monkeypatch):
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    (source / "AGENTS.md").write_text("Old rules.", encoding="utf-8")
+    target.parent.mkdir()
+
+    def saved() -> None:
+        (source / "memory" / "stack.md").write_text("FastAPI now, and more.", encoding="utf-8")
+        (source / "memory" / "export.md").write_text("CSV.", encoding="utf-8")
+        (source / "AGENTS.md").unlink()
+
+    _two_volumes(monkeypatch, source, target, after_the_copy=saved)
+
+    _move(source, target)
+
+    # Moved after all, and what is there is what the user saved last.
+    assert (target / "memory" / "stack.md").read_text(encoding="utf-8") == "FastAPI now, and more."
+    assert (target / "memory" / "export.md").read_text(encoding="utf-8") == "CSV."
+    assert not (target / "AGENTS.md").exists()
+    assert sorted(item.name for item in source.parent.iterdir()) == []
+    assert sorted(item.name for item in target.parent.iterdir()) == ["Budget app"]
+
+
+def test_what_was_saved_last_is_never_removed_when_nothing_else_has_it(tmp_path, monkeypatch):
+    from nekoclaw.host.space import _move, _set_aside_name
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    target.parent.mkdir()
+
+    def saved() -> None:
+        (source / "memory" / "stack.md").write_text("FastAPI now, and more.", encoding="utf-8")
+
+    _two_volumes(monkeypatch, source, target, after_the_copy=saved, bring_up_fails=True)
+
+    with pytest.raises(OSError):
+        _move(source, target)
+
+    monkeypatch.undo()
+    kept = source.parent / ".removing-Budget app"
+    assert (kept / "memory" / "stack.md").read_text(encoding="utf-8") == "FastAPI now, and more."
+    # The next move of a directory of the name takes another name, and leaves this one alone.
+    assert _set_aside_name(source) == source.parent / ".removing-Budget app-2"
+    assert (kept / "memory" / "stack.md").read_text(encoding="utf-8") == "FastAPI now, and more."
+    # What an ordinary move left half removed is still cleared away.
+    (kept / ".keep").unlink()
+    assert _set_aside_name(source) == kept and not kept.exists()
+
+
+async def test_archiving_does_not_make_an_empty_project_of_one_that_is_set_aside(space, root, monkeypatch):
+    await space.touch_project("Budget app", description="tracks spending")
+    await space.file_entry("Budget app", title="Stack", content="Flask.")
+    source = root / "projects" / "Budget app"
+
+    def saved() -> None:
+        (source / "memory" / "stack.md").write_text("changed", encoding="utf-8")
+
+    year = "2027"
+    _two_volumes(monkeypatch, source, root / "archive" / year / "Budget app", after_the_copy=saved, bring_up_fails=True)
+
+    assert await space.archive_project("Budget app", summary="An app.") is None
+
+    monkeypatch.undo()
+    # No directory of its name with nothing in it but a record.
+    assert not source.exists()
+    assert (root / "projects" / ".removing-Budget app" / "memory" / "stack.md").read_text(encoding="utf-8") == "changed"

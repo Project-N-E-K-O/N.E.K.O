@@ -618,14 +618,20 @@ class SpaceKeeper:
                 self._last_upkeep = float(stored) if isinstance(stored, (int, float)) else 0.0
             if not force and now - self._last_upkeep < SPACE_UPKEEP_INTERVAL_SECONDS:
                 return False
-            self._last_upkeep = now
             since = state.get("since")
             if not isinstance(since, (int, float)):
                 # The first round ever: commissions that ended before this
                 # host was started are not reviewed after the fact. The ones
                 # it saw end are, among them the one this round follows.
                 since = self._watching_since
-            await self._space.write_state(upkeep_at=now, since=since)
+            try:
+                await self._space.write_state(upkeep_at=now, since=since)
+            except OSError:
+                # Read a moment ago, not now. The round is not counted as
+                # done: the next commission that ends starts one.
+                logger.warning("what the task agent space keeps about its upkeep cannot be written; no tidying this time")
+                return False
+            self._last_upkeep = now
             for name, step in (
                 ("late reviews", lambda: self._late_reviews(now, float(since))),
                 ("archiving", lambda: self._archive_idle(now)),
