@@ -7,7 +7,7 @@ start) should be reversible. Each such action lands a new entry in a
 the whole session (messages + sandbox memory files + model_config +
 stage_state + eval_results + persona + virtual clock) back to that point.
 
-Design decisions (see also PLAN.md §13 "快照与回退"):
+Design decisions (see also PLAN.md §13 \"Snapshots and rewind\"):
 
 1. **Per-session, not singleton.**  Each live :class:`Session` holds one
    :class:`SnapshotStore`. Destroying the session (re-create / reset)
@@ -27,14 +27,14 @@ Design decisions (see also PLAN.md §13 "快照与回退"):
 
 4. **5-second per-trigger debounce.**  If the user fires three
    ``/chat/send`` calls within 5 seconds and each one calls
-   ``capture(trigger="send")``, we only keep the *latest* — middle
+   ``capture(trigger=\"send\")``, we only keep the *latest* — middle
    captures are overwritten in place. This keeps the timeline readable
-   ("7 sends" without 7 near-identical entries) without losing the final
+   (\"7 sends\" without 7 near-identical entries) without losing the final
    state. Different triggers never merge (a ``send`` followed 2s later
    by a ``memory_op`` yields two entries).
 
    Triggers that **never** debounce: ``init``, ``manual`` (user pressed
-   the [+ 手动建快照] button explicitly), ``pre_rewind_backup``
+   the [+ Create snapshot manually] button explicitly), ``pre_rewind_backup``
    (automatic safety net — must always be kept).
 
 5. **Rewind truncates forward history.**  Rewinding to snapshot S drops

@@ -38,13 +38,13 @@ from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__)
 
-# main_server 进程 ready 后要预热的重模块。genai 会在 import 时捎带 mcp，
-# 所以列了 genai 就不必单列 mcp。translatepy 的子翻译器各自有数据表，逐个列出
-# 让它们都进 sys.modules 缓存。
+# Heavy modules to warm after main_server is ready. Importing genai brings in mcp,
+# so listing genai makes a separate mcp entry unnecessary. translatepy subtranslators each have data tables; list them individually
+# so all enter the sys.modules cache.
 MAIN_SERVER_WARMUP: tuple[str, ...] = (
-    # openai/anthropic：曾在 utils/llm_client 顶层 import、坐在 merged 启动串行链
-    # 最前端（合计 ~0.7s，大头是 pydantic 模型类构建）。改惰性后在此预热，首次真实
-    # LLM 调用（greeting 等）不等 import。
+    # openai/anthropic were once top-level utils/llm_client imports, at the front of the merged startup's
+    # serial chain (~0.7s total, mostly pydantic model construction). Warm lazy imports here so the first real
+    # LLM call (greeting, etc.) need not wait for imports.
     "openai",
     "anthropic",
     "google.genai",
@@ -57,17 +57,17 @@ MAIN_SERVER_WARMUP: tuple[str, ...] = (
     "translatepy.translators.mymemory",
     "translatepy.translators.translatecom",
     "googletrans",
-    # 功能路由的重依赖（声音克隆 TTS / 网易云 / 网页抓取 / B 站），从各 router /
-    # util 模块顶层下放到 handler 后，在这里预热，保证首次点功能时不等 import。
+    # Heavy feature-route dependencies (voice-clone TTS / NetEase Cloud / web scraping / Bilibili) moved from router /
+    # util module tops into handlers; warm them here so the first feature use need not wait for imports.
     "dashscope",
     "dashscope.audio.tts_v2",
     "pyncm_async",
     "bs4",
     "bilibili_api",
-    # 21 条封禁话题模板的 compile（其中 4 条各约 51 KB 正则源码），实测
-    # 294-298 ms。原来在 config/prompts/prompts_directives 模块级做，坐在
-    # memory_server 的 eager 导入链上、也就是端口 bind 之前。改惰性之后在
-    # 这里预热，首次指令抽取不用等。
+    # Compiling 21 banned-topic templates (four with ~51KB regex source each) took
+    # 294-298ms. Previously at config/prompts/prompts_directives module scope, this occupied
+    # memory_server's eager import chain before port binding. After making it lazy,
+    # warm it here so first directive extraction need not wait.
     "config.prompts.prompts_directives:DIRECTIVE_PATTERNS",
 )
 
@@ -95,8 +95,8 @@ def start_background_warmup(modules, *, label: str = "server") -> bool:
 
     Returns whether a thread was actually started (``False`` if it already ran).
     """
-    # 测试环境下不预热：daemon 线程跑真实重 import 既拖慢测试、又会在测试 logging
-    # 拆除后回写日志报错，且预热是纯优化无行为契约，跳过完全安全。
+    # Skip warming in tests: real heavy imports in daemon threads slow tests and log errors
+    # after test logging teardown. Warming is a pure optimization without a behavior contract, so skipping is safe.
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return False
 
@@ -122,7 +122,7 @@ def start_background_warmup(modules, *, label: str = "server") -> bool:
                 )
             except Exception as exc:
                 logger.debug("[warmup:%s] skip %s: %s", label, name, exc)
-            # 每个模块之间主动让出，给正在跑的事件循环一个抢回 GIL 的机会。
+            # Yield between modules, giving the running event loop a chance to reclaim the GIL.
             time.sleep(0)
         logger.info(
             "[warmup:%s] done: %d/%d modules in %.0f ms",

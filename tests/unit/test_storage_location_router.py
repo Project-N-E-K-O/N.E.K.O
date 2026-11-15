@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from main_routers import storage_location_router as storage_location_router_module
 from main_routers.shared_state import init_shared_state
 from utils.cloudsave_runtime import CLOUDSAVE_DISABLED_ENV, ROOT_MODE_MAINTENANCE_READONLY
+from utils import native_directory
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.config_manager import ConfigManager
 from utils.config_manager import storage_roots as storage_roots_module
@@ -522,7 +523,7 @@ def test_restart_migration_write_failure_rolls_back_in_original_job(tmp_path, mo
     )
     assert response.json()["restart_mode"] == "migrate_after_shutdown"
     assert "private-" not in response.json()["error"]
-    # 另一个 job 是路由的 bootstrap reconcile；没有单独的回滚 job。
+    # Other job is route bootstrap reconciliation; no separate rollback job.
     assert sum(getattr(job, "__name__", "") == "_job" for job in jobs) == 1
     assert not any(getattr(job, "func", None) in (
         storage_location_router_module._restore_storage_mutation_state,
@@ -1635,10 +1636,10 @@ def test_storage_location_pick_directory_reports_cancelled_selection(tmp_path):
 
 @pytest.mark.unit
 def test_storage_location_pick_directory_uses_windows_native_picker(tmp_path):
-    with patch.object(storage_location_router_module.sys, "platform", "win32"):
+    with patch.object(native_directory.sys, "platform", "win32"):
         with patch.object(
-            storage_location_router_module,
-            "_pick_directory_via_powershell",
+            native_directory,
+            "_pick_via_powershell",
             return_value=str((tmp_path / "picked-win").resolve()),
         ) as powershell_picker:
             selected_root = storage_location_router_module._pick_storage_location_directory(start_path=str(tmp_path))
@@ -1652,25 +1653,21 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
     selected_root = str((tmp_path / "picked-win").resolve())
 
     with patch.object(
-        storage_location_router_module,
-        "_resolve_executable_name",
+        native_directory,
+        "_find_executable",
         return_value="powershell.exe",
     ), patch.object(
-        storage_location_router_module.shutil,
-        "which",
-        return_value="powershell.exe",
-    ), patch.object(
-        storage_location_router_module.subprocess,
+        native_directory.subprocess,
         "run",
-        return_value=storage_location_router_module.subprocess.CompletedProcess(
+        return_value=native_directory.subprocess.CompletedProcess(
             args=[],
             returncode=0,
             stdout=selected_root + "\n",
             stderr="",
         ),
     ) as run_mock:
-        result = storage_location_router_module._pick_directory_via_powershell(
-            start_path=str(tmp_path)
+        result = native_directory._pick_via_powershell(
+            start_path=str(tmp_path), title="请选择存储位置目录"
         )
 
     assert result == selected_root
@@ -1685,14 +1682,65 @@ def test_windows_powershell_directory_picker_uses_topmost_owner(tmp_path):
 
 
 @pytest.mark.unit
+def test_windows_picker_keeps_quotes_and_commands_out_of_the_script(tmp_path):
+    title = "x’; Start-Process calc; ‘"
+    start = str(tmp_path / "Bob’s 'plugins'")
+    with patch.object(native_directory, "_find_executable", return_value="powershell.exe"), patch.object(
+        native_directory.subprocess, "run",
+        return_value=native_directory.subprocess.CompletedProcess([], 0, stdout=start, stderr=""),
+    ) as run:
+        assert native_directory._pick_via_powershell(start_path=start, title=title) == start
+    command = run.call_args.args[0]
+    assert title not in command[-1] and start not in command[-1]
+    assert run.call_args.kwargs["env"]["NEKO_PICK_TITLE"] == title
+    assert run.call_args.kwargs["env"]["NEKO_PICK_START"] == start
+    assert run.call_args.kwargs["encoding"] == "utf-8"
+    assert "[Console]::Out.WriteLine" in command[-1]
+
+
+def test_windows_picker_console_protocol_round_trips_unicode_paths(tmp_path):
+    if native_directory.sys.platform != "win32":
+        pytest.skip("Windows PowerShell protocol")
+    executable = native_directory._find_executable("powershell.exe")
+    if executable is None:
+        pytest.skip("PowerShell unavailable")
+    setting = native_directory._POWERSHELL_SCRIPT.splitlines()[0]
+    value = str(tmp_path / "中文😀")
+    result = native_directory.subprocess.run(
+        [executable, "-NoProfile", "-Command", setting + "; [Console]::Out.WriteLine($env:NEKO_PICK_START)"],
+        env={**native_directory.os.environ, "NEKO_PICK_START": value},
+        capture_output=True, text=True, encoding="utf-8", check=True,
+    )
+    assert result.stdout.strip() == value
+
+
+def test_open_directory_reports_invalid_normalization_as_directory_error(tmp_path):
+    with pytest.raises(native_directory.NativeDirectoryError) as caught:
+        native_directory.open_directory(str(tmp_path) + "\0")
+    assert caught.value.code == "DIRECTORY_UNAVAILABLE"
+
+
+def test_linux_display_failure_tries_the_next_available_picker(tmp_path):
+    results = [
+        native_directory.subprocess.CompletedProcess([], 1, "", "cannot open display"),
+        native_directory.subprocess.CompletedProcess([], 0, str(tmp_path), ""),
+    ]
+    with patch.object(native_directory, "_find_executable", side_effect=lambda *args: args[0]), patch.object(
+        native_directory, "_run_picker", side_effect=results,
+    ) as run:
+        assert native_directory._pick_via_linux_dialog(start_path="", title="Folder") == str(tmp_path)
+    assert run.call_count == 2
+
+
+@pytest.mark.unit
 def test_storage_location_pick_directory_propagates_native_unavailable_on_linux(tmp_path):
-    """Linux native dialog 不可用时直接 raise，不再有 tkinter 兜底（项目策略：不带 tk）。"""
-    with patch.object(storage_location_router_module.sys, "platform", "linux"):
+    """Raise if Linux native dialog unavailable; no tkinter fallback (project policy excludes tk)."""
+    with patch.object(native_directory.sys, "platform", "linux"):
         with patch.object(
-            storage_location_router_module,
-            "_pick_directory_via_linux_dialog",
-            side_effect=storage_location_router_module._DirectoryPickerUnavailable(
-                "directory_picker_unavailable",
+            native_directory,
+            "_pick_via_linux_dialog",
+            side_effect=native_directory.NativeDirectoryError(
+                "DIRECTORY_PICKER_UNAVAILABLE",
                 "native picker unavailable",
             ),
         ) as linux_picker:
@@ -2101,15 +2149,15 @@ def test_storage_location_select_current_root_rolls_back_when_recovery_write_fai
         False,
     )
 
-    # pre-image：回滚后这三份状态必须逐一还原
+    # Pre-image: restore all three states individually after rollback.
     previous_migration = load_storage_migration(config_manager)
     previous_policy = load_storage_policy(config_manager, anchor_root=config_manager.anchor_root)
     previous_root_state = config_manager.load_root_state()
 
-    # 让三段写里的第二段（save_storage_policy）失败 —— 此时检查点已经被删掉了。
-    # 打桩只影响路由模块自己的名字：bootstrap 阶段不调用 save_storage_policy，
-    # 而回滚走的是 _restore_storage_mutation_state（直接 atomic_write_json 与
-    # save_storage_migration），不会被这个桩误伤。
+    # Fail second of three writes (save_storage_policy), after checkpoint already deleted.
+    # Stub affects route-local name only: bootstrap does not call save_storage_policy,
+    # and rollback uses _restore_storage_mutation_state (direct atomic_write_json and
+    # save_storage_migration), unaffected by stub.
     def _deny_policy_write(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
@@ -2129,7 +2177,7 @@ def test_storage_location_select_current_root_rolls_back_when_recovery_write_fai
     assert payload["ok"] is False
     assert payload["error_code"] == "storage_policy_write_failed"
 
-    # 回滚把被删掉的检查点、没写成的策略、没切的 root mode 全部还原
+    # Rollback restores deleted checkpoint, failed policy, and unchanged root mode.
     assert load_storage_migration(config_manager) == previous_migration
     assert load_storage_policy(config_manager, anchor_root=config_manager.anchor_root) == previous_policy
     assert config_manager.load_root_state() == previous_root_state
@@ -2163,13 +2211,13 @@ def test_storage_location_select_unavailable_selected_root_rolls_back_when_recov
         False,
     )
 
-    # pre-image：回滚后策略与 root mode 必须逐一还原
+    # Pre-image: restore policy/root mode individually on rollback.
     previous_policy = load_storage_policy(reloaded_manager, anchor_root=reloaded_manager.anchor_root)
     previous_root_state = reloaded_manager.load_root_state()
 
-    # 打桩只影响路由模块自己的名字：bootstrap 阶段不调用 save_storage_policy，而回滚走的是
-    # _restore_storage_mutation_state（直接 atomic_write_json 与 save_storage_migration），
-    # 不会被这个桩误伤。
+    # Stub affects route-local name only: bootstrap omits save_storage_policy; rollback uses
+    # _restore_storage_mutation_state (direct atomic_write_json / save_storage_migration),
+    # unaffected by stub.
     def _deny_policy_write(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
@@ -2225,10 +2273,10 @@ def test_storage_location_select_current_root_rolls_back_when_persist_write_fail
     payload = response.json()
     assert payload["ok"] is False
     assert payload["error_code"] == "storage_policy_write_failed"
-    # 响应体只给稳定文案，底层异常（含绝对路径）必须留在服务端日志里
+    # Response uses stable text; underlying exceptions with absolute paths stay in server logs.
     assert "[Errno 13]" not in payload["error"]
 
-    # 写入一行都没落地，回滚后策略文件仍应不存在，root_state 保持原样
+    # No write persisted; after rollback policy file stays absent and root_state unchanged.
     assert not get_storage_policy_path(config_manager).exists()
     assert load_storage_policy(config_manager) == previous_policy
     assert config_manager.load_root_state() == previous_root_state
@@ -2253,7 +2301,7 @@ def test_storage_location_select_keeps_corrupt_policy_bytes_after_rollback(tmp_p
     config_manager = _DummyConfigManager(tmp_path)
     policy_path = get_storage_policy_path(config_manager, anchor_root=_route_anchor_root(config_manager))
     policy_path.parent.mkdir(parents=True, exist_ok=True)
-    corrupt_bytes = b'{"selected_root": "D:\\\\half-writ'  # 写到一半被截断的 JSON
+    corrupt_bytes = b'{"selected_root": "D:\\\\half-writ'  # JSON truncated midway through write.
     policy_path.write_bytes(corrupt_bytes)
 
     def _deny_policy_write(*args, **kwargs):
@@ -2273,7 +2321,7 @@ def test_storage_location_select_keeps_corrupt_policy_bytes_after_rollback(tmp_p
     assert response.status_code == 500
     payload = response.json()
     assert payload["error_code"] == "storage_policy_write_failed"
-    # 盘上必须还是那份损坏内容：旧实现会把它 unlink 掉
+    # Disk must retain corrupt content; old implementation unlinked it.
     assert policy_path.read_bytes() == corrupt_bytes
 
 
@@ -2283,7 +2331,7 @@ def test_storage_location_select_keeps_corrupt_migration_bytes_after_rollback(tm
     config_manager = _DummyConfigManager(tmp_path)
     migration_path = get_storage_migration_path(config_manager, anchor_root=_route_anchor_root(config_manager))
     migration_path.parent.mkdir(parents=True, exist_ok=True)
-    corrupt_bytes = b'{"status": "copying"'  # 截断的检查点
+    corrupt_bytes = b'{"status": "copying"'  # Truncated checkpoint.
     migration_path.write_bytes(corrupt_bytes)
 
     def _deny_policy_write(*args, **kwargs):
@@ -2342,9 +2390,9 @@ def test_storage_location_select_reports_unreadable_policy_state(tmp_path, monke
     payload = response.json()
     assert payload["ok"] is False
     assert payload["error_code"] == "storage_state_unreadable"
-    # 响应体只给稳定文案，底层异常（含绝对路径）必须留在服务端日志里
+    # Response uses stable text; underlying exceptions with absolute paths stay in server logs.
     assert "[Errno" not in payload["error"]
-    # 快照阶段就失败：写入闭包一行都没跑，那个路径（目录）也还留在原地
+    # Snapshot failed before any mutation closure ran; path (directory) remains untouched.
     assert write_calls == []
     assert policy_path.is_dir()
 
@@ -2407,11 +2455,11 @@ def test_storage_location_select_reports_recovered_when_rollback_has_nothing_to_
         raise PermissionError(13, "Permission denied")
 
     def _record_byte_write(path, *args, **kwargs):
-        # 回滚一旦真的去写就会被记下来；跳过的实现下这里应该一次都不被调用
+        # Record any actual rollback writes; skipping implementation must never call this.
         byte_write_calls.append(path)
         raise PermissionError(13, "Permission denied")
 
-    # 前向写策略被拒（写入的第一步就失败）；回滚若真去写，同一个不可写目录也会拒绝
+    # Forward policy write denied at first step; actual rollback writes would hit same unwritable directory.
     monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
     monkeypatch.setattr(file_utils_module, "atomic_write_bytes", _record_byte_write)
 
@@ -2426,12 +2474,12 @@ def test_storage_location_select_reports_recovered_when_rollback_has_nothing_to_
 
     assert response.status_code == 500
     payload = response.json()
-    # 盘上一字未改，回滚确实成功了，文案必须如实说「已恢复」，而不是「未能恢复」
+    # Disk unchanged, rollback truly succeeded; truthfully report restored, never could-not-restore.
     assert payload["error_code"] == "storage_policy_write_failed"
     assert "已恢复原有状态" in payload["error"]
-    # 跳过生效：回滚没有尝试任何写入
+    # Skip effective: rollback attempted no writes.
     assert byte_write_calls == []
-    # 盘上还是那份 pre-image
+    # Disk still holds pre-image.
     assert policy_path.read_bytes() == original_policy
 
 
@@ -2485,9 +2533,9 @@ def test_storage_location_select_reports_rollback_failure_when_rollback_write_al
     def _deny_write(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
-    # 双重失败：前向写策略被拒；回滚改成按 pre-image 原始字节还原之后，要构造"回滚也
-    # 写不进去"就得拦那条真实落盘路径（atomic_write_bytes），拦 save_storage_migration
-    # 已经拦不住它了（回滚不再经过 save_* 这两个 helper）。
+    # Double failure: forward policy write rejected; rollback now restores raw pre-image bytes, so simulating failed rollback
+    # must intercept real atomic_write_bytes, not save_storage_migration,
+    # because rollback no longer calls either save_* helper.
     monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_write)
     monkeypatch.setattr(file_utils_module, "atomic_write_bytes", _deny_write)
 
@@ -2503,12 +2551,12 @@ def test_storage_location_select_reports_rollback_failure_when_rollback_write_al
     assert response.status_code == 500
     payload = response.json()
     assert payload["ok"] is False
-    # 回滚失败时不能沿用那个声称「已恢复原有状态」的错误码
+    # Failed rollback must not reuse error code claiming original state restored.
     assert payload["error_code"] == "storage_policy_rollback_failed"
-    # 响应体只给稳定文案，底层异常（含绝对路径）必须留在服务端日志里
+    # Response uses stable text; underlying exceptions with absolute paths stay in server logs.
     assert "[Errno 13]" not in payload["error"]
 
-    # 回滚确实没成功：检查点没被写回去，盘上并没有回到 pre-image
+    # Rollback truly failed: checkpoint not restored, disk differs from pre-image.
     assert previous_migration
     assert not load_storage_migration(config_manager)
 
@@ -2566,9 +2614,9 @@ def test_storage_location_select_reports_snapshot_failure_without_claiming_resto
     payload = response.json()
     assert payload["ok"] is False
     assert payload["error_code"] == "storage_operation_failed"
-    # 响应体只给稳定文案，底层异常（含绝对路径）必须留在服务端日志里
+    # Response uses stable text; underlying exceptions with absolute paths stay in server logs.
     assert "[Errno 13]" not in payload["error"]
-    # 快照都没取成，绝不能跑回滚
+    # Snapshot itself failed: never run rollback.
     assert rollback_calls == []
 
 
@@ -2625,14 +2673,14 @@ def test_storage_location_select_rollback_is_best_effort(tmp_path, monkeypatch):
     policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
     original_policy = policy_path.read_bytes() if policy_path.exists() else None
 
-    # policy 和 root_state 必须真的改变，再让最后一步失败。
+    # Policy/root_state must actually change before failing last step.
     real_set_root_mode = storage_location_router_module.set_root_mode
 
     def _set_root_mode_then_fail(*args, **kwargs):
         real_set_root_mode(*args, **kwargs)
         raise PermissionError(13, "Permission denied")
 
-    # 回滚时：migration 的字节写被拒（第一步失败），policy 路径放行
+    # During rollback, reject migration byte write (first step), allow policy path.
     def _selective_byte_write(path, data, *args, **kwargs):
         if Path(path).name == "storage_migration.json":
             raise PermissionError(13, "Permission denied")
@@ -2652,16 +2700,16 @@ def test_storage_location_select_rollback_is_best_effort(tmp_path, monkeypatch):
 
     assert response.status_code == 500
     payload = response.json()
-    # migration 还原失败 → 回滚部分失败 → 不能声称「已恢复」
+    # Migration restoration failed → partial rollback failure → never claim restored.
     assert payload["error_code"] == "storage_policy_rollback_failed"
-    # migration 没被还原（前向写入删了它，回滚写不回去），文件应不存在
+    # Migration not restored (forward deleted it, rollback cannot rewrite); file absent.
     assert not migration_path.exists()
-    # policy 已被还原回 pre-image（best-effort 第二步成功）
+    # Policy restored to pre-image (best-effort second step succeeds).
     if original_policy is not None:
         assert policy_path.read_bytes() == original_policy
     else:
         assert not policy_path.exists()
-    # root_state 也被还原回 pre-image（best-effort 第三步成功）
+    # root_state restored to pre-image too (best-effort third step succeeds).
     assert config_manager.load_root_state().get("mode") == "deferred_init"
 
 
@@ -2677,13 +2725,13 @@ def test_storage_location_select_rollback_runs_inside_same_transaction(tmp_path,
     """
     config_manager = _DummyConfigManager(tmp_path)
 
-    # 前向写入失败
+    # Forward write failure.
     def _deny_policy_write(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(storage_location_router_module, "save_storage_policy", _deny_policy_write)
 
-    # 记录 _run_locked_storage_job 被调用的次数
+    # Count _run_locked_storage_job calls.
     job_calls = []
     original_run_locked = storage_location_router_module._run_locked_storage_job
 
@@ -2707,11 +2755,11 @@ def test_storage_location_select_rollback_runs_inside_same_transaction(tmp_path,
         )
 
     assert response.status_code == 500
-    # 正向写入阶段只调用一次 _run_locked_storage_job（快照 + 写入 + 同事务回滚），
-    # 没有第二次回滚 job。bootstrap 也会调一次，所以这里只统计写入阶段的 _job。
+    # Forward mutation calls _run_locked_storage_job once (snapshot + mutation + same-transaction rollback),
+    # never a second rollback job. Bootstrap also calls once; count mutation-phase _job only.
     write_jobs = [j for j in job_calls if "_apply_storage_mutation_writes" in getattr(j, "__qualname__", "")]
     assert len(write_jobs) == 1
-    # 没有任何 _restore_storage_mutation_state 的单独 job 调用
+    # No separate _restore_storage_mutation_state job call.
     rollback_jobs = [
         j for j in job_calls
         if getattr(j, "func", None) is storage_location_router_module._restore_storage_mutation_state
@@ -2736,7 +2784,7 @@ def test_storage_location_select_rolls_back_when_cancelled_after_writes_landed(t
     config_manager = _DummyConfigManager(tmp_path)
     anchor_root = _route_anchor_root(config_manager)
 
-    # 三个状态文件在盘上都先有一份「改动前」的内容，这样回滚是「改回去」而不是「删掉」
+    # Three state files initially hold pre-change content so rollback restores rather than deletes.
     policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
     policy_path.parent.mkdir(parents=True, exist_ok=True)
     original_policy = b'{"version": 1, "selected_root": "D:/N.E.K.O"}'
@@ -2746,8 +2794,8 @@ def test_storage_location_select_rolls_back_when_cancelled_after_writes_landed(t
     migration_path.write_bytes(original_migration)
     original_root_state = config_manager.load_root_state()
 
-    # 模拟 _run_locked_storage_job 的既定行为：先等 worker 跑到终态（三步已落盘），
-    # 再把取消送达。只在正向 job 之后抛一次，回滚 job 仍要能正常跑完。
+    # Simulate _run_locked_storage_job contract: wait for worker terminal state with all three writes persisted,
+    # then deliver cancellation. Raise once after forward job only; rollback must still complete normally.
     cancel_delivered = {"done": False}
     original_run_locked = storage_location_router_module._run_locked_storage_job
 
@@ -2765,7 +2813,7 @@ def test_storage_location_select_rolls_back_when_cancelled_after_writes_landed(t
     )
 
     def _write():
-        # 三步写入全部成功，这正是「写已落盘、屏障却没解除」的前提
+        # All three writes succeeded: premise for persisted writes but unreleased barrier.
         save_storage_policy(
             config_manager,
             selected_root=config_manager.app_docs_dir,
@@ -2791,9 +2839,9 @@ def test_storage_location_select_rolls_back_when_cancelled_after_writes_landed(t
             )
         )
 
-    # 前置条件：写入确实完整落盘过，否则这个用例证明不了「取消了也要回滚」
+    # Precondition: complete persistence actually occurred, proving cancellation still requires rollback.
     assert state_snapshot["_write_outcome"] == "success"
-    # 取消路径必须把三个文件都退回 pre-image，不能留着「盘上已选好、屏障却还锁着」
+    # Cancellation restores all three pre-images, never leaving disk selection committed while barrier stays locked.
     assert policy_path.read_bytes() == original_policy
     assert migration_path.read_bytes() == original_migration
     assert config_manager.load_root_state() == original_root_state
@@ -4459,6 +4507,33 @@ def test_v1_migration_left_entries_are_copied_over_at_the_next_launch(tmp_path):
 
 
 @pytest.mark.unit
+def test_v1_catch_up_leaves_retained_plugin_installations_in_place(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    plugin_file = ".neko-plugin-installations/plugins/example/plugin.toml"
+    source_plugin = source_root / plugin_file
+    source_plugin.parent.mkdir(parents=True)
+    source_plugin.write_text('[plugin]\nid = "example"\n', encoding="utf-8")
+    (source_root / "plugins.lock.json").write_text('{"entries":[]}', encoding="utf-8")
+    scoped_lock = "plugins.0123456789abcdef.lock.json"
+    (source_root / scoped_lock).write_text('{"entries":[]}', encoding="utf-8")
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+    assert not (target_root / plugin_file).exists()
+    assert not (target_root / "plugins.lock.json").exists()
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert response.json()["error_code"] == "retained_source_cleanup_incomplete"
+    assert scoped_lock in response.json()["remaining_entries"]
+    assert source_plugin.is_file()
+    assert (source_root / "plugins.lock.json").is_file()
+    assert (source_root / scoped_lock).is_file()
+    assert not (target_root / scoped_lock).exists()
+
+
+@pytest.mark.unit
 def test_v1_catch_up_leaves_an_entry_the_new_root_already_has(tmp_path):
     source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
     (target_root / "pngtuber").mkdir()
@@ -5078,3 +5153,57 @@ def test_storage_cleanup_leaves_the_root_while_entries_remain(tmp_path, monkeypa
     assert second.status_code == 200, second.json()
     assert not source_root.exists()
     assert load_storage_migration(_make_real_config_manager(tmp_path))["retained_source_mode"] == "cleaned"
+
+
+_LEDGER = "nekoclaw/ledger.db"
+_LEDGER_LOG = "nekoclaw/ledger.db-wal"
+
+
+def _v1_migration_that_left_a_ledger_behind(tmp_path):
+    source_root, target_root = _v1_migration_that_left_pngtuber_behind(tmp_path)
+    (source_root / "nekoclaw").mkdir()
+    (source_root / _LEDGER).write_bytes(b"the old root's ledger")
+    (source_root / _LEDGER_LOG).write_bytes(b"commits of the old root")
+    return source_root, target_root
+
+
+def _ledger_files(root) -> dict:
+    return {name: (root / name).read_bytes() for name in (_LEDGER, _LEDGER_LOG) if (root / name).exists()}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "new_root",
+    [
+        # No ledger yet: half a pair, should the catch-up be stopped between the two, would be
+        # taken for the new root's own ledger the next time, and the log never follow.
+        {},
+        # Its own ledger, closed down in order: the old root's log is not put next to it.
+        {_LEDGER: b"made at the new root"},
+        # A log without its ledger: the old root's ledger is not put next to it.
+        {_LEDGER_LOG: b"commits of nobody knows what"},
+    ],
+)
+def test_v1_catch_up_leaves_a_ledger_and_its_log_in_the_old_root(tmp_path, new_root):
+    source_root, target_root = _v1_migration_that_left_a_ledger_behind(tmp_path)
+    (source_root / "nekoclaw" / "permissions.json").write_text('{"browser": "always"}', encoding="utf-8")
+    for name, content in new_root.items():
+        (target_root / name).parent.mkdir(exist_ok=True)
+        (target_root / name).write_bytes(content)
+
+    reloaded_manager = _make_real_config_manager(tmp_path)
+    run_pending_storage_migration(reloaded_manager)
+
+    assert _ledger_files(target_root) == new_root
+    copied = load_storage_migration(reloaded_manager).get("copied_entries") or {}
+    assert not {_LEDGER, _LEDGER_LOG} & set(copied)
+    # What stands on its own is caught up as before.
+    assert (target_root / "nekoclaw" / "permissions.json").read_text(encoding="utf-8") == '{"browser": "always"}'
+    assert (target_root / "pngtuber" / "set" / "idle.png").is_file()
+    # The pair is still whole in the old root, and cleanup names it instead of taking it away.
+    pair = {_LEDGER: b"the old root's ledger", _LEDGER_LOG: b"commits of the old root"}
+    assert _ledger_files(source_root) == pair
+    response = _cleanup_request(tmp_path, source_root)
+    assert response.status_code == 409, response.json()
+    assert {_LEDGER, _LEDGER_LOG} <= set(response.json()["remaining_entries"])
+    assert _ledger_files(source_root) == pair

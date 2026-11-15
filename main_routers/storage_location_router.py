@@ -21,7 +21,7 @@ checkpoint flow, and exposes maintenance-state diagnostics for the web UI.
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
@@ -34,7 +34,6 @@ import shutil
 import sys
 import inspect
 import stat
-import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable
@@ -85,6 +84,7 @@ from utils.storage_migration import (
     is_storage_migration_pending,
     load_storage_migration,
     metadata_fingerprint,
+    migrated_runtime_entry_names,
     move_entry_without_overwrite,
     private_cleanup_entry_name,
     private_cleanup_name,
@@ -114,6 +114,7 @@ from utils.storage_policy import (
 )
 from utils.config_manager import get_config_manager as get_runtime_config_manager
 from utils.root_state_lock import root_state_transaction
+from utils import native_directory
 
 router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
 logger = logging.getLogger(__name__)
@@ -121,29 +122,29 @@ _storage_mutation_lock = asyncio.Lock()
 
 # _STORAGE_MUTATION_OFFLOAD_CONTRACT
 #
-# 这个文件的存储状态写序列**已经挪进工作线程**（#2598 之前写的
-# _STORAGE_MUTATION_STAYS_ON_LOOP 说明作废）。#2598 当时列的两条阻塞理由不是被无视
-# 了，是被逐条解掉的，改动前请先确认它们仍然成立：
+# This file's storage-state write sequence already runs in a worker thread; pre-#2598
+# _STORAGE_MUTATION_STAYS_ON_LOOP guidance is obsolete. #2598 resolved both original blockers
+# individually rather than ignoring them; verify these guarantees before changing it:
 #
-# 一、取消原子性 —— 靠"整条序列进同一个 to_thread job"保住。
-#     delete_storage_migration → save_storage_policy → set_root_mode 之间依旧一个
-#     await 都没有：它们现在同在一个同步闭包里，由 _apply_storage_mutation_writes /
-#     _run_locked_storage_job 送进 worker。to_thread 被取消时线程照样跑完，所以序列
-#     不会被切成两半。守卫：tests/unit/test_root_state_write_lock.py 的
+# 1. Cancellation atomicity: put the entire sequence into one to_thread job.
+#    delete_storage_migration -> save_storage_policy -> set_root_mode still contains
+#    no await; all live in one synchronous closure submitted by _apply_storage_mutation_writes /
+#    _run_locked_storage_job. Cancelling to_thread leaves its thread running to completion,
+#    so the sequence cannot split. Guard: tests/unit/test_root_state_write_lock.py's
 #     test_storage_write_primitives_never_sit_directly_in_an_async_body。
 #
-#     另外 _run_locked_storage_job 在取消时会**循环等到 worker 结束**再放
-#     CancelledError 出去，否则 _storage_mutation_lock 会在工作线程还在写的时候松开，
-#     下一个变更请求就能跟它交错。
+#    _run_locked_storage_job also loops until the worker finishes before propagating
+#    CancelledError, or _storage_mutation_lock releases while writes continue,
+#    allowing the next mutation request to interleave.
 #
-# 二、root_state 的无锁写者 —— 已经不存在了。
-#     build_storage_location_bootstrap_payload 现在默认 persist_reconcile=False，
-#     GET /bootstrap、/status、/diagnostics、/retained-source、POST /exit 全是纯读；
-#     只有已经拿着 _storage_mutation_lock 的 *_locked 路由才 opt-in 落盘。另外
-#     root_state 有了真锁（utils/root_state_lock.py），读—改—写整段进锁、锁内重读。
+# 2. Unlocked root_state writers no longer exist.
+#    build_storage_location_bootstrap_payload now defaults persist_reconcile=False;
+#    GET /bootstrap,/status,/diagnostics,/retained-source and POST /exit are read-only;
+#    only *_locked routes holding _storage_mutation_lock opt into persistence. Also,
+#    root_state now uses utils/root_state_lock.py around full read-modify-write, rereading under lock.
 #
-# 回滚也必须在 worker 中执行：普通写入失败与写入共用同一事务，写入成功后的
-# 屏障/关闭失败恢复经 _run_locked_storage_job 提交，取消时等 worker 终态再传播。
+# Rollback must also run in workers: ordinary write failures share their write transaction; recovery after
+# successful writes but failed fencing/closing uses _run_locked_storage_job, awaiting worker termination before propagating cancellation.
 
 
 class StorageLocationSelectionRequest(BaseModel):
@@ -279,7 +280,7 @@ class _StorageRollbackPartialError(RuntimeError):
     """
 
     def __init__(self, failures: list[tuple[str, Path, BaseException]]):
-        # failures 至少有一个元素；取第一个拼主消息，完整列表留在 self.failures 里供日志使用
+        # failures is nonempty: use the first for the main message, retaining the full list in self.failures for logs.
         first_step, first_path, first_exc = failures[0]
         super().__init__(
             f"storage mutation rollback partially failed ({len(failures)} step(s)); "
@@ -328,10 +329,10 @@ def _snapshot_storage_mutation_state(
     policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
     migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
 
-    # root_state 保留严格加载器的合成恢复状态；读失败统一归为状态不可读。
+    # root_state preserves the strict loader's synthesized recovery state; classify all read failures as unreadable state.
     root_state, root_state_raw = _read_root_state_snapshot(config_manager)
 
-    # 回滚只需要原始字节，不解析、也不生成第二套恢复依据。
+    # Rollback needs only original bytes, without parsing or inventing another recovery basis.
     policy_preimage = _read_state_file_preimage(policy_path) if include_policy else None
     migration_preimage = _read_state_file_preimage(migration_path) if include_migration else None
 
@@ -372,12 +373,12 @@ def _restore_state_file_from_preimage(path: Path, preimage: dict[str, Any]) -> N
     if preimage.get("existed"):
         raw = preimage.get("bytes")
         if raw is None:
-            # 构造上不该出现（existed=True 必带 bytes）。宁可抛也不静默跳过：跳过会让
-            # 回滚假装成功，把一个半还原的状态留给调用方。
+            # Construction should guarantee bytes when existed=True. Raise rather than silently skip,
+            # which would falsely report successful rollback and leave partially restored state.
             raise RuntimeError("storage state pre-image exists but carries no bytes")
-        # 盘上已经是 pre-image 就跳过写入：说明这个文件从未被改动（写入一步都没成功），
-        # 或已被前面的回滚步骤退回。不写就不可能失败，于是「写入第一步就失败」这种情况
-        # 能如实判成回滚成功，不会误报「未能恢复原有状态」。比较原始字节，不解析内容。
+        # Skip writing when disk already equals the pre-image: either no write succeeded or earlier rollback
+        # restored it. No write means no possible write failure, so first-step write failures honestly count
+        # as successful rollback rather than failed restoration. Compare raw bytes without parsing.
         try:
             from utils.file_utils import read_bytes_tolerating_replace
 
@@ -385,12 +386,12 @@ def _restore_state_file_from_preimage(path: Path, preimage: dict[str, Any]) -> N
                 logger.info("[storage_location] 状态文件已是快照内容，跳过回滚写入: %s", path)
                 return
         except FileNotFoundError:
-            # 当前不存在（被删过）→ 必须写回
+            # Currently absent after deletion: restore by writing.
             pass
         except OSError:
-            # 读不出当前内容，无法确认是否已恢复 → 不跳过，交给下面的写入去尝试
+            # Unreadable current content cannot prove restoration; attempt writing below rather than skipping.
             pass
-        # 局部导入，和本文件既有的原子写导入保持一致
+        # Local import matches this file's existing atomic-write imports.
         from utils.file_utils import atomic_write_bytes
 
         atomic_write_bytes(path, raw)
@@ -432,7 +433,7 @@ def _restore_storage_mutation_state_locked(
     ``_run_locked_storage_job``, which waits for the worker to finish before it
     propagates cancellation.
     """
-    # 空快照表示未开始写入；非空快照必须携带字节 pre-image，缺字段不能当作文件不存在。
+    # Empty snapshots mean writing never started; nonempty snapshots require byte pre-images, with missing fields never implying absent files.
     if not snapshot:
         logger.warning("skipping storage mutation rollback: snapshot was never taken")
         return
@@ -455,13 +456,13 @@ def _restore_storage_mutation_state_locked(
             logger.exception("failed to restore %s, continuing remaining storage restores: %s", step, state_path)
             failures.append((step, Path(state_path), exc))
 
-    # ---- 第三步：root_state ----
+    # ---- Step three: root_state ----
     previous_root_state = snapshot.get("root_state")
     if isinstance(previous_root_state, dict):
-        # root_state 不做字节快照（回滚要写回的是「原路径不可用」覆盖后的合成状态），
-        # 改用加载值比较：盘上已是快照里的值就跳过写入，理由同
-        # _restore_state_file_from_preimage —— 不写就不可能失败。
-        # 公共恢复入口已持有 root_state_transaction，覆盖整段读取和恢复写入。
+        # root_state uses loaded-value comparison instead of byte snapshots because rollback restores synthesized state
+        # reflecting original-path unavailability. Skip when disk already equals the snapshot,
+        # as in _restore_state_file_from_preimage: avoiding writes avoids failure.
+        # The shared recovery entry already holds root_state_transaction across reading and restoration writes.
         root_state_path = Path(getattr(config_manager, "root_state_path", ""))
         try:
             try:
@@ -481,7 +482,7 @@ def _restore_storage_mutation_state_locked(
             )
             failures.append(("root_state", root_state_path, exc))
 
-    # 三步全部跑完后，只要有任意一步失败就抛聚合异常；全成功则静默返回
+    # Attempt all three steps, then raise an aggregate error if any failed; return silently on full success.
     if failures:
         raise _StorageRollbackPartialError(failures)
 
@@ -504,17 +505,17 @@ async def _run_locked_storage_job(job: Callable[[], Any]) -> Any:
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        # 循环等到 worker 真的结束，而不是"suppress 一次就走"。第二次 cancel（典型
-        # 组合：请求先被取消，紧接着服务器关闭又取消一次）会让下面这个 await 再抛一
-        # 次；只 suppress 一次的话就会在 worker 还在写的时候把 _storage_mutation_lock
-        # 让出去，等于这段防护白做。worker 是一次有界的落盘（最坏再加 155ms 退避），
-        # 所以这个循环一定会停。
+        # Loop until actual worker completion rather than suppressing once. A second cancellation (request
+        # cancellation immediately followed by server shutdown) raises again at this await;
+        # suppressing only once would release _storage_mutation_lock while writes continue,
+        # defeating protection. Worker persistence is bounded, at worst adding 155ms backoff,
+        # so this loop must terminate.
         while not task.done():
             with suppress(asyncio.CancelledError):
                 await asyncio.wait({task})
-        # 取回异常再走人：没人 retrieve 的话 asyncio 会在 GC 时打
-        # "Task exception was never retrieved"，把一次落盘失败变成一条谁也对不上的
-        # 日志。这里只是消费掉它——取消已经发生，原来的 CancelledError 才是要传出去的。
+        # Retrieve exceptions before leaving; otherwise asyncio emits
+        # "Task exception was never retrieved" at GC, turning a write failure into an unattributable
+        # log. Consume it only: cancellation already happened and the original CancelledError must propagate.
         if task.done() and not task.cancelled() and task.exception() is not None:
             logger.warning(
                 "storage write job failed after the request was cancelled: %s",
@@ -548,26 +549,26 @@ async def _apply_storage_mutation_writes(
     """
 
     def _job() -> Any:
-        # 快照、写入、回滚必须在同一个 root_state_transaction() 内完成。
-        # 原来的做法是「快照+写入」在一个事务，回滚在另一个 job 里重新取锁——两个事务
-        # 之间的窗口会让第三方（cloudsave fence、跨进程 launcher 等）把 root_state 改
-        # 成新值，然后回滚用整份旧快照把人家的改动整份盖掉。把回滚搬进同一个事务后，
-        # write() 失败的常见路径从头到尾不释放锁，第三方零机会插入。
+        # Snapshot, writes, and rollback must share one root_state_transaction().
+        # Previously snapshot+writes shared a transaction, but rollback reacquired in another job; the gap
+        # allowed third parties (cloudsave fence / cross-process launcher etc.) to update root_state,
+        # then stale full-snapshot rollback overwrote their changes. Keeping rollback in the same transaction means
+        # ordinary write() failures never release the lock, leaving no third-party insertion window.
         #
-        # 另一个原因：不要在 cloud_apply_fence 持有的临时 mode 下拍快照然后在 fence
-        # 退出后回放——快照必须和写入在同一事务里。
+        # Also avoid snapshotting cloud_apply_fence's temporary mode and restoring it after fence exit;
+        # snapshot and writes must share a transaction.
         with root_state_transaction():
             snapshot_out.clear()
             snapshot_out.update(_snapshot_storage_mutation_state(
                 config_manager, anchor_root=anchor_root,
                 include_policy=include_policy, include_migration=include_migration,
             ))
-            # 快照阶段可能抛 _StorageStateUnreadable：此时 write() 一行都没跑，
-            # 外层 except _StorageStateUnreadable 分支负责处理，不进下面的 try。
+            # Snapshotting may raise _StorageStateUnreadable before write() runs at all;
+            # the outer specific except handles that without entering try below.
             try:
                 result = write()
             except Exception:
-                # write() 抛异常 → 在同一把锁内立即回滚，消除第三方插入窗口
+                # write() failure rolls back immediately under the same lock, eliminating third-party interleaving.
                 try:
                     _restore_storage_mutation_state(
                         config_manager,
@@ -576,11 +577,11 @@ async def _apply_storage_mutation_writes(
                     )
                     snapshot_out["_write_outcome"] = "rolled_back"
                 except Exception as rollback_exc:
-                    # 回滚自身也失败（best-effort 下至少一步失败）→ 记录结果与异常，
-                    # 由外层 except 分支根据 _write_outcome 判定错误码
+                    # Rollback itself failed in at least one best-effort step: record outcome and exception;
+                    # the outer except chooses an error code from _write_outcome.
                     snapshot_out["_write_outcome"] = "rollback_failed"
                     snapshot_out["_rollback_error"] = rollback_exc
-                # 重新抛出 write() 的原始异常，让外层 except 分支走错误码判定
+                # Reraise write()'s original exception for outer error-code handling.
                 raise
             snapshot_out["_write_outcome"] = "success"
             return result
@@ -628,8 +629,8 @@ async def _apply_storage_mutation_writes_or_rollback(
             include_migration=include_migration,
         )
     except asyncio.CancelledError:
-        # worker 已结束。成功写入但屏障尚未解除时必须回滚；写入失败已在原事务内
-        # 尝试回滚，不能再提交第二个任务覆盖其他写者的新状态。
+        # Worker finished. Successful writes still behind an uncleared fence require rollback; failed writes already
+        # attempted rollback in their original transaction, so never submit a second job overwriting newer writers' state.
         if snapshot_out.get("_write_outcome") == "success":
             with suppress(Exception, asyncio.CancelledError):
                 await _run_locked_storage_job(
@@ -648,12 +649,12 @@ async def _apply_storage_mutation_writes_or_rollback(
             "error": "存储状态文件内容损坏或格式无效，未发生落盘改动，请检查或恢复状态文件。",
         }
     except _StorageStateUnreadable as exc:
-        # 状态文件当前读不出原始字节（权限拒绝、被别的进程占用、路径是目录、目录不可访问、I/O 错误）。
-        # 只有 FileNotFoundError 才算「不存在」，所以这里无法确认文件到底在不在。
-        # 快照阶段就终止了：write() 一行都没跑，盘上内容与请求前完全一致。所以这里既不回滚、
-        # 也不能说「已恢复」—— 只需如实告诉用户「读不出来、是否还存在无法确认」。
-        # 改动前这种文件会被宽容加载器折叠成 None（当作「不存在」），回滚顺手把它 unlink 掉：
-        # 一份只是暂时读不到的状态文件被永久删除。所以它必须有自己的错误码。
+        # State-file raw bytes are unreadable: permission denial, other-process locks, directory paths, inaccessible directories, or I/O errors.
+        # Only FileNotFoundError proves absence, so existence here remains unknown.
+        # Aborted during snapshot, before any write(): disk is unchanged from before the request. Neither roll back
+        # nor claim restoration; honestly report unreadability and uncertain existence.
+        # The old tolerant loader collapsed such files to None/absent, after which rollback unlinked them,
+        # permanently deleting temporarily unreadable state. Give this its own error code.
         logger.warning(
             "[storage_location] 存储位置配置未写入：状态文件读不出来（是否还存在无法确认），已放弃本次落盘: %s",
             exc.path,
@@ -664,35 +665,35 @@ async def _apply_storage_mutation_writes_or_rollback(
             "error": "写入存储位置配置失败：状态文件当前无法读取（可能不存在，或所在目录不可访问），未发生落盘改动，请稍后重试或检查本机状态目录是否可访问。",
         }
     except Exception as exc:
-        # 写入失败（典型场景：本机状态目录不可写，沙箱 / 反勒索防护下的固定症状）。
-        # 回滚已经在 _job 内部、同一把 root_state_transaction() 里同步执行完毕（见
-        # _apply_storage_mutation_writes），这里不再二次提交回滚 job——二次提交会在两个
-        # 事务之间留出窗口，让第三方把 root_state 改成新值后被旧快照整份盖掉。
+        # Write failed, typically an unwritable local-state directory under sandbox / ransomware protection.
+        # _job already performed synchronous rollback within the same root_state_transaction()
+        # (see _apply_storage_mutation_writes). Never submit another rollback job here: the transaction gap
+        # lets third parties update root_state before stale snapshots overwrite those changes.
         #
-        # 四种失败结局的盘上状态各不相同，绝不能共用一句「已恢复原有状态」：
-        #   1) 快照读到不可读的状态文件 → write() 一行都没跑（见上面那个分支）；
-        #   2) 快照没取成              → write() 一行都没跑，盘上就是 pre-image；
-        #   3) 回滚成功                → 盘上被改过，又退回了 pre-image；
-        #   4) 回滚失败                → 盘上可能停在半截。
-        # 前端只按 error_code 取固定文案、不读响应体里的 error，所以四种结局必须各有
-        # 一个错误码，否则用户会据此误判能不能直接重试。
+        # Four failure outcomes have different disk states and cannot share a restored-original-state claim:
+        #   1. Snapshot found an unreadable state file: write() never ran, as handled above.
+        #   2. Snapshot failed: write() never ran; disk remains at pre-image.
+        #   3. Rollback succeeded: disk changed, then returned to pre-image.
+        #   4. Rollback failed: disk may remain partially changed.
+        # Frontend chooses fixed wording from error_code, not response error text; each outcome needs
+        # a distinct code or users may wrongly decide immediate retries are safe.
         if not snapshot_out:
-            # 文件读/格式错误已由上面的具体分支处理；其他快照前故障不归因为写权限。
+            # Specific branches above handle file read/format errors; do not attribute other pre-snapshot faults to write permissions.
             logger.exception("storage operation failed before a snapshot was taken")
             return None, {
                 "ok": False,
                 "error_code": "storage_operation_failed",
                 "error": "提交存储位置操作失败，未发生落盘改动，请稍后重试。",
             }
-        # 回滚结果由 _job 写入 snapshot_out["_write_outcome"]：
-        #   - "rolled_back"   → 三步全部成功
-        #   - "rollback_failed" → best-effort 下至少一步失败，异常在 _rollback_error
+        # _job records rollback results in snapshot_out["_write_outcome"]:
+        #   - rolled_back: all three steps succeeded.
+        #   - rollback_failed: at least one best-effort step failed; exception is in _rollback_error.
         outcome = snapshot_out.get("_write_outcome")
         if outcome != "rolled_back":
-            # 回滚要往同一个「不可写」的目录里重新落盘，所以它自己也会失败：恢复失败的
-            # 迁移分支就是现成的例子——检查点已被 delete_storage_migration 删掉，回滚
-            # 要重新写回它，同样会被拒。此时盘上并没有回到 pre-image，绝不能对用户声称
-            # 「已恢复原有状态」：用户会据此直接重试，而状态其实停在半截。
+            # Rollback writes into the same unwritable directory and may fail too. Failed migration recovery is an
+            # example: delete_storage_migration removed the checkpoint, and rollback's restoration write
+            # is denied again. Disk has not returned to pre-image, so claiming restoration falsely encourages
+            # retries against partially modified state.
             rollback_error = snapshot_out.get("_rollback_error")
             logger.warning(
                 "[storage_location] 存储位置配置写入失败且回滚失败，盘上状态可能未回到 pre-image: "
@@ -705,7 +706,7 @@ async def _apply_storage_mutation_writes_or_rollback(
                 "error_code": "storage_policy_rollback_failed",
                 "error": "写入存储位置配置失败，且未能恢复原有状态，请检查本机状态目录是否可写；若仍异常请手动确认状态文件。",
             }
-        # 只有确认回滚完成才可以声称已恢复。
+        # Claim restoration only after verified rollback completion.
         logger.warning(
             "[storage_location] 存储位置配置写入失败，已回滚原有状态: %s",
             exc,
@@ -728,10 +729,10 @@ async def _release_storage_startup_barrier_or_rollback(
     try:
         await _release_storage_startup_barrier_if_needed(reason=reason)
     except BaseException as release_exc:
-        # BaseException 而不是 Exception：客户端断连时这里收到的是 CancelledError，
-        # 只接 Exception 就会正好跳过这段回滚——而"写已落盘、屏障没解除"恰恰是最需要
-        # 回滚的那个状态。下面无条件 raise，所以 KeyboardInterrupt / SystemExit 的
-        # 语义不变。
+        # Catch BaseException, not Exception: client disconnection produces CancelledError,
+        # which would otherwise skip rollback precisely when writes persisted but fencing remains active.
+        # The unconditional raise below preserves KeyboardInterrupt / SystemExit
+        # semantics.
         try:
             restore = partial(_restore_storage_mutation_state, config_manager, snapshot, anchor_root=anchor_root)
             if isinstance(release_exc, asyncio.CancelledError):
@@ -838,7 +839,11 @@ def _safe_path_size(path: Path) -> int:
 
 def _estimate_runtime_payload_bytes(source_root: Path) -> int:
     total = 0
-    for name in MIGRATED_RUNTIME_ENTRY_NAMES:
+    try:
+        entry_names = migrated_runtime_entry_names(source_root)
+    except OSError:
+        entry_names = MIGRATED_RUNTIME_ENTRY_NAMES
+    for name in entry_names:
         total += _safe_path_size(source_root / name)
     return total
 
@@ -1030,279 +1035,37 @@ def _build_maintenance_message(bootstrap_payload: dict[str, Any]) -> str:
     return ""
 
 
-def _normalize_directory_picker_start_path(raw_value: str) -> str:
-    candidate_text = str(raw_value or "").strip()
-    if not candidate_text:
-        return ""
-
-    try:
-        candidate = normalize_runtime_root(candidate_text)
-    except Exception:
-        candidate = Path(candidate_text).expanduser()
-        if not candidate.is_absolute():
-            return ""
-
-    if candidate.exists() and candidate.is_dir():
-        return str(candidate)
-
-    current = candidate.parent
-    while current != current.parent:
-        if current.exists() and current.is_dir():
-            return str(current)
-        current = current.parent
-
-    if current.exists() and current.is_dir():
-        return str(current)
-    return ""
-
-
-def _resolve_executable_name(*candidates: str) -> str:
-    for candidate in candidates:
-        if not candidate:
-            continue
-        if os.path.isabs(candidate) and os.path.exists(candidate):
-            return candidate
-        resolved = shutil.which(candidate)
-        if resolved:
-            return resolved
-    return candidates[0]
-
-
-def _pick_directory_via_osascript(*, start_path: str) -> str:
-    command = [_resolve_executable_name("/usr/bin/osascript", "osascript")]
-    if start_path:
-        safe_start_path = start_path.replace("\\", "\\\\").replace('"', '\\"')
-        command.extend(
-            [
-                "-e",
-                'tell application "Finder" to activate',
-                "-e",
-                f'set defaultLocation to POSIX file "{safe_start_path}"',
-                "-e",
-                'set selectedFolder to choose folder with prompt "请选择存储位置目录" default location defaultLocation',
-            ]
-        )
-    else:
-        command.extend(
-            [
-                "-e",
-                'tell application "Finder" to activate',
-                "-e",
-                'set selectedFolder to choose folder with prompt "请选择存储位置目录"',
-            ]
-        )
-    command.extend(["-e", "POSIX path of selectedFolder"])
-
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=120,
-        )
-    except FileNotFoundError as exc:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            "当前环境暂不支持系统目录选择，请手动输入路径。",
-        ) from exc
-    except Exception as exc:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            f"打开系统目录选择器失败: {exc}",
-        ) from exc
-
-    if completed.returncode != 0:
-        stderr = str(completed.stderr or "").strip()
-        if "User canceled" in stderr or "(-128)" in stderr:
-            raise _DirectoryPickerCancelled()
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_failed",
-            f"打开系统目录选择器失败: {stderr or completed.returncode}",
-        )
-
-    selected_root = str(completed.stdout or "").strip()
-    if not selected_root:
-        raise _DirectoryPickerCancelled()
-    return selected_root
-
-
-def _pick_directory_via_powershell(*, start_path: str) -> str:
-    powershell_executable = _resolve_executable_name(
-        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-        "powershell.exe",
-        "powershell",
-        "pwsh.exe",
-        "pwsh",
-    )
-    if not os.path.isabs(powershell_executable) and not shutil.which(powershell_executable):
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            "当前系统未找到 PowerShell，无法打开目录选择器。",
-        )
-
-    escaped_start_path = start_path.replace("'", "''")
-    script = """
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$owner = New-Object System.Windows.Forms.Form
-$owner.Text = 'N.E.K.O'
-$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
-$owner.Size = New-Object System.Drawing.Size(1, 1)
-$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::FixedToolWindow
-$owner.ShowInTaskbar = $false
-$owner.Opacity = 0
-$owner.TopMost = $true
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = '请选择存储位置目录'
-$dialog.ShowNewFolderButton = $true
-if ('{start_path}') {{
-    $dialog.SelectedPath = '{start_path}'
-}}
-$owner.Show()
-$owner.Activate()
-$owner.BringToFront()
-[System.Windows.Forms.Application]::DoEvents()
-$result = $dialog.ShowDialog($owner)
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) {{
-    Write-Output $dialog.SelectedPath
-    exit 0
-}}
-exit 2
-""".strip().format(start_path=escaped_start_path)
-
-    try:
-        completed = subprocess.run(
-            [powershell_executable, "-NoProfile", "-STA", "-Command", script],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=120,
-        )
-    except FileNotFoundError as exc:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            "当前系统未找到 PowerShell，无法打开目录选择器。",
-        ) from exc
-    except Exception as exc:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_failed",
-            f"打开系统目录选择器失败: {exc}",
-        ) from exc
-
-    if completed.returncode == 2:
-        raise _DirectoryPickerCancelled()
-    if completed.returncode != 0:
-        stderr = str(completed.stderr or "").strip()
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_failed",
-            f"打开系统目录选择器失败: {stderr or completed.returncode}",
-        )
-
-    selected_root = str(completed.stdout or "").strip()
-    if not selected_root:
-        raise _DirectoryPickerCancelled()
-    return selected_root
-
-
-def _pick_directory_via_linux_dialog(*, start_path: str) -> str:
-    commands: list[list[str]] = []
-    zenity_executable = _resolve_executable_name("/usr/bin/zenity", "/bin/zenity", "zenity")
-    if os.path.isabs(zenity_executable) and os.path.exists(zenity_executable) or shutil.which(zenity_executable):
-        command = [zenity_executable, "--file-selection", "--directory", "--title=请选择存储位置目录"]
-        if start_path:
-            command.append(f"--filename={start_path.rstrip('/')}/")
-        commands.append(command)
-    kdialog_executable = _resolve_executable_name("/usr/bin/kdialog", "/bin/kdialog", "kdialog")
-    if os.path.isabs(kdialog_executable) and os.path.exists(kdialog_executable) or shutil.which(kdialog_executable):
-        command = [kdialog_executable, "--getexistingdirectory"]
-        if start_path:
-            command.append(start_path)
-        commands.append(command)
-    yad_executable = _resolve_executable_name("/usr/bin/yad", "/bin/yad", "yad")
-    if os.path.isabs(yad_executable) and os.path.exists(yad_executable) or shutil.which(yad_executable):
-        command = [yad_executable, "--file-selection", "--directory", "--title=请选择存储位置目录"]
-        if start_path:
-            command.append(f"--filename={start_path.rstrip('/')}/")
-        commands.append(command)
-
-    if not commands:
-        raise _DirectoryPickerUnavailable(
-            "directory_picker_unavailable",
-            "当前系统未安装可用的图形目录选择器。",
-        )
-
-    last_error = None
-    for command in commands:
-        try:
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=120,
-            )
-        except Exception as exc:
-            last_error = exc
-            continue
-
-        if completed.returncode == 0:
-            selected_root = str(completed.stdout or "").strip()
-            if selected_root:
-                return selected_root
-            raise _DirectoryPickerCancelled()
-        if completed.returncode in (1, 252):
-            raise _DirectoryPickerCancelled()
-        last_error = str(completed.stderr or "").strip() or completed.returncode
-
-    raise _DirectoryPickerUnavailable(
-        "directory_picker_failed",
-        f"打开系统目录选择器失败: {last_error}",
-    )
-
-
 def _pick_storage_location_directory(*, start_path: str) -> str:
-    # 项目策略：不带 Tk/Tcl。每个平台只信任其原生桥（osascript / PowerShell /
-    # zenity-kdialog-yad），原生桥失败就直接 _DirectoryPickerUnavailable，让前端
-    # 提示用户手填路径——而不是落到 tkinter 兜底（Nuitka 不带 tk-inter 时
-    # tk.Tk() 抛 SystemExit 拖死后端）。检查由 scripts/check_no_tkinter.py 守门。
-    normalized_start_path = _normalize_directory_picker_start_path(start_path)
-    if sys.platform == "darwin":
-        return _pick_directory_via_osascript(start_path=normalized_start_path)
-    if sys.platform == "win32":
-        return _pick_directory_via_powershell(start_path=normalized_start_path)
-    return _pick_directory_via_linux_dialog(start_path=normalized_start_path)
+    # Project policy excludes Tk/Tcl. utils.native_directory only uses platform-native bridges
+    # (osascript / PowerShell / zenity-kdialog-yad); failure raises _DirectoryPickerUnavailable so the
+    # frontend requests manual paths, never tkinter fallback, whose tk.Tk() raises SystemExit and kills
+    # the backend when Nuitka lacks tk-inter. scripts/check_no_tkinter.py enforces this.
+    try:
+        return native_directory.pick_directory(start_path=start_path, title="请选择存储位置目录")
+    except native_directory.DirectoryPickerCancelled as exc:
+        raise _DirectoryPickerCancelled() from exc
+    except native_directory.NativeDirectoryError as exc:
+        if exc.code == "DIRECTORY_PICKER_UNAVAILABLE":
+            message = "当前环境暂不支持系统目录选择，请手动输入路径。"
+        else:
+            message = f"打开系统目录选择器失败: {exc}"
+        raise _DirectoryPickerUnavailable(exc.code.lower(), message) from exc
 
 
 def _open_path_in_file_manager(path: Path | str) -> None:
-    target_path = normalize_runtime_root(path)
-    if not target_path.exists() or not target_path.is_dir():
-        raise _OpenStorageRootUnavailable(
-            "storage_root_unavailable",
-            "当前数据目录不存在或不可访问。",
-        )
-
     try:
-        if sys.platform == "win32":
-            os.startfile(str(target_path))  # type: ignore[attr-defined]
-            return
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", str(target_path)])
-            return
-
-        opener = shutil.which("xdg-open") or shutil.which("gio")
-        if not opener:
+        native_directory.open_directory(normalize_runtime_root(path))
+    except native_directory.NativeDirectoryError as exc:
+        if exc.code == "DIRECTORY_UNAVAILABLE":
+            raise _OpenStorageRootUnavailable(
+                "storage_root_unavailable",
+                "当前数据目录不存在或不可访问。",
+            ) from exc
+        if exc.code == "OPEN_DIRECTORY_UNAVAILABLE":
             raise _OpenStorageRootUnavailable(
                 "open_storage_root_unavailable",
                 "当前系统未找到可用的文件管理器打开命令。",
-            )
-        if os.path.basename(opener) == "gio":
-            subprocess.Popen([opener, "open", str(target_path)])
-        else:
-            subprocess.Popen([opener, str(target_path)])
-    except _OpenStorageRootUnavailable:
-        raise
-    except Exception as exc:
+            ) from exc
         raise _OpenStorageRootUnavailable(
             "open_storage_root_failed",
             f"打开当前数据目录失败: {exc}",
@@ -1545,8 +1308,8 @@ def _build_completed_migration_notice(
     require_existing_retained_root: bool = False,
     persist_reconcile: bool = False,
 ) -> dict[str, Any]:
-    # persist_reconcile 只有已经拿着 _storage_mutation_lock 的调用方能传 True，
-    # 见 build_storage_location_bootstrap_payload 的说明。
+    # Only callers already holding _storage_mutation_lock may set persist_reconcile=True;
+    # see build_storage_location_bootstrap_payload.
     bootstrap = (
         bootstrap_payload
         if isinstance(bootstrap_payload, dict)
@@ -1935,6 +1698,11 @@ def _cleanup_retained_runtime_root(
     # kept in it stay put.
     def _collect_remaining() -> tuple[str, ...]:
         leftovers = _private_cleanup_leftovers(retained_path)
+        try:
+            entry_names = migrated_runtime_entry_names(retained_path)
+        except OSError:
+            entry_names = MIGRATED_RUNTIME_ENTRY_NAMES
+            leftovers = None
         return tuple(
             dict.fromkeys(
                 # A v1 checkpoint also carries evidence for what was copied
@@ -1946,7 +1714,7 @@ def _cleanup_retained_runtime_root(
                     # Every migrated name counts here, a v1 checkpoint's too:
                     # one restored in the old root after its catch-up (a sync
                     # client) is data the cleanup must not pass over.
-                    for entry_name in dict.fromkeys([*MIGRATED_RUNTIME_ENTRY_NAMES, *proofs, *catch_up_skipped])
+                    for entry_name in dict.fromkeys([*entry_names, *proofs, *catch_up_skipped])
                     if _entry_may_exist(retained_path / entry_name)
                 ]
                 + [entry_name for entry_name, _private in leftovers or []]
@@ -2337,7 +2105,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
         return remaining, kept
 
     try:
-        # 这一步 rmtree 保留目录，同样不能在取消时把 _storage_mutation_lock 让出去
+        # This rmtree retention-directory step likewise must not release _storage_mutation_lock on cancellation.
         remaining_entries, retained_root_kept = await _run_locked_storage_job(_cleanup_and_record)
     except Exception as exc:
         response.status_code = 500
@@ -2765,7 +2533,7 @@ async def _post_storage_location_restart_locked(
             )
 
         state_snapshot = {}
-        # 写入阶段的异常/取消由共享入口完整处理；关闭阶段独立处理，避免再次回滚。
+        # Shared entry handles all write-phase errors/cancellation; treat closing independently to avoid duplicate rollback.
         _, write_error = await _apply_storage_mutation_writes_or_rollback(
             config_manager,
             anchor_root=anchor_root,
@@ -2815,9 +2583,9 @@ async def _post_storage_location_restart_locked(
             **restart_preflight,
         }
 
-    # 回滚要用的两份 pre-image 与两次写同在一个 job 里：create_pending_storage_migration
-    # 落检查点、set_root_mode 切 maintenance，中间一旦有 await，取消就能停在
-    # "检查点已建、root mode 还是 normal" 上——启动时会当成一次凭空出现的待迁移。
+    # Both rollback pre-images and writes share one job: create_pending_storage_migration creates
+    # the checkpoint, then set_root_mode enters maintenance. An intervening await allows cancellation with
+    # checkpoint created but root still normal, appearing at startup as an unexplained pending migration.
     rollback_state: dict[str, Any] = {}
 
     def _schedule_pending_migration() -> dict[str, Any]:

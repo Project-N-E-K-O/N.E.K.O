@@ -285,7 +285,7 @@ def test_update_writes_nothing_when_mutator_raises(light_manager):
     with pytest.raises(ValueError):
         light_manager.update_json_config(FILENAME, mutator)
     assert path.read_bytes() == before
-    # 锁已释放：下一次更新照常完成
+    # The lock has been released: the next update completes normally
     light_manager.update_json_config(FILENAME, lambda cfg: cfg.update(a=3))
     assert _read(path) == {"a": 3}
 
@@ -876,7 +876,7 @@ def test_every_core_config_writer_goes_through_the_locked_entry_point():
 
     root = Path(json_update.__file__).resolve().parents[2]
     sources = [*root.glob("*.py")]
-    for package in ("app", "brain", "config", "main_logic", "main_routers", "memory", "plugin", "utils"):
+    for package in ("app", "config", "main_logic", "main_routers", "memory", "plugin", "utils"):
         sources.extend(path for path in (root / package).rglob("*.py") if "tests" not in path.parts)
     assert len(sources) > 100, "source scan found almost nothing; the guard would pass vacuously"
     offenders = []

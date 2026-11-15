@@ -778,16 +778,16 @@ def test_character_card_manager_voice_dropdown_groups_by_provider_source(
     )
 
     groups = state["groups"]
-    # 克隆按 provider 分两组，互不混
+    # Separate clones into two provider groups without mixing.
     mm = next((g for g in groups if "MiniMax" in g["label"]), None)
     el = next((g for g in groups if "ElevenLabs" in g["label"]), None)
     assert mm and mm["source"] == "clone" and mm["values"] == ["mm1"]
     assert el and el["source"] == "clone" and el["values"] == ["el1"]
     assert "·" in mm["label"] and "·" in el["label"]
-    # 免费预制组（值为 free voice_id）
+    # Free preset group (values are free voice_ids).
     free = next((g for g in groups if "voice-tone-FREE1" in g["values"]), None)
     assert free and free["source"] == "preset" and "·" in free["label"]
-    # native 预制组（Gemini · 预制）
+    # Native preset group (Gemini presets).
     native = next((g for g in groups if "Gemini" in g["label"]), None)
     assert native and native["source"] == "preset" and "·" in native["label"]
 
@@ -1848,8 +1848,8 @@ def test_character_card_manager_workshop_upload_preserves_field_order(
     mock_page: Page,
     running_server: str,
 ):
-    """上传到创意工坊会剥掉系统保留字段（含承载顺序的 _reserved），需确保字段创建顺序
-    以顶层 _field_order 幸存，否则下载方按对象枚举顺序渲染时数字 key 字段会再次乱序。"""
+    """Workshop uploads strip reserved system fields, including _reserved carrying order; ensure creation order
+    survives in top-level _field_order, or numeric keys reorder when downloaders enumerate object keys."""
     _open_character_card_manager(mock_page, running_server)
 
     uploaded = mock_page.evaluate(
@@ -1938,8 +1938,8 @@ def test_character_card_manager_scan_import_keeps_model_fields_and_order(
     mock_page: Page,
     running_server: str,
 ):
-    """从创意工坊导入角色卡（scanCharaFile）必须保留 live2d/model_type 等模型字段，
-    同时按显式 _field_order 排列自定义字段。若误套渲染路径的系统保留名剔除，会丢掉模型绑定。"""
+    """Workshop character-card imports (scanCharaFile) must preserve model fields such as live2d/model_type,
+    while sorting custom fields by explicit _field_order. Applying render-time reserved-name filtering would lose model bindings."""
     _open_character_card_manager(mock_page, running_server)
 
     added = mock_page.evaluate(
@@ -1997,11 +1997,11 @@ def test_character_card_manager_scan_import_keeps_model_fields_and_order(
     )
 
     assert added is not None
-    # P1：模型字段必须保留，被误过滤会丢失模型绑定、开成错误或缺失的模型
+    # P1: preserve model fields; filtering them loses model bindings and opens the wrong model or none.
     assert added["live2d"] == "测试模型"
     assert added["model_type"] == "live2d"
     assert added["live2d_item_id"] == "99887"
-    # 自定义字段及其显式创建顺序一并保留
+    # Preserve custom fields and their explicit creation order together.
     assert added["1"] == "数字字段"
     assert added["喵喵喵"] == "文字字段"
     assert added["_field_order"] == ["喵喵喵", "1"]

@@ -30,8 +30,7 @@ let isEmotionChanging = false; // 防止快速连续点击的标志
 // Electron Pet 窗口永不进入手机模式（本文件早于 common_ui.js 加载，故用 flag 内联判断）。
 const isMobileWidth = () => !window.__LANLAN_IS_ELECTRON_PET__ && window.innerWidth <= 768;
 
-// 口型同步参数列表常量
-// 这些参数用于控制模型的嘴部动作，在处理表情和常驻表情时需要跳过，以避免覆盖实时的口型同步
+// 运行时嘴部参数保护范围：保存外观时仍需排除嘴形，避免把动态表情固化。
 window.LIPSYNC_PARAMS = [
     'ParamMouthOpenY',
     'ParamMouthForm',
@@ -42,6 +41,9 @@ window.LIPSYNC_PARAMS = [
     'ParamE',
     'ParamO'
 ];
+
+// 语音振幅只驱动开合；嘴形交给表情和动作。保留上面的外观保护范围。
+window.LIPSYNC_AMPLITUDE_PARAMS = window.LIPSYNC_PARAMS.filter(id => id !== 'ParamMouthForm');
 
 // 模型偏好验证常量
 const MODEL_PREFERENCES = {
@@ -142,6 +144,8 @@ class Live2DManager {
         this.modelRootPath = null; // 记录当前模型根路径，如 /static/<modelName>
         this.savedModelParameters = null; // 保存的模型参数（从parameters.json加载），供定时器定期应用
         this._shouldApplySavedParams = false; // 是否应该应用保存的参数
+        this._parameterReloadSequence = 0; // 最新参数读取请求的提交资格
+        this._parameterConfigRevision = 0; // 已发布参数配置的版本，不等于覆盖安装版本
         this.appearanceBaselineParameters = {}; // 用户保存后的外观基准，用于表情/motion 重置
         this._savedParamsTimer = null; // 保存参数应用的定时器
         this._mouseTrackingEnabled = window.mouseTrackingEnabled !== false; // 鼠标跟踪启用状态
@@ -161,7 +165,7 @@ class Live2DManager {
         this._bubbleGeometrySettleRefreshMs = LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS;
         this._bubbleGeometryModelReadyAt = 0;
         this._bubbleGeometryRefreshPass = 0;
-        this._linuxX11RendererProfileOptimized = false;
+        this._rendererProfileOptimized = false;
         this._idleFpsRestoreTimer = null;
         this._idleFpsGovernorTimer = null;
 
@@ -179,6 +183,11 @@ class Live2DManager {
 
         // 口型同步
         this.mouthValue = 0; // 0~1 (嘴巴开合值)
+        this._lipSyncOwner = null;
+        this._mouthOverrideToken = null;
+        this._mouthMotionManagerRef = null;
+        this._cachedMouthIndices = null;
+        this._cachedMouthIndicesModel = null;
         this.mouthParameterId = null; // 例如 'ParamMouthOpenY' 或 'ParamO'
         this._mouthOverrideInstalled = false;
         this._origMotionManagerUpdate = null; // 保存原始的 motionManager.update 方法
@@ -1039,6 +1048,7 @@ class Live2DManager {
             (performance.now() - this._lastPointerMoveAt) < LIVE2D_INTERACTIVE_FPS_HOLD_MS) return true;
         const appState = window.appState;
         if (appState && appState.lipSyncActive) return true;
+        if (this._visitCaptureActive) return true;
         return false;
     }
 
@@ -1097,25 +1107,28 @@ class Live2DManager {
     }
 
     /**
-     * Electron/X11 的透明全屏窗口里，WebGL getter 会造成明显同步阻塞。
-     * pixi-live2d-display 的 Cubism renderer 每帧都 save/restore WebGL profile，
-     * 其中包含一批 gl.getParameter/getVertexAttrib 调用；当前页面只有这一个
-     * Live2D WebGL pipeline，PIXI 会在同一帧内重新设置所需状态，所以桌面 X11 下
-     * 跳过这段 profile 保存可以避免每帧 GPU/CPU 同步等待。
+     * 透明全屏窗口里，WebGL getter 会造成明显同步阻塞（Linux X11；Windows 混合显卡
+     * 下实测每帧 ~250ms，见 #3593）。pixi-live2d-display 的 Cubism renderer 每帧都
+     * save/restore WebGL profile，其中包含一批 gl.getParameter/getVertexAttrib/isEnabled
+     * 调用；桌面 X11 和 Electron 桌宠窗口里，stage 上只有这一个 Live2D 模型、没有 filter，
+     * 模型画完后 pixi-live2d-display 会 reset PIXI 的 state/texture，所以跳过这段
+     * profile 保存可以避免每帧 GPU/CPU 同步等待。
+     * 前提：桌宠 stage 不再挂其他 PIXI 对象；以后要加，需重新评估这里的 GL 状态串扰。
+     * 模型管理器、预览页等其他页面仍走原来的 save/restore。
      */
-    _optimizeLinuxX11RendererProfile(model) {
-        if (!isDesktopLinuxX11Runtime()) return;
+    _optimizeRendererProfile(model) {
+        if (!isDesktopLinuxX11Runtime() && window.__LANLAN_IS_ELECTRON_PET__ !== true) return;
         const renderer = model && model.internalModel && model.internalModel.renderer;
         if (!renderer || typeof renderer.saveProfile !== 'function' || typeof renderer.restoreProfile !== 'function') return;
-        if (renderer.__nekoLinuxX11ProfileOptimized) return;
+        if (renderer.__nekoProfileOptimized) return;
 
         renderer.__nekoOriginalSaveProfile = renderer.saveProfile;
         renderer.__nekoOriginalRestoreProfile = renderer.restoreProfile;
         renderer.saveProfile = function() {};
         renderer.restoreProfile = function() {};
-        renderer.__nekoLinuxX11ProfileOptimized = true;
-        this._linuxX11RendererProfileOptimized = true;
-        console.log('[Live2D Core] Linux X11 renderer profile optimization enabled');
+        renderer.__nekoProfileOptimized = true;
+        this._rendererProfileOptimized = true;
+        console.log('[Live2D Core] renderer profile save/restore skipped');
     }
 
     /**
@@ -1182,7 +1195,7 @@ class Live2DManager {
     }
 
     // 保存用户偏好
-    async saveUserPreferences(modelPath, position, scale, parameters, display, viewport) {
+    async saveUserPreferences(modelPath, position, scale, parameters, display, viewport, parametersMode) {
         try {
             // 观看模式只读：viewer 不应把本地拖动覆盖到全局模型布局（也避免向 monitor 的只读端点 POST 触发 405）
             if (window.isViewerMode) {
@@ -1203,6 +1216,7 @@ class Live2DManager {
             // 如果有参数，添加到偏好中
             if (parameters && typeof parameters === 'object') {
                 preferences.parameters = parameters;
+                if (parametersMode) preferences.parameters_mode = parametersMode;
             }
 
             // 如果有显示器信息，添加到偏好中（用于多屏幕位置恢复）
@@ -5607,6 +5621,65 @@ class Live2DManager {
 
 // 导出
 window.Live2DModel = Live2DModel;
+// Avatar operation lifecycle
+// Operations are bounded and retire only their own promises/commit authority.
+// A Stage lifetime signal also remains attached to an admitted SDK action.
+function live2dCreateAvatarOperation(manager, options = {}) {
+    const model = manager.currentModel, internalModel = model?.internalModel, core = internalModel?.coreModel;
+    const controller = new AbortController();
+    const sources = Array.from(new Set([options.signal, options.lifetimeSignal].filter(Boolean)));
+    const abort = () => {
+        controller.abort();
+        if (manager._actionMotionRequestPendingOperation === operation) {
+            manager._actionMotionRequestPendingOperation = null; manager._actionMotionRequestPendingModel = null;
+        }
+        if (manager._emotionChangeOperation === operation) {
+            manager._emotionChangeOperation = null; manager.isEmotionChanging = false;
+        }
+    };
+    const operation = { manager, model, internalModel, core, signal: controller.signal, abort,
+        isCurrent: () => !controller.signal.aborted && manager.currentModel === model && !model?.destroyed
+            && model?.internalModel === internalModel && internalModel?.coreModel === core
+            && (typeof options.isCurrent !== 'function' || options.isCurrent()) };
+    if (!manager._avatarOperations) manager._avatarOperations = new Set();
+    manager._avatarOperations.add(operation);
+    let timer = setTimeout(abort, 15000), disposed = false;
+    operation.clearDeadline = () => { clearTimeout(timer); timer = null; };
+    operation.dispose = () => {
+        if (disposed) return;
+        disposed = true; operation.clearDeadline();
+        sources.forEach(signal => signal.removeEventListener('abort', abort));
+        manager._avatarOperations.delete(operation);
+    };
+    sources.forEach(signal => { if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true }); });
+    operation.wait = (promise) => new Promise((resolve, reject) => {
+        const rejectRetired = () => reject(Object.assign(new Error('Live2D operation retired'), { name: 'AbortError' }));
+        if (!operation.isCurrent()) { Promise.resolve(promise).catch(() => false); rejectRetired(); return; }
+        const retired = () => { controller.signal.removeEventListener('abort', retired); rejectRetired(); };
+        controller.signal.addEventListener('abort', retired, { once: true });
+        Promise.resolve(promise).then(value => {
+            controller.signal.removeEventListener('abort', retired);
+            if (!operation.isCurrent()) rejectRetired(); else resolve(value);
+        }, error => { controller.signal.removeEventListener('abort', retired); reject(error); });
+    });
+    return operation;
+}
+
+Live2DManager.prototype._allowsAvatarOperation = function(options, capability) {
+    if (options?.signal?.aborted) return false;
+    const owner = options && options.performanceOwner;
+    if (owner && !owner.cancelled && this._avatarPerformanceSessionOwners?.get(capability) === owner
+        && (typeof options.isCurrent !== 'function' || options.isCurrent())) return true;
+    return this._avatarPerformanceBypassLocks === true
+        || typeof this.isAvatarPerformanceCapabilityLocked !== 'function'
+        || !this.isAvatarPerformanceCapabilityLocked(capability);
+};
+
+Live2DManager.prototype._cancelAvatarOperations = function() {
+    Array.from(this._avatarOperations || []).forEach(operation => operation.abort());
+};
+
+// End avatar operation lifecycle
 window.Live2DManager = Live2DManager;
 window.isMobileWidth = isMobileWidth;
 

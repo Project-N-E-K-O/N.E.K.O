@@ -77,7 +77,9 @@ from .registry import (
     utc_now,
 )
 from .chunking import chunk_bodies
-from .render import RenderCard, render_reference_block
+from .subscriptions import KnowledgeSubscription, Release, identity_conflict
+from .passive import PASSIVE_SEMANTIC_CANDIDATES, Calibration, PassiveHit, select_hits, thresholds_for
+from .render import RenderCard, render_reference_block, render_turn_cards
 from .retrieval import (
     LEXICAL_CANDIDATES,
     RankedHit,
@@ -98,6 +100,11 @@ from .store import (
 )
 from .text import title_key
 
+from config.turn_context_settings import (
+    TURN_CONTEXT_ITEM_MAX_TOKENS,
+    TURN_CONTEXT_QUERY_MAX_CHARS,
+)
+
 
 logger = logging.getLogger("N.E.K.O.Knowledge")
 _T = TypeVar("_T")
@@ -116,6 +123,7 @@ DETACHED_WRITE_WAIT_SECONDS = 10.0
 MAX_QUERY_EMBEDDINGS = 2
 MAX_QUERY_CHARS = 2_000
 MAX_QUERY_LIMIT = 10
+PASSIVE_DIAGNOSTIC_RESULTS = frozenset({"matched", "timeout", "busy", "error"})
 MAX_TRACKED_JOBS = 50
 MAX_PENDING_IMPORTS = 3
 # Packs are listed whole on the management page; keep that list small.
@@ -183,6 +191,8 @@ class ImportJob:
     # Set once the index write commits; from then on the import is no longer
     # cancellable. The lock makes "cancel" and "commit" exclusive.
     committed: bool = False
+    # Market metadata of a subscription install; None for a local import.
+    subscription: KnowledgeSubscription | None = None
     gate: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def to_json(self) -> dict[str, Any]:
@@ -195,6 +205,7 @@ class ImportJob:
             "chunks_total": self.chunks_total,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "subscription": self.subscription.to_json() if self.subscription else None,
         }
 
 
@@ -257,6 +268,11 @@ def _consume(task: asyncio.Task[Any]) -> None:
         task.exception()
 
 
+def _covers(releases: frozenset[Release] | None, subscription: KnowledgeSubscription | None) -> bool:
+    """Whether a removal naming ``releases`` (``None``: all) overrides an import carrying ``subscription``."""
+    return releases is None or (subscription is not None and subscription.release in releases)
+
+
 class KnowledgeService:
     def __init__(self, root: Path, *, embedder: Embedder | None = None) -> None:
         self.root = Path(root)
@@ -282,17 +298,20 @@ class KnowledgeService:
         self._vectors_dirty = False
         self._index_model_id: str | None = None
         self._query_embeddings: set[asyncio.Task[Any]] = set()
+        # Passive turn context: probe vectors and backgrounds per model.
+        self._calibration = Calibration()
         self._admitting: dict[str, int] = {}
         # Request order: imports and removals each take the next number when
         # the request arrives (before parsing or waiting for the lock). An
-        # import gives way only to removals of its pack that arrived later:
-        # ``_removed_at`` holds the latest committed one, ``_pending_removals``
-        # those still waiting.
+        # import gives way only to removals of its pack that arrived later
+        # and cover its release (see ``_covers``): ``_removed_at`` holds the
+        # latest committed one per release (``None``: every release),
+        # ``_pending_removals`` those still waiting.
         self._request_seq = 0
-        self._removed_at: dict[str, int] = {}
+        self._removed_at: dict[str, dict[Release | None, int]] = {}
         # Values are frozensets, replaced rather than mutated: the import's
         # cancellation check reads them from a worker thread.
-        self._pending_removals: dict[str, frozenset[int]] = {}
+        self._pending_removals: dict[str, frozenset[tuple[int, frozenset[Release] | None]]] = {}
         self._query_pool: concurrent.futures.ThreadPoolExecutor | None = None
         self._parsing = 0
         self._detached: set[asyncio.Future[Any]] = set()
@@ -307,6 +326,13 @@ class KnowledgeService:
         self._removal_settled = asyncio.Event()
         self._vectors_built_for: tuple[int, str] | None = None
         self._vector_task: asyncio.Task[Any] | None = None
+        # Subscription imports between arrival and their job being known (or
+        # their refusal), by arrival number: the market page must be able to
+        # see an import that has not become a job yet.
+        self._incoming: dict[int, KnowledgeSubscription] = {}
+        # Arrival numbers whose admission runs on its own (shielded), which
+        # then owns removing the ``_incoming`` entry.
+        self._admission_owned: set[int] = set()
 
     # ── lifecycle ───────────────────────────────────────────────────
 
@@ -342,6 +368,7 @@ class KnowledgeService:
         if startup is not None and not startup.done():
             await asyncio.wait({startup}, timeout=DETACHED_WRITE_WAIT_SECONDS)
         self._index_wakeup.set()
+        self._calibration.cancel()
         tasks = [task for task in (*self._tasks, self._vector_task) if task is not None]
         for task in tasks:
             task.cancel()
@@ -619,15 +646,110 @@ class KnowledgeService:
             # nothing this removal could commit, so it must not make that
             # import yield either.
             raise KnowledgeUnavailable("not_found")
-        self._request_seq += 1
-        my_seq = self._request_seq
-        self._pending_removals[pack_id] = self._pending_removals.get(pack_id, frozenset()) | {my_seq}
 
-        async def run() -> dict[str, Any]:
-            record = self._registry.packs.get(pack_id)
+        def decide(record: PackRecord | None) -> tuple[PackRecord | None, str]:
             if record is None:
                 raise KnowledgeUnavailable("not_found")
-            registry = self._registry.without_pack(pack_id)
+            return record, ""
+
+        return await self._remove(pack_id, None, decide)
+
+    async def remove_subscription(
+        self, pack_id: str, identity: tuple[str, str, str], releases: frozenset[Release]
+    ) -> dict[str, Any]:
+        """Unsubscribe: remove the named releases of a market package, installed or on the way.
+
+        One request settles it all under the write lock: imports of the pack
+        that arrived before this request and carry one of ``releases`` stand
+        down (queued, building, or still being admitted and not yet a job),
+        and the installed pack is removed if it is one of those releases.
+
+        Safe to repeat: a pack that is not installed, or that is installed as
+        a release not named here (a later subscription), is left alone and
+        reported as success. A pack that is there under another identity (a
+        local pack, another market package) is an error, as is any import of
+        this package under another pack id.
+
+        The lock is waited for as long as any request waits for it
+        (``WRITE_LOCK_TIMEOUT_SECONDS``): a large import committing past its
+        point of no return can hold it longer, and then the answer is
+        ``knowledge_busy``, for the caller to repeat the same request.
+        """
+        self._require_ready()
+        self._check_unsubscribe_target(pack_id, identity)
+
+        def decide(record: PackRecord | None) -> tuple[PackRecord | None, str]:
+            # Checked again under the lock: an import may have landed since.
+            self._check_unsubscribe_target(pack_id, identity)
+            if record is None:
+                return None, "not_installed"
+            if record.subscription is None or record.subscription.release not in releases:
+                return None, "other_release"
+            return record, ""
+
+        result = await self._remove(pack_id, releases, decide)
+        return {**result, "removed": not result.get("kept")}
+
+    def _check_unsubscribe_target(self, pack_id: str, identity: tuple[str, str, str]) -> None:
+        record = self._registry.packs.get(pack_id)
+        if record is not None and (record.subscription is None or record.subscription.identity != identity):
+            raise KnowledgeUnavailable("subscription_identity_mismatch")
+        provider, package_id = identity[0], identity[1]
+        claims = [
+            (subscription.pack_id, subscription.identity)
+            for subscription in (
+                *(item.subscription for item in self._registry.packs.values()),
+                *(job.subscription for job in self._jobs.values() if job.state in ACTIVE_JOB_STATES),
+                *self._incoming.values(),
+            )
+            if subscription is not None
+            and subscription.provider == provider
+            and subscription.provider_package_id == package_id
+        ]
+        # The whole identity: a removal for an old remote id must not match
+        # an import of the package that is not installed yet either.
+        if any(claim != (pack_id, identity) for claim in claims):
+            raise KnowledgeUnavailable("subscription_identity_mismatch")
+
+    async def _remove(
+        self,
+        pack_id: str,
+        releases: frozenset[Release] | None,
+        decide: Callable[[PackRecord | None], tuple[PackRecord | None, str]],
+    ) -> dict[str, Any]:
+        """Remove ``pack_id`` as ``decide`` rules under the lock, overriding the
+        imports it covers (``releases``; ``None`` covers every import of the pack).
+
+        The request's place in the order is taken here, before any await.
+        """
+        self._request_seq += 1
+        my_seq = self._request_seq
+        removal = (my_seq, releases)
+        self._pending_removals[pack_id] = self._pending_removals.get(pack_id, frozenset()) | {removal}
+
+        async def run() -> dict[str, Any]:
+            record, kept = decide(self._registry.packs.get(pack_id))
+            registry = self._registry.without_pack(pack_id) if record is not None else None
+            if registry is not None:
+                await self._thread(save_registry, self.root, registry)
+            marks = dict(self._removed_at.get(pack_id, {}))
+            for key in releases if releases is not None else (None,):
+                marks[key] = max(marks.get(key, 0), my_seq)
+            self._removed_at[pack_id] = marks
+            for job in list(self._jobs.values()):
+                if (
+                    job.pack_id == pack_id
+                    and job.state == "queued"
+                    and job.arrived_at < my_seq
+                    and _covers(releases, job.subscription)
+                ):
+                    job.cancel_requested = True
+                    self._finish_job(job, "cancelled")
+                    self._unqueue(job.job_id)
+                    await self._discard_staging(job.job_id)
+            if record is None or registry is None:
+                return {"pack_id": pack_id, "removed_entries": 0, "kept": kept}
+            file_name = record.file_name
 
             def cleanup() -> None:
                 # Best effort: the removal is committed by the registry write,
@@ -637,18 +759,10 @@ class KnowledgeService:
                 except Exception:
                     logger.warning("[Knowledge] index cleanup of %s failed", pack_id, exc_info=True)
                 try:
-                    (self.root / PACKS_DIR / record.file_name).unlink(missing_ok=True)
+                    (self.root / PACKS_DIR / file_name).unlink(missing_ok=True)
                 except OSError:
                     logger.warning("[Knowledge] could not delete the file of %s", pack_id)
 
-            await self._thread(save_registry, self.root, registry)
-            self._removed_at[pack_id] = max(self._removed_at.get(pack_id, 0), my_seq)
-            for job in list(self._jobs.values()):
-                if job.pack_id == pack_id and job.state == "queued" and job.arrived_at < my_seq:
-                    job.cancel_requested = True
-                    self._finish_job(job, "cancelled")
-                    self._unqueue(job.job_id)
-                    await self._discard_staging(job.job_id)
             self._broken_packs = tuple(p for p in self._broken_packs if p != pack_id)
             self._publish_registry(registry)
             self._vector_generation += 1
@@ -658,7 +772,7 @@ class KnowledgeService:
         try:
             result = await self._locked(run)
         finally:
-            pending = self._pending_removals.get(pack_id, frozenset()) - {my_seq}
+            pending = self._pending_removals.get(pack_id, frozenset()) - {removal}
             if pending:
                 self._pending_removals[pack_id] = pending
             else:
@@ -668,23 +782,60 @@ class KnowledgeService:
         self._schedule_vector_refresh()
         return result
 
+    def _identity_conflict(self, pack_id: str, subscription: KnowledgeSubscription | None) -> bool:
+        """Whether installing this would break the rules in ``knowledge.subscriptions``."""
+        installed = {key: record.subscription for key, record in self._registry.packs.items()}
+        if identity_conflict(pack_id, subscription, installed):
+            return True
+        # An import of another pack may already be installing this package.
+        return subscription is not None and any(
+            job.state in ACTIVE_JOB_STATES
+            and job.pack_id != pack_id
+            and job.subscription is not None
+            and job.subscription.provider_package_id == subscription.provider_package_id
+            for job in self._jobs.values()
+        )
+
+    def _removal_committed_over(
+        self, pack_id: str, subscription: KnowledgeSubscription | None, arrived_at: int
+    ) -> bool:
+        """Whether a committed removal that arrived after this import covers it."""
+        marks = self._removed_at.get(pack_id, {})
+        latest = marks.get(None, -1)
+        if subscription is not None:
+            latest = max(latest, marks.get(subscription.release, -1))
+        return latest > arrived_at
+
+    def _removal_pending_over(self, job: ImportJob) -> bool:
+        """Whether a removal still waiting, that arrived after this import, covers it."""
+        return any(
+            seq > job.arrived_at and _covers(releases, job.subscription)
+            for seq, releases in self._pending_removals.get(job.pack_id, ())
+        )
+
     def _superseded(self, job: ImportJob) -> bool:
         """Whether a removal of the job's pack overrides this import."""
         return (
             job.cancel_requested
-            or any(seq > job.arrived_at for seq in self._pending_removals.get(job.pack_id, ()))
-            or self._removed_at.get(job.pack_id, -1) > job.arrived_at
+            or self._removal_pending_over(job)
+            or self._removal_committed_over(job.pack_id, job.subscription, job.arrived_at)
         )
 
     # ── imports ─────────────────────────────────────────────────────
 
-    async def import_pack(self, raw: bytes) -> dict[str, Any]:
+    async def import_pack(
+        self, raw: bytes, *, subscription: KnowledgeSubscription | None = None
+    ) -> dict[str, Any]:
+        """Import a pack; ``subscription`` marks a verified plugin-market artifact."""
         self._require_ready()
         # Parsing a large pack holds several copies of it in memory: refuse
         # before parsing when imports are already at their limit, and never
         # parse more than that many at once.
         if self.import_busy():
-            return {"ok": False, "reason": "knowledge_busy"}
+            # A repeat of an apply whose import is queued or building is still
+            # answered with that import: the slots may be full of exactly it.
+            staged = await self._staged_repeat(raw, subscription) if subscription is not None else None
+            return staged or {"ok": False, "reason": "knowledge_busy"}
         self._request_seq += 1
         arrived_at = self._request_seq
         # The reservation lasts until the request is answered (including the
@@ -693,8 +844,10 @@ class KnowledgeService:
         self._parsing += 1
         parse_work: list[concurrent.futures.Future[Any]] = []
         deferred = False
+        if subscription is not None:
+            self._incoming[arrived_at] = subscription
         try:
-            return await self._import_parsed(raw, arrived_at, parse_work)
+            return await self._import_parsed(raw, arrived_at, parse_work, subscription)
         except asyncio.CancelledError:
             # A cancelled request stops waiting, but its parse thread runs on
             # with the pack in memory: the slot is freed when that ends.
@@ -709,6 +862,66 @@ class KnowledgeService:
         finally:
             if not deferred:
                 self._parsing -= 1
+            if arrived_at not in self._admission_owned:
+                self._incoming.pop(arrived_at, None)
+
+    def subscription_state(self) -> dict[str, Any]:
+        """What the market page reconciles against.
+
+        ``installed``: subscribed packs (``broken`` ones are not served).
+        ``imports``: subscription imports, newest first: still being admitted
+        (``admitting``, not a job yet), queued or building, and the finished
+        ones still remembered (``active`` / ``failed`` / ``cancelled``, with the
+        reason). A failure after the plugin server handed the artifact over
+        is only visible here.
+        """
+        self._require_ready()
+        installed = [
+            {
+                "pack_id": record.pack_id,
+                "subscription": record.subscription.to_json(),
+                "broken": record.pack_id in self._broken_packs,
+                "entries": record.entries,
+                "installed_at": record.installed_at,
+                "updated_at": record.updated_at,
+            }
+            for record in sorted(self._registry.packs.values(), key=lambda item: item.pack_id)
+            if record.subscription is not None
+        ]
+        admitting = [
+            {"job_id": "", "pack_id": subscription.pack_id, "state": "admitting", "reason": "",
+             "subscription": subscription.to_json()}
+            for _arrived, subscription in sorted(self._incoming.items(), reverse=True)
+        ]
+        jobs = [job.to_json() for job in reversed(self._jobs.values()) if job.subscription is not None]
+        return {"installed": installed, "imports": admitting + jobs}
+
+    def _staged_subscription_job(self, subscription: KnowledgeSubscription) -> ImportJob | None:
+        """The queued or building import of exactly this subscription, unless a removal overrides it."""
+        return next(
+            (
+                job
+                for job in self._jobs.values()
+                if job.state in ACTIVE_JOB_STATES
+                and job.subscription == subscription
+                and not self._superseded(job)
+            ),
+            None,
+        )
+
+    async def _staged_repeat(self, raw: bytes, subscription: KnowledgeSubscription) -> dict[str, Any] | None:
+        """The answer to a repeated apply of a staged import, or None if this is no such repeat."""
+        if self._staged_subscription_job(subscription) is None:
+            return None
+        if await self._thread(pack_sha256, raw) != subscription.artifact_sha256:
+            return None
+        # Checked again after the await: the import may have finished since.
+        staged = self._staged_subscription_job(subscription)
+        return {"ok": True, **staged.to_json(), "existing": True} if staged is not None else None
+
+    def _admission_settled(self, arrived_at: int) -> None:
+        self._admission_owned.discard(arrived_at)
+        self._incoming.pop(arrived_at, None)
 
     def import_busy(self) -> bool:
         """Whether a new import would be refused for lack of room right now."""
@@ -722,12 +935,32 @@ class KnowledgeService:
         self._parsing -= 1
 
     async def _import_parsed(
-        self, raw: bytes, arrived_at: int, parse_work: list[concurrent.futures.Future[Any]]
+        self,
+        raw: bytes,
+        arrived_at: int,
+        parse_work: list[concurrent.futures.Future[Any]],
+        subscription: KnowledgeSubscription | None = None,
     ) -> dict[str, Any]:
+        if subscription is not None:
+            # The market published these exact bytes; anything else is not
+            # the artifact the subscription names.
+            if await self._parse_thread(parse_work, pack_sha256, raw) != subscription.artifact_sha256:
+                return {"ok": False, "reason": "artifact_hash_mismatch"}
+            staged = self._staged_subscription_job(subscription)
+            if staged is not None:
+                # A repeat of an apply already staged (its answer was lost on
+                # the way): the same artifact under the same metadata, so the
+                # answer is that job, not "another import is in progress".
+                return {"ok": True, **staged.to_json(), "existing": True}
         try:
             pack, canonical, chunks = await self._parse_thread(parse_work, self._prepare_import, raw)
         except KnowledgePackError as exc:
             return {"ok": False, "reason": exc.reason}
+        if subscription is not None:
+            if pack.pack_id != subscription.pack_id:
+                return {"ok": False, "reason": "package_identity_mismatch"}
+            if pack.material_type != subscription.material_type:
+                return {"ok": False, "reason": "material_type_mismatch"}
         if len(canonical) > MAX_PACK_BYTES:
             # Normalization fills in omitted fields and can grow the file; the
             # staged canonical form is what gets read back, so it is what counts.
@@ -738,6 +971,9 @@ class KnowledgeService:
         if (
             existing is not None
             and existing.pack_sha256 == sha
+            # Same content under new market metadata (a re-published version)
+            # still goes through a job, so the record gets the new metadata.
+            and existing.subscription == subscription
             and pack.pack_id not in self._broken_packs
             # The raw file is the source of truth; if it went missing or was
             # altered since startup, import again so it gets rewritten.
@@ -750,6 +986,10 @@ class KnowledgeService:
             and not self._pending_removals.get(pack.pack_id)
         ):
             return {"ok": True, "pack_id": pack.pack_id, "unchanged": True, "state": "active"}
+        # After the awaits above and with none before the reservation below;
+        # the commit checks once more under the lock.
+        if self._identity_conflict(pack.pack_id, subscription):
+            return {"ok": False, "reason": "subscription_identity_mismatch"}
         # Admission is checked and reserved without an await in between, so
         # two requests for the same pack cannot both get through, and staged
         # files (written before the single runner gets to them) stay bounded.
@@ -762,7 +1002,7 @@ class KnowledgeService:
 
         async def admit() -> dict[str, Any]:
             try:
-                return await self._admit_import(pack, canonical, chunks, arrived_at)
+                return await self._admit_import(pack, canonical, chunks, arrived_at, subscription)
             finally:
                 self._admitting.pop(pack.pack_id, None)
 
@@ -772,6 +1012,10 @@ class KnowledgeService:
         admission = asyncio.ensure_future(admit())
         self._detached.add(admission)
         admission.add_done_callback(self._detached.discard)
+        # The admission outlives a cancelled request; until it ends (with a
+        # job remembered, or a refusal) the import stays visible as incoming.
+        self._admission_owned.add(arrived_at)
+        admission.add_done_callback(lambda _done: self._admission_settled(arrived_at))
         return await asyncio.shield(admission)
 
     async def _admit_import(
@@ -780,6 +1024,7 @@ class KnowledgeService:
         canonical: bytes,
         chunks: int,
         arrived_at: int,
+        subscription: KnowledgeSubscription | None = None,
     ) -> dict[str, Any]:
         registry = self._registry
         others = [record for record in registry.packs.values() if record.pack_id != pack.pack_id]
@@ -795,7 +1040,7 @@ class KnowledgeService:
         # another admission's just-written staging file would otherwise be
         # counted on disk and again as that admission's reservation.
         async with self._admission_lock:
-            return await self._stage_import(pack, canonical, chunks, arrived_at)
+            return await self._stage_import(pack, canonical, chunks, arrived_at, subscription)
 
     async def _stage_import(
         self,
@@ -803,6 +1048,7 @@ class KnowledgeService:
         canonical: bytes,
         chunks: int,
         arrived_at: int,
+        subscription: KnowledgeSubscription | None = None,
     ) -> dict[str, Any]:
         # Staged files are counted from their jobs, or from the reservation of
         # an admission that has not written one yet; taken together with the
@@ -827,6 +1073,7 @@ class KnowledgeService:
             chunks_total=chunks,
             staged_bytes=len(canonical),
             staged_sha256=pack_sha256(canonical),
+            subscription=subscription,
         )
         await self._thread(atomic_write_bytes, self._staging_path(job.job_id), canonical)
         if self._stopping:
@@ -834,8 +1081,10 @@ class KnowledgeService:
             await self._discard_staging(job.job_id)
             return {"ok": False, "reason": "knowledge_stopping"}
         self._remember_job(job)
+        # A job now: listed as one, no longer as an incoming import.
+        self._incoming.pop(arrived_at, None)
         job.arrived_at = arrived_at
-        if self._removed_at.get(pack.pack_id, -1) > arrived_at:
+        if self._removal_committed_over(pack.pack_id, subscription, arrived_at):
             # The pack was removed while this import was being admitted.
             job.cancel_requested = True
             self._finish_job(job, "cancelled")
@@ -1024,7 +1273,7 @@ class KnowledgeService:
                         if (
                             self._stopping
                             or job.cancel_requested
-                            or self._removed_at.get(job.pack_id, -1) > job.arrived_at
+                            or self._removal_committed_over(job.pack_id, job.subscription, job.arrived_at)
                             # Never spin the single runner on one job.
                             or attempt == MAX_IMPORT_YIELDS
                         ):
@@ -1057,7 +1306,7 @@ class KnowledgeService:
                 await self._discard_staging(job_id)
 
     async def _await_pending_removals(self, job: ImportJob) -> None:
-        while any(seq > job.arrived_at for seq in self._pending_removals.get(job.pack_id, ())):
+        while self._removal_pending_over(job):
             await self._removal_settled.wait()
 
     async def _commit_job(self, job: ImportJob) -> None:
@@ -1092,6 +1341,11 @@ class KnowledgeService:
                 raise KnowledgePackError("capacity_chunks")
             if self._installed_pack_bytes(pack.pack_id, active_jobs) + len(raw) > MAX_TOTAL_PACK_BYTES:
                 raise KnowledgePackError("capacity_bytes")
+            # Admission checked identity without the lock too; another import
+            # may have installed this pack or this market package since.
+            installed = {key: r.subscription for key, r in self._registry.packs.items()}
+            if identity_conflict(pack.pack_id, job.subscription, installed):
+                raise KnowledgePackError("subscription_identity_mismatch")
             now = utc_now()
             keys = {entry.key for entry in pack.entries}
             record = PackRecord(
@@ -1109,6 +1363,7 @@ class KnowledgeService:
                 ),
                 installed_at=previous.installed_at if previous else now,
                 updated_at=now,
+                subscription=job.subscription,
             )
             final_path = self.root / PACKS_DIR / record.file_name
             atomic_write_bytes(final_path, raw)
@@ -1475,6 +1730,304 @@ class KnowledgeService:
             return finish("miss", retrieval_mode=retrieval_mode)
         return finish("matched", hits=hits, context=context, retrieval_mode=retrieval_mode)
 
+    async def turn_context(
+        self,
+        *,
+        text: str,
+        exclude_card_ids: Sequence[str] = (),
+        budget_ms: int = DEFAULT_QUERY_BUDGET_MS,
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        """Cards a chat message brings in unasked (passive turn context).
+
+        Only packs whose ``auto_context`` is on take part, under the global
+        switch. Knowledge and corpus are chosen separately (``passive``) and
+        returned as two sections of bare cards for Main to wrap:
+        ``{"knowledge": {"context", "card_ids", "tokens"}, "corpus": {...}}``.
+        ``exclude_card_ids`` are cards the session still carries; they are
+        left out before anything is ranked. Nothing about the session is kept
+        here. The result never raises.
+        """
+        started = time.monotonic()
+        text = str(text or "").strip()[:TURN_CONTEXT_QUERY_MAX_CHARS]
+        budget = min(max(int(budget_ms or DEFAULT_QUERY_BUDGET_MS), 50), MAX_QUERY_BUDGET_MS) / 1000
+        excluded = {str(card_id) for card_id in exclude_card_ids or ()}
+
+        def finish(result: str, **extra: Any) -> dict[str, Any]:
+            elapsed = int((time.monotonic() - started) * 1000)
+            sections = {
+                kind: extra.get(kind) or {"context": "", "card_ids": [], "tokens": 0}
+                for kind in MATERIAL_TYPES
+            }
+            hits = sum(len(section["card_ids"]) for section in sections.values())
+            # Runs on every text turn: only outcomes worth a look are kept,
+            # so routine misses do not push tool lookups out of the log.
+            if result in PASSIVE_DIAGNOSTIC_RESULTS:
+                self.diagnostics.record_query(
+                    mode="passive",
+                    result=result,
+                    retrieval_mode=extra.get("retrieval_mode", ""),
+                    hits=hits,
+                    entry_title="",
+                    pack_id="",
+                    elapsed_ms=elapsed,
+                    error_type=extra.get("error_type", ""),
+                )
+            return {
+                "ok": True,
+                "result": result,
+                **sections,
+                "retrieval_mode": extra.get("retrieval_mode", ""),
+                "elapsed_ms": elapsed,
+            }
+
+        if self._state != "ready":
+            return finish("unavailable")
+        if not self._registry.enabled:
+            return finish("disabled")
+        if not text:
+            return finish("miss")
+        registry = self._registry
+        allowed = [
+            pack_id
+            for pack_id in self._allowed_pack_ids(registry, "auto")
+            if (record := registry.packs.get(pack_id)) is not None and record.auto_context
+        ]
+        if not allowed:
+            return finish("off")
+        if self._query_slots.locked():
+            return finish("busy")
+        async with self._query_lease():
+            deadline = started + budget
+            try:
+                async with asyncio.timeout(max(deadline - time.monotonic(), 0.01)):
+                    current = await self._query_thread(self._current_packs, allowed, registry)
+                    allowed = [pack_id for pack_id in allowed if pack_id in current]
+                    if not allowed:
+                        return finish("miss")
+                    picked, retrieval_mode = await self._passive_pick(
+                        text, allowed, deadline, registry, excluded
+                    )
+                    if not any(picked.values()):
+                        return finish("miss", retrieval_mode=retrieval_mode)
+                    sections = await self._query_thread(
+                        self._render_turn_sections, picked, text, language, registry
+                    )
+            except TimeoutError:
+                return finish("timeout")
+            except Exception as exc:
+                logger.warning("[Knowledge] turn context failed: %s", type(exc).__name__, exc_info=True)
+                return finish("error", error_type=type(exc).__name__)
+        if not any(section["card_ids"] for section in sections.values()):
+            return finish("miss", retrieval_mode=retrieval_mode)
+        return finish("matched", retrieval_mode=retrieval_mode, **sections)
+
+    async def _passive_pick(
+        self,
+        text: str,
+        allowed: list[str],
+        deadline: float,
+        registry: Registry,
+        excluded: set[str],
+    ) -> tuple[dict[str, list[PassiveHit]], str]:
+        """Candidates from all three signals, judged per material type."""
+        model_id = self._current_model_id()
+        # Read together, with no await between: the generation names this
+        # very snapshot in the calibration cache.
+        snapshot = self._vectors
+        snapshot_key = self._vectors_built_for
+        vector_packs = [
+            pack_id
+            for pack_id in allowed
+            if (record := registry.packs.get(pack_id)) is not None
+            and record.local_embedding
+            and (
+                snapshot is None
+                or snapshot.pack_versions is None
+                or snapshot.pack_versions.get(pack_id, record.pack_sha256) == record.pack_sha256
+            )
+        ]
+        type_packs = {
+            material_type: [
+                pack_id
+                for pack_id in allowed
+                if registry.packs[pack_id].effective_material_type == material_type
+            ]
+            for material_type in MATERIAL_TYPES
+        }
+        embed_task: asyncio.Task[Any] | None = None
+        if (
+            model_id is not None
+            and snapshot is not None
+            and snapshot.model_id == model_id
+            and set(vector_packs) & set(snapshot.pack_ids)
+            and len(self._query_embeddings) < MAX_QUERY_EMBEDDINGS
+            and self.embedder is not None
+        ):
+            self._calibration.ensure_probes(model_id, self.embedder.embed_batch)
+            embed_task = asyncio.create_task(self.embedder.embed(text))
+            embed_task.add_done_callback(_consume)
+            self._query_embeddings.add(embed_task)
+            embed_task.add_done_callback(self._query_embeddings.discard)
+        # Cards the session still carries are left out before any cut, so
+        # they cannot take the slots of the next-best cards. Disabled cards
+        # stay out of the vector cut and the calibration background too.
+        excluded_ids, disabled_ids, exact_ids, lexical_ids, named_ids = await self._query_thread(
+            self._passive_lexical_search, text, allowed, registry, excluded
+        )
+        query_vector: np.ndarray | None = None
+        if embed_task is not None:
+            remaining = deadline - time.monotonic()
+            done, _pending = await asyncio.wait(
+                {embed_task}, timeout=max(remaining - QUERY_RENDER_RESERVE_SECONDS, 0)
+            )
+            if embed_task in done and embed_task.exception() is None and embed_task.result():
+                blob = normalize_vector(embed_task.result())
+                if blob is not None:
+                    query_vector = np.frombuffer(blob, dtype="<f4")
+        # Each material type gets its own candidate cut, so many close cards
+        # of one type never push the other type's leader out.
+        semantic_by_type: dict[str, list[SemanticMatch]] = {}
+        if query_vector is not None:
+            vector_excluded = excluded_ids | disabled_ids
+            # One hop per type: a query cancelled or timed out between them
+            # does not go on scanning the other type while holding its slot.
+            for material_type, packs in type_packs.items():
+                type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in packs]
+                if type_vector_packs:
+                    semantic_by_type[material_type] = await self._query_thread(
+                        self._passive_semantic_search, snapshot, query_vector,
+                        type_vector_packs, vector_excluded,
+                    )
+        semantic = [match for matches in semantic_by_type.values() for match in matches]
+        candidate_ids = list(dict.fromkeys(
+            [*exact_ids, *named_ids, *lexical_ids, *(m.entry_id for m in semantic)]
+        ))
+        entries = await self._query_thread(self._store.fetch_entries, candidate_ids)
+        allowed_set = await self._query_thread(self._current_packs, allowed, registry)
+        picked: dict[str, list[PassiveHit]] = {}
+        for material_type in MATERIAL_TYPES:
+            type_set = {pack_id for pack_id in type_packs[material_type] if pack_id in allowed_set}
+            if not type_set:
+                picked[material_type] = []
+                continue
+            usable = {
+                entry_id
+                for entry_id, entry in entries.items()
+                if entry.pack_id in type_set
+                and not _disabled_in(entry, registry)
+                and f"{entry.pack_id}/{title_key(entry.title)}" not in excluded
+            }
+            type_vector_packs = [pack_id for pack_id in vector_packs if pack_id in type_set]
+            background = (
+                self._calibration.background(
+                    snapshot, snapshot_key, type_vector_packs, material_type, self._thread,
+                    excluded_entry_ids=disabled_ids,
+                )
+                if query_vector is not None and type_vector_packs
+                else None
+            )
+            picked[material_type] = select_hits(
+                text,
+                entries=entries,
+                usable=usable,
+                exact_ids=[entry_id for entry_id in exact_ids if entry_id in usable],
+                named_ids=[entry_id for entry_id in named_ids if entry_id in usable],
+                lexical_ids=[entry_id for entry_id in lexical_ids if entry_id in usable],
+                semantic=[
+                    match for match in semantic_by_type.get(material_type, ())
+                    if match.entry_id in usable
+                ],
+                thresholds=thresholds_for(material_type, background),
+            )
+        return picked, ("hybrid" if query_vector is not None else "bm25")
+
+    def _excluded_entry_ids(self, card_ids: set[str]) -> set[int]:
+        """Entry ids of ``pack_id/title_key`` card ids."""
+        titles: dict[str, list[str]] = {}
+        for card_id in card_ids:
+            pack_id, _, key = card_id.partition("/")
+            if pack_id and key:
+                titles.setdefault(pack_id, []).append(key)
+        return self._store.entry_ids_by_title(titles) if titles else set()
+
+    def _passive_lexical_search(
+        self, text: str, pack_ids: list[str], registry: Registry, excluded_cards: set[str]
+    ) -> tuple[set[int], set[int], list[int], list[int], list[int]]:
+        """Exclusions and keyword candidates in one worker-thread hop.
+
+        Returns the entry ids of ``excluded_cards``, the disabled entry ids of
+        ``pack_ids`` (index and registry snapshot), then the exact, keyword
+        and named candidates.
+        """
+        excluded_ids = self._excluded_entry_ids(excluded_cards)
+        snapshot_disabled = self._snapshot_only_disabled(pack_ids, registry)
+        disabled_ids = self._store.disabled_entry_ids(pack_ids) | snapshot_disabled
+        # Disabled index rows are filtered in SQL already.
+        excluded = excluded_ids | snapshot_disabled
+        exact_ids, lexical_ids = self._store.lexical_candidates(
+            text, pack_ids=pack_ids, limit=LEXICAL_CANDIDATES, exclude_ids=excluded,
+        )
+        named_ids = self._store.named_candidates(text, pack_ids=pack_ids, exclude_ids=excluded)
+        return excluded_ids, disabled_ids, exact_ids, lexical_ids, named_ids
+
+    def _passive_semantic_search(
+        self,
+        snapshot: VectorSnapshot | None,
+        query_vector: np.ndarray,
+        pack_ids: list[str],
+        excluded_ids: set[int],
+    ) -> list[SemanticMatch]:
+        """Vector candidates of one material type, with its own cut so many
+        close cards of one type never push the other type's leader out."""
+        return semantic_candidates(
+            snapshot,
+            query_vector,
+            allowed_pack_ids=pack_ids,
+            exclude_entry_ids=excluded_ids,
+            limit=PASSIVE_SEMANTIC_CANDIDATES,
+            threshold=-1.0,
+        )
+
+    def _render_turn_sections(
+        self,
+        picked: dict[str, list[PassiveHit]],
+        text: str,
+        language: str | None,
+        registry: Registry,
+    ) -> dict[str, dict[str, Any]]:
+        ids = [hit.entry_id for hits in picked.values() for hit in hits]
+        entries = self._store.fetch_entries(ids)
+        current = self._current_packs([entry.pack_id for entry in entries.values()], registry)
+        sections: dict[str, dict[str, Any]] = {}
+        for material_type in MATERIAL_TYPES:
+            cards: list[RenderCard] = []
+            card_ids: list[str] = []
+            for hit in picked.get(material_type, ()):
+                entry = entries.get(hit.entry_id)
+                record = registry.packs.get(entry.pack_id) if entry is not None else None
+                if entry is None or record is None or _disabled_in(entry, registry) or entry.pack_id not in current:
+                    continue
+                bodies = chunk_bodies(entry.content) or [entry.content]
+                index = best_excerpt_index(text, bodies, hit.semantic_chunk)
+                excerpt = bodies[index] if index == 0 else f"... {bodies[index]}"
+                cards.append(
+                    RenderCard(
+                        title=entry.title,
+                        material_type=material_type,
+                        summary=entry.summary,
+                        content=excerpt,
+                        source_name=record.source.name,
+                        source_license=record.source.license,
+                    )
+                )
+                card_ids.append(f"{entry.pack_id}/{title_key(entry.title)}")
+            context, tokens = render_turn_cards(
+                cards, language=language, max_tokens_per_card=TURN_CONTEXT_ITEM_MAX_TOKENS
+            )
+            sections[material_type] = {"context": context, "card_ids": card_ids, "tokens": tokens}
+        return sections
+
     @contextlib.asynccontextmanager
     async def _query_lease(self) -> AsyncIterator[None]:
         """Hold a query slot until the query and all its thread work are done.
@@ -1830,6 +2383,7 @@ class KnowledgeService:
                         record, chunk, embedding_state, indexing=self._registry.enabled
                     ),
                     "broken": record.pack_id in self._broken_packs,
+                    "subscription": record.subscription.to_json() if record.subscription else None,
                     "installed_at": record.installed_at,
                     "updated_at": record.updated_at,
                 }

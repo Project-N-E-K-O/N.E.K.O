@@ -1,4 +1,4 @@
-"""Gemini TTS voice 目录的规范化、识别与 UI shape 行为。"""
+"""Normalization, recognition, and UI-shape behavior of the Gemini TTS voice catalog."""
 import os
 import sys
 
@@ -70,8 +70,8 @@ def test_aliases_resolve_to_default_per_gender(alias, expected):
 
 @pytest.mark.parametrize("voice_id", ["", "   ", None])
 def test_empty_input_is_unrecognized(voice_id):
-    """空输入用 default 兜底，但 recognized=False —— 调用方据此区分
-    "用户显式选了 voice" 与 "我们替他默认选了一个"。"""
+    """Empty input falls back to default with recognized=False, letting callers distinguish
+    'the user explicitly selected a voice' from 'we selected a default for them'."""
     name, recognized = normalize_gemini_tts_voice(voice_id)
     assert name == GEMINI_TTS_DEFAULT_VOICE
     assert recognized is False
@@ -115,8 +115,8 @@ def test_gemini_provider_registered_with_expected_metadata():
 
 
 def test_default_voices_are_in_catalog():
-    """default voice 必须真的在 catalog 里 —— 否则 fallback 会撞上
-    Gemini API 报 voice 不存在。"""
+    """The default voice must actually exist in the catalog; otherwise fallback causes
+    the Gemini API to report a nonexistent voice."""
     assert GEMINI_TTS_DEFAULT_VOICE in GEMINI_TTS_VOICE_GENDERS
     assert GEMINI_TTS_DEFAULT_MALE_VOICE in GEMINI_TTS_VOICE_GENDERS
     assert GEMINI_TTS_VOICE_GENDERS[GEMINI_TTS_DEFAULT_MALE_VOICE] == "Male"

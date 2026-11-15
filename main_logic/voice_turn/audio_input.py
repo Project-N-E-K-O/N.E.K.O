@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .activity_evidence import RnnoiseEvidence
+from .audio_delivery import AudioDeliveryTag
 from utils.audio_processor import AudioProcessor
 
 
@@ -43,6 +44,7 @@ class ProcessedVoiceFrame:
     speech_probability: float | None
     rnnoise_available: bool = False
     rnnoise_evidence: RnnoiseEvidence | None = None
+    delivery: AudioDeliveryTag | None = None
 
 
 class VoiceInputAudioPipeline:
@@ -253,7 +255,7 @@ class VoiceInputAudioPipeline:
                        latest_probability_last=evidence.last,
                        latest_probability_ema=evidence.ema)
         try:
-            logger.info("[voice-rnnoise] pipeline=%s stats=%s", self._diagnostic_id, summary)
+            logger.debug("[voice-rnnoise] pipeline=%s stats=%s", self._diagnostic_id, summary)
         except Exception:
             # Diagnostics cannot reject PCM or break cancellation/close ownership.
             pass

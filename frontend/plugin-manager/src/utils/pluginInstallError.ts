@@ -19,6 +19,12 @@ const INSTALL_ERROR_KEYS: Record<string, string> = {
   legacy_plugin_present: 'market.legacyPluginConflict',
   package_hash_mismatch: 'market.packageHashMismatch',
   download_failed: 'market.downloadFailed',
+  package_size_exceeded: 'market.packageSizeExceeded',
+  download_timeout: 'market.downloadTimeout',
+  download_network_error: 'market.downloadNetworkError',
+  download_http_error: 'market.downloadHttpError',
+  insufficient_disk_space: 'market.insufficientDiskSpace',
+  download_write_failed: 'market.downloadWriteFailed',
   market_list_fetch_failed: 'market.marketListFetchFailed',
   market_catalog_unavailable: 'market.marketListFetchFailed',
   market_catalog_not_configured: 'market.catalogNotConfigured',
@@ -51,4 +57,27 @@ export function normalizePluginInstallErrorCode(code: unknown): string {
 
 export function resolvePluginInstallErrorKey(code: unknown): string {
   return INSTALL_ERROR_KEYS[normalizePluginInstallErrorCode(code)] || 'market.installFailed'
+}
+
+/** Read structured sizes only; old servers and malformed metadata keep the generic copy. */
+export function pluginPackageSizeDetails(details: unknown) {
+  if (!details || typeof details !== 'object') return null
+  const { actual_bytes: actual, maximum_bytes: limit, size_source: source } = details as Record<string, unknown>
+  if (typeof actual !== 'number' || !Number.isSafeInteger(actual) || actual < 0
+    || typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit <= 0
+    || (source !== 'content_length' && source !== 'received_bytes')) return null
+
+  const format = (bytes: number) => {
+    const units = ['B', 'KiB', 'MiB', 'GiB']
+    let index = Math.min(Math.floor(Math.log2(Math.max(1, bytes)) / 10), units.length - 1)
+    if (index < units.length - 1 && Number((bytes / 1024 ** index).toFixed(2)) >= 1024) index++
+    return `${Number((bytes / 1024 ** index).toFixed(2))} ${units[index]}`
+  }
+  const actualText = format(actual)
+  const limitText = format(limit)
+  // An overflow of one byte must not look like "500 MiB exceeds 500 MiB".
+  return {
+    actual: actual > limit && actualText === limitText ? `${actualText} (${actual} B)` : actualText,
+    limit: limitText, source, actualBytes: actual, maximumBytes: limit,
+  }
 }

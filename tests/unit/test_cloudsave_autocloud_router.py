@@ -101,9 +101,9 @@ async def test_cloudsave_router_exposes_steam_autocloud_configuration_payload():
 
             cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
 
-            # 这个测试只关心 steam_autocloud 配置，不关心 workshop 状态查询。
-            # 不打 patch 的话 _enrich_cloudsave_payload_with_workshop_status 会调
-            # SimpleNamespace 上不存在的 .Workshop，把 ERROR 喷到日志里。
+            # This test concerns only steam_autocloud configuration, not workshop status queries.
+            # Without this patch, _enrich_cloudsave_payload_with_workshop_status would access
+            # the nonexistent .Workshop on SimpleNamespace and emit ERROR logs.
             with patch.object(
                 cloudsave_router_module,
                 "get_subscribed_workshop_items",

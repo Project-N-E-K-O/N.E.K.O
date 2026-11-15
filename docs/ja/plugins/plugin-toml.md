@@ -84,15 +84,19 @@ short_description = "Note management with AI-powered organization."
 keywords = ["note", "筆記", "memo", "record", "メモ"]
 ```
 
-これらの field は host が plugin をロードした後の Agent routing に使われます。
+host が plugin をロードした後、Agent（ネコクロー、NekoClaw）はこれらの field を使って plugin を選びます。
 
-- `description` — plugin metadata と Agent fine assessment に使う完全な説明です。
-- `short_description` — coarse screening 用の短い説明です。省略時は `description` から生成して cache される場合があります。
-- `keywords` — 正規表現 pattern です。hit は Stage 1 candidate に union されますが、Stage 2 を省略したり実行を保証したりしません。
+- `description` — plugin metadata と精選に使う完全な説明です。
+- `short_description` — 粗選別が読む短い説明で、読むのは最大 150 token です。**書いておいてください。** 省略されていて `description` がこの 150 token を超えるときは、ホストがバックグラウンドで小さいモデルに `description` から書かせますデータディレクトリの `nekoclaw/plugin_short_descriptions.json` に保存し、成功すればプラグインと説明の版ごとにモデルへのリクエスト 1 回です。150 token を超えた結果は 150 に切り詰めて保存します。リクエストが失敗した場合は保存せず、10 分後に再試行し、そのたびにリクエストが 1 回かかります。同じ版の `description` には 1 日最大 3 回まで（再起動をまたいでも数えます）で、`description` が変われば数え直します。保存されるまでは `description` の先頭部分を代わりに使います。
+- `keywords` — 正規表現 pattern です。一致した plugin は粗選別の候補に入り、精選では「キーワード一致」の印が付きます。精選を省略したり、実行を保証したりはしません。
+
+選択は二段階です。選択対象の全 plugin と、その可視 entry の説明の合計が 3000 token を超えるときは、先に粗選別を行い、三つの集合の和を残します。keywords が一致した plugin、BM25 のテキスト一致の上位 10 件（plugin の ID、名前、説明と、entry の ID・説明が対象）、小型モデルが短い説明から選んだ plugin です。その後、精選が `plugin_id` と runtime `entry_id` を選び、引数を埋めます。3000 token 以下なら粗選別は行わず、選択対象の plugin すべてが精選に渡ります。
+
+選択が走るのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はなくなったため、「ユーザーが何気なく口にしただけで選ばれる」ことに頼っていた plugin は、選ばれる回数が減ります。keywords と BM25 が照合するテキストは、ユーザーの元の発言と、モデルが dispatch した一文を合わせたものです。ユーザーの発言が keywords に一致することは、そのターンをターン後チェックへ通すシグナルの一つでもあります。
 
 listener/integration を Agent dispatch から完全に外すには `passive = true` を設定します。non-passive plugin も Agent-visible runtime entry が 1 つ以上なければ candidate になりません。
 
-Stage 2 の最終出力は `plugin_id` と runtime `entry_id` です。どちらも今回表示した candidate set と照合され、最初の不正値だけ correction retry を 1 回行い、それでも不正なら拒否されます。
+精選が返した `plugin_id` と `entry_id` は、そのとき見せた candidate set と照合されます。不正な場合は聞き直さず、どの entry も直接は呼ばれません。その用件は task agent に渡され、task agent が使えないときは「できない」と返されます。精選は、誰にもできない用件、またはそもそも片付ける用件ではないもの（`route="none"`）と答えることもでき、その場合は何も始まりません。entry が呼ばれたときの動作は、[エントリーとパラメーター](./entries)の「Agent が entry を呼ぶとき」を参照してください。
 
 ```toml
 version = "1.2.0"
@@ -144,10 +148,25 @@ startup_failure = "warn"
 ```
 
 - `enabled` — `false` にすると、ファイルを削除せず一時的に無効化できます
-- `auto_start` — `true` なら N.E.K.O 起動時に自動開始、そうでなければパネルから手動開始します
+- `auto_start` — 省略時は `false`。保存済みのユーザー設定が manifest の値より優先され、自動起動にはユーザーの承認も必要です
 - `priority` — optional integer runtime ordering hint
 - `timeout` — startup readiness を待つ秒数。`0 < timeout <= 300` が必要で、省略時は system default
 - `startup_failure` — `startup` hook failure の扱い。`warn`（default、process を残して degraded）、`fail`（startup abort）、`ignore`（log only）
+
+プラグインセンターの独立した自動起動スイッチで、ユーザー設定を保存します。
+初めてローカルにインストールするときは、パッケージに `auto_start = true` とあっても
+設定を `false` として保存し、スイッチをオフで表示します。通常の更新や再インストールでは
+保存済みの選択を維持します。既存のインストールで明示された manifest の値は、
+ユーザー設定による上書きがなければ引き続き適用されます。
+
+既定では、手動の起動・停止・再読み込みで自動起動設定は変わりません。
+新規インストールは承認待ちとなり、独立した自動起動スイッチをオンにすると承認されます。
+手動の起動や再読み込みでは、以後の自動起動は承認されません。
+
+`NEKO_PLUGIN_SYNC_AUTO_START_ON_TOGGLE=1` を設定すると、従来の設定同期を有効にできます。
+手動の起動・再読み込みは `auto_start=true`、停止は `auto_start=false` を保存します。
+「手動の起動・停止ではこの設定は変わらない」というスイッチの説明は既定の動作を示します。
+従来の同期を有効にしても、承認待ちのプラグインには独立したスイッチによる明示的な承認が必要です。
 
 ---
 
@@ -181,6 +200,24 @@ enabled = true
 有効にすると、コード内で `self.store` を使って、再起動後も残るデータを保存・取得できます。
 
 ストレージが不要なら、このセクションは書かなくてかまいません。デフォルトでは無効です。
+
+---
+
+### `[plugin.shared]` — 他のプラグインの共有ファイルを読む
+
+```toml
+[plugin.shared]
+reads = ["weather"]
+```
+
+どのプラグインにも共有ディレクトリ `<ユーザーデータルート>/plugin_shared/<プラグイン id>/` があり、他のプラグインに読ませてよいファイルを置けます。持ち主のプラグインは `self.shared_path(...)` で書き込みます。他のプラグインが公開したファイルを読むには、そのプラグインの id を `reads` に書いたうえで `self.shared_path_of("weather", ...)` を呼びます。宣言がないまま呼ぶと `ValidationError` が発生します。
+
+知っておくべき点が 2 つあります。
+
+- **これは取り決めであり、セキュリティ境界ではありません。** プラグイン同士はサンドボックスで隔離されていないため、あるプラグインが他のプラグインのディレクトリに書き込むことを防ぐ仕組みはありません。宣言は、この依存関係をマニフェスト上で見えるようにするためのものです。他のプラグインのファイルは読み取り専用として扱い、自分の共有ディレクトリに秘密情報を置かないでください。
+- **共有ディレクトリはプラグインのプライベートな状態ではありません。** 公開したプラグインが削除されてもディレクトリは残り、ユーザーが保存場所を変更したときはユーザーデータと一緒に移動します。
+
+公開する側に宣言は要りません。共有ファイルを公開も参照もしないなら、このセクションは書かなくてかまいません。
 
 ---
 
@@ -257,6 +294,8 @@ plugin/plugins/smart_notes/
 ├── config/plugin.toml      ← 実際に使用される設定
 ├── data/                   ← self.data_path()
 └── cache/                  ← self.cache_path()
+
+<ユーザーデータルート>/plugin_shared/smart_notes/   ← self.shared_path()。宣言したプラグインが読む
 ```
 
 必須なのは `plugin.toml` と `[plugin].entry` が指す、インポート可能な Python モジュールです。一般的には `__init__.py` を使いますが、それに限定されません。インストール済みコードは、これらの書き込み可能な状態データとは別に保存されます。

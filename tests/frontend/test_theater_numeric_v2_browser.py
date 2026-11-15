@@ -1,4 +1,4 @@
-"""用真实剧本选择页脚本验收迁移后的核心交互。"""  # noqa: DOCSTRING_CJK
+"""Use the real script-selection page code to verify migrated core interactions."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -93,11 +93,13 @@ def _install_selector_routes(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('via_market', [False, True])
 def test_owned_selector_closes_after_capsule_takeover_before_opening_response(
     mock_page: Page,
     running_server: str,
+    via_market: bool,
 ):
-    """由本体打开的选剧页在胶囊接管后关闭，不等待开场模型请求返回。"""  # noqa: DOCSTRING_CJK
+    """Close the main-app-opened selection page after capsule takeover, without waiting for the opening model request."""  # noqa: DOCSTRING_CJK
 
     pending: dict[str, Route] = {}
 
@@ -122,10 +124,17 @@ def test_owned_selector_closes_after_capsule_takeover_before_opening_response(
     mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
     mock_page.wait_for_function("() => window.nekoTheaterRuntime && window.reactChatWindowHost")
 
+    if via_market:
+        mock_page.context.route('http://market.test/selected', lambda route: route.fulfill(
+            body=f'<button onclick="location.replace(\'{running_server}/theater?story_id={STORY["story_id"]}\')">Import</button>'))
     with mock_page.expect_popup() as popup_info:
-        mock_page.evaluate("() => window.open('/theater', 'neko_theater_test')")
+        mock_page.evaluate("url => window.open(url, 'neko_theater_test')", 'http://market.test/selected' if via_market else '/theater')
     selector = popup_info.value
+    if via_market:
+        selector.get_by_role('button', name='Import', exact=True).click()
+        selector.wait_for_url(f'{running_server}/theater?story_id={STORY["story_id"]}')
     selector.wait_for_load_state("domcontentloaded")
+    assert selector.evaluate('!!window.opener && !window.opener.closed')
     expect(selector.locator("#theater-start-btn")).to_be_enabled()
     with mock_page.expect_request("**/api/theater-numeric/session/start"):
         selector.locator("#theater-start-btn").click()
@@ -214,7 +223,7 @@ def test_selector_shows_story_summary_roles_and_new_session_actions(mock_page: P
     expect(mock_page.locator("#theater-detail-player")).to_contain_text("回乡整理旧屋")
     expect(mock_page.locator("#theater-detail-catgirl")).to_contain_text("小葵")
     expect(mock_page.locator("#theater-start-btn")).to_be_enabled()
-    # 预算已固定，选择页不再提供档位控件。
+    # The budget is fixed; the selection page no longer offers tier controls.
     expect(mock_page.locator("#theater-token-budget")).to_have_count(0)
     expect(mock_page.locator("#theater-start-btn")).to_have_text("开始")
     expect(mock_page.locator("#theater-start-btn")).to_have_attribute("data-i18n", "theater.start")
@@ -233,7 +242,7 @@ def test_selector_recovers_status_when_story_detail_request_loses_network(
     mock_page: Page,
     running_server: str,
 ):
-    """切换剧本时网络中断必须退出读取态并显示可重试错误。"""  # noqa: DOCSTRING_CJK
+    """A network failure while switching scripts must exit loading and show a retryable error."""  # noqa: DOCSTRING_CJK
 
     second_story = {
         **STORY,
@@ -286,7 +295,7 @@ def test_selector_reports_archive_list_failure_instead_of_empty_history(
     mock_page: Page,
     running_server: str,
 ):
-    """归档接口失败必须进入可重试错误态，不能发布就绪和空记录。"""  # noqa: DOCSTRING_CJK
+    """Archive API failure must enter a retryable error state, never publish ready with empty records."""  # noqa: DOCSTRING_CJK
 
     def handler(route: Route) -> None:
         path = route.request.url.split("?", 1)[0]
@@ -319,7 +328,7 @@ def test_selector_reports_archive_list_failure_instead_of_empty_history(
 
 @pytest.mark.frontend
 def test_selector_can_pin_and_forget_saved_theater_memory(mock_page: Page, running_server: str):
-    """选剧页用最小记录列表提供收藏与显式忘记入口。"""  # noqa: DOCSTRING_CJK
+    """The selection page uses a minimal record list for favorites and explicit forgetting."""  # noqa: DOCSTRING_CJK
 
     forgotten = {"value": False}
     pinned = {"value": False}
@@ -380,7 +389,7 @@ def test_selector_opens_identity_checked_performance_archive(
     mock_page: Page,
     running_server: str,
 ):
-    """已保存记录应通过详情接口打开完整公开演绎。"""  # noqa: DOCSTRING_CJK
+    """Open the complete public enactment of saved records through the detail API."""  # noqa: DOCSTRING_CJK
 
     def handler(route: Route) -> None:
         request = route.request
@@ -509,7 +518,7 @@ def test_active_story_only_enables_continue(mock_page: Page, running_server: str
     expect(mock_page.locator("#theater-end-btn")).to_have_text("结束演绎")
     expect(mock_page.locator("#theater-session-hint")).to_contain_text("点击“继续”")
     expect(mock_page.locator("#theater-restart-btn")).to_have_count(0)
-    # 旧 Session 的兼容字段不能重新显示预算选择器。
+    # Legacy Session compatibility fields must not bring back the budget selector.
     expect(mock_page.locator("#theater-token-budget")).to_have_count(0)
 
 
@@ -665,7 +674,7 @@ def test_selector_queues_post_end_memory_prompt_behind_open_confirmation(
     mock_page: Page,
     running_server: str,
 ):
-    """结束回执到达时不能覆盖用户尚未选择的重新开始确认框。"""  # noqa: DOCSTRING_CJK
+    """An ending receipt must not overwrite an unanswered restart confirmation dialog."""  # noqa: DOCSTRING_CJK
 
     start_calls: list[dict] = []
     skip_calls: list[dict] = []
@@ -742,7 +751,7 @@ def test_selector_drops_restart_confirmation_after_story_switch(
     mock_page: Page,
     running_server: str,
 ):
-    """A 剧本确认框等待期间切到 B 后，确认旧弹窗不能重新开始 B。"""  # noqa: DOCSTRING_CJK
+    """After switching from A to B while A's confirmation waits, accepting the old dialog must not restart B."""  # noqa: DOCSTRING_CJK
 
     second_story = {
         **STORY,

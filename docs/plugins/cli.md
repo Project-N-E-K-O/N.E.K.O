@@ -1,5 +1,9 @@
 # Publish a plugin to the N.E.K.O Plugin Market
 
+::: info Package profiles and runtime configuration
+Plugin Center installs deploy plugin code, including the plugin's own `profiles.toml` and `profiles/` files. They do not deploy `payload/profiles/` into `.neko-package-profiles`, and existing package-profile directories do not block installation or reinstallation. Those legacy directories are retained unchanged during install, upgrade, and uninstall. Runtime configuration, data, and caches remain in the independent plugin state directory. The Python `unpack_package()` API still exports the complete package, including package profiles.
+:::
+
 This guide continues from the [quick start](/plugins/quick-start). It takes the plugin that already runs in a N.E.K.O source checkout through uploading its source to GitHub, passing its first review, publishing its first installable version, and releasing later updates.
 
 The examples use the `hello_world` plugin created in the quick start. Its source stays in:

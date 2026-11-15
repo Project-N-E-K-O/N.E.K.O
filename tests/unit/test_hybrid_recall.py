@@ -62,8 +62,8 @@ class TestTokenize(unittest.TestCase):
         self.assertIn("Witness", tokens)
 
     def test_stop_names_stripped(self):
-        # When "博士" is a stop_name, the CJK segment becomes "最爱猫咪"
-        # and bigrams shouldn't contain "博士".
+        # When "博士" is a stop_name, the CJK segment becomes "最爱猫咪".
+        # Bigrams should not contain "博士".
         tokens = _tokenize("博士最爱猫咪", ["博士"])
         self.assertNotIn("博士", tokens)
         self.assertIn("最爱", tokens)
@@ -81,7 +81,7 @@ class TestBM25Rank(unittest.TestCase):
         ]
         ranked = _bm25_rank("博士 游戏", pool, stop_names=[])
         ids = [d["id"] for d, _ in ranked]
-        # a (has both 博士 and 游戏) ranks first; c (only 博士) second;
+        # a (contains both 博士 and 游戏) ranks first; c (only 博士) second;
         # b (no overlap) gets score 0 and is dropped
         self.assertEqual(ids[0], "a")
         self.assertNotIn("b", ids)
@@ -103,32 +103,32 @@ class TestBM25Rank(unittest.TestCase):
         self.assertEqual(ranked, [])
 
     def test_tokenize_coerces_non_string_text(self):
-        """Regression for codex review (3rd round): normal-path _tokenize 之前
-        漏了 str() coerce，遇到 malformed entry 里 text=list/int 等 truthy
-        non-string 时，``_SPLIT_RE.split`` 抛 TypeError 把整条 hybrid_recall
-        abort（应只 skip 单行）。"""
-        # 不该抛任何异常，return [] (list 走 str() 后变 "[1, 2, 3]" → 一个 Latin token)
+        """Regression for codex review (3rd round): normal-path _tokenize previously omitted
+        str() coercion; truthy non-string text such as list/int in malformed entries made
+        ``_SPLIT_RE.split`` raise TypeError and abort the whole hybrid_recall
+        instead of skipping only that row."""
+        # Must not raise; return [] (str(list) becomes '[1, 2, 3]' → one Latin token).
         result = _tokenize([1, 2, 3], [])
         self.assertIsInstance(result, list)
-        # 应不挂；具体输出无所谓
+        # Must not fail; exact output is immaterial.
         result = _tokenize(12345, [])
         self.assertIsInstance(result, list)
-        # None 早就 OK
+        # None already works.
         self.assertEqual(_tokenize(None, []), [])
 
     def test_tf_preserved_so_heavy_repeat_outranks_brief(self):
-        """Regression for codex review #1 (commit fd2b75fc4 之前)：
-        ``_extract_keywords`` 返回 set，单 doc 内重复 token 被 dedupe，
-        BM25 的 TF 信号死掉。修正后 ``_tokenize`` 返回 list 保留 multiplicity，
-        同一 term 出现 N 次的 doc 应当显著高于只出现 1 次的 doc。"""
+        """Regression for codex review #1 (before commit fd2b75fc4):
+        ``_extract_keywords`` returned a set, deduplicating repeated tokens within each document
+        and destroying BM25 TF signals. ``_tokenize`` now returns a list retaining multiplicity;
+        documents with N occurrences of a term must score significantly above those with one."""
         pool = [
             {"id": "heavy", "text": "博士博士博士博士博士最爱博士的游戏"},
             {"id": "brief", "text": "今天博士跟我说了别的事"},
         ]
         ranked = _bm25_rank("博士", pool, stop_names=[])
         ids = [d["id"] for d, _ in ranked]
-        # heavy 出现 "博士" 多次 → BM25 TF 项给高分；brief 只出现 1 次
-        # → 同样的 IDF 但低 TF。heavy 必须排第一，分数也得明显更高。
+        # heavy contains '博士' repeatedly → higher BM25 TF score; brief contains it once,
+        # with the same IDF but lower TF. heavy must rank first with a clearly higher score.
         self.assertEqual(ids[0], "heavy")
         heavy_score = next(s for d, s in ranked if d["id"] == "heavy")
         brief_score = next(s for d, s in ranked if d["id"] == "brief")
@@ -202,19 +202,19 @@ class TestTagTier(unittest.TestCase):
         self.assertNotIn("target_type", out[0])
 
     def test_skip_non_dict_entries(self):
-        """Regression for codex review on commit d3880f9c9：facts.json
-        如果混进 non-dict 行（manual edit / 老格式 / 迁移 bug），
-        ``dict(it)`` 会 TypeError/ValueError 把整个 _tag_tier 挂掉，
-        升级成 whole-query 失败。修正后单条 skip，其余继续。"""
+        """Regression for codex review on commit d3880f9c9: non-dict rows in facts.json
+        (manual edit / legacy format / migration bug) made
+        ``dict(it)`` raise TypeError/ValueError and break all of _tag_tier,
+        failing the entire query. Now skip individual rows and continue."""
         items = [
             {"id": "good", "text": "valid entry"},
-            "this is a malformed string row",  # 非 dict
-            ["nested", "list", "row"],         # 非 dict
-            12345,                              # 非 dict
+            "this is a malformed string row",  # Not a dict.
+            ["nested", "list", "row"],         # Not a dict.
+            12345,                              # Not a dict.
             {"id": "also_good", "text": "another valid entry"},
         ]
         out = _tag_tier(items, "fact")
-        # 两条好 entry 都该出来，三条坏 entry 被 skip
+        # Return both valid entries, skipping the three invalid ones.
         self.assertEqual(len(out), 2)
         self.assertEqual({d["id"] for d in out}, {"good", "also_good"})
 
@@ -290,13 +290,13 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
 
     async def test_disputed_reflection_drops_out_of_recall(self):
         """A net-negative reflection must not survive into recall results."""
-        # ⚠️ 用**真实落盘 schema** 的行，不是手工塞 score 的合成行。
-        # reflections.json 里根本没有 ``score`` 键（evidence 是 reinforcement /
-        # disputation 两个累加器，score 一律读时折算）。上面那条
-        # ``test_hard_filter_drops_negative_score`` 塞了 score 所以一直绿，但它
-        # 证明不了生产行为——真实数据上 ``score is None``，那道过滤整条空转，
-        # 被用户反驳到负分的反思照样被召回、原文注入 context，跟 system prompt
-        # 里的 ban 指令正面打架。这条按真实形状钉住。
+        # Warning: use rows with the **actual persisted schema**, not synthetic rows with manually injected score.
+        # reflections.json has no ``score`` key (evidence consists of reinforcement /
+        # disputation accumulators; score is always derived on read). The earlier
+        # ``test_hard_filter_drops_negative_score`` stays green because it injects score,
+        # but cannot prove production behavior: real data has ``score is None``, bypassing the filter,
+        # recalling negatively scored, user-disputed reflections and injecting their text into context, directly contradicting
+        # the system prompt's ban. This test uses the actual shape to guard the behavior.
         now_iso = datetime.now().isoformat()
         reflections = [
             {
@@ -311,12 +311,12 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
 
     async def test_ignored_reflection_is_not_treated_as_disputed(self):
         """⚠️ Silence is not objection: a merely-ignored row must stay recallable."""
-        # ``evidence_score`` 转负不止一条路。用户对 surfaced 反思**沉默**时，
-        # post_turn 按 'ignored' 记 reinforcement += -0.2；AI 一次抛 7 条、用户
-        # 当轮没接话，这 7 条就全成了 rein=-0.2 / disp=0 的负分行。按净分一刀切
-        # 会把它们当场从召回里抹掉（对抗审查实测存量里 17.8% 的活跃 reflection
-        # 属于这一类），而两周后用户主动问"我上个月在忙什么"，那批正是该被召回
-        # 的东西。判据必须带上 disputation>0，才等于 _hard_filter 那句
+        # ``evidence_score`` can become negative in several ways. When users stay **silent** about surfaced reflections,
+        # post_turn records 'ignored' as reinforcement += -0.2. If AI surfaces 7 reflections and the user
+        # does not engage that turn, all 7 become negative rows with rein=-0.2 / disp=0. Filtering by net score alone
+        # immediately removes them from recall (adversarial auditing found 17.8% of existing active reflections
+        # in this category), although two weeks later a user asking 'what was I busy with last month?' should recall
+        # exactly those entries. Require disputation>0 to match _hard_filter's condition
         # "user has been disputing this more than confirming it"。
         now_iso = datetime.now().isoformat()
         reflections = [{
@@ -330,7 +330,7 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
 
     async def test_reinforced_reflection_survives_recall(self):
         """Control: same missing score key, net-positive evidence, still recalled."""
-        # 少了这条，上面那条用"把所有 reflection 都过滤掉"也能通过。
+        # Without this case, the previous test could pass by filtering out all reflections.
         now_iso = datetime.now().isoformat()
         reflections = [
             {
@@ -345,8 +345,8 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
 
     async def test_evidence_free_reflection_still_recalled(self):
         """A row with no evidence fields at all (net 0) must not be dropped."""
-        # 钉住"只多丢负分行"这条单调性：改动之前 score=None 放行，改动之后
-        # 算出 0.0 仍然放行。
+        # Guard monotonicity: drop only additional negative-score rows. Before this change score=None passed;
+        # after it, derived 0.0 must still pass.
         reflections = [
             {"id": "plain", "text": "博士最喜欢的游戏是 The Witness",
              "status": "confirmed"},
@@ -356,24 +356,24 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
 
     async def test_fact_rows_are_not_evidence_scored(self):
         """The fact tier is outside the evidence system and must stay untouched."""
-        # facts.json 没有 reinforcement / disputation 字段，也没有写入方给它们
-        # 派信号；给 fact 盖一个恒 0 的 score 是噪音，而 ``evidence_score`` 对
-        # ``protected`` 行返回 +inf —— 那个语义该由将来真加字段的那次改动显式
-        # 决定，不该从这里顺手泛化过去。
+        # facts.json has no reinforcement / disputation fields, and no writer sends them
+        # signals; assigning a constant-zero fact score is noise, while ``evidence_score`` on
+        # ``protected`` rows returns +inf; that meaning must be decided explicitly when real fields
+        # are introduced, rather than generalized incidentally here.
         facts = [{"id": "f_protected", "text": "博士养了只猫", "protected": True}]
         tagged = _tag_tier(facts, "fact")
         self.assertNotIn("score", tagged[0])
-        # 且 protected fact 不会被 hard_filter 当 persona 丢掉之外的理由影响：
-        # 这里只断言没有被本次改动加上 score 键。
+        # Also, protected facts are unaffected by hard_filter reasons other than persona exclusion:
+        # assert only that this change does not add a score key.
 
     async def test_stale_score_key_is_recomputed_not_kept(self):
         """A stale on-row score snapshot must be overwritten by the live value."""
-        # 手工编辑 / 历史迁移可能留下 score 键，那个值不带衰减、算不准；唯一
-        # 权威是按当前时间现算。写成 setdefault 的话这条会红。
+        # Manual edits / old migrations may leave score keys without decay, making them inaccurate; only
+        # current-time recomputation is authoritative. Using setdefault would fail this case.
         now_iso = datetime.now().isoformat()
         rows = [{
             "id": "stale", "text": "...", "status": "confirmed",
-            "score": 99.0,  # 陈旧快照
+            "score": 99.0,  # Stale snapshot.
             "reinforcement": 0.0, "disputation": 3.0,
             "disp_last_signal_at": now_iso,
         }]
@@ -382,13 +382,13 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
 
     async def test_tagging_only_ever_drops_rows_never_resurrects_one(self):
         """``_tag_tier`` must be monotone against a bare ``_hard_filter``."""
-        # ⚠️ 这条钉的是**方向**。``disputation <= 0`` 那支一度写的是
-        # ``d.pop('score', None)``，理由是"回落到不按分过滤，与改动前一致"——
-        # 但改动前 _tag_tier 根本不碰这个键，所以"一致"要求的是不碰而不是删：
-        # 盘上带着陈旧 ``score: -5.0`` 的行原样会被 _hard_filter 丢掉，pop 之后
-        # 反而活了下来，与那句单调性注释正相反。
-        # 只断言 stale_neg 被丢是不够的（把 pop 换成任何别的写法都能过），
-        # 用集合包含关系直接编码"只减不增"。
+        # Warning: guard the **direction**. The ``disputation <= 0`` branch once used
+        # ``d.pop('score', None)`` to 'fall back to unscored filtering, consistent with previous behavior';
+        # but _tag_tier previously left this key untouched, so consistency requires leaving it, not deleting it:
+        # rows with stale ``score: -5.0`` would originally be dropped by _hard_filter, but pop
+        # resurrected them, contradicting the monotonicity comment.
+        # Merely asserting stale_neg is dropped is insufficient (any replacement for pop might pass);
+        # directly encode 'only remove, never add' through set containment.
         from memory.recall import MemoryRecallReranker
 
         def _rows():
@@ -410,11 +410,11 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
                 _tag_tier(_rows(), "reflection")
             )
         }
-        # 前提：裸过滤本来就丢 stale_neg（否则这条测不到任何东西）
+        # Precondition: the bare filter already drops stale_neg, or this test proves nothing.
         self.assertNotIn("stale_neg", baseline)
         self.assertLessEqual(tagged, baseline)
-        # 而"沉默"那类（rein 负、disp=0）必须仍然活着 —— 单调性不能靠一刀切
-        # 多杀来满足，那会把实测 17.8% 的活跃 reflection 一起抹掉。
+        # 'Silence' rows (negative rein, disp=0) must survive; monotonicity cannot be satisfied by indiscriminate
+        # extra filtering, which would also erase the observed 17.8% of active reflections.
         self.assertIn("silent", tagged)
 
     async def test_hard_filter_drops_suppressed(self):
@@ -451,19 +451,19 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["results"], [])
 
     async def test_small_pool_exact_match_clears_production_threshold(self):
-        """Regression for codex P1 on commit ef81ec41a: 之前 BM25 阈值定 1.0，
-        但 Okapi 公式在小 pool 下 IDF 系数本身就矮（单 doc IDF ≈ 0.288），
-        max score 也就 ~0.72 → 永远过不去 1.0 → 新用户 / 小语料下 BM25
-        兜底完全死掉。降到 0.1 后 single-doc exact match 能正常召回。
+        """Regression for codex P1 on commit ef81ec41a: the previous BM25 threshold was 1.0,
+        but Okapi IDF is inherently small for small pools (single-doc IDF ≈ 0.288),
+        with max score only ~0.72 → never passing 1.0 → BM25 fallback completely failed
+        for new users / small corpora. At 0.1, single-document exact matches can be recalled.
 
-        本测试**不 patch threshold**，用生产值（0.1）跑，验真实命中。
+        This test **does not patch the threshold**; use production 0.1 to verify real matches.
         """
-        # 单 fact，query 完全命中：阈值 0.1 必须 clear
+        # Single fact, exact query match: must clear threshold 0.1.
         facts = [{"id": "only_one", "text": "博士最喜欢的游戏是 The Witness",
                   "score": 1.0}]
         fact_store, reflection_engine = self._make_stores(facts, [])
         config_manager = MagicMock()
-        # 关掉 cosine（mock 成 unavailable），证 BM25-only 路径能出结果
+        # Disable cosine (mock unavailable) to prove the BM25-only path returns results.
         with patch("memory.hybrid_recall._cosine_rank", new=AsyncMock(return_value=[])):
             res = await __import__("memory.hybrid_recall", fromlist=["hybrid_recall"]).hybrid_recall(
                 lanlan_name="testcat",
@@ -477,28 +477,28 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
                       "single-doc exact match should clear production BM25 threshold 0.1")
 
     async def test_malformed_entries_dont_kill_whole_query(self):
-        """Regression for codex review on commit 47d0d191f: 单条 malformed
-        entry (text 是 list / score 是 string 等) 不该带挂整个 hybrid_recall
-        → 应只 skip 那一行，其余好的 entry 继续返回。
+        """Regression for codex review on commit 47d0d191f: one malformed
+        entry (list text / string score, etc.) must not break the entire hybrid_recall;
+        skip only that row and continue returning valid entries.
 
-        修在 ``MemoryRecallReranker._hard_filter`` 加 try/except per-entry。
+        Fixed with per-entry try/except in ``MemoryRecallReranker._hard_filter``.
         """
         facts = [
-            # 正常 entry
+            # Valid entry.
             {"id": "good_1", "text": "博士最喜欢的游戏是 The Witness", "score": 1.0},
-            # 坏 entry: text 是 list（manual edit / 老格式残留）
+            # Invalid entry: text is a list (manual edit / legacy format residue).
             {"id": "bad_text", "text": ["this", "is", "wrong"], "score": 1.0},
-            # 坏 entry: score 是 string（无法和 0 比较）
+            # Invalid entry: score is a string (cannot compare with 0).
             {"id": "bad_score", "text": "博士的游戏", "score": "high"},
-            # 正常 entry
+            # Valid entry.
             {"id": "good_2", "text": "博士最爱的游戏 The Witness", "score": 1.0},
         ]
-        # 不该抛任何异常，good_1 / good_2 都应该被召回
+        # Must not raise; recall both good_1 / good_2.
         res = await self._run("博士 游戏", facts, [])
         ids = [r["id"] for r in res["results"]]
         self.assertIn("good_1", ids)
         self.assertIn("good_2", ids)
-        # 坏 entry 自然不出现
+        # Invalid entries naturally stay absent.
         self.assertNotIn("bad_text", ids)
         self.assertNotIn("bad_score", ids)
 
@@ -506,8 +506,8 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         reflections = [
             {"id": "r1", "text": "博士对长尾敏感", "score": 1.0, "status": "confirmed"},
         ]
-        # Query 用 archive 不沾边的词，避免 setUp 里 facts_archive.json
-        # 那条"博士曾经养过一只猫"也被召回干扰断言。
+        # Query with words unrelated to the archive, preventing setUp's facts_archive.json
+        # entry '博士曾经养过一只猫' from being recalled and interfering with assertions.
         res = await self._run("长尾", [], reflections)
         ids_to_tier = {r["id"]: r["tier"] for r in res["results"]}
         self.assertIn("r1", ids_to_tier)
@@ -528,8 +528,8 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_time_window_filters_out_of_window_semantic_match(self):
-        """"语义 + 时间"联合检索：两条都语义命中 query，但只有事件落在
-        time_window 内的那条应被返回，窗口外的被硬过滤掉。"""
+        """Combined semantic + time retrieval: both entries match the query semantically, but only the event
+        within time_window should return; hard-filter the one outside."""
         from datetime import datetime
         facts = [
             {"id": "in_win", "text": "博士五月一号聊的旅行计划", "score": 1.0,
@@ -537,14 +537,14 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
             {"id": "out_win", "text": "博士三月聊的旅行计划", "score": 1.0,
              "event_start_at": "2026-03-15T10:00:00"},
         ]
-        window = (datetime(2026, 5, 1), datetime(2026, 6, 1))  # 五月整月
+        window = (datetime(2026, 5, 1), datetime(2026, 6, 1))  # Entire month of May.
         res = await self._run_windowed("旅行 计划", facts, [], window)
         ids = [r["id"] for r in res["results"]]
         self.assertIn("in_win", ids)
         self.assertNotIn("out_win", ids)
 
     async def test_time_window_falls_back_to_created_at(self):
-        """窗口过滤的锚点：缺 event_start_at 时退回 created_at。"""
+        """Window-filter anchor: fall back to created_at when event_start_at is missing."""
         from datetime import datetime
         facts = [
             {"id": "by_created", "text": "博士的旅行计划", "score": 1.0,
@@ -555,21 +555,21 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         self.assertIn("by_created", [r["id"] for r in res["results"]])
 
     async def test_time_window_anchor_prefers_event_end_over_created_at(self):
-        """锚点优先级 event_end_at → event_start_at → created_at：只有
-        event_end_at（无 start）的条目应按 end 入窗，不能拿写盘时间 created_at
-        误判。这里 event_end_at 在窗口内、created_at 在窗口外，必须命中。"""
+        """Anchor priority event_end_at → event_start_at → created_at: an entry with only
+        event_end_at (no start) must enter the window by end, not be misclassified by disk-write time created_at.
+        Here event_end_at is inside and created_at outside; it must match."""
         from datetime import datetime
         facts = [
             {"id": "end_only", "text": "博士的旅行计划", "score": 1.0,
-             "event_end_at": "2026-05-20T10:00:00",   # 在五月窗口内
-             "created_at": "2026-07-01T10:00:00"},      # 写盘时间在窗口外
+             "event_end_at": "2026-05-20T10:00:00",   # Inside the May window.
+             "created_at": "2026-07-01T10:00:00"},      # Disk-write time outside the window.
         ]
         window = (datetime(2026, 5, 1), datetime(2026, 6, 1))
         res = await self._run_windowed("旅行 计划", facts, [], window)
         self.assertIn("end_only", [r["id"] for r in res["results"]])
 
     async def test_time_window_drops_entry_without_parseable_time(self):
-        """无可解析时间戳的条目在时间检索下判为不在窗口内（宁漏不错挂）。"""
+        """Entries without parsable timestamps are outside the window in temporal retrieval (prefer misses over incorrect assignment)."""
         from datetime import datetime
         facts = [
             {"id": "no_time", "text": "博士的旅行计划", "score": 1.0},
@@ -580,8 +580,8 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
 
 
 class TestRecallByTime(unittest.IsolatedAsyncioTestCase):
-    """``recall_by_time`` —— 只给 time、按事件时间邻近返回最接近的若干条
-    fact + reflection。"""
+    """``recall_by_time``: given only time, return the nearest few facts + reflections
+    by event-time proximity."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -623,19 +623,19 @@ class TestRecallByTime(unittest.IsolatedAsyncioTestCase):
         ]
         res = await self._run("2026-05-01", facts, refl)
         ids = [r["id"] for r in res["results"]]
-        # 窗口内 r_in 最先；f_near（2 天后）次之；f_far（六月）最后。
+        # In-window r_in first; f_near (2 days later) second; f_far (June) last.
         self.assertEqual(ids[0], "r_in")
         self.assertIn("f_near", ids)
-        # denied 被 _hard_filter 丢掉。
+        # _hard_filter drops denied.
         self.assertNotIn("r_denied", ids)
-        # fact 和 reflection 都进了结果。
+        # Both fact and reflection appear in results.
         tiers = {r["tier"] for r in res["results"]}
         self.assertEqual(tiers, {"fact", "reflection"})
 
     async def test_right_boundary_event_ranks_behind_in_window(self):
-        """半开窗口右界：事件正好起于 win_end（如 time='2026-05-01' 时的
-        2026-05-02T00:00:00）虽 dist=0 也算窗口外，必须排在真窗口内条目之后
-        （Codex）。"""
+        """Half-open window right edge: an event starting exactly at win_end (e.g.
+        2026-05-02T00:00:00 for time='2026-05-01') is outside despite dist=0 and must rank
+        after entries actually within the window (Codex)."""
         facts = [
             {"id": "boundary", "text": "正好五月二号零点", "score": 1.0,
              "event_start_at": "2026-05-02T00:00:00"},
@@ -644,7 +644,7 @@ class TestRecallByTime(unittest.IsolatedAsyncioTestCase):
         ]
         res = await self._run("2026-05-01", facts, [])
         ids = [r["id"] for r in res["results"]]
-        # 窗口内的 in_may1 必须在右界 boundary 之前
+        # In-window in_may1 must precede right-edge boundary.
         self.assertLess(ids.index("in_may1"), ids.index("boundary"))
 
     async def test_unparseable_time_returns_empty(self):
@@ -703,12 +703,12 @@ class TestArchiveHalfCommitOverlap(unittest.IsolatedAsyncioTestCase):
 
         ids = [r["id"] for r in res["results"]]
         self.assertEqual(ids.count("dup"), 1, ids)
-        # 名额：两份 dup 会把 BM25 的 top-2 占满，solo 本该被召回却被挤掉。
+        # Capacity: two dup copies fill BM25 top-2, displacing solo that should have been recalled.
         self.assertIn("solo", ids, ids)
-        # 计分：RRF 对同一 id 的每次出现都累加 1/(k+rank)，重复行会拿双倍分。
+        # Scoring: RRF adds 1/(k+rank) for each occurrence of an id; duplicate rows get double scores.
         dup_score = next(r["score"] for r in res["results"] if r["id"] == "dup")
         self.assertAlmostEqual(dup_score, 1.0 / 61, places=6)
-        # 活跃副本胜出（它至少和归档副本一样新，monotonic 标记以它为准）。
+        # Active copy wins (at least as recent as archived copy; its monotonic marker is authoritative).
         self.assertEqual(
             next(r["tier"] for r in res["results"] if r["id"] == "dup"), "fact",
         )
@@ -754,8 +754,8 @@ class TestArchiveHalfCommitOverlap(unittest.IsolatedAsyncioTestCase):
         """Rows without a usable id share no key, so folding them would trade
         a duplicate for silent data loss."""
         from memory.hybrid_recall import _drop_archive_overlap
-        # 活跃侧同样可能有手改 / 老库留下的坏 id：把它们原样塞进集合会在
-        # list/dict 上抛 TypeError（unhashable），一条坏行带挂整次召回。
+        # Active data may also contain malformed ids from manual edits / old databases: putting them directly into sets
+        # raises TypeError on unhashable list/dict and lets one bad row break the whole recall.
         active = [
             {"id": "", "text": "空 id 的活跃行"},
             {"id": None, "text": "没有 id 的活跃行"},
@@ -774,7 +774,7 @@ class TestArchiveHalfCommitOverlap(unittest.IsolatedAsyncioTestCase):
         texts = [r["text"] for r in kept]
         self.assertEqual(len(kept), 3, texts)
         self.assertNotIn("真重叠", texts)
-        # id 为 0 是完全可用的键（`not fact_id` 会把它误判成没有 id）。
+        # id 0 is a valid key (`not fact_id` would incorrectly treat it as missing).
         self.assertNotIn("id 为 0 的 legacy 重叠行", texts)
 
 

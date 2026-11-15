@@ -30,8 +30,8 @@ class BaseMessage:
     content: Any
     type: str = ""
     additional_kwargs: dict[str, Any] = field(default_factory=dict)
-    # 只在 N.E.K.O 内部持久化和路由，发送给模型供应商时由 to_openai 主动剥离。
-    # 这样剧场来源等程序语义不用伪装成正文标签，也不会污染普通模型协议。
+    # Persist and route only inside N.E.K.O; to_openai explicitly strips this before sending to model providers.
+    # Program semantics such as theater provenance need not masquerade as body tags or pollute ordinary model protocols.
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -55,7 +55,7 @@ class AIMessage(BaseMessage):
 
 
 def message_metadata(message: Any) -> dict[str, Any]:
-    """读取内存消息、OpenAI 消息或落盘消息携带的内部元数据。"""  # noqa: DOCSTRING_CJK
+    """Read internal metadata from in-memory, OpenAI, or persisted messages."""  # noqa: DOCSTRING_CJK
 
     if isinstance(message, BaseMessage):
         return message.metadata if isinstance(message.metadata, dict) else {}
@@ -184,20 +184,20 @@ class LLMStreamChunk:
     # ``"tool_calls"`` / ``"content_filter"`` / None. ``"tool_calls"`` signals
     # the caller should run the tool then continue the conversation.
     finish_reason: str | None = None
-    # Thinking-mode 模型（DeepSeek-R 系 / Qwen / GLM thinking 等 OpenAI-compat
-    # 端点）在 ``delta`` 里单独流出的推理链文本。普通对话用不到，但 **多轮
-    # tool calling** 时这些 provider 要求把发起 tool_calls 那条 assistant 消息的
-    # ``reasoning_content`` 原样回填，否则下一轮报 400 "The `reasoning_content`
-    # in the thinking mode must be passed back to the API."。tool 循环靠累积此
-    # 字段把它写回 assistant 历史。
+    # Reasoning-chain text streamed separately in ``delta`` by thinking-mode models (DeepSeek-R / Qwen / GLM thinking and other
+    # OpenAI-compatible endpoints). Ordinary chat does not need it, but during **multi-round
+    # tool calling**, these providers require the assistant message initiating tool_calls to include
+    # ``reasoning_content`` unchanged, or the next round returns 400 "The `reasoning_content`
+    # in the thinking mode must be passed back to the API.". Tool loops accumulate this
+    # field and write it back into assistant history.
     reasoning_content: str | None = None
-    # ``OmniOfflineClient`` tool-loop sentinel：``_astream_*_with_tools`` 在
-    # 把当前 tool 轮（assistant tool_calls + tool result）inline 写进 history
-    # 后会 yield 一个 ``LLMStreamChunk(content="", tool_round_persisted=True)``。
-    # ``stream_text`` 看到就把 final-segment buffer 清掉，避免之后
-    # ``_conversation_history.append(AIMessage(content=...))`` 把 pre-tool
-    # 文本第二次写进 history（pre-tool 文本已经在 ``assistant.tool_calls.content``
-    # 里了）。
+    # ``OmniOfflineClient`` tool-loop sentinel: after ``_astream_*_with_tools`` writes
+    # the current tool round (assistant tool_calls + tool result) inline into history,
+    # it yields ``LLMStreamChunk(content="", tool_round_persisted=True)``.
+    # ``stream_text`` clears its final-segment buffer on receiving it, preventing a later
+    # ``_conversation_history.append(AIMessage(content=...))`` from writing pre-tool
+    # text into history twice (it already exists in ``assistant.tool_calls.content``).
+    #
     tool_round_persisted: bool = False
 
 @dataclass
@@ -232,7 +232,7 @@ def _normalize_messages(messages: Any) -> list[dict]:
     for msg in messages:
         if isinstance(msg, dict):
             if "role" in msg:
-                # metadata 仅供 N.E.K.O 内部持久化和路由，不属于供应商消息协议。
+                # metadata is only for internal N.E.K.O persistence/routing, outside provider message protocols.
                 out.append({key: value for key, value in msg.items() if key != "metadata"})
             elif "type" in msg and "data" in msg:
                 role = _TYPE_TO_ROLE.get(msg["type"], msg["type"])

@@ -46,25 +46,217 @@ import re
 from pathlib import Path
 
 import pytest
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP = ROOT / "static" / "i18n-i18next.js"
 LOCALES_DIR = ROOT / "static" / "locales"
 
-# 版本串的形状：日期前缀 + 说明这次递增为什么发生的 slug。历史上出现过
-# `2026-01-31-1` 这种纯序号后缀，也出现过带下划线的 `guide1_7-upstream-main-merge`，
-# 所以下划线和数字都放行，只把日期前缀钉死 —— 日期前缀是别处（例如
-# static/yui-guide-day1-systray-intro.test.cjs）用来做“不早于某次递增”比较的依据。
+# Version shape: date prefix + slug explaining increment. Historical
+# `2026-01-31-1` numeric suffixes and underscore-containing `guide1_7-upstream-main-merge`
+# require digits/underscores allowed; fix date prefix only, used elsewhere (e.g.
+# static/yui-guide-day1-systray-intro.test.cjs) for no-earlier-than-increment checks.
 LOCALE_VERSION_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-[a-z0-9][a-z0-9._-]*$")
 
-# 这里穷举的是 git 历史里所有出现过的 LOCALE_VERSION 取值（含只活在分支上的，
-# 比如 `2026-08-14-language-preference-superseded`）。作用有两个：挡住“递增”被写成
-# 一个早就发过的字符串，以及挡住 rebase/revert 把版本串带回旧值 —— 这两种情况下
-# 客户端的缓存键都不会变，新 key 依旧吃不到。
+# Enumerate every LOCALE_VERSION in Git history, including branch-only values
+# such as `2026-08-14-language-preference-superseded`. Prevent increments reusing
+# previously released values and rebase/revert restoring old ones: either leaves
+# client cache keys unchanged and new locale keys unavailable.
 #
-# 递增 LOCALE_VERSION 时，把旧值追加到这里。
+# When incrementing LOCALE_VERSION, append old value here.
 RETIRED_LOCALE_VERSIONS = frozenset(
     {
+        "2026-11-15-nekoclaw-browser-deepseek-tts-merge",
+        "2026-11-15-custom-tts-voice-fallback-hint",
+        "2026-11-14-nekoclaw-browser-theater-market-merge",
+        "2026-11-14-deepseek-tts-voice-placeholder",
+        "2026-11-13-nekoclaw-browser-not-found",
+        "2026-11-14-theater-handoff-nekoclaw-merge",
+        "2026-11-13-theater-safe-delivery",
+        "2026-11-14-theater-handoff-feedback",
+        "2026-11-14-theater-nekoclaw-main-merge",
+        "2026-11-12-nekoclaw-task-hud-statuses",
+        "2026-11-13-theater-invite-card",
+        "2026-11-13-theater-main-merge",
+        "2026-11-11-theater-sync-evidence-merge",
+        "2026-11-11-atlascloud-assist-provider-main-merge",
+        "2026-11-03-theater-market-community-invite-merge",
+        "2026-11-11-sync-evidence-notices",
+        "2026-11-03-theater-market-news-overseas-merge",
+        "2026-11-03-theater-market-systray-labels-merge",
+        "2026-11-03-news-overseas-systray-labels-main-merge",
+        "2026-11-03-theater-market-chat-sync-merge",
+        "2026-11-11-air-basketball-main-merge",
+        "2026-11-02-atlascloud-assist-provider-main-merge",
+        "2026-11-10-air-basketball-shared-court",
+        "2026-11-10-cat-visit-sync-main-merge",
+        "2026-11-09-sync-recent-file-unreadable",
+        "2026-11-05-cat-visit-exit-confirmation",
+        "2026-11-05-cat-visit-opper-main-merge",
+        "2026-11-09-sync-recent-write-unconfirmed",
+        "2026-11-08-sync-main-merge-habitual-phrases",
+        "2026-11-05-sync-main-merge-pinned-facts",
+        "2026-11-08-habitual-phrase-panel-main-merge",
+        "2026-11-03-sync-memory-waiting",
+        "2026-11-03-sync-invitation-main-merge",
+        "2026-11-03-sync-capacity-feedback",
+        "2026-11-03-sync-cache-main-merge",
+        "2026-11-03-sync-recovery-memory-merge",
+        "2026-11-03-news-overseas-systray-labels-main-merge",
+        "2026-11-03-sync-model-main-merge",
+        "2026-10-30-sync-model-main-merge",
+        "2026-10-29-sync-review-main-merge",
+        "2026-10-23-media-memory-sync",
+        "2026-11-08-habitual-phrase-panel",
+        "2026-11-07-connectivity-output-limit",
+        "2026-11-06-chat-clear-screen",
+        "2026-11-05-opper-assist-provider-main-merge",
+        "2026-11-04-visit-invitation-capacity",
+        "2026-11-04-cat-visit-invitation-capacity-main-merge",
+        "2026-11-03-cat-visit-invitation-capacity-main-merge",
+        "2026-11-03-cat-visit-overseas-news-main-merge",
+        "2026-11-03-cat-visit-main-merge",
+        "2026-10-22-pr3353-opper-assist-provider-main-rebase",
+        "2026-11-03-sync-archive-subject-recovery",
+        "2026-11-03-news-overseas-chat-sync-main-merge",
+        "2026-11-03-systray-intro-es-pt-labels",
+        "2026-11-03-theater-market-model-shake-merge",
+        "2026-10-28-theater-entry-social-realtime-merge",
+        "2026-10-28-theater-entry-nekoverse-merge",
+        "2026-10-28-theater-entry-social-hub-merge",
+        "2026-10-27-theater-entry-watch-together-merge",
+        "2026-10-27-theater-entry-visit-hub-merge",
+        "2026-10-27-theater-entry-stories",
+        "2026-10-27-theater-market-feedback-merge",
+        "2026-10-27-theater-market-main-merge",
+        "2026-10-26-theater-market-main-sync",
+        "2026-10-26-theater-review-fixes",
+        "2026-11-03-news-overseas-chat-sync-main-merge",
+        "2026-11-02-model-click-shake",
+        "2026-10-30-news-overseas-trends-steam",
+        "2026-10-30-edge-peek-first-notice",
+        "2026-11-03-news-overseas-sources-main-merge",
+        "2026-11-03-chat-sync-residue-main-merge",
+        "2026-10-30-news-source-tooltip",
+        "2026-10-30-chat-sync-residue-main-merge",
+        "2026-10-30-chat-sync-recovery-cloud-copies-kept",
+        "2026-10-30-chat-sync-profile-upload-key",
+        "2026-10-30-chat-sync-retired-keys",
+        "2026-10-28-cat-visit-mode-mismatch",
+        "2026-10-29-visit-invitation-input",
+        "2026-10-30-voice-processing-host",
+        "2026-10-30-voice-repair-recovery",
+        "2026-10-30-local-audio-copy",
+        "2026-10-28-pr3507-resource-setup-main-sync",
+        "2026-10-28-social-hub-realtime-main-merge",
+        "2026-10-28-cat-visits",
+        "2026-10-28-hide-nekoverse-entry",
+        "2026-10-28-voice-resource-setup-ci-fix",
+        "2026-10-27-voice-input-setup-main-rebase",
+        "2026-10-28-voice-input-setup-main-rebase",
+        "2026-10-28-voice-resource-feedback",
+        "2026-10-28-voice-resource-complete",
+        "2026-10-28-voice-resource-result",
+        "2026-10-28-voice-resource-repair",
+        "2026-10-28-voice-resource-repair-errors",
+        "2026-10-28-microphone-short-trial",
+        "2026-10-28-pr3507-ci-main-sync",
+        "2026-10-28-social-hub-recommendation-dismiss",
+        "2026-10-28-social-hub-recommendations",
+        "2026-10-28-social-hub-empty-states",
+        "2026-10-28-pr3507-main-rebase",
+        "2026-10-27-pr3507-conflict-rebase",
+        "2026-10-27-watch-together-stop-notice",
+        "2026-10-27-watch-together-redesign",
+        "2026-10-27-visit-social-hub-feedback-information",
+        "2026-10-27-visit-social-hub",
+        "2026-10-27-voice-input-setup",
+        "2026-10-27-pr3507-main-rebase",
+        "2026-10-27-feedback-information",
+        "2026-10-27-feedback-entry-hidden",
+        "2026-10-27-feedback-disclosure",
+        "2026-10-27-feedback-account-entry-main-rebase",
+        "2026-10-26-feedback-coming-soon",
+        "2026-10-26-feedback-upload-entry",
+        "2026-10-26-voice-identity-guide-sections",
+        "2026-10-25-pr3496-memory-sync-merge",
+        "2026-10-25-pr3496-main-merge",
+        "2026-10-25-recent-memory-sync-main-merge",
+        "2026-10-22-recent-memory-sync",
+        "2026-10-23-pr3482-feedback-devices",
+        "2026-10-22-memory-browser-local-only",
+        "2026-10-20-pr3353-opper-assist-provider-main-rebase",
+        "2026-10-11-pr3353-opper-assist-provider-main-rebase",
+        "2026-10-09-opper-assist-provider",
+        "2026-10-22-pr3477-visit-main-merge",
+        "2026-10-22-pr3467-rebase-main",
+        "2026-10-21-pr3467-music-countdown",
+        "2026-10-19-screen-observation-card",
+        "2026-10-21-visit-v1-initial",
+        "2026-10-21-pr3467-invite-options-label",
+        "2026-10-21-pr3467-recommendation-card-main-merge",
+        "2026-10-21-pr3461-import-chooser-main-merge",
+        "2026-10-21-pr3462-cat-settings-main-merge",
+        "2026-10-19-pr-import-note-molili-zip",
+        "2026-10-20-all-chat-text",
+        "2026-10-19-cat-settings-panel",
+        "2026-10-18-pr3447-partial-day-notes",
+        "2026-10-18-pr3447-owned-items",
+        "2026-10-18-pr3447-name-length",
+        "2026-10-18-pr3447-resume-import",
+        "2026-10-18-pr3447-main-merge",
+        "2026-10-17-pr3447-molili-reentry-guard",
+        "2026-10-17-chat-sync-main-merge-2",
+        "2026-10-17-pr3447-molili-import",
+        "2026-10-17-pr3447-molili-chats-note",
+        "2026-10-17-pr3447-molili-origin-badge",
+        "2026-10-18-pr-molili-import-type-chooser",
+        "2026-10-19-pr-import-note-molili",
+        "2026-10-17-pr3441-main-rebase",
+        "2026-10-16-voice-activation-feedback",
+        "2026-10-17-chat-sync-quota-split-oversized",
+        "2026-10-17-chat-sync-quota-split",
+        "2026-10-17-chat-sync-oversized-local-only",
+        "2026-10-17-chat-sync-main-merge",
+        "2026-10-16-chat-sync-cloud-delete-confirm",
+        "2026-10-15-passive-turn-context",
+        "2026-10-16-chat-sync-character-quota",
+        "2026-10-13-visit-pr12-main-merge-pr3415",
+        "2026-10-13-visit-pr12-main-merge-day1-systray",
+        "2026-10-13-pr3415-screen-source-main-merge-2",
+        "2026-10-13-visit-pr12-input-source-refusal",
+        "2026-10-13-day1-platform-systray-main-merge",
+        "2026-10-13-visit-pr12-main-merge-pr3403",
+        "2026-10-13-visit-pr12-review-round1",
+        "2026-10-13-visit-frame-badges-main-merge-5",
+        "2026-10-13-visit-pr12-chat-consent-main-merge",
+        "2026-10-12-visit-pr12-chat-consent",
+        "2026-10-13-day1-platform-systray",
+        "2026-10-13-pr3415-screen-source-main-merge",
+        "2026-10-13-pr3415-screen-source-closed",
+        "2026-10-12-pr3140-gravity-main-merge",
+        "2026-10-12-visit-frame-badges-main-merge-4",
+        "2026-10-12-visit-frame-badges-main-merge-3",
+        "2026-10-12-gravity-cat-settings",
+        "2026-10-12-pr14a-debrief-pr3398-merge",
+        "2026-10-12-visit-frame-badges-main-merge-2",
+        "2026-10-12-pr3398-main-merge",
+        "2026-10-12-visit-frame-badges-merge",
+        "2026-10-12-pr14a-debrief-ambiguous-names-merge",
+        "2026-10-12-pr14a-debrief-main-merge",
+        "2026-10-12-visit-ambiguous-names-pr13-pr15-merge",
+        "2026-10-11-vrm-emotion-recovery",
+        "2026-10-11-vrm-emotion-load-state-main-rebase",
+        "2026-10-11-pr3385-cloudsave-visit-data-busy",
+        "2026-10-11-vrm-emotion-load-state",
+        "2026-10-11-visit-data-ambiguous-names",
+        "2026-10-11-visit-pr13-pr15-report-queued-login",
+        "2026-10-11-visit-data-ambiguous",
+        "2026-10-11-visit-data-busy-rename-text",
+        "2026-10-11-pr14a-visit-debrief",
+        "2026-10-11-visit-pr13-pr15-settings-memory-panel",
+        "2026-10-11-visit-pr13-pr15-forget-record-discard",
+        "2026-10-12-visit-frame-badges",
         "2026-10-11-pngtuber-skipped-bound-memory-toggle-main-merge",
         "2026-10-10-pngtuber-delete-skipped-bound",
         "2026-10-09-memory-toggle-repair",
@@ -133,7 +325,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-theater-air-basketball-main-merge",
 
         "2026-10-04-voice-readiness-review-main-merge",
-        "2026-10-04-external-route-registry-main-merge-round4",
         "2026-10-03-voice-readiness-model-picker-merge",
         "2026-10-04-storage-requesty-main-merge",
         "2026-10-03-voice-readiness-recovery",
@@ -142,21 +333,16 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-voice-readiness",
         "2026-10-03-storage-rollback-errors",
         "2026-10-04-external-route-registry-main-merge-round3",
-        "2026-10-04-storage-requesty-main-merge",
         "2026-10-01-theater-ordinary-chat-unavailable",
         "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-theater-screen-share-avatar-tools-main-merge",
         "2026-09-30-theater-suggestion-fill-copy",
         "2026-09-30-avatar-tool-pending-recovery-social-login-merge",
         "2026-09-30-theater-avatar-tools-main-merge",
-        "2026-10-03-storage-rollback-errors",
-        "2026-10-04-external-route-registry-main-merge-round3",
         "2026-10-03-external-route-registry-main-merge-round2",
         "2026-10-03-requesty-model-picker-main-merge",
         "2026-10-03-external-route-registry-main-merge",
-        "2026-10-03-model-picker-main-merge-round5",
         "2026-10-02-external-route-registry",
-        "2026-10-03-storage-rollback-errors",
         "2026-10-03-assist-key-tutorial-clarified",
         "2026-10-03-requesty-key-tutorial",
         "2026-10-03-requesty-main-merge",
@@ -167,7 +353,6 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-10-03-model-picker-url-hint",
         "2026-10-03-assist-model-picker",
         "2026-10-03-requesty-air-basketball-main-merge",
-        "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-click-guide-review-main-merge",
         "2026-09-28-click-guide-review",
         "2026-09-28-click-guide-main-merge",
@@ -378,27 +563,24 @@ RETIRED_LOCALE_VERSIONS = frozenset(
         "2026-09-30-social-login-prompt-voice-identity-merge",
         "2026-09-30-theater-social-settings-main-merge",
         "2026-09-29-click-guide-screen-source-merge",
-        "2026-09-30-avatar-tool-pending-recovery-social-login-merge",
         "2026-09-27-air-basketball-main-merge",
         "2026-10-02-air-basketball-main-merge",
         "2026-10-03-air-basketball-review-fixes",
         "2026-10-03-air-basketball-review-round2",
-        "2026-10-01-click-guide-memory-reactivation",
         "2026-10-01-theater-click-guide-memory-reactivation",
-        "2026-10-03-air-basketball-review-round3",
     }
 )
 
-# 当前 8 个语言包的 key 结构指纹（只覆盖 key 路径，不覆盖译文本身）。
+# Current eight locale key-structure fingerprints (key paths only, excluding translation values).
 #
-# 为什么只按 key 而不按整文件内容：缓存陈旧时，改字面量的后果是用户多看几天旧措辞，
-# 而新增/改名 key 的后果是把 key 本身当文案渲染出来。只对后者敏感，等于把这条守卫的
-# 红灯精准打在真正需要递增版本的那类改动上，同时让纯润色文案的 PR 不必来动它 ——
-# 一条每个 PR 都要顺手改一下的守卫，很快就会被当成噪音机械地改绿。
+# Why keys, not whole-file content: stale literal edits show old wording for days,
+# while new/renamed keys render raw keys. Sensitivity only to latter targets
+# genuinely version-requiring changes without burdening wording-only PRs;
+# a guard requiring edits every PR soon becomes noise mechanically made green.
 #
-# 数组也按下标展开，所以往 badminton.lines.* 这类台词数组里追加一条同样会打红：
-# 陈旧缓存下那一条会取到 undefined，症状和缺 key 是一类。
-LOCALE_KEY_SIGNATURE = 'dd2a633000e38d0dc53b1db73e69b9baf601ca54f18d0459b11182f00bb32250'
+# Arrays expand by index too, so appending badminton.lines.* dialogue also fails:
+# stale caches yield undefined, equivalent to missing keys.
+LOCALE_KEY_SIGNATURE = "b693d242a7b686710faa8f614770c916fcccf3d033bc69fee33168b8c4d2db34"
 
 _BUMP_INSTRUCTIONS = (
     "static/locales 的 key 结构变了。请在 static/i18n-i18next.js 里把 LOCALE_VERSION "
@@ -427,7 +609,7 @@ def _supported_languages(bootstrap: str) -> tuple[str, ...]:
 
 
 def _key_paths(node: object, prefix: str = "") -> list[str]:
-    # 叶子按点分路径展开，数组按 [i] 下标展开，得到一个与译文无关的纯结构视图。
+    # Expand leaves as dotted paths, arrays as [i], yielding pure structure independent of translations.
     if isinstance(node, dict):
         collected: list[str] = []
         for key, value in node.items():
@@ -442,8 +624,8 @@ def _key_paths(node: object, prefix: str = "") -> list[str]:
 
 
 def _locale_key_signature(languages: tuple[str, ...]) -> str:
-    # 指纹覆盖的是 SUPPORTED_LANGUAGES 声明的那一组语言，而不是目录里躺着的所有 json：
-    # 引导脚本只会去拉这一组，所以新增一门语言同样必须递增版本才能被老客户端看见。
+    # Fingerprints cover SUPPORTED_LANGUAGES, not every JSON in directory:
+    # bootstrap loads only that set, so adding a language also requires version increment for existing clients.
     digest = hashlib.sha256()
     for language in sorted(languages):
         path = LOCALES_DIR / f"{language}.json"
@@ -476,9 +658,9 @@ def test_locale_version_is_not_a_value_that_already_shipped() -> None:
 
 
 def test_every_locale_load_site_carries_the_cache_bust_query() -> None:
-    # 两个装载点（手动 fetch 与 i18next backend 的 loadPath）必须都带 ?v=。断言写成
-    # “扫出所有 /static/locales/ 引用再逐个查”，而不是分别断言两条已知字符串：后者对
-    # “又加了第三个装载点、忘了带 ?v=”是瞎的，而那正是最容易发生的漏法。
+    # Both loaders (manual fetch and i18next backend loadPath) need ?v=. Scan every
+    # /static/locales/ reference then check individually, rather than assert two known strings;
+    # the latter misses a third loader forgetting ?v=, the most likely omission.
     bootstrap = _read_bootstrap()
     references = re.findall(r"/static/locales/[^\s'\"`]*", bootstrap)
     assert len(references) >= 2, (
@@ -497,12 +679,32 @@ def test_locale_key_signature_pins_the_shipped_key_set() -> None:
     assert signature == LOCALE_KEY_SIGNATURE, _BUMP_INSTRUCTIONS
 
 
+@pytest.mark.parametrize("template_name", ["model_manager.html", "vrm_emotion_manager.html"])
+def test_vrm_pages_refresh_the_locale_bootstrap_with_static_assets(template_name: str) -> None:
+    from config import DEFAULT_VRM_LIGHTING
+
+    template = Environment().from_string(
+        (ROOT / "templates" / template_name).read_text(encoding="utf-8")
+    )
+    urls = []
+    for version in ("before-locale-update", "after-locale-update"):
+        rendered = template.render(
+            static_asset_version=version,
+            vrm_defaults=dict(DEFAULT_VRM_LIGHTING),
+        )
+        scripts = re.findall(r'<script\b[^>]*\bsrc="([^"]+)"', rendered)
+        bootstrap_urls = [url for url in scripts if url.startswith("/static/i18n-i18next.js")]
+        assert bootstrap_urls == [f"/static/i18n-i18next.js?v={version}"]
+        urls.extend(bootstrap_urls)
+    assert urls[0] != urls[1], "a locale bootstrap update must change its browser cache key"
+
+
 def test_bump_instructions_name_every_step_of_the_fix() -> None:
-    # 上一条用例的红灯文案是这条守卫唯一的“教学面”—— 它是把作者从指纹失配引到递增
-    # 版本的那根线。文案里漏掉任何一步，守卫就退化成“改个指纹就绿”。
+    # Previous test's failure message is this guard's sole instructional surface, guiding authors from mismatched
+    # fingerprints to incrementing version. Missing any step reduces it to change-fingerprint-to-pass.
     #
-    # 同时把“文案确实接在那条断言上”一并钉住：只查字符串内容、不查调用点的话，
-    # 别人把指纹用例的 message 换成一句就地写的短提示，这条依旧是绿的。
+    # Also assert message actually attaches to that assertion: content-only checks would still pass
+    # if someone replaced the fingerprint failure message with a short inline hint.
     signature_test_source = inspect.getsource(
         test_locale_key_signature_pins_the_shipped_key_set
     )

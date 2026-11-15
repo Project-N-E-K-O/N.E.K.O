@@ -6,7 +6,7 @@ nothing intervened to break the fingerprint chain at index 0, the
 ``_compute_review_capacity`` walk matched all the way through the head
 SystemMessage (snapshot[0] == current[0] for the same memo), so the
 replacement window covered the memo slot. The review LLM is told (via
-``<要点3>``) to keep the memo, returns it in ``corrected_dialogue`` with
+``<key point 3>``) to preserve the memo, returning it in ``corrected_dialogue`` with
 role ``SYSTEM_MESSAGE``, but the patching loop dropped any system role
 unconditionally — leaving the memo slot empty in ``new_history`` and the
 on-disk recent file ended up with no memo.
@@ -156,7 +156,7 @@ def test_memo_preserved_when_snapshot_has_head_system_and_llm_returns_it(tmp_pat
 
 
 def test_memo_restored_when_llm_hallucinates_delete(tmp_path):
-    """Scenario D defensive: LLM ignores <要点3> and omits the system
+    """Scenario D defensive case: LLM ignores <key point 3> and omits the system
     entry from corrected_dialogue. Expect: snapshot[0] memo is restored
     (don't allow LLM to silently drop the memo)."""
     memo = "先前对话的备忘录: keep me."
@@ -190,12 +190,12 @@ def test_memo_restored_when_llm_hallucinates_delete(tmp_path):
 
 
 def test_empty_llm_output_falls_through_to_white_review(tmp_path):
-    """LLM 返回空 corrected_dialogue 是"整段都删"的语义信号，原设计
-    在 take_count == 0 处按 white review 处理（不写盘、不更新 fingerprint）。
+    """An empty corrected_dialogue from the LLM signals \"delete the entire section\"; the original design
+    handled this as a white review when take_count == 0 (no disk write and no fingerprint update).
 
-    Regression：normalize 兜底必须在 corrected_messages 非空时才介入，
-    否则会把空列表强行补成 [snapshot[0]]，绕过白 review 闸门把对话区
-    擦掉只剩 memo（CodeRabbit Critical）。
+    Regression: the normalization fallback must intervene only when corrected_messages is non-empty,
+    otherwise an empty list would be forcibly replaced with [snapshot[0]], bypassing the white-review gate and erasing the conversation pane
+    so only the memo remains (CodeRabbit Critical).
     """
     memo = "先前对话的备忘录: original."
     snapshot = [
@@ -206,23 +206,23 @@ def test_empty_llm_output_falls_through_to_white_review(tmp_path):
         AIMessage(content="ai 2"),
     ]
     on_disk_before = list(snapshot)
-    fake_llm = _FakeLLM([])  # LLM 返回空
+    fake_llm = _FakeLLM([])  # LLM returns empty
     mgr, name, _master = _make_manager(tmp_path, on_disk_before, fake_llm)
 
     status, fp = _run(mgr.review_history(name, snapshot=list(snapshot)))
 
     assert status == "white", f"空 corrected → 应走 white review，实际 {status}"
     assert fp is None
-    # 磁盘内容不动
+    # Disk contents remain untouched
     final = _read_disk(mgr.log_file_path[name])
     assert len(final) == len(on_disk_before)
     assert isinstance(final[0], SystemMessage) and final[0].content == memo
 
 
 def test_pre_compression_drops_hallucinated_system(tmp_path):
-    """history 还没压缩过（snapshot[0] 不是 SystemMessage），LLM 幻觉吐
-    system 行：必须 drop，恢复老 filter 行为。否则 normalize 块不触发，
-    伪 memo 会被注入未压缩对话区污染下游（Codex P2）。"""
+    """History has not been compacted yet (snapshot[0] is not a SystemMessage), but the LLM hallucinated
+    a system line: it must be dropped and the old filter behavior restored. Otherwise normalization does not run,
+    and the fake memo is injected into the uncompacted conversation and contaminates downstream context (Codex P2)."""
     snapshot = [
         HumanMessage(content="hi 1"),
         AIMessage(content="ai 1"),
@@ -234,7 +234,7 @@ def test_pre_compression_drops_hallucinated_system(tmp_path):
     corrected = [
         {"role": "Master", "content": "hi 1"},
         {"role": "Xiaoba", "content": "ai 1"},
-        {"role": "SYSTEM_MESSAGE", "content": "fake hallucinated memo"},  # 幻觉
+        {"role": "SYSTEM_MESSAGE", "content": "fake hallucinated memo"},  # Hallucination
         {"role": "Master", "content": "hi 2"},
         {"role": "Xiaoba", "content": "ai 2"},
         {"role": "Master", "content": "hi 3"},
@@ -247,17 +247,17 @@ def test_pre_compression_drops_hallucinated_system(tmp_path):
 
     assert status == "patched"
     final = _read_disk(mgr.log_file_path[name])
-    # 不能有任何 SystemMessage（snapshot 没有 → result 也不该有）
+    # No SystemMessage may appear anywhere (snapshot has none, so result must not either)
     assert not any(isinstance(m, SystemMessage) for m in final), \
         f"幻觉 system 必须被 drop，实际 final={[type(m).__name__ for m in final]}"
 
 
 def test_only_system_no_dialogue_falls_through_to_white_review(tmp_path):
-    """LLM 只返 system 没返任何对话 ≡ 返空列表（语义上"整段对话都删"），
-    应走白 review。
+    """If the LLM returns only a system message and no conversation ≡ an empty list (semantically, \"delete the whole conversation\"),
+    use white review.
 
-    Regression：normalize 不能把这种坏输出"修正"成 [SystemMessage]，否则
-    长度=1 绕过 take_count==0 白 review 闸门，对话区被擦光只剩 memo
+    Regression: normalization must not \"repair\" this bad output into [SystemMessage], or
+    length=1 would bypass the take_count==0 white-review gate, wiping the conversation pane and leaving only the memo
     （Codex P1）。
     """
     memo = "先前对话的备忘录: original."
@@ -278,11 +278,11 @@ def test_only_system_no_dialogue_falls_through_to_white_review(tmp_path):
 
     assert status == "white", f"只返 system → 应走 white review，实际 {status}"
     assert fp is None
-    # 磁盘原样不动
+    # Disk remains unchanged
     final = _read_disk(mgr.log_file_path[name])
     assert len(final) == len(on_disk_before)
     assert isinstance(final[0], SystemMessage) and final[0].content == memo
-    # 对话区原封不动
+    # Conversation pane remains unchanged
     assert [type(m).__name__ for m in final[1:]] == ["HumanMessage", "AIMessage", "HumanMessage", "AIMessage"]
 
 
@@ -302,7 +302,7 @@ def test_memo_promoted_when_llm_misplaces_it_in_middle(tmp_path):
     ]
     corrected = [
         {"role": "Master", "content": "hi 1"},
-        {"role": "SYSTEM_MESSAGE", "content": misplaced_memo},  # 错位
+        {"role": "SYSTEM_MESSAGE", "content": misplaced_memo},  # Misaligned
         {"role": "Master", "content": "hi 2"},
         {"role": "Xiaoba", "content": "ai 1"},
         {"role": "Xiaoba", "content": "ai 2"},
@@ -318,12 +318,12 @@ def test_memo_promoted_when_llm_misplaces_it_in_middle(tmp_path):
     final = _read_disk(mgr.log_file_path[name])
     assert isinstance(final[0], SystemMessage), "memo 必须在头部"
     assert final[0].content == misplaced_memo, "用 LLM 给的（首条 system）"
-    # 其余位置不能再有 SystemMessage
+    # No SystemMessage may appear at any other position
     assert not any(isinstance(m, SystemMessage) for m in final[1:])
 
 
 def test_memo_dedup_when_llm_returns_multiple_systems(tmp_path):
-    """LLM 多吐几条 SystemMessage。Expect: 只留首条作为头部 memo。"""
+    """LLM returns several SystemMessages. Expect: keep only the first as the leading memo."""
     memo = "先前对话的备忘录: 原文。"
     snapshot = [
         SystemMessage(content=memo),
@@ -337,7 +337,7 @@ def test_memo_dedup_when_llm_returns_multiple_systems(tmp_path):
     corrected = [
         {"role": "SYSTEM_MESSAGE", "content": "memo v1"},
         {"role": "Master", "content": "hi 1"},
-        {"role": "SYSTEM_MESSAGE", "content": "memo v2 (bogus)"},  # 多吐
+        {"role": "SYSTEM_MESSAGE", "content": "memo v2 (bogus)"},  # Extra output
         {"role": "Master", "content": "hi 2"},
         {"role": "Xiaoba", "content": "ai 1"},
         {"role": "Xiaoba", "content": "ai 2"},
@@ -369,7 +369,7 @@ def test_memo_preserved_with_concurrent_append(tmp_path):
         HumanMessage(content="hi 2"),
         AIMessage(content="ai 2"),
     ]
-    # 模拟 review LLM 跑期间用户发了一条新消息，落到 disk 上
+    # Simulate a new user message being written to disk while the review LLM is running
     appended = HumanMessage(content="brand new")
     current_on_disk = list(snapshot) + [appended]
     fake_llm = _FakeLLM([

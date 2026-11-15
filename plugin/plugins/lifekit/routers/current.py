@@ -1,4 +1,4 @@
-"""当前天气 + 每日预报 router。"""
+"""Current weather and daily forecast router."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from .._location_entry import (
 
 
 class CurrentWeatherRouter(PluginRouter):
-    """get_weather entry：当前天气 + 未来多日预报。"""
+    """get_weather entry: current weather and the forecast for the coming days."""
 
     def __init__(self):
         super().__init__(name="current_weather")
@@ -90,7 +90,7 @@ class CurrentWeatherRouter(PluginRouter):
         if timezone_mismatch:
             summary += i18n.t("summary.timezone_mismatch")
 
-        # 推送天气卡片到聊天框（直接显示，不经过 LLM）
+        # Push the weather card directly to chat without passing it through the LLM.
         forecast_lines = []
         for f in forecast[:3]:
             forecast_lines.append(f"{f['date']}  {f['weather']}  {f.get('temp_min', '')}~{f.get('temp_max', '')}°C")

@@ -198,56 +198,56 @@ def resolve_group_config(session: Session, group: GroupKey) -> ModelGroupConfig:
     return cfg
 
 
-# ── Lanlan 免费端防滥用绕行 ──────────────────────────────────────────
+# -- Lanlan free-endpoint anti-abuse detour --
 #
-# 背景
-#   主程序 NEKO 访问免费版文本 API 时, lanlan 服务端只对\"看起来是 Lanlan
-#   客户端\"的请求放行 (主站是 WS, 文本侧走 openai SDK, 服务端识别手段未公
-#   开, 推测基于 TLS 指纹 / 主程序特有请求形态). 从 testbench 这种独立
-#   HTTP 客户端直连, 命中 `www.lanlan.tech` / `lanlan.tech` / `www.lanlan.app`
-#   任意一个都会被 400 拦住:
+# Background.
+# NEKO's free text API accepts only requests resembling Lanlan clients;
+# main voice uses WebSockets, text uses OpenAI SDK. Server identification was unpublished,
+# presumed TLS fingerprints / main-program-specific request shapes. Standalone testbench HTTP
+# clients contacting www.lanlan.tech / lanlan.tech / www.lanlan.app
+# all received 400.
 #       {"error": "Invalid request: you are not using Lanlan. STOP ABUSE THE API."}
-#   2026-04 实测结果 (详见 docs/AGENT_NOTES.md #12): 只有**老域名无 www 前
-#   缀**的 `https://lanlan.app/text/v1` 未启用该校验, 返回正常的 OpenAI
-#   兼容 completion 数据. 主程序 `utils.config_manager._adjust_free_api_url`
-#   只把 `lanlan.tech → lanlan.app`, 不动 `www.` 前缀, 所以主程序靠 GeoIP
-#   路由能得到 `www.lanlan.app` / `lanlan.tech` 两种形态, 但它**本身已经**
-#   通过特殊途径绕过校验; testbench 没有那个特殊途径, 只能挑一个开放的.
+# April 2026 testing (docs/AGENT_NOTES.md #12) found only the old non-www
+# https://lanlan.app/text/v1 domain lacked validation and returned ordinary OpenAI-compatible
+# completions. Main utils.config_manager._adjust_free_api_url rewrote
+# lanlan.tech -> lanlan.app without changing www., so GeoIP routing yielded
+# www.lanlan.app or lanlan.tech; main already had a special validation bypass,
+# but testbench lacked it and had to choose an open endpoint.
 #
-# 策略
-#   在 testbench 这一侧, 当 ``cfg.base_url`` 命中任意一个被拦截的 lanlan 免
-#   费域时, 统一重写为 `https://lanlan.app/text/v1` 再交给下游 openai SDK.
-#   这是**纯测试生态补丁**, 不写回 session.model_config (summary 页面展示
-#   的仍是用户/预设原始 URL, 避免视觉欺骗), 也不动 `config/api_providers
-#   .json` (那是主程序财产, 按规则不能动). 后续若 lanlan 服务端把老域名
-#   也关掉, 只需在这里更新 _FREE_API_FALLBACK 常量, 业务代码零感知.
+# Strategy.
+# In testbench only, rewrite cfg.base_url matching blocked Lanlan free domains
+# to https://lanlan.app/text/v1 before passing to the OpenAI SDK.
+# This test-only patch never writes session.model_config; summaries still show
+# the user's original/preset URL transparently. It also leaves config/api_providers
+# .json untouched as main-program-owned configuration. If the old domain closes too,
+# update _FREE_API_FALLBACK here without changing business code.
 #
-# 2026-06-19 复检 (docs/UPSTREAM_SYNC_2026-06.md): 实测 `www.lanlan.tech`、旁路目标
-#   `lanlan.app` 以及相关人员建议的 `www.lanlan.app` **三个域名的 /text/v1/chat/
-#   completions 现在都返回 "STOP ABUSE THE API"** (curl 与 openai SDK 两种客户端结
-#   果一致) —— lanlan 服务端已把老域名口子关掉 (上面预警的情况已发生)。
-#   注意: 代码里 `www.lanlan.app` 实际是主程序**海外免费语音/TTS/realtime (Gemini
-#   代理) 端点** (见 main_logic/omni_realtime_client.py、tts_client/workers/step.py、
-#   wss://www.lanlan.app/tts), 并非文字补全服务; 免费文字端唯一配置是 config/
-#   api_providers.json 的 `https://www.lanlan.tech/text/v1`。换 `www.lanlan.app`
-#   救不了 testbench 的文字链路。
-#   testbench 用的是与主程序完全相同的 ChatOpenAI + SSL context + free-access key 仍
-#   被拦, 说明校验不依赖 TLS 指纹, 而依赖 testbench 无法复制的特征 (最可能是: 免费文
-#   字端要求先有活跃的 `wss://.../core` realtime 会话把客户端登记, 主程序总会先建该
-#   会话故放行, testbench 只发裸文字补全故被判 abuse)。**当前已无可用的免费域名**:
-#   该旁路暂时失效, 不再尝试逆向其防滥用机制。要在 testbench 跑真实 LLM 流程, 请在
-#   Settings → Models 给对应组 (chat/memory/judge/simuser) 配一个可用的付费 provider
-#   + API key; 免费 Lanlan 预设仅对 NEKO 主程序自身可用。
-#   (绝大多数 smoke 用 mock, 不受影响; 仅真实对话/记忆/评分的手测需要可用 key。)
+# 2026-06-19 recheck (docs/UPSTREAM_SYNC_2026-06.md): www.lanlan.tech, bypass lanlan.app,
+# and suggested www.lanlan.app now all return STOP ABUSE THE API on /text/v1/chat/
+# completions, consistently via curl and OpenAI SDK. The old bypass is closed,
+# exactly the warned-about scenario.
+# www.lanlan.app actually serves main's overseas free voice/TTS/realtime Gemini
+# proxy (main_logic/omni_realtime_client.py, tts_client/workers/step.py,
+# wss://www.lanlan.app/tts), not text completions. The sole configured free text endpoint is config/
+# api_providers.json https://www.lanlan.tech/text/v1. Switching to www.lanlan.app
+# cannot restore testbench text access.
+# Identical main-program ChatOpenAI, SSL context, and free-access keys still fail in testbench,
+# indicating identification beyond TLS fingerprints. Most likely free text requires an active
+# wss://.../core realtime session registering the client first; main always opens one,
+# while testbench submits bare text completions and is classified as abuse. No free domain remains available.
+# This bypass is inactive; do not reverse-engineer anti-abuse mechanisms further. Configure usable paid providers
+# and API keys per chat/memory/judge/simuser group under Settings -> Models for real testbench LLM flows.
+# Free Lanlan presets work only for the NEKO main program itself.
+# Most smoke tests use mocks and remain unaffected; only real chat/memory/scoring manual tests need working keys.
 
-# 2026-08-01: 裸 `lanlan.app` 已**下线** (维护者确认), 不只是像 6 月那样被反滥
-#   用校验拦掉。旁路目标不复存在, 所以旁路本身必须停用: 继续重写只会把一个能
-#   给出 "STOP ABUSE THE API" 的 400 (它至少说明了原因) 换成一个 DNS/连接失败
-#   (它什么也不说明), 诊断信息只会更差。
+# 2026-08-01: maintainers confirmed bare lanlan.app shut down entirely, beyond June's anti-abuse rejection.
+# With the bypass target gone, disable rewriting: otherwise meaningful 400 STOP ABUSE THE API errors
+# become opaque DNS/connection failures,
+# degrading diagnostics.
 #
-#   保留常量而非删除函数: 它记录了这条路曾经存在、为何存在、以及为何不再可用,
-#   而空元组让重写循环自然成为 no-op —— base_url 原样交给下游, 免费预设在
-#   testbench 里以服务端自己的话失败。
+# Retain the constant/function to document this route's history and rationale;
+# an empty tuple naturally makes rewriting noop, forwarding base_url unchanged
+# and letting free presets fail with the server's own explanation.
 _LANLAN_FREE_BLOCKED_HOSTS: tuple[str, ...] = ()
 _LANLAN_FREE_OPEN_HOST = ""
 
@@ -310,12 +310,12 @@ class OfflineChatBackend:
         Parameters
         ----------
         user_content
-            Composer / 脚本 / SimUser 产出的 user (或 system) 消息正文. 传
-            ``None`` 表示**跳过 "追加一条新 user 消息"** 这一步, 直接在
-            当前 ``session.messages`` 之上跑推理. 仅在"会话末尾已经有一条
-            未回复的 user 消息, 本次调用只是补齐 assistant 回复"的场景使用
-            (例如 P13 Auto-Dialog 的 adaptive 首步). 其它调用方一律传字
-            符串让本函数管理好 user 消息与 ``{event: 'user'}`` SSE 帧.
+            User/system message text from Composer, scripts, or SimUser. Passing
+            None skips appending a new user message and runs inference
+            directly on current session.messages, only when the session already ends
+            with an unanswered user message and this call merely completes its assistant reply,
+            e.g. P13 Auto-Dialog's adaptive first step. All other callers pass strings
+            so this function manages user messages and {event:'user'} SSE frames.
 
         Yields
         ------
@@ -361,9 +361,9 @@ class OfflineChatBackend:
         if role not in {ROLE_USER, ROLE_SYSTEM}:
             raise ValueError(f"stream_send does not accept role={role!r}")
         if user_content is None:
-            # "只跑回复"模式, 末尾必须已经是 user, 否则 prompt_bundle 会拼出
-            # 一个无结尾 user 的 wire, 大多数 provider 会拒 (Gemini 400, OpenAI
-            # "last message must be user" 等). 提前校验, 给出明确错误.
+            # Reply-only mode requires an existing final user message; otherwise prompt_bundle constructs
+            # wire without a terminal user and most providers reject it, e.g. Gemini 400 / OpenAI
+            # last message must be user. Validate early with explicit errors.
             if not session.messages or session.messages[-1].get("role") != ROLE_USER:
                 raise ValueError(
                     "stream_send(user_content=None) 要求 session.messages 末尾是 "
@@ -389,15 +389,15 @@ class OfflineChatBackend:
             )
 
         if user_content is not None:
-            # P24 Day 8 手测 #6 (§13 F3 scope 扩展): 对 user 消息做 prompt
-            # injection 检测. 按 LESSONS "检测不改, 不阻断" 原则 —
-            # - 不过滤 / 不改写 (本项目允许用户输入任何攻击性 payload 作为
-            #   测试素材, 任何自动净化都会抵消核心能力);
-            # - 命中时写 diagnostics warning (Diagnostics → Errors 可见) +
-            #   SSE 发一个 `injection_warning` frame 让 UI 挂 badge;
-            # - 继续执行原 chat send 路径, 不影响消息落盘或 LLM 调用.
-            # 这是对原 F3 设计的扩展: 最初 F3 只在 judge_runner 里检测,
-            # 用户 dev_note L17 暗示期望"发送时就能看到注入告警", 本次补齐.
+            # P24 Day 8 manual test #6, section 13 F3 scope extension: detect prompt injection
+            # in user messages. LESSONS says detect without modification or blocking:
+            # - Never filter/rewrite; arbitrary offensive payloads are valid test material,
+            #   and automatic sanitization would negate core testing capabilities.
+            # - On matches, write diagnostic warnings visible under Diagnostics -> Errors,
+            #   plus injection_warning SSE frames for UI badges.
+            # - Continue original chat sending, without affecting persistence or LLM calls.
+            # Extends F3's original judge_runner-only detection;
+            # user dev_note L17 expected visible warnings at send time, implemented here.
             try:
                 from tests.testbench.pipeline import (
                     prompt_injection_detect as _pid,
@@ -419,16 +419,16 @@ class OfflineChatBackend:
                             "role": role,
                             "content_length": len(user_content),
                             "hits_count": len(hits),
-                            # 2026-04-22 Day 8 手测 #2 修正: 原来写 `h.match_preview`
-                            # 拼错 (实际字段是 `match_text`), AttributeError 被
-                            # `except Exception: pass` 静默吞掉, 导致整个检测
-                            # 分支 silent 失败 — 用户看到的就是"注入无检出无提示".
-                            # 现在用 to_dict() 返回完整结构.
+                            # 2026-04-22 Day 8 manual test #2 fix: h.match_preview was a typo;
+                            # the field is match_text. AttributeError was
+                            # silently swallowed by except Exception:pass, making detection
+                            # fail without matches or notices.
+                            # Use to_dict() for the complete structure now.
                             "hits": [h.to_dict() for h in hits[:20]],
                             "summary": summary,
                         },
                     )
-                    # SSE warning frame — UI 可挂 advisory badge, 不阻断.
+                    # SSE warning frames support advisory UI badges without blocking.
                     yield {
                         "event": "injection_warning",
                         "warning": {
@@ -438,11 +438,11 @@ class OfflineChatBackend:
                             "message": f"检测到 {len(hits)} 条可疑注入模式 (不阻断)",
                         },
                     }
-            except Exception as exc:  # noqa: BLE001 — detection 不得破坏主流程
-                # 2026-04-22 Day 8 手测: 原来 `except Exception: pass` 是
-                # silent fallback 反模式 (LESSONS #14) — 检测分支的任何 bug
-                # (字段拼错 / import 链挂掉) 都会被静默吞. 改成 python_logger
-                # warning 一条: 检测失败不阻断 chat send, 但至少留审计线索.
+            except Exception as exc:  # noqa: BLE001 - Detection must not break the main flow.
+                # 2026-04-22 manual test: except Exception:pass was the silent-fallback
+                # antipattern from LESSONS #14, hiding all detection bugs
+                # such as misspelled fields or import failures. Log one python_logger
+                # warning instead: failed detection must not block chat, but must leave an audit clue.
                 python_logger().warning(
                     "chat.send: prompt_injection detection skipped due to "
                     "%s: %s", type(exc).__name__, exc,
@@ -474,17 +474,17 @@ class OfflineChatBackend:
                 }
             yield {"event": "user", "message": user_msg}
 
-            # role=system + /chat/send: 上层前端 (composer.js) 默认允许此
-            # 组合, UI 文案承诺"写入 + 立即跑 LLM". 但主程序 (main_logic/
-            # omni_offline_client.py) 语义里 SystemMessage 只存在于
-            # _conversation_history[0] (初始化阶段), 运行期无 role=system
-            # 消息; 因此 Gemini 对 "wire 中间/末尾 system" shape 过敏, 偶
-            # 返空 reply 200 或 400 (详见 prompt_builder.build_prompt_bundle
-            # 的长注释 + AGENT_NOTES #32 + §7.25). 现在 wire 层 chokepoint
-            # 会把 role=system 重写为 role=user 加 `[system note] ` 前缀,
-            # 提示 tester 自己所选的 role **在 LLM 眼里等价于一条带前缀的
-            # user 消息**, 不等价于初始化 system prompt. 写一个 diagnostics
-            # warning 让 Diagnostics → Errors/Logs 能直接看到契约偏离点.
+            # role=system + /chat/send is allowed by frontend composer.js, promising
+            # persistence plus immediate LLM execution. Main-program semantics in main_logic/
+            # omni_offline_client.py allow SystemMessage only at initial
+            # _conversation_history[0], never runtime system messages.
+            # Gemini rejects mid/end-wire systems, sometimes returning empty 200 replies
+            # or 400; see prompt_builder.build_prompt_bundle's extended comments,
+            # AGENT_NOTES #32 and section 7.25. The wire chokepoint now rewrites
+            # role=system to role=user with a [system note] prefix,
+            # telling testers their selected role is equivalent to a prefixed
+            # user message to the LLM, not its initial system prompt. Emit a diagnostic
+            # warning visible in Diagnostics -> Errors/Logs to expose contract deviations.
             if role == ROLE_SYSTEM:
                 try:
                     from tests.testbench.pipeline import (
@@ -508,23 +508,23 @@ class OfflineChatBackend:
                             "source": "chat.send",
                         },
                     )
-                except Exception as exc:  # noqa: BLE001 — 审计不得阻主流程
+                except Exception as exc:  # noqa: BLE001 - Auditing must not block the main flow.
                     python_logger().debug(
                         "chat.send: system-rewrite diagnostics log "
                         "failed: %s: %s", type(exc).__name__, exc,
                     )
-        # user_content is None 时 ({event:'user'} 缺省) — 上游调用方负责
-        # 生成 "user 消息已就绪" 的 UI 提示 (例如 Auto-Dialog 的 simuser_done
-        # 事件). 这里不伪造 event 保持单一职责.
+        # With user_content=None and no {event:'user'}, callers supply the
+        # user-ready UI event, e.g. Auto-Dialog simuser_done.
+        # Do not fabricate events here; retain a single responsibility.
 
-        # NOTE: 早期版本里这两个 except 分支会 `session.messages.pop()` 把
-        # 刚 append 的 user_msg 回滚掉. 但 `{event: 'user'}` 已经先于此
-        # 推给前端了, 前端把消息入了本地 messages 数组和 DOM; 后端一 pop,
-        # 就出现"前端看得到, GET /messages 看不到, PUT /messages/{id} 返
-        # 回 404 MessageNotFound"的灵异现象 (Prompt Preview 同样不会收录).
-        # 正确做法: 保留 user_msg, 让后端/前端/preview 三者保持一致.
-        # 用户可以在 Settings 里修好 config 后直接再点 Send (新 user_msg
-        # 会在同一时间戳追加), 或者从消息上的 [⋯] 菜单把这条失败消息删掉.
+        # NOTE: earlier except branches popped session.messages, undoing newly appended
+        # user_msg after {event:'user'} had already reached frontend,
+        # whose local messages/DOM retained it. Backend removal then produced
+        # frontend-visible messages absent from GET /messages and 404 MessageNotFound
+        # on PUT /messages/{id}; Prompt Preview omitted them too.
+        # Keep user_msg so backend, frontend, and preview stay consistent.
+        # Users may fix Settings and Send again, appending a new same-timestamp message,
+        # or delete the failed message through its [...] menu.
         try:
             bundle = build_prompt_bundle(session)
         except PreviewNotReady as exc:
@@ -552,7 +552,7 @@ class OfflineChatBackend:
                 "temperature": cfg.temperature,
                 "max_tokens": cfg.max_tokens,
                 "timeout": cfg.timeout,
-                # wire_messages 是完整复现的关键, 原样落盘.
+                # wire_messages is essential to exact reproduction; persist unchanged.
                 "wire_messages": bundle.wire_messages,
                 "system_prompt_chars": bundle.char_counts.get("system_prompt_total", 0),
                 "message_count_before_user": len(session.messages) - 1,
@@ -598,27 +598,27 @@ class OfflineChatBackend:
         token_usage: dict[str, Any] | None = None
         client = None
 
-        # L36 §7.25 r4 — Prompt Preview "预览 = 真实" 契约.
-        # chat.send 的 wire 和 session.messages 在设计上是同步的 (user 消息
-        # 已经 append 到 session.messages 才构建 bundle), 所以理论上从
-        # session.messages 反推出来的预览 wire 和这里送的 wire 一致. 但我们
-        # 仍然把真实 wire 快照一份 — 好处: (a) external_events / auto_dialog /
-        # simuser 等路径必须快照, 这里一起快照保证 "上次真实 wire" 的语义
-        # 在任何入口都是覆盖的, 不会出现 "切换入口后预览看到的是上一轮
-        # external event 的 wire, 但最近一次其实是 chat.send" 的时序错位;
-        # (b) 给 reply_chars 做 ground-truth 校准, 预览 UI 可以显示 LLM
-        # 返回长度; (c) 把 bundle 和"真实发送"的一对一关系显式化, 未来
-        # 如果 bundle 和真实 wire 漂移 (比如 retry 改了最后一条) 立即可见.
+        # L36 section 7.25 r4: Prompt Preview equals actual wire.
+        # chat.send wire and session.messages are designed to match: user messages
+        # append before bundle construction, so previews reconstructed from
+        # session.messages should match actual sends. Still snapshot
+        # real wire: (a) external_events/auto_dialog/simuser require snapshots,
+        # so doing the same here gives last-real-wire semantics across every entry,
+        # preventing previews retaining a previous external-event wire after switching
+        # to a newer chat.send.
+        # (b) Ground-truth reply_chars calibration lets preview display actual LLM
+        # response length. (c) Explicit bundle/actual-send pairing exposes future
+        # drift, such as retries altering the last message, immediately.
         #
-        # P25 Day 3 — source 分流:
-        #   * ``SOURCE_AUTO`` (双 AI 自动对话的 target 轮) → ``auto_dialog_target``
-        #     这条路径在 ``auto_dialog.py::_forward_target_stream`` 里以
-        #     ``source=SOURCE_AUTO`` 进来, 语义是 "自动对话中这一轮的 target AI";
-        #     preview UI 靠这个 slug 区分 "tester 在主 composer 里发" vs.
-        #     "auto_dialog 批量推进中的一轮", 对调试多轮自动对话中 wire 为何
-        #     突然不一样有用.
-        #   * 其它 source (manual / inject / script) → ``chat.send``, 是
-        #     preview UI 的默认 "普通对话" 标签.
+        # P25 Day 3 source routing:
+        # - SOURCE_AUTO, target turns in two-AI auto dialogue, maps to auto_dialog_target.
+        #   auto_dialog.py::_forward_target_stream enters with
+        #   source=SOURCE_AUTO, meaning this automatic dialogue's target-AI turn.
+        #   Preview slugs distinguish manual composer sends from
+        #   batch-driven auto-dialogue rounds, helping explain suddenly changed
+        #   wire in multiround automatic dialogue.
+        # - Other sources (manual/inject/script) map to chat.send,
+        #   preview's default ordinary-chat label.
         _wire_source = "auto_dialog_target" if source == SOURCE_AUTO else "chat.send"
         try:
             record_last_llm_wire(

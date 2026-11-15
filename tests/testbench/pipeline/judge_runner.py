@@ -978,7 +978,7 @@ def _normalize_comparative_verdict(raw: str) -> str:
     ``"B_better"`` / ``"tie"``, but LLMs sometimes emit the Chinese
     ``"A 更好"`` or uppercase ``"TIE"``. We normalize to the canonical
     form used everywhere else in the codebase.
-    """
+    """  # noqa: DOCSTRING_CJK
     s = str(raw or "").strip()
     lower = s.lower()
     if not s:
@@ -1037,7 +1037,7 @@ def _format_history_for_prompt(
     ``[系统消息]`` label; roles outside the known three are skipped
     (they're never produced by our own pipeline but defensive coding
     keeps us safe against imported/restored sessions).
-    """
+    """  # noqa: DOCSTRING_CJK
     character_name = character_name or "AI"
     master_name = master_name or "用户"
     lines: list[str] = []
@@ -1079,7 +1079,7 @@ def _escape_user_content_tag(text: str) -> str:
 
     Replaces literal ``</user_content>`` with ``<\\/user_content>`` so a
     crafted user utterance can't break out of the delimiter frame. This
-    does **not** violate the "\u6c38\u4e0d\u8fc7\u6ee4" principle: the
+    does **not** violate the "never filter" principle: the
     on-disk raw field (session message, persona, schema context) still
     contains the original bytes — only the prompt-assembly serialisation
     escapes frame-breaking sequences, analogous to HTML entity
@@ -1252,7 +1252,7 @@ def build_judge_prompt_preview(
 
     Pure function over (judger, inputs). Mirrors the first half of
     :meth:`BaseJudger.run` (``_build_ctx`` → ``schema.render_prompt`` →
-    prepend preamble) and returns the wire shape the UI's [预览 prompt]
+    prepend preamble) and returns the wire shape the UI's [preview prompt]
     button can render. Does **not** stamp ``session.last_llm_wire``
     (that would mislead the Chat page Preview Panel which is now chat-
     only, see r7).

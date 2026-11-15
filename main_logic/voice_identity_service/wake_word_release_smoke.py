@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import time
 import shutil
+import traceback
 
 
 async def check_preference_worker(model_dir: Path | None = None) -> None:
@@ -60,7 +61,10 @@ def main() -> int:
         validate_wake_word_resources(SherpaWakeWordConfig(model_dir=model_dir, keywords=DEFAULT_WAKE_WORD_KEYWORDS))
         asyncio.run(check_preference_worker(Path(model_dir)))
     except Exception:
+        # The CI gate only sees this process's redirected output, so keep the
+        # cause next to the failure marker instead of swallowing it.
         print("WAKE_WORD_RELEASE_SMOKE_FAILED", flush=True)
+        print(traceback.format_exc(), flush=True)
         return 1
     print("WAKE_WORD_RELEASE_SMOKE_READY", flush=True)
     return 0

@@ -14,31 +14,6 @@ from utils.config_manager import ConfigManager, get_config_manager
 from tests.yui_guide_director_parts import DIRECTOR_SCRIPT_NAMES, read_director_source
 
 
-@pytest.fixture
-def reset_tracker_records():
-    """Hand out a `register(lanlan)` callable; wipe registered lanlan keys
-    from the module-level `_task_tracker._records` both before yield and
-    in the finalizer.
-
-    Module-level `_task_tracker` is shared across tests; without explicit
-    isolation a failing assertion would leak cancelled records into the
-    next test and produce spurious flakes. Putting cleanup in the fixture
-    finalizer keeps it on the `finally` path so it runs even if the test
-    body raises.
-    """
-    from app.agent_server import _task_tracker
-
-    registered: set[str] = set()
-
-    def register(lanlan: str) -> None:
-        _task_tracker._records.pop(lanlan, None)
-        registered.add(lanlan)
-
-    yield register
-    for lanlan in registered:
-        _task_tracker._records.pop(lanlan, None)
-
-
 def _expected_plugin_dashboard_location(v: str = "") -> str:
     from config import USER_PLUGIN_BASE
 
@@ -138,30 +113,72 @@ def test_core_config_uses_agent_model_only():
     assert legacy_keys == []
 
 
+def _agent_server_route_paths() -> set:
+    # The routes live in the package's submodules (``api_runtime`` /
+    # ``api_routes``); the facade ``__init__`` declares none itself.
+    paths = set()
+    for module_path, _ in _agent_server_package_sources():
+        paths.update(_route_paths_from_decorators(str(module_path), "app"))
+    return paths
+
+
 def test_agent_server_legacy_endpoints_removed():
-    paths = _route_paths_from_decorators("app/agent_server/__init__.py", "app")
-    assert "/process" not in paths
-    assert "/plan" not in paths
-    assert "/analyze_and_plan" not in paths
+    paths = _agent_server_route_paths()
+    assert paths, "no routes found in the app/agent_server package"
+    for removed in {
+        "/process",
+        "/plan",
+        "/analyze_and_plan",
+        # Gone with the per-turn analyzer and its channels: work now arrives
+        # through /nekoclaw/dispatch and is recorded in the host's ledger.
+        "/plugin/execute",
+        "/computer_use/run",
+        "/browser_use/run",
+        "/api/agent/tasks/{task_id}/correction",
+        "/capabilities",
+        "/mcp/availability",
+        "/openclaw/availability",
+    }:
+        assert removed not in paths
 
 
 def test_main_agent_router_legacy_endpoints_removed():
     paths = _route_paths_from_decorators("main_routers/agent_router.py", "router")
-    assert "/api/agent/task_status" not in paths
-    assert "/api/agent/notify_task_result" not in paths
+    assert paths, "no routes found in main_routers/agent_router.py"
+    for removed in {
+        "/api/agent/task_status",
+        "/api/agent/notify_task_result",
+        "/task_status",
+        "/notify_task_result",
+        "/internal/analyze_request",
+        "/mcp/availability",
+        "/openclaw/availability",
+        "/openclaw/guide",
+        "/openclaw/guide/content",
+        "/openclaw/guide/assets/{asset_path:path}",
+    }:
+        assert removed not in paths
+    assert not any("openclaw" in path for path in paths)
 
 
 def test_main_agent_router_expected_proxy_endpoints_exist():
     paths = _route_paths_from_decorators("main_routers/agent_router.py", "router")
     for expected in {
         "/flags",
+        "/state",
+        "/command",
         "/health",
         "/tasks",
         "/tasks/{task_id}",
+        "/tasks/{task_id}/cancel",
+        "/admin/control",
         "/computer_use/availability",
         "/browser_use/availability",
-        "/openclaw/availability",
-        "/mcp/availability",
+        "/user_plugin/availability",
+        # The banner over the desktop or the browser window, and the browser settings.
+        "/builtin/activity",
+        "/builtin/stop",
+        "/builtin/browser/settings",
     }:
         assert expected in paths
 
@@ -324,17 +341,26 @@ def test_agent_hud_viewport_clamp_uses_layout_for_non_pixel_positions():
 
 
 def test_agent_server_expected_event_driven_endpoints_exist():
-    paths = set()
-    for module_path, _ in _agent_server_package_sources():
-        paths.update(_route_paths_from_decorators(str(module_path), "app"))
+    paths = _agent_server_route_paths()
     for expected in {
         "/health",
         "/agent/flags",
+        "/agent/state",
+        "/agent/command",
+        "/notify_config_changed",
+        "/admin/control",
         "/tasks",
         "/tasks/{task_id}",
+        "/tasks/{task_id}/cancel",
+        "/api/agent/tasks/{task_id}/complete",
         "/computer_use/availability",
         "/browser_use/availability",
-        "/openclaw/availability",
+        "/nekoclaw/dispatch",
+        "/nekoclaw/query",
+        "/nekoclaw/brief",
+        "/builtin/activity",
+        "/builtin/stop",
+        "/builtin/browser/settings",
     }:
         assert expected in paths
 
@@ -343,7 +369,7 @@ def test_agent_router_update_flags_keeps_user_plugin_forwarding():
     fn = _get_function_def("main_routers/agent_router.py", "update_agent_flags")
     literals = _gather_string_literals(fn)
     assert "user_plugin_enabled" in literals
-    assert "openclaw_enabled" in literals
+    assert "openclaw_enabled" not in literals
     assert "/agent/flags" in literals
 
 
@@ -354,7 +380,6 @@ def test_agent_router_update_flags_has_safe_rollback_defaults():
         "computer_use_enabled",
         "browser_use_enabled",
         "user_plugin_enabled",
-        "openclaw_enabled",
     }
 
     found_rollback_dict = False
@@ -382,25 +407,13 @@ def test_agent_router_command_syncs_core_flags_locally():
     assert _contains_call(fn, "update_agent_flags")
 
 
-def test_agent_router_openclaw_optimistic_sync_clears_stale_ready():
+def test_agent_router_no_longer_syncs_openclaw_flags():
     source = Path("main_routers/agent_router.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    func = None
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "post_agent_command":
-            func = node
-            break
-    assert func is not None
-    func_src = ast.get_source_segment(source, func) or ""
 
-    assert 'if key == "openclaw_enabled":' in func_src
-    assert 'flag_update["openclaw_ready"] = False' in func_src
-    assert '"openclaw_ready": False' in func_src
-
-
-def test_agent_router_has_internal_analyze_request_endpoint():
-    paths = _route_paths_from_decorators("main_routers/agent_router.py", "router")
-    assert "/internal/analyze_request" in paths
+    # The OpenClaw channel is gone: neither the optimistic local sync in
+    # ``post_agent_command`` nor the off-switch defaults carry its two flags.
+    assert "openclaw_enabled" not in source
+    assert "openclaw_ready" not in source
 
 
 def test_yui_guide_steps_registry_uses_day1_round_without_legacy_handoff_scenes():
@@ -1554,7 +1567,7 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert avatar_interaction_restore_block.index("const isActiveAvatarContainer = elementId === `${activePrefix}-container`;") < avatar_interaction_restore_block.index("if (hasSnapshotPointerEvents && snapshotPointerEvents) {")
     assert "this.restoreAvatarFloatingModelInteractionState('teardown-early');" in tutorial_source
     assert ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))" in tutorial_source
-    # 最终恢复统一按业务形态分流：普通模型回放交互快照，猫咪态重走 goodbye 链路。
+    # Final recovery follows business modes: ordinary models replay interaction snapshots; cat mode reruns goodbye chains.
     assert ".then(() => this.restoreAvatarFloatingModelStateAfterTutorial())" in tutorial_source
     assert tutorial_source.index(".then(() => this.restoreTutorialAvatarOverride())") < tutorial_source.index(
         ".then(() => this.clearTutorialYuiLive2dRuntimeResidue('tutorial-avatar-restored'))"
@@ -2001,16 +2014,16 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     assert "await this.waitForFloatingButtons()" in start_round_block
     assert "this.claimDirectAvatarFloatingTutorialBoot(round, source);" in start_round_block
     claim_index = start_round_block.index("this.claimDirectAvatarFloatingTutorialBoot(round, source);")
-    # round 预留会改变预测结果；direct-boot claim 必须覆盖状态同步和胶囊 prepare 的异步等待窗口。
+    # Round reservations affect predictions; direct-boot claims must cover asynchronous state-sync/capsule-prepare windows.
     assert claim_index < start_round_block.index("await stateApi.flush();")
     assert claim_index < start_round_block.index(
         "await this.prepareYuiGuideCompactChatForTutorial()"
     )
-    # prepare 期间取消时释放提前 claim，但保留已跳过用户模型的恢复标记。
+    # Cancellation during prepare releases early claims while retaining skipped-user-model recovery markers.
     cancellation_release_index = start_round_block.index(
         "this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-cancelled', {"
     )
-    # 只检查取消分支的当前 release 调用，避免误命中后续正常 teardown 的同名参数。
+    # Check only release calls in cancellation branches, avoiding same-named parameters in later normal teardown.
     cancellation_release_block = start_round_block[cancellation_release_index:].split("});", 1)[0]
     assert "keepUserModelBootSkipped: true" in cancellation_release_block
     assert "suppressPrediction: true" in cancellation_release_block
@@ -2037,7 +2050,7 @@ def test_avatar_floating_direct_tutorial_boot_uses_manager_recheck_and_user_mode
     )[0]
     assert "this.dispatchAvatarFloatingTutorialInputRestored(" in tutorial_source
     assert "neko:yui-guide:tutorial-input-restored" in tutorial_source
-    # 输入区域刷新必须发生在模型身份和猫咪/普通业务形态都恢复完成之后。
+    # Refresh input regions only after restoring model identity and cat/ordinary modes completely.
     assert teardown_block.index("this.restoreAvatarFloatingModelStateAfterTutorial()") < teardown_block.index(
         "this.dispatchAvatarFloatingTutorialInputRestored("
     )
@@ -2236,197 +2249,6 @@ def test_plugin_manager_bootstraps_plugin_dashboard_runtime_without_overlay_brid
     assert "initPluginDashboardYuiGuideRuntime()" in main_source
 
 
-def test_task_executor_format_messages_marks_latest_user_request():
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    conversation = [
-        {"role": "user", "text": "帮我打开系统计算器"},
-        {"role": "assistant", "text": "已经打开了"},
-    ]
-    output = executor._format_messages(conversation)
-    assert "LATEST_USER_REQUEST: 帮我打开系统计算器" in output
-    assert "assistant: 已经打开了" in output
-
-
-def test_task_executor_format_messages_mentions_image_attachments():
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    conversation = [
-        {
-            "role": "user",
-            "content": "帮我看看这张图哪里报错了",
-            "attachments": [{"type": "image_url", "url": "data:image/png;base64,abc"}],
-        }
-    ]
-    output = executor._format_messages(conversation)
-    assert "LATEST_USER_REQUEST: 帮我看看这张图哪里报错了 [Attached images: 1]" in output
-
-
-def test_plugin_terminal_status_defaults_and_run_data_overrides():
-    from app.agent_server import _plugin_terminal_status
-
-    # Default: success → completed, fail → failed.
-    assert _plugin_terminal_status(True, None) == "completed"
-    assert _plugin_terminal_status(False, None) == "failed"
-    assert _plugin_terminal_status(True, {}) == "completed"
-    assert _plugin_terminal_status(False, {}) == "failed"
-
-    # Explicit blocked signals (plugin opts in via run_data).
-    assert _plugin_terminal_status(True, {"status": "clarify", "action": "clarify", "needs_confirmation": True}) == "blocked"
-    assert _plugin_terminal_status(True, {"status": "confirm_required", "needs_confirmation": True}) == "blocked"
-    assert _plugin_terminal_status(True, {"status": "blocked"}) == "blocked"
-
-    # Error signal forces failed even on raw success.
-    assert _plugin_terminal_status(True, {"status": "error"}) == "failed"
-
-    # observation_only bypasses overrides → fall back to raw success.
-    assert _plugin_terminal_status(True, {"status": "error", "observation_only": True}) == "completed"
-    assert _plugin_terminal_status(True, {"status": "blocked", "observation_only": True}) == "completed"
-
-    # executed=False on its own is intentionally NOT enough — many plugins use
-    # it to mean "no game-side card played" while the control op succeeded
-    # (e.g. STS2 stop_autoplay returns status="idle", executed=False after a
-    # real stop). Inferring blocked from that misreports successful ops.
-    assert _plugin_terminal_status(True, {"status": "idle", "executed": False}) == "completed"
-    assert _plugin_terminal_status(True, {"status": "stale", "executed": False}) == "completed"
-    assert _plugin_terminal_status(True, {"status": "ok", "executed": True}) == "completed"
-
-    # raw_success=False must always land on "failed". run_data signals cannot
-    # "upgrade" a protocol failure to a softer status like "blocked".
-    assert _plugin_terminal_status(False, {"status": "blocked"}) == "failed"
-    assert _plugin_terminal_status(False, {"status": "clarify", "action": "clarify", "needs_confirmation": True}) == "failed"
-    assert _plugin_terminal_status(False, {"status": "confirm_required", "needs_confirmation": True}) == "failed"
-    assert _plugin_terminal_status(False, {"status": "error"}) == "failed"
-    # observation_only also doesn't change the picture on raw fail.
-    assert _plugin_terminal_status(False, {"status": "blocked", "observation_only": True}) == "failed"
-
-
-def test_plugin_result_contract_runtime_static_and_default(monkeypatch):
-    from app.agent_server.channels import user_plugin
-
-    executor = type(
-        "Executor",
-        (),
-        {
-            "plugin_list": [
-                {
-                    "id": "demo",
-                    "entries": [
-                        {
-                            "id": "status",
-                            "metadata": {
-                                "result_kind": "event",
-                                "expires_in_s": 30,
-                            },
-                        },
-                        {"id": "action", "metadata": {}},
-                    ],
-                }
-            ]
-        },
-    )()
-    monkeypatch.setattr(user_plugin._shared.Modules, "task_executor", executor)
-
-    assert user_plugin._resolve_plugin_result_contract("demo", "status", None) == (
-        "event",
-        30.0,
-    )
-    runtime = {
-        "meta": {
-            "agent": {
-                "result_kind": "task_result",
-                "expires_in_s": 5,
-            }
-        }
-    }
-    assert user_plugin._resolve_plugin_result_contract("demo", "status", runtime) == (
-        "task_result",
-        None,
-    )
-    assert user_plugin._resolve_plugin_result_contract("demo", "action", None) == (
-        "task_result",
-        None,
-    )
-
-
-def test_plugin_result_contract_invalid_runtime_falls_back_to_static(monkeypatch):
-    from app.agent_server.channels import user_plugin
-
-    executor = type(
-        "Executor",
-        (),
-        {
-            "plugin_list": [
-                {
-                    "id": "demo",
-                    "entries": [
-                        {
-                            "id": "status",
-                            "metadata": {
-                                "result_kind": "event",
-                                "expires_in_s": 20,
-                            },
-                        }
-                    ],
-                }
-            ]
-        },
-    )()
-    monkeypatch.setattr(user_plugin._shared.Modules, "task_executor", executor)
-    runtime = {
-        "meta": {
-            "agent": {
-                "result_kind": "not-a-kind",
-                "expires_in_s": float("nan"),
-            }
-        }
-    }
-
-    assert user_plugin._resolve_plugin_result_contract("demo", "status", runtime) == (
-        "event",
-        20.0,
-    )
-
-
-def test_plugin_contract_lookups_use_executor_resolved_entry_ids():
-    def _assert_resolved_entry_arg(func_node, result_name):
-        target_calls = {
-            "_lookup_llm_result_fields": [],
-            "_resolve_plugin_result_contract": [],
-        }
-        for node in ast.walk(func_node):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in target_calls
-            ):
-                target_calls[node.func.id].append(node)
-        for call_name, calls in target_calls.items():
-            assert len(calls) == 1, f"expected one {call_name} call"
-            entry_arg = calls[0].args[1]
-            assert isinstance(entry_arg, ast.Attribute)
-            assert entry_arg.attr == "entry_id"
-            assert isinstance(entry_arg.value, ast.Name)
-            assert entry_arg.value.id == result_name
-
-    _assert_resolved_entry_arg(
-        _get_function_def(
-            "app/agent_server/channels/user_plugin.py",
-            "dispatch",
-        ),
-        "up_result",
-    )
-    _assert_resolved_entry_arg(
-        _get_function_def(
-            "app/agent_server/api_runtime.py",
-            "plugin_execute_direct",
-        ),
-        "res",
-    )
-
-
 def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
     from main_logic.core import _build_callback_instruction
 
@@ -2451,1139 +2273,6 @@ def test_callback_instruction_renders_blocked_plugin_result_as_not_executed():
     assert "说明未执行原因" in output
     assert "执行失败" not in output
     assert "需要确认后才能执行" in output
-
-
-def test_task_executor_hides_agent_auto_disabled_plugin_entries():
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    plugins = [
-        {
-            "id": "demo_plugin",
-            "description": "示例插件",
-            "entries": [
-                {"id": "diagnostics_snapshot", "description": "获取诊断快照", "metadata": {"agent_auto": False}},
-                {"id": "start_job", "description": "启动示例任务"},
-            ],
-        }
-    ]
-
-    desc = "\n".join(executor._build_plugin_desc_lines(plugins))
-    assert "diagnostics_snapshot" not in desc
-    assert "start_job" in desc
-    plugin, entry = executor._find_plugin_entry(plugins, "demo_plugin", "diagnostics_snapshot")
-    assert plugin is plugins[0]
-    assert entry is None
-
-
-def test_task_executor_skips_plugin_with_only_agent_hidden_entries():
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    plugins = [
-        {
-            "id": "demo_plugin",
-            "description": "示例插件",
-            "entries": [
-                {"id": "diagnostics_snapshot", "description": "获取诊断快照", "metadata": {"agent_auto": False}},
-            ],
-        }
-    ]
-
-    assert executor._build_plugin_desc_lines(plugins) == []
-    plugin, entry = executor._find_plugin_entry(plugins, "demo_plugin", "diagnostics_snapshot")
-    assert plugin is plugins[0]
-    assert entry is None
-
-
-def test_apply_cached_short_descriptions_manifest_cache_and_fallback():
-    """_apply_cached_short_descriptions is a pure manifest/cache read (zero LLM):
-    a manifest-provided short_description is used as-is and primes the cache; a
-    cache hit (description unchanged) is applied; missing or stale entries are
-    left empty and returned as background-prewarm candidates — never generated
-    here."""
-    from brain.task_executor import DirectTaskExecutor
-
-    key = DirectTaskExecutor._desc_key
-    executor = object.__new__(DirectTaskExecutor)
-    executor._short_desc_cache = {}
-    # 缓存键是完整 description 的 hash（截断只用于喂 LLM，不当失效 key）
-    executor._short_desc_cache["from_cache"] = (key("full B"), "cached B")
-    executor._short_desc_cache["stale_cache"] = (key("old D"), "cached D")
-
-    plugins = [
-        {"id": "has_manifest", "description": "full A", "short_description": "short A"},
-        {"id": "from_cache", "description": "full B"},
-        {"id": "stale_cache", "description": "new D"},
-        {"id": "missing", "description": "full C"},
-        {"id": "no_desc"},
-        "not_a_dict",
-    ]
-
-    missing = executor._apply_cached_short_descriptions(plugins)
-
-    # (a) manifest 自带 → 直接用，并把它写进缓存供后续 refresh 复用
-    assert plugins[0]["short_description"] == "short A"
-    assert executor._short_desc_cache["has_manifest"] == (key("full A"), "short A")
-    # 缓存命中（desc 未变）→ 应用缓存值
-    assert plugins[1]["short_description"] == "cached B"
-    # 缓存陈旧（desc 变了）→ 不应用，进 missing 候选
-    assert "short_description" not in plugins[2]
-    # 缺失且无缓存 → 不现生成，留空，进 missing 候选
-    assert "short_description" not in plugins[3]
-    # 无 description → 无可摘要内容，不进 missing 也不留空
-    assert "short_description" not in plugins[4]
-
-    assert sorted(p["id"] for p in missing) == ["missing", "stale_cache"]
-
-
-@pytest.mark.asyncio
-async def test_plugin_list_provider_never_generates_short_description_on_hot_path():
-    """Core acceptance: the analyze hot path (plugin_list_provider) must never
-    generate a short_description inline. Plugins missing one are handed to the
-    background prewarm; the call returns immediately, _get_llm is not invoked
-    synchronously, and analyze safely falls back to the full description."""
-    from unittest.mock import AsyncMock, MagicMock, patch
-    from brain.task_executor import DirectTaskExecutor
-
-    plugins = [{"id": "no_short", "description": "a plugin without a short description"}]
-    executor = object.__new__(DirectTaskExecutor)
-    executor.plugin_list = []
-    executor._external_plugin_provider = AsyncMock(return_value=plugins)
-    executor._short_desc_cache = {}
-    executor._short_desc_prewarm_inflight = set()
-    executor._short_desc_prewarm_tasks = set()
-
-    llm_factory = MagicMock(
-        side_effect=AssertionError("_get_llm must not be called on the analyze hot path")
-    )
-    with patch.object(DirectTaskExecutor, "_get_llm", llm_factory), \
-         patch.object(
-             DirectTaskExecutor, "_prewarm_short_descriptions", new_callable=AsyncMock,
-         ) as mock_prewarm:
-        result = await executor.plugin_list_provider(force_refresh=True)
-
-    # 返回的插件仍缺 short_description（未现生成）→ 分析侧回退到完整 description
-    assert not result[0].get("short_description")
-    # 热路径上 _get_llm 没被同步调用
-    llm_factory.assert_not_called()
-    # 缺失插件被调度进后台预热
-    mock_prewarm.assert_called_once()
-    assert "no_short" in executor._short_desc_prewarm_inflight
-    await asyncio.sleep(0)  # 让后台任务跑掉，避免 "coroutine never awaited" 警告
-
-
-def test_short_desc_cache_persists_generated_entries_across_instances(tmp_path):
-    """LLM-generated short_descriptions are persisted to disk; a fresh instance
-    (simulating a restart) reuses them with zero LLM. The key is a hash of the
-    full description, so a manifest change invalidates the entry and triggers
-    regeneration."""
-    from types import SimpleNamespace
-    from brain.task_executor import DirectTaskExecutor
-
-    cfg = SimpleNamespace(config_dir=str(tmp_path), ensure_config_directory=lambda: None)
-    key = DirectTaskExecutor._desc_key
-
-    # 实例一：把一条生成的缓存落盘（key = 完整 description 的 hash）
-    exec1 = object.__new__(DirectTaskExecutor)
-    exec1._config_manager = cfg
-    exec1._short_desc_cache_filename = "plugin_short_desc_cache.json"
-    exec1._persist_generated_short_descriptions({"genplug": (key("full desc"), "generated short")})
-    assert (tmp_path / "plugin_short_desc_cache.json").exists()
-
-    # 实例二：从盘上加载（模拟重启）
-    exec2 = object.__new__(DirectTaskExecutor)
-    exec2._config_manager = cfg
-    exec2._short_desc_cache_filename = "plugin_short_desc_cache.json"
-    exec2._short_desc_cache = exec2._load_short_desc_cache()
-    assert exec2._short_desc_cache == {"genplug": (key("full desc"), "generated short")}
-
-    # desc 未变 → 命中持久化缓存，零 LLM，不进 missing
-    plugins = [{"id": "genplug", "description": "full desc"}]
-    assert exec2._apply_cached_short_descriptions(plugins) == []
-    assert plugins[0]["short_description"] == "generated short"
-
-    # desc 变了 → hash key 失效，重新作为生成候选
-    changed = [{"id": "genplug", "description": "CHANGED desc"}]
-    missing = exec2._apply_cached_short_descriptions(changed)
-    assert "short_description" not in changed[0]
-    assert [p["id"] for p in missing] == ["genplug"]
-
-
-def test_short_desc_cache_key_uses_full_description_not_truncated_prompt():
-    """Regression (Codex P2): the cache key is a hash of the FULL description;
-    truncation is prompt-only. A very long description (far above
-    PLUGIN_INPUT_DESC_MAX_TOKENS) must still hit the cache, rather than missing
-    forever because a truncated key never matches the full description."""
-    from config import PLUGIN_INPUT_DESC_MAX_TOKENS
-    from brain.task_executor import DirectTaskExecutor
-
-    key = DirectTaskExecutor._desc_key
-    long_desc = ("word " * (PLUGIN_INPUT_DESC_MAX_TOKENS * 4)).strip()  # 远超输入截断阈值
-
-    executor = object.__new__(DirectTaskExecutor)
-    executor._short_desc_cache = {"big": (key(long_desc), "cached short")}
-
-    plugins = [{"id": "big", "description": long_desc}]
-    assert executor._apply_cached_short_descriptions(plugins) == []
-    assert plugins[0]["short_description"] == "cached short"
-
-
-def test_short_desc_cache_load_tolerates_missing_and_corrupt_file(tmp_path):
-    """A missing file or corrupt JSON yields an empty cache safely (no raise)."""
-    from types import SimpleNamespace
-    from brain.task_executor import DirectTaskExecutor
-
-    cfg = SimpleNamespace(config_dir=str(tmp_path), ensure_config_directory=lambda: None)
-    executor = object.__new__(DirectTaskExecutor)
-    executor._config_manager = cfg
-    executor._short_desc_cache_filename = "plugin_short_desc_cache.json"
-
-    # 文件不存在
-    assert executor._load_short_desc_cache() == {}
-
-    # 损坏的 JSON
-    (tmp_path / "plugin_short_desc_cache.json").write_text("{not json", encoding="utf-8")
-    assert executor._load_short_desc_cache() == {}
-
-
-@pytest.mark.asyncio
-async def test_task_executor_routes_galgame_continue_phrase_through_plugin_assessment():
-    from unittest.mock import AsyncMock, patch
-    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
-
-    plugins = [{
-        "id": "galgame_plugin",
-        "description": "galgame plugin",
-        "short_description": "galgame control",
-        "entries": [{"id": "galgame_continue_auto_advance", "input_schema": {}}],
-    }]
-    executor = object.__new__(DirectTaskExecutor)
-    executor.plugin_list = []
-    executor._external_plugin_provider = AsyncMock(return_value=plugins)
-    executor._short_desc_cache = {}
-
-    decision = UserPluginDecision(
-        has_task=True,
-        can_execute=True,
-        task_description="继续自动推进 galgame 剧情",
-        plugin_id="galgame_plugin",
-        entry_id="galgame_continue_auto_advance",
-        plugin_args={"message": "继续推进剧情"},
-        reason="llm_user_plugin_assessment",
-    )
-    with patch.object(
-        DirectTaskExecutor,
-        "_assess_user_plugin",
-        new_callable=AsyncMock,
-        return_value=decision,
-    ) as mock_assess:
-        result = await executor.analyze_and_execute(
-            [{"role": "user", "content": "继续推进剧情"}],
-            agent_flags={
-                "computer_use_enabled": False,
-                "browser_use_enabled": False,
-                "user_plugin_enabled": True,
-                "openclaw_enabled": False,
-            },
-        )
-
-    assert result is not None
-    assert result.execution_method == "user_plugin"
-    assert result.tool_name == "galgame_plugin"
-    assert result.entry_id == "galgame_continue_auto_advance"
-    assert result.tool_args == {"message": "继续推进剧情"}
-    assert result.reason == "llm_user_plugin_assessment"
-    mock_assess.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_task_executor_routes_galgame_mode_phrases_through_plugin_assessment():
-    from unittest.mock import AsyncMock, patch
-    from brain.task_executor import DirectTaskExecutor, UserPluginDecision
-
-    plugins = [{
-        "id": "galgame_plugin",
-        "description": "galgame plugin",
-        "short_description": "galgame control",
-        "entries": [{"id": "galgame_set_mode", "input_schema": {}}],
-    }]
-    executor = object.__new__(DirectTaskExecutor)
-    executor.plugin_list = []
-    executor._external_plugin_provider = AsyncMock(return_value=plugins)
-    executor._short_desc_cache = {}
-
-    decisions = [
-        UserPluginDecision(
-            has_task=True,
-            can_execute=True,
-            task_description="切换 galgame 到自动推进模式",
-            plugin_id="galgame_plugin",
-            entry_id="galgame_set_mode",
-            plugin_args={"mode": "choice_advisor", "push_notifications": True},
-            reason="llm_user_plugin_assessment_auto",
-        ),
-        UserPluginDecision(
-            has_task=True,
-            can_execute=True,
-            task_description="切换 galgame 到伴读模式",
-            plugin_id="galgame_plugin",
-            entry_id="galgame_set_mode",
-            plugin_args={"mode": "companion", "push_notifications": True},
-            reason="llm_user_plugin_assessment_companion",
-        ),
-    ]
-    with patch.object(
-        DirectTaskExecutor,
-        "_assess_user_plugin",
-        new_callable=AsyncMock,
-        side_effect=decisions,
-    ) as mock_assess:
-        auto_result = await executor.analyze_and_execute(
-            [{"role": "user", "content": "开启自动推进模式"}],
-            agent_flags={
-                "computer_use_enabled": False,
-                "browser_use_enabled": False,
-                "user_plugin_enabled": True,
-                "openclaw_enabled": False,
-            },
-        )
-        companion_result = await executor.analyze_and_execute(
-            [{"role": "user", "content": "切回伴读，不要自动点"}],
-            agent_flags={
-                "computer_use_enabled": False,
-                "browser_use_enabled": False,
-                "user_plugin_enabled": True,
-                "openclaw_enabled": False,
-            },
-        )
-
-    assert auto_result is not None
-    assert auto_result.execution_method == "user_plugin"
-    assert auto_result.tool_name == "galgame_plugin"
-    assert auto_result.entry_id == "galgame_set_mode"
-    assert auto_result.tool_args == {"mode": "choice_advisor", "push_notifications": True}
-    assert auto_result.reason == "llm_user_plugin_assessment_auto"
-    assert companion_result is not None
-    assert companion_result.entry_id == "galgame_set_mode"
-    assert companion_result.tool_args == {"mode": "companion", "push_notifications": True}
-    assert companion_result.reason == "llm_user_plugin_assessment_companion"
-    assert mock_assess.await_count == 2
-
-
-def test_task_executor_plugin_desc_includes_enum_values():
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    lines = executor._build_plugin_desc_lines([
-        {
-            "id": "galgame_plugin",
-            "description": "galgame plugin",
-            "entries": [
-                {
-                    "id": "galgame_agent_command",
-                    "description": "agent command",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": [
-                                    "query_status",
-                                    "query_context",
-                                    "send_message",
-                                    "set_standby",
-                                    "list_messages",
-                                    "ack_message",
-                                ],
-                            },
-                        },
-                    },
-                },
-            ],
-        },
-    ])
-
-    assert "action:string enum=[query_status|query_context|send_message|set_standby|list_messages|ack_message]" in "\n".join(lines)
-
-
-def test_task_executor_plugin_desc_truncates_long_enum_with_remainder_hint():
-    """超过 12 个 enum 值时，截断标记必须在 [] 内并带 '+N more' 数量提示，
-    而不是孤零零的 '...'，以避免 LLM 把可见的 12 个误当成完整合法值清单。
-    """
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    long_enum = [f"v{i:02d}" for i in range(15)]  # 15 > 12，触发截断
-    lines = executor._build_plugin_desc_lines([
-        {
-            "id": "demo_plugin",
-            "description": "demo",
-            "entries": [
-                {
-                    "id": "demo_entry",
-                    "description": "demo entry",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "kind": {"type": "string", "enum": long_enum},
-                        },
-                    },
-                },
-            ],
-        },
-    ])
-    rendered = "\n".join(lines)
-
-    expected_inner = "|".join(long_enum[:12])
-    assert f"kind:string enum=[{expected_inner}|... +3 more]" in rendered
-    # 旧的 "]..." 形态必须消失，避免 LLM 误读为"列表完整、后面是注释省略号"
-    assert "]..." not in rendered
-    # 被截断的值不应该出现在 prompt 里
-    for v in long_enum[12:]:
-        assert v not in rendered
-
-
-def test_agent_server_user_turn_fingerprint_includes_attachments():
-    from app.agent_server import _build_user_turn_fingerprint as fingerprint
-
-    text_only = fingerprint([{"role": "user", "content": "看图"}])
-    with_attachment = fingerprint([
-        {
-            "role": "user",
-            "content": "看图",
-            "attachments": [{"type": "image_url", "url": "data:image/png;base64,abc"}],
-        }
-    ])
-    image_only = fingerprint([
-        {
-            "role": "user",
-            "content": "",
-            "attachments": [{"type": "image_url", "url": "data:image/png;base64,abc"}],
-        }
-    ])
-
-    assert text_only != with_attachment
-    assert image_only is not None
-
-
-def test_openclaw_magic_analyze_fingerprint_uses_turn_marker():
-    from app.agent_server import _build_analyze_event_fingerprint
-
-    messages = [{"role": "user", "content": "/stop"}]
-    first = _build_analyze_event_fingerprint({
-        "trigger": "text_openclaw_magic_command",
-        "event_id": "event-a",
-        "messages": messages,
-    })
-    second = _build_analyze_event_fingerprint({
-        "trigger": "text_openclaw_magic_command",
-        "event_id": "event-b",
-        "messages": messages,
-    })
-    ordinary_first = _build_analyze_event_fingerprint({
-        "trigger": "turn_end",
-        "event_id": "event-a",
-        "messages": messages,
-    })
-    ordinary_second = _build_analyze_event_fingerprint({
-        "trigger": "turn_end",
-        "event_id": "event-b",
-        "messages": messages,
-    })
-
-    assert first != second
-    assert ordinary_first == ordinary_second
-
-
-def test_user_message_signature_ignores_metadata_and_role():
-    from app.agent_server import _user_message_signature, _last_user_message_signature
-
-    # 非 user 消息 / 无 text → None
-    assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
-    assert _user_message_signature({"role": "user"}) is None
-    assert _user_message_signature("not a dict") is None
-
-    a = {"role": "user", "text": "打开天气网站并截图", "timestamp": 100}
-    b = {"role": "user", "text": "打开天气网站并截图", "timestamp": 999, "id": "msg-99"}
-    c = {"role": "user", "text": "打开天气网站", "timestamp": 100}
-    assert _user_message_signature(a) == _user_message_signature(b)
-    assert _user_message_signature(a) != _user_message_signature(c)
-
-    # attachments 进入 signature
-    d = {
-        "role": "user",
-        "text": "看下这个",
-        "attachments": [{"url": "https://example.com/x.png"}],
-    }
-    e = {
-        "role": "user",
-        "text": "看下这个",
-        "attachments": [{"url": "https://example.com/y.png"}],
-    }
-    assert _user_message_signature(d) != _user_message_signature(e)
-
-    # _last_user_message_signature 取最后一条 user
-    messages = [
-        {"role": "user", "text": "你好"},
-        {"role": "assistant", "text": "嗨"},
-        {"role": "user", "text": "打开天气网站并截图"},
-        {"role": "assistant", "text": "ok"},
-    ]
-    assert _last_user_message_signature(messages) == _user_message_signature(messages[2])
-
-
-def test_redact_passthrough_when_no_cancelled_records(reset_tracker_records):
-    from app.agent_server import _redact_cancelled_user_turns
-
-    lanlan = "test-lanlan-redact-passthrough"
-    reset_tracker_records(lanlan)
-
-    messages = [
-        {"role": "user", "text": "hi"},
-        {"role": "assistant", "text": "hello"},
-    ]
-    assert _redact_cancelled_user_turns(messages, lanlan) is messages
-
-
-def test_redact_bypasses_first_time_user_msg_with_single_trailing_assistant(reset_tracker_records):
-    """核心 bypass 规则：user msg 后面有且仅有 1 条 role='assistant' 的消息时，
-    它是"首次被 analyze"——即使 sig 命中 cancelled_sigs 也 bypass。这一次
-    bypass 后下次 analyze 时它的 trailing-assistant 计数会涨过 1，自动失去
-    豁免。"""
-    from app.agent_server import (
-        _user_message_signature,
-        _redact_cancelled_user_turns,
-        _task_tracker,
-    )
-
-    lanlan = "test-lanlan-bypass-firsttime"
-    reset_tracker_records(lanlan)
-
-    text = "打开天气"
-    sig = _user_message_signature({"role": "user", "text": text})
-    _task_tracker.record_completed(
-        lanlan, task_id="t-cancel", method="browser_use",
-        desc=text, success=False, cancelled=True,
-        trigger_user_fingerprint=sig,
-    )
-
-    # 用户 cancel 之后又发了同文本，messages 末尾就是这条新 user + 它的 reply
-    messages = [
-        {"role": "user", "text": text},                  # 0: 旧的被取消那条，后面 2 条 assistant
-        {"role": "assistant", "text": "正在打开"},        # 1
-        {"role": "user", "text": text},                  # 2: 新发的复述，后面 1 条 assistant
-        {"role": "assistant", "text": "再次打开中"},      # 3
-    ]
-    out = _redact_cancelled_user_turns(messages, lanlan)
-    # 旧 user (trailing=2) 被 redact，新 user (trailing=1) bypass 保留
-    from app.agent_server import REDACTED_USER_TURN_MARKER
-    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[1] is messages[2]
-    assert out[2] is messages[3]
-    assert len(out) == 3
-
-
-def test_redact_three_repeats_all_redacted_after_user_continues(reset_tracker_records):
-    """t/t+1/t+2 连发同文本，单次 cancel → 用户继续聊别的（新 user+assistant）
-    → 三条同文本全部 redact（trailing assistant 都 >1），新 user msg
-    bypass。这是用户拍板的核心诉求："cancel 抵消之前所有相关请求"。"""
-    from app.agent_server import (
-        _user_message_signature,
-        _redact_cancelled_user_turns,
-        _task_tracker,
-        REDACTED_USER_TURN_MARKER,
-    )
-
-    lanlan = "test-lanlan-three-repeats"
-    reset_tracker_records(lanlan)
-
-    text = "打开天气"
-    sig = _user_message_signature({"role": "user", "text": text})
-    _task_tracker.record_completed(
-        lanlan, task_id="t-cancel", method="browser_use",
-        desc=text, success=False, cancelled=True,
-        trigger_user_fingerprint=sig,
-    )
-
-    messages = [
-        {"role": "user", "text": text},                  # 0: trailing assistants = 2
-        {"role": "user", "text": text},                  # 1: trailing assistants = 2
-        {"role": "user", "text": text},                  # 2: trailing assistants = 2
-        {"role": "assistant", "text": "尝试打开"},        # 3: 第 1 条 assistant
-        {"role": "user", "text": "再聊别的"},             # 4: trailing assistants = 1 → bypass
-        {"role": "assistant", "text": "嗯"},              # 5: 第 2 条 assistant
-    ]
-    out = _redact_cancelled_user_turns(messages, lanlan)
-    # 三条 X 都被 redact，"再聊别的" 保留
-    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[1] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[2] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    # "尝试打开" 紧跟最后一条 X 被吞
-    assert out[3] is messages[4]                          # "再聊别的"
-    assert out[4] is messages[5]                          # "嗯"
-    assert len(out) == 5
-
-
-def test_redact_drops_earlier_successful_segment_when_same_text_cancelled(reset_tracker_records):
-    """by-design 副作用：用户先后用同文本各发一次请求，第一次成功完成、
-    第二次被取消。redact 不区分历史里同 sig 的成功段和取消段——所有
-    trailing-assistant > 1 的同 sig user msg 都被屏蔽。早先成功段的
-    assistant 响应文本因此丢失，但 inject() 仍输出 [COMPLETED] 行让
-    analyzer 知道"那个任务做过且成功"，所以语义层面不算严重损失。"""
-    from app.agent_server import (
-        _user_message_signature,
-        _redact_cancelled_user_turns,
-        _task_tracker,
-        REDACTED_USER_TURN_MARKER,
-    )
-
-    lanlan = "test-lanlan-earlier-success"
-    reset_tracker_records(lanlan)
-
-    text = "打开天气"
-    sig = _user_message_signature({"role": "user", "text": text})
-    _task_tracker.record_completed(
-        lanlan, task_id="t-cancel", method="browser_use",
-        desc=text, success=False, cancelled=True,
-        trigger_user_fingerprint=sig,
-    )
-
-    messages = [
-        {"role": "user", "text": text},                  # 0: 早先成功的同文本
-        {"role": "assistant", "text": "好的，截图已发"},   # 1: 早先成功响应
-        {"role": "user", "text": "再聊别的"},             # 2
-        {"role": "assistant", "text": "嗯"},              # 3
-        {"role": "user", "text": text},                  # 4: 最近被取消那次
-        {"role": "assistant", "text": "正在打开"},        # 5: 取消任务的进行中痕迹
-        {"role": "user", "text": "继续"},                 # 6: 用户继续聊
-        {"role": "assistant", "text": "嗯"},              # 7
-    ]
-    out = _redact_cancelled_user_turns(messages, lanlan)
-    # 两条同 sig user msg 都 redact，各自之后的 assistant 段也吞掉
-    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[1] is messages[2]                          # "再聊别的" 保留
-    assert out[2] is messages[3]                          # 它的 assistant
-    assert out[3] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[4] is messages[6]                          # "继续"
-    assert out[5] is messages[7]
-    assert len(out) == 6
-
-
-def test_redact_preserves_system_messages_inside_dropped_span(reset_tracker_records):
-    """drop_until_next_user 期间只吞 assistant/tool；夹在中间的 system
-    消息（session callback / context 注入）跟被取消请求无关，必须保留。"""
-    from app.agent_server import (
-        _user_message_signature,
-        _redact_cancelled_user_turns,
-        _task_tracker,
-        REDACTED_USER_TURN_MARKER,
-    )
-
-    lanlan = "test-lanlan-system-preserve"
-    reset_tracker_records(lanlan)
-
-    text = "打开天气"
-    _task_tracker.record_completed(
-        lanlan, task_id="t1", method="browser_use",
-        desc=text, success=False, cancelled=True,
-        trigger_user_fingerprint=_user_message_signature({"role": "user", "text": text}),
-    )
-
-    # cancelled user msg 后面有 2 条 assistant，所以 trailing=2 → redact
-    messages = [
-        {"role": "user", "text": text},
-        {"role": "assistant", "text": "正在打开..."},
-        {"role": "system", "content": "[session callback] something unrelated"},
-        {"role": "tool", "content": "browser_screenshot.png"},
-        {"role": "user", "text": "再聊别的"},
-        {"role": "assistant", "text": "嗯"},
-    ]
-    out = _redact_cancelled_user_turns(messages, lanlan)
-    assert out == [
-        {"role": "system", "content": REDACTED_USER_TURN_MARKER},
-        # 中间无关的 system 消息保留
-        {"role": "system", "content": "[session callback] something unrelated"},
-        # assistant + tool 被吞
-        {"role": "user", "text": "再聊别的"},
-        {"role": "assistant", "text": "嗯"},
-    ]
-
-
-def test_trim_protects_live_cancelled_records_against_cap_pressure():
-    """繁忙 session 在 TTL 内积累大量 assigned/completed 时，still-live
-    cancelled record 不能被 tail-window 裁剪挤掉——否则它代表的 redact 信号
-    会丢失，被取消的 user turn 重新暴露给 analyzer。"""
-    from app.agent_server import AgentTaskTracker
-    from config import AGENT_TASK_TRACKER_MAX_RECORDS as CAP
-
-    tracker = AgentTaskTracker()
-    lanlan = "test-lanlan-trim-protect"
-
-    # 先记一条 cancel，它必须被保住。
-    tracker.record_completed(
-        lanlan, task_id="cancel-me", method="browser_use",
-        desc="x", success=False, cancelled=True,
-        trigger_user_fingerprint="protected-sig",
-    )
-
-    # 然后填满超过 cap 数量的 assigned/completed 噪声。
-    for i in range(CAP * 3):
-        tracker.record_assigned(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}")
-        tracker.record_completed(lanlan, task_id=f"t{i}", method="user_plugin", desc=f"task-{i}", success=True)
-
-    assert len(tracker._records[lanlan]) <= CAP
-    sigs = tracker.get_cancelled_user_sigs(lanlan)
-    assert "protected-sig" in sigs, (
-        f"cancelled record was evicted by _trim under cap pressure; got {sigs}"
-    )
-
-
-def test_user_message_signature_distinguishes_senders():
-    """多用户场景：两个不同 user 发同样的文字，sig 必须不同——否则取消 A
-    的请求会让 redact 误吞 B 的同文本请求。"""
-    from app.agent_server import _user_message_signature
-
-    a_top = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
-    b_top = {"role": "user", "text": "打开天气", "sender_id": "user-B"}
-    a_meta = {"role": "user", "text": "打开天气", "meta": {"sender_id": "user-A"}}
-    a_ctx = {"role": "user", "text": "打开天气", "_ctx": {"user_id": "user-A"}}
-    no_sender = {"role": "user", "text": "打开天气"}
-
-    sig_a = _user_message_signature(a_top)
-    sig_b = _user_message_signature(b_top)
-    assert sig_a and sig_b and sig_a != sig_b
-    # 三种来源同一 sender_id 都归一到同一签名
-    assert _user_message_signature(a_meta) == sig_a
-    assert _user_message_signature(a_ctx) == sig_a
-    # 无 sender 与有 sender 不同
-    no_sig = _user_message_signature(no_sender)
-    assert no_sig and no_sig not in (sig_a, sig_b)
-
-
-def test_redact_does_not_eat_another_users_same_text_turn(reset_tracker_records):
-    """A 取消了 "打开天气"，B 在同一 messages 列表后续发同文本请求——
-    redact 应只动 A 的请求（sig 不同），不应误吞 B 的。"""
-    from app.agent_server import (
-        _user_message_signature,
-        _redact_cancelled_user_turns,
-        _task_tracker,
-        REDACTED_USER_TURN_MARKER,
-    )
-
-    lanlan = "test-lanlan-multi-user"
-    reset_tracker_records(lanlan)
-
-    a_msg = {"role": "user", "text": "打开天气", "sender_id": "user-A"}
-    b_msg = {"role": "user", "text": "打开天气", "sender_id": "user-B"}
-
-    _task_tracker.record_completed(
-        lanlan, task_id="t-a-cancel", method="browser_use",
-        desc="打开天气", success=False, cancelled=True,
-        trigger_user_fingerprint=_user_message_signature(a_msg),
-    )
-
-    # A 的 user msg trailing=2（被 redact），B 的 trailing=1（首次 bypass）
-    messages = [
-        a_msg,
-        {"role": "assistant", "text": "正在打开"},
-        b_msg,
-        {"role": "assistant", "text": "好的"},
-    ]
-    out = _redact_cancelled_user_turns(messages, lanlan)
-    assert out[0] == {"role": "system", "content": REDACTED_USER_TURN_MARKER}
-    assert out[1] is b_msg                    # B 的请求保留
-    assert out[2] == messages[3]              # B 的 assistant 响应保留
-    assert len(out) == 3                      # 只吞 A 的 user + 它后面的 assistant
-
-
-def test_user_message_payload_text_is_shared_between_signature_and_turn_fingerprint():
-    """_user_message_signature 与 _build_user_turn_fingerprint 现在共用同一个
-    normalization helper（_user_message_payload_text），避免归一化规则漂移。
-    验证：单条 user 消息的 fingerprint = sha256(payload) = signature。
-    """
-    import hashlib
-    from app.agent_server import (
-        _user_message_payload_text,
-        _user_message_signature,
-        _build_user_turn_fingerprint,
-    )
-
-    msg = {
-        "role": "user",
-        "text": "打开天气",
-        "attachments": [{"url": "https://example.com/x.png"}],
-    }
-    payload = _user_message_payload_text(msg)
-    expected_sig = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
-    assert _user_message_signature(msg) == expected_sig
-    # 单条 user 消息时，turn fingerprint 也是同一个 payload 的 sha256
-    assert _build_user_turn_fingerprint([msg]) == expected_sig
-
-    # 非 user 消息：两个函数都不参与
-    assert _user_message_payload_text({"role": "assistant", "text": "hi"}) is None
-    assert _user_message_signature({"role": "assistant", "text": "hi"}) is None
-
-
-def test_inject_skips_records_belonging_to_cancelled_tasks(reset_tracker_records):
-    """被取消任务对应的 [ASSIGNED] 与 [CANCELLED] 记录都不应再注入到 analyzer
-    视野——其触发的 user turn 已被 redact，重新注入只会把它拉回视野。"""
-    from app.agent_server import _task_tracker
-
-    lanlan = "test-lanlan-inject"
-    reset_tracker_records(lanlan)
-
-    _task_tracker.record_assigned(
-        lanlan, task_id="t1", method="browser_use", desc="打开天气并截图",
-    )
-    _task_tracker.record_completed(
-        lanlan, task_id="t1", method="browser_use",
-        desc="打开天气并截图", success=False, cancelled=True,
-        trigger_user_fingerprint="sig-1",
-    )
-    _task_tracker.record_assigned(
-        lanlan, task_id="t2", method="user_plugin", desc="另一个任务",
-    )
-    _task_tracker.record_completed(
-        lanlan, task_id="t2", method="user_plugin",
-        desc="另一个任务", success=True,
-    )
-
-    messages = [{"role": "user", "text": "..."}]
-    out = _task_tracker.inject(messages, lanlan)
-    summary = next((m for m in out if isinstance(m, dict) and m.get("role") == "system"), None)
-    assert summary is not None
-    content = summary["content"]
-    # 取消任务的 desc 完全不出现
-    assert "打开天气并截图" not in content
-    assert "[CANCELLED]" not in content
-    # 没被取消的任务正常出现
-    assert "另一个任务" in content
-
-
-def test_inject_returns_messages_unchanged_when_all_tasks_cancelled(reset_tracker_records):
-    """全部 records 都属于已取消任务 → inject 不应再插入空 summary 消息。"""
-    from app.agent_server import _task_tracker
-
-    lanlan = "test-lanlan-inject-empty"
-    reset_tracker_records(lanlan)
-
-    _task_tracker.record_assigned(
-        lanlan, task_id="t1", method="browser_use", desc="x",
-    )
-    _task_tracker.record_completed(
-        lanlan, task_id="t1", method="browser_use",
-        desc="x", success=False, cancelled=True,
-        trigger_user_fingerprint="sig-1",
-    )
-
-    messages = [{"role": "user", "text": "..."}]
-    out = _task_tracker.inject(messages, lanlan)
-    assert out is messages
-
-
-def test_cancel_task_records_trigger_signature_for_redact():
-    """cancel_task / _cancel_openclaw_tasks_for_stop 都应把 task info 里的
-    _trigger_user_fingerprint 透传到 record_completed，使 redact 能定位回
-    触发的 user turn。"""
-    targets = {
-        "cancel_task": ast.AsyncFunctionDef,
-        "_cancel_openclaw_tasks_for_stop": ast.AsyncFunctionDef,
-    }
-    for name, kind in targets.items():
-        source, node = _find_agent_server_function(name, kind)
-        segment = ast.get_source_segment(source, node)
-        assert "_task_tracker.record_completed" in segment, (
-            f"{name} should call record_completed on cancel"
-        )
-        assert 'trigger_user_fingerprint=info.get("_trigger_user_fingerprint")' in segment, (
-            f"{name} should forward _trigger_user_fingerprint to record_completed"
-        )
-        # 旧的 trigger_user_ts 字段已彻底拆除
-        assert "trigger_user_ts" not in segment, (
-            f"{name} still references the removed trigger_user_ts field"
-        )
-
-
-@pytest.mark.asyncio
-async def test_task_executor_routes_openclaw_as_independent_execution_method():
-    from unittest.mock import AsyncMock, MagicMock, patch
-    from brain.task_executor import DirectTaskExecutor, UnifiedChannelDecision
-
-    executor = object.__new__(DirectTaskExecutor)
-    executor.computer_use = None
-    executor.browser_use = None
-    executor.plugin_list = []
-    executor._external_plugin_provider = None
-
-    # openclaw adapter 可用
-    mock_openclaw = MagicMock()
-    mock_openclaw.is_available.return_value = {"ready": True}
-    executor.openclaw = mock_openclaw
-
-    # mock 统一渠道评估，让 LLM 选择 qwenpaw
-    mock_decision = UnifiedChannelDecision()
-    mock_decision.qwenpaw = {"can_execute": True, "task_description": "搜索天气并截图", "reason": "需要浏览器操作"}
-
-    with patch.object(DirectTaskExecutor, "_assess_unified_channels", new_callable=AsyncMock, return_value=mock_decision):
-        result = await executor.analyze_and_execute(
-            [{"role": "user", "text": "帮我打开浏览器搜索今天天气并截图保存到桌面"}],
-            agent_flags={
-                "computer_use_enabled": False,
-                "browser_use_enabled": False,
-                "user_plugin_enabled": False,
-                "openclaw_enabled": True,
-            },
-        )
-
-    assert result is not None
-    assert result.execution_method == "openclaw"
-    assert result.tool_args is not None
-    assert "instruction" in result.tool_args
-
-
-@pytest.mark.asyncio
-async def test_task_executor_routes_openclaw_with_image_attachments():
-    from unittest.mock import AsyncMock, MagicMock, patch
-    from brain.task_executor import DirectTaskExecutor, UnifiedChannelDecision
-
-    executor = object.__new__(DirectTaskExecutor)
-    executor.computer_use = None
-    executor.browser_use = None
-    executor.plugin_list = []
-    executor._external_plugin_provider = None
-
-    mock_openclaw = MagicMock()
-    mock_openclaw.is_available.return_value = {"ready": True}
-    executor.openclaw = mock_openclaw
-
-    mock_decision = UnifiedChannelDecision()
-    mock_decision.qwenpaw = {"can_execute": True, "task_description": "分析图片并修复报错", "reason": "需要多模态能力"}
-
-    with patch.object(DirectTaskExecutor, "_assess_unified_channels", new_callable=AsyncMock, return_value=mock_decision):
-        result = await executor.analyze_and_execute(
-            [{
-                "role": "user",
-                "content": "帮我修这个报错",
-                "attachments": [{"type": "image_url", "url": "data:image/png;base64,abc"}],
-            }],
-            agent_flags={
-                "computer_use_enabled": False,
-                "browser_use_enabled": False,
-                "user_plugin_enabled": False,
-                "openclaw_enabled": True,
-            },
-        )
-
-    assert result is not None
-    assert result.execution_method == "openclaw"
-    assert result.tool_args is not None
-    assert result.tool_args["attachments"][0]["url"] == "data:image/png;base64,abc"
-
-
-def test_openclaw_session_mapping_is_stable_per_sender_and_resettable():
-    import threading
-    from brain.openclaw_adapter import OpenClawAdapter
-
-    adapter = object.__new__(OpenClawAdapter)
-    adapter._session_lock = threading.Lock()
-    adapter._session_cache = {}
-    adapter._save_session_cache = lambda: None
-
-    sid_one = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a")
-    sid_two = adapter.get_or_create_persistent_session_id(role_name="OtherRole", sender_id="user_a")
-    sid_three = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_b")
-    sid_reset = adapter.reset_persistent_session_id(role_name="LanLan", sender_id="user_a")
-
-    assert sid_one == sid_two
-    assert sid_three != sid_one
-    assert sid_reset != sid_one
-    assert adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a") == sid_reset
-
-
-def test_openclaw_responses_payload_uses_stable_session_id_for_conversation():
-    from brain.openclaw_adapter import OpenClawAdapter
-
-    adapter = object.__new__(OpenClawAdapter)
-    payload = adapter._build_responses_payload(
-        session_id="stable-session",
-        user_id="user_a",
-        channel="console",
-        instruction="帮我看下桌面文件",
-        attachments=None,
-    )
-
-    assert payload["session_id"] == "stable-session"
-    assert payload["conversation"]["id"] == "stable-session"
-    assert payload["user_id"] == "user_a"
-    assert payload["channel"] == "console"
-
-
-def test_openclaw_process_payload_includes_channel():
-    from brain.openclaw_adapter import OpenClawAdapter
-
-    adapter = object.__new__(OpenClawAdapter)
-    payload = adapter._build_process_payload(
-        session_id="stable-session",
-        channel="console",
-        instruction="/stop",
-        attachments=None,
-    )
-
-    assert payload["session_id"] == "stable-session"
-    assert payload["channel"] == "console"
-
-
-@pytest.mark.asyncio
-async def test_openclaw_stop_running_falls_back_to_persistent_session():
-    import threading
-    from brain.openclaw_adapter import OpenClawAdapter
-
-    adapter = object.__new__(OpenClawAdapter)
-    adapter._session_lock = threading.Lock()
-    adapter._session_cache = {}
-    adapter._save_session_cache = lambda: None
-    adapter.default_sender_id = "user_a"
-    adapter.last_error = None
-
-    session_id = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a")
-    result = await adapter.stop_running(sender_id="user_a", role_name="LanLan", task_id="task-1")
-
-    assert result["success"] is True
-    assert result["sender_id"] == "user_a"
-    assert result["session_id"] == session_id
-    assert result["task_id"] == "task-1"
-
-
-@pytest.mark.asyncio
-async def test_openclaw_run_magic_command_rotates_session_after_new():
-    import threading
-    from unittest.mock import AsyncMock
-    from brain.openclaw_adapter import OpenClawAdapter
-
-    adapter = object.__new__(OpenClawAdapter)
-    adapter._session_lock = threading.Lock()
-    adapter._session_cache = {}
-    adapter._save_session_cache = lambda: None
-    adapter.default_sender_id = "user_a"
-    adapter.run_instruction = AsyncMock(return_value={"success": True, "reply": "backend ok", "raw": {"ok": True}})
-
-    initial_session = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a")
-    result = await adapter.run_magic_command("/new", sender_id="user_a", role_name="LanLan")
-    current_session = adapter.get_or_create_persistent_session_id(role_name="LanLan", sender_id="user_a")
-
-    assert result["success"] is True
-    assert result["command"] == "/new"
-    assert result["reply"] == "好的喵！旧的话题存档啦，主人想聊点什么新鲜事？"
-    assert result["session_id"] != initial_session
-    assert current_session == result["session_id"]
-
-
-@pytest.mark.asyncio
-async def test_task_executor_magic_intent_routes_to_openclaw_before_unified_assessment():
-    from unittest.mock import AsyncMock, MagicMock, patch
-    from brain.task_executor import DirectTaskExecutor
-
-    executor = object.__new__(DirectTaskExecutor)
-    executor.computer_use = None
-    executor.browser_use = None
-    executor.plugin_list = []
-    executor._external_plugin_provider = None
-
-    mock_openclaw = MagicMock()
-    mock_openclaw.is_available.return_value = {"ready": True}
-    mock_openclaw.classify_magic_intent = AsyncMock(return_value={"is_magic_intent": True, "command": "/new", "source": "test"})
-    mock_openclaw.get_magic_command_task_description.return_value = "开启新的 QwenPaw 话题会话"
-    executor.openclaw = mock_openclaw
-
-    with patch.object(DirectTaskExecutor, "_assess_unified_channels", new_callable=AsyncMock) as mock_assess:
-        result = await executor.analyze_and_execute(
-            [{"role": "user", "content": "我们换个话题吧"}],
-            agent_flags={
-                "computer_use_enabled": False,
-                "browser_use_enabled": False,
-                "user_plugin_enabled": False,
-                "openclaw_enabled": True,
-            },
-        )
-
-    assert result is not None
-    assert result.execution_method == "openclaw"
-    assert result.tool_args["magic_command"] == "/new"
-    assert result.tool_args["direct_reply"] is True
-    mock_assess.assert_not_called()
-
-
-def test_agent_server_openclaw_sender_id_prefers_latest_user_identity():
-    source, node = _find_agent_server_function("_resolve_openclaw_sender_id", ast.FunctionDef)
-    fn_src = ast.get_source_segment(source, node)
-    assert fn_src is not None
-
-    ns = {"AGENT_HISTORY_TURNS": 8}
-    exec("from typing import Any\n" + fn_src, ns)
-    resolver = ns["_resolve_openclaw_sender_id"]
-
-    result = resolver([
-        {"role": "user", "content": "旧消息", "sender_id": "first_user"},
-        {"role": "assistant", "content": "处理中"},
-        {"role": "user", "content": "最新消息", "metadata": {"user_id": "latest_user"}},
-    ])
-
-    assert result == "latest_user"
-
-
-def test_agent_server_collects_active_openclaw_tasks_for_same_sender():
-    source, node = _find_agent_server_function("_collect_active_openclaw_task_ids", ast.FunctionDef)
-    fn_src = ast.get_source_segment(source, node)
-    assert fn_src is not None
-
-    # channels/openclaw.py accesses the state bag as ``_shared.Modules.<attr>``
-    # (single-owner rule of the package split), so the exec namespace exposes
-    # the fake Modules through a stand-in ``_shared``.
-    import types as _types
-
-    ns = {
-        "Optional": __import__("typing").Optional,
-        "Modules": type(
-            "Modules",
-            (),
-            {
-                "task_registry": {
-                    "openclaw-running": {
-                        "type": "openclaw",
-                        "status": "running",
-                        "sender_id": "user_a",
-                        "lanlan_name": "LanLan",
-                    },
-                    "openclaw-completed": {
-                        "type": "openclaw",
-                        "status": "completed",
-                        "sender_id": "user_a",
-                        "lanlan_name": "LanLan",
-                    },
-                    "openclaw-other-user": {
-                        "type": "openclaw",
-                        "status": "running",
-                        "sender_id": "user_b",
-                        "lanlan_name": "LanLan",
-                    },
-                    "browser-running": {
-                        "type": "browser_use",
-                        "status": "running",
-                        "sender_id": "user_a",
-                        "lanlan_name": "LanLan",
-                    },
-                }
-            },
-        ),
-    }
-    ns["_shared"] = _types.SimpleNamespace(Modules=ns.pop("Modules"))
-    exec(fn_src, ns)
-    collector = ns["_collect_active_openclaw_task_ids"]
-
-    result = collector(sender_id="user_a", lanlan_name="LanLan", exclude_task_id="magic-stop")
-
-    assert result == ["openclaw-running"]
 
 
 def test_cross_server_analyze_request_no_http_fallback_endpoint():
@@ -3622,8 +2311,8 @@ def test_is_agent_api_ready_reports_missing_fields(agent_api, expected_reason):
 
 
 def test_is_agent_api_ready_passes_free_access_key_when_agent_not_free():
-    """free-access 是非空占位 token：readiness 只看三件套填没填，不再因占位 key + 非免费
-    语境而拦截（免费判定已收口到 is_agent_free，脏配置由下游 401 兜底）。"""
+    """free-access is a nonempty placeholder token; readiness checks only the configured triple, no longer rejecting placeholder keys
+    in nonfree contexts. Free classification is centralized in is_agent_free; downstream 401 handles corrupt config."""
     manager = object.__new__(ConfigManager)
     manager.get_model_api_config = lambda _model_type: {
         "model": "m", "base_url": "https://u", "api_key": "free-access",
@@ -3634,8 +2323,8 @@ def test_is_agent_api_ready_passes_free_access_key_when_agent_not_free():
 
 
 def test_is_agent_free_tracks_agent_model_not_version():
-    """is_agent_free() 只认 agent model 名(free-agent-model)，与 core/assist 的版本免费解耦：
-    用免费语音(core=free)但 agent 换自费/自定义 model 时应为 False。"""
+    """is_agent_free checks only agent model free-agent-model, independent of core/assist free tiers:
+    free voice core=free with paid/custom agent models returns False."""
     manager = object.__new__(ConfigManager)
     manager.get_model_api_config = lambda _model_type: {"model": "free-agent-model"}
     assert manager.is_agent_free() is True
@@ -3646,16 +2335,16 @@ def test_is_agent_free_tracks_agent_model_not_version():
 
 
 def test_default_free_profile_agent_model_matches_metered_name():
-    """回退 DEFAULT_ASSIST_API_PROFILES['free'] 的 agent model 必须等于配额计量名
-    (_free_agent_model_name)，否则 api_providers.json 缺失/不可读时免费 agent 不计
-    配额、is_agent_free 误判（codex #1593）。锁住 defaults 与计量名一致。"""
+    """DEFAULT_ASSIST_API_PROFILES['free'] fallback agent model must match quota-accounting
+    _free_agent_model_name, or absent/unreadable api_providers.json skips free-agent
+    quota and misclassifies is_agent_free (codex #1593). Pin defaults/accounting alignment."""
     from config import DEFAULT_ASSIST_API_PROFILES
     assert DEFAULT_ASSIST_API_PROFILES['free']['AGENT_MODEL'] == ConfigManager._free_agent_model_name
 
 
 def test_is_free_voice_tracks_core_not_assist():
-    """is_free_voice() 只认 core(CORE_API_TYPE=='free')，与 assist 无关：
-    core=qwen+assist=free（自费语音+免费文本）应为 False。"""
+    """is_free_voice checks only core CORE_API_TYPE=='free', independent of assist:
+    core=qwen plus assist=free, paid voice/free text, returns False."""
     manager = object.__new__(ConfigManager)
     manager.get_core_config = lambda: {"CORE_API_TYPE": "free"}
     assert manager.is_free_voice() is True
@@ -3666,8 +2355,8 @@ def test_is_free_voice_tracks_core_not_assist():
 
 
 def test_agent_gate_is_free_version_field_sources_agent_free():
-    """gate / agent 命令回包的 is_free_version 字段值取 is_agent_free()（agent model 维度），
-    而非 is_free_voice()（语音/core 维度）——锁住三处同源，防回退。"""
+    """Gate/agent response is_free_version uses agent-model is_agent_free,
+    never voice/core is_free_voice. Pin all three sources against regression."""
     server = _agent_server_package_source_concat()
     assert '"is_free_version": cm.is_agent_free()' in server
     router = Path("main_routers/agent_router.py").read_text(encoding="utf-8")
@@ -3688,10 +2377,10 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
 
     assert 'command == "set_agent_enabled"' in func_src
     assert "gate = _check_agent_api_gate()" in func_src
-    assert "adapter_refreshed = _try_refresh_computer_use_adapter(force=True)" in func_src
-    assert "if not adapter_refreshed and Modules.computer_use is not None:" in func_src
-    assert "falling back to existing adapter" in func_src
-    assert "if Modules.computer_use is not None:" in func_src
+    assert "adapter_refreshed = _try_refresh_model_probe(force=True)" in func_src
+    assert "if not adapter_refreshed and Modules.model_probe is not None:" in func_src
+    assert "falling back to the existing one" in func_src
+    assert "if Modules.model_probe is not None:" in func_src
     assert '_fire_agent_llm_connectivity_check(queue=True)' in func_src
     assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
     assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
@@ -3702,7 +2391,7 @@ def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capa
     assert '"agent_api_gate": gate' in func_src
 
 
-def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
+def test_agent_llm_check_settles_browser_use_instead_of_leaving_it_pending():
     source, func = _find_agent_server_function(
         "_fire_agent_llm_connectivity_check", ast.AsyncFunctionDef
     )
@@ -3710,24 +2399,18 @@ def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
 
     # capabilities.py accesses the state bag as ``_shared.Modules.<attr>``
     # (single-owner rule of the package split).
-    assert "adapter = _shared.Modules.computer_use" in func_src
-    assert "if adapter is None:" in func_src
+    assert "probe = _shared.Modules.model_probe" in func_src
+    assert "if probe is None:" in func_src
     assert '_set_capability("computer_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
     assert '_set_capability("browser_use", False, "AGENT_CU_MODULE_NOT_LOADED")' in func_src
-    assert "bu = _shared.Modules.browser_use" in func_src
-    assert "if bu is None:" in func_src
-    assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
-
-
-def test_agent_popup_refetches_snapshot_after_openclaw_probe_settles():
-    source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
-    popup_src = source.split(
-        "window.addEventListener('neko-popup-opening'", 1
-    )[1].split("window.addEventListener('neko-popup-closed'", 1)[0]
-
-    assert "refreshOpenClawAvailability()" in popup_src
-    assert ".finally(() => {" in popup_src
-    assert "if (state.popupOpen) fetchSnapshot().catch(() => {});" in popup_src
+    # Once the model answers, the browser tools are as ready as a browser can
+    # be found on this computer; nothing has to be loaded for them.
+    assert "await asyncio.to_thread(_browser_dependency_status)" in func_src
+    assert (
+        '_set_capability("browser_use", dependency_ready, "" if dependency_ready else dependency_error)'
+        in func_src
+    )
+    assert "AGENT_BU_MODULE_NOT_LOADED" not in func_src
 
 
 def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
@@ -3765,7 +2448,6 @@ def test_agent_popup_state_sync_includes_pngtuber_prefix():
         "keyboard",
         "browser",
         "user-plugin",
-        "openclaw",
         "status",
     ]:
         assert f"pngtuber-agent-{suffix}" in ui_v2_source
@@ -3775,10 +2457,11 @@ def test_agent_popup_state_sync_includes_pngtuber_prefix():
         "keyboard",
         "browser",
         "user-plugin",
-        "openclaw",
         "status",
     ]:
         assert f"pngtuber-agent-{suffix}" in legacy_source
+    # The OpenClaw switch went with its channel.
+    assert "agent-openclaw" not in ui_v2_source and "agent-openclaw" not in legacy_source
 
 
 def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():
@@ -3793,7 +2476,7 @@ def test_get_model_api_config_agent_uses_agent_fields_without_custom_switch():
     }
 
     cfg = manager.get_model_api_config("agent")
-    # agent 走专用字段但 is_custom 仅反映全局 ENABLE_CUSTOM_API 开关
+    # Agent uses dedicated fields, but is_custom reflects only global ENABLE_CUSTOM_API.
     assert cfg["is_custom"] is False
     assert cfg["model"] == "agent-model"
     assert cfg["base_url"] == "https://agent.example/v1"
@@ -3912,7 +2595,7 @@ async def test_agent_event_bus_publish_session_event_with_bridge(monkeypatch):
     bus.set_main_bridge(None)
 
 
-async def test_agent_event_bus_publish_analyze_request_reliably_with_ack():
+async def test_agent_event_bus_publish_turn_check_reliably_with_ack():
     import main_logic.agent_event_bus as bus
     import threading
 
@@ -3924,7 +2607,7 @@ async def test_agent_event_bus_publish_analyze_request_reliably_with_ack():
 
         async def publish_analyze_request(self, event):
             self.events.append(event)
-            bus.notify_analyze_ack(event.get("event_id"))
+            bus.notify_turn_check_ack(event.get("event_id"))
             return True
 
     bridge = DummyBridge()
@@ -3932,29 +2615,36 @@ async def test_agent_event_bus_publish_analyze_request_reliably_with_ack():
     bridge.owner_thread_id = threading.get_ident()
     bus.set_main_bridge(bridge)
     try:
-        ok = await bus.publish_analyze_request_reliably(
+        ok = await bus.publish_turn_check_reliably(
             lanlan_name="Tian",
-            trigger="turn_end",
-            messages=[{"role": "user", "text": "帮我打开系统计算器"}],
+            user_text="帮我打开系统计算器",
+            reply_text="好的，我这就去打开",
             ack_timeout_s=0.2,
             retries=0,
         )
         assert ok is True
         assert len(bridge.events) == 1
-        assert bridge.events[0]["event_type"] == "analyze_request"
-        assert bridge.events[0]["event_id"]
+        event = bridge.events[0]
+        assert event["event_type"] == "turn_check_request"
+        assert event["event_id"]
+        assert event["lanlan_name"] == "Tian"
+        assert event["user_text"] == "帮我打开系统计算器"
+        assert event["reply_text"] == "好的，我这就去打开"
+        # The analyzer's payload is gone: no history, trigger, or proactive marker.
+        for legacy_key in ("messages", "trigger", "proactive"):
+            assert legacy_key not in event
     finally:
         bus.set_main_bridge(None)
 
 
-async def test_agent_event_bus_publish_analyze_request_reliably_without_bridge_returns_false():
+async def test_agent_event_bus_publish_turn_check_reliably_without_bridge_returns_false():
     import main_logic.agent_event_bus as bus
 
     bus.set_main_bridge(None)
-    ok = await bus.publish_analyze_request_reliably(
+    ok = await bus.publish_turn_check_reliably(
         lanlan_name="Tian",
-        trigger="turn_end",
-        messages=[{"role": "user", "text": "hello"}],
+        user_text="hello",
+        reply_text="hi",
         ack_timeout_s=0.05,
         retries=0,
     )
@@ -4028,18 +2718,18 @@ async def test_zmq_bridge_end_to_end(monkeypatch):
 
     async def fake_on_session_event(event):
         received_on_agent.append(event)
-        if event.get("event_type") == "analyze_request":
+        if event.get("event_type") == "turn_check_request":
             event_id = event.get("event_id")
             if event_id and agent_bridge.push is not None:
                 agent_bridge.push.send_json(
-                    {"event_type": "analyze_ack", "event_id": event_id},
+                    {"event_type": "turn_check_ack", "event_id": event_id},
                     __import__("zmq").NOBLOCK,
                 )
 
     async def fake_on_agent_event(event):
         received_on_main.append(event)
-        if event.get("event_type") == "analyze_ack":
-            bus.notify_analyze_ack(event.get("event_id", ""))
+        if event.get("event_type") == "turn_check_ack":
+            bus.notify_turn_check_ack(event.get("event_id", ""))
 
     main_bridge = bus.MainServerAgentBridge(on_agent_event=fake_on_agent_event)
     agent_bridge = bus.AgentServerEventBridge(on_session_event=fake_on_session_event)
@@ -4051,22 +2741,26 @@ async def test_zmq_bridge_end_to_end(monkeypatch):
 
     bus.set_main_bridge(main_bridge)
     try:
-        ok = await bus.publish_analyze_request_reliably(
+        ok = await bus.publish_turn_check_reliably(
             lanlan_name="TestChar",
-            trigger="test",
-            messages=[{"role": "user", "content": "hello"}],
+            user_text="hello",
+            reply_text="hi there",
             ack_timeout_s=2.0,
             retries=1,
         )
-        assert ok is True, "analyze_request was not acked"
+        assert ok is True, "turn_check_request was not acked"
 
         await asyncio.sleep(0.5)
+        delivered = [
+            e for e in received_on_agent if e.get("event_type") == "turn_check_request"
+        ]
+        assert delivered, f"Agent did not receive turn_check_request: {received_on_agent}"
+        assert delivered[0]["lanlan_name"] == "TestChar"
+        assert delivered[0]["user_text"] == "hello"
+        assert delivered[0]["reply_text"] == "hi there"
         assert any(
-            e.get("event_type") == "analyze_request" for e in received_on_agent
-        ), f"Agent did not receive analyze_request: {received_on_agent}"
-        assert any(
-            e.get("event_type") == "analyze_ack" for e in received_on_main
-        ), f"Main did not receive analyze_ack: {received_on_main}"
+            e.get("event_type") == "turn_check_ack" for e in received_on_main
+        ), f"Main did not receive turn_check_ack: {received_on_main}"
     finally:
         bus.set_main_bridge(None)
         main_bridge._stop.set()
@@ -4199,33 +2893,50 @@ async def test_zmq_agent_to_main_push_pull(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_emit_main_event_sends_via_bridge():
-    """_emit_main_event calls agent_bridge.emit_to_main when bridge is available."""
-    source, func = _find_agent_server_function("_emit_main_event", ast.AsyncFunctionDef)
-    assert _contains_call(func, "emit_to_main"), \
-        "_emit_main_event does not call emit_to_main"
+    """_emit_main_event hands the event to agent_bridge.emit_to_main when a bridge is available.
+
+    The bridge call itself sits in ``_send_main_event`` (shared with the
+    report sender); ``_emit_main_event`` goes through it.
+    """
+    emit_source, emit_func = _find_agent_server_function("_emit_main_event", ast.AsyncFunctionDef)
+    emit_src = ast.get_source_segment(emit_source, emit_func) or ""
+    assert "_send_main_event(event)" in emit_src, \
+        "_emit_main_event does not go through _send_main_event"
+    _, send_func = _find_agent_server_function("_send_main_event", ast.AsyncFunctionDef)
+    assert _contains_call(send_func, "emit_to_main"), \
+        "_send_main_event does not call emit_to_main"
 
 
 def test_emit_main_event_no_http_fallback():
     """_emit_main_event must NOT contain any httpx or HTTP fallback code."""
-    source, func = _find_agent_server_function("_emit_main_event", ast.AsyncFunctionDef)
-    func_source = ast.get_source_segment(source, func) or ""
-    assert "httpx" not in func_source, "_emit_main_event still contains httpx HTTP fallback"
-    assert "http://" not in func_source, "_emit_main_event still contains HTTP URL"
+    for name in ("_emit_main_event", "_send_main_event"):
+        source, func = _find_agent_server_function(name, ast.AsyncFunctionDef)
+        func_source = ast.get_source_segment(source, func) or ""
+        assert "httpx" not in func_source, f"{name} still contains httpx HTTP fallback"
+        assert "http://" not in func_source, f"{name} still contains HTTP URL"
 
 
 # ---------------------------------------------------------------------------
 #  _on_session_event (agent_server.py)
 # ---------------------------------------------------------------------------
 
-def test_on_session_event_dispatches_ack_and_analyze():
-    """_on_session_event creates tasks for ack emission and background analysis."""
+def test_on_session_event_dispatches_ack_and_turn_check():
+    """_on_session_event hands a turn check to a background task, which emits the ack."""
     source, func = _find_agent_server_function("_on_session_event", ast.AsyncFunctionDef)
     func_src = ast.get_source_segment(source, func) or ""
-    assert "analyze_ack" in func_src, "_on_session_event does not emit analyze_ack"
-    assert "_background_analyze_and_plan" in func_src, \
-        "_on_session_event does not call _background_analyze_and_plan"
-    assert "create_task" in func_src, \
-        "_on_session_event does not use create_task for async dispatch"
+    assert '"turn_check_request"' in func_src, \
+        "_on_session_event does not handle turn_check_request"
+    assert "_create_tracked_task(_handle_turn_check_request(event))" in func_src, \
+        "_on_session_event does not dispatch the turn check as a background task"
+    assert "analyze_request" not in func_src
+    assert "_background_analyze_and_plan" not in func_src
+
+    handler_source, handler = _find_agent_server_function(
+        "_handle_turn_check_request", ast.AsyncFunctionDef
+    )
+    handler_src = ast.get_source_segment(handler_source, handler) or ""
+    assert '_create_tracked_task(_emit_main_event("turn_check_ack"' in handler_src, \
+        "_handle_turn_check_request does not emit turn_check_ack as a background task"
 
 
 # ---------------------------------------------------------------------------
@@ -4297,11 +3008,11 @@ async def test_publish_session_event_threadsafe_from_different_thread():
 
 
 # ---------------------------------------------------------------------------
-#  Analyze request ack timeout + retry
+#  Turn check request ack timeout + retry
 # ---------------------------------------------------------------------------
 
-async def test_analyze_request_reliably_retries_on_timeout():
-    """publish_analyze_request_reliably retries when ack times out."""
+async def test_turn_check_reliably_retries_on_timeout():
+    """publish_turn_check_reliably retries when ack times out."""
     import main_logic.agent_event_bus as bus
     import threading
 
@@ -4321,23 +3032,24 @@ async def test_analyze_request_reliably_retries_on_timeout():
     bridge.owner_thread_id = threading.get_ident()
     bus.set_main_bridge(bridge)
     try:
-        ok = await bus.publish_analyze_request_reliably(
+        ok = await bus.publish_turn_check_reliably(
             lanlan_name="Test",
-            trigger="test",
-            messages=[{"role": "user", "content": "hi"}],
+            user_text="hi",
+            reply_text="hello",
             ack_timeout_s=0.05,
             retries=2,
         )
         assert ok is False, "Should have failed after all retries"
         assert len(attempts) == 3, f"Expected 3 attempts (1 + 2 retries), got {len(attempts)}"
+        assert attempts[0], "event_id must not be empty"
         assert all(eid == attempts[0] for eid in attempts), \
             "All attempts should use the same event_id"
     finally:
         bus.set_main_bridge(None)
 
 
-async def test_analyze_request_reliably_returns_true_on_delayed_ack():
-    """publish_analyze_request_reliably succeeds when ack arrives within timeout."""
+async def test_turn_check_reliably_returns_true_on_delayed_ack():
+    """publish_turn_check_reliably succeeds when ack arrives within timeout."""
     import main_logic.agent_event_bus as bus
     import threading
 
@@ -4349,7 +3061,7 @@ async def test_analyze_request_reliably_returns_true_on_delayed_ack():
         async def publish_analyze_request(self, event):
             eid = event.get("event_id")
             asyncio.get_running_loop().call_later(
-                0.05, lambda: bus.notify_analyze_ack(eid)
+                0.05, lambda: bus.notify_turn_check_ack(eid)
             )
             return True
 
@@ -4358,10 +3070,10 @@ async def test_analyze_request_reliably_returns_true_on_delayed_ack():
     bridge.owner_thread_id = threading.get_ident()
     bus.set_main_bridge(bridge)
     try:
-        ok = await bus.publish_analyze_request_reliably(
+        ok = await bus.publish_turn_check_reliably(
             lanlan_name="Test",
-            trigger="test",
-            messages=[{"role": "user", "content": "hi"}],
+            user_text="hi",
+            reply_text="hello",
             ack_timeout_s=0.5,
             retries=0,
         )
@@ -4393,72 +3105,99 @@ async def test_real_bridge_not_started_returns_false():
 
 
 # ---------------------------------------------------------------------------
-#  _publish_analyze_request_with_fallback (cross_server.py)
+#  _publish_turn_check_with_fallback (cross_server.py)
 # ---------------------------------------------------------------------------
 
+# One finished exchange: a turn check compares what the user asked with what
+# she answered, so a history without her reply is never sent at all.
+_TURN_CHECK_EXCHANGE = [
+    {"role": "user", "content": "hi"},
+    {"role": "assistant", "content": "hello"},
+]
+
+
 async def test_cross_server_publish_returns_true_on_success(monkeypatch):
-    """_publish_analyze_request_with_fallback returns True when reliably delivered."""
-    from main_logic.cross_server import _publish_analyze_request_with_fallback
+    """_publish_turn_check_with_fallback returns True when reliably delivered."""
+    from main_logic.cross_server import _publish_turn_check_with_fallback
+
+    calls = []
 
     async def fake_reliably(**kw):
+        calls.append(kw)
         return True
 
     monkeypatch.setattr(
-        "main_logic.cross_server.publish_analyze_request_reliably",
+        "main_logic.cross_server.publish_turn_check_reliably",
         fake_reliably,
     )
 
-    ok = await _publish_analyze_request_with_fallback("Tian", "turn_end", [{"role": "user", "content": "hi"}])
+    ok = await _publish_turn_check_with_fallback("Tian", "turn_end", list(_TURN_CHECK_EXCHANGE))
     assert ok is True
+    assert len(calls) == 1
+    assert calls[0]["lanlan_name"] == "Tian"
+    assert calls[0]["user_text"] == "hi"
+    assert calls[0]["reply_text"] == "hello"
+    for legacy_key in ("messages", "trigger", "proactive"):
+        assert legacy_key not in calls[0]
 
 
 async def test_cross_server_publish_returns_false_on_failure(monkeypatch):
-    """_publish_analyze_request_with_fallback returns False when delivery fails."""
-    from main_logic.cross_server import _publish_analyze_request_with_fallback
+    """_publish_turn_check_with_fallback returns False when delivery fails."""
+    from main_logic.cross_server import _publish_turn_check_with_fallback
+
+    calls = []
 
     async def fake_reliably(**kw):
+        calls.append(kw)
         return False
 
     monkeypatch.setattr(
-        "main_logic.cross_server.publish_analyze_request_reliably",
+        "main_logic.cross_server.publish_turn_check_reliably",
         fake_reliably,
     )
 
-    ok = await _publish_analyze_request_with_fallback("Tian", "turn_end", [{"role": "user", "content": "hi"}])
+    ok = await _publish_turn_check_with_fallback("Tian", "turn_end", list(_TURN_CHECK_EXCHANGE))
     assert ok is False
+    assert len(calls) == 1
 
 
 async def test_cross_server_publish_returns_false_on_exception(monkeypatch):
-    """_publish_analyze_request_with_fallback returns False when exception is raised."""
-    from main_logic.cross_server import _publish_analyze_request_with_fallback
+    """_publish_turn_check_with_fallback returns False when exception is raised."""
+    from main_logic.cross_server import _publish_turn_check_with_fallback
+
+    calls = []
 
     async def fake_reliably(**kw):
+        calls.append(kw)
         raise RuntimeError("zmq exploded")
 
     monkeypatch.setattr(
-        "main_logic.cross_server.publish_analyze_request_reliably",
+        "main_logic.cross_server.publish_turn_check_reliably",
         fake_reliably,
     )
 
-    ok = await _publish_analyze_request_with_fallback("Tian", "turn_end", [{"role": "user", "content": "hi"}])
+    ok = await _publish_turn_check_with_fallback("Tian", "turn_end", list(_TURN_CHECK_EXCHANGE))
     assert ok is False
+    assert len(calls) == 1
 
 
 def test_cross_server_publish_no_http_fallback():
-    """_publish_analyze_request_with_fallback must NOT contain HTTP fallback."""
+    """_publish_turn_check_with_fallback must NOT contain HTTP fallback."""
     source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     func = None
     for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_publish_analyze_request_with_fallback":
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_publish_turn_check_with_fallback":
             func = node
             break
     assert func is not None
     func_src = ast.get_source_segment(source, func) or ""
     assert "aiohttp.ClientSession" not in func_src, \
-        "_publish_analyze_request_with_fallback still contains HTTP fallback"
+        "_publish_turn_check_with_fallback still contains HTTP fallback"
+    assert "httpx" not in func_src, \
+        "_publish_turn_check_with_fallback still contains HTTP fallback"
     assert "/agent/analyze_request" not in func_src, \
-        "_publish_analyze_request_with_fallback still targets HTTP endpoint"
+        "_publish_turn_check_with_fallback still targets HTTP endpoint"
 
 
 class _FakeInternalResponse:
@@ -4574,22 +3313,22 @@ def test_cross_server_session_end_uses_settle_for_zero_remaining():
     """session end must call /settle when everything was already /cache-synced."""
     source = Path("main_logic/cross_server.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
-    assignments = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id in {"_settle_endpoint", "_settle_payload"}:
-                assignments[target.id] = ast.dump(node.value, include_attributes=False)
+    settle = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_settle_session_end"
+    )
+    assignments = [
+        ast.dump(node.value, include_attributes=False)
+        for node in ast.walk(settle)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "endpoint" for t in node.targets)
+    ]
 
-    assert assignments["_settle_endpoint"] == ast.dump(
-        ast.parse('"process" if remaining else "settle"', mode="eval").body,
+    # The payload already includes turn-end messages /cache did not accept (memory_carry).
+    assert ast.dump(
+        ast.parse('"process" if payload else "settle"', mode="eval").body,
         include_attributes=False,
-    )
-    assert assignments["_settle_payload"] == ast.dump(
-        ast.parse("remaining if remaining else []", mode="eval").body,
-        include_attributes=False,
-    )
+    ) in assignments
 
 
 def test_cross_server_memory_cache_failure_paths_are_selective():
@@ -4689,15 +3428,16 @@ def test_cross_server_memory_cache_business_failure_and_recovery(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-#  Concurrent analyze requests with correct ack matching
+#  Concurrent turn check requests with correct ack matching
 # ---------------------------------------------------------------------------
 
-async def test_concurrent_analyze_requests_match_acks_correctly():
-    """Multiple concurrent analyze_request_reliably calls each get their own ack."""
+async def test_concurrent_turn_checks_match_acks_correctly():
+    """Multiple concurrent publish_turn_check_reliably calls each get their own ack."""
     import main_logic.agent_event_bus as bus
     import threading
 
     ack_delays = {"req1": 0.05, "req2": 0.10}
+    event_ids = {}
 
     class ConcurrentBridge:
         def __init__(self):
@@ -4707,9 +3447,10 @@ async def test_concurrent_analyze_requests_match_acks_correctly():
         async def publish_analyze_request(self, event):
             eid = event.get("event_id")
             name = event.get("lanlan_name")
+            event_ids[name] = eid
             delay = ack_delays.get(name, 0.05)
             asyncio.get_running_loop().call_later(
-                delay, lambda: bus.notify_analyze_ack(eid)
+                delay, lambda: bus.notify_turn_check_ack(eid)
             )
             return True
 
@@ -4719,15 +3460,17 @@ async def test_concurrent_analyze_requests_match_acks_correctly():
     bus.set_main_bridge(bridge)
     try:
         results = await asyncio.gather(
-            bus.publish_analyze_request_reliably(
-                lanlan_name="req1", trigger="t", messages=[{"r": "u"}],
+            bus.publish_turn_check_reliably(
+                lanlan_name="req1", user_text="u", reply_text="r",
                 ack_timeout_s=1.0, retries=0,
             ),
-            bus.publish_analyze_request_reliably(
-                lanlan_name="req2", trigger="t", messages=[{"r": "u"}],
+            bus.publish_turn_check_reliably(
+                lanlan_name="req2", user_text="u", reply_text="r",
                 ack_timeout_s=1.0, retries=0,
             ),
         )
         assert results == [True, True], f"Expected both True, got {results}"
+        assert event_ids["req1"] and event_ids["req2"]
+        assert event_ids["req1"] != event_ids["req2"]
     finally:
         bus.set_main_bridge(None)

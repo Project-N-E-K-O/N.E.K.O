@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.testclient import TestClient
 import pytest
 
+import config.visit_settings as visit_settings
 from main_routers import agent_router, cookies_login_router, pages_router, shared_state
 
 
@@ -21,6 +22,8 @@ PAGE_PATHS = [
 def pages_client(monkeypatch):
     monkeypatch.setattr(shared_state, "_state", shared_state._state.copy())
     monkeypatch.setattr(shared_state, "set_steamworks", lambda _value: None)
+    # /visit/transport sits behind the NEKO_VISIT_ENABLED release switch (404 while off); render it with the switch on
+    monkeypatch.setattr(visit_settings, "VISIT_ENABLED", True)
     shared_state.init_shared_state(
         role_state={},
         steamworks=None,
@@ -49,9 +52,8 @@ def test_production_pages_render_with_real_templates(pages_client, path):
 @pytest.mark.parametrize("path", [
     f"{cookies_login_router.router.prefix}/page",
     f"{cookies_login_router.router.prefix}/guide",
-    f"{agent_router.router.prefix}/openclaw/guide",
 ])
-def test_credentials_and_agent_guides_render_with_real_templates(pages_client, path):
+def test_credentials_pages_render_with_real_templates(pages_client, path):
     response = pages_client.get(path)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/html")

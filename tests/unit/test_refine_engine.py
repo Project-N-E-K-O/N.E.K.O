@@ -44,7 +44,7 @@ def test_cluster_hash_is_order_independent():
 
 
 def test_cluster_hash_excludes_fact_ids():
-    """fact 加入/退出 cluster 不应改变 hash —— fact 是只读 info source。"""
+    """Adding/removing facts from a cluster must not change its hash: facts are read-only information sources."""
     from memory.refine import MemoryRefineEngine
     base = [_refl('r1'), _refl('r2')]
     with_fact = base + [_fact('f1'), _fact('f2')]
@@ -116,13 +116,13 @@ def test_all_stamped_fresh_false_when_any_stale():
 
 
 def test_all_stamped_fresh_skips_fact_members():
-    """fact 没有 last_refine 字段，不应让 skip 判定 fail。"""
+    """Facts lack last_refine and must not break the skip decision."""
     from memory.refine import MemoryRefineEngine
     h = 'h'
     now = datetime.now().isoformat()
     cluster = [
         _refl('r1', last_refine_cluster_hash=h, last_refine_at=now),
-        _fact('f1'),  # 没 stamp，但是 fact，应被跳过
+        _fact('f1'),  # A fact without a stamp: skip it.
     ]
     assert MemoryRefineEngine._all_stamped_fresh(cluster, h) is True
 
@@ -141,17 +141,17 @@ def test_starvation_key_returns_min_non_fact_timestamp():
 
 
 def test_starvation_key_empty_string_when_any_unstamped():
-    """未 stamp 的成员视为最饿（''）→ 整个 cluster 排到队首。"""
+    """Unstamped members are treated as hungriest (''); the entire cluster sorts first."""
     from memory.refine import MemoryRefineEngine
     cluster = [
         _refl('r1', last_refine_at='2026-04-01T00:00:00'),
-        _refl('r2'),  # 无 last_refine_at → ''
+        _refl('r2'),  # Missing last_refine_at -> ''.
     ]
     assert MemoryRefineEngine._cluster_starvation_key(cluster) == ''
 
 
 def test_starvation_key_empty_when_all_facts():
-    """全 fact cluster（理论不会发生）→ ''。"""
+    """An all-fact cluster (theoretically impossible) returns ''."""
     from memory.refine import MemoryRefineEngine
     cluster = [_fact('f1'), _fact('f2')]
     assert MemoryRefineEngine._cluster_starvation_key(cluster) == ''
@@ -191,10 +191,10 @@ def test_render_cluster_skips_entries_missing_text_or_id():
     from memory.refine import MemoryRefineEngine
     out = MemoryRefineEngine._render_cluster([
         _refl('r1', text='valid'),
-        _refl('r2', text=''),       # 无 text，跳
-        _refl('', text='no id'),    # 无 id，跳
+        _refl('r2', text=''),       # Missing text: skip.
+        _refl('', text='no id'),    # Missing id: skip.
     ])
-    assert out.count('\n') == 0  # 只有 r1 一行
+    assert out.count('\n') == 0  # Only the r1 row.
     assert 'valid' in out
     assert 'no id' not in out
 
@@ -204,7 +204,7 @@ def test_render_cluster_skips_entries_missing_text_or_id():
 
 @pytest.mark.asyncio
 async def test_refine_pass_noop_when_embedding_disabled():
-    """embedding 服务关闭 → 整 pass no-op，零 LLM 调用。"""
+    """Embedding service disabled: the entire pass is a noop, with zero LLM calls."""
     from unittest.mock import MagicMock, patch
     from memory.refine import MemoryRefineEngine
 

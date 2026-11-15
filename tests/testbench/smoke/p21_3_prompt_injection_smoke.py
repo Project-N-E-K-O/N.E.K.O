@@ -2,7 +2,7 @@
 
 Run after touching ``scoring_schema`` render path, ``judge_runner``
 delimiter framing, or ``prompt_injection_detect`` library
-(PLAN.md §13 — Prompt Injection 最小化防御 pass)::
+(PLAN.md §13 — Prompt Injection minimal-defense pass)::
 
     .venv\\Scripts\\python.exe tests/testbench/smoke/p21_3_prompt_injection_smoke.py
 
@@ -20,7 +20,7 @@ Covers:
       behaviour preserved).
 
   F2 (judger delimiter framing):
-    * ``_wrap_user_content`` emits a ``<user_content kind="...">…
+    * ``_wrap_user_content`` emits a ``<user_content kind=\"...\">…
       </user_content>`` block with kind attribute.
     * Injected ``</user_content>`` inside user text is escaped so the
       frame can't be broken out of.

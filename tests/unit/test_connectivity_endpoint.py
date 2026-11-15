@@ -13,6 +13,7 @@ Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6
 from __future__ import annotations
 
 import asyncio
+import json
 import ssl
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -203,7 +204,7 @@ class TestSchemaValidation:
         constructor.assert_not_called()
 
     async def test_builtin_assist_accepts_any_successful_candidate_url(self):
-        """内置辅助 provider 有多个候选 URL 时，任一通过即返回可用 URL。"""
+        """With multiple built-in assist-provider URL candidates, any successful candidate returns an available URL."""
         calls = []
 
         async def fake_test(url, api_key, model="gpt-3.5-turbo", is_free=False):
@@ -402,7 +403,7 @@ class TestSchemaValidation:
         assert result["error_code"] == "missing_params"
 
     async def test_builtin_core_accepts_any_successful_candidate_url(self):
-        """内置核心 provider 若配置多个候选 URL，任一通过即返回可用 URL。"""
+        """With multiple built-in core-provider URL candidates, any successful candidate returns an available URL."""
         calls = []
 
         async def fake_test(url, api_key, model=""):
@@ -441,7 +442,7 @@ class TestSchemaValidation:
         assert calls[-1][1] == "sk-region-key"
 
     async def test_save_auto_resolve_core_prefers_provider_keybook_key(self):
-        """核心 provider 有专属 Key 时，保存前检测优先使用专属 Key 而非旧 coreApiKey。"""
+        """Pre-save connectivity checks prefer a dedicated core-provider key over old coreApiKey when configured."""
         calls = []
 
         async def fake_test(url, api_key, model=""):
@@ -485,7 +486,7 @@ class TestSchemaValidation:
         assert _get_save_provider_api_key(core_cfg, fake_config, "qwen_intl") == "sk-intl-key"
 
     async def test_save_auto_resolves_builtin_candidate_url(self):
-        """保存配置时会自动检测候选 URL，并写入通过的 URL。"""
+        """Saving configuration automatically probes URL candidates and persists the successful URL."""
         calls = []
 
         async def fake_test(url, api_key, model="gpt-3.5-turbo", is_free=False):
@@ -533,7 +534,7 @@ class TestSchemaValidation:
         assert calls[-1][1] == "sk-intl"
 
     async def test_save_auto_resolve_reuses_frontend_checked_url(self):
-        """前端本轮已检测通过的 URL 会被复用，避免保存时重复检测。"""
+        """Reuse URLs already validated by the frontend this round to avoid duplicate probing on save."""
         fake_config = {
             "core_api_providers": {},
             "assist_api_providers": {
@@ -573,7 +574,7 @@ class TestSchemaValidation:
         assert core_cfg["resolvedProviderUrls"]["assist:qwen_intl"] == "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
 
     async def test_save_auto_resolve_drops_stale_url_when_detection_fails(self):
-        """保存前检测失败时不能继续保留旧的地域 URL。"""
+        """Failed pre-save probes must not retain old regional URLs."""
         fake_config = {
             "core_api_providers": {},
             "assist_api_providers": {
@@ -614,9 +615,9 @@ class TestSchemaValidation:
         assert core_cfg["resolvedProviderUrls"] == {}
 
     async def test_save_auto_resolve_keeps_unrelated_when_target_fails(self):
-        """target 测失败时丢掉它自己的旧 resolved，但不该误伤同一份 dict 里
-        其它 provider 的记忆。覆盖 CodeRabbit #3258131687 (失败丢旧值) 和
-        Codex #3258589662 (保留无关 provider) 的组合语义。
+        """When a target probe fails, drop its own old resolved value without harming other providers' remembered values
+        in the same dictionary. Combines CodeRabbit #3258131687 (drop failed old values) and
+        Codex #3258589662 (preserve unrelated providers).
         """
         fake_config = {
             "core_api_providers": {},
@@ -658,11 +659,11 @@ class TestSchemaValidation:
         }
 
     async def test_save_auto_resolve_skips_assist_provider_with_empty_key(self):
-        """assist provider 的 key 缺失时不应该回退到 coreApiKey 去 probe：
-        core/assist 是不同 provider 时 coreApiKey 是 OpenAI 的，拿去打 qwen_intl
-        必然 401 → 误判失败 → 顺手 pop 掉之前测通的 region pin
-        (Codex P2 #3258802582)。target 应该被 _build_save_connectivity_targets
-        过滤掉，resolved 旧值保留。
+        """Missing assist-provider keys must not fall back to coreApiKey for probing:
+        with different core/assist providers, OpenAI's coreApiKey sent to qwen_intl
+        inevitably returns 401, causing a false failure and removal of a previously working regional pin
+        (Codex P2 #3258802582). _build_save_connectivity_targets should filter the target,
+        preserving the old resolved value.
         """
         fake_config = {
             "core_api_providers": {},
@@ -703,8 +704,8 @@ class TestSchemaValidation:
         }
 
     async def test_save_auto_resolve_keeps_unrelated_resolved_when_no_targets(self):
-        """没有候选目标时保留历史 resolved URL：本次 save 没动 qwen_intl，
-        别把 CosyVoice intl runtime 还要用的 US 端点记忆顺手清掉
+        """Preserve historical resolved URLs when no target candidates exist: this save did not change qwen_intl,
+        so do not clear the US endpoint remembered for CosyVoice international runtime.
         (Codex P1 #3258589662)。
         """
         core_cfg = {
@@ -917,6 +918,58 @@ class TestOpenAICompatibleErrors:
     ChatOpenAI level rather than httpx level.
     """
 
+    @pytest.mark.parametrize(
+        ("url", "official_openai"),
+        [
+            ("https://api.openai.com/v1", True),
+            ("https://API.OPENAI.COM/v1/", True),
+            ("https://api.example.com/v1", False),
+            ("https://api.openai.com.example.com/v1", False),
+            ("https://api.openai.com@api.example.com/v1", False),
+            ("http://api.openai.com/v1", False),
+        ],
+    )
+    async def test_probe_output_budget_on_wire(self, url, official_openai):
+        """Exercise the real project client and SDK against a local transport.
+
+        The simulated OpenAI response reproduces #3640 when a one-token
+        request reaches the wire; other endpoints retain their cheap probe.
+        No network request or real credential is used.
+        """
+        from config import CONNECTIVITY_TEST_MAX_TOKENS
+
+        requests = []
+
+        def handle(request):
+            payload = json.loads(request.content)
+            requests.append(payload)
+            budget = payload["max_completion_tokens"]
+            if official_openai and budget < 64:
+                return httpx.Response(400, json={"error": {
+                    "message": "Could not finish the message because max_tokens or model output limit was reached.",
+                    "type": "invalid_request_error",
+                }})
+            return httpx.Response(200, json={
+                "id": "probe", "object": "chat.completion", "created": 0,
+                "model": payload["model"],
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"},
+                             "finish_reason": "stop"}],
+            })
+
+        transport = httpx.MockTransport(handle)
+        with patch("openai.DefaultAsyncHttpxClient", side_effect=lambda **_: httpx.AsyncClient(transport=transport)):
+            result = await _test_openai_compatible(url, "sk-test-only", "gpt-5.6-luna")
+
+        assert result["success"] is True
+        assert len(requests) == 1
+        assert requests[0]["model"] == "gpt-5.6-luna"
+        assert requests[0]["messages"] == [{"role": "user", "content": "hi"}]
+        assert requests[0]["stream"] is False
+        if official_openai:
+            assert 64 <= requests[0]["max_completion_tokens"] <= 128
+        else:
+            assert requests[0]["max_completion_tokens"] == CONNECTIVITY_TEST_MAX_TOKENS
+
     async def test_success(self):
         """Successful chat completion → success."""
         mock_response = MagicMock()
@@ -1074,6 +1127,33 @@ class TestOpenAICompatibleErrors:
 
 class TestClassifyOpenAIError:
     """Test _classify_openai_error directly for edge cases."""
+
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_output_limit_has_safe_diagnostic(self, nested):
+        from openai import BadRequestError
+
+        detail = {
+            "message": "Could not finish the message because max_tokens or model output limit was reached. "
+                       "Please try again with higher max_tokens. sk-secret-must-not-appear",
+            "type": "invalid_request_error", "param": None, "code": None,
+        }
+        response = httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"))
+        result = _classify_openai_error(BadRequestError(
+            "sensitive upstream message", response=response,
+            body={"error": detail} if nested else detail,
+        ))
+        assert result["success"] is False
+        assert result["error_code"] == "output_limit"
+        assert "sk-secret" not in str(result)
+        assert "sensitive upstream" not in str(result)
+
+    @pytest.mark.parametrize("body", [None, "not json", {"error": []}, {"message": "invalid model"}])
+    def test_unrelated_bad_request_stays_failure(self, body):
+        from openai import BadRequestError
+
+        response = httpx.Response(400, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"))
+        result = _classify_openai_error(BadRequestError("sensitive message", response=response, body=body))
+        assert result == {"success": False, "error": "HTTP 400", "error_code": "unknown"}
 
     def test_asyncio_timeout(self):
         """asyncio.TimeoutError → timeout."""
@@ -1318,8 +1398,8 @@ class TestEndpointExceptionHandling:
 
 
 # ===========================================================================
-# 12. vLLM-Omni TTS handshake-only probe (#1764 review 第六轮)
-#     验证 sub_type='vllm_omni_tts' 路径不发 OpenAI Realtime session.update
+# 12. vLLM-Omni TTS handshake-only probe (#1764 review round 6).
+#     Verify sub_type='vllm_omni_tts' sends no OpenAI Realtime session.update.
 # ===========================================================================
 
 class TestVllmOmniWsHandshake:
@@ -1343,7 +1423,7 @@ class TestVllmOmniWsHandshake:
             )
 
         assert result["success"] is True
-        # 关键断言：握手探测路径绝不发任何应用层帧（session.update / 任何 send）
+        # Key assertion: handshake probes never send application frames (session.update or any send).
         mock_conn.send.assert_not_called()
         mock_conn.recv.assert_not_called()
 

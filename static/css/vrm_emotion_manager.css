@@ -541,6 +541,24 @@ body {
     animation: slide-in 0.3s ease;
 }
 
+#emotion-load-state:not([hidden]) {
+    display: block;
+}
+
+#emotion-load-state[hidden], #retry-load-btn[hidden], #unavailable-bindings[hidden] {
+    display: none;
+}
+
+#retry-load-btn {
+    margin-top: var(--spacing-md);
+}
+
+.btn:disabled, .preview-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+    transform: none;
+}
+
 @keyframes slide-in {
     from {
         opacity: 0;

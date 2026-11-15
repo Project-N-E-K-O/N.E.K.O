@@ -893,10 +893,18 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
 
     const handleStart = (clientX, clientY) => {
         if (isDragging) return;
+        // Match the shared avatar drag gate: Playground owns this gesture,
+        // including the wait for its entry to finish.
+        const button = returnButtonContainer.querySelector('.neko-idle-return-btn');
+        if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
         window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
             detail: {
                 reason: 'return-ball-drag-start',
-                container: returnButtonContainer
+                container: returnButtonContainer,
+                dragSessionId: dragActivitySequence + 1,
+                screenX: clientX + (Number(window.screenX) || 0),
+                screenY: clientY + (Number(window.screenY) || 0),
+                timestamp: Date.now()
             }
         }));
         isDragging = true;
@@ -948,7 +956,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
                 window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                     detail: {
                         reason: 'return-ball-drag-active',
-                        container: returnButtonContainer
+                        container: returnButtonContainer,
+                        dragSessionId: dragActivitySequence
                     }
                 }));
             }
@@ -974,7 +983,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
                 window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
                     detail: {
                         reason: 'return-ball-drag-active',
-                        container: returnButtonContainer
+                        container: returnButtonContainer,
+                        dragSessionId: dragActivitySequence
                     }
                 }));
             }
@@ -992,6 +1002,22 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         if (!isDragging) return;
         pendingClientX = clientX;
         pendingClientY = clientY;
+        if (dragActiveDispatched || Math.abs(clientX - dragStartX) > 5 || Math.abs(clientY - dragStartY) > 5) {
+            window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                detail: {
+                    reason: 'return-ball-drag-motion',
+                    container: returnButtonContainer,
+                    dragSessionId: dragActivitySequence,
+                    clientX,
+                    clientY,
+                    screenX: clientX + (Number(window.screenX) || 0),
+                    screenY: clientY + (Number(window.screenY) || 0),
+                    deltaX: clientX - dragStartX,
+                    deltaY: clientY - dragStartY,
+                    timestamp: Date.now()
+                }
+            }));
+        }
         if (!dragRAFId) {
             dragRAFId = requestAnimationFrame(applyDragPosition);
         }
@@ -1009,7 +1035,13 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
             const dragActivityFacts = finishDragActivity();
 
-            setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
+            // Release physics immediately, while keeping the subsequent DOM
+            // click suppressed just like the shared avatar drag implementation.
+            returnButtonContainer.setAttribute('data-dragging', 'false');
+            if (moved) {
+                returnButtonContainer.setAttribute('data-neko-return-click-suppressed', 'true');
+                setTimeout(() => returnButtonContainer.removeAttribute('data-neko-return-click-suppressed'), 120);
+            }
             isDragging = false;
             dragActiveDispatched = false;
             returnButtonContainer.style.cursor = 'grab';
@@ -1018,6 +1050,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
                 dispatchDragTerminal(
                     dragCancelled ? 'return-ball-drag-cancel' : 'return-ball-drag-end',
                     Object.assign({
+                        dragSessionId: dragActivitySequence,
+                        releasedAt: Date.now(),
                         movedDistancePx: moved ? movedDistancePx : 0,
                         dragCancelled: dragCancelled
                     }, dragActivityFacts)
@@ -1041,6 +1075,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
             e.stopImmediatePropagation();
             return;
         }
+        const button = returnButtonContainer.querySelector('.neko-idle-return-btn');
+        if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
         if (returnButtonContainer.contains(e.target)) {
             e.preventDefault(); handleStart(e.clientX, e.clientY);
         }
@@ -1061,6 +1097,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     document.addEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
 
     returnButtonContainer.addEventListener('touchstart', (e) => {
+        const button = returnButtonContainer.querySelector('.neko-idle-return-btn');
+        if (_isNekoIdleCat1PlaygroundEntryOrDropActive(button)) return;
         if (returnButtonContainer.contains(e.target)) {
             e.preventDefault(); const touch = e.touches[0]; handleStart(touch.clientX, touch.clientY);
         }
@@ -1107,23 +1145,47 @@ VRMManager.prototype.applyScreenDelta = function(screenDx, screenDy, options = {
     const canvasRect = this.renderer.domElement.getBoundingClientRect();
     const viewWidth = canvasRect.width > 0 ? canvasRect.width : window.innerWidth;
     const viewHeight = canvasRect.height > 0 ? canvasRect.height : window.innerHeight;
-    if (viewWidth <= 0 || viewHeight <= 0) return;
+    if (!(viewWidth > 0) || !(viewHeight > 0)
+        || !Number.isFinite(screenDx) || !Number.isFinite(screenDy)) return;
 
-    const cameraDistance = camera.position.distanceTo(scene.position);
-    if (cameraDistance < 0.001) return;
-
-    const fov = camera.fov * (Math.PI / 180);
-    const worldHeight = 2 * Math.tan(fov / 2) * cameraDistance;
-    const worldWidth = worldHeight * camera.aspect;
-
-    const pixelToWorldX = worldWidth / viewWidth;
-    const pixelToWorldY = worldHeight / viewHeight;
-
-    const right = new window.THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-    const up = new window.THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-
-    scene.position.add(right.clone().multiplyScalar(screenDx * pixelToWorldX));
-    scene.position.add(up.clone().multiplyScalar(-screenDy * pixelToWorldY));
+    // 在同一投影深度上平移。直线距离会随横向/纵向偏移增长，导致来回拖猫时越移越远。
+    camera.updateWorldMatrix(true, false);
+    const worldPosition = scene.getWorldPosition(new window.THREE.Vector3());
+    const depth = -worldPosition.clone().applyMatrix4(camera.matrixWorldInverse).z;
+    if (!Number.isFinite(depth)) return;
+    const anchor = worldPosition.clone();
+    const near = Math.max(camera.near, 0.001);
+    if (depth < near) {
+        // 大模型旋转后，原点可在相机后方而身体仍可见；以可见深度区间的中点换算位移。
+        const box = new window.THREE.Box3().setFromObject(scene);
+        if (box.isEmpty()) return;
+        let minDepth = Infinity, maxDepth = -Infinity;
+        for (const x of [box.min.x, box.max.x]) {
+            for (const y of [box.min.y, box.max.y]) {
+                for (const z of [box.min.z, box.max.z]) {
+                    const point = new window.THREE.Vector3(x, y, z).applyMatrix4(camera.matrixWorldInverse);
+                    minDepth = Math.min(minDepth, -point.z);
+                    maxDepth = Math.max(maxDepth, -point.z);
+                }
+            }
+        }
+        // 参考深度限定在相机 near/far 内，避免选到远裁剪面之外的锚点。
+        const visibleNear = Math.max(near, minDepth);
+        const visibleFar = Math.min(camera.far, maxDepth);
+        if (!Number.isFinite(visibleNear) || !Number.isFinite(visibleFar) || visibleFar < visibleNear) return;
+        box.getCenter(anchor).applyMatrix4(camera.matrixWorldInverse);
+        anchor.z = -(visibleNear + visibleFar) / 2;
+        anchor.applyMatrix4(camera.matrixWorld);
+    }
+    const target = anchor.clone().project(camera);
+    target.x += screenDx * 2 / viewWidth;
+    target.y -= screenDy * 2 / viewHeight;
+    target.unproject(camera);
+    // 锚点仅决定换算深度；世界位移仍应用到原始模型原点。
+    target.sub(anchor).add(worldPosition);
+    if (scene.parent) scene.parent.worldToLocal(target);
+    if (![target.x, target.y, target.z].every(Number.isFinite)) return;
+    scene.position.copy(target);
 
     if (options.clamp !== false && this.interaction && typeof this.interaction.clampModelPosition === 'function') {
         const clamped = this.interaction.clampModelPosition(scene.position.clone());

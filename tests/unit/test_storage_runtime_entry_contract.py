@@ -27,6 +27,11 @@ DELIBERATELY_UNMIGRATED = {
     # checkpoint itself, so it can never move as a whole; what the code keeps
     # below it under the runtime root is checked one level down instead.
     "state",
+    # Holds the task agents' working directories (virtual environments,
+    # ``node_modules``) and the profile of the browser the browser tools
+    # start: both contain links, and the copier stops a whole migration at a
+    # link. Its plain files move one by one instead, which is checked below.
+    "nekoclaw",
 }
 
 # Files under state that belong to the anchor root and stay with it, with the
@@ -113,6 +118,10 @@ def _unwrap_same_path(node: ast.AST) -> ast.AST | None:
 
 def _is_runtime_root(node: ast.AST, aliases: set[str]) -> bool:
     """Whether ``node`` evaluates to the runtime root itself (not a child or parent)."""
+    if isinstance(node, ast.IfExp):
+        # Only the selected value can alias the root. A reference in the
+        # condition or inside a child path does not make that value the root.
+        return _is_runtime_root(node.body, aliases) or _is_runtime_root(node.orelse, aliases)
     wrapped = _unwrap_same_path(node)
     if wrapped is not None:
         return _is_runtime_root(wrapped, aliases)
@@ -409,3 +418,77 @@ def test_a_wrapped_path_that_is_not_the_runtime_root_is_not_scanned(expression):
 
     assert _scan_state_children(tree) == set()
     assert _scan_module(tree) == set()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        ("other if ready else Path(cm.app_docs_dir) / 'chat_sync'", {"chat_sync"}),
+        ("Path(cm.app_docs_dir) / 'chat_sync' if ready else other", {"chat_sync"}),
+        ("other if cm.app_docs_dir.exists() else fallback", set()),
+    ],
+)
+def test_conditional_subdirectory_is_not_a_runtime_root_alias(expression, expected):
+    tree = ast.parse(chr(10).join([
+        "def f(cm):",
+        f"    directory = {expression}",
+        "    target = directory / 'state.sqlite3'",
+    ]))
+
+    assert _scan_module(tree) == expected
+    assert _scan_state_children(tree) == set()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "expression",
+    ["cm.app_docs_dir if ready else other", "other if ready else cm.app_docs_dir"],
+)
+def test_conditional_runtime_root_alias_is_still_scanned(expression):
+    tree = ast.parse(chr(10).join([
+        "def f(cm):",
+        f"    directory = {expression}",
+        "    target = directory / 'new_top_level'",
+        "    child = directory / 'state' / 'new_child'",
+    ]))
+
+    assert _scan_module(tree) == {"new_top_level", "state"}
+    assert _scan_state_children(tree) == {"new_child"}
+
+
+@pytest.mark.unit
+def test_the_plain_files_of_nekoclaw_move_one_by_one():
+    """nekoclaw does not move as a directory (the links below it would stop a
+    whole migration), so every file the host and the browser tools keep
+    directly in it has to be named among the migrated entries."""
+    from nekoclaw.builtin.browser.settings import BrowserSettingsStore
+    from nekoclaw.host.paths import HostPaths
+
+    root = Path("data-root") / "nekoclaw"
+    paths = HostPaths(root)
+    kept = {
+        getattr(paths, name)().name
+        for name in dir(paths)
+        if name.endswith(("_db", "_json")) and callable(getattr(paths, name))
+    }
+    kept.add(BrowserSettingsStore(root).path().name)
+    # The scan must see the files there are, or it proves nothing.
+    assert {"ledger.db", "permissions.json", "model_capabilities.json", "browser.json"} <= kept
+
+    migrated = {name.removeprefix("nekoclaw/") for name in MIGRATED_RUNTIME_ENTRY_NAMES if name.startswith("nekoclaw/")}
+    assert kept <= migrated, (
+        "A file kept directly in <data root>/nekoclaw is not migrated. Add it to "
+        "MIGRATED_RUNTIME_ENTRY_NAMES in utils/storage/migration.py as nekoclaw/<name>."
+    )
+    # What was committed to the ledger and not yet written into its file is in the write-ahead log.
+    assert "ledger.db-wal" in migrated
+    # Neither the directory as a whole nor the two directories with links in them.
+    assert "nekoclaw" not in MIGRATED_RUNTIME_ENTRY_NAMES
+    assert not {"task_agents", "browser_profile"} & migrated
+    # What task agents keep for later commissions is plain text in a directory
+    # of its own, apart from their session directories, and moves as a whole.
+    space = paths.space().root
+    assert space.parent == root and space.name in migrated
+    assert root / "task_agents" not in (space, *space.parents)
+    assert space not in paths.session_dir("c1", "a project").parents

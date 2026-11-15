@@ -18,7 +18,7 @@ CHOICES = ("（阅读刚显示的文字）", "（暂时沉默）", "（询问这
 def _payload():
     return {
         "offer_present": False, "valid": False, "body_violations": [],
-        "unsafe_suggestion_indexes": [], "failure_reason": "",
+        "failure_reason": "",
         "fixed_narration_triggers": [{"id": "0", "evidence": "指尖触碰物品"}],
         "suggestion_checks": [
             {"index": 0, "decision": "after_display", "requires": ["0"]},
@@ -32,7 +32,7 @@ def _review(payload=None):
     return evaluator._parse_transition_judge_output(
         json.dumps(_payload() if payload is None else payload, ensure_ascii=False),
         fixed_narration_review=True, fixed_narration_ids=("record", "second"),
-        display_suggestions=CHOICES,
+        display_suggestions=CHOICES, allow_after_display=True,
     )
 
 
@@ -62,7 +62,6 @@ def test_malformed_dependency_only_removes_choices_and_keeps_trigger_and_body(ch
 @pytest.mark.parametrize("checks", [None, {}, [], [{"index": 0, "decision": "allow", "requires": []}]])
 def test_missing_or_incomplete_checks_do_not_silently_allow_unchecked_choices(checks):
     payload = _payload()
-    payload.pop("unsafe_suggestion_indexes")
     payload["suggestion_checks"] = checks
     assert _review(payload).unsafe_suggestion_indexes == (0, 1, 2)
 
@@ -70,7 +69,9 @@ def test_missing_or_incomplete_checks_do_not_silently_allow_unchecked_choices(ch
 def test_legacy_response_has_no_dependencies_and_unsolicited_field_is_rejected():
     payload = _payload()
     payload.pop("suggestion_checks")
+    payload["unsafe_suggestion_indexes"] = []
     assert _review(payload).display_dependent_suggestions == ()
+    assert _review(payload).unsafe_suggestion_indexes == (0, 1, 2)
     with pytest.raises(evaluator.NumericV2EvaluatorOutputError):
         evaluator._parse_transition_judge_output(json.dumps(_payload()), fixed_narration_review=True,
                                                  fixed_narration_ids=("record", "second"))
@@ -97,13 +98,12 @@ def test_dependencies_cannot_override_hard_rejection_or_drift_after_choice_inser
     candidate["fixed_narrations"] = [{"node_id": "start", "id": "record"}]
     assert workflow._drop_undelivered_display_suggestions(candidate, review, node_id="start")[0] == candidate
     shifted = {"suggested_inputs": ["接受邀请。", *CHOICES]}
-    result, _ = workflow._drop_undelivered_display_suggestions(shifted, review, node_id="start")
+    result, _ = workflow._drop_undelivered_display_suggestions(shifted, _review(), node_id="start")
     assert result["suggested_inputs"] == ["接受邀请。", CHOICES[1], CHOICES[2]]
 
 
 def test_reject_decision_derives_existing_unsafe_index_without_display_dependency():
     payload = _payload()
-    payload.pop("unsafe_suggestion_indexes")
     payload["suggestion_checks"][0] = {"index": 0, "decision": "reject", "requires": []}
     review = _review(payload)
     assert review.unsafe_suggestion_indexes == (0,)
@@ -144,7 +144,7 @@ async def test_workflow_delivers_then_filters_once_and_restores(tmp_path, monkey
         calls["review"] += 1
         result = _review()
         if not confirmed:
-            result = replace(result, display_dependent_suggestions=())
+            result = replace(result, display_dependent_suggestions=(), approved_suggestion_texts=CHOICES)
         if not trigger_valid:
             result = replace(result, fixed_narration_triggers=({"id": "record", "evidence": "并不存在的动作"},))
         return result
@@ -202,7 +202,9 @@ async def test_misclassified_choice_is_hidden_only_on_actual_display_turn(
             return replace(_review(), display_dependent_suggestions=(
                 {"text": stale_choice, "requires": ("record",)},
             ))
-        return evaluator.NumericV2TransitionOfferReview(False, False, (), ())
+        return evaluator.NumericV2TransitionOfferReview(
+            False, False, (), (), approved_suggestion_texts=tuple(next_choices),
+        )
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", enabled)
     monkeypatch.setattr(workflow.NumericV2MetricEvaluator, "evaluate", evaluate)

@@ -30,7 +30,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from ..connection_cleanup import connection_registry
-from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence
+from ..delivery import begin_transport_write, complete_transport_write, delivery_evidence, retire_interval_deliveries
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ._shared import is_auth_rejection
 
@@ -469,7 +469,7 @@ async def _step_sender(
                     state.last_utterance_id = request.utterance_id
                     # The configured container and codec are raw PCM16LE. The
                     # official field is Base64 text; no WAV header is added.
-                    delivery = begin_transport_write(request_queue)
+                    delivery = begin_transport_write(request_queue, delivery_spans=request.delivery_spans)
                     await ws.send(
                         json.dumps(
                             {
@@ -484,6 +484,7 @@ async def _step_sender(
                     complete_transport_write(
                         delivery, len(request.audio), generation=request.generation,
                         buffer_epoch=request.buffer_epoch, provider="step",
+                            delivery_spans=request.delivery_spans, takes_ownership=True,
                     )
                     continue
 
@@ -566,6 +567,8 @@ async def _step_sender(
                 )
                 return "error", request
             finally:
+                if request.kind == "audio":
+                    retire_interval_deliveries(request_queue, only_spans=request.delivery_spans)
                 request_queue.task_done()
     except asyncio.CancelledError:
         raise

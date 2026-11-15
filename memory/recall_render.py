@@ -165,9 +165,9 @@ def render_recall_block(
         lines.append(
             f"{len(lines) + 1}. {tag} {text}{_time_suffix(item, lang)}"
         )
-    # 行级兜底与编号分开做：编号要按最终顺序连续，而截断只能在整行拼好之后
-    # 量。单条截断只管 text，tag 里的未知枚举是原样透出的，而整段预算的
-    # "至少留一条"规则会无条件留下第一行——畸形 entity 正是从这里进 prompt 的。
+    # Keep line-level fallback separate from numbering: numbering must be consecutive in final order, while truncation can only be measured
+    # after assembling the entire line. Per-item truncation affects only text; unknown tag enums pass through unchanged, and the overall
+    # budget's 'keep at least one' rule always retains the first line. This is how malformed entities enter the prompt.
     lines = [
         truncate_to_tokens(
             line, RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS,
@@ -177,8 +177,8 @@ def render_recall_block(
 
     budget = RECALL_RENDER_TOTAL_MAX_TOKENS
     if header_template is not None:
-        # 用 n=条目总数 估表头开销：最终 n 只会更小、位数只会更少，往大了
-        # 估是安全方向。
+        # Estimate header overhead using n=total item count: final n can only be smaller with fewer digits, so overestimating
+        # is safe.
         budget -= count_tokens(header_template.format(n=len(lines))) + count_tokens("\n")
     kept, dropped = take_lines_within_token_budget(lines, max(0, budget))
 

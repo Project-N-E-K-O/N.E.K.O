@@ -40,7 +40,7 @@ from pathlib import Path
 
 import zmq
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # 供 --self-test 导入 plugin.*
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # Allow --self-test to import plugin.*.
 
 _DEFAULT_RPC = "tcp://127.0.0.1:38865"
 _DEFAULT_STORE = "conversations"
@@ -185,9 +185,9 @@ def main() -> int:
     print("[probe] 每行：时间 | turn_type | role | channel | content")
 
     deadline = time.time() + args.seconds if args.seconds else None
-    # 跟随用的是写入序号 seq，不是时间戳：bus.query 按写入顺序倒序截取，而一条
-    # 记录的时间戳可能早于它的写入时刻（AI 回复用首块时间、轮次末才落库），
-    # 按时间戳推进游标会在突发时漏读。
+    # Following uses the write sequence seq, not timestamps: bus.query truncates in reverse write order, while a
+    # record's timestamp may precede its write time (AI replies use the first chunk's time but persist at turn end),
+    # so advancing a timestamp cursor loses records during bursts.
     since_ts = args.since_ts
     seen_seq = -1
     if args.follow and not args.show_all:
@@ -221,7 +221,7 @@ def main() -> int:
         printed = 0
         for item in items:
             if int(item.get("seq") or 0) <= seen_seq:
-                continue  # 已打印过的写入序号
+                continue  # Write sequences already printed.
             print("[probe] " + _record_line(item))
             printed += 1
 
@@ -306,7 +306,7 @@ def _self_test() -> int:
         }, "st-boundary")
         boundary_items = (boundary_resp := (boundary.get("result") or {})).get("items") or []
         ok_order = len(lines) == 3 and "cat" in lines[0]
-        # since_ts 是包含语义：同时间戳的两条必须都还在，游标才不会跳过它们。
+        # since_ts is inclusive: both records sharing a timestamp must remain available so the cursor cannot skip them.
         ok_boundary = len(boundary_items) == 2
         ok = ok_order and ok_boundary
         if not ok:

@@ -1,6 +1,5 @@
 import os as _os
 import sys as _sys
-import tempfile as _tempfile
 from pathlib import Path as _Path
 
 # Project root must be on sys.path before importing `utils.*` — works even when
@@ -41,35 +40,14 @@ def _ensure_builtin_live2d_unpacked(model_name):
 for _builtin_live2d_model in ("yui-origin", "yui-lolita"):
     _ensure_builtin_live2d_unpacked(_builtin_live2d_model)
 
-# Redirect test logs out of the user's real %USERPROFILE%/Documents/N.E.K.O/logs.
-# Without this, every pytest session — including ones that intentionally inject
-# OSError / 坏 JSON / mock-driven failures via patches — dumps ERROR lines into
-# the user's Documents tree.
-#
-# We override RobustLoggerConfig._get_log_directory directly (rather than going
-# through NEKO_STORAGE_SELECTED_ROOT) because that env var also drives
-# ConfigManager / cloudsave_runtime layout, and pointing those at the temp dir
-# triggers a legacy-app-root migration scan that rmtrees the temp dir mid-test.
-# Loggers are constructed at module import time, so the patch must happen here
-# in conftest BEFORE any project module is imported.
-_NEKO_TEST_LOG_ROOT = _Path(_tempfile.gettempdir()) / f"neko_test_logs_{_os.getpid()}"
-_NEKO_TEST_LOG_ROOT.mkdir(parents=True, exist_ok=True)
-from utils import logger_config as _logger_config_module
-# Override only the Documents-fallback hook (priority 2 in _get_log_directory).
-# Env-var-based override (priority 1) and the cascade through application/system
-# data dirs stay intact — so tests that use monkeypatch.setenv on
-# NEKO_STORAGE_SELECTED_ROOT still see the override they expect.
-_logger_config_module.RobustLoggerConfig._get_documents_directory = (
-    lambda self, _root=_NEKO_TEST_LOG_ROOT: _root
-)
+# Before ANY product module is imported: telemetry opt-out, inherited storage-root
+# variables dropped, logs redirected out of the real Documents/N.E.K.O/logs, and
+# ConfigManager root resolution pointed at a throwaway root (module-level
+# get_config_manager() singletons run the migration chain on import). Shared with
+# plugin/tests/conftest.py; see tests/process_isolation.py for why each step is there.
+from tests.process_isolation import isolate_test_process as _isolate_test_process
 
-# 同理，但针对运行根本身：get_config_manager() 的 migrate 默认为 True，
-# 谁先 import 那 7 个模块级单例之一，谁就在真实运行根上跑完整条迁移链。
-# 必须在任何产品模块被 import 之前装好（见 tests/real_root_isolation.py）。
-from utils.config_manager import ConfigManager as _ConfigManagerForIsolation
-from tests import real_root_isolation as _real_root_isolation
-
-_real_root_isolation.install(_ConfigManagerForIsolation)
+_isolate_test_process()
 
 import asyncio
 import asyncio.runners
@@ -168,15 +146,15 @@ KEY_MAPPING = {
     "assistApiKeyMimoTokenPlan": "ASSIST_API_KEY_MIMO_TOKEN_PLAN",
 }
 
-# 全进程时钟守卫：运行期比对，与 patch 的写法无关（见 tests/clock_guard.py）
-# pytest 按名字在 conftest 命名空间里发现 hook，所以这个导入没有显式调用点
-# ——它不是死代码：把它删掉，全进程时钟守卫就整个失效（改回全局 patch 也不再转红）。
+# Process-wide clock guard: compare at runtime independently of patch technique (see tests/clock_guard.py).
+# pytest discovers hooks by name in conftest, so this import has no explicit call site;
+# it is not dead code: removing it disables the process-wide clock guard, letting global patches pass again.
 from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
 
-# 存储根环境变量守卫（见 tests/storage_root_env_guard.py）：NEKO_STORAGE_SELECTED_ROOT
-# 一旦泄漏到进程环境，后面每个"临时" ConfigManager 都会无视 patch 过的目录、直接写进
-# 开发机的真实运行根（2026-09-01 就这样把六个角色从 characters.json 里抹掉了）。
-# 同 clock_guard：pytest 按名字发现 hook，这个导入没有显式调用点但不是死代码。
+# Storage-root environment guard (tests/storage_root_env_guard.py): if NEKO_STORAGE_SELECTED_ROOT
+# leaks into process environment, every later temporary ConfigManager ignores patched directories and writes
+# directly to the developer's actual runtime root (this erased six characters from characters.json on 2026-09-01).
+# As with clock_guard, pytest discovers hooks by name; the import has no explicit call site but is not dead code.
 from tests.storage_root_env_guard import (  # noqa: E402
     pytest_runtest_setup,  # noqa: F401
     pytest_runtest_teardown,  # noqa: F401
@@ -428,8 +406,8 @@ def _resolve_runtime_test_port(port_name: str) -> int:
         else:
             if 1 <= port_value <= 65535:
                 return port_value
-            # 0 会让 uvicorn 随机绑端口但 readiness probe 仍连 0，测试必卡死；
-            # 负数 / >65535 直接非法。一律视为未设置，重新分配。
+            # Port 0 makes uvicorn bind randomly while readiness still connects to 0, hanging the test;
+            # negatives and values >65535 are invalid. Treat all as unset and reallocate.
             logger.warning(
                 "Ignoring out-of-range %s=%r (must be 1..65535)",
                 env_name,
@@ -591,9 +569,9 @@ def clean_user_data_dir(tmp_path_factory):
             str(cm.app_docs_dir),
             str(new_app_docs_dir),
             dirs_exist_ok=True,
-            # Chromium / Electron 运行时可能遗留 SingletonSocket / SingletonLock 等特殊文件，
-            # 这些文件既不属于用户数据，也会在 macOS 上导致 copytree 失败。小剧场 Session
-            # 同样是运行态数据；复制开发机活动存档会让浏览器测试依赖测试开始前的真实演绎状态。
+            # Chromium/Electron may leave special files such as SingletonSocket / SingletonLock,
+            # which are not user data and can break copytree on macOS. Theater Sessions
+            # are also runtime data; copying active developer saves makes browser tests depend on pretest enactment state.
             ignore=shutil.ignore_patterns("Singleton*", "theater"),
         )
     
@@ -700,9 +678,9 @@ def mock_memory_server():
     import httpx
 
     def _is_memory_server_ready(timeout_seconds: float = 1.0) -> bool:
-        # HTTP 级 readiness 优于裸 TCP connect —— 能确认 FastAPI 挂起来了，
-        # 不只是 socket 在听。端口走 _get_runtime_test_port 动态分配，
-        # 支持并行 pytest 运行。
+        # HTTP readiness is better than raw TCP connect: it proves FastAPI is serving,
+        # not merely that a socket listens. _get_runtime_test_port dynamically allocates ports
+        # to support parallel pytest runs.
         try:
             with httpx.Client(timeout=timeout_seconds, proxy=None, trust_env=False) as client:
                 response = client.get(f"http://127.0.0.1:{memory_port}/new_dialog/healthcheck")

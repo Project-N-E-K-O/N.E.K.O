@@ -6,7 +6,10 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Coroutine, Protocol, TYPE_CHECKING, runtime_checkable
+
+if TYPE_CHECKING:
+    from plugin.server.application.conversations import ConversationService
 
 from plugin.core.state import state
 from plugin.core.status import status_manager
@@ -14,6 +17,9 @@ from plugin.logging_config import get_logger
 from plugin.utils.time_utils import now_iso
 from plugin.server.application.install_source import StartupReconciler, get_install_source_manager
 from plugin.server.application.plugins import PluginLifecycleService, PluginRegistryService
+from plugin.server.application.plugins.capability_analysis_service import (
+    schedule_analysis_many,
+)
 from plugin.server.application.plugins.hot_reload_service import hot_reload_service
 from plugin.server.application.plugins.layout_migration import migrate_legacy_plugin_layout
 from plugin.server.application.plugins.operation_lock import (
@@ -39,18 +45,11 @@ from plugin.server.messaging.plane_runner import MessagePlaneRunner, build_messa
 from plugin.server.monitoring.metrics import metrics_collector
 from plugin.server.messaging.request_router import plugin_router
 from plugin.settings import PLUGIN_SHUTDOWN_TIMEOUT, PLUGIN_SHUTDOWN_TOTAL_TIMEOUT
-from utils.logger_config import get_module_logger
-
-_EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
-
-if _EMBEDDED_BY_AGENT:
-    logger = get_module_logger(__name__, "Agent")
-else:
-    logger = get_logger("server.lifecycle")
+logger = get_logger("server.lifecycle")
 
 
-# 等 ProactiveBridge 的 SUB 连上的上限。bridge 现在一起来就连接并订阅，正常
-# 情况下微秒级就绪；这个上限只是兜底，短到起不来时不会让人以为应用卡死了。
+# Maximum wait for the ProactiveBridge SUB to connect. The bridge now connects and subscribes immediately on startup; normally
+# it is ready within microseconds. This timeout is only a safety net, short enough not to make the app appear frozen if startup fails.
 _PROACTIVE_SUBSCRIBER_WAIT_SECONDS = 3.0
 
 
@@ -77,9 +76,24 @@ async def _held(lock: _CrossLoopLock) -> AsyncIterator[None]:
         lock.release()
 
 
+async def _on_subscription_loop(operation: Coroutine[Any, Any, None]) -> None:
+    """Keep the existing subscription manager on the loop that started it."""
+    task = getattr(bus_subscription_manager, "_task", None)
+    owner = task.get_loop() if isinstance(task, asyncio.Task) else None
+    if owner is not None and owner is not asyncio.get_running_loop() and owner.is_running():
+        try:
+            future = asyncio.run_coroutine_threadsafe(operation, owner)
+        except RuntimeError:
+            operation.close()
+            raise
+        await asyncio.wrap_future(future)
+    else:
+        await operation
+
+
 @runtime_checkable
 class _PluginHostContract(Protocol):
-    async def start(self, message_target_queue: object) -> None: ...
+    async def start(self) -> None: ...
 
     async def shutdown(self, timeout: float = PLUGIN_SHUTDOWN_TIMEOUT) -> None: ...
 
@@ -92,6 +106,8 @@ class _ShutdownResult:
 class ServerLifecycleService:
     def __init__(self) -> None:
         self._message_plane_runner: MessagePlaneRunner | None = None
+        self._conversation_service: ConversationService | None = None
+        self._conversation_service_ready = False
         self._plugin_registry_service = PluginRegistryService()
         self._plugin_lifecycle_service = PluginLifecycleService()
         # Guards ``ensure_delivery_path_started`` so the startup lifecycle and a
@@ -123,6 +139,46 @@ class ServerLifecycleService:
         # mid-teardown would race the shutdown it is being torn down by.
         self._hot_reload_service = hot_reload_service
         self._hot_reload_started = False
+        # True between a completed ``startup`` and the next ``shutdown``. An
+        # embedded server answers HTTP before then (agent_server starts the
+        # lifecycle only when user plugins are switched on), with an empty registry.
+        self._running = False
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    def _read_conversation_message(self, message_id: str) -> dict | None:
+        reader = getattr(self._message_plane_runner, "get_conversation_message", None)
+        return reader(message_id) if callable(reader) else None
+
+    def _update_conversation_message(self, message_id: str, fields: dict) -> dict | None:
+        update = getattr(self._message_plane_runner, "update_conversation_message", None)
+        return update(message_id, fields) if callable(update) else None
+
+    def _accept_conversation_record(self, event: dict) -> None:
+        bus_subscription_manager.accept_conversation_record(event)
+
+    def conversation_service(self, *, require_ready: bool = True) -> ConversationService | None:
+        """Gate reads on health while preserving retained fact ingress."""
+        if require_ready and (self._delivery_path_shutting_down or not self._conversation_service_ready):
+            return None
+        if require_ready and not self._message_plane_runner_is_alive():
+            self._conversation_service_ready = False
+            return None
+        return self._conversation_service
+
+    async def probe_conversation_service(self) -> ConversationService | None:
+        """Recheck an existing plane for a cold read without starting resources."""
+        async with _held(self._delivery_path_lock):
+            if (
+                not self._delivery_path_shutting_down
+                and self._conversation_service is not None
+                and self._message_plane_runner is not None
+                and self.conversation_service() is None
+            ):
+                await self._check_message_plane_health()
+        return self.conversation_service()
 
     @staticmethod
     def _get_plugin_hosts_snapshot() -> dict[str, object]:
@@ -222,6 +278,14 @@ class ServerLifecycleService:
             )
             return True
 
+    def _close_conversation_service(self) -> None:
+        self._conversation_service_ready = False
+        service = self._conversation_service
+        self._conversation_service = None
+        bus_subscription_manager.set_conversation_observers()
+        if service is not None:
+            service.close()
+
     async def _retire_message_plane(self) -> None:
         """Tear the plane AND both bridges down so a later entry rebuilds them all.
 
@@ -262,7 +326,15 @@ class ServerLifecycleService:
                         str(exc),
                     )
 
-        await asyncio.to_thread(_teardown)
+        try:
+            await _on_subscription_loop(
+                bus_subscription_manager.invalidate_conversations("message_plane_reset")
+            )
+        finally:
+            try:
+                self._close_conversation_service()
+            finally:
+                await asyncio.to_thread(_teardown)
 
     async def _check_message_plane_health(self) -> bool:
         """Probe the current runner. Never raises; a failed probe is ``False``.
@@ -276,8 +348,10 @@ class ServerLifecycleService:
         """
         runner = self._message_plane_runner
         if runner is None:
+            self._conversation_service_ready = False
             return False
         if not self._message_plane_runner_is_alive():
+            self._conversation_service_ready = False
             logger.warning(
                 "message_plane threads are not all running; treating it as "
                 "unhealthy even if its RPC endpoint still answers"
@@ -286,17 +360,19 @@ class ServerLifecycleService:
         try:
             health_check_async = getattr(runner, "health_check_async", None)
             if health_check_async is not None and asyncio.iscoroutinefunction(health_check_async):
-                return bool(await health_check_async(timeout_s=1.0))
-            # Fallback: runner only exposes the sync API — offload to a worker thread so we
-            # never block the event loop on the ~1s TCP probe + RPC round-trip.
-            return bool(await asyncio.to_thread(runner.health_check, timeout_s=1.0))
+                healthy = bool(await health_check_async(timeout_s=1.0))
+            else:
+                # Sync probes stay off the shared event loop.
+                healthy = bool(await asyncio.to_thread(runner.health_check, timeout_s=1.0))
         except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
             logger.warning(
                 "message_plane health check failed: err_type={}, err={}",
                 type(exc).__name__,
                 str(exc),
             )
-            return False
+            healthy = False
+        self._conversation_service_ready = healthy
+        return healthy
 
     async def _start_message_plane(self) -> bool:
         """Start the plane, or verify the one already standing. Returns usability."""
@@ -352,11 +428,27 @@ class ServerLifecycleService:
             return True
         # Same process mints the credential and starts the plane that must
         # accept it; start_bridge() below is the only writer.
-        self._message_plane_runner = build_message_plane_runner(
-            auth_token=ingest_auth_token(),
-        )
-        self._plane_probe_failures = 0
-        self._message_plane_runner.start()
+        if self._conversation_service is None:
+            from plugin.server.application.conversations import ConversationService
+
+            self._conversation_service = ConversationService(
+                self._read_conversation_message,
+                update_message=self._update_conversation_message,
+            )
+            bus_subscription_manager.set_conversation_observers(
+                on_record=self._conversation_service.accept_message,
+                on_fact=self._conversation_service.accept_fact,
+            )
+        try:
+            self._message_plane_runner = build_message_plane_runner(
+                auth_token=ingest_auth_token(),
+                on_record_accepted=self._accept_conversation_record,
+            )
+            self._plane_probe_failures = 0
+            self._message_plane_runner.start()
+        except Exception:
+            await self._retire_message_plane()
+            raise
         if not await self._check_message_plane_health():
             # Counts toward the same budget the reuse branch spends: this is
             # failure #1 against this runner, not a free one.
@@ -390,10 +482,10 @@ class ServerLifecycleService:
                 len(refresh_result.get("removed", [])),
                 len(refresh_result.get("failed", [])),
             )
-            # 分成「可并发」与「需按序」两组。依赖检查（core/dependency.py 的
-            # _find_plugins_by_entry）读的是 state.event_handlers —— 被依赖方必须
-            # 已经启动并注册完 handler，所以声明了依赖的插件不能与它的提供者同时起。
-            # 两组各自保持既有拓扑序，详见
+            # Split into two groups: "safe to start concurrently" and "must start in order." Dependency checks (core/dependency.py's
+            # _find_plugins_by_entry) read state.event_handlers — the dependency must already have started and registered its handler,
+            # so a plugin declaring a dependency cannot start at the same time as its provider.
+            # Each group preserves its existing topological order; see
             # registry_service._get_autostart_plugin_groups_sync。
             independent_ids, ordered_ids = (
                 await self._plugin_registry_service.list_autostart_plugin_groups()
@@ -405,6 +497,12 @@ class ServerLifecycleService:
                 str(exc),
             )
             return
+
+        # Queue capability analysis for every registered plugin in one thread
+        # hop before autostart begins.
+        with state.acquire_plugins_read_lock():
+            analysis_ids = list(state.plugins)
+        await asyncio.to_thread(schedule_analysis_many, analysis_ids)
 
         if not independent_ids and not ordered_ids:
             logger.warning("no autostart plugins discovered at startup; plugins may need manual start")
@@ -474,6 +572,7 @@ class ServerLifecycleService:
             )
 
     async def startup(self) -> None:
+        self._running = False
         # A short shutdown wait may leave an old shielded reload alive. Drain it
         # while both gates remain closed before admitting the next server run.
         await self._hot_reload_service.wait_for_stopped()
@@ -482,8 +581,8 @@ class ServerLifecycleService:
         # would make every delivery-path start a no-op for the new run.
         async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = False
-        # 同样重置插件操作门闩：关停时置位的门闩会让 start_plugin 拒绝启动，
-        # 重启后必须放开，否则所有插件启动都会吃 409。
+        # Reset the plugin-operation gate too: the gate set during shutdown makes start_plugin reject launches,
+        # so it must be released after restart or every plugin startup returns 409.
         from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
         _lifecycle_module._operations_shutting_down = False
 
@@ -516,8 +615,6 @@ class ServerLifecycleService:
         await self.ensure_delivery_path_started()
 
         await self._refresh_registry_and_start_autostart_plugins()
-
-        await bus_subscription_manager.start()
         logger.debug("bus subscription manager started")
 
         def _get_hosts() -> dict[str, object]:
@@ -529,8 +626,10 @@ class ServerLifecycleService:
         await metrics_collector.start(plugin_hosts_getter=_get_hosts)
         logger.debug("metrics collector started")
 
-        # 关闭时是 no-op：PLUGIN_HOT_RELOAD 默认 false，必须显式开启。
+        # No-op on shutdown: PLUGIN_HOT_RELOAD defaults to false and must be explicitly enabled.
         self._hot_reload_started = self._hot_reload_service.start()
+        # Discovery has run: the registry now reflects the plugin sources.
+        self._running = True
         try:
             emit_lifecycle_event({"type": "server_startup_ready", "plugin_id": "server", "time": now_iso()})
         except Exception as exc:
@@ -567,6 +666,7 @@ class ServerLifecycleService:
                 # decided what there was to stop.
                 logger.debug("delivery path start skipped: shutting down")
                 return False
+            await _on_subscription_loop(bus_subscription_manager.start())
             if self._delivery_path_started:
                 # Revalidated, not trusted. Everything else in this file makes a
                 # failure visible; a latch that is never re-read would quietly
@@ -678,28 +778,28 @@ class ServerLifecycleService:
             # plane actually holds.
             return failed
 
-        # 两条 bridge 先于任何插件起来。autostart 插件可以在自己的 startup 钩
-        # 子里调 push_message()，而 ProactiveBridge 的 SUB 要在它自己的线程里
-        # 连上并订阅——PUB/SUB 对缺席的订阅方是丢弃，所以订阅就绪之前推的
-        # 消息角色永远不会说出口，而 push_message() 已经回了 submitted=True。
+        # Start both bridges before any plugins. An autostart plugin may call push_message() in its startup
+        # hook, while ProactiveBridge's SUB connects and subscribes on its own thread —
+        # PUB/SUB drops messages for absent subscribers, so messages pushed before subscription readiness
+        # will never be spoken even though push_message() already returned submitted=True.
         #
-        # 顺序只是第一步：SUBSCRIBE 传播到 PUB 侧本身还有一小段延迟，所以下
-        # 面在放插件进来之前会等 wait_for_proactive_subscriber。
+        # Ordering is only the first step: SUBSCRIBE takes a short time to propagate to PUB, so
+        # wait for wait_for_proactive_subscriber before starting plugins below.
         #
-        # ⚠️ 即便如此也不是数学上的关闭：ZMQ 的 SUBSCRIBE 返回不代表 PUB 端
-        # 已经处理完这条订阅（slow joiner），极窄的一段仍在。要关死得让 bridge
-        # 起来后补读一次 store 并按 message_id 去重，代价是重复投递的风险。
+        # ⚠️ Even this is not mathematically airtight: a successful ZMQ SUBSCRIBE does not mean the PUB side
+        # has processed it yet (slow joiner), so a very small gap remains. To close it, the bridge would need to
+        # read the store once after startup and deduplicate by message_id, at the cost of potential duplicate delivery.
         #
-        # 另外更正一处此前写错的机制：plane bridge **不会**因为没 start 就拒
-        # 收。`_Bridge._enabled` 读的是 MESSAGE_PLANE_BRIDGE_ENABLED 这个配置
-        # 开关（构造时读一次），不是「start() 跑没跑」——start() 之前
-        # enqueue_delta 照常入队，线程起来后排空。实测 publish_record 在
-        # start_bridge() 之前返回 True。
-        # 必须在 runner 起完之后、bridge 起之前：配置端口被占时 runner 会挑
-        # 一个备用端口并写回环境变量，而 _bridge 是 import 期就建好的、那时
-        # 冻结的还是原来那个地址。不刷新的话，端口一冲突，push_message /
-        # frames / conversations 全都发向那个被占的端点，而调用方已经拿到
-        # submitted=True——正是这条路要消灭的那种静默不投递。
+        # Also correct an earlier explanation of the mechanism: the plane bridge does **not** reject messages just because it has not started.
+        # `_Bridge._enabled` reads the MESSAGE_PLANE_BRIDGE_ENABLED config
+        # switch (once during construction), not whether start() has run — before start(),
+        # enqueue_delta still queues messages and the thread drains them once started. In practice, publish_record returned
+        # True before start_bridge().
+        # Must happen after the runner starts and before the bridge starts: if the configured port is occupied, the runner chooses
+        # a fallback port and writes it back to the environment, while _bridge was created at import time and
+        # still has the original address frozen. Without refreshing it, a port conflict sends push_message /
+        # frames / conversations to the occupied endpoint, even though the caller already received
+        # submitted=True — exactly the silent non-delivery path this change is meant to eliminate.
         try:
             refresh_ingest_endpoint()
         except Exception as exc:
@@ -746,9 +846,9 @@ class ServerLifecycleService:
             )
             failed.append("proactive_bridge")
 
-        # 等订阅方真正连上再放插件进来。只把 start 挪到插件前面并不能关掉窗
-        # 口——SUBSCRIBE 传播到 PUB 侧仍有一小段延迟。有界等待：bridge 被禁
-        # 用或已经死了就立刻返回，起不来也不能把整个启动挂在这儿。
+        # Wait until subscribers actually connect before starting plugins. Moving start before plugins alone does not close the
+        # gap — SUBSCRIBE still takes time to propagate to PUB. Use a bounded wait: return immediately if the bridge is disabled
+        # or already dead, and never hang the whole startup if it cannot start.
         #
         # A timeout here is NOT a failure by itself -- the SUB may still connect
         # after this bounded wait and the components are up, so retrying would
@@ -838,9 +938,9 @@ class ServerLifecycleService:
         return had_errors
 
     async def _shutdown_internal(self) -> _ShutdownResult:
-        # 关停门闩：在动任何插件宿主之前置位，让 start_plugin 拒绝启动新插件。
-        # 被 asyncio.shield 保护的 in-flight reload 若在 host 快照之后才注册新
-        # host，那个子进程就是没人停止的孤儿。startup() 开头会重置。
+        # Shutdown gate: set it before touching any plugin host so start_plugin rejects new launches.
+        # An in-flight reload protected by asyncio.shield may register a new host after the host
+        # snapshot, leaving its child process orphaned. startup() resets the gate at the beginning.
         from plugin.server.application.plugins import lifecycle_service as _lifecycle_module
         _lifecycle_module._operations_shutting_down = True
 
@@ -851,9 +951,9 @@ class ServerLifecycleService:
 
         had_errors = False
 
-        # 先停热重载 watcher 再动任何插件宿主：它触发的 reload 是完整的
-        # stop+start 事务，和关停流程并发会把插件留在半启动状态。in-flight
-        # 的 reload 被 operation lock 屏蔽取消，会自己跑完当前一步后退出。
+        # Stop the hot-reload watcher before touching plugin hosts: its reload is a full
+        # stop+start transaction, and concurrent shutdown could leave a plugin half-started. An in-flight
+        # reload shielded from cancellation by the operation lock will finish its current step and exit.
         if self._hot_reload_started or self._hot_reload_service.is_running:
             try:
                 await self._hot_reload_service.stop(timeout=0.05)
@@ -882,7 +982,10 @@ class ServerLifecycleService:
                 had_errors = True
                 logger.warning("failed to stop message_plane runner: {}", exc)
 
-        # Phase 2: parallel shutdown of all async components
+        # Keep control RPC available until plugin cleanup callbacks have finished.
+        hosts_stopped = asyncio.Event()
+
+        # Phase 2: parallel shutdown of async components; router follows hosts.
         async def _stop_metrics():
             await metrics_collector.stop()
 
@@ -890,13 +993,17 @@ class ServerLifecycleService:
             await status_manager.shutdown_status_consumer(timeout=PLUGIN_SHUTDOWN_TIMEOUT)
 
         async def _stop_bus():
-            await bus_subscription_manager.stop()
+            await _on_subscription_loop(bus_subscription_manager.stop())
 
         async def _stop_router():
+            await hosts_stopped.wait()
             await plugin_router.stop()
 
         async def _stop_hosts():
-            return await self._shutdown_hosts()
+            try:
+                return await self._shutdown_hosts()
+            finally:
+                hosts_stopped.set()
 
         parallel_tasks = {
             "metrics": asyncio.create_task(_stop_metrics()),
@@ -915,6 +1022,7 @@ class ServerLifecycleService:
                 had_errors = True
 
         # Phase 3: resource cleanup
+        self._close_conversation_service()
         try:
             await asyncio.wait_for(asyncio.to_thread(state.close_plugin_resources), timeout=0.5)
         except asyncio.TimeoutError:
@@ -953,6 +1061,7 @@ class ServerLifecycleService:
         async with _held(self._delivery_path_lock):
             self._delivery_path_shutting_down = True
             self._delivery_path_started = False
+        self._running = False
         try:
             result = await asyncio.wait_for(self._shutdown_internal(), timeout=PLUGIN_SHUTDOWN_TOTAL_TIMEOUT)
         except asyncio.TimeoutError:
@@ -967,6 +1076,8 @@ class ServerLifecycleService:
             except (RuntimeError, ValueError, TypeError, OSError, AttributeError, KeyError) as exc:
                 logger.warning("forced cleanup after timeout failed: {}", exc)
             return
+        finally:
+            self._close_conversation_service()
 
         if result.had_errors:
             logger.warning("server shutdown completed with errors")
@@ -989,6 +1100,7 @@ async def ensure_plugin_messaging_started() -> bool:
     """
     await _ensure_plugin_router_started()
 
+
     # Idempotent, and bound to the module singleton on purpose: this entry has no
     # instance of its own. ``ServerLifecycleService.startup`` deliberately does
     # NOT come through here -- see ``_ensure_plugin_router_started``.
@@ -1007,20 +1119,20 @@ async def _ensure_plugin_router_started() -> None:
     the port split and orphaned runner this PR already fixed twice, reachable
     through a door the delivery-path call opened.
     """
-    try:
-        _ = state.plugin_response_map
-    except (RuntimeError, ValueError, TypeError, OSError, AttributeError) as exc:
-        logger.warning(
-            "failed to initialize plugin response map early: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
-
     await plugin_router.start()
     logger.debug("plugin router started")
 
 
 _service = ServerLifecycleService()
+
+
+def get_conversation_service(*, require_ready: bool = True) -> ConversationService | None:
+    """Access the current delivery-path instance without constructing another."""
+    return _service.conversation_service(require_ready=require_ready)
+
+
+async def probe_conversation_service() -> ConversationService | None:
+    return await _service.probe_conversation_service()
 
 
 def _final_log_flush() -> None:
@@ -1043,6 +1155,11 @@ atexit.register(_final_log_flush)
 
 async def startup() -> None:
     await _service.startup()
+
+
+def lifecycle_running() -> bool:
+    """Whether the plugin system has started and discovered the plugin sources."""
+    return _service.running
 
 
 async def shutdown() -> None:

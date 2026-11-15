@@ -11,7 +11,7 @@ B1 — **happy path**: a zip with ``characters.json`` + ``memory/<char>/{persona
 B2 — **nested wrapper folder**: a zip whose entries are all under a top-level
      ``my_export/`` folder still resolves characters.json + memory dir.
 
-B3 — **ambiguous archive**: two cat girls + no ``character_name`` -> 422
+B3 — **ambiguous archive**: two nekos + no ``character_name`` -> 422
      AmbiguousArchive; passing the name disambiguates -> 200.
 
 B4 — **error mapping**: no session -> 404; invalid base64 -> 400 InvalidBase64;
@@ -214,7 +214,7 @@ def check_b3_ambiguous(client) -> list[str]:
     try:
         _delete_session(client)
         _create_session(client, "b3_ambig")
-        # two cat girls + no 当前猫娘 -> ambiguous.
+        # Two nekos + no current neko -> ambiguous.
         chars = _characters_json(["A猫", "B猫"])
         chars["当前猫娘"] = ""  # force ambiguity (no current pointer)
         zip_bytes = _build_zip({

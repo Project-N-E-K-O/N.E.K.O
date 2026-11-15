@@ -90,7 +90,7 @@ def test_validate_accepts_matching_entity_and_type():
 
 
 def test_validate_rejects_cross_entity_relation():
-    """master 不能用 dynamic（属于 relationship）。"""
+    """master cannot use dynamic (which belongs to relationship)."""
     from memory.reflection import _validate_reflection_ontology
     ok, reason = _validate_reflection_ontology("master", "dynamic", "current", "x")
     assert ok is False
@@ -226,7 +226,7 @@ async def test_synthesize_persists_valid_ontology_fields(tmp_path):
 
 @pytest.mark.asyncio
 async def test_synthesize_degrades_invalid_relation_type_to_null(tmp_path):
-    """LLM 返回了非法的 entity→relation_type 映射时，反思应保留但字段置空。"""
+    """If the LLM returns an invalid entity-to-relation_type mapping, retain the reflection but clear those fields."""
     fs, re = _install(str(tmp_path))
     results = await _run_synth(fs, re, {
         "reflection": "观察到的某个模式",
@@ -266,7 +266,7 @@ async def test_synthesize_demotes_subject_alongside_other_ontology(tmp_path):
 
 @pytest.mark.asyncio
 async def test_synthesize_handles_legacy_prompt_missing_ontology(tmp_path):
-    """旧 prompt / 旧 model 不返回 ontology 字段时应当静默通过。"""
+    """Old prompts / models omitting ontology fields must pass silently."""
     fs, re = _install(str(tmp_path))
     results = await _run_synth(fs, re, {
         "reflection": "legacy-style reflection",

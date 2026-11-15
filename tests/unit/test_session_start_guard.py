@@ -152,7 +152,7 @@ def _make_starting_manager(*, starting_input_mode):
     mgr.is_active = True
     mgr._audio_stream_epoch = 0
     mgr._user_session_abandon_epoch = 0
-    # 跨模式重启前会校验"当前 ws 仍是本请求那把且仍连接"，并清熔断。
+    # Before restarting across modes, verify the current ws is this request's still-connected socket, then clear the circuit breaker.
     mgr.websocket = _FakeConnectedWS()
     mgr.reset_session_start_circuit = lambda: None
     return mgr
@@ -167,23 +167,23 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
     then re-enter start_session in the requested (audio) mode rather than
     reusing the text ack."""
     mgr = _make_starting_manager(starting_input_mode="text")
-    # 递归重入会走 self.start_session(...)；用实例属性 mock 截住，断言它被
-    # 以请求模式再调一次，而不真正跑完整启动路径。
+    # Recursive reentry calls self.start_session(...); intercept it with an instance-attribute mock and assert
+    # another call with the requested mode, without running the entire startup path.
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
 
-    ws = mgr.websocket  # 重启前会校验 self.websocket is websocket 且连接
+    ws = mgr.websocket  # Before restarting, verify self.websocket is websocket and connected
     deadline = asyncio.get_running_loop().time() + 15.0
     start_task = asyncio.create_task(
         LLMSessionManager.start_session(mgr, ws, False, "audio", user_initiated=True, _deadline=deadline)
     )
-    # 让它先进入跨模式等待循环，再放行 in-flight 落定。
+    # Enter the cross-mode wait loop first, then allow the in-flight operation to settle.
     await asyncio.sleep(0.1)
-    assert restart_mock.await_count == 0  # 还在等，不该提前重入
+    assert restart_mock.await_count == 0  # Still waiting; must not reenter early
     mgr._starting_session_count = 0
     await start_task
 
-    # 重入禁用二次跨模式重启（深度封顶 1）。
+    # Reentry disables another cross-mode restart (maximum depth 1).
     restart_mock.assert_awaited_once_with(
         ws,
         False,
@@ -212,7 +212,7 @@ async def test_cross_mode_start_gives_up_when_inflight_never_settles(monkeypatch
     await LLMSessionManager.start_session(mgr, object(), False, "audio", user_initiated=True)
 
     restart_mock.assert_not_awaited()
-    assert mgr._starting_session_count == 1  # in-flight guard 原样保留
+    assert mgr._starting_session_count == 1  # Retain the in-flight guard unchanged
 
 
 @pytest.mark.unit
@@ -226,7 +226,7 @@ async def test_cross_mode_background_start_does_not_restart():
     restart_mock = AsyncMock()
     mgr.start_session = restart_mock
 
-    # 后台 text 撞上在飞的 audio：默认 user_initiated=False。
+    # Background text encounters in-flight audio: user_initiated=False by default.
     await LLMSessionManager.start_session(mgr, object(), False, "text")
 
     restart_mock.assert_not_awaited()
@@ -800,13 +800,13 @@ async def test_concurrent_text_handoffs_rebuild_the_offline_session_once():
     for _ in range(10):
         await asyncio.sleep(0)
 
-    # 第一条还卡在 end_session 里，第二条绝不能已经开始拆同一个会话。
+    # The first request remains inside end_session; the second must not already start tearing down the same session.
     assert len(end_calls) == 1
 
     gate.set()
     assert await first is True
     assert await second is True
-    # 第二条看到的是第一条的成果，没有再拆一次。
+    # The second sees the first request's result and does not tear down again.
     assert len(end_calls) == 1
 
 
@@ -847,7 +847,7 @@ async def test_text_handoff_accepts_a_barrier_timeout_once_the_swap_already_land
     mgr.start_session = AsyncMock()
     await mgr._multimodal_handoff_lock.acquire()
     try:
-        # 闸的持有者已经把会话换成 offline 了，只是还没释放。
+        # The gate holder has switched the session to offline but has not released the gate yet.
         mgr.session = MagicMock(spec=OmniOfflineClient)
         assert await LLMSessionManager._ensure_offline_session_for_text_input(
             mgr, "text"

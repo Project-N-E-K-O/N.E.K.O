@@ -831,15 +831,15 @@ def test_list_isolates_a_tool_when_a_persisted_resource_fails_integrity(tmp_path
     assert {item["id"] for item in store.list_items()} == {valid["id"], damaged["id"]}
     (store.root / damaged["id"] / "default.png").write_bytes(b"truncated")
 
-    # 列表这一层不再逐字节重算 digest（太贵，前端每次 focus 都会拉列表），
-    # 所以内容被篡改的道具会先继续出现在列表里……
+    # Listing no longer recomputes bytewise digests (too costly; the frontend lists on every focus),
+    # so tampered tools initially remain visible in listings...
     assert {item["id"] for item in store.list_items()} == {valid["id"], damaged["id"]}
-    # ……但真正消费它的地方立刻拒绝：详情页 / 编辑页走全量校验。
+    # ...but actual consumers reject them immediately: detail / edit pages perform full validation.
     with pytest.raises(AvatarToolStoreError) as raised:
         store.get_detail(damaged["id"])
     assert raised.value.code == "record_invalid"
 
-    # 详情页那次核验就地把它摘出公开目录，不用等重启。
+    # Detail validation removes it from the public catalog immediately, without waiting for restart.
     try:
         assert raised.value.integrity_mismatch is True
         assert damaged["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[store._root_key()]
@@ -998,9 +998,9 @@ def test_read_enforces_current_v2_text_limits(tmp_path, monkeypatch, field, expe
     with pytest.raises(AvatarToolStoreError) as raised:
         store.read_record(item["id"])
 
-    # 落盘记录的字段校验复用了表单校验器，但读取路径会把它归一化成
-    # record_invalid —— 只有这样隔离判据才认得它，超限的道具才不会一边被列表
-    # 隐藏、一边继续占着配额。原始字段码保留在异常链里。
+    # Persisted-field validation reuses the form validator, but reads normalize it to
+    # record_invalid so quarantine recognizes it and oversized tools do not remain counted against quota
+    # while hidden from listings. Original field codes remain in the exception chain.
     assert raised.value.code == "record_invalid"
     assert raised.value.transient is False
     assert isinstance(raised.value.__cause__, AvatarToolStoreError)
@@ -1238,7 +1238,7 @@ def test_delete_preserves_an_unconfirmed_moved_version_across_restart(
     with pytest.raises(SimulatedCrash if crash_after_move else AvatarToolStoreError) as raised:
         store.delete_tool(tool_id)
 
-    # 没崩溃、正式路径又空着时，删除就地把未授权的移动挪回原位：等于没删。
+    # Without a crash, if the official path is free, deletion moves the unauthorized rename back: effectively no deletion.
     restored_inline = not crash_after_move and not republish_final
     if not crash_after_move:
         assert raised.value.code == "tool_delete_failed"
@@ -1256,14 +1256,14 @@ def test_delete_preserves_an_unconfirmed_moved_version_across_restart(
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
 
-    # 保留的未确认副本只拦住同一个 ID，不再让整个存储根停在待恢复状态。
+    # Unconfirmed retained copies block only their own ID, no longer the entire store awaiting recovery.
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     if restored_inline:
         assert restarted.get_detail(tool_id)["name"] == "Replaced"
         return
     if not republish_final:
-        # 正式路径空着：启动恢复撤销这次证实不了的删除，把副本原样挪回，
-        # 道具重新出现、可以再删一次，而不是无限期占着这个 ID 和配额。
+        # Official path free: startup recovery undoes the unprovable deletion by restoring the copy unchanged;
+        # the tool reappears and can be deleted again rather than indefinitely occupying its ID and quota.
         assert not deleting.exists()
         assert not (store.root / f".{tool_id}.deleting.unverified").exists()
         assert (final / "record.json").read_bytes() == new_record, "startup lost the moved version"
@@ -1400,7 +1400,7 @@ def test_delete_keeps_unreadable_authorization_or_moved_objects_for_recovery(
         store.delete_tool(tool_id)
     assert raised.value.status_code == (409 if failure == "marker-json" else 503)
     if failure == "marker-json":
-        # 授权读不出来就证明不了移走的是被授权的那一份：就地挪回，删除作废。
+        # Unreadable authorization cannot prove the moved object was authorized: restore it and cancel deletion.
         assert not deleting.exists()
         assert not marker.exists()
         assert (final / "record.json").read_bytes() == record_bytes
@@ -1531,23 +1531,23 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
 
-    # 崩溃之后（比如存储根被复制迁移过），移走的对象再也对不上授权。
+    # After a crash (for example, migrating a copied store root), the moved object no longer matches authorization.
     if flavour == "identity-mismatch":
         record_path = deleting / "record.json"
         record_path.write_bytes(record_path.read_bytes())
     elif flavour == "corrupt-marker":
         marker.write_bytes(b"{")
     elif flavour == "directory-marker":
-        # 同步客户端或文件系统损坏把授权位置变成了目录。
+        # A sync client or filesystem corruption turned the authorization location into a directory.
         marker.unlink()
         marker.mkdir()
         (marker / "stray").write_bytes(b"x")
     else:
-        # 4 KiB 以内就能嵌套到让 json.loads 抛 RecursionError；它必须按
-        # 「授权不匹配」处理，而不是炸穿整轮恢复。
+        # Under 4 KiB can nest deeply enough for json.loads to raise RecursionError; treat it as
+        # an authorization mismatch rather than crashing the entire recovery pass.
         marker.write_bytes(b"[" * 3000)
     retained_record = (deleting / "record.json").read_bytes()
-    # 同步客户端在正式路径上又发布了一份：恢复不能挪回覆盖它，只能保留副本。
+    # A sync client published another object at the official path: recovery must retain the copy rather than overwrite it.
     shutil.copytree(deleting, final)
 
     restarted = AvatarToolStore(_ConfigManager(store.root))
@@ -1555,7 +1555,7 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     assert (deleting / "record.json").read_bytes() == retained_record
 
-    # 授权位置是目录时，明确删除也不能丢弃它里面的东西，界面不提示去删除。
+    # When authorization is a directory, even explicit deletion must preserve its contents; the UI offers no deletion prompt.
     pending_code = "tool_recovery_pending" if flavour == "directory-marker" else "tool_delete_pending"
 
     def assert_pending(operation):
@@ -1591,15 +1591,15 @@ def test_a_retained_unconfirmed_deletion_blocks_only_its_own_tool_id(tmp_path, m
         assert (marker / "stray").read_bytes() == b"x"
         return
 
-    # 拿着过期 revision 的删除被拒绝时，副本不能先被丢掉。
+    # Rejecting deletion with a stale revision must not discard the copy first.
     with pytest.raises(AvatarToolStoreError) as conflict:
         restarted.delete_tool(blocked_id, base_revision="1-1")
     assert (conflict.value.code, conflict.value.status_code) == ("tool_revision_conflict", 409)
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.exists()
 
-    # 用户明确删除这个 ID：保留的副本随正式目录一起清掉，这个 ID 重新可用，
-    # 不会再永远卡在 tool_delete_pending。
+    # The user explicitly deletes this ID: remove the retained copy with the official directory, freeing the ID
+    # instead of leaving it stuck forever in tool_delete_pending.
     assert restarted.delete_tool(blocked_id, base_revision=republished["revision"]) == blocked_id
     assert not deleting.exists()
     assert not marker.exists()
@@ -1621,7 +1621,7 @@ def test_a_delete_rejected_by_the_identity_recheck_keeps_the_retained_copy(tmp_p
     retained_record = (deleting / "record.json").read_bytes()
 
     def republish_during_fence(*_args, **kwargs):
-        # 写入围栏落在初次身份观察和重验之间：同步客户端恰好在这里换掉了 record。
+        # The write fence falls between initial identity observation and revalidation: a sync client replaces record exactly there.
         if kwargs.get("operation") == "delete":
             record_path = final / "record.json"
             replacement = final / "record.json.synced"
@@ -1639,8 +1639,8 @@ def test_a_delete_rejected_by_the_identity_recheck_keeps_the_retained_copy(tmp_p
 
 
 @pytest.mark.parametrize("failing_step", ("fsync", "open"))
-# Windows 打不开目录句柄，_fsync_directory 在那里本来就不做目录同步，
-# 这两种注入的失败都走不到。
+# Windows cannot open directory handles, so _fsync_directory already skips directory syncing there;
+# neither injected failure can occur.
 @pytest.mark.skipif(os.name == "nt", reason="directory fsync is unsupported on Windows")
 def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     tmp_path, monkeypatch, failing_step
@@ -1663,7 +1663,7 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
         raise OSError("simulated I/O error")
 
     def failing_directory_open(path, *args, **kwargs):
-        # POSIX 上打开目录本来是支持的：EMFILE、EIO 这类失败不能当成「平台不支持」吞掉。
+        # POSIX supports opening directories: do not swallow EMFILE or EIO as an unsupported platform.
         if Path(path) == store.root:
             raise OSError(errno.EMFILE, "simulated descriptor exhaustion")
         return real_open(path, *args, **kwargs)
@@ -1675,8 +1675,8 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     with pytest.raises(AvatarToolStoreError) as raised:
         store.delete_tool(tool_id)
 
-    # 撤授权没能落盘：副本和正式目录都不能丢。目录同步一直失败，授权回到原位这一步
-    # 也确认不了落盘，所以副本先留在停放名下，原授权已经放回原位。
+    # Authorization revocation did not persist: preserve both copy and official directory. Directory syncing keeps failing, so restoring
+    # authorization cannot be confirmed durable either; leave the copy parked after restoring the original authorization.
     assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 500)
     parked = store.root / f".{tool_id}.retained"
     assert (parked / "record.json").read_bytes() == retained_record
@@ -1684,8 +1684,8 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
     assert final.is_dir()
     assert marker.read_bytes() == b"{"
     assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
-    # 同一进程里重试删除：先跑恢复把副本连同原授权挪回「保留副本」状态，再照常丢弃，
-    # 不会卡在 tool_delete_pending 直到重启。
+    # Retrying deletion in the same process: recovery first moves the copy and original authorization back to retained-copy state, then discards normally,
+    # without remaining tool_delete_pending until restart.
     monkeypatch.setattr("utils.avatar_tool_store.os.fsync", real_fsync)
     monkeypatch.setattr("utils.avatar_tool_store.os.open", real_open)
     assert store.delete_tool(tool_id) == tool_id
@@ -1698,7 +1698,7 @@ def test_discarding_a_retained_deletion_stops_when_revoking_it_is_not_durable(
 @pytest.mark.skipif(os.name == "nt", reason="directories cannot be opened on Windows")
 @pytest.mark.parametrize("strict", (False, True))
 def test_closing_a_synced_directory_only_fails_a_strict_sync(tmp_path, monkeypatch, strict):
-    # 尽力同步夹在必须成对的步骤之间（比如刚把保留副本停放好）：关闭句柄出错不能跳过调用方的回滚。
+    # Best-effort syncing sits between paired steps (such as just parking a retained copy): handle-close errors must not skip caller rollback.
     from utils.avatar_tool_store import _fsync_directory
 
     real_close = os.close
@@ -1723,8 +1723,8 @@ def test_closing_a_synced_directory_only_fails_a_strict_sync(tmp_path, monkeypat
 def test_discarding_a_retained_deletion_works_where_directories_cannot_be_synced(
     tmp_path, monkeypatch, failing_step, code
 ):
-    # 部分 CIFS/SMB、FUSE 挂载对目录 fsync 恒定返回这些 errno：这是「不支持」，
-    # 不是「这次没落盘」。当成失败的话，保留副本会让这个 ID 永远删不掉。
+    # Some CIFS/SMB and FUSE mounts consistently return these errno values for directory fsync: this means unsupported,
+    # not a durability failure this time. Treating it as failure would make retained copies prevent this ID's deletion forever.
     if not hasattr(errno, code):
         pytest.skip(f"errno.{code} is not defined on this platform")
     unsupported = getattr(errno, code)
@@ -1776,14 +1776,14 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
     marker = store.root / f".{tool_id}.deleting.unverified"
     shutil.copytree(final, deleting)
     if replaced == "nested-in-place":
-        # 合法道具目录是平的，但保留副本本来就是异常残留，可能带子目录。
+        # Valid tool directories are flat, but retained copies are abnormal leftovers and may contain subdirectories.
         (deleting / "nested").mkdir()
         (deleting / "nested" / "stray.bin").write_bytes(b"old")
     marker.write_bytes(b"{")
     synced_record = b'{"synced": "newer version"}'
 
     def sync_during_fence(*_args, **kwargs):
-        # 写入围栏落在「观察到副本」和「丢弃副本」之间：同步客户端恰好换掉了副本或授权。
+        # The write fence falls between observing and discarding a copy: a sync client replaces the copy or authorization there.
         if kwargs.get("operation") != "delete":
             return
         if replaced == "copy":
@@ -1791,13 +1791,13 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
             deleting.mkdir()
             (deleting / "record.json").write_bytes(synced_record)
         elif replaced == "record-in-place":
-            # 原地改写同一个文件：目录本身的身份不变，只有 record.json 的变了。
+            # Rewriting the same file in place leaves directory identity unchanged; only record.json changes.
             (deleting / "record.json").write_bytes(synced_record)
         elif replaced == "nested-in-place":
-            # 原地改写子目录里的文件：副本目录和子目录本身的身份都不变。
+            # Rewriting a nested file leaves both the copy directory and subdirectory identities unchanged.
             (deleting / "nested" / "stray.bin").write_bytes(b"synced newer")
         elif replaced == "resource-in-place":
-            # 原地改写一张图片：目录和 record.json 的身份都不变。
+            # Rewriting an image in place leaves both directory and record.json identities unchanged.
             resource = next(path for path in deleting.iterdir() if path.suffix == ".png")
             resource.write_bytes(resource.read_bytes() + b"synced")
         else:
@@ -1808,7 +1808,7 @@ def test_a_retained_copy_replaced_after_it_was_observed_is_not_discarded(tmp_pat
     with pytest.raises(AvatarToolStoreError) as raised:
         store.delete_tool(tool_id)
 
-    # 换进来的可能是更新的版本：整个删除拒绝，副本、授权和正式目录都不动。
+    # The replacement might be newer: reject the entire deletion, leaving copy, authorization, and official directory intact.
     assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 409)
     assert deleting.is_dir()
     assert marker.is_file()
@@ -1837,7 +1837,7 @@ def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_p
         pass
 
     def crash_on_discard(path, *args, **kwargs):
-        # 副本被停放到 .retained 名下，正式目录暂存成功后才真正删掉它；在这一步崩溃。
+        # The copy is parked under .retained and deleted only after staging the official directory; crash at this step.
         if Path(path).name.endswith(".retained"):
             raise SimulatedCrash()
         return real_rmtree(path, *args, **kwargs)
@@ -1847,7 +1847,7 @@ def test_discarding_a_retained_deletion_survives_a_crash_after_revoking_it(tmp_p
         store.delete_tool(tool_id)
     monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
 
-    # 正式目录的删除已经暂存：剩下的是已确认删除和停放的副本，恢复直接清掉。
+    # Official deletion is staged: confirmed deletion and a parked copy remain, so recovery simply removes them.
     assert not marker.exists()
     assert not final.exists()
     assert list(store.root.glob(".*.retained"))
@@ -1875,7 +1875,7 @@ def test_a_crash_before_the_published_delete_is_staged_keeps_the_retained_copy(t
         pass
 
     def crash_before_staging(*_args, **_kwargs):
-        # 副本和原授权已经停放、正式目录的删除还没暂存：进程在这里退出。
+        # Copy and original authorization are parked, but official deletion is not staged: the process exits here.
         raise SimulatedCrash()
 
     monkeypatch.setattr(AvatarToolStore, "_stage_delete_locked", crash_before_staging)
@@ -1887,7 +1887,7 @@ def test_a_crash_before_the_published_delete_is_staged_keeps_the_retained_copy(t
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
-    # 正式目录还在，删除没有发生：副本连同原授权回到「保留副本」状态，不当成孤儿清掉。
+    # Official directory still exists; deletion never happened: restore copy and original authorization to retained-copy state, not orphan cleanup.
     assert final.is_dir()
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.read_bytes() == b"{"
@@ -1906,17 +1906,17 @@ def test_recovery_keeps_a_parked_copy_it_cannot_place_and_blocks_only_its_id(tmp
     final = store.root / tool_id
     deleting = store.root / f".{tool_id}.deleting"
     parked = store.root / f".{tool_id}.retained"
-    # 崩溃前停放的副本（原授权在里面）。
+    # Copy parked before the crash, containing its original authorization.
     shutil.copytree(final, parked)
     (store.root / f".{tool_id}.retained.unverified").write_bytes(b"{")
     parked_record = (parked / "record.json").read_bytes()
     if state == "unresolved-deleting":
-        # 暂存把一个同步换进来的目录挪去了 .deleting，核对不上，正式路径又被
-        # 重新占着、挪不回：这次删除证实不了，也没有发生。
+        # Staging moved a sync-replaced directory to .deleting; verification fails, and the official path is
+        # occupied again, preventing restoration: this deletion is unproven and did not happen.
         shutil.copytree(final, deleting)
         (store.root / f".{tool_id}.deleting.unverified").write_bytes(b"{")
     else:
-        # 正式路径被同步成了普通文件。
+        # The official path was synced into a regular file.
         shutil.rmtree(final)
         final.write_bytes(b"not a directory")
 
@@ -1924,8 +1924,8 @@ def test_recovery_keeps_a_parked_copy_it_cannot_place_and_blocks_only_its_id(tmp
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
 
-    # 删除有没有发生判断不了：停放的副本不能被当成已完成删除丢掉，也不能让它
-    # 悄悄占着配额而这个 ID 照常可写。
+    # Deletion cannot be determined: neither discard the parked copy as confirmed deletion nor let it
+    # silently consume quota while the ID remains writable.
     assert (parked / "record.json").read_bytes() == parked_record
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     with pytest.raises(AvatarToolStoreError) as blocked:
@@ -1944,7 +1944,7 @@ def test_a_crash_while_parking_beside_a_directory_marker_recovers(tmp_path, monk
     deleting = store.root / f".{tool_id}.deleting"
     marker = store.root / f".{tool_id}.deleting.unverified"
     parked = store.root / f".{tool_id}.retained"
-    # 副本已经停放、授权（被同步客户端换成了目录）还没移进去时崩溃。
+    # Crash after parking the copy but before moving in authorization, which a sync client replaced with a directory.
     shutil.copytree(final, parked)
     marker.mkdir()
     (marker / "stray.bin").write_bytes(b"synced")
@@ -1954,12 +1954,12 @@ def test_a_crash_while_parking_beside_a_directory_marker_recovers(tmp_path, monk
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
 
-    # 恢复不能卡在删不掉的目录授权上：副本连同原授权回到「保留副本」状态。
+    # Recovery must not stall on undeletable directory authorization: restore copy and original authorization to retained-copy state.
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     assert (deleting / "record.json").read_bytes() == parked_record
     assert (marker / "stray.bin").read_bytes() == b"synced"
     assert not parked.exists()
-    # 明确删除也不丢弃目录授权里的东西：只拦这一个 ID。
+    # Even explicit deletion preserves directory-authorization contents, blocking only this ID.
     with pytest.raises(AvatarToolStoreError) as blocked:
         restarted.delete_tool(tool_id)
     assert blocked.value.code == "tool_recovery_pending"
@@ -1973,7 +1973,7 @@ def test_recovery_never_recursively_deletes_a_directory_at_an_orphan_marker_path
     tool_id = f"local-{uuid.uuid4()}"
     store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
     marker = store.root / f".{tool_id}.deleting.unverified"
-    # 授权位置出现一个目录（同步客户端放进来的），旁边既没有 .deleting 也没有停放的副本。
+    # A sync client placed a directory at the authorization location, with neither .deleting nor a parked copy nearby.
     marker.mkdir()
     (marker / "unknown.bin").write_bytes(b"not ours")
 
@@ -1981,7 +1981,7 @@ def test_recovery_never_recursively_deletes_a_directory_at_an_orphan_marker_path
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
 
-    # 里面是什么无从确认：不递归删除，恢复照常完成，只拦这一个 ID。
+    # Its contents are unknown: do not recursively delete; recovery completes normally and blocks only this ID.
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     assert (marker / "unknown.bin").read_bytes() == b"not ours"
     with pytest.raises(AvatarToolStoreError) as blocked:
@@ -2015,7 +2015,7 @@ def test_a_rolled_back_copy_waits_until_its_restored_marker_is_durable(tmp_path,
         return real_replace(source, destination, *args, **kwargs)
 
     def directory_sync_fails_after_staging(fd):
-        # 回滚时存储根的目录同步失败：授权回到原位这一步不一定落了盘。
+        # Store-root directory syncing fails during rollback: restoring authorization may not be durable.
         if state["staging_failed"] and stat_module.S_ISDIR(os.fstat(fd).st_mode):
             raise OSError(errno.EIO, "simulated I/O error")
         return real_fsync(fd)
@@ -2027,12 +2027,12 @@ def test_a_rolled_back_copy_waits_until_its_restored_marker_is_durable(tmp_path,
     monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
     monkeypatch.setattr("utils.avatar_tool_store.os.fsync", real_fsync)
 
-    # 授权没确认落盘就不把副本挪回 .deleting：崩溃后那会是一个无授权、会被清掉的 .deleting。
+    # Without confirmed authorization durability, do not restore the copy to .deleting: a crash would leave unauthorized .deleting subject to cleanup.
     assert final.is_dir()
     assert not deleting.exists()
     assert (parked / "record.json").read_bytes() == retained_record
     assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
-    # 之后恢复把副本连同原授权挪回「保留副本」状态。
+    # Later recovery restores copy and original authorization to retained-copy state.
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
@@ -2073,12 +2073,12 @@ def test_parking_is_durable_before_the_marker_moves(tmp_path, monkeypatch):
         index for index, event in enumerate(events)
         if event[0] == "replace" and event[1] == marker.name
     )
-    # 副本停放落盘之后才动授权：只落了后一步的崩溃会让副本回到 .deleting 且没有授权。
+    # Touch authorization only after parking is durable: persisting only the later step before a crash restores an unauthorized .deleting copy.
     assert park < move_marker
     if os.name != "nt":
         assert ("dir-fsync",) in events[park + 1:move_marker]
-    # 授权停在存储根里、副本旁边（同一个目录内改名），由存储根的严格持久化覆盖之后
-    # 才暂存正式目录。
+    # Park authorization in the store root beside the copy (rename within one directory), and strictly persist the root
+    # before staging the official directory.
     assert events[move_marker][2] == f".{tool_id}.retained.unverified"
     stage = events.index(("replace", final.name, deleting.name))
     assert move_marker < stage
@@ -2106,7 +2106,7 @@ def test_a_rolled_back_marker_that_authorizes_the_copy_is_replaced(tmp_path, mon
             raise OSError(errno.ENOSPC, "simulated disk full")
         result = real_replace(source, destination, *args, **kwargs)
         if not rewritten and Path(source).name.endswith(".retained.unverified") and Path(destination) == marker:
-            # 停放期间同步客户端改写了原授权：挪回原位的这份恰好能授权副本。
+            # A sync client rewrites original authorization while parked: the restored authorization happens to authorize the copy.
             rewritten.append(True)
             _, _, directory_identity, _ = avatar_tool_store._probe_entry_state(parked)
             record_kind, _, record_identity, _ = avatar_tool_store._probe_entry_state(parked / "record.json")
@@ -2124,7 +2124,7 @@ def test_a_rolled_back_marker_that_authorizes_the_copy_is_replaced(tmp_path, mon
 
     assert rewritten
     assert final.is_dir()
-    # 副本不能挨着一份能授权它的授权回到 .deleting：恢复会把它当成已确认删除清掉。
+    # Never return a copy to .deleting beside authorization that matches it: recovery would clean it as confirmed deletion.
     assert not (deleting.exists() and store._delete_authorization_matches(deleting, marker))
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
@@ -2145,7 +2145,7 @@ def test_a_parked_copy_becomes_resolvable_without_a_restart(tmp_path, monkeypatc
     (store.root / f".{tool_id}.retained.unverified").write_bytes(b"{")
     published = tmp_path / "published"
     shutil.move(str(final), str(published))
-    # 正式路径被同步成了普通文件：启动恢复判断不了，保留停放的副本、只拦这个 ID。
+    # The official path was synced into a regular file: startup cannot decide, retains the parked copy, and blocks only this ID.
     final.write_bytes(b"not a directory")
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
@@ -2162,11 +2162,11 @@ def test_a_parked_copy_becomes_resolvable_without_a_restart(tmp_path, monkeypatc
         with pytest.raises(AvatarToolStoreError) as blocked:
             restarted.delete_tool(tool_id)
         assert blocked.value.code == "tool_recovery_pending"
-    # 周围状态没变、副本仍然判断不了：重复操作不重跑整轮恢复。
+    # Surrounding state is unchanged and the copy remains indeterminate: repeated operations do not rerun all recovery.
     assert recovery_runs == []
 
-    # 之后同步客户端把正式目录放了回来：不用重启，下一次删除先重跑恢复，副本
-    # 回到「保留副本」状态，再照常一并丢弃。
+    # A sync client later restores the official directory: without restart, the next deletion reruns recovery, returns the copy
+    # to retained-copy state, then discards both normally.
     final.unlink()
     shutil.move(str(published), str(final))
     assert restarted.delete_tool(tool_id) == tool_id
@@ -2188,7 +2188,7 @@ def test_a_parked_copy_beside_a_kept_deleting_copy_becomes_resolvable_without_a_
     parked = store.root / f".{tool_id}.retained"
     shutil.copytree(final, parked)
     (store.root / f".{tool_id}.retained.unverified").write_bytes(b"{")
-    # 另有一份授权对不上的 .deleting，正式目录也在：启动恢复两边都判断不了。
+    # Another .deleting has mismatched authorization while the official directory exists: startup cannot determine either side.
     shutil.copytree(final, deleting)
     marker.write_bytes(b"{")
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
@@ -2208,8 +2208,8 @@ def test_a_parked_copy_beside_a_kept_deleting_copy_becomes_resolvable_without_a_
         assert blocked.value.code == "tool_recovery_pending"
     assert recovery_runs == []
 
-    # 之后同步客户端把正式目录移走了：.deleting 可以挪回原位，停放的副本也随之
-    # 可以判断。不用重启，下一次删除就重跑恢复，再照常一并丢弃。
+    # A sync client later removes the official directory: .deleting can return to its original path, making the parked copy
+    # decidable too. Without restart, the next deletion reruns recovery and discards both normally.
     shutil.move(str(final), str(tmp_path / "moved-away"))
     assert restarted.delete_tool(tool_id) == tool_id
     assert recovery_runs
@@ -2233,8 +2233,8 @@ def test_recovery_never_takes_an_entry_of_the_parked_copy_for_its_authorization(
     parked = store.root / f".{tool_id}.retained"
     parked_marker = store.root / f".{tool_id}.retained.unverified"
     shutil.copytree(final, parked)
-    # 副本里有一个名字像授权的条目（同步客户端放进来的）；真正的授权要么停在副本
-    # 旁边，要么在崩溃中已经没了。
+    # A sync client placed an authorization-named entry inside the copy; real authorization is either parked
+    # beside the copy or already lost in the crash.
     lookalike = parked / f".retained-{uuid.uuid4()}.unverified"
     lookalike.write_bytes(b"synced user data")
     if marker_beside_copy:
@@ -2243,7 +2243,7 @@ def test_recovery_never_takes_an_entry_of_the_parked_copy_for_its_authorization(
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
 
-    # 副本原样回到「保留副本」状态，里面的条目一个不少；旁边是一份对不上它的授权。
+    # Restore the copy unchanged to retained-copy state, preserving all entries, beside authorization that does not match it.
     assert not parked.exists()
     assert not parked_marker.exists()
     assert (deleting / lookalike.name).read_bytes() == b"synced user data"
@@ -2264,7 +2264,7 @@ def test_recovery_clears_the_marker_of_a_parked_copy_that_is_gone(tmp_path, monk
     tool_id = f"local-{uuid.uuid4()}"
     parked_marker = store.root / f".{tool_id}.retained.unverified"
     store.initialize()
-    # 删除已经完成、停放的副本已经删掉，只是崩溃在清掉它旁边的授权之前。
+    # Deletion completed and the parked copy was removed; the crash only preceded cleanup of adjacent authorization.
     if kind == "file":
         parked_marker.write_bytes(b"{")
     else:
@@ -2278,7 +2278,7 @@ def test_recovery_clears_the_marker_of_a_parked_copy_that_is_gone(tmp_path, monk
     if kind == "file":
         assert not parked_marker.exists()
     else:
-        # 目录不是本模块放的，不递归删除。
+        # This module did not create the directory; do not recursively delete it.
         assert (parked_marker / "stray.bin").read_bytes() == b"synced"
 
 
@@ -2296,7 +2296,7 @@ def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, mon
     real_replace = os.replace
 
     def fail_staging(source, destination, *args, **kwargs):
-        # 正式目录挪去 .deleting 这一步失败（比如磁盘满）。
+        # Moving the official directory to .deleting fails, for example due to a full disk.
         if Path(source) == final and Path(destination) == deleting:
             raise OSError(errno.ENOSPC, "simulated disk full")
         return real_replace(source, destination, *args, **kwargs)
@@ -2306,7 +2306,7 @@ def test_a_retained_copy_is_put_back_when_staging_the_delete_fails(tmp_path, mon
         store.delete_tool(tool_id)
     monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
 
-    # 删除失败就等于没发生：副本挪回原位、授权对不上，正式目录也还在。
+    # Failed deletion means it never happened: restore the copy beside mismatched authorization; the official directory remains.
     assert raised.value.code == "tool_delete_failed"
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.exists()
@@ -2333,8 +2333,8 @@ def test_a_retained_copy_synced_in_just_before_it_is_parked_is_not_discarded(tmp
     swapped = []
 
     def sync_right_before_parking(source, destination, *args, **kwargs):
-        # 核对之后、改名之前：同步客户端恰好把副本整个换掉。先核对再改名留下的
-        # 就是这个窗口，只能先改名认领、再核对认领到的东西。
+        # Between verification and rename, a sync client replaces the whole copy. Verify-then-rename leaves
+        # this window; claim by renaming first, then verify the claimed object.
         if not swapped and Path(source) == deleting and Path(destination).name.endswith(".retained"):
             swapped.append(True)
             shutil.rmtree(deleting)
@@ -2369,7 +2369,7 @@ def test_a_retained_copy_survives_a_failed_delete_when_no_marker_can_be_written(
     real_open = Path.open
 
     def disk_full_for_markers(self, mode="r", *args, **kwargs):
-        # 磁盘满：正式目录的授权写不出来，失败后也补写不出新的授权。
+        # Full disk: cannot write authorization for the official directory, nor replacement authorization after failure.
         if "x" in mode and self.name.endswith(".deleting.unverified"):
             raise OSError(errno.ENOSPC, "simulated disk full")
         return real_open(self, mode, *args, **kwargs)
@@ -2378,13 +2378,13 @@ def test_a_retained_copy_survives_a_failed_delete_when_no_marker_can_be_written(
     with pytest.raises(AvatarToolStoreError) as raised:
         store.delete_tool(tool_id)
 
-    # 回滚只靠改名：原授权连同副本原样回到原位，不需要写新文件。
+    # Rollback uses renames alone: restore the original authorization and copy unchanged without writing new files.
     assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 500)
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.read_bytes() == b"{"
     assert final.is_dir()
     assert not list(store.root.glob(".*.retained"))
-    # 重启恢复看到的仍是「授权对不上、正式目录在」：保留副本，而不是当成已确认删除清掉。
+    # Restart recovery still sees mismatched authorization and an existing official directory: retain the copy, never clean it as confirmed deletion.
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
@@ -2415,7 +2415,7 @@ def test_a_rolled_back_copy_is_never_left_without_its_marker(tmp_path, monkeypat
         return real_open(self, mode, *args, **kwargs)
 
     def marker_cannot_move_back(source, destination, *args, **kwargs):
-        # 暂存失败后，原授权改名挪回也失败，补写新授权同样写不出来。
+        # Staging fails, renaming original authorization back also fails, and writing new authorization fails too.
         if Path(source).name.endswith(".retained.unverified") and Path(destination) == marker:
             raise OSError(errno.EIO, "simulated I/O error")
         return real_replace(source, destination, *args, **kwargs)
@@ -2427,12 +2427,12 @@ def test_a_rolled_back_copy_is_never_left_without_its_marker(tmp_path, monkeypat
 
     assert (raised.value.code, raised.value.status_code) == ("tool_delete_failed", 500)
     assert final.is_dir()
-    # 无授权的 .deleting 会被恢复当成已确认删除：宁可让副本留在停放名下。
+    # Recovery treats unauthorized .deleting as confirmed deletion: prefer leaving the copy parked.
     assert not (deleting.exists() and not marker.exists())
     assert not deleting.exists()
     assert list(store.root.glob(".*.retained"))
     assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
-    # 故障过去之后，恢复看到正式目录还在、删除没有暂存：把副本连同原授权挪回。
+    # After the fault clears, recovery sees the official directory and unstaged deletion: restore copy and original authorization.
     monkeypatch.setattr(Path, "open", real_open)
     monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
@@ -2465,7 +2465,7 @@ def test_a_transient_probe_error_during_rollback_keeps_the_retained_copy(tmp_pat
         return real_open(self, mode, *args, **kwargs)
 
     def marker_probe_fails_once_during_rollback(path):
-        # 暂存失败后回滚时，探测授权位置恰好遇到一次瞬时错误。
+        # During rollback after staging failure, probing the authorization location hits a transient error.
         if state["staging_failed"] and not state["probe_failed"] and Path(path) == marker:
             state["probe_failed"] = True
             return "unknown", 0, OSError(errno.EIO, "simulated transient error")
@@ -2476,15 +2476,15 @@ def test_a_transient_probe_error_during_rollback_keeps_the_retained_copy(tmp_pat
     with pytest.raises(AvatarToolStoreError):
         store.delete_tool(tool_id)
 
-    # 读不到授权位置不等于那里有授权，也不等于那里没有：原授权放回原位，副本要么在
-    # 确认授权对不上之后回到 .deleting，要么留在停放名下，绝不会被丢掉。
+    # Unreadable authorization location proves neither presence nor absence: restore original authorization; the copy either
+    # returns to .deleting after confirmed mismatch or stays parked, but is never discarded.
     assert state["probe_failed"]
     assert marker.read_bytes() == b"{"
     assert final.is_dir()
     parked = store.root / f".{tool_id}.retained"
     holder = deleting if deleting.exists() else parked
     assert (holder / "record.json").read_bytes() == retained_record
-    # 恢复把副本连同原授权挪回「保留副本」状态。
+    # Recovery restores the copy and original authorization to retained-copy state.
     monkeypatch.setattr(Path, "open", real_open)
     monkeypatch.setattr("utils.avatar_tool_store._probe_entry", real_probe)
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
@@ -2512,8 +2512,8 @@ def test_a_marker_synced_in_during_rollback_is_replaced_by_the_original(tmp_path
     def sync_marker_after_parking(source, destination, *args, **kwargs):
         result = real_replace(source, destination, *args, **kwargs)
         if not synced and Path(destination).name.endswith(".retained.unverified"):
-            # 原授权刚被停放：同步客户端恰好在原位放回一份授权（内容由它决定，
-            # 可能恰好能授权这份副本），这次删除自己的授权于是写不进去。
+            # Just after parking original authorization, a sync client replaces it at the original location with chosen content
+            # that might authorize this copy, preventing this deletion from writing its own authorization.
             synced.append(True)
             marker.write_bytes(b'{"synced": true}')
         return result
@@ -2525,7 +2525,7 @@ def test_a_marker_synced_in_during_rollback_is_replaced_by_the_original(tmp_path
 
     assert synced
     assert final.is_dir()
-    # 副本带着已知对不上的原授权回到原位，外来的授权不能留在它旁边。
+    # Restore the copy beside its known-mismatching original authorization; never leave external authorization beside it.
     assert (deleting / "record.json").read_bytes() == retained_record
     assert marker.read_bytes() == b"{"
     assert not list(store.root.glob(".*.retained"))
@@ -2545,7 +2545,7 @@ def test_an_unreadable_retained_copy_still_blocks_saves_with_delete_pending(tmp_
     (store.root / f".{tool_id}.deleting.unverified").write_bytes(b"{")
 
     def unreadable(_path):
-        # 副本里有读不了的子目录。保存只需要知道「这是一份保留副本」，不该去遍历它。
+        # The copy contains an unreadable subdirectory. Saving only needs to identify a retained copy, not traverse it.
         raise PermissionError(errno.EACCES, "simulated unreadable subdirectory")
 
     monkeypatch.setattr("utils.avatar_tool_store._retained_copy_state", unreadable)
@@ -2565,8 +2565,8 @@ def test_a_deleting_entry_that_deleting_cannot_clear_reports_recovery_pending(tm
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     tool_id = f"local-{uuid.uuid4()}"
     created = store.create_tool_v3(manifest=_v3_manifest(tool_id), uploads=[_png()])
-    # 同步客户端或损坏把 .deleting 变成了普通文件：明确删除清不掉它，界面不能
-    # 提示「先删除再重建」。
+    # Sync or corruption turned .deleting into a regular file that explicit deletion cannot clear; the UI must not
+    # suggest deleting first and recreating.
     deleting = store.root / f".{tool_id}.deleting"
     deleting.write_bytes(b"stray")
 
@@ -2603,9 +2603,9 @@ def test_an_overflowing_special_probability_is_invalid_not_a_server_error(
 ):
     monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
-    # JSON 整数字面量没有长度上限，float() 转不下会抛 OverflowError。
-    # 400 位时 float() 抛 OverflowError；5000 位超过解释器的整数位数上限，
-    # json.loads 在校验之前就抛普通 ValueError。
+    # JSON integer literals have no length cap; float() conversion can raise OverflowError.
+    # At 400 digits float() raises OverflowError; 5000 digits exceeds the interpreter's integer-digit limit,
+    # causing json.loads to raise ordinary ValueError before validation.
     huge = 10 ** digits
     special_uploads = [_png(), _png(size=(12, 10))]
 
@@ -2646,12 +2646,12 @@ def test_an_overflowing_special_probability_is_invalid_not_a_server_error(
     record = json.loads(record_path.read_text(encoding="utf-8"))
     tampered = _replace_probabilities(record, "__HUGE__")
     assert tampered != record
-    # json.dumps 也写不出超过位数上限的整数，直接拼进文本。
+    # json.dumps also cannot serialize integers beyond the digit limit; splice them directly into text.
     record_path.write_text(
         json.dumps(tampered).replace('"__HUGE__"', "1" + "0" * digits), encoding="utf-8"
     )
 
-    # 磁盘上一条被改坏的记录只让它自己失效，不能让整个列表抛出。
+    # One corrupt on-disk record invalidates only itself; it must not make the entire listing raise.
     listed = {item["id"] for item in store.list_items()}
     assert other_id in listed
     assert tool_id not in listed
@@ -3545,11 +3545,11 @@ def test_delete_cleanup_failure_registers_recovery_and_self_heals_without_restar
     try:
         assert store.delete_tool(deleted["id"]) == deleted["id"]
         assert deleting.is_dir()
-        # 残留仍占预算，所以必须登记恢复，否则本进程内这份字节数要不回来。
+        # Leftovers still consume budget, so register recovery or their bytes remain unavailable in this process.
         assert store._current_storage_bytes() > retained_bytes
         assert store._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
 
-        # 不重启、不显式调 initialize()：下一次普通调用就该把残留清掉。
+        # Without restart or explicit initialize(), the next ordinary call should remove leftovers.
         monkeypatch.setattr("utils.avatar_tool_store.shutil.rmtree", real_rmtree)
         assert [item["id"] for item in store.list_items()] == [retained["id"]]
         assert not deleting.exists()
@@ -3588,12 +3588,12 @@ def test_neither_list_nor_startup_rehashes_but_consumers_do(tmp_path, monkeypatc
         assert len(store.list_items()) == 3
         assert digests == [], "list_items must not recompute resource digests"
 
-        # 启动同样不做全量复核：作者原来的启动路径一个文件都不 hash，加回去会给
-        # 每次冷启动摊上 O(总字节数)。
+        # Startup also skips full verification: the original startup hashes no files; restoring hashing would impose
+        # O(total bytes) on every cold start.
         store.initialize()
         assert digests == [], "startup must not recompute resource digests"
 
-        # 只有真正消费资源的地方才逐字节核验。
+        # Only actual resource consumers verify byte by byte.
         store.get_detail(created[0]["id"])
         assert digests, "get_detail must verify resource digests"
     finally:
@@ -3618,7 +3618,7 @@ def test_transient_read_failure_spares_the_tool_but_a_digest_mismatch_quarantine
         raise OSError("file locked by another process")
 
     try:
-        # 文件没坏，只是这一轮读不到 —— 一次杀软扫描不该永久藏掉好道具。
+        # The file is intact but unreadable this time: one antivirus scan must not permanently hide a good tool.
         monkeypatch.setattr(AvatarToolStore, "_file_digest", staticmethod(locked_digest))
         with pytest.raises(AvatarToolStoreError) as raised:
             store.get_detail(tool["id"])
@@ -3628,7 +3628,7 @@ def test_transient_read_failure_spares_the_tool_but_a_digest_mismatch_quarantine
         monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
         assert [item["id"] for item in store.list_items()] == [tool["id"]]
 
-        # 读到了字节、但和摘要对不上 —— 这才是确定性损坏。
+        # Bytes were read but mismatch the digest: this is deterministic corruption.
         (store.root / tool["id"] / "default.png").write_bytes(b"truncated")
         with pytest.raises(AvatarToolStoreError) as raised:
             store.get_detail(tool["id"])
@@ -3636,7 +3636,7 @@ def test_transient_read_failure_spares_the_tool_but_a_digest_mismatch_quarantine
         assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
         assert store.list_items() == []
 
-        # 损坏的道具改不动（update 自己就会全量核验），只能删；删掉要解除隔离。
+        # Corrupt tools cannot be updated (update fully verifies), only deleted; deletion must clear quarantine.
         assert store.delete_tool(tool["id"]) == tool["id"]
         assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
     finally:
@@ -3661,7 +3661,7 @@ def test_update_rejects_retained_bytes_swapped_after_the_record_was_verified(tmp
     def swap_after_verification(self, tool_id, *, verify_resources=False):
         record = real_read_record(self, tool_id, verify_resources=verify_resources)
         if verify_resources:
-            # 校验通过之后、retained_bytes 打开文件之前，外部写者换掉了内容。
+            # After validation but before retained_bytes opens the file, an external writer replaces its contents.
             (self.root / tool_id / "default.png").write_bytes(_png(size=(31, 31)))
         return record
 
@@ -3697,8 +3697,8 @@ def test_update_maps_a_retained_read_failure_to_a_controlled_error(tmp_path, mon
         change_images=[_png(size=(9, 9))],
     )
 
-    # 只让 retained_bytes 那次打开失败：update_tool 开头的
-    # read_record(verify_resources=True) 也会打开同一个文件算摘要，得先放行。
+    # Fail only retained_bytes's open: update_tool begins with
+    # read_record(verify_resources=True), which opens the same file to hash it and must pass first.
     stage = {"verified": False}
     real_read_record = AvatarToolStore.read_record
 
@@ -3731,11 +3731,11 @@ def test_update_maps_a_retained_read_failure_to_a_controlled_error(tmp_path, mon
                 change_resources=["change-000.png"],
                 change_images=[],
             )
-        # 路由只接 AvatarToolStoreError / MaintenanceModeError；裸 OSError 会变 500。
+        # The route handles only AvatarToolStoreError / MaintenanceModeError; bare OSError becomes 500.
         assert raised.value.code == "resource_read_failed"
         assert raised.value.status_code == 503
         assert raised.value.field == "default_image"
-        # 读不到不等于损坏，不能隔离。
+        # Unreadable does not mean corrupt; do not quarantine.
         assert raised.value.integrity_mismatch is False
         assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
     finally:
@@ -3749,8 +3749,8 @@ def test_record_read_is_bounded_yet_fits_the_largest_legal_record(tmp_path, monk
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     cap = avatar_tool_store.AVATAR_TOOL_MAX_RECORD_BYTES
 
-    # 上限必须从 limits 推出来，而不是拍脑袋：改大 maxChangeImages /
-    # maxMeaningChars / maxNameChars 而忘了调上限，这里要先红。
+    # Derive the cap from limits rather than guess: increasing maxChangeImages /
+    # maxMeaningChars / maxNameChars without adjusting the cap must fail here first.
     worst_case = {
         "recordVersion": 2,
         "id": "local-00000000-0000-4000-8000-000000000000",
@@ -3790,8 +3790,8 @@ def test_record_read_is_bounded_yet_fits_the_largest_legal_record(tmp_path, monk
         change_images=[_png()],
     )
     record_path = store.root / tool["id"] / "record.json"
-    # 合法 record 后面缀上大量空白：JSON 依然可解析、schema 依然通过，所以只有
-    # 「读取有上限」这一条能让它出局 —— 否则断言分不清是被大小拒的还是被结构拒的。
+    # Append abundant whitespace to a valid record: JSON and schema remain valid, so only
+    # bounded reading rejects it, distinguishing size rejection from structural rejection.
     record_path.write_bytes(
         record_path.read_bytes() + b" " * (cap * 2)
     )
@@ -3802,8 +3802,8 @@ def test_record_read_is_bounded_yet_fits_the_largest_legal_record(tmp_path, monk
     finally:
         pass
     assert raised.value.code == "record_invalid"
-    # 超限是确定性的不合法（不是这一轮读不到），所以要被隔离 —— 否则它既进不了
-    # 公开目录，也没有任何界面入口能删掉，却一直挂着名额和配额。
+    # Oversize is deterministically invalid, not transiently unreadable, so quarantine it; otherwise it is absent from
+    # the public catalog and has no deletion UI while still occupying a slot and quota.
     assert raised.value.transient is False
     assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[store._root_key()]
     avatar_tool_store._QUARANTINED_TOOL_IDS.pop(store._root_key(), None)
@@ -3824,9 +3824,9 @@ def test_update_rejects_a_retained_resource_that_outgrew_its_limit(tmp_path, mon
     )
     stored = (store.root / tool["id"] / "default.png").stat().st_size
 
-    # retained_bytes 的预检是第二道防线：update_tool 开头的全量核验里
-    # _file_digest 已经有自己的大小预检，所以只有「核验通过之后资源才变超限」
-    # 这条 TOCTOU 路径能走到它。用收紧上限模拟那一刻，省去往盘上写 8 MiB。
+    # retained_bytes preflight is the second defense: _file_digest already has its own size preflight during
+    # update_tool's initial full validation, so only resources becoming oversized after verification
+    # can reach this TOCTOU path. Tighten the limit to simulate that moment without writing 8 MiB.
     real_read_record = AvatarToolStore.read_record
 
     def shrink_after_verification(self, tool_id, *, verify_resources=False):
@@ -3920,9 +3920,9 @@ def test_verification_refuses_an_oversized_resource_before_hashing_it(tmp_path, 
         with pytest.raises(AvatarToolStoreError) as raised:
             store.read_record(tool["id"], verify_resources=True)
         assert raised.value.code == "record_invalid"
-        # 一个字节都不该被读进来。
+        # Not a single byte should be read.
         assert consumed["bytes"] == 0, f"hashed {consumed['bytes']} bytes of an oversized asset"
-        # 大小越界是确定性的内容异常，应当隔离。
+        # Oversize is a deterministic content violation and must be quarantined.
         assert raised.value.integrity_mismatch is True
         assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
     finally:
@@ -3956,7 +3956,7 @@ def test_record_rejects_non_file_entries_in_the_tool_directory(tmp_path, monkeyp
         except (OSError, NotImplementedError):
             pytest.skip("symlink creation requires privileges on this platform")
 
-    # 之前闭包只统计普通文件，塞进来的子目录/符号链接会被无声忽略。
+    # The closure previously counted only regular files, silently ignoring added subdirectories/symlinks.
     with pytest.raises(AvatarToolStoreError) as raised:
         store.read_record(tool["id"])
     assert raised.value.code == "record_invalid"
@@ -3982,7 +3982,7 @@ def test_digest_stops_reading_when_a_file_grows_past_the_fstat_snapshot(tmp_path
     class _SmallSnapshot:
         st_size = 0
 
-    # 谎报快照，等价于「fstat 之后外部写者又往文件里追加」。
+    # Lie about the snapshot, equivalent to an external writer appending after fstat.
     monkeypatch.setattr(avatar_tool_store.os, "fstat", lambda _fd: _SmallSnapshot())
 
     consumed = {"bytes": 0}
@@ -4007,7 +4007,7 @@ def test_digest_stops_reading_when_a_file_grows_past_the_fstat_snapshot(tmp_path
         with pytest.raises(AvatarToolStoreError) as raised:
             store.read_record(tool["id"], verify_resources=True)
         assert raised.value.integrity_mismatch is True
-        # 读取必须在越限后立刻停下，而不是一路读到 6 MiB 的 EOF。
+        # Stop reading immediately after exceeding the cap, rather than continuing to EOF at 6 MiB.
         assert consumed["bytes"] <= 1024 * 1024 + store.limits["maxImageBytes"], consumed["bytes"]
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
@@ -4036,12 +4036,12 @@ def test_a_temporarily_unreadable_tool_still_holds_its_slot(tmp_path, monkeypatc
         return real_open(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", locked_record)
-    # 这一轮读不出来不能返回一份缺项的“成功列表”，否则前端会把暂时不可读误当
-    # 成已经删除。整次刷新失败，前端继续保留上一份权威快照。
+    # Transient unreadability must not yield an incomplete successful listing, or the frontend mistakes unreadable items
+    # for deleted ones. Fail the entire refresh so the frontend retains its previous authoritative snapshot.
     with pytest.raises(AvatarToolStoreError) as list_error:
         store.list_items()
     assert list_error.value.transient is True
-    # 它还在盘上，名额也必须照占，否则上限会被悄悄突破。
+    # It remains on disk and must still occupy a slot, preventing silent limit bypass.
     with pytest.raises(AvatarToolStoreError) as raised:
         _create_tool(
             store,
@@ -4092,7 +4092,7 @@ def test_recovery_never_lets_a_stale_backup_overwrite_an_unreadable_final(tmp_pa
     final = store.root / tool["id"]
     current_revision = store.record_revision(store.read_record(tool["id"]))
 
-    # 上一次更新已经发布了新 final，但清理 backup 失败，残留了旧版本。
+    # The previous update published a new final but failed to remove backup, leaving the old version.
     backup = store.root / f".{tool['id']}.backup"
     shutil.copytree(final, backup)
     (backup / "record.json").write_text(
@@ -4101,7 +4101,7 @@ def test_recovery_never_lets_a_stale_backup_overwrite_an_unreadable_final(tmp_pa
         ),
         encoding="utf-8",
     )
-    # 让 backup 自洽（摘要对得上），否则它本来就会被判损坏而与本用例无关。
+    # Make backup self-consistent with matching digests, or it would be corrupt independently of this case.
     stale = json.loads((backup / "record.json").read_text(encoding="utf-8"))
     stale["resourceDigests"] = {
         name: AvatarToolStore._file_digest(backup / name, 32 * 1024 * 1024)
@@ -4120,17 +4120,17 @@ def test_recovery_never_lets_a_stale_backup_overwrite_an_unreadable_final(tmp_pa
     monkeypatch.setattr(Path, "open", unreadable_final)
     try:
         store.initialize()
-        # final 必须原样保留，绝不能被旧 backup 顶掉。
+        # Preserve final unchanged; the old backup must never replace it.
         assert final.is_dir()
         assert backup.is_dir(), "the backup was consumed despite an unproven final"
-        # 恢复没走完，存储根必须留在待恢复状态。
+        # Recovery is incomplete; the store root must remain pending recovery.
         assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
 
         monkeypatch.undo()
         monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
         store.initialize()
 
-        # 锁一放开，final 被证明有效，残留 backup 才被清掉。
+        # Only after the lock releases and final proves valid may leftover backup be removed.
         assert not backup.exists()
         assert store.record_revision(store.read_record(tool["id"])) == current_revision
         assert store.get_detail(tool["id"])["changeItems"][0]["meaning"] == (
@@ -4157,7 +4157,7 @@ def test_a_quarantined_tool_stops_holding_its_slot(tmp_path, monkeypatch):
     )
     root_key = store._root_key()
     try:
-        # 名额被占满，此时建不了第二个。
+        # All slots are occupied, preventing creation of a second tool.
         with pytest.raises(AvatarToolStoreError) as raised:
             _create_tool(
                 store, name="Second", change_mode="press-swap", change_meanings=["m"],
@@ -4165,13 +4165,13 @@ def test_a_quarantined_tool_stops_holding_its_slot(tmp_path, monkeypatch):
             )
         assert raised.value.code == "tool_limit_reached"
 
-        # 内容被篡改，消费点核验时证伪并隔离它。
+        # Content was tampered with; consumer verification disproves validity and quarantines it.
         (store.root / damaged["id"] / "default.png").write_bytes(b"truncated")
         with pytest.raises(AvatarToolStoreError):
             store.get_detail(damaged["id"])
         assert damaged["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
 
-        # 被证伪之后就不该再占着名额。
+        # Once disproven, it must no longer occupy a slot.
         replacement = _create_tool(
             store, name="Second", change_mode="press-swap", change_meanings=["m"],
             default_image=_png(), change_images=[_png()],
@@ -4201,7 +4201,7 @@ def test_recovery_defers_when_a_resource_file_is_unreadable_not_just_the_record(
     real_open = Path.open
 
     def unreadable_asset(self, *args, **kwargs):
-        # 这次挡的是资源文件，不是 record.json。
+        # Block the resource file this time, not record.json.
         if self.name == "default.png" and str(final) in str(self):
             raise OSError("asset is locked by another process")
         return real_open(self, *args, **kwargs)
@@ -4234,7 +4234,7 @@ def test_recovery_removes_a_provably_invalid_backup_so_it_stops_eating_the_quota
     store.ensure()
     tool_id = "local-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
-    # 中断的更新没有留下有效 final，而 .backup 本身是确定性损坏的。
+    # Interrupted update left no valid final, and .backup itself is deterministically corrupt.
     backup = store.root / f".{tool_id}.backup"
     backup.mkdir()
     (backup / "record.json").write_bytes(b"not-json")
@@ -4273,7 +4273,7 @@ def test_a_condemned_tool_stops_eating_the_storage_quota(tmp_path, monkeypatch):
         with pytest.raises(AvatarToolStoreError):
             store.get_detail(tool["id"])
         assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
-        # 用户看不到它、也进不了它的编辑页，所以它不能继续扣着配额。
+        # Users cannot see it or enter its editor, so it must no longer consume quota.
         assert store._current_storage_bytes() == 0
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
@@ -4293,20 +4293,20 @@ def test_recovery_quarantines_a_condemned_final_without_deleting_it(tmp_path, mo
         change_images=[_png()],
     )
     final = store.root / tool["id"]
-    # 中断更新的痕迹，让恢复会走到这个道具。
+    # Evidence of interrupted update makes recovery visit this tool.
     (store.root / f".{tool['id']}.updating").mkdir()
-    # 闭包被破坏：用户往目录里放了一个额外文件。
+    # Broken closure: a user placed an extra file in the directory.
     (final / "notes.txt").write_bytes(b"something the user dropped in")
 
     root_key = store._root_key()
     try:
         store.initialize()
         assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
-        # 关键：目录和用户放进去的文件都还在，恢复不替用户做删除决定。
+        # Crucially, the directory and user-added file remain: recovery does not decide deletion for the user.
         assert final.is_dir()
         assert (final / "notes.txt").is_file()
         assert (final / "default.png").is_file()
-        # 但它不再占配额。
+        # But it no longer consumes quota.
         assert store._current_storage_bytes() == 0
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
@@ -4327,21 +4327,21 @@ def test_a_stale_backup_never_rolls_back_a_condemned_but_present_final(tmp_path,
         change_images=[_png(size=(13, 13))],
     )
     final = store.root / tool["id"]
-    # 上一次更新已经成功，只是清理 backup 失败，留下了旧版本。注意没有 .updating。
+    # The previous update succeeded but backup cleanup failed, leaving an old version. Note the absence of .updating.
     backup = store.root / f".{tool['id']}.backup"
     shutil.copytree(final, backup)
-    # 同步客户端往已发布目录里塞了个文件，闭包被破坏 —— final 因此被证伪。
+    # A sync client added a file to the published directory, breaking closure and disproving final's validity.
     (final / "synced-note.txt").write_bytes(b"added by a sync client")
 
     root_key = store._root_key()
     try:
         store.initialize()
-        # final 必须原样保留：既不能回滚成旧版本，也不能连带删掉用户的文件。
+        # Preserve final unchanged: neither roll back to an old version nor delete the user's file with it.
         assert final.is_dir()
         assert (final / "synced-note.txt").is_file()
         assert (final / "default.png").is_file()
         assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
-        # 残留的 backup 该清掉，否则它一直占配额又没有任何入口能删。
+        # Remove leftover backup, or it consumes quota indefinitely with no deletion UI.
         assert not backup.exists()
         assert store._current_storage_bytes() == 0
     finally:
@@ -4364,22 +4364,22 @@ def test_restoring_a_backup_clears_the_quarantine_it_set(tmp_path, monkeypatch):
     )
     final = store.root / tool["id"]
     backup = store.root / f".{tool['id']}.backup"
-    shutil.copytree(final, backup)  # 破坏之前先留下有效副本
+    shutil.copytree(final, backup)  # Preserve a valid copy before corruption.
     root_key = store._root_key()
 
-    # 先让消费点核验发现损坏并把它隔离 —— 这才是恢复时需要解除的那个标记。
+    # First let consumer verification detect corruption and quarantine it: this is the marker recovery must clear.
     (final / "default.png").write_bytes(b"truncated")
     try:
         with pytest.raises(AvatarToolStoreError):
             store.get_detail(tool["id"])
         assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
 
-        # 中断证据：更新没走完，backup 才是该回到的状态。
+        # Interruption evidence: the update never completed, so backup is the state to restore.
         (store.root / f".{tool['id']}.updating").mkdir()
         store.initialize()
         assert final.is_dir()
         assert not backup.exists()
-        # 回滚出来的这一份刚通过完整核验，不该背着隔离标记继续被列表跳过。
+        # The restored copy just passed full verification; it must not retain quarantine and remain hidden from listings.
         assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
         assert [item["id"] for item in store.list_items()] == [tool["id"]]
     finally:
@@ -4387,9 +4387,9 @@ def test_restoring_a_backup_clears_the_quarantine_it_set(tmp_path, monkeypatch):
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
 
 
-# --- 恢复状态空间穷举 ---
-# 之前每一轮都是被 review 指出一个组合、修一个组合。这里把 final × backup ×
-# .updating 的全部组合钉死，剩余缺陷一次暴露，而不是继续一条条等人喂。
+# --- Exhaustive recovery state space ---
+# Previously each review exposed one combination for a separate fix. Pin every final × backup ×
+# .updating combination here to reveal remaining defects together rather than waiting for one-by-one reports.
 
 
 def _condemn(directory):
@@ -4429,9 +4429,9 @@ def test_recovery_state_matrix(tmp_path, monkeypatch, final_state, backup_state,
     if updating_present:
         updating.mkdir()
 
-    # 该道具只有留下 .updating 或 .backup 才会被恢复遍历到。
+    # Recovery visits a tool only if .updating or .backup remains.
     visited = updating_present or backup_state != "missing"
-    # 可以回滚，当且仅当没有 final 会被牺牲，或有 .updating 这个中断证据。
+    # Rollback is allowed exactly when no final is sacrificed or .updating proves interruption.
     may_restore = updating_present or final_state == "missing"
     restorable = backup_state == "valid" and may_restore
 
@@ -4441,20 +4441,20 @@ def test_recovery_state_matrix(tmp_path, monkeypatch, final_state, backup_state,
         assert not updating.exists(), "an interrupted staging directory was left behind"
 
         if final_state == "valid":
-            # 有效的已发布目录任何情况下都不许被顶掉。
+            # Never replace a valid published directory under any circumstances.
             assert final.is_dir()
             assert not (final / "intruder.txt").exists()
             assert [item["id"] for item in store.list_items()] == [tool_id]
             assert tool_id not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
         elif restorable:
-            # 只有「没有 final 可牺牲」或「有中断证据」时才回滚，且回滚出来的
-            # 那一份必须是干净的、不带隔离标记。
+            # Roll back only with no final to sacrifice or evidence of interruption; the restored
+            # copy must be clean, without quarantine.
             assert final.is_dir()
             assert not (final / "intruder.txt").exists()
             assert tool_id not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
             assert [item["id"] for item in store.list_items()] == [tool_id]
         elif final_state == "condemned":
-            # 被证伪但仍在盘上：保留用户的文件，只登记隔离。
+            # Invalidated but still on disk: preserve the user's files and only register quarantine.
             assert final.is_dir()
             assert (final / "intruder.txt").is_file(), "recovery destroyed the user's file"
             if visited:
@@ -4465,17 +4465,17 @@ def test_recovery_state_matrix(tmp_path, monkeypatch, final_state, backup_state,
             assert store.list_items() == []
 
         if visited:
-            # 没被用于回滚的 backup 一律清掉：它进不了公开目录、UI 也删不掉。
+            # Remove every backup unused for rollback: it cannot enter the public catalog or be deleted through the UI.
             assert not backup.exists(), "an unusable backup kept occupying the quota"
 
-        # 配额不能被「看不见又删不掉」的东西挂住。即便恢复的遍历入口
-        # （.updating / .backup）都不在，list_items 的轻量闭包核验也会把被证伪的
-        # 道具隔离掉，所以这里一律归零。
+        # Invisible, undeletable objects must not hold quota. Even without recovery entry markers
+        # (.updating / .backup), list_items's lightweight closure check quarantines invalidated
+        # tools, so quota is always zero here.
         visible = store.list_items()
         expected_bytes = store._directory_bytes(final) if visible else 0
         assert store._current_storage_bytes() == expected_bytes
         if final_state == "condemned" and not restorable:
-            # 没被回滚掉的被证伪 final 必须进隔离；被回滚的那份已经是有效版本。
+            # Quarantine invalidated finals not rolled back; restored copies are already valid versions.
             assert tool_id in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
@@ -4534,13 +4534,13 @@ def test_a_plain_file_named_updating_does_not_authorize_a_rollback(tmp_path, mon
     backup = store.root / f".{tool['id']}.backup"
     shutil.copytree(final, backup)
     (final / "synced-note.txt").write_bytes(b"added by a sync client")
-    # 不是暂存目录，只是一个同名的普通文件。
+    # A regular file with the same name, not a staging directory.
     (store.root / f".{tool['id']}.updating").write_bytes(b"not a staging directory")
 
     root_key = store._root_key()
     store.initialize()
 
-    # 不得据此把 final 回滚成旧版本，也不得删掉用户放进去的文件。
+    # Do not use it to roll final back to an old version or delete user-added files.
     assert final.is_dir()
     assert (final / "synced-note.txt").is_file()
     assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
@@ -4582,20 +4582,20 @@ def test_a_field_level_record_failure_still_quarantines_and_frees_the_quota(
     try:
         with pytest.raises(AvatarToolStoreError) as raised:
             store.get_detail(tool["id"])
-        # 归一化之后隔离判据才认得它。
+        # Normalize it so the quarantine criterion recognizes it.
         assert raised.value.code == "record_invalid"
         assert raised.value.transient is False
         assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key]
         assert store.list_items() == []
-        # 界面上既看不到也删不掉，所以配额必须释放。
+        # Invisible and undeletable in the UI, so release its quota.
         assert store._current_storage_bytes() == 0
     finally:
         avatar_tool_store._QUARANTINED_TOOL_IDS.pop(root_key, None)
 
 
-# --- 隔离判据的输入空间穷举 ---
-# 「什么算被证伪」最近连着出了两次边界（闭包不符、字段错误码）。这里把落盘记录
-# 的各种损坏形态一次列全：被证伪的必须隔离并释放配额，读不出来的必须原样保留。
+# --- Exhaustive quarantine-criterion input space ---
+# Two recent invalidity edge cases involved broken closure and field error codes. Enumerate all persisted-record
+# corruption shapes together: quarantine invalidated records and release quota; preserve unreadable ones unchanged.
 
 def _corrupt_record(directory, mutate):
     path = directory / "record.json"
@@ -4660,7 +4660,7 @@ def test_every_proven_invalid_record_is_quarantined_and_frees_the_quota(
         assert raised.value.transient is False, flavour
         assert tool["id"] in avatar_tool_store._QUARANTINED_TOOL_IDS[root_key], flavour
         assert store.list_items() == [], flavour
-        # 被证伪的道具在界面上看不到也删不掉，名额和配额都必须放开。
+        # Invalidated tools cannot be seen or deleted in the UI, so release both slots and quota.
         assert store._current_storage_bytes() == 0, flavour
         assert store._occupied_tool_slots() == 0, flavour
     finally:
@@ -4713,7 +4713,7 @@ def test_a_transient_read_failure_never_quarantines_whatever_is_locked(
 
         monkeypatch.undo()
         monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
-        # 锁一放开，道具原样回到列表，名额和配额都还在。
+        # Once the lock releases, the unchanged tool returns to listings with its slot and quota intact.
         assert [item["id"] for item in store.list_items()] == [tool["id"]], locked
         assert store._current_storage_bytes() == occupied, locked
         assert store._occupied_tool_slots() == 1, locked
@@ -4736,7 +4736,7 @@ def test_recovery_treats_a_failed_directory_probe_as_transient_not_absent(tmp_pa
     final = store.root / tool["id"]
     current_revision = store.record_revision(store.read_record(tool["id"]))
 
-    # 上一次更新已经把新版本发布成 final，只是清理 backup 那步失败，旧版本残留。
+    # The last update published the new final but failed backup cleanup, leaving the old version.
     backup = store.root / f".{tool['id']}.backup"
     shutil.copytree(final, backup)
     (backup / "record.json").write_text(
@@ -4751,7 +4751,7 @@ def test_recovery_treats_a_failed_directory_probe_as_transient_not_absent(tmp_pa
         for name in stale["resourceDigests"]
     }
     (backup / "record.json").write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
-    # 没有 .updating —— 上一次更新是走完了的，这个 backup 只是残留，不是回滚证据。
+    # No .updating: the last update completed; this backup is a leftover, not rollback evidence.
     assert not (store.root / f".{tool['id']}.updating").exists()
 
     real_stat, real_lstat = os.stat, os.lstat
@@ -4765,13 +4765,13 @@ def test_recovery_treats_a_failed_directory_probe_as_transient_not_absent(tmp_pa
         return probe
 
     root_key = store._root_key()
-    # 两个都挡住：is_dir() 走 stat，is_symlink() 走 lstat。只挡一个的话，改回
-    # is_dir() 的写法仍然读得到目录，这个用例就抓不到回归了。
+    # Block both: is_dir() uses stat, is_symlink() uses lstat. Blocking one still lets an
+    # is_dir() implementation read the directory, so the test would miss regression.
     monkeypatch.setattr(os, "lstat", flaky(real_lstat))
     monkeypatch.setattr(os, "stat", flaky(real_stat))
     try:
         store.initialize()
-        # 只是一次读不到元数据，final 必须原样还在。
+        # Metadata is merely unreadable this time; preserve final unchanged.
         assert stat_module.S_ISDIR(real_lstat(str(final)).st_mode), (
             "the live final was rolled back on a transient probe failure"
         )
@@ -4782,7 +4782,7 @@ def test_recovery_treats_a_failed_directory_probe_as_transient_not_absent(tmp_pa
         monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
         store.initialize()
 
-        # 元数据能读了，final 被证明有效，残留 backup 这才被清掉。
+        # Only after metadata becomes readable and final proves valid may leftover backup be removed.
         assert not backup.exists()
         assert store.record_revision(store.read_record(tool["id"])) == current_revision
         assert store.get_detail(tool["id"])["changeItems"][0]["meaning"] == (
@@ -4814,7 +4814,7 @@ def test_public_resource_allowlist_accepts_a_symlinked_storage_root(tmp_path, mo
 
     assert is_public_avatar_tool_resource_path(link, f"{tool['id']}/default.png")
 
-    # 根「里面」的软链接仍然一律拒绝：那才是能指到根外面去的那一类。
+    # Always reject symlinks inside the root: those are the ones that can point outside it.
     outside = tmp_path / "outside.png"
     outside.write_bytes(_png())
     inner = real_root / tool["id"] / "default.png"
@@ -4854,8 +4854,8 @@ def test_a_transient_record_probe_failure_never_condemns_a_healthy_tool(tmp_path
     _flaky_lstat(monkeypatch, record)
     with pytest.raises(AvatarToolStoreError) as raised:
         store.read_record(tool["id"])
-    # 读不到元数据必须报成暂时性失败：报 tool_not_found 会让启动恢复把这个健康
-    # 道具判成「被证伪」，轻则隔离，重则在有中断证据时拿旧 backup 顶掉它。
+    # Unreadable metadata must report transient failure: tool_not_found would make startup classify this healthy
+    # tool as invalid, quarantine it, or even replace it with old backup if interruption evidence exists.
     assert raised.value.transient is True
     assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
 
@@ -4876,8 +4876,8 @@ def test_a_failed_staging_probe_keeps_the_root_recovery_pending(tmp_path, monkey
     _flaky_lstat(monkeypatch, orphan)
     try:
         store.initialize()
-        # 孤儿没被清掉，就不能宣称恢复完成 —— 否则本进程内不会再重试，它继续
-        # 绕过配额计费并占着同一个 ID。
+        # Recovery cannot claim completion while an orphan remains, or this process never retries and it keeps
+        # bypassing quota accounting while occupying the same ID.
         assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
         assert orphan.is_dir()
 
@@ -4909,8 +4909,8 @@ def test_a_failed_slot_probe_still_holds_the_tool_slot(tmp_path, monkeypatch):
             store, name="Second", change_mode="press-swap", change_meanings=["m"],
             default_image=_png(), change_images=[_png()],
         )
-    # 少算一个名额就能建出第 65 个，等目录重新可读时已经超限了。名额检查排在
-    # 配额检查之前，所以这里必须是名额拒绝，不能拿配额拒绝顶替。
+    # Undercounting one slot permits a 65th tool, exceeding the cap when the directory becomes readable. Slot checks precede
+    # quota checks, so assert slot rejection here rather than substituting quota rejection.
     assert raised.value.code == "tool_limit_reached"
 
 
@@ -4934,7 +4934,7 @@ def test_a_failed_quota_probe_refuses_to_publish(tmp_path, monkeypatch):
             store, name="Second", change_mode="press-swap", change_meanings=["m"],
             default_image=_png(), change_images=[_png()],
         )
-    # 漏掉的字节会让 maxTotalBytes 形同虚设，所以算不准就必须拒绝写入。
+    # Missing bytes nullify maxTotalBytes; reject writes when accounting is uncertain.
     assert raised.value.code == "avatar_tools_directory_unavailable"
     assert raised.value.transient is True
 
@@ -4958,8 +4958,8 @@ def test_a_transient_probe_failure_inside_validation_never_condemns(tmp_path, mo
     _flaky_lstat(monkeypatch, final if target == "directory" else final / "default.png")
     with pytest.raises(AvatarToolStoreError) as raised:
         store.read_record(tool["id"], verify_resources=True)
-    # 报成非 transient 的 record_invalid，等于告诉恢复「这份已经坏了」——它会隔离
-    # 这个健康道具，有中断证据时还会拿旧 backup 顶掉它。
+    # Reporting nontransient record_invalid tells recovery the record is corrupt: it would quarantine
+    # this healthy tool and replace it with old backup when interruption evidence exists.
     assert raised.value.transient is True
     assert tool["id"] not in avatar_tool_store._QUARANTINED_TOOL_IDS.get(root_key, set())
 
@@ -4983,12 +4983,12 @@ def test_a_transient_closure_probe_failure_is_not_a_closure_violation(tmp_path, 
     intruder = store.root / tool["id"] / "extra.txt"
     intruder.write_text("dropped in by a sync client", encoding="utf-8")
 
-    # 先确认基线：能读到这个多余文件时，闭包不符是确定性的证伪。
+    # Establish the baseline: when the extra file is readable, closure mismatch deterministically disproves validity.
     with pytest.raises(AvatarToolStoreError) as proven:
         store.read_record(tool["id"], verify_resources=True)
     assert proven.value.transient is False
 
-    # 同一个文件，只是这一轮读不到 —— 结论必须从「被证伪」退回「暂时读不出来」。
+    # The same file is merely unreadable this time: downgrade from invalid to temporarily unreadable.
     _flaky_lstat(monkeypatch, intruder)
     with pytest.raises(AvatarToolStoreError) as raised:
         store.read_record(tool["id"], verify_resources=True)
@@ -5013,7 +5013,7 @@ def test_a_failed_staging_size_probe_refuses_the_update(tmp_path, monkeypatch):
     real_lstat = os.lstat
 
     def probe(path, *args, **kwargs):
-        # 暂存目录里的文件是本进程刚写出来的，这里模拟网络盘在那一刻抖了一下。
+        # This process just wrote staging-directory files; simulate a network-drive glitch at that instant.
         if ".updating" in str(path) and str(path).endswith(".png"):
             raise OSError(errno.EBUSY, "metadata temporarily unavailable")
         return real_lstat(path, *args, **kwargs)
@@ -5031,8 +5031,8 @@ def test_a_failed_staging_size_probe_refuses_the_update(tmp_path, monkeypatch):
             change_resources=[""],
             change_images=[_png(size=(10, 10))],
         )
-    # 无论被哪一层拦下，都必须是「暂时不可用」而不是「你的记录坏了」，
-    # 而且原记录必须完好无损 —— 一次读不到不能让用户丢掉已保存的那一份。
+    # Whichever layer rejects it must report temporary unavailability rather than a corrupt record,
+    # preserving the original record intact: one failed read must not lose the user's saved copy.
     assert raised.value.transient is True
 
     monkeypatch.undo()
@@ -5047,7 +5047,7 @@ def test_directory_bytes_refuses_to_understate_the_total(tmp_path, monkeypatch):
     directory.mkdir()
     (directory / "default.png").write_bytes(b"x" * 128)
 
-    # 基线：读得到就照常统计。
+    # Baseline: count normally when readable.
     assert AvatarToolStore._directory_bytes(directory) == 128
 
     _flaky_lstat(monkeypatch, directory / "default.png")
@@ -5077,7 +5077,7 @@ def test_a_foreign_occupant_at_the_final_path_defers_instead_of_being_deleted(
     backup = store.root / f".{tool['id']}.backup"
     shutil.copytree(final, backup)
 
-    # 正式目录被同步客户端或手工操作换成了别的东西。
+    # A sync client or manual action replaced the official directory with something else.
     shutil.rmtree(final)
     if occupant == "file":
         final.write_bytes(b"replaced by a sync client")
@@ -5097,14 +5097,14 @@ def test_a_foreign_occupant_at_the_final_path_defers_instead_of_being_deleted(
     try:
         store.initialize()
 
-        # 拿 backup 覆盖要先删掉占位的东西，那违反「恢复不替用户删除正式目录」。
+        # Replacing it with backup requires deleting the occupying object, violating the rule against recovery deleting official directories for users.
         kind, _, _ = avatar_tool_store._probe_entry(final)
         assert kind != "absent", "recovery deleted whatever was sitting at the final path"
         assert kind != "dir", "the stale backup was published over a foreign occupant"
-        # 而 backup 可能是这个道具仅存的副本，也不能顺手清掉。
+        # Backup might also be the tool's only remaining copy and cannot simply be removed.
         assert backup.is_dir(), "the only surviving copy was cleaned up"
-        # 两条路都走不了，但这是只关系到这一个 ID 的持久状态：不能把整个存储根
-        # 挂在待恢复上，而是单独拦住这个 ID 的写入。
+        # Neither path works, but this persistent state concerns only one ID: do not keep the entire store root
+        # pending recovery; block writes to this ID alone.
         assert root_key not in avatar_tool_store._RECOVERY_PENDING_ROOTS
         with pytest.raises(AvatarToolStoreError) as blocked:
             store.create_tool_v3(manifest=_v3_manifest(tool["id"]), uploads=[_png()])
@@ -5130,8 +5130,8 @@ def test_recovery_rechecks_the_final_before_replacing_it_with_a_backup(tmp_path,
     backup = store.root / f".{tool['id']}.backup"
     shutil.copytree(final, backup)
 
-    # 起点：正式目录不在（一次失败的回滚留下的状态），backup 是唯一副本 ——
-    # 恢复据此获得「可以回滚」的授权。
+    # Initial state: no official directory (left by failed rollback), with backup the only copy;
+    # this authorizes recovery to roll back.
     newest = tmp_path / "newest"
     shutil.copytree(final, newest)
     (newest / "record.json").write_text(
@@ -5152,7 +5152,7 @@ def test_recovery_rechecks_the_final_before_replacing_it_with_a_backup(tmp_path,
     raced = []
 
     def digest_and_race(path, maximum):
-        # 校验 backup 的中途，别的进程把正式目录建了出来。
+        # While backup is being validated, another process creates the official directory.
         if not raced:
             raced.append(True)
             shutil.copytree(newest, final)
@@ -5164,15 +5164,15 @@ def test_recovery_rechecks_the_final_before_replacing_it_with_a_backup(tmp_path,
         store.initialize()
         assert raced, "the race never happened; this test proves nothing"
 
-        # 授权是基于「正式目录不在」发出的。前提在校验期间变了，这一轮就必须弃权：
-        # 既不能删掉刚出现的正式目录，也不能消耗掉 backup。
+        # Authorization depended on the official directory being absent. If that premise changes during validation, abstain this pass:
+        # neither delete the newly appeared official directory nor consume backup.
         assert backup.is_dir(), "the backup was consumed on a stale authorization"
         assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
 
         monkeypatch.undo()
         monkeypatch.setattr("utils.avatar_tool_store.assert_cloudsave_writable", lambda *_a, **_k: None)
-        # 下一次操作重新确认前提：正式目录这次是有效的，于是它说了算，
-        # 而 backup 退化成残留被清掉 —— 新发布的那一版没有被旧 backup 抹掉。
+        # The next operation rechecks the premise: the official directory is now valid and authoritative,
+        # so backup becomes a leftover to remove; the old backup never erases the newly published version.
         assert store.get_detail(tool["id"])["changeItems"][0]["meaning"] == (
             "what the sync client just published"
         )
@@ -5446,16 +5446,16 @@ def test_a_failed_rollback_probe_keeps_the_root_recovery_pending(tmp_path, monke
 
     def failing_replace(src, dst, **kwargs):
         replaces.append((str(src), str(dst)))
-        # 精确命中发布那一步（.updating -> final），不能按调用次序数：
-        # atomic_write_json 写 record.json 时自己也会调 os.replace。
-        # 让它在这里失败，正式目录已经改名成 .backup，只剩那一份副本。
+        # Target publication exactly (.updating -> final), not by call order:
+        # atomic_write_json also calls os.replace when writing record.json.
+        # Fail here after the official directory becomes .backup, leaving that as the sole copy.
         if str(dst) == str(final) and str(src).endswith(".updating"):
             in_rollback_window.append(True)
             raise OSError(errno.EIO, "publish failed")
         return real_replace(src, dst, **kwargs)
 
     def flaky_lstat(path, *args, **kwargs):
-        # 只在回滚窗口里抖，否则更新还没走到那一步就被打断了。
+        # Inject glitches only during rollback, or the update gets interrupted before reaching it.
         if in_rollback_window and str(path) == str(final):
             raise OSError(errno.EBUSY, "metadata temporarily unavailable")
         return real_lstat(path, *args, **kwargs)
@@ -5476,8 +5476,8 @@ def test_a_failed_rollback_probe_keeps_the_root_recovery_pending(tmp_path, monke
                 change_images=[_png(size=(10, 10))],
             )
         assert in_rollback_window, "the failure did not land in the rollback window"
-        # 回滚该不该做判不出来时，不能当成「不用回滚」——那样道具会在本进程内
-        # 一直消失，要等下次启动恢复才回来。
+        # Inability to determine whether rollback is needed must not mean no rollback; that would leave the tool
+        # missing for this process until recovery at the next startup.
         assert root_key in avatar_tool_store._RECOVERY_PENDING_ROOTS
     finally:
         avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(root_key)
@@ -5514,7 +5514,7 @@ def test_an_untyped_on_disk_v3_value_is_skipped_like_any_invalid_record(tmp_path
     healthy = store.create_tool_v3(manifest=_v3_manifest(healthy_id, name="Healthy"), uploads=[_png()])
     record_path = store.root / poisoned_id / "record.json"
     if poison == "nested":
-        # 64 KiB 以内就放得下让 json.loads 递归溢出的嵌套。
+        # Under 64 KiB can contain nesting deep enough to overflow json.loads recursion.
         record_path.write_text("[" * 5000 + "]" * 5000, encoding="utf-8")
     else:
         _corrupt_record(store.root / poisoned_id, poison)
@@ -5540,7 +5540,7 @@ def test_initialize_survives_an_untyped_final_next_to_an_update_backup(tmp_path,
     restarted = AvatarToolStore(_ConfigManager(store.root))
     restarted.initialize()
 
-    # 没有 .updating 作为中断证据，残留 backup 被清掉，被证伪的正式目录只隔离不删。
+    # Without .updating interruption evidence, remove leftover backup; quarantine the invalid official directory without deleting it.
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     assert not backup.exists()
     assert (store.root / tool_id / "record.json").is_file()
@@ -5686,7 +5686,7 @@ def test_delete_with_a_stale_base_revision_keeps_the_newer_version(tmp_path, mon
     store = AvatarToolStore(_ConfigManager(tmp_path / "avatar_tools"))
     tool_id = f"local-{uuid.uuid4()}"
     opened = store.create_tool_v3(manifest=_v3_manifest(tool_id, name="r1"), uploads=[_png()])
-    # 另一个窗口保存出 r2；旧修改页仍拿着 r1。
+    # Another window saved r2; the old editor still holds r1.
     saved = store.update_tool_v3(
         tool_id,
         base_revision=opened["revision"],
@@ -5705,7 +5705,7 @@ def test_delete_with_a_stale_base_revision_keeps_the_newer_version(tmp_path, mon
     assert store.delete_tool(tool_id, base_revision=saved["revision"]) == tool_id
     assert not (store.root / tool_id).exists()
 
-    # 不带 base_revision 保持原有行为。
+    # Omitting base_revision preserves existing behavior.
     legacy = store.create_tool_v3(manifest=_v3_manifest(tool_id, name="legacy"), uploads=[_png()])
     assert store.delete_tool(legacy["id"]) == tool_id
 
@@ -5799,8 +5799,8 @@ def test_a_foreign_final_next_to_update_artifacts_blocks_only_its_own_tool_id(
     assert final.read_bytes() == b"placed by a sync client"
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
 
-    # 占位文件被移走后，同 ID 的下一次写入先跑恢复：backup 回滚成原道具
-    # （同一份创建的重试直接返回它），纯 .updating 残留被清掉后正常创建。
+    # After removing the occupying file, the next same-ID write runs recovery first: backup restores the original tool
+    # (retrying the same creation returns it directly); lone .updating leftovers are removed before normal creation.
     final.unlink()
     recreated = restarted.create_tool_v3(
         manifest=_v3_manifest(blocked_id, name="Blocked"), uploads=[_png()]
@@ -5840,7 +5840,7 @@ def test_recovery_undoes_an_unverifiable_deletion_when_the_final_path_is_free(
     monkeypatch.setattr("utils.avatar_tool_store.os.replace", real_replace)
     avatar_tool_store._RECOVERY_PENDING_ROOTS.discard(store._root_key())
 
-    # 比如存储根被复制迁移过：st_dev/st_ino 变了，授权永远对不上。
+    # For example, copying/migrating the store root changes st_dev/st_ino, permanently mismatching authorization.
     if flavour == "identity-mismatch":
         record_path = deleting / "record.json"
         record_path.write_bytes(record_path.read_bytes())
@@ -5857,7 +5857,7 @@ def test_recovery_undoes_an_unverifiable_deletion_when_the_final_path_is_free(
     if restore_fails_once:
         monkeypatch.setattr("utils.avatar_tool_store.os.replace", refuse_restore)
         restarted.initialize()
-        # 挪回做不到是暂时问题：保留副本和授权，留在待恢复状态重试。
+        # Failure to move back is transient: preserve copy and authorization, pending recovery for retry.
         assert restarted._root_key() in avatar_tool_store._RECOVERY_PENDING_ROOTS
         assert {path.name: path.read_bytes() for path in deleting.iterdir()} == moved_files
         assert marker.exists()
@@ -5868,8 +5868,8 @@ def test_recovery_undoes_an_unverifiable_deletion_when_the_final_path_is_free(
         restarted.initialize()
         items = restarted.list_items()
 
-    # 证实不了的删除被撤销：道具原样回来、用户可以再删一次，不再无限期占着
-    # 这个 ID 和看不见的配额。
+    # Unprovable deletion is undone: the unchanged tool returns and users can delete again, rather than indefinitely occupying
+    # this ID and invisible quota.
     assert restarted._root_key() not in avatar_tool_store._RECOVERY_PENDING_ROOTS
     assert not deleting.exists()
     assert not marker.exists()

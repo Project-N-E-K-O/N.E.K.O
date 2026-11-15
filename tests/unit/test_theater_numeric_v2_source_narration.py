@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -41,7 +42,7 @@ def test_source_narration_rejects_non_text(invalid):
 
 
 def test_live_actor_rejects_stored_segment_shape():
-    # 存档读取走 Runtime/Store，模型入口只能交付当前文本合同。
+    # Load archives through Runtime/Store; model entry points may deliver only the current text contract.
     candidate = {
         'segments': [
             {'phase': 'source_response', 'performance': '（点头）记住了。'},
@@ -77,7 +78,7 @@ async def test_source_reply_survives_commit_cold_restore_and_fork(tmp_path, with
 
     reviewed = _build_transition_judge_messages(runtime.engine, current.session,
         actor_performance=assembled, player_input=message, transition_outcome=outcome)[0]
-    review_data = json.loads(reviewed[1].content.split('：', 1)[1])
+    review_data = prompt_payload(reviewed[1].content)
     if with_narration:
         assert review_data['candidate_segments'][0]['scene_narration'] == NPC_REPLY
     else:

@@ -72,7 +72,7 @@ def derive_plugin_metadata(plugin_dir: Path, *, source_only: bool = False) -> di
     :func:`write_packaged_metadata` turns it into a warning so packaging keeps
     working, while a caller that needs the metadata can treat it as fatal.
     """
-    # 延迟导入：CLI 的其它命令不该为这条路付框架导入的钱。
+    # Lazy import: other CLI commands should not pay framework import costs for this path.
     from plugin.core.registry import _parse_single_plugin_config
     from plugin.server.application.plugins.metadata_scanner import (
         PluginMetadataScanError,
@@ -86,8 +86,8 @@ def derive_plugin_metadata(plugin_dir: Path, *, source_only: bool = False) -> di
 
     logger = _load_logger()
     try:
-        # 不带用户覆盖：这份元数据要发给别人，不能掺进作者机器上的 profile
-        # 和运行时配置（codex）。
+        # Exclude user overrides: this metadata is distributed to others and must not include the author's local profile
+        # or runtime configuration (codex).
         ctx = _parse_single_plugin_config(
             config_path, set(), logger, apply_user_overlays=False
         )
@@ -105,10 +105,10 @@ def derive_plugin_metadata(plugin_dir: Path, *, source_only: bool = False) -> di
         )
     module_path, class_name = entry.split(":", 1)
 
-    # 探测之前先记下这棵树的样子。插件的模块级代码完全可能在 import 时写文件
-    # （初始化状态文件、生成缓存），而 handler 是在那之前推出来的、指纹是在那之后
-    # 算的：装出来的树能通过校验，import 它却会注册出和 plugin.meta.json 不一样的
-    # 入口（codex）。
+    # Record the tree before probing. Plugin module-level code may write files during import
+    # through initialization or caching; handlers are inferred before that, while fingerprints are computed afterward.
+    # The installed tree could pass validation while importing registers entries different from plugin.meta.json
+    # (codex).
     digest_before_probe = compute_source_sha256(plugin_dir)
     dirs_before_probe = source_directory_names(plugin_dir)
 
@@ -132,10 +132,10 @@ def derive_plugin_metadata(plugin_dir: Path, *, source_only: bool = False) -> di
 
     empty_dirs = empty_source_directories(plugin_dir)
     if empty_dirs:
-        # ZIP 不存目录条目，所以空目录装不到用户机器上；而指纹只覆盖文件，
-        # 装出来的那棵树照样和 source_files/source_bytes/source_sha256 全对得上。
-        # 一个按目录存在与否条件注册入口的插件，因此会拿着一份按「有这个目录」
-        # 推出来的 handler 在没有这个目录的机器上跑（codex）。
+        # ZIP omits directory entries, so empty directories do not install; fingerprints cover only files,
+        # leaving the installed tree consistent with source_files/source_bytes/source_sha256.
+        # A plugin conditionally registering entries based on directory existence would then run without that directory
+        # using handlers inferred while it existed (codex).
         raise MetadataProbeError(
             "staged tree contains directories that cannot survive packaging "
             f"({empty_dirs[:3]}); packaging without metadata so the host rescans"
@@ -144,18 +144,18 @@ def derive_plugin_metadata(plugin_dir: Path, *, source_only: bool = False) -> di
         compute_source_sha256(plugin_dir) != digest_before_probe
         or source_directory_names(plugin_dir) != dirs_before_probe
     ):
-        # 目录也要比。内容摘要只覆盖文件，所以"建一个空标记目录、按它注册入口、
-        # 再把它删掉"这一串前后摘要完全相同（codex）。
+        # Compare directories too. Content digests cover only files, so creating an empty marker directory, registering entries from it,
+        # and deleting it leaves identical before/after digests (codex).
         raise MetadataProbeError(
             "importing the plugin changed the staged tree; packaging without "
             "metadata so the host rescans"
         )
     renamed = unicode_renamed_source_files(plugin_dir)
     if renamed:
-        # 指纹按 NFC 记名，打包器写进档案的也是 NFC——但探测这一步 import 的是
-        # 文件系统上那个分解形式的名字。装到保留原拼写的文件系统上，插件里写死
-        # 分解形式字面量的代码会打不开文件，注册出来的东西和这里探到的不是一回事，
-        # 而两棵树的指纹又恰好一样，宿主会照单全收（codex）。宁可不带元数据。
+        # Fingerprints and archive names use NFC, but probing imports the decomposed spelling
+        # from the filesystem. On a filesystem retaining original spellings, plugin code hardcoding
+        # decomposed literals cannot open files and registers something different from this probe,
+        # while both trees have identical fingerprints and the host accepts them (codex). Prefer omitting metadata.
         raise MetadataProbeError(
             "staged file names change under NFC normalization "
             f"({renamed[:3]}); packaging without metadata so the host rescans"
@@ -164,18 +164,18 @@ def derive_plugin_metadata(plugin_dir: Path, *, source_only: bool = False) -> di
     return {
         "schema_version": PACKAGED_METADATA_SCHEMA_VERSION,
         "sdk_version": SDK_VERSION,
-        # 摘要算在真正打进包里的那棵树上，不是作者的源目录。构建规则
-        # （tool.neko.build 的 exclude/exclude_dirs/exclude_files）可以把 .py /
-        # .toml / .json 排除在包外，而用户机器上哈希的是装出来的那份——两边算的
-        # 树不一样，一旦走到内容校验就会条条判成"源码变了"，把好好的 schema 换成
-        # 占位（greptile）。扫描现在也在同一棵树上，见函数开头。
+        # Hash the actual packaged tree rather than the author's source directory. Build rules
+        # (tool.neko.build exclude/exclude_dirs/exclude_files) may omit .py /
+        # .toml / .json files, while user machines hash the installed tree. Different trees make
+        # every content check incorrectly report source changes, replacing valid schemas with
+        # placeholders (greptile). Scanning now uses the same tree; see function entry.
         "source_sha256": compute_source_sha256(plugin_dir),
-        # 文件清单让"少了一个文件"这件事不依赖时间戳，也不依赖解包顺序。
+        # The file inventory makes missing-file detection independent of timestamps and extraction order.
         "source_files": stat_summary.names,
         "source_bytes": stat_summary.total_bytes,
         "build_env": build_environment(),
-        # 打包时那份 manifest 声明的 entries 表；宿主拿它判断用户的覆盖有没有
-        # 动过入口表，而不是判断「存不存在这张表」。
+        # The packaging-time manifest's declared entries table lets the host determine whether user overrides changed
+        # entry definitions, rather than merely checking whether the table exists.
         "entries_config_sha256": entries_config_digest(ctx.conf, ctx.pdata),
         "entries": list(isolated.entries_preview),
         "handlers": dict(isolated.handlers),
@@ -242,8 +242,8 @@ def write_packaged_metadata(
         )
         return None
     meta_path = Path(target_dir) / PACKAGED_METADATA_FILENAME
-    # newline="" 而不是默认：默认会在 Windows 上把 LF 翻成 CRLF，于是盘上这份生成物
-    # 和仓库里存的那份天生不一致，每次 git status 都报行尾要被改写。
+    # Use newline="": Windows defaults translate LF to CRLF, making generated files inherently differ
+    # from repository versions and causing git status to warn about line-ending changes every time.
     meta_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

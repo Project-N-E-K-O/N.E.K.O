@@ -64,13 +64,13 @@ Memory Server はキャラクター別の永続メモリを管理します。liv
 
 ## Agent Server（`app/agent_server/`、ポート 48915 / 48916）
 
-`app/agent_server/__main__.py` は package の Tool Server FastAPI app を `127.0.0.1:48915` で起動します。実装は `api_runtime.py`、`api_routes.py`、`capabilities.py`、`registry.py`、`tracker.py`、`results.py`、`plugin_host.py`、`channels/` に分割されています。
+`app/agent_server/__main__.py` は package の Tool Server FastAPI app を `127.0.0.1:48915` で起動します。実装は `api_runtime.py`、`api_routes.py`、`capabilities.py`、`results.py`、`plugin_host.py`、`nekoclaw_mount.py`、`nekoclaw_builtins.py` に分割されています。タスクを記録して実行する NekoClaw ホストは `nekoclaw/host/` にあります。
 
-Agent startup では capability state、`DirectTaskExecutor`、Agent 側 ZeroMQ bridge、channel probe、background scheduler を初期化します。`plugin_host.py` は isolated thread で embedded user-plugin FastAPI listener を `127.0.0.1:48916` に起動します。Listener が同一 process にあっても、user-plugin execution は feature flag と plugin lifecycle gate の対象です。
+Agent startup では capability state、Agent 側 ZeroMQ bridge、agent モデルの接続確認を初期化し、NekoClaw ホストを登録します。登録では何も作りません。ホストの台帳、agent runtime、能力ゲートウェイは、最初に必要になった時点で作られます。`plugin_host.py` は isolated thread で embedded user-plugin FastAPI listener を `127.0.0.1:48916` に起動します。Listener が同一 process にあっても、user-plugin execution は feature flag と plugin lifecycle gate の対象です。
 
 ### HTTP ownership
 
-- **`:48915` Tool Server** — Agent flag/capability、task submit/inspect、cancel、health、proactive trigger、internal channel control
+- **`:48915` Tool Server** — Agent flag/capability、メイン対話の二つのタスクツールが使う内部の dispatch / query ルート、task の参照、cancel、health、deferred 完了コールバック
 - **`:48916` embedded user-plugin service** — installed plugin discovery、run lifecycle、market bridge target、deferred plugin completion support
 
 Main Server は公開 `/api/agent/*` surface をこれら内部 service へ proxy します。Browser code は process-local object を呼ばず、Main Server response を authoritative state として扱います。
@@ -80,20 +80,20 @@ Main Server は公開 `/api/agent/*` surface をこれら内部 service へ prox
 | 既定アドレス | Pattern | Bind owner | 方向 | 用途 |
 |---|---|---|---|---|
 | `tcp://127.0.0.1:48961` | PUB / SUB | Main | Main → Agent | Session/lifecycle event |
-| `tcp://127.0.0.1:48963` | PUSH / PULL | Main | Main → Agent | Reliable `analyze_request` queue |
-| `tcp://127.0.0.1:48962` | PUSH / PULL | Main（`PULL`） | Agent → Main | ACK、status、task update、result |
+| `tcp://127.0.0.1:48963` | PUSH / PULL | Main | Main → Agent | Reliable `turn_check_request` queue |
+| `tcp://127.0.0.1:48962` | PUSH / PULL | Main（`PULL`） | Agent → Main | ACK、status、task update、報告 |
 
-Agent は対応 SUB/PULL/PUSH mirror socket に connect します。Bridge は synchronous ZeroMQ socket を background receive thread で扱います。Agent → Main delivery に HTTP fallback はありません。
+Agent は対応 SUB/PULL/PUSH mirror socket に connect します。Bridge は synchronous ZeroMQ socket を background receive thread で扱います。Agent → Main delivery に HTTP fallback はありません。タスクについての報告はホストの outbox に残り、bridge が受け取るまで再試行されます。
 
 ### Task execution path
 
-1. `main_logic/cross_server.py` が bounded conversation view を `analyze_request` として publish し、Main bridge は ACK を待ち、timeout 時に一度 retry します。
-2. Agent は master/capability gate、cancelled content redaction、deduplication を適用します。
-3. `brain/task_executor.py` の `DirectTaskExecutor` が enabled channel を評価します。廃止済み Analyzer/Planner/Processor class は live pipeline にありません。
-4. Non-plugin work は priority 順で最初の executable channel を選びます。user plugin は deterministic candidate filter の後、検証付き LLM entry selection を行います。
-5. `app/agent_server/channels/` の選択 adapter が task を register し、update を emit し、work を実行/委譲して terminal result を記録します。
-6. ACK、`task_update`、`task_result`、proactive event が `:48962` で戻り、Main bridge が browser を更新し、model-visible result を対応 `LLMSessionManager` へ queue します。
+1. メインの対話モデルが `dispatch_task` ツールを呼びます。`main_logic/core/tool_calling.py` がその一文を `:48915` の `/nekoclaw/dispatch` へ POST し、レシートをモデルへ返します。
+2. タスクブレイン（`nekoclaw/host/task_brain.py`）が台帳に依頼を登録します。第一ラウンドはローカルで行い、およそ 1 秒以内にレシートを返します。第二ラウンドはバックグラウンドで進みます。
+3. 判断モデルがプラグインエントリを選び、プラグインサービスの `/runs` プロトコルで直接呼びます。合うエントリがない、または複数ステップが必要な場合は、依頼を task agent（画面上では「使い魔」）へ渡します。
+4. task agent は agent runtime（`nekoclaw/runtime/`）で動き、能力ゲートウェイ経由でプラグインエントリ、MCP ツール、キーボード・マウス、ブラウザーを使います。
+5. 状態が変わるたびに `task_update` を送ります。結果、質問、訂正はまず outbox に書き、`:48962` で送ります。Main bridge が browser を更新し、モデルに見せる報告を対応する `LLMSessionManager` へ queue します。
+6. ユーザーが始めたターンが、実際に手を動かすツールを呼ばずに終わると、`main_logic/cross_server.py` が `:48963` で `turn_check_request` を送ります。Main bridge は ACK を待ち、timeout 時に一度 retry します。
 
-Cancellation は provider-specific teardown より先に registry state を terminal にし、late provider output による上書きを防ぎます。Deferred user-plugin task は completion endpoint または timeout まで running のままです。
+中止では、プラグインの Run を取り消したり task agent のセッションを閉じたりする前に、台帳の状態を `cancelled` と書きます。そのため、遅れて届いた出力が中止済みの依頼を上書きすることはありません。プラグインが deferred の結果を返した依頼は、completion endpoint が呼ばれるか timeout で失敗になるまで `working` のままです。
 
-Channel routing、flag、retention、delivery semantics は [Agent システム](/ja/architecture/agent-system)を参照してください。
+dispatch、ターン後チェック、flag、delivery semantics は [Agent システム](/ja/architecture/agent-system)を参照してください。

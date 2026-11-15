@@ -108,7 +108,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const installForm = ref<PluginCliInstallRequest>({
     package: '',
     plugins_root: '',
-    profiles_root: '',
     on_conflict: 'fail',
   })
 
@@ -175,12 +174,9 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
   })
   const {
     filterText: pluginFilter,
-    useRegex,
-    filterMode,
     selectedTypes,
     layoutMode,
     selectedPluginIds,
-    regexError,
     pluginCount,
     adapterCount,
     filteredPurePlugins,
@@ -646,17 +642,12 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
 
       if (buildMode.value === 'all') {
         let response: PluginCliBuildResponse
-        // This workbench lists managed sources; implicit API "all" also builds
-        // development archives, which belong to the protected development page.
-        const refs = targetRefs(targets)
         try {
           response = await buildPluginCli({
-            mode: 'selected',
-            plugin_refs: refs.length > 0 ? refs : undefined,
-            plugins: refs.length > 0 ? undefined : targets,
+            mode: 'all',
             target_dir: buildForm.value.target_dir || undefined,
             keep_staging: !!buildForm.value.keep_staging,
-          }, { timeout: 300_000 })
+          })
         } catch (error) {
           response = failedBuildResponse('all', error)
           setResult('build', response)
@@ -758,7 +749,6 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     inspectResult.value = null
     const response = await installPackagePath(installForm.value.package || '', {
       pluginsRoot: installForm.value.plugins_root,
-      profilesRoot: installForm.value.profiles_root,
     })
     if (!response) {
       return
@@ -851,10 +841,7 @@ export function usePackageManager(options: UsePackageManagerOptions = {}) {
     layoutMode,
     buildMode,
     pluginFilter,
-    useRegex,
-    filterMode,
     selectedTypes,
-    regexError,
     pluginsLoading,
     packagesLoading,
     localPackages,

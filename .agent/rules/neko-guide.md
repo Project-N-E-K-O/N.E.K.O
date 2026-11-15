@@ -137,3 +137,17 @@ wire-format 路径例外：provider 自家的 worker 内部（如 `gemini_tts_wo
 配置写入遵循对偶模式：`ConfigManager.save_characters` / `JukeboxConfig.save()` 等同步版留给启动期 & sync 迁移；async 路径一律走 `asave_characters` / `asave()` 之类的 `a*` 版本，内部就是 `asyncio.to_thread(self.<sync>, ...)`。新增写磁盘方法时请保持这个对偶。
 
 事件循环慢回调检测需要开启 asyncio debug 模式才会触发（设置 `NEKO_DEBUG_ASYNC=1`；`PYTHONASYNCIODEBUG=1` 或 `python -X dev` 也可）。启用后 `main_server.py` 会把 `loop.slow_callback_duration` 收紧到 50ms，超过的 sync 回调会打 `Executing ... took X seconds` warning。提 PR 前请在调试模式下扫一眼启动日志。
+
+## NekoClaw 术语：界面叫「使魔」，代码叫 task agent
+
+NekoClaw（猫爪，`nekoclaw/`）里同一样东西，界面和代码用不同的名字：
+
+| 界面叫法 | 代码里 | 说明 |
+|---|---|---|
+| 使魔 | task agent（`task_agent`、`TaskAgent*`、`TASK_AGENT_*`） | 替她办一件事的执行会话。存盘值（`route` / `source` / `channel`）是 `"task_agent"`，数据目录是 `task_agents/` |
+| — | agent runtime（`AgentRuntime`，`nekoclaw/runtime/`） | 运行 task agent 的那一层：内置运行时，或将来可选的 dsh |
+| — | harness（`AgentHarness`，子类 `SessionHarness`） | 移植自 dsh 的内部循环，在 agent runtime 里面 |
+
+- 「使魔」只出现在界面文案（八种语言）和她说给用户的话里，比如回执「可以交给使魔」、认用户说「告诉使魔」的词表。后端代码、注释、日志、协议和发给模型的提示词里不写 familiar，写 task agent。
+- 不用裸 `agent`：仓库里已有 agent 进程、agent 模型槽、旧的 `brain/`、`agent_task_id` 等，容易撞名。
+- 详见 `docs/design/nekoclaw-rewrite.md` 开头的术语对照和第 3 节。

@@ -1,5 +1,5 @@
 """
-性能监控路由
+Performance monitoring routes
 """
 from __future__ import annotations
 

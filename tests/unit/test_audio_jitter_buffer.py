@@ -48,11 +48,11 @@ class _FakeQueue:
 def test_initial_head_start_holds_back_until_threshold():
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=10, steady_buffer_bytes=4)
-    # 首包累计不足 initial 阈值时不放行（盖住开头 inter-chunk gap）。
+    # Hold the first chunk until initial accumulation reaches the threshold, covering the opening inter-chunk gap.
     buf.append(b"abc")
     buf.append(b"def")
     assert q.items == []
-    # 攒够 initial 后一次性放出累计领先量。
+    # Once initial is reached, release all accumulated lead at once.
     buf.append(b"ghij")
     assert q.items == [b"abcdefghij"]
 
@@ -60,11 +60,11 @@ def test_initial_head_start_holds_back_until_threshold():
 def test_steady_flush_after_started():
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=4, steady_buffer_bytes=4)
-    buf.append(b"aaaa")  # 越过 initial，放行首包
+    buf.append(b"aaaa")  # Cross initial and release the first chunk.
     assert q.items == [b"aaaa"]
-    buf.append(b"bb")  # 不足 steady，缓冲
+    buf.append(b"bb")  # Below steady: buffer.
     assert q.items == [b"aaaa"]
-    buf.append(b"cc")  # 凑够 steady，放行
+    buf.append(b"cc")  # Reach steady: release.
     assert q.items == [b"aaaa", b"bbcc"]
 
 
@@ -72,28 +72,28 @@ def test_flush_drains_remainder_below_threshold():
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=4, steady_buffer_bytes=4)
     buf.append(b"aaaa")
-    buf.append(b"z")  # 尾音不足 steady
-    buf.flush()  # response.done 时强制放出
+    buf.append(b"z")  # Trailing audio below steady.
+    buf.flush()  # Force release on response.done.
     assert q.items == [b"aaaa", b"z"]
 
 
 def test_flush_during_head_start_marks_started():
-    # 短句不足 initial：靠终结 flush 首次放行后，stray delta 应走 steady 而非
-    # 重新 head-start（否则会被下一轮 reset 静默丢弃）。
+    # A short sentence below initial first releases on terminal flush; stray deltas must then use steady rather than
+    # restarting head-start (or the next turn's reset silently drops them).
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=10, steady_buffer_bytes=2)
-    buf.append(b"ab")  # 不足 initial，缓冲
+    buf.append(b"ab")  # Below initial: buffer.
     assert q.items == []
-    buf.flush()  # response.done：放行短句
+    buf.flush()  # response.done: release the short sentence.
     assert q.items == [b"ab"]
     assert buf.started is True
-    # 晚到的 stray delta 直接走 steady（凑够 2 字节即放行），不再被 hold 400ms
+    # Late stray deltas use steady directly, releasing at 2 bytes rather than holding another 400 ms.
     buf.append(b"cd")
     assert q.items == [b"ab", b"cd"]
 
 
 def test_flush_on_empty_buffer_does_not_mark_started():
-    # 空 flush 没放行任何音频，不应改变 head-start 状态。
+    # An empty flush releases no audio and must not change head-start state.
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=10, steady_buffer_bytes=2)
     buf.flush()
@@ -103,10 +103,10 @@ def test_flush_on_empty_buffer_does_not_mark_started():
 def test_reset_discards_unsent_buffer_and_restarts_head_start():
     q = _FakeQueue()
     buf = AudioJitterBuffer(q, initial_buffer_bytes=10, steady_buffer_bytes=4)
-    buf.append(b"abc")  # 缓冲中、未放出
-    buf.reset()  # 打断 / 新轮次
+    buf.append(b"abc")  # Buffered, not yet released.
+    buf.reset()  # Interruption / new turn.
     assert q.items == []
-    # reset 后重新进入 head-start 状态：又要攒够 initial 才放行。
+    # reset reenters head-start: accumulate initial again before releasing.
     buf.append(b"xyz")
     assert q.items == []
 
@@ -152,7 +152,7 @@ def test_factory_generic_env_override(monkeypatch):
 
 
 def test_factory_legacy_env_fallback(monkeypatch):
-    # 旧 NEKO_QWEN_TTS_* 覆盖仍生效（generic 未设时回退）。
+    # Legacy NEKO_QWEN_TTS_* overrides still work as fallback when generic values are unset.
     monkeypatch.delenv("NEKO_TTS_JITTER_INITIAL_MS", raising=False)
     monkeypatch.setenv("NEKO_QWEN_TTS_INITIAL_BUFFER_MS", "800")
     q = _FakeQueue()

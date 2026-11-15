@@ -35,6 +35,7 @@ from typing import Any, Mapping
 from utils.file_utils import atomic_write_text
 
 from .models import MATERIAL_TYPES, KnowledgeSource, pack_id_is_valid
+from .subscriptions import KnowledgeSubscription, SubscriptionError, parse_subscription
 
 
 REGISTRY_SCHEMA_VERSION = 1
@@ -75,6 +76,8 @@ class PackRecord:
     disabled_titles: tuple[str, ...] = ()
     installed_at: str = ""
     updated_at: str = ""
+    # Set for a pack installed from the plugin market; None for a local import.
+    subscription: KnowledgeSubscription | None = None
 
     @property
     def effective_material_type(self) -> str:
@@ -85,7 +88,7 @@ class PackRecord:
         return pack_file_name(self.pack_id, self.pack_sha256)
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "pack_sha256": self.pack_sha256,
             "source": {
                 "name": self.source.name,
@@ -102,6 +105,10 @@ class PackRecord:
             "installed_at": self.installed_at,
             "updated_at": self.updated_at,
         }
+        # Only written when present, so a local pack's record is unchanged.
+        if self.subscription is not None:
+            payload["subscription"] = self.subscription.to_json()
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +168,14 @@ def _parse_record(pack_id: str, raw: object) -> PackRecord:
     disabled = raw.get("disabled_titles")
     if not isinstance(disabled, list) or any(not isinstance(item, str) for item in disabled):
         raise KnowledgeRegistryError("invalid_pack_record")
+    subscription = None
+    if raw.get("subscription") is not None:
+        try:
+            subscription = parse_subscription(raw["subscription"], strict=False)
+        except SubscriptionError as exc:
+            raise KnowledgeRegistryError("invalid_pack_record") from exc
+        if subscription.pack_id != pack_id:
+            raise KnowledgeRegistryError("invalid_pack_record")
     return PackRecord(
         pack_id=pack_id,
         pack_sha256=sha,
@@ -178,6 +193,7 @@ def _parse_record(pack_id: str, raw: object) -> PackRecord:
         disabled_titles=tuple(sorted(set(disabled))),
         installed_at=_str(raw.get("installed_at", "")),
         updated_at=_str(raw.get("updated_at", "")),
+        subscription=subscription,
     )
 
 

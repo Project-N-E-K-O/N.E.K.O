@@ -9,6 +9,10 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
+from main_logic.voice_turn.audio_delivery import (
+    AudioDeliverySpan, slice_delivery_spans, observe_delivery_spans as _observe_delivery_spans,
+)
+from main_logic.voice_turn.interception_events import InterceptionDeliveryStage
 
 if TYPE_CHECKING:
     from main_logic.voice_turn.contracts import VoiceTurnToken
@@ -86,6 +90,7 @@ class AsrActivateCommand:
     session_ref: Any
     buffered_pcm16: bytes
     sample_rate_hz: int
+    delivery_spans: tuple[AudioDeliverySpan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +101,7 @@ class AsrAudioCommand:
     sequence_no: int
     pcm16: bytes
     sample_rate_hz: int
+    delivery_spans: tuple[AudioDeliverySpan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +223,10 @@ class AsrAudioDispatcher:
     def active_turn(self) -> VoiceTurnToken | None:
         return self._turn_token if self._state in {"active", "sealed"} else None
 
+    @property
+    def sealed_turn(self) -> VoiceTurnToken | None:
+        return self._turn_token if self._state == "sealed" else None
+
     def activate(
         self,
         turn_token: VoiceTurnToken,
@@ -224,6 +234,7 @@ class AsrAudioDispatcher:
         buffered_pcm16: bytes,
         *,
         sample_rate_hz: int = 16_000,
+        delivery_spans: tuple[AudioDeliverySpan, ...] = (),
     ) -> bool:
         if sample_rate_hz <= 0 or len(buffered_pcm16) % 2:
             raise ValueError("ASR_ACTIVATE_INVALID_PCM")
@@ -239,6 +250,7 @@ class AsrAudioDispatcher:
                 session_ref,
                 buffered_pcm16,
                 sample_rate_hz,
+                delivery_spans,
             )
         )
 
@@ -250,6 +262,7 @@ class AsrAudioDispatcher:
         *,
         sample_rate_hz: int,
         sequence_no: int,
+        delivery_spans: tuple[AudioDeliverySpan, ...] = (),
     ) -> bool:
         if not pcm16:
             return True
@@ -271,6 +284,7 @@ class AsrAudioDispatcher:
                 sequence_no,
                 pcm16,
                 sample_rate_hz,
+                delivery_spans,
             )
         )
 
@@ -301,24 +315,34 @@ class AsrAudioDispatcher:
     def abort(self, turn_token: VoiceTurnToken | None = None) -> None:
         if turn_token is not None and self._turn_token != turn_token:
             return
+        # Fence the writer before notifying receipt owners. A rejected receipt
+        # cannot leave this generation active or block independent cleanup.
+        self._generation += 1
+        self._turn_token = None
+        self._session_ref = None
+        self._state = "aborted"
+        self._last_sequence = 0
         self.cancel_pending_pause_hints()
-        discarded = 0
+        discarded = []
         while True:
             try:
                 command = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             self._enqueued_at.pop(id(command), None)
-            if isinstance(command, AsrPauseHintCommand) and not command.completed.done():
-                command.completed.set_result(False)
-            self._queue.task_done()
-            discarded += 1
-        self.asr_abort_discarded_command_count += discarded
-        self._generation += 1
-        self._turn_token = None
-        self._session_ref = None
-        self._state = "aborted"
-        self._last_sequence = 0
+            discarded.append(command)
+        self.asr_abort_discarded_command_count += len(discarded)
+        for command in discarded:
+            try:
+                if isinstance(command, (AsrActivateCommand, AsrAudioCommand)):
+                    _observe_delivery_spans(
+                        command.delivery_spans, InterceptionDeliveryStage.NOT_SENT,
+                        context="audio abort",
+                    )
+                if isinstance(command, AsrPauseHintCommand) and not command.completed.done():
+                    command.completed.set_result(False)
+            finally:
+                self._queue.task_done()
 
     async def wait_idle(self) -> None:
         await self._queue.join()
@@ -434,6 +458,11 @@ class AsrAudioDispatcher:
                         (time.monotonic() - queued_at) * 1_000
                     )
                 if not self._command_is_current(command):
+                    if isinstance(command, (AsrActivateCommand, AsrAudioCommand)):
+                        _observe_delivery_spans(
+                            command.delivery_spans, InterceptionDeliveryStage.NOT_SENT,
+                            context="stale command",
+                        )
                     continue
                 if isinstance(command, AsrPauseHintCommand):
                     if not command.completed.cancelled() and command.revision == self._pause_hint_revision:
@@ -482,13 +511,47 @@ class AsrAudioDispatcher:
                 max_bytes = command.sample_rate_hz * 2
                 for offset in range(0, len(payload), max_bytes):
                     if not self._command_is_current(command):
+                        _observe_delivery_spans(
+                            slice_delivery_spans(
+                                command.delivery_spans, offset // 2, (len(payload) - offset) // 2,
+                            ),
+                            InterceptionDeliveryStage.NOT_SENT, context="unsent remainder",
+                        )
                         break
                     chunk = payload[offset : offset + max_bytes]
-                    await command.session_ref.stream_audio(
-                        chunk,
-                        sample_rate_hz=command.sample_rate_hz,
+                    spans = slice_delivery_spans(command.delivery_spans, offset // 2, len(chunk) // 2)
+                    try:
+                        await command.session_ref.stream_audio(
+                            chunk, sample_rate_hz=command.sample_rate_hz,
+                            **({"delivery_spans": spans} if spans else {}),
+                        )
+                    except BaseException:
+                        _observe_delivery_spans(
+                            spans, InterceptionDeliveryStage.UNKNOWN, context="failed send",
+                        )
+                        _observe_delivery_spans(
+                            slice_delivery_spans(
+                                command.delivery_spans, (offset + len(chunk)) // 2,
+                                (len(payload) - offset - len(chunk)) // 2,
+                            ),
+                            InterceptionDeliveryStage.NOT_SENT, context="unsent remainder",
+                        )
+                        raise
+                    receipt_error = _observe_delivery_spans(
+                        spans, InterceptionDeliveryStage.QUEUED, context="queued send",
                     )
-                    if not self._command_is_current(command):
+                    if receipt_error is not None or not self._command_is_current(command):
+                        _observe_delivery_spans(
+                            slice_delivery_spans(
+                                command.delivery_spans, (offset + len(chunk)) // 2,
+                                (len(payload) - offset - len(chunk)) // 2,
+                            ),
+                            InterceptionDeliveryStage.NOT_SENT, context="unsent remainder",
+                        )
+                        if receipt_error is not None:
+                            # Admission rejection still fails closed. Only the
+                            # independent notifications are made best-effort.
+                            raise receipt_error
                         break
                     self.provider_wire_sequence += 1
                     await self._on_wire_audio(

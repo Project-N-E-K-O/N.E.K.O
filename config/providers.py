@@ -28,27 +28,28 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 
 # ────────────────────────────────────────────────────────────────
-# Extra-body 常量 & 映射（原 config/__init__.py）
+# Extra-body constants & mappings (formerly config/__init__.py).
 # ────────────────────────────────────────────────────────────────
 
-# 每个 provider 的 thinking 旋钮成对定义：上为默认（关思考，进 MODELS_EXTRA_BODY_MAP），
-# 下为凝神启用形式（_THINKING 后缀，由 focus_extra_body 取用）。对偶按各家 API 的
-# 自身语义，不是机械翻 bool —— 见 _THINKING_ENABLE_FORM 与 focus_extra_body。
+# Each provider's thinking settings come in pairs: above is default (thinking off, used by MODELS_EXTRA_BODY_MAP),
+# below enables focused cognition (_THINKING suffix, consumed by focus_extra_body). Pair by each API's own
+# semantics rather than mechanically flipping booleans; see _THINKING_ENABLE_FORM and focus_extra_body.
 EXTRA_BODY_OPENAI = {"enable_thinking": False}
 EXTRA_BODY_OPENAI_THINKING = {"enable_thinking": True}
 
-# ⚠️ 上面那个 OPENAI 指的是「OpenAI-compatible 形状」—— enable_thinking 是 DashScope /
-# Silicon 这类兼容网关的方言，OpenAI 自己不认。下面这两组才是 api.openai.com 原生的。
-# 实测（2026-08-07，Chat Completions）：
-#   - 嵌套 {"reasoning": {"effort": ...}} 是 OpenRouter / Responses API 的形状，Chat
-#     Completions 直接 400 Unknown parameter: 'reasoning'；原生只收顶层 reasoning_effort。
-#   - 档位按模型分裂，没有一个全家通用的「最低档」：
-#       gpt-5.6-luna / gpt-5.6-terra → none / low / medium / high / xhigh（无 minimal）
-#       gpt-5-nano                   → minimal / low / medium / high（无 none）
-#     所以关思考要分两组常量，凝神侧都收敛到 low（两家都支持）。
+# Warning: OPENAI above means OpenAI-compatible shape: enable_thinking is DashScope /
+# Silicon-compatible gateway dialect, unrecognized by OpenAI itself. The next two groups are native api.openai.com forms.
+# Observed (2026-08-07, Chat Completions):
+#   - Nested {"reasoning": {"effort": ...}} belongs to OpenRouter / Responses API; Chat
+#     Completions returns 400 Unknown parameter: 'reasoning'; native accepts top-level reasoning_effort only.
+#   - Effort levels vary by model; there is no universal minimum:
+#       gpt-5.6-luna / gpt-5.6-terra → none / low / medium / high / xhigh (no minimal).
+#       gpt-5-nano                   → minimal / low / medium / high (no none).
+#     Thus thinking-off requires two constant groups; focused cognition uses low for both, supported by both families.
 EXTRA_BODY_OPENAI_NATIVE = {"reasoning_effort": "none"}
 EXTRA_BODY_OPENAI_NATIVE_THINKING = {"reasoning_effort": "low"}
 
@@ -58,70 +59,80 @@ EXTRA_BODY_OPENAI_NATIVE_MINIMAL_THINKING = {"reasoning_effort": "low"}
 EXTRA_BODY_CLAUDE = {"thinking": {"type": "disabled"}}
 EXTRA_BODY_CLAUDE_THINKING = {"thinking": {"type": "enabled"}}
 
-# Anthropic 原生 claude（经 OpenAI-compat 透传 thinking）跟 GLM/Kimi/Doubao 的
-# thinking.type 方言不一样：Opus 4.7+ 已移除 {type:enabled,budget_tokens}，发它直接
-# 400，启用思考必须用 {type:adaptive}；Opus 4.6/Sonnet 4.6 也用 adaptive；Haiku 4.5
-# 是否支持还要逐个验证 OpenAI-compat 行为。本 PR 暂只用 disabled（平时关思考），且
-# 故意不配 enable 对偶 —— 凝神对 claude 保持 thinking-off（安全退化，绝不 400），
-# adaptive 的正确 per-model 接入留 follow-up。
-# Haiku 5.5 仍收 disabled（仅限 effort ≤ high；默认 medium，项目不发 effort）。
+# Native Anthropic claude (thinking passed through OpenAI compatibility) differs from GLM/Kimi/Doubao's
+# thinking.type dialect: Opus 4.7+ removed {type:enabled,budget_tokens}, returning
+# 400; enabling requires {type:adaptive}. Opus 4.6/Sonnet 4.6 also use adaptive; Haiku 4.5
+# still needs individual OpenAI-compat verification. This PR uses only disabled (ordinary thinking off) and
+# intentionally has no enable pair: focused cognition keeps claude thinking off (safe degradation without 400),
+# leaving correct per-model adaptive integration for follow-up.
+# Haiku 5.5 still accepts disabled (effort ≤ high only; default medium; project sends no effort).
 EXTRA_BODY_ANTHROPIC = {"thinking": {"type": "disabled"}}
-# Sonnet 5.5 起 {type:disabled} 直接 400，关思考只能发 {type:between_tools}（同样
-# 仅限 effort ≤ high，默认 high；不得带 display / budget_tokens 等其它字段）。
-# Opus 5.5 / Fable 5.1 除 adaptive 外的任何显式 thinking 都 400，思考关不掉，
-# 故不登记（get_extra_body → {} → 不发 thinking，走原生 adaptive）。
+# Since Sonnet 5.5, {type:disabled} returns 400; thinking off requires {type:between_tools} (also
+# effort ≤ high only, default high; no display / budget_tokens or other fields).
+# Opus 5.5 / Fable 5.1 rejects any explicit thinking except adaptive with 400; thinking cannot be disabled,
+# so do not register them (get_extra_body → {} → omit thinking, using native adaptive).
 EXTRA_BODY_ANTHROPIC_BETWEEN_TOOLS = {"thinking": {"type": "between_tools"}}
 
 EXTRA_BODY_GEMINI = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 0}}}}
-# Gemini 2.5: budget 0 = 关；凝神给一个低固定预算 800 token（开思考但不深思）。
+# Gemini 2.5: budget 0 disables; focused cognition gets fixed low 800-token budget (thinking without deep reasoning).
 EXTRA_BODY_GEMINI_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_budget": 800}}}}
 
 EXTRA_BODY_GEMINI_3 = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": False}}}}
-# Gemini 3: 思考档位保持最低(low)，只把思考过程透出(thoughts 走独立字段，不混进 content)。
+# Gemini 3: keep lowest thinking level (low), exposing thoughts separately without mixing into content.
 EXTRA_BODY_GEMINI_3_THINKING = {"extra_body": {"google": {"thinking_config": {"thinking_level": "low", "include_thoughts": True}}}}
+# Flash-Lite models sit on minimal: gemini-3.5-flash-lite already defaults to it (Google's 3.6 guide)
+# and 3.1-flash-lite accepts it, so low would only add billed thinking tokens.
+# Focused cognition pairs with the same low form as the rest of Gemini 3.
+EXTRA_BODY_GEMINI_3_MINIMAL = {"extra_body": {"google": {"thinking_config": {"thinking_level": "minimal", "include_thoughts": False}}}}
 
 EXTRA_BODY_OPENROUTER = {"reasoning": {"effort": "none"}}
-# OpenRouter: effort none→low（开思考但取最低努力档）。
+# OpenRouter: effort none→low (enable thinking at minimum effort).
 EXTRA_BODY_OPENROUTER_THINKING = {"reasoning": {"effort": "low"}}
 
-# OpenRouter 上的 Gemini 3.5 起思考不能关：发 effort=none 直接 400
+# OpenRouter Gemini 3.5+ cannot disable thinking; effort=none returns 400.
 # "Reasoning is mandatory for this endpoint and cannot be disabled."。
-# minimal 实测思考 0 token，作为 none 的替代；凝神照样翻成 low。
-# 实测（2026-10-07）：google/gemini-3.5-flash / 3.6-flash / 3.8-flash 拒 none；
-# 3.1-flash-lite / 3-flash-preview 仍接受 none，留在 EXTRA_BODY_OPENROUTER。
+# Observed minimal uses 0 thinking tokens, replacing none; focused cognition still switches to low.
+# Observed (2026-10-07): google/gemini-3.5-flash / 3.6-flash / 3.8-flash reject none;
+# 3.1-flash-lite / 3-flash-preview still accept none.
 EXTRA_BODY_OPENROUTER_MINIMAL = {"reasoning": {"effort": "minimal"}}
+# Router-bound efforts follow the upstream floor in UPSTREAM_REASONING_FLOOR (owner-confirmed
+# 2026-11-05: the floor is the vendor's rule, so every router must respect it even when one
+# accepts a lower value): Gemini 3.x and gemini-2.5-flash bottom out at minimal, except
+# gemini-3.8-flash at low (it rejects minimal). At low the focused-cognition form equals the
+# regular form, so it has no enable pair.
+EXTRA_BODY_OPENROUTER_LOW = {"reasoning": {"effort": "low"}}
 
-# MiniMax 的 reasoning_split 只控制思考的「输出格式」，不是 on/off 开关：M2.x 始终
-# 内部推理、无法关闭；True=思考走独立 reasoning_details 字段，False/省略=思考以 <think>
-# 标签嵌进 content。凝神保持 True（不收录进下方 _THINKING_ENABLE_FORM 即「不翻」）：
-# 思考本就常开、无需动它；且 True 让 CoT 留在独立字段、不混进 content 被 TTS 当台词
-# 念出（与 leaks_thinking_in_content 防的是同一类问题）。
-# M3 可以关思考（thinking.type=disabled/adaptive），所以下方映射表里 M3 走
-# EXTRA_BODY_CLAUDE，凝神翻成 enabled，不用本常量。
-# 文档 https://platform.minimax.io/docs/guides/text-m3-function-call
+# MiniMax reasoning_split controls only thinking output format, not enablement; M2.x always
+# reasons internally and cannot disable it. True puts thoughts in reasoning_details; False/omitted embeds <think>
+# tags in content. Focused cognition retains True (omitted from _THINKING_ENABLE_FORM means no change):
+# thinking already stays on; True keeps CoT separate from content so TTS does not read it as dialogue
+# (protecting against the same issue as leaks_thinking_in_content).
+# M3 supports thinking on/off (thinking.type=disabled/adaptive), so mappings below use
+# EXTRA_BODY_CLAUDE for M3, switching to enabled for focused cognition rather than this constant.
+# Documentation: https://platform.minimax.io/docs/guides/text-m3-function-call
 #      https://platform.minimax.io/docs/api-reference/text-openai-api
 EXTRA_BODY_MINIMAX = {"reasoning_split": True}
 
-# Step 的 reasoning_effort 不支持 none：三档模型只收 low / medium / high，
-# step-3.5-flash-2603 只收 low / high。flash 系列与 step-5-preview 无法关闭
-# 思考，关思考与凝神都填最低档 low，作为 none 的替代。不收录进下方
-# _THINKING_ENABLE_FORM（凝神不翻）。
-# 文档 https://platform.stepfun.ai/docs/en/api-reference/chat/chat-completion-create
+# Step reasoning_effort does not support none: three-level models accept low / medium / high,
+# while step-3.5-flash-2603 accepts low / high only. Flash family and step-5-preview cannot disable
+# thinking; use minimum low both normally and for focused cognition, replacing none. Omit from
+# _THINKING_ENABLE_FORM (no focused-cognition switch).
+# Documentation: https://platform.stepfun.ai/docs/en/api-reference/chat/chat-completion-create
 EXTRA_BODY_STEP_LOW = {"reasoning_effort": "low"}
 
-# Agent 调用统一开关：是否加载 extra_body。
-# 默认开启，配合 MODELS_EXTRA_BODY_MAP 实现默认关闭 thinking。
+# Unified agent-call switch: whether to load extra_body.
+# Enabled by default; with MODELS_EXTRA_BODY_MAP, disables thinking by default.
 AGENT_USE_EXTRA_BODY = True
 
-# 模型到 extra_body 的映射
+# Model-to-extra_body mapping.
 MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
-    # OpenAI 原生系列 —— 走顶层 reasoning_effort，别拿 EXTRA_BODY_OPENAI /
-    # EXTRA_BODY_OPENROUTER 来填，那两个形状都会被 400（见常量处的实测记录）。
+    # Native OpenAI family uses top-level reasoning_effort; do not use EXTRA_BODY_OPENAI /
+    # EXTRA_BODY_OPENROUTER: both shapes return 400 (see observations beside constants).
     "gpt-5.6-luna": EXTRA_BODY_OPENAI_NATIVE,
     "gpt-5.6-terra": EXTRA_BODY_OPENAI_NATIVE,
     "gpt-5.6-sol": EXTRA_BODY_OPENAI_NATIVE,
     "gpt-5-nano": EXTRA_BODY_OPENAI_NATIVE_MINIMAL,
-    # Qwen 系列
+    # Qwen family.
     "qwen-flash": EXTRA_BODY_OPENAI,
     "qwen3.6-flash": EXTRA_BODY_OPENAI,
     "qwen3.6-flash-2026-04-16": EXTRA_BODY_OPENAI,
@@ -138,11 +149,11 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3.7-flash": EXTRA_BODY_OPENAI,
     "qwen3.7-flash-2026-07-15": EXTRA_BODY_OPENAI,
     "qwen3.8-flash": EXTRA_BODY_OPENAI,
-    # 全模态非实时版（实时版带 -realtime 后缀，走 WebSocket，不经这张表）：
-    # 协议跟普通文本模型一样，只是输入多了音视频，输出只有文本；默认开思考，
-    # enable_thinking=False 生效（实测 2026-10-07）。
+    # Non-realtime omni models (realtime has -realtime suffix and WebSocket, bypassing this table):
+    # same protocol as ordinary text models with additional audio/video input and text-only output; thinking defaults on,
+    # and enable_thinking=False works (observed 2026-10-07).
     "qwen3.8-omni-flash": EXTRA_BODY_OPENAI,
-    # GLM 系列
+    # GLM family.
     "glm-4.5-air": EXTRA_BODY_CLAUDE,
     "glm-4.6v-flash": EXTRA_BODY_CLAUDE,
     "glm-4.7-flash": EXTRA_BODY_CLAUDE,
@@ -150,12 +161,12 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "glm-5v-turbo": EXTRA_BODY_CLAUDE,
     "glm-5.1": EXTRA_BODY_CLAUDE,
     "glm-5.2": EXTRA_BODY_CLAUDE,
-    # Kimi系列
+    # Kimi family.
     "kimi-k2-0905-preview": EXTRA_BODY_CLAUDE,
     "kimi-k2.5": EXTRA_BODY_CLAUDE,
     "kimi-k2.6": EXTRA_BODY_CLAUDE,
     "kimi-k3": EXTRA_BODY_CLAUDE,
-    # MiniMax系列
+    # MiniMax family.
     "MiniMax-M2.5": EXTRA_BODY_MINIMAX,
     "MiniMax-M2.7": EXTRA_BODY_MINIMAX,
     "MiniMax-M3": EXTRA_BODY_CLAUDE,
@@ -166,28 +177,28 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "deepseek-ai/DeepSeek-V4-Flash": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-397B-A17B": EXTRA_BODY_OPENAI,
     "Qwen/Qwen3.5-122B-A10B": EXTRA_BODY_OPENAI,
-    # DeepSeek 官方（api.deepseek.com）：V4 默认开思考，且用的是 thinking.type 方言，
-    # 跟 GLM/Kimi/Doubao 同形状，直接复用 EXTRA_BODY_CLAUDE。转售同款的网关是另外的
-    # 键名（SiliconFlow 的 deepseek-ai/…、OpenRouter 的 deepseek/…），各走各的方言，
-    # 不会被这几行波及。vision-exp 是同端口同代的视觉版，方言一致。
-    # V4.1 起官方调用名是 deepseek-flash（自带视觉）；v4-flash / vision-exp
-    # 仍被接受，服务端转给 V4.1 Flash。Pro 没有 4.1 版，仍叫 deepseek-v4-pro。
-    # 文档 https://api-docs.deepseek.com/quick_start/pricing
+    # Official DeepSeek (api.deepseek.com): V4 defaults thinking on, using thinking.type dialect,
+    # matching GLM/Kimi/Doubao, so reuse EXTRA_BODY_CLAUDE. Reseller gateways use different
+    # model keys (SiliconFlow deepseek-ai/…, OpenRouter deepseek/…) and their own dialects,
+    # unaffected here. vision-exp is the same-generation visual model on the same endpoint, with identical dialect.
+    # From V4.1, official call name is deepseek-flash (vision included); v4-flash / vision-exp
+    # remain accepted and route server-side to V4.1 Flash. Pro has no 4.1 version and remains deepseek-v4-pro.
+    # Documentation: https://api-docs.deepseek.com/quick_start/pricing
     "deepseek-flash": EXTRA_BODY_CLAUDE,
     "deepseek-v4-flash": EXTRA_BODY_CLAUDE,
     "deepseek-v4-flash-vision-exp": EXTRA_BODY_CLAUDE,
     "deepseek-v4-pro": EXTRA_BODY_CLAUDE,
     # Step
     "step-2-mini": {"tools": [{"type": "web_search", "function": {"description": "这个web_search用来搜索互联网的信息"}}]},
-    # reasoning_effort 无 none，思考无法关闭，平时与凝神都走 low。
+    # reasoning_effort lacks none; thinking cannot disable, so ordinary and focused modes both use low.
     "step-5-preview": EXTRA_BODY_STEP_LOW,
     "step-3.7-flash": EXTRA_BODY_STEP_LOW,
     "step-3.5-flash": EXTRA_BODY_STEP_LOW,
     "step-3.5-flash-2603": EXTRA_BODY_STEP_LOW,
-    # 免费版（lanlan.tech / lanlan.app，模型名固定 free-model）：用 thinking.type 风格，
-    # 平时下发 disabled、凝神由 focus_extra_body flip 成 enabled。
+    # Free service (lanlan.tech / lanlan.app, fixed free-model name) uses thinking.type style,
+    # normally sending disabled; focus_extra_body flips it to enabled for focused cognition.
     "free-model": EXTRA_BODY_CLAUDE,
-    # Claude 系列（Anthropic 原生：enable 须用 adaptive，本 PR 暂不翻，见 EXTRA_BODY_ANTHROPIC）
+    # Claude family (native Anthropic: enabling requires adaptive; no switch in this PR, see EXTRA_BODY_ANTHROPIC).
     "claude-sonnet-5-5": EXTRA_BODY_ANTHROPIC_BETWEEN_TOOLS,
     "claude-haiku-5-5": EXTRA_BODY_ANTHROPIC,
     "claude-sonnet-5": EXTRA_BODY_ANTHROPIC,
@@ -195,34 +206,45 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "claude-haiku-4-5-20251001": EXTRA_BODY_ANTHROPIC,
     "claude-opus-4-7": EXTRA_BODY_ANTHROPIC,
     "claude-opus-4-6": EXTRA_BODY_ANTHROPIC,
-    # Doubao Seed 2.0 系列
+    # Doubao Seed 2.0 family.
     "doubao-seed-2-0-lite-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-pro-260215": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-lite-260428": EXTRA_BODY_CLAUDE,
     "doubao-seed-2-0-mini-260428": EXTRA_BODY_CLAUDE,
-    # Gemini 系列
+    # Gemini family.
     "gemini-2.5-flash": EXTRA_BODY_GEMINI,
     "gemini-2.5-flash-lite": EXTRA_BODY_GEMINI,
     "gemini-3-flash-preview": EXTRA_BODY_GEMINI_3,
-    "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3,
+    "gemini-3.1-flash-lite": EXTRA_BODY_GEMINI_3_MINIMAL,
     "gemini-3.5-flash": EXTRA_BODY_GEMINI_3,
+    "gemini-3.5-flash-lite": EXTRA_BODY_GEMINI_3_MINIMAL,
     "gemini-3.6-flash": EXTRA_BODY_GEMINI_3,
+    "gemini-3.7-flash": EXTRA_BODY_GEMINI_3,
     "gemini-3.8-flash": EXTRA_BODY_GEMINI_3,
-    # OpenRouter 格式 (provider/model) — OpenRouter 使用统一的 reasoning 参数
-    "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER,
+    # OpenRouter format (provider/model): unified reasoning parameter.
+    "google/gemini-2.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-2.5-flash-lite": EXTRA_BODY_OPENROUTER,
-    "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER,
-    "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER,
+    "google/gemini-3-flash-preview": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.1-flash-lite": EXTRA_BODY_OPENROUTER_MINIMAL,
+    # Atlas Cloud's DeepSeek id (lowercase; SiliconFlow spells it deepseek-ai/DeepSeek-V4-Flash).
+    # Atlas turns DeepSeek thinking off only through reasoning:{effort:none}; see ROUTER_REASONING.
+    "deepseek-ai/deepseek-v4-flash": EXTRA_BODY_OPENROUTER,
     "google/gemini-3.5-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.5-flash-lite": EXTRA_BODY_OPENROUTER_MINIMAL,
     "google/gemini-3.6-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
-    "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_MINIMAL,
+    "google/gemini-3.7-flash": EXTRA_BODY_OPENROUTER_LOW,
+    "google/gemini-3.8-flash": EXTRA_BODY_OPENROUTER_LOW,
     "qwen/qwen3.5-9b": EXTRA_BODY_OPENROUTER,
 }
 
 
-def get_extra_body(model: str) -> dict | None:
+def get_extra_body(model: str, base_url: str | None = None) -> dict | None:
     """Return the extra_body config for the given model name.
+
+    ``base_url`` lets a router host map its own model id onto the registered
+    upstream id (see ``ROUTER_REASONING``); without it the lookup is by model
+    name only.
 
     Returns:
         The matching extra_body dict; an empty dict when the model needs no
@@ -230,22 +252,22 @@ def get_extra_body(model: str) -> dict | None:
     """
     if not model:
         return None
-    return MODELS_EXTRA_BODY_MAP.get(model, {})
+    return MODELS_EXTRA_BODY_MAP.get(resolve_router_model(model, base_url), {})
 
 
-def get_agent_extra_body(model: str) -> dict | None:
+def get_agent_extra_body(model: str, base_url: str | None = None) -> dict | None:
     """Return extra_body for Agent calls based on a single global switch."""
     if not AGENT_USE_EXTRA_BODY:
         return None
-    return get_extra_body(model)
+    return get_extra_body(model, base_url)
 
 
-# 凝神（thinking-on）时把各 provider 的「关思考」extra_body 翻成「开思考」形式。
-# 键 = 「关」常量的 id，值 = 对应「开」常量；按各家 API 语义一一对偶，不机械翻 bool。
-# 未收录的「关」常量（如 MiniMax 的 reasoning_split、Step 的 reasoning_effort=low）
-# 表示「凝神保持原值不翻」；非 thinking 的 provider extra（如 step-2-mini 的
-# web_search tools）天然不在此表，在 MODELS_FOCUS_EXTRA_BODY_MAP 里回退为原值、
-# 原样保留。
+# Focused cognition (thinking on) converts each provider's thinking-off extra_body to its thinking-on form.
+# Key = off-constant id; value = matching on-constant, paired by API semantics rather than boolean flipping.
+# Unlisted off constants (e.g. MiniMax reasoning_split, Step reasoning_effort=low)
+# retain their values under focused cognition; non-thinking extras (e.g. step-2-mini's
+# web_search tools) naturally remain outside this table and fall back to original values in MODELS_FOCUS_EXTRA_BODY_MAP,
+# preserved unchanged.
 _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_OPENAI): EXTRA_BODY_OPENAI_THINKING,
     id(EXTRA_BODY_OPENAI_NATIVE): EXTRA_BODY_OPENAI_NATIVE_THINKING,
@@ -253,21 +275,22 @@ _THINKING_ENABLE_FORM: dict[int, dict] = {
     id(EXTRA_BODY_CLAUDE): EXTRA_BODY_CLAUDE_THINKING,
     id(EXTRA_BODY_GEMINI): EXTRA_BODY_GEMINI_THINKING,
     id(EXTRA_BODY_GEMINI_3): EXTRA_BODY_GEMINI_3_THINKING,
+    id(EXTRA_BODY_GEMINI_3_MINIMAL): EXTRA_BODY_GEMINI_3_THINKING,
     id(EXTRA_BODY_OPENROUTER): EXTRA_BODY_OPENROUTER_THINKING,
     id(EXTRA_BODY_OPENROUTER_MINIMAL): EXTRA_BODY_OPENROUTER_THINKING,
 }
 
-# model → 凝神 extra_body，与 MODELS_EXTRA_BODY_MAP 同源派生（共用 model 列表，不会
-# 漂移）：命中对偶则取「开」形式，否则回退原值（保留 web_search / 不翻 MiniMax
-# 与 Step low）。
-# 依赖 MODELS_EXTRA_BODY_MAP 的值是模块级常量引用，故可用 id 做配对键。
+# model → focused-cognition extra_body, derived from MODELS_EXTRA_BODY_MAP with one shared model list
+# to prevent drift: use paired on form if present, else original value (preserving web_search / MiniMax
+# and Step low).
+# Relies on MODELS_EXTRA_BODY_MAP values referencing module-level constants, allowing id pairing keys.
 MODELS_FOCUS_EXTRA_BODY_MAP: dict[str, dict] = {
     model: _THINKING_ENABLE_FORM.get(id(body), body)
     for model, body in MODELS_EXTRA_BODY_MAP.items()
 }
 
 
-def focus_extra_body(model: str) -> dict | None:
+def focus_extra_body(model: str, base_url: str | None = None) -> dict | None:
     """extra_body for a Focus (thinking-on) turn.
 
     Regular turns send the provider's thinking-DISABLED extra_body (see
@@ -291,33 +314,263 @@ def focus_extra_body(model: str) -> dict | None:
     Returns ``None`` when the model has no registered extra_body."""
     if not model:
         return None
-    enabled = MODELS_FOCUS_EXTRA_BODY_MAP.get(model)
+    enabled = MODELS_FOCUS_EXTRA_BODY_MAP.get(resolve_router_model(model, base_url))
     # deepcopy: enabled is a shared module-level constant, possibly nested
     # (Gemini's thinking_config); a caller mutating the result must not poison
     # the registry. Cheap — focus_extra_body runs once per focus turn.
     return copy.deepcopy(enabled) if enabled else None
 
 
-# 记忆系统里有意开思考的后台调用（审阅、信号检测、refine、反思合成…）默认不发
-# extra_body，让模型走原生思考。原生思考常常没有边：大到撞输出额度或超时，所以
-# 按端点显式压一档（登记在 CacheProviderConfig.memory_thinking_extra_body）。
-# 压思考的旋钮是**端点**的方言，不是模型的：同一个 deepseek-v4-flash，官方认
-# reasoning_effort，百炼只认 thinking_budget（发 reasoning_effort 被忽略，思考反而
-# 6.4k~7.6k）。按端点登记也让 deepseek-v4-flash-0731 这类快照名天然命中。
-# 实测（2026-10-07/08，同一条推理题 / 信号检测提示词）：
-#   - DeepSeek 官方：默认思考 5.4k~6.5k；reasoning_effort=low 降到 2.0k~2.4k
-#     （minimal 反而 3.4k~4.2k，不稳定，不用）。思考默认就开，不必再发 thinking。
-#   - 百炼（DashScope）：thinking_budget 对 qwen3.7/3.8、omni、max、百炼上的
-#     DeepSeek 都精确生效；对不开思考的模型（qwen-plus）无作用、不报错，也不会
-#     把思考打开。不发参数时 qwen3.7-flash 思考打满 8192，DeepSeek 快照版到 12k。
-#   - 硅基流动：max_tokens 只封正文，不发参数时思考跑到请求超时；必须
-#     enable_thinking + thinking_budget 才封得住（只发 thinking_budget 会让 DeepSeek
-#     系直接不思考）。对不支持思考的模型（Ling-mini-2.0 / Qwen2.5-7B-Instruct /
-#     GLM-4-9B-0414 / DeepSeek-V3）enable_thinking 被忽略、不报错、不产生思考；
-#     实测的混合模型（Qwen3-8B、DeepSeek-V3.2 / V4-Flash、Qwen3.5）原生默认就开
-#     思考，所以按端点下发不会把关着的思考打开（2026-10-08）。
-# 预算取共享输出护栏同值，给 8192 额度里的 JSON 正文留出至少一半。
-# 未登记的端点保持原样（返回 None = 不发 extra_body = 原生思考）。
+# Lowest reasoning effort each upstream vendor allows (owner-confirmed 2026-11-05). It is the
+# vendor's rule, so every router-bound effort respects it even where a router accepts lower:
+# Claude has no none / minimal; Gemini 3.x cannot turn thinking off (no none) and bottoms out
+# at minimal, except the 3.x Pro models and gemini-3.7-flash / 3.8-flash at low; gemini-2.5-flash
+# and gpt-5-nano at minimal. The Pro models are not registered; Opper returns the same 400 for
+# them and 3.7-flash as for 3.8 (gemini/gemini-3-pro-preview is served by 3.1-pro-preview there).
+# Gemini 3.x evidence (2026-11-06): Google's Gemini 3.5 Flash guide lists MINIMAL / LOW / MEDIUM /
+# HIGH and the legacy thinking page marks minimal as an error on 3.8 Flash; Opper returns 400
+# "does not support reasoning_effort minimal; use thinking_level (low, medium, high)" for 3.8 and
+# reaches 0 reasoning tokens with minimal on 3-flash-preview / 3.1-flash-lite / 3.5 / 3.6 /
+# 3.5-flash-lite. Matched on the upstream id with any router prefix ("google/", "gemini/",
+# "anthropic/") stripped; exact ids win over prefixes; unlisted models have no floor.
+REASONING_EFFORT_ORDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+UPSTREAM_REASONING_FLOOR: dict[str, str] = {
+    "gemini-2.5-flash": "minimal",
+    "gemini-3-pro-preview": "low",
+    "gemini-3.1-pro-preview": "low",
+    "gemini-3.7-flash": "low",
+    "gemini-3.8-flash": "low",
+    "gpt-5-nano": "minimal",
+}
+UPSTREAM_REASONING_FLOOR_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("claude-", "low"),
+    ("gemini-3", "minimal"),
+)
+
+
+def reasoning_effort_floor(model: str) -> str | None:
+    """Lowest effort the model's upstream vendor accepts, or ``None`` if unrestricted."""
+    # Router prefix and variant suffix ("google/…", "…:flex", "…:free") do not change the upstream model.
+    upstream = (model or "").rsplit("/", 1)[-1].split(":", 1)[0]
+    floor = UPSTREAM_REASONING_FLOOR.get(upstream)
+    if floor is not None:
+        return floor
+    for prefix, prefix_floor in UPSTREAM_REASONING_FLOOR_PREFIXES:
+        if upstream.startswith(prefix):
+            return prefix_floor
+    return None
+
+
+def clamp_reasoning_effort(model: str, effort: str) -> str:
+    """Raise ``effort`` to the model's upstream floor; unknown levels pass through."""
+    floor = reasoning_effort_floor(model)
+    if floor is None or effort not in REASONING_EFFORT_ORDER:
+        return effort
+    if REASONING_EFFORT_ORDER.index(effort) < REASONING_EFFORT_ORDER.index(floor):
+        return floor
+    return effort
+
+
+@dataclass(frozen=True)
+class RouterReasoningConfig:
+    """How one router host expects thinking to be expressed.
+
+    The registry (``MODELS_EXTRA_BODY_MAP``) stays keyed by upstream / OpenRouter
+    ids; a router row maps its own ids onto those entries and translates the
+    registered body into the router's wire form."""
+
+    # Router id prefixes stripped to find the registered upstream id.
+    strip_prefixes: tuple[str, ...] = ()
+    # Map dotted versions (claude-sonnet-5.5) onto the registered hyphen form.
+    dotted_versions: bool = False
+    # Router-to-registry renames applied after prefix stripping.
+    model_aliases: dict[str, str] = field(default_factory=dict)
+    # Translate OpenRouter's reasoning:{effort} into a top-level reasoning_effort.
+    reasoning_to_top_level: bool = False
+    # Router id -> (regular, focus) top-level reasoning_effort replacing the registered body.
+    efforts: dict[str, tuple[str, str]] = field(default_factory=dict)
+
+
+# Opper (api.opper.ai/v3/compat) honours only top-level reasoning_effort: thinking.type,
+# extra_body.google.thinking_config, reasoning.effort and enable_thinking all return 200 but are
+# ignored. Router id -> (regular, focus) effort, replacing the registered Google-dialect forms;
+# gemini/-prefixed ids (the Opper catalogue form) resolve to the same registry entries.
+# Observed (2026-11-05), then raised to UPSTREAM_REASONING_FLOOR:
+#   - gemini-2.5-flash (bare id) ignores none / minimal (~2200 reasoning tokens on a hard prompt);
+#     low is the lowest that works (~800). gemini/gemini-2.5-flash honours minimal (~0 tokens).
+#   - 2.5-flash-lite reaches 0 with none. 3-flash-preview / 3.1-flash-lite / 3.5 / 3.6 reach 0
+#     with none or minimal and sit on the minimal floor; 3.8-flash returns 400 on minimal and
+#     barely reduces with none (~500, same as low), so it sits on low.
+#   - Claude is not listed: 4.x does not think by default, 5.x keeps thinking under every effort
+#     and thinking.type, and low turns thinking on for 4.x, so nothing is sent.
+OPPER_REASONING_EFFORT: dict[str, tuple[str, str]] = {
+    "gemini-2.5-flash": ("low", "low"),
+    "gemini/gemini-2.5-flash": ("minimal", "low"),
+    "gemini-2.5-flash-lite": ("none", "low"),
+    "gemini/gemini-2.5-flash-lite": ("none", "low"),
+    "gemini-3-flash-preview": ("minimal", "low"),
+    "gemini/gemini-3-flash-preview": ("minimal", "low"),
+    "gemini-3.1-flash-lite": ("minimal", "low"),
+    "gemini/gemini-3.1-flash-lite": ("minimal", "low"),
+    "gemini-3.5-flash": ("minimal", "low"),
+    "gemini/gemini-3.5-flash": ("minimal", "low"),
+    "gemini-3.5-flash-lite": ("minimal", "low"),
+    "gemini/gemini-3.5-flash-lite": ("minimal", "low"),
+    "gemini-3.6-flash": ("minimal", "low"),
+    "gemini/gemini-3.6-flash": ("minimal", "low"),
+    "gemini-3.7-flash": ("low", "low"),
+    "gemini/gemini-3.7-flash": ("low", "low"),
+    "gemini-3.8-flash": ("low", "low"),
+    "gemini/gemini-3.8-flash": ("low", "low"),
+}
+
+# Hostname -> router row. OpenRouter needs none: its dialect is the registry's own form.
+#   - Requesty documents a top-level reasoning_effort (https://docs.requesty.ai/features/reasoning).
+#   - OrcaRouter passes each vendor's native knob through unchanged (official integration note,
+#     2026-11-05): top-level reasoning_effort for OpenAI, a thinking block for Anthropic; OpenRouter's
+#     reasoning:{...} and enable_thinking are ignored. Its Claude ids use OpenRouter naming
+#     (anthropic/claude-sonnet-5.5), so they resolve to the native entries and send the native
+#     thinking body. Not live-tested on Claude (paid models returned 402); verified only on the
+#     free deepseek/deepseek-v4-flash-free, where thinking:{type:disabled} reached 0 reasoning tokens.
+#     Its DeepSeek ids (deepseek/deepseek-v4-flash) resolve to the native DeepSeek entries the same
+#     way; the free variant thinks by default and maps onto deepseek-v4-flash.
+_REQUESTY_REASONING = RouterReasoningConfig(reasoning_to_top_level=True)
+_OPPER_REASONING = RouterReasoningConfig(strip_prefixes=("gemini/",), efforts=OPPER_REASONING_EFFORT)
+_ORCAROUTER_REASONING = RouterReasoningConfig(
+    strip_prefixes=("anthropic/", "deepseek/"),
+    dotted_versions=True,
+    model_aliases={
+        "claude-haiku-4-5": "claude-haiku-4-5-20251001",
+        "deepseek-v4-flash-free": "deepseek-v4-flash",
+    },
+)
+# Atlas Cloud (api.atlascloud.ai/v1) honours a different knob per upstream, so it has no host-wide
+# conversion. Observed (2026-11-11, reasoning tokens on a short logic prompt):
+#   - Gemini: top-level reasoning_effort works on every model; reasoning:{effort} is ignored on
+#     2.5-flash / 2.5-flash-lite. 2.5-flash-lite does not think with none but does with minimal
+#     (~400); 2.5-flash bottoms out at minimal (~350, ~1300 unset); 3.1-flash-lite / 3.5-flash
+#     reach 0 with minimal; 3-flash-preview keeps thinking (~500-1000) under every knob;
+#     3.8-flash returns 400 on none / minimal.
+#   - DeepSeek (deepseek-ai/deepseek-v4-flash): only reasoning:{effort:none} reaches 0 (6/6);
+#     top-level reasoning_effort, thinking.type and enable_thinking are ignored (6/6 still think),
+#     so the registered OpenRouter body is sent unchanged.
+#   - Claude: ids are dotted, some with a route suffix (-ccmax / -aws); the native thinking block
+#     passes through on 5.x (haiku-5.5 and sonnet-5 honour {type:disabled}; sonnet-5.5 returns 400
+#     on disabled and accepts between_tools), while reasoning_effort low / medium / high return 400
+#     on 5.5. 4.x ignores the thinking block and does not think by default.
+#   - max_completion_tokens and max_tokens both cap reasoning + answer; sending both returns 400.
+ATLASCLOUD_REASONING_EFFORT: dict[str, tuple[str, str]] = {
+    "google/gemini-2.5-flash": ("minimal", "low"),
+    "google/gemini-2.5-flash-lite": ("none", "low"),
+    "google/gemini-3-flash-preview": ("minimal", "low"),
+    "google/gemini-3.1-flash-lite": ("minimal", "low"),
+    "google/gemini-3.5-flash": ("minimal", "low"),
+    "google/gemini-3.8-flash": ("low", "low"),
+}
+_ATLASCLOUD_REASONING = RouterReasoningConfig(
+    strip_prefixes=("anthropic/",),
+    dotted_versions=True,
+    model_aliases={
+        "claude-haiku-5-5-ccmax": "claude-haiku-5-5",
+        "claude-sonnet-5-5-ccmax": "claude-sonnet-5-5",
+        "claude-sonnet-5-aws": "claude-sonnet-5",
+    },
+    efforts=ATLASCLOUD_REASONING_EFFORT,
+)
+ROUTER_REASONING: dict[str, RouterReasoningConfig] = {
+    "router.requesty.ai": _REQUESTY_REASONING,
+    "router.eu.requesty.ai": _REQUESTY_REASONING,
+    "api.opper.ai": _OPPER_REASONING,
+    "api.orcarouter.ai": _ORCAROUTER_REASONING,
+    "api.atlascloud.ai": _ATLASCLOUD_REASONING,
+}
+
+
+def router_reasoning_config(base_url: str | None) -> RouterReasoningConfig | None:
+    """Router row for an endpoint, matched on the exact hostname."""
+    return ROUTER_REASONING.get(urlsplit(str(base_url or "")).hostname or "")
+
+
+def resolve_router_model(model: str, base_url: str | None) -> str:
+    """Registry id for ``model`` as named on ``base_url``'s router.
+
+    Returns ``model`` unchanged when it is registered as is, when the endpoint
+    is not a router in ``ROUTER_REASONING``, or when no registered id matches."""
+    config = router_reasoning_config(base_url)
+    if config is None or not model or model in MODELS_EXTRA_BODY_MAP:
+        return model
+    for prefix in config.strip_prefixes:
+        if model.startswith(prefix):
+            upstream = model[len(prefix):]
+            if config.dotted_versions:
+                upstream = upstream.replace(".", "-")
+            upstream = config.model_aliases.get(upstream, upstream)
+            if upstream in MODELS_EXTRA_BODY_MAP:
+                return upstream
+    return model
+
+
+def rewrite_router_reasoning(
+    base_url: str | None, model: str, extra_body: dict | None,
+) -> tuple[dict | None, str | None]:
+    """Translate a registered thinking body into a router's top-level ``reasoning_effort``.
+
+    Applies the endpoint's ``ROUTER_REASONING`` row: OpenRouter's
+    ``reasoning:{effort}`` becomes a top-level effort, or, for models in the
+    row's ``efforts`` table, the model's registered regular (thinking-off) or
+    focus (thinking-on) knob is replaced by the effort for that mode. The
+    returned effort is raised to the upstream floor. Other keys are preserved,
+    an explicit ``reasoning_effort`` already in ``extra_body`` wins, and the
+    input dict is never mutated. Returns ``(extra_body, None)`` when nothing
+    applies."""
+    config = router_reasoning_config(base_url)
+    if config is None or not extra_body:
+        return extra_body, None
+    effort = None
+    if config.reasoning_to_top_level:
+        reasoning = extra_body.get("reasoning")
+        if isinstance(reasoning, dict) and set(reasoning) == {"effort"}:
+            extra_body = dict(extra_body)
+            extra_body.pop("reasoning")
+            effort = extra_body.pop("reasoning_effort", reasoning["effort"])
+    efforts = config.efforts.get(model)
+    if efforts:
+        upstream = resolve_router_model(model, base_url)
+        forms = (
+            (MODELS_EXTRA_BODY_MAP.get(upstream), efforts[0]),
+            (MODELS_FOCUS_EXTRA_BODY_MAP.get(upstream), efforts[1]),
+        )
+        for form, form_effort in forms:
+            if form and all(k in extra_body and extra_body[k] == v for k, v in form.items()):
+                extra_body = {k: v for k, v in extra_body.items() if k not in form}
+                if "reasoning_effort" not in extra_body:
+                    effort = form_effort
+                break
+    if effort is None:
+        return extra_body, None
+    return extra_body, clamp_reasoning_effort(model, effort)
+
+
+# Background memory calls intentionally enabling thinking (review, signal detection, refine, reflection synthesis, etc.) normally omit
+# extra_body to use native reasoning, which often runs unbounded until output limits or timeout; therefore
+# explicitly reduce effort per endpoint (CacheProviderConfig.memory_thinking_extra_body).
+# Thinking controls use **endpoint** dialect rather than model dialect: the same deepseek-v4-flash accepts
+# reasoning_effort officially, while Bailian recognizes only thinking_budget (reasoning_effort is ignored, increasing thinking
+# to 6.4k–7.6k). Endpoint registration also naturally matches snapshots such as deepseek-v4-flash-0731.
+# Observed (2026-10-07/08, same reasoning problem / signal-detection prompt):
+#   - Official DeepSeek: default thinking 5.4k–6.5k; reasoning_effort=low reduces to 2.0k–2.4k
+#     (minimal instead gives unstable 3.4k–4.2k, unused). Thinking defaults on; no need to send thinking again.
+#   - Bailian (DashScope): thinking_budget works precisely for qwen3.7/3.8, omni, max, and hosted
+#     DeepSeek; it has no effect or error on non-thinking models (qwen-plus), nor does it
+#     enable thinking. Without parameters, qwen3.7-flash reaches 8192 thinking tokens and DeepSeek snapshots 12k.
+#   - SiliconFlow: max_tokens caps content only; absent controls, thinking runs until request timeout. Require
+#     enable_thinking + thinking_budget for a cap (thinking_budget alone disables DeepSeek
+#     thinking). Non-thinking models (Ling-mini-2.0 / Qwen2.5-7B-Instruct /
+#     GLM-4-9B-0414 / DeepSeek-V3) ignore enable_thinking without errors or reasoning;
+#     tested hybrid models (Qwen3-8B, DeepSeek-V3.2 / V4-Flash, Qwen3.5) natively default thinking on,
+#     so endpoint-level parameters do not enable previously disabled thinking (2026-10-08).
+# Use the shared output-guard budget, reserving at least half of 8192 tokens for JSON content.
+# Unregistered endpoints remain unchanged (None = omit extra_body = native thinking).
 EXTRA_BODY_DEEPSEEK_MEMORY_THINKING = {"reasoning_effort": "low"}
 EXTRA_BODY_DASHSCOPE_MEMORY_THINKING = {"thinking_budget": 4096}
 EXTRA_BODY_SILICON_MEMORY_THINKING = {"enable_thinking": True, "thinking_budget": 4096}
@@ -364,7 +617,7 @@ def leaks_thinking_in_content(model: str) -> bool:
 
 
 # ────────────────────────────────────────────────────────────────
-# Cache Provider 配置（原 tests/test_cco_capacity.py PROVIDER_CACHE_CONFIG）
+# Cache Provider configuration (formerly tests/test_cco_capacity.py PROVIDER_CACHE_CONFIG).
 # ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -373,20 +626,20 @@ class CacheProviderConfig:
 
     provider_id: str
     name: str
-    base_url: str                   # 典型完整 URL（用于测试/文档）
-    base_url_pattern: str           # 用于 substring match
+    base_url: str                   # Typical complete URL (tests/documentation).
+    base_url_pattern: str           # Used for substring matching.
     cache_mode: str                 # "session" | "auto" | "upstream"
     requires_header: bool
-    # 是否需要在请求体里打 body 级缓存标记（Anthropic 风格
-    # cache_control: {"type": "ephemeral"}）。与 requires_header 正交：
-    # provider 可以两个都不要、只要其一、或两个都要。get_cache_kwargs 据此
-    # 决定是否给 ChatOpenAI 传 enable_cache_control=True，由 _params() 消费。
+    # Whether request body needs body-level cache markers (Anthropic-style
+    # cache_control: {"type": "ephemeral"}). Independent of requires_header:
+    # providers may need neither, either one, or both. get_cache_kwargs uses this
+    # to pass enable_cache_control=True to ChatOpenAI, consumed by _params().
     #
-    # ⚠️ 切勿给 Anthropic 自家的 OpenAI 兼容端点（api.anthropic.com 走 OpenAI
-    # SDK，见 utils.llm_client.create_chat_llm 的 anthropic 分支）置 True：该兼容
-    # 层不支持 prompt caching，注入的 cache_control 会被静默忽略，结果是"报告开了
-    # 缓存却零命中"。需要 body 级缓存时，走原生 Messages API，或换一个明确支持该
-    # OpenAI-wire cache_control 形态的网关（Anthropic-compat / OpenRouter 等）再开。
+    # Warning: never enable this for Anthropic's own OpenAI-compatible endpoint (api.anthropic.com via OpenAI
+    # SDK; see utils.llm_client.create_chat_llm's anthropic branch): that compatibility
+    # layer lacks prompt caching and silently ignores injected cache_control, reporting caching enabled
+    # with zero hits. For body-level caching use native Messages API, or a gateway explicitly supporting
+    # this OpenAI-wire cache_control shape (Anthropic-compat / OpenRouter, etc.) before enabling.
     requires_body_flag: bool = False
     header_name: str | None = None
     header_value: str | None = None
@@ -395,22 +648,22 @@ class CacheProviderConfig:
     auto_cache: bool = True
     cache_price: float = 0.10
     creation_price: float = 0.10
-    # OpenAI 兼容请求里输出上限用哪个字段。各家对两个字段的语义不一致
-    # （实测 2026-10-07，开思考）：
-    #   - max_completion_tokens：OpenAI 新规范，封「思考 + 正文」总量。
-    #     DeepSeek 官方 / GLM 官方 / 硅基流动不认，**静默忽略**，上限形同虚设。
-    #   - max_tokens：老字段。DeepSeek / GLM 当总量上限用；DashScope、Doubao、
-    #     硅基只拿它封正文，思考不受限；OpenAI 新模型直接 400。
-    # 所以默认留在 max_completion_tokens，只有不认它的厂商改发 max_tokens。
-    # 两个字段不能同时发：Doubao / Gemini / OpenAI 会 400。
-    # 百炼（DashScope）上 qwen 与 DeepSeek 实测都是 max_completion_tokens 封总量
-    # （2026-10-08），默认值即正确，不必登记。
+    # Output-limit field for OpenAI-compatible requests; provider semantics differ between the two fields
+    # (observed 2026-10-07, thinking enabled):
+    #   - max_completion_tokens: new OpenAI specification caps thinking + content together.
+    #     Official DeepSeek / GLM / SiliconFlow **silently ignore** it, rendering the cap ineffective.
+    #   - max_tokens: legacy field. DeepSeek / GLM cap total output; DashScope, Doubao,
+    #     SiliconFlow cap content only, leaving thinking unlimited; newer OpenAI models return 400.
+    # Therefore default to max_completion_tokens, using max_tokens only for providers that reject/ignore it.
+    # Never send both: Doubao / Gemini / OpenAI return 400.
+    # Observed for both Qwen and DeepSeek on Bailian (DashScope): max_completion_tokens caps total output
+    # (2026-10-08), so default is correct without registration.
     token_limit_field: str = "max_completion_tokens"
-    # 记忆系统开思考调用压思考用的 extra_body（端点方言，见
-    # memory_thinking_extra_body 上方的实测记录）；None = 原生思考。
+    # Memory-system thinking-enabled calls use this extra_body to reduce thinking (endpoint dialect; see
+    # observations above memory_thinking_extra_body); None = native thinking.
     memory_thinking_extra_body: dict | None = None
 
-    # 兼容测试里 config["xxx"] 字典式访问
+    # Support dictionary-style config["xxx"] access in tests.
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
 
@@ -419,8 +672,8 @@ class CacheProviderConfig:
 
 
 CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
-    # qwen_intl / qwen_us 必须排在 qwen 前面：resolve_cache_provider 按
-    # dict 顺序做 substring 匹配，区域域名需要先命中自己的配置。
+    # qwen_intl / qwen_us must precede qwen: resolve_cache_provider matches substrings
+    # in dict order, so regional domains must first match their own configuration.
     "qwen_intl": CacheProviderConfig(
         provider_id="qwen_intl",
         memory_thinking_extra_body=EXTRA_BODY_DASHSCOPE_MEMORY_THINKING,
@@ -490,8 +743,8 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         cached_token_field="cached_tokens",
         token_limit_field="max_tokens",
     ),
-    # 智谱国际站（Z.ai）：与 open.bigmodel.cn 同一套 API，同样静默忽略
-    # max_completion_tokens（实测 2026-10-08，glm-5.1 上限 300 实出 1,434）。
+    # Zhipu international (Z.ai): same API as open.bigmodel.cn, also silently ignores
+    # max_completion_tokens (observed 2026-10-08: glm-5.1 emitted 1,434 with cap 300).
     "glm_intl": CacheProviderConfig(
         provider_id="glm_intl",
         name="Z.ai GLM (Intl)",
@@ -525,7 +778,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         cached_token_field="prompt_cache_hit_tokens",
         token_limit_field="max_tokens",
     ),
-    # 硅基国际站：按与国内站同一套实现处理（未实测，无可用 key）。
+    # SiliconFlow international: assume same implementation as domestic (untested, no available key).
     "silicon_intl": CacheProviderConfig(
         provider_id="silicon_intl",
         memory_thinking_extra_body=EXTRA_BODY_SILICON_MEMORY_THINKING,
@@ -578,7 +831,7 @@ CACHE_PROVIDERS: dict[str, CacheProviderConfig] = {
         cache_mode="auto",
         requires_header=False,
         min_cache_tokens=1024,
-        cached_token_field="prompt_tokens_details.cached_tokens",  # 与 OpenAI 相同
+        cached_token_field="prompt_tokens_details.cached_tokens",  # Same as OpenAI.
     ),
     "doubao": CacheProviderConfig(
         provider_id="doubao",

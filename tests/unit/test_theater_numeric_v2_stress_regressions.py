@@ -13,7 +13,7 @@ from tests.unit.test_theater_numeric_v2_runtime import _binding, _opening
 from tests.unit.test_theater_numeric_v2_natural_ending import _engine
 from tests.unit.test_theater_numeric_v2_transition_history import _candidate
 from tests.unit.theater_workshop.test_numeric_v2_generation import _generation_setup, _idea_outline
-from theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
+from services.theater_workshop.sdk.generation.numeric_v2 import NumericV2Generator
 
 
 @pytest.mark.asyncio
@@ -26,7 +26,7 @@ async def test_new_verified_invitation_does_not_reinsert_this_turns_consumed_act
     current = await runtime.start_session(session_id='consumed_new_offer', catgirl_binding=_binding(), opening_performance=_opening())
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult((), False)
@@ -49,6 +49,54 @@ async def test_new_verified_invitation_does_not_reinsert_this_turns_consumed_act
     assert result.stored.session.transition_offered is True
     assert result.diagnostics['verified_offer_acceptance_suggestions_inserted'] == 0
     assert await runtime.restore_session('consumed_new_offer') == result.stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('acceptance', [
+    '（回看柜台）明天来复习，我给你留靠窗的位置。',
+    '（指向驾驶舱）我来签发你的舰长许可。',
+])
+async def test_authored_acceptance_is_reviewed_and_rejected_batch_is_not_reinserted(
+    tmp_path, monkeypatch, acceptance,
+):
+    story = numeric_v2_story()
+    for route in story['nodes'][0]['route_gates']:
+        route['transition_contract']['accept_input'] = acceptance
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story), tmp_path)
+    current = await runtime.start_session(session_id='authored_suggestion_review',
+        catgirl_binding=_binding(), opening_performance=_opening())
+    reviewed = []
+
+    async def options():
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        return {'performance': '（点头）要现在一起出发吗？',
+                'suggested_inputs': ['（摇头）我先想想。'], 'transition_offered': True}
+
+    async def review(self, **kwargs):
+        suggestions = tuple(kwargs['actor_performance']['suggested_inputs'])
+        reviewed.append(suggestions)
+        unsafe = tuple(i for i, item in enumerate(suggestions) if item == acceptance)
+        return evaluator.NumericV2TransitionOfferReview(True, True, (), unsafe)
+
+    monkeypatch.setattr(workflow, 'aload_theater_module_options', options)
+    monkeypatch.setattr(workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(workflow.NumericV2MetricEvaluator, 'validate_transition_offer', review)
+    result = await workflow.execute_numeric_v2_turn(config_manager=object(), runtime=runtime,
+        current=current, turn=TurnRequestV2('ask', 0, '还有什么安排？'),
+        ensure_current_binding=lambda _: _binding())
+
+    assert result.performance['suggested_inputs'] == []
+    assert result.performance['performance'] == '（点头）要现在一起出发吗？'
+    assert result.stored.session.transition_offered is True
+    assert reviewed == [(acceptance, '（摇头）我先想想。')]
+    assert await runtime.restore_session('authored_suggestion_review') == result.stored
 
 
 @pytest.mark.parametrize('name,purpose,state', [
@@ -92,7 +140,7 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
     calls = {'actor': 0, 'narrow': 0, 'review': 0}
 
     async def options():
-        return {**default_options(), 'review': True}
+        return {**{key: key == 'evaluator' for key in default_options()}, 'review': True}
 
     async def evaluate(self, **kwargs):
         return evaluator.NumericV2EvaluationResult((), True, natural_ending_ready=True)
@@ -136,13 +184,15 @@ async def test_terminal_question_check_does_not_replace_full_review_or_commit_un
                   turn=TurnRequestV2('finish', 0, '就到这里吧。'), ensure_current_binding=lambda _: _binding())
     if requires_reply or timeout or full_review_rejects:
         with pytest.raises(workflow.NumericV2ActorOutputError):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session('terminal_question') == current
         assert calls['actor'] == (1 if timeout else 2)
-        assert calls['narrow'] == (1 if timeout else 2)
+        # The stub returns the same visible draft on rewrite. The narrow
+        # verdict can be reused, while the independent review still runs.
+        assert calls['narrow'] == 1
         assert calls['review'] == (2 if full_review_rejects else 0)
     else:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.status == 'ended'
         assert calls == {'actor': 1, 'narrow': int('？' in text), 'review': 1}
         assert result.diagnostics['terminal_question_review_calls'] == calls['narrow']

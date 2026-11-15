@@ -815,9 +815,9 @@ def test_icebreaker_reveals_next_choice_prompt_after_assistant_line_delay():
         1,
     )[0]
     assert append_failure_block.index("session.nodeId = previousNodeId;") < append_failure_block.index("return false;")
-    # 揭示延迟改为「只扣视觉」：choicePrompt 立刻下发（绑定输入路由），延迟值随
-    # revealDelayMs 交给 chat host 按 revealAt 延后露出按钮。deliverNode 不再用
-    # promise 把 setChoicePrompt 整体往后拖，避免间隙内输入落到普通聊天。
+    # Reveal delay now affects only visuals: send choicePrompt immediately to bind input routing, passing
+    # revealDelayMs to the chat host so buttons appear at revealAt. deliverNode no longer
+    # delays the whole setChoicePrompt call with a promise, which sent intervening input to ordinary chat.
     assert "waitBeforeChoicePromptReveal" not in runtime
     choice_prompt_call = "setChoicePrompt(node, localeData, computeChoicePromptRevealDelay(text))"
     assert choice_prompt_call in deliver_node_block

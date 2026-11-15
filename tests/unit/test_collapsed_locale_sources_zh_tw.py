@@ -44,9 +44,9 @@ def _locale_chat_value(locale_code: str, key: str) -> str:
     return data["chat"][key]
 
 
-# ── 1. _get_chat_locale_text 的兜底源 ────────────────────────
+# -- 1. _get_chat_locale_text fallback source. --
 def test_chat_locale_text_precondition_the_two_rows_differ():
-    """空断言陷阱：两份 JSON 若哪天同文，下面的断言就永远为真。"""  # noqa: DOCSTRING_CJK
+    """Vacuous-assertion trap: if both JSON files ever contain identical text, the following assertion is always true."""  # noqa: DOCSTRING_CJK
     assert _locale_chat_value("zh-TW", "title") != _locale_chat_value("zh-CN", "title")
 
 
@@ -67,7 +67,7 @@ def test_chat_locale_text_still_falls_back_to_simplified(spelling, monkeypatch):
 
 
 def test_chat_locale_text_still_prefers_an_explicit_language(monkeypatch):
-    """兜底改了，显式入参的优先级不能跟着变。"""  # noqa: DOCSTRING_CJK
+    """Changing fallback sources must not change explicit argument precedence."""  # noqa: DOCSTRING_CJK
     monkeypatch.setattr(_shared, "get_global_language_full", lambda: "zh-TW")
     assert _shared._get_chat_locale_text("ja", "title", "FB") == _locale_chat_value(
         "ja", "title"
@@ -79,7 +79,7 @@ def test_chat_locale_text_unknown_key_still_returns_the_fallback(monkeypatch):
     assert _shared._get_chat_locale_text(None, "no_such_key_here", "FB") == "FB"
 
 
-# ── 2. normalize_turn_language 的兜底源 ─────────────────────
+# -- 2. normalize_turn_language fallback source. --
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_turn_language_falls_back_to_the_traditional_global(spelling, monkeypatch):
     import utils.language_utils as lu
@@ -104,7 +104,7 @@ def test_turn_language_still_prefers_an_explicit_language(spelling, monkeypatch)
     assert conversation_turns.normalize_turn_language(spelling) == "zh-TW"
 
 
-# ── 3. callback 指令：渲染函数就地归一化 ─────────────────────
+# -- 3. Callback instructions: renderer normalizes locally. --
 CALLBACKS = [
     {
         "origin": "task_result",
@@ -128,15 +128,15 @@ def test_callback_precondition_the_two_rows_differ():
 
 @pytest.mark.parametrize("spelling", TRADITIONAL_SPELLINGS)
 def test_callback_instruction_renders_traditional(spelling):
-    """渲染函数自己归一化，所以连 ``zh_TW`` / ``zh-Hant`` 这些拼法也接得住。"""  # noqa: DOCSTRING_CJK
+    """Renderer-local normalization accepts spellings such as ``zh_TW`` / ``zh-Hant`` too."""  # noqa: DOCSTRING_CJK
     assert _rendered(spelling) == _rendered("zh-TW")
     assert _rendered(spelling) != _rendered("zh")
 
 
 @pytest.mark.parametrize("spelling", SIMPLIFIED_SPELLINGS)
 def test_callback_instruction_still_renders_simplified(spelling):
-    """⚠️ ``zh-CN`` 也在这张清单里：它是 ``format='full'`` 的产物，而
-    prompts_sys 的表没有 ``zh-CN`` 行。"""  # noqa: DOCSTRING_CJK
+    """``zh-CN`` is included too: ``format='full'`` produces it,
+    but prompts_sys has no zh-CN row."""  # noqa: DOCSTRING_CJK
     assert _rendered(spelling) == _rendered("zh")
 
 
@@ -146,18 +146,18 @@ def test_callback_instruction_leaves_other_locales_alone(spelling):
     assert _rendered(spelling) != _rendered("en") or spelling == "en"
 
 
-# ── 4. 调用点：自动发现，不是列清单 ──────────────────────────
-# ⚠️ 第 3 节测的是渲染函数，它已经就地归一化了——把调用点改回 ``format='short'``，
-# 第 3 节**照样全绿**，因为字形是在调用点丢的，函数里救不回来。所以这里 walk 一遍
-# 两个 mixin 的 AST，找出所有喂 _build_callback_instruction 的变量，回溯它的赋值。
+# -- 4. Automatically discover call sites rather than enumerating them. --
+# Section 3 tests renderers that already normalize locally. Reverting callers to format='short'
+# still leaves section 3 green: script information lost at call sites cannot be restored inside renderers. Walk
+# both mixins' ASTs, find variables supplied to _build_callback_instruction, and trace their assignments.
 CALLBACK_MODULES = ("main_logic.core.proactive", "main_logic.core.lifecycle")
 
 
 def _callee_name(node: ast.Call) -> str:
-    """调用名，属性式与裸名一视同仁。
+    """Return the call name, treating attribute calls and bare names equally.
 
-    ⚠️ 只认 ``ast.Name`` 会漏 ``callback_render._build_callback_instruction(...)``
-    这种属性式调用——那是个纯粹合法的重构，却会让守卫看不见那个调用点。
+    Recognizing only ast.Name misses attribute-style calls such as callback_render._build_callback_instruction(...),
+    a perfectly valid refactor that would otherwise hide the call site from the guard.
     """  # noqa: DOCSTRING_CJK
     func = node.func
     if isinstance(func, ast.Name):
@@ -175,11 +175,11 @@ def _tree(module_name: str) -> ast.Module:
 
 
 def _functions_rendering_callbacks(tree: ast.Module) -> list:
-    """含 _build_callback_instruction 调用的函数。
+    """Functions containing _build_callback_instruction calls.
 
-    ⚠️ 必须按函数定界。``_lang`` 这个名字在这两个模块里被七八个互不相干的
-    消费点共用（prompt_ephemeral、context summary、pending extra replies…），
-    全模块按变量名匹配会把那些还没迁移的路径一起算进来。
+    Bound discovery by function: _lang is shared across seven or eight unrelated consumers in both modules
+    (prompt_ephemeral, context summaries, pending extra replies, etc.);
+    module-wide variable-name matching would include paths not yet migrated.
     """  # noqa: DOCSTRING_CJK
     out = []
     for node in ast.walk(tree):
@@ -195,7 +195,7 @@ def _functions_rendering_callbacks(tree: ast.Module) -> list:
 
 
 def _lang_arg_names(tree: ast.Module) -> set[str]:
-    """喂给 _build_callback_instruction 的 ``lang=`` 变量名。"""  # noqa: DOCSTRING_CJK
+    """Names of ``lang=`` variables supplied to _build_callback_instruction."""  # noqa: DOCSTRING_CJK
     names = set()
     for node in ast.walk(tree):
         if not (
@@ -210,7 +210,7 @@ def _lang_arg_names(tree: ast.Module) -> set[str]:
 
 
 def _short_format_assignments(tree: ast.Module) -> list[int]:
-    """渲染回调的函数里，哪些 ``lang=`` 变量是被 ``format='short'`` 赋的值。"""  # noqa: DOCSTRING_CJK
+    """Within callback-rendering functions, identify ``lang=`` variables assigned using ``format='short'``."""  # noqa: DOCSTRING_CJK
     offenders = []
     for func in _functions_rendering_callbacks(tree):
         names = _lang_arg_names(func)
@@ -235,7 +235,7 @@ def _short_format_assignments(tree: ast.Module) -> list[int]:
 
 @pytest.mark.parametrize("module_name", CALLBACK_MODULES)
 def test_the_callback_call_site_walk_finds_something(module_name):
-    """空断言陷阱：AST 匹配写错时下面那条会 vacuously 通过。"""  # noqa: DOCSTRING_CJK
+    """Vacuous-assertion trap: broken AST matching would make the following assertion pass vacuously."""  # noqa: DOCSTRING_CJK
     tree = _tree(module_name)
     assert _lang_arg_names(tree), f"{module_name} 里没找到 lang= 调用点"
     assert _functions_rendering_callbacks(tree), f"{module_name} 里没定位到渲染函数"

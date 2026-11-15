@@ -31,7 +31,7 @@ async def _background_preload():
     """
     try:
         logger.info("🔄 后台预加载翻译与网络模块...")
-        # 在线程池中执行同步导入（避免阻塞事件循环）
+        # Run synchronous imports in a thread pool to avoid blocking the event loop
         import concurrent.futures
 
         loop = asyncio.get_event_loop()
@@ -60,33 +60,33 @@ def _sync_preload_modules():
 
     start = time.time()
 
-    # 1. 翻译服务相关模块（避免首轮对话延迟）
+    # 1. Translation-service modules (avoid first-conversation latency)
     try:
-        # 预加载翻译库（googletrans, translatepy 等）
+        # Preload translation libraries (googletrans, translatepy, etc.)
         from utils import language_utils
 
-        # 触发翻译库的导入（如果可用）
+        # Trigger translation-library imports if available
         _ = language_utils.GOOGLETRANS_AVAILABLE
         _ = language_utils.TRANSLATEPY_AVAILABLE
         logger.debug("✅ 翻译库预加载完成")
     except Exception as e:
         logger.debug(f"⚠️ 翻译库预加载失败（不影响使用）: {e}")
 
-    # 2. 翻译服务实例（需要 config_manager）
+    # 2. Translation-service instance (requires config_manager)
     try:
-        # 提前初始化翻译服务（如果在初始化过程中需要翻译数据）
+        # Initialize the translation service early if initialization needs translation data
         from utils.language_utils import get_translation_service
         from utils.config_manager import get_config_manager
 
-        # 此处仅调用以触发单例初始化，后续使用时通过 get_translation_service 获取即可
+        # Call only to trigger singleton initialization here; later retrieve it through get_translation_service
         config_manager = get_config_manager()
-        # 预初始化翻译服务实例（触发 LLM 客户端创建等）
+        # Preinitialize the translation service (creating the LLM client, etc.)
         _ = get_translation_service(config_manager)
         logger.debug("✅ 翻译服务预加载完成")
     except Exception as e:
         logger.debug(f"⚠️ 翻译服务预加载失败（不影响使用）: {e}")
 
-    # 3. dashscope (阿里云 CosyVoice TTS SDK - 仅在使用自定义音色时需要)
+    # 3. dashscope (Alibaba Cloud CosyVoice TTS SDK, needed only for custom voices)
     try:
         import dashscope  # noqa: F401
 
@@ -94,27 +94,27 @@ def _sync_preload_modules():
     except Exception as e:
         logger.debug(f"  ✗ dashscope: {e}")
 
-    # 4. httpx SSL 上下文预热（首次创建 AsyncClient 会初始化 SSL）
+    # 4. Warm the httpx SSL context (the first AsyncClient creation initializes SSL)
     try:
         import httpx
         import asyncio
 
         async def _warmup_httpx():
-            # per-call AsyncClient: 这就是 SSL warmup 本身，改共享 client 反而没意义
+            # per-call AsyncClient: this is the SSL warmup itself; using a shared client would defeat its purpose
             async with httpx.AsyncClient(
                 timeout=1.0, proxy=None, trust_env=False
             ) as client:
-                # 发送一个简单请求预热 SSL 上下文
+                # Send a simple request to warm the SSL context
                 try:
                     await client.get("http://127.0.0.1:1", timeout=0.01)
                 except:  # noqa: E722
-                    pass  # 预期会失败，只是为了初始化 SSL
+                    pass  # Failure is expected; this only initializes SSL
 
-        # 在当前线程的事件循环中运行（如果没有则创建临时循环）
+        # Run on the current thread's event loop, creating a temporary loop if needed
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # 如果已有运行中的循环，使用线程池
+                # Use a thread pool if an event loop is already running
                 import concurrent.futures
 
                 with concurrent.futures.ThreadPoolExecutor() as pool:

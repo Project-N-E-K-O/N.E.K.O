@@ -1,3 +1,4 @@
+import { ClearChatScreenButton, useChatScreenVisibility } from './ChatScreenVisibility';
 import clsx from 'clsx';
 import {
   useEffect,
@@ -14,9 +15,10 @@ import {
 import { i18n } from './i18n';
 import MessageBlockView from './MessageBlockView';
 import MessageReactions from './MessageReactions';
+import ScreenObservationExposure, { getScreenObservationAnchorIds } from './ScreenObservationExposure';
 import ThinkingDots from './ThinkingDots';
 import { isTopicHintMessage } from './TopicHintBubble';
-import { type ChatMessage, type MessageAction } from './message-schema';
+import { hasVisibleMessageContent, type ChatMessage, type MessageAction } from './message-schema';
 
 export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
 
@@ -79,6 +81,7 @@ type CompactExportHistoryPanelProps = {
   choiceLayerAbove: boolean;
   visibilityState?: 'open' | 'closing';
   thinking?: boolean;
+  thinkingLabel?: string;
   failedStatusLabel: string;
   onAutoScrollToBottomChange: (enabled: boolean) => void;
   onToggleMessage: (messageId: string) => void;
@@ -123,7 +126,8 @@ export function isCompactExportMessageSelectable(message: ChatMessage) {
   // Frontend-only topic-hint teasers are hidden from the history view and never
   // exported, so they must not count toward selectable/selected totals either —
   // otherwise the header count diverges from what's visible/selectable.
-  return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message);
+  return !!message.id && message.status !== 'sending' && !isTopicHintMessage(message)
+    && hasVisibleMessageContent(message);
 }
 
 function isSelectionIgnoredTarget(target: EventTarget | null, currentTarget: EventTarget) {
@@ -162,6 +166,7 @@ function getCompactHistoryMessageClassName(message: ChatMessage, selected: boole
   return clsx('compact-export-history-message', {
     'is-user': message.role === 'user',
     'is-assistant': message.role === 'assistant' || message.role === 'tool',
+    'is-visit-peer': message.role === 'tool',
     'is-system': message.role === 'system',
     'is-selected': selected,
     'is-unselected': hasSelection && selectable && !selected,
@@ -174,7 +179,8 @@ function getCompactHistoryMessageClassName(message: ChatMessage, selected: boole
 function getCompactHistoryRoleGroup(message?: ChatMessage) {
   if (!message) return 'none';
   if (message.role === 'user') return 'user';
-  if (message.role === 'assistant' || message.role === 'tool') return 'assistant';
+  if (message.role === 'tool') return 'visit-peer';
+  if (message.role === 'assistant') return 'assistant';
   return 'system';
 }
 
@@ -239,6 +245,7 @@ export default function CompactExportHistoryPanel({
   choiceLayerAbove,
   visibilityState = 'open',
   thinking = false,
+  thinkingLabel,
   failedStatusLabel,
   onAutoScrollToBottomChange,
   onToggleMessage,
@@ -262,8 +269,17 @@ export default function CompactExportHistoryPanel({
   // render, but they carry no real history — exclude them from the history view,
   // selection, and export so they can't show up as blank rows / empty entries.
   const messages = useMemo(
-    () => allMessages.filter((message) => !isTopicHintMessage(message)),
+    () => allMessages.filter((message) => !isTopicHintMessage(message) && hasVisibleMessageContent(message)),
     [allMessages],
+  );
+  const { isMessageHidden } = useChatScreenVisibility();
+  const displayMessages = useMemo(
+    () => mode === 'theater' ? messages : messages.filter(message => !isMessageHidden(message)),
+    [messages, mode, isMessageHidden],
+  );
+  const exposureAnchorIds = useMemo(
+    () => getScreenObservationAnchorIds(messages, allMessages),
+    [messages, allMessages],
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const scrollContentRef = useRef<HTMLDivElement | null>(null);
@@ -290,7 +306,7 @@ export default function CompactExportHistoryPanel({
     height: 0,
     scrollable: false,
   });
-  const selectedMessages = messages.filter(message => selectedIds.has(message.id));
+  const selectedMessages = displayMessages.filter(message => selectedIds.has(message.id));
   const previewHasSelection = selectedMessages.length > 0;
   const selectedMessageIds = selectedMessages.map(message => message.id);
   const selectedMessageSignature = selectedMessages.map(message => [
@@ -306,7 +322,7 @@ export default function CompactExportHistoryPanel({
   const exportActionsDisabled = !previewHasSelection || exportBusy;
   const historyInteractive = visibilityState === 'open';
   const selectionControlsInteractive = mode === 'chat' && historyInteractive && controlsOpen;
-  const historyHasContent = messages.length > 0 || thinking;
+  const historyHasContent = displayMessages.length > 0 || thinking;
   const scrollbarHitVisible = scrollbarVisible
     && !!scrollRef.current
     && !!getCompactHistoryScrollbarMetrics(scrollRef.current);
@@ -510,7 +526,7 @@ export default function CompactExportHistoryPanel({
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [autoScrollToBottom, messages, previewOpen, visibilityState, thinking]);
+  }, [autoScrollToBottom, displayMessages, previewOpen, visibilityState, thinking]);
 
   // 图片（尤其是远端表情包 / GIF）可能在上面的固定 settle 帧结束后才完成解码。若图片块没有
   // width/height 元数据，它会从 0 高度增长到固有高度；此时 scrollHeight 增大但 scrollTop 不会
@@ -752,6 +768,7 @@ export default function CompactExportHistoryPanel({
               className={clsx('compact-export-preview-message', {
                 'is-user': message.role === 'user',
                 'is-assistant': message.role === 'assistant' || message.role === 'tool',
+                'is-visit-peer': message.role === 'tool',
                 'is-system': message.role === 'system',
               })}
               role="listitem"
@@ -760,14 +777,15 @@ export default function CompactExportHistoryPanel({
             >
               <div className="compact-export-preview-bubble">
                 <div className="compact-export-preview-meta">
-                  <span>{message.author}</span>
-                  <span>{message.time}</span>
+                  <span className="compact-export-preview-author">{message.author}</span>
+                  <span className="compact-export-preview-time">{message.time}</span>
                 </div>
                 <div className="compact-export-preview-content">
                   {message.blocks.map((block, index) => (
                     <MessageBlockView
                       key={`${message.id}-preview-${block.type}-${index}`}
                       interactive={false}
+                      presentation="bubble"
                       block={block}
                       message={message}
                       isStreaming={streaming}
@@ -958,6 +976,7 @@ export default function CompactExportHistoryPanel({
 
   return (
     <section
+      {...(choiceLayerAbove ? { inert: '' } : {})}
       className={clsx('compact-export-history-anchor', {
         'under-choice-prompt': choiceLayerAbove,
         'has-preview': previewOpen,
@@ -1042,13 +1061,13 @@ export default function CompactExportHistoryPanel({
           >
             {historyHasContent ? (
               <div ref={scrollContentRef} className="compact-export-history-scroll-content">
-                {messages.map((message, index) => {
+                {displayMessages.map((message, index) => {
                   const selectable = isCompactExportMessageSelectable(message);
                   const selected = selectedIds.has(message.id);
                   const selectionEnabled = selectionControlsInteractive && selectable;
                   const failed = message.status === 'failed';
                   const streaming = message.status === 'streaming';
-                  const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
+                  const tone = getCompactHistoryBubbleTone(message, index, displayMessages[index - 1]);
                   const motionStyle: CSSProperties & Record<string, string> = {
                     '--compact-history-enter-delay': resolveCompactHistoryEnterDelay(message, index),
                     '--compact-history-exit-delay': computeCompactHistoryExitDelay(index),
@@ -1092,12 +1111,17 @@ export default function CompactExportHistoryPanel({
                             <MessageBlockView
                               key={`${message.id}-${block.type}-${index}`}
                               interactive={!selectionEnabled}
+                              presentation="bubble"
                               block={block}
                               message={message}
                               isStreaming={streaming}
                               onAction={onAction}
                             />
                           ))}
+                          {exposureAnchorIds.has(message.id) ? (
+                            <ScreenObservationExposure messages={allMessages} turnId={message.turnId}
+                              interactive={!selectionEnabled} onAction={onAction} />
+                          ) : null}
                         </div>
                       </div>
                       <MessageReactions message={message} />
@@ -1114,7 +1138,7 @@ export default function CompactExportHistoryPanel({
                   >
                     <div className="compact-export-history-bubble focus-thinking-history-bubble">
                       <div className="compact-export-history-content">
-                        <ThinkingDots />
+                        <ThinkingDots label={thinkingLabel} />
                       </div>
                     </div>
                   </article>
@@ -1138,6 +1162,11 @@ export default function CompactExportHistoryPanel({
               onPointerCancel={finishScrollbarPointerDrag}
               onLostPointerCapture={finishScrollbarPointerDrag}
             />
+          ) : null}
+          {mode === 'chat' ? (
+            <div className={`chat-clear-screen-tools${controlsOpen ? ' is-selecting' : ''}`}>
+              <ClearChatScreenButton disabled={!historyInteractive || choiceLayerAbove || displayMessages.length === 0} />
+            </div>
           ) : null}
           {mode === 'chat' && controlsOpen ? (
             <div

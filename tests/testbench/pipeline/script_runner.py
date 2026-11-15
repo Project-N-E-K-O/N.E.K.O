@@ -1,36 +1,36 @@
-"""Script runner — 脚本化对话 (Scripted) pipeline for P12.
+"""Script runner — scripted-dialogue pipeline for P12.
 
-PLAN §P12 约定: 读 ``dialog_templates/*.json`` (builtin + user 合并, 同 name
-时 user 覆盖 builtin), 支持 ``Next turn`` 逐轮 / ``Run all`` 一键跑完; 每轮
-消费 ``turns[].time`` 推进 virtual clock; ``role=assistant`` 的 ``expected``
-字段自动写入紧随其后的真实 AI 回复的 ``reference_content``, 为后续
-ComparativeJudger (P15+) 提供对照参考; ``bootstrap`` 字段重设会话起点.
+PLAN §P12: read ``dialog_templates/*.json`` (merge builtin + user, user overrides
+same-name builtin); support ``Next turn`` and ``Run all``; consume each
+``turns[].time`` to advance virtual clock. ``role=assistant`` ``expected``
+automatically fills real AI reply's ``reference_content``, providing
+ComparativeJudger (P15+) reference; ``bootstrap`` resets session origin.
 
-设计要点
+Design points
 --------
-* **脚本游标独立于 ``session.messages``**: 脚本里 ``role=assistant`` 的 turn
-  只是"expected 的载体", 不是一个真实要发送的消息, 不占 ``session.messages``
-  一格. 如果把游标和消息下标绑在一起, 混跑 ``inject_system`` / 编辑消息就
-  会立即错位. 我们采用独立 ``cursor`` + 每次 ``advance_one_user_turn`` 把
-  assistant turn 的 expected 暂存 ``pending_reference``, 等下次 LLM 回复落
-  盘时再回填. 这样对消息编辑无感, 脚本"下一轮"的语义永远指"下一条 user
-  turn 的发送".
-* **多条连续 assistant turn 的 expected 合并**: 极少见但合法 (模板里同一
-  位置写两条 assistant, 两条都带 expected), 用 ``\\n---\\n`` 拼接, 避免后者
-  把前者覆盖.
-* **bootstrap 的幂等性**: 只在 ``session.messages`` 为空时应用, 否则给
-  warning. 已经产生消息的会话硬改 cursor 会让后续消息出现负时间差.
-* **stream_send 复用**: 脚本的 user turn 执行走与手动 ``/chat/send``
-  **完全同一条路径** (``chat_runner.get_chat_backend().stream_send(...,
-  source='script')``). 前端收到的 SSE 事件里 ``user`` / ``assistant_start``
-  / ``delta`` / ``assistant`` / ``done`` / ``error`` 等全部与手动一致,
-  额外 yield ``script_turn_done`` / ``script_exhausted`` 承载脚本进度.
-* **reference 回填时机**: 在 ``{event:'assistant'}`` 出来时回填 — 这时
-  完整 content 已经 join 并写回 ``assistant_msg['content']``. 如果流式中
-  断/失败 (``{event:'error'}``), 就丢弃 ``pending_reference`` 保持不变
-  (下次脚本重试这条 user turn 会重新消费到).
-* **错误语义**: :class:`ScriptError` 的 code 覆盖前端所有需要分 toast 的
-  场景: ``ScriptNotFound`` / ``ScriptSchemaInvalid`` / ``ScriptNotLoaded``
+* **Script cursor is independent of ``session.messages``**: ``role=assistant`` turns
+  only carry expected, not real messages, and occupy no ``session.messages``
+  slot. Binding cursor to message indices breaks with ``inject_system`` / edits.
+  Use independent ``cursor``; each ``advance_one_user_turn`` stages assistant
+  expected in ``pending_reference`` until next LLM reply
+  persists. Message edits cannot affect it; next script turn always means next user
+  turn submission.
+* **Merge consecutive assistant expected values**: rare but valid (multiple assistant
+  turns at one position with expected); join using ``\\n---\\n`` rather than letting latter
+  overwrite former.
+* **Idempotent bootstrap**: apply only with empty ``session.messages``, warning otherwise;
+  changing clock after messages creates negative time differences later.
+* **Reuse stream_send**: scripted user turns follow exactly manual ``/chat/send``
+  path (``chat_runner.get_chat_backend().stream_send(...,
+  source='script')``). Frontend receives identical SSE ``user`` / ``assistant_start``
+  / ``delta`` / ``assistant`` / ``done`` / ``error`` events,
+  plus ``script_turn_done`` / ``script_exhausted`` for progress.
+* **Reference fill timing**: fill at ``{event:'assistant'}``, after full
+  content joins and persists in ``assistant_msg['content']``. Stream interruption /
+  failure (``{event:'error'}``) discards ``pending_reference``, keeping cursor unchanged
+  so next script retry consumes same user turn again.
+* **Error semantics**: :class:`ScriptError` codes cover distinct frontend toasts:
+  ``ScriptNotFound`` / ``ScriptSchemaInvalid`` / ``ScriptNotLoaded``
   / ``ScriptExhausted`` / ``NoActiveSession``.
 """
 from __future__ import annotations
@@ -62,12 +62,12 @@ class ScriptError(RuntimeError):
     """Raised by the script pipeline; maps to a specific HTTP status.
 
     Codes:
-        * ``NoActiveSession`` — 还没建会话 (404).
-        * ``ScriptNotFound`` — 合并列表里找不到指定 name (404).
-        * ``ScriptSchemaInvalid`` — JSON 读上来但 schema 不对 (422).
-        * ``ScriptNotLoaded`` — 调 next/run_all 之前没 /load (412).
-        * ``ScriptExhausted`` — 已经跑到末尾还点 next (412).
-        * ``ScriptTurnFailed`` — 内部异常 (500).
+        * ``NoActiveSession`` — no session created (404).
+        * ``ScriptNotFound`` — name absent from merged list (404).
+        * ``ScriptSchemaInvalid`` — readable JSON with invalid schema (422).
+        * ``ScriptNotLoaded`` — next/run_all before /load (412).
+        * ``ScriptExhausted`` — next requested after end (412).
+        * ``ScriptTurnFailed`` — internal error (500).
     """
 
     def __init__(self, code: str, message: str, status: int = 500) -> None:
@@ -84,10 +84,10 @@ _DURATION_RE: Final[re.Pattern[str]] = re.compile(r"(\d+)\s*([dhms])", re.IGNORE
 
 
 def _parse_duration_text(text: str) -> int | None:
-    """``"1h30m" / "2d" / "45s" / "3600"`` → seconds (``None`` if unparsable).
+    """``\"1h30m\" / \"2d\" / \"45s\" / \"3600\"`` → seconds (``None`` if unparsable).
 
-    纯数字按秒; 单位接受 d/h/m/s (大小写不敏感). 与 static/core/time_utils.js
-    的 ``parseDurationText`` 行为对齐, 避免 JS / Python 两端解析分歧.
+    Bare numbers mean seconds; d/h/m/s units are case-insensitive. Match static/core/time_utils.js
+    ``parseDurationText`` to prevent JS/Python parsing disagreement.
     """
     t = (text or "").strip()
     if not t:
@@ -170,14 +170,14 @@ def _normalize_template(raw: dict[str, Any], *, source: str, path: Path) -> dict
                 "role": ROLE_USER,
                 "content": content,
                 "time": t.get("time") if isinstance(t.get("time"), dict) else None,
-                "expected": None,  # user turn 不能带 expected (语义上无意义), 忽略.
+                "expected": None,  # User turns cannot meaningfully carry expected; ignore it.
             })
         else:  # assistant
             expected = t.get("expected")
             normalized_turns.append({
                 "role": ROLE_ASSISTANT,
                 "content": None,
-                "time": None,  # assistant turn 的 time 字段无意义, 统一 drop.
+                "time": None,  # Assistant-turn time is meaningless; always drop it.
                 "expected": (expected if isinstance(expected, str) else None),
             })
     bootstrap = raw.get("bootstrap")
@@ -199,10 +199,10 @@ def _normalize_template(raw: dict[str, Any], *, source: str, path: Path) -> dict
 
 
 def _scan_dir(directory: Path, *, source: str) -> list[dict[str, Any]]:
-    """读一个目录下所有 ``*.json`` 并返回规范化后的 meta 列表.
+    """Read all ``*.json`` in a directory and return normalized metadata.
 
-    单个模板 JSON 读失败不会导致整个目录空 — 只记 warning 日志, 跳过
-    这一条. 这样加用户手动 mv 一个坏 JSON 进来不会把 UI 列表搞空.
+    Individual JSON read failure warns and skips only that template, never empties directory;
+    manually moving one invalid JSON into user directory cannot blank UI list.
     """
     if not directory.exists():
         return []
@@ -226,13 +226,13 @@ def _scan_dir(directory: Path, *, source: str) -> list[dict[str, Any]]:
 def list_templates() -> list[dict[str, Any]]:
     """Return merged (builtin + user) template meta list for the UI dropdown.
 
-    - Builtin 先扫 (``tests/testbench/dialog_templates/``).
-    - User 后扫 (``tests/testbench_data/dialog_templates/``); 同 ``name`` 时
-      user 覆盖 builtin, 保留一条 ``overriding_builtin: True`` 标记让 UI
-      可以标角标/提示 (当前 composer.js 未使用, 留给 Diagnostics 页).
-    - 返回的字段只放前端可用的 meta (name / description / user_persona_hint
-      / turns_count / source / path / overriding_builtin), **不**带 turns
-      数组 — 避免下拉渲染时一次性传几十 KB.
+    - Scan builtin first (``tests/testbench/dialog_templates/``).
+    - Scan user later (``tests/testbench_data/dialog_templates/``); matching ``name``
+      overrides builtin, retaining ``overriding_builtin: True`` for UI badges/hints
+      (not yet used by composer.js; reserved for Diagnostics).
+    - Return frontend metadata only (name / description / user_persona_hint
+      / turns_count / source / path / overriding_builtin), **without** turns
+      array, avoiding tens of KB during dropdown rendering.
     """
     builtin_list = _scan_dir(tb_config.BUILTIN_DIALOG_TEMPLATES_DIR, source="builtin")
     user_list = _scan_dir(tb_config.USER_DIALOG_TEMPLATES_DIR, source="user")
@@ -268,7 +268,7 @@ def load_template(name: str) -> dict[str, Any]:
     """
     builtin_list = _scan_dir(tb_config.BUILTIN_DIALOG_TEMPLATES_DIR, source="builtin")
     user_list = _scan_dir(tb_config.USER_DIALOG_TEMPLATES_DIR, source="user")
-    # User 后覆盖.
+    # User overrides later.
     by_name: dict[str, dict[str, Any]] = {}
     for t in builtin_list:
         by_name[t["name"]] = t
@@ -286,42 +286,42 @@ def load_template(name: str) -> dict[str, Any]:
 
 # ── P12.5: CRUD for the Setup → Scripts subpage editor ─────────────
 #
-# 注意和上面 `load_template` 的差别:
-#   * `load_template` 是给 session 的 "加载时" 用的, 返回值已做了规范化 (drop
-#     了 user turn 的 expected / assistant turn 的 time 等无意义字段), 适合
-#     pipeline 跑.
-#   * 下面五个 (`read_template` / `save_user_template` / `delete_user_template`
-#     / `validate_template_dict` / `duplicate_builtin_to_user`) 是给 "编辑器"
-#     用的, 需要同时暴露 builtin 原文 + user 覆盖状态 + 软校验错误清单, 方便
-#     UI 把字段级错误红框高亮.
+# Difference from `load_template` above:
+#   * `load_template` loads sessions, returning normalized values (dropping
+#     meaningless user expected / assistant time fields), suitable for
+#     pipeline execution.
+#   * Five methods below (`read_template` / `save_user_template` / `delete_user_template`
+#     / `validate_template_dict` / `duplicate_builtin_to_user`) serve the editor,
+#     exposing builtin originals + user-override state + soft-validation errors so
+#     UI can highlight field errors.
 #
-# 语义约定:
-#   * user 模板文件名 = ``<name>.json``.  name 字段 = 唯一 id.
-#   * user 的 name 与 builtin 重名 = 覆盖 builtin (跟加载器优先级一致).
-#   * builtin 不可原地改, 要改就先 `duplicate_builtin_to_user` 得到 user 副本.
-#   * `save_user_template` / `delete_user_template` 只碰
-#     `USER_DIALOG_TEMPLATES_DIR`, 碰到 builtin 目录就 403.
+# Semantics:
+#   * User filename = ``<name>.json``; name is unique id.
+#   * User name matching builtin overrides builtin, matching loader precedence.
+#   * Builtins cannot change in place; use `duplicate_builtin_to_user` first.
+#   * `save_user_template` / `delete_user_template` touch only
+#     `USER_DIALOG_TEMPLATES_DIR`; builtin-directory access returns 403.
 
 
 _NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
 
 
 def _is_safe_template_name(name: str) -> bool:
-    """文件名级安全校验.  阻断路径穿越 / 非法字符 / 空名.
+    """Filename security validation blocks traversal, invalid characters, and empty names.
 
-    测试人员可能会手写 name, 如果我们直接拼 ``USER_DIR / f'{name}.json'`` 里
-    带 ``../`` 或者设备盘符, 就会把文件写到数据目录外. 白名单: 字母数字下划
-    线短横线, 首字不能是分隔符, 长度 ≤ 64. 够用且不给路径穿越留缝.
+    Testers may enter names manually; directly joining ``USER_DIR / f'{name}.json'``
+    with ``../`` or device prefixes writes outside data directory. Allow alphanumerics/underscores/
+    hyphens, no leading separator, length ≤64; sufficient without traversal gaps.
     """
     return bool(_NAME_RE.match(name or ""))
 
 
 def _collect_template_errors(raw: Any) -> list[dict[str, str]]:
-    """软校验: 返回字段级错误清单 (空列表 = 通过).
+    """Soft validation returns all field errors (empty list means success).
 
-    和 `_normalize_template` 语义一致但"不 raise, 而是把所有错都收集起来",
-    让编辑器一次看到所有红点. path 字段是 JSON pointer 风格 (``turns[2].content``),
-    UI 用它定位 turn 卡片.
+    Same semantics as `_normalize_template`, collecting all errors instead of raising,
+    so editor highlights everything together. JSON-pointer-style path (``turns[2].content``)
+    locates UI turn cards.
     """
     errors: list[dict[str, str]] = []
 
@@ -406,7 +406,7 @@ def _write_user_template_atomic(path: Path, data: dict[str, Any]) -> None:
     """Crash-safe write of a user-authored script template JSON.
 
     P24 §4.1.2 (2026-04-21): the previous bespoke implementation claimed
-    "防掉电" in its docstring but had no ``fsync`` — a power loss during
+    \"power-loss safe\" in its docstring but had no ``fsync`` — a power loss during
     write could leave a zero-byte file masquerading as a valid template.
     Now delegates to the unified ``atomic_io.atomic_write_json`` helper
     which includes ``fh.flush() + os.fsync(...)`` before the rename.
@@ -422,20 +422,20 @@ def _write_user_template_atomic(path: Path, data: dict[str, Any]) -> None:
 
 
 def validate_template_dict(raw: Any) -> dict[str, Any]:
-    """软校验入口 (给 UI validate 按钮 + save 前置).
+    """Soft validation for UI validate button and save prerequisite.
 
-    返回:
-        ``{"ok": bool, "errors": [{path, message}, ...], "normalized": <dict>?}``
+    Returns:
+        ``{\"ok\": bool, \"errors\": [{path, message}, ...], \"normalized\": <dict>?}``
 
-    ``normalized`` 仅在 ``ok=True`` 时存在, 是 save 到磁盘的规范化形态 (跟
-    ``_normalize_template`` 产出一致). 用 ``_normalize_template`` 在软校验
-    通过后再硬跑一遍, 把去冗余 / 补默认值这步统一跑在一个实现上.
+    ``normalized`` exists only if ``ok=True``, representing disk-save form, matching
+    ``_normalize_template`` output. Run ``_normalize_template`` after soft validation
+    to centralize redundant-field removal/default filling in one implementation.
     """
     errors = _collect_template_errors(raw)
     if errors:
         return {"ok": False, "errors": errors}
-    # 软校验全过 → 硬 normalize 一遍 (此时不应该 raise, 真 raise 了说明两边
-    # 检查不一致, 是 script_runner 内部 bug — 兜底成一个通用错.
+    # Soft validation passed → hard normalize (should not raise; an exception means inconsistent
+    # checks, an internal script_runner bug; fall back to generic error).
     try:
         normalized = _normalize_template(raw, source="user", path=Path("<inline>"))
     except ScriptError as exc:
@@ -447,17 +447,17 @@ def validate_template_dict(raw: Any) -> dict[str, Any]:
 
 
 def read_template(name: str) -> dict[str, Any]:
-    """给编辑器用的"富详情": 活动版本 + builtin/user 双边存在性.
+    """Editor details: active version + builtin/user existence.
 
-    返回:
+    Returns:
         {
-            "active": <规范化 dict, user 优先>,
-            "has_builtin": bool,
-            "has_user": bool,
-            "overriding_builtin": bool,  # has_user AND has_builtin
+            \"active\": <normalized dict, user preferred>,
+            \"has_builtin\": bool,
+            \"has_user\": bool,
+            \"overriding_builtin\": bool,  # has_user AND has_builtin
         }
 
-    找不到任一版本 → ScriptError(ScriptNotFound, 404).
+    Neither version exists → ScriptError(ScriptNotFound, 404).
     """
     builtin_list = _scan_dir(tb_config.BUILTIN_DIALOG_TEMPLATES_DIR, source="builtin")
     user_list = _scan_dir(tb_config.USER_DIALOG_TEMPLATES_DIR, source="user")
@@ -481,22 +481,22 @@ def read_template(name: str) -> dict[str, Any]:
 def save_user_template(raw: Any) -> dict[str, Any]:
     """Save (create or overwrite) one user template; returns read_template result.
 
-    流程:
-        1. ``validate_template_dict`` 校验, 失败抛 ScriptSchemaInvalid (422).
-        2. 原子写 ``USER_DIALOG_TEMPLATES_DIR/<name>.json`` (dumps 的是
-           normalized 形态 — 剥掉了 user turn 的 expected / assistant 的 time
-           这种无意义字段, 让磁盘 JSON 尽量干净).
-        3. 调 ``read_template(name)`` 返回新鲜详情, 顺带 ``overriding_builtin``
-           让前端决定是否弹"覆盖 builtin"提示.
+    Flow:
+        1. ``validate_template_dict``; failure raises ScriptSchemaInvalid (422).
+        2. Atomically write ``USER_DIALOG_TEMPLATES_DIR/<name>.json`` with
+           normalized data, removing meaningless user expected / assistant time
+           to keep disk JSON clean.
+        3. ``read_template(name)`` returns fresh details plus ``overriding_builtin``
+           for frontend overwrite-builtin notification.
 
-    写入格式: 使用 normalized (_normalize_template 输出), 不直接写原始 raw —
-    这样无论 UI 传什么乱七八糟冗余字段, 磁盘落下来都是干净一致的.
+    Persist normalized (_normalize_template output), never raw input,
+    ensuring consistent clean JSON regardless of redundant UI fields.
     """
     result = validate_template_dict(raw)
     if not result["ok"]:
-        # 走 ScriptSchemaInvalid — 但我们想把字段级 errors 一并带回给前端.
-        # ScriptError 的默认签名只接 message, 所以用 attribute 附加; router
-        # 层 handle 时优先取 ``exc.errors``.
+        # Use ScriptSchemaInvalid while returning field-level errors to frontend.
+        # ScriptError accepts only message by default, so attach errors as attribute; router
+        # prefers ``exc.errors`` when handling.
         exc = ScriptError(
             "ScriptSchemaInvalid",
             "模板校验未通过, 请修正后重新保存.",
@@ -508,14 +508,14 @@ def save_user_template(raw: Any) -> dict[str, Any]:
     normalized = result["normalized"]
     name = normalized["name"]
     if not _is_safe_template_name(name):
-        # 二次兜底 (上面已校验, 这里是 defense-in-depth).
+        # Second safeguard (already validated above; defense in depth).
         raise ScriptError(
             "ScriptSchemaInvalid",
             f"name={name!r} 不是合法文件名 (只允许字母/数字/下划线/短横线).",
             status=422,
         )
 
-    # 丢掉 source/path 这两个"读出来才有"的元字段, 磁盘 JSON 不应该带.
+    # Remove read-only source/path metadata; disk JSON should not contain it.
     disk_payload = {
         "name": normalized["name"],
         "description": normalized.get("description", ""),
@@ -550,15 +550,15 @@ def save_user_template(raw: Any) -> dict[str, Any]:
 
 
 def delete_user_template(name: str) -> dict[str, Any]:
-    """Delete one user template by name.  Builtin is protected.
+    """Delete one user template by name. Builtin is protected.
 
-    - 只碰 user 目录; builtin 的 sample_*.json 永不删.
-    - 如果该 name 仅存在 builtin 没有 user 版本 → 404 (没东西可删).
-    - 如果 user 版本删完, builtin 仍然存在 → 返回 ``resurfaces_builtin: True``
-      让前端提示"内置版本重新生效".
+    - Touch user directory only; never delete builtin sample_*.json.
+    - Name exists only as builtin, no user version →404 (nothing to delete).
+    - Builtin remains after user deletion → return ``resurfaces_builtin: True``
+      for frontend notice that built-in version is active again.
 
-    Note: 不直接动 session.script_state — router 层判断当前加载剧本跟被删的
-    是否同名, 再塞 warning 到响应. 这里保持纯.
+    Note: never mutate session.script_state here; router checks if loaded script
+    matches deleted name and adds response warning. Keep this function pure.
     """
     if not _is_safe_template_name(name or ""):
         raise ScriptError(
@@ -577,7 +577,7 @@ def delete_user_template(name: str) -> dict[str, Any]:
     python_logger().info(
         "[script_runner] deleted user template %s (was at %s)", name, target,
     )
-    # builtin 仍在?
+    # Builtin still exists?
     builtin_list = _scan_dir(tb_config.BUILTIN_DIALOG_TEMPLATES_DIR, source="builtin")
     resurfaces = any(t["name"] == name for t in builtin_list)
     return {
@@ -589,17 +589,17 @@ def delete_user_template(name: str) -> dict[str, Any]:
 def duplicate_builtin_to_user(
     source_name: str, target_name: str, *, overwrite: bool = False,
 ) -> dict[str, Any]:
-    """Copy a template (usually builtin, but user→user 也行) to a new user name.
+    """Copy a template (usually builtin, also user→user) to a new user name.
 
-    典型用法: 测试人员在 UI 点 builtin 的 ``[复制为可编辑]``, 我们把 builtin
-    全量 copy 到 user 目录, 并改 name 为 target_name. 保存时走 `save_user_template`
-    跑一遍校验, 跟手写新建等价.
+    Typical UI action ``[复制为可编辑]`` copies full builtin to user directory,
+    changing name to target_name. Validate via `save_user_template` on save,
+    equivalent to manual creation.
 
-    冲突策略:
-        * target_name 的 user 版本已存在 + ``overwrite=False`` → 409 Conflict.
-        * target_name 与 builtin 的某个 name 重名 (非 source 自身也算) →
-          允许 (视作"覆盖 builtin"语义), UI 自己决定要不要弹 confirm.
-    """
+    Conflicts:
+        * User target_name exists + ``overwrite=False`` →409 Conflict.
+        * target_name matches any builtin (even another source) →
+          allowed as builtin override; UI decides whether confirmation is needed.
+    """  # noqa: DOCSTRING_CJK
     if not _is_safe_template_name(target_name or ""):
         raise ScriptError(
             "ScriptSchemaInvalid",
@@ -617,14 +617,14 @@ def duplicate_builtin_to_user(
             status=409,
         )
 
-    # 深拷贝, 改 name. 把 source/path 字段剥掉 (那是元信息, 不写磁盘).
+    # Deep-copy and change name, removing source/path metadata from disk output.
     new_raw: dict[str, Any] = copy.deepcopy(src)
     new_raw["name"] = target_name
     new_raw.pop("source", None)
     new_raw.pop("path", None)
     new_raw.pop("overriding_builtin", None)
-    # turns 里 _normalize_template 产出的 expected/time=None 保留进 save 会被
-    # 清理, 所以不用提前剥.
+    # Saving cleans expected/time=None values created by _normalize_template in turns,
+    # so no need to strip beforehand.
 
     return save_user_template(new_raw)
 
@@ -637,9 +637,9 @@ def apply_bootstrap(
 ) -> list[str]:
     """Apply script ``bootstrap`` to ``session.clock``; return warnings.
 
-    仅当 ``session.messages`` 为空时真的应用 — 否则硬覆盖会导致后续消息
-    出现负时间差, UI 的时间分隔符 / prompt builder 都会错乱. 跳过时
-    返回一条 warning, 由 router 塞进 /script/load 的响应供前端 toast.
+    Apply only when ``session.messages`` is empty, or forced overwrite gives later messages
+    negative time differences, breaking UI separators/prompt builder. On skip,
+    return warning for router's /script/load response toast.
     """
     warnings: list[str] = []
     if not bootstrap:
@@ -701,15 +701,15 @@ def apply_bootstrap(
 def apply_turn_time(session: Session, time_dict: dict[str, Any] | None) -> list[str]:
     """Consume ``turns[i].time`` into ``clock.stage_next_turn``; return warnings.
 
-    支持的字段 (PLAN §8 明文约定):
-        * ``advance``       → 文本解析 ("1h30m" / "45s" / "2d"), 追加到 stage.
-        * ``advance_seconds`` → 纯秒数.
-        * ``at``            → 绝对 ISO 时间.
-        * 字段缺省 / ``time`` 本身为 ``None`` → 不 stage, 交给
-          ``stream_send`` 的 ``per_turn_default_seconds`` 默认行为.
+    Supported fields (PLAN §8):
+        * ``advance``       → parse duration (\"1h30m\" / \"45s\" / \"2d\") and add to stage.
+        * ``advance_seconds`` → seconds directly.
+        * ``at``            → absolute ISO time.
+        * Missing field / ``time`` is ``None`` → no staging; use
+          ``stream_send``'s ``per_turn_default_seconds`` default.
 
-    冲突解决: ``at`` 优先于 ``advance*``; ``advance`` 优先于 ``advance_seconds``;
-    与 :meth:`VirtualClock.stage_next_turn` 内部的优先级一致.
+    Precedence: ``at`` over ``advance*``; ``advance`` over ``advance_seconds``,
+    matching :meth:`VirtualClock.stage_next_turn`.
     """
     warnings: list[str] = []
     if not time_dict:
@@ -804,7 +804,7 @@ def describe_script_state(session: Session) -> dict[str, Any] | None:
     s = session.script_state
     if s is None:
         return None
-    # 不把完整 turns 数组发回前端 (可能十几条); UI 只需要游标+总数+名字.
+    # Do not return full turns array (possibly dozens); UI needs cursor + total + name only.
     return {
         "template_name": s["template_name"],
         "template_source": s["template_source"],
@@ -825,10 +825,10 @@ _REFERENCE_JOIN: Final[str] = "\n---\n"
 
 
 def _merge_pending_reference(existing: str | None, new_expected: str) -> str:
-    """合并连续多条 assistant turn 的 expected.
+    """Merge expected from consecutive assistant turns.
 
-    少见 (模板里同一位置写两条 assistant 各带 expected), 但合法 — 用
-    ``\\n---\\n`` 拼接避免后者覆盖前者.
+    Rare but valid (multiple assistant turns with expected at same position);
+    join with ``\\n---\\n`` to avoid overwriting earlier values.
     """
     new_text = (new_expected or "").strip()
     if not new_text:
@@ -841,32 +841,32 @@ def _merge_pending_reference(existing: str | None, new_expected: str) -> str:
 async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any]]:
     """Run one scripted user turn; yield the same SSE events as /chat/send.
 
-    语义 (见 AGENT_NOTES §4.17 #35): 模板里 ``role=assistant`` 的 turn 携带的
-    ``expected`` 是 **"对上一条 user turn 的理想 AI 回复"**. 因此本函数的流
-    程是 **"先把 cursor 处的 user 发出去, AI 回复产出之后, 再看紧随其后的
-    assistant turn 们把它们的 expected 合并回填到这条 AI 回复的
-    reference_content"**. 简单说: expected 是向前看 (lookahead) 的, 不是向后
-    看的.
+    Semantics (AGENT_NOTES §4.17 #35): ``role=assistant`` turns carry
+    ``expected``, the **ideal AI reply to the preceding user turn**. Therefore
+    send user at cursor first; after AI reply, look at immediately following
+    assistant turns and merge expected into that reply's
+    reference_content. Expected uses lookahead,
+    not lookbehind.
 
-    流程:
-        1. 如果 ``cursor`` 刚好落在 ``role=assistant`` 上 (孤儿 expected, 没
-           有匹配的上一轮 user), 跳过并收集一条 warning.
-        2. ``cursor`` 指向一条 ``role=user`` → (a) 消费 ``time`` 到
-           stage_next_turn; (b) **先 lookahead** 把 ``cursor+1`` 之后连续
-           的 assistant turn 的 expected 合并成 ``fill_reference``;
-           (c) 调 ``chat_runner.stream_send(..., source='script')`` 转发
-           事件.
-        3. 在收到 ``{event:'assistant'}`` 时把 ``fill_reference`` 写到
-           assistant 消息的 ``reference_content``.
-        4. stream 成功 → ``cursor`` 推进到 user turn + 连续 assistant turn
-           之后的第一条 (= ``lookahead_end``); 失败 → 保持 ``cursor`` 不
-           动, 让 tester 修完配置再重试同一轮.
-        5. yield ``{event:'script_turn_done', cursor, turns_count}``.
-        6. 若 cursor 已到末尾, 再 yield ``{event:'script_exhausted'}``.
+    Flow:
+        1. If ``cursor`` points to ``role=assistant`` (orphan expected without
+           matching preceding user), skip with warning.
+        2. ``cursor`` points to ``role=user`` → (a) consume ``time`` into
+           stage_next_turn; (b) **look ahead first**, merging consecutive assistant
+           expected after ``cursor+1`` into ``fill_reference``;
+           (c) call ``chat_runner.stream_send(..., source='script')``, forwarding
+           events.
+        3. On ``{event:'assistant'}``, write ``fill_reference`` to
+           assistant message's ``reference_content``.
+        4. Success → advance ``cursor`` beyond user + consecutive assistant turns
+           to ``lookahead_end``; failure → leave ``cursor`` unchanged
+           so tester can fix config and retry same turn.
+        5. Yield ``{event:'script_turn_done', cursor, turns_count}``.
+        6. At end also yield ``{event:'script_exhausted'}``.
 
-    设计备注 ``pending_reference`` 字段 (session.script_state 里): 目前这版
-    lookahead 实现不再需要跨调用保留 pending, 所以每轮结束统一清零; 字段
-    保留是为了后续扩展 (例如 "一条 user 被拆成多轮注释" 场景).
+    ``pending_reference`` design note (session.script_state): this lookahead
+    implementation no longer needs pending across calls, clearing after each turn;
+    retain field for future extensions such as one user split across multiple annotations.
     """
     state = session.script_state
     if state is None:
@@ -885,8 +885,8 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
             status=412,
         )
 
-    # Step 1: 跳过落在 cursor 处的孤儿 assistant turn (= 没有前置 user 就出现
-    # 的 expected). 合法模板里不该出现这种情形, 但容错跳过 + 记 warning.
+    # Step 1: skip orphan assistant turns at cursor (expected without preceding user).
+    # Valid templates should not contain these, but skip tolerantly and warn.
     orphan_warnings: list[str] = []
     while cursor < len(turns) and turns[cursor]["role"] == ROLE_ASSISTANT:
         expected = turns[cursor].get("expected") or ""
@@ -897,7 +897,7 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
         cursor += 1
 
     if cursor >= len(turns):
-        # 全是孤儿 assistant, 脚本直接耗尽.
+        # All orphan assistant turns: script immediately exhausted.
         state["pending_reference"] = None
         state["cursor"] = cursor
         yield {
@@ -910,7 +910,7 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
         yield {"event": "script_exhausted"}
         return
 
-    # Step 2: 当前 cursor 指向一条 user turn.
+    # Step 2: cursor now points to a user turn.
     user_turn = turns[cursor]
     user_content = user_turn["content"]
     time_dict = user_turn.get("time")
@@ -923,8 +923,8 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
             "warnings": all_warnings,
         }
 
-    # Step 2b: lookahead — 把 cursor+1 之后连续的 assistant turn 的 expected
-    # 合并成本轮要回填的 reference.  遇到下一条 user (或末尾) 就停.
+    # Step 2b: look ahead through consecutive assistant turns after cursor+1,
+    # merging expected into this reply's reference; stop at next user or end.
     lookahead_end = cursor + 1
     fill_reference: str = ""
     while (
@@ -937,9 +937,9 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
         lookahead_end += 1
 
     state["pending_reference"] = fill_reference or None
-    state["cursor"] = cursor  # 还没推进, 要等 stream 成功走完.
+    state["cursor"] = cursor  # Do not advance until stream finishes successfully.
 
-    # Step 3: 转发 stream_send 事件, 并在 'assistant' 出来时回填 reference.
+    # Step 3: forward stream_send events and fill reference when assistant appears.
     backend = get_chat_backend()
     remaining_reference: str | None = fill_reference if fill_reference.strip() else None
     stream_ok = False
@@ -954,8 +954,8 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
             if ev == "assistant" and remaining_reference:
                 msg = event.get("message") or {}
                 msg_id = msg.get("id")
-                # 消息对象本身是 session.messages[-1] 的同一引用 (见
-                # OfflineChatBackend.stream_send 末尾), 改它等同于改 session.
+                # Message is the same object as session.messages[-1] (see
+                # OfflineChatBackend.stream_send's end); changing it changes session.
                 if msg_id:
                     msg["reference_content"] = _merge_pending_reference(
                         msg.get("reference_content"), remaining_reference,
@@ -970,13 +970,13 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
                             "consumed_assistant_turns": lookahead_end - cursor - 1,
                         },
                     )
-                remaining_reference = None  # 只回填一次, 防止 assistant 事件重复.
+                remaining_reference = None  # Fill once only, guarding duplicate assistant events.
             if ev == "done":
                 stream_ok = True
             yield event
     except Exception as exc:  # noqa: BLE001
-        # stream_send 本应把内部异常转成 {event:'error'} 再 return, 这里兜
-        # 底是为了 ScriptError 用户别因为底层异常泄漏栈.
+        # stream_send should convert internal exceptions to {event:'error'} and return; this fallback
+        # wraps ScriptError without exposing underlying stack traces to users.
         python_logger().exception(
             "[script_runner] stream_send crashed mid-turn (session=%s): %s",
             session.id, exc,
@@ -989,16 +989,16 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
             },
         }
 
-    # Step 4: 根据 stream 成败决定游标走向.
+    # Step 4: advance cursor according to stream success/failure.
     if stream_ok:
-        # user turn + 被消费掉的 assistant turn(s) 都跑完了 → 直接跳到
-        # lookahead_end (= 下一条 user 或末尾).
+        # User turn + consumed assistant turns completed → jump directly to
+        # lookahead_end (next user or end).
         cursor = lookahead_end
         state["cursor"] = cursor
         state["pending_reference"] = None
     else:
-        # stream 失败 — 保持 cursor 不动 (仍指向失败的 user turn),
-        # pending_reference 清零 (下次重试 lookahead 重新扫一遍, 不用旧值).
+        # Stream failure: keep cursor on failed user turn,
+        # clear pending_reference; retry rescans lookahead rather than reusing stale value.
         state["pending_reference"] = None
 
     exhausted = cursor >= len(turns)
@@ -1017,11 +1017,11 @@ async def advance_one_user_turn(session: Session) -> AsyncIterator[dict[str, Any
 async def run_all_turns(session: Session) -> AsyncIterator[dict[str, Any]]:
     """Iterate ``advance_one_user_turn`` until exhausted or an error occurs.
 
-    停止条件 (任一触发):
-        * ``{event:'script_exhausted'}``: 脚本末尾.
-        * ``{event:'error'}``: stream_send 内部错 (配置缺失 / LLM 超时等).
-        * ``ScriptExhausted`` 异常: 循环守护 (理论到不了, 因为前面会先看
-          到 ``script_exhausted`` 事件). 留着防并发竞争.
+    Stop on any of:
+        * ``{event:'script_exhausted'}``: script end.
+        * ``{event:'error'}``: stream_send error (missing config / LLM timeout, etc.).
+        * ``ScriptExhausted``: defensive loop guard, theoretically unreachable since
+          ``script_exhausted`` event arrives first; retained for concurrency races.
     """
     while True:
         state = session.script_state
@@ -1047,7 +1047,7 @@ async def run_all_turns(session: Session) -> AsyncIterator[dict[str, Any]]:
             return
 
         if saw_error:
-            # 上一轮里 stream_send 报错 — 不要咬着继续跑, 交给前端决定.
+            # Previous stream_send failed; stop instead of persisting, leaving frontend to decide.
             return
 
 

@@ -363,20 +363,24 @@
 
     // ======================== 音乐指令清洗（从 app-chat.js 复刻） ========================
 
+    function findPendingMusicCommand(text) {
+        var match = text.match(/\[[^\]]*$/);
+        if (!match) return null;
+        var partial = match[0].toLowerCase();
+        var command = '[play_music:';
+        return partial.startsWith(command) || command.startsWith(partial) ? match : null;
+    }
+
     function cleanMusicFromChunk(rawText) {
         var s = normalizeGeminiText(rawText);
         if (window._pendingMusicCommand) {
             s = window._pendingMusicCommand + s;
             window._pendingMusicCommand = '';
         }
-        var m = s.match(/\[[^\]]*$/);
+        var m = findPendingMusicCommand(s);
         if (m) {
-            var partial = m[0].toLowerCase();
-            var target = '[play_music:';
-            if (partial.startsWith(target) || target.startsWith(partial)) {
-                window._pendingMusicCommand = m[0];
-                s = s.slice(0, m.index);
-            }
+            window._pendingMusicCommand = m[0];
+            s = s.slice(0, m.index);
         }
         return s.replace(/\[play_music:[^\]]*(\]|$)/g, '');
     }
@@ -628,9 +632,12 @@
                     window._isProcessingRealisticQueue = false;
                     if (window._realisticGeminiQueue && window._realisticGeminiQueue.length > 0) {
                         processRealisticQueue(window._realisticGeminiVersion || 0);
+                    } else {
+                        window.dispatchEvent(new Event('neko-realistic-queue-idle'));
                     }
                 }
             }
+            if (window.nekoReplyTail) window.nekoReplyTail.changed();
         }
     }
 
@@ -685,7 +692,7 @@
                 avatarUrl: updatedMsg.avatarUrl,
                 blocks: updatedMsg.blocks,
                 status: 'streaming'
-            });
+            }, { streamText: true, pendingMusicCommand: window._pendingMusicCommand });
         }
     }
 
@@ -708,6 +715,8 @@
             } catch (_) {}
         }
         window._realisticGeminiQueue = [];
+        window.dispatchEvent(new Event('neko-realistic-queue-idle'));
+        if (window.nekoReplyTail) window.nekoReplyTail.changed();
     }
 
     // ======================== appendMessage（覆盖核心） ========================
@@ -847,37 +856,18 @@
                 window._pendingMusicCommand = '';
             }
 
-            var incoming = normalizeGeminiText(text);
-
-            // 未闭合的音乐指令片段
-            if (window._pendingMusicCommand) {
-                incoming = window._pendingMusicCommand + incoming;
-                window._pendingMusicCommand = '';
-            }
-            var openBracketMatch = incoming.match(/\[[^\]]*$/);
-            if (openBracketMatch) {
-                var partialText = openBracketMatch[0];
-                var normalizedPartial = normalizeGeminiText(partialText).toLowerCase();
-                var targetPrefix = '[play_music:';
-                if (normalizedPartial.startsWith(targetPrefix) || targetPrefix.startsWith(normalizedPartial)) {
-                    window._pendingMusicCommand = partialText;
-                    incoming = incoming.slice(0, openBracketMatch.index);
-                }
-            }
+            var incoming = cleanMusicFromChunk(text);
 
             var prev = typeof window._realisticGeminiBuffer === 'string' ? window._realisticGeminiBuffer : '';
             var combined = prev + incoming;
             combined = combined.replace(/\[play_music:[^\]]*(\]|$)/g, '');
 
-            var fullTurnText = (typeof window._geminiTurnFullText === 'string' ? window._geminiTurnFullText : '')
-                .replace(/\[play_music:[^\]]*(\]|$)/g, '');
-
             // structured text detection
-            if (looksLikeStructuredRichText(fullTurnText) || looksLikeStructuredRichText(combined)) {
+            if (looksLikeStructuredRichText(streamingText) || looksLikeStructuredRichText(combined)) {
                 window._structuredGeminiStreaming = true;
                 window._realisticGeminiBuffer = combined;
                 window._realisticGeminiQueue = [];
-                renderStructuredGeminiMessage(fullTurnText || combined);
+                renderStructuredGeminiMessage(streamingText || combined);
                 return;
             }
 
@@ -949,10 +939,9 @@
             // 场景 B: 气泡已存在，追加更新（_geminiTurnFullText 是 per-segment
             // 累积，已在 startNewSegment 处重置过，不需要再 slice）。
             else if (window.currentGeminiMessage && host) {
-                var fullMergeText = (window._geminiTurnFullText || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
                 var existingId = window.currentGeminiMessage.dataset.reactChatMessageId;
                 var stableTime = window.currentGeminiMessage._stableTime || getCurrentTimeString();
-                var updatedMsg = buildMessage(existingId, 'assistant', getCurrentAssistantName(), stableTime, fullMergeText, 'streaming');
+                var updatedMsg = buildMessage(existingId, 'assistant', getCurrentAssistantName(), stableTime, streamingText, 'streaming');
                 if (updatedMsg) {
                     host.updateMessage(existingId, {
                         author: updatedMsg.author,
@@ -960,7 +949,7 @@
                         avatarUrl: updatedMsg.avatarUrl,
                         blocks: updatedMsg.blocks,
                         status: 'streaming'
-                    });
+                    }, { streamText: true, pendingMusicCommand: window._pendingMusicCommand });
                 }
             }
 
@@ -1075,7 +1064,10 @@
         return true;
     }
 
-    function appendReactChatBlocks(payload) {
+    function appendReactChatBlocks(payload, tailPlacement) {
+        if (payload && payload.reply_tail && !tailPlacement) {
+            return !!(window.nekoReplyTail && window.nekoReplyTail.enqueue(payload));
+        }
         var host = getHost();
         var blocks = structuredBlocksFrom(payload && payload.blocks);
         var cardHandled = false;
@@ -1113,6 +1105,11 @@
             blocks: blocks,
             status: 'sent'
         };
+        if (tailPlacement) {
+            message.id = tailPlacement.id;
+            message.sortKey = tailPlacement.sortKey;
+            message.createdAt = tailPlacement.createdAt;
+        }
         if (host && typeof host.appendMessage === 'function') {
             _tryFlushPendingHostMessages();
             if (!appendHostMessageSafely(host, message, 'plugin_chat_blocks')) {
@@ -1172,6 +1169,66 @@
         host.removeMessage('topic-hint-' + tid);
     }
 
+    // ======================== 串门台词（visit_line / visit_line_delta） ========================
+
+    // 说话人 → 角色：对端（访客猫娘 / 对方亲人）一律 'tool'（OD-19，样式在 index.css）；
+    // 本侧猫娘是她自己（assistant），本侧亲人是用户自己（user）
+    function visitLineRole(speaker) {
+        if (!speaker || speaker.self !== true) return 'tool';
+        return speaker.kind === 'human' ? 'user' : 'assistant';
+    }
+
+    /**
+     * visit-chat.js 拼好一行台词后交到这里上屏（新建或原地更新同一条气泡）。
+     * spec: {messageId, speaker, author, avatarUrl, text, notice, replace}
+     * 台词块一律纯文本（§3.6.6）：不走 SmartTextBlock / ReactMarkdown，对端塞的
+     * Markdown 图片 / 链接原样显示、不加载、不可点。
+     */
+    function renderVisitLine(spec) {
+        var host = getHost();
+        if (!spec || !spec.messageId) return false;
+        var role = visitLineRole(spec.speaker);
+        var author = sanitizeDisplayName(spec.author) || (role === 'user' ? getCurrentUserName() : getCurrentAssistantName());
+        var blocks = [{ type: 'text', text: String(spec.text || ''), plain_text: true }];
+        if (spec.notice) {
+            blocks.push({ type: 'status', tone: 'info', text: String(spec.notice) });
+        }
+        var avatarUrl = role === 'assistant' ? getAssistantAvatarUrl() : (spec.avatarUrl || '');
+        var patch = {
+            role: role,
+            author: author,
+            avatarLabel: Array.from(author)[0] ? Array.from(author)[0].toUpperCase() : undefined,
+            avatarUrl: avatarUrl || undefined,
+            blocks: blocks,
+            status: 'sent'
+        };
+        // 串门台词按 (lp, side_rank) 落位：visit-chat 算好的排序键（没有就照常追加到末尾）
+        if (typeof spec.sortKey === 'number' && isFinite(spec.sortKey)) patch.sortKey = spec.sortKey;
+        var messages = host && typeof host.getState === 'function' ? (host.getState().messages || []) : [];
+        var exists = messages.some(function (message) { return message && message.id === spec.messageId; });
+        if (exists && host && typeof host.updateMessage === 'function') {
+            host.updateMessage(spec.messageId, patch);
+            return true;
+        }
+        var message = Object.assign({
+            id: spec.messageId,
+            time: getCurrentTimeString(),
+            createdAt: Date.now()
+        }, patch);
+        if (host && typeof host.appendMessage === 'function') {
+            _tryFlushPendingHostMessages();
+            return !!appendHostMessageSafely(host, message, 'visit_line');
+        }
+        var pending = _pendingHostMessages.find(function (m) { return m.id === spec.messageId; });
+        if (pending) {
+            Object.assign(pending, patch);
+        } else {
+            _queuePendingHostMessage(message);
+        }
+        _tryFlushPendingHostMessages();
+        return true;
+    }
+
     // ======================== refreshReactAssistantAvatars ========================
 
     function refreshReactAssistantAvatars() {
@@ -1213,6 +1270,7 @@
         window.appChat.appendReactTopicHint = appendReactTopicHint;
         window.appChat.removeReactTopicHint = removeReactTopicHint;
         window.appChat.setReactMessageStatus = setReactMessageStatus;
+        window.appChat.renderVisitLine = renderVisitLine;
     }
 
     // 头像更新事件

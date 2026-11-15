@@ -1366,8 +1366,8 @@ def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
     assert "deferRevealPrepared: true" in prelude_block
     assert "Number(round) === 1" not in prelude_block
 
-    round_block = manager_source.split("const completed = await director.playAvatarFloatingRound(round,", 1)[1].split(
-        "});",
+    round_block = manager_source.split("await director.playAvatarFloatingRound(round,", 1)[1].split(
+        "})",
         1,
     )[0]
     assert "revealPrepared: () => this.revealTutorialLive2dPrepared()" in round_block

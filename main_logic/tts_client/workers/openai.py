@@ -50,8 +50,8 @@ def _openai_auth_client_kwargs(client_type, audio_api_key):
     if audio_api_key:
         return client_kwargs
 
-    # OpenAI SDK 2.34+ 默认拒绝空 key，但提供免凭证兼容开关；旧版没有该参数。
-    # 仅在当前 SDK 明确支持时关闭初始化校验，请求层仍显式删除 Authorization。
+    # OpenAI SDK 2.34+ rejects empty keys by default but offers a credential-free compatibility switch; older versions lack that parameter.
+    # Disable initialization checks only when the current SDK explicitly supports it; still remove Authorization explicitly at request time.
     try:
         supports_auth_free = "_enforce_credentials" in signature(client_type).parameters
     except (TypeError, ValueError):
@@ -64,8 +64,8 @@ def _openai_auth_client_kwargs(client_type, audio_api_key):
 def _openai_endpoint_query_http_client(client_type, endpoint_query):
     """Build an SDK HTTP client that preserves the configured endpoint query."""
 
-    # 让 httpx 只负责把可能存在的非 ASCII 字符规范化为合法 URL 字节；重复 key、
-    # 顺序和尾随斜杠仍按配置原样保留。
+    # Let httpx only normalize any non-ASCII characters into valid URL bytes; preserve duplicate keys,
+    # order, and trailing slashes exactly as configured.
     endpoint_query_bytes = httpx.URL(
         f"https://openai-tts-query.invalid/?{endpoint_query}"
     ).query
@@ -95,8 +95,8 @@ def openai_tts_worker(
     """OpenAI-compatible TTS: sentence input with a streamed PCM response."""
 
     # Normalize once so whitespace-only credentials use the auth-free path.
-    # 配置文件或环境变量里只含空白字符的 key 等同于未填写；否则 SDK 会误发
-    # ``Authorization: Bearer <空白>``，与连接测试的免鉴权行为不一致。
+    # Keys containing only whitespace in configuration or environment variables count as missing; otherwise the SDK incorrectly sends
+    # ``Authorization: Bearer <whitespace>``, inconsistent with credential-free connectivity testing.
     audio_api_key = str(audio_api_key or "").strip()
 
     try:
@@ -125,7 +125,7 @@ def openai_tts_worker(
         if base_url:
             # Validate/normalize inside setup so configuration failures travel
             # through the shared worker skeleton's normal __ready__ channel.
-            # 配置错误必须走统一的未就绪信号，不能在线程外静默退出。
+            # Configuration errors must use the unified not-ready signal rather than silently exiting outside the thread.
             sdk_base_url, endpoint_query = openai_tts_sdk_options(base_url)
             client_kwargs["base_url"] = sdk_base_url
             if endpoint_query:
@@ -142,8 +142,8 @@ def openai_tts_worker(
             if extra_body:
                 request_kwargs["extra_body"] = extra_body
             if not audio_api_key:
-                # 新版 SDK 还会在发请求前检查鉴权方式；Omit 保证免鉴权服务
-                # 不会收到占位或空白 Bearer 头。
+                # New SDKs also check authentication before sending requests; Omit ensures credential-free services
+                # receive neither placeholder nor whitespace Bearer headers.
                 request_kwargs["extra_headers"] = {
                     "Authorization": openai_omit,
                 }
@@ -218,7 +218,7 @@ def _custom_openai_tts_is_selected(ctx) -> bool:
 
     # The exact configured voice is an explicit Custom API selection and wins
     # even if an old clone with the same ID still exists in voice storage.
-    # 角色选中的音色与配置音色一致时，自定义 API 必须优先于同名历史克隆记录。
+    # When the character's selected voice matches the configured voice, custom APIs take precedence over historical clones with the same name.
     exact_configured_voice = bool(selected_voice and selected_voice == configured_voice)
     if (
         not exact_configured_voice
@@ -246,12 +246,12 @@ def _custom_openai_tts_resolve(ctx):
 
         # Validate before spawning the network worker, but retain the provider
         # identity so the shared supervisor can sanitize and replay on fallback.
-        # 在线程启动前校验配置；失败时仍保留 provider 身份，交给监管层安全回退。
+        # Validate configuration before starting the thread; retain provider identity on failure so supervision can fall back safely.
         openai_tts_base_url(base_url)
         build_openai_tts_payload("", model, effective_voice)
     except Exception:
         # The exception can contain a signed URL, credential, or provider echo.
-        # 配置读取/校验异常只记录稳定错误码和阶段，禁止输出原始异常内容。
+        # Log only stable error codes and stages for configuration-read/validation exceptions, never raw exception content.
         log_configured_tts_failure("custom", "configuration")
         return configured_tts_unavailable_worker, "", "custom"
 

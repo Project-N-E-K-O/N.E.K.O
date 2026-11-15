@@ -73,7 +73,7 @@ def test_apply_role_placeholders_empty_name_leaves_token_literal():
     """When the host hasn't resolved a name yet (extremely early
     initialization), the helper must leave the placeholder as-is rather than
     replacing with the empty string and producing broken sentences like
-    '向  汇报' or 'Hi, ! Welcome.'."""
+    '向  汇报' or 'Hi, ! Welcome.'."""  # noqa: DOCSTRING_CJK
     from main_logic.core import apply_role_placeholders
 
     out = apply_role_placeholders(
@@ -202,6 +202,11 @@ def _mgr_for_main_server(send_lanlan_return=True):
     fake_mgr.master_name = "小明"
     fake_mgr.send_lanlan_response = AsyncMock(return_value=send_lanlan_return)
     fake_mgr.handle_proactive_complete = AsyncMock()
+    fake_mgr.current_speech_id = "previous-turn"
+    fake_mgr._chat_original_turns = {}
+    async def rotate():
+        fake_mgr.current_speech_id = "plugin-reply-turn"
+    fake_mgr.rotate_speech_id_for_response_done = AsyncMock(side_effect=rotate)
     fake_mgr.passthrough_to_chat_bubble = AsyncMock(return_value=True)
     fake_mgr.render_chat_blocks = AsyncMock(return_value=True)
     fake_mgr.enqueue_agent_callback = MagicMock()
@@ -242,6 +247,10 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, cap
     )
 
     fake_mgr.send_lanlan_response.assert_awaited_once()
+    # No origin is pinned here; send_lanlan_response creates the rotated turn's ordinary proof.
+    assert fake_mgr._chat_original_turns == {}
+    assert fake_mgr.send_lanlan_response.await_args.kwargs["turn_id"] == "plugin-reply-turn"
+    assert fake_mgr.send_lanlan_response.await_args.kwargs["expected_speech_id"] == "plugin-reply-turn"
     sent_text = fake_mgr.send_lanlan_response.await_args.args[0]
     assert "{MASTER_NAME}" not in sent_text
     assert "跟 小明 报告" in sent_text
@@ -249,6 +258,41 @@ async def test_main_server_direct_reply_substitutes_master_name(monkeypatch, cap
     assert private_reply not in captured.out
     assert private_reply not in captured.err
 
+
+
+@pytest.mark.unit
+async def test_main_server_direct_reply_closes_the_turn_it_was_sent_in(monkeypatch):
+    """The completion is told the reply's turn as it was before the send: a
+    user turn begun during the send keeps its words and tool calls."""
+    from app import main_server
+
+    fake_mgr = _mgr_for_main_server()
+    fake_mgr.last_user_engagement_time = 100.0
+
+    async def send(*args, **kwargs):
+        # The user starts typing while the reply is being sent.
+        fake_mgr.last_user_engagement_time = 101.0
+        return True
+
+    fake_mgr.send_lanlan_response = AsyncMock(side_effect=send)
+    _patch_main_server(monkeypatch, fake_mgr)
+
+    await main_server._handle_agent_event(
+        {
+            "event_type": "task_result",
+            "lanlan_name": "兰兰",
+            "text": "ignored",
+            "detail": "搞定了",
+            "direct_reply": True,
+            "channel": "plugin:demo",
+            "task_id": "t-2",
+            "media_parts": [],
+        }
+    )
+
+    fake_mgr.handle_proactive_complete.assert_awaited_once_with(
+        expected_speech_id="plugin-reply-turn", expected_user_engagement_time=100.0
+    )
 
 @pytest.mark.unit
 async def test_main_server_chat_passthrough_substitutes_master_name(monkeypatch):
@@ -363,18 +407,18 @@ async def test_main_server_event_failure_logs_only_exception_type(monkeypatch):
     )
     assert private_error not in rendered
 
-    # 异常消息可能带用户对话文本，所以一个 logger 级别都不能碰——DEBUG 也不行：
-    # 源码运行且 log_level<=DEBUG 时 setup_logging 会挂一个只收 DEBUG 的
-    # RotatingFileHandler 落到 logs/，logger.debug 同样会被持久化。仓库规则见
-    # .agent/rules/neko-guide.md 与 docs/contributing/code-style.md。
+    # An error message may contain user conversation text, so do not use any logger level — not even DEBUG:
+    # when running from source with log_level<=DEBUG, setup_logging installs a DEBUG-only
+    # RotatingFileHandler that writes to logs/, so logger.debug would be persisted too. See repository rules in
+    # .agent/rules/neko-guide.md and docs/contributing/code-style.md.
     for forbidden in ("debug", "info", "error", "critical", "exception"):
         assert not getattr(test_logger, forbidden).called, (
             f"异常详情不得进 logger.{forbidden}（logger 输出会落盘）"
         )
-    # traceback 走 print，且只在 DEBUG 级下输出
+    # Print the traceback, and only when DEBUG is enabled
     assert printed == [1], "DEBUG 级下应通过 print 输出 traceback"
 
-    # DEBUG 关闭时连 print 也不该有
+    # When DEBUG is disabled, do not even call print
     printed.clear()
     test_logger.reset_mock()
     test_logger.isEnabledFor.return_value = False

@@ -534,6 +534,28 @@ def test_output_schema_is_pending_and_not_a_runtime_rule_schema():
     assert "context" not in candidate and "conversation_id" not in candidate
 
 
+def test_source_lines_are_opt_in_and_name_each_distinct_message_once():
+    messages = [
+        candidate_core.SourceMessage("en", "quiet lantern, quiet lantern", 7),
+        candidate_core.SourceMessage("en", "nothing here", 2),
+        candidate_core.SourceMessage("en", "quiet lantern", 9),
+        candidate_core.SourceMessage("en", "quiet lantern", 4),
+    ]
+    plain = candidate_core.build_report(
+        messages, input_record_count=4, config=candidate_core.MiningConfig(),
+        rules_by_language={},
+    )
+    assert "source_lines" not in _candidate(plain, "quiet lantern")
+
+    report = candidate_core.build_report(
+        messages, input_record_count=4, config=candidate_core.MiningConfig(),
+        rules_by_language={}, include_source_lines=True,
+    )
+    candidate = _candidate(report, "quiet lantern")
+    assert candidate["source_lines"] == [4, 7, 9]
+    assert candidate["occurrence_count"] == 4
+
+
 def test_serialized_output_is_byte_deterministic(tmp_path: Path):
     messages = [
         miner.SourceMessage("en", "quiet lantern", index) for index in range(1, 4)

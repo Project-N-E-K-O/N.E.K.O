@@ -61,8 +61,8 @@ _clients_by_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.As
 _fallback_client: Optional[httpx.AsyncClient] = None
 _clients_lock = threading.RLock()
 
-# 默认超时：与历史三个调用点中最宽松的对齐（5s）。调用方可以用
-# `client.get(url, timeout=...)` 针对单次请求覆盖。
+# Default timeout matches the most permissive of the three historical call sites (5s). Callers may
+# override individual requests using client.get(url, timeout=...).
 _DEFAULT_TIMEOUT = 5.0
 
 
@@ -97,9 +97,9 @@ def get_internal_http_client() -> httpx.AsyncClient:
 
 def _create_internal_http_client() -> httpx.AsyncClient:
     """Create a client dedicated to internal 127.0.0.1 services."""
-    # verify=False 彻底跳过 SSLContext 初始化 —— 我们只用来访问
-    # 127.0.0.1 的内部服务，纯 http，不经过 TLS。
-    # trust_env=False 不读 HTTP_PROXY/NO_PROXY 等环境变量。
+    # verify=False skips SSLContext initialization entirely: we access only
+    # internal 127.0.0.1 services over plain HTTP, without TLS.
+    # trust_env=False ignores HTTP_PROXY/NO_PROXY and similar environment variables.
     transport = httpx.AsyncHTTPTransport(verify=False, retries=0)
     return httpx.AsyncClient(
         timeout=_DEFAULT_TIMEOUT,

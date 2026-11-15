@@ -43,7 +43,7 @@ async def test_successor_prepares_do_not_evict_a_still_running_final() -> None:
 
     assert runtime._core_multimodal_turns.get(running_id) is running_record
 
-    # 它自己的 dispatch 收尾时才该消失。
+    # It should disappear only when its own dispatch finishes.
     runtime._abandon_core_voice_turn(running_id, session_ref=None)
     assert running_id not in runtime._core_multimodal_turns
 
@@ -66,7 +66,7 @@ async def test_a_dispatching_record_outlives_the_cap() -> None:
     running_record = runtime._core_multimodal_turns[running_id]
     running_record.dispatch_started = True
 
-    # 远多于上限的后继 prepare。
+    # Prepare far more successors than the limit.
     for turn_id in range(502, 502 + _MAX_LIVE_TURN_RECORDS * 3):
         token = VoiceTurnToken(
             ingress=runtime._capture_ingress_token(), turn_id=turn_id
@@ -76,7 +76,7 @@ async def test_a_dispatching_record_outlives_the_cap() -> None:
         )
 
     assert runtime._core_multimodal_turns.get(running_id) is running_record
-    # 没在派发的那些仍然有界。
+    # Records that are not dispatching remain bounded.
     assert len(runtime._core_multimodal_turns) <= _MAX_LIVE_TURN_RECORDS
 
 
@@ -99,7 +99,7 @@ async def test_all_records_mid_dispatch_keeps_them_past_the_cap() -> None:
         )
         record_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
         runtime._begin_core_multimodal_turn(record_id, token)
-        # 每一条都立刻进入派发，于是永远没有可淘汰的记录。
+        # Every record immediately starts dispatching, so none can ever be evicted.
         runtime._core_multimodal_turns[record_id].dispatch_started = True
 
     assert len(runtime._core_multimodal_turns) == _MAX_LIVE_TURN_RECORDS + 4
@@ -107,7 +107,7 @@ async def test_all_records_mid_dispatch_keeps_them_past_the_cap() -> None:
         record.dispatch_started
         for record in runtime._core_multimodal_turns.values()
     )
-    # 各自的 dispatch 收尾时才回落到界内。
+    # Return within the bound only as each dispatch finishes.
     for record_id in list(runtime._core_multimodal_turns)[:4]:
         runtime._abandon_core_voice_turn(record_id, session_ref=None)
     assert len(runtime._core_multimodal_turns) == _MAX_LIVE_TURN_RECORDS
@@ -160,5 +160,5 @@ async def test_the_real_dispatch_marks_its_record_before_it_can_be_evicted() -> 
 
     assert seen_mid_dispatch["record"] is record
     runtime.session.submit_external_voice_turn.assert_awaited_once()
-    # 自己的 finally 摘掉它。
+    # Its own finally removes it.
     assert turn_id not in runtime._core_multimodal_turns

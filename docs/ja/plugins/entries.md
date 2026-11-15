@@ -1,10 +1,10 @@
 # エントリーとパラメーター
 
-entry point は、ロード済み plugin が Plugin Manager、他 plugin、user-plugin Agent route に公開する callable operation です。`@plugin_entry(id=...)` の runtime `entry_id` で識別します。
+entry point は、ロード済み plugin が Plugin Manager、他 plugin、Agent（ネコクロー、NekoClaw）に公開する callable operation です。`@plugin_entry(id=...)` の runtime `entry_id` で識別します。
 
-`plugin.toml` の `[plugin].entry` と混同しないでください。そちらは plugin class を import する `module.path:ClassName` です。また `@llm_tool` とも別です。LLM tool は main_server の `/api/tools` registry に登録されて会話中に呼ばれますが、user-plugin Agent routing が選ぶのは plugin runtime entry です。
+`plugin.toml` の `[plugin].entry` と混同しないでください。そちらは plugin class を import する `module.path:ClassName` です。また `@llm_tool` とも別です。LLM tool は main_server の `/api/tools` registry に登録され、会話中にメインの対話モデルが呼びます。一方 Agent は、用件を任された後に plugin の runtime entry を選びます。
 
-Agent routing は plugin-level filtering の後に entry metadata を評価します。Stage 2 は実在する `plugin_id` と `entry_id` を正確に返す必要があり、missing/unknown ID は correction retry 1 回の後に拒否されます。
+Agent はまず plugin を絞り込み、その後で entry metadata を評価します。精選は実在する `plugin_id` と `entry_id` を正確に返す必要があります。ID が欠けている、または存在しない場合は聞き直さず、どの entry も直接は呼ばれません。その用件は task agent に渡され、task agent が使えないときは「できない」と返されます。entry がいつ、誰に呼ばれ、結果がどう扱われるかは、後述の「Agent が entry を呼ぶとき」を参照してください。
 
 ---
 
@@ -68,7 +68,7 @@ async def greet(
 
 これでパネルでは、`name` の横に "The person's name"、`times` の横に "How many times to repeat" が表示されます。
 
-AI エージェントにもこの説明が渡るため、どんな値を渡すべきか理解しやすくなります。
+この entry を呼ぶ task agent にも、この説明が渡ります。task agent は entry の `input_schema` をそのまま受け取るためです。一方、entry を直接呼ぶ精選に見えるのは、パラメーターの名前、型、`enum` の値だけです。精選に必ず伝えたいことは entry の `description` に書いてください。二つの呼び出し元の違いは、後述の「Agent が entry を呼ぶとき」で説明します。
 
 ---
 
@@ -128,7 +128,7 @@ async def divide(self, a: float, b: float):
 
 ## AI に見せる戻り値を制御する
 
-デフォルトでは、AI は戻り値のすべてのフィールドを見ます。ただし、検索結果の生データのように大きな値を返す場合、AI には要約だけ見せたいことがあります。
+`llm_result_fields` で、AI が結果のどのフィールドを読むかを宣言します。戻り値には検索結果の生データのような大きな値が入りがちですが、AI に必要なのは要約だけ、という場合に使います。
 
 ```python
 @plugin_entry(
@@ -148,6 +148,8 @@ async def search(self, query: str):
 ```
 
 `llm_result_fields` に指定したフィールドだけが AI に送られます。その他のフィールドは通常どおり保存され、パネルでも見られますが、AI のコンテキストには入りません。トークン節約に役立ちます。
+
+`llm_result_fields` を宣言しない場合に AI へ何が渡るかは、entry を誰が呼んだかで変わります。後述の「Agent が entry を呼ぶとき」にある結果の対照表を参照してください。
 
 ---
 
@@ -211,6 +213,58 @@ def _make_handler(self, cmd_info):
 動的エントリーも静的エントリーと同じように動きます。パネルに表示され、実行でき、AI からも呼び出せます。handler がパラメーターを受け取る場合は、`input_schema` を明示的に渡してください。動的登録では handler のシグネチャから推論されません。
 
 削除するには `self.unregister_dynamic_entry(entry_id)` を使います。
+
+---
+
+## Agent が entry を呼ぶとき
+
+Agent（ネコクロー、NekoClaw）が entry を探すのは、メインの対話モデルが用件を任せたときだけです。つまり、モデルが `dispatch_task` ツールを呼んだとき、または口頭で引き受けてターン後チェックが代わりに dispatch したときです。ターンが終わるたびに自動で解析する処理はありません。全体の流れは[エージェントシステム](/ja/architecture/agent-system)、plugin の絞り込み方は [plugin.toml](./plugin-toml) を参照してください。ID が `__llm_tool__` で始まる entry（`@llm_tool` が作るもの）はこの選択に加わらず、メインの対話モデルだけが呼びます。
+
+### Agent に見える entry
+
+plugin が `passive = true` を設定している場合、または entry の `metadata` で `agent_auto`、`agent_exposed`、`llm_exposed` が `false`、あるいは `agent_hidden` が `true` の場合、その entry は対象から外れます。
+
+```python
+@plugin_entry(id="internal_sync", metadata={"agent_hidden": True})
+async def internal_sync(self):
+    ...
+```
+
+これらのスイッチが効くのは Agent に対してだけです。Plugin Manager や他の plugin からは、引き続き呼び出せます。
+
+### 二つの呼び出し元
+
+- **直接呼び出し（主経路）。** entry 一つで終わる用件では、精選がその entry を選び、引数を埋めます。精選に見えるのは、plugin の `description` と、可視 entry ごとの ID、`description`、短い引数ヒントです。引数ヒントは、先頭 8 個のパラメーターの型と `enum` の値、それに `required` です。パラメーターの説明は含まれません。
+- **task agent。** 合う entry がない、または複数ステップが必要な用件は、task agent に渡されます。task agent は、画面上で「使い魔」と呼ばれる実行セッションです。能力ゲートウェイ経由で、entry をツールとして呼びます。ツールの説明は plugin 名、entry 名、entry の `description` を並べたもの（200 token で切り詰め）、ツールのパラメーターは entry の `input_schema` です。task agent が受け取るのは任された内容で、会話履歴ではありません。選択の際に候補に残った plugin の entry は、最初からツールとして並びます。それ以外の可視 entry は、説明で照合する検索ツールを通じて見つけます。
+
+どちらの呼び出し元も同じ `/runs` リクエストを送り、`args._ctx` に同じキーを入れます。
+
+| `_ctx` のキー | 値 |
+|---|---|
+| `lanlan_name` | その用件の持ち主であるキャラクター |
+| `conversation_id` | dispatch に付いてきた識別子。ない場合は入らない |
+| `entry_timeout` | この呼び出しに適用されるタイムアウト。entry の `timeout`、またはホストの既定値 |
+| `latest_user_request` | そのターンのユーザーの元の発言。書き換えない |
+
+plugin entry の権限カテゴリ（ホストの `permissions.json` の `plugin_entry`）は、既定で `allow` です。確認を求めるモードにすると、task agent からの呼び出しはユーザーの承認を待ちます。`deny` にすると、どちらの呼び出し元も plugin entry を使いません。
+
+### 結果の扱い
+
+| | 直接呼び出し | task agent からの呼び出し |
+|---|---|---|
+| 結果を読むのは | メインの対話モデル。その用件の報告として受け取る | task agent。ツール結果として受け取る。ユーザーに伝わるのは用件全体が終わったとき |
+| `llm_result_fields` を宣言した場合 | 列挙したフィールドだけ | 列挙したフィールドだけ |
+| `llm_result_fields` を宣言しない場合 | 一文だけ。`data.reply` が空でない文字列ならそれ、なければ Run の message | その一文に続けて、`data` を JSON で渡す |
+| `meta.agent.delivery`、`result_kind`、`expires_in_s` | 有効 | 無効。ユーザーへの報告は、その用件自体の設定に従う |
+| `data.needs_confirmation`（または `status: "confirm_required"`） | 用件は `blocked` で終わり、plugin のメッセージが報告される | ゲートウェイが plugin のメッセージを質問としてユーザーに尋ね、回答を task agent に渡す。task agent がユーザーの代わりに答えることはできない |
+| `data.action: "clarify"`（または `status: "clarify"` / `"blocked"`） | 用件は `blocked` で終わり、plugin のメッセージが報告される | 「この呼び出しは実行されなかった」という注記を付けて task agent に返す |
+| `data.deferred: true` | plugin がコールバックするまで用件は終わらない。1 時間コールバックがなければ失敗になる | 「plugin が後で自分で完了する」という注記を付けて task agent に返す。`bind_task` は呼ばれない |
+
+直接呼び出しの列は、以前の Agent と同じです。結果に `observation_only` が付いている場合、どちらの呼び出し元も `needs_confirmation` や `clarify` として扱いません。
+
+### 中止
+
+用件が中止されると、ホストはその用件のまだ動いている Run すべてについて、プラグインサービスの `POST /runs/{run_id}/cancel` を呼びます。直接呼び出しでも、task agent からの呼び出しでも同じです。
 
 ---
 

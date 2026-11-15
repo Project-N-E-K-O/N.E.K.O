@@ -481,7 +481,7 @@ async def test_workshop_unsubscribe_discards_the_intent_when_the_commit_fails(tm
 
 
 async def test_workshop_unsubscribe_refuses_a_character_held_by_a_route(tmp_path, monkeypatch):
-    # 与改名 / 删除同一个守卫（OD-13）：串门 / 小游戏在用、或串门后台还在按它的名字写数据时不删它
+    # Use the same guard as rename/delete (OD-13): do not delete while visits/minigames use it or visit background tasks still write data under its name
     from utils import external_route_registry as registry
 
     config = _Config(tmp_path, {
@@ -507,7 +507,7 @@ async def test_workshop_unsubscribe_refuses_a_character_held_by_a_route(tmp_path
 
 
 async def test_workshop_unsubscribe_holds_its_characters_until_the_config_is_written(tmp_path, monkeypatch):
-    # 检查通过之后到写完 characters.json：这些角色不能再开串门 / 小游戏（与改名 / 删除同一做法）
+    # From a successful check until characters.json is written, these characters cannot start visits/minigames (as with rename/delete)
     from utils import external_route_registry as registry
 
     config = _Config(tmp_path, {

@@ -192,8 +192,8 @@ async def voice_design(request: Request):
             provider_label = cosyvoice_runtime.get('provider_label') or '阿里百炼CosyVoice'
             dashscope_base_url = cosyvoice_runtime.get('base_url', '')
             storage_key = cosyvoice_runtime.get('storage_key') or api_key
-            # 音色注册会绑定 target_model（复刻音色不能跨模型使用），优先采用
-            # 用户在 TTS 端点填写的 cosyvoice-v* 模型，未填/填了别家 ID 时回退默认。
+            # Voice registration binds target_model (cloned voices cannot cross models); prefer the
+            # user's cosyvoice-v* model from the TTS endpoint, falling back when absent or from another vendor.
             design_model = (
                 get_cosyvoice_user_preferred_model(provider)
                 or get_cosyvoice_clone_model(provider)

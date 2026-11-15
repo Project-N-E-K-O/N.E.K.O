@@ -222,8 +222,8 @@ def _post_event(
 def _extract_result(body: dict[str, Any]) -> dict[str, Any]:
     """Return the SimulationResult fields from the POST response body.
 
-    Wire shape (router post-2026-04-23, per P25_BLUEPRINT §2.6 "一个响应
-    结构"): SimulationResult fields are flat at the top level alongside a
+    Wire shape (router post-2026-04-23, per P25_BLUEPRINT §2.6 'one response
+    structure'): SimulationResult fields are flat at the top level alongside a
     sibling ``kind`` discriminator — ``{kind, accepted, reason, ...}``.
     Previously the router wrapped them inside an ``{kind, result: {...}}``
     envelope, which shape-drifted against the P25 Day 2 UI (the panel's
@@ -325,10 +325,10 @@ def check_a_happy_paths(client, mock) -> list[str]:
                f"dedupe_info.hit={dedupe_info.get('hit')}")
 
         # A1c — wire instruction role (P25 Day 2 polish 2):
-        # 主程序 prompt_ephemeral 的语义契约是 ``messages + HumanMessage(
-        # content=instruction)`` — instruction 以 **user** 角色注入. 如果
-        # 误写成 role=system, 会让空 session 的 wire 只有 [system, system],
-        # Gemini 400 "Model input cannot be empty". 这条 check 守住契约.
+        # The main app's prompt_ephemeral contract is ``messages + HumanMessage(
+        # content=instruction)``: inject instruction with **user** role. Mistakenly using
+        # role=system leaves an empty session's wire as [system, system], causing
+        # Gemini 400 "Model input cannot be empty". This check protects the contract.
         wire = mock.last_wire or []
         _check(bool(wire), "A1c.wire_nonempty",
                f"mock.last_wire empty after avatar call: {wire!r}")
@@ -343,20 +343,20 @@ def check_a_happy_paths(client, mock) -> list[str]:
 
         # A1d — direct avatar event-fact instruction contract.
         #
-        # Avatar prompt 只发送直接事件事实，不拼入 text_context、字段列表或
-        # 回复格式要求。reward_drop / easter_egg 仍通过客观事件事实体现，
-        # 所以这里守住"奖励进入事件事实，草稿不泄露"。
+        # Avatar prompts send only direct event facts, without text_context, field lists, or
+        # response-format instructions. reward_drop / easter_egg remain represented through objective event facts,
+        # so guard that rewards enter event facts while drafts remain private.
         #
         # Matrix:
-        #   - fist + reward_drop + text_context → 事件事实包含"奖励"，
-        #     不包含 text_context 原文或"输入框草稿"字段。
-        #   - hammer + easter_egg（强度与彩蛋标记为同一事实）→
-        #     事件事实包含"彩蛋"。
-        # (persona.language 默认 zh-CN, 检 zh 文案 key.)
+        #   - fist + reward_drop + text_context → event facts contain "奖励" ('reward'),
+        #     without raw text_context or the "输入框草稿" ('input draft') field.
+        #   - hammer + easter_egg (intensity and easter-egg marker form one fact) →
+        #     event facts contain "彩蛋" ('easter egg').
+        # persona.language defaults to zh-CN; check Chinese copy keys.
         #
-        # 用 intensity=rapid 升 rank 越过 A1 留下的 fist_touch rank=1 条目
-        # (8000ms 窗口内需要 rank 更高才走接收分支); 不这样 A1 和 A1d
-        # 会彼此 dedupe_window_hit.
+        # Use intensity=rapid to increase rank beyond A1's fist_touch rank=1 entry
+        # (acceptance within the 8000ms window requires higher rank); otherwise A1 and A1d
+        # trigger dedupe_window_hit against each other.
         mock.set_reply("Mocked reply")
         status, body = _post_event(
             client, "avatar",
@@ -388,15 +388,15 @@ def check_a_happy_paths(client, mock) -> list[str]:
                "A1d.no_text_context_body",
                f"avatar event-fact instruction leaked text_context body: "
                f"{instruction_d[:400]!r}")
-        # 并且 wire 最后一条 instruction 必须等于 SimulationResult.instruction
-        # (已由 A1c 守住 happy path, 这里对 context/reward 路径再守一次).
+        # The wire's final instruction must also equal SimulationResult.instruction
+        # (A1c protects the happy path; recheck context/reward paths here).
         wired = (mock.last_wire or [])[-1:] or [{}]
         _check(wired[0].get("content") == instruction_d,
                "A1d.wire_tail_matches",
                "wire tail content != SimulationResult.instruction for the "
                "text_context + reward_drop case")
 
-        # A1e — hammer + easter_egg 触发彩蛋文案入 instruction.
+        # A1e — hammer + easter_egg inserts easter-egg wording into instruction.
         mock.set_reply("Mocked reply")
         status, body = _post_event(
             client, "avatar",
@@ -1421,14 +1421,14 @@ def check_h_persona_language_fallback(client, mock) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────
-# Case I — SimulationResult.reason 复现表 (§A.8 #5 + §4.7)
+# Case I — SimulationResult.reason reproducibility table (§A.8 #5 + §4.7)
 # ─────────────────────────────────────────────────────────────
 #
 # §4.7 defines the closed set of reasons this stack will ever emit.
-# **复现集 (语义契约层)**: invalid_payload / duplicate / busy / llm_error
+# **Reproduced set (semantic-contract layer)**: invalid_payload / duplicate / busy / llm_error
 # (+ proactive_pass / missing_fields for proactive-specific short
 # circuits, documented in §A.8 #5).
-# **不复现集 (运行时机制层, §2.1)**: cooldown / speak_cooldown /
+# **Non-reproduced set (runtime-mechanism layer, §2.1)**: cooldown / speak_cooldown /
 # voice_session_active / no_websocket / session_start_failed /
 # not_text_session.
 #
@@ -1436,7 +1436,7 @@ def check_h_persona_language_fallback(client, mock) -> list[str]:
 # avatar_interaction_simulated / agent_callback_simulated /
 # proactive_simulated entry produced by *earlier* sub-cases (A-G-H)
 # and asserts each ``detail.reason`` is either null/empty (accepted
-# path) or a member of the 复现集. Any 不复现集 value leaking in would
+# path) or a member of the reproduced set. Any non-reproduced-set value leaking in would
 # mean we accidentally started reproducing main program runtime
 # mechanics, which §2.1 forbids.
 
@@ -1482,7 +1482,7 @@ REASON_NOT_REPRODUCED: frozenset[str] = frozenset({
 
 
 def check_i_reason_whitelist(client, mock) -> list[str]:
-    """I — every emitted SimulationResult.reason is in the 复现集."""
+    """I — every emitted SimulationResult.reason is in the reproduced set."""
     errors: list[str] = []
     try:
         _create_session(client, "p25_I_reason")

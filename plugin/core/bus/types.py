@@ -113,15 +113,15 @@ class _FramesClientProto(Protocol):
 
 
 class BusHubProtocol(Protocol):
-    """Bus Hub 协议，提供对各种 Bus 客户端的访问
+    """Bus Hub protocol exposing the various bus clients.
     
     Attributes:
-        messages: 消息客户端，用于查询消息
-        events: 事件客户端，用于查询事件
-        lifecycle: 生命周期客户端，用于查询生命周期事件
-        memory: 内存客户端，用于查询内存数据
-        conversations: 对话客户端，用于查询对话上下文
-        frames: 画面客户端，用于读取宿主最近推给模型的那几帧（有损，不是日志）
+        messages: Message-query client.
+        events: Event-query client.
+        lifecycle: Lifecycle-event query client.
+        memory: Memory-data query client.
+        conversations: Conversation-context query client.
+        frames: Recent host-supplied model frames, lossy rather than a log.
     """
     @property
     def messages(self) -> _MessageClientProto: ...
@@ -295,13 +295,13 @@ class BusList(BusListCore, Generic[TRecord]):
         self._plan: Optional[TraceNode] = plan
         self._cache_valid: bool = True
 
-    # 只读快照 store 的列表把它翻成 True。lazy 模式下 sort()/limit()/filter()
-    # **不在本地算**，只记计划、等物化时重放；而重放是同步调 client.get()，在
-    # 事件循环里那一调拿回的是协程（get() 自己会转发到 get_async），于是
-    # `await bus.frames.get(...)` 之后一链式就 AttributeError，还漏一个没 await
-    # 的协程。快照没有"重放到最新"的语义可言——它就是一次读到的那批——所以本地
-    # 算才是对的。_plan 仍然保留：reload_with()/reload_with_async() 直接看
-    # _plan，不看这个开关，显式刷新照旧可用。
+    # Enable this for read-only snapshot-store lists. Lazy sort()/limit()/filter()
+    # record plans rather than evaluating locally, replaying on materialization via synchronous client.get().
+    # Inside event loops get forwards to get_async and returns a coroutine, making chaining after
+    # await bus.frames.get(...) raise AttributeError and leak an unawaited coroutine.
+    # Snapshots represent that specific read, with no replay-to-latest semantics, so local
+    # evaluation is correct. Retain _plan because reload_with()/reload_with_async() consult
+    # it directly rather than this flag, preserving explicit refresh.
     _snapshot_chain: bool = False
 
     def _is_lazy_mode(self) -> bool:
@@ -352,7 +352,7 @@ class BusList(BusListCore, Generic[TRecord]):
     def dump(self) -> List[Dict[str, Any]]:
         """Dump records as JSON-serializable dicts.
 
-        中文: 将列表中的每条记录转换为 dict(通常来自 record.dump()), 便于序列化/日志输出.
+        Convert each record to a dictionary, usually via record.dump(), for serialization/logging.
         English: Convert each record to a dict (typically via record.dump()) for serialization/logging.
         """
         self._ensure_materialized()
@@ -361,7 +361,7 @@ class BusList(BusListCore, Generic[TRecord]):
     def dump_records(self) -> List[TRecord]:
         """Return a shallow copy of the underlying record list.
 
-        中文: 返回当前记录列表的浅拷贝, 直接得到原始 record 对象.
+        Return a shallow copy of the current record list with original record objects.
         English: Return a shallow copy of record objects.
         """
         self._ensure_materialized()
@@ -374,11 +374,11 @@ class BusList(BusListCore, Generic[TRecord]):
     def trace_dump(self) -> List[Dict[str, Any]]:
         """Dump the recorded query trace.
 
-        中文: 返回 trace 的可序列化版本, 用于调试/展示链式调用做了什么.
+        Return serializable trace data for debugging/displaying chained operations.
         English: Return a serializable trace describing the chained operations.
 
         Note:
-            - trace 仅用于可观测性, 不保证可重放.
+            - Traces support observability only, without replay guarantees.
         """
         return [
             {
@@ -392,7 +392,7 @@ class BusList(BusListCore, Generic[TRecord]):
     def trace_tree_dump(self) -> Optional[Dict[str, Any]]:
         """Dump the replayable plan tree (if available).
 
-        中文: 返回可重放的 plan(TraceNode) 树结构, 用于 watcher/reload.
+        Return the replayable TraceNode plan tree for watchers/reload.
         English: Return a replayable plan tree used by reload()/watch().
 
         Returns:
@@ -406,12 +406,12 @@ class BusList(BusListCore, Generic[TRecord]):
     def explain(self) -> str:
         """Explain how this BusList is produced.
 
-        中文: 生成当前列表的“查询表达式”字符串, 用于调试/打印.
+        Generate the current list's query-expression string for debugging/printing.
         English: Return a human-readable query expression for debugging.
 
         Note:
-            - 有 plan 时优先用 plan.explain() (更准确).
-            - 无 plan 时退化为 trace 串联.
+            - Prefer plan.explain() when available for accuracy.
+            - Otherwise concatenate trace entries.
         """
         if self._plan is not None:
             return self._plan.explain()
@@ -467,28 +467,28 @@ class BusList(BusListCore, Generic[TRecord]):
     ) -> "BusList[TRecord]":
         """Return a new list sorted by fields or a custom key.
 
-        中文: 返回一个按字段或自定义 key 排序后的新 BusList.
+        Return a new BusList sorted by fields or a custom key.
         English: Return a new BusList sorted by fields or a custom key.
 
         Args:
             by:
-                中文: 按哪些字段排序. 可以是单个字段名或字段名列表. 为空时会尝试默认字段
+                Fields to sort by, one name or a list; empty attempts default fields.
                 (timestamp/created_at/time).
                 English: Sort by field name(s). If omitted, tries default fields
                 (timestamp/created_at/time).
             key:
-                中文: 自定义排序函数. 与 by 互斥.
+                Custom sorting function, mutually exclusive with by.
                 English: Custom sort key callable. Mutually exclusive with by.
             cast:
-                中文: 对字段值进行简单类型转换, 支持 "int"/"float"/"str".
+                Simple field-value coercion: \"int\"/\"float\"/\"str\".
                 English: Optional value casting for field values: "int"/"float"/"str".
             reverse:
-                中文: 是否倒序.
+                Whether to reverse order.
                 English: Sort descending when True.
 
         Note:
-            - sort(key=callable) 无法被 reload() 重放.
-            - sort(by=...) 可以被 reload()/watch() 重放.
+            - reload() cannot replay sort(key=callable).
+            - reload()/watch() can replay sort(by=...).
         """
         if key is not None and by is not None:
             raise ValueError("Specify only one of 'key' or 'by'")
@@ -560,25 +560,25 @@ class BusList(BusListCore, Generic[TRecord]):
     ) -> "BusList[TRecord]":
         """Filter records by structured conditions.
 
-        中文: 根据 BusFilter/关键字参数过滤记录, 返回新的 BusList.
+        Filter records by BusFilter/keyword arguments, returning a new BusList.
         English: Filter records using BusFilter or keyword arguments, returning a new BusList.
 
         Args:
             flt:
-                中文: 预构建的 BusFilter, 为空则根据 kwargs 创建.
+                Prebuilt BusFilter; create from kwargs when absent.
                 English: Optional BusFilter. When None, build from kwargs.
             strict:
-                中文: 严格模式. 正则非法/类型转换失败时抛异常.
+                Strict mode raises for invalid regexes / failed type conversions.
                 English: Strict mode. Raise on invalid regex / invalid numeric conversions.
             **kwargs:
-                中文: BusFilter 字段快捷写法, 例如 source=..., type=..., priority_min=...
+                BusFilter field shorthand, e.g. source=..., type=..., priority_min=....
                 English: Convenience fields for BusFilter (e.g. source/type/priority_min...).
 
         Returns:
-            一个新的 BusList.
+            A new BusList.
 
         Note:
-            - filter(...) 是可重放的, 可用于 reload()/watch().
+            - filter(...) is replayable through reload()/watch().
         """
         if flt is None:
             flt = BusFilter(**kwargs)
@@ -692,12 +692,12 @@ class BusList(BusListCore, Generic[TRecord]):
     def where(self, predicate: Callable[[TRecord], bool]) -> "BusList[TRecord]":
         """Filter using an arbitrary Python predicate.
 
-        中文: 使用任意 Python 函数 predicate 过滤记录, 返回新 BusList.
+        Filter with any Python predicate, returning a new BusList.
         English: Filter with an arbitrary Python predicate callable.
 
         Warning:
-            - where(predicate) 由于 predicate 不可序列化/不可重放, reload()/watch() 无法重放这一步.
-            - 该操作不可序列化或重放；需要 reload()/watch() 时使用 filter(...).
+            - where(predicate) cannot be serialized/replayed by reload()/watch().
+            - Use filter(...) for reload()/watch(); this operation is neither serializable nor replayable.
         """
         if self._is_lazy_mode():
             raise NonReplayableTraceError("lazy list cannot use where(predicate); use filter(...) instead")
@@ -713,12 +713,12 @@ class BusList(BusListCore, Generic[TRecord]):
     def limit(self, n: int) -> "BusList[TRecord]":
         """Limit the number of records.
 
-        中文: 截取前 n 条记录并返回新 BusList.
+        Return a new BusList containing the first n records.
         English: Return a new BusList containing at most the first n records.
 
         Note:
-            - n <= 0 时返回空列表.
-            - limit(...) 是可重放的, 可用于 reload()/watch().
+            - n<=0 returns an empty list.
+            - limit(...) is replayable through reload()/watch().
         """
         nn = int(n)
         if nn <= 0:
@@ -755,10 +755,10 @@ class BusList(BusListCore, Generic[TRecord]):
                 elif bus == "lifecycle":
                     return _as_eager(ctx.bus.lifecycle.get(**params))
                 elif bus == "frames":
-                    # 只读 store，但一样要能重放：BusRpcClientBase 给每次 get()
-                    # 都挂了带 bus 名的 GetNode，所以少一个分支不是"少一个功能"，
-                    # 而是文档里写着的 frames.sort(...).limit(1) 一链式就抛
-                    # NonReplayableTraceError。conversations 同理。
+                    # Read-only stores still need replay support: BusRpcClientBase attaches bus-named GetNodes
+                    # to every get(), so a missing branch does not merely omit functionality;
+                    # documented frames.sort(...).limit(1) chaining instead raises
+                    # NonReplayableTraceError. The same applies to conversations.
                     return _as_eager(ctx.bus.frames.get(**params))
                 elif bus == "conversations":
                     return _as_eager(ctx.bus.conversations.get(**params))
@@ -799,11 +799,11 @@ class BusList(BusListCore, Generic[TRecord]):
     ) -> "BusList[TRecord]":
         """Replay the recorded plan against live bus data.
 
-        中文: 使用可重放 plan 重新从 bus 拉取数据并应用同样的链式操作, 返回最新 BusList.
+        Replay the plan against the bus with the same chained operations, returning a current BusList.
         English: Reload from bus by replaying the stored plan and operations.
 
         Requirements:
-            - 必须是 replayable plan (通常由 get()/filter()/sort(by=...)/limit() 组合产生).
+            - Requires replayable plans, usually built from get()/filter()/sort(by=...)/limit().
         """
         if ctx is None:
             ctx = getattr(self, "_ctx", None)
@@ -835,19 +835,19 @@ class BusList(BusListCore, Generic[TRecord]):
     ) -> "BusList[TRecord]":
         """Reload with optional in-place mutation.
 
-        中文: reload 的底层实现, 可选择 inplace=True 直接更新当前对象内容.
+        Underlying reload implementation, optionally updating this object directly with inplace=True.
         English: Underlying reload implementation; can mutate current instance when inplace=True.
 
         Args:
             ctx:
-                中文: 需要提供 ctx.bus.messages/events/lifecycle 等接口.
+                Supply ctx.bus.messages/events/lifecycle and related interfaces.
                 English: Context providing ctx.bus.* clients.
             inplace:
-                中文: True 时原对象会被更新(保持同一实例), False 时返回新列表.
+                True updates the same instance; False returns a new list.
                 English: When True, mutate this instance; otherwise return a new list.
 
         Raises:
-            NonReplayableTraceError: plan 缺失或含不可重放步骤(如 sort(key=callable), where(predicate)).
+            NonReplayableTraceError: Missing plan or nonreplayable steps such as sort(key=callable)/where(predicate).
         """
         if ctx is None:
             ctx = getattr(self, "_ctx", None)
@@ -879,16 +879,16 @@ class BusList(BusListCore, Generic[TRecord]):
         *,
         inplace: bool = False,
     ) -> "BusList[TRecord]":
-        """异步版本的 reload_with，使用 asyncio.to_thread 包装同步调用。
+        """Async reload_with wraps synchronous calls in asyncio.to_thread.
         
-        Note: 底层 ZMQ socket 是同步的，此方法通过线程池实现非阻塞。
+        Note: underlying ZMQ sockets are synchronous; use the thread pool for nonblocking behavior.
         
         Args:
-            ctx: 上下文，提供 ctx.bus.* 客户端
-            inplace: True 时原对象会被更新，False 时返回新列表
+            ctx: Context exposing ctx.bus.* clients.
+            inplace: True updates the original object; False returns a new list.
             
         Returns:
-            刷新后的 BusList
+            Refreshed BusList.
         """
         return cast(
             "BusList[TRecord]",
@@ -925,22 +925,22 @@ class BusList(BusListCore, Generic[TRecord]):
     ) -> "BusListWatcher[TRecord]":
         """Create a watcher for this query.
 
-        中文: 基于当前可重放 plan 创建 watcher, 用于监听 bus 变化并触发 subscribe 回调.
+        Create a watcher from the current replayable plan to observe bus changes and invoke subscribe callbacks.
         English: Create a watcher based on the replayable plan for change notifications.
 
         Args:
             ctx:
-                中文: 需要提供 ctx.bus.* 以及(在插件进程内)必要的 IPC 能力.
+                Supply ctx.bus.* and required IPC capabilities within plugin processes.
                 English: Context providing bus clients and (in plugin process) IPC capability.
             bus:
-                中文: 手动指定 bus 类型("messages"/"events"/"lifecycle"). 默认从 plan 自动推断.
+                Explicit bus type (\"messages\"/\"events\"/\"lifecycle\"), otherwise inferred from plan.
                 English: Override bus name; otherwise inferred from the plan.
             debounce_ms:
-                中文: 监听去抖(毫秒). >0 时会合并短时间内多次 bus change, 降低 reload 频率.
+                Debounce milliseconds; positive values combine nearby bus changes to reduce reloads.
                 English: Debounce window in milliseconds. When >0, coalesce bursts of bus changes.
 
         Note:
-            - watcher 需要 replayable plan; where(predicate) 这类不可重放操作会报错.
+            - Watchers require replayable plans; operations like where(predicate) raise.
         """
         if ctx is None:
             ctx = getattr(self, "_ctx", None)

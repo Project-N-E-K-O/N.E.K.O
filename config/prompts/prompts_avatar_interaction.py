@@ -37,7 +37,6 @@ from config._runtime import (
 from config.prompts._locale import normalize_prompt_locale
 from config.prompts.avatar_interaction_contract import (
     AVATAR_INTERACTION_ROUND_GESTURES as _AVATAR_INTERACTION_ROUND_GESTURES,
-    AVATAR_INTERACTION_TOUCH_ZONE_TOOLS as _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS,
     normalize_avatar_interaction_intensity as _normalize_avatar_interaction_intensity,
     resolve_avatar_interaction_round_result as _resolve_avatar_interaction_round_result,
     LOCAL_AVATAR_TOOL_ID_PATTERN as _LOCAL_AVATAR_TOOL_ID_PATTERN,
@@ -55,56 +54,12 @@ _LOCAL_AVATAR_TOOL_MEMORY_TEMPLATES = {
     "pt": "[{master} interagiu com você usando a ferramenta personalizada “{name}”]",
 }
 
-_AVATAR_INTERACTION_TOUCH_ZONE_FACTS = {
-    "zh": {
-        "ear": "这次互动的位置是你的耳侧。",
-        "head": "这次互动的位置是你的头顶。",
-        "face": "这次互动的位置是你的脸侧或嘴边。",
-        "body": "这次互动的位置是你的身前或肩侧。",
-    },
-    "zh-TW": {
-        "ear": "這次互動的位置是你的耳側。",
-        "head": "這次互動的位置是你的頭頂。",
-        "face": "這次互動的位置是你的臉側或嘴邊。",
-        "body": "這次互動的位置是你的身前或肩側。",
-    },
-    "en": {
-        "ear": "The interaction landed beside your ear.",
-        "head": "The interaction landed on top of your head.",
-        "face": "The interaction landed by your cheek or mouth.",
-        "body": "The interaction landed on the front of your body or shoulder.",
-    },
-    "ja": {
-        "ear": "道具が当たった位置はあなたの耳の横です。",
-        "head": "道具が当たった位置はあなたの頭のてっぺんです。",
-        "face": "道具が当たった位置はあなたの頬または口元です。",
-        "body": "道具が当たった位置はあなたの体の前または肩の横です。",
-    },
-    "ko": {
-        "ear": "도구가 닿은 곳은 네 귀 옆이다.",
-        "head": "도구가 닿은 곳은 네 머리 위다.",
-        "face": "도구가 닿은 곳은 네 볼이나 입가다.",
-        "body": "도구가 닿은 곳은 네 몸 앞이나 어깨 옆이다.",
-    },
-    "ru": {
-        "ear": "Инструмент коснулся области возле твоего уха.",
-        "head": "Инструмент коснулся твоей макушки.",
-        "face": "Инструмент коснулся твоей щеки или области рядом со ртом.",
-        "body": "Инструмент коснулся передней части тела или плеча.",
-    },
-    "es": {
-        "ear": "La interacción fue junto a tu oreja.",
-        "head": "La interacción fue en la parte superior de tu cabeza.",
-        "face": "La interacción fue en tu mejilla o junto a tu boca.",
-        "body": "La interacción fue en la parte frontal de tu cuerpo o en el hombro.",
-    },
-    "pt": {
-        "ear": "A interação aconteceu ao lado da sua orelha.",
-        "head": "A interação aconteceu no topo da sua cabeça.",
-        "face": "A interação aconteceu na sua bochecha ou no canto da boca.",
-        "body": "A interação aconteceu na frente do seu corpo ou no ombro.",
-    },
-}
+# TODO: Restore distinct body-part wording only after touch-zone detection is
+# reliable across model types, poses, and framing. The current bounds-ratio
+# heuristic can misidentify parts, so prompts and memory notes use action facts
+# only, without body-part descriptions or redundant generic contact sentences.
+# Keep touch_zone detection and contract validation unchanged for future use.
+# Follow-up: https://github.com/Project-N-E-K-O/N.E.K.O/issues/3512
 _AVATAR_INTERACTION_REACTION_PROFILES = {
     "zh": {
         "lollipop": {
@@ -652,10 +607,10 @@ def _require_avatar_interaction_facts(tool_id: str, action_id: str, payload: dic
     return intensity
 
 
-# Memory-note 模板里对人的称呼一律用 {master} 占位符，由 _build_avatar_interaction_memory_meta
-# 在格式化时展开成调用方传入的 master_name。禁止在模板里出现 "主人 / Your master /
-# ご主人さま / 주인 / Хозяин" 等附属称呼字面量；这是项目核心价值观，反 AI 物化。
-# 已有 tests/unit/test_avatar_interaction_memory_contract.py 的禁词测试做护栏。
+# In memory-note templates, refer to people only with the {master} placeholder; _build_avatar_interaction_memory_meta
+# expands it during formatting to the caller-provided master_name. Do not put literal forms such as "主人 / Your master /
+# ご主人さま / 주인 / Хозяин" in templates; this is a core project value that opposes objectifying AI.
+# tests/unit/test_avatar_interaction_memory_contract.py already guards against forbidden terms.
 _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
     "zh": {
         "lollipop": {
@@ -742,9 +697,9 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
         },
     },
     "ko": {
-        # 韩语主格助词 이/가 与名字最后一个音节的韵尾相关；master_name 是任意字符串
-        # （可能是中/英/数字），无法静态判断，本文件统一用 "이"。memory_note 是给
-        # LLM 读的事件日志，不是 user-facing 字符串，小幅语法瑕疵 LLM 能正确理解。
+        # The Korean subject particle 이/가 depends on the final syllable of a name; master_name is arbitrary
+        # text (it may be Chinese, English, or digits), so gender/coda cannot be determined statically. Use "이" consistently in this file. memory_note is
+        # an event log read by an LLM, not user-facing text; the LLM can understand minor grammatical flaws.
         "lollipop": {
             "offer": "[{master}이 너에게 막대사탕을 한입 먹여 줬다]",
             "tease": "[{master}이 너에게 막대사탕을 한입 더 먹여 줬다]",
@@ -766,8 +721,8 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
         },
     },
     "ru": {
-        # 俄语过去时随主语性别变（дал / дала）。master_name 是任意字符串，无法静态
-        # 判断性别，本文件统一用阳性默认形式。同上：LLM-facing 事件日志容忍语法瑕疵。
+        # Russian past tense varies by the subject's gender (дал / дала). master_name is arbitrary, so gender cannot be determined
+        # statically; use the masculine default throughout this file. As above, minor grammar flaws are acceptable in an LLM-facing event log.
         "lollipop": {
             "offer": "[{master} дал тебе кусочек леденца]",
             "tease": "[{master} дал тебе ещё кусочек леденца]",
@@ -832,8 +787,8 @@ _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES = {
     },
 }
 
-# master_name 缺失/空时按本地化中性词回退；禁止回落到"主人 / master / ご主人さま /
-# 주인 / Хозяин"等物化称呼。
+# When master_name is missing or empty, fall back to a localized neutral term; never fall back to "主人 / master / ご主人さま /
+# 주인 / Хозяин" or other objectifying forms.
 _AVATAR_INTERACTION_MEMORY_NOTE_MASTER_FALLBACK: dict[str, str] = {
     "zh": "对方",
     "zh-TW": "對方",
@@ -875,7 +830,7 @@ def _avatar_interaction_korean_subject_actor(name: str) -> str:
 
     Hangul names can choose 이/가 exactly by final consonant. For latin names,
     use a small readability heuristic; other scripts stay unchanged.
-    """
+    """  # noqa: DOCSTRING_CJK
     stripped = str(name or "").strip()
     if not stripped:
         return _AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK["ko"]
@@ -910,8 +865,8 @@ def _sanitize_avatar_interaction_text_context(
     # truncate_to_tokens forwarded via config._runtime (DI; see top of file)
     # — config (L0) must not import utils (L1) directly.
     if max_tokens is None:
-        # Lazy import 避免 config 包加载顺序问题（本文件被 config/__init__.py
-        # 末尾的 re-export 路径间接导入）。
+        # Lazy import avoids config package load-order issues (this file is imported indirectly through the re-export at the end of config/__init__.py).
+        #
         from config import AVATAR_INTERACTION_CONTEXT_MAX_TOKENS
 
         max_tokens = AVATAR_INTERACTION_CONTEXT_MAX_TOKENS
@@ -1003,21 +958,9 @@ def _build_avatar_interaction_instruction(
         )
 
     actor = _avatar_interaction_prompt_actor(locale, master_name)
-    reaction_focus = str(reaction_profile["reaction_focus"]).format(
+    return str(reaction_profile["reaction_focus"]).format(
         lanlan_name=lanlan_name, master_name=actor, actor=actor
     )
-    touch_zone = str(payload.get("touch_zone") or "").strip().lower()
-    touch_zone_fact = (
-        _AVATAR_INTERACTION_TOUCH_ZONE_FACTS.get(
-            locale, _AVATAR_INTERACTION_TOUCH_ZONE_FACTS["en"]
-        ).get(touch_zone, "")
-        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS
-        else ""
-    )
-    if touch_zone_fact:
-        fact_separator = "" if locale in {"zh", "zh-TW", "ja"} else " "
-        reaction_focus = f"{reaction_focus}{fact_separator}{touch_zone_fact}"
-    return reaction_focus
 
 
 def _build_avatar_interaction_memory_meta(
@@ -1113,22 +1056,6 @@ def _build_avatar_interaction_memory_meta(
     formatted_note = str(memory_note or "").strip()
     if formatted_note and "{master}" in formatted_note:
         formatted_note = formatted_note.format(master=master)
-    touch_zone = str(payload.get("touch_zone") or "").strip().lower()
-    touch_zone_fact = (
-        _AVATAR_INTERACTION_TOUCH_ZONE_FACTS.get(
-            locale, _AVATAR_INTERACTION_TOUCH_ZONE_FACTS["en"]
-        ).get(touch_zone, "")
-        if tool_id in _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS
-        else ""
-    )
-    if formatted_note and touch_zone_fact:
-        fact = touch_zone_fact.rstrip(".。")
-        separator = "；" if locale in {"zh", "zh-TW", "ja"} else "; "
-        if formatted_note.endswith("]"):
-            formatted_note = f"{formatted_note[:-1]}{separator}{fact}]"
-        else:
-            formatted_note = f"{formatted_note}{separator}{fact}"
-
     return {
         "memory_note": formatted_note,
         "memory_dedupe_key": dedupe_key,

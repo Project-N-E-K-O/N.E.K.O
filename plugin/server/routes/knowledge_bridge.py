@@ -59,6 +59,13 @@ def _client() -> Any:
     return get_internal_http_client()
 
 
+def main_write_headers(port: int) -> dict[str, str]:
+    """The Origin and CSRF token Main's ``/api/public-knowledge`` writes require of this server."""
+    import config
+
+    return {"Origin": f"http://127.0.0.1:{port}", "X-CSRF-Token": str(config.AUTOSTART_CSRF_TOKEN)}
+
+
 def _failure(reason: str, status_code: int) -> JSONResponse:
     return JSONResponse({"ok": False, "reason": reason}, status_code=status_code)
 
@@ -87,8 +94,6 @@ async def public_knowledge_bridge(
     headers = {"Accept": "application/json"}
     content: AsyncIterator[bytes] | None = None
     if request.method == "POST":
-        import config
-
         declared = request.headers.get("content-length")
         problem = declared_size_problem(declared, max_bytes)
         if problem is not None:
@@ -96,8 +101,7 @@ async def public_knowledge_bridge(
         headers.update(
             {
                 "Content-Type": request.headers.get("content-type", "application/json"),
-                "Origin": f"http://127.0.0.1:{port}",
-                "X-CSRF-Token": str(config.AUTOSTART_CSRF_TOKEN),
+                **main_write_headers(port),
             }
         )
         if declared is not None:

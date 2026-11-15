@@ -57,8 +57,8 @@ logger = logging.getLogger(__name__)
 
 _client: Optional[httpx.AsyncClient] = None
 
-# 默认超时：多数 scraper / fetcher 调用在 5-10s 区间。调用方可以用
-# `client.get(url, timeout=...)` 覆盖单次请求。
+# Default timeout: most scraper/fetcher calls take 5-10 s. Callers can override
+# individual requests with `client.get(url, timeout=...)`.
 _DEFAULT_TIMEOUT = 10.0
 
 

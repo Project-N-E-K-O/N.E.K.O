@@ -71,7 +71,7 @@ def ticket(*, role: str, sub: str, vid: str, char_tag: str, display_name: str = 
 
 
 def credentials(role: str, *, visit_id: str = VISIT_ID, invite_code: Optional[str] = INVITE,
-                account: str = "acct") -> cr.VisitCredentials:
+                account: str = "acct", audio: bool = False) -> cr.VisitCredentials:
     host = role == "host"
     return cr.VisitCredentials(
         role=role, visit_id=visit_id, char_tag=HOST_CHAR_UID if host else GUEST_CHAR_UID,
@@ -84,7 +84,7 @@ def credentials(role: str, *, visit_id: str = VISIT_ID, invite_code: Optional[st
                                display_name="Host cat" if host else "Guest cat", visit_id=visit_id),
         visit_uid=HOST_UID if host else GUEST_UID, vid=HOST_VID if host else GUEST_VID,
         peer_vid=None if host else HOST_VID, invite_code=invite_code if host else None,
-        invite_expires_at=NOW + 600 if host else None, account=account,
+        invite_expires_at=NOW + 600 if host else None, account=account, audio=audio,
     )
 
 
@@ -149,6 +149,7 @@ class FakeHost:
         self.lanlan_name = lanlan_name
         self.current = True
         self.precondition: Optional[str] = None
+        self.precondition_allow_goodbye_silent: list[bool] = []
         self.frames: list[dict] = []
         self.statuses: list[tuple[str, dict]] = []
         self.takeovers: list[object] = []
@@ -158,6 +159,7 @@ class FakeHost:
         self.resubmitted: list[dict] = []
         self.user_inputs: list[str] = []
         self.outputs: list[str] = []
+        self.output_finalized: list[bool] = []
         self.blocks: list[tuple[list, str]] = []
         self.streams: list[FakeStream] = []
         self.voice_streams = True
@@ -179,7 +181,10 @@ class FakeHost:
     def is_current(self) -> bool:
         return self.current
 
-    def precondition_failure(self):
+    def precondition_failure(self, *, allow_goodbye_silent: bool = False):
+        self.precondition_allow_goodbye_silent.append(allow_goodbye_silent)
+        if allow_goodbye_silent and self.precondition == "goodbye_silent":
+            return None
         return self.precondition
 
     async def interrupt_main_turn(self, timeout: float) -> bool:
@@ -230,6 +235,9 @@ class FakeHost:
         self.resubmitted.extend(callbacks)
         self.events.append("resubmit")
 
+    async def warm_speech(self) -> None:
+        self.events.append("warm_speech")
+
     def open_speech_stream(self, *, metadata, request_id, on_enqueued, on_failed=None):
         if not self.voice_streams:
             return None
@@ -237,7 +245,7 @@ class FakeHost:
         stream.metadata = metadata
         stream.on_failed = on_failed
         if self.dead_worker_prefix and request_id.startswith(self.dead_worker_prefix):
-            stream.closed = True           # TTS worker 已关：push / finish 都收不下
+            stream.closed = True           # TTS worker closed: accepts neither push nor finish.
         self.streams.append(stream)
         return stream
 
@@ -253,8 +261,11 @@ class FakeHost:
         self.user_inputs.append(text)
         self.events.append("mirror_user_input")
 
-    async def mirror_assistant_output(self, text, *, metadata, request_id) -> None:
+    async def mirror_assistant_output(
+        self, text, *, metadata, request_id, finalize_turn=False,
+    ) -> None:
         self.outputs.append(text)
+        self.output_finalized.append(bool(finalize_turn))
         self.events.append(f"output:{request_id}")
 
     async def render_chat_blocks(self, blocks, *, request_id, source_name) -> bool:
@@ -301,7 +312,7 @@ class FakeClient:
         from utils.llm_client import AIMessage, HumanMessage
 
         self.prompts.append(text)
-        # LLM 这一轮实际收到的历史（不含本轮提问）
+        # History actually received by LLM this turn (excluding current question).
         self.seen.append([getattr(m, "content", "") for m in self._conversation_history])
         self._conversation_history.append(HumanMessage(content=text))
         chunks = await self.replies.next(text)
@@ -309,11 +320,11 @@ class FakeClient:
         for chunk in chunks:
             await asyncio.sleep(0)
             if isinstance(chunk, asyncio.Event):
-                # 生成途中的停顿点：测试在这里插入打断 / 结束
+                # Mid-generation pause: tests inject interruption / ending here.
                 await chunk.wait()
                 continue
             if isinstance(chunk, BaseException):
-                raise chunk                            # 生成到一半出错
+                raise chunk                            # Fail midway through generation.
             out.append(chunk)
             await self.on_text_delta(chunk, len(out) == 1)
         self._conversation_history.append(AIMessage(content="".join(out)))
@@ -359,10 +370,12 @@ class Side:
     cancelled: list = field(default_factory=list)
     uploads: list = field(default_factory=list)
     commits: list = field(default_factory=list)
-    settings: dict = field(default_factory=lambda: {"visitMemoryEnabled": True, "visitVoiceEnabled": True})
+    settings: dict = field(default_factory=lambda: {"visitEnabled": True, "visitMemoryEnabled": True,
+                                                         "visitVoiceEnabled": True})
     rt: Optional[rtm.VisitRuntime] = None
     creds_error: Optional[Exception] = None
     creds_gate: Optional[asyncio.Event] = None
+    creds_audio: bool = False
 
 
 def make_side(tmp_path: Path, role: str, *, clock: FakeClock, wall: FakeClock, name: Optional[str] = None,
@@ -380,7 +393,7 @@ def make_side(tmp_path: Path, role: str, *, clock: FakeClock, wall: FakeClock, n
             await side.creds_gate.wait()
         if side.creds_error is not None:
             raise side.creds_error
-        return credentials(role)
+        return credentials(role, audio=side.creds_audio)
 
     async def fetch_pubkeys():
         return pubkeys()
@@ -435,6 +448,7 @@ def make_side(tmp_path: Path, role: str, *, clock: FakeClock, wall: FakeClock, n
         settings=settings, create_session=create_session, character_context=character_context,
         memory_block=memory_block, commit_region=commit_region, commit_summary=commit_summary,
         schedule_upload=schedule_upload, rng=random.Random(0), reply_gap_s=(0.0, 0.0),
+        human_reply_grace_s=0.0,
     )
     side = Side(name=name, role=role, host=FakeHost(name), deps=deps, config_dir=config_dir, replies=replies)
     side_holder["side"] = side
@@ -546,7 +560,7 @@ async def through_gate(rt: rtm.VisitRuntime, *, video_ok: bool = True) -> Option
 
 
 async def bring_up(tmp_path: Path, monkeypatch, *, accept: bool = True, host_replies: Optional[Replies] = None,
-                   guest_replies: Optional[Replies] = None, settings: Optional[dict] = None):
+                   guest_replies: Optional[Replies] = None, settings: Optional[dict] = None, audio: bool = False):
     """Host and guest through the gate, joined, hello verified; with ``accept`` the visit is active."""
     patch_admission(monkeypatch)
     clock = FakeClock(1000.0)
@@ -556,6 +570,7 @@ async def bring_up(tmp_path: Path, monkeypatch, *, accept: bool = True, host_rep
     if settings:
         host.settings.update(settings)
         guest.settings.update(settings)
+    host.creds_audio = guest.creds_audio = audio   # Servers' voice gate (OD-15 v4); older Servers omit it
     wire = Wire()
     hrt = await start_side(host, clock=clock, wall=wall)
     grt = await start_side(guest, invite_code=INVITE, clock=clock, wall=wall)
@@ -597,7 +612,7 @@ async def finish(rt: rtm.VisitRuntime, clock: Optional[FakeClock] = None, *, tim
     while rt.exit_task is None or not rt.exit_task.done():
         if loop.time() > end:
             raise AssertionError("exit flow did not finish")
-        # 只快进到足够跳过排空与 leave 补传窗口：不能把交还回调的兜底期限也跳过去
+        # Advance only past drain/leave retransmission windows, never past handback callback fallback deadline.
         if clock is not None and rt.exit_task is not None and jumped < 12.0:
             clock.advance(0.5)
             jumped += 0.5
@@ -616,6 +631,6 @@ async def teardown(*sides: Side, wire: Optional[Wire] = None, clock: Optional[Fa
             try:
                 await finish(rt, clock, timeout=30)
             except AssertionError:
-                pass  # 收尸尽力而为：没收完的场次由各测试文件的 _reset_for_tests 夹具兜底
+                pass  # Best-effort cleanup: each test file's _reset_for_tests fixture covers unfinished visits.
     if wire is not None:
         await wire.close()

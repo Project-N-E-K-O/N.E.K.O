@@ -71,7 +71,10 @@ produce structurally unequal groups that value-dedup cannot rescue, and would
 make one marker belong to two groups. The bound lives at bind time instead
 (``IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM``, 409 on overflow), which is
 an acceptable failure mode for a rare human action in a way read-time
-truncation is not.
+truncation is not. ``IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM`` tightens it
+per platform: ``neko_visit`` is capped at 1 until the visit forget sends
+``target_epochs`` (issue #3405), since a second visit account would make every
+visit forget fan out to a target without a durable tombstone.
 """
 
 from __future__ import annotations

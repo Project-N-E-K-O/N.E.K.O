@@ -21,6 +21,7 @@ from plugin.neko_plugin_cli.public import (
     build_bundle,
     build_plugin,
     install_package,
+    unpack_package,
 )
 
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "neko_plugin_cli" / "plugins"
@@ -92,6 +93,7 @@ def _metadata_snapshot(metadata: dict[str, object]) -> dict[str, object]:
 @pytest.mark.plugin_integration
 def test_init_custom_output_generates_runnable_vscode_check_task(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     output = tmp_path / "custom-source-root" / "custom_output"
 
@@ -120,6 +122,8 @@ def test_init_custom_output_generates_runnable_vscode_check_task(
     if not resolved_cwd.is_absolute():
         resolved_cwd = output / resolved_cwd
 
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+
     completed = subprocess.run(
         check_task["command"].replace("${workspaceFolder}", str(output)),
         cwd=resolved_cwd.resolve(),
@@ -127,6 +131,7 @@ def test_init_custom_output_generates_runnable_vscode_check_task(
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=120,
     )
 
@@ -134,7 +139,10 @@ def test_init_custom_output_generates_runnable_vscode_check_task(
 
 
 @pytest.mark.plugin_integration
-def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Path) -> None:
+@pytest.mark.parametrize("retained_profile", [False, True], ids=["clean", "legacy-profile"])
+def test_public_single_plugin_workflow_matches_real_package_layout(
+    tmp_path: Path, retained_profile: bool,
+) -> None:
     plugin_dir = _copy_fixture_plugin(tmp_path, "plugin_with_rules")
     package_path = tmp_path / "plugin_with_rules.neko-plugin"
 
@@ -180,10 +188,16 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
     assert "payload/plugins/plugin_with_rules/secret.txt" not in names
     assert "payload/plugins/plugin_with_rules/cache_dir/cache.txt" not in names
 
+    profiles_root = tmp_path / "runtime_profiles"
+    legacy_profile = profiles_root / "plugin_with_rules" / "default.toml"
+    if retained_profile:
+        legacy_profile.parent.mkdir(parents=True)
+        legacy_profile.write_bytes(b"legacy single-plugin profile\r\n")
+
     install_result = install_package(
         package_path,
         plugins_root=tmp_path / "runtime_plugins",
-        profiles_root=tmp_path / "runtime_profiles",
+        profiles_root=profiles_root,
         on_conflict="rename",
     )
 
@@ -192,11 +206,29 @@ def test_public_single_plugin_workflow_matches_real_package_layout(tmp_path: Pat
     assert (installed_dir / "main.py").is_file()
     assert not (installed_dir / "debug.tmp").exists()
     assert not (installed_dir / "secret.txt").exists()
-    assert (install_result.profile_dir / "default.toml").is_file()
+    assert install_result.profile_dir is None
+    assert install_result.profiles_root is None
+    if retained_profile:
+        assert legacy_profile.read_bytes() == b"legacy single-plugin profile\r\n"
+    else:
+        assert not profiles_root.exists()
+
+    exported = unpack_package(
+        package_path, plugins_root=tmp_path / "exported_plugins",
+        profiles_root=tmp_path / "exported_profiles",
+    )
+    assert exported.profile_dir is not None
+    with zipfile.ZipFile(package_path) as archive:
+        assert (exported.profile_dir / "default.toml").read_bytes() == archive.read(
+            "payload/profiles/default.toml"
+        )
 
 
 @pytest.mark.plugin_integration
-def test_public_bundle_workflow_covers_analysis_build_and_install(tmp_path: Path) -> None:
+@pytest.mark.parametrize("retained_profile", [False, True], ids=["clean", "legacy-profile"])
+def test_public_bundle_workflow_covers_analysis_build_and_install(
+    tmp_path: Path, retained_profile: bool,
+) -> None:
     alpha_dir = _copy_fixture_plugin(tmp_path, "bundle_alpha")
     beta_dir = _copy_fixture_plugin(tmp_path, "bundle_beta")
     package_path = tmp_path / "fixture_bundle.neko-bundle"
@@ -251,10 +283,16 @@ def test_public_bundle_workflow_covers_analysis_build_and_install(tmp_path: Path
         },
     }
 
+    profiles_root = tmp_path / "runtime_profiles"
+    legacy_profile = profiles_root / "fixture_bundle" / "default.toml"
+    if retained_profile:
+        legacy_profile.parent.mkdir(parents=True)
+        legacy_profile.write_bytes(b"legacy shared bundle profile\r\n")
+
     install_result = install_package(
         package_path,
         plugins_root=tmp_path / "runtime_plugins",
-        profiles_root=tmp_path / "runtime_profiles",
+        profiles_root=profiles_root,
         on_conflict="rename",
     )
 
@@ -262,7 +300,23 @@ def test_public_bundle_workflow_covers_analysis_build_and_install(tmp_path: Path
     assert installed_ids == ["bundle_alpha", "bundle_beta"]
     assert (tmp_path / "runtime_plugins" / "bundle_alpha" / "plugin.toml").is_file()
     assert (tmp_path / "runtime_plugins" / "bundle_beta" / "plugin.toml").is_file()
-    assert (install_result.profile_dir / "default.toml").is_file()
+    assert install_result.profile_dir is None
+    assert install_result.profiles_root is None
+    if retained_profile:
+        assert legacy_profile.read_bytes() == b"legacy shared bundle profile\r\n"
+    else:
+        assert not profiles_root.exists()
+
+    exported = unpack_package(
+        package_path, plugins_root=tmp_path / "exported_plugins",
+        profiles_root=tmp_path / "exported_profiles",
+    )
+    assert exported.installed_plugin_count == 2
+    assert exported.profile_dir is not None
+    with zipfile.ZipFile(package_path) as archive:
+        assert (exported.profile_dir / "default.toml").read_bytes() == archive.read(
+            "payload/profiles/default.toml"
+        )
 
 
 @pytest.mark.plugin_integration

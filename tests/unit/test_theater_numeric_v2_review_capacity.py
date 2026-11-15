@@ -1,7 +1,8 @@
-"""Formal-transition capacity changes must not alter ordinary review, complete-evidence protection or call policy."""
+"""Review capacity preserves complete evidence and rejects excess input before client construction."""
 
 from dataclasses import replace
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
@@ -24,10 +25,18 @@ def _fixture(repetitions=700):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('disputed', [False, True])
-@pytest.mark.parametrize('repetitions,allowed', [(700, True), (950, True), (2000, False)])
-async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch, repetitions, allowed, disputed):
-    """Use the current 8000-token formal-review limit, covering input above ordinary review's 6000 tokens and rejection above the formal cap."""
+# Repetition counts construct the measured boundary, not a promise of fixed prose capacity.
+# Full authored player/role context is counted too; retain the measured
+# 9500–10000 window below rather than promising fixed prose capacity.
+@pytest.mark.parametrize('review_kind,repetitions,allowed', [
+    ('formal', 1432, True), ('formal', 1552, False),
+    ('ordinary', 1067, True), ('ordinary', 1187, False),
+    ('missed', 971, True), ('missed', 1091, False),
+])
+async def test_review_capacity_applies_before_fast_and_dispute_calls(monkeypatch, review_kind, repetitions, allowed, disputed):
+    """All review branches accept complete input above 9500 and reject input above 10000 before sending."""
     calls = []
+    clients = []
 
     class Client:
         async def __aenter__(self):
@@ -37,48 +46,68 @@ async def test_formal_capacity_applies_before_fast_and_dispute_calls(monkeypatch
             return False
 
         async def ainvoke(self, messages):
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             calls.append(messages)
-            return SimpleNamespace(content=json.dumps(dict(offer_present=False, offer_quote="", valid=False,
-                body_violations=[], unsafe_suggestion_indexes=[], failure_reason='', delivery_matches_route=True)))
+            payload = dict(offer_present=False, offer_quote="", valid=False,
+                body_violations=[], unsafe_suggestion_indexes=[], failure_reason='')
+            if review_kind == 'formal':
+                payload['delivery_matches_route'] = True
+            return SimpleNamespace(content=json.dumps(payload))
 
     async def config(_):
         return dict(model='test', base_url='http://test.invalid')
 
     async def factory(*args, **kwargs):
+        clients.append(kwargs)
         assert kwargs['max_retries'] == 0
         assert kwargs['timeout'] == (
             evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS if disputed
             else evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
         )
-        # 正式快检输出余量和争议输出预算保持原约束。
-        assert kwargs['max_completion_tokens'] == (4096 if disputed else 512)
+        # Changing input capacity must not change output headroom, retries, or waiting deadlines.
+        fast_output = {'formal': 512, 'ordinary': 320, 'missed': 320}[review_kind]
+        assert kwargs['max_completion_tokens'] in (
+            {4096} if disputed else {fast_output, 190} if review_kind == 'formal' else {fast_output}
+        )
         return Client()
 
     monkeypatch.setattr(evaluator, '_model_config', config)
     monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
-    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda _: {'enable_thinking': True})
+    monkeypatch.setattr(evaluator, 'focus_extra_body', lambda *_: {'enable_thinking': True})
     engine, session, outcome, candidate = _fixture(repetitions)
-    kwargs = dict(engine=engine, session=session, message='好。', actor_performance=candidate, transition_outcome=outcome)
+    if review_kind != 'formal':
+        candidate = {'performance': candidate['segments'][0]['performance'], 'suggested_inputs': []}
+    kwargs = dict(engine=engine, session=session, message='好。', actor_performance=candidate)
+    if review_kind == 'formal':
+        kwargs['transition_outcome'] = outcome
+    elif review_kind == 'missed':
+        kwargs['check_missed_initiation'] = True
     worker = evaluator.NumericV2MetricEvaluator(object())
     if allowed:
         await worker.validate_transition_offer(**kwargs, dispute_review=disputed)
-        assert len(calls) == 1
+        assert len(calls) == 1  # Scene fake records the full evidence packet.
+        assert len(clients) == (2 if review_kind == "formal" else 1)
         tokens = sum(evaluator.count_tokens(m.content) for m in calls[0])
-        assert 4200 < tokens <= NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy']['formal_judge_input_max_tokens'] == 8000
-        if repetitions == 950:
-            assert tokens > 6000
-        data = json.loads(calls[0][1].content.split('：', 1)[1])
-        # 正式快检与争议复查也须区分摘录与完整证据，不能由缺项否定已做动作。
+        budget = NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy']
+        assert budget['judge_input_max_tokens'] == budget['formal_judge_input_max_tokens'] == 10000
+        assert 9500 < tokens <= 10000
+        data = prompt_payload(calls[0][1].content)
+        # Both official quick checks and dispute reviews must distinguish excerpts from complete evidence; missing fields cannot negate completed actions.
         assert 'excerpt_only' in calls[0][0].content
-        assert data['candidate_segments'][0]['performance'] == candidate['segments'][0]['performance']
+        if review_kind == 'formal':
+            assert data['candidate_segments'][0]['performance'] == candidate['segments'][0]['performance']
+        else:
+            assert data['actor_performance'] == candidate['performance']
+            assert ('missed_initiation_check' in data) is (review_kind == 'missed')
     else:
         with pytest.raises(evaluator.NumericV2EvaluatorError, match='transition_review_budget_exceeded'):
             await worker.validate_transition_offer(**kwargs, dispute_review=disputed)
-        assert calls == []
+        assert calls == clients == []
 
 
-def test_formal_packing_keeps_more_history_without_changing_ordinary_review(monkeypatch):
-    """Formal-capacity experiments must not change the confirmed ordinary 6000-token budget."""
+def test_formal_budget_override_does_not_change_ordinary_packing(monkeypatch):
+    """The legacy formal budget key still controls only formal packing when overridden."""
     engine, session, outcome, candidate = _fixture(200)
     history = tuple({'revision': i, 'from_node_id': 'start', 'to_node_id': 'start', 'performance_contract_version': 3,
         'input_text': '我听见了。', 'performance': '（' + '她整理好手边的工具。' * 80 + '）'} for i in range(1, 7))
@@ -92,6 +121,6 @@ def test_formal_packing_keeps_more_history_without_changing_ordinary_review(monk
     monkeypatch.setitem(NUMERIC_V2_ACTOR_BUDGET_PROFILES['economy'], 'formal_judge_input_max_tokens', 4200)
     old_formal, ordinary_again = build(True), build(False)
     assert [m.content for m in ordinary] == [m.content for m in ordinary_again]
-    assert sum(evaluator.count_tokens(m.content) for m in ordinary) <= 6000
-    assert sum(evaluator.count_tokens(m.content) for m in expanded) <= 8000
-    assert len(json.loads(expanded[1].content.split('：', 1)[1])['scene_context']) > len(json.loads(old_formal[1].content.split('：', 1)[1])['scene_context'])
+    assert sum(evaluator.count_tokens(m.content) for m in ordinary) <= 10000
+    assert sum(evaluator.count_tokens(m.content) for m in expanded) <= 10000
+    assert len(prompt_payload(expanded[1].content)['scene_context']) > len(prompt_payload(old_formal[1].content)['scene_context'])

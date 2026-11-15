@@ -44,6 +44,7 @@ from ._shared import (
     uuid,
     websockets,
 )
+from main_logic.agent_event_bus import conversation_reply_observation, schedule_conversation_fact_observed_best_effort
 from main_logic.provider_failure_signals import (
     CODES_REQUIRING_MSG_DETAIL,
     classify_provider_failure_text,
@@ -55,6 +56,18 @@ from ._protocol_capabilities import (
 
 
 _ATTACHED_TRANSPORT = object()
+_VOICE_RESPONSE_DELTAS = frozenset({
+    "response.text.delta", "response.output_text.delta",
+    "response.audio.delta", "response.output_audio.delta",
+    "response.audio_transcript.delta", "response.output_audio_transcript.delta",
+})
+_VOICE_RESPONSE_TRANSCRIPT_ENDS = frozenset({
+    "response.audio_transcript.done", "response.output_audio_transcript.done",
+})
+_VOICE_AUDIO_DELTAS = frozenset({"response.audio.delta", "response.output_audio.delta"})
+_VOICE_TRANSCRIPT_DELTAS = frozenset({
+    "response.audio_transcript.delta", "response.output_audio_transcript.delta",
+})
 
 
 class _RealtimeEventOwnerRetired(ConnectionError):
@@ -76,6 +89,7 @@ _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 # arrives right behind its original, so this only has to outlive the events
 # interleaved between them; it is a leak guard, not a history.
 _USAGE_RECORDED_ID_LIMIT = 32
+_RECENT_RESPONSE_TERMINAL_LIMIT = 32
 _INPUT_ROUTE_IDENTITY_ITEM_LIMIT = 8
 # ``None`` is a valid route owner (no active game route), so the "nothing to
 # freeze" answer needs its own sentinel.
@@ -95,16 +109,16 @@ _RAW_SCOPED_UTTERANCE_MEMORY = 8
 # from it would put the record decades away.
 _FRAME_BUS_MAX_CAPTURE_AGE_SECONDS = 300.0
 
-# `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
-# 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
-# 生成的客户端相关性 id（`event_user_item_<uuid4().hex>` 之类）。hex 的字符集是
-# 0-9a-f，'429' 这三个字符全在里面：32 位 hex 串里随机出现 '429' 的概率约 0.7%，
-# '1008' 约 0.04%，'503' 约 0.7%。撞上一次，一次普通的「这条事件被拒」就被误判成配额 /
-# 策略致命错误，直接 close() 掉整条 realtime 连接 —— 用户话说到一半，连接没了，而且
-# 无法复现。id 只是相关性标识，不携带任何分类信息，所以分类前先把它们剔干净。
+# Fatal error-event classification matches substrings ('429'/'1008'/'503'/'quota'...). Previously
+# it inspected str(event['error']), the entire dictionary repr including our own
+# generated correlation IDs such as event_user_item_<uuid4().hex>. Hex uses
+# 0-9a-f, containing every character in 429: a random 32-character ID contains it about 0.7%
+# of the time, 1008 about 0.04%, and 503 about 0.7%. One collision turns ordinary event
+# rejection into fatal quota/policy errors, closing realtime mid-utterance unpredictably.
+# IDs carry correlation only, never classification meaning; remove them before classification.
 #
-# 只剔 id 字段，不动 message / code / type / param：`code: 1008`、`"HTTP 429"` 这些
-# 真信号一个不少。剔掉的字段照样进日志和 on_connection_error，诊断信息没有损失。
+# Remove ID fields only, preserving message/code/type/param and real signals such as code:1008 or HTTP 429.
+# Removed fields still enter diagnostics and on_connection_error, losing no information.
 def _is_correlation_key(key: str) -> bool:
     lowered = key.lower()
     return lowered == "id" or lowered.endswith("_id")
@@ -513,17 +527,18 @@ class _TransportMixin:
         self._reset_input_route_identity_stream()
         return identity
 
-    async def _deliver_input_transcript(self, transcript: str, *, item_id: object = None) -> None:
+    async def _deliver_input_transcript(self, transcript: str, *, item_id: object = None) -> bool:
         identity = self._take_input_route_identity(item_id)
         routed_callback = getattr(self, "on_input_transcript_with_route", None)
         if callable(routed_callback):
-            await routed_callback(
+            result = await routed_callback(
                 transcript,
                 source_game_route_identity=identity,
             )
-            return
+            return result is not False
         if self.on_input_transcript:
-            await self.on_input_transcript(transcript)
+            return (await self.on_input_transcript(transcript)) is not False
+        return True
 
     async def connect(self, instructions: str, native_audio=True) -> None:
         """Establish WebSocket connection with the Realtime API."""
@@ -533,9 +548,9 @@ class _TransportMixin:
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
-        # 同一个实例会被跨会话复用，所以 close() 立起来的帧抄送闭锁必须在这里
-        # 落下——否则重连之后 frames 总线上这个角色就再也不出现了，而且是静默
-        # 的（抄送本来就是 best-effort，没人会因此报错）。
+        # Instances are reused across sessions; release close()'s frame-copy latch here,
+        # or this character silently disappears forever from the frames bus after reconnect,
+        # since copying is best effort and emits no failure.
         self._frame_copies_closed = False
 
         # [ISSUE4c] Reset the tool-call flood window on every (re)connect. The
@@ -551,9 +566,6 @@ class _TransportMixin:
         # after a reconnect would otherwise have the new session's first turns
         # suppressed as already-billed duplicates.
         self._usage_recorded_ids = []
-        # Same lifetime as the id bookkeeping above, and for the same
-        # reason: a reconnect may reach a different upstream.
-        self._announces_responses = False
         # Same lifetime, same reason: the quarantine is lowered only by a
         # response.created on THIS socket, so a replacement connection to a
         # never-announcing upstream would never clear it. Unreachable today
@@ -573,7 +585,7 @@ class _TransportMixin:
             self._response_arbiter.reset_connection_state()
             return
 
-        # 确保开始新连接时状态完全重置
+        # Fully reset state when starting a connection.
         self._silence_reset_pending = False
         self._last_silence_clear_speech_time = 0.0
         self._last_local_loud_time = 0.0
@@ -590,7 +602,7 @@ class _TransportMixin:
         self._clear_uplink_resampler()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
-        # GLM Plus 不能出现在 ?model= 上，见 glm_realtime_gateway_model。
+        # GLM Plus must not appear in ?model=; see glm_realtime_gateway_model.
         query_model = (
             glm_realtime_gateway_model(self.model, self.base_url)
             if self._is_glm_realtime()
@@ -620,12 +632,12 @@ class _TransportMixin:
             capabilities.response_start_evidence.value,
         )
 
-        # 启动静默检测任务（只在启用时）
+        # Start silence detection only when enabled.
         self._last_speech_time = time.time()
         self._silence_timeout_triggered = False
         if self._silence_check_task:
             self._silence_check_task.cancel()
-        # 只在启用静默超时时启动检测任务
+        # Start the detector only with silence timeouts enabled.
         if self._enable_silence_timeout:
             self._silence_check_task = asyncio.create_task(self._check_silence_timeout())
         else:
@@ -681,9 +693,9 @@ class _TransportMixin:
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
                 "turn_detection": None if is_manual else {
-                    # Qwen3 系全模态（qwen3-omni / 3.5 / 3.8）实测都接受
-                    # semantic_vad；qwen-omni-turbo-realtime 收到它不回
-                    # session.updated，沿用 server_vad。
+                    # Qwen3 omni models (qwen3-omni/3.5/3.8) all accept
+                    # semantic_vad in testing; qwen-omni-turbo-realtime does not acknowledge
+                    # session.updated with it, so retain server_vad.
                     "type": "semantic_vad" if "qwen3" in self._model_lower else "server_vad",
                     "threshold": 0.55,
                     "prefix_padding_ms": 300,
@@ -694,11 +706,11 @@ class _TransportMixin:
                 # "enable_search": True,
                 # "search_options": {'enable_source': True}
             }
-            # Qwen-Omni-Realtime 自 2026 起支持 tools（嵌套 function 形，
-            # 同 StepFun）。重要约束：tools 与 enable_search 互斥——
-            # 我们注册了自定义工具时强制 enable_search=False，避免
-            # session.update 被服务端拒绝。文档参见 Aliyun client-events
-            # 章节 "工具调用（tools）和联网搜索（enable_search）不兼容"。
+            # Qwen-Omni-Realtime supports nested-function tools since 2026, matching StepFun.
+            # Crucial constraint: tools and enable_search are mutually exclusive;
+            # force enable_search=False when custom tools are registered, avoiding
+            # rejected session.update. See Aliyun client-events documentation's
+            # tools-and-enable_search incompatibility section.
             if self.has_tools():
                 qwen_session["tools"] = self._tools_for_qwen()
                 qwen_session["enable_search"] = False
@@ -711,10 +723,10 @@ class _TransportMixin:
                 "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
                 "audio": {
                     "input": {
-                        # OpenAI Realtime PCM 输入只支持 24kHz；显式声明以匹配
-                        # 我们 _resample_uplink 上采后的实际采样率。复用
-                        # _uplink_sample_rate（此分支恒为 24000）作单一数据源，
-                        # 避免声明与实际两处来源漂移。
+                        # OpenAI Realtime PCM input supports only 24kHz; declare it explicitly
+                        # to match _resample_uplink's actual upsampled rate. Reuse
+                        # _uplink_sample_rate, always 24000 in this branch, as the single source
+                        # to prevent declaration/actual-rate drift.
                         "format": {"type": "audio/pcm", "rate": self._uplink_sample_rate},
                         "transcription": {"model": "gpt-4o-mini-transcribe"},
                         "turn_detection": None if is_manual else {
@@ -738,7 +750,7 @@ class _TransportMixin:
             default_voice = get_stepfun_tts_default_voice('step')
             step_session = {
                 "instructions": instructions,
-                "modalities": ['text', 'audio'], # Step API只支持这一个模式
+                "modalities": ['text', 'audio'], # Step API supports this mode only.
                 "voice": self.voice if self.voice else default_voice,
                 "input_audio_format": "pcm16",
                 "output_audio_format": "pcm16",
@@ -782,9 +794,9 @@ class _TransportMixin:
                     "type": "server_vad"
                 },
             }
-            # 海外免费（lanlan.app，Gemini 代理）建 session 时一次性指定
-            # language_code，与 TTS server 路对偶；lanlan.tech（StepFun）不发，
-            # 沿用其自动识别 / voice_label 语义。
+            # Overseas free lanlan.app Gemini proxy sets language_code once
+            # at session creation, symmetric with TTS servers. lanlan.tech StepFun omits it,
+            # retaining automatic detection / voice_label semantics.
             if 'lanlan.app' in (self.base_url or ''):
                 from utils.language_utils import get_tts_language_code
                 free_session["language_code"] = get_tts_language_code()
@@ -794,9 +806,9 @@ class _TransportMixin:
             free_session["tools"] = free_tools
             await self.update_session(free_session)
         elif "grok" in self._model_lower:
-            # xAI Grok Voice：OpenAI Realtime 1.0 风格的扁平 schema。
-            # 内置 voice 见 GET /v1/tts/voices（eve/ara/leo/rex/sal），默认 eve。
-            # tools 走 OpenAI 兼容的 function 协议（response.function_call_arguments.done）。
+            # xAI Grok Voice: flat OpenAI Realtime 1.0 schema.
+            # Built-in voices from GET /v1/tts/voices: eve/ara/leo/rex/sal, default eve.
+            # Tools use OpenAI-compatible functions through response.function_call_arguments.done.
             grok_session = {
                 "instructions": instructions,
                 "modalities": self._modalities,
@@ -949,9 +961,9 @@ class _TransportMixin:
                 )
                 return new_payload
 
-        # 压到底仍然超限：与其整条 item 被丢掉（那会让本轮既没有图也没有
-        # transcript 进 provider 历史），不如按"多余丢弃"逐张摘掉最旧的那些。
-        # 最新那张必须留 —— 回合身份和 TTL 都以它为准。
+        # Still oversized after maximum compression: drop oldest excess images individually rather than
+        # losing the entire item, including both images and transcript from provider history.
+        # Always retain the latest frame, which defines turn identity and TTL.
         content = event["item"]["content"]
         while len(decoded) > 1:
             dropped_part, _prefix, _img = decoded.pop(0)
@@ -985,30 +997,30 @@ class _TransportMixin:
     ) -> bool:
         if send_guard is not None and not send_guard():
             raise ConnectionError("realtime event owner is no longer current")
-        # 检查是否已发生致命错误，直接跳过发送
+        # Skip sending immediately after fatal errors.
         if self._fatal_error_occurred:
             return False
 
-        # Gemini 不使用 WebSocket 风格的事件发送
-        # 而是使用 session.send_client_content() 或 session.send_realtime_input()
+        # Gemini does not send WebSocket-style events;
+        # it uses session.send_client_content() / session.send_realtime_input().
         if self._is_gemini:
-            # Gemini 的事件通过专用方法处理，这里直接返回
-            # 对于 session.update / conversation.item.create 等事件，Gemini 不支持
+            # Dedicated methods handle Gemini events; return directly here.
+            # Gemini does not support events such as session.update / conversation.item.create.
             logger.debug(f"Gemini mode: skipping WebSocket event {event.get('type', 'unknown')}")
             return False
 
-        # Backpressure: 检查是否处于节流状态
+        # Backpressure: check throttling.
         if self._is_throttled:
             if time.time() < self._throttle_until:
-                # 仍在节流期，丢弃音频帧以减轻服务器压力
+                # During throttling, drop audio frames to reduce server pressure.
                 if event.get("type") == "input_audio_buffer.append":
-                    return False  # 丢弃音频帧
+                    return False  # Drop audio frames.
             else:
-                # 节流期结束，恢复正常发送
+                # Throttle expired: resume normal sending.
                 self._is_throttled = False
                 logger.info("🔄 Backpressure throttle ended, resuming sends")
 
-        # 检查websocket是否有效
+        # Validate websocket availability.
         if not self.ws:
             return False
 
@@ -1017,7 +1029,7 @@ class _TransportMixin:
         # ``error.event_id`` echoes for rejection callbacks) keep theirs.
         # Otherwise fall back to the legacy timestamp-based id.
         event.setdefault('event_id', "event_" + str(int(time.time() * 1000)))
-        async with self._send_semaphore:  # 限制并发发送数量
+        async with self._send_semaphore:  # Limit concurrent sends.
             try:
                 if send_guard is not None and not send_guard():
                     raise _RealtimeEventOwnerRetired(
@@ -1026,10 +1038,10 @@ class _TransportMixin:
                 if not self.ws:
                     return False
                 if pre_send is not None:
-                    # 临界区之内、序列化**之前**的最后一次就地改写机会。等信号量
-                    # 是真实让出点，调用方在此之前做的任何判据都可能在这段等待里
-                    # 翻转；而 payload 是下一行才生成的，所以在这里改 event 就能
-                    # 被带上，不需要重新序列化。
+                    # Last chance for in-place changes inside the critical section before serialization. Waiting
+                    # on the semaphore yields, so earlier caller checks may change meanwhile;
+                    # payload is created on the next line, making edits here effective
+                    # without reserialization.
                     pre_send(event)
                 payload = json.dumps(event)
                 # Guard: Qwen/GLM/Step servers enforce 256KB max frame; for
@@ -1047,16 +1059,16 @@ class _TransportMixin:
                                 "image payload exceeds realtime WebSocket frame limit"
                             )
                         return False
-                # 发送前的两道复查，判据不同、都要跑：send_guard 管「这条连接还
-                # 是不是当前所有者」，raw-vision fence 管「这一帧还符不符合当前
-                # 路由模式」。等信号量、重压缩超大图都是让出点，两者都可能在这
-                # 期间翻转。
+                # Two distinct presend checks both run: send_guard verifies current connection
+                # ownership; raw-vision fencing verifies the frame still fits current routing
+                # mode. Semaphore waits and oversized-image recompression yield, allowing either
+                # condition to change.
                 #
-                # 注意 expected_visual_mode 是**送出时的那个模式**，不是写死的
-                # NATIVE：fence 要拦的是"帧在准入之后跨过了模式边界"，不是"只准
-                # 在 native 模式下发原始帧"。描述模式下主动搭话的那张一次性 cue
-                # 图就是照原样送的（见 stream_image 里 cache_latest=False 的分支），
-                # 写死 NATIVE 会把它一并拦掉。
+                # expected_visual_mode is the mode at sending, never hardcoded
+                # NATIVE: fences prevent post-admission mode-boundary crossings, not every
+                # raw frame outside native mode. Description-mode proactive one-shot cue
+                # images pass unchanged (stream_image cache_latest=False);
+                # hardcoded NATIVE would wrongly block them too.
                 if send_guard is not None and not send_guard():
                     raise _RealtimeEventOwnerRetired(
                         "realtime event owner is no longer current"
@@ -1077,10 +1089,10 @@ class _TransportMixin:
                 transport = self.ws
                 if not transport:
                     return False
-                # 结构化 wire trace（NEKO_REALTIME_WIRE_TRACE，默认关）：写出之后才记，
-                # 只记类型/id/计数；recorder 自己吞掉异常，不会影响发送结果。
-                # generation 必须在 await send 之前同步读：等待期间换上新连接会把
-                # generation 加 1，这条写到旧 socket 上的事件不能记到新连接名下。
+                # Structured wire traces (NEKO_REALTIME_WIRE_TRACE, off by default) record after successful writing,
+                # including types/IDs/counts only. Recorder errors never affect send results.
+                # Read generation synchronously before awaiting send: replacing connections during waits increments
+                # generation, and old-socket events must not be attributed to new connections.
                 wire_trace = getattr(self, "_wire_trace", None)
                 trace_generation = (
                     getattr(self, "_connection_generation", None)
@@ -1148,9 +1160,9 @@ class _TransportMixin:
             raise
         except Exception:
             pass
-        # GLM 的 session.update 会重置没带上的字段。缺 beta_fields 会把
-        # video_passive 打回 audio 并拆掉下游；缺 model 会把 Plus 退回默认
-        # glm-realtime。调用方显式传入时尊重调用方。
+        # GLM session.update resets omitted fields: missing beta_fields changes
+        # video_passive to audio and removes downstream; missing model downgrades Plus
+        # to default glm-realtime. Respect explicit caller values.
         if self._is_glm_realtime():
             pinned: Dict[str, Any] = {}
             if "beta_fields" not in config:
@@ -1236,7 +1248,7 @@ class _TransportMixin:
         ordinary microphone path deliberately keeps the BASE return value of
         ``None`` even when the transport reports a definitive result.
         """
-        # 检查是否已发生致命错误，如果是则直接返回
+        # Return immediately after fatal errors.
         if self._fatal_error_occurred:
             return False if require_output_commit else None
 
@@ -1246,7 +1258,7 @@ class _TransportMixin:
             else time.time()
         )
 
-        # 本地音量判定：用原始输入做 RMS，避免 VAD 延迟时误清 buffer
+        # Local volume detection uses raw-input RMS, preventing mistaken buffer clearing during VAD delay.
         ingress_route_identity = self._read_input_route_identity()
         self._ensure_voice_handoff_audio_timeline()
         handoff_input_sequence = getattr(self, "_voice_handoff_input_sequence", 0)
@@ -1346,7 +1358,7 @@ class _TransportMixin:
                     self._client_vad_last_speech_time = audio_timeline_at
                     self._client_vad_active = True
 
-            # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音。
+            # Silence clearing trusts RNNoise when available, otherwise VAD plus continuous local silence.
             if self._should_clear_audio_buffer_on_silence(
                 audio_timeline_at,
                 use_rnnoise_path,
@@ -1401,7 +1413,7 @@ class _TransportMixin:
         must not overwrite or consume the ambient screen/camera snapshot state.
         """
         try:
-            # 使用统一的视觉分析函数
+            # Use the shared visual-analysis helper.
             from utils.screenshot_utils import analyze_image_with_vision_model
 
             description = await analyze_image_with_vision_model(
@@ -1433,7 +1445,7 @@ class _TransportMixin:
                 self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                 self._latest_image_b64 = None
                 self._proactive_image_consumed = True
-            # 检测内容审查错误并发送中文提示到前端（不关闭session）
+            # Detect moderation errors and send Chinese frontend notices without closing sessions.
             error_str = str(e)
             if 'censorship' in error_str:
                 if self.on_status_message:
@@ -1767,8 +1779,8 @@ class _TransportMixin:
             callback_owned_raw_image = bool(
                 not cache_latest and str(source or "").strip() == "callback"
             )
-            # 主动搭话那一张 cue 图。与上面同款谓词并列，别只判 not cache_latest
-            # —— 那覆盖的是所有一次性图（callback media、插件 read 图都算）。
+            # The proactive cue image: use the same explicit predicate as above, never merely not cache_latest,
+            # which also covers callback media and plugin-read images.
             proactive_cue_image = bool(
                 not cache_latest and str(source or "").strip() == "proactive"
             )
@@ -1790,40 +1802,40 @@ class _TransportMixin:
                 )
             if delivery_mode == VisualDeliveryMode.EXTERNAL_DESCRIPTION:
                 if proactive_cue_image:
-                    # 一次性 cue 图（主动搭话的那张截图），不是环境帧。
+                    # One-shot proactive screenshot cue, not an ambient frame.
                     #
-                    # 这里**不**返回 handoff_required：多模态 handoff 是给独立 ASR
-                    # 回合准备的，主动搭话没有那样一个回合可以交接，调用方
-                    # (prompt_ephemeral) 拿不到东西就会把快照判成终局失败、
-                    # _mark_snapshot_consumed_if_current() 永久退休它——于是描述
-                    # 模式下每一次主动搭话都静默丢掉自己的视觉上下文。
+                    # Do not return handoff_required: multimodal handoff serves independent ASR
+                    # turns, while proactive delivery has no such turn. Without a result,
+                    # prompt_ephemeral classifies the snapshot as terminal failure and
+                    # _mark_snapshot_consumed_if_current() permanently retires it, silently
+                    # losing every description-mode proactive turn's visual context.
                     #
-                    # 直接落到下面的原生发送路径把图原样送出去，调用方补一句简单
-                    # 引导即可，不再为它单独跑一次 VISION_MODEL 注释。
-                    # 原始帧闸门在上面已经明确豁免了描述模式，所以这里不越权。
-                    # 收不了原始图的 provider（标准 StepFun，_supports_native_image
-                    # 为假）会继续走下面那条 VISION_MODEL 分支——对它们那是唯一通道。
+                    # Fall directly into native sending below, delivering the image unchanged with a simple
+                    # caller-supplied cue rather than another VISION_MODEL annotation call.
+                    # Raw-frame gating above explicitly exempts description mode, so this does not exceed authorization.
+                    # Providers lacking raw-image support (standard StepFun, _supports_native_image=False)
+                    # still use VISION_MODEL below, their sole available path.
                     #
-                    # ⚠️ 判据必须带 source == "proactive"，只放行主动搭话那一张 cue
-                    # 图。一开始我只判 not cache_latest，那覆盖的是**所有**一次性
-                    # 图：callback media（source="callback"）和插件 read 图
-                    # （source="plugin"）也跟着上了线。后果不止是越权——仓库里另外
-                    # 三个 cache_latest=False 的调用方各自维护着一套"这次有没有走
-                    # 原始 WS 投递"的判据，全都写死 _visual_delivery_mode ==
+                    # Require source=="proactive", allowing only its one-shot cue image.
+                    # Initially checking only not cache_latest admitted all one-shot
+                    # images, including callback media (source="callback") and plugin reads
+                    # (source="plugin"). Beyond excess authorization, three other repository
+                    # cache_latest=False callers independently determine raw-WebSocket
+                    # delivery with hardcoded _visual_delivery_mode == checks:
                     # "native"：
-                    #   proactive.py 的 attempted_websocket_native_delivery 和
-                    #   websocket_native_delivery —— 它们控制着写到一半抛异常时
-                    #   要不要退掉 session（字节可能已经过界），在描述模式下会
-                    #   静默失效；
-                    #   passive callback 那条"必须以原始媒体到达最终 VLM"的约定，
-                    #   原本正是靠这里回 handoff_required 落实的。
-                    # 收窄到 proactive 之后这些路径回到 handoff_required，那些判据
-                    # 也就不会被绕过。
+                    # proactive.py attempted_websocket_native_delivery and
+                    # websocket_native_delivery determine whether partial-write exceptions
+                    # require session retirement because bytes may already have crossed boundaries;
+                    # description mode would silently bypass them.
+                    # Passive callback's raw-media-must-reach-final-VLM contract
+                    # was enforced precisely by handoff_required here.
+                    # Restricting to proactive returns other paths to handoff_required,
+                    # preserving those predicates.
                     pass
                 elif not cache_latest:
-                    # 其余一次性图（callback media / 插件 read）维持原状：多模态
-                    # handoff 是它们的通道，也是 passive callback"必须以原始媒体
-                    # 到达最终 VLM"那条约定的落实方式。
+                    # Other one-shot callback/plugin images keep existing multimodal
+                    # handoff, enforcing passive callbacks' requirement that original media
+                    # reach the final VLM.
                     return ImageStageResult(
                         accepted=False,
                         mode="handoff_required",
@@ -1857,7 +1869,7 @@ class _TransportMixin:
             # Standard StepFun is the only realtime provider without native
             # vision; its first frame triggers VISION_MODEL analysis.
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
-                # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
+                # Nonnative visual backends analyze only this turn's first frame; discard later high-frequency frames to avoid flooding VISION_MODEL concurrently.
                 async with self._image_lock:
                     if self._image_recognized_this_turn or self._image_being_analyzed:
                         return ImageStageResult(
@@ -1944,11 +1956,11 @@ class _TransportMixin:
                             )
                             != delivery_mode
                             or (
-                                # 与本函数入口那道闸门同口径：描述模式是被明确
-                                # 豁免的（set_visual_delivery_mode 进这个模式时
-                                # 会顺手把 _raw_visual_delivery_blocked 置上，
-                                # 所以只看这个标志会把描述模式下的一次性 cue 图
-                                # 一起拦掉——Gemini 的主动搭话原始图投递整条断掉）。
+                                # Match entry gating: description mode is explicitly
+                                # exempt. set_visual_delivery_mode also sets
+                                # _raw_visual_delivery_blocked when entering it,
+                                # so checking that flag alone blocks description-mode one-shot cues,
+                                # breaking all Gemini proactive raw-image delivery.
                                 delivery_mode
                                 != VisualDeliveryMode.EXTERNAL_DESCRIPTION
                                 and getattr(
@@ -1977,8 +1989,8 @@ class _TransportMixin:
                         raise
                     if self._supports_native_image:
                         self._last_native_image_time = current_time
-                    # 送到了才复制。Gemini 不走 send_event，没有那条就地重压缩
-                    # 的路径，所以 image_b64 就是 provider 收到的那份字节。
+                    # Copy only after delivery. Gemini bypasses send_event's in-place recompression,
+                    # so image_b64 is exactly what the provider received.
                     self._publish_provider_frame(
                         image_b64,
                         source=source,
@@ -2022,11 +2034,11 @@ class _TransportMixin:
                 if sent and self._supports_native_image:
                     self._last_native_image_time = current_time
                 if sent:
-                    # 只判 sent，别跟着上面那半条件走：_supports_native_image 管
-                    # 的是节流时间戳该不该更新，不是"这一帧有没有送出去"——free
-                    # 路该标志为假时照样把帧发了出去，带上它就会静默漏掉真实投递。
-                    # 字节从 append_event 里读回来——send_event 对超限帧的重压缩
-                    # 是就地改写 event 的，参数里那份已不是 provider 收到的图。
+                    # Check sent only, not the preceding conjunction: _supports_native_image decides
+                    # throttle-timestamp updates, not delivery success. Free routing still sends with
+                    # that flag False; including it silently misses actual delivery.
+                    # Read bytes back from append_event: send_event recompresses oversized images
+                    # in place, so the argument no longer matches provider-received content.
                     self._publish_provider_frame_from_event(
                         append_event,
                         source=source,
@@ -2140,11 +2152,11 @@ class _TransportMixin:
                 if sent and self._supports_native_image:
                     self._last_native_image_time = current_time
                 if sent:
-                    # 只判 sent，别跟着上面那半条件走：_supports_native_image 管
-                    # 的是节流时间戳该不该更新，不是"这一帧有没有送出去"——free
-                    # 路该标志为假时照样把帧发了出去，带上它就会静默漏掉真实投递。
-                    # 字节从 append_event 里读回来——send_event 对超限帧的重压缩
-                    # 是就地改写 event 的，参数里那份已不是 provider 收到的图。
+                    # Check sent only, not the preceding conjunction: _supports_native_image decides
+                    # throttle-timestamp updates, not delivery success. Free routing still sends with
+                    # that flag False; including it silently misses actual delivery.
+                    # Read bytes back from append_event: send_event recompresses oversized images
+                    # in place, so the argument no longer matches provider-received content.
                     self._publish_provider_frame_from_event(
                         append_event,
                         source=source,
@@ -2186,26 +2198,26 @@ class _TransportMixin:
         Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
         """
 
-        # 与最近的回复比较相似度
+        # Compare similarity against recent replies.
         high_similarity_count = 0
         for recent in self._recent_responses:
             similarity = calculate_text_similarity(response, recent)
             if similarity >= self._repetition_threshold:
                 high_similarity_count += 1
 
-        # 添加到最近回复列表
+        # Append to recent replies.
         self._recent_responses.append(response)
         if len(self._recent_responses) > self._max_recent_responses:
             self._recent_responses.pop(0)
 
-        # 如果与最近2轮都高度重复（即第3轮重复），触发检测
+        # Detect repetition when highly similar to both previous replies, the third repeated round.
         if high_similarity_count >= 2:
             logger.warning(f"OmniRealtimeClient: 检测到连续{high_similarity_count + 1}轮高重复度对话")
 
-            # 清空重复检测缓存
+            # Clear repetition-detection cache.
             self._recent_responses.clear()
 
-            # 触发回调
+            # Trigger the callback.
             if should_recover is not None and not should_recover():
                 # Recording history is about the text this turn produced and
                 # lands nowhere else. The RECOVERY is not: the host clears the
@@ -2242,7 +2254,7 @@ class _TransportMixin:
         """
 
         self._audio_delta_count = 0
-        # 确保 buffer 被清空
+        # Ensure buffer clearing.
         self._output_transcript_buffer = ""
         self._print_input_transcript = False
         if self._supports_native_image:
@@ -2402,9 +2414,9 @@ class _TransportMixin:
             and self._audio_delta_count > 0
         ):
             return None
-        # 「有声无字」是反复出现的问题（见 ISSUE4b），留一条 debug 日志方便下次
-        # 诊断时确认是这条兜底生效、还是 streaming/transcript.done 路径生效。
-        # audio_delta_count 此处尚未清零，记录的是本轮真实值。
+        # Audio without text recurs (ISSUE4b); leave a debug message to distinguish this fallback
+        # from streaming/transcript.done paths in later diagnosis.
+        # audio_delta_count has not reset yet and reflects this round's actual count.
         logger.debug(
             "turn-end 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
             len(self._output_transcript_buffer),
@@ -2415,6 +2427,49 @@ class _TransportMixin:
         self._is_first_transcript_chunk = False
         return pending
 
+    async def _observed_text_callback(self, callback, *args):
+        observation = getattr(self, "_realtime_conversation_observation", None)
+        if observation and observation.get("closed"):
+            if observation.get("allow_text_continuations") and observation.get("close_reason") == "completed":
+                # Gemini already classified this as the same turn. Reuse its
+                # transcript only during the callback; Core projects shown text.
+                observation["_text_snapshot"] = self._gemini_current_transcript
+            else:
+                observation = None
+        token = conversation_reply_observation.set(observation)
+        try:
+            return await callback(*args)
+        finally:
+            if observation is not None:
+                observation.pop("_text_snapshot", None)
+            conversation_reply_observation.reset(token)
+
+    def _close_realtime_conversation_observation(self, status: str) -> None:
+        observation = getattr(self, "_realtime_conversation_observation", None)
+        if not observation or observation.get("closed") or not observation.get("started"):
+            return
+        observation["closed"] = True
+        if status in ("completed", "success", "succeeded"):
+            reason = "completed"
+        elif status in ("cancelled", "canceled"):
+            reason = "interrupted"
+        elif status in ("failed", "error"):
+            reason = "failed"
+        else:
+            reason = "unknown"
+        observation["close_reason"] = reason
+        schedule_conversation_fact_observed_best_effort(
+            self.lanlan_name,
+            fact="reply.closed",
+            payload={
+                "reply_id": observation["reply_id"], "input_id": None,
+                "turn_id": observation.get("turn_id"),
+                "character": self.lanlan_name, "text": None,
+                "origin": observation["origin"], "audio_expected": None,
+                "text_state": "closed", "close_reason": reason, "occurred_at": time.time(),
+            },
+        )
+
     async def _emit_pending_output_transcript(
         self, pending: tuple[str, bool] | None
     ) -> None:
@@ -2423,7 +2478,7 @@ class _TransportMixin:
         if pending is None or not self.on_output_transcript:
             return
         text, is_first = pending
-        await self.on_output_transcript(text, is_first)
+        await self._observed_text_callback(self.on_output_transcript, text, is_first)
 
     def _clear_turn_response_state(self) -> None:
         """Drop the flags that say "a response is in progress".
@@ -2437,18 +2492,37 @@ class _TransportMixin:
         self._is_responding = False
         self._current_response_id = None
         self._current_item_id = None
+        self._recovered_voice_response = False
         self._skip_until_next_response = False
-        # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
+        # Clear interruption flags at response end so next-round text.delta cannot be blocked.
         self._interrupted = False
 
     def _begin_response_lifecycle(self, response_id: Any) -> None:
         """Apply the host-side state shared by all accepted start evidence."""
 
+        # Supersession ends the observation, but does not prove cancellation.
+        self._close_realtime_conversation_observation("unknown")
+        self._cancelled_voice_successor_sid = None
+        self._cancelled_voice_successor_has_input = False
+        self._cancelled_voice_response_id = None
+        self._cancelled_voice_early_output = None
+        self._cancelled_voice_started_item_id = None
+        self._recovered_voice_response = False
         self._current_response_id = response_id
         arbiter = getattr(self, "_response_arbiter", None)
         self._current_response_source = (
             arbiter.response_source_for(response_id) if arbiter is not None else None
         )
+        source = self._current_response_source
+        origin = None
+        if source == "proactive":
+            origin = {"kind": "unknown", "is_proactive": True, "plugin_id": None, "task_id": None}
+        elif source in ("external_asr", "external_asr_multimodal"):
+            origin = {"kind": "user_interaction", "is_proactive": False, "plugin_id": None, "task_id": None}
+        self._realtime_conversation_observation = ({
+            "reply_id": uuid.uuid4().hex, "origin": origin,
+            "started": False, "closed": False, "lifecycle": "realtime",
+        } if response_id else None)
         self._is_responding = True
         self._turn_epoch += 1
         self._current_turn_epoch = self._turn_epoch
@@ -2466,6 +2540,73 @@ class _TransportMixin:
         self._is_first_text_chunk = self._is_first_transcript_chunk = True
         self._output_transcript_buffer = ""
         self._current_response_transcript = ""
+
+    def _bind_unannounced_voice_response(self, response_id: str | None) -> bool:
+        """Bind a native reply after a cancelled proxy response rotated Core's ID."""
+        pending_sid = self._cancelled_voice_successor_sid
+        if (
+            pending_sid is None
+            or not self._cancelled_voice_successor_has_input
+            or self._announces_responses
+            or self._skip_until_next_response
+            or self._interrupted
+            or self._response_arbiter.has_live_response
+        ):
+            return False
+        if self._read_host_turn_id() != pending_sid:
+            # A different local turn has since taken the ID we reserved.
+            self._cancelled_voice_successor_sid = None
+            self._cancelled_voice_successor_has_input = False
+            self._cancelled_voice_early_output = None
+            return False
+        self._response_arbiter.notify_native_response_started(response_id)
+        self._begin_response_lifecycle(response_id)
+        self._recovered_voice_response = True
+        return True
+
+    def _observe_unannounced_voice_output(self, event: dict[str, Any]) -> None:
+        event_type = event.get("type")
+        if event_type in _VOICE_RESPONSE_DELTAS:
+            content = event.get("delta")
+        elif event_type in _VOICE_RESPONSE_TRANSCRIPT_ENDS:
+            if not self._cancelled_voice_successor_has_input:
+                # The normal transcript-end path drains the buffer below.
+                self._cancelled_voice_early_output = None
+                return
+            content = event.get("transcript")
+        else:
+            return
+        if not isinstance(content, str) or not content:
+            return
+        response_id = _response_id_text(event.get("response_id"))
+        if self._cancelled_voice_successor_has_input:
+            # Actual output following new input may reuse the cancelled ID.
+            # A delayed fragment from the cancelled reply can look identical.
+            self._bind_unannounced_voice_response(response_id)
+        elif (
+            not self._announces_responses
+            and not self._skip_until_next_response
+            and not self._interrupted
+            and not self._response_arbiter.has_live_response
+            and not self._print_input_transcript
+            and (event_type in _VOICE_AUDIO_DELTAS or event_type in _VOICE_TRANSCRIPT_DELTAS)
+        ):
+            # Before input is accepted, only remember identifiable output
+            # with no known terminal. Keep its slice of the transcript buffer.
+            early = self._cancelled_voice_early_output
+            if (
+                self._cancelled_voice_response_id is None
+                or response_id is None
+                or response_id == self._cancelled_voice_response_id
+                or response_id in self._recent_response_terminal_ids
+            ):
+                self._cancelled_voice_early_output = None
+            elif early is None or early[0] != response_id:
+                self._cancelled_voice_early_output = (response_id, len(self._output_transcript_buffer))
+        elif self._cancelled_voice_early_output is not None:
+            # Output that can already stream to Core no longer belongs to
+            # the buffered slice we were holding for the input transcript.
+            self._cancelled_voice_early_output = None
 
     def _read_host_turn_id(self) -> str | None:
         """Sample the host's live speech id, or None for "no answer".
@@ -2507,6 +2648,8 @@ class _TransportMixin:
         still_ours: Callable[[], bool] | None = None,
         connection_still_ours: Callable[[], bool] | None = None,
         carry_host_turn_forward: bool = False,
+        recover_cancelled_voice: bool = False,
+        cancelled_response_id: str | None = None,
     ) -> None:
         """Tell the host this turn is over.
 
@@ -2671,6 +2814,12 @@ class _TransportMixin:
             )
             return
         if not self._has_server_vad and self.on_sid_rotate:
+            recover_cancelled_voice = (
+                recover_cancelled_voice
+                and not self._announces_responses
+                and self._realtime_protocol_capabilities.accepts_id_bearing_content_start
+            )
+            previous_sid = self._read_host_turn_id() if recover_cancelled_voice else None
             try:
                 await self.on_sid_rotate()
             except asyncio.CancelledError:
@@ -2686,6 +2835,20 @@ class _TransportMixin:
                     self._current_turn_host_id = self._read_host_turn_id()
                     self._is_first_text_chunk = True
                     self._is_first_transcript_chunk = True
+                elif recover_cancelled_voice and (
+                    connection_still_ours is None or connection_still_ours()
+                ):
+                    next_sid = self._read_host_turn_id()
+                    if previous_sid is not None and next_sid is not None and next_sid != previous_sid:
+                        # Keep the old ownership until a successor produces
+                        # output, including when the cancelled response never
+                        # announced a start and we had no saved snapshot.
+                        self._current_turn_host_id = previous_sid
+                        self._cancelled_voice_successor_sid = next_sid
+                        self._cancelled_voice_successor_has_input = False
+                        self._cancelled_voice_response_id = cancelled_response_id
+                        self._cancelled_voice_early_output = None
+                        self._cancelled_voice_started_item_id = None
 
     async def _on_arbiter_stuck_release(
         self, reason: str, response_id: str | None = None
@@ -2770,6 +2933,7 @@ class _TransportMixin:
             return
         if not self._is_responding and self._current_response_id is None:
             return
+        self._close_realtime_conversation_observation("unknown")
         # The epoch this response began in, not the one the callback happens to
         # find. Between them a barge-in can have advanced _turn_epoch at
         # speech_stopped — which does not clear _current_response_id, so the id
@@ -2950,27 +3114,27 @@ class _TransportMixin:
 
         # Mark as interrupted to suppress any remaining output until next response
         self._interrupted = True
-        # 这一轮被取消了，但 provider 仍然欠它一个终结事件（Gemini 是
-        # interrupted / turn_complete）。记一笔「欠账」：那条终结属于**这一轮**，
-        # 不能让它去结算之后才铸造的 external turn token —— 逐事件捕获的实现会
-        # 让它捕获到新 token 并清掉，会话随即显得空闲而外部回合还活着。
-        # 一次性的：由下一个到达的终结消费掉，或在真正的新回合开始时作废
-        # （_gemini_support.py 的 turn-start 块），或到期。
+        # This round was cancelled, but the provider still owes its terminal event (Gemini
+        # interrupted/turn_complete). Record that debt as belonging to this round,
+        # never allowing it to settle later-minted external turn tokens. Per-event capture would
+        # grab and clear the new token, making sessions appear idle while external turns remain alive.
+        # One-shot: consumed by the next terminal event, invalidated on genuine new-turn start
+        # (_gemini_support.py turn-start block), or expired.
         self._gemini_cancelled_terminal_pending = True
-        # 期限是独立于内容的第二道界。turn-start 那处作废只在「合法终结之前先来了
-        # AI 内容」时才跑得到；裸 turn_complete 绕过它，此后再无内容的情形也绕过
-        # 它。没有期限时，陈旧欠账会一直挂着直到吃掉某一条不属于它的终结。
+        # Expiry is a second content-independent boundary. Turn-start invalidation runs only if
+        # AI content precedes legitimate termination; bare turn_complete and no-further-content
+        # cases bypass it. Without expiry stale debt waits until consuming an unrelated terminal event.
         self._gemini_cancelled_terminal_deadline = (
             time.monotonic() + GEMINI_CANCELLED_TERMINAL_TTL_SECONDS
         )
-        # 期限的起点要等中断真正送达 provider 才算数。Gemini 没有 response.cancel，
-        # 中断是靠后继内容送出去才生效的，所以 _gemini_send_user_turn 会把它重打
-        # 一次；这里先打是为了让下面任何一条 return 路径都带着期限离开，不至于落进
-        # deadline is None 的 fail-open。只允许重打一次，免得后续每次发送都续命。
+        # Start expiry only once interruption actually reaches the provider. Gemini lacks response.cancel,
+        # so successor content delivers interruption; _gemini_send_user_turn refreshes the timestamp once.
+        # Set it here initially so every return path below has a deadline rather than
+        # failing open with None. Allow one refresh only, never extending life on every later send.
         self._gemini_cancelled_terminal_awaiting_delivery = True
-        # 身份：让 _gemini_send_user_turn 能认出「这笔欠账是不是我这次发送送达的」。
-        # 那边是 await 之后才读全局状态的，没有身份的话，一次**更早**发起、此刻才
-        # 返回的发送会把刚武装的这笔当成自己送的，提前起算 TTL。
+        # Identity lets _gemini_send_user_turn determine whether its send delivered this debt.
+        # It reads globals after await; without identity, an older send returning now
+        # mistakes newly armed debt for its own, starting TTL early.
         self._gemini_cancelled_terminal_id = object()
 
         # 1. Cancel the current response
@@ -3002,7 +3166,7 @@ class _TransportMixin:
         # recording, the _interrupted reset, the transcript flush and the
         # on_response_done callback all silently miss one turn.
         self._current_item_id = None
-        # 清空转录buffer和重置标志，防止打断后的错位
+        # Clear transcript buffers and reset flags to prevent post-interruption misalignment.
         self._output_transcript_buffer = ""
         self._is_first_transcript_chunk = True
 
@@ -3059,7 +3223,7 @@ class _TransportMixin:
                 )
                 return True
 
-            # 结构化 wire trace（默认关）：在任何分发/过滤之前记录，陈旧事件也照记。
+            # Structured wire trace, off by default: record before dispatch/filtering, including stale events.
             wire_trace = getattr(self, "_wire_trace", None)
             async for message in message_ws:
                 if await retire_if_replaced():
@@ -3097,26 +3261,26 @@ class _TransportMixin:
                         item_id=err_item_id,
                     )
 
-                    # 致命性判定只看语义字段，绝不看回显的 event_id（见
-                    # _error_classification_text 的注释）。日志、路由和
-                    # on_connection_error 继续用完整的 error_msg。
+                    # Fatal classification inspects semantic fields only, never echoed event_id (see
+                    # _error_classification_text). Diagnostics, routing, and
+                    # on_connection_error still use complete error_msg.
                     classify_text = _error_classification_text(event.get('error'))
                     classify_lower = classify_text.lower()
 
-                    # 检测503过载错误，触发backpressure节流
+                    # Detect 503 overload and trigger backpressure.
                     if '503' in classify_text or 'overloaded' in classify_lower:
                         self._is_throttled = True
                         self._throttle_until = time.time() + self._throttle_duration
                         self._server_busy_count += 1
                         logger.warning(f"⚡ 503 detected (count={self._server_busy_count}), throttling for {self._throttle_duration}s")
-                        # 前2次静默节流，第3次起通知前端
+                        # Throttle silently twice, notifying frontend from the third occurrence.
                         if self._server_busy_count >= 3 and self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "SERVER_BUSY_THROTTLE"}))
                             if await retire_if_replaced():
                                 return
                         continue
 
-                    # Idle timeout — Qwen 约 25s 无操作断连
+                    # Idle timeout: Qwen disconnects after ~25s inactivity.
                     if 'too long without operation' in classify_lower or 'idle' in classify_lower:
                         logger.warning("⏰ Idle timeout from API: %s", error_msg)
                         if self.on_connection_error:
@@ -3152,6 +3316,8 @@ class _TransportMixin:
                         self._begin_response_lifecycle(
                             _response_id_text(event.get("response_id"))
                         )
+                if self._cancelled_voice_successor_sid is not None:
+                    self._observe_unannounced_voice_output(event)
 
                 # A cancelled response can still emit buffered events after a
                 # replacement response has become current.  Providers that
@@ -3170,8 +3336,20 @@ class _TransportMixin:
                         response = event.get("response")
                         if isinstance(response, dict):
                             event_response_id = _response_id_text(response.get("id"))
+                    known_terminal = False
+                    if (
+                        event_type == "response.done"
+                        and event_response_id is not None
+                        and not self._announces_responses
+                    ):
+                        known_terminal = event_response_id in self._recent_response_terminal_ids
+                        if not known_terminal:
+                            self._recent_response_terminal_ids.append(event_response_id)
+                            del self._recent_response_terminal_ids[:-_RECENT_RESPONSE_TERMINAL_LIMIT]
                     tracked = self._current_response_id
                     tracked_text = None if tracked is None else str(tracked)
+                    # With a reused ID, a duplicate terminal can look identical
+                    # to the successor's terminal. Let a matching ID finish.
                     if (
                         event_response_id is not None
                         and event_response_id != tracked_text
@@ -3185,15 +3363,14 @@ class _TransportMixin:
                         # which have no server VAD — no speech-id rotation,
                         # which is what silences every turn after the first.
                         #
-                        # Same reasoning as the arbiter's: a terminal for an id
-                        # this connection has never seen announced cannot be
-                        # another response's, because there is no other
-                        # response to have announced it. The latch is per
-                        # connection and set only by response.created, so on
-                        # any announcing provider this condition is false from
-                        # its first turn onward and the stale filter behaves
-                        # exactly as before.
-                        and self._announces_responses
+                        # For an unannounced recovered reply, reject known
+                        # old terminals. The observed trace used the same ID
+                        # for output and terminal, but the proxy can omit IDs
+                        # and we have no equality contract for unknown IDs.
+                        and (
+                            self._announces_responses
+                            or (self._recovered_voice_response and known_terminal)
+                        )
                         # A mismatched function/terminal ID alone does not
                         # enter this branch: the observed Lanlan/livestream
                         # trace never announced response.created. Its original
@@ -3378,31 +3555,53 @@ class _TransportMixin:
                         if isinstance(response, dict)
                         else ""
                     )
-                    finalize_response = (
-                        self._response_arbiter.notify_response_terminal(event)
-                    )
+                    terminal_event = event
+                    if self._recovered_voice_response:
+                        # Release the registration even if the terminal omits
+                        # the ID or uses a different ID than the output did.
+                        terminal_event = {
+                            **event,
+                            "response": {
+                                **(response if isinstance(response, dict) else {}),
+                                "id": self._current_response_id,
+                            },
+                        }
+                    finalize_response = self._response_arbiter.notify_response_terminal(terminal_event)
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
-                    # 解析实时 API 返回的 token 用量
+                    # Parse realtime API token usage.
                     self._record_response_usage(event.get("response"))
                     if finalize_response is False:
                         continue
+                    pending_sid = self._cancelled_voice_successor_sid
+                    if pending_sid is not None:
+                        # A terminal cannot claim a reserved ID. If Core has
+                        # moved on, discard the reservation and let the
+                        # normal host-ownership check handle the terminal.
+                        if self._read_host_turn_id() == pending_sid:
+                            early = self._cancelled_voice_early_output
+                            if early is not None and event_response_id in (None, early[0]):
+                                self._cancelled_voice_early_output = None
+                            continue
+                        self._cancelled_voice_successor_sid = None
+                        self._cancelled_voice_successor_has_input = False
+                        self._cancelled_voice_early_output = None
                     self._clear_turn_response_state()
-                    # 响应完成，检测重复度
+                    # On response completion, check repetition.
                     await self._record_response_repetition(
                         self._take_response_transcript()
                     )
                     if await retire_if_replaced():
                         return
-                    # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
-                    # response.audio_transcript.delta、从不发 response.audio_transcript.done，
-                    # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
-                    # 但带工具调用的一轮里，工具调用那一轮的 response.done 会把
-                    # _print_input_transcript 置 False（见下方），紧随其后的真回复转录便走
-                    # buffer 分支累积进 _output_transcript_buffer，没有 transcript.done 来 flush，
-                    # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
-                    # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
-                    # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
+                    # Audio-without-text fallback: some providers, e.g. lanlan.app Gemini voice proxy, emit only
+                    # response.audio_transcript.delta, never response.audio_transcript.done;
+                    # output transcripts rely on streaming below with _print_input_transcript=True.
+                    # In tool turns, the tool-call response.done sets
+                    # _print_input_transcript=False below, routing the following real response into
+                    # _output_transcript_buffer with no transcript.done to flush it.
+                    # Clearing then loses subtitles despite speech. Flush before clearing whenever this round actually
+                    # emitted audio (audio_delta_count>0) and buffered text remains. Streaming clears the buffer each time,
+                    # making this a noop without duplicate delivery on normal turns.
                     try:
                         await self._flush_pending_output_transcript()
                     except asyncio.CancelledError:
@@ -3414,11 +3613,14 @@ class _TransportMixin:
                         )
                     if await retire_if_replaced():
                         return
+                    self._close_realtime_conversation_observation(response_status)
                     self._reset_per_turn_output_state()
                     await self._notify_turn_finished(
                         connection_still_ours=receive_owner_is_current,
                         carry_host_turn_forward=response_status
                         in {"", "completed", "success", "succeeded"},
+                        recover_cancelled_voice=response_status in {"canceled", "cancelled"},
+                        cancelled_response_id=event_response_id,
                     )
                     if await retire_if_replaced():
                         return
@@ -3457,18 +3659,25 @@ class _TransportMixin:
                     self.note_user_turn_started()
                     self._ensure_voice_handoff_audio_timeline()
                     self._voice_handoff_server_item_id = event.get("item_id")
+                    started_item_id = _response_id_text(event.get("item_id"))
+                    if (
+                        self._cancelled_voice_successor_sid is not None
+                        and started_item_id is not None
+                        and started_item_id not in self._raw_speech_started_scoped_item_ids
+                    ):
+                        self._cancelled_voice_started_item_id = started_item_id
                     self._note_raw_speech_started_scope(event.get("item_id"))
                     self._speech_started_total += 1
                     logger.info("Speech detected")
                     self._response_arbiter.notify_server_vad_started()
                     self._bind_input_route_identity_to_item(event.get("item_id"))
                     self._audio_in_buffer = True
-                    # 重置静默计时器
+                    # Reset silence timers.
                     self._last_speech_time = time.time()
                     # Priority 1: server VAD → sync to unified _client_vad_active
                     self._client_vad_active = True
                     self._client_vad_last_speech_time = self._last_speech_time
-                    # B: server-VAD 也喂给 _user_recent_activity，保持各 VAD 源对称。
+                    # B: server VAD also updates _user_recent_activity, keeping VAD sources symmetric.
                     self._user_recent_activity_time = self._last_speech_time
                     if self._is_responding:
                         logger.info("Handling interruption")
@@ -3517,6 +3726,7 @@ class _TransportMixin:
                     self._client_vad_last_speech_time = _now
                     self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
+                    transcript_item_id = _response_id_text(event.get("item_id"))
                     already_scoped = self._raw_transcript_was_already_scoped(
                         event.get("item_id")
                     )
@@ -3528,13 +3738,41 @@ class _TransportMixin:
                         self.note_user_turn_started()
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
+                    transcript_accepted = True
                     if self.on_input_transcript or self.on_input_transcript_with_route:
-                        await self._deliver_input_transcript(
+                        transcript_accepted = await self._deliver_input_transcript(
                             transcript,
                             item_id=event.get("item_id"),
                         )
                         if await retire_if_replaced():
                             return
+                    if (
+                        self._cancelled_voice_successor_sid is not None
+                        and transcript_accepted
+                        # Scope dedupes the tool-generation advance. To use
+                        # a scoped transcript here, require its matching
+                        # speech_started after the cancelled response.done.
+                        # Earlier starts may belong to the interrupted turn
+                        # or its successor.
+                        and (
+                            not already_scoped
+                            or (
+                                transcript_item_id is not None
+                                and transcript_item_id == self._cancelled_voice_started_item_id
+                            )
+                        )
+                        and isinstance(transcript, str) and transcript.strip()
+                    ):
+                        self._cancelled_voice_successor_has_input = True
+                        early = self._cancelled_voice_early_output
+                        if early is not None:
+                            pending_text = self._output_transcript_buffer[early[1]:]
+                            if self._bind_unannounced_voice_response(early[0]) and pending_text:
+                                self._current_response_transcript = pending_text
+                                self._is_first_transcript_chunk = False
+                                await self._emit_pending_output_transcript((pending_text, True))
+                                if await retire_if_replaced():
+                                    return
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
                     # [ISSUE4b] Voice-without-text fix. Audio deltas and transcript
@@ -3542,7 +3780,7 @@ class _TransportMixin:
                     # delta time. But this transcript.done re-checks those flags at
                     # *done* time — if a flag flipped True between audio playing and
                     # done (session-transition / proactive-inject race), the audio
-                    # was already spoken yet the transcript got dropped → 前端有声无字.
+                    # was already spoken yet the transcript got dropped, leaving frontend audio without subtitles.
                     # If audio already went out this response (_audio_delta_count>0),
                     # always forward the matching transcript regardless of a late
                     # flag flip; only suppress when nothing was spoken (interrupted
@@ -3555,7 +3793,7 @@ class _TransportMixin:
                             or _audio_already_spoken
                         )
                     ):
-                        await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                        await self._observed_text_callback(self.on_output_transcript, self._output_transcript_buffer, self._is_first_transcript_chunk)
                         if await retire_if_replaced():
                             return
                         self._is_first_transcript_chunk = False
@@ -3566,7 +3804,7 @@ class _TransportMixin:
                         if self.on_text_delta:
                             if "glm" not in self._model_lower:
                                 self._ai_recent_activity_time = time.time()
-                                await self.on_text_delta(event["delta"], self._is_first_text_chunk)
+                                await self._observed_text_callback(self.on_text_delta, event["delta"], self._is_first_text_chunk)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_text_chunk = False
@@ -3583,20 +3821,20 @@ class _TransportMixin:
                             if await retire_if_replaced():
                                 return
                     elif event_type in ["response.audio.done", "response.output_audio.done"]:
-                        # 权威的「这一轮音频流已关闭」信号（issue #1566）。前端原本
-                        # 靠「四个音频队列当下是否为空」猜本轮放完没，落在音频阵之间
-                        # 的空档就会提前收尾（口型停一下又重启、尾音孤儿）。
+                        # Authoritative audio-stream-closed signal (issue #1566). Frontend previously guessed
+                        # completion from four currently empty audio queues; gaps between bursts caused
+                        # early finalization, restarting mouth movement and orphaning tail audio.
                         #
-                        # ⚠️ 时序：必须在这里 await 触发，绝不能 _fire_task /
-                        # create_task。本接收循环是顺序的，走到这条事件时该轮所有
-                        # audio.delta 的 ``await self.on_audio_delta(...)`` 都已经
-                        # 返回，因此完结信号天然排在最后一块音频之后。改成
-                        # fire-and-forget 会让它插到音频前面，前端提前收尾 —— 那正是
-                        # 这个 issue 本身。
+                        # Timing: await the callback here, never _fire_task /
+                        # create_task. This receiver is sequential; by this event, every
+                        # audio.delta's await self.on_audio_delta(...) already
+                        # returned, naturally placing completion after the final audio chunk.
+                        # Fire-and-forget may overtake audio and prematurely finalize frontend,
+                        # recreating the issue itself.
                         #
-                        # 放在 _skip_until_next_response / _interrupted 守卫内，与
-                        # audio.delta 同门：被打断的一轮不发（打断有独立的 cancel
-                        # 通道）。漏发是可接受的降级，前端有 give-up 计时器兜底。
+                        # Keep within _skip_until_next_response / _interrupted guards,
+                        # sharing audio.delta admission. Interrupted rounds omit it and use separate cancellation;
+                        # missed completion is acceptable fallback because frontend give-up timers exist.
                         if self.on_audio_done:
                             await self.on_audio_done()
                             if await retire_if_replaced():
@@ -3605,26 +3843,26 @@ class _TransportMixin:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")
                             if transcript:
-                                await self.on_output_transcript(transcript, True)
+                                await self._observed_text_callback(self.on_output_transcript, transcript, True)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_transcript_chunk = False
                     elif event_type in ["response.audio_transcript.delta", "response.output_audio_transcript.delta"]:
                         if self.on_output_transcript:
                             delta = event.get("delta", "")
-                            # 累积当前回复的转录文本用于重复度检测
+                            # Accumulate response transcripts for repetition detection.
                             self._current_response_transcript += delta
                             if not self._print_input_transcript:
                                 self._output_transcript_buffer += delta
                             else:
                                 if self._output_transcript_buffer:
                                     # logger.info(f"{self._output_transcript_buffer} is_first_chunk: True")
-                                    await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
+                                    await self._observed_text_callback(self.on_output_transcript, self._output_transcript_buffer, self._is_first_transcript_chunk)
                                     if await retire_if_replaced():
                                         return
                                     self._is_first_transcript_chunk = False
                                     self._output_transcript_buffer = ""
-                                await self.on_output_transcript(delta, self._is_first_transcript_chunk)
+                                await self._observed_text_callback(self.on_output_transcript, delta, self._is_first_transcript_chunk)
                                 if await retire_if_replaced():
                                     return
                                 self._is_first_transcript_chunk = False
@@ -3634,7 +3872,7 @@ class _TransportMixin:
                         if await retire_if_replaced():
                             return
                 else:
-                    # 调试日志：text.delta 被 _interrupted/_skip 标志拦截（每个 response 仅记录一次）
+                    # Debug once per response when interruption/skip flags block text.delta.
                     if event_type in ["response.text.delta", "response.output_text.delta"]:
                         if self._suppressed_delta_logged_resp_id != self._current_response_id:
                             self._suppressed_delta_logged_resp_id = self._current_response_id
@@ -3833,16 +4071,23 @@ class _TransportMixin:
                 expected_provider_session=retired_outcome_owner[1],
                 expected_outcome_token=retired_outcome_owner[2],
             )
-        # 取消欠账同样属于退役的那条连接：替换连接上的第一条终结是**它自己**的，
-        # 被上一条连接的欠账吃掉就等于新回合的 token 没人结算。与上面退役 proactive
-        # outcome 同一判据。隔离重连那条路上 connect() 跑在 handle_interruption()
-        # 之前（_responses.py 的 prepare_external_voice_turn），不会抹掉刚武装的那笔。
+        # Cancellation debt belongs to retired connections too. Replacement connections' first terminal event owns
+        # its own turn; old-connection debt must not consume it and leave new tokens unsettled. Match retired proactive
+        # outcomes above. Isolated reconnect calls connect() before handle_interruption()
+        # in _responses.py prepare_external_voice_turn, preserving newly armed debt.
         self._gemini_cancelled_terminal_pending = False
         self._gemini_cancelled_terminal_deadline = None
         self._gemini_cancelled_terminal_awaiting_delivery = False
         self._gemini_cancelled_terminal_id = None
         self._raw_speech_started_scope_pending_transcript = False
         self._raw_speech_started_scoped_item_ids = []
+        self._announces_responses = False
+        self._cancelled_voice_successor_sid = None
+        self._cancelled_voice_successor_has_input = False
+        self._cancelled_voice_response_id = None
+        self._cancelled_voice_early_output = None
+        self._cancelled_voice_started_item_id = None
+        self._recent_response_terminal_ids = []
         # Provider response identity and interruption state belong to the
         # retired connection. Some raw proxies never announce responses, so a
         # stale interrupt would mute the replacement for its entire lifetime,
@@ -4234,9 +4479,9 @@ class _TransportMixin:
         tool_tasks=(),
         retired_gemini_contexts=(),
     ) -> None:
-        # 先取消在飞的 Gemini 提交，再等退休的工具调用收尾：前者是可能一直挂着的
-        # SDK 写，把它留到后面会让整段拆除跟着它一起等。取消逻辑只有
-        # _gemini_support._cancel_gemini_submit_tasks 一份，别在这里再抄一遍。
+        # Cancel in-flight Gemini submissions before awaiting retired tool-call cleanup: SDK writes can hang
+        # indefinitely and would stall all teardown if left until later. Keep cancellation solely in
+        # _gemini_support._cancel_gemini_submit_tasks, without duplicating it here.
         await self._cancel_gemini_submit_tasks(
             gemini_proactive_submit_task,
             gemini_external_submit_task,
@@ -4251,7 +4496,7 @@ class _TransportMixin:
             # stays perfectly healthy.
             await response_arbiter.shutdown("realtime client closed")
 
-        # 取消静默检测任务
+        # Cancel silence detection.
         if silence_check_task:
             silence_check_task.cancel()
             try:
@@ -4274,7 +4519,7 @@ class _TransportMixin:
             await self._retry_gemini_contexts(retired_gemini_contexts)
             return
 
-        # 重置静默超时相关状态
+        # Reset silence-timeout state.
         self._silence_timeout_triggered = False
         self._last_speech_time = None
         self._silence_reset_pending = False
@@ -4347,9 +4592,9 @@ class _TransportMixin:
             if not any(existing is retired for existing in transports):
                 transports.append(retired)
         if transports:
-            # 连接时已设 close_timeout=2s：远端超时未回 CLOSE 帧时，
-            # websockets 内部会自行 abort transport 强制关闭，
-            # 在兼容慢代理的同时保持清理等待有界。
+            # Connection close_timeout=2s makes websockets internally abort transport
+            # if remote CLOSE never arrives, bounding cleanup
+            # while accommodating slow proxies.
             for index, retired in enumerate(transports):
                 closed = False
                 try:

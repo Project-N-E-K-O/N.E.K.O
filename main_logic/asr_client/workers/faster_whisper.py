@@ -58,6 +58,8 @@ from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
 from ..delivery import (
     begin_transport_write,
     complete_transport_write,
+    interval_delivery_spans,
+    retire_interval_deliveries,
     delivery_evidence,
 )
 from ..worker_failure import record_worker_failure
@@ -869,6 +871,7 @@ async def faster_whisper_asr_worker(
         # The evidence object is created here, on the loop, so the thread
         # only flips one attribute on it.
         evidence = delivery_evidence(request_queue)
+        delivery_spans = interval_delivery_spans(request_queue, key)
         skip = threading.Event()
         # Waiting in the process-wide decode queue behind ANOTHER session's
         # uninterruptible decode is not this session's recognition time:
@@ -940,7 +943,7 @@ async def faster_whisper_asr_worker(
                 if skip.is_set() or not pcm_box:
                     # Cancelled while queued: drop the PCM without decoding.
                     return None
-                begin_transport_write(request_queue)
+                begin_transport_write(request_queue, delivery_spans=delivery_spans)
                 return _transcribe_pcm16(model, pcm_box[0], language, initial_prompt)
             finally:
                 leave_decoder()
@@ -976,8 +979,10 @@ async def faster_whisper_asr_worker(
                 # (a new session must not be failed for this one's backlog).
                 pcm_box.clear()
                 return_slot()
+            retire_interval_deliveries(request_queue, only_spans=delivery_spans)
             raise
         except Exception as exc:
+            retire_interval_deliveries(request_queue, only_spans=delivery_spans)
             raise _LocalAsrFailure(
                 "ASR_LOCAL_TRANSCRIBE_FAILED",
                 "faster-whisper transcription failed",
@@ -985,6 +990,7 @@ async def faster_whisper_asr_worker(
         complete_transport_write(
             evidence, len(pcm16), generation=generation,
             buffer_epoch=buffer_epoch, provider=PROVIDER_KEY,
+            delivery_spans=delivery_spans, takes_ownership=True,
         )
         return _AsrWorkerEvent(
             kind="final",
@@ -1124,9 +1130,9 @@ async def faster_whisper_asr_worker(
                                 pass
                             else:
                                 pcm16 = buffers.pop(key, None)
-                                # 只数还没完成的：本轮刚解完、下面才出队的不占积压名额。
-                                # 名额在拷贝 PCM、建任务之前占：本会话积压上限之外，
-                                # 还有一个跨所有会话的进程级上限。
+                                # Count only unfinished tasks: those decoded this round and dequeued below do not occupy backlog slots.
+                                # Reserve slots before copying PCM or creating tasks: in addition to this session's backlog limit,
+                                # a process-wide limit applies across all sessions.
                                 if pcm16 and (
                                     _decodes_in_flight(pending) >= _MAX_PENDING_DECODES
                                     or not pool.try_reserve_decode()

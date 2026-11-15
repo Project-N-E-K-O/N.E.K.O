@@ -14,6 +14,7 @@ vi.mock('axios', () => ({
 }))
 
 import {
+  fetchMarketCatalog,
   fetchMarketPluginComments,
   fetchMarketPluginReadme,
   fetchMarketLatestVersions,
@@ -62,6 +63,57 @@ describe('Market API transport', () => {
     expect(mocks.marketGet).toHaveBeenCalledWith('/plugins', {
       params: { page: 1, page_size: 20 },
     })
+  })
+
+  function catalogPage(page: number, ids: number[], totalPages: number) {
+    return {
+      data: {
+        items: ids.map((id) => ({
+          id,
+          name: `Plugin ${id}`,
+          author_name: 'NEKO',
+          latest_version: null,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+        })),
+        total: 250,
+        page,
+        page_size: 100,
+        total_pages: totalPages,
+      },
+    }
+  }
+
+  it('concatenates every catalog page in server order', async () => {
+    mocks.marketGet.mockImplementation(async (_path: string, { params }: { params: { page: number } }) =>
+      catalogPage(params.page, [params.page * 10 + 1, params.page * 10 + 2], 3),
+    )
+
+    const catalog = await fetchMarketCatalog({ sort_by: 'name', sort_order: 'asc', channel: 'beta' })
+
+    expect(catalog?.map((plugin) => plugin.id)).toEqual([11, 12, 21, 22, 31, 32])
+    expect(mocks.marketGet).toHaveBeenCalledTimes(3)
+    for (const page of [1, 2, 3]) {
+      expect(mocks.marketGet).toHaveBeenCalledWith('/plugins', {
+        params: { sort_by: 'name', sort_order: 'asc', page, page_size: 100, channel: 'beta' },
+      })
+    }
+  })
+
+  it('fetches a single request when the catalog fits on one page', async () => {
+    mocks.marketGet.mockResolvedValueOnce(catalogPage(1, [1], 1))
+
+    await expect(fetchMarketCatalog({})).resolves.toHaveLength(1)
+    expect(mocks.marketGet).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns null instead of a partial catalog when any page fails', async () => {
+    mocks.marketGet.mockImplementation(async (_path: string, { params }: { params: { page: number } }) => {
+      if (params.page === 2) throw new Error('page 2 unavailable')
+      return catalogPage(params.page, [params.page], 3)
+    })
+
+    await expect(fetchMarketCatalog({})).resolves.toBeNull()
   })
 
   it('uses the local catalog bridge when Market status is unavailable', async () => {

@@ -41,6 +41,8 @@ import json
 import math
 from pathlib import Path
 
+from slim_live2d_motions import dump_motion
+
 DEFAULT_ROOT = Path(__file__).resolve().parents[1] / "static" / "yui-origin"
 
 TARGET_IDS = ("ParamMouthForm", "ParamMouthOpenY")
@@ -122,8 +124,8 @@ def smooth_curve(keys, neutral, sigma_s, out_hz, fade_s):
     t_end, _ = keys[-1]
     duration = t_end - t_start
     if duration <= 0:
-        # 退化时间轴（首尾时间相同）：直接钉回中性位，避免 dt=0 触发除零
-        # 让整批 motion 处理中断。
+        # For a degenerate timeline (identical start and end times), pin to neutral to avoid dt=0 causing division by zero
+        # and interrupting the entire batch of motions.
         return [(t_start, neutral), (t_end, neutral)]
     n_samples = max(2, int(round(duration * SAMPLE_HZ)) + 1)
     dt = duration / (n_samples - 1)
@@ -208,7 +210,7 @@ def process(path: Path):
     meta["TotalSegmentCount"] = seg_total
     meta["TotalPointCount"] = pts_total
 
-    path.write_text(json.dumps(data, indent=4, ensure_ascii=False), encoding="utf-8")
+    path.write_text(dump_motion(data), encoding="utf-8")
     return stats
 
 

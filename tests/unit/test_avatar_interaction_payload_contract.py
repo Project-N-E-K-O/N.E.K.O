@@ -185,9 +185,9 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
             self.acks.append((interaction_id, accepted, reason, kwargs))
 
     monkeypatch.setattr(greeting, "OmniOfflineClient", FakeOfflineClient)
-    # 冷却判定和 ingress 时间戳都在 greeting 里读 time.time()
+    # Both cooldown checks and ingress timestamps read time.time() in greeting,
     # （GreetingMixin._avatar_interaction_ingress_time / handle_avatar_interaction），
-    # 所以假时钟打在 main_logic.core.greeting 上。
+    # so patch the clock on main_logic.core.greeting.
     patch_module_clock(monkeypatch, greeting, time=lambda: 123.456)
     runtime = RuntimeHarness()
     runtime.engagement_times = []
@@ -753,7 +753,7 @@ def test_payload_normalizer_requires_touch_zone_only_for_declared_tools():
     assert lollipop_with_null_zone is None
 
 
-# --- 回归面：新增的 _avatar_interaction_gate_lock 不得改变内置道具的互动语义 ---
+# --- Regression coverage: the new _avatar_interaction_gate_lock must not change built-in prop interaction semantics ---
 
 
 def _builtin_runtime(monkeypatch, *, cooldown_ms=600, clock=None):
@@ -820,7 +820,7 @@ def _fist_payload(interaction_id):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_builtin_interaction_accepts_then_enforces_cooldown(monkeypatch):
-    # 时钟必须会走：固定时钟下「冷却拒绝也推进了时间戳」是观测不到的。
+    # The clock must advance: a fixed clock cannot reveal cooldown rejection incorrectly advancing the timestamp.
     clock = {"now": 1000.0}
     runtime = _builtin_runtime(monkeypatch, clock=lambda: clock["now"])
 
@@ -829,18 +829,18 @@ async def test_builtin_interaction_accepts_then_enforces_cooldown(monkeypatch):
     committed_at = runtime._last_avatar_interaction_at
     assert committed_at == 1000_000
 
-    clock["now"] = 1000.3  # +300ms，仍在 600ms 冷却窗口内
+    clock["now"] = 1000.3  # +300ms, still within the 600ms cooldown window
     second = await runtime.handle_avatar_interaction(_fist_payload("fist-2"))
     assert second == {
         "accepted": False,
         "reason": "cooldown",
         "interaction_id": "fist-2",
     }
-    # 冷却拒绝不得推进提交时间戳，否则连击会把冷却窗口无限续期。
+    # Cooldown rejection must not advance the commit timestamp, or repeated clicks extend the cooldown indefinitely.
     assert runtime._last_avatar_interaction_at == committed_at
     assert runtime.acks[-1] == ("fist-2", False, "cooldown")
 
-    # 冷却拒绝仍要消费去重槽位：同一个 id 再来是重放，不该再走一遍冷却分支。
+    # Cooldown rejection still consumes the dedup slot: the same id is a replay and must not enter the cooldown branch again.
     clock["now"] = 1000.4
     replay = await runtime.handle_avatar_interaction(_fist_payload("fist-2"))
     assert replay["reason"] == "duplicate"
@@ -897,7 +897,7 @@ async def test_builtin_instruction_is_sent_inside_the_session_with_its_system_pr
             return None
 
         async def prompt_ephemeral(self, instruction, **_kwargs):
-            # 复刻 prompt_ephemeral 的拼装：历史 + 临时 HumanMessage。
+            # Reproduce prompt_ephemeral assembly: history + a temporary HumanMessage.
             seen["messages"] = self._conversation_history + [HumanMessage(content=instruction)]
             return True
 
@@ -936,7 +936,7 @@ async def test_a_stalled_cooldown_ack_does_not_hold_the_interaction_gate(monkeyp
     await asyncio.sleep(0)
     await asyncio.sleep(0)
 
-    # 后续互动必须能自己走完闸门，不被卡在 ack 上的那一次拖住。
+    # Subsequent interactions must pass the gate independently, without being held up by the interaction blocked on ack.
     assert follower.done(), "a stalled cooldown ack still blocks the interaction gate"
     assert follower.result()["reason"] == "cooldown"
 

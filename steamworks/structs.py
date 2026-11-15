@@ -1,18 +1,18 @@
 import sys
 from ctypes import *
 
-# Steam SDK 的 callback / 详情 struct 在不同平台用不同 pragma pack：
+# Steam SDK callback/detail structs use platform-specific pragma packing:
 # - Linux / macOS：VALVE_CALLBACK_PACK_SMALL → #pragma pack(push, 4)
 # - Windows：VALVE_CALLBACK_PACK_LARGE → #pragma pack(push, 8)
-# Python ctypes 默认按自然对齐（uint64 → 8 字节），与 Windows 一致；
-# 在 Linux/macOS 上需要显式 _pack_ = 4，否则 uint64 字段会被读偏。
+# Python ctypes defaults to natural alignment (uint64 -> 8 bytes), matching Windows;
+# Linux/macOS require explicit _pack_ = 4 or uint64 fields are misread.
 _STEAM_CALLBACK_PACK = 8 if sys.platform == 'win32' else 4
 
 
 class FindLeaderboardResult_t(Structure):
     """ Represents the STEAMWORKS LeaderboardFindResult_t call result type """
-    # u64 在 offset 0 — 当前布局两种 pack 一致；显式声明仅为与其它
-    # callback struct 对偶，匹配 SDK 的 VALVE_CALLBACK_PACK_SMALL/LARGE。
+    # u64 at offset 0: both pack modes yield the same layout; declare explicitly only for symmetry with other
+    # callback structs and SDK VALVE_CALLBACK_PACK_SMALL/LARGE.
     _pack_ = _STEAM_CALLBACK_PACK
     _fields_ = [
         ("leaderboardHandle", c_uint64),
@@ -21,8 +21,8 @@ class FindLeaderboardResult_t(Structure):
 
 
 class CreateItemResult_t(Structure):
-    # int + u64 + bool：pack=8 时 u64@8（4 字节 padding），pack=4 时 u64@4。
-    # Linux/macOS 需显式 _pack_=4 才能正确读到 publishedFileId。
+    # int + u64 + bool: pack=8 puts u64@8 with 4 bytes padding; pack=4 puts u64@4.
+    # Linux/macOS need explicit _pack_=4 to read publishedFileId correctly.
     _pack_ = _STEAM_CALLBACK_PACK
     _fields_ = [
         ("result", c_int),
@@ -32,9 +32,9 @@ class CreateItemResult_t(Structure):
 
 
 class SubmitItemUpdateResult_t(Structure):
-    # int + bool + u64：bool 后的 padding 让 u64 在 pack=4/8 下都落在 offset 8，
-    # 当前布局凑巧两边一致；显式 _pack_ 保持与其它 callback struct 对偶，
-    # 避免日后调整字段顺序时再次踩坑。
+    # int + bool + u64: padding after bool places u64 at offset 8 for both pack=4/8,
+    # coincidentally matching the current layout. Explicit _pack_ maintains symmetry with other callback structs,
+    # preventing regressions after future field reordering.
     _pack_ = _STEAM_CALLBACK_PACK
     _fields_ = [
         ("result", c_int),
@@ -44,7 +44,7 @@ class SubmitItemUpdateResult_t(Structure):
 
 
 class ItemInstalled_t(Structure):
-    # u32 + u64：pack=8 时 u64@8，pack=4 时 u64@4。
+    # u32 + u64: pack=8 puts u64@8; pack=4 puts u64@4.
     _pack_ = _STEAM_CALLBACK_PACK
     _fields_ = [
         ("appId", c_uint32),
@@ -53,7 +53,7 @@ class ItemInstalled_t(Structure):
 
 
 class SubscriptionResult(Structure):
-    # i32 + u64：pack=8 时 u64@8，pack=4 时 u64@4。
+    # i32 + u64: pack=8 puts u64@8; pack=4 puts u64@4.
     _pack_ = _STEAM_CALLBACK_PACK
     _fields_ = [
         ("result", c_int32),
@@ -62,7 +62,7 @@ class SubscriptionResult(Structure):
 
 
 class SteamUGCQueryCompleted_t(Structure):
-    # u64 在 offset 0 — 当前布局两种 pack 一致；显式声明仅为对偶。
+    # u64 at offset 0: current layout matches both pack modes; declare explicitly only for symmetry.
     _pack_ = _STEAM_CALLBACK_PACK
     _fields_ = [
         ("handle", c_uint64),
@@ -74,16 +74,16 @@ class SteamUGCQueryCompleted_t(Structure):
 
 
 class SteamUGCDetails_t(Structure):
-    # Linux/macOS 下 Steam SDK 用 VALVE_CALLBACK_PACK_SMALL（#pragma
-    # pack(push, 4)），uint64 字段按 4 字节对齐。Python ctypes 默认走
-    # 8 字节自然对齐，于是 m_ulSteamIDOwner 等 uint64 字段被读偏 4
-    # 字节，steamIDOwner 低 32 位永远是 0x01100001（Public/Individual/
-    # Desktop 的 universe|type|instance 位），把伪 Steam ID 喂给
-    # GetFriendPersonaName 时 Steam 客户端会返回一个不固定的 sentinel
-    # 字符串（实测返回 "ZeroGravity"），让所有创意工坊条目都显示成同一
-    # 错误作者。Windows 下 SDK 用 VALVE_CALLBACK_PACK_LARGE（pack=8），
-    # 与 ctypes 默认值一致，因此 _pack_ 仅按 SMALL 平台显式设置 4，
-    # Windows 维持 ctypes 默认 8 字节对齐。
+    # On Linux/macOS, Steam SDK uses VALVE_CALLBACK_PACK_SMALL (#pragma
+    # pack(push, 4)), aligning uint64 to 4 bytes. Python ctypes defaults to
+    # natural 8-byte alignment, shifting fields such as m_ulSteamIDOwner by 4
+    # bytes. steamIDOwner's low 32 bits then always become 0x01100001, the Public/Individual/
+    # Desktop universe|type|instance bits. Passing that fake Steam ID to
+    # GetFriendPersonaName makes Steam return a varying sentinel
+    # string (observed "ZeroGravity"), displaying the same wrong author on all
+    # Workshop items. Windows SDK uses VALVE_CALLBACK_PACK_LARGE (pack=8),
+    # matching ctypes defaults, so explicitly set _pack_=4 only for SMALL platforms,
+    # retaining default 8-byte alignment on Windows.
     _pack_ = _STEAM_CALLBACK_PACK
     _fields_ = [
         ("publishedFileId", c_uint64),
@@ -116,7 +116,7 @@ class SteamUGCDetails_t(Structure):
 
 
 class MicroTxnAuthorizationResponse_t(Structure):
-    # u32 + u64 + bool：pack=8 时 u64@8，pack=4 时 u64@4。
+    # u32 + u64 + bool: pack=8 puts u64@8; pack=4 puts u64@4.
     _pack_ = _STEAM_CALLBACK_PACK
     _fields_ = [
         ("appId", c_uint32),

@@ -19,7 +19,7 @@ import { computed, ref } from 'vue'
 
 import { fetchMarketPluginVersions, type MarketPluginVersion } from '@/api/market'
 import { fetchBridge, readErrorCode } from '@/api/marketBridge'
-import { isGithubReleaseDownloadUrl, useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
+import { useGithubMirrorSource } from '@/composables/useGithubMirrorSource'
 import { useMarketInstallTaskStore } from '@/stores/marketInstallTask'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { usePluginStore } from '@/stores/plugin'
@@ -481,23 +481,17 @@ export const usePluginUpdatesStore = defineStore('pluginUpdates', () => {
         return failCandidate(candidate, 'market.installFailed', 'release has no package_url/sha256')
       }
 
-      // Same URL resolution as the Market page: the backend only falls back
-      // from a proxy to GitHub direct, never the other way, so submitting the
-      // canonical URL fails wherever GitHub itself is unreachable.
-      if (isGithubReleaseDownloadUrl(packageUrl)) {
-        try {
-          await mirror.ensureAutoSource()
-        } catch (err) {
-          updateLog.warn('mirror measurement failed; using the last known source', { pluginId, err })
-        }
+      try {
+        await mirror.ensureDownloadPreferences()
+      } catch {
+        return failCandidate(candidate, 'mirrorSource.saveFailed', 'download preferences unavailable')
       }
-      const effectiveUrl = mirror.resolveGithubDownloadUrl(packageUrl)
 
       const res = await fetchBridge('/market/install', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          package_url: effectiveUrl,
+          package_url: packageUrl,
           canonical_package_url: packageUrl,
           package_sha256: packageSha256,
           payload_hash: release.payload_hash ?? null,

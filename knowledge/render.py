@@ -32,7 +32,7 @@ from config.prompts.prompts_knowledge import (
     PUBLIC_KNOWLEDGE_CARD_LABELS,
 )
 from config.prompts.prompts_sys import _loc, normalize_sys_prompt_locale
-from utils.tokenize import truncate_to_tokens
+from utils.tokenize import count_tokens, truncate_to_tokens
 
 from .text import neutralize_fence, single_line, strip_chat_markup
 
@@ -93,3 +93,36 @@ def render_reference_block(cards: Sequence[RenderCard], *, language: str | None)
         lines.append(provenance)
     lines.append(_loc(PUBLIC_KNOWLEDGE_BLOCK_END, lang))
     return "\n".join(lines)
+
+
+def render_turn_cards(
+    cards: Sequence[RenderCard], *, language: str | None, max_tokens_per_card: int
+) -> tuple[str, int]:
+    """Cards for passive turn context, without the reference fence.
+
+    Main wraps them in its own block, one section per material type, so a
+    card here is just its title, summary and the matched passage, each card
+    within ``max_tokens_per_card``. Returns the text and its token count.
+    """
+    if not cards:
+        return "", 0
+    labels = _loc(PUBLIC_KNOWLEDGE_CARD_LABELS, normalize_sys_prompt_locale(language))
+    blocks: list[str] = []
+    for card in cards:
+        lines = [f"- [{_safe_line(card.title, TITLE_CHARS)}]"]
+        if card.summary:
+            summary = _safe_block(card.summary, min(SUMMARY_TOKENS, max_tokens_per_card // 3))
+            if summary:
+                lines.append(f"  {labels['summary']}: {summary}")
+        remaining = max_tokens_per_card - count_tokens("\n".join(lines)) - 8
+        if remaining > 0:
+            content = _safe_block(card.content, remaining)
+            if content:
+                lines.append(f"  {labels['content']}: {content}")
+        card = "\n".join(lines)
+        if count_tokens(card) > max_tokens_per_card:
+            # A token-dense title plus summary can pass the budget alone.
+            card = _safe(truncate_to_tokens(card, max_tokens_per_card)).rstrip()
+        blocks.append(card)
+    text = "\n".join(blocks)
+    return text, count_tokens(text)

@@ -63,9 +63,9 @@ def _localized_template(templates: dict[str, str], lang: str | None) -> str:
     return _loc(templates, _normalize_prompt_lang(lang))
 
 
-# 开局上下文输入水印：pregame 的近期记录 + 启动参数走独立 HumanMessage（裸 JSON），
-# 用收尾水印标出数据块边界，让模型分清上面那块是注入输入而非指令。逐 locale 保留中文
-# （与 prompts_minigame_route.py 的成对水印对齐），内部禁冒号破折号。
+# Opening-context input watermark: pregame recent records and launch parameters use a separate HumanMessage (raw JSON),
+# with a closing watermark delimiting the data block so the model recognizes injected input rather than instructions. Preserve Chinese in every locale
+# (matching the paired watermarks in prompts_minigame_route.py); colons and dashes are forbidden inside it.
 PREGAME_CONTEXT_INPUT_WATERMARK = "======以上为开局近期记录与启动参数======"
 
 

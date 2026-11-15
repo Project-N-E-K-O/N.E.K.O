@@ -12,10 +12,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-# 任务结果如何送达主 AI 的三档枚举。
-#   - "proactive"：默认。立即起一轮，让角色主动汇报。
-#   - "passive" ：写入上下文但不打断用户；下一次用户发言时被自然带入 prompt。
-#   - "silent"  ：完全跳过 LLM 通道（仅前端 HUD/task_update）。
+# Three delivery modes for task results sent to the main AI.
+#   - "proactive": default. Start a turn immediately for the character to report proactively.
+#   - "passive": add to context without interrupting the user; include naturally in the prompt on the next user message.
+#   - "silent": bypass the LLM channel entirely (frontend HUD/task_update only).
 DELIVERY_MODES = ("proactive", "passive", "silent")
 DEFAULT_DELIVERY = "proactive"
 

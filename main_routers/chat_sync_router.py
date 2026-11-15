@@ -1,0 +1,282 @@
+"""Local desktop controls for opt-in chat originals, independent of memory edits."""
+
+from __future__ import annotations
+
+import re
+import sqlite3
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr
+
+from services.chat_sync.runtime import get_desktop_chat_sync_runtime
+from utils.config_manager import get_config_manager
+from utils.config_manager.reserved_schema import get_character_uid
+
+
+async def _local_access(request: Request, response: Response) -> None:
+    """Protect local chat contents and consent from remote and cross-origin calls."""
+    from main_routers.card_drop_router import _local_request_source_allowed
+    from main_routers.local_access import is_local_oauth_status_request
+
+    response.headers["Cache-Control"] = "no-store"
+    if not is_local_oauth_status_request(request) or not _local_request_source_allowed(request):
+        raise HTTPException(403, "chat_sync_local_access_required", headers={"Cache-Control": "no-store"})
+
+
+router = APIRouter(prefix="/api/chat-sync", tags=["chat-sync"], dependencies=[Depends(_local_access)])
+
+
+class CharacterSyncChoice(BaseModel):
+    """Accept explicit history consent; missing/old-client fields never expand a previous grant."""
+
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool
+    includeHistory: StrictBool = False
+
+
+class ProfileChoiceRequest(BaseModel):
+    """Pin the saved local candidate and cloud revision shown in the consent UI."""
+
+    model_config = ConfigDict(extra="forbid")
+    localHash: StrictStr
+    revision: StrictInt
+
+
+class ProfileResolveRequest(ProfileChoiceRequest):
+    """Resolve retained candidates without silently accepting a renamed role."""
+
+    choice: Literal["local", "remote"]
+    confirmRename: StrictBool = False
+
+
+class ProfileImportRequest(BaseModel):
+    """Import only the exact server-owned version reviewed in the local UI."""
+
+    model_config = ConfigDict(extra="forbid")
+    revision: StrictInt
+    profileHash: StrictStr
+
+
+async def _runtime():
+    """Resolve the configured runtime root only after local authorization."""
+    return await get_desktop_chat_sync_runtime(get_config_manager())
+
+
+Runtime = Annotated[object, Depends(_runtime)]
+
+
+async def _characters() -> list[dict]:
+    """Use durable desktop UIDs; never bind by display name or issue IDs on reads."""
+    data = await get_config_manager().aload_characters()
+    entries = data.get("猫娘", {}) if isinstance(data, dict) else {}
+    return [
+        {"characterSyncId": uid, "displayName": name}
+        for name, profile in entries.items() if isinstance(profile, dict) and (uid := get_character_uid(profile))
+    ]
+
+
+async def _character(character_uid: str) -> dict:
+    """Prevent paths for absent or newly imported unrelated characters."""
+    for character in await _characters():
+        if character["characterSyncId"] == character_uid:
+            return character
+    raise HTTPException(404, "chat_sync_character_not_found", headers={"Cache-Control": "no-store"})
+
+
+def _error(exc: ValueError) -> HTTPException:
+    """Expose fixed adapter errors without bearer, network body or account PII."""
+    code = str(exc)
+    status = 401 if code == "chat_sync_login_required" else 409
+    if code in {"chat_sync_unavailable", "chat_sync_service_rejected", "chat_sync_retry_later"}:
+        status = 503
+    return HTTPException(status, code, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/status")
+async def status(runtime: Runtime):
+    """Report opt-in per local character without claiming chats are uploaded."""
+    state = await runtime.status()
+    bindings = {item["character_uid"]: item for item in state.pop("bindings")}
+    choices = state.pop("syncChoices", {})
+    pending_choices = state.pop("syncPendingChoices", {})
+    setup_errors = state.pop("syncSetupErrors", {})
+    setup_diagnostics = state.pop("syncSetupDiagnostics", {})
+    characters = await _characters()
+    for character in characters:
+        if character["characterSyncId"] in setup_errors:
+            character["syncSetupError"] = setup_errors[character["characterSyncId"]]
+        if character["characterSyncId"] in setup_diagnostics:
+            character["syncSetupDiagnostic"] = setup_diagnostics[character["characterSyncId"]]
+        binding = bindings.get(character["characterSyncId"])
+        paused_or_bound = binding and (binding["binding_id"] or binding["generation"] > 1)
+        # Pending On is the saved user choice even before online owner checks
+        # activate a paused binding. Editing the card must preserve that choice.
+        character["syncPending"] = bool(pending_choices.get(character["characterSyncId"]))
+        # A role without a saved choice is Off, matching cloud saves: only an
+        # explicit checked save grants sync.
+        character["syncEnabled"] = (bool(binding["enabled"]) or character["syncPending"]) if paused_or_bound else choices.get(character["characterSyncId"], False)
+        character["binding"] = None if binding is None else {
+            "ownerId": binding["owner_id"], "bindingId": binding["binding_id"],
+            "enabled": bool(binding["enabled"]), "generation": binding["generation"],
+            **{key: binding[key] for key in ("pendingOriginals", "pendingDeletions", "cursor", "hasSealedBatch", "localOnlyOriginals")},
+            # Only fixed adapter codes are exposed, never remote response text.
+            "lastSyncError": binding.get("lastSyncError"),
+            "writerRecoveryRequired": binding.get("writerRecoveryRequired", False),
+            # Fixed local codes: capacity, archive subject or inbox waiting states.
+            "localMemoryDiagnostics": binding.get("localMemoryDiagnostics", []),
+            # Profile revision hints contain no raw settings or credential data.
+            "profile": binding.get("profile"),
+        }
+    return {**state, "characters": characters}
+
+
+@router.post("/wake")
+async def wake(runtime: Runtime, body: None = Body(default=None)):
+    """Wake the selected opted-in role without exposing OAuth or awaiting remote I/O."""
+    try:
+        await runtime.request_catchup()
+    except ValueError as exc:
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError("chat_sync_unavailable")) from None
+    return {"scheduled": True}
+
+
+@router.post("/recent-changed")
+async def recent_changed(runtime: Runtime, body: None = Body(default=None)):
+    """Accept a local write hint without resetting profile or network retry gates."""
+    runtime.wake_scheduler()
+    return {"scheduled": True}
+
+
+@router.post("/characters/{character_uid}/sync-choice")
+async def save_sync_choice(character_uid: str, body: CharacterSyncChoice, runtime: Runtime):
+    """Resolve the saved UID and treat this save as the single affirmative choice."""
+    character = await _character(character_uid)
+    try:
+        return await runtime.save_character_sync_choice(character_uid, character["displayName"], body.enabled,
+                                                       include_history=body.includeHistory)
+    except ValueError as exc:
+        raise _error(exc) from None
+    except (OSError, sqlite3.Error):
+        raise _error(ValueError("chat_sync_unavailable")) from None
+
+
+@router.get("/characters/{character_uid}/history")
+async def history(character_uid: str, runtime: Runtime):
+    """Return canonical originals and separate local-only replies for passive display."""
+    await _character(character_uid)
+    originals = await runtime.history(character_uid)
+    return {"characterSyncId": character_uid, "originals": originals,
+            "localReplies": await runtime.local_replies(character_uid)}
+
+
+@router.get("/characters/{character_uid}/model-sync")
+async def model_sync_status(character_uid: str, runtime: Runtime):
+    await _character(character_uid)
+    return await runtime.models.status(character_uid)
+
+
+@router.post("/characters/{character_uid}/model-sync/{token}")
+async def model_sync_loaded(character_uid: str, token: str, body: dict, runtime: Runtime):
+    await _character(character_uid)
+    if set(body) != {"loaded"} or type(body["loaded"]) is not bool or not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise HTTPException(400, "invalid_model_response")
+    try:
+        return {"applied": await runtime.models.finish(character_uid, token, body["loaded"])}
+    except (ValueError, OSError):
+        raise HTTPException(409, "chat_sync_binding_changed") from None
+
+
+@router.post("/characters/{character_uid}/model-sync-action")
+async def model_sync_action(character_uid: str, body: dict, runtime: Runtime):
+    await _character(character_uid)
+    if set(body) != {"action"} or type(body["action"]) is not str or body["action"] not in {"cloud", "local", "retry"}:
+        raise HTTPException(400, "invalid_model_response")
+    try:
+        await runtime.models.resolve(character_uid, body["action"])
+    except ValueError as exc:
+        raise _error(exc) from None
+    except OSError:
+        raise HTTPException(409, "chat_sync_binding_changed", headers={"Cache-Control": "no-store"}) from None
+    runtime.wake_scheduler()
+    return {"accepted": True}
+
+
+@router.post("/characters/{character_uid}/profile/local")
+async def local_profile(character_uid: str, runtime: Runtime):
+    """Observe saved raw settings even when the user declines uploading them."""
+    await _character(character_uid)
+    try:
+        return await runtime.profiles.local(character_uid)
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+@router.get("/cloud/characters")
+async def cloud_characters(runtime: Runtime):
+    """Cloud discovery is explicit and cannot create local characters."""
+    try:
+        return await runtime.profiles.cloud_roles()
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+@router.get("/cloud/characters/{character_uid}/profile")
+async def cloud_profile(character_uid: str, runtime: Runtime):
+    """Preview account-owned raw settings before the user chooses a new role."""
+    try:
+        return await runtime.profiles.preview(character_uid)
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+@router.post("/cloud/characters/{character_uid}/import")
+async def import_cloud_profile(character_uid: str, body: ProfileImportRequest, runtime: Runtime):
+    """Create once by UID; a name collision never replaces an existing character."""
+    try:
+        return await runtime.profiles.import_role(character_uid, body.revision, body.profileHash)
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+@router.post("/characters/{character_uid}/profile/approve")
+async def approve_profile(character_uid: str, body: ProfileChoiceRequest, runtime: Runtime):
+    """Queue one immutable approved snapshot; the browser supplies no profile/owner."""
+    await _character(character_uid)
+    try:
+        return await runtime.profiles.approve(character_uid, body.localHash, body.revision)
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+@router.post("/characters/{character_uid}/profile/resolve")
+async def resolve_profile(character_uid: str, body: ProfileResolveRequest, runtime: Runtime):
+    """Keep both versions until a reviewed choice passes the current CAS guards."""
+    await _character(character_uid)
+    try:
+        if body.choice == "local":
+            return await runtime.profiles.approve(character_uid, body.localHash, body.revision, resolve=True)
+        return await runtime.profiles.step(character_uid, manual=True, choose_remote=True,
+                                           local_hash=body.localHash, revision=body.revision,
+                                           confirm_rename=body.confirmRename)
+    except ValueError as exc:
+        raise _error(exc) from None
+
+
+async def close_runtime() -> None:
+    """Release adapter clients without clearing local original or deletion queues."""
+    from services.chat_sync.runtime import close_desktop_chat_sync_runtimes
+    await close_desktop_chat_sync_runtimes()
+
+
+@router.post("/characters/{character_uid}/recovery/preview")
+async def recovery_preview(character_uid: str, runtime: Runtime):
+    """Renew installation authority and verify one role against the cloud."""
+    character = await _character(character_uid)
+    try:
+        # The runtime always uses its built-in origin; the browser never supplies one.
+        return await runtime.recover_writer_role(character_uid, character["displayName"])
+    except ValueError as exc:
+        raise _error(exc) from None

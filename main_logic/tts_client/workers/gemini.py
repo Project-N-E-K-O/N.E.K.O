@@ -16,10 +16,15 @@
 
 import numpy as np
 import time
-import base64
 
 from utils.tts.native_voice_registry import make_native_tts_resolver, register_tts_worker_resolver
-from utils.tts.providers.gemini import GEMINI_TTS_MODEL, normalize_gemini_tts_voice
+from utils.tts.providers.gemini import (
+    GEMINI_TTS_MODEL,
+    GEMINI_TTS_SAMPLE_RATE,
+    build_gemini_tts_payload,
+    extract_gemini_tts_pcm,
+    normalize_gemini_tts_voice,
+)
 
 from .._infra import _resample_audio, _run_sentence_tts_worker
 from .._telemetry import _record_tts_telemetry
@@ -53,7 +58,7 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
         )
 
-        # TLS 连接预热
+        # Warm up TLS connections.
         try:
             logger.info("Gemini TTS TLS 预热中...")
             await client.get(
@@ -66,36 +71,14 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             logger.warning(f"Gemini TTS TLS 预热失败（不影响后续使用）: {e}")
 
         async def synthesize(text: str, speech_id: str) -> None:
-            wrapped = (
-                "Say the text with a proper tone, "
-                f"don't omit or add any words:\n\"{text}\""
-            )
-            payload = {
-                "contents": [{"parts": [{"text": wrapped}]}],
-                "generationConfig": {
-                    "response_modalities": ["AUDIO"],
-                    "speechConfig": {
-                        "voiceConfig": {
-                            "prebuiltVoiceConfig": {"voiceName": voice_id}
-                        }
-                    },
-                },
-            }
+            payload = build_gemini_tts_payload(text, voice_id)
             audio_data = None
             for attempt in range(1, MAX_RETRIES + 1):
                 t0 = time.time()
                 try:
                     r = await client.post(url, json=payload, timeout=TTS_TIMEOUT)
                     r.raise_for_status()
-                    data = r.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            inline = parts[0].get("inlineData", {})
-                            audio_b64 = inline.get("data")
-                            if audio_b64:
-                                audio_data = base64.b64decode(audio_b64)
+                    audio_data = extract_gemini_tts_pcm(r.json())
                     dt = time.time() - t0
                     if audio_data:
                         logger.info(
@@ -115,14 +98,14 @@ def gemini_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
             if audio_data:
                 _record_tts_telemetry("gemini", len(text))
                 audio_array = np.frombuffer(audio_data, dtype=np.int16)
-                resampled_bytes = _resample_audio(audio_array, 24000, 48000)
+                resampled_bytes = _resample_audio(audio_array, GEMINI_TTS_SAMPLE_RATE, 48000)
                 response_queue.put(resampled_bytes)
 
         return synthesize, client.aclose
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="Gemini TTS")
 
-# Gemini 内置音色和 realtime/LLM endpoint 共用 CORE_API_KEY，不走自定义 TTS slot。
+# Gemini built-in voices share CORE_API_KEY with realtime/LLM endpoints; they do not use custom TTS slots.
 register_tts_worker_resolver(
     'gemini',
     make_native_tts_resolver(gemini_tts_worker, 'core_api_key'),

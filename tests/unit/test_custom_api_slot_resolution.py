@@ -67,7 +67,7 @@ class TestNamedProviderSlotKey:
             conversationModelId='deepseek-v4-flash',
             conversationModelUrl='https://api.deepseek.com/v1',
             assistApiKeyDeepseek='sk-deepseek-book',
-            # 前端只能把脱敏哨兵拷进槽位字段，落盘后是空串
+            # The frontend may only copy redaction sentinels into slot fields; persistence stores empty strings.
             conversationModelApiKey='',
         ))
         cfg = config_manager.get_core_config()
@@ -103,7 +103,7 @@ class TestNamedProviderSlotKey:
         _write_core_config(config_manager, _base_config(
             conversationModelProvider='deepseek',
             conversationModelId='deepseek-v4-flash',
-            # 另一家的端点（存量 / 导入 / 手改）
+            # Another provider's endpoint (existing / imported / manually edited).
             conversationModelUrl='https://api.openai.com/v1',
             assistApiKeyDeepseek='DEEPSEEK-REAL-KEY',
         ))
@@ -119,7 +119,7 @@ class TestNamedProviderSlotKey:
         _write_core_config(config_manager, _base_config(
             conversationModelProvider='deepseek',
             conversationModelId='deepseek-v4-flash',
-            conversationModelUrl='https://api.deepseek.com/v1/',  # 尾斜杠写法差异
+            conversationModelUrl='https://api.deepseek.com/v1/',  # Trailing-slash spelling difference.
             assistApiKeyDeepseek='DEEPSEEK-REAL-KEY',
         ))
         conv = config_manager.get_model_api_config('conversation')
@@ -174,7 +174,7 @@ class TestNamedProviderSlotKey:
             summaryModelId='gpt-5-mini',
             summaryModelUrl='https://api.openai.com/v1',
             summaryModelApiKey='sk-legacy-slot',
-            # 管理簿里没有 openai 这一条
+            # No openai entry in the registry.
         ))
         cfg = config_manager.get_core_config()
         assert cfg['SUMMARY_MODEL_API_KEY'] == 'sk-legacy-slot', (
@@ -217,7 +217,7 @@ class TestNamedProviderSlotKey:
             'summaryModelId': 'qwen3.7-plus',
             'summaryModelUrl': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
             'summaryModelApiKey': 'sk-slot-specific',
-            # 管理簿里没有 qwen 这一条 —— ASSIST_API_KEY_QWEN 只会是 _fb() 派生值
+            # No qwen entry in the registry: ASSIST_API_KEY_QWEN can only be derived by _fb().
         })
         cfg = config_manager.get_core_config()
         assert cfg['SUMMARY_MODEL_API_KEY'] == 'sk-slot-specific', (
@@ -423,8 +423,8 @@ class TestRealtimeApiType:
             f"实际={rt['api_type']!r}"
         )
         assert rt['api_type'] != 'local', "也不能落进未实现的 'local'"
-        # 方言回落还不够：端点和凭证必须**一起**回落。只改方言的话会得到
-        # 「用核心的方言去说另一家的端点」——同样是分裂，只是换了个方向。
+        # Dialect fallback alone is insufficient: endpoint and credentials must fall back together.
+        # Otherwise the core dialect talks to another provider's endpoint, the same split in reverse.
         assert rt['base_url'] == cfg['CORE_URL'], (
             "实时端点必须跟着方言一起回落核心，"
             f"实际={rt['base_url']!r}"
@@ -436,7 +436,7 @@ class TestRealtimeApiType:
             "实时凭证同样必须是核心那家的，"
             f"实际={rt['api_key']!r}"
         )
-        # 派发身份与凭证必须同源：worker 按 api_type 选、凭证走 tts_default
+        # Dispatch identity and credentials must share a source: choose worker by api_type, credentials through tts_default.
         assert 'dashscope' not in (tts['base_url'] or ''), (
             f"TTS 端点不该被实时槽的选择带偏，实际={tts['base_url']!r}"
         )
@@ -471,8 +471,8 @@ class TestRealtimeApiType:
         Being a valid core API says nothing about whether this slot can express
         it: the whole audio stack carries one provider identity.
         """
-        # 带上一条残留 URL（换 provider 时留下的）。没有它，URL 本来就是空的、
-        # 自定义分支根本走不到，改动与否结果都一样 —— 这条残留正是唯一的分界。
+        # Include a stale URL left behind on provider change. Without it, the URL is empty and the custom
+        # branch is unreachable, yielding the same result with or without the fix; the stale URL is decisive.
         _write_core_config(config_manager, _base_config(
             coreApi='qwen',
             omniModelProvider='gemini',
@@ -660,7 +660,7 @@ class TestFallbackProtocolIsSameOrigin:
         _write_core_config(config_manager, _base_config(
             agentModelProvider='claude',
             agentModelId='claude-sonnet-4',
-            agentModelUrl='',  # 没填完 → 上游回填成 assist 地址
+            agentModelUrl='',  # Incomplete entry -> upstream fills in the assist address.
             assistApiKeyClaude='sk-ant-book',
         ))
         cfg = config_manager.get_core_config()
@@ -777,8 +777,8 @@ class TestVisionCredentialBoundary:
         URL would call them the same endpoint and hand one provider's
         credential to the other.
         """
-        # 两个 path **只**差大小写：这才是「折叠整条 URL」与「只折叠 scheme/host」
-        # 的分界。差别更大的话两种写法都会判成不同，测不出东西。
+        # The two paths differ only in case: this distinguishes lowercasing the entire URL from only scheme/host.
+        # Larger differences would be unequal under both implementations and test nothing.
         client = _make_offline_client(
             base_url='https://api.example.com/v1/TenantA',
             vision_base_url='https://api.example.com/v1/tenanta',
@@ -817,11 +817,11 @@ class TestVisionCredentialBoundary:
             ('http://api.example.com:99999999/v1', 'http://api.example.com:1/v1'),
             ('http://[::1]:abc/v1', 'http://[::1]:abc/v1'),
             ('::::', 'http://api.example.com/v1'),
-            # urlsplit 自己就会对未闭合的 IPv6 抛 ValueError
+            # urlsplit itself raises ValueError on unclosed IPv6 literals.
             ('http://[::1', 'http://api.example.com/v1'),
             ('http://[::1/v1', 'http://[::1/v1'),
         ):
-            _same_endpoint(a, b)  # 不抛就是通过
+            _same_endpoint(a, b)  # Passing means no exception.
 
         assert _same_endpoint('http://[::1/v1', 'http://[::1/v1') is True, (
             "解析不了时按原串比，两个相同的坏 URL 仍是同源"

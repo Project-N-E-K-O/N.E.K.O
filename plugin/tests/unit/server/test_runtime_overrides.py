@@ -115,8 +115,8 @@ def test_runtime_overrides_set_no_op_when_unchanged(_isolate_runtime_overrides, 
     ro.reset_cache_for_testing()
 
     ro.set_runtime_override("alpha", False)
-    ro.set_runtime_override("alpha", False)  # 同值，不应再写
-    ro.set_runtime_override("alpha", True)   # 翻转，应写
+    ro.set_runtime_override("alpha", False)  # Same value: do not write again
+    ro.set_runtime_override("alpha", True)   # Toggled value: write it
 
     assert [list(call.items()) for call in write_calls] == [
         [("alpha", False)],

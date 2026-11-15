@@ -106,7 +106,7 @@ def test_the_guard_can_actually_fail():
     before = "def get_meme_topic_line(lang):\n    return _loc(D, lang)\n"
     assert _raw_language_lookups(before), "detector missed the pre-change shape"
 
-    # 归一化之后必须不再报，否则这条守卫会把修好的代码也判红。
+    # Normalization must stop the warning; otherwise this guard marks corrected code as failing too.
     after = (
         "def get_meme_topic_line(lang):\n"
         "    lang_key = _normalize_prompt_language(lang)\n"
@@ -114,12 +114,12 @@ def test_the_guard_can_actually_fail():
     )
     assert _raw_language_lookups(after) == []
 
-    # 另外两种查表形状也要认得，否则改写成 .get / [] 就能绕过守卫。
+    # Recognize the other two lookup shapes too, or rewriting as .get / [] bypasses the guard.
     assert _raw_language_lookups("def f(lang):\n    return D.get(lang, D['en'])\n")
     assert _raw_language_lookups("def f(language):\n    return D[language]\n")
 
 
-# ── 行为面：今天零变化，C2 之后才会动 ────────────────────────────────────────
+# -- Behavior: unchanged today; changes begin after C2. --
 
 
 @pytest.mark.parametrize("lang", CALLER_REACHABLE_LOCALES)
@@ -139,9 +139,9 @@ def test_meme_topic_line_is_unchanged_for_every_locale_callers_can_pass(lang, ke
     )
 
 
-# 每个 locale 在 source_instruction 里独有的字面片段。手写而不是从模块里取：
-# 这些片段住在 get_proactive_format_sections 的函数体内部（局部 dict），拿不到，
-# 而"从被测对象自己推导期望值"恰恰是下面这条测试要避开的东西。
+# Literal fragments unique to each locale's source_instruction. Handwritten rather than imported:
+# they live in a local dictionary within get_proactive_format_sections and are inaccessible,
+# and deriving expected values from the implementation itself is precisely what this test avoids.
 _SOURCE_INSTRUCTION_MARKERS = {
     "zh": "你可以结合",
     "en": "You may combine",
@@ -152,8 +152,8 @@ _SOURCE_INSTRUCTION_MARKERS = {
     "pt": "Você pode combinar",
 }
 
-# 素材名走的是另一张表（_material_labels），必须单独钉：只钉上面那张的话，把
-# 素材名表整个换成英文仍然全绿 —— 这是变异跑出来的，不是推理出来的。
+# Material names use a separate _material_labels table and need a separate assertion. Testing only the above
+# leaves an all-English material table green, as mutation testing demonstrated.
 _MATERIAL_LABEL_MARKERS = {
     "zh": "屏幕内容",
     "en": "screen content",
@@ -189,7 +189,7 @@ def test_format_sections_select_that_locales_own_text(lang):
                 f"{lang} did not select its own material label"
             )
         seen.add((source_instruction, output_format_section))
-    # 16 种素材组合不能全塌成同一段文案，否则 has_* 分支根本没起作用。
+    # All 16 material combinations must not collapse to the same text, or has_* branches do nothing.
     assert len(seen) > 1
 
 
@@ -226,10 +226,10 @@ def test_the_whole_module_answers_one_script_for_a_traditional_locale():
         has_screen=True, has_web=False, has_music=False, has_meme=False, lang="zh"
     )
     assert source_instruction != simplified
-    # 钉住内容确实是繁体那一行，且不是简体、不是英文——单看"两边不等"是空的，
-    # "所有人都拿英文"也能让它不等。
-    assert "螢幕內容" in source_instruction                          # 繁体写法
-    assert _MATERIAL_LABEL_MARKERS["zh"] not in source_instruction  # 屏幕内容
+    # Assert the actual Traditional Chinese line, distinct from Simplified and English; inequality alone is insufficient,
+    # because giving everyone English can also produce unequal results.
+    assert "螢幕內容" in source_instruction                          # Traditional spelling.
+    assert _MATERIAL_LABEL_MARKERS["zh"] not in source_instruction  # Screen content.
     assert _MATERIAL_LABEL_MARKERS["en"] not in source_instruction  # screen content
 
 

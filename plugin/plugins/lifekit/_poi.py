@@ -1,4 +1,4 @@
-"""POI 搜索抽象层 — 支持高德 / 百度 / Overpass(OSM)。"""
+"""POI search abstraction supporting Amap / Baidu / Overpass (OSM)."""
 
 from __future__ import annotations
 
@@ -39,21 +39,21 @@ def _text_value(value: Any) -> str:
 
 @dataclass
 class POIItem:
-    """一个 POI 结果。"""
+    """A POI result."""
     name: str
     address: str = ""
-    type_name: str = ""       # "餐饮" / "咖啡厅" / "景点"
-    distance_m: float = 0     # 距搜索中心的距离（米）
+    type_name: str = ""       # "餐饮" / "咖啡厅" / "景点" (dining / cafe / attraction).
+    distance_m: float = 0     # Distance from the search center in meters.
     lat: float = 0
     lon: float = 0
     tel: str = ""
-    rating: str = ""          # 评分（如果有）
-    matched_term: str = ""     # 哪个召回词命中了该结果
+    rating: str = ""          # Rating, if available.
+    matched_term: str = ""     # Which recall term matched this result.
 
 
 @dataclass
 class POIResult:
-    """POI 搜索结果。"""
+    """POI search results."""
     query: str
     items: List[POIItem] = field(default_factory=list)
     provider: str = ""
@@ -76,7 +76,7 @@ class POIProvider(Protocol):
     ) -> List[POIItem]: ...
 
 
-# ── 高德 POI 搜索 ───────────────────────────────────────────────
+# -- Amap POI search --
 
 class AMapPOI:
     name = "amap"
@@ -133,7 +133,7 @@ class AMapPOI:
         return items
 
 
-# ── 百度 POI 搜索 ───────────────────────────────────────────────
+# -- Baidu POI search --
 
 class BaiduPOI:
     name = "baidu"
@@ -196,10 +196,10 @@ class BaiduPOI:
         return items
 
 
-# ── Overpass (OpenStreetMap) POI 搜索 — 免费无 key ──────────────
+# -- Overpass (OpenStreetMap) POI search: free, no key --
 
 class OverpassPOI:
-    """Overpass API 搜索 — 免费，无需 key，数据来自 OpenStreetMap。"""
+    """Overpass API search: free, no key required, using OpenStreetMap data."""
     name = "osm"
 
     _PUBLIC_ENDPOINTS = (
@@ -208,7 +208,7 @@ class OverpassPOI:
         "https://overpass-api.de/api/interpreter",
     )
 
-    # 地图召回词 → 完整 OSM tag filter。存在性查询不能伪装成 ``shop=yes``。
+    # Map recall terms to complete OSM tag filters. Existence queries must not masquerade as ``shop=yes``.
     _TAG_FILTERS: Dict[str, str] = {
         "商店": '["shop"]', "店铺": '["shop"]', "shop": '["shop"]',
         "shops": '["shop"]', "store": '["shop"]', "stores": '["shop"]',
@@ -270,7 +270,7 @@ class OverpassPOI:
     ) -> List[POIItem]:
         tag_filter = self._TAG_FILTERS.get(query, "")
         if not tag_filter:
-            # 通用搜索：用 name 匹配 — 转义正则、Overpass QL 特殊字符和控制字符
+            # General search matches name; escape regex, Overpass QL special characters, and control characters.
             import re
             sanitized = re.sub(r'[\x00-\x1f\x7f]', '', query)  # strip control chars
             escaped = re.sub(r'(["\\\.\*\+\?\(\)\[\]\{\}\|^$])', r'\\\1', sanitized)
@@ -320,7 +320,7 @@ class OverpassPOI:
                         continue
                     raw_lat = raw_lat if raw_lat is not None else center.get("lat")
                     raw_lon = raw_lon if raw_lon is not None else center.get("lon")
-                # 合法坐标可能是 0.0（赤道/本初子午线），所以用显式 None 判定喵
+                # Valid coordinates may be 0.0 (equator/prime meridian), so check None explicitly, meow.
                 if raw_lat is None or raw_lon is None:
                     continue
                 plat = float(raw_lat)
@@ -459,10 +459,10 @@ def _is_duplicate_item(
     )
 
 
-# ── POI 搜索调度器 ──────────────────────────────────────────────
+# -- POI search dispatcher --
 
 class POIService:
-    """根据配置选择 provider 搜索 POI。"""
+    """Select a provider from configuration to search POIs."""
 
     def __init__(self, cfg: Dict[str, Any]):
         self._providers: list[POIProvider] = []

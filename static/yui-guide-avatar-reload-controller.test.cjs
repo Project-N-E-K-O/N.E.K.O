@@ -62,8 +62,30 @@ function loadReloadControllerWindow() {
     return window;
 }
 
-test('tutorial avatar reload snapshots proactive chat and restores it after model restore', async () => {
+function attachEventRecorder(window) {
+    const events = [];
+    window.CustomEvent = class {
+        constructor(type, init) {
+            this.type = type;
+            this.detail = (init && init.detail) || null;
+        }
+    };
+    window.dispatchEvent = function (event) {
+        events.push(event);
+    };
+    return events;
+}
+
+function suppressionEvents(events, active) {
+    return events.filter(
+        (event) => event.type === 'neko:home-tutorial-features-suppressed'
+            && event.detail.active === active
+    );
+}
+
+test('tutorial avatar reload stops proactive runtime without rewriting settings memory', async () => {
     const window = loadReloadControllerWindow();
+    const events = attachEventRecorder(window);
     const calls = [];
     const host = {
         constructor: {
@@ -95,50 +117,53 @@ test('tutorial avatar reload snapshots proactive chat and restores it after mode
         clearViewportWatcher: () => calls.push({ type: 'clearViewport' })
     });
 
+    window.releaseProactiveVisionStream = function () {
+        assert.equal(controller.isProactiveRuntimeHeld(), true);
+        assert.equal(suppressionEvents(events, true).length, 1);
+        this.stopCalls.push('stream');
+    };
     await controller.beginOverride();
 
-    assert.equal(window.proactiveChatEnabled, false);
-    assert.equal(window.appState.proactiveChatEnabled, false);
-    assert.equal(window.proactiveVisionChatEnabled, false);
-    assert.equal(window.appState.proactiveVisionChatEnabled, false);
+    // 标志与事件先于流释放生效，但设置内存一个字都不许改：
+    // 这些值由 saveSettings 持久化并跨窗口同步，改写即污染。
     assert.deepEqual(window.stopCalls, ['chat', 'vision', 'stream']);
-
-    await controller.restoreOverride();
-
+    assert.equal(controller.isProactiveRuntimeHeld(), true);
+    assert.equal(suppressionEvents(events, true).length, 1);
     assert.equal(window.proactiveChatEnabled, true);
     assert.equal(window.appState.proactiveChatEnabled, true);
     assert.equal(window.proactiveVisionChatEnabled, true);
     assert.equal(window.appState.proactiveVisionChatEnabled, true);
     assert.equal(window.proactiveNewsChatEnabled, false);
     assert.equal(window.appState.proactiveNewsChatEnabled, false);
-    assert.equal(window.scheduleCalls, 1);
+
+    await controller.restoreOverride();
+
+    // 释放：标志复位、事件派发；没有设置值需要恢复，控制器也不再自己
+    // 排程（重排/补挂由 app-proactive 的释放事件监听负责）。
+    assert.equal(controller.isProactiveRuntimeHeld(), false);
+    assert.equal(suppressionEvents(events, false).length, 1);
+    assert.equal(window.proactiveChatEnabled, true);
+    assert.equal(window.appState.proactiveChatEnabled, true);
+    assert.equal(window.scheduleCalls, 0);
     assert.equal(calls.filter((call) => call.type === 'reload').length, 2);
 });
 
-test('tutorial avatar reload snapshots proactive chat when override starts, not when constructed', async () => {
+test('tutorial avatar reload keeps the runtime hold until the model restore settles', async () => {
     const window = loadReloadControllerWindow();
-    window.proactiveChatEnabled = false;
-    window.appState.proactiveChatEnabled = false;
-    window.proactiveVisionChatEnabled = false;
-    window.appState.proactiveVisionChatEnabled = false;
-
-    const host = {
-        constructor: {
-            detectModelPrefix() {
-                return 'live2d';
-            }
-        }
-    };
+    const events = attachEventRecorder(window);
+    let releaseModel;
+    const modelGate = new Promise((resolve) => { releaseModel = resolve; });
+    let modelCalls = 0;
     const controller = window.TutorialAvatarReloadController.createController({
-        host,
-        timeoutMs: 200,
-        resolveCurrentName: () => {
-            window.proactiveChatEnabled = true;
-            window.appState.proactiveChatEnabled = true;
-            window.proactiveVisionChatEnabled = true;
-            window.appState.proactiveVisionChatEnabled = true;
-            return Promise.resolve('LanLan');
+        host: {
+            constructor: {
+                detectModelPrefix() {
+                    return 'live2d';
+                }
+            }
         },
+        timeoutMs: 5000,
+        resolveCurrentName: () => Promise.resolve('LanLan'),
         fetchCharacters: () => Promise.resolve({
             '猫娘': {
                 LanLan: {
@@ -148,7 +173,11 @@ test('tutorial avatar reload snapshots proactive chat when override starts, not 
             }
         }),
         buildSnapshotPayload: () => ({ model_type: 'live2d', live2d: 'lanlan' }),
-        reloadModel: () => Promise.resolve(),
+        // 第一次调用是换入教程模型：立即完成；第二次是恢复用户模型：受控。
+        reloadModel: () => {
+            modelCalls += 1;
+            return modelCalls === 1 ? Promise.resolve() : modelGate;
+        },
         setPreparing: () => {},
         revealPrepared: () => {},
         applyIdentityOverride: () => {},
@@ -156,36 +185,45 @@ test('tutorial avatar reload snapshots proactive chat when override starts, not 
     });
 
     await controller.beginOverride();
-    await controller.restoreOverride();
+    assert.equal(controller.isProactiveRuntimeHeld(), true);
 
+    const restorePromise = controller.restoreOverride();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // 模型恢复中的窗口：feature controller 的 end 可能已先行放行，本层
+    // hold 必须撑到恢复完成——触发闸门靠它拦住对临时模型开口的定时器。
+    assert.equal(controller.isProactiveRuntimeHeld(), true);
+    assert.equal(suppressionEvents(events, false).length, 0);
+
+    releaseModel();
+    await restorePromise;
+
+    assert.equal(controller.isProactiveRuntimeHeld(), false);
+    assert.equal(suppressionEvents(events, false).length, 1);
+    // 全程设置内存零改写。
     assert.equal(window.proactiveChatEnabled, true);
     assert.equal(window.appState.proactiveChatEnabled, true);
-    assert.equal(window.proactiveVisionChatEnabled, true);
-    assert.equal(window.appState.proactiveVisionChatEnabled, true);
-    assert.equal(window.scheduleCalls, 1);
 });
 
-test('tutorial avatar reload does not overwrite proactive state restored by the tutorial lifecycle', async () => {
+test('tutorial avatar reload registers its own hold while the feature controller is active', async () => {
     const window = loadReloadControllerWindow();
-    window.proactiveChatEnabled = false;
-    window.appState.proactiveChatEnabled = false;
-    window.proactiveVisionChatEnabled = false;
-    window.appState.proactiveVisionChatEnabled = false;
+    const events = attachEventRecorder(window);
     window.NekoHomeTutorialFeatureController = {
         isActive() {
             return true;
         }
     };
 
-    const host = {
-        constructor: {
-            detectModelPrefix() {
-                return 'live2d';
-            }
-        }
-    };
     const controller = window.TutorialAvatarReloadController.createController({
-        host,
+        host: {
+            constructor: {
+                detectModelPrefix() {
+                    return 'live2d';
+                }
+            }
+        },
         timeoutMs: 200,
         resolveCurrentName: () => Promise.resolve('LanLan'),
         fetchCharacters: () => Promise.resolve({
@@ -206,19 +244,18 @@ test('tutorial avatar reload does not overwrite proactive state restored by the 
 
     await controller.beginOverride();
 
-    // Skip/angry-exit tears down the feature controller before the model restore.
-    window.proactiveChatEnabled = true;
-    window.appState.proactiveChatEnabled = true;
-    window.proactiveVisionChatEnabled = true;
-    window.appState.proactiveVisionChatEnabled = true;
-    window.NekoHomeTutorialFeatureController = null;
+    // feature controller 已激活时本层也登记自己的 hold：controller 的 end
+    // 先于模型恢复完成，那段窗口由本层的标志继续守住触发闸门。
+    assert.equal(controller.isProactiveRuntimeHeld(), true);
+    assert.equal(window.proactiveChatEnabled, true);
+    assert.equal(window.appState.proactiveChatEnabled, true);
 
     await controller.restoreOverride();
 
+    assert.equal(controller.isProactiveRuntimeHeld(), false);
+    assert.equal(suppressionEvents(events, false).length, 1);
     assert.equal(window.proactiveChatEnabled, true);
     assert.equal(window.appState.proactiveChatEnabled, true);
-    assert.equal(window.proactiveVisionChatEnabled, true);
-    assert.equal(window.appState.proactiveVisionChatEnabled, true);
 });
 
 test('tutorial avatar reload can keep prepared model hidden for intro performance reveal', async () => {

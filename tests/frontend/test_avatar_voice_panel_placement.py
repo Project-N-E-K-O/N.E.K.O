@@ -194,12 +194,14 @@ def test_open_voice_panels_follow_toolbar_moves_and_window_resize(page: Page):
 
 
 @pytest.mark.frontend
-def test_device_hover_bridge_allows_transfer_but_expires_in_blank_gap(page: Page):
+def test_device_hover_bridge_allows_transfer_and_survives_parking_in_gap(page: Page):
     _install_toolbar(page)
     _open_action(page, "device")
     result = _snapshot(page)
     a, b = result["popup"], result["panel"]
-    # The popup padding and toolbar clearance are outside either hover surface.
+    # The transfer corridor joins the row and the panel. Parking inside it is
+    # a mid-transfer pause, not a dismissal: the panel must stay open no
+    # matter how long the pointer rests there.
     gap_x = a["left"] - 6
     gap_y = b["top"] + 20
     page.mouse.move(gap_x, gap_y)
@@ -209,6 +211,37 @@ def test_device_hover_bridge_allows_transfer_but_expires_in_blank_gap(page: Page
     page.wait_for_timeout(360)
     assert page.locator(".neko-mic-subwindow").count() == 1
     page.mouse.move(gap_x, gap_y)
+    page.wait_for_timeout(1400)
+    assert page.locator(".neko-mic-subwindow").count() == 1
+    # Leaving the corridor for a blank area still collapses the panel.
+    page.mouse.move(b["right"] - 6, b["bottom"] + 60)
+    page.wait_for_function("!document.querySelector('.neko-mic-subwindow')", timeout=1800)
+
+
+@pytest.mark.frontend
+def test_device_panel_survives_menu_drift_under_resting_pointer(page: Page):
+    _install_toolbar(page)
+    _open_action(page, "device")
+    # The toolbar keeps gliding under a resting pointer (model breathing and
+    # mouse tracking). The synthetic mouseleave caused by that movement must
+    # not collapse the panel while the pointer rests on the menu.
+    page.evaluate("""() => {
+        window.__drift = setInterval(() => {
+            const scale = 1 + Math.round(Math.sin(performance.now() / 300)) / 50;
+            __setModelBounds(1029, scale);
+            __toolbarTick();
+        }, 120);
+    }""")
+    page.wait_for_timeout(2000)
+    assert page.locator(".neko-mic-subwindow").count() == 1
+    # Parking on menu whitespace also keeps the panel: it follows the menu
+    # session, not the single row that opened it.
+    page.locator(".mic-gain-container").hover()
+    page.wait_for_timeout(600)
+    assert page.locator(".neko-mic-subwindow").count() == 1
+    page.evaluate("() => clearInterval(window.__drift)")
+    # Leaving the menu and panel entirely still collapses it.
+    page.mouse.move(1400, 60)
     page.wait_for_function("!document.querySelector('.neko-mic-subwindow')", timeout=1800)
 
 

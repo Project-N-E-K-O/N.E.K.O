@@ -20,7 +20,6 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { formatHttpError } from '@/utils/request'
-import { isOrdinaryPlugin } from '@/utils/pluginDisplay'
 
 interface Props {
   pluginId: string
@@ -37,15 +36,12 @@ const autoStart = computed(() => {
   return plugin?.autoStart ?? false
 })
 
-// The host never auto-starts development plugins and the API refuses the
-// preference for them (409), so the switch is shown read-only.
-const supported = computed(() => {
-  const plugin = pluginStore.getPluginById(props.pluginId)
-  return plugin ? isOrdinaryPlugin(plugin) : true
-})
+// The host never auto-starts workbench projects and the API refuses the
+// preference for them, so the switch is shown read-only.
+const supported = computed(() => pluginStore.getPluginById(props.pluginId)?.source !== 'project')
 
 const hintKey = computed(() => {
-  if (!supported.value) return 'plugins.autoStartUnsupportedDevelopment'
+  if (!supported.value) return 'plugins.autoStartUnsupportedProject'
   const plugin = pluginStore.getPluginById(props.pluginId)
   if (!autoStart.value && plugin?.runtime_enabled === false) {
     return 'plugins.autoStartDisabledHint'

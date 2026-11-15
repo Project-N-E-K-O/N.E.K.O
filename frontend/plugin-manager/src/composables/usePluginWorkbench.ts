@@ -13,14 +13,12 @@ import type { PluginMeta } from '@/types/api'
 import {
   useGridWorkbench,
   normalizeSearchPart,
-  type FilterMode,
   type LayoutMode,
   type QualifierMatcher,
 } from '@/composables/useGridWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 
 export type PluginWorkbenchLayoutMode = LayoutMode
-export type PluginWorkbenchFilterMode = FilterMode
 export type PluginWorkbenchGroupType = 'plugin' | 'adapter'
 
 export type PluginWorkbenchItem = PluginMeta & {
@@ -87,10 +85,10 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
         return !ctx.selectedIds.includes(plugin.id)
       case 'manual':
       case 'manual_start':
-        return plugin.autoStart === false
+        return plugin.autoStart !== true
       case 'auto':
       case 'auto_start':
-        return plugin.autoStart !== false
+        return plugin.autoStart === true
       case 'plugin':
       case 'adapter':
         return plugin.type === value
@@ -242,14 +240,11 @@ export function usePluginWorkbench<
   return {
     items: workbench.items,
     filterText: workbench.filterText,
-    useRegex: workbench.useRegex,
-    filterMode: workbench.filterMode,
     selectedTypes,
     layoutMode: workbench.layoutMode,
     selectedPluginIds: workbench.selectedIds,
     selectedCount: workbench.selectedCount,
     multiSelectEnabled: workbench.multiSelectEnabled,
-    regexError: workbench.regexError,
     groupCounts: workbench.groupCounts,
     pluginCount,
     adapterCount,

@@ -10,8 +10,8 @@ from importlib import import_module as _import_module
 
 from . import base as _base
 from . import decorators as _decorators
-# 避免 `from . import llm_tool as _llm_tool` 在 importlib.reload 时被外部 `llm_tool` 函数名
-# 遮蔽（第一次加载后本模块的 `llm_tool` 属性变成函数，导致下次 `from . import llm_tool` 拿回函数而非子模块）喵
+# Prevent `from . import llm_tool as _llm_tool` from being shadowed by the exported `llm_tool` function during importlib.reload
+# (after the first load, this module's `llm_tool` attribute is a function, so the next `from . import llm_tool` returns it instead of the submodule), meow
 _llm_tool = _sys.modules.get("plugin.sdk.plugin.llm_tool") or _import_module("plugin.sdk.plugin.llm_tool")
 from . import activity as _activity
 from . import runtime as _runtime
@@ -133,3 +133,32 @@ __all__ = [
 from plugin.sdk.shared.core.cards import ChatCard, CardSubmissionError, PluginView
 
 __all__ += ["ChatCard", "CardSubmissionError", "PluginView"]
+
+_MEMORY_TYPES = (
+    "MemoryTarget", "MemorySubject", "MemoryHit", "MemorySearchResult",
+    "MemoryPersona", "MemoryPersonaSection", "MemoryPersonaEntry", "MemoryError",
+)
+_CONVERSATION_TYPES = (
+    "ConversationMessage", "ReplyOrigin", "ConversationChange", "InputSubmission",
+    "InputSubmittedEvent", "ReplyDetail", "ReplyEvent", "PlaybackDetail",
+    "InteractionInput", "InteractionDetail",
+)
+__all__ += ["MemoryClient", *_MEMORY_TYPES, *_CONVERSATION_TYPES]
+
+
+def __getattr__(name: str):
+    if name == "MemoryClient":
+        module = _import_module("plugin.sdk.shared.memory.client")
+    elif name in _MEMORY_TYPES:
+        module = _import_module("plugin.sdk.shared.contracts.memory")
+    elif name in _CONVERSATION_TYPES:
+        module = _import_module("plugin.sdk.shared.contracts.conversations")
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

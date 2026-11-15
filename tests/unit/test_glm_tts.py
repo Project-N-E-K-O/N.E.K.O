@@ -29,8 +29,8 @@ def test_build_glm_voice_name_is_stable_and_unique_per_audio():
     first = build_glm_voice_name("Miko", "aabbccddeeff00112233445566778899", "ch")
     second = build_glm_voice_name("Miko", "aabbccddeeff00112233445566778899", "ch")
     other_audio = build_glm_voice_name("Miko", "ffeeddccbbaa00112233445566778899", "ch")
-    # 同音频换 ref_language：本地 MD5 去重不命中（ref_language 是去重键的一部分），
-    # voice_name 必须随之变化，否则 GLM 按账号内唯一性拒绝第二次注册。
+    # Changing ref_language for identical audio avoids local MD5 deduplication (language is part of the key);
+    # voice_name must change too, or GLM rejects the second registration for account-level uniqueness.
     other_language = build_glm_voice_name("Miko", "aabbccddeeff00112233445566778899", "ja")
 
     assert first == second
@@ -43,7 +43,7 @@ def test_build_glm_voice_name_is_stable_and_unique_per_audio():
 
 @pytest.mark.unit
 def test_build_glm_voice_name_without_language_keeps_legacy_shape():
-    # 不传 ref_language 时保持旧形状（无语言段），纯函数向后兼容。
+    # Omitting ref_language preserves the old form without a language segment, keeping the pure function compatible.
     assert build_glm_voice_name("Miko", "aabbccddeeff00112233") == "neko_miko_aabbccddeeff"
 
 
@@ -306,7 +306,7 @@ def test_glm_tts_registry_meta_matches_cogtts_runtime_behavior():
     cogtts_meta = TTS_PROVIDER_REGISTRY.get("cogtts")
     assert meta is not None, "glm_tts must be present in TTS_PROVIDER_REGISTRY"
     assert meta.category == "http_sentence"
-    # 与 cogtts 同 worker：运行时行为位必须一致（replay progress / normalizer）。
+    # Sharing the cogtts worker requires matching runtime behavior flags (replay progress / normalizer).
     assert meta.category == cogtts_meta.category
     assert meta.input_streaming == cogtts_meta.input_streaming
     assert meta.output_streaming == cogtts_meta.output_streaming
@@ -563,8 +563,8 @@ async def test_glm_direct_link_clone_registers_via_two_step_flow(monkeypatch):
     monkeypatch.setattr(vc, "_validate_direct_link_target", _noop_validate)
     monkeypatch.setattr(vc, "_request_direct_link_follow_redirects", _fake_head)
     monkeypatch.setattr(vc, "_download_direct_link_audio", _fake_download)
-    # glm_tts 直链分支在函数内局部导入 normalize_voice_clone_api_audio（与 minimax
-    # 分支同构），monkeypatch 必须打到 utils.audio 源头才能被运行时局部导入看到。
+    # glm_tts direct-link cloning locally imports normalize_voice_clone_api_audio, matching minimax;
+    # monkeypatch utils.audio itself so the runtime local import sees it.
     monkeypatch.setattr("utils.audio.normalize_voice_clone_api_audio", _fake_normalize)
 
     payload = {
@@ -768,29 +768,29 @@ def test_glm_tts_frontend_and_backend_are_wired():
     assert "glm_tts: 'glm'" in voice_clone_js
     assert "['glm_tts', 'assistApiKeyGlm']" in voice_clone_js
     assert "voice.glmTtsApiRequired" in voice_clone_js
-    # 直链克隆已支持：/voice_clone_direct 的 valid_providers 含 glm_tts（下载音频后
-    # 走两步注册），前端不得把 glm_tts 列入直链禁用名单。
+    # Direct-link cloning is supported: /voice_clone_direct valid_providers includes glm_tts, downloading audio
+    # before two-step registration. The frontend must not disable direct links for glm_tts.
     direct_link_fn = voice_clone_js.split("function isDirectLinkUnsupportedProvider")[1].split("}")[0]
     assert "'glm_tts'" not in direct_link_fn
-    assert "'elevenlabs', 'glm_tts']" in router_py  # valid_providers 直达白名单
+    assert "'elevenlabs', 'glm_tts']" in router_py  # Direct valid_providers whitelist.
     assert "GlmTtsError" in router_py
     assert "key='glm_tts'" in registry_py
     assert "_glm_clone_is_selected" in registry_py
-    # TTS_PROVIDER_REGISTRY 元数据（wehos review）：resolver 返回 provider_key='glm_tts'，
-    # tts_runtime 按 meta 决定逐句重放进度等运行时行为；缺失会让克隆音色在 worker
-    # 故障切换时拿不到逐句确认（原生 cogtts 有）。
+    # TTS_PROVIDER_REGISTRY metadata (wehos review): resolver returns provider_key='glm_tts';
+    # tts_runtime uses metadata for per-sentence replay progress and related behavior. Missing metadata deprives clones
+    # of sentence confirmations during worker failover (native cogtts has them).
     assert '"glm_tts": TTSProviderMeta(' in registry_meta_py
     assert "GLM_TTS_API_KEY_MISSING" in router_py
     assert "GlmVoiceCloneClient(api_key=api_key, base_url=base_url)" in router_py
-    # 10MB 超限预检（CodeRabbit review）：超限走 413 而不是 500，且不打远端 API。
+    # 10MB preflight limit (CodeRabbit review): return 413 rather than 500 without calling the remote API.
     assert "GLM_VOICE_CLONE_MAX_AUDIO_BYTES" in router_py
     assert "GLM_TTS_AUDIO_TOO_LARGE" in router_py
-    # 本地 WS TTS 激活时不得把 glm_tts 克隆误送进 /v1/speakers/register 本地注册流。
+    # Active local WebSocket TTS must not send glm_tts clones through local /v1/speakers/register registration.
     assert "provider not in ('vllm_omni', 'glm_tts')" in router_py
     assert "GLM_TTS_PREVIEW_FAILED" in preview_py
     assert "provider == 'glm_tts'" in preview_py
     assert "get_tts_api_key('glm_tts')" in storage_py
-    # 删除白名单必须覆盖 __GLM_TTS__ 分桶，否则标准删除接口删不掉已注册的 GLM 音色。
+    # Deletion whitelist must include __GLM_TTS__ buckets, or the standard endpoint cannot delete registered GLM voices.
     assert "storage_key.startswith(GLM_VOICE_STORAGE_KEY)" in storage_py
     assert GLM_VOICE_STORAGE_KEY == "__GLM_TTS__"
     assert zh_locale["voice"]["provider"]["glm_tts"] == "智谱GLM声音复刻"

@@ -1,10 +1,10 @@
-"""Numeric v2 的确定性状态引擎与 Runtime 入口。"""  # noqa: DOCSTRING_CJK
+"""Deterministic Numeric v2 state engine and Runtime entry points."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
 from copy import deepcopy
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 import re
 from pathlib import Path
@@ -12,14 +12,20 @@ from typing import Any, Mapping
 
 from utils.tokenize import truncate_to_tokens
 
-from .numeric_v2_context import pending_transition_record
-from .numeric_v2_fixed_narration import add_entry, displayed_ids, required_pending, validate_delivery
+from .numeric_v2_cast import NumericV2CastProjection
+from .numeric_v2_context import current_scene_records, pending_transition_record, recorded_transition_offer
+from .numeric_v2_fixed_narration import add_entry, displayed_ids, has_pending_entry, required_pending, validate_delivery
+from .numeric_v2_transition_text import is_placeholder_accept_input
 
 from .numeric_v2 import (
     CompiledNumericV2Package,
     NumericV2Compiler,
+    valid_fact_evidence_anchor,
+    valid_fact_player_handoff_item,
 )
 from .numeric_v2_performance import (
+    is_silent_invitation_control,
+    performance_content_blocks,
     transition_source_dialogue_policy,
     valid_mixed_performance_policy,
     valid_ordered_content,
@@ -31,6 +37,8 @@ from .numeric_v2_budget import (
 )
 from .numeric_v2_action_projection import (
     normalize_player_action_projection,
+    performed_player_handoff,
+    player_handoff_is_explicit,
     project_player_action_result,
 )
 from .numeric_v2_store import (
@@ -46,8 +54,8 @@ FACT_PROJECTION_SCHEMA = "neko.script.fact_projection.numeric.v1"
 TIMELINE_PROJECTION_SCHEMA = "neko.script.timeline_projection.numeric.v1"
 STORY_STATE_SCHEMA = "neko.script.story_state.numeric.v1"
 NUMERIC_V2_PLAYER_INPUT_MAX_TOKENS = 140
-NUMERIC_V2_INPUT_SOURCES = frozenset({"freeform", "suggestion", "reinvite"})
-# 当前 Session 只保存正文、数值和转场状态；旧证据链 Session 不再可恢复。
+NUMERIC_V2_INPUT_SOURCES = frozenset({"freeform", "suggestion", "reinvite", "accept_invitation"})
+# Current Sessions store only body, numeric, and transition states; old evidence-chain Sessions are no longer recoverable.
 _DIALOGUE_POLICIES = frozenset({"required", "optional", "forbidden"})
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _STORY_FACT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
@@ -64,15 +72,32 @@ _FACT_CONTRACT_VISIBILITIES = frozenset({"public", "story"})
 _FACT_CANDIDATE_EVIDENCE_SOURCES = frozenset({"player_input", "actor_performance", "runtime_fact"})
 _FACT_CANDIDATE_MAX_ITEMS = 16
 _FACT_CANDIDATE_MAX_EVIDENCE = 4
-# 完成事实只能引用已经发生的结果；这组词只拦明确的未来态，不把“准备工作已经完成”
-# 之类包含同形名词的完成表述误判为计划。
+# Completion facts may reference only outcomes that already happened; these terms block explicit future states without mistaking completed statements such as
+# 'preparations are complete', containing homographic nouns, for plans.
 _UNCONFIRMED_FACT_EVIDENCE_RE = re.compile(
     r"即将|将要|尚未|还没|"
     r"(?:准备|考虑|计划)(?:去|做|开始|进入|执行|进行|前往|离开|启动|按下|发力)|"
     r"打算"
 )
-# 到达类合同需要证明角色已经跨过目标边界；只写朝目标移动仍是过程态。根据合同描述
-# 限定作用域，避免把“撤离已经开始”这类本来就记录启动状态的事实一并拒绝。
+# Expressing a present intention differs from carrying out its object. Keep
+# deferred declarations and contracts also requiring actual completion blocked.
+_INTENTION_FACT_RE = re.compile(r"(?:表示|表达).{0,8}(?:愿意|意愿|意向|打算)")
+_DEFERRED_INTENTION_EVIDENCE_RE = re.compile(
+    r"(?:准备|打算|考虑|计划|即将|将要|尚未|还没).{0,16}(?:表示|表达|表态|承诺|答应|同意)"
+)
+# A first-person offer to handle the next action can prove an agreement, but
+# cannot on its own prove the promised result. Keep this to standalone offers.
+_FUTURE_ACTOR_ASSIGNMENT_RE = re.compile(
+    r"^(?:(?:我)?(?:带|陪|领)你[^已了过，,。.!?！？；;（）()\n]+[，,]\s*)?"
+    r"然后我来(?!到|过|自)[^已了过，,。.!?！？；;（）()\n]+[。.]?$"
+)
+_AGREEMENT_FACT_RE = re.compile(r"承诺|答应|约定|同意|分工|商定|安排|接受|回应|决定|表态")
+_EVIDENCE_CLAUSE_RE = re.compile(r"[^，。！？；、,.!?;（）()\n]+")
+_PENDING_EVIDENCE_CLAUSE_RE = re.compile(
+    r"待会|等会|等一下|等.{0,12}(?:回来|到场)|稍后|还得|还需|仍需|尚未|还没|准备|打算|要不要|先别"
+)
+# Arrival contracts require crossing the target boundary, not merely moving toward it. Scope by contract description
+# to avoid rejecting facts intentionally recording startup states, such as 'evacuation has begun'.
 _COMPLETED_LOCATION_FACT_RE = re.compile(
     r"(?:已经|已).{0,48}(?:进入|抵达|到达|安置|撤离)"
 )
@@ -94,15 +119,15 @@ _COMPARATORS = {
 
 
 class NumericV2RuntimeError(ValueError):
-    """Numeric v2 回合无法在当前确定性状态上结算。"""  # noqa: DOCSTRING_CJK
+    """The Numeric v2 turn cannot settle against current deterministic state."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2RevisionConflictError(NumericV2RuntimeError):
-    """客户端基于过期 revision 提交。"""  # noqa: DOCSTRING_CJK
+    """The client submitted against an expired revision."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2DuplicateTurnError(NumericV2RuntimeError):
-    """同一个 client_turn_id 已经成功提交。"""  # noqa: DOCSTRING_CJK
+    """The same client_turn_id has already been committed successfully."""  # noqa: DOCSTRING_CJK
 
 
 def _stable_id(value: Any, field: str) -> str:
@@ -118,7 +143,7 @@ def _integer(value: Any, field: str) -> int:
 
 
 def _story_scalar(value: Any, field: str) -> bool | int | str:
-    """限制事实值为可稳定序列化、可回放的简单标量。"""  # noqa: DOCSTRING_CJK
+    """Restrict fact values to simple scalars that serialize consistently and can be replayed."""  # noqa: DOCSTRING_CJK
 
     if isinstance(value, bool):
         return value
@@ -129,8 +154,8 @@ def _story_scalar(value: Any, field: str) -> bool | int | str:
     raise NumericV2RuntimeError(f"{field}_invalid")
 
 
-def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
-    """提取已由编译器校验的事实合同；缺失合同表示不开放模型事实写入。"""  # noqa: DOCSTRING_CJK
+def _story_fact_contract(value: Any) -> dict[str, dict[str, Any]]:
+    """Extract compiler-validated fact contracts; missing contracts disable model fact writes."""  # noqa: DOCSTRING_CJK
 
     if value is None:
         return {}
@@ -139,13 +164,16 @@ def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
     facts = value.get("facts")
     if not isinstance(facts, Mapping):
         raise NumericV2RuntimeError("story_fact_contract_invalid")
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, dict[str, Any]] = {}
     for key, definition in facts.items():
         if (
             not isinstance(key, str)
             or not isinstance(definition, Mapping)
             or not {"value_type", "visibility"}.issubset(definition)
-            or set(definition).difference({"value_type", "visibility", "description"})
+            or set(definition).difference({"value_type", "visibility", "description", "evidence_source", "evidence_anchor", "player_handoff_item"})
+            or ("evidence_source" in definition and definition["evidence_source"] not in ("performance", "player_input"))
+            or ("evidence_anchor" in definition and not valid_fact_evidence_anchor(definition))
+            or ("player_handoff_item" in definition and not valid_fact_player_handoff_item(definition))
             or definition.get("value_type") not in _FACT_CONTRACT_VALUE_TYPES
             or definition.get("visibility") not in _FACT_CONTRACT_VISIBILITIES
             or (
@@ -160,6 +188,9 @@ def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
         result[key] = {
             "value_type": str(definition["value_type"]),
             "visibility": str(definition["visibility"]),
+            **({"evidence_source": definition["evidence_source"]} if "evidence_source" in definition else {}),
+            **({"evidence_anchor": deepcopy(definition["evidence_anchor"])} if "evidence_anchor" in definition else {}),
+            **({"player_handoff_item": list(definition["player_handoff_item"])} if "player_handoff_item" in definition else {}),
             **(
                 {"description": str(definition["description"])}
                 if "description" in definition
@@ -170,7 +201,7 @@ def _story_fact_contract(value: Any) -> dict[str, dict[str, str]]:
 
 
 def _story_fact_value_matches(value: bool | int | str, value_type: str) -> bool:
-    """按合同检查事实值类型，整数不接受布尔值的 Python 子类关系。"""  # noqa: DOCSTRING_CJK
+    """Check fact value types against the contract; reject booleans as integers despite Python subclassing."""  # noqa: DOCSTRING_CJK
 
     if value_type == "bool":
         return type(value) is bool
@@ -181,13 +212,34 @@ def _story_fact_value_matches(value: bool | int | str, value_type: str) -> bool:
     return False
 
 
+def _matches_evidence_anchor(anchor: str | list[list[str]], quote: str) -> bool:
+    if isinstance(anchor, str):
+        return anchor in quote
+    # Check ordered actions within one original quote. A clause that only plans
+    # a later action cannot fill a group. Delimiters prevent joining fragments.
+    visible = _EVIDENCE_CLAUSE_RE.sub(
+        lambda clause: "\n" if (
+            _PENDING_EVIDENCE_CLAUSE_RE.search(clause[0]) or quote[clause.end():clause.end() + 1] in {"?", "？"}
+        ) else clause[0], quote,
+    )
+    offset = 0
+    for group in anchor:
+        end = min((start + len(phrase) for phrase in group
+                   if (start := visible.find(phrase, offset)) >= 0), default=None)
+        if end is None:
+            return False
+        offset = end
+    return True
+
+
 def validate_fact_candidates(
     candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
     *,
     fact_contract: Mapping[str, Any] | None,
     evidence_sources: Mapping[str, str],
+    defer_actor_completion_review: bool = False,
 ) -> tuple[tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
-    """只把带完整四元组和逐字证据的确定候选转换成事实操作与审计记录。"""  # noqa: DOCSTRING_CJK
+    """Convert only definite candidates with complete quadruples and verbatim evidence into fact operations and audit records."""  # noqa: DOCSTRING_CJK
 
     contract = _story_fact_contract(fact_contract)
     if not contract:
@@ -244,9 +296,29 @@ def validate_fact_candidates(
                 or quote not in source_text
             ):
                 raise NumericV2RuntimeError("story_fact_candidate_evidence_unverifiable")
-            if _UNCONFIRMED_FACT_EVIDENCE_RE.search(quote):
-                raise NumericV2RuntimeError("story_fact_candidate_evidence_not_completed")
             description = str(definition.get("description") or "")
+            checked_quote = quote
+            if (_INTENTION_FACT_RE.search(description) and not re.search(r"已经|实际|完成", description)
+                    and not _DEFERRED_INTENTION_EVIDENCE_RE.search(quote)):
+                checked_quote = quote.replace("打算", "")
+            # A final-draft review can distinguish a pending result from a
+            # completed delivery whose contents describe something pending.
+            if (not (defer_actor_completion_review and source == "actor_performance")
+                    and _UNCONFIRMED_FACT_EVIDENCE_RE.search(checked_quote)):
+                raise NumericV2RuntimeError("story_fact_candidate_evidence_not_completed")
+            # Player instructions can authorize a character's action, but cannot
+            # prove its performed result. Authors opt in per fact; old packages
+            # retain their original source permissions and archive semantics.
+            if (definition.get("evidence_source") == "performance" and source != "actor_performance"
+                    or definition.get("evidence_source") == "player_input" and source != "player_input"):
+                raise NumericV2RuntimeError("story_fact_candidate_evidence_source_not_allowed")
+            if (
+                definition.get("evidence_source") == "performance"
+                and "完成" in description
+                and not _AGREEMENT_FACT_RE.search(description)
+                and _FUTURE_ACTOR_ASSIGNMENT_RE.fullmatch(quote.strip())
+            ):
+                raise NumericV2RuntimeError("story_fact_candidate_evidence_not_completed")
             if (
                 _COMPLETED_LOCATION_FACT_RE.search(description)
                 and _IN_PROGRESS_LOCATION_EVIDENCE_RE.search(quote)
@@ -254,6 +326,9 @@ def validate_fact_candidates(
             ):
                 raise NumericV2RuntimeError("story_fact_candidate_evidence_not_completed")
             normalized_evidence.append({"source": source, "quote": quote})
+        anchor = definition.get("evidence_anchor")
+        if anchor and not any(_matches_evidence_anchor(anchor, item["quote"]) for item in normalized_evidence):
+            raise NumericV2RuntimeError("story_fact_candidate_evidence_anchor_missing")
         seen_keys.add(key)
         operations.append({
             "op": "set",
@@ -271,7 +346,7 @@ def _normalize_actor_fact_candidates(
     fact_contract: Mapping[str, Mapping[str, Any]],
     allowed_keys: set[str],
 ) -> tuple[dict[str, Any], ...]:
-    """把 Actor 的三字段候选补成统一审计形状；权限与语义只取作者合同。"""  # noqa: DOCSTRING_CJK
+    """Expand the Actor's three-field candidates into a uniform audit shape; take permissions and semantics only from the author's contract."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(candidates, (list, tuple)) or len(candidates) > _FACT_CANDIDATE_MAX_ITEMS:
         raise NumericV2RuntimeError("actor_fact_candidates_invalid")
@@ -297,7 +372,7 @@ def _normalize_actor_fact_candidates(
             "value": candidate.get("value"),
             "visibility": definition.get("visibility"),
             "confidence": "confirmed",
-            # 这四项是内部审计标签，不让 Actor 重复生成可由合同确定的元数据。
+            # These four internal audit labels derive from contracts; Actor need not regenerate them.
             "subject": "本轮最终演绎",
             "action": "确认",
             "object": key,
@@ -308,7 +383,7 @@ def _normalize_actor_fact_candidates(
 
 
 def _validate_story_state(value: Any) -> dict[str, Any]:
-    """校验故事状态投影，确保它只包含确定性事件事实。"""  # noqa: DOCSTRING_CJK
+    """Validate the story-state projection to ensure it contains only deterministic event facts."""  # noqa: DOCSTRING_CJK
 
     if not isinstance(value, Mapping) or set(value) != {"schema", "revision", "facts"}:
         raise NumericV2RuntimeError("story_state_schema_invalid")
@@ -369,7 +444,7 @@ def apply_fact_ops(
     allowed_keys: set[str] | frozenset[str] | None = None,
     fact_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """在副本上原子应用事实操作，唯一允许写入故事事实账本。"""  # noqa: DOCSTRING_CJK
+    """Atomically apply fact operations to a copy; this is the sole permitted writer of the story fact ledger."""  # noqa: DOCSTRING_CJK
 
     current_state = _validate_story_state(current)
     if _integer(revision, "story_state_revision") != current_state["revision"] + 1:
@@ -430,7 +505,7 @@ def apply_fact_ops(
         }
         if len(facts) > _STORY_STATE_MAX_FACTS:
             raise NumericV2RuntimeError("story_state_facts_invalid")
-    # 字典序持久化，保证同一批操作的回放和存档 diff 稳定。
+    # Persist lexicographically for stable replay and save diffs over identical operations.
     return _validate_story_state({
         "schema": STORY_STATE_SCHEMA,
         "revision": revision,
@@ -439,7 +514,7 @@ def apply_fact_ops(
 
 
 def _initial_story_state(start_node_id: str) -> dict[str, Any]:
-    """记录开场已进入事件；当前位置仍由 Session.current_node_id 负责。"""  # noqa: DOCSTRING_CJK
+    """Record entry into the opening event; Session.current_node_id still owns the current position."""  # noqa: DOCSTRING_CJK
 
     return _validate_story_state({
         "schema": STORY_STATE_SCHEMA,
@@ -513,7 +588,7 @@ def _advance_story_state(
     fact_operations: tuple[Mapping[str, Any], ...] = (),
     fact_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """按正式回合原子推进场景事件和已核验事实，不复制 Session 的位置和数值字段。"""  # noqa: DOCSTRING_CJK
+    """Atomically advance scene events and verified facts by committed turn without copying Session position or numeric fields."""  # noqa: DOCSTRING_CJK
 
     operations: list[dict[str, Any]] = []
     allowed_keys: set[str] = set()
@@ -529,10 +604,10 @@ def _advance_story_state(
             allowed_keys.add(key)
     operations.extend(deepcopy(dict(operation)) for operation in fact_operations)
     contract_facts = dict((fact_contract or {}).get("facts") or {})
-    # 场景进入/离开事实由 Runtime 自己声明，和剧本开放的模型事实共用一次原子提交。
+    # Runtime declares scene-entry/exit facts itself and commits atomically with script-allowed model facts.
     for key in allowed_keys:
         contract_facts.setdefault(key, {"value_type": "bool", "visibility": "public"})
-    # 候选事实也必须落在同一份已声明合同内；允许集合同时覆盖内部事件和剧本白名单。
+    # Candidate facts must share the declared contract; allowed sets include internal events and script allowlists.
     allowed_keys.update(contract_facts)
     current = _prune_runtime_scene_events(
         current,
@@ -553,7 +628,7 @@ def _fact_projection(
     event: Mapping[str, Any],
     performance: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """保存本轮可由 Runtime 直接证明的事实证据，不把自然语言猜测冒充语义事实。"""  # noqa: DOCSTRING_CJK
+    """Save fact evidence directly provable by Runtime this turn; do not pass natural-language guesses off as semantic facts."""  # noqa: DOCSTRING_CJK
 
     visible_parts: list[dict[str, str]] = []
     segments = performance.get("segments")
@@ -620,7 +695,7 @@ def current_visit_started_revision(session: Any) -> int:
 
 
 def _timeline_projection(event: Mapping[str, Any]) -> dict[str, Any]:
-    """记录可由 Runtime 证明的场景访问顺序，不从演绎文案推断自然日期。"""  # noqa: DOCSTRING_CJK
+    """Record scene visit order provable by Runtime without inferring calendar dates from narrative text."""  # noqa: DOCSTRING_CJK
 
     revision = int(event.get("result_revision", 0) or 0)
     from_node_id = str(event.get("from_node_id") or "")
@@ -660,12 +735,12 @@ def _timeline_projection(event: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-# 称呼按完整独立词匹配：两侧须为文本边界、空白或下列标点，避免“小哥哥”“我哥哥”误命中。
+# Match forms of address as independent whole words bounded by text edges, whitespace, or listed punctuation, avoiding false matches in '小哥哥'/'我哥哥'.
 PLAYER_ADDRESS_BOUNDARY_CHARS = r"\s,，。.!！;；:："
 
 
 def _player_address_disclosed(message: str, configured_address: str) -> bool:
-    """只接受包含完整昵称的明确自我介绍或称呼请求。"""  # noqa: DOCSTRING_CJK
+    """Accept only explicit self-introductions or address requests containing the complete nickname."""  # noqa: DOCSTRING_CJK
 
     text = str(message or "").strip()
     address = str(configured_address or "").strip()
@@ -676,10 +751,10 @@ def _player_address_disclosed(message: str, configured_address: str) -> bool:
     right = rf"(?=$|[{PLAYER_ADDRESS_BOUNDARY_CHARS}])"
     quoted_address = rf"[\"'“‘「『]?{escaped}[\"'”’」』]?"
     patterns = (
-        # 中文：限定为第一人称身份陈述或明确的称呼指令，排除“你认识小明吗”。
+        # Chinese: require first-person identity declarations or explicit address instructions, excluding '你认识小明吗' ('do you know Xiaoming?').
         rf"{left}(?:我(?:的名字)?(?:是|叫)|请?(?:叫|称呼)我(?:为)?|你可以叫我)\s*{quoted_address}(?:吧|就好|即可)?{right}",
         rf"{left}{quoted_address}\s*(?:就是我|是我){right}",
-        # 其他已支持界面的常见自我介绍形式；昵称本身始终按完整精确字符串匹配。
+        # Common self-introduction forms in supported UI languages; nicknames always match complete exact strings.
         rf"{left}(?:i\s+am|i['’]m|my\s+name\s+is|call\s+me|you\s+can\s+call\s+me)\s+{quoted_address}{right}",
         rf"{left}(?:me\s+llamo|ll[aá]mame|me\s+chamo|pode\s+me\s+chamar\s+de|меня\s+зовут)\s+{quoted_address}{right}",
         rf"{left}(?:私は|僕は|俺は|名前は)\s*{quoted_address}\s*(?:です|だ){right}",
@@ -694,7 +769,7 @@ def _player_address_known_after_turn(
     session: "ScriptSessionV2",
     message: str,
 ) -> bool:
-    """仅在玩家明确披露完整配置昵称后推进称呼知情状态。"""  # noqa: DOCSTRING_CJK
+    """Advance nickname knowledge only after the player explicitly discloses the complete configured nickname."""  # noqa: DOCSTRING_CJK
 
     if session.player_address_known:
         return True
@@ -703,7 +778,7 @@ def _player_address_known_after_turn(
 
 
 def _transition_offered(value: Mapping[str, Any]) -> bool:
-    """读取上一轮 Actor 是否交付了可见的具体转场提议。"""  # noqa: DOCSTRING_CJK
+    """Read whether the previous Actor turn delivered a visible, concrete transition proposal."""  # noqa: DOCSTRING_CJK
 
     raw = value.get("transition_offered", False)
     if not isinstance(raw, bool):
@@ -720,7 +795,7 @@ def _dialogue_policy(value: Any, *, default: str = "required") -> str:
 
 @dataclass(frozen=True, slots=True)
 class MetricChangeV2:
-    """判定模型提出、确定性引擎复验后的单项数值变化。"""  # noqa: DOCSTRING_CJK
+    """Determine a single numeric change proposed by the model and revalidated by the deterministic engine."""  # noqa: DOCSTRING_CJK
 
     metric_id: str
     delta: int
@@ -750,7 +825,7 @@ class MetricChangeV2:
         evidence = str(value.get("evidence") or "").strip()
         if not criterion or not evidence:
             raise NumericV2RuntimeError("metric_change_reason_required")
-        # 判定器只能命中作者已声明的依据，不能借自由文本扩展数值规则。
+        # Evaluator may use only author-declared evidence, never extend numeric rules through free text.
         allowed_criteria = definition[f"{direction}_criteria"]
         if criterion not in allowed_criteria:
             raise NumericV2RuntimeError("metric_change_criterion_invalid")
@@ -770,7 +845,7 @@ class TurnRequestV2:
     client_turn_id: str
     base_revision: int
     message: str
-    # reinvite 是显式控制操作；其他来源只描述普通输入的 UI 来源。
+    # Controls carry UI intent separately from the player's roleplay text.
     input_source: str = "freeform"
 
     @classmethod
@@ -781,9 +856,11 @@ class TurnRequestV2:
             message=str(value.get("message") or "").strip(),
             input_source=str(value.get("input_source") or "freeform").strip(),
         )
+        if request.input_source == "accept_invitation" and request.message:
+            raise NumericV2RuntimeError("numeric_invitation_acceptance_not_available")
         if (
             request.base_revision < 0
-            or (not request.message and request.input_source != "reinvite")
+            or (not request.message and request.input_source not in {"reinvite", "accept_invitation"})
             or request.input_source not in NUMERIC_V2_INPUT_SOURCES
         ):
             raise NumericV2RuntimeError("numeric_turn_request_invalid")
@@ -807,19 +884,19 @@ class ScriptSessionV2:
     processed_client_turn_ids: tuple[str, ...]
     opening_performance: dict[str, Any]
     performance_history: tuple[dict[str, Any], ...]
-    # 故事状态只保存可由 Runtime 证明的事件事实；当前位置仍以 current_node_id 为唯一权威。
+    # Story state stores only Runtime-verifiable event facts; current_node_id remains the sole location authority.
     story_state: dict[str, Any]
-    # 预算档位属于 Session 快照；继续演绎必须沿用原档位，重新开始才允许重选。
+    # Budget tier belongs to Session snapshots; continuation retains it, and only restart allows reselection.
     actor_budget_profile: str = NUMERIC_V2_DEFAULT_ACTOR_BUDGET_PROFILE
-    # 演绎 revision 只表示正式回合；结束与继续使用独立版本，避免延迟请求互相覆盖。
+    # Performance revision counts formal turns only; ending/continuation use separate versions to prevent late requests overwriting each other.
     lifecycle_revision: int = 0
     player_address_known: bool = False
     ended_reason: str | None = None
-    # 显式遗忘只切断后续记忆与冷档案投影，不删除继续演绎所需的 Session 历史。
+    # Explicit forgetting stops future memory/cold-archive projections without deleting Session history required for continuation.
     forgotten_through_revision: int = -1
-    # 发声能力是确定性 Session 状态；沉睡、失声或关机不能靠自由文本临时猜测。
+    # Speech capability is deterministic Session state; sleep, muteness, or shutdown cannot be guessed ad hoc from free text.
     dialogue_policy: str = "required"
-    # 只有 Actor 在已提交正文中明确提出具体下一步时才锁存为真。
+    # Latch true only when Actor explicitly proposes a concrete next step in committed text.
     transition_offered: bool = False
     # Recorded by the live runtime, never inferred from a later archive/replay.
     opening_performed_at: str = ""
@@ -865,7 +942,7 @@ class ScriptSessionV2:
                 "evidence_chain_version",
             )
         ):
-            # 旧证据链存档已删除；重新导入必须先由作者升级为 v2.2，而不是隐式迁移。
+            # Old evidence-chain saves are removed; reimport requires author upgrade to v2.2, never implicit migration.
             raise NumericV2RuntimeError("numeric_v2_legacy_session_unsupported")
         raw_player_address_known = value.get("player_address_known", False)
         if not isinstance(raw_player_address_known, bool):
@@ -883,6 +960,13 @@ class ScriptSessionV2:
         story_state = _validate_story_state(value.get("story_state"))
         if story_state["revision"] != session_revision:
             raise NumericV2RuntimeError("story_state_revision_mismatch")
+        # Retired auxiliary metadata is ignored only at the legacy-save boundary.
+        def read_performance(record: Any) -> Any:
+            if not isinstance(record, Mapping):
+                return deepcopy(record)  # Preserve malformed records for the existing chain validator to reject.
+            return {key: deepcopy(item) for key, item in record.items()
+                    if key not in {"narrative_record", "narrative_events"}}
+
         return cls(
             session_id=_stable_id(value.get("session_id"), "session_id"),
             story_package_id=_stable_id(value.get("story_package_id"), "story_package_id"),
@@ -895,8 +979,8 @@ class ScriptSessionV2:
             revision=session_revision,
             status=str(value.get("status") or ""),
             processed_client_turn_ids=tuple(str(item) for item in value.get("processed_client_turn_ids") or []),
-            opening_performance=deepcopy(dict(value.get("opening_performance") or {})),
-            performance_history=tuple(deepcopy(list(value.get("performance_history") or []))),
+            opening_performance=read_performance(dict(value.get("opening_performance") or {})),
+            performance_history=tuple(read_performance(item) for item in value.get("performance_history") or []),
             opening_performed_at=str(value.get("opening_performed_at") or ""),
             story_state=story_state,
             actor_budget_profile=actor_budget_profile,
@@ -920,13 +1004,16 @@ class TurnOutcomeV2:
     route: dict[str, Any] | None
     route_status: str
     transition_contract: dict[str, Any] | None
+    # Prompt metadata does not participate in settlement equivalence or Ledger replay.
+    blocked_departure_route: Mapping[str, Any] | None = field(default=None, compare=False)
+    departure_blocker: str | None = field(default=None, compare=False)
 
 
 class NumericV2Engine:
-    """只在候选 Session 上应用 v2.2 的数值、作者路线和转场规则。"""  # noqa: DOCSTRING_CJK
+    """Apply v2.2 numeric, author-route, and transition rules only to the candidate Session."""  # noqa: DOCSTRING_CJK
 
     def __init__(self, compiled: CompiledNumericV2Package):
-        # 防止调用方绕过 from_mapping/注册表，直接把旧合同编译结果注入运行时。
+        # Prevent callers bypassing from_mapping/registry by injecting old compiled contracts directly into runtime.
         meta = compiled.story.get("meta")
         if not isinstance(meta, Mapping) or meta.get("contract_version") != "v2.2":
             raise NumericV2RuntimeError("numeric_v2_upgrade_required")
@@ -940,7 +1027,7 @@ class NumericV2Engine:
     def from_mapping(cls, value: Mapping[str, Any]) -> "NumericV2Engine":
         compiler = NumericV2Compiler()
         meta = value.get("meta")
-        # 运行时只接受 v2.2；旧包必须先由作者升级，不能绕过注册表直接加载。
+        # Runtime accepts v2.2 only; authors must upgrade old packages, which cannot bypass the registry for direct loading.
         contract_version = meta.get("contract_version") if isinstance(meta, Mapping) else None
         if contract_version != "v2.2":
             raise NumericV2RuntimeError("numeric_v2_upgrade_required")
@@ -951,6 +1038,95 @@ class NumericV2Engine:
     def story_id(self) -> str:
         return self.compiled.story_id
 
+    def scene_fact_targets(self, node_id: str) -> list[dict[str, Any]]:
+        """Share current-act fact targets without exposing future nodes or selecting a route."""  # noqa: DOCSTRING_CJK
+
+        node = self.nodes[str(node_id)]
+        contract = node.get("completion_contract")
+        # 完成合同维持原权限；程序旁白没有事实键，不进入候选白名单。
+        targets = [
+            {"key": requirement["key"], "value": requirement["equals"]}
+            for requirement in (contract.get("all", ()) if isinstance(contract, Mapping) else ())
+            if "key" in requirement
+        ]
+        completion_targets = list(targets)
+        for route in node.get("route_gates", ()):
+            conditions = route["conditions"]
+            mode = "any" if "any" in conditions else "all"
+            for condition in conditions.get(mode, ()):
+                if condition.get("type") != "fact_equals":
+                    continue
+                key, value = condition["key"], condition["value"]
+                definition = self.fact_contract.get(key)
+                # 新增来源仅限本幕公开事实；全局、其他幕和后台 story 事实不交给演员生成。
+                if (not key.startswith(f"scene:{node_id}:") or not isinstance(definition, Mapping)
+                        or definition.get("visibility") != "public"):
+                    continue
+                # 同一完成目标不再多发一份待办；False/0 及不同出口的值不能被相等比较合并。
+                if any(target["key"] == key and type(target["value"]) is type(value)
+                       and target["value"] == value for target in completion_targets):
+                    continue
+                targets.append({"key": key, "value": value, "route_id": route["id"],
+                                "condition_mode": mode})
+        return targets
+
+    def pending_natural_ending_fact_targets(self, outcome: TurnOutcomeV2) -> list[dict[str, Any]]:
+        """Keep current public completion targets writable from the final source performance."""
+        event = outcome.ledger_event
+        if (outcome.session.status != "ended" or event["from_node_id"] == event["to_node_id"]
+                or event.get("natural_ending_ready") is not True or event["transition_intent"] != "unclear"):
+            return []
+        facts = outcome.session.story_state["facts"]
+        return [
+            target for target in self.scene_fact_targets(event["from_node_id"])
+            if "route_id" not in target
+            and self.fact_contract[target["key"]]["visibility"] == "public"
+            and not (type(value := facts.get(target["key"], {}).get("value")) is type(target["value"])
+                     and value == target["value"])
+        ]
+
+    @staticmethod
+    def _displayed_suggestion(
+        session: ScriptSessionV2, message: str, *, revision: int, node_id: str,
+    ) -> bool:
+        origin = (session.opening_performance if revision == 0 else next((record
+            for record in reversed(session.performance_history)
+            if record.get("revision") == revision and record.get("to_node_id") == node_id), None))
+        suggestions = origin.get("suggested_inputs") if isinstance(origin, Mapping) else None
+        return isinstance(suggestions, list) and message in suggestions
+
+    def blocked_player_handoffs(
+        self, session: ScriptSessionV2, message: str, *, input_source: str = "freeform",
+    ) -> dict[str, list[str]]:
+        """A guarded receipt requires player action, independent of the Actor's new draft."""
+
+        pending = {
+            target["key"]: self.fact_contract[target["key"]]["player_handoff_item"]
+            for target in self.scene_fact_targets(session.current_node_id)
+            if target["value"] is True and "player_handoff_item" in self.fact_contract[target["key"]]
+            and session.story_state["facts"].get(target["key"], {}).get("value") is not True
+        }
+        if not pending:
+            return {}
+        clicked_suggestion = input_source == "suggestion" and self._displayed_suggestion(
+            session, message, revision=session.revision, node_id=session.current_node_id)
+        records, _ = current_scene_records(session)
+        return {
+            key: names for key, names in pending.items()
+            if not player_handoff_is_explicit(message, names, allow_omitted_subject=clicked_suggestion)
+            and not any(
+                record.get("from_node_id") == record.get("to_node_id") == session.current_node_id
+                and player_handoff_is_explicit(str(record.get("input_text") or ""), names,
+                    allow_omitted_subject=record.get("input_source") == "suggestion" and self._displayed_suggestion(
+                        session, str(record.get("input_text") or ""), revision=int(record["revision"]) - 1,
+                        node_id=session.current_node_id))
+                and performed_player_handoff("\n".join(
+                    block["text"] for block in performance_content_blocks(record) if block["type"] != "dialogue"
+                ), names, receipt_only=True)
+                for record in records
+            )
+        }
+
     def finalize_actor_fact_candidates(
         self,
         base_session: ScriptSessionV2,
@@ -958,29 +1134,32 @@ class NumericV2Engine:
         *,
         candidates: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
         evidence_sources: Mapping[str, str],
+        defer_actor_completion_review: bool = False,
     ) -> tuple[TurnOutcomeV2, tuple[dict[str, Any], ...]]:
-        """把最终 Actor 候选与 Evaluator 事实合并后按同一 revision 原子重建。"""  # noqa: DOCSTRING_CJK
+        """Merge final Actor candidates with Evaluator facts, then rebuild atomically at the same revision."""  # noqa: DOCSTRING_CJK
 
-        node = self.nodes.get(base_session.current_node_id)
-        completion_contract = node.get("completion_contract") if isinstance(node, Mapping) else None
-        allowed_keys = {
-            str(requirement.get("key") or "")
-            for requirement in (
-                completion_contract.get("all")
-                if isinstance(completion_contract, Mapping)
-                else ()
-            )
-            if isinstance(requirement, Mapping)
-        }
+        targets = self.scene_fact_targets(base_session.current_node_id)
+        allowed_keys = {target["key"] for target in targets}
+        completion_keys = {target["key"] for target in targets if "route_id" not in target}
         normalized_candidates = _normalize_actor_fact_candidates(
             candidates,
             fact_contract=self.fact_contract,
             allowed_keys=allowed_keys,
         )
+        for candidate in normalized_candidates:
+            # 旧完成键保留原有取值权限；新增路线键只能报告作者为当前幕声明的原值。
+            if candidate["key"] not in completion_keys and not any(
+                target["key"] == candidate["key"]
+                and type(target["value"]) is type(candidate["value"])
+                and target["value"] == candidate["value"]
+                for target in targets
+            ):
+                raise NumericV2RuntimeError("actor_fact_candidate_value_not_allowed")
         actor_operations, audit = validate_fact_candidates(
             normalized_candidates,
             fact_contract={"facts": self.fact_contract},
             evidence_sources=evidence_sources,
+            defer_actor_completion_review=defer_actor_completion_review,
         )
         return self.finalize_fact_operations(base_session, outcome, operations=actor_operations), audit
 
@@ -991,7 +1170,7 @@ class NumericV2Engine:
         *,
         operations: tuple[Mapping[str, Any], ...],
     ) -> TurnOutcomeV2:
-        """合并已核验操作，重建同一 revision 的事实与访问记录，不重复计分或换幕。"""  # noqa: DOCSTRING_CJK
+        """Merge verified operations and rebuild facts and visit records at the same revision without duplicate scoring or act changes."""  # noqa: DOCSTRING_CJK
 
         self.validate_session(base_session)
         event = outcome.ledger_event
@@ -1002,6 +1181,10 @@ class NumericV2Engine:
         ):
             raise NumericV2RuntimeError("actor_fact_outcome_mismatch")
         existing_operations = tuple(event.get("fact_operations") or ())
+        blocked = self.blocked_player_handoffs(base_session, str(event["input_text"]),
+            input_source=str(event.get("input_source") or "freeform")) if operations else {}
+        if any(operation.get("value") is True and operation["key"] in blocked for operation in operations):
+            raise NumericV2RuntimeError("numeric_v2_player_handoff_required")
         existing_keys = {
             str(operation.get("key") or "")
             for operation in existing_operations
@@ -1120,6 +1303,50 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("session_transition_offered_invalid")
         _dialogue_policy(session.dialogue_policy)
 
+    def invitation_acceptance_route(
+        self, session: ScriptSessionV2, *, ledger_events: tuple[Mapping[str, Any], ...] = (),
+    ) -> str:
+        """Bind an explicit click to the latest complete reviewed proposal, never to Actor button wording."""
+
+        if (session.status != "active" or not session.transition_offered
+                or self.completion_contract_satisfied(session) is not True):
+            return ""
+        origin = pending_transition_record(session, ledger_events=ledger_events)
+        event = ledger_events[-1] if ledger_events else None
+        if not isinstance(origin, Mapping) or not isinstance(event, Mapping):
+            return ""
+        receipt = event.get("program_invitation")
+        if (not isinstance(receipt, Mapping) or receipt.get("kind") != "reviewed_proposal"
+                or set(receipt) != {"kind", "revision", "route_id", "target_node_id", "offer", "performance", "visible_blocks"}
+                or type(receipt.get("revision")) is not int
+                or receipt["revision"] != session.revision
+                or origin.get("revision") != session.revision
+                or event.get("result_revision") != session.revision
+                or event.get("from_node_id") != session.current_node_id
+                or event.get("to_node_id") != session.current_node_id
+                or event.get("visit_started_revision") != current_visit_started_revision(session)
+                or event.get("input_source") != "reinvite"
+                or origin.get("input_source") != "reinvite"
+                or origin.get("suggested_inputs") != []):
+            return ""
+        offer = receipt.get("offer")
+        blocks = performance_content_blocks(origin)
+        # A receipt covers the entire delivered proposal; excerpt matches cannot
+        # authorize a body changed after review or an invitation hidden in actions.
+        if (not isinstance(offer, str) or not offer.strip()
+                or receipt.get("performance") != offer or origin.get("performance") != offer
+                or receipt.get("visible_blocks") != blocks
+                or not any(block.get("type") == "dialogue" for block in blocks)):
+            return ""
+        route = self.preview_route(session.current_node_id, session.metrics, facts=session.story_state["facts"])
+        target = self.nodes.get(str(route.get("target_node_id") or "")) if route else None
+        if (not isinstance(route, Mapping) or not isinstance(target, Mapping)
+                or target.get("type") == "ending" or target.get("terminal") is True
+                or receipt.get("route_id") != route.get("id")
+                or receipt.get("target_node_id") != route.get("target_node_id")):
+            return ""
+        return str(route["id"])
+
     def resolve_turn(
         self,
         session: ScriptSessionV2,
@@ -1132,12 +1359,16 @@ class NumericV2Engine:
         fact_operations: tuple[Mapping[str, Any], ...] = (),
         ledger_events: tuple[Mapping[str, Any], ...] = (),
         condition_narrations_enabled: bool = True,
+        routing_fact_operations: tuple[Mapping[str, Any], ...] | None = None,
+        hold_current_scene: bool = False,
     ) -> TurnOutcomeV2:
-        """结算 v2.2 回合；目标、证据和完成锁存不再进入状态机。"""  # noqa: DOCSTRING_CJK
+        """Settle a v2.2 turn; targets, evidence, and completion latches no longer enter the state machine."""  # noqa: DOCSTRING_CJK
 
         self.validate_session(session)
         if not isinstance(condition_narrations_enabled, bool):
             raise NumericV2RuntimeError("condition_narrations_enabled_invalid")
+        if not isinstance(hold_current_scene, bool):
+            raise NumericV2RuntimeError("hold_current_scene_invalid")
         if session.status == "ended":
             raise NumericV2RuntimeError("session_already_ended")
         if request.base_revision != session.revision:
@@ -1148,10 +1379,24 @@ class NumericV2Engine:
             raise NumericV2RuntimeError("metric_change_duplicate")
         if transition_intent not in {"accept", "initiate", "reject", "unclear"}:
             raise NumericV2RuntimeError("transition_intent_invalid")
+        blocked = self.blocked_player_handoffs(session, request.message,
+            input_source=request.input_source) if fact_operations else {}
+        if any(operation.get("value") is True and operation["key"] in blocked for operation in fact_operations):
+            raise NumericV2RuntimeError("numeric_v2_player_handoff_required")
+        invitation_acceptance = request.input_source == "accept_invitation"
+        if invitation_acceptance and (
+            request.message or changes or fact_operations or routing_fact_operations
+            or scene_complete or natural_ending_ready or transition_intent not in {"accept", "unclear"}
+            or not self.invitation_acceptance_route(session, ledger_events=ledger_events)
+        ):
+            # This is an explicit control, never an empty ordinary turn. An
+            # unclear result is reserved for Workflow's reviewed withdrawal;
+            # Store independently requires that cancellation before committing.
+            raise NumericV2RuntimeError("numeric_invitation_acceptance_not_available")
         reinvitation = request.input_source == "reinvite"
         if reinvitation and (changes or fact_operations or scene_complete or natural_ending_ready or transition_intent != "unclear"):
             raise NumericV2RuntimeError("numeric_reinvitation_not_available")
-        # 重新接受只能依据本次场景访问中已经公开的邀请；不新增状态，冷恢复仍从同一历史判定。
+        # Reaccept only invitations published during this scene visit; add no state, and evaluate the same history on cold recovery.
         offered_record = pending_transition_record(
             session, ledger_events=ledger_events, include_withdrawn=True,
         )
@@ -1159,10 +1404,13 @@ class NumericV2Engine:
             transition_intent == "accept"
             and offered_record is not None
         )
+        source = self.nodes[session.current_node_id]
+        uses_completion_advance = self.node_has_completion_advance(source)
         effective_transition_intent = transition_intent
         if (
             transition_intent in {"accept", "reject"}
-            and not (can_accept_offer if transition_intent == "accept" else session.transition_offered)
+            and not (can_accept_offer if transition_intent == "accept"
+                     else session.transition_offered or uses_completion_advance)
         ):
             effective_transition_intent = "unclear"
 
@@ -1175,59 +1423,104 @@ class NumericV2Engine:
             applied.append({**change.to_dict(), "before": after[change.metric_id], "after": next_value})
             after[change.metric_id] = next_value
 
-        source = self.nodes[session.current_node_id]
-        next_turn_count = session.node_turn_count if reinvitation else session.node_turn_count + 1
+        uses_fact_routes = self.node_uses_fact_routes(source)
+        routing_operations = fact_operations if routing_fact_operations is None else routing_fact_operations
+        if any(operation not in fact_operations for operation in routing_operations):
+            raise NumericV2RuntimeError("routing_fact_operations_invalid")
+        # Resolve explicit choices from the same validated fact operations that
+        # will be committed, without changing the source Session on failure.
+        route_facts = session.story_state["facts"]
+        if (uses_fact_routes or uses_completion_advance) and routing_operations:
+            # Apply the same capacity rule as settlement before projecting a new
+            # choice; author-declared facts remain protected from event pruning.
+            route_state = _prune_runtime_scene_events(
+                session.story_state, operations=list(routing_operations),
+                author_keys=set(self.fact_contract),
+            )
+            route_facts = apply_fact_ops(
+                route_state, revision=session.revision + 1,
+                client_turn_id=request.client_turn_id, ops=routing_operations,
+                fact_contract={"facts": self.fact_contract},
+            )["facts"]
+        next_turn_count = session.node_turn_count if reinvitation or invitation_acceptance else session.node_turn_count + 1
         route = None
         route_status = "playing"
         accepted_offer_route_id = None
         offer_route_changed = False
         if effective_transition_intent == "initiate":
-            # 玩家可主动要求进入已公开的下一阶段；不伪造邀请，也不绕过本轮数值选路。
-            # Evaluator 识别明确请求，正式转场复核再检查公开去向和授权；不合格正文仍不提交。
-            route, route_status = self._select_route(source, after)
+            # Players may explicitly request a published next stage, without fabricating invitations or bypassing this turn's numeric routing.
+            # Evaluator recognizes explicit requests; formal-transition review checks public destinations/authorization, still refusing invalid bodies.
+            route, route_status = self._select_route(source, after, route_facts)
         elif effective_transition_intent == "accept" and can_accept_offer:
-            # 活跃或明确重新接受的历史邀请共用选路条件；不能凭作者目标或模型空口 accept 换幕。
-            route, route_status = self._select_route(source, after)
-            # 接受的是原邀请，不能把追问或本轮加分选出的另一出口当成玩家授权。
-            # 从既有 Ledger 取发出邀请时的数值，不另设可漂移的待确认路线状态。
+            # Active/reaccepted historical invitations share routing conditions; author goals or unsupported model accept cannot transition acts.
+            route, route_status = self._select_route(source, after, route_facts)
+            # Acceptance concerns the original invitation, not a follow-up question or another exit selected by this turn's score increase.
+            # Read invitation-time numeric values from existing Ledger, without separate drift-prone pending-route state.
             offered_event = next((event for event in ledger_events
                 if offered_record is not None
                 and event.get("result_revision") == offered_record.get("revision")), None)
             if offered_event is not None:
-                offered_route, _ = self._select_route(source, offered_event["after_metrics"])
+                offered_route, _ = self._select_route(
+                    source, offered_event["after_metrics"],
+                    self.route_facts_at_revision(ledger_events, int(offered_event["result_revision"]))
+                    if uses_fact_routes else None,
+                )
                 accepted_offer_route_id = str(offered_route["id"]) if offered_route else ""
                 offer_route_changed = route is None or route["id"] != accepted_offer_route_id
                 if offer_route_changed:
                     route, route_status = None, "playing"
             if route is None:
-                # 提议对应的路线当前仍不可达时，留在当前幕而不伪造 advanced。
+                # If the invitation route remains unreachable, stay in the current act rather than fabricate advanced.
                 route_status = "playing" if offer_route_changed else "transition_offered"
         elif session.transition_offered and effective_transition_intent == "unclear":
-            # unclear 保留提议，下一轮只回应玩家，不重复催促。
+            # unclear preserves proposals; next turn responds without repeated urging.
             route_status = "transition_offered"
         elif effective_transition_intent == "reject":
-            # reject 清除当前提议；Actor 可在出现新因果后重新提出。
+            # reject clears the current proposal; Actor may propose anew after new causal developments.
             route_status = "playing"
 
-        # 自然结束只放行本轮已经可收束的结局，不借用 scene_complete 自动推进普通幕。
-        # 保持原路线优先级；若胜出的路线是普通幕，不跳过它另找一个结局。
+        # Natural ending allows only endings ready to conclude this turn, never scene_complete-driven automatic advancement of ordinary acts.
+        # Retain route priorities; if a normal act wins, do not skip it to find an ending.
         if route is None and not offer_route_changed and scene_complete and natural_ending_ready is True and effective_transition_intent != "reject":
-            ending_route, _ = self._select_route(source, after)
-            # 判定看到的是结算前的候选结局；数值变化若改选另一出口，不能挪用前者的授权。
-            preview_route, _ = self._select_route(source, before)
+            ending_route, _ = self._select_route(source, after, route_facts)
+            # Evaluation sees the presettlement candidate ending; numeric changes selecting another exit cannot reuse its authorization.
+            preview_route, _ = self._select_route(source, before, session.story_state["facts"])
             if ending_route is not None and preview_route is not None and ending_route["id"] == preview_route["id"]:
                 ending_target = self.nodes[str(ending_route["target_node_id"])]
                 if ending_target.get("type") == "ending" or ending_target.get("terminal") is True:
                     route = ending_route
 
-        # Only explicitly required immutable pieces gate departure; ordinary goals
-        # remain optional creative material and keep their existing semantics.
-        # 条件片段只能由复核模块的触发声明交付；模块关闭时它们永远无法展示，
-        # 因此不能继续锁住出口。该开关随 Ledger 记录，重放沿用当时的判定。
-        if route is not None and required_pending(
-            source, session, condition_triggers_enabled=condition_narrations_enabled,
-        ):
-            route, route_status = None, "playing"
+        if (route is None and uses_completion_advance and not offer_route_changed
+                and request.input_source in {"freeform", "suggestion"}
+                and transition_intent != "reject" and not session.transition_offered
+                and self.completion_contract_satisfied(session, facts=route_facts) is True):
+            continuation, _ = self._select_route(source, after, route_facts)
+            if continuation is not None and continuation["transition_contract"].get("advance_on_completion") is True:
+                route = continuation
+        if hold_current_scene:
+            route = None
+            route_status = "transition_offered" if session.transition_offered else "playing"
+        blocked_departure_route = None
+        departure_blocker = None
+        if route is not None:
+            departure_blocker = self.route_departure_blocker(
+                session, route, facts=route_facts, condition_narrations_enabled=condition_narrations_enabled,
+            )
+            if departure_blocker is not None:
+                blocked_departure_route = route
+                route, route_status = None, "playing"
+        elif uses_completion_advance or source["story_beat"].get("fixed_narrations"):
+            # A blocked automatic exit may not have reached route selection.
+            # Preview the winning candidate for context without changing route_status.
+            candidate, _ = self._select_route(source, after, route_facts)
+            if candidate is not None:
+                departure_blocker = self.route_departure_blocker(
+                    session, candidate, facts=route_facts, condition_narrations_enabled=condition_narrations_enabled,
+                )
+                if departure_blocker is not None:
+                    blocked_departure_route = candidate
+        if invitation_acceptance and transition_intent == "accept" and route is None:
+            raise NumericV2RuntimeError("numeric_invitation_acceptance_not_available")
         target_node_id = session.current_node_id
         next_status = "active"
         transition = None
@@ -1239,7 +1532,7 @@ class NumericV2Engine:
             transition = deepcopy(dict(route["transition_contract"]))
             route_status = "advanced"
 
-        player_address_known = session.player_address_known if reinvitation else _player_address_known_after_turn(session, request.message)
+        player_address_known = session.player_address_known if reinvitation or invitation_acceptance else _player_address_known_after_turn(session, request.message)
         dialogue_policy = session.dialogue_policy
         if route is not None:
             dialogue_policy = self._node_dialogue_policy(
@@ -1268,8 +1561,8 @@ class NumericV2Engine:
             processed_client_turn_ids=(*session.processed_client_turn_ids, request.client_turn_id),
             player_address_known=player_address_known,
             dialogue_policy=dialogue_policy,
-            # 当前回合的 Actor 正文尚未生成；接受、拒绝或正式换场都会先清除旧提议，
-            # unclear 才保留它等待下一轮继续回应。
+            # This turn's Actor body is not generated yet; acceptance, rejection, or formal transition clears old proposals first,
+            # while unclear alone retains them for further responses next turn.
             transition_offered=(
                 session.transition_offered
                 if route is None and effective_transition_intent == "unclear"
@@ -1296,22 +1589,22 @@ class NumericV2Engine:
             "status": next_status,
             "player_address_known": player_address_known,
             "before_dialogue_policy": session.dialogue_policy,
-            # Evaluator 与节点覆盖先于 Actor 生效；Actor exact 交付产生的状态效果只影响下一回合。
-            # 单独锁存正文生成时看到的发声合同，避免提交时用更新后的状态反向否定本轮合法对白。
+            # Evaluator/node overrides apply before Actor; state effects from Actor's exact delivery affect only the next turn.
+            # Latch the speech contract seen during body generation separately, preventing later updated state from retroactively rejecting valid dialogue.
             "performance_dialogue_policy": dialogue_policy,
             "dialogue_policy": dialogue_policy,
-            # 正文通过校验后由本引擎的 finalize_transition_offer_state 统一锁存新提议；
-            # 这里先记录 Evaluator 结算后的旧提议保留或清除结果。
+            # After body validation, finalize_transition_offer_state centrally latches new proposals;
+            # record Evaluator's preserve/clear decision for old proposals here first.
             "transition_offered": (
                 session.transition_offered
                 if route is None and effective_transition_intent == "unclear"
                 else False
             ),
-            # 版本 2 表示称呼状态由“完整昵称 + 明确披露句式”确定，旧事件按已提交事实兼容重放。
+            # Version 2 determines address knowledge from complete nickname + explicit disclosure patterns; legacy events replay committed facts compatibly.
             "player_address_disclosure_version": 2,
         }
-        # 这份投影只由当前输入与 Runtime 已确认的路线/事实结果生成；不接受
-        # Actor、客户端或作者目标反向写入玩家已经完成的动作。
+        # Generate this projection only from current input and Runtime-confirmed route/fact outcomes; Actor, clients,
+        # and author goals cannot retroactively write completed player actions.
         event["player_action_projection"] = project_player_action_result(
             request.message,
             revision=revision,
@@ -1320,26 +1613,52 @@ class NumericV2Engine:
             fact_operations=fact_operations,
         )
         event["transition_intent"] = effective_transition_intent
-        if reinvitation:
-            event["input_source"] = "reinvite"
+        if request.input_source == "suggestion" and self._displayed_suggestion(
+                session, request.message, revision=session.revision, node_id=session.current_node_id):
+            # Persist the real click so fact settlement and cold replay use the
+            # same player-action permissions; this never asserts a receipt.
+            event["input_source"] = "suggestion"
+        if reinvitation or invitation_acceptance:
+            event["input_source"] = request.input_source
             event["input_text"] = ""
             event["player_action_projection"] = normalize_player_action_projection({})
         event["visit_started_revision"] = revision if route is not None else current_visit_started_revision(session)
         if accepted_offer_route_id is not None:
-            # 同时作为审计/分叉的重放边界；无此字段的旧回合沿用旧选路规则。
+            # Also marks audit/fork replay boundaries; old turns without this field retain old routing rules.
             event["accepted_offer_route_id"] = accepted_offer_route_id
+        if route is not None and accepted_offer_route_id is not None:
+            receipt = offered_event.get("program_invitation") if offered_event else None
+            if (isinstance(receipt, Mapping) and receipt.get("silent") is True
+                    and receipt.get("route_id") == accepted_offer_route_id
+                    and receipt.get("revision") == session.revision
+                    and receipt.get("offer") == ""
+                    and request.input_source == "suggestion"
+                    and request.message.strip() == receipt.get("accept_input")):
+                # This receipt constrains only the departing scene, never Session policy.
+                event["source_transition_dialogue_policy"] = "forbidden"
+                event["input_source"] = request.input_source
         if offer_route_changed:
             event["transition_offer_invalidated"] = True
         if fact_operations:
-            # 事实候选已经在提交前通过合同校验；Ledger 保存规范化操作以支持确定性重放。
+            # Validate candidate facts before commit; Ledger stores normalized operations for deterministic replay.
             event["fact_operations"] = deepcopy([dict(operation) for operation in fact_operations])
-        # 只记录新信号的阳性值；旧 Ledger 缺省为 false，分叉重放不会替旧历史提前结束。
+        if uses_fact_routes or uses_completion_advance:
+            # Actor/Review may append facts after route selection. Replay must
+            # retain the pre-generation inputs instead of applying those facts
+            # retroactively to this turn's destination.
+            event["routing_fact_operations"] = deepcopy([dict(operation) for operation in routing_operations])
+        # Record positive new signals only; legacy Ledger defaults false, preventing fork replay from ending old history early.
         if natural_ending_ready is True:
             event["natural_ending_ready"] = True
-        # 只记录关闭值；旧 Ledger 缺省为开启，重放保持原有离幕门槛。
+        if hold_current_scene:
+            event["delivery_hold"] = True
+        # Record disabled values only; legacy Ledger defaults enabled, retaining original act-exit thresholds on replay.
         if condition_narrations_enabled is False:
             event["condition_narrations_enabled"] = False
-        return TurnOutcomeV2(next_session, event, changes, route, route_status, transition)
+        return TurnOutcomeV2(
+            next_session, event, changes, route, route_status, transition,
+            blocked_departure_route=blocked_departure_route, departure_blocker=departure_blocker,
+        )
 
     def finalize_transition_offer_state(
         self,
@@ -1349,20 +1668,20 @@ class NumericV2Engine:
         new_offer: bool,
         invalidate_previous_offer: bool = False,
     ) -> tuple[TurnOutcomeV2, dict[str, Any]]:
-        """由 Runtime 唯一锁存本轮公开提议，并同步 Session、Ledger 与正文。"""  # noqa: DOCSTRING_CJK
+        """Let Runtime alone latch this turn's public proposal and synchronize Session, Ledger, and narrative text."""  # noqa: DOCSTRING_CJK
 
         if not isinstance(new_offer, bool) or not isinstance(invalidate_previous_offer, bool):
             raise NumericV2RuntimeError("transition_offered_invalid")
-        # 改稿前与提交前可能各调用一次；同一候选里已经确认的撤下边界不能被后一次丢掉。
+        # May run before revision and again before commit; later calls must retain withdrawal boundaries already confirmed in the candidate.
         invalidate_previous_offer = invalidate_previous_offer or outcome.ledger_event.get("transition_offer_invalidated") is True
         transition_offered = new_offer or (outcome.session.transition_offered and not invalidate_previous_offer)
         finalized_performance = {
             **performance,
             "transition_offered": transition_offered,
         }
-        # Runtime 选路漂移或 Workflow 明确复核才能撤下旧邀请，Actor 不能注入历史边界。
+        # Only Runtime routing drift or explicit Workflow review may withdraw old invitations; Actor cannot inject historical boundaries.
         finalized_performance.pop("transition_offer_invalidated", None)
-        # 区分“本轮重新公开有效邀请”和“仅沿用旧邀请”；回复绑定不能只看最终布尔状态。
+        # Distinguish newly republished valid invitations from retained old ones; reply binding cannot rely solely on the final boolean.
         finalized_performance.pop("transition_offer_presented", None)
         ledger_event = {**outcome.ledger_event, "transition_offered": transition_offered}
         if new_offer:
@@ -1392,7 +1711,7 @@ class NumericV2Engine:
         source_dialogue_policy: str = "required",
         target_dialogue_policy: str = "required",
     ) -> dict[str, Any]:
-        """固定三段提交结构；新旁白承接历史，旧数组调用仍按原协议组装。"""  # noqa: DOCSTRING_CJK
+        """Fix the three-part commit structure; new narration continues history, while legacy array calls retain the original assembly protocol."""  # noqa: DOCSTRING_CJK
 
         target_node_id = str(outcome.ledger_event["to_node_id"])
         if outcome.ledger_event["from_node_id"] == target_node_id:
@@ -1400,18 +1719,21 @@ class NumericV2Engine:
         result = deepcopy(dict(performance))
         segments = result.get("segments")
         authored_bridge = str(bridge_scene_narration or "").strip()
+        entry_narration = has_pending_entry(self.nodes[target_node_id], outcome.session)
         if {
             "source_performance",
             "target_performance",
         }.issubset(result):
-            # 两段旁白必须来自同一次生成；作者原文是事实约束，不再覆盖已适配历史的文本。
-            # 紧凑主路径与下方三段验证共用桥段许可；目标旁白始终必须非空。
+            # Both narration segments must come from the same generation; author text constrains facts without overwriting history-adapted output.
+            # Compact primary flow and three-segment validation below share bridge permissions; target narration must always be nonempty.
             if (
-                not valid_scene_narration(
+                not isinstance(result["source_performance"], str)
+                or not valid_scene_narration(
                     {"scene_narration": result.get("bridge_scene_narration")},
                     allow_empty=not bridge_required,
                 )
-                or not valid_scene_narration({"scene_narration": result.get("target_scene_narration")})
+                or not valid_scene_narration(
+                    {"scene_narration": result.get("target_scene_narration")}, allow_empty=entry_narration)
             ):
                 raise NumericV2RuntimeError("numeric_transition_performance_invalid")
             authored_bridge = result.pop("bridge_scene_narration")
@@ -1430,7 +1752,7 @@ class NumericV2Engine:
                     "performance": str(result.pop("target_performance") or "").strip(),
                 },
             ]
-            # 可选来源旁白仍属于第一段，同次提交；不挪到换幕后的桥段或猫娘对白。
+            # Optional source narration remains segment one in the same commit, never moved to post-transition bridges or neko dialogue.
             if "source_scene_narration" in result:
                 segments[0]["scene_narration"] = result.pop("source_scene_narration")
             result["segments"] = segments
@@ -1440,13 +1762,13 @@ class NumericV2Engine:
             and len(segments) == 3
             and isinstance(segments[1], Mapping)
         ):
-            # 紧凑输出在上方已选用生成旁白；此处也保留旧三段数组调用的原有组装行为。
+            # Compact output already selected generated narration above; retain original assembly for legacy three-segment array callers too.
             segments[1] = {
                 "phase": "transition_bridge",
                 "scene_narration": authored_bridge,
             }
         if (
-            not valid_scene_narration({"scene_narration": target_opening})
+            not valid_scene_narration({"scene_narration": target_opening}, allow_empty=entry_narration)
             or not isinstance(segments, list)
             or len(segments) != 3
             or not all(isinstance(item, Mapping) for item in segments)
@@ -1457,12 +1779,14 @@ class NumericV2Engine:
             or set(segments[1]) != {"phase", "scene_narration"}
             or set(segments[2]) != {"phase", "performance"}
             or not valid_mixed_performance_policy(
-                segments[0], source_dialogue_policy
+                segments[0], source_dialogue_policy, allow_empty=True,
             )
-            # 合同仍有独立时间、地点或环境事实时桥段必须可见；仅同场连续且无独立事实时可为空。
+            # Bridges must remain visible when contracts contain independent time/location/environment facts; allow empty only for same-scene continuity without independent facts.
             or not valid_scene_narration(segments[1], allow_empty=not bridge_required)
             or not valid_mixed_performance_policy(
-                segments[2], target_dialogue_policy
+                segments[2], target_dialogue_policy,
+                allow_empty=entry_narration or (outcome.session.status == "ended"
+                    and outcome.ledger_event.get("natural_ending_ready") is True),
             )
         ):
             raise NumericV2RuntimeError("numeric_transition_performance_invalid")
@@ -1483,8 +1807,125 @@ class NumericV2Engine:
         )
         return result
 
-    def _select_route(self, node: Mapping[str, Any], metrics: Mapping[str, int]) -> tuple[dict[str, Any] | None, str]:
-        eligible = [route for route in node.get("route_gates", []) if self._conditions_match(route["conditions"], metrics)]
+    @staticmethod
+    def node_uses_fact_routes(node: Mapping[str, Any]) -> bool:
+        return any(row.get("type") == "fact_equals"
+                   for route in node.get("route_gates", ())
+                   for row in route["conditions"].get("any", route["conditions"].get("all", ())))
+
+    @staticmethod
+    def node_has_completion_advance(node: Mapping[str, Any]) -> bool:
+        return any(route["transition_contract"].get("advance_on_completion") is True
+                   for route in node.get("route_gates", ()))
+
+    def first_unlock_route_labels(self, node_id: str) -> dict[str, tuple[str, ...]]:
+        """Read literal route identifiers that may be checked against already public words."""
+
+        labels = {}
+        for route in self.nodes[node_id]["route_gates"]:
+            target = self.nodes[route["target_node_id"]]
+            if (target.get("type") == "ending" or target.get("terminal") is True
+                    or route["transition_contract"].get("silent_choice")):
+                continue
+            conditions = route["conditions"]
+            names = [str(target.get("chapter") or "")]
+            names.extend(
+                row["value"] for row in conditions.get("any", conditions.get("all", ()))
+                if row["type"] == "fact_equals" and isinstance(row["value"], str)
+                and self.fact_contract.get(row["key"], {}).get("visibility") == "public"
+            )
+            if distinct := tuple(dict.fromkeys(name.strip() for name in names if len(name.strip()) >= 2)):
+                labels[route["id"]] = distinct
+        return labels
+
+    def route_facts_at_revision(
+        self, ledger_events: tuple[Mapping[str, Any], ...], revision: int, *, before_actor: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Replay facts at the invitation revision; before_actor selects facts used before generating the exit, including a reviewed same-turn source delivery."""
+
+        state = _initial_story_state(str(self.story["start_node_id"]))
+        for event in ledger_events:
+            if int(event["result_revision"]) > revision:
+                break
+            state = _advance_story_state(
+                state, from_node_id=str(event["from_node_id"]), to_node_id=str(event["to_node_id"]),
+                revision=int(event["result_revision"]), client_turn_id=str(event["client_turn_id"]),
+                fact_operations=tuple(event.get(
+                    "routing_fact_operations" if before_actor and event["result_revision"] == revision
+                    else "fact_operations",
+                ) or ()),
+                fact_contract={"facts": self.fact_contract},
+            )
+        return state["facts"]
+
+    def invitation_used_superseded_route(self, current: NumericV2StoredSession) -> bool:
+        """Check unsigned older invitations against the route shown before Actor fact settlement."""
+
+        session = current.session
+        if not self.node_uses_fact_routes(self.nodes[session.current_node_id]):
+            return False
+        origin = pending_transition_record(session, ledger_events=current.ledger_events, include_withdrawn=True)
+        if origin is None:
+            return False
+        revision = origin.get("revision")
+        issued = next((row for row in current.ledger_events if row.get("result_revision") == revision), None)
+        if (issued is None or "routing_fact_operations" not in issued
+                or issued["routing_fact_operations"] == issued.get("fact_operations", [])
+                or isinstance(issued.get("program_invitation"), Mapping)):
+            return False
+        facts_before = self.route_facts_at_revision(current.ledger_events, revision, before_actor=True)
+        facts_after = self.route_facts_at_revision(current.ledger_events, revision)
+        before = self.preview_route(session.current_node_id, issued["after_metrics"], facts=facts_before)
+        after = self.preview_route(session.current_node_id, issued["after_metrics"], facts=facts_after)
+        if before == after:
+            return False
+        # Earlier versions could append the exact authored offer after a route
+        # opened. The actual visible author text independently identifies it.
+        cast = NumericV2CastProjection.from_story(self.story,
+            player_name=(str(session.catgirl_binding.get("player_address") or "你")
+                         if session.player_address_known else "你"),
+            catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前角色"))
+        fallback = cast.text(str(((after or {}).get("transition_contract") or {}).get("fallback_offer") or "")).strip()
+        body = str(origin.get("performance") or "").strip()
+        visible_offer = recorded_transition_offer(origin) or body.split("\n")[-1]
+        return not fallback or visible_offer != fallback
+
+    def has_placeholder_authored_invitation(self, current: NumericV2StoredSession) -> bool:
+        """Recognize an old auto-published author pair without reinterpreting dynamic offers."""
+
+        session = current.session
+        origin = pending_transition_record(session, ledger_events=current.ledger_events)
+        suggestions = origin.get("suggested_inputs") if origin else None
+        if (not isinstance(suggestions, list) or not suggestions or not isinstance(suggestions[0], str)
+                or not is_placeholder_accept_input(suggestions[0])):
+            return False
+        revision = origin.get("revision")
+        issued = next((row for row in current.ledger_events if row.get("result_revision") == revision), None)
+        if issued is None:
+            return False
+        receipt = issued.get("program_invitation")
+        if isinstance(receipt, Mapping) and (receipt.get("kind") in {"reviewed_dynamic", "reviewed_proposal"}
+                                             or receipt.get("silent") is True):
+            return False
+        facts = (self.route_facts_at_revision(current.ledger_events, revision)
+                 if self.node_uses_fact_routes(self.nodes[session.current_node_id]) else None)
+        route = self.preview_route(session.current_node_id, issued["after_metrics"], facts=facts)
+        contract = (route or {}).get("transition_contract") or {}
+        cast = NumericV2CastProjection.from_story(self.story,
+            player_name=(str(session.catgirl_binding.get("player_address") or "你")
+                         if session.player_address_known else "你"),
+            catgirl_name=str(session.catgirl_binding.get("catgirl_name") or "当前角色"))
+        accept = cast.text(str(contract.get("accept_input") or "")).strip()
+        offer = cast.text(str(contract.get("fallback_offer") or "")).strip()
+        body = str(origin.get("performance") or "").strip()
+        return bool(offer and accept == suggestions[0]
+                    and (recorded_transition_offer(origin) == offer or body == offer or body.endswith("\n" + offer)))
+
+    def _select_route(
+        self, node: Mapping[str, Any], metrics: Mapping[str, int],
+        facts: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        eligible = [route for route in node.get("route_gates", []) if self._conditions_match(route["conditions"], metrics, facts)]
         if not eligible:
             return None, "conditions_blocked"
         highest = max(int(route["priority"]) for route in eligible)
@@ -1497,25 +1938,51 @@ class NumericV2Engine:
         self,
         node_id: str,
         metrics: Mapping[str, int],
+        *,
+        facts: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
-        """只读返回按当前数值会被 Runtime 选中的路线，不改变 Session。"""  # noqa: DOCSTRING_CJK
+        """Return, read-only, the route Runtime would select at the current numeric values without changing Session."""  # noqa: DOCSTRING_CJK
 
         node = self.nodes.get(str(node_id))
         if node is None:
             raise NumericV2RuntimeError("node_not_found")
-        route, _status = self._select_route(node, metrics)
+        route, _status = self._select_route(node, metrics, facts)
         return route
 
-    def completion_contract_satisfied(self, session: ScriptSessionV2) -> bool | None:
-        """只读判断当前幕的作者完成条件；未声明时返回 None。"""  # noqa: DOCSTRING_CJK
+    def route_departure_blocker(
+        self,
+        session: ScriptSessionV2,
+        route: Mapping[str, Any],
+        *,
+        facts: Mapping[str, Mapping[str, Any]] | None = None,
+        condition_narrations_enabled: bool = True,
+    ) -> str | None:
+        """Read the hard departure gates of an already selected route without granting authorization."""  # noqa: DOCSTRING_CJK
+
+        if (route["transition_contract"].get("advance_on_completion") is True
+                and self.completion_contract_satisfied(session, facts=facts) is not True):
+            return "completion_pending"
+        # Conditional segments can only be delivered through review. When it is
+        # off, only the remaining deliverable mandatory pieces can block departure.
+        source = self.nodes[session.current_node_id]
+        if source["story_beat"].get("fixed_narrations") and required_pending(
+            source, session, condition_triggers_enabled=condition_narrations_enabled,
+        ):
+            return "required_narration_pending"
+        return None
+
+    def completion_contract_satisfied(
+        self, session: ScriptSessionV2, *, facts: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> bool | None:
+        """Check the current act's author completion condition read-only; return None if undeclared."""  # noqa: DOCSTRING_CJK
 
         self.validate_session(session)
         node = self.nodes[session.current_node_id]
         contract = node.get("completion_contract")
         if not isinstance(contract, Mapping):
             return None
-        story_state = _validate_story_state(session.story_state)
-        facts = story_state["facts"]
+        if facts is None:
+            facts = _validate_story_state(session.story_state)["facts"]
         displayed = (displayed_ids(session)
                      if any("fixed_narration_id" in row for row in contract["all"]) else set())
         return all(
@@ -1528,18 +1995,26 @@ class NumericV2Engine:
         )
 
     @staticmethod
-    def _conditions_match(conditions: Mapping[str, Any], metrics: Mapping[str, int]) -> bool:
+    def _conditions_match(
+        conditions: Mapping[str, Any], metrics: Mapping[str, int],
+        facts: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> bool:
         mode = "any" if "any" in conditions else "all"
         rows = list(conditions.get(mode) or [])
-        checks = [
-            _COMPARATORS[str(row["op"])](metrics[str(row["metric"])], int(row["value"]))
-            for row in rows
-        ]
+        checks = []
+        for row in rows:
+            if row["type"] == "fact_equals":
+                fact = (facts or {}).get(row["key"])
+                checks.append(isinstance(fact, Mapping)
+                              and type(fact.get("value")) is type(row["value"])
+                              and fact["value"] == row["value"])
+            else:
+                checks.append(_COMPARATORS[str(row["op"])](metrics[str(row["metric"])], int(row["value"])))
         return any(checks) if mode == "any" else all(checks)
 
 
 class NumericV2Runtime:
-    """组合 v2 Engine 和独立持久化目录。"""  # noqa: DOCSTRING_CJK
+    """Combine the v2 Engine with an independent persistence directory."""  # noqa: DOCSTRING_CJK
 
     def __init__(self, engine: NumericV2Engine, root: Path, *, write_transaction=None):
         self.engine = engine
@@ -1617,7 +2092,7 @@ class NumericV2Runtime:
         self,
         session_id: str,
     ) -> NumericV2StoredSession | None:
-        """只为结束旧演绎读取存档；调用方不得据此继续生成剧情。"""  # noqa: DOCSTRING_CJK
+        """Read the save only to end an old performance; callers must not use it to continue generating plot."""  # noqa: DOCSTRING_CJK
 
         return await self.store.load_for_lifecycle(session_id)
 
@@ -1628,7 +2103,7 @@ class NumericV2Runtime:
         session_id: str,
         through_revision: int,
     ) -> NumericV2StoredSession:
-        """从指定 revision 建立隔离压测分叉，不覆盖正式剧本的继续演绎槽位。"""  # noqa: DOCSTRING_CJK
+        """Create an isolated load-test fork from the given revision without overwriting the official script's continuation slot."""  # noqa: DOCSTRING_CJK
 
         source = await self.store.load(source_session_id)
         if source is None:
@@ -1646,7 +2121,10 @@ class NumericV2Runtime:
             opening_performance=source.session.opening_performance,
             actor_budget_profile=source.session.actor_budget_profile,
         )
-        replay_session = replace(replay_session, opening_performed_at=source.session.opening_performed_at)
+        replay_session = replace(
+            replay_session, opening_performance=deepcopy(source.session.opening_performance),
+            opening_performed_at=source.session.opening_performed_at,
+        )
         replay_events: list[dict[str, Any]] = []
         for index, source_event in enumerate(source.ledger_events[:through_revision]):
             changes = tuple(
@@ -1673,8 +2151,12 @@ class NumericV2Runtime:
                 scene_complete=bool(source_event.get("scene_complete")),
                 transition_intent=str(source_event.get("transition_intent") or "unclear"),
                 natural_ending_ready=source_event.get("natural_ending_ready") is True,
-                ledger_events=tuple(replay_events) if "accepted_offer_route_id" in source_event else (),
+                ledger_events=tuple(replay_events) if ("accepted_offer_route_id" in source_event
+                    or source_event.get("input_source") == "accept_invitation") else (),
                 condition_narrations_enabled=source_event.get("condition_narrations_enabled") is not False,
+                hold_current_scene=source_event.get("delivery_hold") is True,
+                routing_fact_operations=tuple(source_event["routing_fact_operations"])
+                if "routing_fact_operations" in source_event else None,
                 fact_operations=tuple(
                     dict(operation)
                     for operation in source_event.get("fact_operations") or []
@@ -1685,15 +2167,30 @@ class NumericV2Runtime:
                 dict(source.session.performance_history[index])
             )
             replayed_event = deepcopy(outcome.ledger_event)
+            # Extraction rules apply to new turns, not committed evidence. Keep
+            # the fork's Ledger aligned with its copied performance, including
+            # legacy records that never carried an action projection.
+            if "player_action_projection" in source_event:
+                replayed_event["player_action_projection"] = deepcopy(source_event["player_action_projection"])
+            else:
+                replayed_event.pop("player_action_projection", None)
             if isinstance(source_event.get("program_invitation"), Mapping):
                 replayed_event["program_invitation"] = deepcopy(source_event["program_invitation"])
             if source_event.get("transition_offer_invalidated") is True:
                 replayed_event["transition_offer_invalidated"] = True
+            if source_event.get("offer_repair_attempted") is True:
+                replayed_event["offer_repair_attempted"] = True
             if source_event.get("transition_offer_presented") is True:
                 replayed_event["transition_offer_presented"] = True
+            if "transition_offer_source" in source_event:
+                replayed_event["transition_offer_source"] = source_event["transition_offer_source"]
+            if "delivery_fallback" in source_event:
+                replayed_event["delivery_fallback"] = source_event["delivery_fallback"]
+            if source_event.get("program_progress_invitation") is True:
+                replayed_event["program_progress_invitation"] = True
             replayed_session_after_turn = outcome.session
             if "transition_offered" in source_event:
-                # 分叉重放沿用原回合已经提交的提议状态；不能把 Actor 结果重新猜一遍。
+                # Fork replay uses committed original proposal states rather than reinterpreting Actor results.
                 committed_transition_offered = source_event.get("transition_offered")
                 if not isinstance(committed_transition_offered, bool):
                     raise NumericV2RuntimeError("session_transition_offered_invalid")
@@ -1707,15 +2204,15 @@ class NumericV2Runtime:
                 and source_event.get("player_address_known") is True
                 and outcome.session.player_address_known is False
             ):
-                # 旧 Ledger 曾按“昵称出现即知情”提交。来源 Session 已通过兼容审计，
-                # 测试分叉必须保持该既成状态，不能用新规则悄悄改写历史。
+                # Old Ledger committed knowledge upon nickname occurrence; source Session passed compatibility auditing,
+                # so test forks retain that established state rather than silently rewrite history using new rules.
                 replayed_event.pop("player_address_disclosure_version", None)
                 replayed_event["player_address_known"] = True
                 replayed_session_after_turn = replace(
                     outcome.session,
                     player_address_known=True,
                 )
-            # 分叉只更换 Session 身份；剧情正文和每轮正式输入保持逐字一致。
+            # Forks change only Session identity; preserve story text and formal per-turn input verbatim.
             source_performance.update({
                 "schema": PERFORMANCE_RECORD_SCHEMA,
                 "client_turn_id": request.client_turn_id,
@@ -1750,18 +2247,51 @@ class NumericV2Runtime:
         natural_ending_ready: bool = False,
         fact_operations: tuple[Mapping[str, Any], ...] = (),
         condition_narrations_enabled: bool = True,
+        initiation_quote: str | None = None,
+        hold_current_scene: bool = False,
     ) -> TurnOutcomeV2:
-        return self.engine.resolve_turn(
-            current.session,
-            request,
-            changes,
-            scene_complete=scene_complete,
-            transition_intent=transition_intent,
-            natural_ending_ready=natural_ending_ready,
-            ledger_events=current.ledger_events,
-            fact_operations=fact_operations,
-            condition_narrations_enabled=condition_narrations_enabled,
-        )
+        superseded_offer = transition_intent == "accept" and self.engine.invitation_used_superseded_route(current)
+        placeholder_reply = transition_intent in {"accept", "initiate"} and is_placeholder_accept_input(request.message)
+        def resolve(intent: str, ending_ready: bool) -> TurnOutcomeV2:
+            return self.engine.resolve_turn(
+                current.session,
+                request,
+                changes,
+                scene_complete=scene_complete,
+                transition_intent=intent,
+                natural_ending_ready=ending_ready,
+                ledger_events=current.ledger_events,
+                fact_operations=fact_operations,
+                condition_narrations_enabled=condition_narrations_enabled,
+                hold_current_scene=hold_current_scene,
+            )
+
+        blocked_authorization = superseded_offer or placeholder_reply
+        outcome = resolve("unclear" if blocked_authorization else transition_intent,
+                          natural_ending_ready and not blocked_authorization)
+        if transition_intent == "initiate" and outcome.route is not None:
+            # The Evaluator and missed-initiation review compare the request to
+            # the pre-settlement exit when one is available. Do not transfer
+            # that authorization when settlement changes the selected route.
+            session = current.session
+            checked_route = self.engine.preview_route(
+                session.current_node_id, session.metrics, facts=session.story_state["facts"],
+            )
+            if checked_route is not None and checked_route["id"] != outcome.route["id"]:
+                outcome = resolve("unclear", False)
+            elif checked_route is None and initiation_quote is not None:
+                # A live model may only bind a newly opened exit to a unique
+                # author label already present in its verified quote and the
+                # actual request. Direct deterministic callers retain their contract.
+                labels = self.engine.first_unlock_route_labels(session.current_node_id)
+                quoted = {route_id for route_id, names in labels.items() if any(name in initiation_quote for name in names)}
+                requested = {route_id for route_id, names in labels.items() if any(name in request.message for name in names)}
+                if quoted != {outcome.route["id"]} or requested != quoted:
+                    outcome = resolve("unclear", False)
+        if superseded_offer:
+            # Apply only to live turns; replay must retain the history accepted by older versions.
+            outcome = replace(outcome, ledger_event={**outcome.ledger_event, "transition_offer_invalidated": True})
+        return outcome
 
     async def commit_turn(
         self,
@@ -1796,15 +2326,22 @@ class NumericV2Runtime:
                             segments[0],
                             transition_source_dialogue_policy(
                                 str(
-                                    outcome.ledger_event.get("before_dialogue_policy")
+                                    outcome.ledger_event.get("source_transition_dialogue_policy")
+                                    or outcome.ledger_event.get("before_dialogue_policy")
                                     or "required"
                                 )
                             ),
+                            allow_empty=True,
                         )
                         or not valid_scene_narration(segments[1], allow_empty=True)
-                        or not valid_scene_narration(segments[2])
+                        or not valid_scene_narration(segments[2], allow_empty=any(
+                            piece["position"] == "before" for piece in segments[2].get("fixed_narrations", ())))
                         or not valid_mixed_performance_policy(
-                            segments[2], outcome.session.dialogue_policy
+                            segments[2], outcome.session.dialogue_policy,
+                            allow_empty=any(piece["position"] == "before"
+                                for piece in segments[2].get("fixed_narrations", ()))
+                                or (outcome.session.status == "ended"
+                                    and outcome.ledger_event.get("natural_ending_ready") is True),
                         )
                     )
                 )
@@ -1821,7 +2358,8 @@ class NumericV2Runtime:
         elif (
             "performance" in performance
             and (
-                not valid_mixed_performance_policy(
+                not is_silent_invitation_control(outcome.ledger_event, performance)
+                and not valid_mixed_performance_policy(
                     performance,
                     str(
                         outcome.ledger_event.get("performance_dialogue_policy")
@@ -1854,7 +2392,7 @@ class NumericV2Runtime:
             **deepcopy(dict(performance)),
             # The actor cannot supply this clock. Only committed live turns use it.
             "performed_at": datetime.now().astimezone().isoformat(),
-            # 旧记录没有该标记；版本 3 才强制混合正文合同，保证历史 Session 可恢复。
+            # Legacy records lack this marker; enforce mixed-body contracts only from version 3 so historical Sessions remain recoverable.
             "performance_contract_version": (
                 3
                 if new_contract
@@ -1864,8 +2402,8 @@ class NumericV2Runtime:
         record["player_action_projection"] = normalize_player_action_projection(
             outcome.ledger_event.get("player_action_projection")
         )
-        if outcome.ledger_event.get("input_source") == "reinvite":
-            record["input_source"] = "reinvite"
+        if outcome.ledger_event.get("input_source") in {"suggestion", "reinvite", "accept_invitation"}:
+            record["input_source"] = outcome.ledger_event["input_source"]
         fact_projection = _fact_projection(outcome.ledger_event, record)
         record["fact_projection"] = fact_projection
         timeline_projection = _timeline_projection(outcome.ledger_event)
@@ -1914,7 +2452,7 @@ class NumericV2Runtime:
         self,
         session_id: str,
     ) -> NumericV2StoredSession:
-        """持久化遗忘水位，继续演绎时仍保留 Runtime 上下文。"""  # noqa: DOCSTRING_CJK
+        """Persist the forgetting watermark while retaining Runtime context for continued performance."""  # noqa: DOCSTRING_CJK
 
         return await self.store.forget_history_through_current_revision(session_id)
 

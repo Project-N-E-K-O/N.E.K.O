@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tool-calling surface for ``LLMSessionManager``: register/unregister
-and sync of tools, the builtin ``recall_memory`` tool, and tool-call
+and sync of tools, the builtin tools (``recall_memory``, public knowledge,
+and the two task tools ``dispatch_task`` / ``query_tasks``), and tool-call
 dispatch.
 
 Method-only mixin: every instance attribute is assigned in
@@ -27,6 +28,22 @@ from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic import public_knowledge
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
 from config.prompts.prompts_sys import _loc
+from config.turn_context_settings import (
+    RECALL_MEMORY_TOOL_BUDGET_MS,
+    RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
+)
+from config.prompts.prompts_task_tools import (
+    DISPATCH_TOOL_DESCRIPTION,
+    DISPATCH_TOOL_NAME,
+    DISPATCH_TOOL_TASK_DESCRIPTION,
+    QUERY_TOOL_DESCRIPTION,
+    QUERY_TOOL_NAME,
+    QUERY_TOOL_QUESTION_DESCRIPTION,
+    TASK_TOOL_EMPTY,
+    TASK_TOOL_QUERY_UNREACHABLE,
+    TASK_TOOL_UNCERTAIN,
+    TASK_TOOL_UNREACHABLE,
+)
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
@@ -41,6 +58,20 @@ from ._shared import logger
 
 class ToolCallingMixin:
     """Tool-calling surface methods (see module docstring)."""
+
+    def _only_looks_up(self, tool_name: str) -> bool:
+        """Whether a tool is one of the built-in ones that only look something up.
+
+        A turn in which she called nothing but these has not acted, so what
+        she said in it is still checked afterwards (see ``cross_server``); any
+        other tool call is an action whose result is the one judgement of
+        that turn. A tool of another source that holds one of these names is
+        not known to only look up.
+        """
+        if tool_name not in ("recall_memory", public_knowledge.TOOL_NAME, QUERY_TOOL_NAME):
+            return False
+        held = self.tool_registry.get(tool_name)
+        return held is None or held.metadata.get("source") == "builtin"
 
     # ------------------------------------------------------------------
     # Tool calling — public API for agent_server / plugins
@@ -83,18 +114,18 @@ class ToolCallingMixin:
         await self._sync_tools_to_active_session(raise_on_failure=True)
 
     def unregister_tool(self, name: str) -> bool:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         existed = self.tool_registry.unregister(name)
         if existed:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             self._fire_task(self._sync_tools_to_active_session())
         return existed
 
     async def unregister_tool_and_sync(self, name: str) -> bool:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         existed = self.tool_registry.unregister(name)
         if existed:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return existed
 
@@ -102,18 +133,18 @@ class ToolCallingMixin:
         return self.tool_registry.names()
 
     def clear_tools(self, *, source: str | None = None) -> int:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             self._fire_task(self._sync_tools_to_active_session())
         return n
 
     async def clear_tools_and_sync(self, *, source: str | None = None) -> int:
-        holder = self._public_knowledge_holder()
+        holders = self._yielding_builtin_holders()
         n = self.tool_registry.clear(source=source)
         if n > 0:
-            self._refill_vacated_builtins(holder)
+            self._refill_vacated_builtins(holders)
             await self._sync_tools_to_active_session(raise_on_failure=True)
         return n
 
@@ -133,6 +164,26 @@ class ToolCallingMixin:
         call. Forwards to the registry (process-global, outliving any
         single session), then routes any images the tool returned.
         """
+        if not self._only_looks_up(call.name):
+            self._turn_acted_through_tools = True
+        light_bubble = getattr(self, "_push_focus_thinking", None)
+        if light_bubble is not None and not getattr(self, "_turn_has_spoken", False):
+            # She called a tool before saying anything this turn: the chat
+            # shows the "…" bubble until her first words arrive
+            # (send_lanlan_response clears it) or the turn ends.
+            self._tool_wait_bubble = True
+            try:
+                await light_bubble(True)
+            except Exception:
+                logger.debug("[%s] lighting the tool-wait bubble failed", self.lanlan_name, exc_info=True)
+        if call.reply_owner is not None:
+            from main_logic.reply_tail import reply_tail_registry
+
+            tool = self.tool_registry.get(call.name)
+            if tool is not None and tool.handler is None and tool.metadata.get("reply_tail") is True:
+                call.host_reply = reply_tail_registry.tool_context(
+                    self, call.reply_owner, call.call_id, str(tool.metadata.get("source", "")),
+                )
         result = await self.tool_registry.execute(call)
         if result.images:
             await self._route_tool_images(
@@ -188,12 +239,12 @@ class ToolCallingMixin:
         )
 
     # ------------------------------------------------------------------
-    # 内置 pseudo 工具：recall_memory
+    # Built-in pseudo tool: recall_memory
     # ------------------------------------------------------------------
-    # 机制层占位：先让 offline / realtime 两条路径都能 register、把
-    # description / parameters 推到 wire、收到模型的 tool call、回 result。
-    # handler 当前固定返回"没有找到相关记忆"，等真实记忆检索接好后只
-    # 替换 ``_handle_recall_memory_call`` 即可，不动注册 / 同步链路。
+    # Mechanism-level placeholder: first allow both offline and realtime paths to register, send
+    # description / parameters on the wire, receive a model tool call, and return a result.
+    # The handler currently always returns "No relevant memories found"; when real memory retrieval is wired up, only
+    # replace ``_handle_recall_memory_call`` without changing registration / synchronization.
 
     def _register_builtin_tools(self) -> None:
         """Re-register the built-in tools, with description / parameter docs in the current
@@ -231,9 +282,9 @@ class ToolCallingMixin:
                         "description": _loc(RECALL_MEMORY_TOOL_TIME_DESCRIPTION, _lang),
                     },
                 },
-                # query / time 至少给一个：只给 time 就按时间回溯（不依赖
-                # 内容），只给 query 就语义检索。两者都空时 handler 早退回
-                # "没有找到相关记忆"。故 required 留空，靠 handler 兜底。
+                # At least one of query / time is required: time alone performs time-based recall (independent of
+                # content); query alone performs semantic retrieval. If both are empty, the handler returns early with
+                # "No relevant memories found." Keep required empty and let the handler validate.
                 "required": [],
             },
             handler=self._handle_recall_memory_call,
@@ -241,23 +292,205 @@ class ToolCallingMixin:
         )
         self.tool_registry.register(recall_tool, replace=True)
         self._register_public_knowledge_tool()
+        self._register_task_tools()
 
     # ------------------------------------------------------------------
-    # 内置工具：query_public_knowledge
+    # Built-in tools: dispatch_task / query_tasks
     # ------------------------------------------------------------------
-    # 公共知识库在 Memory Server（/internal/knowledge/*），Main 只做 HTTP
-    # 客户端。只有存在可用知识包时才注册：没有导入知识包的用户不必每轮都
-    # 带上这份工具 schema。可用标志在 main_logic.public_knowledge 里缓存，
-    # 变化时回调 _on_public_knowledge_availability 重新注册并同步到会话。
+    # Her two task tools. They exist only while NekoClaw is switched on for
+    # this session (``_is_agent_enabled``), so a session without it does not
+    # carry their definitions. Both take one sentence and no identifier: the
+    # task brain in the agent process keeps the record and works out which
+    # task a sentence is about. Proactive generation builds its own request
+    # without any tool, so these never ride on it.
+
+    def _register_task_tools(self) -> bool:
+        """Register or remove the two task tools to match the switches. Returns whether anything changed."""
+        enabled = False
+        try:
+            enabled = bool(self._is_agent_enabled())
+        except Exception:
+            enabled = False
+        if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
+            # The kill-switch of ``_register_builtin_tools`` holds on this
+            # path too (a switch update calls this directly).
+            enabled = False
+        changed = False
+        if not enabled:
+            for name in (DISPATCH_TOOL_NAME, QUERY_TOOL_NAME):
+                current = self.tool_registry.get(name)
+                if current is not None and current.metadata.get("source") == "builtin":
+                    self.tool_registry.unregister(name)
+                    changed = True
+            return changed
+        _lang = _normalize_memory_prompt_lang(self.user_language)
+        definitions = (
+            ToolDefinition(
+                name=DISPATCH_TOOL_NAME,
+                description=_loc(DISPATCH_TOOL_DESCRIPTION, _lang),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": _loc(DISPATCH_TOOL_TASK_DESCRIPTION, _lang)},
+                    },
+                    "required": ["task"],
+                },
+                handler=self._handle_dispatch_task_call,
+                metadata={"source": "builtin"},
+            ),
+            ToolDefinition(
+                name=QUERY_TOOL_NAME,
+                description=_loc(QUERY_TOOL_DESCRIPTION, _lang),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": _loc(QUERY_TOOL_QUESTION_DESCRIPTION, _lang)},
+                    },
+                },
+                handler=self._handle_query_tasks_call,
+                metadata={"source": "builtin"},
+            ),
+        )
+        for definition in definitions:
+            current = self.tool_registry.get(definition.name)
+            if current is not None and current.metadata.get("source") != "builtin":
+                # A tool of another source holds the name; it is left alone.
+                continue
+            if current is not None and current.description == definition.description:
+                # Registered already, in this language: nothing to do. Every
+                # status push calls this, so it must not register (and log) again.
+                continue
+            changed = True
+            self.tool_registry.register(definition, replace=True)
+        return changed
+
+    async def _post_to_task_system(self, path: str, body: dict) -> tuple[dict | None, bool]:
+        """POST one request of a task tool to the agent process.
+
+        Returns ``(answer, may_have_arrived)``. ``answer`` is None when no
+        usable answer came back. ``may_have_arrived`` then tells the two ways
+        of failing apart: False when the request was never delivered or was
+        turned down before anything was done with it (no connection, a 4xx
+        status), True when it went out and the answer did not come back in
+        time, could not be read, or was an error of the agent process's own
+        (any other status). In the second case the agent process may be
+        carrying it out all the same.
+
+        ``TASK_TOOL_TIMEOUT_SECONDS`` is the limit on the whole request. The
+        HTTP client applies its timeout to connecting, sending and reading
+        each on their own, which could add up to several times that.
+        """
+        import httpx
+
+        from config import TOOL_SERVER_PORT
+        from config.nekoclaw_settings import TASK_TOOL_TIMEOUT_SECONDS
+
+        try:
+            from utils.internal_http_client import get_internal_http_client
+
+            client = get_internal_http_client()
+            resp = await asyncio.wait_for(
+                client.post(
+                    f"http://127.0.0.1:{TOOL_SERVER_PORT}{path}",
+                    json=body,
+                    timeout=TASK_TOOL_TIMEOUT_SECONDS,
+                ),
+                TASK_TOOL_TIMEOUT_SECONDS,
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            logger.warning("[task tools] %s not delivered (%s)", path, type(exc).__name__)
+            return None, False
+        except Exception as exc:
+            # Running out of the overall limit lands here as well: which
+            # phase it was in is not known, so neither is whether it arrived.
+            logger.warning("[task tools] %s sent, no answer (%s)", path, type(exc).__name__)
+            return None, True
+        if not resp.is_success:
+            logger.warning("[task tools] %s returned status=%s", path, resp.status_code)
+            # A 4xx is the agent process turning the request down before it
+            # did anything with it. Any other status can come after the task
+            # was taken on (an error while its receipt was being written).
+            return None, not 400 <= resp.status_code < 500
+        try:
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("[task tools] %s answered with something unreadable (%s)", path, type(exc).__name__)
+            return None, True
+        if not isinstance(data, dict):
+            return None, True
+        return data, True
+
+    async def _handle_dispatch_task_call(self, arguments: dict) -> str:
+        """Handler for ``dispatch_task``: hand her sentence to the task brain and return its receipt.
+
+        The receipt is the conclusion of the task brain's first round (already
+        under way / nothing can do this / accepted, or what became of a stop,
+        an addition or an answer). It does not wait for the work itself.
+
+        Logging follows ``recall_memory``: INFO carries names and outcome
+        only, never what she or the user said.
+        """
+        _lang = _normalize_memory_prompt_lang(self.user_language)
+        args_dict = arguments if isinstance(arguments, dict) else {}
+        task = args_dict.get("task")
+        task = task.strip() if isinstance(task, str) else ""
+        if not task:
+            return _loc(TASK_TOOL_EMPTY, _lang)
+        data, may_have_arrived = await self._post_to_task_system(
+            "/nekoclaw/dispatch",
+            {
+                "text": task,
+                "lanlan_name": self.lanlan_name,
+                # The user's own words of this turn, as far as they are known
+                # by now; plugins get them as ``_ctx.latest_user_request``.
+                "user_text": getattr(self, "_latest_user_utterance", "") or "",
+                "conversation_id": str(getattr(self, "current_speech_id", "") or ""),
+                "language": self.user_language,
+            },
+        )
+        text = str((data or {}).get("text") or "").strip()
+        logger.info(
+            "[dispatch_task] called by name=%s mode=%s lang=%s → kind=%s",
+            self.lanlan_name, self.input_mode, _lang,
+            (data or {}).get("kind") or ("uncertain" if may_have_arrived else "unreachable"),
+        )
+        if text:
+            return text
+        return _loc(TASK_TOOL_UNCERTAIN if may_have_arrived else TASK_TOOL_UNREACHABLE, _lang)
+
+    async def _handle_query_tasks_call(self, arguments: dict) -> str:
+        """Handler for ``query_tasks``: ask the task brain what is under way or whether something can be done."""
+        _lang = _normalize_memory_prompt_lang(self.user_language)
+        args_dict = arguments if isinstance(arguments, dict) else {}
+        question = args_dict.get("question")
+        question = question.strip() if isinstance(question, str) else ""
+        data, _may_have_arrived = await self._post_to_task_system(
+            "/nekoclaw/query",
+            {"text": question, "lanlan_name": self.lanlan_name, "language": self.user_language},
+        )
+        text = str((data or {}).get("text") or "").strip()
+        logger.info(
+            "[query_tasks] called by name=%s mode=%s lang=%s → %s",
+            self.lanlan_name, self.input_mode, _lang, "answered" if text else "unreachable",
+        )
+        return text or _loc(TASK_TOOL_QUERY_UNREACHABLE, _lang)
+
+    # ------------------------------------------------------------------
+    # Built-in tool: query_public_knowledge
+    # ------------------------------------------------------------------
+    # Public knowledge lives in Memory Server (/internal/knowledge/*); Main only provides the HTTP
+    # client. Register this tool only when a usable knowledge package exists, so users who imported none do not need to
+    # include its schema in every turn. Availability is cached in main_logic.public_knowledge; when it changes, callback _on_public_knowledge_availability re-registers and syncs it to the session.
+    #
 
     def _register_public_knowledge_tool(self) -> None:
-        # 可选工具：这里出任何问题都不能连带 recall_memory 的注册。
+        # This optional tool must not affect recall_memory registration if anything goes wrong.
         try:
             public_knowledge.add_availability_listener(self)
             port = getattr(self, "memory_server_port", None)
             if port is not None:
                 public_knowledge.schedule_availability_refresh(port)
-            # 同名工具若是插件等其他来源注册的，不覆盖也不删除。
+            # If a plugin or other source registered a tool with the same name, do not overwrite or delete it.
             current = self.tool_registry.get(public_knowledge.TOOL_NAME)
             ours = current is None or public_knowledge.is_builtin_definition(current)
             if not ours:
@@ -277,25 +510,39 @@ class ToolCallingMixin:
                 type(e).__name__,
             )
 
-    def _public_knowledge_holder(self) -> ToolDefinition | None:
-        """The tool holding the ``query_public_knowledge`` name, before a removal."""
-        return self.tool_registry.get(public_knowledge.TOOL_NAME)
+    def _yielding_builtin_holders(self) -> dict[str, ToolDefinition | None]:
+        """The tools holding the names of the builtins that yield to other sources, before a removal."""
+        return {
+            name: self.tool_registry.get(name)
+            for name in (public_knowledge.TOOL_NAME, DISPATCH_TOOL_NAME, QUERY_TOOL_NAME)
+        }
 
-    def _refill_vacated_builtins(self, previous_holder: ToolDefinition | None) -> None:
-        """Take the builtin's name back from another source's tool just removed.
+    def _refill_vacated_builtins(self, previous_holders: dict[str, ToolDefinition | None] | None) -> None:
+        """Take a builtin's name back from another source's tool just removed.
 
-        Only for optional builtins that yield to same-name tools of other
-        sources (``query_public_knowledge``): when such a tool goes away the
-        availability flag does not change, so no availability callback would
-        restore the builtin. Removing the builtin itself (e.g. clearing the
-        "builtin" source) is respected: nothing is put back.
+        Only for builtins that yield to same-name tools of other sources
+        (``query_public_knowledge`` and the two task tools): when such a tool
+        goes away neither the availability flag nor a switch changes, so
+        nothing else would restore the builtin. Removing the builtin itself
+        (e.g. clearing the "builtin" source) is respected: nothing is put back.
         """
         if os.environ.get("NEKO_DISABLE_BUILTIN_TOOLS", "").strip().lower() in ("1", "true", "yes"):
             return
-        if previous_holder is None or public_knowledge.is_builtin_definition(previous_holder):
-            return
-        if self.tool_registry.get(public_knowledge.TOOL_NAME) is None and public_knowledge.tool_available():
+        previous_holders = previous_holders or {}
+
+        def vacated(name: str) -> bool:
+            held = previous_holders.get(name)
+            return (
+                held is not None
+                and (held.metadata or {}).get("source") != "builtin"
+                and self.tool_registry.get(name) is None
+            )
+
+        if vacated(public_knowledge.TOOL_NAME) and public_knowledge.tool_available():
             self._register_public_knowledge_tool()
+        if vacated(DISPATCH_TOOL_NAME) or vacated(QUERY_TOOL_NAME):
+            # Registers what the switches call for and leaves the rest alone.
+            self._register_task_tools()
 
     def _on_public_knowledge_availability(self) -> None:
         """Availability flipped: re-register and push to live sessions."""
@@ -344,8 +591,8 @@ class ToolCallingMixin:
             time_arg = raw_time.strip()
         session_kind = type(self.session).__name__ if self.session is not None else "no-session"
 
-        # 空入参早退：模型偶尔会用空 args 调一下"探探工具是否可用"，省一次
-        # HTTP。但只要带了 time（按时间回溯，不依赖 query），就不算空入参。
+        # Return early on empty input: the model sometimes sends empty args to "check whether the tool is available," avoiding an HTTP call.
+        # But input with time (time-based recall does not require query) is not empty.
         if not query and not time_arg:
             logger.info(
                 "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
@@ -355,27 +602,32 @@ class ToolCallingMixin:
             logger.debug("[recall_memory] empty-query args=%s", args_dict)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # POST 到 memory_server。query 始终原样下传，不能因为带了 time 就清空
-        # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
-        # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
-        # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
-        post_body = {"query": query, "language": self.user_language}
+        # POST to memory_server. Always forward query unchanged; do not clear it when time is present
+        # — downstream routing: query + time → hybrid_recall(query, time_window=...) performs
+        # joint "semantic + temporal" retrieval (rank by query within the window while retaining semantic matches); time alone
+        # → pure time-proximity recall; if time parsing fails, query still enables semantic-retrieval fallback.
+        post_body = {
+            "query": query,
+            "language": self.user_language,
+            # If the server exceeds this budget, use keyword results only instead of timing out completely and reporting "not found."
+            "budget_ms": RECALL_MEMORY_TOOL_BUDGET_MS,
+        }
         if time_arg:
             post_body["time"] = time_arg
         result_payload: dict = {}
-        recall_request_ok = False  # 仅当 memory server 真正成功返回时才置真
+        recall_request_ok = False  # Set true only when Memory Server actually returns successfully
         try:
             from utils.internal_http_client import get_internal_http_client
             client = get_internal_http_client()
             resp = await client.post(
                 f"http://127.0.0.1:{self.memory_server_port}/query_memory/{self.lanlan_name}",
                 json=post_body,
-                timeout=5.0,
+                timeout=RECALL_MEMORY_TOOL_TIMEOUT_SECONDS,
             )
             if not resp.is_success:
-                # WARNING 只带 status + body 长度（非敏感元数据）；body 原文
-                # 含跨进程边界返回的字符串，可能夹带 query 回显 / 错误细节
-                # 等含上下文内容，按 PR #1384 立的隐私分层规矩落 DEBUG。
+                # WARNING logs include only status + body length (non-sensitive metadata); the raw body
+                # is a string returned across a process boundary and may include echoed query / error details
+                # or other contextual content, so log it at DEBUG under the privacy-tier policy established by PR #1384.
                 body_text = resp.text or ""
                 logger.warning(
                     "[recall_memory] memory_server returned status=%s body_len=%d",
@@ -399,9 +651,9 @@ class ToolCallingMixin:
         results = results if isinstance(results, list) else []
         elapsed_ms = result_payload.get("elapsed_ms", 0) if isinstance(result_payload, dict) else 0
 
-        # INFO 只记 has_time（布尔），不落 time_arg 原值——time_arg 是用户
-        # 原始输入，按本函数 docstring 立的隐私分层规矩（INFO 可能被打包外送）
-        # 原文只进下面的 DEBUG。
+        # INFO records only has_time (boolean), never the original time_arg — time_arg is raw user
+        # input, and under the privacy-tier policy documented in this function's docstring (INFO may be packaged and sent externally)
+        # The raw text goes only to DEBUG below.
         logger.info(
             "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
             "has_time=%s → hits=%d elapsed=%.0fms",
@@ -415,29 +667,29 @@ class ToolCallingMixin:
         )
 
         if not results:
-            # 同时带了 query 和 time 却 0 命中：八成是两个过滤条件叠加太窄
-            # （时间窗口里没有语义匹配的条目）。别直接报"没有记忆"让模型放弃，
-            # 提示它放宽——只留 time 或只留 query 再查一次。
-            # 仅在请求**真正成功返回**时才给放宽提示：non-2xx / 异常也会落到
-            # results=[]，那是 memory server 临时故障，不该误导模型"换条件重试"
-            # 白烧刚收紧的工具迭代预算。
+            # Both query and time were provided but there were zero hits: likely the filters were too narrow together
+            # (no semantically matching entries inside the time window). Do not simply report "no memories found" and make the model give up;
+            # prompt it to broaden the search — retry with only time or only query.
+            # Show the broader-search hint only when the request **actually succeeded**: non-2xx / exceptions also become
+            # results=[], but that indicates a temporary Memory Server failure; do not mislead the model into "retrying with different filters"
+            # and wasting the tool-iteration budget that was just tightened.
             if recall_request_ok and query and time_arg:
                 return _loc(RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN, _lang).format(query=query)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # 整段渲染扔进 worker 线程：truncate_to_tokens 编码的是**截断前**的
-        # 原文，而这条链路存在的理由正是"上游可能返回一条超长的合并
-        # reflection"。tiktoken 对切不开的超长 chunk 是二次退化，同步跑在
-        # 事件循环上会连带卡住语音会话。渲染本身保持同步函数（与插件侧
-        # memory_bridge.render_relevant_memory 同构、测试可直调），offload
-        # 放在这个唯一的 async 调用点。
+        # Render the entire section in a worker thread: truncate_to_tokens encodes the **pre-truncation**
+        # raw text, and this path exists specifically because "upstream may return one extremely long merged
+        # reflection." tiktoken has quadratic fallback on chunks it cannot split; running it synchronously on
+        # the event loop could also stall voice sessions. Keep rendering itself a synchronous function (matching
+        # memory_bridge.render_relevant_memory on the plugin side and directly testable); offload
+        # only at this sole async call site.
         return await asyncio.to_thread(self._render_recall_block, results, _lang)
 
     @staticmethod
     def _render_recall_block(results: list, _lang: str) -> str:
         """Render recall hits through the shared entry point, with a header.
 
-        Format: ``1. [事实/关于用户] text  (2026-05-01, 23 天前)``, under an
+        Format: ``1. [fact/about user] text  (2026-05-01, 23 days ago)``, under an
         i18n overview line.
 
         No line building happens here. ``memory.recall_render`` is the one
@@ -476,7 +728,7 @@ class ToolCallingMixin:
         Covers:
         - ``self.session``: the currently active main session
         - ``self.pending_session``: the session prewarming during hot-swap (the
-          window where the new catgirl is built but not yet formally swapped).
+          window where the new neko is built but not yet formally swapped).
           Without syncing it, tools registered via register_tool before
           pending_session takes over would be lost after the hot-swap completes.
 
@@ -491,8 +743,8 @@ class ToolCallingMixin:
         final state.
         """
         async with self._tool_sync_lock:
-            # registry 在 lock 内才读，确保拿到的是 lock 持有期间的真实快照
-            # （而不是入队时的旧值）。
+            # Read registry only inside the lock to ensure the snapshot is the actual value while the lock is held
+            # (not the stale value from when the item was queued).
             defs = self.tool_registry.all()
             targets = []
             if self.session is not None:
@@ -518,6 +770,6 @@ class ToolCallingMixin:
                     logger.warning("⚠️ Tool sync to %s session failed: %s", role, e)
                     errors.append(err_text)
             if errors and raise_on_failure:
-                # 给 ``*_and_sync`` 调用方一个明确信号：wire 上没真生效，
-                # 让 HTTP /api/tools 不要回 ok=true 假成功。
+                # Give ``*_and_sync`` callers an explicit signal that the change did not take effect on the wire,
+                # so HTTP /api/tools does not return a false ok=true success.
                 raise RuntimeError("tool sync failed: " + "; ".join(errors))

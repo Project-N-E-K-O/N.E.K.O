@@ -154,7 +154,7 @@ async def test_cli_rejects_unverified_direct_builtin_override(
 
 
 @pytest.mark.asyncio
-async def test_builtin_override_plan_blocks_existing_incoming_profile_target(
+async def test_builtin_override_plan_ignores_existing_package_profile_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -182,8 +182,7 @@ async def test_builtin_override_plan_blocks_existing_incoming_profile_target(
 
     plan = await PluginCliService().plan_install(package=str(package))
 
-    assert plan["action"] == "blocked"
-    assert plan["reason"] == "override_profile_target_exists"
+    assert plan["action"] == "override_builtin"
     assert retained_state.read_text(encoding="utf-8") == "[settings]\nkeep = true\n"
     assert not user_root.exists()
 
@@ -215,7 +214,7 @@ async def test_install_plan_fails_closed_when_exec_and_state_roots_collide(
 
 
 @pytest.mark.asyncio
-async def test_install_plan_fails_before_write_when_exec_and_profile_roots_collide(
+async def test_install_plan_ignores_unused_package_profile_root_overlap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -233,11 +232,11 @@ async def test_install_plan_fails_before_write_when_exec_and_profile_roots_colli
     monkeypatch.setattr(settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(settings, "USER_PACKAGE_PROFILES_ROOT", shared_root)
 
-    with pytest.raises(ServerDomainError) as exc_info:
-        await PluginCliService().plan_install(package=str(package))
+    plan = await PluginCliService().plan_install(package=str(package))
 
-    assert exc_info.value.code == "PLUGIN_EXEC_STATE_ROOT_COLLISION"
+    assert plan["action"] == "install"
     assert not shared_root.exists()
+
 
 
 def _market_override(

@@ -53,7 +53,7 @@ def test_lock_is_shared_while_referenced_and_released_when_idle():
 
 
 def test_a_replaced_slot_is_marked_inactive():
-    # 与 finalize 一致：还拿着旧 dict 的任务要看到状态翻转
+    # Match finalize: tasks still holding the old dict must see the state change.
     from utils.visit_route_state import activate_visit_route, finalize_visit_route_state, get_visit_route_state
 
     old = activate_visit_route("ReplaceNeko", phase="active")

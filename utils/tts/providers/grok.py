@@ -42,10 +42,10 @@ from utils.tts.native_voice_registry import (
 FALLBACK_GROK_TTS_DEFAULT_VOICE = "eve"
 FALLBACK_GROK_TTS_DEFAULT_MALE_VOICE = "leo"
 
-# 与 api_providers.json 的 native_tts_voice_providers.grok.voices 保持同形；
-# config 是权威源，这份是 JSON 加载失败时的兜底，保证 provider 始终注册。
-# Gender 标签是 best-effort 推断（xAI 文档只列 voice_id + name + language），
-# 仅用于 UI 展示，routing/dispatch 只看 key。
+# Match the shape of native_tts_voice_providers.grok.voices in api_providers.json;
+# config is authoritative, while this fallback keeps the provider registered if JSON loading fails.
+# Gender labels are best-effort guesses (xAI docs list only voice_id + name + language),
+# used only for UI display; routing/dispatch uses only the key.
 _FALLBACK_GROK_TTS_VOICE_GENDERS: dict[str, str] = {
     "eve": "Female",
     "ara": "Female",

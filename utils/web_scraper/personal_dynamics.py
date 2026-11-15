@@ -26,8 +26,8 @@ import os
 
 from utils.cookies_login import credential_manager
 
-# bs4 惰性 import（各解析函数内首用加载，utils.module_warmup 后台预热兜底）：本模块被
-# system_router 顶层引用、坐在 main_server 启动 import 链上，顶层 bs4 会拖慢端口就绪。
+# Lazily import bs4 on first use in parsers, with utils.module_warmup background preloading: system_router imports
+# this module at top level on main_server's startup chain, where eager bs4 would delay port readiness.
 if TYPE_CHECKING:
     pass
 import json
@@ -102,8 +102,8 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
         headers = {"User-Agent": get_random_user_agent(), "Referer": "https://t.bilibili.com/"}
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        # per-call AsyncClient: 带用户鉴权 cookie —— 不能走共享 client，否则
-        # 响应的 Set-Cookie 会自动提取进共享 jar，跨请求污染（httpx 默认行为）
+        # per-call AsyncClient carries user-authentication cookies; never use a shared client, or
+        # response Set-Cookie values enter the shared jar and contaminate other requests (httpx default behavior)
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=headers, cookies=credential.get_cookies(), timeout=10.0)
             response.raise_for_status()
@@ -159,7 +159,7 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
                 if following is not None and not bool(following):
                     continue
                 
-                # 获取到了作者名
+                # Author name obtained
                 author = module_author.get("name") or "未知UP主"
                 pub_time = module_author.get("pub_time") or "刚刚"
                 
@@ -171,7 +171,7 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
                 raw_text = desc.get("text") or ""
                 
                 content = ""
-                specific_url = f"https://t.bilibili.com/{dynamic_id}"  # 默认动态页面URL
+                specific_url = f"https://t.bilibili.com/{dynamic_id}"  # Default post-page URL
                 bvid = ""
                 title = ""
                 description_hint = raw_text
@@ -179,7 +179,7 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
                 
                 match major_type:
                     case "MAJOR_TYPE_ARCHIVE": 
-                        # 视频动态：添加视频链接
+                        # Video post: add the video URL
                         archive = safe_dict(major, "archive")
                         bvid = archive.get("bvid", "")
                         title = str(archive.get('title') or '')
@@ -190,14 +190,14 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
                         content = f"[发布了新视频] {title}"
                         
                     case "MAJOR_TYPE_DRAW": 
-                        # 图文动态：保持动态页面链接
+                        # Image/text post: retain the post-page URL
                         if raw_text:
                             content = f"[图文动态] {raw_text}"
                         else:
                             content = "[分享了图片]"
                         
                     case "MAJOR_TYPE_ARTICLE":
-                        # 专栏文章：添加文章链接
+                        # Column article: add its article URL
                         article = safe_dict(major, "article")
                         article_id = article.get("id", "")
                         title = str(article.get('title') or '')
@@ -207,7 +207,7 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
                         content = f"[发布了专栏文章] {title}"
                         
                     case "MAJOR_TYPE_LIVE_RCMD":
-                        # 直播动态：添加直播间链接
+                        # Livestream post: add the streaming-room URL
                         live_title = raw_text
                         kind = "live"
                         try:
@@ -234,11 +234,11 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
                         
                     case _:
                         if dynamic_type == "DYNAMIC_TYPE_LIVE_RCMD":
-                            # 直播开播推送：添加直播间链接
+                            # Stream-start notification: add the streaming-room URL
                             content = f"[正在直播] {raw_text or '快来我的直播间看看吧！'}"
                             title = str(raw_text or '正在直播')
                             kind = "live"
-                            # 尝试从描述中提取直播间ID
+                            # Try extracting streaming-room ID from the description
                             room_match = re.search(r'直播间：(\d+)', raw_text)
                             if room_match:
                                 specific_url = f"https://live.bilibili.com/{room_match.group(1)}"
@@ -265,9 +265,9 @@ async def _fetch_bilibili_personal_dynamic_uncached(limit: int = 10) -> Dict[str
 
                 dynamic_list.append({
                     'dynamic_id': dynamic_id, 'type': dynamic_type, 'timestamp': pub_time,
-                    'author': author, 'content': final_content,  # 存入拼接好的完整字符串
-                    'url': specific_url,  # 使用具体类型的URL
-                    'base_url': f"https://t.bilibili.com/{dynamic_id}",  # 保留原始动态页面链接
+                    'author': author, 'content': final_content,  # Store the fully assembled string
+                    'url': specific_url,  # Use the content-type-specific URL
+                    'base_url': f"https://t.bilibili.com/{dynamic_id}",  # Retain the original post-page URL
                     'platform': 'bilibili',
                     'lane': 'following',
                     'kind': kind,
@@ -355,7 +355,7 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         if not validate_cookies('douyin', cookies):
             return {'success': False, 'error': '抖音 Cookie 核心字段缺失，请检查配置'}
 
-        # 抖音 Web 端关注流接口
+        # Douyin web following-feed endpoint
         url = "https://www.douyin.com/aweme/v1/web/aweme/following/request/"
         headers = {
             "User-Agent": get_random_user_agent(),
@@ -363,7 +363,7 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             "Accept": "application/json, text/plain, */*"
         }
 
-        # 基础参数，实际环境中如果触发风控，可能需要在 URL 中追加抓包获取的 X-Bogus 和 a_bogus
+        # Basic parameters; anti-abuse checks may require appending captured X-Bogus and a_bogus to the URL
         params = {
             "count": limit,
             "device_platform": "webapp",
@@ -372,7 +372,7 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        # per-call AsyncClient carries user-authentication cookies; same rationale as bilibili
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.get(url, params=params, headers=headers, cookies=cookies, timeout=10.0)
             response.raise_for_status()
@@ -383,7 +383,7 @@ async def fetch_douyin_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             return {'success': False, 'error': "API请求失败，可能需要更新 Cookie 或补全 X-Bogus 签名"}
 
         dynamic_list = []
-        # 兼容不同的数据返回结构，归一化为 list
+        # Normalize varying response structures into a list
         raw_data = data.get("data")
         if isinstance(raw_data, list):
             aweme_list = raw_data
@@ -455,7 +455,7 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             "Accept": "*/*"
         }
 
-        # 快手 GraphQL 查询 Payload: visionFollowFeed (关注流)
+        # Kuaishou GraphQL query payload: visionFollowFeed (following feed)
         payload = {
             "operationName": "visionFollowFeed",
             "variables": {
@@ -466,7 +466,7 @@ async def fetch_kuaishou_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        # per-call AsyncClient carries user-authentication cookies; same rationale as bilibili
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.post(url, headers=headers, json=payload, cookies=cookies, timeout=10.0)
             response.raise_for_status()
@@ -533,16 +533,16 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         if not validate_cookies('weibo', weibo_cookies):
             return {'success': False, 'error': '微博 Cookie 核心字段缺失，请检查配置'}
         
-        # 1. 只需要最核心的 SUB，其他全都不需要！
+        # 1. Only the essential SUB is needed; omit everything else!
         sub = weibo_cookies.get('SUB') or weibo_cookies.get('sub')
         if not sub:
             logger.error("❌ 缺少核心登录凭证 SUB。")
             return {'success': False, 'error': '缺少核心登录凭证 SUB'}
 
-        # 2. 目标变更为：移动端首页关注流的固定 Container ID
+        # 2. Target the fixed Container ID of the mobile homepage following feed
         url = "https://m.weibo.cn/api/container/getIndex?containerid=102803"
         
-        # 3. 必须伪装成手机浏览器的 User-Agent
+        # 3. Impersonate a mobile browser User-Agent
         mobile_ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
         
         headers = {
@@ -553,13 +553,13 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             'MWeibo-Pwa': '1'
         }
         
-        # 仅携带最纯净的 SUB 即可
+        # Carry only a clean SUB cookie
         req_cookies = {'SUB': sub}
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        # 4. 移动端 API 非常宽容，直接用普通的 httpx 即可稳定发包
-        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        # 4. The mobile API is permissive enough for stable requests through ordinary httpx
+        # per-call AsyncClient carries user-authentication cookies; same rationale as bilibili
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers, cookies=req_cookies, timeout=10.0)
 
@@ -575,7 +575,7 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
             data = response.json()
 
-        # 只有明确的鉴权错误才缓存失效；限流或服务异常仅影响本次请求。
+        # Cache authentication invalidity only for explicit authentication errors; rate limits/service errors affect this request only.
         if data.get('ok') != 1:
             if _is_weibo_auth_failure(data):
                 await asyncio.to_thread(
@@ -592,7 +592,7 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         weibo_list = []
 
         for card in cards:
-            # card_type == 9 代表这是一条正常的微博博文卡片
+            # card_type == 9 denotes an ordinary Weibo post card
             if card.get('card_type') != 9:
                 continue
 
@@ -603,11 +603,11 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             user = mblog.get('user', {})
             author = user.get('screen_name') or '未知博主'
 
-            # 提取正文并清理 HTML 标签
+            # Extract body text and strip HTML tags
             text = str(mblog.get('text') or '')
             clean_text = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', text)).strip()
 
-            # 兼容并缝合转发内容
+            # Support and concatenate reposted content
             if mblog.get('retweeted_status'):
                 retweet = mblog['retweeted_status']
                 rt_author = retweet.get('user', {}).get('screen_name') or '原博主'
@@ -626,7 +626,7 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
                 'author': author,
                 'content': final_content,
                 'timestamp': mblog.get('created_at') or '',
-                'url': f"https://m.weibo.cn/detail/{mid}" # 使用移动端 URL
+                'url': f"https://m.weibo.cn/detail/{mid}" # Use the mobile URL
             })
 
             if len(weibo_list) >= limit:
@@ -634,12 +634,12 @@ async def fetch_weibo_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
 
         if weibo_list: 
             logger.info(f"✅ 成功通过移动端接口获取到 {len(weibo_list)} 条微博个人动态")
-            logger.info("微博动态:")  # 统一对齐 B站 的提示词
+            logger.info("微博动态:")  # Align prompt wording with Bilibili
             for i, weibo in enumerate(weibo_list, 1):
                 content = weibo.get('content', '')
                 if len(content) > 50:
                     content = content[:50] + "..."
-                # 微博正文是用户面对的内容，不写 logger
+                # Weibo bodies are user-facing content; do not write them to logger
                 print(f"  - {content}")
 
             return {'success': True, 'statuses': weibo_list}
@@ -662,7 +662,7 @@ async def fetch_reddit_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         headers = {'User-Agent': get_random_user_agent(), 'Accept': 'application/json'}
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        # per-call AsyncClient carries user-authentication cookies; same rationale as bilibili
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers, cookies=reddit_cookies, timeout=10.0)
             response.raise_for_status()
@@ -694,11 +694,11 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
     try:
         url = "https://twitter.com/home"
         headers = {'User-Agent': get_random_user_agent()}
-        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        # per-call AsyncClient carries user-authentication cookies; same rationale as bilibili
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             res = await client.get(url, headers=headers, cookies=cookies, timeout=10.0)
 
-        # 如果被重定向到了登录页，说明 Cookie 彻底失效了
+        # Redirection to a login page means the cookie is completely invalid
         if _is_twitter_auth_redirect(res.url):
             await asyncio.to_thread(
                 credential_manager.mark_auth_rejected,
@@ -720,7 +720,7 @@ async def _fetch_twitter_personal_web_scraping(limit: int = 10, cookies: Optiona
             tweets.append({
                 'author': f"@{author_str}", 
                 'content': clean_text,
-                'timestamp': '刚刚'  # 保持与主 API 数据字典格式的统一
+                'timestamp': '刚刚'  # Match the main API's data-dictionary format
             })
 
         if tweets:
@@ -746,7 +746,7 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         if not validate_cookies('twitter', twitter_cookies):
             return {'success': False, 'error': 'Twitter Cookie 核心字段缺失，请检查配置'}
              
-        # 提取防伪 CSRF Token。Twitter 必须，否则哪怕有合法 Cookie 也会立刻 401/403
+        # Extract the CSRF token: Twitter requires it and immediately returns 401/403 without it, even with valid cookies
         ct0 = twitter_cookies.get('ct0') or twitter_cookies.get('CT0', '')
         if not ct0:
             logger.warning("Twitter Cookie 中缺少核心字段 ct0，极大可能触发风控拦截")
@@ -757,10 +757,10 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
             logger.warning("TWITTER_BEARER_TOKEN not configured, falling back to web scraping")
             return await _fetch_twitter_personal_web_scraping(limit=limit, cookies=twitter_cookies)
         
-        # 切换到更稳定、包含完整推文文本的 v1.1 接口
+        # Switch to the more stable v1.1 endpoint containing full tweet text
         url = f"https://api.twitter.com/1.1/statuses/home_timeline.json?tweet_mode=extended&count={limit}"
         
-        # 补全极其严格的 Twitter 风控协议头
+        # Supply Twitter's strict anti-abuse request headers
         headers = {
             'User-Agent': get_random_user_agent(), 
             'Accept': 'application/json',
@@ -776,16 +776,16 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         
         await asyncio.sleep(random.uniform(0.1, 0.5))
 
-        # per-call AsyncClient: 带用户鉴权 cookie，见 bilibili 同款理由
+        # per-call AsyncClient carries user-authentication cookies; same rationale as bilibili
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             response = await client.get(url, headers=headers, cookies=twitter_cookies, timeout=10.0)
 
-            # 状态码非 200 时，平滑降级到备用网页刮削方案
+            # For non-200 status, fall back gracefully to webpage scraping
             if response.status_code != 200:
                 logger.warning(f"Twitter API 拒绝访问 (状态码: {response.status_code})，回退到网页刮削...")
                 return await _fetch_twitter_personal_web_scraping(limit, twitter_cookies)
 
-            # 真正去解析返回的推文数据，替换掉之前的占位符
+            # Actually parse returned tweet data, replacing the old placeholder
             data = response.json()
         if not isinstance(data, list):
             return {'success': False, 'error': 'API 返回数据格式异常'}
@@ -794,13 +794,13 @@ async def fetch_twitter_personal_dynamic(limit: int = 10) -> Dict[str, Any]:
         for tweet in data[:limit]:
             user = tweet.get('user', {})
             author = user.get('screen_name') or 'Unknown'
-            # tweet_mode=extended 时，正文在 full_text 里
+            # With tweet_mode=extended, body text is in full_text
             text = str(tweet.get('full_text') or tweet.get('text') or '')
 
-            # 清理推文末尾自带的分享短链接 (https://t.co/xxx)
+            # Remove automatically appended tweet-sharing short links (https://t.co/xxx)
             clean_text = re.sub(r'https://t\.co/\w+', '', text).strip()
 
-            # 处理转推 (Retweet) 的前缀拼接
+            # Add the retweet prefix
             if 'retweeted_status' in tweet:
                 rt_user = tweet['retweeted_status'].get('user', {}).get('screen_name', 'Unknown')
                 rt_text = str(tweet['retweeted_status'].get('full_text') or '')
@@ -832,7 +832,7 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
         if china_region:
             logger.info("检测到中文区域，获取B站、微博、抖音和快手个人动态")
             
-            # 1. 将抖音和快手加入并发任务列表
+            # 1. Add Douyin and Kuaishou to concurrent tasks
             b_dyn, w_dyn, d_dyn, k_dyn = await asyncio.gather(
                 fetch_bilibili_personal_dynamic(limit),
                 fetch_weibo_personal_dynamic(limit),
@@ -841,7 +841,7 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 return_exceptions=True
             )
             
-            # 2. 增加对抖音和快手的异常隔离与安全降级
+            # 2. Isolate Douyin/Kuaishou exceptions and provide safe fallback
             if isinstance(b_dyn, Exception):
                 b_dyn = {'success': False, 'error': str(b_dyn)}
             if isinstance(w_dyn, Exception):
@@ -851,7 +851,7 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
             if isinstance(k_dyn, Exception):
                 k_dyn = {'success': False, 'error': str(k_dyn)}
 
-            # 3. 只要有一个平台成功，就判定为总体成功
+            # 3. Success from any platform means overall success
             top_success = any([
                 b_dyn.get('success', False), 
                 w_dyn.get('success', False),
@@ -859,7 +859,7 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 k_dyn.get('success', False)
             ])
             
-            # 4. 封装返回字典
+            # 4. Assemble the response dictionary
             result = {
                 'success': top_success, 
                 'region': 'china', 
@@ -869,7 +869,7 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 'kuaishou_dynamic': k_dyn
             }
             
-            # 【新增】汇总全平台失败的错误信息给顶层
+            # [New] Aggregate all-platform failure details for the top level
             if not top_success:
                 errors = []
                 if b_dyn.get('error'):
@@ -909,8 +909,8 @@ async def fetch_personal_dynamics(limit: int = 10) -> Dict[str, Any]:
                 'twitter_dynamic': t_dyn
             }
             
-            # 【新增】汇总海外平台失败的错误信息给顶层
-            # 【新增】汇总海外平台失败的错误信息给顶层
+            # [New] Aggregate overseas-platform failure details for the top level
+            # [New] Aggregate overseas-platform failure details for the top level
             if not top_success:
                 errors = []
                 if r_dyn.get('error'):
@@ -936,7 +936,7 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
     region = data.get('region', 'china')
     
     if region == 'china':
-        # 配置表：(数据字典键名, 展示标题, 列表的键名)
+        # Configuration table: (data-dictionary key, display title, list key)
         platforms = [
             ('bilibili_dynamic', 'B站关注UP主动态', 'dynamics'),
             ('weibo_dynamic', '微博个人关注动态', 'statuses'),
@@ -946,12 +946,12 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
         
         for key, title, list_key in platforms:
             dyn_data = data.get(key, {})
-            # 海象运算符 := 提取列表，如果为空则直接跳过该平台
+            # Use walrus := to extract the list; skip the platform immediately when empty
             if dyn_data.get('success') and (items := dyn_data.get(list_key, [])):
                 output_lines.append(f"【{title}】")
                 
                 for i, item in enumerate(items[:5], 1):
-                    # 统一了排版结构，保证所有平台的缩进严格对齐 (3个空格)
+                    # Use consistent layout with exactly aligned three-space indentation across platforms
                     author = item.get('author', '未知')
                     timestamp = item.get('timestamp', '')
                     content = item.get('content', '')
@@ -964,7 +964,7 @@ def format_personal_dynamics(data: Dict[str, Any]) -> str:
         return "\n".join(output_lines).strip() or "暂时无法获取关注动态"
         
     else:
-        # 海外平台配置表
+        # Overseas-platform configuration table
         platforms = [
             ('reddit_dynamic', 'Reddit Subscribed Posts', 'posts'),
             ('twitter_dynamic', 'Twitter Timeline', 'tweets')

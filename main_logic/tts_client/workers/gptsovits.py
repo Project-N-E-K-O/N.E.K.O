@@ -20,6 +20,8 @@ import json
 import websockets
 import aiohttp
 import asyncio
+from dataclasses import dataclass, field
+from queue import Empty
 
 from config import GSV_VOICE_PREFIX
 from utils.config_manager import _as_bool, get_config_manager
@@ -30,6 +32,7 @@ from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
 logger = get_module_logger(__name__, "Main")
+GPTSOVITS_END_TIMEOUT_SECONDS = 30.0
 
 class CustomTTSVoiceFetchError(Exception):
     """Raised when custom TTS voice list cannot be fetched from provider."""
@@ -85,15 +88,15 @@ async def get_custom_tts_voices(base_url: str, provider: str = 'gptsovits'):
 
     return voices
 
-# GSV worker 的"句标点"白名单。判据：
-# - 含字母 / 数字（Unicode 字母含 CJK / 假名 / 韩文 / 希腊 / 西里尔 /
-#   阿拉伯 letter）→ 真内容，放行
-# - 无字母数字但全是白名单标点（不限个数）→ LLM 真实标点 chunk（`，` `。`
-#   `？` 等，可能也含罕见的 `。。。` `？！`），放行让 server TextBuffer 切句
-# - 无字母数字且含任何非白名单符号 → kaomoji（`=。=` `(╯°□°）╯` `^_^`），丢
+# GSV worker sentence-punctuation allowlist. Criteria:
+# - Contains letters/digits (Unicode letters include CJK / kana / Hangul / Greek / Cyrillic /
+#   Arabic): real content, allow.
+# - No letters/digits but entirely allowlisted punctuation, regardless of count: genuine LLM punctuation chunks (`，` `。`
+#   `？`, including rare `。。。` `？！`), allowed so server TextBuffer can split sentences.
+# - No letters/digits and any nonallowlisted symbol: kaomoji (`=。=` `(╯°□°）╯` `^_^`), discard.
 #
-# 标点集刻意覆盖多语言（CJK / ASCII / Arabic / Spanish），但**不放** `(` `)`
-# `[` `]` `{` `}` `「」` `《》` `"` `'` `~` `^` `*` `_` `-` 等 kaomoji 高发字符。
+# Include multilingual punctuation (CJK / ASCII / Arabic / Spanish) but exclude kaomoji-prone `(` `)`
+# `[` `]` `{` `}` `「」` `《》` `"` `'` `~` `^` `*` `_` `-`, etc.
 _GSV_ALLOWED_PUNCT = frozenset('。！？；：，、…—．.!?;:,¿¡،؟؛')
 
 def _gsv_should_drop_chunk(text: str) -> bool:
@@ -114,6 +117,19 @@ def _gsv_should_drop_chunk(text: str) -> bool:
             has_unsanctioned = True
     return has_unsanctioned
 
+
+@dataclass(eq=False)
+class _GsvSpeech:
+    """One utterance owns its network work; the control queue never waits for it."""
+
+    speech_id: str
+    commands: asyncio.Queue = field(default_factory=asyncio.Queue)
+    task: asyncio.Task | None = None
+    cancelled: bool = False
+    failed: bool = False
+    ending: bool = False
+    closed: bool = False
+
 def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """GPT-SoVITS TTS worker - uses the v3 WebSocket stream-input duplex mode
     
@@ -122,15 +138,15 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         response_queue: multiprocess response queue sending audio data (also used for the ready signal)
         audio_api_key: API key (unused, kept for interface consistency)
         voice_id: v3 voice config ID, formatted as "voice_id" or "voice_id|advanced-params JSON"
-                  e.g.: "my_voice" or "my_voice|{\"speed\":1.2,\"text_lang\":\"all_zh\"}"
+                  e.g.: "my_voice" or "my_voice|{\"speed_factor\":1.2,\"text_lang\":\"all_zh\"}"
     
     Config (set via TTS_MODEL_URL):
         base_url: GPT-SoVITS API address, e.g. "http://127.0.0.1:9881"
                   automatically converted to the ws:// protocol for the WebSocket connection
     """
-    _ = audio_api_key  # 未使用，但保持接口一致
+    _ = audio_api_key  # Unused, retained for interface consistency.
 
-    # 获取配置
+    # Get configuration.
     base_url = resolve_worker_gsv_api_url(get_config_manager())
 
     if not is_valid_http_url(base_url):
@@ -151,8 +167,8 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         redact_url_for_log(WS_URL),
     )
 
-    # 剥离 gsv: 前缀（角色系统用于标识 GPT-SoVITS voice_id 的路由前缀）
-    # 解析 voice_id：支持 "voice_id" 或 "voice_id|{JSON高级参数}" 格式
+    # Strip gsv:, the character system's GPT-SoVITS voice_id routing prefix.
+    # Parse voice_id in either "voice_id" or "voice_id|{advanced JSON parameters}" format.
     extra_params = {}
     raw_voice = voice_id.strip() if voice_id else ""
     if raw_voice.startswith(GSV_VOICE_PREFIX):
@@ -171,21 +187,6 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
     else:
         v3_voice_id = raw_voice or "_default"
 
-    # 预加载 websockets State（兼容不同版本）
-    try:
-        from websockets.connection import State as _WsState
-    except (ImportError, AttributeError):
-        _WsState = None
-
-    def _ws_is_open(ws_conn):
-        """Check whether the WS connection is still open (compatible with websockets v14+/v16)"""
-        if ws_conn is None:
-            return False
-        if _WsState is not None:
-            return getattr(ws_conn, 'state', None) is _WsState.OPEN
-        # fallback: 旧版 websockets
-        return not getattr(ws_conn, 'closed', True)
-
     def _extract_pcm_from_wav(wav_bytes: bytes) -> tuple:
         """Extract PCM data and the sample rate from a WAV chunk"""
         if len(wav_bytes) < 44:
@@ -194,220 +195,238 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         pcm_data = wav_bytes[44:]
         if len(pcm_data) < 2:
             return None, 0
-        # 确保偶数长度
+        # Ensure an even length.
         if len(pcm_data) % 2 != 0:
             pcm_data = pcm_data[:-1]
         return pcm_data, src_rate
 
     async def async_worker():
-        """Async TTS worker main loop - WebSocket duplex mode"""
-        ws = None
-        receive_task = None
-        current_speech_id = None
-        resampler = None
-        # close_session(send_end=True) 返回时接收协程已经结束（正常收完 done 或被
-        # cancel），本轮不会再有音频进队列，那一刻才是本轮音频流的关闭点。
-        audio_done = AudioDoneEmitter(response_queue)
+        current = None
+        last_ending_task = None
+        live_speeches = set()
+        stopping = False
 
-        async def receive_loop(ws_conn):
-            """Independent receive coroutine: handles audio chunks and JSON messages returned by the WS"""
-            nonlocal resampler
-            try:
-                async for message in ws_conn:
-                    if isinstance(message, bytes):
-                        # 每个 binary frame 是完整 WAV chunk（含 header）
-                        pcm_data, src_rate = _extract_pcm_from_wav(message)
-                        if pcm_data is not None and len(pcm_data) > 0:
-                            audio_array = np.frombuffer(pcm_data, dtype=np.int16)
-                            if src_rate != 48000:
-                                if resampler is None:
-                                    resampler = soxr.ResampleStream(src_rate, 48000, 1, dtype='float32')
-                                resampled_bytes = _resample_audio(audio_array, src_rate, 48000, resampler)
-                            else:
-                                resampled_bytes = audio_array.tobytes()
-                            response_queue.put(resampled_bytes)
-                    else:
-                        # JSON 消息（日志用）
-                        try:
-                            msg = json.loads(message)
-                            msg_type = msg.get('type', '')
-                            if msg_type == 'sentence':
-                                # TTS 文本原文不写 logger
-                                _gsv_text = msg.get('text', '')
-                                logger.debug(f"[GPT-SoVITS v3] 合成 (len={len(_gsv_text)} chars)")
-                                print(f"[GPT-SoVITS v3] 合成: {_gsv_text[:30]}...")
-                            elif msg_type == 'sentence_done':
-                                logger.debug(f"[GPT-SoVITS v3] 句完成 (task={msg.get('task_id')}, chunks={msg.get('chunks_sent', '?')})")
-                            elif msg_type == 'done':
-                                logger.debug("[GPT-SoVITS v3] 会话完成")
-                            elif msg_type == 'error':
-                                error_msg = str(msg.get('message', ''))
-                                _enqueue_error(response_queue, f"[GPT-SoVITS v3] 服务端错误: {error_msg}")
-                            elif msg_type == 'flushed':
-                                logger.debug("[GPT-SoVITS v3] flush 完成")
-                        except json.JSONDecodeError:
-                            pass
-            except websockets.exceptions.ConnectionClosed:
-                logger.debug("[GPT-SoVITS v3] WS 连接已关闭")
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                _enqueue_error(response_queue, f"[GPT-SoVITS v3] 接收循环异常: {e}")
-
-        async def close_session(ws_conn, recv_task, send_end=True):
-            """Close the current WS session"""
-            nonlocal resampler
-            if send_end and _ws_is_open(ws_conn):
+        async def cleanup_socket(ws_conn, receiver=None, command=None):
+            for task in (command, receiver):
+                if task is None:
+                    continue
+                if not task.done():
+                    task.cancel()
                 try:
-                    await ws_conn.send(json.dumps({"cmd": "end"}))
-                    # 等待 done 消息（最多 30 秒，让推理完成）
-                    await asyncio.wait_for(recv_task, timeout=30.0)
-                except (asyncio.TimeoutError, Exception):
-                    pass
-            if recv_task and not recv_task.done():
-                recv_task.cancel()
-                try:
-                    await recv_task
+                    await task
                 except (asyncio.CancelledError, Exception):
                     pass
-            if _ws_is_open(ws_conn):
+            if ws_conn is not None:
                 try:
                     await ws_conn.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("[GPT-SoVITS v3] WS 关闭失败: %s", exc)
+
+        async def finish_cleanup(ws_conn, receiver=None, command=None):
+            # A later interrupt may arrive during normal close. It must not
+            # cancel cleanup itself or strand an old socket/receiver.
+            cleanup = asyncio.create_task(cleanup_socket(ws_conn, receiver, command))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
+
+        async def open_socket():
+            ws_conn = await websockets.connect(WS_URL, ping_interval=None, max_size=10 * 1024 * 1024)
+            try:
+                safe_params = {k: v for k, v in extra_params.items() if k not in ("cmd", "voice_id")}
+                await ws_conn.send(json.dumps({"cmd": "init", "voice_id": v3_voice_id, **safe_params}))
+                ready = json.loads(await asyncio.wait_for(ws_conn.recv(), timeout=10.0))
+                if ready.get("type") != "ready":
+                    raise RuntimeError(f"init 失败: {ready}")
+                return ws_conn
+            except (asyncio.CancelledError, Exception):
+                await finish_cleanup(ws_conn)
+                raise
+
+        async def warmup():
+            ws_conn = None
+            try:
+                ws_conn = await open_socket()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error("[GPT-SoVITS v3] 初始连接失败: %s", exc)
+                response_queue.put(("__ready__", False))
+                return False
+            finally:
+                await finish_cleanup(ws_conn)
+            if not stopping:
+                response_queue.put(("__ready__", True))
+            return True
+
+        def report_error(speech, error):
+            if not speech.cancelled:
+                # The manager already understands this marker. A retired turn's
+                # error must not be charged to a replacement speech_id either.
+                response_queue.put(("__tts_sentence_failed__", speech.speech_id, ""))
+                _enqueue_error(response_queue, f"[GPT-SoVITS v3] Worker 错误: {error}")
+
+        def put_pcm(speech, payload):
+            if payload and not (speech.cancelled or speech.failed):
+                response_queue.put(("__audio__", speech.speech_id, payload))
+
+        async def receive_audio(speech, ws_conn):
             resampler = None
-
-        async def create_connection():
-            """Create a new WS connection and send init"""
-            nonlocal ws, receive_task, resampler
-            resampler = None
-
-            logger.debug(f"[GPT-SoVITS v3] 连接: {WS_URL}")
-            ws = await websockets.connect(WS_URL, ping_interval=None, max_size=10 * 1024 * 1024)
-
-            # 发送 init 指令（合并高级参数，过滤保留字段防止覆盖）
-            safe_params = {k: v for k, v in extra_params.items() if k not in ("cmd", "voice_id")}
-            init_msg = {"cmd": "init", "voice_id": v3_voice_id, **safe_params}
-            await ws.send(json.dumps(init_msg))
-
-            # 等待 ready 响应
-            ready_msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
-            ready_data = json.loads(ready_msg)
-            if ready_data.get('type') != 'ready':
-                raise RuntimeError(f"init 失败: {ready_data}")
-
-            logger.debug(f"[GPT-SoVITS v3] 会话就绪 (voice={v3_voice_id})")
-
-            # 启动接收协程
-            receive_task = asyncio.create_task(receive_loop(ws))
-            return ws
-
-        # ─── 初始连接验证 ───
-        try:
-            await create_connection()
-            logger.info(f"[GPT-SoVITS v3] TTS 已就绪 (WS 双工模式): {WS_URL}")
-            logger.info(f"  voice_id: {v3_voice_id}")
-            response_queue.put(("__ready__", True))
-        except Exception as e:
-            logger.error(f"[GPT-SoVITS v3] 初始连接失败: {e}")
-            logger.error("请确保 GPT-SoVITS 服务已运行且端口正确")
-            response_queue.put(("__ready__", False))
-            return
-
-        # ─── 主循环 ───
-        try:
-            loop = asyncio.get_running_loop()
-
-            while True:
+            source_rate = None
+            async for message in ws_conn:
+                if speech.cancelled or speech.failed:
+                    return False
+                if isinstance(message, bytes):
+                    pcm, source_rate = _extract_pcm_from_wav(message)
+                    if pcm:
+                        audio = np.frombuffer(pcm, dtype=np.int16)
+                        if source_rate != 48000:
+                            if resampler is None:
+                                resampler = soxr.ResampleStream(source_rate, 48000, 1, dtype='float32')
+                            pcm = _resample_audio(audio, source_rate, 48000, resampler)
+                        put_pcm(speech, pcm)
+                    continue
                 try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                    message = json.loads(message)
+                except json.JSONDecodeError:
+                    continue
+                kind = message.get("type")
+                logger.debug("[GPT-SoVITS v3] event=%s speech_id=%s", kind, speech.speech_id)
+                if kind == "error":
+                    raise RuntimeError(f"服务端错误: {message.get('message', '')}")
+                if kind == "done":
+                    if resampler is not None and not speech.cancelled:
+                        tail = _resample_audio(np.empty(0, dtype=np.int16), source_rate, 48000,
+                                               resampler, last=True)
+                        put_pcm(speech, tail)
+                    return True
+            return False
 
+        async def run_speech(speech, predecessor):
+            ws_conn = receiver = command = None
+            complete = False
+            audio_done = AudioDoneEmitter(response_queue)
+            try:
+                # Cancelling one utterance must not cancel shared initialization.
+                if not await asyncio.shield(startup):
+                    return
+                # A normal successor starts after the previous end publishes
+                # its tail and completion. Cancelling this wait leaves the
+                # predecessor's task alone.
+                if predecessor is not None:
+                    await asyncio.wait((predecessor,))
+                text = await speech.commands.get()
+                if text is None:
+                    # A filtered-only utterance owns an end marker but has no
+                    # text to send or socket to drain.
+                    audio_done.emit(speech.speech_id)
+                    return
+                for attempt in range(3):
+                    try:
+                        ws_conn = await open_socket()
+                        break
+                    except Exception as exc:
+                        if attempt == 2:
+                            raise
+                        logger.warning("[GPT-SoVITS v3] 连接失败 (retry %s/3): %s", attempt + 1, exc)
+                        await asyncio.sleep(0.5 * (2 ** attempt))
+                receiver = asyncio.create_task(receive_audio(speech, ws_conn))
+                while not speech.cancelled:
+                    if text is None:
+                        await ws_conn.send(json.dumps({"cmd": "end"}))
+                        try:
+                            complete = await asyncio.wait_for(receiver, timeout=GPTSOVITS_END_TIMEOUT_SECONDS)
+                        except asyncio.TimeoutError as exc:
+                            raise RuntimeError(f"等待尾部音频超时（{GPTSOVITS_END_TIMEOUT_SECONDS:g}秒）") from exc
+                        if not complete:
+                            raise RuntimeError("会话关闭但未收到 done")
+                        break
+                    await ws_conn.send(json.dumps({"cmd": "append", "data": text}))
+                    _record_tts_telemetry("gptsovits", len(text))
+                    logger.debug("[GPT-SoVITS v3] append (len=%s chars)", len(text))
+                    command = asyncio.create_task(speech.commands.get())
+                    done, _ = await asyncio.wait((command, receiver), return_when=asyncio.FIRST_COMPLETED)
+                    if receiver in done:
+                        await receiver  # Retrieve upstream errors before reporting an early close.
+                        raise RuntimeError("会话在文本结束前关闭")
+                    text = await command
+                    command = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                report_error(speech, exc)
+                # Mute before cancelling a failed receiver: a callback may already
+                # have taken a frame off the wire when cancellation arrives.
+                speech.failed = True
+            finally:
+                try:
+                    await finish_cleanup(ws_conn, receiver, command)
+                finally:
+                    speech.closed = True
+            # Failure already latched the delivery result. Closing the stream
+            # releases downstream completion waiters without claiming success.
+            if not speech.cancelled and (complete or (speech.failed and speech.ending)):
+                audio_done.emit(speech.speech_id)
+
+        def retire(speech):
+            if speech is not None and not speech.cancelled and not speech.closed:
+                speech.cancelled = True
+                logger.debug("[GPT-SoVITS v3] interrupt speech_id=%s", speech.speech_id)
+                speech.task.cancel()
+
+        def speech_finished(speech, task):
+            speech.closed = True
+            live_speeches.discard(speech)
+            if not task.cancelled() and task.exception() is not None:
+                report_error(speech, task.exception())
+
+        startup = asyncio.create_task(warmup())
+        try:
+            while True:
+                if startup.done() and not startup.result():
+                    break
+                try:
+                    # Queue.get itself cannot be cancelled by asyncio. A bounded
+                    # idle wait lets startup failure retire the worker/executor.
+                    sid, text = await asyncio.to_thread(request_queue.get, timeout=0.1)
+                except Empty:
+                    continue
                 if sid == TTS_SHUTDOWN_SENTINEL:
                     break
-
                 if sid == "__interrupt__":
-                    # 打断：立即关闭连接，不发 end、不等推理完成
-                    audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
-                    try:
-                        if _ws_is_open(ws):
-                            await close_session(ws, receive_task, send_end=False)
-                            ws = None
-                            receive_task = None
-                        current_speech_id = None
-                        audio_done.reset()
-                    finally:
-                        audio_done.end_interrupt()
+                    for speech in live_speeches:
+                        retire(speech)
+                    current = None
+                    last_ending_task = None
                     continue
-
-                # speech_id 变化 → 打断旧会话，创建新连接
-                # 打断时不发 end（避免等待推理完成），直接关闭连接
-                if sid != current_speech_id and sid is not None:
-                    if _ws_is_open(ws):
-                        await close_session(ws, receive_task, send_end=False)
-                        ws = None
-                        receive_task = None
-                    current_speech_id = sid
-                    audio_done.reset()  # 新轮次重置 audio_done 去重标记
-                    for _retry in range(3):
-                        try:
-                            await create_connection()
-                            break
-                        except Exception as e:
-                            logger.warning(f"[GPT-SoVITS v3] 连接失败 (retry {_retry+1}/3): {e}")
-                            ws = None
-                            if _retry < 2:
-                                await asyncio.sleep(0.5 * (2 ** _retry))
-                    else:
-                        logger.error("[GPT-SoVITS v3] 连接重试耗尽，跳过当前文本")
-                        continue
-
                 if sid is None:
-                    # 正常结束：发送 end 关闭会话（v3 end 会自动 flush 剩余文本）
-                    # 先捕获本轮 sid：close_session 会让出，返回后 current_speech_id 要清掉。
-                    finished_speech_id = current_speech_id
-                    if _ws_is_open(ws):
-                        await close_session(ws, receive_task, send_end=True)
-                        ws = None
-                        receive_task = None
-                        # 会话已关且接收协程已停，本轮不会再有音频
-                        audio_done.emit(finished_speech_id)
-                    current_speech_id = None
+                    if current is not None and not current.cancelled and not current.closed and not current.ending:
+                        current.ending = True
+                        last_ending_task = current.task
+                        current.commands.put_nowait(None)
                     continue
-
-                if not tts_text or not tts_text.strip():
-                    continue
-
-                # kaomoji / 颜文字兜底：见 _GSV_ALLOWED_PUNCT 注释。
-                # `=。=` `(╯°□°）╯` `^_^` 这类丢；单标点 `，` `。` `？` 放过让
-                # server TextBuffer 触发切句。
-                if _gsv_should_drop_chunk(tts_text):
-                    continue
-
-                # 用 append 累积碎片文本，v3 TextBuffer 自动按标点切句推理
-                if _ws_is_open(ws):
-                    try:
-                        await ws.send(json.dumps({"cmd": "append", "data": tts_text}))
-                        _record_tts_telemetry("gptsovits", len(tts_text))
-                        # TTS 文本原文不写 logger
-                        logger.debug(f"[GPT-SoVITS v3] append (len={len(tts_text)} chars)")
-                        print(f"[GPT-SoVITS v3] append: {tts_text[:30]}...")
-                    except Exception as e:
-                        logger.error(f"[GPT-SoVITS v3] 发送失败: {e}")
-                        ws = None
-                        receive_task = None
-                        current_speech_id = None
-
-        except Exception as e:
-            _enqueue_error(response_queue, f"[GPT-SoVITS v3] Worker 错误: {e}")
-            response_queue.put(("__ready__", False))
+                if (current is None or current.speech_id != sid
+                        or current.cancelled or current.failed or current.closed):
+                    if current is not None and not current.ending:
+                        retire(current)
+                    current = _GsvSpeech(sid)
+                    live_speeches.add(current)
+                    current.task = asyncio.create_task(run_speech(current, last_ending_task))
+                    current.task.add_done_callback(lambda task, speech=current: speech_finished(speech, task))
+                if not current.ending and text and text.strip() and not _gsv_should_drop_chunk(text):
+                    current.commands.put_nowait(text)
         finally:
-            # 清理
-            if _ws_is_open(ws):
-                await close_session(ws, receive_task, send_end=False)
+            stopping = True
+            remaining = list(live_speeches)
+            for speech in remaining:
+                retire(speech)
+            if not startup.done():
+                startup.cancel()
+            await asyncio.gather(startup, *(speech.task for speech in remaining), return_exceptions=True)
 
-    # 运行异步 worker
+    # Run the async worker.
     try:
         asyncio.run(async_worker())
     except Exception as e:
@@ -416,12 +435,12 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
 def _gptsovits_is_selected(ctx) -> bool:
     core_config, cm = ctx.core_config, ctx.cm
-    # 选中信号收口到 GPTSOVITS_ENABLED 单一真相：config_manager 的 snapshot 已把
-    # ttsModelProvider=='gptsovits' 下拉（与 pre-#1830 存量旧开关）派生进
-    # GPTSOVITS_ENABLED，这里不再自己 raw load core_config.json 读 ttsModelProvider。
-    # snapshot 写 GPTSOVITS_ENABLED 时已 _as_bool 规整，这里再包一层防御性对齐隔壁
-    # ENABLE_CUSTOM_API / core.py，避免直接传入未规整 dict 时字符串 "false"/"0"
-    # 被当真值误抢 GPT-SoVITS。
+    # Consolidate selection into GPTSOVITS_ENABLED: config_manager snapshots already derive
+    # ttsModelProvider=='gptsovits', plus pre-#1830 legacy switches, into
+    # GPTSOVITS_ENABLED. Do not raw-load core_config.json here to read ttsModelProvider again.
+    # Snapshot creation already normalizes GPTSOVITS_ENABLED with _as_bool; defensively repeat it to match
+    # ENABLE_CUSTOM_API / core.py and prevent raw dict strings "false"/"0"
+    # from wrongly selecting GPT-SoVITS through truthiness.
     if not _as_bool(core_config.get('GPTSOVITS_ENABLED'), False):
         return False
     try:

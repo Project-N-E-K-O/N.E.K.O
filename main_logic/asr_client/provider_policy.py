@@ -33,6 +33,7 @@ class AsrProviderPolicy:
     connect_retry_cap_seconds: float = 1.0
     observes_local_activity: bool = False
     supports_result_preserving_finish: bool = False
+    supports_interception_delivery: bool = False
 
     def __post_init__(self) -> None:
         if self.max_segment_ms is not None and self.max_segment_ms <= 0:
@@ -101,4 +102,6 @@ def resolve_provider_policy(
         connect_retry_base_seconds=meta.connect_retry_base_seconds,
         connect_retry_cap_seconds=meta.connect_retry_cap_seconds,
         supports_result_preserving_finish=meta.supports_result_preserving_finish,
+        supports_interception_delivery=(meta.supports_interception_delivery and endpointing_mode == "manual"
+                                        and meta.worker_input_sample_rate_hz == meta.wire_sample_rate_hz),
     )

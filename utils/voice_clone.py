@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# 公共基类
+# Common base class
 # ============================================================================
 
 class VoiceCloneError(Exception):
@@ -65,10 +65,10 @@ class VoiceCloneError(Exception):
 
 
 # ============================================================================
-# MiniMax 语音克隆
+# MiniMax voice cloning
 # ============================================================================
 
-# 内部语言代码 → MiniMax 语言代码
+# Internal language codes → MiniMax language codes
 _MINIMAX_LANGUAGE_CODE_MAP = {
     'ch': 'zh', 'zh': 'zh',
     'en': 'en',
@@ -102,7 +102,7 @@ class MinimaxVoiceCloneClient:
         return h
 
     # ------------------------------------------------------------------
-    # Step 1 - 上传音频文件，获取 file_id
+    # Step 1 - Upload audio and obtain file_id
     # ------------------------------------------------------------------
     async def upload_file(
         self,
@@ -155,7 +155,7 @@ class MinimaxVoiceCloneClient:
             raise MinimaxVoiceCloneError(f"上传音频失败: {e}") from e
 
     # ------------------------------------------------------------------
-    # Step 2 - 用 file_id 创建/注册音色
+    # Step 2 - Create/register the voice using file_id
     # ------------------------------------------------------------------
     async def create_voice(
         self,
@@ -286,7 +286,7 @@ class MinimaxVoiceCloneClient:
             raise MinimaxVoiceCloneError(f"预览音频生成失败: {e}") from e
 
     # ------------------------------------------------------------------
-    # 组合便捷方法: upload + create 一步完成
+    # Combined convenience method: upload + create in one step
     # ------------------------------------------------------------------
     async def clone_voice(
         self,
@@ -309,23 +309,23 @@ class MinimaxVoiceCloneClient:
 
 
 # ============================================================================
-# Xiaomi MiMo 语音克隆
+# Xiaomi MiMo voice cloning
 # ============================================================================
 #
-# 与 MiniMax/CosyVoice/ElevenLabs 的「上传样本 → 远端注册 → 拿 voice_id」不同，MiMo 的
-# voiceclone（mimo-v2.5-tts-voiceclone）没有注册步骤（已核实官方文档：无 create-voice /
-# 远端 voice_id）：参考音频每次合成请求内联在 OpenAI 兼容 chat-completions 的 ``audio.voice``
-# 里（``data:audio/...;base64,...``）。
+# Unlike MiniMax/CosyVoice/ElevenLabs' 'upload sample → remote registration → obtain voice_id', MiMo's
+# voiceclone (mimo-v2.5-tts-voiceclone) has no registration step (verified in official documentation: no create-voice /
+# remote voice_id). Each synthesis request inlines reference audio in OpenAI-compatible chat-completions ``audio.voice``
+# (``data:audio/...;base64,...``).
 #
-# **对偶 MiniMax 的存储模型**：MiniMax 在 voice_storage.json 的 voice_meta 里存远端 voice_id
-# 作克隆身份；MiMo 在同一处存**参考音频本身（base64）**作克隆身份——整段落进 voice_meta、
-# 随 voice_storage.json 云同步，不另起本地文件存储。enrollment 时用 MiMo 做一次校验性合成
-# 确认 key + 样本可用（对偶其它家真打远端注册接口）；试听（synthesize_preview）同样内联样本，
-# 对偶 MiniMax 的预览。dispatch 由 mimo provider 按 voice_meta.provider 选中后读出样本内联。
+# **Symmetric with MiniMax's storage model**: MiniMax stores remote voice_id as clone identity in voice_storage.json voice_meta;
+# MiMo stores **the reference audio itself (base64)** there as clone identity. The whole sample enters voice_meta,
+# syncing with voice_storage.json rather than separate local files. Enrollment performs one validation synthesis through MiMo
+# to confirm key/sample availability, symmetric with other providers' actual remote registration calls; synthesize_preview also inlines the sample,
+# matching MiniMax preview. On dispatch, the mimo provider selected by voice_meta.provider reads and inlines the sample.
 
-# voice_storage 中标识 MiMo 克隆音色的前缀（按 MiMo API key 末 8 位分桶）
-# MiMo 校验 / 试听用 wav（自包含、非流式一次性返回，便于直接取音频）；运行时 worker 才用
-# pcm16 流式。Codex review #1851：非流式请求不应再要 pcm16 裸流。
+# Prefix identifying MiMo cloned voices in voice_storage, bucketed by the final 8 characters of the MiMo API key
+# MiMo validation/preview uses wav, a self-contained nonstreaming response easy to extract; only runtime workers use
+# streaming pcm16. Codex review #1851: nonstreaming requests must not request raw pcm16 streams.
 _MIMO_PREVIEW_AUDIO_FORMAT = 'wav'
 
 
@@ -355,7 +355,7 @@ def _extract_mimo_audio_bytes(payload: dict) -> bytes:
         try:
             return base64.b64decode(b64)
         except (binascii.Error, ValueError, TypeError):
-            # 上游返回了非字符串/非 bytes 的 audio 字段也不应冒泡，按"无音频"继续尝试下一候选。
+            # A non-string/non-bytes upstream audio field must not propagate errors; treat as 'no audio' and try the next candidate.
             continue
     return b''
 
@@ -381,7 +381,7 @@ class MimoVoiceCloneClient:
             'model': MIMO_TTS_VOICECLONE_MODEL,
             'messages': [{'role': 'assistant', 'content': text}],
             'audio': {
-                # 非流式取一次性音频：wav 自包含，不要 pcm16 裸流（Codex review）。
+                # Fetch complete nonstreaming audio: self-contained wav, not raw pcm16 (Codex review).
                 'format': _MIMO_PREVIEW_AUDIO_FORMAT,
                 'voice': mimo_voice_clone_data_uri(audio_bytes, mime_type),
             },
@@ -454,7 +454,7 @@ class MimoVoiceCloneClient:
 
 
 # ============================================================================
-# Qwen / CosyVoice 语音克隆
+# Qwen / CosyVoice voice cloning
 # ============================================================================
 
 class QwenVoiceCloneError(VoiceCloneError):
@@ -479,9 +479,9 @@ class QwenVoiceCloneClient:
       (Steps 1+2 combine into the clone_voice convenience method, with retries)
     """
 
-    # 重试配置
+    # Retry configuration
     MAX_RETRIES = 3
-    RETRY_DELAY = 3  # 秒
+    RETRY_DELAY = 3  # Seconds
 
     def __init__(self, api_key: str, tflink_upload_url: str, dashscope_base_url: str = ""):
         self.api_key = api_key
@@ -489,7 +489,7 @@ class QwenVoiceCloneClient:
         self.dashscope_base_url = dashscope_base_url
 
     # ------------------------------------------------------------------
-    # Step 1 - 上传音频到 tfLink，获取公网直链
+    # Step 1 - Upload audio to tfLink and obtain a public direct URL
     # ------------------------------------------------------------------
     async def upload_file(
         self,
@@ -531,7 +531,7 @@ class QwenVoiceCloneClient:
 
                 logger.info("tfLink原始响应: %s", data)
 
-                # 获取下载链接
+                # Get the download link
                 tmp_url = None
                 possible_keys = ['downloadLink', 'download_link', 'url', 'direct_link', 'link', 'download_url']
                 for key in possible_keys:
@@ -546,7 +546,7 @@ class QwenVoiceCloneClient:
                 if not tmp_url.startswith(('http://', 'https://')):
                     raise QwenVoiceCloneError(f'无效的URL格式: {tmp_url}')
 
-                # 测试URL是否可访问
+                # Test URL accessibility
                 test_resp = await client.head(tmp_url, timeout=10)
                 if test_resp.status_code >= 400:
                     raise QwenVoiceCloneError(
@@ -564,7 +564,7 @@ class QwenVoiceCloneClient:
             raise QwenVoiceCloneError(f"上传音频到tfLink失败: {e}") from e
 
     # ------------------------------------------------------------------
-    # Step 2 - 通过 DashScope 注册音色
+    # Step 2 - Register the voice through DashScope
     # ------------------------------------------------------------------
     def create_voice(
         self,
@@ -599,11 +599,11 @@ class QwenVoiceCloneClient:
         if language_hints and cosyvoice_model_supports_language_hints(target_model):
             kwargs["language_hints"] = language_hints
 
-        # 写 module-global + 构造 service + service.create_voice 整段都拿
-        # DASHSCOPE_GLOBAL_LOCK：clone_voice 由 asyncio.to_thread 跑在工作线程，
-        # 同进程多个 clone 请求并发时会在 "set global → SDK 调用" 之间互相
-        # 覆盖 key/地域，请求带着别人的凭证发出去 (Codex P1 #3258691457)。
-        # TTS worker / preview 也共用这把锁。
+        # Hold DASHSCOPE_GLOBAL_LOCK across module-global updates, service construction, and service.create_voice:
+        # clone_voice runs in an asyncio.to_thread worker, so concurrent cloning requests in one process can
+        # overwrite each other's key/region between setting globals and calling the SDK,
+        # sending requests with someone else's credentials (Codex P1 #3258691457).
+        # TTS workers and previews share this lock too.
         try:
             with DASHSCOPE_GLOBAL_LOCK:
                 dashscope.api_key = self.api_key
@@ -619,7 +619,7 @@ class QwenVoiceCloneClient:
             raise QwenVoiceCloneError(str(e)) from e
 
     # ------------------------------------------------------------------
-    # 组合便捷方法: upload + create，含重试
+    # Combined convenience method: upload + create, with retries
     # ------------------------------------------------------------------
     async def clone_voice(
         self,
@@ -664,7 +664,7 @@ class QwenVoiceCloneClient:
                     await asyncio.sleep(self.RETRY_DELAY)
                     continue
 
-                # 最后一次尝试或非可重试错误
+                # Final attempt or non-retryable error
                 if is_timeout:
                     raise QwenVoiceCloneError(
                         f'音色注册超时，已尝试{self.MAX_RETRIES}次'
@@ -676,5 +676,5 @@ class QwenVoiceCloneClient:
                 else:
                     raise
 
-        # 理论上不会到这里，但以防万一
+        # Unreachable in theory, but guard defensively
         raise last_error or QwenVoiceCloneError("音色注册失败: 未知错误")  # type: ignore[misc]

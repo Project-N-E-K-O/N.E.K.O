@@ -86,9 +86,9 @@ async def test_push_then_finish_queues_text_and_one_end_marker():
     assert "".join(texts) == "你好，今天天气不错。"
     assert sum(counted) == len("".join(texts))
     assert mgr.current_speech_id == stream.speech_id
-    # 结束标记入队即注销回调
+    # Register the callback as soon as the end marker is queued
     assert stream.speech_id not in mgr._mirror_stream_callbacks
-    # 收尾后再推 / 再收尾一律 no-op
+    # Any further push / finish after finalization is a no-op
     assert stream.push("多余") is False and stream.finish() is False
     await _settle()
     assert _queued(mgr) == []
@@ -101,7 +101,7 @@ async def test_text_waits_for_the_worker_and_the_callback_outlives_finish():
     stream.push("等一下。")
     assert stream.finish() is True
     await _settle()
-    # 未就绪：正文进待发缓存、收尾被推迟，回调还登记着
+    # Not ready yet: text goes into the pending-send cache, finalization is deferred, and the callback remains registered
     assert mgr.tts_pending_chunks == [(stream.speech_id, "等一下。")]
     assert mgr._tts_done_pending_until_ready is True and _queued(mgr) == []
     assert stream.speech_id in mgr._mirror_stream_callbacks
@@ -127,7 +127,7 @@ async def test_abort_is_terminal_and_interrupts_its_own_speech():
     assert mgr.interrupts == [stream.speech_id]
     assert stream.speech_id not in mgr._mirror_stream_callbacks
     assert stream.push("后面的") is False and stream.finish() is False
-    assert stream.abort() is False          # 幂等
+    assert stream.abort() is False          # Idempotent
     await _settle()
     assert _queued(mgr) == [] and mgr.interrupts == [stream.speech_id]
 
@@ -169,7 +169,7 @@ async def test_finish_after_the_worker_died_reports_no_worker():
 async def test_missing_worker_closes_the_stream_so_push_fails_fast():
     mgr = _mgr(alive=False)
     stream = _open(mgr)
-    assert stream.push("你好。") is True       # 还没开播：先收下
+    assert stream.push("你好。") is True       # Accept it even before playback starts
     await _settle()
     assert stream.closed and stream.push("再说") is False
     assert _queued(mgr) == [] and mgr.tts_pending_chunks == []
@@ -195,7 +195,7 @@ async def test_stream_and_main_chat_keep_their_own_speech_ids():
     first.push("串门一句。")
     first.finish()
     await _settle()
-    # 主聊天一轮：没有登记回调，入队照旧
+    # One main-chat turn: no callback is registered; enqueue as usual
     async with mgr.lock:
         mgr.current_speech_id = "main-turn"
         mgr._tts_done_queued_for_turn = False
@@ -218,7 +218,7 @@ async def test_stream_and_main_chat_keep_their_own_speech_ids():
 
 
 async def test_ordinary_enqueue_without_any_stream_is_unchanged():
-    # 普通聊天：管理器上没有任何流式登记（含 __new__ 构造、没有这个属性的旧夹具）
+    # Ordinary chat: no streaming registration exists on the manager (including __new__ instances and old fixtures without this attribute)
     mgr = _make_manager()
     del_attr = "_mirror_stream_callbacks"
     assert not hasattr(mgr, del_attr)
@@ -265,11 +265,11 @@ async def test_visit_host_adapter_opens_a_real_stream():
     assert counted == [len("到家了。")]
 
 
-# ── 评审第 1 轮：轮流认领 TTS 轮次、失去归属、失败信号 ──────────────────
+# ── Review round 1: claim TTS turns in order, lose ownership, failure signals ────────────
 
 
 async def test_back_to_back_streams_play_in_open_order():
-    # 回家仪式句与简述：两条流各自一次 push + finish，同一拍里接连打开
+    # The homecoming ritual line and summary: each of two streams pushes and finishes once, starting back-to-back in the same event-loop tick
     mgr = _mgr()
     counted: list[int] = []
     failed: list[bool] = []
@@ -295,7 +295,7 @@ async def test_a_newer_stream_waits_until_the_older_one_finishes():
     newer.push("第二句。")
     newer.finish()
     await _settle()
-    # 旧流还没收尾：新流不认领，旧流的 speech id 与 done 标记不被覆盖
+    # Old stream has not finished: new stream does not claim the turn, and the old stream's speech ID and done flag remain untouched
     assert mgr.current_speech_id == older.speech_id
     assert _queued(mgr) == [(older.speech_id, "第一句，")]
     older.push("说完了。")
@@ -312,12 +312,12 @@ async def test_stream_that_lost_the_turn_stops_touching_tts_state():
     stream.push("串门的话，")
     await _settle()
     async with mgr.lock:
-        mgr.current_speech_id = "main-turn"     # 普通聊天接走了轮次
+        mgr.current_speech_id = "main-turn"     # Ordinary chat takes over the turn
     stream.push("被打断的后半句。")
     assert stream.finish() is True
     await _settle()
     assert _queued(mgr) == [(stream.speech_id, "串门的话，")]
-    assert mgr._tts_done_queued_for_turn is False   # 没替主聊天这一轮请求结束标记
+    assert mgr._tts_done_queued_for_turn is False   # Do not request an end marker for this main-chat turn
     assert failed == [True] and stream.closed and stream.push("x") is False
     assert stream.speech_id not in mgr._mirror_stream_callbacks
 
@@ -329,7 +329,7 @@ async def test_abort_cleanup_finishes_before_the_next_stream_claims(monkeypatch)
     async def slow_interrupt():
         order.append("interrupt-start")
         await asyncio.sleep(0.05)
-        mgr.tts_pending_chunks.clear()          # 与 _finish_tts_clear 一样清掉待发缓存
+        mgr.tts_pending_chunks.clear()          # Clear the pending-send cache, just like _finish_tts_clear
         order.append("interrupt-end")
 
     mgr.interrupt_mirror_speech = slow_interrupt
@@ -341,7 +341,7 @@ async def test_abort_cleanup_finishes_before_the_next_stream_claims(monkeypatch)
     second.push("后一句。")
     await asyncio.sleep(0.1)
     await _settle()
-    # 后一条流在前一条的打断清理做完之后才认领：它的待发文字没被一并清掉
+    # The next stream claims only after interruption cleanup of the previous one completes: its pending text is not cleared along with it
     assert order == ["interrupt-start", "interrupt-end"]
     assert mgr.tts_pending_chunks == [(second.speech_id, "后一句。")]
     assert mgr.current_speech_id == second.speech_id
@@ -362,7 +362,7 @@ async def test_enqueue_error_after_partial_text_interrupts_and_reports_failure()
     stream.push("第二段。")
     await _settle()
     assert failed == [True] and stream.closed
-    assert mgr.interrupts == [stream.speech_id]   # 已进 TTS 的半句被打断
+    assert mgr.interrupts == [stream.speech_id]   # A partial sentence already sent to TTS is interrupted
     assert real is not None
 
 
@@ -409,7 +409,7 @@ async def test_a_stream_never_finished_only_holds_the_turn_for_a_bounded_time(mo
     await asyncio.sleep(0.1)
     await _settle()
     assert mgr.current_speech_id == nxt.speech_id
-    # 晚到的旧流发现轮次已被接走：不再入队、报失败
+    # Late old stream finds that ownership has transferred: do not enqueue; report failure
     stuck.push("后半句")
     await _settle()
     assert failed == [True]
@@ -434,11 +434,11 @@ async def test_visit_host_adapter_passes_the_failure_signal():
     assert failed == [True]
 
 
-# ── 评审第 2 轮 ───────────────────────────────────────────────────────
+# -- Review round 2 --
 
 
 async def test_family_turn_started_after_open_is_not_taken_over():
-    # 回家段落打开之后、认领之前，亲人先开口（普通对话开了新一轮）：本流放弃，不抢那一轮
+    # After the homecoming segment starts but before it claims the turn, a family member speaks first (ordinary dialogue starts a new turn): this stream yields and does not take over that turn
     mgr = _mgr()
     failed: list[bool] = []
     stream = _open(mgr, failed=failed)
@@ -452,7 +452,7 @@ async def test_family_turn_started_after_open_is_not_taken_over():
 
 
 async def test_deferred_end_marker_keeps_lines_apart():
-    # worker 未就绪：前一行的结束标记只是推迟，后一行要等它真正入队再认领，两行不会合成一句
+    # Worker is not ready: the previous line's end marker is only deferred; the next line must wait until it is actually queued before claiming, so the two lines are not merged
     mgr = _mgr(ready=False)
     first = _open(mgr)
     first.push("第一句。")
@@ -493,7 +493,7 @@ async def test_timed_out_predecessor_is_failed_and_interrupted_before_the_claim(
     nxt.finish()
     await asyncio.sleep(0.1)
     await _settle()
-    # 先打断旧行（当时它还是当前语音），再由新行认领
+    # Interrupt the old line first (it is still the current speech), then let the new line claim the turn
     assert order == [f"interrupt:{stuck.speech_id}"]
     assert failed == [True] and stuck.closed
     assert mgr.current_speech_id == nxt.speech_id
@@ -501,8 +501,8 @@ async def test_timed_out_predecessor_is_failed_and_interrupted_before_the_claim(
 
 
 async def test_deferred_end_discarded_elsewhere_fails_and_hands_over(monkeypatch):
-    # 推迟到 worker 就绪的结束标记被别处清掉（普通对话打断 / 会话重建）：本流报失败并交出轮次，
-    # 下一条不必等满上限
+    # The deferred end marker is cleared elsewhere (ordinary-dialogue interruption / session rebuild): this stream reports failure and releases the turn,
+    # so the next line does not have to wait for the full timeout
     monkeypatch.setattr(MirrorSpeechStream, "_DEFERRED_POLL_S", 0.01)
     mgr = _mgr(ready=False)
     failed: list[bool] = []
@@ -513,7 +513,7 @@ async def test_deferred_end_discarded_elsewhere_fails_and_hands_over(monkeypatch
     second.push("第二句。")
     await _settle()
     assert mgr._tts_done_pending_until_ready is True and failed == []
-    mgr.tts_pending_chunks.clear()                 # _finish_tts_clear 同款清理
+    mgr.tts_pending_chunks.clear()                 # Same cleanup as _finish_tts_clear
     mgr._tts_done_pending_until_ready = False
     await asyncio.sleep(0.05)
     await _settle()
@@ -522,7 +522,7 @@ async def test_deferred_end_discarded_elsewhere_fails_and_hands_over(monkeypatch
     assert first.speech_id not in mgr._mirror_stream_ends
 
 
-# ── 评审第 1 轮（云端）────────────────────────────────────────────────
+# ── Review round 1 (cloud) ────────────────────────────────────────────────
 
 
 async def test_finished_streams_are_not_kept_alive_by_the_manager():
@@ -540,13 +540,13 @@ async def test_finished_streams_are_not_kept_alive_by_the_manager():
         await _settle(40)
     await _settle(40)
     gc.collect()
-    assert ref() is None                       # 不经 tail → _predecessor 链留住整串历史
-    assert mgr._mirror_stream_tail._on_failed is None   # 最后一条也不再拖着失败回调（及其闭包）
+    assert ref() is None                       # Bypass tail so the _predecessor chain retains the full history
+    assert mgr._mirror_stream_tail._on_failed is None   # The last item must not retain the failure callback (and its closure) either
     assert failed == []
 
 
 async def test_middle_stream_aborted_before_its_claim_does_not_fail_the_next():
-    # A、B、C 同一拍打开；B 在等 A 时被中止：C 等 A 说完再认领，不误判「轮次被接走」
+    # A, B, and C start in the same tick; B is cancelled while waiting for A: C waits for A to finish before claiming, without falsely assuming "the turn was taken over"
     mgr = _mgr()
     failed: list[str] = []
     a = _open(mgr)
@@ -558,7 +558,7 @@ async def test_middle_stream_aborted_before_its_claim_does_not_fail_the_next():
     c.push("第三句。")
     c.finish()
     await _settle(40)
-    assert mgr.current_speech_id == a.speech_id      # A 还没说完：C 不认领
+    assert mgr.current_speech_id == a.speech_id      # A is still speaking: C does not claim
     a.push("说完了。")
     a.finish()
     await _settle(60)
@@ -568,7 +568,7 @@ async def test_middle_stream_aborted_before_its_claim_does_not_fail_the_next():
 
 
 async def test_stream_opened_after_a_claim_waits_through_an_aborted_middle_one():
-    # C 打开时 A 已认领（C 的 base 就是 A）：B 中止后 C 也不能直接盖过还在说的 A
+    # A claimed before C started (C's base is A): after B is cancelled, C still cannot take over A while it is speaking
     mgr = _mgr()
     a = _open(mgr)
     a.push("第一段，")
@@ -600,7 +600,7 @@ async def test_timed_out_owner_behind_an_aborted_stream_is_interrupted_before_th
     c.finish()
     await asyncio.sleep(0.2)
     await _settle(60)
-    # 还占着轮次的是 A：超过上限先让 A 失败、打断它的半句，再由 C 认领
+    # A still owns the turn: when the timeout expires, fail A and interrupt its partial sentence first; then C claims
     assert failed == ["a"] and mgr.interrupts == [a.speech_id]
     assert mgr.current_speech_id == c.speech_id
     assert _queued(mgr)[-2:] == [(c.speech_id, "下一句。"), (None, None)]
@@ -662,7 +662,7 @@ async def test_concurrent_give_ups_interrupt_once_and_survive_a_cancelled_caller
     first = asyncio.ensure_future(owner._give_up())
     second = asyncio.ensure_future(owner._give_up())
     await _settle()
-    first.cancel()                          # 等收尾的一方被取消：收尾本身照常做完
+    first.cancel()                          # If the party waiting to finish is cancelled, the finish operation itself still completes normally
     await _settle()
     gate.set()
     await asyncio.wait_for(second, 5)
@@ -684,14 +684,14 @@ async def test_an_aborted_stream_never_reports_failure_even_if_given_up_mid_clea
     await _settle()
     owner.abort()
     await _settle()
-    giving_up = asyncio.ensure_future(owner._give_up())   # 后继恰在打断清理途中等满了上限
+    giving_up = asyncio.ensure_future(owner._give_up())   # A successor reaches its timeout exactly while interruption cleanup is underway
     await _settle()
     gate.set()
     await asyncio.wait_for(giving_up, 5)
     assert failed == []
 
 
-# ── 评审第 2 轮（云端）／Codex ─────────────────────────────────────────
+# ── Review round 2 (cloud) / Codex ─────────────────────────────────────────
 
 
 async def test_claim_preempts_a_proactive_turn_like_mirror_assistant_speech():
@@ -699,11 +699,11 @@ async def test_claim_preempts_a_proactive_turn_like_mirror_assistant_speech():
 
     mgr = _mgr()
     mgr.state = SessionStateMachine(lanlan_name="T")
-    assert await mgr.state.try_start_proactive()        # 主动搭话正在准备
+    assert await mgr.state.try_start_proactive()        # Proactive message is being prepared
     stream = _open(mgr)
     stream.push("我回来啦。")
     await _settle()
-    # 主动搭话之后在 claim 锁里看到被抢占就放弃，不会把轮次从本流手里换走
+    # If the proactive message sees that it was preempted while holding the claim lock, it yields without taking the turn away from this stream
     assert mgr.state.is_proactive_preempted() is True
     assert mgr.current_speech_id == stream.speech_id
 
@@ -778,19 +778,19 @@ async def test_worker_dying_while_the_end_marker_waits_fails_and_hands_over(monk
     second.push("第二句。")
     await _settle()
     assert mgr._tts_done_pending_until_ready is True and failed == []
-    mgr.tts_thread = _DeadThread()                 # 等就绪的 worker 死了：推迟标记还在，没人补发
+    mgr.tts_thread = _DeadThread()                 # The worker waiting to become ready has died: the deferred marker remains, with nobody to resend it
     await asyncio.sleep(0.05)
     await _settle()
     assert failed == [True] and mgr.interrupts[0] == first.speech_id
     assert first._released.done()
 
 
-# ── 评审第 3 轮（云端）────────────────────────────────────────────────
+# ── Review round 3 (cloud) ─────────────────────────────────────────────────
 
 
 async def test_finish_without_worker_hands_over_only_after_its_interrupt():
-    # 与中止同理：finish 当场报 no_worker 时，被取消的后台任务不抢先交出；
-    # 后继在打断清理做完之后才认领，它的待发文字不会被这次清理一并清掉
+    # As with cancellation: when finish immediately reports no_worker, the cancelled background task must not release ownership first;
+    # the successor claims only after interruption cleanup finishes, so its pending text is not cleared by that cleanup
     mgr = _mgr(ready=False)
     order: list[str] = []
 

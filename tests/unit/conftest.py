@@ -359,13 +359,55 @@ def _enable_theater_review_modules(request, monkeypatch):
         if not _is_theater_test_module(request):
             return
         from services.theater import numeric_v2_workflow as workflow
+    from services.theater import numeric_v2_options
     from services.theater.numeric_v2_options import default_options
 
+    # Exercise retained review implementations despite the temporary production pause.
+    # Speed-first regressions explicitly restore False and the real options loader.
+    monkeypatch.setattr(numeric_v2_options, "MODEL_REVIEWS_ENABLED", True)
+
     async def _all_on() -> dict[str, bool]:
-        # 交付校验是本轮新增的纯程序检查，既有回归不覆盖它，避免悄悄改变既有断言。
+        # Delivery validation is a new purely programmatic check; exclude it from existing regressions to avoid silently changing their assertions.
         return {key: True for key in default_options() if key != 'review_delivery'}
 
     monkeypatch.setattr(workflow, "aload_theater_module_options", _all_on, raising=False)
+
+
+
+
+@pytest.fixture(autouse=True)
+def _stub_theater_continuity_check(request, monkeypatch):
+    """Orchestration fixtures isolate the new post-draft check from model transport.
+
+    Native contract tests retain the real adapter; dedicated gate tests supply
+    their own verdicts to exercise repair, rejection and atomic persistence.
+    """
+    if not _is_theater_test_module(request) or request.node.path.name in {"test_theater_numeric_v2_contract_gate.py", "test_theater_numeric_v2_contract_evidence.py"}:
+        return
+    from services.theater.numeric_v2_evaluator import NumericV2MetricEvaluator
+    original = NumericV2MetricEvaluator.verify_contract_boundaries
+
+    async def check(self, **kwargs):
+        if kwargs.get("session") is not None:
+            if kwargs.get("proposed_offer") is not None:
+                kwargs["diagnostics"]["offer_actionable"] = True
+            return ()
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(NumericV2MetricEvaluator, "verify_contract_boundaries", check)
+
+
+@pytest.fixture(autouse=True)
+def _stub_theater_story_evidence(request, monkeypatch):
+    """Supply a positive model verdict to tests exercising unrelated turn mechanics."""
+    if not _is_theater_test_module(request) or request.node.path.name == "test_theater_numeric_v2_natural_fact_approval.py":
+        return
+    from services.theater.numeric_v2_evaluator import NumericV2MetricEvaluator, NumericV2StoryEvidenceReview
+
+    async def approve(self, *, claims, ending_route, **kwargs):
+        return NumericV2StoryEvidenceReview(tuple(range(len(claims))), ending_route is not None)
+
+    monkeypatch.setattr(NumericV2MetricEvaluator, "review_story_evidence", approve)
 
 
 @pytest.fixture

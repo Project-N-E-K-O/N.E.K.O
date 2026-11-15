@@ -136,7 +136,7 @@ async def create_session(body: CreateSessionRequest | None = None) -> dict[str, 
     Any previously active session is destroyed first — the underlying
     ``ConfigManager`` is a singleton so concurrent sessions are not
     possible. See ``PLAN.md §本期主动不做`` for rationale.
-    """
+    """  # noqa: DOCSTRING_CJK
     store = get_session_store()
     try:
         session = await store.create(name=(body.name if body else None))
@@ -488,7 +488,7 @@ async def load_saved_session(name: str) -> dict[str, Any]:
         archive = persistence.load_archive(name)
         tarball_bytes = persistence.read_tarball_bytes(name)
     except persistence.PersistenceError as exc:
-        # P21.1 G2 (persistence 可靠性加固 pass): previously we silently
+        # P21.1 G2 (persistence reliability hardening pass): previously we silently
         # let ``TarballMissing`` through with ``tarball_bytes = b""`` and
         # loaded the session with empty memory. That's sneakily bad
         # because the companion tarball could disappear in the narrow
@@ -973,7 +973,7 @@ class ExportSessionRequest(BaseModel):
 
     API keys are **always redacted** in exports — there's no knob for
     "include plaintext keys" here (see module docstring §"API Key
-    脱敏" decision note). Save/Load has that knob; Export deliberately
+    redaction\" decision note). Save/Load has that knob; Export deliberately
     doesn't because exports are shared artefacts by definition.
     """
 

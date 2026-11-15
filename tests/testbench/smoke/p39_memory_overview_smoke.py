@@ -1,7 +1,7 @@
 """P39 (P29) — memory system overview aggregator smoke.
 
 Guards the read-only overview chokepoint
-(``tests/testbench/pipeline/memory_overview.py``) behind the 系统概况 sub-page:
+(``tests/testbench/pipeline/memory_overview.py``) behind the System overview sub-page:
 ``GET /api/memory/overview`` + ``POST /api/memory/overview/{ai_report,contradictions}``.
 
 Contracts under test
@@ -15,7 +15,7 @@ O3 — **contradiction honesty (blueprint §6)**: a recorded correction whose
      old_text still lives in persona surfaces B1 (L0) + N1 (unresolved, bad).
      A same-topic similar pair surfaces B2 with severity **info** — a candidate
      for review, NOT a contradiction verdict. The rules pass NEVER asserts a
-     "contradiction" beyond the recorded L0 signals.
+     \"contradiction\" beyond the recorded L0 signals.
 O4 — **embedding health**: missing / stale / off-dim entries surface E1/E2/E4.
 O5 — **structure**: an orphan reflection (no sources) → D1; an orphan persona
      (source reflection missing) → D2; a merge-promoted persona (source_id gone

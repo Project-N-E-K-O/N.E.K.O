@@ -840,6 +840,8 @@
         window.addEventListener('neko:idle-cat1-compact-mirror-state', I.handleIdleCat1CompactMirrorState);
         window.addEventListener('neko:idle-cat1-play-yarn-visibility', I.handleIdleCat1PlayYarnVisibility);
         window.addEventListener('neko:idle-cat1-playground-yarn-request', I._handleIdleCat1PlaygroundYarnRequest);
+        window.addEventListener('neko:idle-cat1-playground-yarn-activate', I._handleIdleCat1PlaygroundYarnActivate);
+        window.addEventListener('neko:idle-cat1-playground-state', I._handleIdleCat1PlaygroundState);
         window.addEventListener('live2d-goodbye-click', function () {
             I.setGoodbyeComposerHidden(true, 'live2d-goodbye-click');
         });
@@ -1032,6 +1034,13 @@
         handleMiniGameInviteResolved: I.handleMiniGameInviteResolved,
         isMounted: function () { return I.mounted; }
     });
+
+    if (window.nekoChatHistory) {
+        window.nekoChatHistory.connect({
+            getMessages: function () { return I.state.messages; },
+            restore: I.restoreChatHistory
+        });
+    }
 
     delete window.__appReactChatWindowParts;
 })();

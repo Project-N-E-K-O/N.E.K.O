@@ -29,8 +29,8 @@ def _turn_token(*, session_epoch: int = 1, turn_id: int = 2) -> VoiceTurnToken:
 
 
 def test_unavailable_without_a_result_constructs():
-    # 模型缺失时的合法形态：没有 decision 也没有 probability。__post_init__
-    # 若收得过严，这条路径会在运行时崩掉，而下面的反向用例照样全绿。
+    # Valid form when the model is unavailable: neither decision nor probability. Overly strict
+    # __post_init__ validation would crash this runtime path while all negative tests below stayed green.
     evaluation = TurnEvaluation(
         status=EvaluationStatus.UNAVAILABLE,
         decision=None,
@@ -45,8 +45,8 @@ def test_unavailable_without_a_result_constructs():
 
 
 def test_unavailable_carries_no_decision():
-    # UNAVAILABLE 不得携带语义结果：带上 decision 会被构造契约直接拒绝，
-    # 而不是静默吞掉（吞掉会让上层把「模型缺失」误读成回合结论）。
+    # UNAVAILABLE must carry no semantic result: construction rejects a decision outright,
+    # rather than swallowing it and letting callers misread model unavailability as a turn conclusion.
     with pytest.raises(ValueError, match="non-OK evaluations must not carry"):
         TurnEvaluation(
             status=EvaluationStatus.UNAVAILABLE,

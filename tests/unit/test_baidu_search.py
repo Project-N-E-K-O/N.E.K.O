@@ -14,8 +14,8 @@ import pytest
 
 from utils.web_scraper import parse_baidu_results, _sanitize_search_text
 
-_PUA = "\ue687"   # Baidu iconfont 私有区字符（实测页面中出现）
-_ZWSP = "\u200b"  # 零宽空格
+_PUA = "\ue687"   # Baidu iconfont private-use characters (observed on actual pages).
+_ZWSP = "\u200b"  # Zero-width space.
 _REPL = "\ufffd"  # replacement character
 
 _BAIDU_HTML = f"""
@@ -69,7 +69,7 @@ def test_parse_baidu_takes_h3_titles_and_sanitizes():
 
     titles = [r['title'] for r in results]
     assert titles == ['上海气象预报站', '中国天气网权威预警发布']
-    # 摘要清洗：零宽/U+FFFD 被清掉，&nbsp; 归一为普通空格
+    # Clean summaries: remove zero-width/U+FFFD characters and normalize &nbsp; to ordinary spaces.
     assert results[0]['abstract'] == '今日多云 33/28℃'
 
 
@@ -79,14 +79,14 @@ def test_parse_baidu_rejects_unsafe_links():
 
     joined = ' '.join(r['title'] + r['url'] for r in results)
     assert 'javascript' not in joined
-    assert '查看40天预报详情页' not in joined  # 卡片子链接不再被当成结果标题
-    assert '今天上海的气温是多少度' not in joined  # 相关搜索的站内相对链接被拒绝
+    assert '查看40天预报详情页' not in joined  # Card sublinks are no longer treated as result titles.
+    assert '今天上海的气温是多少度' not in joined  # Reject site-relative links in related searches.
     assert all(r['url'].startswith(('http://', 'https://')) for r in results)
 
 
 @pytest.mark.unit
 def test_parse_baidu_scans_past_rejected_containers():
-    # 大量相关搜索容器排在前面时，不能因预截断漏掉后面的有效结果
+    # Many preceding related-search containers must not cause pre-truncation to miss later valid results.
     junk = ''.join(
         f'<div class="c-container"><h3><a href="/s?wd=related{i}">相关搜索推荐词条目{i}</a></h3></div>'
         for i in range(10)
@@ -103,7 +103,7 @@ def test_parse_baidu_scans_past_rejected_containers():
 
 @pytest.mark.unit
 def test_parse_baidu_h3_fallback_filters_ads_and_dupes():
-    # 兜底 h3 路径与主循环同口径：广告关键词过滤 + URL 去重
+    # Fallback h3 handling matches the main loop: ad-keyword filtering + URL deduplication.
     html = (
         '<html><body>'
         '<h3><a href="http://www.baidu.com/link?url=AD">广告推广的天气站点标题</a></h3>'
@@ -117,7 +117,7 @@ def test_parse_baidu_h3_fallback_filters_ads_and_dupes():
 
 @pytest.mark.unit
 def test_parse_baidu_h3_fallback_scans_past_rejected_links():
-    # 兜底 h3 路径（无 c-container）同样不能因预截断漏掉排在后面的有效链接
+    # Fallback h3 handling (without c-container) must not miss later valid links through pre-truncation either.
     junk = ''.join(
         f'<h3><a href="/s?wd=related{i}">相关搜索推荐词条目{i}</a></h3>'
         for i in range(10)

@@ -20,18 +20,24 @@ handler at import time.
 """
 
 import asyncio
+import math
+import time
+from datetime import datetime
 from functools import wraps
 
 from config import (
     IGNORED_REINFORCEMENT_DELTA,
     USER_CONFIRM_DELTA,
+    USER_ENGAGED_DELTA,
     USER_REBUT_DELTA,
 )
 from memory.event_log import (
     EVIDENCE_SOURCE_USER_CONFIRM,
+    EVIDENCE_SOURCE_USER_ENGAGE,
     EVIDENCE_SOURCE_USER_IGNORE,
     EVIDENCE_SOURCE_USER_REBUT,
 )
+from memory.reflection.surfacing import REFLECTION_FEEDBACK_KINDS
 from memory.outbox import OP_POST_TURN_SIGNALS
 from memory.message_sources import is_theater_memory_message
 
@@ -180,6 +186,9 @@ async def _spawn_outbox_post_turn_signals(
             )
     payload = {
         'messages': messages_to_dict(messages),
+        # When the turn happened: a replay after a restart can run much
+        # later, and the pinned-fact section dates its entries by the turn.
+        'turn_at': time.time(),
     }
     if has_explicit_language:
         if locale_order is not None:
@@ -209,7 +218,7 @@ async def _spawn_outbox_post_turn_signals(
     try:
         op_id = await runtime.outbox.aappend_pending(lanlan_name, OP_POST_TURN_SIGNALS, payload)
     except Exception as e:
-        # Outbox 写失败不能阻塞主流程，降级为一次性任务（与重构前行为一致）
+        # Outbox write failure must not block main flow; degrade to one-shot task, matching prerefactor behavior.
         logger.warning(
             f"[Outbox] {lanlan_name}: append_pending 失败，降级为内存任务: "
             f"{type(e).__name__}: {e}"
@@ -280,6 +289,7 @@ async def _run_post_turn_signals_after_locale_reservation(
     language: str | None = None,
     admission_order: int | None,
     locale_only: bool = False,
+    conversation_at: datetime | None = None,
 ):
     locale_order = await _wait_for_character_prompt_locale_order(
         lanlan_name,
@@ -291,6 +301,7 @@ async def _run_post_turn_signals_after_locale_reservation(
         language=language,
         locale_order=locale_order,
         locale_only=locale_only,
+        conversation_at=conversation_at,
     )
 
 
@@ -325,6 +336,14 @@ async def _resolve_corrections_with_subject_locale(lanlan_name: str) -> int:
     )
 
 
+async def _record_pinned_mentions(lanlan_name: str, ai_response: str) -> None:
+    """Start the mention cooldown of the pinned entries a reply of hers brought up."""
+    store = runtime.pinned_fact_store
+    if store is None or not ai_response:
+        return
+    await store.arecord_mentions(lanlan_name, ai_response)
+
+
 @_with_language_context
 async def _run_post_turn_signals(
     messages: list,
@@ -333,6 +352,7 @@ async def _run_post_turn_signals(
     language: str | None = None,
     locale_order: int | None = None,
     locale_only: bool = False,
+    conversation_at: datetime | None = None,
 ):
     """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
@@ -342,7 +362,8 @@ async def _run_post_turn_signals(
       1. OFF-mode Stage-1 fallback — when powerful_memory is off the batch loop is
          fully stopped, and per-turn ``fact_store.extract_facts`` is the only
          fallback for fact extraction (not run in ON-mode; left to the batch loop)
-      2. repetition sniffing — local BM25, §2.6 5h-window suppress
+      2. repetition sniffing — local BM25, §2.6 5h-window suppress; 2b. the
+         same for the pinned section (its mention cooldown)
       3. check_feedback — detects user feedback on surfaced reflections (LLM runs
          only when surfaced has pending entries) + NEGATIVE_KEYWORDS hits trigger
          the LLM target check
@@ -358,19 +379,19 @@ async def _run_post_turn_signals(
     semantics. The **string value** of ``OP_POST_TURN_SIGNALS`` remains
     ``"extract_facts"`` (the outbox.ndjson wire format is immutable).
     """
-    # 剧场原文要进入近期与时间索引记忆，但不能冒充现实聊天参与事实、反馈
-    # 判断或猫娘自述统计；混合批次中只让普通消息进入这些后续链路。
+    # Theater originals enter recent/time-index memory, but must not impersonate real-chat participation facts, feedback
+    # judgments, or neko disclosure statistics; mixed batches pass only normal messages to those downstream paths.
     ordinary_messages = [message for message in messages if not is_theater_memory_message(message)]
     user_msgs = _extract_user_messages(ordinary_messages)
 
-    # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop
-    # 靠这个 counter 在累积 N 轮时触发 _signal_check_one。
-    # 只在 user 有发声时 bump，**故意不**算 AI-only / proactive turn：
-    # path A 抽的是 user_observation fact，没 user 发声就抽不出料；
-    # path B 是 piggyback A 的 trigger 跑（不独立调度），也跟着只在 user
-    # 有 engagement 的窗口里跑。这是 product thesis 的"90% 没心没肺"——
-    # AI 自言自语 + user 不搭理的内容是廉价层，不该自动当 fact 沉淀污染
-    # memory；只有 user 印证过的才升级到神明降临层。
+    # Count this turn toward signal-extraction trigger (RFC §3.4.3); batch loop
+    # triggers _signal_check_one after accumulating N turns via this counter.
+    # Bump only if user spoke, deliberately excluding AI-only/proactive turns:
+    # path A extracts user_observation, yielding nothing without user input;
+    # path B piggybacks A triggers rather than scheduling independently, so likewise runs
+    # only in user-engaged windows. Product thesis: "90% carefree";
+    # AI monologues ignored by users belong to inexpensive layer, never automatically become facts polluting
+    # memory; only user-confirmed material upgrades to the divine-intervention layer.
     if locale_only:
         return
     if user_msgs:
@@ -381,34 +402,43 @@ async def _run_post_turn_signals(
             # signal-extraction cycle — not worth interrupting conversation flow.
             logger.debug(f"[MemoryServer] signal-check turn counter 更新失败: {e}")
 
-    # 强力记忆开关——本轮 evidence-related 路径的 gate（promote/negative-keyword/
-    # corrections）。check_feedback 自身仍跑（主动搭话回应是核心 channel）。
+    # Strong-memory switch gates this turn's evidence-related paths (promote/negative-keyword/
+    # corrections). check_feedback still runs; proactive-chat responses are a core channel.
     powerful_enabled = await gates._ais_powerful_memory_enabled()
 
-    # Step 1 — per-turn Stage-1 fact extraction：只在 powerful_memory **关闭**
-    # 时跑（OFF-mode baseline fallback）。ON-mode 下 fact extraction 完全交给
-    # ``_periodic_signal_extraction_loop`` 跑 batch Stage-1+Stage-2（RFC §3.4.3
-    # 设计意图："不在对话主路径上每轮运行 extract_facts——太贵。改为背景调度"，
-    # batch 路径带上下文、质量更高、cost 更低）。
+    # Step 1: per-turn Stage-1 extraction runs only with powerful_memory disabled
+    # (OFF-mode baseline fallback). ON mode delegates all extraction to
+    # ``_periodic_signal_extraction_loop`` for batch Stage-1+Stage-2 (RFC §3.4.3:
+    # avoid costly per-turn extract_facts on conversation path; schedule background batches
+    # with context, improving quality and lowering cost).
     #
-    # OFF-mode 下 batch loop 整段停（见 _periodic_signal_extraction_loop 的
-    # `if not powerful_enabled: continue` 分支），如果这里也跳过，facts.json
-    # 就完全无路径更新——这是 chatgpt-codex-connector PR #1346 抓到的 regression。
-    # OFF-mode 保留 legacy per-turn Stage-1，let user 仍能拿到基础 fact 累积。
-    # gate 只排除纯剧场批次；其余输入（含纯 AI 的普通批次，如主动搭话无回复）
-    # 照旧抽取，可能产出 ai_disclosure 事实，与引入剧场前的行为一致。
-    theater_only_batch = bool(messages) and not ordinary_messages
-    if not powerful_enabled and not theater_only_batch:
+    # OFF mode stops the entire batch loop (see _periodic_signal_extraction_loop's
+    # `if not powerful_enabled: continue`); skipping here too leaves facts.json
+    # with no update path, regression caught by chatgpt-codex-connector on PR #1346.
+    # OFF mode retains legacy per-turn Stage-1 for basic fact accumulation.
+    # Only the user's own messages go in, like ON mode's path A: the basic
+    # prompt has no source field, so every fact it returns is stored as the
+    # user's (user_observation), and the AI's lines would turn its own words
+    # into "the user said". A batch with no user message (unanswered proactive
+    # speech, pure theater) extracts nothing: what the user never engaged with
+    # does not become memory.
+    if not powerful_enabled and user_msgs:
+        user_messages = [
+            message for message in ordinary_messages
+            if getattr(message, 'type', '') == 'human'
+        ]
         try:
-            await runtime.fact_store.extract_facts(ordinary_messages, lanlan_name)
+            await runtime.fact_store.extract_facts(
+                user_messages, lanlan_name, conversation_at=conversation_at,
+            )
         except Exception as e:
             logger.warning(f"[MemoryServer] OFF-mode 事实提取失败: {e}")
 
     try:
-        # 2. 全局复读嗅探：扫描 AI 回复中是否重复提及 persona 条目 +
-        #    confirmed reflection（§2.6 5h 窗口 suppress 机制，两者正交）。
-        #    本地 BM25，无 LLM 调用，per-turn 跑是必要的——5h 窗口逻辑
-        #    依赖即时更新。
+        # 2. Global repetition sniffing: scan AI responses for repeated persona entries +
+        #    confirmed reflections (§2.6 five-hour suppression window, orthogonal mechanisms).
+        #    Local BM25, no LLM; per-turn processing necessary because five-hour window
+        #    depends on immediate updates.
         ai_response = _extract_ai_response(ordinary_messages)
         if ai_response:
             await runtime.persona_manager.arecord_mentions(lanlan_name, ai_response)
@@ -417,7 +447,15 @@ async def _run_post_turn_signals(
         logger.warning(f"[MemoryServer] 复读嗅探失败: {e}")
 
     try:
-        # 3. 检查用户对之前 surfaced 反思的反馈 + 派 evidence 信号
+        # 2b. The same sniffing for the pinned section (private chat only, like
+        #     this whole flow): what she just brought up enters its mention
+        #     cooldown, so a resident fact or promise is not raised every turn.
+        await _record_pinned_mentions(lanlan_name, _extract_ai_response(ordinary_messages))
+    except Exception as e:
+        logger.warning(f"[MemoryServer] 常驻区复读嗅探失败: {type(e).__name__}")
+
+    try:
+        # 3. Check user feedback on previously surfaced reflections and dispatch evidence signals.
         surfaced = await runtime.reflection_engine.aload_surfaced(lanlan_name)
         pending_surfaced = [s for s in surfaced if s.get('feedback') is None]
         if pending_surfaced and user_msgs:
@@ -430,11 +468,13 @@ async def _run_post_turn_signals(
                         continue
                     rid = fb.get('reflection_id')
                     kind = fb.get('feedback')
-                    if rid and kind in ('confirmed', 'denied', 'ignored'):
+                    if rid and kind in REFLECTION_FEEDBACK_KINDS:
                         fb_map[rid] = kind
 
                 # RFC §3.1.5: confirmed → reinforcement += 1; denied →
-                # disputation += 1; ignored → reinforcement += -0.2.
+                # disputation += 1; ignored → reinforcement += -0.2;
+                # engaged (chatted on without a yes) → reinforcement += 0.3,
+                # which is not the user's backing (awaits_user_signal).
                 # pending→confirmed/denied state transitions happen in the
                 # score-driven auto_promote_stale path (not here).
                 #
@@ -450,6 +490,9 @@ async def _run_post_turn_signals(
                     if kind == 'confirmed':
                         delta = {'reinforcement': USER_CONFIRM_DELTA}
                         source = EVIDENCE_SOURCE_USER_CONFIRM
+                    elif kind == 'engaged':
+                        delta = {'reinforcement': USER_ENGAGED_DELTA}
+                        source = EVIDENCE_SOURCE_USER_ENGAGE
                     elif kind == 'denied':
                         delta = {'disputation': USER_REBUT_DELTA}
                         source = EVIDENCE_SOURCE_USER_REBUT
@@ -468,8 +511,8 @@ async def _run_post_turn_signals(
                             f"({rid}, {kind}) 失败，此次反馈 signal 已丢失: {e}"
                         )
 
-                # denied 仍然走 areject_promotion 做 status transition（保留
-                # 既有 surfaced 登记 + reflection status='denied' 行为）
+                # denied still calls areject_promotion for status transition, retaining
+                # existing surfaced registration + reflection status='denied' behavior.
                 for rid, kind in fb_map.items():
                     if kind == 'denied':
                         try:
@@ -480,9 +523,9 @@ async def _run_post_turn_signals(
                                 f"{rid}，此次 denial 未转入 status: {e}"
                             )
 
-                # 让后续扫描把 pending→confirmed 推进。强力记忆决定走哪条：
-                #   开 → score-driven + merge LLM
-                #   关 → time-driven (14 天 confirm + 14 天 promote, 零 LLM)
+                # Let later scans advance pending→confirmed. Strong-memory setting selects path:
+                #   Enabled → score-driven + merge LLM.
+                #   Disabled → time-driven (14-day confirm + 14-day promote, no LLM).
                 try:
                     if powerful_enabled:
                         await runtime.reflection_engine.aauto_promote_stale(lanlan_name)
@@ -497,13 +540,13 @@ async def _run_post_turn_signals(
 
     if powerful_enabled:
         try:
-            # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
-            # 强力记忆关 → 整段不跑（这是 evidence-RFC 引入的额外 LLM 路径）
+            # 3.5 Negative-keyword hook (§3.4.5): matches dispatch asynchronous small-LLM tasks.
+            # Strong memory disabled → skip entirely (extra LLM path introduced by evidence RFC).
             if user_msgs:
                 from utils.language_utils import get_global_language_full
-                # 这个子任务由 post-turn 派生，同样按角色登记：
-                # release 只取消父任务的话，它会在 hold 之后继续给旧名字写
-                # disputation / reflection 状态。
+                # Post-turn-derived child tasks register per character too:
+                # cancelling only parent on release lets children keep writing old-name
+                # disputation/reflection state after hold.
                 _track_character_post_turn_task(
                     lanlan_name,
                     runtime._spawn_background_task(
@@ -516,13 +559,26 @@ async def _run_post_turn_signals(
             logger.debug(f"[MemoryServer] 负面关键词 hook 派发失败: {e}")
 
         try:
-            # 4. 审视矛盾队列（如果有 pending corrections）
-            # 强力记忆关 → 不跑 LLM 批量审视（corrections queue 累积，等重开消化）
+            # 4. Review conflict queue if corrections are pending.
+            # Strong memory disabled → no batch LLM review (queue accumulates until reenabled).
             resolved = await _resolve_corrections_with_subject_locale(lanlan_name)
             if resolved:
                 logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
         except Exception as e:
             logger.warning(f"[MemoryServer] 矛盾审视失败: {e}")
+
+
+def _payload_turn_time(payload: dict) -> datetime | None:
+    """The turn time a post-turn payload recorded; None for payloads that predate it."""
+    raw = payload.get('turn_at')
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if not math.isfinite(raw) or raw <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(raw)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> None:
@@ -554,10 +610,15 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
         render_language = None
     if not messages and not is_supported_language_code(language):
         return
+    # Only payloads that recorded their turn time pass it on; older ones
+    # carry no such information and are extracted as "now", as before.
+    turn_time = _payload_turn_time(payload)
+    dated = {'conversation_at': turn_time} if turn_time is not None else {}
     if payload.get('locale_order_deferred'):
         kwargs = {
             'language': language,
             'admission_order': payload.get('locale_admission_order'),
+            **dated,
         }
         if not messages:
             kwargs['locale_only'] = True
@@ -570,6 +631,7 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     kwargs = {
         'language': language,
         'locale_order': payload.get('locale_order'),
+        **dated,
     }
     if render_language is not None:
         kwargs['render_language'] = render_language

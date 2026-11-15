@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, 'avatar/avatar-multiscreen-drag-hint.js'), 'utf8');
 
 function createElement(tagName, ownerDocument) {
+    const listeners = new Map();
     const element = {
         tagName: tagName.toUpperCase(),
         children: [],
@@ -39,7 +40,13 @@ function createElement(tagName, ownerDocument) {
         setAttribute(name, value) {
             this.attributes[name] = value;
         },
-        addEventListener() {}
+        addEventListener(type, listener) {
+            listeners.set(type, listener);
+        },
+        click() {
+            const listener = listeners.get('click');
+            if (listener) listener();
+        }
     };
     return element;
 }
@@ -104,6 +111,31 @@ const twoDisplays = [
     { id: 1, screenX: 0, screenY: 0, width: 1000, height: 800 },
     { id: 2, screenX: 1000, screenY: 0, width: 900, height: 800 }
 ];
+
+for (const action of ['ack', 'never']) {
+    test(`the ${action} button closes the prompt and persists its reminder preference`, async () => {
+        const { window, document } = createContext({ displays: twoDisplays });
+        const hint = window.NekoAvatarMultiScreenDragHint;
+        await hint.recordPointerEdgeApproach('live2d', {
+            startScreenX: 620, startScreenY: 400, screenX: 860, screenY: 400
+        });
+        const prompt = document.getElementById('avatar-multiscreen-drag-hint');
+        const actions = prompt.children[2];
+        actions.children[action === 'ack' ? 1 : 0].click();
+
+        assert.equal(document.getElementById('avatar-multiscreen-drag-hint'), null);
+        const state = hint._readState();
+        if (action === 'ack') {
+            assert.ok(state.snoozeUntil > Date.now());
+            assert.notEqual(state.never, true);
+        } else {
+            assert.equal(state.never, true);
+        }
+        assert.equal(await hint.recordDisplaySwitchMiss('live2d'), false);
+        assert.equal(await hint.recordDisplaySwitchMiss('live2d'), false);
+        assert.equal(document.getElementById('avatar-multiscreen-drag-hint'), null);
+    });
+}
 
 test('pointer edge release intent shows the drag hint after repeated attempts', async () => {
     const { window, document } = createContext({ displays: twoDisplays });

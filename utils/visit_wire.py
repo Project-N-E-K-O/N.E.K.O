@@ -117,6 +117,11 @@ __all__ = [
     "CMD_CTL",
     "CMD_TEXT",
     "CMD_LOSSY",
+    "VISIT_CAT_SCENE_VERSION",
+    "CAT_POSE_FIELDS",
+    "CAT_POSE_MODES",
+    "CAT_POSE_FACINGS",
+    "CAT_POSE_SLOT_TIERS",
     "RELIABLE_TYPES",
     "LEAVE_REASONS",
     "TRUNC_REASONS",
@@ -142,29 +147,30 @@ __all__ = [
     "max_worst_case_rates",
 ]
 
-# ── 本模块私有常量（visit_settings 里没有的协议细节）──────────────────────
+# -- Private protocol-detail constants absent from visit_settings --
 
-_ENVELOPE_VERSION = 1          # 信封 v
-# payload v（与信封 v 独立）按线协议主版本登记、由它推出：升 payload v（= 已知字段换了语义）
-# 必须同时升 VISIT_WIRE_PROTO 并在这里新增一项。只升 v 不升 proto 的话，新旧两端的 hello
-# 会被对方当 _invalid 吞掉、握手干等超时，走不到 proto_mismatch 的「请双方更新」提示。
-# 已有的项不改（测试钉住），加字段不升版（未知字段本就忽略）
+_ENVELOPE_VERSION = 1          # Envelope version.
+# Payload version is independent of envelope version but derived from the wire-protocol major version. Bumping it changes known-field semantics,
+# requiring VISIT_WIRE_PROTO to increase and a new entry here. Bumping payload alone makes peers silently
+# swallow each other's hello as _invalid and time out instead of reporting proto_mismatch with update-both guidance.
+# Never change existing entries, as tests enforce; adding ignored unknown fields requires no version bump.
 _PAYLOAD_VERSION_BY_PROTO = {1: 1}
 _PAYLOAD_VERSION = _PAYLOAD_VERSION_BY_PROTO[VISIT_WIRE_PROTO]
 _U32_MAX = 2 ** 32 - 1
-_LN_MAX_DIGITS = 10            # ln = 'h:' + ≤10 位数字 → ≤12 字符
+_LN_MAX_DIGITS = 10            # ln = 'h:' + at most 10 digits -> at most 12 characters.
 _WIDEST_LN = "h:" + "9" * _LN_MAX_DIGITS
 _LANG_MAX_BYTES = 16
 _APP_VERSION_MAX_BYTES = 16
 _TIER_MAX_BYTES = 16
-_TICKET_MAX_BYTES = 2048       # 票 ≈560 B，留足余量；hello 整体 ≤2 KB 由发送侧保证
-_LEAVE_REASON_MAX_BYTES = 32   # 枚举外的值接收侧映射 peer_left，所以只限长度不限枚举
-_TRUNC_REASON_MAX_BYTES = 32   # 同理：新版本加截断原因不能让老版本把整行判 _invalid
-_RAW_T_DIAG_MAX = 32           # 未知 t 只留前 32 字符做诊断
-_CLUSTER_BACKOFF_MAX = 16      # 截断时为不切开 emoji 合字最多回退的字符数
+_CAT_ASSET_MAX_BYTES = 64
+_TICKET_MAX_BYTES = 2048       # Tickets are about 560 B; leave headroom. Senders enforce the complete hello's 2 KB limit.
+_LEAVE_REASON_MAX_BYTES = 32   # Receivers map unknown enum values to peer_left; limit length, not enum membership.
+_TRUNC_REASON_MAX_BYTES = 32   # Likewise new truncation reasons must not make old versions reject entire lines as _invalid.
+_RAW_T_DIAG_MAX = 32           # Retain only the first 32 characters of unknown t for diagnostics.
+_CLUSTER_BACKOFF_MAX = 16      # Maximum truncation backtracking to avoid splitting emoji ligatures.
 
-# max_worst_case_rates 的纸面参数（§4.1 限速条）
-_TEXT_PIECES_TYPICAL = 5       # 普通 4096 B 正文编码后 ≤5 片
+# Theoretical max_worst_case_rates parameters, section 4.1 rate limits.
+_TEXT_PIECES_TYPICAL = 5       # Ordinary 4096 B bodies encode into at most 5 fragments.
 _ACK_MAX_BYTES = 80
 _HB_MAX_BYTES = 100
 _TYPING_MAX_BYTES = 60
@@ -175,10 +181,15 @@ _STATS_INTERVAL_S = 5
 CMD_CTL = 1
 CMD_TEXT = 2
 CMD_LOSSY = 3
+VISIT_CAT_SCENE_VERSION = 2
 
 _CMD_OF: dict[str, int] = {
     "hello": CMD_CTL,
     "ready": CMD_CTL,
+    "cat_action": CMD_CTL,
+    "cat_pose_commit": CMD_CTL,
+    "cat_world_intent": CMD_CTL,
+    "cat_world_commit": CMD_CTL,
     "ack": CMD_CTL,
     "hb": CMD_CTL,
     "state": CMD_CTL,
@@ -189,9 +200,15 @@ _CMD_OF: dict[str, int] = {
     "line_abort": CMD_TEXT,
     "typing": CMD_LOSSY,
     "stats": CMD_LOSSY,
+    "cat_motion": CMD_LOSSY,
+    "cat_world_pointer": CMD_LOSSY,
+    "cat_world_frame": CMD_LOSSY,
 }
 
-RELIABLE_TYPES: frozenset[str] = frozenset({"hello", "ready", "wrap_up", "leave", "text"})
+RELIABLE_TYPES: frozenset[str] = frozenset({
+    "hello", "ready", "cat_action", "cat_pose_commit", "cat_world_intent",
+    "cat_world_commit", "wrap_up", "leave", "text",
+})
 """Message types that go through ``VisitOutbox`` (carry ``seq``, retransmitted until acked)."""
 
 LEAVE_REASONS: frozenset[str] = frozenset({
@@ -214,7 +231,7 @@ reason as a finished turn (see ``main_logic/visit/room.py``)."""
 _WIDEST_TRUNC_REASON = max(TRUNC_REASONS, key=len)
 
 
-# ── ID 格式闸与路径派生（§4.6）────────────────────────────────────────
+# -- ID format gates and path derivation: section 4.6 --
 
 VISIT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{22}$")
 """Format of ``visit_id`` (``secrets.token_urlsafe(16)``); always used with ``fullmatch``."""
@@ -273,7 +290,7 @@ def revocation_path(base_dir: Union[str, Path], rev_id: Any) -> Path:
     return id_path(base_dir, rev_id, REVOCATION_ID_RE, ".json")
 
 
-# ── 编码工具 ────────────────────────────────────────────────────────────
+# -- Encoding helpers --
 
 def _dumps(obj: Any) -> str:
     """Compact JSON, raw non-ASCII, no NaN (mirrors ``JSON.stringify``)."""
@@ -339,7 +356,7 @@ def _check_unicode(s: str) -> None:
         raise ValueError("text is not valid Unicode (lone surrogate)") from exc
 
 
-# ── 不切开字形簇（emoji 合字 / 组合符 / 旗帜）──────────────────────────
+# -- Preserve grapheme clusters: emoji ligatures, combining marks, flags --
 
 def _is_cluster_extender(ch: str) -> bool:
     o = ord(ch)
@@ -409,7 +426,7 @@ def _safe_cut(s: str, p: int, *, floor: int = 0) -> int:
     return q
 
 
-# ── 分片信封（§4.1）──────────────────────────────────────────────────
+# -- Fragment envelopes: section 4.1 --
 
 def _envelope_text(r: str, m: int, i: int, n: int, p: str) -> str:
     return _dumps({"v": _ENVELOPE_VERSION, "r": r, "m": m, "i": i, "n": n, "p": p})
@@ -558,7 +575,7 @@ class Reassembler:
         try:
             env = json.loads(text)
         except (ValueError, RecursionError):
-            # 深层嵌套（"[[[[…"）让 json.loads 抛 RecursionError：同样是一片坏数据，丢弃计数
+            # Deep nesting such as "[[[[…" makes json.loads raise RecursionError; count/discard as another corrupt fragment.
             return None
         if not isinstance(env, dict):
             return None
@@ -607,7 +624,7 @@ class Reassembler:
         try:
             obj = json.loads(joined)
         except (ValueError, RecursionError):
-            # 分片拼出的深层嵌套 payload 同样按坏消息丢弃计数，不能冲出接收处理
+            # Likewise count/discard deeply nested assembled payloads rather than escaping receive processing.
             self.dropped += 1
             return None
         if not isinstance(obj, dict):
@@ -616,7 +633,7 @@ class Reassembler:
         return obj
 
 
-# ── 消息 schema（§4.2）────────────────────────────────────────────────
+# -- Message schemas: section 4.2 --
 
 def _utf8_cap(limit: int) -> AfterValidator:
     def check(v: str) -> str:
@@ -631,7 +648,7 @@ def _utf8_cap(limit: int) -> AfterValidator:
 
 
 _U32 = Annotated[int, Field(ge=0, le=_U32_MAX)]
-# 必达消息的 seq 从 1 起（累计 ack 可以是 0）：seq=0 的必达帧会被收端当成「已见过」静默吞掉
+# Reliable seq starts at 1, though cumulative ack may be 0; receivers silently treat reliable seq=0 frames as already seen.
 _Seq = Annotated[int, Field(ge=1, le=_U32_MAX)]
 _Lp = Annotated[int, Field(ge=0, le=VISIT_LP_MAX)]
 _IIdx = Annotated[int, Field(ge=0, le=VISIT_LINE_DELTA_MAX_I)]
@@ -644,13 +661,92 @@ _Lang = Annotated[str, _utf8_cap(_LANG_MAX_BYTES)]
 _Tier = Annotated[str, _utf8_cap(_TIER_MAX_BYTES)]
 _NonNegFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 _NonNegInt = Annotated[int, Field(ge=0)]
+_CatSceneVersion = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_CatAsset = Annotated[str, Field(min_length=1), _utf8_cap(_CAT_ASSET_MAX_BYTES)]
+_CatActionKind = Literal["greet", "play", "rest", "move"]
+_CatMotionId = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_CatSampleSeq = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_Q16 = Annotated[int, Field(ge=0, le=65535)]
+_CatMotionMode = Literal["idle", "walk", "drag", "airborne", "edge", "follow"]
+_CatFacing = Literal["left", "right"]
+_CatTier = Literal["cat1", "cat2", "cat3"]
+_CatWorldIntentId = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_CatWorldSeq = Annotated[int, Field(ge=1, le=_U32_MAX)]
+_CatWorldVelocityQ12 = Annotated[int, Field(ge=-4096, le=4095)]
+_CatWorldIntentKind = Literal["yarn_spawn", "yarn_grab", "yarn_release", "question_tap"]
+_CatWorldHolder = Literal["none", "host", "guest"]
+_CatSlot = Literal[
+    "idle.cat1", "idle.cat2", "idle.cat3",
+    "click.cat1", "click.cat2", "click.cat3",
+    "drag.cat1", "drag.cat2", "drag.cat3", "drag.rapid",
+    "movement.cat1.walking", "movement.cat1.stretch", "movement.cat1.interactive",
+    "action.cat1.eat", "action.cat1.play_yarn", "playground.cat1.air",
+]
+CAT_POSE_FIELDS = frozenset({
+    "motion_id", "sample_seq", "x_q16", "y_q16", "mode", "facing", "tier", "slot",
+})
+CAT_POSE_MODES = frozenset({"idle", "walk", "drag", "airborne", "edge", "follow"})
+CAT_POSE_FACINGS = frozenset({"left", "right"})
+CAT_POSE_SLOT_TIERS = {
+    "idle.cat1": "cat1", "idle.cat2": "cat2", "idle.cat3": "cat3",
+    "click.cat1": "cat1", "click.cat2": "cat2", "click.cat3": "cat3",
+    "drag.cat1": "cat1", "drag.cat2": "cat2", "drag.cat3": "cat3",
+    "drag.rapid": "cat1",
+    "movement.cat1.walking": "cat1", "movement.cat1.stretch": "cat1",
+    "movement.cat1.interactive": "cat1", "action.cat1.eat": "cat1",
+    "action.cat1.play_yarn": "cat1", "playground.cat1.air": "cat1",
+}
+CAT_WORLD_INTENT_FIELDS = frozenset({"intent_id", "kind", "x_q16", "y_q16"})
+CAT_WORLD_STATE_FIELDS = frozenset({
+    "world_seq", "yarn_active", "yarn_x_q16", "yarn_y_q16",
+    "yarn_vx_q12", "yarn_vy_q12", "yarn_holder",
+    "question_active", "question_x_q16", "question_y_q16", "collision_seq",
+})
+CAT_WORLD_INTENT_KINDS = frozenset({"yarn_spawn", "yarn_grab", "yarn_release", "question_tap"})
+
+_CAT_POSE_FORBIDDEN_FIELDS = frozenset({
+    "actor", "actor_side", "url", "asset_url", "resource_url",
+    "x", "y", "left", "top", "width", "height", "px", "py",
+    "pixel_x", "pixel_y", "screen_x", "screen_y", "screenX", "screenY",
+})
+
+
+def _forbid_cat_pose_authority_and_pixels(data: Any) -> Any:
+    """Reject authority, resource-location and raw-pixel fields on pose messages."""
+    if not isinstance(data, Mapping):
+        return data
+    for raw_key in data:
+        key = str(raw_key)
+        lowered = key.lower()
+        if (key in _CAT_POSE_FORBIDDEN_FIELDS or lowered.endswith("_url")
+                or lowered.endswith("_px") or lowered.startswith("pixel_")):
+            raise ValueError(f"cat pose must not carry {key}")
+    return data
+
+
+def _forbid_cat_world_authority_and_pixels(data: Any) -> Any:
+    """Shared-world messages carry normalized intent/state, never local authority or pixels."""
+    if not isinstance(data, Mapping):
+        return data
+    forbidden = {
+        "actor", "actor_side", "side", "authority", "host_authority",
+        "x", "y", "left", "top", "width", "height", "px", "py",
+        "pixel_x", "pixel_y", "screen_x", "screen_y", "screenX", "screenY",
+        "url", "asset_url", "resource_url",
+    }
+    for raw_key in data:
+        key = str(raw_key)
+        lowered = key.lower()
+        if key in forbidden or lowered.endswith("_url") or lowered.endswith("_px"):
+            raise ValueError(f"cat world must not carry {key}")
+    return data
 
 
 class _Msg(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
 
-    # 只认本版 payload：v 升版意味着已知字段换了语义（加字段不必升版，未知字段本就忽略），
-    # 按 v1 解释会把未来版本的语义套错；必达消息走 _invalid 空操作推进 seq
+    # Accept only this payload version: changing v changes known-field semantics, unlike adding ignored unknown fields.
+    # Interpreting future versions as v1 misreads semantics; reliable invalid messages advance seq through _invalid no-ops.
     v: Annotated[int, Field(ge=_PAYLOAD_VERSION, le=_PAYLOAD_VERSION)] = _PAYLOAD_VERSION
 
 
@@ -662,6 +758,8 @@ class _HelloCaps(BaseModel):
     proto: _NonNegInt
     app_version: Annotated[str, _utf8_cap(_APP_VERSION_MAX_BYTES)]
     crop: _Crop
+    cat_scene: Optional[_CatSceneVersion] = None
+    cat_asset: Optional[_CatAsset] = None
 
 
 class _Hello(_Msg):
@@ -675,6 +773,108 @@ class _Hello(_Msg):
 
 class _Ready(_Msg):
     t: Literal["ready"]
+    seq: _Seq
+
+
+class _CatAction(_Msg):
+    t: Literal["cat_action"]
+    seq: _Seq
+    kind: _CatActionKind
+    seed: _U32
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_actor_side(cls, data: Any) -> Any:
+        # Actor identity is derived from the authenticated transport sender.
+        # _Msg normally ignores unknown fields for forward compatibility, but
+        # silently accepting this authority-like field would weaken that rule.
+        if isinstance(data, Mapping) and "actor_side" in data:
+            raise ValueError("cat_action must not carry actor_side")
+        return data
+
+
+class _CatPoseFields(_Msg):
+    motion_id: _CatMotionId
+    sample_seq: _CatSampleSeq
+    x_q16: _Q16
+    y_q16: _Q16
+    mode: _CatMotionMode
+    facing: _CatFacing
+    tier: _CatTier
+    slot: _CatSlot
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_authority_and_pixels(cls, data: Any) -> Any:
+        return _forbid_cat_pose_authority_and_pixels(data)
+
+    @model_validator(mode="after")
+    def _slot_matches_tier(self) -> "_CatPoseFields":
+        if CAT_POSE_SLOT_TIERS[self.slot] != self.tier:
+            raise ValueError("cat pose slot does not match tier")
+        return self
+
+
+class _CatMotion(_CatPoseFields):
+    t: Literal["cat_motion"]
+
+
+class _CatPoseCommit(_CatPoseFields):
+    t: Literal["cat_pose_commit"]
+    seq: _Seq
+
+
+class _CatWorldIntent(_Msg):
+    t: Literal["cat_world_intent"]
+    seq: _Seq
+    intent_id: _CatWorldIntentId
+    kind: _CatWorldIntentKind
+    x_q16: _Q16
+    y_q16: _Q16
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_authority_and_pixels(cls, data: Any) -> Any:
+        return _forbid_cat_world_authority_and_pixels(data)
+
+
+class _CatWorldPointer(_Msg):
+    t: Literal["cat_world_pointer"]
+    intent_id: _CatWorldIntentId
+    x_q16: _Q16
+    y_q16: _Q16
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_authority_and_pixels(cls, data: Any) -> Any:
+        return _forbid_cat_world_authority_and_pixels(data)
+
+
+class _CatWorldStateFields(_Msg):
+    world_seq: _CatWorldSeq
+    yarn_active: bool
+    yarn_x_q16: _Q16
+    yarn_y_q16: _Q16
+    yarn_vx_q12: _CatWorldVelocityQ12
+    yarn_vy_q12: _CatWorldVelocityQ12
+    yarn_holder: _CatWorldHolder
+    question_active: bool
+    question_x_q16: _Q16
+    question_y_q16: _Q16
+    collision_seq: _U32
+
+    @model_validator(mode="before")
+    @classmethod
+    def _forbid_authority_and_pixels(cls, data: Any) -> Any:
+        return _forbid_cat_world_authority_and_pixels(data)
+
+
+class _CatWorldFrame(_CatWorldStateFields):
+    t: Literal["cat_world_frame"]
+
+
+class _CatWorldCommit(_CatWorldStateFields):
+    t: Literal["cat_world_commit"]
     seq: _Seq
 
 
@@ -725,7 +925,7 @@ class _Leave(_Msg):
 
     @model_validator(mode="after")
     def _watermark_is_previous_seq(self) -> "_Leave":
-        # last_seq 必须恰是 seq - 1：低水位会让接收方跳过缺口等待、立刻结束
+        # last_seq must equal seq - 1; lower values make receivers skip gap waiting and end immediately.
         if self.last_seq != self.seq - 1:
             raise ValueError("leave.last_seq must equal seq - 1")
         return self
@@ -784,7 +984,7 @@ class _Typing(_Msg):
     t: Literal["typing"]
     lp: _Lp
     sp: _Sp
-    on: Optional[bool] = None   # 只在 VISIT_STREAM_DELTAS=False 的整句模式里带
+    on: Optional[bool] = None   # Include only in whole-sentence VISIT_STREAM_DELTAS=False mode.
 
 
 class _Stats(_Msg):
@@ -801,6 +1001,13 @@ class _Stats(_Msg):
 _MODELS: dict[str, type[_Msg]] = {
     "hello": _Hello,
     "ready": _Ready,
+    "cat_action": _CatAction,
+    "cat_motion": _CatMotion,
+    "cat_pose_commit": _CatPoseCommit,
+    "cat_world_intent": _CatWorldIntent,
+    "cat_world_pointer": _CatWorldPointer,
+    "cat_world_frame": _CatWorldFrame,
+    "cat_world_commit": _CatWorldCommit,
     "ack": _Ack,
     "hb": _Hb,
     "state": _State,
@@ -824,7 +1031,7 @@ def cmd_of(t: str) -> int:
 
 
 def is_reliable(t: str) -> bool:
-    """True for the outbox-backed types ``hello / ready / wrap_up / leave / text``."""
+    """True for outbox-backed types, including cat actions and pose commits."""
     return t in RELIABLE_TYPES
 
 
@@ -963,8 +1170,8 @@ def decode_msg(text: Union[str, bytes, Mapping[str, Any]], *, cmd: Optional[int]
             soft.append("tail_ms")
     elif t == "line_delta":
         try:
-            # 与 encode_msg / line_delta_encoded_len 同一口径：payload JSON 再作为信封 p
-            # 转义一次后的字节；只量 JSON 会放过引号 / 反斜杠密集、实际要分多片的 delta
+            # Match encode_msg / line_delta_encoded_len: measure payload JSON after escaping again as envelope p,
+            # not JSON alone, which undercounts quote/backslash-heavy deltas needing multiple fragments.
             size = _esc_len(_dumps(raw))
         except (ValueError, TypeError, UnicodeEncodeError):
             size = VISIT_LINE_DELTA_PAYLOAD_MAX_BYTES + 1
@@ -989,10 +1196,10 @@ def decode_msg(text: Union[str, bytes, Mapping[str, Any]], *, cmd: Optional[int]
     return out
 
 
-# ── wire 预算（以完全编码后字节为准）──────────────────────────────────
+# -- Wire budgets use fully encoded bytes --
 
 def _widest_delta_payload(txt: str) -> dict:
-    # i==0 的附加字段全部在场、各字段取最大宽度
+    # All i==0 extras present, with maximum field widths.
     return {
         "t": "line_delta", "v": _PAYLOAD_VERSION, "ln": _WIDEST_LN,
         "i": VISIT_LINE_DELTA_MAX_I, "lp": VISIT_LP_MAX, "txt": txt,
@@ -1097,8 +1304,8 @@ def fit_text_to_wire(
     if pieces_before <= max_pieces:
         return base
     txt = str(base.get("txt", ""))
-    # 已因「不该接话」的原因截断（人类插话 / 收尾 / 整场结束）时保留原因：改成 wire_size
-    # 会让对端把这句当成说完的一轮去接话
+    # Preserve prior reasons prohibiting replies, including human interruption/finalization/visit end; replacing them with wire_size
+    # would make peers treat the sentence as a completed reply turn.
     reason = base.get("trunc_reason")
     if not (base.get("truncated") is True and reason in SILENCING_TRUNC_REASONS):
         reason = "wire_size"
@@ -1112,7 +1319,7 @@ def fit_text_to_wire(
         raise ValueError("text payload does not fit the wire even when empty")
     lo, hi = 0, len(txt)
     if fits(hi):
-        lo = hi            # 只换了截断原因（更短）就放得下：整句保留
+        lo = hi            # A shorter replacement truncation reason alone makes it fit; retain the whole sentence.
     while hi - lo > 1:
         mid = (lo + hi) // 2
         if fits(mid):
@@ -1134,7 +1341,7 @@ def fit_text_to_wire(
     return result
 
 
-# ── 脱敏注入契约 ──────────────────────────────────────────────────────
+# -- Redaction injection contract --
 
 RedactSpans = Sequence[tuple[int, int, int, int]]
 RedactResult = Union[str, tuple[str, RedactSpans]]
@@ -1146,7 +1353,7 @@ def _identity(s: str) -> str:
     return s
 
 
-# 只用 C 层字符串操作量长度：流式热路径上不做逐字符的 Python 循环
+# Measure length with C-level string operations only, avoiding per-character Python loops on streaming hot paths.
 _SURROGATE_RE = re.compile("[" + chr(0xD800) + "-" + chr(0xDFFF) + "]")
 _CONTROL_RE = re.compile("[" + chr(0) + "-" + chr(0x1F) + "]")
 
@@ -1209,7 +1416,7 @@ class _OffsetMap:
         for lst in (self._rs, self._re, self._ds, self._de):
             del lst[count:]
 
-    # 三个查询等价于按顺序线性扫描：起点 < pos 的区间是一段前缀，其中只有最后一个可能盖住 pos
+    # Three queries equal an ordered linear scan: intervals starting before pos form a prefix, only its final interval can cover pos.
     def red_to_raw(self, pos: int) -> int:
         k = bisect_left(self._ds, pos) - 1
         if k < 0:
@@ -1245,7 +1452,7 @@ def _map_redaction(raw: str, result: Any, *, derive: bool) -> tuple[str, _Offset
     if result == raw:
         return result, _OffsetMap(raw, result, ())
     if not derive:
-        # difflib 在整句上推出的区间与分段推出的不一定相同，分段模式只能接受自报区间
+        # difflib ranges inferred for whole sentences may differ from segment-wise inference; segmented mode accepts only explicitly reported ranges.
         raise ValueError("redact_boundary requires redact to return (text, spans)")
     matcher = difflib.SequenceMatcher(None, raw, result, autojunk=False)
     spans = [(i1, i2, j1, j2) for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal"]
@@ -1285,11 +1492,11 @@ class _SegmentedRedaction:
         self._fn = fn
         self._boundary = boundary
         self._with_spans = with_spans
-        self.raw_end = 0          # raw[:raw_end] 已提交
-        self.red = ""             # redact(raw[:raw_end]) 的文本
+        self.raw_end = 0          # raw[:raw_end] committed.
+        self.red = ""             # Text of redact(raw[:raw_end]).
         self.map = _OffsetMap("", "", ())
-        self._scanned = 0         # raw[:_scanned] 已查过边界字符
-        self._cut = 0             # raw[:_scanned] 里最后一个边界字符之后的位置
+        self._scanned = 0         # Boundary characters checked through raw[:_scanned].
+        self._cut = 0             # Position after the last boundary character in raw[:_scanned].
 
     def advance(self, raw: str) -> None:
         """Commit ``raw`` (an extension of every earlier argument) up to its last boundary."""
@@ -1316,7 +1523,7 @@ class _SegmentedRedaction:
         """Redacted text and offset map of ``raw[raw_end:]``."""
         seg = raw[self.raw_end:]
         if not seg:
-            # 契约：redact(a + '') == redact(a)，所以空尾的脱敏结果只能是空
+            # Contract: redact(a + '') == redact(a), so redaction of an empty tail must be empty.
             return "", _OffsetMap("", "", ())
         return _run_redact_segment(self._fn, seg)
 
@@ -1387,10 +1594,10 @@ class WireBudget:
             _SegmentedRedaction(redact, redact_boundary, with_spans=False)
             if redact is not _identity and redact_boundary is not None else None
         )
-        self._raw_bytes = 0       # 仅 plain 模式：已接受文本的 UTF-8 字节
-        self._raw_esc = 0         # 仅 plain 模式：已接受文本两次转义后的字节
-        # 出站文本两次转义后不超过它就一定 <= max_pieces 片；首次完整测量成功后才设
-        # （header 不合法时 encode_msg 抛错的时机保持与逐次完整测量相同）
+        self._raw_bytes = 0       # Plain mode only: accepted text's UTF-8 bytes.
+        self._raw_esc = 0         # Plain mode only: accepted text's double-escaped bytes.
+        # Outgoing double-escaped text below this threshold is guaranteed to fit max_pieces; initialize only after successful full measurement,
+        # preserving encode_msg's invalid-header exception timing from repeated full measurements.
         self._esc_cap: Optional[int] = None
 
     @property
@@ -1403,9 +1610,9 @@ class WireBudget:
         return self._sanitize(_redacted_only(self._redact, self._raw))
 
     def _certain_esc_cap(self) -> int:
-        # fragment 贪心装片：除最后一片外每片装了 > budget - 6 字节（单字符转义后最多 6 B），
-        # 所以 n 片意味着 W >= (n-1)(budget-5)+1；W <= max_pieces*(budget-5) 时 n <= max_pieces。
-        # budget 取三位数 i/n 时最小的那个，任一位宽下都成立
+        # Greedy fragment packing gives every nonfinal fragment > budget - 6 bytes, with at most 6 B per escaped character;
+        # thus n fragments imply W >= (n-1)(budget-5)+1, and W <= max_pieces*(budget-5) implies n <= max_pieces.
+        # Use the minimum budget for three-digit i/n, valid at any width.
         if not 1 <= self._max_pieces <= 999:
             return -1
         overhead = len(_envelope_text(self._visit_id[:8], _U32_MAX, 999, 999, "").encode("utf-8"))
@@ -1435,7 +1642,7 @@ class WireBudget:
             redacted = _redacted_only(self._redact, self._raw + tail)
         out = self._sanitize(redacted)
         if self._clean is not None and out != self._clean(redacted):
-            return False                      # sanitize 自己截掉了内容
+            return False                      # sanitize itself truncated content.
         if len(out.encode("utf-8")) > VISIT_TEXT_MAX_BYTES:
             return False
         if self._esc_cap is not None and _esc2_text_len(out) <= self._esc_cap:
@@ -1472,7 +1679,7 @@ class WireBudget:
         return accepted
 
 
-# ── 分句（§3.6.4 / d4 §2.1）──────────────────────────────────────────
+# -- Sentence splitting: section 3.6.4 / d4 section 2.1 --
 
 _END_MARKS = frozenset("。！？；…!?;.")
 _ASCII_END_MARKS = frozenset("!?;.")
@@ -1522,8 +1729,8 @@ class _CutScanner:
 
     def next_cut(self, pending: str, *, final: bool, holdback: int) -> Optional[int]:
         """Length of the next clause, or None to wait for more text."""
-        # 只有没下刀（即没超 VISIT_DELTA_TEXT_MAX_BYTES）才保存状态，所以 _text 不超过
-        # 800 个字符：这次前缀比较是与整句长度无关的定长 memcmp
+        # Save state only without cutting, i.e. within VISIT_DELTA_TEXT_MAX_BYTES, bounding _text
+        # to 800 characters; prefix comparison is fixed-length memcmp independent of sentence length.
         if self._text and pending.startswith(self._text):
             (start, raw_bytes, enc, cjk, words, in_word, in_token, token_space,
              token_ascii, first_ns, last_ns) = self._state
@@ -1531,10 +1738,10 @@ class _CutScanner:
             start = raw_bytes = cjk = words = 0
             enc = _DELTA_OVERHEAD
             in_word = False
-            in_token = False       # 处在句末 / 换行 / 合格逗号之后的边界记号里
-            token_space = False    # 记号里已出现空白（之后只吸收空白）
-            token_ascii = False    # 记号目前只有 ASCII 句末符（"3.14" 之类不算边界）
-            first_ns = last_ns = -1   # 已扫部分首 / 末个非空白字符：len(pending[:k].strip()) 的增量形式
+            in_token = False       # Inside a boundary marker after sentence punctuation/newline/eligible comma.
+            token_space = False    # Whitespace already occurred in the marker; accept only more whitespace.
+            token_ascii = False    # Marker currently contains only ASCII terminators; "3.14" is not a boundary.
+            first_ns = last_ns = -1   # First/last nonwhitespace in the scanned portion, an incremental len(pending[:k].strip()).
         self._text = ""
         n = len(pending)
         for k in range(start, n):
@@ -1728,7 +1935,7 @@ class ClauseSplitter:
         return self._cut(e_red, pending, omap, final)
 
     def _cut(self, base: int, pending: str, omap: Optional[_OffsetMap], final: bool) -> list[Clause]:
-        # pending 是脱敏全文从 base 起的部分；omap 为 None 表示未脱敏（位置一一对应）
+        # pending is redacted full text from base; omap=None means no redaction and identity position mapping.
         out: list[Clause] = []
         e_red = base
         while e_red - base < len(pending):
@@ -1739,7 +1946,7 @@ class ClauseSplitter:
             if omap is not None:
                 span = omap.red_span_around(e_red + cut)
                 if span is not None:
-                    # 不在替换词中间下刀：优先切在替换词之前，否则整词带走
+                    # Never cut inside replacement words; prefer before them, otherwise consume them whole.
                     cut = span[0] - e_red if span[0] > e_red else span[1] - e_red
             new_red = e_red + cut
             new_raw = new_red if omap is None else omap.red_to_raw(new_red)
@@ -1765,7 +1972,7 @@ def split_clauses(line: str) -> list[str]:
     return [c.text for c in clauses]
 
 
-# ── 文本估时（§3.6.4 / d4 §3.4）────────────────────────────────────────
+# -- Text-duration estimates: section 3.6.4 / d4 section 3.4 --
 
 _WORD_JOINERS = frozenset(".,'’")
 
@@ -1782,7 +1989,7 @@ def estimate_speech_ms(text: str) -> int:
     """
     cjk = words = ends = commas = 0
     in_word = False
-    prev = ""   # 上一个字符的类别：'end' / 'comma' / ''
+    prev = ""   # Previous character category: 'end' / 'comma' / ''.
     n = len(text)
     for idx, ch in enumerate(text):
         if is_cjk_char(ch):
@@ -1796,7 +2003,7 @@ def estimate_speech_ms(text: str) -> int:
             prev = ""
         elif (ch in _WORD_JOINERS and in_word and idx + 1 < n
               and text[idx + 1].isalnum() and not is_cjk_char(text[idx + 1])):
-            continue   # 词内连接符：3.14 / 1,000 / don't
+            continue   # Intraword connectors: 3.14 / 1,000 / don't.
         elif ch in _END_MARKS:
             in_word = False
             if prev != "end":
@@ -1829,7 +2036,7 @@ def clause_release_offsets_ms(clauses: Sequence[Clause]) -> list[int]:
     return out
 
 
-# ── 接收侧字幕拼接（§4.2 line_delta）─────────────────────────────────
+# -- Receiver subtitle assembly: section 4.2 line_delta --
 
 class LineDeltaAssembler:
     """Receive-side subtitle assembly of one sender's ``line_delta`` stream.
@@ -1861,7 +2068,7 @@ class LineDeltaAssembler:
         self._lru = int(closed_lru)
         self._lines: dict[str, dict[int, str]] = {}
         self._lps: dict[str, Optional[int]] = {}
-        # 被容量淘汰的行里最大的 lp：墓碑有上限，水位兜住被挤出墓碑的更老的行
+        # Highest lp evicted for capacity; bounded tombstones need a watermark covering older displaced lines.
         self._evicted_lp: Optional[int] = None
         self._open: Optional[str] = None
         self._open_lp: Optional[int] = None
@@ -1882,8 +2089,8 @@ class LineDeltaAssembler:
             return False
         lp = msg.get("lp")
         if ln in self._lines and (lp if _is_int(lp) else None) != self._lps.get(ln):
-            # 一行只有一个 lp（与 VisitRoom.observe_lp 同一不变量）：后续分片换了 lp，
-            # 拼出来的字幕就混进了声称不同排序位置的片段
+            # Each line has one lp, matching VisitRoom.observe_lp; changing lp in later fragments
+            # mixes fragments claiming different ordering positions into one subtitle.
             self.anomalies += 1
             return False
         retired = ln in self._lines and ln != self._open
@@ -1891,11 +2098,11 @@ class LineDeltaAssembler:
             if not (_is_int(lp) and self._open_lp is not None and lp > self._open_lp):
                 self.anomalies += 1
                 return False
-            # 新行 lp 更大：旧行只是 text 还在 seq 缺口后排队，退出「打开」但保留其分片
+            # Newer lp replaces open status of old lines whose text waits behind seq gaps, retaining their fragments.
             self._open = None
         if ln not in self._lines and self._evicted_lp is not None \
                 and not (_is_int(lp) and lp > self._evicted_lp):
-            # 不高于淘汰水位的「新」行：被淘汰旧行的晚到 / 重放分片，不能当新行装回去
+            # New lines at/below eviction watermark are late/replayed evicted fragments; never recreate them as new.
             self.anomalies += 1
             return False
         if ln not in self._lines:
@@ -1906,7 +2113,7 @@ class LineDeltaAssembler:
             return False
         clauses[i] = txt
         if retired:
-            # 已被较新行替下、text 尚未到的旧行：晚到的分片照常落位，不抢回「打开」
+            # Late fragments of replaced old lines awaiting text still fill their slots without reclaiming open status.
             return True
         if self._open != ln:
             self._open = ln
@@ -1915,12 +2122,12 @@ class LineDeltaAssembler:
         return True
 
     def _bound_unclosed(self) -> None:
-        # 被替下、text 迟迟不来的旧行有上限：诚实对端排在 seq 缺口后的 text 最多
-        # VISIT_REORDER_BUFFER_MAX 条，再多就是只发首片不收口的对端，丢最旧的
+        # Bound replaced lines whose text never arrives: honest peers have at most VISIT_REORDER_BUFFER_MAX
+        # text items behind seq gaps; excess implies opening-only peers. Drop the oldest.
         while len(self._lines) > VISIT_REORDER_BUFFER_MAX + 1:
             oldest = next(k for k in self._lines if k != self._open)
             evicted_lp = self._lps.get(oldest)
-            # 墓碑与 drop 相同：晚到分片静默忽略，可靠 text 仍能收口
+            # Tombstones act like drop: silently ignore late fragments while reliable text can still finalize.
             self.drop(oldest)
             if evicted_lp is not None and (self._evicted_lp is None or evicted_lp > self._evicted_lp):
                 self._evicted_lp = evicted_lp
@@ -1981,7 +2188,7 @@ class LineDeltaAssembler:
         return "".join(parts)
 
 
-# ── 纸面最坏速率（§4.1 限速条 / PR-03 测试同源）──────────────────────
+# -- Theoretical worst-case rates: section 4.1, shared with PR-03 tests --
 
 def max_worst_case_rates() -> tuple[float, float]:
     """Paper upper bound of one side's outbound data channel: ``(messages/s, KB/s)``.

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-# 这一段与 plugin/conftest.py 重复是有意的：plugin/tests 自带 pytest.ini，跑
-# `pytest plugin/tests` 时 rootdir 就是它，confcutdir 会把上层的 plugin/conftest.py
-# 切掉；而直接跑 plugin/plugins/<name>/tests 时又只有上层那份生效。两处都留才能
-# 让八棵测试树都被守卫覆盖。重复注册无害：先跑的那份还原并判红，后跑的看到无漂移。
+# This deliberately duplicates plugin/conftest.py: plugin/tests has its own pytest.ini, and running
+# `pytest plugin/tests` makes it rootdir, so confcutdir excludes the parent plugin/conftest.py.
+# Running plugin/plugins/<name>/tests directly activates only the parent copy. Retain both so
+# all eight test trees are guarded. Duplicate registration is harmless: the first restores and fails on drift, the second sees none.
 #
-# sys.path 必须在**任何项目 import 之前**钉好：这些树各有各的 rootdir，而 venv 的
-# editable .pth 指向主仓库根。中途插入会让前半段 import 从主仓库解析、后半段从本
-# 副本解析（实测炸在 main_logic.agent_event_bus）。
+# Set sys.path before any project import: these trees have different rootdirs, while the venv's
+# editable .pth points to the main repository. Inserting it midway resolves early imports from the main repository and later ones
+# from this copy (observed failure in main_logic.agent_event_bus).
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -15,9 +15,25 @@ _REPO_ROOT = str(_Path(__file__).resolve().parents[2])
 if _sys.path[:1] != [_REPO_ROOT]:
     _sys.path.insert(0, _REPO_ROOT)
 
-# pytest 按名字在 conftest 命名空间里发现 hook，所以这个导入没有显式调用点
-# ——它不是死代码：把它删掉，全进程时钟守卫就整个失效。
+# Before ANY product module is imported (this file's own imports below build the
+# ConfigManager singleton during collection): telemetry opt-out, inherited storage-root
+# variables dropped, logs redirected, ConfigManager root resolution pointed at a
+# throwaway root. Same call as tests/conftest.py; see tests/process_isolation.py.
+from tests.process_isolation import isolate_test_process as _isolate_test_process  # noqa: E402
+
+_isolate_test_process()
+
+# pytest discovers hooks by name in the conftest namespace, so these imports have no explicit call site;
+# they are not dead code: deleting one disables that process-wide guard.
 from tests.clock_guard import pytest_runtest_call  # noqa: F401,E402
+# Storage-root environment guard (tests/storage_root_env_guard.py): a test that leaves
+# NEKO_STORAGE_ANCHOR_ROOT / NEKO_STORAGE_CLOUDSAVE_ROOT behind (the autouse fixture below
+# only resets SELECTED) would steer every later ConfigManager toward the real root.
+from tests.storage_root_env_guard import (  # noqa: E402
+    pytest_runtest_setup,  # noqa: F401
+    pytest_runtest_teardown,  # noqa: F401
+    pytest_sessionstart,  # noqa: F401
+)
 
 import asyncio.events as _events
 from collections.abc import AsyncIterator
@@ -58,9 +74,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def _isolate_plugin_runtime_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> None:
+):
+    from tests.storage_root_env_guard import restore_storage_root_env, snapshot_storage_root_env
+
+    before = snapshot_storage_root_env()
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(tmp_path / "runtime_data"))
     monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+    yield
+    # Starting a plugin process makes the host export its whole storage layout
+    # into os.environ for the child (plugin/core/host.py:
+    # _refresh_child_storage_layout_env). monkeypatch only undoes keys it saw,
+    # so ANCHOR / CLOUDSAVE stayed set for the rest of the session -- and before
+    # the ConfigManager singleton was isolated they named the real root.
+    restore_storage_root_env(before)
 
 
 @pytest.fixture(autouse=True)
@@ -86,6 +112,36 @@ def _isolate_runtime_overrides(monkeypatch: pytest.MonkeyPatch):
         yield fake_store
     finally:
         _ro.reset_cache_for_testing()
+
+
+@pytest.fixture(autouse=True)
+def isolated_plugin_consent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Real consent and report stores, isolated in a temporary directory."""
+    import json
+    from plugin.server.infrastructure import plugin_consent
+    from plugin.server.application.plugins import (
+        capability_analysis_service,
+        consent_service,
+    )
+    from plugin.server.infrastructure.capability_reports import CapabilityReportStore
+
+    class Manager:
+        def get_runtime_config_path(self, name):
+            return tmp_path / "consent" / name
+        def save_json_config(self, name, data):
+            path = self.get_runtime_config_path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data), encoding="utf-8")
+
+    store = plugin_consent.PluginConsentStore(Manager())
+    monkeypatch.setattr(plugin_consent, "consent_store", store)
+    monkeypatch.setattr(consent_service, "consent_store", store)
+    runner = capability_analysis_service.CapabilityAnalysisService(
+        CapabilityReportStore(tmp_path / "reports")
+    )
+    monkeypatch.setattr(capability_analysis_service, "analysis_service", runner)
+    yield store
+    runner.shutdown()
 
 
 @pytest.fixture(autouse=True)

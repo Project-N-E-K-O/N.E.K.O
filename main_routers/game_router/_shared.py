@@ -34,10 +34,10 @@ logger = get_module_logger(__name__, "Game")
 router = APIRouter(tags=["game"], prefix="/api/game")
 
 
-# 游戏期间外部主入口路由状态。这里记录的是“主语音入口/主聊天窗是否被游戏接管”，
-# 不是游戏页面内部另起一套聊天入口。
-# 实际容器在 utils/game_route_state.py，这里只 re-import 以保持现有调用点 / 测试
-# 使用 game_router._game_route_states / _route_state_key 的写法不变。
+# External primary-route state during games: whether game took over main voice/main chat entry,
+# not a separate chat entry created inside the game page.
+# Actual container lives in utils/game_route_state.py; reimport preserves existing callers/tests
+# using game_router._game_route_states / _route_state_key.
 _DEFAULT_LAST_FULL_DIALOGUE_COUNT = 8
 
 

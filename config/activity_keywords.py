@@ -77,7 +77,7 @@ Editorial rules: process executable names are only included when
 verified from official or well-known sources. Skipped if unsure —
 title-only is fine, fabricated process names are worse than nothing.
 No adult / NSFW entries.
-"""
+"""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -113,7 +113,7 @@ ActivityCategory = Literal[
                    # tracker bypasses LLM enrichment + buffers entirely so
                    # the user's secret (password manager, banking, health
                    # records, etc.) never leaves the process.
-    'own_app',     # The N.E.K.O / catgirl app itself in foreground.
+    'own_app',     # The N.E.K.O / neko app itself in foreground.
                    # Tracker treats as "no new window data this tick" —
                    # window observation is NOT updated and the previous
                    # window's dwell timer is FROZEN: state machine
@@ -123,13 +123,13 @@ ActivityCategory = Literal[
                    # duration so dwell only counts non-own-app time.
                    # GPU fallback gaming is intentionally NOT
                    # short-circuited during own_app foreground —
-                   # catgirl Live2D/VRM rendering typically lands below
+                   # neko Live2D/VRM rendering typically lands below
                    # the gaming threshold, and a high-GPU app the user
                    # was already running in the background continues to
                    # be the user's "real activity" worth classifying.
                    # Avoids the recursive feedback where "user is
-                   # looking at the catgirl app" feeds back into the
-                   # catgirl's chat decisions.
+                   # looking at the neko app" feeds back into the
+                   # neko's chat decisions.
 ]
 
 
@@ -250,19 +250,19 @@ PRIVATE_PROCESS_NAMES: list[str] = [
 
 # === OWN-APP EXCLUSION (second-highest priority, after private) ===
 #
-# The N.E.K.O / catgirl app itself. When in foreground, the tracker
+# The N.E.K.O / neko app itself. When in foreground, the tracker
 # treats this as "no fresh window data" — observation is NOT updated
 # and the previous window's dwell timer is FROZEN: state machine
 # records ``_own_app_freeze_started_at`` on entry and on the next
 # non-own_app observation advances ``_current_window_started_at`` by
-# the freeze duration, so a brief glance at the catgirl can't push the
+# the freeze duration, so a brief glance at the neko can't push the
 # previously-foreground app past dwell thresholds (e.g. focused_work's
 # 90s). GPU fallback gaming is intentionally NOT short-circuited
-# during own_app foreground (catgirl Live2D/VRM typically lands below
+# during own_app foreground (neko Live2D/VRM typically lands below
 # the threshold; a high-GPU app the user was running in the
 # background remains their "real activity" worth classifying).
-# Avoids the recursive feedback where "user is looking at the catgirl"
-# becomes a signal the catgirl uses to decide whether to chat.
+# Avoids the recursive feedback where "user is looking at the neko"
+# becomes a signal the neko uses to decide whether to chat.
 #
 # Process names from ``specs/launcher.spec`` (PyInstaller output for
 # the Windows desktop build) and known sibling executables shipped
@@ -314,13 +314,13 @@ OWN_APP_PROCESS_NAMES: list[str] = [
 #
 #   competitive            → propensity=restricted_screen_only, skip 0.0,
 #                            tone=terse  (LoL team fight, CS round, etc.)
-#                            screen-only 的安静感由 /proactive_chat 的
-#                            前端固定 base_interval + 后端 uniform(0, 0.5*base)
-#                            抖动承担（实际间隔 [base, 1.5*base]，0.5*base 上限
-#                            兜底 60s）；skip 不再叠加。
+#                            Screen-only quietness comes from /proactive_chat's
+#                            fixed frontend base_interval plus backend uniform(0, 0.5*base)
+#                            jitter, giving [base, 1.5*base] intervals with the 0.5*base upper bound
+#                            capped at 60s; skip no longer adds another delay.
 #   immersive horror       → propensity=restricted_screen_only, skip 0.3,
 #                            tone=hushed (silent hill, RE2, etc.) —
-#                            氛围比信息密度更怕打扰，保留整轮 skip
+#                            Ambience is more interruption-sensitive than information density; retain whole-round skip.
 #   immersive (other)      → propensity=restricted_screen_only, skip 0.0,
 #                            tone=mellow (RPG, story-driven)
 #   casual                 → propensity=open, skip 0.0, tone=playful
@@ -382,7 +382,7 @@ GAME_TITLE_KEYWORDS: list = [
     ('Love and Deepspace', ['Love and Deepspace', '恋与深空', '戀與深空'], 'casual', 'rpg'),
 
     # ============================================================
-    # Xishanju / 西山居
+    # Xishanju.
     # ============================================================
     ('JX3 / Jian Wang 3', ['JX3', 'Jian Wang 3', 'JianXia', '剑网3', '劍網3', '劍俠情緣網絡版叁']),
     ('JX3 Online HD', ['剑网3 缘起', '剑网3缘起']),
@@ -2043,10 +2043,10 @@ ENTERTAINMENT_PROCESS_NAMES: list[tuple[str, str]] = [
     ('spotify.exe', 'music'),
     ('applemusic.exe', 'music'),
     ('itunes.exe', 'music'),
-    ('cloudmusic.exe', 'music'),            # 网易云音乐
+    ('cloudmusic.exe', 'music'),            # NetEase Cloud Music.
     ('qqmusic.exe', 'music'),
     ('kugou.exe', 'music'),
-    ('kwmusic.exe', 'music'),               # 酷我音乐
+    ('kwmusic.exe', 'music'),               # Kuwo Music.
     ('foobar2000.exe', 'music'),
     ('aimp.exe', 'music'),
     ('musicbee.exe', 'music'),
@@ -2075,7 +2075,7 @@ ENTERTAINMENT_PROCESS_NAMES: list[tuple[str, str]] = [
     ('kodi.exe', 'video'),
     ('iqiyi.exe', 'video'),
     ('youku.exe', 'video'),
-    ('qqlive.exe', 'video'),                # 腾讯视频
+    ('qqlive.exe', 'video'),                # Tencent Video.
     ('bilibili.exe', 'video'),
     ('哔哩哔哩.exe', 'video'),
     ('douyin.exe', 'video'),
@@ -2088,7 +2088,7 @@ ENTERTAINMENT_PROCESS_NAMES: list[tuple[str, str]] = [
     ('kindle.exe', 'ebook'),
     ('calibre.exe', 'ebook'),
     ('calibre-ebook-viewer.exe', 'ebook'),
-    ('weread.exe', 'ebook'),                # 微信读书
+    ('weread.exe', 'ebook'),                # WeChat Reading.
     ('digitaleditions.exe', 'ebook'),
     ('kobo.exe', 'ebook'),
     ('hamster ebook converter.exe', 'ebook'),
@@ -2268,8 +2268,8 @@ ENTERTAINMENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('audius.co', 'music'),
     ('jamendo.com', 'music'),
     # Regional music
-    ('music.163.com', 'music'),             # 网易云
-    ('y.qq.com', 'music'),                  # QQ 音乐
+    ('music.163.com', 'music'),             # NetEase Cloud Music.
+    ('y.qq.com', 'music'),                  # QQ Music.
     ('kugou.com', 'music'),
     ('kuwo.cn', 'music'),
     ('music.migu.cn', 'music'),
@@ -2288,7 +2288,7 @@ ENTERTAINMENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('gaana.com', 'music'),
     ('music.yandex.ru', 'music'),
     # Podcasts
-    ('xiaoyuzhoufm.com', 'music'),          # 小宇宙
+    ('xiaoyuzhoufm.com', 'music'),          # Xiaoyuzhou.
     ('podcasts.apple.com', 'music'),
     ('pca.st', 'music'),                    # Pocket Casts
     ('overcast.fm', 'music'),
@@ -2304,8 +2304,8 @@ ENTERTAINMENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('tapas.io', 'comic'),
     ('tappytoon.com', 'comic'),
     ('kuaikanmanhua.com', 'comic'),
-    ('ac.qq.com', 'comic'),                 # 腾讯动漫
-    ('u17.com', 'comic'),                   # 有妖气
+    ('ac.qq.com', 'comic'),                 # Tencent Comics.
+    ('u17.com', 'comic'),                   # U17 Comics.
     ('comic-walker.com', 'comic'),
     ('shonenjumpplus.com', 'comic'),
     ('pocket.shonenmagazine.com', 'comic'),
@@ -2341,7 +2341,7 @@ ENTERTAINMENT_DOMAIN_KEYWORDS: list[tuple[str, str]] = [
     ('cracked.com', 'news'),
     ('mashable.com', 'news'),
     ('news.ycombinator.com', 'news'),
-    ('s.weibo.com', 'news'),                # 微博热搜
+    ('s.weibo.com', 'news'),                # Weibo trending searches.
     ('4chan.org', 'forum'),
     ('boards.4chan.org', 'forum'),
     ('news.nicovideo.jp', 'news'),
@@ -2607,7 +2607,7 @@ COMMUNICATION_PROCESS_NAMES: list[tuple[str, str]] = [
     ('thebat.exe', 'email'),
     ('thebat64.exe', 'email'),
     ('Spark.exe', 'email'),
-    ('MailMaster.exe', 'email'),  # NetEase 邮箱大师
+    ('MailMaster.exe', 'email'),  # NetEase Mail Master.
     ('HxOutlook.exe', 'email'),   # Windows 10/11 built-in Mail
     ('HxMail.exe', 'email'),
     ('hxtsr.exe', 'email'),
@@ -2921,7 +2921,7 @@ def _build_title_table() -> list[tuple[Needle, ClassifyResult]]:
         for alias in aliases:
             table.append((_make_needle(alias), ClassifyResult('private', None, canonical)))
 
-    # OWN_APP — second priority. Beats gaming because the catgirl app's
+    # OWN_APP — second priority. Beats gaming because the neko app's
     # own GPU usage would otherwise trip gaming-by-GPU fallback.
     for canonical, aliases in OWN_APP_TITLE_KEYWORDS:
         for alias in aliases:

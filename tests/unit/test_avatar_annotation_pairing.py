@@ -61,8 +61,11 @@ def test_ws_reply_carries_its_own_avatar_position():
         fake = _fake_manager()
 
         async def _send_json(payload):
-            assert payload == {"type": "request_screenshot"}
-            LLMSessionManager.resolve_screenshot_request(fake, shot, POS_A)
+            assert payload['type'] == 'request_screenshot'
+            assert payload['request_id']
+            LLMSessionManager.resolve_screenshot_request(
+                fake, shot, POS_A, request_id=payload['request_id'],
+            )
 
         fake.websocket = SimpleNamespace(send_json=_send_json)
         return await LLMSessionManager.request_fresh_screenshot(fake, timeout=3.0)

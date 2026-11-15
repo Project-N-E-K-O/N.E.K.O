@@ -1,12 +1,12 @@
-"""GalGame 模式在语音对话下不空耗 token 的前端不变量。
+"""Frontend invariant preventing wasted GalGame tokens during voice conversations.
 
-galgame 模式默认开启（readGalgameModePreference 在无 localStorage 时返回
-true）。「语音对话 / voice-only」= 用户没有打开 React 聊天窗口，此时
-overlay.hidden 为真。每轮 assistant 回复结束会派发 `neko-assistant-turn-end`，
-其 handler 必须因 overlay.hidden **同步早退**，不得 POST /api/galgame/options
-—— 否则就是在没人能看到、点击选项的情况下白烧 summary 档 token。
+Galgame defaults on (readGalgameModePreference returns true without
+localStorage). Voice-only means the user has not opened the React chat window,
+so overlay.hidden is true. Each completed assistant reply dispatches `neko-assistant-turn-end`;
+its handler must **return early synchronously** for overlay.hidden, without POST /api/galgame/options,
+or summary-tier tokens are wasted on options nobody can see or click.
 
-参考 tests/frontend/test_avatar_reaction_bubble.py 的 turn-end 派发写法。
+See tests/frontend/test_avatar_reaction_bubble.py for turn-end dispatch patterns.
 """
 
 import pytest
@@ -73,7 +73,7 @@ def test_galgame_options_gated_by_chat_window_visibility(
     assert pre["galgameEnabled"] is True, "前置失败：galgame 未启用，测试无意义"
     assert pre["overlayHidden"] is True, "前置失败：overlay 应处于隐藏（voice-only）态"
 
-    # —— 主张：voice-only（overlay hidden）下 turn-end 不拉取选项 ——
+    # -- Claim: turn-end does not fetch options in voice-only mode (overlay hidden). --
     mock_page.evaluate(
         """
         () => window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {
@@ -81,14 +81,14 @@ def test_galgame_options_gated_by_chat_window_visibility(
         }))
         """
     )
-    # overlay.hidden 检查是同步的，但 fetch 走 microtask；给足时间确认请求确实没发。
+    # overlay.hidden checks synchronously, but fetch uses a microtask; allow time to confirm no request was sent.
     mock_page.wait_for_timeout(800)
     assert galgame_requests == [], (
         f"voice-only 路径不应触发 galgame 选项生成，实际发出: {galgame_requests}"
     )
 
-    # —— 对照：揭开 overlay 后，同一个 turn-end 会拉取选项 ——
-    # 证明上面那道关的开关确实是 overlay 可见性，而非别的原因导致没请求。
+    # -- Control: revealing the overlay makes the same turn-end fetch options. --
+    # Prove overlay visibility controls the gate, rather than another reason for the missing request.
     mock_page.evaluate(
         """
         () => {

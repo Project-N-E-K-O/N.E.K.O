@@ -233,8 +233,8 @@ async def list_providers() -> dict[str, Any]:
         key_field = PROVIDER_TO_KEY_FIELD.get(key)
         # ``preset_has_bundled_api_key`` is True when the preset ships its
         # own api_key (the ``free`` preset carries ``openrouter_api_key:
-        # "free-access"``). UI uses this to display "此预设内置 API Key,
-        # 无需填写" instead of the generic "未配置" warning for free tier.
+        # "free-access"``). UI uses this to display the preset's built-in API key
+        # requiring no entry, instead of the generic unconfigured warning for free tier.
         # Value itself is never echoed — only the boolean — to keep the
         # endpoint plaintext-free.
         providers.append({
@@ -296,7 +296,7 @@ async def test_connection(
 
     The op runs under the session lock to avoid racing with a /chat/send;
     state is labeled ``busy`` so the UI can disable unrelated buttons.
-    """
+    """  # noqa: DOCSTRING_CJK
     if group not in GROUP_KEYS:
         raise HTTPException(status_code=400, detail={"message": f"Unknown group: {group}"})
     payload = body or _TestConnectionRequest()
@@ -308,18 +308,18 @@ async def test_connection(
             state=SessionState.BUSY,
         ):
             session = get_session_store().require()
-            # 走 chat_runner.resolve_group_config 统一三层兜底:
-            #   1) 用户显式填 api_key
-            #   2) 预设自带 api_key (free → "free-access")
-            #   3) tests/api_keys.json 里的 provider 映射
-            # 任一层命中即可. 只有三层都失败 (真的没 key) 才提示 MissingApiKey.
-            # 过去这里手写了 `if not cfg.api_key: return MissingApiKey`, 导致免
-            # 费预设即使后端能连也被前端拒绝.
+            # Use chat_runner.resolve_group_config's shared three-level fallback:
+            #   1) Explicit user api_key.
+            #   2) Preset api_key (free -> "free-access").
+            #   3) Provider mapping in tests/api_keys.json.
+            # Any successful level suffices; show MissingApiKey only if all three fail and there truly is no key.
+            # Previously a handwritten `if not cfg.api_key: return MissingApiKey` rejected free
+            # presets at the frontend despite backend connectivity.
             try:
                 cfg = resolve_group_config(session, group)
             except ChatConfigError as exc:
-                # 把 chat_runner 的错误码映射到 UI 期望的字段名 — 前端现有
-                # toast 逻辑认 NotConfigured / MissingApiKey 这两个标签.
+                # Map chat_runner error codes to field names expected by UI; existing frontend
+                # toast logic recognizes NotConfigured / MissingApiKey.
                 error_type = {
                     "ChatModelNotConfigured": "NotConfigured",
                     "ChatApiKeyMissing": "MissingApiKey",

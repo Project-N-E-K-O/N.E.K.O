@@ -128,8 +128,8 @@ def _build_character_payload_fingerprint(
     binding_payload: Any,
     memory_hashes: dict[str, str],
 ) -> str:
-    # character_id 由每台设备独立生成，不能参与内容指纹；否则内容相同的两台设备、
-    # 或升级前上传的云端快照，都会被判成 diverged。
+    # Each device generates character_id independently, so exclude it from content fingerprints; otherwise identical content on two devices,
+    # or cloud snapshots uploaded before the upgrade, would be classified as diverged.
     fingerprint_payload = {
         "schema_version": 1,
         "character_name": str(character_name or ""),

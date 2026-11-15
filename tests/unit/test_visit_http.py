@@ -33,7 +33,7 @@ from main_logic.visit.limits import Blocklist
 from main_logic.visit.spool import VisitSpool
 from main_logic.visit.subjects import derive_pair_id, derive_peer_char_id
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
-from main_routers.visit_router import accounts, http, memory_routes, persona, transport_ws
+from main_routers.visit_router import accounts, background, display_socket, http, memory_routes, persona, transport_ws
 from main_routers.visit_router import credentials as cr
 from main_routers.visit_router import router as visit_router
 from main_routers.visit_router import runtime as rtm
@@ -67,14 +67,14 @@ OTHER_OWN = "e" * 24
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for module in (rtm, transport_ws, visit_route_state, http, cr, tu):
+    for module in (rtm, transport_ws, visit_route_state, http, cr, tu, display_socket):
         module._reset_for_tests()
     rtm.register_visit_route_kind()
     monkeypatch.setattr(visit_settings, "VISIT_ENABLED", True)
     monkeypatch.setattr(visit_settings, "NEKO_VISIT_ALLOW_NONLOCAL", False)
     monkeypatch.delenv("NEKO_BEHIND_PROXY", raising=False)
     yield
-    for module in (rtm, transport_ws, visit_route_state, http, cr, tu):
+    for module in (rtm, transport_ws, visit_route_state, http, cr, tu, display_socket):
         module._reset_for_tests()
 
 
@@ -89,8 +89,9 @@ class Env:
         self.preview_mode = "ok"
         self.preview_visit_id = VISIT_ID
         self.preview_expires = NOW + 600
+        self.preview_display_name = "Mimi"
         self.preview_calls: list[str] = []
-        self.account: str | None = "acct"     # 与夹具签发的凭证同一个社区账号
+        self.account: str | None = "acct"     # Same community account as fixture-issued credentials.
         self.own_uid: str | None = OWN
         self.gate = PersonaGate(ok=True, state="ok", text="一只活泼的猫娘。")
         self.gate_wait: asyncio.Event | None = None
@@ -156,6 +157,8 @@ class Env:
             replies = {
                 "404": (404, {"code": "invite_invalid"}), "410": (410, {"code": "invite_expired"}),
                 "403": (403, {"code": "banned"}), "429": (429, {"code": "rate_limited", "retry_after_s": 9}),
+                "quota": (429, {"code": "quota_exceeded", "retry_after_s": 3600}),
+                "concurrency": (429, {"code": "concurrency_limit", "retry_after_s": 60}),
                 "401": (401, {"code": "unauthenticated"}),
             }
             if self.preview_mode == "503":
@@ -166,7 +169,7 @@ class Env:
             return httpx.Response(200, json={
                 "visit_id": self.preview_visit_id, "host_visit_uid": HOST_UID,
                 "host_short_code": HOST_UID[:6].upper(), "cross_region": False, "expires_at": self.preview_expires,
-                "host_display_name": "Mimi",
+                "host_display_name": self.preview_display_name,
             })
         return self.servers.handler(request)
 
@@ -202,12 +205,14 @@ def _no_slot(name="Host") -> bool:
     return visit_route_state.get_visit_route_state(name) is None and rtm.get_runtime(name) is None
 
 
-# ── 总闸与本机来源 ─────────────────────────────────────────────────────
+# ── Master gate and local origin ──
 
 START_CALLS = [
     ("POST", "/api/visit/rooms", {"catgirl": "Host"}),
+    ("GET", "/api/visit/rooms/current?catgirl=Host", None),
     ("POST", f"/api/visit/rooms/{VISIT_ID}/join", {"catgirl": "Guest", "invite_code": INVITE, "confirm": True}),
     ("POST", f"/api/visit/rooms/{VISIT_ID}/accept", {"catgirl": "Host", "accept": True}),
+    ("POST", "/api/visit/route/cat-action", {"visit_id": VISIT_ID, "kind": "greet"}),
     ("GET", f"/api/visit/invites/{INVITE}/preview", None),
 ]
 DATA_CALLS = [
@@ -229,7 +234,7 @@ async def test_release_switch_closes_start_and_join_but_not_ending_state_or_expo
         for method, path, body in START_CALLS:
             resp = await _call(c, method, path, body)
             assert resp.status_code == 404 and resp.json() == {"detail": "Not Found"}, path
-        # 回滚关掉总闸后，仍要能结束在飞的串门、看状态、导出转录（这里的 404 是端点自己的答复）
+        # After rollback disables the gate, still allow ending active visits, status queries, and transcript exports; 404 here comes from endpoints themselves.
         for method, path, body in DATA_CALLS:
             assert (await _call(c, method, path, body)).json() != {"detail": "Not Found"}, path
         assert (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).status_code == 200
@@ -250,32 +255,122 @@ async def test_every_endpoint_requires_the_local_gate(env, method, path, body):
     assert env.preview_calls == [] and _no_slot() and _no_slot("Guest")
 
 
-# ── 建房 ───────────────────────────────────────────────────────────────
+# ── Room creation ──
 
 
-async def test_rooms_answers_202_with_only_the_visit_id(env):
-    resp = await _rooms(env)
+async def test_rooms_answers_202_with_the_visit_id_and_selected_mode(env):
+    resp = await _rooms(env, cat_asset="yui_neko")
     assert resp.status_code == 202
     body = resp.json()
-    assert set(body) == {"visit_id", "phase"} and body["phase"] == "pending"
+    assert set(body) == {"visit_id", "phase", "visit_mode"}
+    assert body["phase"] == "pending" and body["visit_mode"] == "model"
     rt = rtm.get_runtime("Host")
-    assert rt is not None and rt.visit_id == body["visit_id"] and rt.side == "host"
+    assert (rt is not None and rt.visit_id == body["visit_id"] and rt.side == "host"
+            and rt.cat_asset == "yui_neko")
     await settle()
     assert env.host.host.frames_of("visit_state_change", "pending")
-    assert env.host.creds_calls == []   # 能力门之前不去 Servers
+    assert env.host.creds_calls == []   # Never contact Servers before capability gates.
+
+
+@pytest.mark.parametrize("visit_mode,cat_requested", [("model", False), ("cat", True)])
+async def test_room_mode_is_selected_per_visit_even_when_cat_feature_is_enabled(
+    env, monkeypatch, visit_mode, cat_requested,
+):
+    monkeypatch.setattr(http, "VISIT_CAT_SCENE_ENABLED", True)
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", True)
+    fields = {"visit_mode": visit_mode}
+    if cat_requested:
+        fields["target_user_id"] = "22222222-2222-4222-8222-222222222222"
+    resp = await _rooms(env, **fields)
+    assert resp.status_code == 202 and resp.json()["visit_mode"] == visit_mode
+    rt = rtm.get_runtime("Host")
+    assert rt is not None and rt.cat_scene_requested is cat_requested
+
+
+async def test_cat_mode_requires_a_direct_friend_target(env, monkeypatch):
+    monkeypatch.setattr(http, "VISIT_CAT_SCENE_ENABLED", True)
+    monkeypatch.setattr(rtm, "VISIT_CAT_SCENE_ENABLED", True)
+    resp = await _rooms(env, visit_mode="cat")
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "cat_visit_requires_target"
+    assert _no_slot() and env.host.creds_calls == []
+
+
+async def test_cat_mode_refuses_explicitly_while_release_gate_is_off(env, monkeypatch):
+    monkeypatch.setattr(http, "VISIT_CAT_SCENE_ENABLED", False)
+    resp = await _rooms(env, visit_mode="cat")
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "VISIT_CAT_SCENE_UNAVAILABLE"
+    assert _no_slot()
+
+
+async def test_user_switch_off_refuses_rooms_and_join_without_going_online(env):
+    # Disabled visitEnabled rejects creating/joining rooms without reservation/credentials/forwarded previews.
+    env.host.settings["visitEnabled"] = False
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["code"] == "VISIT_DISABLED"
+    assert _no_slot() and env.host.creds_calls == []
+    env.guest.settings.pop("visitEnabled")   # Missing means disabled.
+    join = await _join(env)
+    assert join.status_code == 409 and join.json()["code"] == "VISIT_DISABLED"
+    assert env.preview_calls == [] and _no_slot("Guest") and env.guest.creds_calls == []
+    # Enable and allow normally.
+    env.host.settings["visitEnabled"] = True
+    env.use(env.host)
+    assert (await _rooms(env)).status_code == 202
+
+
+async def test_user_switch_is_checked_by_the_runtime_too(env):
+    # start_visit also checks independently of HTTP, preventing caller bypasses.
+    env.host.settings["visitEnabled"] = False
+    with pytest.raises(rtm.VisitRefused) as refused:
+        await rtm.start_visit("Host", "host")   # Fixture wrapper injects host-side deps.
+    assert refused.value.status == 409 and refused.value.body["code"] == "VISIT_DISABLED"
+    assert _no_slot() and env.host.creds_calls == []
 
 
 async def test_rooms_rejects_bad_fields_before_reserving(env):
     assert (await _rooms(env, catgirl="")).status_code == 400
     assert (await _rooms(env, crop="giant")).json()["code"] == "crop_format"
+    assert (await _rooms(env, visit_mode="tiger")).json()["code"] == "visit_mode_format"
     assert _no_slot()
+
+
+@pytest.mark.parametrize("visit_mode", [[], {}, ["cat"]])
+async def test_unhashable_visit_modes_are_format_errors(env, visit_mode):
+    rooms = await _rooms(env, visit_mode=visit_mode)
+    env.use(env.guest)
+    async with env.client() as c:
+        direct = await c.post(f"/api/visit/rooms/{VISIT_ID}/join-direct", headers=GOOD, json={
+            "catgirl": "Guest", "confirm": True, "crop": "full", "visit_mode": visit_mode,
+        })
+    assert [response.status_code for response in (rooms, direct)] == [400, 400]
+    assert [response.json()["code"] for response in (rooms, direct)] == [
+        "visit_mode_format", "visit_mode_format",
+    ]
+    assert _no_slot() and _no_slot("Guest")
+
+
+async def test_all_room_entry_paths_reject_an_unknown_cat_asset(env):
+    host = await _rooms(env, cat_asset="pc-guessed-cat")
+    guest = await _join(env, cat_asset="pc-guessed-cat")
+    env.use(env.guest)
+    async with env.client() as c:
+        direct = await c.post(f"/api/visit/rooms/{VISIT_ID}/join-direct", headers=GOOD, json={
+            "catgirl": "Guest", "confirm": True, "crop": "full", "cat_asset": "pc-guessed-cat",
+        })
+    assert [response.status_code for response in (host, guest, direct)] == [400, 400, 400]
+    assert [response.json()["code"] for response in (host, guest, direct)] == [
+        "cat_asset_format", "cat_asset_format", "cat_asset_format",
+    ]
+    assert env.preview_calls == [] and _no_slot() and _no_slot("Guest")
 
 
 async def test_cached_preflight_failure_refuses_synchronously(env, monkeypatch):
     class Session:
         lanlan_name, visit_id = "Nobody", VISIT_ID
 
-    # 设置页 / 上一次建房的预检在同一页面环境里失败过：传输 WS 记下结论
+    # Settings/previous room checks failed in this page environment; transport WS retains the conclusion.
     transport_ws._record_preflight(Session(), {"ua": UA, "reason": "no_webrtc"}, False)
     resp = await _rooms(env)
     assert resp.status_code == 409
@@ -284,7 +379,7 @@ async def test_cached_preflight_failure_refuses_synchronously(env, monkeypatch):
     join = await _join(env)
     assert join.status_code == 409 and join.json()["code"] == "VISIT_UNSUPPORTED_ON_THIS_MACHINE"
     assert env.preview_calls == [] and _no_slot("Guest")
-    # 别的页面环境不受牵连
+    # Other page environments remain unaffected.
     async with env.client() as c:
         other = await c.post("/api/visit/rooms", headers={**GOOD, "User-Agent": "Other/1.0"},
                              json={"catgirl": "Host"})
@@ -310,7 +405,7 @@ async def _unsettled_spool(config_dir, visit_id="visitunsettled00000001", size=4
 
 async def test_upload_backlog_counts_unsettled_spools_and_refuses(env, monkeypatch):
     monkeypatch.setattr(tu, "VISIT_UPLOAD_PENDING_CAP_BYTES", 4096)
-    # 只有未结清的 spool（上传早已成功、memory_server 长期不可用）：也算进准入额度
+    # Unsettled spools alone, upload already succeeded but memory_server unavailable, still count toward admission quotas.
     await _unsettled_spool(env.host.config_dir)
     resp = await _rooms(env)
     assert resp.status_code == 409 and resp.json()["code"] == "VISIT_UPLOAD_BACKLOG"
@@ -361,7 +456,7 @@ async def test_unreadable_revocation_log_fails_closed(env):
     _break_log(env.host.config_dir)
     resp = await _rooms(env)
     assert resp.status_code == 409
-    # 同一个码（旧前端照旧认得），另带 reason 说明是读不出的记录在挡，不泄露文件名 / uid
+    # Same legacy-frontend error code plus reason identifying unreadable blockers, without filenames/uids.
     assert resp.json() == {"ok": False, "code": "VISIT_FORGET_IN_PROGRESS", "reason": "forget_record_unreadable"}
     assert _no_slot()
     _break_log(env.guest.config_dir)
@@ -379,7 +474,7 @@ async def test_unreadable_sentinel_without_scope_is_labelled_too(env):
 
 
 async def test_unlistable_record_directory_refuses_without_offering_discard(env):
-    # 目录本身列不出：照样拒（fail closed），但不带 reason——丢弃端点会碰上同一个错误
+    # Unlistable directory also rejects fail-closed, without reason because discard endpoints face the same error.
     (env.host.config_dir / "visit_revocations").write_text("not a directory", encoding="utf-8")
     resp = await _rooms(env)
     assert resp.status_code == 409 and resp.json() == {"ok": False, "code": "VISIT_FORGET_IN_PROGRESS"}
@@ -403,7 +498,7 @@ async def test_real_open_log_is_the_plain_refusal_even_beside_a_damaged_one(env)
                           peer_uid="1" * 24)
     resp = await _rooms(env)
     assert resp.status_code == 409 and resp.json() == {"ok": False, "code": "VISIT_FORGET_IN_PROGRESS"}
-    # 真在清除时优先报真因：丢弃损坏记录帮不上忙，不引导用户去丢
+    # Real clearing takes priority as cause: discarding corrupt records cannot help, so never recommend it.
     _break_log(env.host.config_dir)
     assert "reason" not in (await _rooms(env)).json()
     assert _no_slot()
@@ -428,7 +523,7 @@ async def test_rooms_waits_for_a_clearing_holding_the_admission_lock(env):
     held, release = asyncio.Event(), asyncio.Event()
 
     async def clearing():
-        # 清除一侧：取同一把准入锁写哨兵（memory_routes 的 admission_lock 钩子就是它）
+        # Clearing acquires the same admission lock before writing sentinels, exposed through memory_routes' admission_lock hook.
         async with http.char_admission_lock(HOST_CHAR_UID):
             held.set()
             await release.wait()
@@ -449,7 +544,7 @@ async def test_rooms_waits_for_a_clearing_holding_the_admission_lock(env):
 async def test_admission_lock_is_held_until_the_runtime_is_registered(env):
     env.gate_wait = asyncio.Event()
     request = asyncio.ensure_future(_rooms(env))
-    await asyncio.wait_for(env.gate_entered.wait(), 5)   # 建房已持锁、停在人设闸里
+    await asyncio.wait_for(env.gate_entered.wait(), 5)   # Room creation holds locks and pauses in persona gates.
 
     async def clearing_sees_visit():
         async with http.char_admission_lock(HOST_CHAR_UID):
@@ -457,14 +552,14 @@ async def test_admission_lock_is_held_until_the_runtime_is_registered(env):
 
     probe = asyncio.ensure_future(clearing_sees_visit())
     await settle(60)
-    assert not probe.done()        # 建房还在人设闸里，清除拿不到锁
+    assert not probe.done()        # Clearing cannot acquire locks while room creation remains inside persona gates.
     env.gate_wait.set()
     assert (await request).status_code == 202
-    assert await probe is True     # 清除拿到锁时，这场串门已登记为进行中
+    assert await probe is True     # When clearing acquires locks, this visit is already registered active.
 
 
 def test_forget_endpoints_share_the_admission_lock():
-    # 导入包时把同一把锁交给清除端点（PR-09b 之前就生效：两边都在这个包里）
+    # Package import gives clearing endpoints the same lock, effective before PR-09b since both belong here.
     import importlib
 
     importlib.reload(importlib.import_module("main_routers.visit_router"))
@@ -493,7 +588,7 @@ async def test_character_changed_during_admission_is_refused(env):
     real = local_chars.resolve_char_uid
 
     async def stale(name):
-        return "9" * 32        # 查清除时认到的是另一个角色（期间改名 / 名字被占）
+        return "9" * 32        # Clearing checks resolve a different character after rename/name reuse.
 
     local_chars.resolve_char_uid = stale
     try:
@@ -505,7 +600,153 @@ async def test_character_changed_during_admission_is_refused(env):
     assert rt is not None and rt.finalize_reason == "busy"
 
 
-# ── 邀请预览与入房 ─────────────────────────────────────────────────────
+# ── Cloud snapshots hand names to new characters: no visits until original rename migration finishes ──
+
+
+def _handed_over(env_side, name, *, owner_uid="e" * 32, new="Moved"):
+    """A cloudsave rename of another character that handed ``name`` over to this one, not yet migrated."""
+    marker = {"old": name, "new": new, "uid": owner_uid, "source": "cloudsave", "handed_over": [name]}
+    (env_side.config_dir / "visit_peers.json").write_text(
+        json.dumps({"pending_rename": marker}), encoding="utf-8")
+    return marker
+
+
+class _TmpConfig:
+    """Config-manager stand-in: never the real runtime directory."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def get_config_path(self, name):
+        return self.root / name
+
+    def get_runtime_config_path(self, name):
+        return self.root / name
+
+
+def _configured(monkeypatch, uid_of, root=None):
+    async def readable(*_a, **_kw):
+        return None
+
+    if root is not None:
+        monkeypatch.setattr(local_chars, "get_config_manager", lambda: _TmpConfig(root))
+
+    async def load():
+        return dict(uid_of)
+
+    monkeypatch.setattr(local_chars, "ensure_characters_file_readable", readable)
+    monkeypatch.setattr(local_chars, "load_local_characters", load)
+
+
+async def test_a_handed_over_name_refuses_rooms_and_join_while_its_rename_cannot_settle(env, monkeypatch):
+    async def busy(*_a, **_k):
+        raise OSError("spool locked")
+
+    monkeypatch.setattr(VisitSpool, "rename_own_char", busy)
+    _configured(monkeypatch, {"Host": HOST_CHAR_UID, "Guest": GUEST_CHAR_UID, "Moved": "e" * 32}, env.host.config_dir)
+    host_marker = _handed_over(env.host, "Host")
+    # Original entries remain under Host; new visits would migrate to the original character. Omitting checks must fail mutations.
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending"
+    assert _no_slot() and env.host.creds_calls == []
+    peers = json.loads((env.host.config_dir / "visit_peers.json").read_text(encoding="utf-8"))
+    assert peers["pending_rename"] == {**host_marker, "migrated": True}
+    _handed_over(env.guest, "Guest")
+    join = await _join(env)
+    assert join.status_code == 409 and join.json()["reason"] == "handover_pending"
+    assert _no_slot("Guest") and env.guest.creds_calls == []
+
+
+async def test_a_handed_over_name_is_admitted_once_its_rename_settles(env, monkeypatch):
+    _configured(monkeypatch, {"Host": HOST_CHAR_UID, "Moved": "e" * 32}, env.host.config_dir)
+    _handed_over(env.host, "Host")
+    # Reconcile at admission first, then create normally when migration finishes; always-reject/no-reconcile mutations must fail.
+    assert (await _rooms(env)).status_code == 202
+    peers = json.loads((env.host.config_dir / "visit_peers.json").read_text(encoding="utf-8"))
+    assert "pending_rename" not in peers
+
+
+async def test_a_handed_over_name_waits_for_the_startup_recovery_without_reconciling(env, monkeypatch):
+    from main_routers.visit_router import background
+
+    running = {"v": True}
+    monkeypatch.setattr(background, "startup_recovery_running", lambda: running["v"])
+    _configured(monkeypatch, {"Host": HOST_CHAR_UID, "Moved": "e" * 32}, env.host.config_dir)
+    marker = _handed_over(env.host, "Host")
+    # Startup reconciliation migrates under renamed-character guards without config locks; admission must not reconcile concurrently,
+    # risking marker-clear failure that delays all startup clear replay/backfill until next restart. Reject directly; reconciliation mutations fail.
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending" and _no_slot()
+    peers = json.loads((env.host.config_dir / "visit_peers.json").read_text(encoding="utf-8"))
+    assert peers["pending_rename"] == marker
+    # After startup reconciliation ends unfinished, admission resumes reconciliation and allows completed migrations.
+    running["v"] = False
+    assert (await _rooms(env)).status_code == 202
+
+
+async def test_a_name_handed_over_to_another_character_does_not_block(env, monkeypatch):
+    async def unread():
+        raise AssertionError("the character config is not read when nothing is handed over to this character")
+
+    monkeypatch.setattr(local_chars, "load_local_characters", unread)
+    _handed_over(env.host, "Other")
+    # Different handed-off names: create normally without reading character configuration or taking config locks.
+    assert (await _rooms(env)).status_code == 202
+
+
+async def test_a_handed_over_name_with_a_missing_character_config_refuses(env, monkeypatch, tmp_path):
+    seed = tmp_path / "seed" / "characters.json"
+    seed.parent.mkdir()
+    seed.write_text(json.dumps({"猫娘": {"Host": {"_reserved": {"character_uid": HOST_CHAR_UID}}}}), encoding="utf-8")
+
+    class Config:
+        def get_config_path(self, name):
+            # Missing runtime files fall back to bundled seed files, matching real ConfigManager.
+            return seed
+
+        def get_runtime_config_path(self, name):
+            return tmp_path / "missing" / name
+
+        async def aload_characters(self):
+            # Seed fallback has only Host, not the original character uid e….
+            return {"猫娘": {"Host": {"_reserved": {"character_uid": HOST_CHAR_UID}}}}
+
+    monkeypatch.setattr(local_chars, "get_config_manager", lambda: Config())
+    _handed_over(env.host, "Host")
+    # Handoff markers prove prior characters: missing files cannot mean fresh installs and justify default-seed reconciliation,
+    # which mistakes originals for deleted and removes markers without migration. Reject unresolved cases; missing/seed-file mutations fail.
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending" and _no_slot()
+    peers = json.loads((env.host.config_dir / "visit_peers.json").read_text(encoding="utf-8"))
+    assert "pending_rename" in peers
+
+
+async def test_a_handed_over_name_with_an_unreadable_character_config_refuses(env, monkeypatch):
+    async def broken(*_a, **_kw):
+        raise OSError("characters.json unreadable")
+
+    monkeypatch.setattr(local_chars, "ensure_characters_file_readable", broken)
+    monkeypatch.setattr(local_chars, "get_config_manager", lambda: _TmpConfig(env.host.config_dir))
+    _handed_over(env.host, "Host")
+    # Reconciliation needs readable character configuration: defer on read failure, never infer no handoff.
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending" and _no_slot()
+
+
+async def test_a_failed_handover_check_refuses(env, monkeypatch):
+    from main_logic.visit import char_lifecycle
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(char_lifecycle, "handover_blocks_visit", broken)
+    _handed_over(env.host, "Host")
+    # Failed checks mean unknown; reject for now, never infer no handoff. Fail-open mutations must fail.
+    resp = await _rooms(env)
+    assert resp.status_code == 409 and resp.json()["reason"] == "handover_pending" and _no_slot()
+
+
+# ── Invitation preview and joining ──
 
 
 async def _preview(env, code=INVITE):
@@ -521,9 +762,16 @@ async def test_preview_returns_the_dialog_fields_without_the_host_uid(env):
     assert body == {"visit_id": VISIT_ID, "host_display_name": "Mimi", "host_short_code": HOST_UID[:6].upper(),
                     "cross_region": False, "expires_at": NOW + 600, "locally_blocked": False}
     assert HOST_UID not in resp.text
-    # 只读：不占位、不建 iframe、不领凭证，之后同一邀请码照样能入房
+    # Read-only: no reservations/iframes/credentials, leaving the same invitation joinable afterward.
     assert _no_slot("Guest") and env.guest.creds_calls == []
     assert (await _join(env)).status_code == 202
+
+
+async def test_preview_keeps_a_peer_card_name_that_is_also_installed_locally(env):
+    env.preview_display_name = "Host"
+    body = (await _preview(env)).json()
+    assert body["host_display_name"] == "Host"
+    assert body["host_short_code"] == HOST_UID[:6].upper()
 
 
 async def test_preview_marks_a_locally_blocked_host(env):
@@ -535,6 +783,8 @@ async def test_preview_marks_a_locally_blocked_host(env):
 @pytest.mark.parametrize("mode,status,code", [
     ("404", 404, "invite_invalid"), ("410", 410, "invite_expired"), ("403", 403, "VISIT_BANNED"),
     ("429", 429, "rate_limited"), ("401", 409, "VISIT_LOGIN_REQUIRED"), ("503", 503, "servers_unreachable"),
+    ("quota", 429, "VISIT_QUOTA_EXCEEDED"),
+    ("concurrency", 429, "VISIT_CONCURRENCY_LIMIT"),
 ])
 async def test_preview_maps_servers_errors(env, mode, status, code):
     env.preview_mode = mode
@@ -553,12 +803,13 @@ async def test_preview_rejects_a_malformed_code_before_any_network(env):
 
 async def test_join_answers_202_and_reuses_a_recent_preview(env):
     await _preview(env)
-    resp = await _join(env)
+    resp = await _join(env, cat_asset="yui_neko")
     assert resp.status_code == 202
     assert resp.json() == {"ok": True, "visit_id": VISIT_ID, "phase": "pending"}
-    assert env.preview_calls == [INVITE]      # 60 s 内的预览结果直接复用
+    assert env.preview_calls == [INVITE]      # Reuse previews within sixty seconds.
     rt = rtm.get_runtime("Guest")
-    assert rt is not None and rt.side == "guest" and rt.invite_code == INVITE
+    assert (rt is not None and rt.side == "guest" and rt.invite_code == INVITE
+            and rt.cat_asset == "yui_neko")
 
 
 async def test_join_fetches_the_preview_when_none_is_recent(env, monkeypatch):
@@ -621,7 +872,21 @@ async def test_join_format_gates(env):
     assert env.preview_calls == [] and _no_slot("Guest")
 
 
-# ── 邀请码不进日志 ─────────────────────────────────────────────────────
+async def test_join_applies_the_guest_crop_preference(env):
+    resp = await _join(env, crop="upper")
+    assert resp.status_code == 202
+    runtime = rtm.get_runtime("Guest")
+    assert runtime is not None and runtime.side == "guest"
+    assert runtime.crop == "upper"
+
+
+async def test_join_rejects_an_unknown_crop_before_preview(env):
+    resp = await _join(env, crop="giant")
+    assert resp.status_code == 400 and resp.json()["code"] == "crop_format"
+    assert env.preview_calls == [] and _no_slot("Guest")
+
+
+# ── Invitation codes never enter logs ──
 
 
 async def test_invite_code_is_redacted_on_both_log_hops(env, caplog):
@@ -629,24 +894,24 @@ async def test_invite_code_is_redacted_on_both_log_hops(env, caplog):
 
     caplog.set_level(logging.INFO, logger="httpx")
     caplog.set_level(logging.INFO, logger="uvicorn.access")
-    await _preview(env)   # 出站：httpx 的请求日志带着 Servers 预览 URL
-    # 入站：uvicorn 访问日志的路径是第 3 个参数
+    await _preview(env)   # Outbound httpx request logs contain Servers preview URLs.
+    # Inbound uvicorn access-log paths are argument three.
     logging.getLogger("uvicorn.access").info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5000", "GET",
                                              f"/api/visit/invites/{INVITE}/preview", "1.1", 200)
     hops = {r.name for r in caplog.records if "/invites/***/preview" in r.getMessage()}
     assert hops == {"httpx", "uvicorn.access"}
     assert INVITE not in caplog.text
     access = [r for r in caplog.records if r.name == "uvicorn.access"][-1]
-    # uvicorn 的访问日志格式化器按位置拆参数：改写后参数个数不变、照常能格式化
+    # uvicorn positional formatting retains argument count and remains valid after rewriting.
     assert "/invites/***/preview" in AccessFormatter('%(request_line)s %(status_code)s').format(access)
-    # 不带 /preview 的探测 / 打错的路径一样带着可兑换的邀请码：照样改写
+    # Probes/typos without /preview still carry redeemable invitation codes; redact too.
     logging.getLogger("uvicorn.access").info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5000", "GET",
                                              f"/api/visit/invites/{INVITE}", "1.1", 404)
     assert any(r.getMessage().endswith('/invites/*** HTTP/1.1" 404') for r in caplog.records)
     assert INVITE not in caplog.text
 
 
-# ── 接待 / 结束 ────────────────────────────────────────────────────────
+# ── Reception / ending ──
 
 
 async def test_accept_forwards_to_the_matching_host_runtime(env):
@@ -675,12 +940,309 @@ async def test_accept_forwards_to_the_matching_host_runtime(env):
     assert bad.status_code == 400
 
 
+async def test_accept_true_is_refused_once_the_user_switch_is_off(env):
+    # Visit permission disabled before shutdown hooks end this visit: reject reception, still allow declining.
+    calls = []
+
+    class Stub:
+        visit_id, creds, admitted_account = VISIT_ID, None, "acct"
+
+        async def accept(self, accept):
+            calls.append(accept)
+            return 200, {"ok": True}
+
+    env.host.settings["visitEnabled"] = False
+    rtm._runtimes["Host"] = Stub()
+    try:
+        async with env.client() as c:
+            refused = await c.post(f"/api/visit/rooms/{VISIT_ID}/accept", headers=GOOD,
+                                   json={"catgirl": "Host", "accept": True})
+            declined = await c.post(f"/api/visit/rooms/{VISIT_ID}/accept", headers=GOOD,
+                                    json={"catgirl": "Host", "accept": False})
+    finally:
+        del rtm._runtimes["Host"]
+    assert refused.status_code == 409 and refused.json()["code"] == "VISIT_DISABLED"
+    assert declined.status_code == 200 and calls == [False]
+
+
 async def test_accept_before_the_guest_arrived_is_404(env):
     visit_id = (await _rooms(env)).json()["visit_id"]
     async with env.client() as c:
         resp = await c.post(f"/api/visit/rooms/{visit_id}/accept", headers=GOOD,
                             json={"catgirl": "Host", "accept": True})
     assert resp.status_code == 404 and resp.json()["error"] == "no_pending_invite"
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"kind": "greet"}, "visit_id_format"),
+        ({"visit_id": "../x", "kind": "greet"}, "visit_id_format"),
+        ({"visit_id": VISIT_ID}, "invalid_action"),
+        ({"visit_id": VISIT_ID, "kind": "eat"}, "invalid_action"),
+        ({"visit_id": VISIT_ID, "kind": True}, "invalid_action"),
+        ({"visit_id": VISIT_ID, "kind": []}, "invalid_action"),
+        ({"visit_id": VISIT_ID, "kind": "greet", "actor": "self"}, "invalid_fields"),
+        ({"visit_id": VISIT_ID, "kind": "greet", "actor_side": "host"}, "invalid_fields"),
+        ({"visit_id": VISIT_ID, "kind": "greet", "seed": 7}, "invalid_fields"),
+        ({"visit_id": VISIT_ID, "kind": "greet", "unknown": 1}, "invalid_fields"),
+    ],
+)
+async def test_cat_action_accepts_only_visit_id_and_kind(env, body, code):
+    async with env.client() as c:
+        resp = await c.post("/api/visit/route/cat-action", headers=GOOD, json=body)
+    assert resp.status_code == 400 and resp.json()["code"] == code
+
+
+async def test_cat_action_uses_owned_runtime_and_preserves_body_csrf(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_action(self, kind):
+            calls.append(kind)
+            return 202, {"ok": True, "queued": kind}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            response = await c.post(
+                "/api/visit/route/cat-action",
+                headers={"Origin": ORIGIN, "User-Agent": UA},
+                json={"visit_id": VISIT_ID, "kind": "play", "_csrf_token": AUTOSTART_CSRF_TOKEN},
+            )
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert response.status_code == 202
+    assert response.json() == {"ok": True, "queued": "play"}
+    assert calls == ["play"]
+
+
+async def test_cat_action_accepts_move_as_an_owner_authored_action(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_action(self, kind):
+            calls.append(kind)
+            return 202, {"ok": True, "queued": kind}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            response = await c.post(
+                "/api/visit/route/cat-action",
+                headers=GOOD,
+                json={"visit_id": VISIT_ID, "kind": "move"},
+            )
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert response.status_code == 202
+    assert response.json() == {"ok": True, "queued": "move"}
+    assert calls == ["move"]
+
+
+async def test_cat_action_hides_unknown_and_another_accounts_visits(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_action(self, kind):
+            calls.append(kind)
+            return 200, {"ok": True}
+
+    async with env.client() as c:
+        unknown = await c.post("/api/visit/route/cat-action", headers=GOOD,
+                               json={"visit_id": VISIT_ID, "kind": "rest"})
+        rtm._by_visit[VISIT_ID] = Stub()
+        try:
+            env.account = "someone-else"
+            other = await c.post("/api/visit/route/cat-action", headers=GOOD,
+                                 json={"visit_id": VISIT_ID, "kind": "rest"})
+        finally:
+            rtm._by_visit.pop(VISIT_ID, None)
+    assert unknown.status_code == 404 and unknown.json()["code"] == "unknown_visit"
+    assert other.status_code == 404 and other.json()["code"] == "unknown_visit"
+    assert calls == []
+
+
+async def test_cat_action_passes_runtime_refusal_through(env):
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_action(self, kind):
+            assert kind == "greet"
+            return 409, {"ok": False, "code": "CAT_ACTION_BUSY"}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            response = await c.post("/api/visit/route/cat-action", headers=GOOD,
+                                    json={"visit_id": VISIT_ID, "kind": "greet"})
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert response.status_code == 409
+    assert response.json() == {"ok": False, "code": "CAT_ACTION_BUSY"}
+
+
+_CAT_POSE_BODY = {
+    "visit_id": VISIT_ID, "phase": "sample", "motion_id": 1, "sample_seq": 1,
+    "x_q16": 1000, "y_q16": 2000, "mode": "walk", "facing": "right",
+    "tier": "cat1", "slot": "movement.cat1.walking",
+}
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({"actor": "self"}, "invalid_fields"),
+        ({"actor_side": "host"}, "invalid_fields"),
+        ({"url": "/cat.gif"}, "invalid_fields"),
+        ({"x": 10}, "invalid_fields"),
+        ({"phase": "move"}, "invalid_phase"),
+        ({"motion_id": True}, "invalid_pose"),
+        ({"sample_seq": 0}, "invalid_pose"),
+        ({"x_q16": 65536}, "invalid_pose"),
+        ({"mode": "teleport"}, "invalid_pose"),
+        ({"mode": []}, "invalid_pose"),
+        ({"facing": []}, "invalid_pose"),
+        ({"slot": []}, "invalid_pose"),
+        ({"tier": "cat2", "slot": "movement.cat1.walking"}, "invalid_pose"),
+        ({"slot": "https://example.test/cat.gif"}, "invalid_pose"),
+    ],
+)
+async def test_cat_pose_has_a_strict_normalized_allowlist(env, change, code):
+    async with env.client() as c:
+        response = await c.post(
+            "/api/visit/route/cat-pose", headers=GOOD, json={**_CAT_POSE_BODY, **change},
+        )
+    assert response.status_code == 400 and response.json()["code"] == code
+
+
+async def test_cat_pose_uses_owned_runtime_and_preserves_body_csrf(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_pose(self, phase, pose):
+            calls.append((phase, pose))
+            return 202, {"ok": True, "phase": phase}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            response = await c.post(
+                "/api/visit/route/cat-pose",
+                headers={"Origin": ORIGIN, "User-Agent": UA},
+                json={**_CAT_POSE_BODY, "_csrf_token": AUTOSTART_CSRF_TOKEN},
+            )
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert response.status_code == 202 and response.json() == {"ok": True, "phase": "sample"}
+    assert calls == [("sample", {
+        key: value for key, value in _CAT_POSE_BODY.items() if key not in {"visit_id", "phase"}
+    })]
+
+
+async def test_cat_pose_hides_unknown_and_another_accounts_visits(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_pose(self, phase, pose):
+            calls.append((phase, pose))
+            return 202, {"ok": True}
+
+    async with env.client() as c:
+        unknown = await c.post("/api/visit/route/cat-pose", headers=GOOD, json=_CAT_POSE_BODY)
+        rtm._by_visit[VISIT_ID] = Stub()
+        try:
+            env.account = "someone-else"
+            other = await c.post("/api/visit/route/cat-pose", headers=GOOD, json=_CAT_POSE_BODY)
+        finally:
+            rtm._by_visit.pop(VISIT_ID, None)
+    assert unknown.status_code == 404 and unknown.json()["code"] == "unknown_visit"
+    assert other.status_code == 404 and other.json()["code"] == "unknown_visit"
+    assert calls == []
+
+
+_CAT_WORLD_INTENT_BODY = {
+    "visit_id": VISIT_ID, "intent_id": 1, "kind": "yarn_grab",
+    "x_q16": 1000, "y_q16": 2000,
+}
+_CAT_WORLD_STATE_BODY = {
+    "visit_id": VISIT_ID, "phase": "commit", "world_seq": 1,
+    "yarn_active": True, "yarn_x_q16": 1000, "yarn_y_q16": 2000,
+    "yarn_vx_q12": 2, "yarn_vy_q12": -3, "yarn_holder": "guest",
+    "question_active": False, "question_x_q16": 3000,
+    "question_y_q16": 4000, "collision_seq": 0,
+}
+
+
+@pytest.mark.parametrize(("path", "body", "change", "code"), [
+    ("cat-world-intent", _CAT_WORLD_INTENT_BODY, {"actor": "self"}, "invalid_fields"),
+    ("cat-world-intent", _CAT_WORLD_INTENT_BODY, {"kind": "move"}, "invalid_intent"),
+    ("cat-world-intent", _CAT_WORLD_INTENT_BODY, {"kind": []}, "invalid_intent"),
+    ("cat-world-pointer", _CAT_WORLD_INTENT_BODY, {"kind": None}, "invalid_fields"),
+    ("cat-world-pointer", {k: v for k, v in _CAT_WORLD_INTENT_BODY.items() if k != "kind"},
+     {"x_q16": 65536}, "invalid_pointer"),
+    ("cat-world-state", _CAT_WORLD_STATE_BODY, {"window_width": 100}, "invalid_fields"),
+    ("cat-world-state", _CAT_WORLD_STATE_BODY, {"yarn_vx_q12": 4096}, "invalid_state"),
+    ("cat-world-state", _CAT_WORLD_STATE_BODY, {"yarn_holder": "self"}, "invalid_state"),
+    ("cat-world-state", _CAT_WORLD_STATE_BODY, {"yarn_holder": []}, "invalid_state"),
+])
+async def test_cat_world_http_has_strict_fixed_normalized_fields(env, path, body, change, code):
+    async with env.client() as c:
+        response = await c.post(
+            f"/api/visit/route/{path}", headers=GOOD, json={**body, **change},
+        )
+    assert response.status_code == 400 and response.json()["code"] == code
+
+
+async def test_cat_world_http_forwards_owned_inputs_and_host_only_refusal(env):
+    calls = []
+
+    class Stub:
+        creds, admitted_account = None, "acct"
+
+        async def request_cat_world_intent(self, intent):
+            calls.append(("intent", intent))
+            return 202, {"ok": True, "intent_id": intent["intent_id"]}
+
+        async def request_cat_world_pointer(self, pointer):
+            calls.append(("pointer", pointer))
+            return 202, {"ok": True, "intent_id": pointer["intent_id"]}
+
+        async def request_cat_world_state(self, phase, state):
+            calls.append(("state", phase, state))
+            return 409, {"ok": False, "code": "VISIT_CAT_WORLD_HOST_ONLY"}
+
+    rtm._by_visit[VISIT_ID] = Stub()
+    try:
+        async with env.client() as c:
+            intent = await c.post("/api/visit/route/cat-world-intent", headers=GOOD,
+                                  json=_CAT_WORLD_INTENT_BODY)
+            pointer = await c.post("/api/visit/route/cat-world-pointer", headers=GOOD, json={
+                key: value for key, value in _CAT_WORLD_INTENT_BODY.items() if key != "kind"
+            })
+            state = await c.post("/api/visit/route/cat-world-state", headers=GOOD,
+                                 json=_CAT_WORLD_STATE_BODY)
+    finally:
+        rtm._by_visit.pop(VISIT_ID, None)
+    assert intent.status_code == pointer.status_code == 202
+    assert state.status_code == 409 and state.json()["code"] == "VISIT_CAT_WORLD_HOST_ONLY"
+    assert calls[0] == ("intent", {k: v for k, v in _CAT_WORLD_INTENT_BODY.items()
+                                   if k != "visit_id"})
+    assert calls[1] == ("pointer", {k: v for k, v in _CAT_WORLD_INTENT_BODY.items()
+                                    if k not in {"visit_id", "kind"}})
+    assert calls[2][0:2] == ("state", "commit")
+    assert calls[2][2] == {k: v for k, v in _CAT_WORLD_STATE_BODY.items()
+                            if k not in {"visit_id", "phase"}}
 
 
 async def test_route_end_ends_a_waiting_visit_and_validates_its_body(env):
@@ -702,7 +1264,7 @@ async def test_route_end_ends_a_waiting_visit_and_validates_its_body(env):
     assert env.host.rt.finalize_reason == "recall"
 
 
-# ── 状态 ───────────────────────────────────────────────────────────────
+# ── Status ──
 
 
 def _keys(obj) -> set:
@@ -727,6 +1289,109 @@ async def test_state_never_carries_the_invite_code(env):
     assert "invite_code" not in _keys(resp.json()) and INVITE not in resp.text
 
 
+async def test_state_restores_host_invitation_target_only_to_its_owner(env):
+    await _rooms(env)
+    target = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    env.host.rt.target_user_id = target
+    async with env.client() as client:
+        restored = await client.get("/api/visit/state?catgirl=Host", headers=GOOD)
+        env.account = "someone-else"
+        hidden = await client.get("/api/visit/state?catgirl=Host", headers=GOOD)
+    assert restored.json()["target_user_id"] == target
+    assert restored.json()["phase"] == "pending"
+    assert "target_user_id" not in hidden.json() and target not in hidden.text
+    assert "invite_code" not in restored.json()
+
+
+async def test_current_host_room_recovers_only_the_owned_pending_invite(env):
+    async with env.client() as c:
+        missing = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert missing.status_code == 404
+
+    await _rooms(env)
+    async with env.client() as c:
+        pending = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert pending.status_code == 200
+    assert pending.json()["phase"] == "pending" and "invite_code" not in pending.json()
+
+    rt = env.host.rt
+    Wire().attach(rt, None, HOST_VID)
+    await through_gate(rt)
+    await rt.on_transport_state({"state": "joined", "peer_present": False})
+    await settle()
+    async with env.client() as c:
+        ready = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+        env.account = "someone-else"
+        hidden = await c.get("/api/visit/rooms/current?catgirl=Host", headers=GOOD)
+    assert ready.status_code == 200
+    assert ready.json() == {"visit_id": rt.visit_id, "phase": "invite_ready", "visit_mode": "model",
+                            "invite_code": INVITE, "invite_expires_at": NOW + 600}
+    assert hidden.status_code == 404 and INVITE not in hidden.text
+
+
+async def test_create_room_after_restart_always_mints_a_fresh_local_visit_id(env):
+    created = await _rooms(env)
+    assert created.status_code == 202
+    assert created.json()["phase"] == "pending"
+    assert created.json()["visit_id"] != VISIT_ID
+    assert env.host.rt is not None and env.host.rt.visit_id == created.json()["visit_id"]
+
+
+async def test_create_room_waits_for_desktop_restart_cleanup(env, monkeypatch):
+    async def cleanup_failed():
+        return cr.VisitServersUnreachable("desktop_restart_reset")
+
+    monkeypatch.setattr(display_socket, "wait_desktop_restart_reset", cleanup_failed)
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    assert response.status_code == 503
+    assert response.json()["code"] == "servers_unreachable"
+    assert env.host.rt is None
+
+
+async def test_create_room_asks_for_login_when_desktop_restart_cleanup_needs_it(env, monkeypatch):
+    async def no_local_invites():
+        return 0
+
+    async def signed_out():
+        raise cr.VisitLoginRequired()
+
+    monkeypatch.setattr(rtm, "reset_pending_host_invites_for_desktop_restart", no_local_invites)
+    monkeypatch.setattr(cr, "cancel_pending_host_invites", signed_out)
+    await display_socket._reset_for_new_desktop_run({"desktop_run_id": "desktop-a"})
+    await display_socket._reset_for_new_desktop_run({"desktop_run_id": "desktop-b"})
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    # Symmetric with the startup reset: signed out is a login prompt, not "servers unreachable".
+    assert response.status_code == 409
+    assert response.json()["code"] == "VISIT_LOGIN_REQUIRED"
+    assert env.host.rt is None
+
+
+async def test_create_room_refuses_when_startup_invite_cleanup_failed(env, monkeypatch):
+    async def cleanup_failed():
+        return cr.VisitServersUnreachable("startup_invite_reset")
+
+    monkeypatch.setattr(background, "wait_startup_invite_reset", cleanup_failed)
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    assert response.status_code == 503
+    assert response.json()["code"] == "servers_unreachable"
+    assert env.host.rt is None
+
+
+async def test_create_room_asks_for_login_when_startup_invite_cleanup_needs_it(env, monkeypatch):
+    async def signed_out():
+        return cr.VisitLoginRequired("no_session")
+
+    monkeypatch.setattr(background, "wait_startup_invite_reset", signed_out)
+    async with env.client() as c:
+        response = await c.post("/api/visit/rooms", headers=GOOD, json={"catgirl": "Host"})
+    assert response.status_code == 409
+    assert response.json()["code"] == "VISIT_LOGIN_REQUIRED"
+    assert env.host.rt is None
+
+
 async def test_state_of_an_idle_character_has_the_same_keys(env):
     async with env.client() as c:
         idle = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
@@ -738,7 +1403,17 @@ async def test_state_of_an_idle_character_has_the_same_keys(env):
     assert bad.status_code == 400
 
 
-# ── 转录导出 ───────────────────────────────────────────────────────────
+async def test_state_reports_release_switch_and_default_tier(env, monkeypatch):
+    # Settings use enabled for visit-group visibility and default_tier for readonly tiers (§5 PR-13).
+    async with env.client() as c:
+        on = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
+        monkeypatch.setattr(visit_settings, "VISIT_ENABLED", False)
+        off = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
+    assert on["enabled"] is True and off["enabled"] is False
+    assert on["default_tier"] == off["default_tier"] == "sd600"
+
+
+# ── Transcript export ──
 
 LINES = [
     {"ln": "h:1", "lp": 1, "side": "host", "ts": 1001.0, "from": "own_cat", "text": "你好", "truncated": False},
@@ -808,7 +1483,7 @@ async def test_transcript_reads_the_local_spool(env):
     assert [(line["line_id"], line["speaker_kind"], line["text"]) for line in body["lines"]] == [
         ("h:1", "cat", "你好"), ("g:1", "cat", "喵"), ("g:2", "human", "hi")]
     assert body["lines"][2]["truncated"] is True
-    # 待传文件已结清：拿云端那份对了一遍（这里云端是空的，什么都没并进来）
+    # Pending uploads settled; compared with cloud copies, empty here and adding nothing.
     assert env.servers.count(f"/api/visit/details/{VISIT_ID}") == 1
 
 
@@ -817,7 +1492,7 @@ async def test_transcript_after_forget_has_no_peer_identity(env):
     await spool.delete_peer_fields()
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and body["peer_uid"] is None and body["peer_short_id"] is None
-    assert len(body["lines"]) == 3      # 「清除这个人」只抹身份、不删正文
+    assert len(body["lines"]) == 3      # Clear-this-person erases identity, not text.
 
 
 async def test_transcript_reads_memory_when_the_spool_is_gone(env, monkeypatch):
@@ -847,7 +1522,7 @@ async def test_transcript_reads_memory_when_the_spool_is_gone(env, monkeypatch):
             return 60.0
 
     monkeypatch.setattr(rtm, "recent_runtime", lambda visit_id: Recent() if visit_id == VISIT_ID else None)
-    _write_sealed(env.host.config_dir)   # 内存优先于待传文件
+    _write_sealed(env.host.config_dir)   # Prefer memory over pending-upload files.
     body = (await _transcript(env)).json()
     assert body["source"] == "memory" and set(body) == LOCAL_KEYS | {"ended_at"}
     assert body["transport"] == "livekit" and body["anomalies"] == 3 and body["ended_at"] == NOW + 90
@@ -870,14 +1545,14 @@ async def test_spool_and_pending_upload_are_read_once(env, monkeypatch):
     monkeypatch.setattr(http, "read_pending_upload_doc_sync",
                         lambda *a: reads.append(a) or real(*a))
     body = (await _transcript(env)).json()
-    # 崩溃场次的待传文件要从流水重建：一次请求只读一遍，spool 的 transport 也取自这一份
+    # Crash uploads rebuild from streams: read once per request and derive spool transport from the same copy.
     assert body["source"] == "spool" and body["transport"] == "trtc" and len(reads) == 1
 
 
 async def test_spool_anomalies_ignore_another_accounts_pending_upload(env):
     await _write_spool(env.host.config_dir)
     doc = _upload_doc()
-    doc["own_visit_uid"] = OTHER_OWN      # 共用电脑上另一个账号那一侧的待传文件
+    doc["own_visit_uid"] = OTHER_OWN      # Another shared-computer account's pending upload.
     path = env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
     body = (await _transcript(env)).json()
@@ -890,7 +1565,7 @@ async def test_transcript_rebuilds_a_crashed_upload_stream_without_writing(env):
     body = (await _transcript(env)).json()
     assert body["source"] == "upload" and body["role"] == "guest" and len(body["lines"]) == 3
     assert path.read_bytes() == before
-    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]   # 只读：不封存、不删流水
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]   # Read-only: neither seal nor delete streams.
 
 
 def _details_rows(n, role="host"):
@@ -899,7 +1574,7 @@ def _details_rows(n, role="host"):
         half = {"from": "own_cat", "ts": 1000.0 + i, "text": f"line {i}", "truncated": False}
         rows.append({"lp": i, "side": "host", role: half, ("guest" if role == "host" else "host"): None,
                      "status": "only_" + role})
-    rows.reverse()       # 云端顺序不可信：返回前按 (lp, side_rank) 排
+    rows.reverse()       # Cloud ordering untrusted; sort (lp, side_rank) before returning.
     return rows
 
 
@@ -949,7 +1624,7 @@ async def test_cloud_transcript_takes_this_sides_half(env, monkeypatch):
 
 
 async def test_cloud_transcript_past_the_page_cap_is_502_without_lines(env):
-    # 满页一直翻到上限之后还有 next_cursor
+    # Full pages continue to limits with next_cursor still present.
     env.servers.details_lines = _details_rows(500 * (visit_settings.VISIT_DETAILS_MAX_PAGES + 1))
     resp = await _transcript(env)
     assert resp.status_code == 502 and resp.json()["code"] == "cloud_transcript_incomplete"
@@ -1012,14 +1687,14 @@ async def test_cloud_cursor_that_does_not_advance_is_a_failure(env, monkeypatch)
 
 
 async def test_account_switch_during_admission_is_refused(env, monkeypatch):
-    seen = iter(["u1", "u2"])   # 占位前一次、登记后一次
+    seen = iter(["u1", "u2"])   # Once before reservation, once after registration.
 
     async def switching():
         return next(seen, "u2")
 
     monkeypatch.setattr(accounts, "local_account", switching)
     resp = await _rooms(env)
-    # 清除检查按 u1 查的，这一场却已是 u2 的：作废
+    # Clearing checked u1, but this visit now belongs to u2; invalidate.
     assert resp.status_code == 409 and resp.json()["reason"] == "busy"
     assert env.host.rt.finalize_reason == "busy"
 
@@ -1040,7 +1715,7 @@ async def test_local_copies_of_another_account_are_not_served(env, monkeypatch):
     env.own_uid = OTHER_OWN
     env.servers.details_lines = _details_rows(3)
     body = (await _transcript(env)).json()
-    # 本机三份都属于另一个社区账号：只走云端（Servers 按参与者判定）
+    # All three local copies belong to another community account; cloud only, with Servers participant checks.
     assert body["source"] == "cloud"
     env.account = None
     assert (await _transcript(env)).json()["code"] == "transcript_gone_local"
@@ -1071,12 +1746,12 @@ async def test_memory_transcript_after_forget_has_no_peer_identity(env, monkeypa
     spool = VisitSpool(env.host.config_dir, VISIT_ID)
     await spool.write_state(state)
     assert (await _transcript(env)).json()["peer_uid"] == HOST_UID
-    # 「清除这个人」抹掉了 state.json 的对端字段
+    # Clear-this-person erased peer fields in state.json.
     await spool.write_state({**state, "peer_uid": None, "pair_id": None, "peer_char_id": None})
     body = (await _transcript(env)).json()
     assert body["source"] == "memory" and body["peer_uid"] is None and body["peer_short_id"] is None
     assert HOST_UID not in json.dumps(body)
-    # state.json 已被回收（激活时一定写过）：同样不给身份
+    # state.json reclaimed after guaranteed activation writes; likewise withhold identity.
     spool.state_path.unlink()
     body = (await _transcript(env)).json()
     assert body["source"] == "memory" and body["peer_uid"] is None and len(body["lines"]) == 0
@@ -1085,14 +1760,14 @@ async def test_memory_transcript_after_forget_has_no_peer_identity(env, monkeypa
 async def test_a_spool_that_lost_lines_gives_way_to_a_complete_source(env):
     spool = await _write_spool(env.host.config_dir)
     with open(spool.jsonl_path, "ab") as handle:
-        handle.write(b'{"lp": 9, "side": "host", "ts"')      # 崩溃留下的半行
+        handle.write(b'{"lp": 9, "side": "host", "ts"')      # Crash leaves a partial row.
     _write_sealed(env.host.config_dir)
     env.servers.details_lines = _cloud_rows_covering()
-    # 待传文件补不回这半行：合并后仍不完整，先找云端；云端多出的行并进来，但证明不了丢的那条回来了
+    # Pending uploads cannot restore it; merged data remains incomplete. Consult cloud, merge extra rows, but cannot prove the missing row returned.
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and len(body["lines"]) == 5 and body["dropped_lines"] == 1
     (env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json").unlink()
-    env.servers.details_mode = "503"   # 云端也取不到：退回这份不完整的，并如实标出丢了几行
+    env.servers.details_mode = "503"   # Cloud unavailable too: return incomplete data with truthful missing-row counts.
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
 
@@ -1114,7 +1789,7 @@ async def test_memory_copy_of_another_account_is_not_served(env, monkeypatch):
             return 0
 
     monkeypatch.setattr(rtm, "recent_runtime", lambda visit_id: Recent())
-    env.servers.details_mode = "403"     # 云端按参与者判定：这一场不是当前账号的
+    env.servers.details_mode = "403"     # Cloud participant checks say visit does not belong to current account.
     resp = await _transcript(env)
     assert resp.status_code == 404 and resp.json()["code"] == "transcript_gone_local"
 
@@ -1123,16 +1798,16 @@ async def test_state_of_another_accounts_visit_only_says_busy(env):
     await _rooms(env)
     async with env.client() as c:
         mine = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
-        env.account = "someone-else"     # 共用电脑上换了社区账号
+        env.account = "someone-else"     # Community account switched on shared computer.
         other = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
     assert mine["visit_id"] is not None
-    assert other == {**http.IDLE_STATE, "active": True, "phase": "pending"}
+    assert other == {**http.IDLE_STATE, "active": True, "phase": "pending", **http.release_info()}
 
 
 async def test_an_upload_stream_that_lost_records_gives_way_to_the_cloud(env):
     path = _write_stream(env.host.config_dir)
     with open(path, "ab") as handle:
-        handle.write(b'{"kind": "line", "lp": 9')       # 崩溃留下的半行
+        handle.write(b'{"kind": "line", "lp": 9')       # Crash leaves a partial row.
     env.servers.details_lines = _cloud_rows_covering()
     body = (await _transcript(env)).json()
     assert body["source"] == "upload" and len(body["lines"]) == 5 and body["dropped_lines"] == 1
@@ -1150,7 +1825,7 @@ async def test_cloud_text_that_cannot_be_utf8_is_a_dropped_row_not_500(env, monk
     real = env.servers._details
 
     def with_lone_surrogate(request):
-        # Servers 在 JSON 里转义出一个孤立代理字符（解析得出字符串，却编不成 UTF-8）
+        # Servers JSON escapes a lone surrogate, parseable as strings but unencodable to UTF-8.
         resp = real(request)
         escaped = bytes((92,)) + b"ud800"
         return httpx.Response(resp.status_code, content=resp.content.replace(b"@@SURROGATE@@", escaped),
@@ -1163,7 +1838,7 @@ async def test_cloud_text_that_cannot_be_utf8_is_a_dropped_row_not_500(env, monk
 
 async def test_admission_compares_the_account_the_runtime_recorded(env, monkeypatch):
     async def runtime_saw(*_a):
-        return "someone-else"     # start_visit 读本机账号那一刻是别的账号（中途换走又换回）
+        return "someone-else"     # start_visit sees another account when reading local identity, switched away and back during the request.
 
     monkeypatch.setattr(rtm, "_local_account", runtime_saw)
     resp = await _rooms(env)
@@ -1230,7 +1905,7 @@ async def test_backlog_entry_that_cannot_be_statted_refuses(env, monkeypatch):
 async def test_another_account_cannot_accept_or_recall_but_can_end(env):
     visit_id = (await _rooms(env)).json()["visit_id"]
     rt = env.host.rt
-    env.account = "someone-else"         # 共用电脑上换了社区账号
+    env.account = "someone-else"         # Community account switched on shared computer.
     async with env.client() as c:
         accept = await c.post(f"/api/visit/rooms/{visit_id}/accept", headers=GOOD,
                               json={"catgirl": "Host", "accept": False})
@@ -1238,7 +1913,7 @@ async def test_another_account_cannot_accept_or_recall_but_can_end(env):
                               json={"lanlan_name": "Host", "visit_id": visit_id, "reason": "recall"})
         assert accept.status_code == 404 and recall.status_code == 404
         assert rt.finalize_reason is None and rt.accepted is None
-        # 硬结束照样可以：换了账号的人也要能把角色腾出来
+        # Hard ending remains allowed after account changes, letting users free characters.
         end = await c.post("/api/visit/route/end", headers=GOOD,
                            json={"lanlan_name": "Host", "visit_id": visit_id, "reason": "route_end"})
     assert end.status_code == 200 and rt.finalize_reason == "route_end"
@@ -1283,12 +1958,12 @@ async def test_a_spool_that_silently_missed_a_line_gives_way_to_the_pending_uplo
         "peer_char_id": derive_peer_char_id(HOST_UID, "f" * 32), "peer_char_tag": "f" * 32,
         "started_at": NOW, "lang": "zh-CN",
     }, now=0.0)
-    for line in LINES[:2]:          # 第三行写 spool 失败（只记了日志），上传流水里有
+    for line in LINES[:2]:          # Third row failed spool writes, logged only, but exists in upload streams.
         await spool.append(line)
     await spool.close()
     _write_sealed(env.host.config_dir)
     body = (await _transcript(env)).json()
-    # 两份本机副本取并集：spool 漏的那句从上传流水补回来
+    # Union both local copies: recover spool-missing text from upload streams.
     assert body["source"] == "spool" and len(body["lines"]) == 3 and "dropped_lines" not in body
     assert body["lines"][2]["text"] == "hi"
 
@@ -1301,11 +1976,11 @@ async def test_spool_and_upload_each_missing_a_different_line_are_merged(env):
         "peer_char_id": derive_peer_char_id(HOST_UID, "f" * 32), "peer_char_tag": "f" * 32,
         "started_at": NOW, "lang": "zh-CN",
     }, now=0.0)
-    for line in (LINES[0], LINES[2]):           # spool 漏了第 2 句
+    for line in (LINES[0], LINES[2]):           # Spool lacks sentence two.
         await spool.append(line)
     await spool.close()
     doc = _upload_doc()
-    doc["request"]["lines"] = doc["request"]["lines"][:2]      # 上传流水漏了第 3 句
+    doc["request"]["lines"] = doc["request"]["lines"][:2]      # Upload stream lacks sentence three.
     path = env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
     body = (await _transcript(env)).json()
@@ -1317,12 +1992,12 @@ async def test_a_recovery_sealed_upload_keeps_its_drop_count(env):
 
     path = _write_stream(env.host.config_dir)
     with open(path, "ab") as handle:
-        handle.write(b'{"kind": "line", "lp": 9')       # 崩溃留下的半行
-    # 启动补录把流水封成 .upload.json、删掉流水
+        handle.write(b'{"kind": "line", "lp": 9')       # Crash leaves a partial row.
+    # Startup backfill seals streams into .upload.json and deletes streams.
     doc = recovery._seal_stream_sync(env.host.config_dir / "visit_spool", VISIT_ID, None)
     assert doc["dropped_records"] == 1 and not path.exists()
     env.servers.details_lines = _cloud_rows_covering()
-    body = (await _transcript(env)).json()           # 不完整：先找云端，多出的行并进来、丢行提示照留
+    body = (await _transcript(env)).json()           # Incomplete: consult cloud, merge extra rows, retain missing-row notices.
     assert body["source"] == "upload" and len(body["lines"]) == 5 and body["dropped_lines"] == 1
     env.servers.details_mode = "503"
     body = (await _transcript(env)).json()
@@ -1332,11 +2007,11 @@ async def test_a_recovery_sealed_upload_keeps_its_drop_count(env):
 async def test_a_cloud_copy_with_fewer_lines_does_not_replace_a_partial_one(env):
     spool = await _write_spool(env.host.config_dir)
     with open(spool.jsonl_path, "ab") as handle:
-        handle.write(b'{"lp": 9, "side": "host", "ts"')      # 崩溃留下的半行
-    # 本侧转录还没传上去：云端只有另一行，不是本机副本的超集
+        handle.write(b'{"lp": 9, "side": "host", "ts"')      # Crash leaves a partial row.
+    # Local transcript not uploaded; cloud has another row, not a superset of local data.
     env.servers.details_lines = _details_rows(1)
     body = (await _transcript(env)).json()
-    # 不拿它顶掉本机还剩的行：并进来，丢行数照报
+    # Never replace surviving local rows; merge cloud and preserve missing counts.
     assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 4
     assert [line["text"] for line in body["lines"]][:2] == ["line 0", "你好"]
 
@@ -1354,7 +2029,7 @@ async def test_cloud_rows_past_the_wire_bounds_are_dropped(env):
 
 async def test_a_preview_is_reused_only_by_the_account_that_fetched_it(env):
     await _preview(env)
-    env.account = "someone-else"      # 共用电脑上换了账号：要用自己的账号再问一次 Servers
+    env.account = "someone-else"      # Changed shared-computer account must query Servers again using its own identity.
     env.preview_mode = "403"
     resp = await _join(env)
     assert env.preview_calls == [INVITE, INVITE]
@@ -1362,21 +2037,21 @@ async def test_a_preview_is_reused_only_by_the_account_that_fetched_it(env):
 
 
 async def test_a_preview_fetched_across_an_account_switch_is_not_cached(env, monkeypatch):
-    epochs = iter([7, 9])     # 请求途中有过一次登出 / 换账号（A→B→A 也一样会让代数变）
+    epochs = iter([7, 9])     # Logout/account changes during requests alter generation, even A->B->A.
     monkeypatch.setattr(rtm, "account_epoch", lambda: next(epochs, 9))
     await http._fetch_preview(INVITE, "acct")
     assert http._previews == {}
-    # 期间没有账号变更：照常缓存
+    # No intervening identity change: cache normally.
     monkeypatch.setattr(rtm, "account_epoch", lambda: 9)
     await http._fetch_preview(INVITE, "acct")
     assert list(http._previews) == [("acct", INVITE)]
-    # 缓存之后发生账号变更：不再复用
+    # Identity changes after caching prevent reuse.
     monkeypatch.setattr(rtm, "account_epoch", lambda: 10)
     assert http._recent_preview("acct", INVITE) is None
 
 
 async def test_join_refuses_when_the_account_changes_after_the_preview(env, monkeypatch):
-    seen = iter(["acct", "someone-else"])   # 查预览时一个账号、准入时另一个
+    seen = iter(["acct", "someone-else"])   # Preview and admission use different accounts.
 
     async def switching():
         return next(seen, "someone-else")
@@ -1411,7 +2086,7 @@ async def test_cloud_cursor_cycles_are_rejected_at_once(env, monkeypatch):
 
 
 async def test_an_owned_runtime_is_served_while_the_account_map_is_unwritten(env, monkeypatch):
-    env.own_uid = None        # 领到凭证了、账号映射还没写成（后台补写中）
+    env.own_uid = None        # Credentials acquired, account mapping not yet persisted, background retry active.
 
     class Creds:
         transport, visit_uid, account = "trtc", OWN, "acct"
@@ -1436,9 +2111,9 @@ async def test_an_owned_runtime_is_served_while_the_account_map_is_unwritten(env
 async def test_a_shorter_upload_does_not_replace_a_longer_partial_spool(env):
     spool = await _write_spool(env.host.config_dir)
     with open(spool.jsonl_path, "ab") as handle:
-        handle.write(b'{"lp": 9, "side": "host", "ts"')       # spool 丢了一行半行
+        handle.write(b'{"lp": 9, "side": "host", "ts"')       # Spool loses one complete/partial row.
     doc = _upload_doc()
-    doc["request"]["lines"] = doc["request"]["lines"][:1]      # 上传流水静默少了两行
+    doc["request"]["lines"] = doc["request"]["lines"][:1]      # Upload stream silently lacks two rows.
     path = env.host.config_dir / "visit_spool" / f"{VISIT_ID}.upload.json"
     path.write_text(json.dumps(doc), encoding="utf-8")
     env.servers.details_mode = "503"
@@ -1453,14 +2128,14 @@ def _epochs(monkeypatch, *values):
 
 
 async def test_join_refuses_a_preview_fetched_across_an_account_change(env, monkeypatch):
-    _epochs(monkeypatch, 3, 4)            # 取预览前后代数不同（A→B→A 也一样）
+    _epochs(monkeypatch, 3, 4)            # Generation differs before/after preview, even A->B->A.
     resp = await _join(env)
     assert resp.status_code == 409 and resp.json()["reason"] == "busy"
     assert _no_slot("Guest") and env.guest.creds_calls == []
 
 
 async def test_join_refuses_an_account_change_between_preview_and_admission(env, monkeypatch):
-    _epochs(monkeypatch, 3, 3, 4)         # 预览按代数 3 取到，准入时已是 4
+    _epochs(monkeypatch, 3, 3, 4)         # Preview at generation three, admission now four.
     resp = await _join(env)
     assert resp.status_code == 409 and resp.json()["reason"] == "busy" and _no_slot("Guest")
 
@@ -1474,7 +2149,7 @@ async def test_rooms_refuse_while_an_account_change_is_in_progress(env, monkeypa
 async def test_local_transcript_read_across_an_account_change_falls_back_to_the_cloud(env, monkeypatch):
     await _write_spool(env.host.config_dir)
     env.servers.details_lines = _details_rows(2)
-    _epochs(monkeypatch, 5, 6)            # 读本机副本的过程中有过登出 / 换账号
+    _epochs(monkeypatch, 5, 6)            # Logout/account change while reading local copies.
     body = (await _transcript(env)).json()
     assert body["source"] == "cloud"
 
@@ -1482,7 +2157,7 @@ async def test_local_transcript_read_across_an_account_change_falls_back_to_the_
 async def test_dropped_spool_records_are_not_offset_by_merged_rows(env):
     spool = await _write_spool(env.host.config_dir)
     with open(spool.jsonl_path, "ab") as handle:
-        handle.write(b'{"lp": 9, "side": "host", "ts"')      # spool 坏了一条（认不出是哪一行）
+        handle.write(b'{"lp": 9, "side": "host", "ts"')      # One corrupt spool record with unknown row identity.
     doc = _upload_doc()
     doc["request"]["lines"] = doc["request"]["lines"] + [
         {"lp": 3, "side": "host", "from": "own_cat", "ts": 1005.0, "text": "spool 漏写的另一句", "truncated": False}]
@@ -1490,7 +2165,7 @@ async def test_dropped_spool_records_are_not_offset_by_merged_rows(env):
     path.write_text(json.dumps(doc), encoding="utf-8")
     env.servers.details_mode = "503"
     body = (await _transcript(env)).json()
-    # 补进来一行不代表坏掉的那条找回来了：仍报不完整
+    # Adding one row does not prove the corrupt one recovered; still report incomplete.
     assert len(body["lines"]) == 4 and body["dropped_lines"] == 1
 
 
@@ -1499,7 +2174,7 @@ async def test_cloud_rows_missing_a_local_row_are_merged_not_swapped(env):
     with open(spool.jsonl_path, "ab") as handle:
         handle.write(b'{"lp": 9, "side": "host", "ts"')
     rows = _cloud_rows_covering(extra=3)
-    del rows[1]                       # 云端恰好漏了本机有的那一行（独立写入）
+    del rows[1]                       # Cloud happens to lack a locally present independently written row.
     env.servers.details_lines = rows
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and len(body["lines"]) == 6 and body["dropped_lines"] == 1
@@ -1507,7 +2182,7 @@ async def test_cloud_rows_missing_a_local_row_are_merged_not_swapped(env):
 
 async def test_an_account_change_during_the_cloud_fetch_returns_nothing(env, monkeypatch):
     env.servers.details_lines = _cloud_rows_covering()
-    _epochs(monkeypatch, 5, 5, 5, 6)      # 本机读取前后不变，云端请求途中变了
+    _epochs(monkeypatch, 5, 5, 5, 6)      # Local reads retain identity, changed during cloud requests.
     resp = await _transcript(env)
     assert resp.status_code == 409 and resp.json()["reason"] == "account_change" and "lines" not in resp.json()
 
@@ -1515,7 +2190,7 @@ async def test_an_account_change_during_the_cloud_fetch_returns_nothing(env, mon
 async def test_a_cloud_copy_with_exactly_the_local_rows_keeps_the_drop_notice(env):
     spool = await _write_spool(env.host.config_dir)
     with open(spool.jsonl_path, "ab") as handle:
-        handle.write(b'{"lp": 9, "side": "host", "ts"')      # 两边都丢了最后一条
+        handle.write(b'{"lp": 9, "side": "host", "ts"')      # Both copies lost the final row.
     env.servers.details_lines = _cloud_rows_covering(extra=0)
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and body["dropped_lines"] == 1 and len(body["lines"]) == 3
@@ -1529,36 +2204,36 @@ async def test_a_settled_spool_that_silently_missed_a_line_is_completed_from_the
         "peer_char_id": derive_peer_char_id(HOST_UID, "f" * 32), "peer_char_tag": "f" * 32,
         "started_at": NOW, "lang": "zh-CN",
     }, now=0.0)
-    for line in LINES[:2]:          # 第 3 句写 spool 失败（只记日志），上传早已结清、待传文件已删
+    for line in LINES[:2]:          # Third sentence failed spool writes, logged only; upload settled and pending files deleted.
         await spool.append(line)
     await spool.close()
     env.servers.details_lines = _cloud_rows_covering(extra=0)
     body = (await _transcript(env)).json()
     assert [line["text"] for line in body["lines"]] == ["你好", "喵", "hi"]
-    # 缺的那一行从云端并进来，整份仍是本机形态：对端身份、line_id 与同一场之前的导出一致
+    # Merge missing cloud rows while preserving local representation: peer identity/line_id match earlier exports of this visit.
     assert body["source"] == "spool" and set(body) == LOCAL_KEYS and body["peer_uid"] == HOST_UID
     assert all(set(line) == LOCAL_LINE_KEYS for line in body["lines"])
     assert [line["line_id"] for line in body["lines"]][:2] == ["h:1", "g:1"]
-    env.servers.details_mode = "503"       # 云端取不到：只给 spool
+    env.servers.details_mode = "503"       # Cloud unavailable: spool only.
     body = (await _transcript(env)).json()
     assert body["source"] == "spool" and len(body["lines"]) == 2
 
 
 async def test_preview_fetched_across_an_account_change_is_not_returned(env, monkeypatch):
-    _epochs(monkeypatch, 3, 3, 4)          # 取预览时代数没变，读黑名单的时候变了
+    _epochs(monkeypatch, 3, 3, 4)          # Stable preview generation changes while reading blocklists.
     resp = await _preview(env)
     assert resp.status_code == 409 and resp.json()["reason"] == "account_change"
     assert "host_display_name" not in resp.text
-    _epochs(monkeypatch, 3, 4)             # 取预览途中就变了
+    _epochs(monkeypatch, 3, 4)             # Changes during preview already.
     assert (await _preview(env)).status_code == 409
 
 
 async def test_state_read_across_an_account_change_only_says_busy(env, monkeypatch):
     await _rooms(env)
-    _epochs(monkeypatch, 7, 8)       # 读属主的过程中有过登出 / 换账号
+    _epochs(monkeypatch, 7, 8)       # Logout/account change while reading owners.
     async with env.client() as c:
         body = (await c.get("/api/visit/state?catgirl=Host", headers=GOOD)).json()
-    assert body == {**http.IDLE_STATE, "active": True, "phase": "pending"}
+    assert body == {**http.IDLE_STATE, "active": True, "phase": "pending", **http.release_info()}
 
 
 async def test_preview_that_expired_on_the_way_is_410(env):
@@ -1584,7 +2259,7 @@ async def test_join_refuses_an_invite_that_expires_while_reading_the_blocklist(e
     real = Blocklist.aload
 
     async def slow(config_dir):
-        clock["now"] = NOW              # 读黑名单期间邀请到期
+        clock["now"] = NOW              # Invitation expires during blocklist reads.
         return await real(config_dir)
 
     monkeypatch.setattr(Blocklist, "aload", slow)

@@ -27,9 +27,9 @@ from cachetools import TTLCache
 from utils.meme_fetcher import MEME_ALLOWED_HOSTS
 
 
-# 统一的表情包代理缓存，使用 byte-based 限制 (50MB)，防止 OOM
+# Unified meme-proxy cache with a byte-based 50MB limit to prevent OOM
 MEME_PROXY_CACHE = TTLCache(
-    maxsize=50 * 1024 * 1024,  # 50MB 内存预算
+    maxsize=50 * 1024 * 1024,  # 50MB memory budget
     ttl=1800,
     getsizeof=lambda item: len(item.get('body', b''))
 )
@@ -45,7 +45,7 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
     Proxy a remote meme image, solving CORS issues, with SSRF protection.
     """
     
-    # 检查缓存
+    # Check the cache
     cache_key = url
     if cache_key in MEME_PROXY_CACHE:
         logger.info(f"[Meme Proxy] 命中缓存: {url[:60]}...")
@@ -80,12 +80,12 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
             logger.warning(f"[Meme Proxy] 非法域名请求: {hostname}")
             return JSONResponse(content={"success": False, "error": f"不允许代理该域名: {hostname}"}, status_code=403)
 
-        # 构建请求头
-        # 【修复】完善所有域名的 Referer 映射，避免被反爬拦截
+        # Build request headers
+        # [Fix] Complete Referer mappings for every domain to avoid anti-scraping blocks
         referer_map = {
             'img.soutula.com': 'https://fabiaoqing.com/',
             'fabiaoqing.com': 'https://fabiaoqing.com/',
-            # 2026-04-16: doutub.com 域名易主挂黑产，停用
+            # 2026-04-16: disable doutub.com after ownership changed and the domain began serving malicious content
             # 'qn.doutub.com': 'https://www.doutub.com/',
             # 'doutub.com': 'https://www.doutub.com/',
             'i.imgflip.com': 'https://imgflip.com/',
@@ -101,13 +101,13 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
             'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8'
         }
 
-        # 使用流式下载以严格控制资源大小，防止内存溢出或大文件攻击
-        MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB 限制
+        # Stream downloads to strictly limit resource size and prevent memory overflow or large-file attacks
+        MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB limit
 
-        # 已知 SSL 证书有问题的 CDN 域名（如七牛 CDN hostname mismatch），
-        # 对这些域名首次请求即使用宽松 SSL，避免白白浪费一次超时。
-        # 2026-04-16: qn.doutub.com 随 doutub.com 域名易主停用；白名单当前为空，
-        # 其它域名仍走 ssl.SSLError 降级分支兜底。
+        # CDN domains with known SSL-certificate issues (such as Qiniu CDN hostname mismatches);
+        # use permissive SSL from the first request for these domains to avoid wasting a timeout.
+        # 2026-04-16: disable qn.doutub.com with the doutub.com ownership change; the allowlist is currently empty,
+        # and other domains still use the ssl.SSLError downgrade fallback.
         _SSL_RELAXED_HOSTS: set[str] = set()
         need_relaxed_ssl = hostname in _SSL_RELAXED_HOSTS
 
@@ -125,7 +125,7 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
 
         async with _make_client(relaxed=need_relaxed_ssl) as client:
             current_url = decoded_url
-            for _ in range(4):  # 最多跟随 3 次重定向 (4次请求)
+            for _ in range(4):  # Follow at most 3 redirects (4 requests)
                 async with client.stream("GET", current_url, headers=headers) as resp:
                     if resp.status_code in (301, 302, 303, 307, 308):
                         location = resp.headers.get("Location")
@@ -145,7 +145,7 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
                     
                     resp.raise_for_status()
                     
-                    # 校验 Content-Type (严格白名单，防 SVG XSS 注入)
+                    # Validate Content-Type with a strict allowlist to prevent SVG XSS injection
                     raw_content_type = resp.headers.get('Content-Type', '').lower()
                     content_type = raw_content_type.split(';', 1)[0].strip()
                     allowed_content_types = {
@@ -156,18 +156,18 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
                         logger.warning(f"[Meme Proxy] 拒绝非安全图片内容: {raw_content_type}")
                         return JSONResponse(content={"success": False, "error": "格式不支持或含有潜在风险"}, status_code=403)
                     
-                    # 校验 Content-Length (如果存在)
+                    # Validate Content-Length if present
                     content_length = resp.headers.get('Content-Length')
                     if content_length:
                         try:
                             declared_size = int(content_length)
                         except (ValueError, TypeError):
-                            declared_size = None  # 解析失败就当未知长度，靠流式校验兜底
+                            declared_size = None  # Treat parsing failure as unknown length; streaming validation remains the fallback
                         if declared_size is not None and declared_size > MAX_IMAGE_SIZE:
                             logger.warning(f"[Meme Proxy] 资源过大 (Content-Length): {content_length}")
                             return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
 
-                    # 流式读取内容并累加大小校验
+                    # Read content as a stream and validate cumulative size
                     body = bytearray()
                     async for chunk in resp.aiter_bytes():
                         body.extend(chunk)
@@ -176,7 +176,7 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
                             return JSONResponse(content={"success": False, "error": "资源超过大小限制 (10MB)"}, status_code=413)
 
                     body_bytes = bytes(body)
-                    # 存入 TTLCache
+                    # Store in TTLCache
                     if write_cache:
                         MEME_PROXY_CACHE[cache_key] = {
                             'body': body_bytes,
@@ -198,7 +198,7 @@ async def fetch_meme_image_response(url: str, *, write_cache: bool = True):
     except httpx.TimeoutException:
         return JSONResponse(content={"success": False, "error": "请求超时"}, status_code=504)
     except (ssl.SSLError, httpx.ConnectError) as e:
-        # SSL 握手失败：对白名单内的表情包域名降级重试（宽松 SSL）
+        # SSL handshake failed: retry allowlisted meme domains with downgraded, permissive SSL
         is_ssl = isinstance(e, ssl.SSLError) or 'SSL' in str(e) or 'certificate' in str(e).lower()
         if is_ssl and not need_relaxed_ssl:
             logger.warning(f"[Meme Proxy] SSL 失败，降级重试: {hostname} ({e})")

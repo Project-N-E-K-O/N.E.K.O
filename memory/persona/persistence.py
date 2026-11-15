@@ -47,6 +47,11 @@ from ._shared import (
     logger,
 )
 
+# Card entries for synthetic ``__ai_context.*`` fields store the fingerprint of
+# the events they were rendered from (see ``ai_context_field_fingerprints``).
+_CARD_SOURCE_FINGERPRINT_KEY = 'source_fingerprint'
+
+
 class PersistenceMixin:
     def _persona_path(self, name: str) -> str:
         from memory import ensure_character_dir
@@ -63,9 +68,10 @@ class PersistenceMixin:
         is no legacy flat file to migrate (RFC §3.5.5, last paragraph).
         """
         from memory import ensure_character_dir
+        from memory.archive_shards import PERSONA_ARCHIVE_DIRNAME
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
-            'persona_archive',
+            PERSONA_ARCHIVE_DIRNAME,
         )
 
     def _sync_save_persona_view(self, n: str, view: dict) -> None:
@@ -140,8 +146,10 @@ class PersistenceMixin:
 
         Every call automatically syncs the character_card entries with characters.json.
         """
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         if name in self._personas:
-            # 每次读取时同步 character card
+            # Synchronize character card on every read.
             if self._sync_character_card(name, self._personas[name]):
                 self.save_persona(name, self._personas[name])
             return self._personas[name]
@@ -149,14 +157,18 @@ class PersistenceMixin:
         path = self._persona_path(name)
         if os.path.exists(path):
             try:
-                with open(path, encoding='utf-8') as f:
-                    data = json.load(f)
+                with consistent_view_read(path):
+                    with open(path, encoding='utf-8') as f:
+                        data = json.load(f)
                 if isinstance(data, dict):
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         self._migrate_from_settings(name, data)
                         migrated = True
-                    # 同步 character card
+                    # After the layout is current and settings are folded in, so
+                    # every section is where the archived copies say it is.
+                    self._drop_cold_copies(name, data)
+                    # Synchronize character card.
                     if self._sync_character_card(name, data):
                         migrated = True
                     if migrated:
@@ -170,10 +182,23 @@ class PersistenceMixin:
         # Auto-migrate from legacy settings
         persona = self._empty_persona()
         self._migrate_from_settings(name, persona)
+        # Settings may still hold an entry archived since; the archived copy wins.
+        self._drop_cold_copies(name, persona)
         self._sync_character_card(name, persona)
         self._personas[name] = persona
         self.save_persona(name, persona)
         return persona
+
+    def _drop_cold_copies(self, name: str, persona: dict) -> None:
+        """Drop private persona entries also held in the archive shards (cold storage wins)."""
+        from memory import cold_store
+        directory = os.path.join(self._config_manager.memory_dir, name)
+        for subject, section in persona.items():
+            if not isinstance(section, dict) or not isinstance(section.get('facts'), list):
+                continue
+            section['facts'] = cold_store.without_cold_copies(
+                directory, 'persona', section['facts'], lambda _row, subject=subject: subject,
+            )
 
     async def aensure_persona(self, name: str) -> dict:
         """Thread-safe wrapper. The two branches that `asave_persona()` to disk —
@@ -186,37 +211,81 @@ class PersistenceMixin:
         Call sites already holding `_get_alock(name)` (e.g. inside aadd_fact)
         must use `_aensure_persona_locked` instead, to avoid the deadlock from
         the non-reentrant asyncio.Lock."""
+        from memory.long_term_sync import require_consistent_views
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         async with self._get_alock(name):
             return await self._aensure_persona_locked(name)
 
-    async def _aensure_persona_locked(self, name: str) -> dict:
+    @staticmethod
+    def _validate_private_persona_sections(persona: dict) -> None:
+        """Refuse malformed private containers before ensure can rewrite them."""
+        from memory.scopes import SCOPED_PERSONA_PREFIX
+        if not isinstance(persona, dict):
+            raise ValueError("persona root is not an object")
+        for entity, section in persona.items():
+            if not isinstance(entity, str):
+                raise ValueError("persona entity is not a string")
+            if entity.startswith(SCOPED_PERSONA_PREFIX):
+                continue
+            if not isinstance(section, dict):
+                raise ValueError("persona section is not an object")
+            for key in ('facts', 'dynamics'):
+                if key in section and not isinstance(section[key], list):
+                    raise ValueError("persona facts is not a list")
+
+    async def _aensure_persona_locked(self, name: str, *, strict_read: bool = False) -> dict:
         """Inner body. Caller MUST hold self._get_alock(name)."""
+        from memory.long_term_sync import require_consistent_views, consistent_view_read
+        require_consistent_views(os.path.join(self._config_manager.memory_dir, name))
         if name in self._personas:
+            if strict_read:
+                self._validate_private_persona_sections(self._personas[name])
             if await self._async_sync_character_card(name, self._personas[name]):
                 await self.asave_persona(name, self._personas[name])
             return self._personas[name]
 
         path = self._persona_path(name)
-        if await asyncio.to_thread(os.path.exists, path):
+        if strict_read:
+            # exists() hides permission and other stat failures as False. A
+            # strict snapshot must not initialize over inaccessible storage.
             try:
-                data = await read_json_async(path)
+                await asyncio.to_thread(os.stat, path)
+                exists = True
+            except FileNotFoundError:
+                exists = False
+        else:
+            exists = await asyncio.to_thread(os.path.exists, path)
+        if exists:
+            try:
+                with consistent_view_read(path):
+                    data = await read_json_async(path)
                 if isinstance(data, dict):
+                    if strict_read:
+                        self._validate_private_persona_sections(data)
                     migrated = self._migrate_v1_entity_keys(data)
                     if self._is_persona_empty(data):
                         await self._async_migrate_from_settings(name, data)
                         migrated = True
+                    # Same order as the sync loader: after layout and settings migration.
+                    await asyncio.to_thread(self._drop_cold_copies, name, data)
                     if await self._async_sync_character_card(name, data):
                         migrated = True
                     if migrated:
                         await self.asave_persona(name, data)
                     self._personas[name] = data
                     return data
+                if strict_read:
+                    raise ValueError("persona root is not an object")
                 logger.warning(f"[Persona] {name}: persona 文件不是 dict，忽略")
             except (json.JSONDecodeError, OSError) as e:
+                if strict_read:
+                    raise
                 logger.warning(f"[Persona] 加载失败: {e}")
 
         persona = self._empty_persona()
         await self._async_migrate_from_settings(name, persona)
+        # Settings may still hold an entry archived since; the archived copy wins.
+        await asyncio.to_thread(self._drop_cold_copies, name, persona)
         await self._async_sync_character_card(name, persona)
         self._personas[name] = persona
         await self.asave_persona(name, persona)
@@ -377,7 +446,8 @@ class PersistenceMixin:
         Returns ``(False, None)`` when the locale file exists but could not be
         read this pass; the caller skips the sync, since falling back to the
         process language would rewrite the stored fact. ``(True, None)`` means
-        no persisted locale: render as before.
+        no persisted locale: render in the current language and compare the
+        synthetic fields by source fingerprint instead of text.
         """
         reader = getattr(self._config_manager, "_read_durable_prompt_locale", None)
         if not callable(reader):
@@ -393,8 +463,18 @@ class PersistenceMixin:
     def _apply_character_card_sync(
         self, name: str, persona: dict,
         master_basic_config, lanlan_basic_config,
+        *, durable_locale: str | None = None,
     ) -> bool:
+        """Write the card fields into ``persona``; returns whether anything changed.
+
+        With a ``durable_locale`` the card was rendered in that language and
+        every field compares by text. Without one, the synthetic fields were
+        rendered in whatever language is current, so they compare by source
+        fingerprint instead: the same events in another language are not a
+        change, and are not rewritten.
+        """
         from config import CHARACTER_RESERVED_FIELDS
+        from utils.config_manager import ai_context_field_fingerprints
         excluded_fields = set(CHARACTER_RESERVED_FIELDS)
         changed = False
 
@@ -407,8 +487,9 @@ class PersistenceMixin:
                 return len(val) > 0
             return True
 
-        def _build_expected(card_data: dict, entity: str) -> list[tuple[str, dict]]:
-            """Build the expected (id, entry) list from card fields, preserving card field order."""
+        def _build_expected(card_data: dict, entity: str) -> list[tuple[str, str, str | None]]:
+            """Build the expected (id, text, source fingerprint) list, preserving card field order."""
+            fingerprints = ai_context_field_fingerprints(card_data)
             expected = []
             for k, v in card_data.items():
                 if k in excluded_fields or not _is_syncable(v):
@@ -418,25 +499,39 @@ class PersistenceMixin:
                 if isinstance(v, list):
                     v = '、'.join(str(item) for item in v)
                 entry_id = self._card_entry_id(entity, k)
+                fingerprint = None
                 if str(k).startswith("__ai_context."):
-                    # 合成运行时上下文字段（如 __ai_context.profile_rename_events）：
-                    # value 已是自带本地化标签的完整句子，不能再前缀内部键名，
-                    # 否则裸键 "__ai_context.xxx: ..." 会原样泄漏进模型读到的 fact。
-                    # 用带点的前缀精确匹配约定命名，避免误伤 __ai_contextual_* 这类普通键。
+                    # Synthesized runtime-context fields (e.g. __ai_context.profile_rename_events):
+                    # value already contains a complete sentence with localized labels; never prefix the internal key,
+                    # or the bare "__ai_context.xxx: ..." key leaks unchanged into model-facing facts.
+                    # Match the dotted prefix precisely to avoid ordinary keys such as __ai_contextual_*.
                     text = str(v)
+                    # A user field that merely shares the prefix has no fingerprint.
+                    fingerprint = fingerprints.get(str(k))
                 else:
                     text = f"{k}: {v}"
-                expected.append((entry_id, text))
+                expected.append((entry_id, text, fingerprint))
             return expected
+
+        def _needs_rewrite(entry: dict, text: str, fingerprint: str | None) -> bool:
+            if fingerprint is not None and durable_locale is None:
+                return entry.get(_CARD_SOURCE_FINGERPRINT_KEY) != fingerprint
+            return entry.get('text') != text
+
+        def _stamp_fingerprint(entry: dict, fingerprint: str | None) -> None:
+            if fingerprint is None:
+                entry.pop(_CARD_SOURCE_FINGERPRINT_KEY, None)
+            else:
+                entry[_CARD_SOURCE_FINGERPRINT_KEY] = fingerprint
 
         def _sync_entity(entity: str, card_data: dict) -> bool:
             """Sync a single entity section. Returns whether anything changed."""
             section = persona.setdefault(entity, {})
             facts = section.setdefault('facts', [])
             expected = _build_expected(card_data, entity)
-            expected_ids = {eid for eid, _ in expected}
+            expected_ids = {eid for eid, _, _ in expected}
 
-            # 分离 card 条目和非 card 条目
+            # Separate card and non-card entries.
             existing_card = {}  # id → entry
             other_entries = []
             for entry in facts:
@@ -445,42 +540,46 @@ class PersistenceMixin:
                 else:
                     other_entries.append(entry)
 
-            # 按 card 顺序构建新的 card 条目列表
+            # Build the new card-entry list in card order.
             modified = False
             new_card_entries = []
-            for eid, text in expected:
+            for eid, text, fingerprint in expected:
                 if eid in existing_card:
                     entry = existing_card[eid]
-                    if entry.get('text') != text:
-                        # 文本变化 → 更新
+                    if _needs_rewrite(entry, text, fingerprint):
                         old_text = entry.get('text', '')
-                        entry['text'] = text
-                        # token_count 缓存是从 text 派生的；这里原地改写
-                        # text 必须同步失效缓存，否则渲染路径要等到
-                        # fingerprint mismatch 才补算，还会额外浪费一次
-                        # sha256（对偶于 amerge_into 的 _sync_mutate_entry）。
-                        self._invalidate_token_count_cache(entry)
-                        # Same logic for the embedding cache: a stale
-                        # vector under the old text would slip into
-                        # cosine-based retrieval matches.
-                        self._invalidate_embedding_cache(entry)
+                        if old_text != text:
+                            # Text changed → update.
+                            entry['text'] = text
+                            # token_count cache derives from text; in-place text mutation here
+                            # must invalidate it, or rendering recalculates only after fingerprint
+                            # mismatch, wasting an additional sha256
+                            # (symmetric with amerge_into's _sync_mutate_entry).
+                            self._invalidate_token_count_cache(entry)
+                            # Same logic for the embedding cache: a stale
+                            # vector under the old text would slip into
+                            # cosine-based retrieval matches.
+                            self._invalidate_embedding_cache(entry)
+                            # Never write persona text to logger.
+                            logger.info(f"[Persona] {name}: card 同步更新 [{entity}] (old_len={len(old_text)} new_len={len(text)})")
+                            print(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
+                        # An entry written before fingerprints existed gets one here, once.
+                        _stamp_fingerprint(entry, fingerprint)
                         modified = True
-                        # persona 文本不写 logger
-                        logger.info(f"[Persona] {name}: card 同步更新 [{entity}] (old_len={len(old_text)} new_len={len(text)})")
-                        print(f"[Persona] {name}: card 同步更新 [{entity}] \"{old_text[:30]}\" → \"{text[:30]}\"")
                     new_card_entries.append(entry)
                 else:
-                    # 新字段 → 创建
+                    # New field → create.
                     entry = self._normalize_entry(text)
                     entry['id'] = eid
                     entry['source'] = 'character_card'
                     entry['protected'] = True
+                    _stamp_fingerprint(entry, fingerprint)
                     new_card_entries.append(entry)
                     modified = True
                     logger.info(f"[Persona] {name}: card 同步新增 [{entity}] (len={len(text)})")
                     print(f"[Persona] {name}: card 同步新增 [{entity}] \"{text[:40]}\"")
 
-            # 检查是否有 card 中已删除的条目
+            # Check entries removed from the card.
             removed_ids = set(existing_card.keys()) - expected_ids
             if removed_ids:
                 modified = True
@@ -491,17 +590,17 @@ class PersistenceMixin:
 
 
             if modified:
-                # card 条目在前，其他条目在后
+                # Card entries first, other entries afterward.
                 section['facts'] = new_card_entries + other_entries
 
             return modified
 
-        # 同步 neko entity
+        # Synchronize neko entity.
         if name in (lanlan_basic_config or {}):
             if _sync_entity('neko', lanlan_basic_config[name]):
                 changed = True
 
-        # 同步 master entity
+        # Synchronize master entity.
         if master_basic_config and isinstance(master_basic_config, dict):
             if _sync_entity('master', master_basic_config):
                 changed = True
@@ -535,6 +634,7 @@ class PersistenceMixin:
             return False
         return self._apply_character_card_sync(
             name, persona, master_basic_config, lanlan_basic_config,
+            durable_locale=locale,
         )
 
     async def _async_sync_character_card(self, name: str, persona: dict) -> bool:
@@ -552,6 +652,7 @@ class PersistenceMixin:
             return False
         return self._apply_character_card_sync(
             name, persona, master_basic_config, lanlan_basic_config,
+            durable_locale=locale,
         )
 
     def save_persona(self, name: str, persona: dict | None = None) -> None:
@@ -610,6 +711,83 @@ class PersistenceMixin:
         except Exception:
             self._personas.pop(name, None)
             raise
+
+    async def aget_private_persona_snapshot(self, name: str) -> dict:
+        """Detach the retained private fields while holding the character lock.
+
+        This is a knowledge snapshot, not a render: it does not update mentions,
+        suppression or evidence. Limits apply during construction, not afterwards.
+        """
+        from memory.introspection import is_permanently_suppressed
+        from memory.scopes import SCOPED_PERSONA_PREFIX, is_legacy_private_entry
+
+        max_bytes = 1024 * 1024
+        max_entries = 10_000
+        # Compact UTF-8 JSON uses the same encoding as the HTTP response. Count
+        # each item as it is detached so no oversized snapshot is accumulated.
+        size = len(b'{"sections":[]}')
+        count = 0
+        sections = []
+
+        def encoded_size(value):
+            return len(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name, strict_read=True)
+            if not isinstance(persona, dict):
+                raise ValueError("persona root is not an object")
+            for entity, section in persona.items():
+                if not isinstance(entity, str):
+                    raise ValueError("persona entity is not a string")
+                if entity.startswith(SCOPED_PERSONA_PREFIX):
+                    continue
+                if not isinstance(section, dict):
+                    raise ValueError("persona section is not an object")
+                facts = section.get('facts', [])
+                if not isinstance(facts, list):
+                    raise ValueError("persona facts is not a list")
+                entries = []
+                if len(entity) > max_bytes:
+                    raise OverflowError("persona snapshot exceeds internal limit")
+                section_size = encoded_size({'entity': entity, 'entries': []})
+                for entry in facts:
+                    if isinstance(entry, str):
+                        item = {'id': None, 'text': entry, 'source': 'unknown',
+                                'protected': False, 'suppressed': False}
+                    elif isinstance(entry, dict):
+                        # Introspection retires entries in place (merged or
+                        # rejected); they are no longer current knowledge.
+                        if not is_legacy_private_entry(entry) or is_permanently_suppressed(entry):
+                            continue
+                        ident = entry.get('id')
+                        text = entry.get('text', '')
+                        source = entry.get('source', 'unknown')
+                        if source is None or isinstance(source, str) and not source.strip():
+                            source = 'unknown'
+                        protected = entry.get('protected', False)
+                        suppressed = entry.get('suppress', False)
+                        if (ident is not None and not isinstance(ident, str)) or not isinstance(text, str) or not isinstance(source, str) or not isinstance(protected, bool) or not isinstance(suppressed, bool):
+                            raise ValueError("invalid persona entry fields")
+                        item = {'id': (ident or '').strip() or None, 'text': text, 'source': source,
+                                'protected': protected, 'suppressed': suppressed}
+                    else:
+                        raise ValueError("invalid persona entry")
+                    if not item['text'].strip():
+                        continue
+                    if any(len(value) > max_bytes for value in (item['id'] or '', item['text'], item['source'])):
+                        raise OverflowError("persona snapshot exceeds internal limit")
+                    count += 1
+                    section_size += encoded_size(item) + (1 if entries else 0)
+                    if count > max_entries or size + section_size + (1 if sections else 0) > max_bytes:
+                        raise OverflowError("persona snapshot exceeds internal limit")
+                    entries.append(item)
+                # Empty sections carry no knowledge and are omitted.
+                if entries:
+                    size += section_size + (1 if sections else 0)
+                    if size > max_bytes:
+                        raise OverflowError("persona snapshot exceeds internal limit")
+                    sections.append({'entity': entity, 'entries': entries})
+        return {'sections': sections}
 
     def get_persona(self, name: str) -> dict:
         return self.ensure_persona(name)

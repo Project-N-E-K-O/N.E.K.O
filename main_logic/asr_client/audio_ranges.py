@@ -1,6 +1,7 @@
 """PCM buffers whose sample ownership survives trimming and migration."""
 
 from dataclasses import dataclass
+from typing import Callable
 
 from .audio import AudioRingBuffer
 
@@ -21,6 +22,7 @@ class RangedAudioBuffer(AudioRingBuffer):
     def __init__(self, *, capacity_ms: int, sample_rate_hz: int = 16_000):
         super().__init__(capacity_ms=capacity_ms, sample_rate_hz=sample_rate_hz)
         self._spans: list[AudioSampleSpan] = []
+        self.on_discard: Callable[[AudioSampleSpan], None] | None = None
 
     @property
     def spans(self) -> tuple[AudioSampleSpan, ...]:
@@ -41,6 +43,8 @@ class RangedAudioBuffer(AudioRingBuffer):
     def _trim_spans(self, samples: int) -> None:
         while samples and self._spans:
             span = self._spans.pop(0)
+            if self.on_discard is not None:
+                self.on_discard(AudioSampleSpan(span.start, min(samples, span.samples)))
             if samples < span.samples:
                 start = None if span.start is None else span.start + samples
                 self._spans.insert(0, AudioSampleSpan(start, span.samples - samples))
@@ -62,7 +66,8 @@ class RangedAudioBuffer(AudioRingBuffer):
             size = span.samples * 2
             dropped += len(target.append(payload[offset:offset + size], start_sample=span.start))
             offset += size
-        self.clear()
+        self._audio.clear()
+        self._spans.clear()
         return dropped
 
     def range_failure(self, start: int, end: int) -> str | None:
@@ -94,5 +99,8 @@ class RangedAudioBuffer(AudioRingBuffer):
         return payload
 
     def clear(self) -> None:
+        if self.on_discard is not None:
+            for span in self._spans:
+                self.on_discard(span)
         super().clear()
         self._spans.clear()

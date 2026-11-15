@@ -27,11 +27,11 @@ from utils.api_config_loader import get_native_tts_voice_provider_config
 from utils.tts.provider_registry import PresetCatalog
 
 MIMO_TTS_MODEL = "mimo-v2.5-tts"
-# MiMo 的声音克隆模型。与 preset 不同，MiMo 克隆没有「注册 → 拿远端 voice_id」这一步：
-# 参考音频每次合成请求内联在 ``audio.voice`` 里（``data:audio/...;base64,...``），克隆身份
-# 即是这段本地保存的样本。enrollment（保存样本 + voice_meta provider=mimo/source=clone）在
-# characters_router 的 /voice_clone mimo 分支，对偶 cosyvoice/minimax 的云端克隆流程；
-# dispatch 由 tts_provider_registry 的 mimo provider 按 voice_meta 选中（见设计文档 §4/§7）。
+# MiMo voice-cloning model. Unlike presets, MiMo cloning has no 'register → obtain remote voice_id' step:
+# reference audio is inlined in ``audio.voice`` (``data:audio/...;base64,...``) in every synthesis request. Clone identity
+# is the locally stored sample itself. Enrollment (saving the sample + voice_meta provider=mimo/source=clone) occurs in
+# characters_router's /voice_clone mimo branch, symmetric with cosyvoice/minimax cloud-cloning flows;
+# dispatch selects the mimo provider in tts_provider_registry based on voice_meta (see design §4/§7).
 MIMO_TTS_VOICECLONE_MODEL = "mimo-v2.5-tts-voiceclone"
 MIMO_TTS_VOICEDESIGN_MODEL = "mimo-v2.5-tts-voicedesign"
 MIMO_TTS_DEFAULT_VOICE = "mimo_default"
@@ -93,8 +93,8 @@ def mimo_voice_clone_data_uri(audio_bytes: bytes, mime_type: str = "audio/wav") 
     for the ``mimo-v2.5-tts-voiceclone`` model (reference audio is inlined per
     synthesis request — MiMo has no server-side cloned voice id)."""
     b64 = base64.b64encode(audio_bytes).decode("ascii")
-    # 先 strip 再回退默认：避免 mime_type="   "（全空白）被 `or` 当真值留下、strip 成空串
-    # 生成非法的 ``data:;base64,...``。
+    # Strip before defaulting: otherwise mime_type="   " (all whitespace) survives `or` as truthy, then strips to empty,
+    # producing an invalid ``data:;base64,...`` URL.
     safe_mime = (mime_type or "").strip() or "audio/wav"
     return f"data:{safe_mime};base64,{b64}"
 

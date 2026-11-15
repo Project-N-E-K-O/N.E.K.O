@@ -30,7 +30,7 @@ logger = get_module_logger(__name__, "Main")
 def _get_minimax_tts_http_url(base_url: str | None = None) -> str:
     """Normalize the MiniMax API base URL into the TTS HTTP SSE address."""
     raw_url = (base_url or "https://api.minimaxi.com").strip().rstrip("/")
-    # 将 ws/wss 协议转为 http/https
+    # Convert ws/wss schemes to http/https.
     if raw_url.startswith("ws://"):
         raw_url = "http://" + raw_url[5:]
     elif raw_url.startswith("wss://"):
@@ -133,7 +133,7 @@ async def _minimax_sse_synthesize(
 
             content_type = resp.headers.get("content-type", "").lower()
 
-            # SSE 格式: text/event-stream
+            # SSE format: text/event-stream.
             if "text/event-stream" in content_type:
                 buffer = ""
                 async for raw_chunk in resp.aiter_text():
@@ -143,7 +143,7 @@ async def _minimax_sse_synthesize(
                         line = line.strip()
                         if not line or line.startswith(":"):
                             continue
-                        # SSE 格式: "data: {json}"
+                        # SSE format: "data: {json}".
                         if line.startswith("data:"):
                             json_str = line[5:].strip()
                             if not json_str or json_str == "[DONE]":
@@ -154,12 +154,12 @@ async def _minimax_sse_synthesize(
                                     flush_audio(force=True)
                                     return
                             except json.JSONDecodeError:
-                                # 上游响应可能含 TTS 原文，不写 logger
+                                # Upstream responses may contain raw TTS text; do not write them through logger.
                                 logger.warning("MiniMax TTS SSE JSON 解析失败 (len=%d)", len(json_str))
                                 print(f"[MiniMax TTS] SSE JSON 解析失败 raw: {json_str[:200]}")
                                 continue
 
-                # 处理流结束后 buffer 中可能残留的最后一行（服务端未发尾部换行）
+                # Process the final line remaining in buffer after stream end if the server omitted a trailing newline.
                 residual = buffer.strip()
                 if residual:
                     if residual.startswith("data:"):
@@ -172,25 +172,25 @@ async def _minimax_sse_synthesize(
                                 logger.warning("MiniMax TTS SSE JSON 解析失败 (残留, len=%d)", len(json_str))
                                 print(f"[MiniMax TTS] SSE JSON 解析失败 (残留) raw: {json_str[:200]}")
 
-            # JSON 流格式: application/json (逐行 JSON 对象)
+            # JSON stream format: application/json (one JSON object per line).
             else:
                 buffer = ""
                 async for raw_chunk in resp.aiter_text():
                     buffer += raw_chunk
-                    # 尝试按行分割 JSON 对象
+                    # Try splitting JSON objects by line.
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         line = line.strip()
                         if not line:
                             continue
 
-                        # 移除可能的逗号分隔符
+                        # Remove possible comma separators.
                         if line.startswith(","):
                             line = line[1:].strip()
                         if line.endswith(","):
                             line = line[:-1].strip()
 
-                        # 跳过数组开始/结束标记
+                        # Skip array opening/closing markers.
                         if line in ("[", "]"):
                             continue
 
@@ -200,12 +200,12 @@ async def _minimax_sse_synthesize(
                                 flush_audio(force=True)
                                 return
                         except json.JSONDecodeError:
-                            # 不完整的 JSON 或格式错误，记录警告后跳过；不写原文到 logger
+                            # Warn and skip incomplete or malformed JSON, without writing raw text through logger.
                             logger.warning("MiniMax TTS JSON 解析失败 (len=%d)", len(line))
                             print(f"[MiniMax TTS] JSON 解析失败 raw: {line[:200]}")
                             continue
 
-                # 处理流结束后 buffer 中可能残留的最后一行
+                # Process any final line remaining in buffer after stream end.
                 residual = buffer.strip()
                 if residual:
                     if residual.startswith(","):
@@ -239,8 +239,8 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
         model_name = "speech-2.8-turbo"
         agg_flush_bytes = 4096
 
-        # 连通性探测
-        # per-call AsyncClient: 一次性 probe，紧接着下面会构造 per-worker 持久 client
+        # Connectivity probe.
+        # Per-call AsyncClient for a one-off probe; a persistent per-worker client is created immediately below.
         async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=10)) as probe:
             probe_resp = await probe.post(
                 api_url, headers=headers,
@@ -272,10 +272,10 @@ def minimax_tts_worker(request_queue, response_queue, audio_api_key, voice_id, b
 
     _run_sentence_tts_worker(request_queue, response_queue, setup, label="MiniMax TTS")
 
-# ── 克隆音色 provider（按 voice_meta.provider 选中，hosted SaaS）─────────────
-# 与 vllm/gptsovits 的"配置选中"不同，这三家靠用户所选克隆音色的 voice_meta 路由；
-# is_selected 读 ctx.voice_meta（惰性，vllm/gptsovits 命中时不会触发），resolve 复刻
-# 原 get_tts_worker 克隆块逻辑（含 cosyvoice_intl key 缺失 → dummy 的凭证兜底）。
+# -- Cloned-voice providers (selected by voice_meta.provider, hosted SaaS) --
+# Unlike configuration-based vllm/gptsovits selection, these three route via voice_meta for the user's chosen cloned voice.
+# is_selected reads ctx.voice_meta lazily, without triggering it on vllm/gptsovits matches. resolve reproduces
+# the old get_tts_worker cloning block, including the missing cosyvoice_intl key -> dummy credential fallback.
 
 def _minimax_clone_is_selected(ctx) -> bool:
     vm = ctx.voice_meta

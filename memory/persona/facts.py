@@ -36,6 +36,8 @@ from utils.cloudsave_runtime import assert_cloudsave_writable
 from utils.file_utils import atomic_write_json_async, read_json_async
 
 
+from memory.introspection import is_permanently_suppressed
+
 from memory.stop_names import (
     acollect_stop_names,
     collect_stop_names,
@@ -83,14 +85,14 @@ class FactsMixin:
         explicit migration event is needed.
         """
         defaults = {
-            'id': '',                   # 唯一标识
+            'id': '',                   # Unique identifier.
             'text': '',
             'source': 'unknown',        # character_card | settings | reflection | manual
-            'source_id': None,          # 上游 ID（reflection_id 等）
-            'recent_mentions': [],      # 窗口内提及时间戳列表
-            'suppress': False,          # 是否被抑制
-            'suppressed_at': None,      # suppress 开始时间
-            'protected': False,         # character_card 来源条目，不可 suppress
+            'source_id': None,          # Upstream ID, e.g. reflection_id.
+            'recent_mentions': [],      # Mention timestamps within the window.
+            'suppress': False,          # Whether suppressed.
+            'suppressed_at': None,      # Suppression start time.
+            'protected': False,         # character_card-origin entries cannot be suppressed.
             # Evidence counters (RFC §3.2.3)
             'reinforcement': 0.0,
             'disputation': 0.0,
@@ -98,10 +100,10 @@ class FactsMixin:
             'disp_last_signal_at': None,
             'sub_zero_days': 0,
             'sub_zero_last_increment_date': None,
-            # user_fact reinforces combo 计数（RFC §3.1.8）。终生累计，
-            # decay 只作用于 reinforcement 数值本身不影响这个计数器。
+            # user_fact reinforcement-combo counter (RFC section 3.1.8), accumulated for life;
+            # decay affects reinforcement values only, never this counter.
             'user_fact_reinforce_count': 0,
-            # 溯源：merge_into 吸收的 reflection id 列表
+            # Provenance: reflection IDs absorbed by merge_into.
             'merged_from_ids': [],
             # Derived token-count cache — populated by the render path
             # (`_get_cached_token_count` / `_aget_cached_token_count`)
@@ -114,8 +116,8 @@ class FactsMixin:
             'token_count_text_sha256': None,
             'token_count_tokenizer': None,
             # Fact version chain (RFC memory-enhancements §2). Populated in
-            # resolve_corrections' replace branch so "主人以前住东京，后来搬到
-            # 大阪" stays traceable. Each item: {text, replaced_at, reason,
+            # resolve_corrections' replace branch keeps "主人以前住东京，后来搬到
+            # 大阪" (the owner moved from Tokyo to Osaka) traceable. Each item: {text, replaced_at, reason,
             # source_fact_id}. None/empty list means no version history.
             'version_history': [],
             # Vector-embedding cache (memory-enhancements P2 — see
@@ -128,12 +130,12 @@ class FactsMixin:
             'embedding': None,
             'embedding_text_sha256': None,
             'embedding_model_id': None,
-            # MemoryRefineEngine cluster_hash skip 状态（Phase A-3）。
-            # cluster_hash = sha1(sorted(member_ids))；refine 跑完后所有
-            # 存活成员都 stamp 上当前 cluster 的 hash + timestamp。下次
-            # 同 cluster 再形成时，全员 hash 命中 + 未超 REVISIT_AFTER_DAYS
-            # → 直接 skip（不送 LLM）。任一成员被 merge/split/modify/discard
-            # 后新条目无 stamp，cluster member set 变化 → hash 自然 invalidate。
+            # MemoryRefineEngine cluster_hash skip state, Phase A-3.
+            # cluster_hash = sha1(sorted(member_ids)); after refinement, stamp every
+            # surviving member with current cluster hash/time. When the same cluster
+            # reforms, all hashes match and age stays below REVISIT_AFTER_DAYS,
+            # so skip LLM calls. After any member merges/splits/modifies/discards,
+            # new entries lack stamps and changed membership naturally invalidates hashes.
             'last_refine_cluster_hash': None,
             'last_refine_at': None,
         }
@@ -144,7 +146,7 @@ class FactsMixin:
         if isinstance(entry, dict):
             for k, v in defaults.items():
                 entry.setdefault(k, v)
-            # 兼容旧字段
+            # Legacy-field compatibility.
             entry.pop('mention_count', None)
             entry.pop('consecutive_mentions', None)
             entry.pop('last_mentioned', None)
@@ -181,6 +183,10 @@ class FactsMixin:
         is deliberately kept out of the ordinary Memory log, so the
         rejection line records lengths instead of excerpts."""
         for existing in section_facts:
+            if is_permanently_suppressed(existing):
+                # A retired entry must not absorb a new fact through a
+                # correction: the new text would inherit its suppression.
+                continue
             if isinstance(existing, dict):
                 old_text = existing.get('text', '')
                 is_card = existing.get('source') == 'character_card'
@@ -190,10 +196,10 @@ class FactsMixin:
             if self._texts_may_contradict(old_text, text, stop_names=stop_names):
                 if is_card:
                     if redact_text:
-                        # scoped 输入的正文不进普通 Memory 日志（与 scoped
-                        # 提取/落盘侧的脱敏口径一致），只记长度。
+                        # Scoped input bodies stay out of ordinary Memory logs, matching scoped
+                        # extraction/persistence redaction rules; record lengths only.
                         logger.info(
-                            f"[Persona] {name}: scoped 新条目与角色卡矛盾，"
+                            f"[Persona] {name}: scoped/常驻区新条目与角色卡矛盾，"
                             f"无条件拒绝: card_len={len(old_text)} "
                             f"new_len={len(text)}"
                         )
@@ -211,8 +217,8 @@ class FactsMixin:
         speaker_provenance: dict | None = None,
     ) -> dict:
         entry = self._normalize_entry(text)
-        # scoped 条目 ID 掺隔离域：同 section 双 scope 同秒同文本会撞 ID，
-        # ID 寻址的归档/删除会跨域误伤（Codex P2）。
+        # Include isolation domains in scoped entry IDs: identical same-section/same-second text in different scopes otherwise collides,
+        # causing ID-based archival/deletion across domains (Codex P2).
         domain_salt = (
             f"{subject.key}|{subject.scope}|" if subject is not None else ""
         )
@@ -281,9 +287,9 @@ class FactsMixin:
         )
         stop_names = self._get_entity_stop_names(name)
 
-        # 同 section 可能混着不同自定义 scope 的条目（section key 不含
-        # scope）：矛盾扫描只看本 subject 的条目，跨 scope 文本不得互相
-        # 否决/触发 correction。
+        # Sections may mix custom scopes because section keys omit scope;
+        # contradiction scans consider only this subject, never letting cross-scope text
+        # veto entries or trigger corrections.
         scan_facts = section_facts
         if memory_subject is not None:
             from memory.scopes import entry_matches_subject
@@ -292,8 +298,8 @@ class FactsMixin:
                 if isinstance(e, dict) and entry_matches_subject(e, memory_subject)
             ]
         if memory_subject is not None:
-            # 对偶 aadd_fact：scoped 扫描面看不到角色卡条目所在的 section，
-            # 与固定人设冲突的群衍生断言必须在这里被拒。
+            # Symmetric with aadd_fact: scoped scans cannot see character-card sections,
+            # so reject group-derived assertions conflicting with fixed personas here.
             card_code, _card_text = self._evaluate_fact_contradiction(
                 name, text, self._collect_card_facts(persona), stop_names,
                 redact_text=True,
@@ -335,14 +341,18 @@ class FactsMixin:
     async def aadd_fact(self, name: str, text: str, entity: str = 'master',
                         source: str = 'manual', source_id: str | None = None,
                         subject=None,
-                        speaker_provenance: dict | None = None) -> str:
+                        speaker_provenance: dict | None = None,
+                        fact_source_counts: dict | None = None) -> str:
         """P2.a.2: character-level asyncio.Lock serializes add_fact /
         resolve_corrections / record_mentions, preventing persona.json write races.
 
         Note: _aqueue_correction is invoked while already inside this lock, and
         its standalone lock is an asyncio.Lock (reentrant? no — asyncio.Lock is
         not reentrant) → so inside the lock we call the **unlocked** version of
-        _aqueue_correction."""
+        _aqueue_correction.
+
+        ``fact_source_counts`` (a promoted reflection's user / AI fact counts)
+        is recorded on the new entry as is; nothing reads it for behavior."""
         from memory.scopes import coerce_subject
         memory_subject = coerce_subject(subject)
         if memory_subject is not None:
@@ -354,7 +364,7 @@ class FactsMixin:
             )
             stop_names = await self._aget_entity_stop_names(name)
 
-            # 对偶同步版 add_fact：矛盾扫描按 subject 逐条过滤。
+            # Match synchronous add_fact by filtering contradiction scans per subject.
             scan_facts = section_facts
             if memory_subject is not None:
                 from memory.scopes import entry_matches_subject
@@ -363,9 +373,9 @@ class FactsMixin:
                     if isinstance(e, dict) and entry_matches_subject(e, memory_subject)
                 ]
             if memory_subject is not None:
-                # scoped 写入的扫描面被限制在自己的隔离域，看不到 master /
-                # neko / relationship 下的角色卡条目——与固定人设冲突的
-                # 群衍生断言会被当成普通新增。这里补一次角色卡校验。
+                # Scoped writes scan only their isolation domains, missing master /
+                # neko / relationship character-card entries and treating conflicting group-derived
+                # assertions as normal additions; add a character-card check here.
                 card_code, card_text = self._evaluate_fact_contradiction(
                     name, text, self._collect_card_facts(persona), stop_names,
                     redact_text=True,
@@ -397,12 +407,64 @@ class FactsMixin:
                 )
                 return self.FACT_QUEUED_CORRECTION
 
-            section_facts.append(self._build_fact_entry(
+            entry = self._build_fact_entry(
                 text, source, source_id, subject=memory_subject,
                 speaker_provenance=speaker_provenance,
-            ))
+            )
+            if isinstance(fact_source_counts, dict):
+                entry['fact_source_counts'] = dict(fact_source_counts)
+            section_facts.append(entry)
             await self.asave_persona(name, persona)
             return self.FACT_ADDED
+
+    # Card sections (filled from characters.json: the character card into
+    # "neko", the master profile into "master") that a private fact of each
+    # entity is checked against; see acontradicts_character_card.
+    # Known trade-off: a relationship-type field on the character card (how
+    # the character addresses the master, say) never blocks a master or neko
+    # fact. The keyword-overlap test rarely flags such pairs anyway, while
+    # scanning across cards rejects the master's birthday or age on the
+    # character's own (both measured for PR #3598). Revisit if the
+    # contradiction test learns whose field it is looking at.
+    _CARD_SECTIONS_BY_ENTITY = {
+        'master': ('master',),
+        'neko': ('neko',),
+        'relationship': ('master', 'neko'),
+    }
+
+    async def acontradicts_character_card(
+        self, name: str, text: str, *, entity: str | None = None,
+    ) -> bool:
+        """Whether ``text`` contradicts a protected character-card entry.
+
+        The card half of ``aadd_fact``'s contradiction check, for stores whose
+        entries live outside persona.json (memory/pinned_facts.py). The
+        rejection log line records lengths only.
+
+        ``entity`` picks the card sections a private fact is held against
+        (``_CARD_SECTIONS_BY_ENTITY``). Both cards carry fields such as
+        birthday or age, and the overlap test cannot tell whose they are, so
+        "the master's birthday is ..." against the character card's own
+        birthday is a false conflict. A relationship fact has no card section
+        of its own (relationship fields live in either card), so it is held
+        against both. None, or an unknown entity, scans every section, like
+        the scoped branch of ``aadd_fact``.
+        """
+        persona = await self.aensure_persona(name)
+        sections = self._CARD_SECTIONS_BY_ENTITY.get(entity) if entity else None
+        if sections is None or not isinstance(persona, dict):
+            card_facts = self._collect_card_facts(persona)
+        else:
+            card_facts = self._collect_card_facts({
+                key: persona[key] for key in sections if key in persona
+            })
+        if not card_facts:
+            return False
+        stop_names = await self._aget_entity_stop_names(name)
+        code, _ = self._evaluate_fact_contradiction(
+            name, text, card_facts, stop_names, redact_text=True,
+        )
+        return code == self.FACT_REJECTED_CARD
 
     @staticmethod
     def _find_entry_in_section(section_facts: list, entry_id: str) -> dict | None:
@@ -471,7 +533,7 @@ class FactsMixin:
             }
 
             def _sync_load(_n: str):
-                # 我们已持 async 锁 + 内存 cache 就是当前 view，直接复用。
+                # Async lock is already held and memory cache is current; reuse it directly.
                 return persona
 
             def _sync_mutate(_view):
@@ -531,6 +593,40 @@ class FactsMixin:
                 if isinstance(entry, dict) and entry.get('id') == bare_id:
                     return ek, entry
         return None, None
+
+    async def arecord_covered_facts(
+        self, name: str, section_key: str, entry_id: str,
+        fact_ids: list[str], *, expected_text: str, subject=None,
+    ) -> bool:
+        """Record facts that reflection synthesis skipped as already covered
+        by one persona entry.
+
+        Audit only: evidence stays untouched, so restating an entry never
+        raises its render priority. Returns False when the entry is gone,
+        protected, permanently suppressed, outside ``subject``'s isolation
+        domain, or no longer reads ``expected_text`` (the wording the skip
+        decision was made on).
+        """
+        from memory._reflection.schema import merge_covered_fact_ids
+        from memory.scopes import entry_matches_subject
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(section_key)
+            entry = self._find_entry_in_section(
+                section.get('facts', []) if isinstance(section, dict) else [],
+                entry_id,
+            )
+            if (
+                entry is None
+                or entry.get('protected')
+                or is_permanently_suppressed(entry)
+                or entry.get('text') != expected_text
+                or not entry_matches_subject(entry, subject)
+            ):
+                return False
+            if merge_covered_fact_ids(entry, fact_ids):
+                await self.asave_persona(name, persona)
+            return True
 
     async def amerge_into(
         self, name: str, target_entry_id: str, merged_text: str,
@@ -592,7 +688,9 @@ class FactsMixin:
         consumes the freshest target state.
 
         Returns: 'merged' on success, 'noop' if already merged, 'not_found'
-        if `target_entry_id` is missing from the persona.
+        if `target_entry_id` is missing from the persona or permanently
+        suppressed (merging into a retired entry would hide the reflection
+        with it, and the caller would still mark it merged).
         """
         from memory.event_log import (
             EVT_PERSONA_ENTRY_UPDATED,
@@ -615,6 +713,14 @@ class FactsMixin:
                 logger.warning(
                     f"[Persona] {name}: amerge_into 找不到 target_entry_id="
                     f"{target_entry_id}"
+                )
+                return 'not_found'
+            if is_permanently_suppressed(target_entry):
+                # The caller checked an unlocked snapshot; introspection may
+                # have retired the target since.
+                logger.warning(
+                    f"[Persona] {name}: amerge_into 目标 target_entry_id="
+                    f"{target_entry_id} 已被永久压制"
                 )
                 return 'not_found'
 
@@ -718,8 +824,8 @@ class FactsMixin:
                 'disputation': float(merged_disputation),
                 # Both clocks bumped — the merge IS a fresh signal on this
                 # entry from both sides (rein from the absorbed reflection's
-                # confirmations, disp likewise). RFC §3.1.1 says "只重置被
-                # 触动的一侧" for normal aapply_signal, but merge is a
+                # confirmations and disp likewise). RFC section 3.1.1 resets only the touched
+                # side for ordinary aapply_signal, but merge is a
                 # special case: target evidence values are RECOMPUTED from
                 # both contributors via _compute_merged_evidence (max), so
                 # both timestamps reflect the moment that recomputation
@@ -973,6 +1079,7 @@ class FactsMixin:
             shard_path = await apick_today_shard_path(archive_dir, now=now)
             shard_basename = os.path.basename(shard_path)
             archive_entry = dict(entry)
+            archive_entry['entity_key'] = entity_key
             archive_entry['archived_at'] = now_iso
             archive_entry['archive_shard_path'] = shard_basename
 
@@ -1059,21 +1166,21 @@ class FactsMixin:
     ) -> bool:
         """Stamp a human-readable display name onto an EXISTING scoped section.
 
-        写入路径（scoped facts / scoped history）在成功后调它刷新 section
-        元数据；渲染侧读到就把标题从裸 subject_id 换成「名字 + id」。三条
-        刻意的边界：
+        Scoped fact/history writes call this after success to refresh section
+        metadata; renderers replace bare subject_id headings with name plus ID. Three
+        deliberate boundaries:
 
-        1. **绝不建 section**——scoped persona section 由晋升创建，为了存
-           一个名字就建空 section，会让每个说过话的群成员在 persona.json
-           里留一个空壳（渲染/晋升/refine 循环全要空转它们）。section 还
-           没出现时丢弃名字，下一次写入自然补上（自愈）。
-        2. **scope 必须精确匹配**——section key 不含 scope，同 key 可能住
-           着另一个隔离域的数据；给别人的 section 盖自己的名字等于跨域
-           改元数据（对偶 _normalize_entry_for_section 的 fail-closed）。
-        3. **display_name 过 sanitize_speaker_label**——它会进 prompt 标
-           题，群名/群名片是用户可改的原始数据，与 speaker_label 同一个
-           攻击面（#2605），复用同一个中和器；中和后为空视为没有名字，
-           不清除已有值（名字暂时拿不到时保留旧名比退回裸 id 有用）。
+        1. Never create sections: promotion creates scoped persona sections. Creating
+           empty ones for names leaves shells in persona.json for every speaking
+           group member, wasting rendering/promotion/refinement work. If absent,
+           discard the name; the next write naturally self-heals it.
+        2. Require exact scope matches: section keys omit scope and may contain
+           another isolation domain. Stamping one's own name on another section
+           crosses metadata boundaries, matching _normalize_entry_for_section's fail-closed rule.
+        3. Sanitize display_name with sanitize_speaker_label because it enters prompt
+           headings. User-editable group names/cards share speaker_label's attack
+           surface (#2605), so reuse its neutralizer. Empty results mean no name;
+           retain old values rather than clear them when temporarily unavailable.
 
         ``strict``: a persona file that cannot be read (or is not an object)
         raises instead of returning False, so a caller that must retry can
@@ -1139,14 +1246,14 @@ class FactsMixin:
     async def aforget_subject(self, name: str, subject) -> dict:
         """Delete one exact (subject, scope) domain from the persona view.
 
-        撤回入口（对偶 FactStore / ReflectionEngine 的 aforget_subject）：
-        1. scoped section 里 entry_matches_subject 的条目全删；
-        2. section 因此清空、且 section 元数据就属于这个域时整段删掉
-           （连 display_name）——section key 不含 scope，混居着其它 scope
-           条目时 section 必须保留；
-        3. pending corrections 里带该 subject 戳的条目一并清：残留的
-           correction 在 resolve 时会把已删文本重新写回 persona（回流）。
-        归档分片不清（不进渲染/召回读路径，事件留底）。
+        Revocation entry, symmetric with FactStore/ReflectionEngine aforget_subject:
+        1. Delete all entry_matches_subject matches in scoped sections.
+        2. If emptied and section metadata belongs to this domain, remove the section
+           including display_name. Section keys omit scope, so retain sections
+           containing other scopes' entries.
+        3. Also clear pending corrections stamped for this subject; otherwise
+           resolving them writes deleted text back into persona.
+        Leave archive shards untouched; they are outside rendering/recall, preserving event history.
         """  # noqa: DOCSTRING_CJK
         from memory.scopes import (
             SCOPED_PERSONA_PREFIX,
@@ -1219,11 +1326,11 @@ class FactsMixin:
                         )
                     corrections = corrections_data
 
-                # corrections 清理留在同一把角色锁内：
-                # _aqueue_correction_locked 也在这把锁下写同一个文件，锁外
-                # 读改写会与并发入队互相覆盖。先写 queue；若 persona 落盘
-                # 随后失败，重试仍能从 persona 本体识别目标，反向顺序则可能
-                # 留下已经失去来源映射的回流条目。
+                # Keep correction cleanup under the same character lock:
+                # _aqueue_correction_locked writes the same file under it; unlocked
+                # read-modify-write would overwrite concurrent enqueueing. Write the queue first;
+                # if persona persistence then fails, retry can still identify targets from persona,
+                # whereas reverse ordering can leave rebound entries without source mappings.
                 kept_corrections = [
                     c for c in corrections if not _correction_matches(c)
                 ]
@@ -1379,7 +1486,7 @@ class FactsMixin:
         """Return master + lanlan names + their nicknames (``昵称``) — used to strip
         stop-names before any keyword/BM25/extraction step in the memory pipeline.
 
-        ``lanlan_name`` defaults to the currently active catgirl. When given,
+        ``lanlan_name`` defaults to the currently active neko. When given,
         use that character's own ``昵称`` — on this path ``aadd_fact`` etc.
         explicitly know the target character, avoiding misuse of the active
         character's nicknames in multi-character setups.

@@ -189,7 +189,6 @@ async def _run_one(args: argparse.Namespace) -> dict[str, Any]:
 
     count = args.run_one
     plugins_root = Path(os.environ["NEKO_PLUGIN_BASELINE_PLUGINS_ROOT"])
-    message_queue: asyncio.Queue = asyncio.Queue()
     result: dict[str, Any] = {"count": count, "after_import": _tree_sample(set())}
 
     hosts: list[Any] = []
@@ -208,7 +207,6 @@ async def _run_one(args: argparse.Namespace) -> dict[str, Any]:
             host = PluginHost(plugin_id=plugin_id, entry_point=f"plugins.{plugin_id}:BaselinePlugin", config_path=config_path)
             hosts.append(host)
             await host.start(
-                message_target_queue=message_queue,
                 startup_timeout=args.startup_timeout,
                 startup_failure="fail",
             )

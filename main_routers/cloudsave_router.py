@@ -21,13 +21,12 @@ and safety checks around runtime reload.
 
 URL convention: routes declared WITHOUT trailing slash (no ``@router.get('/')``).
 See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
 import logging
-from pathlib import PurePath
 from contextlib import suppress
 
 from fastapi import APIRouter, Request
@@ -101,6 +100,7 @@ CLOUDSAVE_ERROR_I18N_KEYS = {
     "CLOUDSAVE_CHARACTER_NOT_FOUND": "cloudsave.error.cloudCharacterNotFound",
     "LOCAL_CHARACTER_EXISTS": "cloudsave.error.localCharacterExists",
     "VISIT_DATA_BUSY": "cloudsave.error.visitDataBusy",
+    "VISIT_DATA_AMBIGUOUS": "cloudsave.error.visitDataAmbiguous",
     "CLOUD_CHARACTER_EXISTS": "cloudsave.error.cloudCharacterExists",
     "CLOUDSAVE_WRITE_FENCE_ACTIVE": "cloudsave.error.writeFenceActive",
     "NAME_AUDIT_FAILED": "cloudsave.error.nameAuditFailed",
@@ -320,6 +320,54 @@ async def _force_terminate_session(character_name: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _character_config_lock():
+    # Late binding: tests replace this module-level lock.
+    from utils import character_memory
+
+    return character_memory.character_config_mutation_lock
+
+
+async def _visit_name_refusal(config_manager, name: str):
+    """409 ``VISIT_DATA_BUSY`` while a pending visit retirement / rename holds ``name``.
+
+    Called under the character-config lock right before the import publishes
+    the character, so no delete or rename can slip in between. Same rule as
+    every other path creating a character: the roster keys entries by name.
+    An overwrite of a local character is checked too: when that character's
+    own rename is still unreconciled, the import would replace its profile
+    (and uid) first, and recovery could then no longer tell where its
+    entries belong. A rename that can never be reconciled answers
+    ``VISIT_DATA_AMBIGUOUS`` (delete one of the two characters) rather than
+    ``VISIT_DATA_BUSY`` (try again later).
+    """
+    from main_routers.visit_router import character_hooks
+
+    blocked = await character_hooks.name_block_reason(config_manager, name)
+    if blocked is None:
+        return None
+    reason, names = blocked
+    if reason == character_hooks.NAME_AMBIGUOUS:
+        # Chained rename markers contain more than two names; report the character actually present locally, not an alphabetically earlier intermediate name that no longer exists.
+        configured = set((await config_manager.aload_characters()).get("猫娘") or {})
+        others = sorted(n for n in names if n != name)
+        other = next((n for n in others if n in configured), others[0] if others else name)
+        return _cloudsave_error_response(
+            "VISIT_DATA_AMBIGUOUS",
+            "An unfinished rename between this character and another one left their visit data impossible to "
+            "separate automatically. Delete one of the two characters, then download again.",
+            status_code=409,
+            character_name=name,
+            message_params={"first": name, "second": other},
+        )
+    return _cloudsave_error_response(
+        "VISIT_DATA_BUSY",
+        "Visit data under this name is still being sorted out (a character with this name was just "
+        "deleted or renamed). Please try again later.",
+        status_code=409,
+        character_name=name,
+    )
+
+
 def _local_character_exists(config_manager, character_name: str) -> bool:
     characters_payload = config_manager.load_characters()
     return character_name in (characters_payload.get("猫娘") or {})
@@ -492,8 +540,8 @@ async def _rollback_failed_character_download(
                     config_manager, backup_path, recent_locks_held=True,
                 )
             finally:
-                # 磁盘恢复失败也必须撤销导入期 recent identity；否则
-                # finally 释放文件锁后会把半提交的 redirect/generation 暴露出去。
+                # Even failed disk recovery must revoke import-time recent identity;
+                # otherwise releasing file locks in finally exposes partially committed redirects/generations.
                 rollback_cloudsave_character_import_registry(result)
             initialize_character_data = get_initialize_character_data()
             await initialize_character_data()
@@ -533,8 +581,8 @@ async def _complete_cloudsave_character_download(
             if not reload_ok:
                 raise RuntimeError(reload_error or "reload failed")
         except asyncio.CancelledError as exc:
-            # completion task 本身也可能被 shutdown 直接 cancel；此时仍须在
-            # retained recent locks 下把磁盘和 registry 回滚完，再传播取消。
+            # Shutdown may directly cancel the completion task itself; still roll back disk and registry
+            # under retained recent locks before propagating cancellation.
             await _rollback_failed_character_download(
                 config_manager, name, result, exc,
             )
@@ -639,20 +687,12 @@ async def post_cloudsave_character_download(name: str, request: Request):
             character_name=name,
         )
 
-    if not local_exists:
-        # 同名的已删除角色还在退役串门数据（pending_retire）：名册按名字存，这时导入同名角色
-        # 会看到旧角色的对端与摘要、之后的退役又会删掉新角色的条目（与新建角色同一条规则）
-        from main_logic.visit.char_lifecycle import is_name_retiring
-
-        config_dir = getattr(config_manager, "config_dir", None)
-        if isinstance(config_dir, (str, PurePath)) and str(config_dir) and await is_name_retiring(config_dir, name):
-            return _cloudsave_error_response(
-                "VISIT_DATA_BUSY",
-                "A deleted character with the same name is still having its visit data cleaned up. "
-                "Please try again later.",
-                status_code=409,
-                character_name=name,
-            )
+    # Check before irreversible steps such as forcibly ending sessions / releasing handles: a visit marker reserving the name
+    # still causes 409 below, so do not disconnect the user first. Recheck under lock before publishing.
+    async with _character_config_lock():
+        visit_refusal = await _visit_name_refusal(config_manager, name)
+    if visit_refusal is not None:
+        return visit_refusal
 
     block_reason = _active_session_block_reason(name)
     if block_reason:
@@ -705,15 +745,22 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
                 reason=f"single_character_download:{name}",
             ):
-                result, import_cancelled = await _await_thread_call_to_completion(
-                    import_cloudsave_character_unit,
-                    config_manager,
-                    name,
-                    overwrite=overwrite,
-                    backup_before_overwrite=backup_before_overwrite,
-                    retain_recent_locks=True,
-                    use_cloud_apply_fence=False,
-                )
+                # Evaluate and publish under the character-configuration mutation lock; otherwise concurrent deletion can retire
+                # and commit the name between evaluation and publication, after which this path recreates it.
+                async with _character_config_lock():
+                    visit_refusal = await _visit_name_refusal(config_manager, name)
+                    if visit_refusal is None:
+                        result, import_cancelled = await _await_thread_call_to_completion(
+                            import_cloudsave_character_unit,
+                            config_manager,
+                            name,
+                            overwrite=overwrite,
+                            backup_before_overwrite=backup_before_overwrite,
+                            retain_recent_locks=True,
+                            use_cloud_apply_fence=False,
+                        )
+                if visit_refusal is not None:
+                    return visit_refusal
                 reload_error_response, completion_cancelled = (
                     await _await_coroutine_to_completion(
                         _complete_cloudsave_character_download(

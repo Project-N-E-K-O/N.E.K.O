@@ -118,7 +118,7 @@ def ensure_character_dir(memory_dir: str, name: str) -> str:
     return char_dir
 
 
-# 旧文件名 → 新文件名的映射（不含 name 后缀）
+# Map old filenames to new filenames (without the name suffix).
 #
 # Borrowed from utils.character_memory rather than copied. The copy that used
 # to live here had drifted three entries behind: time_indexed_{name}.db,

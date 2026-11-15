@@ -7,15 +7,20 @@ N.E.K.O/
 ├── app/
 │   ├── main_server/          # Main Web/API entrypoint
 │   ├── memory_server/        # Memory API/runtime
-│   └── agent_server/         # Agent/tool API and channels
+│   └── agent_server/         # Agent API; hosts NekoClaw
 ├── launcher.py               # Thin public launcher entrypoint
 ├── launcher_core/            # Bootstrap, ports, process lifecycle
-├── brain/                    # Agent routing/execution adapters
 ├── config/                   # Defaults, prompts, provider/network data
+├── knowledge/                # Public knowledge packs (runs in the Memory Server)
 ├── main_logic/               # Conversation, clients, TTS, buses
 ├── main_routers/             # Main FastAPI route packages/modules
 ├── memory/                   # Facts, recall, persona, reflection, event/outbox
+├── nekoclaw/
+│   ├── host/                 # Task brain, ledger, capability gateway, permissions
+│   ├── runtime/              # Agent runtime in which task agents run
+│   └── builtin/              # Keyboard-and-mouse and browser tools
 ├── plugin/                   # SDK, host/server, built-ins, tooling
+├── services/                 # Domain services: chat sync, theater runtime
 ├── utils/
 │   └── config_manager/       # Writable config/storage package
 ├── frontend/
@@ -41,6 +46,16 @@ N.E.K.O/
 - `main_logic/voice_turn/` owns provider-neutral voice contracts; local
   Silero/Smart Turn code and model assets live under
   `main_logic/asr_client/endpointing/`.
+- `services/` is an L2 package next to `main_logic/`, `memory/` and
+  `knowledge/`: `main_logic/`, `main_routers/` and `app/` may import it, but it
+  never imports `main_logic/`, `main_routers/` or anything above L2. What it
+  needs from those layers (saved community session, live session manager,
+  character rename) is registered into `services/chat_sync/host.py` by the
+  owning module when that module is imported.
+- `knowledge/` runs inside the Memory Server; Main-side code, `services/`
+  included, reaches it over HTTP only.
+- `scripts/check_module_layering.py` enforces these layers. A new top-level
+  directory with Python code must be added to its `LAYERS`, or CI fails.
 - Docker files are under `docker/`, not the repository root.
 - `pyproject.toml` and `uv.lock` are the dependency contract; `requirements.txt` is not the recommended installation entrypoint.
 

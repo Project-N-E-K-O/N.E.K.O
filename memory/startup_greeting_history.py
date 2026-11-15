@@ -44,13 +44,13 @@ logger = get_module_logger(__name__, "Memory")
 
 _SCHEMA_VERSION = 1
 _DEFAULT_KEY = "default"
-# 召回窗是 3 天，上限必须装得下整个窗口，否则最早那一天会在还该被参考时就被
-# 挤掉。容量要按 15 分钟的触发门槛算，不能按 30 分钟的 burst 闸：用户在上次问候
-# 之后说过话时 burst 会被豁免，此时相邻两条已提交问候只差 15 分钟。
-# 3 天 ÷ 15 分钟 = 288，取 320 留余量。
+# The recall window is three days, so capacity must hold the whole window or the earliest day is
+# evicted while still relevant. Size for the 15-minute trigger threshold rather than the 30-minute burst gate:
+# user speech since the previous greeting bypasses the burst gate, allowing committed greetings 15 minutes apart.
+# Three days / 15 minutes = 288; use 320 for headroom.
 #
-# 这里刻意按条数封顶而不是按时间裁：本模块明确不按墙钟排序（见
-# _read_records_from_disk），时钟回拨时 ts 不能作为「该不该丢」的依据。
+# Intentionally cap by count, not time: this module explicitly avoids wall-clock sorting (see
+# _read_records_from_disk), so timestamps cannot decide eviction after a clock rollback.
 _MAX_RECORDS = 320
 _MAX_STORED_TEXT_CHARS = 160
 

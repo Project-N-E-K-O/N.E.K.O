@@ -479,8 +479,8 @@ class _VoiceTurnAdapter:
             await self._close_resources()
             return
         if self._failed and not task.done():
-            # SmartTurn 的端点等待任务也可能在 consumer 队列外宣告失败。
-            # 此时 consumer 仍在等下一项，必须显式取消，避免关闭流程永久等待。
+            # SmartTurn endpoint-wait tasks can also report failure outside the consumer queue.
+            # The consumer is still waiting for the next item then; explicitly cancel it to avoid shutdown waiting forever.
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         if task.done():
@@ -1756,8 +1756,8 @@ class DetectorRuntime:
                     self._deferred_turn_complete = True
                     self._deferred_completion_identity_advanced = fence is not None
                     return
-                # 当前轮 seal 后立即把检测身份推进到下一轮。旧 provider final
-                # 到达前，新语音只做本地语义判断，完成信号延迟发布。
+                # Advance detection identity to the next round immediately after sealing the current round. Before the old provider final
+                # arrives, new speech receives only local semantic evaluation, with completion publication deferred.
                 self._defer_turn_complete = True
                 if fence is None:
                     self._semantic_generation += 1
@@ -3088,7 +3088,7 @@ class DetectorRuntime:
                     )
                 callback = self._on_turn_complete
         if callback is not None:
-            # 不持有 detector lock 调用 Core，避免 Core 清理时反向 reset 死锁。
+            # Call Core without holding the detector lock, avoiding a reverse-reset deadlock during Core cleanup.
             await callback()
 
     async def close(self) -> None:

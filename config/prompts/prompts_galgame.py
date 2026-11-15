@@ -41,7 +41,7 @@ def normalize_galgame_locale(lang: str | None) -> str:
     return normalize_prompt_locale(lang, default='en', simplified='zh', keep_traditional=True)
 
 
-# {lanlan_name} = catgirl display name; {master_name} = chat partner display name.
+# {lanlan_name} = neko display name; {master_name} = chat partner display name.
 GALGAME_OPTION_GENERATION_PROMPT = {
     'zh': """你是一个游戏剧本助手，正在为一名玩家（{master_name}）生成三个不同风格的回复候选，让玩家在与角色（{lanlan_name}）的对话里挑选其中之一发送。
 
@@ -144,8 +144,8 @@ Não retorne nada fora do JSON. Não envolva em bloco de código.""",
 # Headers used to format the dialogue context block sent to the model.
 GALGAME_DIALOGUE_HEADER = {
     'zh': "======以下为最近的对话======",
-    # 水印框「以下为 / 以上为」在本表里是跨 locale 不变的字面量（英日韩俄西葡各行
-    # 也照抄），繁中行沿用同一个框，只翻描述词，让上下水印保持成对可比。
+    # The watermark frames "以下为 / 以上为" (following/preceding content) are invariant literals across locales in this table (also copied verbatim
+    # in English, Japanese, Korean, Russian, Spanish, and Portuguese). Traditional Chinese keeps the same frames and translates only descriptions so paired watermarks remain comparable.
     'zh-TW': "======以下为最近的對話======",
     'en': "======以下为 the recent dialogue======",
     'ja': "======以下为 直近の会話======",
@@ -172,7 +172,7 @@ GALGAME_DIALOGUE_FOOTER = {
 # the prompt readable in the model's native language instead of an English
 # "her/you" residue mixing into ja/ko/ru output).
 GALGAME_DEFAULT_LANLAN_PLACEHOLDER = {
-    'zh': '猫娘', 'zh-TW': '貓娘', 'en': 'Catgirl', 'ja': '猫娘', 'ko': '캣걸',
+    'zh': '猫娘', 'zh-TW': '貓娘', 'en': 'Neko', 'ja': '猫娘', 'ko': '캣걸',
     'ru': 'Кошкодевочка', 'es': 'Chica gato', 'pt': 'Garota gato',
 }
 GALGAME_DEFAULT_MASTER_PLACEHOLDER = {

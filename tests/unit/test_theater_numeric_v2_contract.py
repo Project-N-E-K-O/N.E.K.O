@@ -1,4 +1,4 @@
-"""Numeric v2 包合同、复验和独立安装目录测试。"""  # noqa: DOCSTRING_CJK
+"""Numeric v2 package-contract, revalidation, and independent installation-directory tests."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from services.theater.numeric_v2_registry import (
 
 
 def numeric_v2_story(*, player_address_known: bool = True) -> dict:
-    """构造一个包含两条数值路线和两个结局的最小合法包。"""  # noqa: DOCSTRING_CJK
+    """Build a minimal valid package containing two numeric routes and two endings."""  # noqa: DOCSTRING_CJK
 
     metric = {
         "name": "信任度",
@@ -78,7 +78,7 @@ def numeric_v2_story(*, player_address_known: bool = True) -> dict:
             "author": "test",
             "revision": "r1",
             "language": "zh-CN",
-            # 默认测试包代表当前唯一可运行的 v2.2 合同；旧包测试显式改写为 v2.1。
+            # The default test package represents the only currently runnable v2.2 contract; old-package tests explicitly change it to v2.1.
             "contract_version": "v2.2",
         },
         "intro": {
@@ -137,7 +137,7 @@ def numeric_v2_story(*, player_address_known: bool = True) -> dict:
 
 
 def numeric_v2_1_story() -> dict:
-    """把基础包升级为带事实来源与作者桥段的严格 v2.1 测试包。"""  # noqa: DOCSTRING_CJK
+    """Upgrade the base package to a strict v2.1 test package with fact sources and author bridges."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["meta"]["contract_version"] = "v2.1"
@@ -176,7 +176,7 @@ def test_numeric_v2_compiles_canonical_package():
 
 
 def test_numeric_v2_fact_contract_accepts_only_explicit_typed_keys():
-    """事实白名单是剧本合同的一部分，值类型和公开范围必须同时声明。"""  # noqa: DOCSTRING_CJK
+    """The fact allowlist is part of the script contract; declare both value types and disclosure scope."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -191,8 +191,54 @@ def test_numeric_v2_fact_contract_accepts_only_explicit_typed_keys():
     assert compiled.story["fact_contract"] == story["fact_contract"]
 
 
+def test_player_handoff_item_requires_a_public_boolean_performance_fact():
+    story = numeric_v2_story()
+    key = "scene:start:box_received"
+    definition = {
+        "description": "旧友已接稳剑匣。",
+        "value_type": "bool",
+        "visibility": "public",
+        "evidence_source": "performance",
+        "player_handoff_item": ["剑匣", "木匣"],
+    }
+    story["fact_contract"] = {"facts": {key: definition}}
+
+    compiled = NumericV2Compiler().compile_v2_2(story)
+
+    assert compiled.story["fact_contract"]["facts"][key] == definition
+
+
+@pytest.mark.parametrize("changes", [
+    {"player_handoff_item": "剑匣"},
+    {"player_handoff_item": []},
+    {"player_handoff_item": ["剑匣", "木匣", "旧匣", "匣子", "小匣"]},
+    {"player_handoff_item": ["剑匣", "剑匣"]},
+    {"player_handoff_item": [""]},
+    {"player_handoff_item": ["  "]},
+    {"player_handoff_item": ["剑匣\n木匣"]},
+    {"player_handoff_item": [["剑匣"]]},
+    {"value_type": "string"},
+    {"visibility": "story"},
+    {"evidence_source": None},
+])
+def test_player_handoff_item_rejects_invalid_aliases_or_incompatible_facts(changes):
+    story = numeric_v2_story()
+    key = "scene:start:box_received"
+    definition = {"value_type": "bool", "visibility": "public", "evidence_source": "performance",
+                  "player_handoff_item": ["剑匣"], **changes}
+    if definition["evidence_source"] is None:
+        definition.pop("evidence_source")
+    story["fact_contract"] = {"facts": {key: definition}}
+
+    with pytest.raises(NumericV2CompileError) as caught:
+        NumericV2Compiler().compile_v2_2(story)
+
+    assert any(issue.code == "invalid_fact_contract_player_handoff_item"
+               and issue.path == f"fact_contract.facts.{key}.player_handoff_item" for issue in caught.value.issues)
+
+
 def test_numeric_v2_completion_contract_accepts_declared_typed_facts():
-    """幕完成条件只能引用事实合同，并保留作者声明的精确目标值。"""  # noqa: DOCSTRING_CJK
+    """Act-completion conditions may reference only the fact contract and must retain the author's exact target values."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -232,7 +278,7 @@ def test_numeric_v2_completion_contract_accepts_declared_typed_facts():
     ],
 )
 def test_numeric_v2_completion_contract_rejects_ambiguous_or_invalid_facts(completion_contract, code):
-    """完成条件不接受任选分支、未知事实、错类型或重复键。"""  # noqa: DOCSTRING_CJK
+    """Completion conditions reject optional branches, unknown facts, incorrect types, and duplicate keys."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -250,7 +296,7 @@ def test_numeric_v2_completion_contract_rejects_ambiguous_or_invalid_facts(compl
 
 
 def test_numeric_v2_completion_contract_is_forbidden_on_terminal_node():
-    """结局没有下一幕，不允许声明会误导收束逻辑的完成条件。"""  # noqa: DOCSTRING_CJK
+    """Endings have no next act and must not declare completion conditions that mislead conclusion logic."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -270,7 +316,7 @@ def test_numeric_v2_completion_contract_is_forbidden_on_terminal_node():
 
 
 def test_numeric_v2_completion_route_requires_author_offer_and_accept_input_for_non_terminal_target():
-    """完成合同通向普通下一幕时，作者邀请与明确接受输入必须成对存在。"""  # noqa: DOCSTRING_CJK
+    """When a completion contract leads to a normal next act, the author's invitation and explicit acceptance input must both exist."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -285,7 +331,7 @@ def test_numeric_v2_completion_route_requires_author_offer_and_accept_input_for_
     story["nodes"][0]["completion_contract"] = {
         "all": [{"key": "scene:start:done", "equals": True}],
     }
-    # 低信任路线先进入普通幕，再由普通幕通向原有结局；高信任路线仍直接进入结局。
+    # The low-trust route first enters a normal act leading to the existing ending; the high-trust route still enters the ending directly.
     middle = story["nodes"][2]
     middle["type"] = "scene"
     middle.pop("terminal")
@@ -360,7 +406,7 @@ def test_numeric_v2_fact_contract_rejects_undeclared_shape(contract, code):
 
 
 def test_numeric_v2_old_compile_entry_requires_upgrade():
-    """旧版编译入口只返回升级错误，不再生成可运行包。"""  # noqa: DOCSTRING_CJK
+    """The legacy compilation entry returns only an upgrade error, no longer generating runnable packages."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_1_story()
     with pytest.raises(NumericV2CompileError) as caught:
@@ -390,7 +436,7 @@ def test_numeric_v2_declared_v2_1_cannot_bypass_registry_strict_gate(tmp_path):
 
 
 def test_numeric_v2_registry_hides_and_rejects_legacy_package_on_load(tmp_path):
-    """磁盘上的旧包只供作者升级，不能出现在运行列表或直接加载。"""  # noqa: DOCSTRING_CJK
+    """Old packages on disk are available only for author upgrades, not runnable listings or direct loading."""  # noqa: DOCSTRING_CJK
 
     package_root = tmp_path / "packages"
     package_root.mkdir()
@@ -405,14 +451,14 @@ def test_numeric_v2_registry_hides_and_rejects_legacy_package_on_load(tmp_path):
         encoding="utf-8",
     )
 
-    # 旧包不进入可运行列表；即使知道 story_id，也必须先升级到 v2.2。
+    # Old packages are excluded from runnable listings; knowing story_id still requires upgrading to v2.2 first.
     assert registry.list_packages() == []
     with pytest.raises(NumericV2PackageError, match="numeric_v2_upgrade_required"):
         registry.load_engine("legacy_on_disk")
 
 
 def test_numeric_v2_v22_uses_strict_limit_gate_and_registry_dispatch(tmp_path):
-    """新生成包必须显式声明 v2.2，并把单回合变化限制在 1—5。"""  # noqa: DOCSTRING_CJK
+    """Newly generated packages must explicitly declare v2.2 and limit per-turn changes to 1–5."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_1_story()
     story["meta"]["contract_version"] = "v2.2"
@@ -433,7 +479,7 @@ def test_numeric_v2_v22_uses_strict_limit_gate_and_registry_dispatch(tmp_path):
 
 
 def test_numeric_v2_v22_does_not_require_legacy_typed_goal_contract():
-    """v2.2 目标是创作素材，不再因缺少旧 typed evidence/delivery 被编译器阻断。"""  # noqa: DOCSTRING_CJK
+    """v2.2 objectives are creative material; missing old typed evidence/delivery no longer blocks compilation."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["meta"]["contract_version"] = "v2.2"
@@ -443,7 +489,7 @@ def test_numeric_v2_v22_does_not_require_legacy_typed_goal_contract():
 
 
 def test_numeric_v2_rejects_actor_prompt_field_over_budget():
-    """导入时必须拒绝必然挤占 Actor 固定上下文的超长作者字段。"""  # noqa: DOCSTRING_CJK
+    """Import must reject oversized author fields that necessarily consume Actor's fixed context allocation."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["intro"]["background"] = "无法用于开场的超长背景。" * 500
@@ -541,7 +587,7 @@ def test_numeric_v2_validates_opening_only_boundaries():
 
 
 def test_numeric_v2_accepts_structured_story_beat_contract_without_rewriting_legacy_beats():
-    """新包可声明明确开场、关系上限和目标证据，未迁移节点仍保持原文与哈希输入。"""  # noqa: DOCSTRING_CJK
+    """New packages can declare explicit openings, relationship caps, and objective evidence; unmigrated nodes retain original text and hash inputs."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     beat = story["nodes"][0]["story_beat"]
@@ -568,14 +614,14 @@ def test_numeric_v2_accepts_structured_story_beat_contract_without_rewriting_leg
     assert compiled_beat["relationship_ceiling"] == "guarded"
     assert compiled_beat["goals"][0]["id"] == "confirm_old_letter"
     assert "must_happen" not in compiled_beat
-    # 兼容节点不能被编译器静默补入新字段，否则旧安装包哈希和 Session 会失效。
+    # The compiler must not silently add new fields to compatibility nodes, invalidating old package hashes and Sessions.
     assert "opening_scene" not in compiled.story["nodes"][1]["story_beat"]
     assert "relationship_ceiling" not in compiled.story["nodes"][1]["story_beat"]
     assert "goals" not in compiled.story["nodes"][1]["story_beat"]
 
 
 def test_numeric_v2_accepts_typed_goal_delivery_contract():
-    """v2.1 交付类型必须原样进入 canonical 包，供 Runtime 确定性消费。"""  # noqa: DOCSTRING_CJK
+    """v2.1 delivery types must enter the canonical package unchanged for deterministic Runtime consumption."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     beat = story["nodes"][0]["story_beat"]
@@ -602,7 +648,7 @@ def test_numeric_v2_accepts_typed_goal_delivery_contract():
 
 
 def test_numeric_v2_rejects_third_person_exact_anchor_for_catgirl_action():
-    """动作锚点会原样进入括号，不能把第三人称旁白交给 TTS。"""  # noqa: DOCSTRING_CJK
+    """Action anchors enter parentheses verbatim; third-person narration must not go to TTS."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     beat = story["nodes"][0]["story_beat"]
@@ -688,7 +734,7 @@ def test_numeric_v2_accepts_natural_semantic_typed_delivery(
     owner,
     output_field,
 ):
-    """输出位置不等于逐字合同；自然动作与对白由 Evaluator 做语义取证。"""  # noqa: DOCSTRING_CJK
+    """Output position is not a verbatim contract; Evaluator gathers semantic evidence from natural actions and dialogue."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     beat = story["nodes"][0]["story_beat"]
@@ -742,7 +788,7 @@ def test_numeric_v2_accepts_natural_semantic_typed_delivery(
     ],
 )
 def test_numeric_v2_rejects_invalid_structured_story_beat_contract(mutate, issue_code):
-    """结构化字段必须在编译边界失败，不能把不完整合同留给模型猜测。"""  # noqa: DOCSTRING_CJK
+    """Structured fields must fail at the compilation boundary rather than leaving incomplete contracts for the model to guess."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     mutate(story["nodes"][0]["story_beat"])
@@ -811,7 +857,7 @@ def test_numeric_v2_rejects_conflicting_identity_source_names():
     ],
 )
 def test_numeric_v2_rejects_identity_without_bounded_source_name(field, identity):
-    """作者身份必须显式分出短姓名，运行时不能从整句职责里猜名字。"""  # noqa: DOCSTRING_CJK
+    """Author identity must explicitly separate a short name; runtime must not guess names from full duty descriptions."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["intro"][field] = identity
@@ -1022,7 +1068,7 @@ def test_numeric_v2_rejects_player_visible_metric():
 
 
 def test_numeric_v2_accepts_metric_free_single_route_mainline():
-    """纯主线只有一个出口时，不要求作者为了编译虚构数值条件。"""  # noqa: DOCSTRING_CJK
+    """A purely linear storyline with one exit must not require authors to invent numeric conditions just to compile."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["metric_schema"] = {}
@@ -1131,7 +1177,7 @@ def test_numeric_v2_rejects_reachable_scene_that_cannot_reach_an_ending():
 
 
 def test_numeric_v2_rejects_direct_self_loop_even_with_an_ending_route():
-    """同节点转场无法由现有 Ledger 表达，必须在编译期拒绝。"""  # noqa: DOCSTRING_CJK
+    """The existing Ledger cannot express same-node transitions, so reject them during compilation."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["nodes"][0]["route_gates"][0]["target_node_id"] = "start"
@@ -1147,7 +1193,7 @@ def test_numeric_v2_rejects_direct_self_loop_even_with_an_ending_route():
 
 
 def test_numeric_v2_rejects_terminal_start_node():
-    """开场即结局无法进入正常演绎流程，必须在导入时拒绝。"""  # noqa: DOCSTRING_CJK
+    """An opening that is already an ending cannot enter normal performance flow and must be rejected on import."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["nodes"][0]["terminal"] = True
@@ -1175,112 +1221,6 @@ def test_numeric_v2_registry_imports_once_without_touching_sessions(tmp_path):
     assert not (tmp_path / "theater" / "numeric_v2" / "sessions").exists()
     with pytest.raises(NumericV2PackageExistsError):
         registry.import_package(numeric_v2_story())
-
-
-def test_numeric_v2_registry_waits_for_future_bundled_story_before_marking(tmp_path):
-    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
-    registry = NumericV2PackageRegistry(package_root)
-
-    registry.ensure_default_packages()
-
-    assert registry.list_packages() == []
-    assert not (package_root / ".defaults_initialized").exists()
-
-    registry.ensure_default_packages()
-
-    assert registry.list_packages() == []
-    assert not (package_root / ".defaults_initialized").exists()
-
-
-def test_numeric_v2_registry_installs_missing_defaults_beside_user_packages(
-    tmp_path,
-    monkeypatch,
-):
-    """用户已有剧本不能阻止首次安装其他内置剧本。"""  # noqa: DOCSTRING_CJK
-
-    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
-    bundled_root = tmp_path / "bundled"
-    bundled_root.mkdir()
-    (bundled_root / "default.json").write_text(
-        json.dumps(numeric_v2_story(), ensure_ascii=False),
-        encoding="utf-8",
-    )
-    registry = NumericV2PackageRegistry(package_root)
-    user_story = numeric_v2_story()
-    user_story["meta"]["story_id"] = "user_numeric_story"
-    registry.import_package(user_story)
-    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
-
-    registry.ensure_default_packages()
-
-    assert {item["story_id"] for item in registry.list_packages()} == {
-        "numeric_v2_contract",
-        "user_numeric_story",
-    }
-    assert (package_root / ".defaults_initialized").is_file()
-
-
-def test_numeric_v2_registry_reconciles_new_defaults_without_restoring_deleted_ones(
-    tmp_path,
-    monkeypatch,
-):
-    """升级只补装新增内置剧本，用户主动删除的旧内置剧本保持删除。"""  # noqa: DOCSTRING_CJK
-
-    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
-    bundled_root = tmp_path / "bundled"
-    bundled_root.mkdir()
-    first_story = numeric_v2_story()
-    (bundled_root / "first.json").write_text(
-        json.dumps(first_story, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    registry = NumericV2PackageRegistry(package_root)
-    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
-    registry.ensure_default_packages()
-    registry.delete_package(first_story["meta"]["story_id"])
-
-    later_story = numeric_v2_story()
-    later_story["meta"]["story_id"] = "numeric_v2_later_default"
-    (bundled_root / "later.json").write_text(
-        json.dumps(later_story, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    registry.ensure_default_packages()
-
-    assert {item["story_id"] for item in registry.list_packages()} == {
-        "numeric_v2_later_default",
-    }
-
-
-def test_numeric_v2_registry_treats_concurrent_default_install_as_success(
-    tmp_path,
-    monkeypatch,
-):
-    """另一进程抢先安装默认包时，本进程仍应完成初始化标记。"""  # noqa: DOCSTRING_CJK
-    package_root = tmp_path / "theater" / "numeric_v2" / "packages"
-    bundled_root = tmp_path / "bundled"
-    bundled_root.mkdir()
-    story = numeric_v2_story()
-    (bundled_root / "default.json").write_text(
-        json.dumps(story, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    registry = NumericV2PackageRegistry(package_root)
-    monkeypatch.setattr(numeric_v2_registry, "_DEFAULT_PACKAGE_ROOT", bundled_root)
-
-    def _concurrent_install(payload):
-        compiled = registry.compiler.compile(payload)
-        target = registry.package_path(compiled.story_id)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(compiled.json_bytes)
-        raise NumericV2PackageExistsError("numeric_v2_package_exists")
-
-    monkeypatch.setattr(registry, "import_package", _concurrent_install)
-
-    registry.ensure_default_packages()
-
-    assert (package_root / ".defaults_initialized").is_file()
-    assert registry.list_packages()[0]["story_id"] == "numeric_v2_contract"
 
 
 def test_numeric_v2_registry_publishes_complete_package_without_hard_links(tmp_path, monkeypatch):

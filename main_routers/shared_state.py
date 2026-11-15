@@ -41,6 +41,8 @@ for code that wants to migrate off the per-field views.
 from collections.abc import MutableMapping
 from typing import Dict
 
+from services.chat_sync import host as _chat_sync_host
+
 # Steamworks handle lives at the L1 ``utils`` layer (see utils/steam_state.py)
 # so low-layer consumers (utils.config_manager GeoIP probe,
 # utils.language_utils Steam-language detection) can read it without
@@ -67,8 +69,8 @@ _state = {
     'config_manager': _UNSET,
     'initialize_character_data': _UNSET,  # Function reference
     'switch_current_catgirl_fast': _UNSET,  # Fast path for current-catgirl switch
-    'init_one_catgirl': _UNSET,             # Fast path for add/update single catgirl
-    'remove_one_catgirl': _UNSET,           # Fast path for delete single catgirl
+    'init_one_catgirl': _UNSET,             # Fast path for add/update single neko
+    'remove_one_catgirl': _UNSET,           # Fast path for delete single neko
     'request_app_shutdown': None,
     'release_storage_startup_barrier': None,
 }
@@ -86,7 +88,7 @@ class _RoleStateFieldView(MutableMapping):
     ---------
     ``__contains__(k)`` returns True iff ``k in role_state`` AND the field
     value is not ``None``. This preserves the legacy "the dict has no entry
-    for this catgirl" check used by code like::
+    for this neko" check used by code like::
 
         if lanlan_name not in session_id: ...
         if lanlan in session_manager: ...
@@ -98,11 +100,11 @@ class _RoleStateFieldView(MutableMapping):
 
     ``__delitem__(k)`` clears the field by setting it to ``None``; it does
     NOT remove the underlying ``role_state`` entry. Removing the whole
-    catgirl goes through ``del role_state[k]`` in
+    neko goes through ``del role_state[k]`` in
     ``_cleanup_character_dicts``. This matches the only consumer ``del`` /
     ``pop`` site we have today (``session_id.pop(lanlan_name, None)`` in
-    ``websocket_router``), which means "this catgirl no longer has a live
-    session" — not "delete the catgirl".
+    ``websocket_router``), which means "this neko no longer has a live
+    session" — not "delete the neko".
 
     Consumers must never assign ``sync_message_queue`` through this view:
     ``RoleState`` builds it once per slot and never replaces it (see the
@@ -287,12 +289,29 @@ def get_switch_current_catgirl_fast():
 
 
 def get_init_one_catgirl():
-    """Fast path: add / update a single catgirl (per-k init without scanning all)."""
+    """Fast path: add / update a single neko (per-k init without scanning all)."""
     _check_initialized('init_one_catgirl')
     return _state['init_one_catgirl']
 
 
 def get_remove_one_catgirl():
-    """Fast path: delete a single catgirl (stop its thread, clean dicts)."""
+    """Fast path: delete a single neko (stop its thread, clean dicts)."""
     _check_initialized('remove_one_catgirl')
     return _state['remove_one_catgirl']
+
+
+def _conversation_busy(manager) -> bool:
+    """Look up the session-state busy predicate on every call (late-bound)."""
+    from main_logic import session_state
+    return session_state.conversation_busy(manager)
+
+
+# services.chat_sync must not import this layer, so this registry pushes its
+# accessors down at import time. The lambdas look up the getters on every call:
+# patches of this module reach chat sync, and before init_shared_state() runs
+# chat sync sees the same RuntimeError as every router.
+_chat_sync_host.install_conversation_registry(
+    get_session_manager=lambda: get_session_manager(),
+    get_init_one_catgirl=lambda: get_init_one_catgirl(),
+    conversation_busy=_conversation_busy,
+)

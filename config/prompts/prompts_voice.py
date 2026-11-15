@@ -26,16 +26,16 @@ VOICE_PREVIEW_TEXTS = {
 }
 
 
-# 本地 Whisper 只有一个 "zh" 语言码，繁体会话默认也多半输出简体。
-# 会话语言是 zh-TW / zh-HK / zh-MO / zh-Hant 时把这句作为 initial_prompt 传入，
-# 引导模型沿用繁体字形。静音时模型偶尔会原样复述这句，识别结果与它完全相同时会被丢弃。
+# Local Whisper has only one "zh" language code and usually outputs simplified Chinese even in traditional-Chinese sessions.
+# Pass this sentence as initial_prompt for zh-TW / zh-HK / zh-MO / zh-Hant sessions,
+# encouraging traditional character forms. During silence the model sometimes repeats it verbatim; discard results that exactly match it.
 WHISPER_TRADITIONAL_CHINESE_INITIAL_PROMPT = "以下是繁體中文的句子。"
 
 
-# 本地 Whisper 在静音/噪声片段上常见的固定幻觉句（来自字幕训练数据）。
-# 这里存的是归一化后的整句：小写、首尾标点与空白已去掉、内部空白压成单个空格。
-# 只有整句完全等于其中一项、且模型置信度同时偏低时才会被丢弃，
-# 用户真的说出这些话时不会被误杀。
+# Common fixed hallucination phrases from local Whisper on silence/noise (originating in subtitle training data).
+# Store normalized full sentences: lowercase, no leading/trailing punctuation or whitespace, and internal whitespace collapsed to single spaces.
+# Discard only when the entire sentence exactly matches an entry and model confidence is also low;
+# genuine user speech containing these words will not be falsely rejected.
 WHISPER_SILENCE_HALLUCINATIONS = frozenset({
     # en
     "thank you",

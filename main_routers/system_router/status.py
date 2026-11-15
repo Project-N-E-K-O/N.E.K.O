@@ -122,8 +122,8 @@ async def get_system_social_config(response: Response):
     return {
         "ok": True,
         "social_base_url": base_url,
-        # 桌面登出时要清掉 IdP 的 SSO cookie，而那个 cookie 在 auth 域上，不是社区域。
-        # 主进程没有别的途径知道这个源，所以随社区配置一起给出。
+        # Desktop logout must clear the IdP SSO cookie, which belongs to the auth domain rather than the community domain.
+        # The main process cannot otherwise discover this origin, so include it with community configuration.
         "auth_public_url": social_base.auth_public_url(),
         "enabled": True,
     }

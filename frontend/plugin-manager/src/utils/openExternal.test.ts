@@ -2,7 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { openLocalPath } from './openExternal'
+import { openLocalPath, prepareExternalWindow } from './openExternal'
 
 describe('openLocalPath file URL conversion', () => {
   beforeEach(() => {
@@ -56,5 +56,51 @@ describe('openLocalPath file URL conversion', () => {
     openLocalPath('file:///C:/tmp/neko%20package/model.json')
 
     expect(openPath).toHaveBeenCalledWith('C:\\tmp\\neko package\\model.json')
+  })
+})
+
+describe('prepareExternalWindow', () => {
+  beforeEach(() => {
+    Reflect.deleteProperty(window, 'electronShell')
+    vi.restoreAllMocks()
+  })
+
+  it('opens a blank window inside the click and points it at the URL later', () => {
+    const popup = { opener: {}, closed: false, location: { href: '' }, close: vi.fn() }
+    const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+
+    const target = prepareExternalWindow()
+    expect(open).toHaveBeenCalledTimes(1)
+    expect(popup.opener).toBeNull()
+
+    target.open('https://market.example/#/knowledge?neko_pair=c')
+    expect(popup.location.href).toBe('https://market.example/#/knowledge?neko_pair=c')
+    expect(open).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports a blank window the browser refused', () => {
+    vi.spyOn(window, 'open').mockReturnValue(null)
+    expect(prepareExternalWindow().blocked).toBe(true)
+  })
+
+  it('closes the blank window on cancel or an unsafe URL', () => {
+    const popup = { opener: {}, closed: false, location: { href: '' }, close: vi.fn() }
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
+
+    prepareExternalWindow().cancel()
+    prepareExternalWindow().open('javascript:alert(1)')
+    expect(popup.close).toHaveBeenCalledTimes(2)
+    expect(popup.location.href).toBe('')
+  })
+
+  it('opens nothing up front in Electron and routes to the system browser', () => {
+    const openExternal = vi.fn()
+    Object.defineProperty(window, 'electronShell', { value: { openExternal }, configurable: true })
+    const open = vi.spyOn(window, 'open')
+
+    const target = prepareExternalWindow()
+    expect(open).not.toHaveBeenCalled()
+    target.open('https://market.example/')
+    expect(openExternal).toHaveBeenCalledWith('https://market.example/')
   })
 })

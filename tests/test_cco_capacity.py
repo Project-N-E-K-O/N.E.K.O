@@ -1,12 +1,12 @@
 """
-CCO (Context Cache Optimization) 完整测试
+Complete CCO (Context Cache Optimization) tests
 
-测试所有 API 提供商的 Context Cache：
-1. 阿里云 DashScope (qwen)
+Test Context Cache for all API providers:
+1. Alibaba Cloud DashScope (qwen)
 2. OpenAI
-3. 智谱 GLM
-4. 阶跃星辰 Step
-5. 硅基流动 Silicon
+3. Zhipu GLM
+4. StepFun Step
+5. SiliconFlow Silicon
 6. Google Gemini
 7. Moonshot Kimi
 
@@ -20,7 +20,7 @@ from config.providers import CACHE_PROVIDERS as PROVIDER_CACHE_CONFIG
 
 
 def test_all_providers_config():
-    """测试所有提供商的缓存配置"""
+    """Test cache configuration for all providers."""
     print("\n" + "="*70)
     print("测试: 所有 API 提供商缓存配置")
     print("="*70)
@@ -35,7 +35,7 @@ def test_all_providers_config():
 
 
 def test_token_extraction_all_providers():
-    """测试所有提供商的 Token 提取"""
+    """Test token extraction for all providers."""
     print("\n" + "="*70)
     print("测试: Token Tracker 缓存字段提取")
     print("="*70)
@@ -74,7 +74,7 @@ def test_token_extraction_all_providers():
 
 
 def test_cost_calculation_all_providers():
-    """测试所有提供商的费用计算"""
+    """Test cost calculation for all providers."""
     print("\n" + "="*70)
     print("测试: 费用计算 (90% 缓存命中率)")
     print("="*70)
@@ -112,7 +112,7 @@ def test_cost_calculation_all_providers():
 
 
 def test_cache_hit_rate_scenarios():
-    """测试不同缓存命中率场景"""
+    """Test different cache-hit ratios."""
     print("\n" + "="*70)
     print("测试: 不同缓存命中率场景 (以 qwen 为例)")
     print("="*70)
@@ -149,7 +149,7 @@ def test_provider_compatibility():
     for provider_id, config in PROVIDER_CACHE_CONFIG.items():
         cache_config = get_cache_kwargs(config["base_url"])
 
-        # body 级 cache flag 由 requires_body_flag 决定，而非 requires_header。
+        # requires_body_flag, not requires_header, controls body-level cache flags.
         expected = config["requires_body_flag"]
 
         actual = cache_config["enable_cache_control"]
@@ -157,7 +157,7 @@ def test_provider_compatibility():
         print(f"  {status} {config['name']}: 缓存控制 = {actual}")
         assert actual == expected, f"{config['name']}: expected {expected}, got {actual}"
 
-    # 没接 body-flag provider 时，全员都应该是 False（header 路不受影响）。
+    # Without a body-flag provider, all should be False; header behavior is unaffected.
     assert all(
         not get_cache_kwargs(c["base_url"])["enable_cache_control"]
         for c in PROVIDER_CACHE_CONFIG.values()
@@ -165,7 +165,7 @@ def test_provider_compatibility():
 
 
 def test_min_cache_tokens_all_providers():
-    """测试所有提供商的最小缓存限制"""
+    """Test minimum cache limits for all providers."""
     print("\n" + "="*70)
     print("测试: 各提供商最小缓存 Token 限制")
     print("="*70)
@@ -225,7 +225,7 @@ def test_body_flag_drives_enable_cache_control():
         base_url="https://anthropic-test.example/v1",
         base_url_pattern="anthropic-test.example",
         cache_mode="auto",
-        requires_header=True,           # 故意两个都打开，验证正交
+        requires_header=True,           # Enable both intentionally to verify independence.
         requires_body_flag=True,
         header_name="x-test-cache",
         header_value="on",
@@ -252,7 +252,7 @@ def test_inject_cache_control_helper():
 
     EPH = {"type": "ephemeral"}
 
-    # 1) 有 system → 标在最后一条 system 上；字符串内容提升为 text part。
+    # 1) With system messages, mark the last system message; promote string content to a text part.
     msgs = [
         {"role": "system", "content": "you are a cat"},
         {"role": "user", "content": "hi"},
@@ -260,11 +260,11 @@ def test_inject_cache_control_helper():
     out = _inject_cache_control(msgs)
     assert out[0]["content"] == [{"type": "text", "text": "you are a cat", "cache_control": EPH}]
     assert out[1] == {"role": "user", "content": "hi"}, "非断点消息不应被改"
-    # 原列表与原 dict 不被 mutate
+    # Do not mutate the original list or dict.
     assert msgs[0]["content"] == "you are a cat", "原始消息被 mutate 了"
     print("  [PASS] system 断点：字符串提升为带 cache_control 的 text part，原对象不变")
 
-    # 2) 没有 system → 标在最后一条消息。
+    # 2) Without system messages, mark the last message.
     msgs2 = [
         {"role": "user", "content": "a"},
         {"role": "assistant", "content": "b"},
@@ -274,7 +274,7 @@ def test_inject_cache_control_helper():
     assert out2[1]["content"] == [{"type": "text", "text": "b", "cache_control": EPH}]
     print("  [PASS] 无 system：回退到最后一条消息")
 
-    # 3) content 已是 parts list → 标在最后一个 text part 上。
+    # 3) For content already represented as parts, mark the last text part.
     msgs3 = [{
         "role": "system",
         "content": [
@@ -290,20 +290,20 @@ def test_inject_cache_control_helper():
     assert parts[1] == {"type": "image_url", "image_url": {"url": "x"}}, "图片 part 不应带标记"
     print("  [PASS] parts list：只标最后一个 text part，图片/前置 part 不动")
 
-    # 4) 断点选 leading 连续 system 段的末尾，trailing system（状态/归档提示）
-    #    不许偷走断点 —— 否则只缓存一句废话，长上下文白缓存。
+    # 4) Place the breakpoint at the end of the leading contiguous system block; trailing system status/archive notices
+    #    must not steal it, caching one useless sentence instead of the long context.
     msgs4 = [
         {"role": "system", "content": "BIG STABLE SYSTEM PROMPT"},
         {"role": "user", "content": "q"},
         {"role": "assistant", "content": "a"},
-        {"role": "system", "content": "你已断开连接"},  # trailing 噪声 system
+        {"role": "system", "content": "你已断开连接"},  # Trailing noisy system message.
     ]
     out4 = _inject_cache_control(msgs4)
     assert out4[0]["content"] == [{"type": "text", "text": "BIG STABLE SYSTEM PROMPT", "cache_control": EPH}]
     assert out4[3] == {"role": "system", "content": "你已断开连接"}, "trailing system 不应被标记"
     print("  [PASS] leading system 段末尾被选中，trailing system 噪声不抢断点")
 
-    # 5) 幂等：对已打标的输出再跑一次，不二次打标、不 clobber 既有 marker。
+    # 5) Idempotence: rerun marked output without marking twice or clobbering existing markers.
     once = _inject_cache_control([{"role": "system", "content": "s"}])
     twice = _inject_cache_control(once)
     assert twice is once, "已打标 → 原样返回，幂等"
@@ -311,14 +311,14 @@ def test_inject_cache_control_helper():
     assert _inject_cache_control(rich) is rich, "已有更丰富的 marker → 不覆盖"
     print("  [PASS] 幂等：重复调用不二次打标，既有 marker 不被 clobber")
 
-    # 6) 防御分支：非 dict / None content / 纯图片 system / 空列表 / 空字符串。
+    # 6) Defensive branches: non-dict / None content / image-only system / empty list / empty string.
     assert _inject_cache_control([]) == []
     img_only = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}]
     assert _inject_cache_control(img_only) is img_only, "无可标记 text → 原样返回"
     empty_str = [{"role": "system", "content": ""}]
     assert _inject_cache_control(empty_str) is empty_str, "空字符串 → 不造空 part"
     none_content = [{"role": "system", "content": None}, {"role": "user", "content": "u"}]
-    # leading system 的 content=None 不可标记 → 整体 no-op（不回退到 user）。
+    # A leading system message with content=None cannot be marked: no-op entirely without falling back to user.
     assert _inject_cache_control(none_content) is none_content, "system content=None → no-op"
     sys_img_only = [{"role": "system", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}]
     assert _inject_cache_control(sys_img_only) is sys_img_only, "纯图片 system → idx 为 None → no-op"

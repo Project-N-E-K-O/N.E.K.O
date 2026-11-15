@@ -47,7 +47,7 @@
 |-------|------------|---------|--------|------|
 | 核心 API Key | `coreApiKey` | `NEKO_CORE_API_KEY` | `""` | 核心（实时语音）API 的密钥；`coreApi` 为 `free` 时自动使用内置的 `free-access`，不用填 |
 | 核心 API 提供商 | `coreApi` | `NEKO_CORE_API` | `"qwen"` | 实时语音模型的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`step`、`gemini`、`glm`、`grok`（`config/api_providers.json` 中 `core_api_providers` 的键） |
-| 辅助 API 提供商 | `assistApi` | `NEKO_ASSIST_API` | `"qwen"` | 对话、摘要、纠错、情感、视觉、Agent 等模型默认使用的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`glm`、`step`、`silicon`、`gemini`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`grok`、`openrouter`、`orcarouter`、`requesty`（`assist_api_providers` 的键，不含只提供 TTS 的 `vllm_omni`） |
+| 辅助 API 提供商 | `assistApi` | `NEKO_ASSIST_API` | `"qwen"` | 对话、摘要、纠错、情感、视觉、Agent 等模型默认使用的提供商。可选：`free`、`qwen`、`qwen_intl`、`openai`、`glm`、`step`、`silicon`、`gemini`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`grok`、`openrouter`、`orcarouter`、`requesty`、`opper`、`atlascloud`（`assist_api_providers` 的键，不含只提供 TTS 的 `vllm_omni`） |
 
 - `assistApi` 没写或为空时，`coreApi` 为 `free` 则取 `free`，否则取 `qwen`；填了未知值会回退到 `qwen`。entrypoint 生成的文件总会写 `assistApi`（没设 `NEKO_ASSIST_API` 时写 `"qwen"`），所以用环境变量选免费版时要同时设 `NEKO_ASSIST_API=free`，否则辅助 API 是 `qwen`，需要为它提供阿里云百炼的 Key（`free-access` 不会被拿来回退）。
 - 小游戏模型默认分别跟随对话、摘要模型；自定义音色 TTS 没有单独配置、也没有 Qwen（含国际版）Key 时，同样回退到辅助 API。
@@ -66,11 +66,11 @@
 | 硅基流动 API Key | `assistApiKeySilicon` | `NEKO_ASSIST_API_KEY_SILICON` | `""` |
 | Grok（xAI）API Key | `assistApiKeyGrok` | `NEKO_ASSIST_API_KEY_GROK` | `""` |
 | 豆包（火山方舟）API Key | `assistApiKeyDoubao` | `NEKO_ASSIST_API_KEY_DOUBAO` | `""` |
-| 其余提供商的 Key | `assistApiKeyQwenIntl`、`assistApiKeyDeepseek`、`assistApiKeyGemini`、`assistApiKeyKimi`、`assistApiKeyKimiCode`、`assistApiKeyMinimax`、`assistApiKeyMinimaxIntl`、`assistApiKeyMimo`、`assistApiKeyMimoTokenPlan`、`assistApiKeyElevenlabs`、`assistApiKeyClaude`、`assistApiKeyOpenrouter`、`assistApiKeyOrcarouter`、`assistApiKeyRequesty`、`assistApiKeyDoubaoTts` | -（在 Web UI 里设置或直接编辑文件） | `""` |
+| 其余提供商的 Key | `assistApiKeyQwenIntl`、`assistApiKeyDeepseek`、`assistApiKeyGemini`、`assistApiKeyKimi`、`assistApiKeyKimiCode`、`assistApiKeyMinimax`、`assistApiKeyMinimaxIntl`、`assistApiKeyMimo`、`assistApiKeyMimoTokenPlan`、`assistApiKeyElevenlabs`、`assistApiKeyClaude`、`assistApiKeyOpenrouter`、`assistApiKeyOrcarouter`、`assistApiKeyRequesty`、`assistApiKeyOpper`、`assistApiKeyAtlascloud`、`assistApiKeyDoubaoTts` | -（在 Web UI 里设置或直接编辑文件） | `""` |
 
 - 提供商和字段的对应关系见 `config/api_providers.json` 的 `api_key_registry`；`assistApiKeyMimoTokenPlan` 是 `useMimoTokenPlan` 为 true 时 MiMo 改用的 Key。
-- 除 Requesty 外，当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。MiniMax（含国际版）、MiMo（含 Token Plan）、ElevenLabs、豆包 TTS 这几个字段本身始终不回退，用这些提供商的语音时要单独填写；不过 MiniMax、MiMo 被选为 `assistApi` 而 Key 留空时，辅助模型的请求仍会用 `coreApiKey` 兜底（`free-access` 除外）。
-- Requesty 的文本和 Agent 请求只使用专用字段 `assistApiKeyRequesty`，不会借用主服务商的 `coreApiKey`。Docker 仅设置 `NEKO_CORE_API_KEY` 和 `NEKO_ASSIST_API=requesty` 不足以使用 Requesty；请在 Web UI 的密钥簿中填写 Requesty Key，或在持久化的 `core_config.json` 中设置该字段。当前 entrypoint 不支持 `NEKO_ASSIST_API_KEY_REQUESTY`。Requesty 的文本 Key 不会写入 TTS 使用的 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退逻辑。
+- 当前 `coreApi` / `assistApi` 对应的 Key 字段留空时，运行时改用 `coreApiKey`（值为 `free-access` 时不回退）；其他提供商的 Key 字段不回退。**只做辅助的提供商**（不在 `core_api_providers` 里的键：`silicon`、`kimi`、`kimi_code`、`deepseek`、`doubao`、`minimax`、`minimax_intl`、`mimo`、`claude`、`openrouter`、`orcarouter`、`requesty`、`opper`、`atlascloud`）不可能是 `coreApi`，`coreApiKey` 必然是别家的 Key，所以它们的 Key 字段即使被选为 `assistApi` 也不回退。ElevenLabs、豆包 TTS 这两个字段同样始终不回退。
+- 只做辅助的提供商，文本和 Agent 请求只使用各自的专用字段（如 `assistApiKeyDeepseek`、`assistApiKeyRequesty`），不会借用主服务商的 `coreApiKey`。Docker 仅设置 `NEKO_CORE_API_KEY` 和 `NEKO_ASSIST_API=<只做辅助的提供商>` 不足以使用它们；除上表 entrypoint 支持的几个环境变量外，请在 Web UI 的密钥簿中填写对应 Key，或在持久化的 `core_config.json` 中设置该字段。它们的文本 Key 也不会写入 CosyVoice 使用的 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退逻辑。
 - `mcpToken`（`NEKO_MCP_TOKEN`）：entrypoint 仍会写入这个字段，配置接口也仍会保存它，但当前代码只是把它转存成 `get_core_config()` 返回值里的 `MCP_ROUTER_API_KEY`，没有任何地方读取，填不填都不影响运行。
 
 ### 3. 服务器端口配置
@@ -96,7 +96,12 @@
 
 浏览器首次访问、cookie 会话和反向代理的细节见 `docs/zh-CN/config/environment-vars.md`。
 
-> **Docker 中**：`docker/entrypoint.sh` 只启动记忆、主服务、Agent 三个进程，对外由 Nginx 提供访问。容器内 `NGINX_PORT` 默认 80，`NGINX_SSL_PORT` 默认 443；官方 compose 把宿主机 48911 映射到 80、48912 映射到 443。Nginx 反代配置里只有主服务的上游端口跟随 `NEKO_MAIN_SERVER_PORT`，记忆（48912）、Agent（48915）、插件（48916）的上游端口都写死了，所以在容器里不要改这三个端口。
+> **Docker 中**：`docker/entrypoint.sh` 只启动记忆、主服务、Agent 三个进程，对外由 Nginx 提供访问。容器内 `NGINX_PORT` 默认 80，`NGINX_SSL_PORT` 默认 443；官方 compose 把宿主机 48911 映射到 80、48912 映射到 443。
+>
+> **四个上游端口都跟随环境变量**：`NEKO_MAIN_SERVER_PORT`（48911）、`NEKO_MEMORY_SERVER_PORT`（48912）、`NEKO_TOOL_SERVER_PORT`（48915）、`NEKO_USER_PLUGIN_SERVER_PORT`（48916）。入口脚本会把它们渲染进 Nginx 路由表，所以「服务绑哪里」和「反代转发到哪」始终一致，可以放心改。**非法值（非整数或超出 1–65535）会让容器拒绝启动**，并在日志第一段说明是哪个变量：
+回落是行不通的 —— 后端会静默回落到默认端口，而 Nginx 渲染、Compose 健康检查、看门狗
+各自读环境变量，三方对不上，结果是「健康的容器被标成 unhealthy、被看门狗重启到预算耗尽」。
+留空或删掉这一行则使用默认值。
 
 > **插件安全与 NAS 兼容**：官方 HTTP/HTTPS 代理同时转发插件操作与 `/security/csrf-token`，浏览器自动获取和附加校验 token。**不用官方 Docker、自己写 Nginx/Caddy 规则时，必须把 `/security/csrf-token` 转发到插件服务（48916）**：它不在原有插件代理前缀（`plugins?|plugin/|plugin-cli/|…`）之下，落到主服务会导致插件启停、安装等需要 token 的操作失败，插件管理器会提示无法获取安全令牌。通过 NAS IP 和宿主机映射端口访问不需要额外配置 Origin/token。外层 HTTPS 反代转容器 HTTP 时，非 loopback NAS 地址允许 hostname 兜底，不比较协议与端口；这也意味着同一 NAS hostname 的其他应用端口进入来源信任边界。自定义域名沿用 `NEKO_TRUSTED_HOSTS`；公网访问认证与网络隔离仍由部署层负责。此校验防跨站操作，不提供用户登录认证。Vite `5173` 仅在开发者显式设置 `NEKO_PLUGIN_MUTATION_ALLOWED_ORIGINS` 后允许，不应加入普通 NAS 部署配置。插件页面直接调用的路由（`/runs`、`ui-api`、插件配置等）默认只校验来源、不强制 token，以保障市场插件继续可用；公网部署可设置 `NEKO_PLUGIN_PAGE_MUTATION_REQUIRE_TOKEN=1` 强制 token，代价是尚未适配的插件页面会失效。完整合同见 [`local-mutation-auth.md`](../docs/design/security/local-mutation-auth.md)。
 
@@ -136,7 +141,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 #### 辅助 API 提供商
 
-`assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter、requesty。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
+`assistApi` 的取值为 `assist_api_providers` 的键：free、qwen、qwen_intl、openai、glm、step、silicon、gemini、kimi、kimi_code、deepseek、doubao、minimax、minimax_intl、mimo、claude、grok、openrouter、orcarouter、requesty、opper、atlascloud。另有 `vllm_omni` 只供 TTS 使用，不出现在辅助 API 下拉框里，它的模型槽位全部为空。
 
 每个提供商有一个接口地址 `OPENROUTER_URL` 和 6 个模型槽位：
 - `CONVERSATION_MODEL` - 文本对话模型
@@ -152,17 +157,21 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 - `mimo` 被选为 `assistApi` 且 `useMimoTokenPlan` 为 `true` 时改用 Token Plan 地址（默认 `https://token-plan-cn.xiaomimimo.com/v1`；`resolvedProviderUrls` 里记有 sgp / ams 候选时用记下的那个），Key 取 `assistApiKeyMimoTokenPlan`。
 - `free` 的辅助地址 `https://www.lanlan.tech/text/v1` 同样按网络区域改写，Agent 槽位除外（见第 6 节）。
 
-### 6. Computer Use（键鼠控制）配置
+### 6. 键鼠控制与浏览器控制（Agent 模型）配置
 
-键鼠控制由 `brain/computer_use.py` 的 `ComputerUseAdapter` 实现：每一步把屏幕截图交给一次多模态模型调用，由模型直接给出思考、动作和要执行的 pyautogui 代码，元素定位也由这个模型完成，不再区分"规划模型"和"定位模型"。它和浏览器控制（`brain/browser_use_adapter.py`）共用 **Agent 模型**槽位，都通过 `get_model_api_config("agent")` 取模型、URL 和 API Key，所用模型需要能接收图片输入。
+键鼠控制和浏览器控制是猫爪（NekoClaw）的两组内置工具，代码在 `nekoclaw/builtin/`。使魔（代码里叫 task agent）在自己的循环里一步一步调用它们；工具本身不带循环，也不另外调用模型。键鼠是一个 `computer` 工具：每次做一个动作并返回动作之后的截图，坐标的横纵两个方向都是 0 到 999 的整数。浏览器是 15 个 `browser_*` 工具：把页面读成文字快照（页面的无障碍树，每个元素带一个 uid），再按 uid 操作元素。
+
+使魔用的是 **Agent 模型**槽位，通过 `get_model_api_config("agent")` 取模型、URL 和 API Key。键鼠工具和浏览器的截图工具要求模型能接收图片输入；模型不能看图时不提供这两个工具，浏览器的其余工具照常可用。
+
+浏览器控制操控的是机器上已经安装的 Chromium 内核浏览器（Chrome、Edge、Brave、Chromium），走浏览器的调试协议。应用不随包附带浏览器，启动时也不下载；Playwright 只是测试依赖，`browser-use` 不在依赖里。找不到浏览器时，浏览器控制的可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。浏览器装在不常见的位置时，用环境变量 `NEKO_BROWSER_PATH` 指定可执行文件，或者写进 `<数据根>/nekoclaw/browser.json` 的 `executable`。
 
 > 旧版文档里的 `computerUseModel` / `computerUseModelUrl` / `computerUseModelApiKey` / `computerUseGroundModel` / `computerUseGroundUrl` / `computerUseGroundApiKey` 已没有任何代码读取，写进 `core_config.json` 不会生效。
 
-功能开关不在 `core_config.json` 里：Agent 总开关 `analyzer_enabled` 和键鼠控制子开关 `computer_use_enabled` 在界面上切换，最后一次的选择存在与 `core_config.json` 同一目录的 `agent_runtime_intent.json`，重启后自动恢复；设置环境变量 `NEKO_DISABLE_AGENT_AUTO_RESTORE=1`（Agent 服务直接读 `os.environ`）可跳过启动后的自动恢复。
+功能开关不在 `core_config.json` 里：Agent 总开关 `analyzer_enabled`、键鼠控制子开关 `computer_use_enabled` 和浏览器控制子开关 `browser_use_enabled` 在界面上切换，最后一次的选择存在与 `core_config.json` 同一目录的 `agent_runtime_intent.json`，重启后自动恢复；设置环境变量 `NEKO_DISABLE_AGENT_AUTO_RESTORE=1`（Agent 服务直接读 `os.environ`）可跳过启动后的自动恢复。
 
 #### 默认配置（跟随 `assistApi`）
 
-未开启自定义 API 时，Agent 模型取 `assistApi` 对应提供商的 `AGENT_MODEL`（为空时退回该提供商的 `VISION_MODEL`），URL 取该提供商的 `OPENROUTER_URL`，API Key 取该提供商的辅助 Key（`assistApiKey*`，未填时通常回退到 `coreApiKey`，但 Requesty 必须填写专用 `assistApiKeyRequesty`；`free` 用自带的 `free-access`）。各提供商的默认值（`config/api_providers.json`）：
+未开启自定义 API 时，Agent 模型取 `assistApi` 对应提供商的 `AGENT_MODEL`（为空时退回该提供商的 `VISION_MODEL`），URL 取该提供商的 `OPENROUTER_URL`，API Key 取该提供商的辅助 Key（`assistApiKey*`，未填时通常回退到 `coreApiKey`，但只做辅助的提供商必须填写各自的专用字段；`free` 用自带的 `free-access`）。各提供商的默认值（`config/api_providers.json`）：
 
 | 提供商 | Agent 模型 | API URL |
 |-------|-----------|---------|
@@ -173,7 +182,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | glm | glm-5v-turbo | https://open.bigmodel.cn/api/paas/v4 |
 | step | step-5-preview | https://api.stepfun.com/v1 |
 | silicon | Qwen/Qwen3.5-122B-A10B | https://api.siliconflow.cn/v1 |
-| gemini | gemini-3.5-flash | https://generativelanguage.googleapis.com/v1beta/openai/ |
+| gemini | gemini-3.8-flash | https://generativelanguage.googleapis.com/v1beta/openai/ |
 | kimi | kimi-k2.6 | https://api.moonshot.cn/v1 |
 | kimi_code | kimi-for-coding | https://api.kimi.com/coding |
 | deepseek | deepseek-flash | https://api.deepseek.com/v1 |
@@ -183,9 +192,11 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 | mimo | mimo-v2.5 | https://api.xiaomimimo.com/v1 |
 | claude | claude-sonnet-5-5 | https://api.anthropic.com/v1 |
 | grok | grok-4.3 | https://api.x.ai/v1 |
-| openrouter | google/gemini-3-flash-preview | https://openrouter.ai/api/v1 |
+| openrouter | google/gemini-3.8-flash | https://openrouter.ai/api/v1 |
 | orcarouter | anthropic/claude-sonnet-5.5 | https://api.orcarouter.ai/v1 |
-| requesty | google/gemini-3-flash-preview | https://router.requesty.ai/v1 |
+| requesty | google/gemini-3.8-flash | https://router.requesty.ai/v1 |
+| opper | gpt-5.4-mini | https://api.opper.ai/v3/compat |
+| atlascloud | google/gemini-3-flash-preview | https://api.atlascloud.ai/v1 |
 
 #### 自定义 Agent 模型
 
@@ -200,7 +211,7 @@ json 里的字段名是小写（如 `openrouter_url`、`agent_model`），对应
 
 Agent API Key 的取法：
 - `follow_assist`：与默认配置相同，取辅助 API 的 Key；`follow_core`：取核心 API 的 Key。两者都忽略 `agentModelApiKey`。
-- 具体提供商：依次取该提供商的 `assistApiKey*`、`agentModelApiKey`；两者都为空、且该提供商正是当前的 `coreApi` 或 `assistApi` 时，再回退到 `coreApiKey`（`minimax`、`minimax_intl`、`mimo`、`requesty` 不回退）。前提是 Agent 地址（`agentModelUrl`，留空即默认地址）与该提供商的 `openrouter_url` 或其候选地址一致，否则只用 `agentModelApiKey`。
+- 具体提供商：依次取该提供商的 `assistApiKey*`、`agentModelApiKey`；两者都为空、且该提供商正是当前的 `coreApi` 或 `assistApi` 时，再回退到 `coreApiKey`（只做辅助的提供商不回退）。前提是 Agent 地址（`agentModelUrl`，留空即默认地址）与该提供商的 `openrouter_url` 或其候选地址一致，否则只用 `agentModelApiKey`。
 - `custom`，或没有设置 `agentModelProvider`：只用 `agentModelApiKey`，为空串也照样使用。
 
 #### 配置示例
@@ -224,7 +235,13 @@ Agent API Key 的取法：
 > - 手工打开 `enableCustomApi` 但不想改 Agent 时，请把 `agentModelProvider` 设为 `follow_assist`。不设置时，`agentModelApiKey`（默认是空串）会把默认的 Agent Key 覆盖掉，Agent 可用性检查会报「Agent API Key 未配置或不可用」。
 > - 选具体提供商时地址不会自动切换：`agentModelUrl` 留空时请求仍发往默认地址（`assistApi` 提供商的地址）。所选提供商与 `assistApi` 不同时，要把 `agentModelUrl` 填成所选提供商的地址，请求才会发往它，也才会取用它的 `assistApiKey*`。
 
-> **Docker 部署**：镜像（`docker/Dockerfile`、`docker/Dockerfile.full`）和 `docker/entrypoint.sh` 都不启动 X 显示服务，也不设置 `DISPLAY`，因此默认 Docker 部署下 pyautogui 无法导入，键鼠控制不可用（可用性检查返回未就绪，原因码 `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE`）。
+> **Docker 部署**：
+> - 键鼠控制：镜像（`docker/Dockerfile`、`docker/Dockerfile.full`）和 `docker/entrypoint.sh` 都不启动 X 显示服务，也不设置 `DISPLAY`，因此默认 Docker 部署下 pyautogui 无法导入，键鼠控制不可用（可用性检查返回未就绪，原因码 `AGENT_PYAUTOGUI_DISPLAY_UNAVAILABLE`）。
+> - 浏览器控制：容器里没有用户自己的浏览器，应用自己也不下载浏览器。standard 镜像（`docker/Dockerfile`）不带浏览器，浏览器控制不可用，可用性检查返回未就绪，原因码 `AGENT_BROWSER_NOT_FOUND`。full 镜像（`docker/Dockerfile.full`）装有 Debian 的 `chromium` 和 `chromium-sandbox`，浏览器工具按命令名 `chromium` 找到它。要让这个 Chromium 在容器里启动起来，还有两个条件（见 `docker/Dockerfile.full` 里「Browser for the browser tools」一段）：
+>   - 服务以 `neko` 用户运行，不是 root（官方 `docker/entrypoint.sh` 已经这样做）；
+>   - Chromium 的沙箱要创建用户命名空间，Docker 默认的 seccomp 配置不允许，Chromium 会一启动就退出，浏览器工具报告浏览器启动不了。仓库里带了一份配置 `docker/seccomp/chromium.json`（Docker 的默认配置，只多一条允许创建命名空间的规则）：用 Compose 时连同 `docker/compose.browser.yaml` 一起起就会带上它，`docker run` 时加 `--security-opt seccomp=docker/seccomp/chromium.json`。它放开了什么、代价是什么、怎么在宿主机上确认，见 `docker/seccomp/README.md`；
+>
+>   容器里没有显示器这一点不用处理：`DISPLAY` 和 `WAYLAND_DISPLAY` 都没设时，浏览器工具自己不开窗口启动浏览器，和 `browser.json` 里的 `headless` 怎么设无关。
 
 ### 7. 自定义模型配置（高级）
 
@@ -295,9 +312,9 @@ Agent API Key 的取法：
 
 1. 用 `config/model_defaults.py` 的 `DEFAULT_*` 常量，初始化 `CORE_URL`、`CORE_MODEL`、`SUMMARY_MODEL` 等大写键。
 2. 以 `DEFAULT_CORE_CONFIG` 为模板，叠加 `core_config.json` 的内容；文件缺失、无法解析或内容不是 JSON 对象时，只用模板。
-3. 填入 Key：`coreApiKey` → `CORE_API_KEY`，`assistApiKey*` → `ASSIST_API_KEY_*`，`mcpToken` → `MCP_ROUTER_API_KEY`。某个提供商没有单独保存 Key、而它正是当前的 `coreApi` 或 `assistApi` 时，改用 `coreApiKey`。`coreApiKey` 是免费线路的占位值 `free-access` 时不做这种回退；MiniMax、MiMo、ElevenLabs、豆包语音、Requesty 的 Key 也从不回退。
+3. 填入 Key：`coreApiKey` → `CORE_API_KEY`，`assistApiKey*` → `ASSIST_API_KEY_*`，`mcpToken` → `MCP_ROUTER_API_KEY`。某个提供商没有单独保存 Key、而它正是当前的 `coreApi` 或 `assistApi` 时，改用 `coreApiKey`。`coreApiKey` 是免费线路的占位值 `free-access` 时不做这种回退；只做辅助的提供商（不在 `core_api_providers` 里）以及 ElevenLabs、豆包语音的 Key 也从不回退。
 4. 按 `coreApi` 取核心 profile，按 `assistApi` 取辅助 profile，用 `config.update()` 覆盖前面的地址和模型。`free` 的 profile 还带占位 Key `free-access`：核心为 `free` 时覆盖 `CORE_API_KEY`，辅助为 `free` 时覆盖 `AUDIO_API_KEY` / `OPENROUTER_API_KEY`。文件里没写 `assistApi` 时，`coreApi` 为 `free` 则取 `free`，否则取 `qwen`；未知的 `assistApi` 回退到 `qwen`。`resolvedProviderUrls` 里如果存有连通性测试选定的地址，并且它属于该提供商的候选地址，就用它替换默认地址。
-5. 辅助提供商的 Key 写入 `OPENROUTER_API_KEY` / `AUDIO_API_KEY`；通常仍为空时改用 `coreApiKey`（`free-access` 除外）。Requesty 的 `OPENROUTER_API_KEY` 必须使用专用 Key，空值保持为空；Requesty 的文本 Key 不写入 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退。Agent 的模型、地址和 Key 默认跟随辅助 API。
+5. 辅助提供商的 Key 写入 `OPENROUTER_API_KEY` / `AUDIO_API_KEY`；通常仍为空时改用 `coreApiKey`（`free-access` 除外）。辅助提供商只做辅助时，`OPENROUTER_API_KEY` 必须使用它的专用 Key，空值保持为空；它的文本 Key 不写入 `AUDIO_API_KEY`，音频凭据保留原有默认值和核心 Key 回退。Agent 的模型、地址和 Key 默认跟随辅助 API。
 6. `enableCustomApi` 为 `true` 时，应用第 7 节的自定义模型字段（GPT-SoVITS 的 TTS 地址不受这个开关限制）。
 7. 改写免费线路地址：只处理域名为 `lanlan.tech` 或其子域（如 `www.lanlan.tech`）的 `*_URL`。直播模式生效时（`config/livestream_config.json` 里，或没有这个文件时 `api_providers.json` 的 `livestream_config` 里，`enabled` 为 `true` 且 `server_prefix` 非空），路径为 `/core`、`/text/v1`、`/tts` 的地址先改用 `server_prefix` 开头的地址；否则在判定为非中国大陆网络时，把域名中的 `lanlan.tech` 换成 `lanlan.app`。`AGENT_MODEL_URL` 不做区域改写。
 
@@ -307,7 +324,7 @@ Agent API Key 的取法：
 
 容器内的服务以 `neko` 用户运行，运行时配置保存在数据根的 `config/` 目录。使用仓库自带的 `docker/docker-compose.yml` 时，数据根是 `/home/neko/.local/share/N.E.K.O`（由 `NEKO_STORAGE_SELECTED_ROOT` 指定）。它随 `./neko-home:/home/neko` 挂载持久化，在宿主机上对应 `./neko-home/.local/share/N.E.K.O/`。
 
-从旧版 `./N.E.K.O` + `./ssl` 双挂载升级的，先按 `README.MD`「从旧版本升级（挂载目录已变更）」迁移数据；否则容器会对着空的数据根启动，`core_config.json` 也会按环境变量重新生成。`docker/entrypoint.sh` 的 `detect_legacy_layout` / `warn_legacy_layout` 发现旧布局痕迹时会在启动日志里提示。
+从旧版 `./N.E.K.O` + `./ssl` 双挂载升级的，先按 [Docker 部署文档](https://project-neko.online/deployment/docker)「Persistent mounts」一节的迁移步骤迁移数据；否则容器会对着空的数据根启动，`core_config.json` 也会按环境变量重新生成。`docker/entrypoint.sh` 的 `detect_legacy_layout` / `warn_legacy_layout` 发现旧布局痕迹时会在启动日志里提示。
 
 ### 方式 1：环境变量（只用于生成初始的 core_config.json）
 
@@ -322,13 +339,12 @@ Agent API Key 的取法：
 | `NEKO_MCP_TOKEN` | `mcpToken` | `""` |
 
 - `NEKO_FORCE_ENV_UPDATE` 取任何非空值（包括 `0`、`false`）都会**整份重写** `core_config.json`。重写后文件里只剩上表这些字段，在 Web UI 里保存过的其他设置（自定义模型、TTS 等）都会丢失。这个变量只要还在，每次启动都会重写，用完要删掉；使用前请先备份。
-- 仓库自带的 `docker-compose.yml` 没有 `env_file:`，`environment:` 只透传以下变量：`TZ`、实例访问相关的 `NEKO_INSTANCE_ACCESS_KEY` / `NEKO_INSTANCE_PUBLIC_ORIGIN` / `NEKO_REQUIRE_HTTPS` / `NEKO_COMMUNITY_WEB_CLIENT_ID` / `NEKO_COMMUNITY_WEB_REDIRECT_URI`、自有域名相关的 `SSL_DOMAIN` / `NEKO_TRUSTED_HOSTS` / `NEKO_TRUSTED_ORIGINS`（留空时：`SSL_DOMAIN` 使用入口脚本默认值，`NEKO_TRUSTED_HOSTS` 回退到 `SSL_DOMAIN`，`NEKO_TRUSTED_ORIGINS` 保持为空），以及固定的 `XDG_DATA_HOME`、`NEKO_STORAGE_SELECTED_ROOT`、`NEKO_STORAGE_ANCHOR_ROOT`。上表中的 API 变量不在其中：只在 `docker/.env` 里写它们不会进入容器（`.env` 只用于 compose 文件里的 `${...}` 替换）。需要在 `neko-main` 服务已有的 `environment:` 列表里追加，例如：
+- 仓库自带的 `docker-compose.yml` 用 `env_file:` 把 `docker/.env` **整份注入容器**（`required: false`，没建 `.env` 也能启动）。因此上表里的变量直接写进 `.env` 就会生效，包括 API Key —— 不再需要往 `environment:` 里逐条追加。
+  `environment:` 里另外显式列出的那些（`TZ`、实例访问相关、自有域名相关、`XDG_DATA_HOME` / `NEKO_STORAGE_*`、四个上游端口）是为了给默认值并固定语义；同名变量以 `environment:` 为准。
+  旧的「只透传固定白名单」说法已经作废：那时 `.env` 只用于 `${...}` 插值，API Key 填了也进不了容器。
 
-  ```yaml
-  - NEKO_CORE_API_KEY=${NEKO_CORE_API_KEY}
-  - NEKO_CORE_API=${NEKO_CORE_API:-qwen}
-  - NEKO_ASSIST_API=${NEKO_ASSIST_API:-qwen}
-  ```
+  > 旧版 compose 只透传固定白名单，那时需要把 API 变量逐条加进 `environment:`。
+  > **现在不需要了** —— 直接写进 `.env` 即可；再往 `environment:` 里加只会造成"两处维护"。
 
   用 `docker run` 时，改用 `-e NEKO_CORE_API_KEY=...` 传入。
 - 启动日志里的 `Core API:` / `Assist API:` 每次启动都会打印，打印的是环境变量的值（未设置时为 `qwen`），不一定是文件里实际生效的值。

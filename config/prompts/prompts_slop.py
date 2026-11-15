@@ -57,12 +57,12 @@ SLOP_RULESET_VERSION = 1
 SLOP_REPEAT_THRESHOLD = 2
 
 
-# 这不是文案模板表，是按语言分组的**正则规则集**（find/replace 对）。补 zh-TW
-# 等于把整套简体正则重写成繁体正字，是独立的内容工程，不属于 issue #2500 的
-# "复制模板"批次。当前 zh-TW 用户经 ``_resolve_short_lang`` 落到 'zh' 规则集：
-# 简体正则对繁体文本大部分不命中，效果是"套路过滤变弱"，不是"输出掉英文"——
-# 没有用户可见回归，所以按 noqa 记账而不是硬凑一份繁体规则。
-SLOP_RULES: dict[str, list[dict]] = {  # noqa: PROMPT_ZH_TW  # 正则规则集，非文案模板；见上方注释
+# This is a language-grouped regex ruleset (find/replace pairs), not a prose-template table. Adding zh-TW
+# means rewriting all simplified-Chinese regexes in traditional orthography, a separate content-engineering task outside issue #2500's
+# template-copying batch. Currently _resolve_short_lang sends zh-TW users to 'zh' rules:
+# most simplified regexes miss traditional text, weakening cliche filtering rather than producing English.
+# With no user-visible regression, record a noqa instead of fabricating traditional rules.
+SLOP_RULES: dict[str, list[dict]] = {  # noqa: PROMPT_ZH_TW  # Regex ruleset, not a prose template; see above.
     'zh': [
         {
             "id": 'ZH_001',
@@ -635,20 +635,20 @@ SLOP_RULES: dict[str, list[dict]] = {  # noqa: PROMPT_ZH_TW  # 正则规则集�
             ],
         },
     ],
-    # 繁体是**独立一块**，不是 zh 的另一种写法。两个理由，缺一不可：
-    # (1) 简体规则对繁体文本几乎全不命中（繁简不同码位），零覆盖；
-    # (2) 少数因字形恰好同形而命中的规则更糟——替换池是简体散文，改写等于往
-    #     繁中会话的上下文里灌简体字，会推着模型改字形。
-    # 所以在繁体规则集出现之前，slop_filter 对繁中是**整轮跳过**的。这一块就是
-    # 那个前提：起步集，不是 zh 那 30 条的镜像，也不追求同步。想扩就用
-    # scripts/natural_expression_candidate_miner.py 挖真实繁中语料，别机械繁化。
+    # Traditional Chinese is independent, not another spelling of zh. Both reasons matter:
+    # (1) Simplified rules almost never match traditional text due to different code points, providing no coverage;
+    # (2) The few rules matching identical glyphs are worse: their replacement pools are simplified prose, injecting
+    #     simplified characters into traditional-Chinese context and pushing the model to change orthography.
+    # Thus slop_filter skips entire traditional-Chinese rounds until a dedicated ruleset exists. This block provides
+    # that starting set, not a mirror of zh's 30 rules, and need not stay synchronized. Expand using
+    # scripts/natural_expression_candidate_miner.py and real traditional-Chinese corpora, not mechanical conversion.
     #
-    # 收词标准比 zh 更保守：只收「模式够长够具体、在正常繁体散文里不会出现」的
-    # 套路。ZH_006（不自覺/下意識地）、ZH_021（忍不住）、ZH_007（仿佛…一般）
-    # 这类短模式在台湾华语口语里是常用词，第一批**故意不收**。
+    # Admission is more conservative than zh: include only cliches whose patterns are long and specific enough to avoid normal traditional prose.
+    # Short patterns such as ZH_006 (不自覺/下意識地), ZH_021 (忍不住), and ZH_007 (仿佛…一般)
+    # are common in Taiwanese Mandarin speech and intentionally excluded from the first batch.
     #
-    # ⚠️ normalize_language_code 把 zh-HK / zh-MO 也归到 zh-TW，所以这张表同时
-    # 服务港澳；用词以台湾华语为准，是既有归一策略的既定后果。
+    # normalize_language_code also maps zh-HK / zh-MO to zh-TW, so this table serves Hong Kong/Macau too;
+    # Taiwanese Mandarin wording is an established consequence of the existing normalization policy.
     'zh-TW': [
         {
             "id": 'TW_001',

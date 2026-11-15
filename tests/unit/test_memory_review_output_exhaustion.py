@@ -316,8 +316,8 @@ async def test_white_review_clears_output_exhaustion_state():
     assert state["review_output_exhaustion_attempts"] == 0
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
-    # 顺带钉住白 review 的既有语义：清锚点、清失败退避、故意不刷 last_review_ts
-    # （下轮 gate 4 用旧 ts 直接放行 + fingerprint=None 触发 gate 5 的 ∞ 通行）。
+    # Also lock down existing empty-review semantics: clear anchors and failure backoff, intentionally leaving last_review_ts unchanged
+    # (gate 4 admits the next round using the old ts, while fingerprint=None triggers gate 5's unlimited passage).
     assert state["last_reviewed_cutoff_tail"] is None
     assert state["review_fail_attempts"] == 0
     assert state["review_fail_fp"] is None
@@ -361,10 +361,10 @@ async def test_generic_failure_breaks_output_exhaustion_streak():
 @pytest.mark.asyncio
 async def test_recovery_that_loses_the_race_does_not_spawn_a_review():
     """A breaker armed while the async token count ran must still block the spawn."""
-    # Gate 6a 的恢复判定只能在锁外做（review_context_token_count 是 async，进不了同步
-    # mutator），锁内复查会拒绝清零。但**拒绝清零还不够** —— 调用方必须跟着放弃本轮，
-    # 否则等于拿一个已经过期的判定绕过了刚 armed 的断路器，那条已经证明压不动的
-    # context 又被放行重烧一轮。这条钉的是调用点，不是 mutator 的返回值。
+    # Gate 6a can check recovery only outside the lock (review_context_token_count is async and cannot enter the synchronous
+    # mutator); rechecking under the lock rejects reset. Rejecting reset alone is insufficient: the caller must abandon this round,
+    # or a stale decision bypasses the newly armed circuit breaker and burns another round on context
+    # already proven incompressible. This checks the call site, not the mutator return value.
     from app import memory_server
     from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
 
@@ -381,13 +381,13 @@ async def test_recovery_that_loses_the_race_does_not_spawn_a_review():
     }
 
     def count_while_a_concurrent_writer_arms_a_newer_breaker(rows):
-        # 模拟另一个后台 review 在这次 async 计数期间又失败了一次，写下更新的断路器。
+        # Simulate another background review failing during this async count and writing a newer circuit-breaker state.
         memory_server.gates._maint_state[name][
             "review_output_exhaustion_min_context_tokens"
         ] = 400
         return len(rows) * 100
 
-    # 8 行 → 800 tokens，与**锁外观测到的** 1000 相比像是「context 已缩短、可以恢复」。
+    # 8 lines -> 800 tokens, which appears recoverable compared with the 1000 observed outside the lock.
     await _drive_review_gate(
         memory_server,
         name,

@@ -165,7 +165,23 @@ def _stage_memory_file(stage_root: Path, relative_path: str, source_path: Path) 
         raise RuntimeError(f"failed to create SQLite shadow copy for {source_path}: {exc}") from exc
 
 
+def retire_recent_keys_before_replace(target_path: Path, source_path: Path | None) -> None:
+    """Record keyed ``recent.json`` entries a cloud apply is about to drop (``source_path=None``: a delete).
+
+    Cloud applies replace or delete ``recent.json`` outside
+    ``write_recent_payload_unlocked``; this is the same comparison
+    (``retire_removed_keyed_entries``), done before the file changes.
+    """
+    from utils.recent_file import read_keyed_payload, retire_removed_keyed_entries
+
+    if target_path.name != "recent.json" or not target_path.exists():
+        return
+    new = [] if source_path is None else read_keyed_payload(source_path)
+    retire_removed_keyed_entries(target_path, None, new)
+
+
 def _apply_runtime_file(source_path: Path, target_path: Path) -> None:
+    retire_recent_keys_before_replace(target_path, source_path)
     if source_path.name == "time_indexed.db" and _looks_like_sqlite_database(source_path):
         target_looks_like_sqlite = not target_path.exists() or _looks_like_sqlite_database(target_path)
         if target_looks_like_sqlite:

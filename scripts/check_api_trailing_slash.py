@@ -30,7 +30,7 @@ production failure under reverse proxies:
   points at the internal ``127.0.0.1:<port>`` and the browser dies with
   ``ERR_CONNECTION_REFUSED``.
 * PR #938 (chara_manager regression on LAN reverse proxies) was exactly this
-  bug. See ``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠" — "no trailing slash on API URLs") and
+  bug. See ``.agent/rules/neko-guide.md`` (§\"API URL 末尾不带斜杠\" — \"no trailing slash on API URLs\") and
   ``main_routers/characters_router.py`` docstring for the full write-up.
 
 Avoiding the redirect entirely (= never declaring a trailing slash) makes
@@ -40,25 +40,25 @@ What it flags
 -------------
 Any decorator call of the form:
 
-    @router.get("/foo/")           # trailing-slash literal
-    @router.post("/foo/bar/")
-    @router.websocket("/ws/foo/")
-    @app.put("/api/v1/foo/")
+    @router.get(\"/foo/\")           # trailing-slash literal
+    @router.post(\"/foo/bar/\")
+    @router.websocket(\"/ws/foo/\")
+    @app.put(\"/api/v1/foo/\")
 
 where ``router`` is any name and the HTTP method comes from
 ``METHOD_NAMES``. Path is the first positional argument or ``path=...``.
 
 Allowed exceptions
 ------------------
-* ``@router.get("/")`` on a router whose declared ``APIRouter(prefix=...)``
+* ``@router.get(\"/\")`` on a router whose declared ``APIRouter(prefix=...)``
   is empty — the literal root page. We have exactly one of these:
   ``main_routers/pages_router.py`` serving ``index.html``. Routers with a
-  non-empty prefix are NOT exempt because ``prefix="/api/foo"`` +
-  ``@router.get("/")`` registers ``/api/foo/`` which IS a trailing-slash
+  non-empty prefix are NOT exempt because ``prefix=\"/api/foo\"`` +
+  ``@router.get(\"/\")`` registers ``/api/foo/`` which IS a trailing-slash
   route (and triggers the same 307 hazard). Reported by CodeRabbit on
   PR #1082.
 * **Explicit alias pair** — when the same function carries BOTH
-  ``@router.get("/foo")`` and ``@router.get("/foo/")``, the trailing-slash
+  ``@router.get(\"/foo\")`` and ``@router.get(\"/foo/\")``, the trailing-slash
   one is a deliberate alias. The 307-redirect attack vector is gone (the
   slash form returns 200 directly), so the convention's safety property is
   preserved. SPA entry points (``/ui`` + ``/ui/``) use this pattern. The

@@ -25,11 +25,13 @@ import os
 import shutil
 import tempfile
 from copy import deepcopy
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from config import DEFAULT_CONFIG_DATA
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, scrub_non_finite_numbers
+from utils.preferences_sanitize import sanitize_preferences_payload
 from utils.storage_path_rewrite import rebase_runtime_bound_workshop_config_paths
 
 from ._shared import (
@@ -40,6 +42,7 @@ from ._shared import (
     TRANSACTIONAL_RUNTIME_ENTRY_PATTERNS,
     RUNTIME_ASSET_DIR_NAMES,
     TARGET_OPTIONAL_STATE_FILES,
+    logger,
 )
 from .staging import (
     _json_canonical_dumps,
@@ -49,7 +52,7 @@ from .staging import (
 )
 
 
-# 与 ConfigManager._get_localized_characters_source 的语言后缀保持一致。
+# Match language suffixes in ConfigManager._get_localized_characters_source.
 _LOCALIZED_DEFAULT_CHARACTER_LANGUAGES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
 
@@ -67,8 +70,8 @@ def _iter_pristine_characters_payloads(config_manager):
         if seed_payload is not None:
             yield seed_payload
 
-    # characters.json 缺失时，首次 load_characters 以内存默认值为底稿补 character_id 并写回；
-    # 写入时的 Steam/系统语言可能与此刻不同，所以任一语言的内置默认值都算未改动。
+    # If characters.json is missing, first load_characters adds character_id to in-memory defaults and writes them back;
+    # Steam/system language at writing may differ from now, so built-in defaults in any language count as unchanged.
     yield DEFAULT_CONFIG_DATA.get("characters.json")
     try:
         from config import get_localized_default_characters
@@ -86,9 +89,9 @@ def _runtime_characters_config_matches_pristine_default(config_manager, runtime_
         runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
     except Exception:
         return False
-    # 首次 load_characters 会为每个角色生成随机 character_id 并写回，字节比较必然失败；
-    # 只忽略本地身份后按内容比较，全新安装才不会被误判为已有用户内容；其余差异（含旧版
-    # _reserved 迁移写回）仍按原语义视为已改动。
+    # First load_characters generates and persists random character_id for each character, making byte comparison fail.
+    # Compare content while ignoring only local identity so fresh installs are not mistaken for user content; other
+    # differences (including old _reserved migration writes) retain the original changed-content semantics.
     comparable_runtime_payload = _characters_payload_for_content_comparison(runtime_payload)
     for pristine_payload in _iter_pristine_characters_payloads(config_manager):
         if pristine_payload is None:
@@ -209,8 +212,8 @@ def _is_ignorable_runtime_entry(path: Path, *, transactional_pattern=None) -> bo
     if name == ".gitkeep":
         return True
     if name.startswith("."):
-        # 事务目录是崩溃恢复的唯一线索，判定「有没有用户内容」时它算内容。
-        # 名字必须逐字命中该目录声明的事务模式，不能只看点前缀和后缀。
+        # Transaction directories are the sole crash-recovery clue, so count as user content when checking its presence.
+        # Names must exactly match declared transaction patterns, not merely a dot prefix and suffix.
         return not (
             transactional_pattern is not None
             and transactional_pattern.fullmatch(name) is not None
@@ -282,14 +285,14 @@ def _load_seed_characters_payload(config_manager) -> dict[str, Any]:
 
 
 def _catgirl_payload_without_character_id(payload: Any) -> dict[str, Any] | None:
-    """Return a deep copy of a catgirl payload without its device-local ``_reserved.character_id``."""
+    """Return a deep copy of a neko payload without its device-local ``_reserved.character_id``."""
     if not isinstance(payload, dict):
         return None
     from utils.config_manager import delete_reserved
 
     stripped_payload = deepcopy(payload)
-    # character_id 是每台设备各自生成的本地身份，不属于角色内容；
-    # 所有「内容是否相同」的比较（种子默认卡、云存档指纹）都必须忽略它。
+    # character_id is a device-local generated identity, not character content;
+    # all content-equality comparisons (seed defaults, cloud-save fingerprints) must ignore it.
     delete_reserved(stripped_payload, "character_id")
     return stripped_payload
 
@@ -350,15 +353,20 @@ def _preferences_entry_key(entry: Any) -> str:
 
 
 def _merge_preferences_payloads(legacy_payload: Any, current_payload: Any) -> list[Any]:
+    from utils.preferences_audit import attach_journal, merge_local_journals
+
+    legacy = _normalize_preferences_payload(legacy_payload)
+    current = _normalize_preferences_payload(current_payload)
+    journal = merge_local_journals(legacy, current)
     merged_entries: dict[str, Any] = {}
     ordered_keys: list[str] = []
-    for payload in (_normalize_preferences_payload(legacy_payload), _normalize_preferences_payload(current_payload)):
+    for payload in (legacy, current):
         for entry in payload:
             key = _preferences_entry_key(entry)
             if key not in merged_entries:
                 ordered_keys.append(key)
             merged_entries[key] = deepcopy(entry)
-    return [merged_entries[key] for key in ordered_keys]
+    return attach_journal([merged_entries[key] for key in ordered_keys], journal)
 
 
 def _deep_merge_json_dicts(legacy_payload: Any, current_payload: Any) -> dict[str, Any]:
@@ -595,6 +603,14 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
         target_root / "state" / "character_tombstones.json"
     )
 
+    def _log_scrubbed(filename: str, path: str) -> None:
+        """Report one dropped non-finite value; the value itself is never logged."""
+        logger.warning(
+            "legacy root import: dropped non-finite value while merging %s (path=%r)",
+            filename,
+            path,
+        )
+
     source_characters = _load_json_if_exists(source_root / "config" / "characters.json")
     target_characters = _load_json_if_exists(target_root / "config" / "characters.json")
     if source_characters is not None or target_characters is not None:
@@ -612,13 +628,33 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
             current_name = str(merged_characters.get("当前猫娘") or "")
             if current_name in target_tombstone_names:
                 merged_characters["当前猫娘"] = next(iter(merged_catgirls), "")
-        atomic_write_json(config_dir / "characters.json", merged_characters, ensure_ascii=False, indent=2)
+        # Same M-001 class as the preferences merge below: ``_load_json_if_exists``
+        # accepts NaN/Infinity, ``atomic_write_json`` refuses to emit them, so a
+        # legacy character carrying a poisoned number would abort the whole import.
+        atomic_write_json(
+            config_dir / "characters.json",
+            scrub_non_finite_numbers(
+                merged_characters, on_drop=partial(_log_scrubbed, "characters.json")
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
 
     source_preferences = _load_json_if_exists(source_root / "config" / "user_preferences.json")
     target_preferences = _load_json_if_exists(target_root / "config" / "user_preferences.json")
     if source_preferences is not None or target_preferences is not None:
         merged_preferences = _merge_preferences_payloads(source_preferences, target_preferences)
-        atomic_write_json(config_dir / "user_preferences.json", merged_preferences, ensure_ascii=False, indent=2)
+        # The legacy file is read with ``json.load``, which accepts the non-finite
+        # literals ``atomic_write_json`` rejects (M-001). Merging copies the
+        # poisoned model entry -- and any poisoned number inside the settings
+        # journal -- straight through, so the import would fail and leave the user
+        # on the old root. Clean the payload instead of dropping it.
+        atomic_write_json(
+            config_dir / "user_preferences.json",
+            sanitize_preferences_payload(merged_preferences),
+            ensure_ascii=False,
+            indent=2,
+        )
 
     # plugin_models.json is copied as one configuration unit by
     # _copy_runtime_root_entries (the current root wins). Deep-merging it could
@@ -635,7 +671,14 @@ def _stage_merged_runtime_configs(config_manager, *, source_root: Path, target_r
                 source_root=source_root,
                 target_root=target_root,
             )
-        atomic_write_json(config_dir / filename, merged_payload, ensure_ascii=False, indent=2)
+        atomic_write_json(
+            config_dir / filename,
+            scrub_non_finite_numbers(
+                merged_payload, on_drop=partial(_log_scrubbed, filename)
+            ),
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 def _copy_optional_legacy_state(*, source_root: Path, target_root: Path, temp_root: Path) -> list[str]:

@@ -19,7 +19,7 @@ from utils.llm_client import (
 
 
 class _InvalidSummaryLLM:
-    """返回无法解析的内容，用来模拟摘要模型连续失败。"""
+    """Return unparseable content to simulate repeated summary-model failures."""
 
     def __init__(self):
         self.calls = 0
@@ -37,7 +37,7 @@ class _InvalidSummaryLLM:
 
 
 class _FakeConfig:
-    """只提供 update_history 需要的角色 recent 路径。"""
+    """Provide only the character recent-history path required by update_history."""
 
     def __init__(self, lanlan_name: str, recent_path: str):
         self._lanlan_name = lanlan_name
@@ -146,8 +146,8 @@ def test_deepseek_thinking_is_disabled_only_for_memory_compression():
 
     assert mgr._config_manager.features == ["summary", "correction"]
     assert compression.extra_body == {"thinking": {"type": "disabled"}}
-    # 记忆整理压过工厂的关思考解析、保持开思考；DeepSeek 原生思考量会顶穿
-    # 输出额度（max_tokens 修好后真正生效），所以显式压到 low 档。
+    # Memory organization overrides the factory's thinking-disabled parser, keeping thinking enabled. DeepSeek's
+    # native thinking can exceed output limits (now enforced after max_tokens fix), so explicitly set low effort.
     assert review.extra_body == {"reasoning_effort": "low"}
 
 
@@ -177,10 +177,10 @@ def test_update_history_preserves_existing_memo_when_compression_fails(tmp_path)
     assert final[-1].content == "new ai"
 
 
-# ── 持续失败兜底 / 分段压缩 / 后台合并 回归测试 ──────────────────────────
+# ── Regressions: persistent-failure fallback / segmented compression / background merge ──
 
 class _ValidSummaryLLM:
-    """返回合法 JSON 摘要，模拟压缩成功。"""
+    """Return a valid JSON summary to simulate successful compression."""
 
     def __init__(self, summary: str = "压缩后的摘要"):
         self.calls = 0
@@ -200,7 +200,7 @@ class _ValidSummaryLLM:
 
 
 def _mock_summary_anchors(mgr):
-    """mock past-block 锚点读写，让 compress_history 成功路径不碰磁盘 meta。"""
+    """Mock past-block anchor reads/writes so successful compress_history never touches on-disk metadata."""
     setattr(mgr, "_aread_last_past_block_update_at", lambda _n: asyncio.sleep(0, result=None))
     setattr(mgr, "_awrite_last_past_block_update_at", lambda _n: asyncio.sleep(0, result=None))
 
@@ -217,7 +217,7 @@ def test_compress_history_returns_memo_on_success(tmp_path):
     memo, summary = result
     assert isinstance(memo, SystemMessage)
     assert "柚希今天聊了咖啡。" in summary
-    assert fake_llm.calls == 1  # 小输入走单次路径，不分段
+    assert fake_llm.calls == 1  # Small input takes the single-call path without segmentation.
 
 
 def test_split_messages_by_budget(tmp_path, monkeypatch):
@@ -226,9 +226,9 @@ def test_split_messages_by_budget(tmp_path, monkeypatch):
     msgs = [HumanMessage(content=f"message number {i}") for i in range(6)]
     chunks = mgr._split_messages_by_budget(msgs, name)
     assert len(chunks) >= 2
-    assert sum(len(c) for c in chunks) == len(msgs)  # 不丢消息
+    assert sum(len(c) for c in chunks) == len(msgs)  # No messages lost.
     flat = [m for c in chunks for m in c]
-    assert [m.content for m in flat] == [m.content for m in msgs]  # 顺序保持
+    assert [m.content for m in flat] == [m.content for m in msgs]  # Order preserved.
 
 
 def test_render_without_theater_skips_locale_pass_and_matches_legacy(tmp_path, monkeypatch):
@@ -267,7 +267,7 @@ def test_compress_history_uses_segmented_path_for_large_input(tmp_path, monkeypa
     result = _run(mgr.compress_history(msgs, name))
 
     assert result is not None
-    assert fake_llm.calls > 1  # 走了分段（map 多次 + 主体最终总结）
+    assert fake_llm.calls > 1  # Segmentation occurred (multiple map calls + final main summary).
 
 
 def test_enforce_hard_cap_drops_oldest_keeps_memo_and_recent(tmp_path, monkeypatch):
@@ -280,11 +280,11 @@ def test_enforce_hard_cap_drops_oldest_keeps_memo_and_recent(tmp_path, monkeypat
     _run(mgr.enforce_hard_cap(name))
 
     kept = mgr.user_histories[name]
-    assert isinstance(kept[0], SystemMessage)  # 备忘录（已压缩长期记忆）保留
+    assert isinstance(kept[0], SystemMessage)  # Preserve the memo (compressed long-term memory).
     assert kept[0].content == memo.content
-    assert len(kept) < 1 + len(body)  # 丢了最旧的原文
-    assert len(kept) >= 1 + mgr.max_history_length  # 至少保留近期 max_history_length 条
-    assert kept[-1].content == body[-1].content  # 保留的是最新的
+    assert len(kept) < 1 + len(body)  # Oldest raw text removed.
+    assert len(kept) >= 1 + mgr.max_history_length  # Preserve at least the latest max_history_length entries.
+    assert kept[-1].content == body[-1].content  # Preserved entries are the newest.
 
 
 def test_enforce_hard_cap_noop_when_under_budget(tmp_path):
@@ -292,7 +292,7 @@ def test_enforce_hard_cap_noop_when_under_budget(tmp_path):
     history = [SystemMessage(content="memo")] + [HumanMessage(content=f"m{i}") for i in range(8)]
     _write_recent(mgr.log_file_path[name], history)
     _run(mgr.enforce_hard_cap(name))
-    assert mgr.user_histories[name] == history  # 未超大上限，不动
+    assert mgr.user_histories[name] == history  # Below the large limit: leave unchanged.
 
 
 def test_merge_backup_memo_merges_when_batch_present(tmp_path):
@@ -310,20 +310,20 @@ def test_merge_backup_memo_merges_when_batch_present(tmp_path):
     assert status == "merged"
     merged = mgr.user_histories[name]
     assert merged[0] is memo
-    assert [m.content for m in merged[1:]] == [m.content for m in new_during]  # 期间新增保留
+    assert [m.content for m in merged[1:]] == [m.content for m in new_during]  # Preserve entries added meanwhile.
 
 
 def test_merge_backup_memo_moot_when_batch_gone(tmp_path):
     mgr, name = _make_manager(tmp_path)
     batch = [HumanMessage(content="u1"), AIMessage(content="a1"), HumanMessage(content="u2")]
-    # current 已被主路径压成 memo + 近期，batch 不在头部
+    # Main path already compressed current to memo + recent; batch is no longer at its head.
     current = [SystemMessage(content="已压缩"), HumanMessage(content="recent")]
     _write_recent(mgr.log_file_path[name], current)
 
     status = _run(mgr.merge_backup_memo(name, list(batch), SystemMessage(content="memo")))
 
     assert status == "moot"
-    assert mgr.user_histories[name][0].content == "已压缩"  # current 不动
+    assert mgr.user_histories[name][0].content == "已压缩"  # Leave current unchanged.
 
 
 def test_update_history_callback_ok_false_on_failure(tmp_path):
@@ -363,7 +363,7 @@ def test_update_history_callback_ok_true_on_success(tmp_path):
 
 
 def test_update_history_compresses_chat_without_swallowing_theater_episode(tmp_path):
-    """普通聊天压缩必须保留剧场胶囊及其来源元数据。"""  # noqa: DOCSTRING_CJK
+    """Ordinary chat compression must preserve theater capsules and their provenance metadata."""  # noqa: DOCSTRING_CJK
 
     mgr, name = _make_manager(tmp_path)
     theater_episode = SystemMessage(
@@ -414,7 +414,7 @@ def test_update_history_compresses_chat_without_swallowing_theater_episode(tmp_p
 
 
 def test_update_history_preserves_legacy_theater_message_before_migration(tmp_path):
-    """旧剧场记录在迁移为单集胶囊前也不能进入普通摘要模型。"""  # noqa: DOCSTRING_CJK
+    """Legacy theater records must also bypass ordinary summary models before migration into episode capsules."""  # noqa: DOCSTRING_CJK
 
     mgr, name = _make_manager(tmp_path)
     legacy_theater = SystemMessage(
@@ -478,7 +478,7 @@ def test_hard_cap_treats_legacy_theater_messages_like_compression(tmp_path, monk
 
 
 def test_review_commit_preserves_capsule_position_between_ordinary_ranges(tmp_path):
-    """通用 review 跨过剧场胶囊提交时只能改普通消息槽位。"""  # noqa: DOCSTRING_CJK
+    """Generic review crossing a theater capsule commit may modify only ordinary message slots."""  # noqa: DOCSTRING_CJK
 
     mgr, name = _make_manager(tmp_path)
     capsule = SystemMessage(
@@ -533,11 +533,11 @@ def test_merge_backup_memo_reports_failed_on_write_error(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise OSError("disk full")
 
-    # 落盘现在收口到 utils.recent_file 的加锁写入口，patch 点跟着走。
+    # Persistence now funnels through utils.recent_file's locked write entry; move the patch point accordingly.
     monkeypatch.setattr("utils.recent_file.atomic_write_json", _boom)
 
     status = _run(mgr.merge_backup_memo(name, list(batch), SystemMessage(content="memo")))
-    assert status == "failed"  # 落盘失败必须报 failed，不能谎报 merged
+    assert status == "failed"  # Persistence failure must report failed, never falsely claim merged.
 
 
 def _theater_capsule(index: int) -> SystemMessage:
@@ -578,7 +578,7 @@ def test_preserved_theater_capsules_do_not_count_toward_compress_threshold(tmp_p
     _write_recent(mgr.log_file_path[name], original)
     calls = _record_compress_inputs(mgr)
 
-    # 普通消息 memo + 3 + 1 = 5，未超过门槛 5；12 个剧场胶囊不能把它推过门槛。
+    # Ordinary messages: memo + 3 + 1 = 5, within threshold 5; twelve theater capsules must not push it over.
     _run(mgr.update_history([AIMessage(content="a2")], name, compress=True))
 
     assert calls == []

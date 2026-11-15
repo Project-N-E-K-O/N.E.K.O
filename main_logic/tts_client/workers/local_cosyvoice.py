@@ -46,7 +46,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     
     Note: the audio_api_key parameter is unused (local mode needs no API key); it is kept to match the unified worker signature
     """
-    _ = audio_api_key  # 本地模式不需要 API Key
+    _ = audio_api_key  # Local mode needs no API key.
 
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
@@ -58,7 +58,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         else:
             logger.error('本地cosyvoice未配置url, 请在设置中填写正确的端口')
         response_queue.put(("__ready__", True))
-        # 模仿 dummy_tts：持续清空队列但不生成音频
+        # Follow dummy_tts: continuously drain the queue without producing audio.
         while True:
             try:
                 sid, _ = request_queue.get()
@@ -68,10 +68,10 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 break
         return
     
-    # OpenAI 兼容端点
+    # OpenAI-compatible endpoint.
     WS_URL = f'{ws_base}/v1/audio/speech/stream'
     
-    # 从 voice_id 解析 voice 和 speed（格式：voice 或 voice:speed）
+    # Parse voice and speed from voice_id (voice or voice:speed).
     voice_name = voice_id or "中文女"
     speech_speed = 1.0
     if voice_id and ':' in voice_id:
@@ -82,7 +82,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
         except ValueError:
             pass
     
-    # 服务器返回的采样率（22050Hz）
+    # Server-returned sample rate (22050 Hz).
     SRC_RATE = 22050
 
     async def async_worker():
@@ -112,7 +112,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             try:
                 async for message in ws_conn:
                     if isinstance(message, bytes):
-                        # 服务器返回 16-bit PCM @ 22050Hz
+                        # Server returns 16-bit PCM at 22050 Hz.
                         audio_array = np.frombuffer(message, dtype=np.int16)
                         resampled_bytes = _resample_audio(audio_array, SRC_RATE, 48000, resampler)
                         response_queue.put(("__audio__", speech_id, resampled_bytes))
@@ -166,7 +166,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             """Create a new connection and send the config"""
             nonlocal ws, receive_task, completion_armed, completion_send_settled, resampler
             
-            # 清理旧连接
+            # Clean up the old connection.
             if receive_task and not receive_task.done():
                 receive_task.cancel()
                 try:
@@ -179,14 +179,14 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 except Exception:
                     pass
             
-            # 重置 resampler
+            # Reset the resampler.
             resampler = soxr.ResampleStream(SRC_RATE, 48000, 1, dtype='float32')
             
             logger.info(f"🔄 [LocalTTS] 正在连接: {WS_URL}")
             ws = await websockets.connect(WS_URL, ping_interval=None)
             logger.info("✅ [LocalTTS] 连接成功")
             
-            # 发送配置
+            # Send configuration.
             config = {
                 "voice": voice_name,
                 "speed": speech_speed,
@@ -194,7 +194,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             await ws.send(json.dumps(config))
             logger.debug(f"发送配置: {config}")
 
-            # 启动接收任务
+            # Start the receiver task.
             completion_armed = asyncio.Event()
             completion_send_settled = asyncio.Event()
             receive_task = asyncio.create_task(
@@ -207,7 +207,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             )
             return ws
 
-        # 初始连接
+        # Initial connection.
         try:
             await create_connection()
             response_queue.put(("__ready__", True))
@@ -217,7 +217,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             response_queue.put(("__ready__", False))
             return
 
-        # 主循环
+        # Main loop.
         loop = asyncio.get_running_loop()
         while True:
             try:
@@ -230,7 +230,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 break
 
             if sid == "__interrupt__":
-                # 打断：立即关闭连接，不发 end 信号
+                # Interruption: close immediately without sending an end signal.
                 if receive_task and not receive_task.done():
                     receive_task.cancel()
                     try:
@@ -247,7 +247,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 current_speech_id = None
                 continue
 
-            # speech_id 变化 -> 打断旧语音，建立新连接
+            # speech_id changed: interrupt old speech and establish a new connection.
             if sid != current_speech_id and sid is not None:
                 if ws and receive_task and not receive_task.done():
                     await send_end_signal(
@@ -265,7 +265,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                     continue
 
             if sid is None:
-                # 正常结束：发送结束信号
+                # Normal completion: send the end signal.
                 if ws:
                     await send_end_signal(
                         ws,
@@ -278,19 +278,19 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             if not tts_text or not tts_text.strip():
                 continue
             
-            # 同时发送（bistream 模式允许边发边收）
+            # Send concurrently (bistream mode supports simultaneous sending and receiving).
             if ws:
                 try:
                     await ws.send(json.dumps({"text": tts_text}))
                     _record_tts_telemetry("local_cosyvoice", len(tts_text))
-                    # TTS 文本原文不写 logger
+                    # Do not write raw TTS text to logger.
                     logger.debug(f"发送合成片段 (len={len(tts_text)} chars)")
                     print(f"发送合成片段: {tts_text}")
                 except Exception as e:
                     _enqueue_error(response_queue, f"发送失败: {e}")
                     ws = None
 
-        # 清理
+        # Cleanup.
         if receive_task and not receive_task.done():
             receive_task.cancel()
             try:
@@ -303,7 +303,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
             except Exception:
                 pass
 
-    # 运行 Asyncio 循环
+    # Run the asyncio loop.
     try:
         asyncio.run(async_worker())
     except Exception as e:

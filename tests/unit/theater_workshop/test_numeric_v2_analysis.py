@@ -1,15 +1,105 @@
 from __future__ import annotations
-from theater_workshop.host import InProcessPackageGateway
+from services.theater_workshop.host import InProcessPackageGateway
 
 from copy import deepcopy
 
-from theater_workshop.sdk.numeric_v2 import NumericV2Compiler
-from theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
+import pytest
+
+from services.theater_workshop.sdk.numeric_v2 import NumericV2Compiler
+from services.theater_workshop.sdk.numeric_v2_analysis import analyze_numeric_v2_story
 from .numeric_v2_fixture import numeric_v2_story
 
 
 def _codes(story: dict) -> set[str]:
     return {warning.code for warning in analyze_numeric_v2_story(story)}
+
+
+_DUPLICATE_DISCLOSURE = "route_fact_duplicates_entry_narration"
+_DISCLOSURE = (
+    "已公开展示日记末页写明列车长返回故障车厢疏散乘客、没有续页，"
+    "且女主说明他回去救人并非抛下她，此后下落未记录。仅找到或翻开日记不能证明。"
+)
+
+
+def _entry_disclosure_story() -> dict:
+    story = numeric_v2_story()
+    node, ending = story["nodes"][:2]
+    story["nodes"] = [node, ending]
+    story["endings"] = story["endings"][:1]
+    key = "scene:start:truth_shared"
+    story["fact_contract"] = {"facts": {key: {
+        "description": _DISCLOSURE,
+        "evidence_source": "performance",
+        "value_type": "bool",
+        "visibility": "public",
+    }}}
+    node["completion_contract"] = {"all": [{"fixed_narration_id": "diary"}]}
+    node["story_beat"]["fixed_narrations"] = [{
+        "id": "diary",
+        "text": (
+            "日记最后一条写着：列车长当晚没有随首批人员撤离，而是返回故障车厢，疏散滞留乘客。"
+            "记录到此中断，后面没有续页。{{catgirl_name}}轻声说："
+            "“他不是丢下了我们，他是回去救人。后来去了哪儿，这本日记没有写。”"
+        ),
+        "trigger": {"type": "entry"},
+        "after": [],
+        "required_before_exit": True,
+    }]
+    node["route_gates"] = node["route_gates"][:1]
+    node["route_gates"][0]["conditions"] = {"all": [{"type": "fact_equals", "key": key, "value": True}]}
+    return story
+
+
+def test_required_entry_disclosure_route_gate_is_only_an_author_warning():
+    story = _entry_disclosure_story()
+    compiler = NumericV2Compiler(InProcessPackageGateway())
+    compiled = compiler.compile(story)
+    core = compiler.compile_core(story)
+
+    warnings = [warning for warning in compiled.warnings if warning.code == _DUPLICATE_DISCLOSURE]
+    assert len(warnings) == 1
+    assert warnings[0].path == "nodes[0].route_gates[0].conditions.all[0]"
+    assert "diary" in warnings[0].message and "scene:start:truth_shared" in warnings[0].message
+    assert compiled.json_bytes == core.json_bytes
+    assert compiled.package_hash == core.package_hash
+
+
+@pytest.mark.parametrize("requirement", [
+    "并且玩家理解了日记的意思",
+    "并且双方同意离开",
+    "并且玩家打开了门",
+    "且老谢把门推开",
+    "并且旧友接过并保管日记",
+    "随后两人会再核验日记",
+])
+def test_disclosure_warning_preserves_independent_followup_requirements(requirement):
+    story = _entry_disclosure_story()
+    fact = story["fact_contract"]["facts"]["scene:start:truth_shared"]
+    fact["description"] = _DISCLOSURE.split("。", 1)[0] + "，" + requirement + "。"
+
+    assert _DUPLICATE_DISCLOSURE not in _codes(story)
+
+
+def test_disclosure_warning_requires_the_text_and_same_scene_required_entry():
+    story = _entry_disclosure_story()
+    node = story["nodes"][0]
+    narration = node["story_beat"]["fixed_narrations"][0]
+    variations = (
+        {"text": "屋中只有湿漉漉的外套和一盏灯。"},
+        {"required_before_exit": False},
+        {"trigger": {"type": "condition", "condition": "玩家交出日记"}},
+        {"after": ["an_earlier_piece"]},
+    )
+    for change in variations:
+        node["story_beat"]["fixed_narrations"] = [{**narration, **change}]
+        assert _DUPLICATE_DISCLOSURE not in _codes(story), change
+
+    node["story_beat"]["fixed_narrations"] = [narration]
+    key = "scene:another_scene:truth_shared"
+    facts = story["fact_contract"]["facts"]
+    facts[key] = facts.pop("scene:start:truth_shared")
+    node["route_gates"][0]["conditions"]["all"][0]["key"] = key
+    assert _DUPLICATE_DISCLOSURE not in _codes(story)
 
 
 def test_full_story_analysis_keeps_recommended_turns_as_soft_pacing_warning():
@@ -35,7 +125,7 @@ def test_full_story_analysis_distinguishes_priority_shadow_and_numeric_unreachab
     compiled = NumericV2Compiler(InProcessPackageGateway()).compile(story)
     codes = {warning.code for warning in compiled.warnings}
 
-    # 低优先级路线的全部条件空间被覆盖，但这仍是作者诊断，不把合法包变成编译失败。
+    # The lower-priority route's entire condition space is covered, but this remains an author diagnostic rather than a compilation failure for a valid package.
     assert "route_priority_shadowed" in codes
     assert "ending_numeric_unreachable" in codes
     assert "route_condition_gap" in codes
@@ -153,7 +243,7 @@ def test_full_story_analysis_does_not_call_unknown_downstream_unreachable():
     warnings = NumericV2Compiler(InProcessPackageGateway()).compile(story).warnings
     codes = {warning.code for warning in warnings}
 
-    # 状态组合超过精确枚举上限时只能标 unknown，不能把结构下游反断言为不可达。
+    # When state combinations exceed the exact-enumeration limit, mark only unknown; do not infer that structurally downstream nodes are unreachable.
     assert "route_analysis_unknown" in codes
     assert "node_numeric_unreachable" not in codes
     assert "ending_numeric_unreachable" not in codes
@@ -213,7 +303,7 @@ def test_full_story_analysis_suppresses_pacing_claims_across_cycles():
 
     codes = {warning.code for warning in NumericV2Compiler(InProcessPackageGateway()).compile(story).warnings}
 
-    # 两次循环各自不超过三回合即可达到阈值，因此不能按首次访问猜成“需要额外回合”。
+    # Both loops can reach the threshold within three turns each, so the first visit must not imply 'extra turns required'.
     assert "route_analysis_unknown" in codes
     assert "route_pacing_difficult" not in codes
     assert "route_pacing_partial" not in codes
@@ -275,13 +365,13 @@ def test_full_story_analysis_keeps_non_convex_entry_bounds_unknown():
     warnings = NumericV2Compiler(InProcessPackageGateway()).compile(story).warnings
     codes = {warning.code for warning in warnings}
 
-    # <=10 与 >=90 是两个不连续入口，不能用 0..100 包围盒虚构中间数值并继续传播。
+    # <=10 and >=90 are disjoint entry ranges; a 0..100 bounding box must not invent intermediate values and propagate them.
     assert "route_analysis_unknown" in codes
     assert "ending_pacing_difficult" not in codes
 
 
 def test_recommended_budget_flags_branch_that_requires_near_maximum_changes():
-    # 十二轮各+5可达，但普通强度每轮+2仍不够；不能把理论极限当作日常体验。
+    # Twelve rounds at +5 can reach it, but ordinary +2 rounds cannot; do not equate theoretical extremes with everyday experience.
     story = numeric_v2_story()
     story["nodes"][0]["recommended_turns"] = 12
     original = deepcopy(story)
@@ -292,7 +382,7 @@ def test_recommended_budget_flags_branch_that_requires_near_maximum_changes():
 
 
 def test_normal_budget_does_not_warn_when_branch_is_within_normal_range():
-    # 阈值降至普通强度预算内后提示消失；诊断只算可能区间，不给剧情自动加分。
+    # The hint disappears when the threshold falls within the normal-intensity budget; diagnostics compute possible intervals without automatically awarding story points.
     story = numeric_v2_story()
     story["nodes"][0]["recommended_turns"] = 12
     for route in story["nodes"][0]["route_gates"]:
@@ -302,7 +392,7 @@ def test_normal_budget_does_not_warn_when_branch_is_within_normal_range():
 
 
 def test_normal_budget_accumulates_upstream_but_never_future_turns():
-    # 两幕各三轮共可增加12点；不能只算入口幕，也不能把结局后的回合借给入口。
+    # Three rounds in each of two acts can add 12 points total; count more than the entry act, but never borrow post-ending rounds for entry.
     story = numeric_v2_story()
     start = story["nodes"][0]
     middle = deepcopy(start)
@@ -322,7 +412,7 @@ def test_normal_budget_accumulates_upstream_but_never_future_turns():
 
 
 def test_two_point_estimate_does_not_follow_model_strength_mapping():
-    # 声明上限3仍允许每轮2点；预算不能因模型normal档位可能映射为1而擅自加倍。
+    # A declared cap of 3 still allows 2 points per round; do not arbitrarily double the budget because the model's normal tier might map to 1.
     story = numeric_v2_story()
     story["metric_schema"]["trust"]["per_turn_limit"] = {"increase": 3, "decrease": 3}
     story["nodes"][0]["recommended_turns"] = 12

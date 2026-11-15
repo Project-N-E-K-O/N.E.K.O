@@ -18,33 +18,33 @@ from plugin.utils.time_utils import now_iso
 @dataclass
 class PluginStatusManager:
     """
-    插件状态管理器
+    Plugin status manager.
     
-    负责：
-    - 状态存储和查询
-    - 状态消费后台任务管理
+    Responsibilities:
+    - Status storage and queries
+    - Status-consumer background task management
     """
     logger: Any = field(default_factory=lambda: logger.bind(component="status"))
     _plugin_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     
-    # 状态消费任务相关
+    # Status-consumer task resources.
     _status_consumer_task: Optional[asyncio.Task] = field(default=None, init=False)
     _shutdown_event: Optional[asyncio.Event] = field(default=None, init=False)
     _plugin_hosts_getter: Optional[callable] = field(default=None, init=False)
     
     def __post_init__(self):
-        """初始化异步资源（延迟创建 Event，确保在正确的事件循环中）"""
-        # 延迟到实际使用时再创建，避免在模块导入时创建 Event
+        """Initialize async resources lazily, creating Event on the correct event loop."""
+        # Create on first use, avoiding Event creation during module import.
         pass
     
     def _ensure_shutdown_event(self) -> None:
-        """确保 shutdown_event 已创建（延迟初始化）"""
+        """Ensure shutdown_event exists (lazy initialization)."""
         if self._shutdown_event is None:
             self._shutdown_event = asyncio.Event()
 
     def apply_status_update(self, plugin_id: str, status: Dict[str, Any], source: str) -> None:
-        """统一落地插件状态的内部工具函数。"""
+        """Internal helper to apply plugin status consistently."""
         if not plugin_id:
             return
         with self._lock:
@@ -57,20 +57,20 @@ class PluginStatusManager:
         self.logger.debug("插件id:%s  插件状态已更新 (来源: %s)", plugin_id, source)
 
     def update_plugin_status(self, plugin_id: str, status: Dict[str, Any]) -> None:
-        """由同进程代码调用：直接在主进程内更新状态。"""
+        """Called by in-process code to update status directly in the main process."""
         self.apply_status_update(plugin_id, status, source="main_process_direct")
 
     def get_plugin_status(self, plugin_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        在进程内获取当前插件运行状态。
-        - plugin_id 为 None：返回 {plugin_id: status, ...}
-        - 否则只返回该插件状态（可能为空 dict）
+        Get current in-process plugin status.
+        - plugin_id=None: return {plugin_id: status, ...}
+        - Otherwise return this plugin's status only (possibly empty dict)
         """
         from plugin.core.state import state
         with self._lock:
             cached = {pid: s.copy() for pid, s in self._plugin_status.items()}
 
-        # 使用缓存快照避免锁竞争
+        # Use cached snapshots to avoid lock contention.
         plugins_snapshot = state.get_plugins_snapshot_cached(timeout=1.0)
         hosts_snapshot = state.get_plugin_hosts_snapshot_cached(timeout=1.0)
         registered_plugin_ids = list(plugins_snapshot.keys())
@@ -118,12 +118,12 @@ class PluginStatusManager:
 
     async def start_status_consumer(self, plugin_hosts_getter: callable) -> None:
         """
-        启动状态消费任务
+        Start status-consumer task.
         
         Args:
-            plugin_hosts_getter: 返回 plugin_hosts 字典的回调函数
+            plugin_hosts_getter: Callback returning plugin_hosts dictionary
         """
-        # 每次启动都重建，避免复用已 set 的事件导致任务立即退出
+        # Recreate each startup; reusing a set event would exit tasks immediately.
         self._shutdown_event = asyncio.Event()
         self._plugin_hosts_getter = plugin_hosts_getter
         if self._status_consumer_task is None or self._status_consumer_task.done():
@@ -132,10 +132,10 @@ class PluginStatusManager:
 
     async def shutdown_status_consumer(self, timeout: float = STATUS_CONSUMER_SHUTDOWN_TIMEOUT) -> None:
         """
-        关闭状态消费任务
+        Stop status-consumer task.
         
         Args:
-            timeout: 等待任务退出的超时时间
+            timeout: Timeout waiting for task exit
         """
         self.logger.debug("Shutting down status consumer")
         
@@ -156,9 +156,9 @@ class PluginStatusManager:
     
     async def _consume_status(self) -> None:
         """
-        状态消费后台任务
+        Background status-consumer task.
         
-        从所有插件的状态队列中消费状态更新消息
+        Consume status-update messages from all plugin status queues.
         """
         self._ensure_shutdown_event()
         while not self._shutdown_event.is_set():
@@ -172,19 +172,19 @@ class PluginStatusManager:
                     await asyncio.sleep(1)
                     continue
                 
-                # 遍历所有插件，消费状态消息
+                # Iterate all plugins, consuming status messages.
                 for plugin_id, host in plugin_hosts.items():
                     try:
-                        # 获取通信资源管理器
+                        # Get communication resource manager.
                         comm_manager = getattr(host, "comm_manager", None)
                         if not comm_manager:
                             continue
                         
-                        # 批量获取状态消息
+                        # Retrieve status messages in batches.
                         messages = comm_manager.get_status_messages(max_count=STATUS_MESSAGE_DEFAULT_MAX_COUNT)
                         for msg in messages:
                             if msg.get("type") == "STATUS_UPDATE":
-                                # 直接调用状态更新方法
+                                # Call status-update method directly.
                                 self.apply_status_update(
                                     plugin_id=msg.get("plugin_id"),
                                     status=msg.get("data", {}),
@@ -195,16 +195,16 @@ class PluginStatusManager:
                     except Exception as e:
                         self.logger.exception(f"Error consuming status for plugin {plugin_id}: {e}")
                 
-                # 短暂休眠避免 CPU 占用过高
+                # Brief sleep avoids excessive CPU use.
                 await asyncio.sleep(STATUS_CONSUMER_SLEEP_INTERVAL)
                 
             except (OSError, RuntimeError) as e:
-                # 系统级错误
+                # System-level error.
                 if not self._shutdown_event.is_set():
                     self.logger.error(f"System error in status consumer: {e}")
                 await asyncio.sleep(1)
             except Exception as e:
-                # 其他未知异常
+                # Other unknown exceptions.
                 if not self._shutdown_event.is_set():
                     self.logger.exception(f"Unexpected error in status consumer: {e}")
                 await asyncio.sleep(1)

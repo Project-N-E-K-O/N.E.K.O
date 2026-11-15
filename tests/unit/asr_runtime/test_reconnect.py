@@ -603,21 +603,21 @@ async def test_reconnect_listener_join_is_bounded() -> None:
         5.0,
     )
 
-    # fail-closed：停不下来的 listener 还绑在退休会话上，不能在它之上再装一个
-    # receive 循环；调用方都把 False 当成"放弃这次重连"。
+    # Fail closed: an unstoppable listener remains bound to the retired session; do not layer another
+    # receive loop over it. All callers interpret False as abandoning this reconnect attempt.
     assert installed is False
     session.handle_messages.assert_not_called()
 
-    # 而且必须把这条会话**退休**掉：只返回 False 会留下一个看起来还活着、实际没有
-    # receive 循环的 client，之后每一轮都撞上同一个卡死的 task 再超时一次，语音从此
-    # 永远收不到回复。
+    # Also retire the session itself: merely returning False leaves an apparently live client without
+    # a receive loop. Every subsequent turn would hit the same stuck task and timeout again,
+    # permanently preventing voice responses.
     assert manager.session is None
     assert manager.message_handler_task is None
     assert manager.is_active is False
     assert manager.session_ready is False
 
-    # 会话没了，麦克风也必须收掉：否则独立 ASR 继续往一个不存在的回答会话投
-    # transcript，用户说什么都石沉大海。
+    # Without the session, stop the microphone too; otherwise standalone ASR keeps submitting
+    # transcripts to a nonexistent response session and every utterance disappears.
     manager._close_independent_asr.assert_awaited_once_with(next_route_mode="blocked")
     manager.send_session_ended_by_server.assert_awaited_once_with()
 

@@ -239,7 +239,7 @@ async def test_invalidate_all_from_inside_dispatch_does_not_cancel_its_caller() 
         steps.append("start")
         captured["worker"] = asyncio.current_task()
         dispatcher.invalidate_all()
-        # 收口路径在 invalidate_all 之后还有若干 await —— 它们必须照常跑完。
+        # The shutdown path has several awaits after invalidate_all; they must all complete normally.
         await asyncio.sleep(0)
         steps.append("after-await")
         await asyncio.sleep(0)
@@ -257,8 +257,8 @@ async def test_invalidate_all_from_inside_dispatch_does_not_cancel_its_caller() 
 
     assert steps == ["start", "after-await", "cleanup-done"]
 
-    # 跑完手头这条之后必须**退出**：再回去 await queue.get() 就成了和新 worker
-    # 并存的僵尸，两个消费者抢同一个队列。
+    # After finishing the current item, it must **exit**: awaiting queue.get() again would leave a zombie alongside the new worker,
+    # with two consumers competing for the same queue.
     worker = captured["worker"]
     for _ in range(50):
         if worker.done():

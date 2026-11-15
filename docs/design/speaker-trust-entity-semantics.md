@@ -166,7 +166,7 @@
 **规范：**
 
 - **M-1 无读侧截断。** `members` 是 `(E, C, kind)` 下**全部** account 的 subject，一个不少。合法性依据：展开宽度对**过滤**是 O(1) 集合命中（`scopes.py:265-276`），成本不在这里。
-- **M-2 上限在 bind 时强制。** 新增 `IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM = 8`，在 `_bind_locked` / `_merge_entities_locked` 的临界区内校验，超限 **409 并拒绝**，附「该实体在 qq 已有 8 个 account」的可读消息。bind 是人工、稀有操作，409 是完全可接受的失败模式；而读时截断不是。
+- **M-2 上限在 bind 时强制。** 新增 `IDENTITY_MAX_ACCOUNTS_PER_ENTITY_PER_PLATFORM = 8`，在 `_bind_locked` / `_merge_entities_locked` 的临界区内校验，超限 **409 并拒绝**，附「该实体在 qq 已有 8 个 account」的可读消息。bind 是人工、稀有操作，409 是完全可接受的失败模式；而读时截断不是。`IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM` 按平台收紧这个上限：`neko_visit` 为 1，因为串门清除还没接上 `target_epochs`，第二个串门账号会让每次串门清除扇出到一个没有持久墓碑的目标；接上之前不许放开（issue #3405）。
 - **M-3 确定性全序。** 需要排序的地方（渲染标题选名、forget 顺序、诊断输出）一律用 `(bound_at, account_id)` 的字典序，**禁止使用 `channels_seen.last` 等易变字段**。canonical 恒排第一。
 - **M-4 成本上界的正确落点。** 真实成本只有三处，且都随 marker 数线性、被 M-2 静态封顶：(a) `hybrid_recall` 无跨条目文本去重（`hybrid_recall.py:665-700`），近重复条目互相挤 top-k；(b) `scoped_forget` 的扇出宽度；(c) persona section 遍历。三处都不需要「读时截断」来控制。
 

@@ -1,8 +1,8 @@
 """
-插件配置 Schema 验证模块
+Plugin configuration schema validation
 
-提供插件配置文件（plugin.toml）的结构验证功能。
-使用 Pydantic v2 进行类型检查和约束验证。
+Provides structural validation of plugin configuration files (plugin.toml).
+Uses Pydantic v2 for type checking and constraint validation.
 """
 from __future__ import annotations
 
@@ -60,14 +60,14 @@ class PluginModelRequirementSchema(BaseModel):
 
 
 class PluginAuthorSchema(BaseModel):
-    """插件作者信息 Schema"""
+    """Plugin author information schema"""
     name: Optional[str] = None
     email: Optional[str] = None
     url: Optional[str] = None
 
 
 class PluginSdkSchema(BaseModel):
-    """SDK 版本约束 Schema"""
+    """SDK version-constraint schema"""
     recommended: Optional[str] = None
     supported: Optional[str] = None
     untested: Optional[str] = None
@@ -75,24 +75,24 @@ class PluginSdkSchema(BaseModel):
 
 
 class PluginStoreSchema(BaseModel):
-    """插件存储配置 Schema"""
+    """Plugin storage-configuration schema"""
     enabled: bool = False
     backend: Optional[str] = None
 
 
 class PluginConfigProfilesFilesSchema(BaseModel):
-    """Profile 文件映射 Schema"""
-    model_config = {"extra": "allow"}  # 允许任意 profile 名称作为 key
+    """Profile file-mapping schema"""
+    model_config = {"extra": "allow"}  # Allow arbitrary profile names as keys
 
 
 class PluginConfigProfilesSchema(BaseModel):
-    """Profile 配置 Schema"""
+    """Profile configuration schema"""
     active: Optional[str] = None
     files: Optional[Dict[str, str]] = None
 
 
 class PluginSafetySchema(BaseModel):
-    """插件安全配置 Schema"""
+    """Plugin security-configuration schema"""
     sync_call_in_handler: Optional[Literal["warn", "reject"]] = None
 
 
@@ -187,7 +187,7 @@ class PluginInstallSchema(BaseModel):
 
 
 class PluginDependencySchema(BaseModel):
-    """插件依赖 Schema"""
+    """Plugin dependency schema"""
     id: Optional[str] = None
     entry: Optional[str] = None
     custom_event: Optional[str] = None
@@ -207,18 +207,18 @@ class PluginDependencySchema(BaseModel):
 
 
 class PluginSectionSchema(BaseModel):
-    """[plugin] 段 Schema - 核心必填配置"""
-    # 必填字段
+    """[plugin] section schema - required core configuration"""
+    # Required fields
     id: str = Field(..., min_length=1, max_length=128, pattern=r'^[a-zA-Z0-9_-]+$')
     name: str = Field(..., min_length=1, max_length=256)
     entry: str = Field(..., pattern=r'^[a-zA-Z0-9_.]+:[a-zA-Z0-9_]+$')
     
-    # 可选字段
+    # Optional fields
     type: PluginType = "plugin"
     description: str = ""
     version: str = Field(default="0.1.0", pattern=r'^\d+\.\d+\.\d+.*$')
     
-    # 嵌套配置
+    # Nested configuration
     author: Optional[PluginAuthorSchema] = None
     sdk: Optional[PluginSdkSchema] = None
     store: Optional[PluginStoreSchema] = None
@@ -245,7 +245,7 @@ class PluginSectionSchema(BaseModel):
     def validate_id(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("plugin.id 不能为空")
-        # 检查是否包含路径遍历字符
+        # Check for path-traversal characters
         if '..' in v or '/' in v or '\\' in v:
             raise ValueError("plugin.id 不能包含路径遍历字符")
         return v.strip()
@@ -262,7 +262,7 @@ class PluginSectionSchema(BaseModel):
 
 
 class PluginRuntimeSchema(BaseModel):
-    """[plugin_runtime] 段 Schema - 运行时控制"""
+    """[plugin_runtime] section schema - runtime controls"""
     enabled: bool = True
     auto_start: bool = False
     priority: Optional[int] = None
@@ -293,23 +293,23 @@ class PluginRuntimeSchema(BaseModel):
 
 class PluginConfigSchema(BaseModel):
     """
-    完整的插件配置 Schema
+    Complete plugin configuration schema
     
-    对应 plugin.toml 文件的顶层结构。
-    [plugin] 段是必填的，其他段可选。
+    Corresponds to the top-level plugin.toml structure.
+    The [plugin] section is required; other sections are optional.
     """
     plugin: PluginSectionSchema
     plugin_runtime: Optional[PluginRuntimeSchema] = None
     
-    # 允许额外的自定义配置段
+    # Allow additional custom configuration sections
     model_config = {"extra": "allow"}
 
 
 class ProfileConfigSchema(BaseModel):
     """
-    用户 Profile 配置 Schema
+    User profile configuration schema
     
-    Profile 配置不允许包含 [plugin] 段（由主配置管理）。
+    Profile configuration cannot contain [plugin], which the main configuration manages.
     """
     model_config = {"extra": "allow"}
     
@@ -321,10 +321,10 @@ class ProfileConfigSchema(BaseModel):
         return data
 
 
-# ============ 验证函数 ============
+# ============ Validation functions ============
 
 class ConfigValidationError(Exception):
-    """配置验证错误"""
+    """Configuration validation error"""
     def __init__(self, message: str, field: Optional[str] = None, details: Optional[List[Dict[str, Any]]] = None):
         self.message = message
         self.field = field
@@ -342,22 +342,22 @@ class ConfigValidationError(Exception):
 
 def validate_plugin_config(config: Dict[str, Any], *, strict: bool = True) -> PluginConfigSchema:
     """
-    验证插件配置
+    Validate plugin configuration
     
     Args:
-        config: 从 TOML 文件加载的配置字典
-        strict: 是否启用严格模式（默认 True）
+        config: Configuration dictionary loaded from TOML
+        strict: Enable strict mode (default True)
     
     Returns:
-        验证通过的 PluginConfigSchema 实例
+        Validated PluginConfigSchema instance
     
     Raises:
-        ConfigValidationError: 验证失败时抛出，包含详细错误信息
+        ConfigValidationError: Validation failure, with detailed errors
     """
     try:
         return PluginConfigSchema.model_validate(config)
     except Exception as e:
-        # 解析 Pydantic 验证错误，生成友好的错误信息
+        # Parse Pydantic validation errors into friendly messages
         errors = _parse_validation_errors(e)
         if errors:
             first_error = errors[0]
@@ -371,16 +371,16 @@ def validate_plugin_config(config: Dict[str, Any], *, strict: bool = True) -> Pl
 
 def validate_profile_config(config: Dict[str, Any]) -> ProfileConfigSchema:
     """
-    验证用户 Profile 配置
+    Validate user profile configuration
     
     Args:
-        config: 从 Profile TOML 文件加载的配置字典
+        config: Configuration dictionary loaded from profile TOML
     
     Returns:
-        验证通过的 ProfileConfigSchema 实例
+        Validated ProfileConfigSchema instance
     
     Raises:
-        ConfigValidationError: 验证失败时抛出
+        ConfigValidationError: Validation failure
     """
     try:
         return ProfileConfigSchema.model_validate(config)
@@ -402,19 +402,19 @@ def validate_plugin_config_partial(
     require_plugin_section: bool = True,
 ) -> Dict[str, Any]:
     """
-    部分验证插件配置（用于配置更新场景）
+    Partially validate plugin configuration for updates
     
-    只验证提供的字段，不要求所有必填字段都存在。
+    Validate only supplied fields without requiring every required field.
     
     Args:
-        config: 配置字典
-        require_plugin_section: 是否要求 [plugin] 段存在
+        config: Configuration dictionary
+        require_plugin_section: Require the [plugin] section
     
     Returns:
-        原始配置字典（验证通过）
+        Original configuration dictionary after validation
     
     Raises:
-        ConfigValidationError: 验证失败时抛出
+        ConfigValidationError: Validation failure
     """
     if require_plugin_section and "plugin" not in config:
         raise ConfigValidationError(
@@ -461,7 +461,7 @@ def validate_plugin_config_partial(
                     details=errors,
                 ) from exc
         
-        # 验证 plugin.id 格式（如果存在）
+        # Validate plugin.id format if present
         plugin_id = plugin_section.get("id")
         if plugin_id is not None:
             if not isinstance(plugin_id, str) or not plugin_id.strip():
@@ -476,7 +476,7 @@ def validate_plugin_config_partial(
                     field="plugin.id",
                 )
         
-        # 验证 plugin.entry 格式（如果存在）
+        # Validate plugin.entry format if present
         entry = plugin_section.get("entry")
         if entry is not None:
             if not isinstance(entry, str) or ':' not in entry:
@@ -485,7 +485,7 @@ def validate_plugin_config_partial(
                     field="plugin.entry",
                 )
     
-    # 验证 plugin_runtime 段（如果存在）
+    # Validate plugin_runtime section if present
     runtime_section = config.get("plugin_runtime")
     if runtime_section is not None:
         if not isinstance(runtime_section, dict):
@@ -496,7 +496,7 @@ def validate_plugin_config_partial(
         
         enabled = runtime_section.get("enabled")
         if enabled is not None and not isinstance(enabled, bool):
-            # 允许字符串形式的布尔值
+            # Allow string-form booleans
             if isinstance(enabled, str):
                 if enabled.lower() not in ("true", "false", "1", "0", "yes", "no", "on", "off"):
                     raise ConfigValidationError(
@@ -513,12 +513,12 @@ def validate_plugin_config_partial(
 
 
 def _parse_validation_errors(exc: Exception) -> List[Dict[str, Any]]:
-    """解析 Pydantic 验证错误，返回友好的错误列表"""
+    """Parse Pydantic validation errors into a friendly error list"""
     from pydantic import ValidationError
     
     errors = []
     
-    # 尝试获取 Pydantic ValidationError 的详细错误
+    # Try retrieving detailed Pydantic ValidationError information
     if isinstance(exc, ValidationError):
         try:
             for err in exc.errors():
@@ -544,7 +544,7 @@ def _parse_validation_errors(exc: Exception) -> List[Dict[str, Any]]:
 
 
 def _translate_error_message(msg: str, error_type: str) -> str:
-    """将 Pydantic 错误消息翻译为中文"""
+    """Translate Pydantic error messages into Chinese"""
     translations = {
         "Field required": "字段必填",
         "field required": "字段必填",
@@ -569,10 +569,10 @@ def _translate_error_message(msg: str, error_type: str) -> str:
     return msg
 
 
-# ============ 便捷函数 ============
+# ============ Convenience functions ============
 
 def is_valid_plugin_id(plugin_id: str) -> bool:
-    """检查插件 ID 是否有效"""
+    """Check plugin ID validity"""
     import re
     if not plugin_id or not isinstance(plugin_id, str):
         return False
@@ -580,7 +580,7 @@ def is_valid_plugin_id(plugin_id: str) -> bool:
 
 
 def is_valid_entry_point(entry: str) -> bool:
-    """检查入口点格式是否有效"""
+    """Check entry-point format validity"""
     if not entry or not isinstance(entry, str):
         return False
     if ':' not in entry:
@@ -590,7 +590,7 @@ def is_valid_entry_point(entry: str) -> bool:
 
 
 __all__ = [
-    # Schema 模型
+    # Schema models
     "PluginConfigSchema",
     "PluginSectionSchema",
     "PluginRuntimeSchema",
@@ -606,13 +606,13 @@ __all__ = [
     "PluginDependencySchema",
     "PluginType",
     "ProfileConfigSchema",
-    # 验证函数
+    # Validation functions
     "validate_plugin_config",
     "validate_profile_config",
     "validate_plugin_config_partial",
-    # 异常
+    # Exceptions
     "ConfigValidationError",
-    # 便捷函数
+    # Convenience functions
     "is_valid_plugin_id",
     "is_valid_entry_point",
 ]

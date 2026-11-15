@@ -43,8 +43,8 @@ def unauthenticated_client():
 # ``isinstance(body, dict)`` 400 guard and actually reaches the CSRF/Origin
 # check we want to canary.
 CARD_ASSIST_ENDPOINTS: list[tuple[str, dict]] = [
-    ("/api/card-assist/clarify", {"json": {"description": "a cat girl"}}),
-    ("/api/card-assist/generate", {"json": {"description": "a cat girl"}}),
+    ("/api/card-assist/clarify", {"json": {"description": "a neko"}}),
+    ("/api/card-assist/generate", {"json": {"description": "a neko"}}),
     ("/api/card-assist/refine", {"json": {"field_key": "性别"}}),
     ("/api/card-assist/chat", {"json": {"messages": [{"role": "user", "content": "hi"}]}}),
 ]

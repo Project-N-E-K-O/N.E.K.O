@@ -34,14 +34,14 @@ def _write_plugin(
     schema: int | None = None,
     with_meta: bool = True,
 ) -> Path:
-    """一个带合法 ``plugin.meta.json`` 的最小插件目录。
+    """A minimal plugin directory with valid plugin.meta.json.
 
-    指纹一律按当前树真算，好让读取方除了被测的那个维度之外全部满意。
+    Compute actual current-tree fingerprints so all reader checks pass except the tested dimension.
     """
     plugin_dir = tmp_path / name
     plugin_dir.mkdir(parents=True)
-    # 必须是 [plugin] 段：_refresh_scanned_packaged_metadata 会校验 manifest 里的 id
-    # 与运行时 id 一致（handler 键里嵌着 id，写错归属就再也对不上）。
+    # Require a [plugin] section: _refresh_scanned_packaged_metadata checks manifest ID
+    # against runtime ID, embedded in handler keys; wrong ownership prevents matching.
     (plugin_dir / "plugin.toml").write_text(f"[plugin]\nid = '{name}'\n", encoding="utf-8")
     (plugin_dir / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
     if not with_meta:
@@ -557,15 +557,15 @@ def test_verified_timestamp_update_keeps_the_snapshot_and_avoids_rehashing(
     assert hashed == [plugin_dir]
 
 
-# ── 1. 核心：写 sidecar，发行产物不动 ────────────────────────────────────
+# -- 1. Core behavior: write sidecars without changing distribution artifacts --
 
 
 def test_an_env_mismatched_package_gets_a_sidecar_and_the_package_is_untouched(tmp_path) -> None:
-    """变异：让 write_local_packaged_metadata 改写 plugin.meta.json 本身。"""
+    """Mutation: make write_local_packaged_metadata rewrite plugin.meta.json itself."""
     plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
     shipped_before = (plugin_dir / _META).read_bytes()
 
-    # 前提：这不是 schema 路径。
+    # Precondition: this is not the schema-refresh path.
     assert packaged_metadata.stale_packaged_schema_version(plugin_dir) is None
     assert packaged_metadata.packaged_metadata_env_mismatched(plugin_dir) is True
     assert packaged_metadata.packaged_metadata_needs_rebuild(plugin_dir) is True
@@ -581,11 +581,11 @@ def test_an_env_mismatched_package_gets_a_sidecar_and_the_package_is_untouched(t
         plugin_dir, before_scan=before_scan, **_SCAN_KWARGS
     ) is True
 
-    # 1) 发行产物一个字节都没动
+    # 1) Distribution artifact bytes remain unchanged.
     assert (plugin_dir / _META).read_bytes() == shipped_before, (
         "发行产物被改写了——sidecar 方案的全部意义就在于不动它"
     )
-    # 2) 缓存落在宿主运行时目录，内容是**本机**的答案
+    # 2) Cache lives in host runtime storage and describes this environment.
     assert _cache_path(plugin_dir).exists()
     assert not (plugin_dir / _LOCAL).exists()
     assert not _cache_path(plugin_dir).is_relative_to(plugin_dir)
@@ -595,7 +595,7 @@ def test_an_env_mismatched_package_gets_a_sidecar_and_the_package_is_untouched(t
     assert local["handlers"]["demo.go"]["name"] == "Scanned", "写进去的不是这次扫描的结果"
     assert local["handlers"]["demo.go"]["timeout"] == 7
     assert local["source_sha256"] == packaged_metadata.compute_source_sha256(plugin_dir)
-    # 3) 读取方现在优先命中 sidecar → 下次启动走快路径
+    # 3) Readers now prefer the sidecar, taking the fast path next startup.
     after = packaged_metadata.read_packaged_metadata(plugin_dir)
     assert after is not None
     assert after.built_in_this_environment is True, "sidecar 写好了读取方却仍拒绝它"
@@ -625,30 +625,30 @@ def test_host_cache_does_not_change_the_installed_source_fingerprint(tmp_path) -
     )
     assert packaged_metadata.source_stat_summary(plugin_dir).names == names_before
 
-    # 结果：包内那份**仍然**有效（只是 build_env 不是本机的），sidecar 覆盖它。
+    # Packaged metadata remains valid, only its build_env differs; the sidecar overrides it.
     shipped = packaged_metadata._read_packaged_metadata_from(plugin_dir / _META, plugin_dir)
     assert shipped is not None, "包内那份被 sidecar 的存在弄失效了"
     assert shipped.built_in_this_environment is False
 
 
 def test_an_unusable_sidecar_falls_back_to_the_package_file(tmp_path) -> None:
-    """sidecar 通不过校验时必须**静默回落**到包内那份，而不是报错、也不是返回 None。
+    """Invalid sidecars must silently fall back to packaged metadata, neither erroring nor returning None.
 
-    故意用"手写一份坏 sidecar"而不是"改源码让它过时"来构造：后者依赖 mtime 判据，
-    而 mtime 在 Windows 上有量化，写入与打戳落在同一刻度时快路径会放过它——源码里
-    ``_read_packaged_metadata_from`` 自己的注释也说过清单才是确定性判据、时间戳会
-    "本机过、CI 挂"。这里要验的是**回落逻辑**，不该顺带赌一个时序。
+    Handcraft an invalid sidecar instead of modifying source to make it stale; the latter relies on mtime,
+    quantized on Windows, allowing writes/timestamps within one tick through fast paths.
+    _read_packaged_metadata_from itself documents inventories as deterministic and timestamps
+    as vulnerable to local-pass/CI-fail behavior. Test fallback logic without gambling on timing.
     """
     plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
     shipped = _read_json(plugin_dir / _META)
 
-    # 一份清单对不上的 sidecar（模拟插件升级后残留的旧 sidecar）。
+    # Sidecar with mismatched inventory simulates stale leftovers after plugin upgrades.
     #
-    # 用"文件清单不匹配"而不是"摘要不匹配"来构造失效，因为清单判据是**确定性**的、
-    # 且排在 mtime 快路径**之前**；而摘要只在 ``newest_source_ns > meta.mtime`` 时才
-    # 重算——一份刚写出来的 sidecar mtime 比源码新，快路径会直接放行，摘要写成什么
-    # 都不检查（实测：source_sha256 填 64 个 0 照样被接受）。这里要验的是回落逻辑，
-    # 不该依赖一个只在特定 mtime 关系下才生效的判据。
+    # Invalidate through file-inventory mismatch, not digest mismatch: inventory checks are deterministic
+    # and precede mtime fast paths. Digests recompute only if newest_source_ns > meta.mtime;
+    # newly written sidecars are newer than source and pass fast paths without checking arbitrary
+    # digest contents (64 zeros in source_sha256 were accepted in practice). Test fallback
+    # independently of timestamp-specific criteria.
     stale = dict(shipped)
     stale["build_env"] = packaged_metadata.build_environment()
     stale["source_files"] = list(shipped["source_files"]) + ["no_longer_here.py"]
@@ -664,12 +664,12 @@ def test_an_unusable_sidecar_falls_back_to_the_package_file(tmp_path) -> None:
 
 
 def test_a_sidecar_from_another_environment_is_not_used(tmp_path) -> None:
-    """变异：``read_packaged_metadata`` 里去掉 ``local.built_in_this_environment`` 这一条。
+    """Mutation: remove local.built_in_this_environment from read_packaged_metadata.
 
-    sidecar 的价值全在于它是**本机**的答案。用户装完 sidecar 之后又升级了 Python，
-    那份 sidecar 就变成了和包内文件一样的"异环境答案"——必须同样被拒绝，退回去付
-    一次扫描（然后重新写一份新的 sidecar，自愈）。少了这个判断，一份过期的 sidecar
-    会被当成权威，插件于是暴露一批它在本机不会注册的入口。
+    Sidecars matter because they describe this environment. Upgrading Python after installation makes
+    the sidecar a foreign-environment answer like packaged metadata; reject it, rescan, and
+    self-heal with a new sidecar. Without this check, stale sidecars become
+    authoritative and expose entries the plugin would not register locally.
     """
     plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
     packaged_metadata.write_local_packaged_metadata(
@@ -680,7 +680,7 @@ def test_a_sidecar_from_another_environment_is_not_used(tmp_path) -> None:
     local_path = _cache_path(plugin_dir)
     assert packaged_metadata.read_packaged_metadata(plugin_dir).built_in_this_environment is True
 
-    # 模拟"写完 sidecar 之后又换了 Python"：把 sidecar 的 build_env 也改成异环境
+    # Simulate Python changing after sidecar creation by marking its build_env foreign too.
     raw = _read_json(local_path)
     raw["build_env"] = _foreign_env(python="3.8")
     local_path.write_text(json.dumps(raw), encoding="utf-8")
@@ -689,15 +689,15 @@ def test_a_sidecar_from_another_environment_is_not_used(tmp_path) -> None:
     assert got is not None
     assert got.built_in_this_environment is False, "用了异环境的 sidecar —— 它和包内那份一样不可信"
     assert got.handlers["demo.go"]["name"] == "Old", "拿到的是 sidecar 的表，不是包内那份"
-    # 而且它重新变成"需要修"的状态 → 下次启动会扫描并重写 sidecar（自愈）
+    # It again needs repair; next startup scans and rewrites the sidecar, self-healing.
     assert packaged_metadata.packaged_metadata_needs_rebuild(plugin_dir) is True
 
 
-# ── 2. 不越权 ───────────────────────────────────────────────────────────
+# -- 2. Stay within authority --
 
 
 def test_a_matching_environment_never_writes_a_sidecar(tmp_path) -> None:
-    """本机打的包不需要 sidecar，也不该每次启动白拍一次指纹。"""
+    """Locally built packages need no sidecar or redundant fingerprints every startup."""
     plugin_dir = _write_plugin(tmp_path)
 
     assert packaged_metadata.packaged_metadata_env_mismatched(plugin_dir) is False
@@ -713,10 +713,10 @@ def test_a_matching_environment_never_writes_a_sidecar(tmp_path) -> None:
 
 
 def test_a_plugin_without_packaged_metadata_never_grows_one(tmp_path) -> None:
-    """手工放入 / dev 模式的插件从来没有过 plugin.meta.json，不该因为启动一次就长出一份。
+    """Manually installed/development plugins lacking plugin.meta.json must not gain one merely by starting.
 
-    这与既有测试 ``test_a_scan_does_not_write_metadata_it_has_no_business_writing[no_file]``
-    是同一条不变量，只是从 sidecar 这一侧再钉一次。
+    This repeats test_a_scan_does_not_write_metadata_it_has_no_business_writing[no_file]'s
+    invariant from the sidecar side.
     """
     plugin_dir = _write_plugin(tmp_path, with_meta=False)
 
@@ -734,11 +734,11 @@ def test_a_plugin_without_packaged_metadata_never_grows_one(tmp_path) -> None:
 
 
 def test_a_newer_schema_is_never_downgraded_into_a_sidecar(tmp_path) -> None:
-    """变异：把 ``packaged_metadata_env_mismatched`` 里的 schema 相等判断去掉。
+    """Mutation: remove schema equality from packaged_metadata_env_mismatched.
 
-    一份比本机更新的包（用户降级了 N.E.K.O）里的表可能用到本机读不懂的字段；用本机
-    的 schema 号给它写一份 sidecar，读取方会优先命中它 —— 那就是**降级**，而且降完
-    就再也回不去了（sidecar 会一直盖住那份更新的包内文件）。
+    Packages newer than local N.E.K.O after downgrades may contain unreadable fields. Writing sidecars
+    with local schema numbers gives them reader priority, downgrading metadata permanently
+    because sidecars keep overriding newer packaged files.
     """
     newer = _SCHEMA + 1
     plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"), schema=newer)
@@ -754,14 +754,14 @@ def test_a_newer_schema_is_never_downgraded_into_a_sidecar(tmp_path) -> None:
 
 
 def test_no_sidecar_without_a_fresh_scan(tmp_path, monkeypatch) -> None:
-    """变异：让 ``before_scan is None`` 时也写。
+    """Mutation: write even when before_scan is None.
 
-    没有扫描结果就没有"本机 import 这棵树学到了什么"，写出来的表只能来自那份异环境
-    的旧文件——那正好是安全属性禁止的事。
+    Without scan results there is no local-import knowledge; output could only reuse the old
+    foreign-environment table, exactly what the safety property forbids.
 
-    这条属性有**两道**独立的门（``before_scan is None`` 的早退，以及后面的
-    ``after_scan != before_scan``），只看返回值区分不出是哪道挡住的，所以断言的是
-    第一道**真的早退了**：它后面的全树 stat/哈希一次都不该跑。
+    Two independent gates enforce this: early return for before_scan=None and later
+    after_scan != before_scan. Return values cannot distinguish them, so assert
+    the first truly returns early, without any later whole-tree stat/hash work.
     """
     plugin_dir = _write_plugin(tmp_path, build_env=_foreign_env(python="3.9"))
     touched: list[str] = []
@@ -784,13 +784,13 @@ def test_no_sidecar_without_a_fresh_scan(tmp_path, monkeypatch) -> None:
 
 
 def test_python_minor_is_part_of_the_environment_identity() -> None:
-    """变异：把 ``build_environment`` 的 python 改成只取 major。
+    """Mutation: build_environment records only Python's major version.
 
-    ``build_environment`` 的 docstring 自己写了理由：插件可以按 ``sys.version_info``
-    决定注册哪些 entry，而小版本之间 C 扩展 ABI 也不兼容。放宽到 major 会让一份在
-    3.11 上 import 出来的表被当成 3.13 的权威答案——插件于是暴露一批它在本机根本不会
-    注册的入口，模型会去调一个不存在的 entry。sidecar 方案消除的是"永远修不好"，
-    **不是**"判得严"。
+    Its docstring explains plugins may register entries based on sys.version_info, while C-extension
+    ABIs also differ across minor versions. Major-only matching treats Python 3.11 imports
+    as authoritative for 3.13, exposing entries the plugin cannot
+    register locally and making models call nonexistent entries. Sidecars fix permanent
+    unrepairability, not strict validation.
     """
     env = packaged_metadata.build_environment()
     assert set(env) == {"os", "python", "arch"}, f"build_env 的维度变了：{sorted(env)}"
@@ -806,14 +806,14 @@ def test_python_minor_is_part_of_the_environment_identity() -> None:
     assert packaged_metadata._environment_matches("not-a-mapping") is False
 
 
-# ── 3. 接线 ─────────────────────────────────────────────────────────────
+# -- 3. Wiring --
 
 
 def test_the_start_path_snapshots_the_tree_for_an_env_mismatched_package(tmp_path) -> None:
-    """变异：把 ``_snapshot_package_tree_for_rebuild`` 的判据换回 schema-only。
+    """Mutation: revert _snapshot_package_tree_for_rebuild to schema-only criteria.
 
-    判据一换回去，异环境的包就拿不到 ``before_scan``，而两个写入函数在
-    ``before_scan is None`` 时都直接返回 False —— 修复静默失效，测试还全绿。
+    Foreign-environment packages then lack before_scan, and both writers return False
+    immediately for before_scan=None, silently disabling repair while tests stay green.
     """
     from plugin.server.application.plugins import lifecycle_service
 
@@ -839,11 +839,11 @@ def test_the_start_path_snapshots_the_tree_for_an_env_mismatched_package(tmp_pat
 
 
 def test_the_dispatch_keeps_the_existing_schema_path_and_only_adds_the_sidecar(tmp_path) -> None:
-    """变异：把分派改成"先判 env、后判 schema"，或者干脆只留一条。
+    """Mutation: dispatch by environment before schema, or retain only one criterion.
 
-    schema 过期时**必须**仍然就地改写包内那份（既有行为，有测试钉着）；只有
-    "schema 当前 + env 异环境"才写 sidecar。两者同时成立时走 schema 路径，这样这次
-    改动不改变任何已有行为。
+    Stale schemas must still rewrite packaged files in place, preserving existing tested behavior.
+    Only current-schema/foreign-environment cases write sidecars; when both conditions apply, choose
+    schema refresh so this change alters no existing behavior.
     """
     from plugin.server.application.plugins import lifecycle_service
 
@@ -855,14 +855,14 @@ def test_the_dispatch_keeps_the_existing_schema_path_and_only_adds_the_sidecar(t
         "分派顺序变了：schema 过期这条路必须仍然优先走就地改写，否则会改变既有行为"
     )
 
-    # schema 过期 → 就地改写，不写 sidecar
+    # Stale schema -> rewrite in place, without sidecars.
     stale_dir = _write_plugin(tmp_path / "stale", name="demo", schema=_SCHEMA - 1)
     scanned = _fake_scanned()
     _upgrade(stale_dir, scanned)
     assert _read_json(stale_dir / _META)["schema_version"] == _SCHEMA, "schema 过期没有就地升级"
     assert not (stale_dir / _LOCAL).exists(), "schema 路径不该写 sidecar"
 
-    # schema 当前 + env 异环境 → 只写 sidecar
+    # Current schema plus foreign environment -> sidecar only.
     env_dir = _write_plugin(tmp_path / "env", name="demo", build_env=_foreign_env(python="3.9"))
     shipped_before = (env_dir / _META).read_bytes()
     _upgrade(env_dir, scanned)
@@ -872,12 +872,12 @@ def test_the_dispatch_keeps_the_existing_schema_path_and_only_adds_the_sidecar(t
 
 
 def _upgrade(plugin_dir: Path, scanned) -> None:
-    """走真实的分派函数，并把 manifest 原样当作生效配置传进去。
+    """Exercise real dispatch with the unchanged manifest as effective configuration.
 
-    传 manifest 本身是为了让 ``_refresh_scanned_packaged_metadata`` 的两道前置守卫都通过
-    （manifest id 与运行时 id 一致、生效 entries 表就是 manifest 自己那份，摘要相等）。
-    本测试要验的是"写到哪"，不是那两道守卫——它们由 test_plugins_lifecycle_service 里
-    既有的用例覆盖。
+    Passing the manifest satisfies _refresh_scanned_packaged_metadata's two prerequisites:
+    matching manifest/runtime IDs and effective entries matching manifest entries by digest.
+    This tests write destinations, not those guards, already covered by
+    test_plugins_lifecycle_service.
     """
     import tomllib
 
@@ -1113,10 +1113,10 @@ def test_long_runtime_cache_path_can_be_written(tmp_path, monkeypatch):
 
 
 def test_the_two_write_paths_share_one_set_of_refusals() -> None:
-    """变异：把共用体复制一份到 write_local_packaged_metadata 里，然后只改一边。
+    """Mutation: copy the shared implementation into write_local_packaged_metadata, then change only one copy.
 
-    读取方对两份文件跑的是同一套校验；一边写得出去、另一边读不进来，就等于白写。
-    所以拒绝理由必须共用同一个函数，而不是各写一份。
+    Readers validate both files identically; writing unreadable data accomplishes nothing.
+    Share rejection criteria through one function rather than duplicated logic.
     """
     shared = inspect.getsource(packaged_metadata._write_scanned_packaged_metadata)
     for guard in ("untrustworthy", "empty_source_directories", "unicode_renamed_source_files",

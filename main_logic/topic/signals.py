@@ -32,18 +32,18 @@ _MAX_SIGNAL_TOKENS_PER_TURN = 500
 _TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 _MAX_GLOBAL_TURNS = 60
 _SIGNAL_RETENTION_SECONDS = 12 * 60 * 60
-# 落盘失败的自愈重试预算。只约束 flush 的重试链 —— _request_persist 那条链按
-# 对话 / 剪枝节奏触发（retention 12h，剪枝极稀疏），本身不构成热循环。
-# base=persistence_flush_delay_seconds，生产走默认 1.0 → 序列 1/2/4/8/16s
-# （合计 ~31s）；耗尽后保持 dirty，等下一次真实数据变更或显式 flush 再试一次，
-# 所以短暂故障仍会在下一条消息时自愈，而永久性写失败不会退化成每秒一次的静默
-# 重试。
+# Persistence failure self-healing retry budget: bounds flush retries only; _request_persist triggers
+# on dialogue/pruning cadence (12h retention, sparse pruning), never a hot loop itself.
+# base=persistence_flush_delay_seconds; production default 1.0 yields 1/2/4/8/16s
+# (~31s total). After exhaustion keep dirty, retry on real changes/explicit flush;
+# transient faults recover with next message, while permanent failure avoids silent once-per-second
+# retries.
 _PERSIST_MAX_RETRIES = 5
-# 单次退避上限。生产默认 base 下末项正好等于它、min() 不改变任何一项；它管的是
-# 调用方把 flush delay 配大（>4s）的情况——没有它，base=60 会让最后一次重试排到
-# 16 分钟之后，早已跟"自愈"无关。base=0 是另一头：退避塌成 5 个零延迟 timer，
-# 仍然有界（次数封顶在 _PERSIST_MAX_RETRIES），不额外加下限，免得再多一个生产
-# 路径上永不生效的旋钮。
+# Per-backoff cap: production base's final delay equals it, so min() changes nothing. Handles
+# caller delays >4s: without cap, base=60 schedules final retry
+# 16 minutes later, no longer self-healing. base=0 instead gives five zero-delay timers,
+# still bounded by _PERSIST_MAX_RETRIES. No extra minimum, avoiding another knob
+# never effective in production.
 _PERSIST_RETRY_BACKOFF_CAP_SECONDS = 16.0
 _FILLER_TEXTS = {
     "你好",
@@ -187,10 +187,10 @@ class TopicSignalStore:
         self._persist_write_lock = threading.Lock()
         self._persist_timer: threading.Timer | None = None
         self._persist_dirty = False
-        # 连续落盘失败次数（成功即清零）+ 退出标记，见 flush 的失败分支。
-        # 寿命：这个 store 由模块级单例 _GLOBAL_TOPIC_POOL 持有、没有 reload
-        # 路径会造第二个实例，所以预算实际上是 per-process 的 —— 已有的
-        # _persist_write_lock 也是实例级、靠同一个理由才真的串起了所有写者。
+        # Consecutive persistence failures (reset on success) + exit marker; see flush failure branch.
+        # Lifetime: module singleton _GLOBAL_TOPIC_POOL holds this store, with no reload path
+        # creating another instance. Thus budget is effectively per process; existing
+        # instance-level _persist_write_lock serializes all writers for the same reason.
         self._persist_retry_count = 0
         self._shutting_down = False
         self._turns: dict[str, deque[TopicTurnSignal]] = defaultdict(
@@ -420,9 +420,9 @@ class TopicSignalStore:
         with self._persist_lock:
             self._persist_dirty = True
             if self._shutting_down:
-                # 退出路径上排 timer 是自欺：atexit 里起的 daemon Timer 不抛异常、
-                # is_alive() 也为 True，但解释器在 delay 到达前就 finalize 了，
-                # 回调永不执行。如实报告丢盘，不假装排了重试。
+                # Scheduling timers during exit is illusory: daemon Timer from atexit raises nothing,
+                # and is_alive() returns True, but interpreter finalizes before delay expires;
+                # callback never runs. Report lost persistence truthfully, never pretend retries are scheduled.
                 logger.warning(
                     "topic signal state not persisted at exit; the in-memory "
                     "window is lost (path=%s)", self._persistence_path,
@@ -431,8 +431,8 @@ class TopicSignalStore:
             if self._persistence_path is None or self._persist_timer is not None:
                 return
             if self._persist_retry_count >= _PERSIST_MAX_RETRIES:
-                # 有界：永久性写失败（只读盘 / ACL）原来会变成每秒一次的静默
-                # 写盘尝试，无次数上限也无退避。
+                # Bounded: permanent write failures (read-only disk / ACL) formerly became silent
+                # once-per-second writes with no cap/backoff.
                 logger.warning(
                     "topic signal persistence failed %d times in a row; giving "
                     "up the retry chain, state stays dirty and the next real "
@@ -456,8 +456,8 @@ class TopicSignalStore:
             return
         with self._persist_lock:
             self._persist_dirty = True
-            # 退出中到来的 note_turn 不该再排一个跑不了的 timer（与 flush 失败
-            # 分支的守卫对偶）。
+            # note_turn during exit must not schedule another unusable timer (symmetric with flush-failure
+            # branch guard).
             if self._shutting_down or self._persist_timer is not None:
                 return
             timer = threading.Timer(self._persistence_flush_delay_seconds, self.flush)
@@ -494,8 +494,8 @@ class TopicSignalStore:
             atomic_write_json(path, payload, ensure_ascii=False, indent=2)
             return True
         except Exception:
-            # 原来异常被整个吞掉，连原因都留不下。分级：每次尝试记 debug（避免
-            # 退避期间刷 warning），give-up 和退出丢盘才由 flush 记 warning。
+            # Previously swallowed exceptions left no reasons. Log each attempt at debug to avoid
+            # warning floods during backoff; flush warns only on give-up and exit persistence loss.
             logger.debug(
                 "topic signal persistence write failed (path=%s)",
                 path, exc_info=True,

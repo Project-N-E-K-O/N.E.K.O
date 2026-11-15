@@ -98,7 +98,7 @@ def default_client() -> ScopedMemoryClient:
 
 
 def _shutdown_client(client: ScopedMemoryClient) -> ScopedMemoryClient:
-    # 关机：同一个 memory_server，但不做 502 退避（单次、受 VISIT_SHUTDOWN_BUDGET_S 约束）
+    # Shutdown: same memory_server, but no 502 backoff (single attempt bounded by VISIT_SHUTDOWN_BUDGET_S).
     return client.with_retry_delays(())
 
 
@@ -112,7 +112,7 @@ async def _bounded(coro: Awaitable[Any], *, shutdown: bool, failed: Any) -> Any:
         return failed
 
 
-# ── 读 ────────────────────────────────────────────────────────────────
+# ── Read ──────────────────────────────────────────────────────────────
 
 
 async def fetch_visit_context(
@@ -171,8 +171,8 @@ async def forget_in_progress(
     if await RevocationLog(config_dir, own_uid=own_uid).is_pair_open(peer_uid, own_char_uid):
         return True
     sentinels, unreadable = await ClearingSentinels(config_dir).list_open_with_unreadable()
-    # 读不出来的清除意图不能当作「没有在清除」；但只挡还能认出的那部分范围，一份坏文件
-    # 不能让全机所有账号、所有角色的串门记忆永久停用
+    # Unreadable clear intent cannot mean no clear underway; block only recognizable scopes, so one corrupt file
+    # cannot permanently disable visit memory for all machine accounts/characters.
     if any(ClearingSentinels.hint_covers(hint, own_uid, own_char_uid, peer_uid) for hint in unreadable):
         return True
     return any(
@@ -286,7 +286,7 @@ async def build_visit_memory_block(
         except asyncio.TimeoutError:
             diag("last_summary_handoff_timeout", own_char_uid=own_char_uid,
                  short_id=derive_short_code(peer_uid))
-        except Exception as exc:  # noqa: BLE001 - 交接失败不挡开场，按现有那份开场
+        except Exception as exc:  # noqa: BLE001 - Handoff failure does not block opening; use existing opening context.
             diag("last_summary_handoff_failed", error=repr(exc))
     if await forget_in_progress(config_dir, own_char_uid, peer_uid, own_uid=own_uid):
         diag("memory_block_skipped_forget_in_progress", own_char_uid=own_char_uid,
@@ -316,7 +316,7 @@ async def build_visit_memory_block(
         if context:
             parts.append(context)
     result = _CONTEXT_JOINER.join(parts)
-    # 拼接处的换行可能与两侧合并成别的 token：最后整体再量一次，超了就截
+    # Joined newlines may merge with adjacent tokens; remeasure whole result, truncate if over budget.
     if await acount_tokens(result) > max_tokens:
         result = await atruncate_to_tokens(result, max_tokens)
     return result
@@ -332,7 +332,7 @@ async def list_visit_subjects(name: str, *, client: ScopedMemoryClient | None = 
     return await client.list_scoped_subjects(name, platform=VISIT_MEMORY_PLATFORM)
 
 
-# ── 写 ────────────────────────────────────────────────────────────────
+# ── Write ─────────────────────────────────────────────────────────────
 
 
 async def post_visit_digest(
@@ -378,7 +378,7 @@ async def post_visit_digest(
             name, subject=subject, messages=messages,
             idempotency_key=idempotency_key, client_requested_at=client_requested_at,
             subject_epochs=dict(subject_epochs) if subject_epochs is not None else None,
-            # 转录记录时定格的语言：抽取语境与语言状态都按它，而不是补录时的当前界面语言
+            # Language frozen at transcript recording drives extraction and language state, not UI language during later backfill.
             language=lang,
         ),
         shutdown=shutdown, failed=False,
@@ -479,7 +479,7 @@ async def post_visit_segments(
         ),
         shutdown=shutdown, failed=False,
     )
-    # 同一个幂等键下整批成败：服务端按键记录整批，部分成功也只能同键整批重试
+    # Whole-batch success/failure under one idempotency key: server records batches, so partial success still retries whole batch with same key.
     return bool(result)
 
 

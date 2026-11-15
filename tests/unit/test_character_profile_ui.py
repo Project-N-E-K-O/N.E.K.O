@@ -1,0 +1,803 @@
+"""Execute the served profile script against disposable DOM and local API doubles."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from tests.node_harness import run_node_script
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "static/app/app-character-profile-sync.js"
+
+
+def run_script(assertions):
+    """Observe real async listeners without a browser, remote HTTP or OAuth data."""
+    bootstrap = r"""
+        const fs=require('node:fs'), vm=require('node:vm'), assert=require('node:assert/strict');
+        const events={}, calls=[], alerts=[];
+        function element(tag='') {
+            return {tag,children:[],dataset:{},events:{},textContent:'',style:{},open:false,
+                appendChild(child){this.children.push(child);child.parent=this;},
+                insertBefore(child,other){this.children.splice(this.children.indexOf(other),0,child);child.parent=this;},
+                setAttribute(){},addEventListener(name,callback){this.events[name]=callback;},
+                querySelector(selector){return this.children.find(x=>selector==='[data-profile-preview]'&&x.dataset.profilePreview);},
+                showModal(){this.open=true;},close(){if(this.open){this.open=false;if(this.events.close)this.events.close();}},
+                remove(){if(this.parent)this.parent.children=this.parent.children.filter(x=>x!==this);}};
+        }
+        const body=element('body');
+        global.document={body,visibilityState:'visible',createElement:element,addEventListener(n,c){events[n]=c;}};
+        global.window={t(k){return k;},confirm(){return true;},alert(v){alerts.push(v);},addEventListener(){},
+            setInterval(){return 1;},clearInterval(){},dispatchEvent(){}};
+        global.CustomEvent=class {constructor(name){this.name=name;}};
+        global.fetch=async(path,init)=>{calls.push({path,init});return {ok:true,json:async()=>response(path,init)};};
+        const uid='a'.repeat(32), profile={schemaVersion:1,name:'Synthetic',nickname:'NICKNAME',systemPrompt:'RAW SETTING',
+            fields:[{key:'Literal field',value:'FIELD VALUE'}],persona:{presetId:'internal_id',promptGuidance:'SPEAKING STYLE',fields:[]}};
+        const candidate={local:profile,head:{...profile,name:'Cloud Name'},local_hash:'d'.repeat(64),head_revision:2,
+            dirty:true,conflict:false,renameRequired:true,apply_pending:true};
+        let response=()=>{throw new Error('Unexpected local API');};
+        function flatten(node){return [node,...node.children.flatMap(flatten)];}
+        function choice(panel,name){return flatten(panel).find(node=>node.dataset.profileChoice===name);}
+        function button(panel,label){return flatten(panel).find(node=>node.tag==='button'&&node.textContent===label);}
+        async function answerPrompt(accepted) {
+            await new Promise(resolve=>setImmediate(resolve));
+            const panel=body.children.find(node=>node.id==='character-profile-sync-prompt');assert(panel?.open);
+            await button(panel,accepted?'common.confirm':'common.cancel').events.click();
+        }
+        vm.runInThisContext(fs.readFileSync(process.argv[1],'utf8'));
+    """
+    script = (bootstrap + assertions).replace('process.argv[1]', json.dumps(str(SCRIPT)))
+    result = run_node_script("node", script, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+
+
+def test_declined_save_records_divergence_without_queueing_upload():
+    run_script(r"""
+        (async()=>{
+            response=(path)=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
+                {...candidate,head:null,conflict:false,renameRequired:false};
+            const pending=window.nekoCharacterProfileSync.afterSave('Synthetic');
+            await answerPrompt(false);await pending;
+            assert.deepEqual(calls.map(x=>x.path),['/api/chat-sync/status','/api/chat-sync/characters/'+uid+'/profile/local']);
+            assert.equal(alerts.length,0);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_unbound_save_asks_and_explains_manual_binding_without_enabling():
+    run_script(r"""
+        (async()=>{
+            response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,binding:null}]});
+            const pending=window.nekoCharacterProfileSync.afterSave('Synthetic');await answerPrompt(true);
+            await new Promise(resolve=>setImmediate(resolve));
+            const notice=body.children[0];assert(flatten(notice).some(node=>node.textContent==='chatSync.profileNeedsBinding'));
+            await button(notice,'chatSync.close').events.click();await pending;assert.deepEqual(alerts,[]);
+            assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/chat-sync/status');
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_approved_save_pins_saved_hash_and_cloud_revision_only():
+    run_script(r"""
+        (async()=>{
+            response=(path)=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
+                {...candidate,head:null,conflict:false,renameRequired:false};
+            const pending=window.nekoCharacterProfileSync.afterSave('Synthetic');await answerPrompt(true);await pending;
+            assert.equal(calls.length,3);
+            assert.deepEqual(JSON.parse(calls[2].init.body),{localHash:candidate.local_hash,revision:2});
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_concurrent_saves_wait_for_individual_consent_without_dropping_the_second_save():
+    run_script(r"""
+        (async()=>{
+            const other='b'.repeat(32);
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'First',characterSyncId:uid,binding:{}},
+                {displayName:'Second',characterSyncId:other,binding:{}}]}:{...candidate,head:null,renameRequired:false,apply_pending:false};
+            const first=window.nekoCharacterProfileSync.afterSave('First');
+            const second=window.nekoCharacterProfileSync.afterSave('Second');
+            await answerPrompt(false);
+            assert(!calls.some(call=>call.path.endsWith('/profile/approve')));
+            await answerPrompt(true);await Promise.all([first,second]);
+            const approved=calls.filter(call=>call.path.endsWith('/profile/approve'));
+            assert.equal(approved.length,1);assert.equal(approved[0].path,'/api/chat-sync/characters/'+other+'/profile/approve');
+            assert.deepEqual(JSON.parse(approved[0].init.body),{localHash:candidate.local_hash,revision:2});
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_concurrent_error_notice_is_shown_after_the_existing_confirmation():
+    run_script(r"""
+        (async()=>{
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
+                {...candidate,head:null,renameRequired:false,apply_pending:false};
+            const save=window.nekoCharacterProfileSync.afterSave('Synthetic');
+            await new Promise(resolve=>setImmediate(resolve));
+            const failed=window.nekoCharacterProfileSync.afterSave('Unavailable');
+            response=()=>{throw new Error('Offline');};
+            await answerPrompt(false);await save;
+            await new Promise(resolve=>setImmediate(resolve));
+            const notice=body.children[0];assert(notice.open);
+            assert(flatten(notice).some(node=>node.textContent==='chatSync.profileSaveFailed'));
+            await button(notice,'chatSync.close').events.click();await failed;
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_poll_retries_a_conflict_that_was_blocked_by_a_late_upload_prompt():
+    run_script(r"""
+        (async()=>{
+            const other='b'.repeat(32);let release;
+            response=path=>{
+                if(path.endsWith('/status'))return{characters:[{displayName:'Conflict',characterSyncId:uid,binding:{profile:{
+                    conflict:true,local_hash:candidate.local_hash,head_revision:2}}},{displayName:'Saving',characterSyncId:other,binding:{}}]};
+                if(path.includes(uid))return new Promise(resolve=>{release=resolve;});
+                return {...candidate,head:null,renameRequired:false,apply_pending:false};
+            };
+            const polling=window.nekoCharacterProfileSync.poll();await new Promise(resolve=>setImmediate(resolve));
+            const saving=window.nekoCharacterProfileSync.afterSave('Saving');await new Promise(resolve=>setImmediate(resolve));
+            release(candidate);await polling;
+            await answerPrompt(false);await saving;
+            const retry=window.nekoCharacterProfileSync.poll();await new Promise(resolve=>setImmediate(resolve));release(candidate);await retry;
+            assert.equal(body.children[0]?.id,'character-profile-sync-dialog');assert(body.children[0].open);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('changed_field', ['local_hash', 'head_revision'])
+def test_poll_backs_off_unreadable_conflict_and_retries_when_its_version_changes(changed_field):
+    run_script(r"""
+        (async()=>{
+            const other='b'.repeat(32), warnings=[];
+            Date.now=()=>1000;
+            const broken={conflict:true,local_hash:candidate.local_hash,head_revision:2};
+            window.showMessage=message=>warnings.push(message);
+            window.nekoChatSync={describeError:error=>error};
+            response=path=>{
+                if(path.endsWith('/status'))return{characters:[{characterSyncId:uid,binding:{profile:broken}},
+                    {displayName:'Later',characterSyncId:other,syncSetupError:'setup-failed',syncSetupDiagnostic:'needs-recovery',
+                        binding:{profile:{conflict:true,local_hash:candidate.local_hash,head_revision:2}}}]};
+                if(path.includes(uid))throw new Error('chat_sync_writer_recovery_required');
+                return candidate;
+            };
+            const localCalls=()=>calls.filter(call=>call.path.includes(uid)&&call.path.endsWith('/profile/local'));
+            await window.nekoCharacterProfileSync.poll();
+            assert.equal(localCalls().length,1);assert.equal(body.children.length,0);
+            await window.nekoCharacterProfileSync.poll();
+            assert.equal(localCalls().length,1);
+            assert.deepEqual(warnings,['chatSync.setupNeedsSave\nsetup-failed','needs-recovery']);
+            assert.equal(body.children[0]?.id,'character-profile-sync-dialog');assert(body.children[0].open);
+            assert(calls.some(call=>call.path.includes(other)&&call.path.endsWith('/profile/local')));
+            await choice(body.children[0],'close').events.click();
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,1);
+            broken[CHANGED_FIELD]=CHANGED_FIELD==='local_hash'?'e'.repeat(64):3;
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,2);
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,2);
+            assert.equal(warnings.length,2);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('CHANGED_FIELD', json.dumps(changed_field)))
+
+
+def test_poll_retries_recovered_conflict_after_backoff_without_a_version_change():
+    run_script(r"""
+        (async()=>{
+            let now=1000, unavailable=true;
+            Date.now=()=>now;
+            response=path=>{
+                if(path.endsWith('/status'))return{characters:[{characterSyncId:uid,binding:{profile:{
+                    conflict:true,local_hash:candidate.local_hash,head_revision:2}}}]};
+                if(unavailable)throw new Error('Temporary read failure');
+                return candidate;
+            };
+            const localCalls=()=>calls.filter(call=>call.path.endsWith('/profile/local'));
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,1);
+            unavailable=false;now+=59999;
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,1);
+            now+=1;
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,2);
+            assert.equal(body.children[0]?.id,'character-profile-sync-dialog');assert(body.children[0].open);
+            await choice(body.children[0],'close').events.click();now+=60000;
+            await window.nekoCharacterProfileSync.poll();assert.equal(localCalls().length,2);
+            assert.equal(body.children.length,0);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_prompt_without_translation_loader_does_not_block_future_dialogs():
+    run_script(r"""
+        (async()=>{
+            delete window.t;
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,binding:{}}]}:
+                {...candidate,head:null,renameRequired:false,apply_pending:false};
+            const save=window.nekoCharacterProfileSync.afterSave('Synthetic');await new Promise(resolve=>setImmediate(resolve));
+            const panel=body.children[0];assert(panel?.open);await button(panel,'cancel').events.click();await save;
+            await window.nekoCharacterProfileSync.review(uid,candidate);assert(body.children[0]?.open);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('theme,hover', [('light', False), ('light', True), ('dark', False), ('dark', True)])
+def test_primary_sync_buttons_have_readable_text_across_the_gradient(theme, hover):
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.set_content(f'<html data-theme="{theme}"><body><dialog id="chat-sync-dialog" open>'
+                             '<button class="chat-sync-button">Cloud model</button><button class="chat-sync-recover">Recover</button></dialog>'
+                             '<dialog id="character-profile-sync-dialog" open><button class="chat-sync-button">Import</button><p class="chat-sync-status" role="status"></p></dialog>'
+                             '<dialog id="character-profile-sync-prompt" open><button class="chat-sync-button">Confirm</button></dialog></body></html>')
+            page.add_style_tag(path=str(ROOT / 'static/css/chat_sync.css'))
+            assert page.get_by_role('status').evaluate('node=>getComputedStyle(node).display') != 'none'
+            for button in page.locator('button').all():
+                if hover:
+                    # Disjoint native dialog fixtures overlap by default; position only this test's host.
+                    button.locator('..').evaluate("node=>{node.style.position='relative';node.style.margin='20px';}")
+                    button.hover()
+                minimum = button.evaluate("""node=>{
+                    const style=getComputedStyle(node), rgb=value=>value.match(/[\\d.]+/g).slice(0,3).map(Number);
+                    const text=rgb(style.color), stops=style.backgroundImage.match(/rgba?\\([^)]+\\)/g).map(rgb);
+                    const luminance=values=>values.map(value=>value/255).map(value=>value<=0.04045?value/12.92:((value+0.055)/1.055)**2.4)
+                        .reduce((sum,value,index)=>sum+value*[0.2126,0.7152,0.0722][index],0);
+                    const foreground=luminance(text), ratios=[];
+                    for(let i=0;i<=20;i++){
+                        const background=luminance(stops[0].map((value,index)=>value+(stops[1][index]-value)*i/20));
+                        ratios.push((Math.max(foreground,background)+0.05)/(Math.min(foreground,background)+0.05));
+                    }
+                    return Math.min(...ratios);
+                }""")
+                assert minimum >= 4.5
+        finally:
+            browser.close()
+
+
+def test_preview_is_readable_inert_persona_and_remote_rename_needs_confirmation():
+    run_script(r"""
+        (async()=>{
+            await window.nekoCharacterProfileSync.review(uid,candidate);const panel=body.children[0];
+            const shown=flatten(panel).map(x=>x.textContent).join('\n');
+            for(const value of ['NICKNAME','RAW SETTING','FIELD VALUE','SPEAKING STYLE'])assert(shown.includes(value));
+            for(const value of ['schemaVersion','internal_id','local_hash','operationId'])assert(!shown.includes(value));
+            assert.equal(calls.length,0);
+            const declined=choice(panel,'remote').events.click();await answerPrompt(false);await declined;
+            assert.equal(calls.length,0);assert(panel.open);
+            response=()=>({});const accepted=choice(panel,'remote').events.click();await answerPrompt(true);await accepted;
+            assert.deepEqual(JSON.parse(calls[0].init.body),{choice:'remote',localHash:candidate.local_hash,revision:2,confirmRename:true});
+            assert(!panel.open);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_dismissed_async_rename_cannot_resolve_a_replaced_profile_dialog():
+    run_script(r"""
+        (async()=>{
+            await window.nekoCharacterProfileSync.review(uid,candidate);const first=body.children[0];
+            const pending=choice(first,'remote').events.click();first.close();
+            await answerPrompt(true);await pending;assert.deepEqual(calls,[]);
+            await window.nekoCharacterProfileSync.review(uid,candidate);assert(body.children[0].open);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('theme,language,width,entry', [
+    ('light', 'zh-CN', 1280, 'character_card_manager'),
+    ('dark', 'ru', 375, 'character_card_manager'),
+    ('light', 'en', 375, 'index'),
+    ('dark', 'zh-TW', 1280, 'index'),
+])
+def test_sync_prompts_share_the_served_skin_and_keep_keyboard_and_consent(theme, language, width, entry):
+    """Real served components stay readable/clickable on the transparent host and card page."""
+    from playwright.sync_api import sync_playwright
+
+    labels = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding='utf-8'))
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(viewport={'width': width, 'height': 700})
+            page.route('**/*', lambda route: route.abort())
+            page.set_content(f'<html data-theme="{theme}"><body></body></html>')
+            for stylesheet in (entry, 'dark-mode', 'chat_sync'):
+                page.add_style_tag(path=str(ROOT / 'static/css' / (stylesheet + '.css')))
+            page.evaluate("""labels=>{
+                window.t=key=>key.split('.').reduce((value,part)=>value?.[part],labels)||key;
+                window.setInterval=()=>1;
+                window.writes=[];
+                window.fetch=async(path,init)=>{
+                    if(init?.method==='POST')window.writes.push({path,body:JSON.parse(init.body)});
+                    return {ok:!path.endsWith('/cloud/characters'),json:async()=>({detail:'chat_sync_unavailable'})};
+                };
+            }""", labels)
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate('window.nekoCharacterProfileSync.cloudImport()')
+            modal = page.locator('#character-profile-sync-dialog')
+            assert modal.get_by_role('status').inner_text() == labels['chatSync']['profileSaveFailed']
+            assert modal.evaluate('(node)=>getComputedStyle(node).borderRadius') == '22px'
+            bounds = modal.bounding_box()
+            assert bounds['x'] >= 0 and bounds['x'] + bounds['width'] <= width
+            assert bounds['y'] >= 0 and bounds['y'] + bounds['height'] <= 700
+            modal.locator('.chat-sync-actions button').click()
+            modal.wait_for(state='detached')
+            page.evaluate("""()=>{
+                const local={name:'Local',nickname:'',systemPrompt:'x'.repeat(3000),fields:[],persona:null};
+                return window.nekoCharacterProfileSync.review('a'.repeat(32),{local,head:{...local,name:'Remote'},
+                    local_hash:'b'.repeat(64),head_revision:2,conflict:true,renameRequired:true});
+            }""")
+            modal.locator('[data-profile-choice="remote"]').click()
+            prompt = page.locator('#character-profile-sync-prompt')
+            assert prompt.is_visible()
+            assert page.evaluate('window.writes') == []
+            prompt.press('Escape')
+            prompt.wait_for(state='detached')
+            assert modal.is_visible()
+            assert page.evaluate('document.activeElement.dataset.profileChoice') == 'remote'
+            assert page.evaluate('window.writes') == []
+            modal.locator('[data-profile-choice="remote"]').click()
+            prompt.get_by_role('button', name=labels['common']['confirm'], exact=True).click()
+            page.wait_for_function('window.writes.length===1')
+            assert page.evaluate('window.writes[0].body') == {
+                'choice': 'remote', 'localHash': 'b' * 64, 'revision': 2, 'confirmRename': True,
+            }
+            assert page.locator('dialog[open]').count() == 0
+        finally:
+            browser.close()
+
+
+def test_late_resolve_receipt_never_closes_a_new_dialog():
+    run_script(r"""
+        (async()=>{
+            let release;global.fetch=async()=>{await new Promise(resolve=>release=resolve);return {ok:true,json:async()=>({})};};
+            await window.nekoCharacterProfileSync.review(uid,candidate);const first=body.children[0];
+            const pending=choice(first,'local').events.click();first.close();
+            await window.nekoCharacterProfileSync.review(uid,candidate);const second=body.children[0];assert.notEqual(first,second);
+            release();await pending;assert(second.open);assert.equal(body.children[0],second);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_cloud_role_is_not_created_by_listing_or_preview():
+    run_script(r"""
+        (async()=>{
+            let refreshed=0;window.loadCharacterCards=async()=>refreshed++;
+            response=(path)=>path.endsWith('/characters')?{characters:[{characterSyncId:uid,displayName:'Cloud Role'}]}:
+                path.endsWith('/profile')?{profile,revision:3,profileHash:'e'.repeat(64)}:{displayName:'Synthetic',existing:false};
+            await window.nekoCharacterProfileSync.cloudImport();const panel=body.children[0];
+            assert.equal(calls.length,1);assert.equal(calls[0].path,'/api/chat-sync/cloud/characters');
+            await button(panel,'Cloud Role').events.click();assert.equal(calls.length,2);
+            assert(flatten(panel).some(x=>x.textContent.includes('RAW SETTING')));
+            await button(panel,'chatSync.cloudCreate').events.click();assert.equal(calls.length,3);
+            assert.deepEqual(JSON.parse(calls[2].init.body),{revision:3,profileHash:'e'.repeat(64)});
+            assert.equal(calls[2].path,'/api/chat-sync/cloud/characters/'+uid+'/import');
+            assert.equal(refreshed,1);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize("choice,success", [("remote", True), ("remote", False), ("local", True)])
+def test_review_refreshes_cards_only_after_remote_apply_without_replacing_draft(choice, success):
+    """A confirmed remote save refreshes the existing list callback, never the editor page."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            # Synthetic DOM/API boundaries cannot reach user roles or the running service.
+            page.route("**/*", lambda route: route.abort())
+            page.set_content('<div id="chara-cards-container"><span class="card-name">Synthetic</span></div>'
+                             '<div class="catgirl-panel-overlay"><textarea id="draft">Unsaved synthetic draft</textarea></div>')
+            page.add_style_tag(path=str(ROOT / "static/css/index.css"))
+            page.add_style_tag(path=str(ROOT / "static/css/chat_sync.css"))
+            page.evaluate("""success => {
+                window.t = key => key;
+                window.refreshCount = 0;
+                window.loadCharacterCards = async () => {
+                    window.refreshCount++;
+                    document.querySelector('.card-name').textContent = 'Cloud Name';
+                };
+                window.fetch = async () => ({ok: success, json: async () => success ? {} : {detail: 'profile_revision_conflict'}});
+            }""", success)
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate("""async () => {
+                const local = {schemaVersion: 1, name: 'Synthetic', nickname: '', systemPrompt: '', fields: [], persona: null};
+                await window.nekoCharacterProfileSync.review('a'.repeat(32), {local, head: {...local, name: 'Cloud Name'},
+                    local_hash: 'b'.repeat(64), head_revision: 2, conflict: true, renameRequired: true});
+            }""")
+            page.locator(f'[data-profile-choice="{choice}"]').click()
+            if choice == "remote":
+                page.locator('#character-profile-sync-prompt').get_by_role('button', name='common.confirm', exact=True).click()
+            if success:
+                page.wait_for_function("!document.querySelector('dialog[open]')")
+            else:
+                page.locator('dialog [role="status"]').get_by_text("chatSync.profileChanged", exact=True).wait_for()
+            expected = int(success and choice == "remote")
+            assert page.evaluate("window.refreshCount") == expected
+            assert page.locator(".card-name").text_content() == ("Cloud Name" if expected else "Synthetic")
+            assert page.locator("#draft").input_value() == "Unsaved synthetic draft"
+            assert page.locator(".catgirl-panel-overlay").count() == 1
+        finally:
+            browser.close()
+
+
+def test_all_served_entrypoints_and_eight_locales_cover_profile_labels():
+    """Classic scripts are served directly; template inclusion is the runtime entry."""
+    for filename in ("index.html", "chat.html", "character_card_manager.html"):
+        assert "/static/app/app-character-profile-sync.js" in (ROOT / "templates" / filename).read_text(encoding="utf-8")
+    locales = [json.loads((ROOT / "static/locales" / (language + ".json")).read_text(encoding="utf-8"))["chatSync"]
+               for language in ("en", "es", "ja", "ko", "pt", "ru", "zh-CN", "zh-TW")]
+    assert all(locale.keys() == locales[0].keys() for locale in locales)
+    for key in ("profileConflict", "profileNeedsBinding", "profileStyle", "profileName", "cloudNameConflict", "cloudCreate"):
+        assert all(locale[key] for locale in locales)
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_card_save_uses_one_choice_without_a_second_profile_confirmation(enabled):
+    run_script(r"""
+        (async()=>{
+            let asked=0;const messages=[];
+            window.confirm=()=>{asked++;throw new Error('Unexpected second confirmation');};
+            window.showMessage=(text,kind)=>messages.push({text,kind});
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:{};
+            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',ENABLED);
+            assert.equal(asked,0);assert.equal(alerts.length,0);assert.equal(calls.length,2);
+            assert.equal(calls[1].path,'/api/chat-sync/characters/'+uid+'/sync-choice');
+            assert.deepEqual(JSON.parse(calls[1].init.body),{enabled:ENABLED,includeHistory:true});
+            assert.equal(messages[0].text,'chatSync.syncChoiceSaved');
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('ENABLED', json.dumps(enabled)))
+
+
+@pytest.mark.parametrize('enabled,loading', [(False, False), (True, False), (True, True)])
+def test_card_save_freezes_known_sync_choice_before_async_work(enabled, loading):
+    """Late checkbox edits or preference loading cannot enlarge the clicked Save's consent."""
+    run_script(r"""(async()=>{
+        const source=fs.readFileSync(CARD_SOURCE,'utf8');
+        vm.runInThisContext(source.slice(source.indexOf('async function saveCatgirlFromPanel('),
+            source.indexOf('async function ensureCanModifyCardsOutsideVoiceMode(')));
+        const toggle={checked:ENABLED,disabled:LOADING}, name={value:'Synthetic',readOnly:true};
+        let releaseVoices,releaseChoice;
+        const form={dataset:{},parentNode:{},_previousVoiceId:'',
+            _voicesLoadPromise:new Promise(resolve=>{releaseVoices=resolve;}),
+            _chatSyncLoadPromise:new Promise(resolve=>{releaseChoice=resolve;}),
+            querySelector(selector){return selector.includes('chat_sync_enabled')?toggle:
+                selector.includes('档案名')?name:selector.includes('voice_id')?{value:''}:null;}};
+        global.ensureSafeExistingCharacterPathName=async()=>true;
+        global.collectCharacterFields=()=>({data:{'档案名':'Synthetic'},fieldOrder:[]});
+        global.attachCharacterFieldOrderPayload=()=>{};
+        global.buildLocalCatgirlRawData=(_name,data)=>data;
+        global.syncCharacterCardCache=()=>{};
+        global.setLocalRawDataFieldOrder=()=>{};
+        global.mergeFreshCatgirlRawDataWithLocal=(_fresh,local)=>local;
+        global.buildCatgirlDetailForm=()=>{};
+        global.loadCharacterData=async()=>({'猫娘':{Synthetic:{}}});
+        global.loadCharacterCards=async()=>{};
+        global.showMessage=window.showMessage=()=>{};
+        response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:{};
+        const saving=saveCatgirlFromPanel(form,'Synthetic',false);
+        // Resolve the original preference and edit the switch while voice loading still blocks saving.
+        toggle.checked=!ENABLED;toggle.disabled=false;releaseChoice();releaseVoices();
+        assert.equal(await saving,true);
+        const grants=calls.filter(call=>call.path.endsWith('/sync-choice'));
+        assert.equal(grants.length,LOADING?0:1);
+        if(!LOADING)assert.deepEqual(JSON.parse(grants[0].init.body),{enabled:ENABLED,includeHistory:true});
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('CARD_SOURCE', json.dumps(str(ROOT / 'static/js/character_card_manager/card-form-and-actions.js')))
+        .replace('ENABLED', json.dumps(enabled)).replace('LOADING', json.dumps(loading)))
+
+
+@pytest.mark.parametrize('is_new,binding,choice,expected', [
+    (True, None, None, False), (False, None, None, False),
+    (False, {'enabled': False}, False, False), (False, None, False, False),
+    (False, {'enabled': False, 'bindingId': None, 'generation': 1}, True, True),
+])
+def test_real_card_switch_is_compact_defaults_from_saved_state_and_has_no_long_hint(is_new, binding, choice, expected):
+    from playwright.sync_api import sync_playwright
+    source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text(encoding="utf-8")
+    start = source.index("    {\n        const row = document.createElement('div');")
+    switch_code = source[start:source.index('    const btnArea', start)]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(viewport={'width': 375, 'height': 700}, reduced_motion='reduce')
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<div class="settings-form-layout panel-tab-settings"><form id="test-card"></form></div>')
+            page.add_style_tag(path=str(ROOT / 'static/css/character_card_manager.css'))
+            page.evaluate("""role => {
+                window.t=key=>key==='chatSync.newRoleSync'?'Sync character and chats (including history)':key;
+                window.setInterval=()=>1;window.fetchCalls=[];
+                window.fetch=async path=>{fetchCalls.push(path);return {ok:true,json:async()=>({characters:[role]})};};
+            }""", {'displayName': 'Synthetic', 'characterSyncId': 'a' * 32, 'binding': binding, 'syncEnabled': choice})
+            page.add_script_tag(path=str(SCRIPT))
+            page.evaluate("""async ({code,isNew})=>{
+                const form=document.querySelector('form');
+                new Function('form','isNew','name',code)(form,isNew,'Synthetic');
+                await form._chatSyncLoadPromise;
+            }""", {'code': switch_code, 'isNew': is_new})
+            toggle=page.get_by_role('switch')
+            assert toggle.is_checked() == expected and toggle.is_enabled()
+            assert page.locator('.character-chat-sync-row').inner_text().splitlines()[0] == 'Sync character and chats (including history)'
+            # The existing advanced recovery entry remains available on saved cards.
+            assert page.get_by_text('chatSync.moreOptions').count() == (0 if is_new else 1)
+            assert page.locator('.character-chat-sync-row').bounding_box()['height'] < 80
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+            toggle.focus();toggle.press('Space')
+            assert toggle.is_checked() != expected
+            assert page.evaluate('fetchCalls') == ([] if is_new else ['/api/chat-sync/status'])
+        finally:
+            browser.close()
+
+
+def test_card_save_keeps_local_success_when_sync_choice_cannot_be_applied():
+    run_script(r"""
+        (async()=>{
+            const messages=[];window.confirm=()=>{throw new Error('Unexpected confirmation');};
+            window.showMessage=(text,kind)=>messages.push({text,kind});
+            response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid}]}:
+                (()=>{throw new Error('synthetic failure');})();
+            await window.nekoCharacterProfileSync.afterCardSave('Synthetic',true);
+            assert.equal(calls.length,2);
+            assert.equal(messages[0].kind,'warning');assert.equal(alerts.length,0);
+        })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_card_save_explains_required_recovery_and_poll_explains_the_setup_failure():
+    """Saved consent must not look like a successful sync while the binding is blocked."""
+    run_script(r"""(async()=>{
+        const messages=[];
+        window.showMessage=(text,kind)=>messages.push({text,kind});
+        window.nekoChatSync={describeError:error=>'reason:'+error};
+        response=path=>path.endsWith('/status')?{characters:[{displayName:'Synthetic',characterSyncId:uid,
+            binding:{writerRecoveryRequired:true}}]}:{};
+        await window.nekoCharacterProfileSync.afterCardSave('Synthetic',true);
+        assert.deepEqual(messages,[{text:'reason:chat_sync_writer_recovery_required',kind:'warning'}]);
+        assert.equal(calls.length,2);
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncSetupError:'chat_sync_account_mismatch'}]});
+        await window.nekoCharacterProfileSync.poll();
+        await window.nekoCharacterProfileSync.poll();
+        assert.deepEqual(messages[1],{text:'chatSync.setupNeedsSave\nreason:chat_sync_account_mismatch',kind:'warning'});
+        assert.equal(messages.length,2);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_card_save_before_choice_load_preserves_previous_consent_without_warning():
+    """A pending status read is not a failed sync save or new consent."""
+    run_script(r"""(async()=>{
+        const messages=[];window.showMessage=(text,kind)=>messages.push({text,kind});
+        await window.nekoCharacterProfileSync.afterCardSave('Synthetic',undefined);
+        assert.deepEqual(calls,[]);assert.deepEqual(messages,[]);assert.deepEqual(alerts,[]);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.mark.parametrize('code', ['chat_sync_account_mismatch', 'unrecognized_setup_error'])
+def test_setup_warning_identifies_the_role_and_unknown_errors_explain_resaving(code):
+    run_script(r"""(async()=>{
+        const messages=[];
+        window.t=(key,values={})=>key+(values.name?':'+values.name:'');
+        window.showMessage=(text,kind)=>messages.push({text,kind});
+        window.nekoChatSync={describeError:code=>code==='chat_sync_account_mismatch'?'account mismatch':'chatSync.errorUnknown'};
+        response=()=>({characters:[{displayName:'First',characterSyncId:uid,syncSetupError:CODE},
+            {displayName:'Second',characterSyncId:'b'.repeat(32),syncSetupError:CODE}]});
+        await window.nekoCharacterProfileSync.poll();
+        assert.equal(messages.length,2);
+        assert(messages[0].text.includes('setupNeedsSave:First'));
+        assert(messages[1].text.includes('setupNeedsSave:Second'));
+        assert(!messages.some(item=>item.text.includes('errorUnknown')));
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """.replace('CODE', json.dumps(code)))
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_card_save_rebuilt_switch_shows_the_choice_saved_by_the_same_click(enabled):
+    """The real form must not read old consent before its Save persists the switch."""
+    from playwright.sync_api import sync_playwright
+
+    source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text(encoding='utf-8')
+    start = source.index("    {\n        const row = document.createElement('div');")
+    switch_code = source[start:source.index('    const btnArea', start)]
+    save_code = source[source.index('async function saveCatgirlFromPanel('):
+                       source.index('async function ensureCanModifyCardsOutsideVoiceMode(')]
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<div id="editor"></div>')
+            page.evaluate("""({enabled, code}) => {
+                window.savedChoice = !enabled;
+                window.saveEvents = [];
+                window.t = key => key;
+                window.setInterval = () => 1;
+                window.showMessage = () => {};
+                window.fetch = async (path, init) => {
+                    if (path === '/api/chat-sync/status') {
+                        const snapshot = savedChoice;
+                        saveEvents.push(['readChoice', snapshot]);
+                        return {ok: true, json: async () => ({characters: [{displayName: 'Synthetic',
+                            characterSyncId: 'a'.repeat(32), syncEnabled: snapshot}]})};
+                    }
+                    if (path.endsWith('/sync-choice')) {
+                        savedChoice = JSON.parse(init.body).enabled;
+                        saveEvents.push(['saveChoice', savedChoice]);
+                        return {ok: true, json: async () => ({})};
+                    }
+                    if (path === '/api/characters/catgirl/Synthetic') {
+                        saveEvents.push(['saveCard']);
+                        return {ok: true, json: async () => ({success: true})};
+                    }
+                    throw new Error('Unexpected fixture API: ' + path);
+                };
+                window.ensureSafeExistingCharacterPathName = async () => true;
+                window.collectCharacterFields = () => ({data: {'档案名': 'Synthetic'}, fieldOrder: []});
+                window.attachCharacterFieldOrderPayload = () => {};
+                window.buildLocalCatgirlRawData = (_name, data) => data;
+                window.syncCharacterCardCache = () => {};
+                window.setLocalRawDataFieldOrder = () => {};
+                window.mergeFreshCatgirlRawDataWithLocal = (_fresh, local) => local;
+                window.loadCharacterData = async () => ({'猫娘': {Synthetic: {}}});
+                window.loadCharacterCards = async () => {};
+                window.buildCatgirlDetailForm = (name, _data, isNew, container) => {
+                    const form = document.createElement('form');
+                    form.innerHTML = '<input name="档案名" value="Synthetic" readonly>';
+                    container.replaceChildren(form);
+                    new Function('form', 'isNew', 'name', code)(form, isNew, name);
+                };
+            }""", {'enabled': enabled, 'code': switch_code})
+            page.add_script_tag(path=str(SCRIPT))
+            page.add_script_tag(content=save_code)
+            result = page.evaluate("""async enabled => {
+                buildCatgirlDetailForm('Synthetic', {}, false, document.getElementById('editor'));
+                const original = document.querySelector('form');
+                await original._chatSyncLoadPromise;
+                original.querySelector('[name="chat_sync_enabled"]').checked = enabled;
+                saveEvents.length = 0;
+                const saved = await saveCatgirlFromPanel(original, 'Synthetic', false);
+                const rebuilt = document.querySelector('form');
+                await rebuilt._chatSyncLoadPromise;
+                return {saved, persisted: savedChoice, checked: rebuilt.querySelector('[role="switch"]').checked,
+                    rebuilt: rebuilt !== original, events: saveEvents};
+            }""", enabled)
+            assert result['saved'] and result['rebuilt']
+            assert result['persisted'] == enabled
+            assert result['checked'] == enabled, result['events']
+        finally:
+            browser.close()
+
+
+def test_card_choice_uses_effective_pending_consent_while_binding_is_still_paused():
+    """A durable resume choice is visible before an offline binding can activate."""
+    run_script(r"""(async()=>{
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncEnabled:true,syncPending:true,binding:{enabled:false,bindingId:'binding',generation:2}}]});
+        assert.equal(await window.nekoCharacterProfileSync.getSyncChoice('Synthetic'),true);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_card_choice_reads_only_the_effective_choice_never_the_binding_flag():
+    """A saved Off stays off even while a first grant's binding is still enabled."""
+    run_script(r"""(async()=>{
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncEnabled:false,syncPending:false,binding:{enabled:true,bindingId:null,generation:1}}]});
+        assert.equal(await window.nekoCharacterProfileSync.getSyncChoice('Synthetic'),false);
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+def test_sync_navigation_copy_uses_saved_card_settings_instead_of_retired_actions():
+    """Setup and binding retries use the card switch, not the recovery-only panel."""
+    for language in ('en', 'es', 'ja', 'ko', 'pt', 'ru', 'zh-CN', 'zh-TW'):
+        locale = json.loads((ROOT / 'static/locales' / (language + '.json')).read_text(encoding="utf-8"))['chatSync']
+        for key in ('setupNeedsSave', 'profileNeedsBinding'):
+            assert locale['moreOptions'].casefold() not in locale[key].casefold(), (language, key)
+
+
+
+def test_retryable_setup_diagnostic_never_requests_resaving_the_card():
+    run_script(r"""(async()=>{
+        const messages=[];
+        window.showMessage=(text,kind)=>messages.push({text,kind});
+        window.nekoChatSync={describeError:error=>'reason:'+error};
+        response=()=>({characters:[{displayName:'Synthetic',characterSyncId:uid,
+            syncSetupDiagnostic:'chat_sync_login_required'}]});
+        await window.nekoCharacterProfileSync.poll();
+        await window.nekoCharacterProfileSync.poll();
+        assert.deepEqual(messages,[{text:'reason:chat_sync_login_required',kind:'warning'}]);
+        assert(!messages[0].text.includes('setupNeedsSave'));
+    })().catch(e=>{console.error(e);process.exitCode=1;});
+    """)
+
+
+@pytest.fixture
+def card_assist_form():
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.route('**/*', lambda route: route.abort())
+            page.set_content('<form id="synthetic-card"><textarea name="Personality">Quiet</textarea>'
+                             '<div class="add-field-area"></div></form>')
+            for script in ('reserved_fields_utils.js', 'character_card_manager/core-and-upload.js',
+                           'character_card_manager/card-companion.js', 'character_card_manager/master-profile.js'):
+                page.add_script_tag(path=str(ROOT / 'static/js' / script))
+            source = (ROOT / 'static/js/character_card_manager/card-form-and-actions.js').read_text(encoding='utf-8')
+            start = source.index("    {\n        const row = document.createElement('div');")
+            page.evaluate("""code => {
+                window.t = key => key;
+                const form = document.querySelector('form');
+                new Function('form', 'isNew', 'name', code)(form, true, 'Synthetic');
+            }""", source[start:source.index('    const btnArea', start)])
+            yield page
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_card_assist_generation_cannot_read_or_change_sync_choice(card_assist_form, enabled):
+    result = card_assist_form.evaluate(r"""async enabled => {
+        const form = document.querySelector('form');
+        const toggle = form.querySelector('[role="switch"]');
+        const defaultChecked = toggle.checked;
+        toggle.checked = enabled;
+        const requests = [], messages = [];
+        window._companionSetBusy = () => {};
+        window._companionAppendTyping = () => ({remove() {}});
+        window._companionEnsureLiveForm = state => state.form.isConnected;
+        window._cardAssistFetch = async (path, body) => {
+            requests.push({path, body});
+            return {fields: {Personality: 'Friendly', chat_sync_enabled: true}};
+        };
+        window._cardAssistFlashRow = () => {};
+        window._companionRefreshFormSnapshot = () => {};
+        window._companionTryAutoSave = async () => {};
+        window._companionAppendAssistant = (_state, text) => messages.push(text);
+        window._companionAppendError = (_state, error) => {throw error;};
+        window._companionUpdateQuickAvailability = () => {};
+        const state = {form, isNew: true, originalName: '', description: 'Synthetic character',
+            collectedAnswers: {}, chatHistory: []};
+        await _companionRunGenerate(state);
+        // Chat/refine actions share the final form application boundary.
+        _cardAssistApplyToForm(form, {chat_sync_enabled: true}, ['chat_sync_enabled'], '', true);
+        return {defaultChecked, checked: toggle.checked, requests,
+            leakedFields: form.querySelectorAll('textarea[name="chat_sync_enabled"]').length,
+            personality: form.querySelector('textarea[name="Personality"]').value,
+            assistantContext: JSON.stringify(state.chatHistory), messages: messages.join('\n')};
+    }""", enabled)
+    assert result['defaultChecked'] is False
+    assert result['requests'][0]['body']['target_field_keys'] == ['Personality']
+    assert result['requests'][0]['body']['current_card'] == {'Personality': 'Quiet'}
+    assert result['checked'] is enabled
+    assert result['leakedFields'] == 0
+    assert result['personality'] == 'Friendly'
+    assert 'chat_sync_enabled' not in result['assistantContext']
+    assert 'chat_sync_enabled' not in result['messages']
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_card_field_autosave_excludes_sync_control(card_assist_form, enabled):
+    result = card_assist_form.evaluate("""async enabled => {
+        const form = document.querySelector('form');
+        const toggle = form.querySelector('[role="switch"]');
+        toggle.checked = enabled;
+        const calls = [];
+        window.fetch = async (path, init) => {
+            calls.push({path, body: JSON.parse(init.body)});
+            return {ok: false};
+        };
+        await panelAutoSaveCatgirlField(form.querySelector('textarea'), 'Synthetic');
+        const callsAfterTextSave = calls.length;
+        await panelAutoSaveCatgirlField(toggle, 'Synthetic');
+        return {calls, callsAfterTextSave, checked: toggle.checked};
+    }""", enabled)
+    assert result['callsAfterTextSave'] == 1
+    assert len(result['calls']) == 1
+    assert result['calls'][0]['body']['Personality'] == 'Quiet'
+    assert 'chat_sync_enabled' not in result['calls'][0]['body']
+    assert result['checked'] is enabled

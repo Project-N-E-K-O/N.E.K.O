@@ -3,15 +3,15 @@
 ``scan_negative_keywords`` is Layer 1 of the pushback pipeline: it decides
 whether a user turn is worth spending a cheap-tier LLM call on to find *which*
 observation the user is pushing back against. Its table was Simplified-only, so
-a Traditional writer's "別說了" matched nothing and the whole pipeline never
+a Traditional writer's \"別說了\" matched nothing and the whole pipeline never
 ran for them — a structural 100% miss, not a low score.
 
 The call site is the part that can silently undo this. ``scan_negative_keywords``
-strips the region suffix by contract ("unknown language -> treat as Chinese"),
+strips the region suffix by contract (\"unknown language -> treat as Chinese\"),
 so ``zh-TW`` is already ``zh`` by the time the lookup happens: a per-locale
 ``NEGATIVE_KEYWORDS_I18N['zh-TW']`` entry would be unreachable data. The fix is
 the union at the lookup, which is why the assertions below deliberately pass
-``lang="zh"`` as well as ``lang="zh-TW"``.
+``lang=\"zh\"`` as well as ``lang=\"zh-TW\"``.
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 

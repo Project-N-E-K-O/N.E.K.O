@@ -284,9 +284,9 @@ def test_get_tts_worker_routes_explicit_vllm_before_cloned_voice(monkeypatch):
         def get_tts_api_key(self, provider):
             pytest.fail("explicit vllm_omni should bypass cloned voice providers")
 
-    # voice_meta 返回 None（非 vllm_omni 克隆）→ resolve 检查后走 preset 路径。
-    # 不再用 pytest.fail 拦截：resolve 必须检查 voice_meta 以区分 clone vs preset，
-    # 与 MiMo 的 _mimo_resolve 对齐（clone 优先于 config-selected preset）。
+    # voice_meta returns None for non-vllm_omni clones; resolve checks it, then uses the preset path.
+    # Do not intercept with pytest.fail: resolve must inspect voice_meta to distinguish clones from presets,
+    # matching MiMo's _mimo_resolve (clones take precedence over config-selected presets).
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
     monkeypatch.setattr(
         tts_client,
@@ -351,7 +351,7 @@ def test_get_tts_worker_routes_vllm_clone_when_config_selected(monkeypatch):
             pytest.fail("vllm_omni clone should not query tts api key")
 
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: _CM())
-    # voice_meta 返回 vllm_omni 克隆音色 → resolve 应走 clone 路径
+    # voice_meta returns a vllm_omni clone: resolve must use the clone path.
     monkeypatch.setattr(
         tts_client,
         "_get_voice_meta",
@@ -371,11 +371,11 @@ def test_get_tts_worker_routes_vllm_clone_when_config_selected(monkeypatch):
 
     assert isinstance(worker, partial)
     assert worker.func is tts_client.vllm_omni_tts_worker
-    # clone 路径：voice='default'（不传克隆 ID），ref_audio 带 data URI，ref_text 有值
+    # Clone path: voice='default' (never the clone ID), data URI in ref_audio, nonempty ref_text.
     assert worker.keywords.get("voice") == "default"
     assert worker.keywords.get("ref_audio") == f"data:audio/wav;base64,{CLONE_B64}"
     assert worker.keywords.get("ref_text") == "你好"
-    # clone 路径读取 ttsModelApiKey 用于 WS 鉴权（与 preset 路径一致，见 _vllm_omni_clone_resolve L688）
+    # Clone path reads ttsModelApiKey for WebSocket authentication, matching presets; see _vllm_omni_clone_resolve L688.
     assert api_key == "vllm-key"
     assert provider_key == "vllm_omni"
     class _CM:
@@ -641,7 +641,7 @@ def test_vllm_omni_worker_marks_not_ready_on_server_error_event(monkeypatch):
     ]
     # Configured endpoints expose only the stable diagnostic contract; the raw
     # server code/message may contain provider echoes and must stay private.
-    # 自定义端点只上报稳定错误码、provider 与阶段，禁止透传原始服务端内容。
+    # Custom endpoints report only stable error codes, provider, and stage; never pass through raw server content.
     assert error_payloads == [
         {
             "code": "TTS_CONFIGURED_API_FAILURE",

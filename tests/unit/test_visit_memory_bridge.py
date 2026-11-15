@@ -70,7 +70,7 @@ async def _block(tmp_path, server, **overrides):
     return await memory_bridge.build_visit_memory_block(name, **kwargs)
 
 
-# ── 写：wire 形态、退避、关机 ─────────────────────────────────────────
+# ── Writes: wire shape, backoff, shutdown ─────────────────────────────────────────
 
 
 async def test_segments_use_participant_subject_and_speaker_ids():
@@ -131,7 +131,7 @@ async def test_digest_retries_502_three_times_then_gives_up():
         idempotency_key="visit-digest:v:0:group:0", client_requested_at=1.0,
         client=server.client(retry_delays=(5.0, 15.0, 45.0)))
     assert not ok
-    assert len(server.calls("scoped_history")) == 4       # 首发 + 5/15/45 s 三次退避
+    assert len(server.calls("scoped_history")) == 4       # Initial attempt + three backoffs of 5/15/45s.
 
 
 async def test_shutdown_mode_is_one_bounded_call(monkeypatch):
@@ -141,7 +141,7 @@ async def test_shutdown_mode_is_one_bounded_call(monkeypatch):
     ok = await memory_bridge.post_visit_digest(
         "A", PAIR, [ln(0)], subject=group_chat_subject(PAIR), lang="zh", idempotency_key="k502",
         client_requested_at=1.0, shutdown=True, client=server.client(retry_delays=(5.0, 15.0, 45.0)))
-    assert not ok and len(server.calls("scoped_history")) == 1      # 关机不退避
+    assert not ok and len(server.calls("scoped_history")) == 1      # No shutdown backoff.
     server.hang["khang"] = asyncio.Event()
     started = asyncio.get_running_loop().time()
     ok = await memory_bridge.post_visit_digest(
@@ -178,13 +178,13 @@ async def test_forget_person_with_two_cats_erases_four_subjects_participant_last
     assert calls[-1]["subject"] == participant_subject(PERSON)
     kinds = [c["subject"]["subject_kind"] for c in calls]
     assert kinds == ["group_chat", "group_participant", "group_participant", "participant"]
-    # 每个 subject 的清除代数在发出之前已加 1 并落盘
+    # Each subject's clear generation increments and persists before sending.
     assert all(c["forget_epoch"] == 1 for c in calls)
     epochs = await ForgetEpochs(tmp_path).get([c["subject"] for c in calls])
     assert set(epochs.values()) == {1}
 
 
-# ── 读：上下文与记忆块 ────────────────────────────────────────────────
+# ── Reads: context and memory blocks ────────────────────────────────────────────────
 
 
 async def test_bootstrap_is_cut_to_the_token_budget():
@@ -215,7 +215,7 @@ async def test_memory_block_starts_with_the_last_visit_summary(tmp_path, monkeyp
     assert block.startswith(OPEN)
     first, rest = block.split(CLOSE, 1)
     assert "Xiaoming" in first and "2023-11-1" in first
-    assert "上次聊了樱花" in first and "伪造" in first        # 伪造的收尾被转义，没把块提前收住
+    assert "上次聊了樱花" in first and "伪造" in first        # Escape forged closing text so the block cannot close early.
     assert rest.strip().startswith("串门记忆")
     assert count_tokens(block) <= 2000
     assert seen["max_tokens"] == 2000 - count_tokens(first + CLOSE + "\n\n")
@@ -258,7 +258,7 @@ async def test_no_subjects_reads_nothing(tmp_path):
     assert server.requests == []
 
 
-# ── 与上一场的交接 ────────────────────────────────────────────────────
+# ── Handoff from the previous visit ────────────────────────────────────────────────────
 
 
 class SlowLLM:
@@ -304,7 +304,7 @@ async def test_slow_previous_summary_times_out_with_one_diagnostic(tmp_path, mon
     assert asyncio.get_running_loop().time() - started < 0.9
     assert "更早那场" in block
     assert sum("visit diag last_summary_handoff_timeout" in r.getMessage() for r in caplog.records) == 1
-    await asyncio.sleep(1.2)                 # 超时只是不等了，生成照样在后台完成
+    await asyncio.sleep(1.2)                 # Timeout stops waiting, but generation still completes in the background.
     assert (await spool.read_state())["last_summary_done"] is True
 
 
@@ -328,7 +328,7 @@ async def test_nothing_loads_while_forget_of_this_person_is_running(tmp_path, mo
     forget = asyncio.create_task(forget_person(
         tmp_path, own_uid=OWN_A, own_char="A", own_char_uid=CHAR_UID_A, peer_uid=PEER_X,
         client=server.client()))
-    await server.entered["scoped_forget"].wait()     # 撤销日志已写、摘要已删，卡在 memory_server
+    await server.entered["scoped_forget"].wait()     # Revocation log written and digest deleted; stalled at memory_server.
     assert await roster.get_last_summary(PEER_X, "A") is None
     with caplog.at_level(logging.WARNING):
         block = await _block(tmp_path, server, handoff=_handoff(tmp_path, SlowLLM(0.0)))
@@ -359,19 +359,19 @@ def test_subject_key_matches_memory_subject_key():
     assert json.dumps(SUBJECTS[0])
 
 
-# ── 坏的清除记录只挡它还认得出的范围 ─────────────────────────────────
+# ── Bad clear records block only their identifiable scope ─────────────────────────────────
 
 
 async def test_unreadable_revocation_log_blocks_only_its_own_pair(tmp_path):
     from main_logic.visit.forget import RevocationLog, revocation_id
 
     log = RevocationLog(tmp_path, own_uid=OWN_A)
-    # 截断的日志：内容一个字段都解析不出，但文件名就是 (own_uid, peer_uid, own_char_uid) 的撤销 id
+    # Truncated log: no fields parse, but the filename is the (own_uid, peer_uid, own_char_uid) revocation id.
     other = log.path_for(revocation_id(OWN_A, PEER_Y, CHAR_UID_A))
     other.parent.mkdir(parents=True, exist_ok=True)
     other.write_text('{"v": 1, "id": "tru', encoding="utf-8")
     assert await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_Y, own_uid=OWN_A)
-    # 别的人 / 别的账号不受这份坏文件牵连
+    # Other people/accounts are unaffected by this bad file.
     assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
     assert not await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_Y, own_uid=OWN_B)
 
@@ -381,7 +381,7 @@ async def test_unreadable_sentinel_blocks_only_the_scope_that_still_parses(tmp_p
 
     store = ClearingSentinels(tmp_path)
     store.dir.mkdir(parents=True, exist_ok=True)
-    # scope 写成不认识的值：own_uid / own_char_uids 仍读得出，只挡这个账号下这个角色
+    # Unrecognized scope: own_uid / own_char_uids remain readable, blocking only this account's character.
     bad = store.path_for("clearing-" + "1" * 32)
     bad.write_text(json.dumps({"v": 1, "op_id": "clearing-" + "1" * 32, "own_uid": OWN_B,
                                "scope": "everything", "own_char_uids": [CHAR_UID_A], "peer_uid": None}),
@@ -391,7 +391,7 @@ async def test_unreadable_sentinel_blocks_only_the_scope_that_still_parses(tmp_p
     assert not await memory_bridge.forget_in_progress(tmp_path, "d" * 32, PEER_X, own_uid=OWN_B)
     await seed_roster(tmp_path)
     block = await _block(tmp_path, FakeMemoryServer())
-    assert block != ""                       # 账号 A 的记忆块照常装配
+    assert block != ""                       # Account A's memory blocks assemble normally.
 
 
 async def test_unreadable_sentinel_without_any_scope_still_fails_closed(tmp_path):
@@ -400,13 +400,13 @@ async def test_unreadable_sentinel_without_any_scope_still_fails_closed(tmp_path
     store = ClearingSentinels(tmp_path)
     store.dir.mkdir(parents=True, exist_ok=True)
     store.path_for("clearing-" + "2" * 32).write_text('{"v": 1, "op_id": "clea', encoding="utf-8")
-    # 一个字段都认不出：不知道它在清谁，只能对所有账号、所有角色都按「在清除」处理
+    # No identifiable fields: the clear target is unknown, so treat all accounts and characters as clearing.
     assert await memory_bridge.forget_in_progress(tmp_path, CHAR_UID_A, PEER_X, own_uid=OWN_A)
     assert await memory_bridge.forget_in_progress(tmp_path, "d" * 32, PEER_Y, own_uid=OWN_B)
 
 
 async def test_fake_server_rejects_a_reused_key_with_a_different_body():
-    # 与服务端 keyed request hash 同口径：同一个幂等键换了请求体（哪怕只差 language）一律 422
+    # Match the server's keyed request hash: a different body under one idempotency key (even language alone) always returns 422.
     server = FakeMemoryServer()
 
     async def post(lines, lang="zh"):
@@ -418,7 +418,7 @@ async def test_fake_server_rejects_a_reused_key_with_a_different_body():
 
     first = [ln(0, "你好"), ln(1, "嗯", "peer_cat")]
     assert await post(first) is True
-    assert await post(first) is True                       # 同键同体：按 duplicate 确认
-    assert await post([ln(0, "改过的话")]) is False          # 同键不同体：422
-    assert await post(first, lang="en") is False            # 只差 language 也是不同请求
+    assert await post(first) is True                       # Same key and body: acknowledge as duplicate.
+    assert await post([ln(0, "改过的话")]) is False          # Same key, different body: 422.
+    assert await post(first, lang="en") is False            # A language-only difference still makes a different request.
     assert server.extractions == 1

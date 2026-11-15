@@ -89,9 +89,13 @@ async function configure(n, rendererOverrides = {}) {
     const model = { internalModel: { renderer, coreModel: core } };
     const boundary = new Error('stop before unrelated model positioning');
     const host = {
+        currentModel: model,
         _isLoadTokenActive: () => true,
         applyModelSettings() { throw boundary; },
     };
+    // Keep real parameter-ticket helpers available while stopping before the
+    // unrelated positioning/UI steps. Do not mock the new ownership checks.
+    Object.setPrototypeOf(host, sandbox.Live2DManager.prototype);
 
     await assert.rejects(
         sandbox.Live2DManager.prototype._configureLoadedModel.call(

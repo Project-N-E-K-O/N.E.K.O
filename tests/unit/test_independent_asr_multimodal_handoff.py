@@ -38,7 +38,7 @@ async def test_offline_multimodal_submit_suppresses_duplicate_transcript() -> No
     ) is True
 
     kwargs = client.stream_text.await_args.kwargs
-    # 本轮的帧是 invocation-local 的，绝不进 session 级的一次性附件队列。
+    # This turn's frames are invocation-local and never enter the session's single-use attachment queue.
     assert kwargs["turn_images"] == ("raw-image",)
     assert client._pending_images == []
     callback = kwargs["input_transcript_callback"]
@@ -72,8 +72,8 @@ async def test_offline_multimodal_failure_leaves_the_attachment_queue_alone() ->
             turn_id="turn-1",
         )
 
-    # 本轮帧从没进过共享队列；取走的那段用户附件在失败后原样放回，不会因为
-    # 字节相同被误删。
+    # These frames never entered the shared queue; restore consumed user attachments unchanged after failure, without
+    # deleting them merely because their bytes match.
     assert client._pending_images == [prior_equal_image]
 
 
@@ -347,8 +347,8 @@ async def test_two_phase_handoff_keeps_audio_input_and_asr_state_alive(
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
-        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
-        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        # The real MultimodalTurn is a frozen dataclass with required source;
+        # omitting it in the double alone breaks the invariant that frame-bus channel labels accompany frames.
         source="screen",
     )
 
@@ -411,8 +411,8 @@ async def test_handoff_candidate_failure_preserves_realtime_session() -> None:
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
-        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
-        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        # The real MultimodalTurn is a frozen dataclass with required source;
+        # omitting it in the double alone breaks the invariant that frame-bus channel labels accompany frames.
         source="screen",
     )
 
@@ -485,14 +485,14 @@ async def test_handoff_listener_cancel_timeout_fail_closes_active_session() -> N
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
-        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
-        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        # The real MultimodalTurn is a frozen dataclass with required source;
+        # omitting it in the double alone breaks the invariant that frame-bus channel labels accompany frames.
         source="screen",
     )
     real_wait_for = asyncio.wait_for
-    # 不再 monkeypatch wait_for：这个 listener 真的会吞掉 CancelledError 并挂住，
-    # 所以超时必须由被测代码自己达成。伪造 TimeoutError 恰好会掩盖「wait_for 会
-    # 等取消完成、因而永远不抛」这个真实行为（Codex P1）。
+    # Stop monkeypatching wait_for: this listener genuinely swallows CancelledError and hangs,
+    # so the tested code must enforce timeout itself. Faking TimeoutError masks the real behavior that wait_for
+    # waits for cancellation to finish and consequently never raises (Codex P1).
     manager._core_voice_listener_cancel_timeout_s = 0.05
 
     delivered = await real_wait_for(
@@ -520,9 +520,9 @@ async def test_handoff_listener_cancel_timeout_fail_closes_active_session() -> N
     candidate.submit_multimodal_turn.assert_not_awaited()
     candidate.close.assert_awaited_once_with()
 
-    # 孤儿会话必须**立刻**关，不能等那个已经证明停不下来的 listener：
-    # 否则 WebSocket 永远开着，脱缰的 listener 还会在 Core 宣告会话结束之后继续
-    # 回调（Codex P1）。
+    # Close the orphan session immediately rather than waiting for a listener proven unstoppable;
+    # otherwise WebSocket stays open forever and the runaway listener keeps invoking callbacks after Core
+    # declares the session ended (Codex P1).
     await real_wait_for(old_session_closed.wait(), 1.0)
     old_session.close.assert_awaited_once_with()
 
@@ -1158,7 +1158,7 @@ async def test_handoff_losing_frame_ownership_midflight_still_delivers_the_text(
     owned = {"frames": True}
 
     async def lose_ownership_during_tts_startup() -> None:
-        # 后继发声正好在这段 await 里 prepare，帧的所有权交了出去。
+        # Successor speech prepares during this await and takes frame ownership.
         owned["frames"] = False
 
     manager.ensure_tts_pipeline_alive = AsyncMock(
@@ -1185,8 +1185,8 @@ async def test_handoff_losing_frame_ownership_midflight_still_delivers_the_text(
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
-        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
-        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        # The real MultimodalTurn is a frozen dataclass with required source;
+        # omitting it in the double alone breaks the invariant that frame-bus channel labels accompany frames.
         source="screen",
     )
 
@@ -1200,10 +1200,10 @@ async def test_handoff_losing_frame_ownership_midflight_still_delivers_the_text(
     )
 
     assert delivered is True
-    # 会话照常 promote —— 路由本来就需要 offline。
+    # Promote the session normally; the route requires offline anyway.
     assert manager.session is candidate
     assert manager.response_backend == "offline_vlm"
-    # 帧没跟着走，话跟着走了。
+    # The frames do not follow; the utterance does.
     candidate.submit_multimodal_turn.assert_not_awaited()
     candidate.submit_external_voice_turn.assert_awaited_once_with(
         "what is this",
@@ -1253,8 +1253,8 @@ async def test_handoff_keeping_ownership_still_submits_the_frames():
         transcript="what is this",
         images=("raw-image",),
         turn_id="turn-1",
-        # 真实的 MultimodalTurn 是 frozen dataclass，source 是必填字段——
-        # 替身缺了它，「帧总线的通道标签跟着帧走」这条就只在替身上不成立。
+        # The real MultimodalTurn is a frozen dataclass with required source;
+        # omitting it in the double alone breaks the invariant that frame-bus channel labels accompany frames.
         source="screen",
     )
 

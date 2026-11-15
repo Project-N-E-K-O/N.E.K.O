@@ -33,6 +33,7 @@
             return false;
         }
         if (_getActiveNekoIdleReturnTier() !== _NEKO_IDLE_TIER_CAT1) return false;
+        if (window.NekoDesktopWindowGravity?.isActive(button)) return false;
         if (_isNekoIdleReturnDragActionBlocking(button) || _isAnyNekoIdleReturnDragActionBlocking()) return false;
         if (_isNekoIdleReturnPending(button) || _isAnyNekoIdleReturnPending()) return false;
         if (_isNekoIdlePresentationTransitionActive(button)) return false;
@@ -518,6 +519,7 @@
     function buildWalkState(button, target, continuation) {
         const fact = readFact(sensingContext.getCurrent());
         if (disposed || currentAction || !fact || !isCat(button)) return null;
+        if (window.NekoDesktopWindowGravity?.isActive(button)) return null;
         if (typeof _isAnyNekoIdleCat1IndependentActionActive === 'function'
             && _isAnyNekoIdleCat1IndependentActionActive()) return null;
         const container = _getNekoIdleReturnContainerFromButton(button);
@@ -703,6 +705,12 @@
 
     function step(state, timestamp) {
         if (!state || currentAction !== state) return;
+        if (window.NekoDesktopWindowGravity?.isActive(state.button)) {
+            // Once inside, the window is a physical container. Continue the
+            // original walk with its constrained target and remove the door clip.
+            finish(state, { recover: false, resumeWalk: true });
+            return;
+        }
         if (!state.button || state.button.isConnected === false
             || !state.container || state.container.isConnected === false
             || !isCat(state.button)) {

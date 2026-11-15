@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 
 def get_system_timezone() -> Optional[str]:
-    """获取系统本地时区名称（IANA 格式）。"""
+    """Get the system local time zone name (IANA format)."""
     try:
         local_tz = datetime.now().astimezone().tzinfo
         if local_tz is None:

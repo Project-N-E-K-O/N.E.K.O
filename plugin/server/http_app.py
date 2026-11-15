@@ -16,12 +16,15 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import RedirectResponse, Response
 
-from plugin.logging_config import get_logger
+from plugin.logging_config import get_logger, setup_plugin_logging, ensure_plugin_log_collection
 from utils.host_origin_guard import HostOriginGuardMiddleware
-from utils.logger_config import get_module_logger
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import shutdown as lifecycle_shutdown
 from plugin.server.lifecycle import startup as lifecycle_startup
+from plugin.server.messaging.llm_tool_registry import (
+    release_tool_host_instance,
+    start_tool_host_instance,
+)
 from plugin.server.routes import (
     config_router,
     documents_router,
@@ -31,6 +34,7 @@ from plugin.server.routes import (
     logs_router,
     market_bridge_router,
     knowledge_bridge_router,
+    knowledge_market_router,
     media_router,
     messages_router,
     metrics_router,
@@ -43,15 +47,12 @@ from plugin.server.routes import (
     runs_router,
     websocket_router,
 )
+from plugin.server.application.plugins import capability_analysis_service
 from plugin.server.routes.frontend import mount_static_files
 from plugin.server.routes.security import router as security_router
+from plugin.server.routes.plugin_projects import router as plugin_projects_router
 
-_EMBEDDED_BY_AGENT = os.getenv("NEKO_PLUGIN_HOSTED_BY_AGENT", "").strip().lower() == "true"
-
-if _EMBEDDED_BY_AGENT:
-    logger = get_module_logger(__name__, "Agent")
-else:
-    logger = get_logger("server.user_plugin_server")
+logger = get_logger("server.user_plugin_server")
 
 
 def _can_register_faulthandler_signal() -> bool:
@@ -134,10 +135,13 @@ def _include_optional_router(
 
 @asynccontextmanager
 async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # 谁负责插件生命周期，由**建这个 app 的人**说了算，见
-    # build_plugin_server_app 的 manage_lifecycle。默认 False：没人明说就不起，
-    # 这个方向的错误是「独立服务器里插件不自启」——看得见、也没人受伤。
+    # Plugin lifecycle ownership belongs to the app's creator; see
+    # build_plugin_server_app's manage_lifecycle. Default False: do not start unless explicitly requested.
+    # An incorrect default in this direction merely leaves standalone-server plugins stopped, visibly and harmlessly.
     manage_lifecycle = bool(getattr(app.state, "manage_plugin_lifecycle", False))
+
+    tool_host_id = await start_tool_host_instance()
+    capability_analysis_service.analysis_service.start()
 
     if _can_register_faulthandler_signal():
         try:
@@ -183,14 +187,14 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     heartbeat_task = asyncio.create_task(_heartbeat(), name="server-heartbeat")
 
-    # 内嵌进 agent_server 时，生命周期由外部按 user_plugin_enabled 开关管理，
-    # 这里绝不能自动起——起了就是把整轮插件元数据扫描拉回端口 bind 之前。
+    # When embedded in agent_server, external code manages lifecycle through user_plugin_enabled;
+    # never autostart here, which would move the full plugin metadata scan back before port binding.
     #
-    # 以前这个判断读的是模块级的 _EMBEDDED_BY_AGENT，也就是**import 那一刻**的
-    # NEKO_PLUGIN_HOSTED_BY_AGENT。它今天恰好是对的，只因为 agent_server 在第一次
-    # import 这个模块之前先设了环境变量——两件相隔很远、谁都没保证的事。任何人在
-    # 那之前先 import 到 plugin.server.http_app，这个常量就冻成 False，全量扫描
-    # **静默**回到启动路径，没有任何东西会红。
+    # Previously this checked module-level _EMBEDDED_BY_AGENT, freezing NEKO_PLUGIN_HOSTED_BY_AGENT
+    # at import time. It works today only because agent_server sets that environment variable before
+    # this module's first import, two distant operations with no guaranteed ordering. If anyone
+    # imports plugin.server.http_app earlier, the constant freezes as False and the full scan
+    # silently returns to startup without any failure signal.
     if manage_lifecycle:
         await lifecycle_startup()
 
@@ -228,10 +232,14 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         from plugin.core.model_gateway_access import model_gateway_access
 
+        await capability_analysis_service.analysis_service.close()
         model_gateway_access.revoke_all()
         from plugin.server.routes.model_gateway import close_model_executor
 
         await close_model_executor(app)
+        from plugin.server.infrastructure.package_download import aclose_package_http_client
+
+        await aclose_package_http_client()
         stop_event.set()
         heartbeat_task.cancel()
         try:
@@ -248,6 +256,7 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
             try:
                 await lifecycle_shutdown()
             finally:
+                await release_tool_host_instance(tool_host_id)
                 # The knowledge bridge uses the shared loopback client; a
                 # standalone plugin server owns its process, so it closes it.
                 # Embedded in another server, that server does.
@@ -261,6 +270,8 @@ async def plugin_server_lifespan(app: FastAPI) -> AsyncIterator[None]:
                         type(exc).__name__,
                         str(exc),
                     )
+        else:
+            await release_tool_host_instance(tool_host_id)
 
 
 def build_plugin_server_app(
@@ -280,6 +291,8 @@ def build_plugin_server_app(
     moment anyone looks. The other direction puts a full plugin scan back on the
     startup path before any port binds, and nothing reports it.
     """
+    setup_plugin_logging("PluginServer")
+    ensure_plugin_log_collection()
     app = FastAPI(title=title, lifespan=plugin_server_lifespan)
     app.state.manage_plugin_lifecycle = manage_lifecycle
 
@@ -292,7 +305,7 @@ def build_plugin_server_app(
             status_code=307,
         )
 
-    # Market 域名通过 settings 配置，支持自部署
+    # Configure the Market domain through settings to support self-hosting.
     from plugin.settings import MARKET_ORIGINS as _market_origins
 
     app.add_middleware(
@@ -337,6 +350,11 @@ def build_plugin_server_app(
     app.include_router(health_router)
     app.include_router(documents_router)
     app.include_router(plugins_router)
+    from plugin.server.routes.plugin_consent import (
+        router as plugin_consent_router,
+    )
+
+    app.include_router(plugin_consent_router)
     app.include_router(runs_router)
     app.include_router(messages_router)
     app.include_router(metrics_router)
@@ -359,9 +377,15 @@ def build_plugin_server_app(
         label="plugin install routes",
     )
     app.include_router(plugin_cli_router)
+    app.include_router(plugin_projects_router)
     app.include_router(llm_tools_router)
+    # Before the bridge: its /market/knowledge/{path} catch-all would
+    # otherwise answer the subscription routes with 404.
+    app.include_router(knowledge_market_router)
     app.include_router(knowledge_bridge_router)
     app.include_router(market_bridge_router)
+    from plugin.server.routes.theater_market import router as theater_market_router
+    app.include_router(theater_market_router)
     # Keep the Host/Origin guard outside CORS and the cache-header middleware;
     # untrusted requests must not be short-circuited before the guard runs.
     from utils.instance_access import InstanceAccessMiddleware

@@ -34,8 +34,8 @@ from utils.root_state_lock import root_state_transaction
 
 logger = get_module_logger(__name__)
 
-# 正常模式：
-# 仅在真正首次需要选择、存在待迁移检查点或进入恢复态时，才要求网页端阻断并显示存储位置选择流程。
+# Normal mode:
+# Block web UI for storage location selection only on actual first selection, pending migration checkpoints, or recovery.
 DEVELOPMENT_ALWAYS_REQUIRE_SELECTION = False
 STORAGE_LOCATION_STAGE = "stage3_web_restart"
 STORAGE_STATUS_POLL_INTERVAL_MS = 1200
@@ -193,9 +193,9 @@ def _reconcile_legacy_cleanup_pending_root_state(
 
     try:
         with root_state_transaction():
-            # 锁内重读一次，别拿调用方手里那份 pre-image 去盖。调用方 load 到这里之间
-            # 变更路由可能已经写过一轮 root_state（回滚就是典型），直接 dict(root_state)
-            # 会把那一轮整份抹掉——PR #2598 里"回滚被 /status 盖掉"就是这个形状。
+            # Reread under lock, never overwrite with caller's pre-image. Mutation routes may have written root_state
+            # between caller load and here (rollback is typical); direct dict(root_state)
+            # would erase that update, as /status overwriting rollback in PR #2598.
             current_state = config_manager.load_root_state()
             if not isinstance(current_state, dict):
                 current_state = root_state
@@ -215,8 +215,8 @@ def _reconcile_legacy_cleanup_pending_root_state(
 
 
 def _should_require_selection(config_manager, *, current_root: Path, anchor_root: Path) -> bool:
-    # 仅保留一个可选的开发调试开关；默认走正式逻辑，
-    # 即只在真正首次或恢复态下要求选择。
+    # Retain one optional development debug switch only; default uses production logic,
+    # requiring selection only on actual first use/recovery.
     if DEVELOPMENT_ALWAYS_REQUIRE_SELECTION:
         return True
     return should_require_storage_selection(

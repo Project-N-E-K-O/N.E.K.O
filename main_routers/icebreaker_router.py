@@ -616,13 +616,13 @@ async def icebreaker_choice(request: Request):
         return {"ok": False, "reason": "missing_lanlan_name"}
 
     requested_session_id = str(data.get("session_id") or "")
-    # 选项必须属于当前 active 的破冰 route，才能写进「有效路径」池——与 /context、
-    # /speak 完全对齐：无 active route → route_not_active；session 不匹配（双 tab 下
-    # 新 session 顶掉旧的）→ stale 拒绝。这样被取代的旧 tab、以及 route 结束后迟到的
-    # 旧请求都进不来，池子不被污染。
-    # 不必担心丢掉收尾的 handoff 选择：前端 recordChoiceToPool 在 handleChoice 开头
-    # 同步发起本请求，而 route/end 要等之后两次 appendChatMessage（各含一个 /context
-    # 往返）才发起，本请求实质上比 route/end 早约两个往返，落地时 route 仍 active。
+    # A choice must belong to the currently active icebreaker route before entering the 'valid paths' pool, matching /context and
+    # /speak exactly: no active route → route_not_active; session mismatch (a new session replacing the old one across two tabs)
+    # → reject as stale. This prevents superseded tabs and old requests arriving after route completion
+    # from polluting the pool.
+    # The final handoff choice will not be lost: frontend recordChoiceToPool starts this request synchronously at the start of handleChoice,
+    # while route/end waits for two subsequent appendChatMessage calls (each including a /context
+    # round trip). This request therefore precedes route/end by about two round trips and lands while the route is still active.
     active_state = _get_active_icebreaker_route_state(lanlan_name)
     if not active_state:
         return {

@@ -1,7 +1,6 @@
 import pytest
 
 from config.prompts.prompts_avatar_interaction import (
-    _AVATAR_INTERACTION_TOUCH_ZONE_FACTS,
     _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES,
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
@@ -13,8 +12,8 @@ from main_logic.mirror_meta import (
 )
 
 
-# 测试公用 master_name —— 任意字符串即可，关键是验证它会被原样展开进 memory_note，
-# 而不是回落到"主人"等物化称呼。
+# Shared test master_name: any string works; verify it expands verbatim into memory_note,
+# rather than falling back to objectifying forms such as 'master'.
 MASTER = "小明"
 
 
@@ -111,37 +110,98 @@ def test_rps_memory_window_dedupes_different_round_results_under_one_key():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("tool_id", ["fist", "hammer"])
-def test_avatar_prompt_and_memory_preserve_touch_zone_facts_in_all_locales(tool_id):
-    locales = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
-    action_id = "poke" if tool_id == "fist" else "bonk"
+@pytest.mark.parametrize(("tool_id", "action_id"), [("fist", "poke"), ("hammer", "bonk")])
+@pytest.mark.parametrize(
+    ("locale", "fist_instruction", "fist_memory", "hammer_instruction", "hammer_memory"),
+    [
+        (
+            "zh",
+            f"{MASTER}刚刚用猫爪轻轻碰了你一下。",
+            f"[{MASTER}用猫爪轻轻碰了你]",
+            f"{MASTER}刚刚用锤子敲中了你一次。",
+            f"[{MASTER}用锤子敲了你一下]",
+        ),
+        (
+            "zh-TW",
+            f"{MASTER}剛剛用貓爪輕輕碰了你一下。",
+            f"[{MASTER}用貓爪輕輕碰了你]",
+            f"{MASTER}剛剛用槌子敲中了你一次。",
+            f"[{MASTER}用槌子敲了你一下]",
+        ),
+        (
+            "en",
+            f"{MASTER} just lightly touched you once with the cat paw.",
+            f"[{MASTER} lightly touched you with the cat paw]",
+            f"{MASTER} just hit you once with the hammer.",
+            f"[{MASTER} bonked you once with a hammer]",
+        ),
+        (
+            "ja",
+            f"{MASTER}が今、猫の肉球で一度だけ軽く触れた。",
+            f"[{MASTER}が猫の手であなたにそっと触れた]",
+            f"{MASTER}が今、ハンマーで一度当てた。",
+            f"[{MASTER}がハンマーであなたを一度叩いた]",
+        ),
+        (
+            "ko",
+            f"{MASTER} 방금 고양이 발로 한 번 가볍게 건드렸다.",
+            f"[{MASTER}이 고양이 발로 너를 살짝 건드렸다]",
+            f"{MASTER} 방금 망치로 한 번 맞혔다.",
+            f"[{MASTER}이 망치로 너를 한 번 쳤다]",
+        ),
+        (
+            "ru",
+            f"{MASTER} только что один раз легко коснулся тебя кошачьей лапкой.",
+            f"[{MASTER} слегка коснулся тебя кошачьей лапкой]",
+            f"{MASTER} только что один раз попал по тебе молотком.",
+            f"[{MASTER} один раз стукнул тебя молотком]",
+        ),
+        (
+            "es",
+            f"{MASTER} acaba de tocarte una vez con la patita de gato.",
+            f"[{MASTER} te tocó suavemente con la pata de gato]",
+            f"{MASTER} acaba de golpearte una vez con el martillo.",
+            f"[{MASTER} te dio un golpe con un martillo]",
+        ),
+        (
+            "pt",
+            f"{MASTER} acabou de tocar em você uma vez com a patinha de gato.",
+            f"[{MASTER} tocou você de leve com a patinha de gato]",
+            f"{MASTER} acabou de bater em você uma vez com o martelo.",
+            f"[{MASTER} bateu em você uma vez com um martelo]",
+        ),
+    ],
+)
+def test_avatar_prompt_and_memory_only_describe_actions_for_all_touch_zones(
+    tool_id, action_id, locale,
+    fist_instruction, fist_memory, hammer_instruction, hammer_memory,
+):
+    expected_instruction, expected_memory_note = (
+        (fist_instruction, fist_memory)
+        if tool_id == "fist"
+        else (hammer_instruction, hammer_memory)
+    )
+    payload = {
+        "tool_id": tool_id,
+        "action_id": action_id,
+        "intensity": "normal",
+    }
+    instruction_without_zone = _build_avatar_interaction_instruction(
+        locale, "YUI", MASTER, payload
+    )
+    expected_memory = _build_avatar_interaction_memory_meta(locale, payload, MASTER)
+    assert instruction_without_zone == expected_instruction
+    assert expected_memory["memory_note"] == expected_memory_note
 
-    for locale in locales:
-        instructions = []
-        memory_notes = []
-        for touch_zone, expected_fact in _AVATAR_INTERACTION_TOUCH_ZONE_FACTS[
-            locale
-        ].items():
-            payload = {
-                "tool_id": tool_id,
-                "action_id": action_id,
-                "intensity": "normal",
-                "touch_zone": touch_zone,
-            }
-            instruction = _build_avatar_interaction_instruction(
-                locale, "YUI", MASTER, payload
-            )
-            memory_note = _build_avatar_interaction_memory_meta(
-                locale, payload, MASTER
-            )["memory_note"]
+    for touch_zone in ("ear", "head", "face", "body"):
+        zone_payload = {**payload, "touch_zone": touch_zone}
+        instruction = _build_avatar_interaction_instruction(
+            locale, "YUI", MASTER, zone_payload
+        )
+        memory = _build_avatar_interaction_memory_meta(locale, zone_payload, MASTER)
 
-            assert expected_fact in instruction
-            assert expected_fact.rstrip(".。") in memory_note
-            instructions.append(instruction)
-            memory_notes.append(memory_note)
-
-        assert len(set(instructions)) == 4
-        assert len(set(memory_notes)) == 4
+        assert instruction == expected_instruction
+        assert memory == expected_memory
 
 
 @pytest.mark.unit
@@ -169,10 +229,10 @@ def test_avatar_touch_zone_is_not_invented_when_missing_or_unsupported():
         "memory_note"
     ]
 
-    assert "这次互动的位置" not in fist_instruction
-    assert "这次互动的位置" not in fist_memory
-    assert "这次互动的位置" not in lollipop_instruction
-    assert "这次互动的位置" not in lollipop_memory
+    assert fist_instruction == f"{MASTER}刚刚用猫爪轻轻碰了你一下。"
+    assert fist_memory == f"[{MASTER}用猫爪轻轻碰了你]"
+    assert "这次互动" not in lollipop_instruction
+    assert "这次互动" not in lollipop_memory
 
 
 @pytest.mark.unit
@@ -200,24 +260,24 @@ def test_avatar_instruction_is_one_direct_fact_and_ignores_text_context():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 反 AI 物化护栏：禁止"主人 / Your master / ご主人さま / 주인 / Хозяин"
+# Guard against AI objectification: forbid "主人 / Your master / ご主人さま / 주인 / Хозяин"
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.unit
 def test_avatar_memory_templates_have_no_dehumanizing_literals():
-    """模板字面量层面：所有语言的所有 (tool, action) 模板都不能含物化称呼。
+    """At the template-literal level, no (tool, action) template in any language may contain objectifying forms of address.
 
-    这是项目核心价值观的护栏——以后再有人加新语言/新 action 模板，手滑写进
-    "主人"等附属称呼会被这条直接 fail 拦下。注意是检查模板原文（含 {master}
-    占位符），不是格式化后的输出。
+    This guards a core project value: new language/action templates accidentally containing
+    subordinate forms such as 'master' immediately fail this test. Check the raw template (including the {master}
+    placeholder), rather than formatted output.
     """
     forbidden = [
         "主人",
         "Your master",
         "your master",
         "Master",
-        "master",  # 跟 {master} 占位符以外的文字共存时 substring 也会命中
+        "master",  # Substring matching also catches terms alongside text other than the {master} placeholder
         "ご主人",
         "주인",
         "хозяин",
@@ -226,7 +286,7 @@ def test_avatar_memory_templates_have_no_dehumanizing_literals():
     for locale, by_tool in _AVATAR_INTERACTION_MEMORY_NOTE_TEMPLATES.items():
         for tool_id, by_action in by_tool.items():
             for action_id, template in by_action.items():
-                # 把 {master} 占位符抠掉，再检查残留文本是否含禁词
+                # Remove the {master} placeholder, then inspect remaining text for prohibited terms
                 stripped = template.replace("{master}", "")
                 for word in forbidden:
                     assert word not in stripped, (
@@ -237,7 +297,7 @@ def test_avatar_memory_templates_have_no_dehumanizing_literals():
 
 @pytest.mark.unit
 def test_avatar_memory_meta_expands_master_name_literally():
-    """build 出来的 memory_note 应该包含传入的 master_name，且不含物化称呼。"""
+    """The built memory_note must contain the supplied master_name without objectifying forms of address."""
     forbidden = ["主人", "Your master", "your master", "ご主人", "주인", "Хозяин", "хозяин"]
     payload = {"tool_id": "fist", "action_id": "poke", "intensity": "normal"}
     for locale in ("zh", "en", "ja", "ko", "ru", "zh-TW"):
@@ -250,8 +310,8 @@ def test_avatar_memory_meta_expands_master_name_literally():
 
 @pytest.mark.unit
 def test_avatar_memory_meta_empty_master_falls_back_to_neutral_word():
-    """master_name 传空时按本地化中性词兜底（"对方 / they / 相手 / 상대 /
-    собеседник"），同样不会回落到物化称呼。"""
+    """Empty master_name falls back to localized neutral terms (\"对方 / they / 相手 / 상대 /
+    собеседник\"), without reverting to objectifying address."""  # noqa: DOCSTRING_CJK
     forbidden = ["主人", "Your master", "your master", "ご主人", "주인", "Хозяин", "хозяин"]
     expected_neutral = {
         "zh": "对方",
@@ -272,7 +332,7 @@ def test_avatar_memory_meta_empty_master_falls_back_to_neutral_word():
 
 @pytest.mark.unit
 def test_avatar_memory_meta_master_name_passes_through_unchanged():
-    """各种 master_name 输入都应原样展开（中文、英文、emoji、含空格名字等）。"""
+    """Expand every master_name input verbatim (Chinese, English, emoji, names with spaces, etc.)."""
     payload = {"tool_id": "fist", "action_id": "poke", "intensity": "normal"}
     for name in ("小明", "Alice", "mochi", "猫猫", "Mei Wang"):
         meta = _build_avatar_interaction_memory_meta("zh", payload, name)

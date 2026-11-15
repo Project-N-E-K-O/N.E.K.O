@@ -6,10 +6,10 @@ from .time_utils import now_iso
 
 
 def parse_bool_config(value: Any, default: bool = True) -> bool:
-    """将配置值解析为 bool，支持 bool / str / None 类型。
+    """Parse a configuration value as bool, supporting bool / str / None.
 
-    str 支持: "true"/"yes"/"on"/"1" → True, "false"/"no"/"off"/"0" → False（不区分大小写）。
-    其他类型或无法识别的字符串返回 *default*。
+    Supported strings: \"true\"/\"yes\"/\"on\"/\"1\" → True, \"false\"/\"no\"/\"off\"/\"0\" → False (case-insensitive).
+    Return *default* for other types or unrecognized strings.
     """
     if isinstance(value, bool):
         return value

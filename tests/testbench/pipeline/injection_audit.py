@@ -44,7 +44,7 @@ Design
   ``summarize(hits)`` plus ``hits[:20].to_dict()`` plus caller-provided
   ``extra``. The tail-20 cap matches the pattern from
   ``chat_runner.stream_send`` and keeps ring-buffer footprint bounded.
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 from typing import Any, Optional

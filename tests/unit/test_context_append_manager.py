@@ -885,9 +885,9 @@ def test_promoted_pending_request_id_keeps_ttl_eviction_order(monkeypatch):
         "_dedup_session_id": id(mgr.session),
     }
 
-    # 时钟打在 main_logic.core.context_append 而不是门面 main_logic.core：
-    # 记账/TTL 淘汰的 time.time() 都在 ContextAppendMixin 所在的这个模块里读，
-    # 门面只是把 mixin 组装进 LLMSessionManager。
+    # Patch the clock in main_logic.core.context_append rather than the main_logic.core facade:
+    # accounting/TTL eviction read time.time() inside the module containing ContextAppendMixin;
+    # the facade merely assembles mixins into LLMSessionManager.
     patch_module_clock(monkeypatch, context_append_module, time=lambda: 1000.0)
     mgr._remember_context_append_request_id(pending_payload)
     patch_module_clock(monkeypatch, context_append_module, time=lambda: 1110.0)
@@ -1201,10 +1201,10 @@ async def test_append_context_applies_token_budget(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_durable_cache_desync_warns_and_reappends_when_swap_consumed_cache(monkeypatch):
-    # 失步窗口：when_ready 的 durable 上下文先入 next-session 缓存并记账，session swap
-    # 期间 _consume_next_session_context_messages 把内容消费走，但去重记账本（TTL 内）未清。
-    # readiness flush 重走 _append_context_to_targets 时应：(1) 自检告警两套结构失步，
-    # (2) 靠 present 二次核对兜底重写、不丢上下文。
+    # Desynchronization window: when_ready durable context enters and is accounted in next-session cache; during session swap,
+    # _consume_next_session_context_messages consumes it, but the deduplication ledger remains within TTL.
+    # When readiness flush retries _append_context_to_targets, it must (1) warn that the structures are out of sync,
+    # (2) recheck present and rewrite as fallback so context is not lost.
     mgr = _make_manager()
     mgr.session_ready = False
 
@@ -1227,7 +1227,7 @@ async def test_durable_cache_desync_warns_and_reappends_when_swap_consumed_cache
     assert mgr.next_session_context_messages == [{"role": "Lan", "text": "durable setup"}]
     assert len(mgr.pending_context_appends) == 1
 
-    # 模拟 session swap 消费缓存（记账本不动）。
+    # Simulate session swap consuming the cache without changing the ledger.
     mgr._consume_next_session_context_messages(len(mgr.next_session_context_messages))
     assert mgr.next_session_context_messages == []
 
@@ -1237,14 +1237,14 @@ async def test_durable_cache_desync_warns_and_reappends_when_swap_consumed_cache
     assert flushed == 1
     assert any("durable context cache desync" in str(msg) for msg in warnings_seen)
     assert "content missing from next-session cache" in " ".join(str(m) for m in warnings_seen)
-    # 兜底重写，上下文没丢。
+    # Fallback rewrite preserves context.
     assert mgr.next_session_context_messages == [{"role": "Lan", "text": "durable setup"}]
 
 
 @pytest.mark.asyncio
 async def test_durable_cache_desync_warns_when_content_present_but_record_missing(monkeypatch):
-    # 反向失步：内容已在 next-session 缓存，但去重记账本没有对应记录（例如记账被清/未写成功）。
-    # 这条会被当作首次写而重复入库，应在重写前自检告警。
+    # Reverse desynchronization: content exists in next-session cache without a deduplication ledger entry (e.g. cleared or failed accounting).
+    # This looks like a first write and duplicates the entry; warn before rewriting.
     mgr = _make_manager()
     mgr.next_session_context_messages = [{"role": "Lan", "text": "dup line"}]
 
@@ -1273,7 +1273,7 @@ async def test_durable_cache_desync_warns_when_content_present_but_record_missin
     assert any(
         "content present but dedup record" in str(msg) for msg in warnings_seen
     )
-    # 记账缺失导致重复入库。
+    # Missing accounting causes a duplicate write.
     assert mgr.next_session_context_messages == [
         {"role": "Lan", "text": "dup line"},
         {"role": "Lan", "text": "dup line"},

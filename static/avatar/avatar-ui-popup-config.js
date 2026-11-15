@@ -26,7 +26,10 @@ function createSettingsPopupShowSync(prefix) {
         syncCheckbox(document.querySelector(`#${prefix}-focus-mode`), window.focusModeEnabled, true);
         syncCheckbox(document.querySelector(`#${prefix}-avatar-reaction-bubble`), window.avatarReactionBubbleEnabled);
         syncCheckbox(document.querySelector(`#${prefix}-focus-cognition`), window.focusCognitionEnabled);
+        syncCheckbox(document.querySelector(`#${prefix}-auto-memory-recall`), window.autoMemoryRecallEnabled);
         syncCheckbox(document.querySelector(`#${prefix}-slop-filter`), window.slopFilterEnabled);
+        syncCheckbox(document.querySelector(`#${prefix}-visit-enabled`), window.visitEnabled);
+        syncCheckbox(document.querySelector(`#${prefix}-visit-voice`), window.visitVoiceEnabled);
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-chat`), window.proactiveChatEnabled);
         // proactive-vision 走 inverted（"隐私模式" UI 显示），与 avatar-ui-popup.js 对齐
         syncCheckbox(popup.querySelector(`#${prefix}-proactive-vision`), window.proactiveVisionEnabled, true);
@@ -55,7 +58,6 @@ if (typeof Live2DManager !== 'undefined') {
         characterMenuItems: [
             { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
             { id: 'live2d-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
-            { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
             { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
         ],
         onMouseTrackingToggle: function(enabled) {
@@ -83,7 +85,6 @@ const _vrmPopupConfig = {
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
         { id: 'vrm-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
-        { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
     ],
     onQualityChange: function(quality) {
@@ -164,7 +165,6 @@ const _mmdPopupConfig = {
     characterMenuItems: [
         { id: 'general', label: '通用设置', labelKey: 'settings.menu.general', icon: '/static/icons/live2d_settings_icon.png', action: 'navigate', url: '/character_card_manager' },
         { id: 'mmd-manage', label: '模型管理', labelKey: 'settings.menu.modelSettings', icon: '/static/icons/character_icon.png', action: 'navigate', urlBase: '/model_manager' },
-        { id: 'theater', label: '小剧场', labelKey: 'settings.menu.theater', icon: '/static/icons/character_icon.png', action: 'navigate', url: '/theater' },
         { id: 'voice-clone', label: '声音克隆', labelKey: 'settings.menu.voiceClone', icon: '/static/icons/voice_clone_icon.png', action: 'navigate', url: '/voice_clone' }
     ],
     sidePanelContainerLayout: {

@@ -7,8 +7,8 @@ round-9 revert of the followup exclusion):
 - aget_followup_topics: excludes score < 0 only —
   **derived-confirmed pending (stored=pending, score >= CONFIRMED)
   is still a valid followup candidate** (design call, see round-9 revert)
-- arecord_mentions: 5h window suppress机制 apply to confirmed reflection
-- synthesize 的 importance-based initial rein seed
+- arecord_mentions: apply the 5h-window suppression mechanism to confirmed reflections.
+- synthesize: importance-based initial reinforcement seed.
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def _seed(rid: str, status: str, rein: float = 0.0, disp: float = 0.0,
 
 @pytest.mark.asyncio
 async def test_aget_confirmed_excludes_score_zero(tmp_path):
-    """confirmed + score = 0 (rein=1, disp=1) 不该渲染 —— 已被用户抵消。"""
+    """confirmed + score = 0 (rein=1, disp=1) must not render: the user has cancelled it out."""
     _, _, _, re, _ = _install(str(tmp_path))
     await re.asave_reflections("小天", [
         _seed("ref_visible", "confirmed", rein=1.0),
@@ -125,7 +125,7 @@ async def test_followup_includes_derived_confirmed_pending(tmp_path):
 
 @pytest.mark.asyncio
 async def test_followup_still_excludes_negative(tmp_path):
-    """score<0 过滤不变：冷藏态不被主动搭话（§3.8.6）。"""
+    """Keep filtering score<0: cold-storage items do not prompt proactive chats (§3.8.6)."""
     _, _, _, re, _ = _install(str(tmp_path))
     await re.asave_reflections("小天", [
         _seed("ref_cold", "pending", rein=0.0, disp=1.0),  # score=-1
@@ -162,7 +162,7 @@ async def test_followup_filters_blank_and_duplicate_text_before_top_k(tmp_path):
 
 @pytest.mark.asyncio
 async def test_arecord_mentions_suppresses_confirmed_over_limit(tmp_path):
-    """5h 窗口内 > 2 次 mention 后 suppress 打开；pending 不参与。"""
+    """More than two mentions within 5h enables suppression; pending items are excluded."""
     _, _, _, re, _ = _install(str(tmp_path))
     await re.asave_reflections("小天", [
         _seed("ref_conf", "confirmed", rein=2.0, text="主人喝咖啡"),
@@ -174,10 +174,10 @@ async def test_arecord_mentions_suppresses_confirmed_over_limit(tmp_path):
 
     reloaded = await re._aload_reflections_full("小天")
     by_id = {r["id"]: r for r in reloaded}
-    # confirmed 被 suppress
+    # Suppress confirmed reflections.
     assert by_id["ref_conf"]["suppress"] is True
     assert len(by_id["ref_conf"]["recent_mentions"]) >= 3
-    # pending 本意是"AI 试探用户确认"，不参与 suppress 机制
+    # pending means the AI probes for user confirmation; it does not participate in suppression.
     assert by_id["ref_pend"]["suppress"] is False
     assert by_id["ref_pend"]["recent_mentions"] == []
 
@@ -188,7 +188,7 @@ async def test_arecord_mentions_under_limit_stays_unsuppressed(tmp_path):
     await re.asave_reflections("小天", [
         _seed("ref_conf", "confirmed", rein=2.0, text="主人喝咖啡"),
     ])
-    # 只提一次
+    # Mention only once.
     await re.arecord_mentions("小天", "主人喝咖啡了")
     reloaded = await re._aload_reflections_full("小天")
     r = reloaded[0]
@@ -201,7 +201,7 @@ async def test_arecord_mentions_under_limit_stays_unsuppressed(tmp_path):
 
 @pytest.mark.asyncio
 async def test_synth_high_importance_seeds_initial_rein(tmp_path):
-    """importance=10 的 fact → reflection 初始 rein=0.8 + rein_last_signal_at 非空。"""
+    """A fact with importance=10 -> reflection initial rein=0.8 and nonempty rein_last_signal_at."""
     from memory.facts import FactStore
     from memory.reflection import ReflectionEngine
 

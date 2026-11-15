@@ -230,10 +230,16 @@
                     return !!button && group.contains(button);
                 },
                 cursorTarget: avatar('btn-mic'),
-                body: () => t('floatingOverview.body') + ' ' + t('floatingOverviewContinueHint') }),
+                // 用户隐藏了喵宇宙按钮时，总览里也不再提它
+                body: () => t(root.nekoCommunityEntry && root.nekoCommunityEntry.isHidden()
+                    ? 'floatingOverviewWithoutSocial' : 'floatingOverview.body') + ' ' + t('floatingOverviewContinueHint') }),
             optional('mic', avatar('btn-mic'), { enter: close, view: () => popupView('mic') }),
             optional('agent', avatar('btn-agent'), { enter: close, view: () => popupView('agent'), windowGuide: windowGuide() }),
-            optional('social', avatar('btn-social'), { enter: close, windowGuide: windowGuide(), view() {
+            optional('social', avatar('btn-social'), { enter: close, windowGuide: windowGuide(),
+                // 标题直接用按钮名，各语言里喵宇宙的叫法只维护 buttons.social 一处
+                title: root.t('buttons.social'),
+                // 用户隐藏了喵宇宙入口时按钮不在，直接跳过这一步。
+                when: () => !(root.nekoCommunityEntry && root.nekoCommunityEntry.isHidden()), view() {
                 return find('.neko-social-embed-close')
                     ? click('socialClose', '.neko-social-embed-close', () => !find('.neko-social-embed-close')) : null;
             } }),

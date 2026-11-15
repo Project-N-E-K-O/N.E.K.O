@@ -824,7 +824,7 @@ class MigrationsMixin:
         try:
             from utils.language_utils import _get_steam_language, _get_system_language, normalize_language_code
             
-            # 优先使用 Steam 语言，其次系统语言
+            # Prefer Steam language, then system language.
             raw_lang = _get_steam_language()
             if not raw_lang:
                 raw_lang = _get_system_language()
@@ -839,7 +839,7 @@ class MigrationsMixin:
         if not lang:
             return None
         
-        # 映射语言代码到文件后缀
+        # Map language codes to filename suffixes.
         lang_lower = lang.lower()
         if lang_lower in ('zh-cn', 'zh'):
             suffix = 'zh-CN'
@@ -858,7 +858,7 @@ class MigrationsMixin:
         elif lang_lower.startswith('pt'):
             suffix = 'pt'
         else:
-            # 未知语言，回退
+            # Unknown language: fall back.
             return None
 
         localized_path = self.project_config_dir / 'characters' / f"{suffix}.json"
@@ -877,26 +877,26 @@ class MigrationsMixin:
              - other files: copy from the project config
            - if neither exists, do nothing (defaults are created later)
         """
-        # 确保目录存在
+        # Ensure directory exists.
         if not self.ensure_config_directory():
             print("Warning: Cannot create config directory, using project config", file=sys.stderr)
             return
         
-        # 显示项目配置目录位置（调试用）
+        # Display project configuration directory for debugging.
         self._log(f"[ConfigManager] Project config directory: {self.project_config_dir}")
         self._log(f"[ConfigManager] User config directory: {self.config_dir}")
         
-        # 迁移每个配置文件
+        # Migrate each configuration file.
         for filename in CONFIG_FILES:
             docs_config_path = self.config_dir / filename
             project_config_path = self.project_config_dir / filename
             
-            # 如果我的文档下已有，跳过
+            # Skip existing files in Documents.
             if docs_config_path.exists():
                 self._log(f"[ConfigManager] Config already exists: {filename}")
                 continue
             
-            # 对 characters.json 特殊处理：根据语言选择本地化版本
+            # Special characters.json handling: select localized version by language.
             if filename == 'characters.json':
                 lang_source = self._get_localized_characters_source()
                 if lang_source:
@@ -906,9 +906,9 @@ class MigrationsMixin:
                         continue
                     except Exception as e:
                         self._log(f"Warning: Failed to migrate localized {lang_source.name}: {e}")
-                        # 继续走默认拷贝逻辑
+                        # Continue default copy behavior.
             
-            # 如果项目config下有，复制过去
+            # Copy files present in project config.
             if project_config_path.exists():
                 try:
                     shutil.copy2(project_config_path, docs_config_path)
@@ -1350,7 +1350,7 @@ class MigrationsMixin:
         1. Check the memory folder under Documents; create it if missing
         2. Migrate all memory files and directories
         """
-        # 确保目录存在
+        # Ensure directory exists.
         if not self.ensure_memory_directory():
             self._log("Warning: Cannot create memory directory, using project memory")
             return
@@ -1367,24 +1367,24 @@ class MigrationsMixin:
         tombstoned = _tombstoned_character_names(self)
         live_characters = _live_character_names(self)
         
-        # 如果项目memory/store目录不存在，跳过
+        # Skip absent project memory/store directories.
         
-        # 一次未完成的拷贝不能留下半份目录。旧写法直接 copytree 到目标位置，
-        # 中途断电/进程被杀就会留下一个残缺的 memory/<name>/——而顶层跳过
-        # 看到目录已存在就再也不管它，那些文件从此进不来。没有读者会去看
-        # 项目根（facts、persona、settings、三个 sidecar、时间索引全部经由
-        # ensure_character_dir(memory_dir, name) 解析，项目根只在枚举时被
-        # 扫到），所以那个角色会被列进选择器却分析出一片空白。
+        # Interrupted copying must never leave partial directories. Direct copytree to destinations
+        # left incomplete memory/<name>/ after power loss/process termination; top-level existence
+        # checks then skipped them forever. Readers never consult project roots:
+        # facts/persona/settings/three sidecars/time indexes all resolve through
+        # ensure_character_dir(memory_dir,name), with project roots consulted only for
+        # enumeration. Characters appeared selectable but analysis was empty.
         #
-        # 先拷进同盘的暂存目录、成功后整体 rename 就位：要么目标完整存在，
-        # 要么根本不存在，没有中间态。中断后下次启动因为目标不存在会重新
-        # 完整拷一遍，比事后逐个补空缺更彻底——补空缺无法识别「被截断的
-        # 文件」，它同样满足 exists()。
+        # Copy to same-drive staging, then rename atomically: complete destinations or
+        # no destinations, never intermediate states. Interrupted startups retry whole copies because
+        # targets remain absent, stronger than filling gaps afterward, which cannot recognize
+        # truncated files also satisfying exists().
         #
-        # 反过来也重要：目标已存在时一律不碰。「文件不在运行时根」不等于
-        # 「它没拷过来」——云端导入会有意删掉受管文件并 unlink，用户也会
-        # 删。往里补会在每次启动复活它们，拿数据搁浅换数据删不掉，是更糟
-        # 的一边。
+        # Conversely leave existing targets untouched. Absent runtime files do not prove
+        # incomplete migration: cloud imports deliberately remove/unlink managed files, and users delete them.
+        # Filling gaps resurrects them every startup, replacing stranded data with undeletable data,
+        # a worse outcome.
         # INSIDE the try. A full disk, a read-only root or a permission problem
         # makes creating the staging root raise, and this runs on the startup
         # path -- outside the handler it would take get_config_manager() down
@@ -1400,9 +1400,9 @@ class MigrationsMixin:
                 return
             staging_root = self._prepare_migration_staging_root()
             for item in self.project_memory_dir.iterdir():
-                # 每个条目单独兜底。这个 try 原本只包在整个循环外面，于是
-                # 第一个失败的条目会把它后面所有角色和散文件一起留在项目
-                # 根里——比这次要修的那个缺口更糟。
+                # Catch failures per entry. Previously one try wrapped the whole loop,
+                # leaving all later characters/loose files stranded in project
+                # roots after the first failure, worse than this fix's original gap.
                 try:
                     # The workspace is still in use. Its mtime does not
                     # move on its own during a deep copytree, so without
@@ -1416,15 +1416,15 @@ class MigrationsMixin:
                         pass
                     dest_path = self.memory_dir / item.name
 
-                    # 目标已存在（任何类型、包括坏掉的符号链接）就不碰。
-                    # lexists 而不是 exists：断链的 exists() 是 False，
-                    # 而 copy2 会顺着它写到 memory_dir 外面去。
+                    # Leave any existing target type untouched, including broken symlinks.
+                    # Use lexists, not exists: broken links return False for exists,
+                    # and copy2 would follow them outside memory_dir.
                     if dest_path.is_symlink() or dest_path.exists():
                         continue
 
                     if item.is_symlink():
-                        # 种子目录里的链接不跟：拷它的目标等于把 memory_dir
-                        # 外面的东西搬进来。
+                        # Never follow links in seed directories, which would import their targets
+                        # from outside memory_dir.
                         print(
                             f"Warning: skip {item.name}: project entry is a symlink",
                             file=sys.stderr,
@@ -1438,9 +1438,9 @@ class MigrationsMixin:
                             # Deleted on purpose. Republishing the seed is
                             # how deleted history came back.
                             continue
-                        # 同样要原子化。散文件这一支原先是裸 copy2，中断会
-                        # 在目标留下一个被截断的文件——而「目标已存在就跳过」
-                        # 会把它永久当成迁移完成，正是目录那支要避免的东西。
+                        # Loose-file copies also need atomicity. Bare copy2 left truncated destination
+                        # files after interruption, then existing-target skips permanently
+                        # treated them as migrated, exactly the directory-path defect.
                         # mkstemp, NOT a name built from item.name: a source
                         # already close to the filesystem name limit pushes
                         # the staged name over it and the copy fails with
@@ -1550,9 +1550,9 @@ class MigrationsMixin:
                         # and comparing the bare name missed it.
                         continue
 
-                    # 同盘暂存 → 原子 rename。暂存目录用点前缀，且只在这
-                    # 一小段时间内存在；角色枚举只看目录名与已知文件模式，
-                    # 不会把它当成角色。
+                    # Same-drive staging -> atomic rename. Dot-prefixed staging directories exist
+                    # briefly; character enumeration checks names/known file patterns,
+                    # never mistaking them for characters.
                     # Straight into the run workspace, under the shortest
                     # name there is -- not a child named for the character,
                     # which would add the longest component of all to every
@@ -1633,7 +1633,7 @@ class MigrationsMixin:
         only logged, never raised — startup must not be blocked.
         """  # noqa: DOCSTRING_CJK
         try:
-            # get_legacy_app_root_candidates 已排除当前 app_docs_dir，且去重
+            # get_legacy_app_root_candidates already excludes current app_docs_dir and deduplicates.
             legacy_roots = list(self.get_legacy_app_root_candidates() or [])
         except Exception as exc:
             self._log(
@@ -1641,10 +1641,10 @@ class MigrationsMixin:
             )
             return
 
-        # CFA 回退场景：_readable_docs_dir 是只读原 Documents，也要纳入。
-        # 只读根意味着 rmtree 永远失败、target 永远存在，下面会基于
-        # readonly_legacy_roots 跳过 rmtree 并静默 target_exists 噪音，
-        # 避免每次启动都打"清理失败/已存在"的重复日志。
+        # CFA fallback: also include read-only original Documents in _readable_docs_dir.
+        # Read-only roots make rmtree always fail and targets remain; below,
+        # readonly_legacy_roots skips rmtree and suppresses target_exists noise,
+        # avoiding repeated cleanup-failed/already-exists startup logs.
         readonly_legacy_roots: set[str] = set()
         readable_docs = getattr(self, "_readable_docs_dir", None)
         if readable_docs:
@@ -1668,8 +1668,8 @@ class MigrationsMixin:
             )
             return
 
-        # characters.json 是用户可写边界；"猫娘" 字段若被损坏成 list / 字符串等
-        # 非空但非 dict 的值，.keys() 会抛 AttributeError 并被外层吞掉。
+        # characters.json is user-writable; nonempty nondict 猫娘 fields such as lists/strings
+        # make .keys() raise AttributeError, swallowed externally.
         catgirl_map = characters.get("猫娘")
         if not isinstance(catgirl_map, dict):
             if catgirl_map is not None:
@@ -1687,19 +1687,19 @@ class MigrationsMixin:
 
         known_characters = set(catgirl_map.keys())
         if not known_characters:
-            # characters.json 异常/为空时无从判断哪些应当迁移，直接退出。
+            # Invalid/empty characters.json cannot establish migration scope; exit directly.
             self._log(
                 "[ConfigManager] migrate_legacy_documents_memory: "
                 "characters.json 中无角色，跳过本次软迁移"
             )
             return
 
-        # 分项计数便于运维排查"到底为什么没迁"。隐藏/下划线前缀、未关联角色
-        # 这两类 skip 是正常 no-op，不单独计数。
+        # Per-category counts aid diagnosis of missing migration. Hidden/underscore prefixes and unlinked characters
+        # are ordinary no-ops, uncounted individually.
         migrated_count = 0
-        target_exists_count = 0  # runtime 已存在同名目录，保留 legacy 副本
-        non_dir_count = 0  # 命中角色名但条目不是目录（反常，需关注）
-        failed_count = 0  # copytree/rename 失败
+        target_exists_count = 0  # Runtime same-named directory exists; retain legacy copies.
+        non_dir_count = 0  # Character name matches nondirectory entries, anomalous and noteworthy.
+        failed_count = 0  # copytree/rename failure.
 
         def _legacy_error_summary(exc: BaseException) -> str:
             """
@@ -1718,9 +1718,9 @@ class MigrationsMixin:
                 return " ".join(parts)
             return type(exc).__name__
 
-        # 日志脱敏策略：所有 self._log 绝不包含完整 legacy 路径 / 角色目录名 /
-        # 用户 Documents 路径，只打 root 序号 + 计数 + 条目类型。这些日志可能
-        # 被收集到日志文件或遥测，泄露用户本地信息不值当。
+        # Log redaction: self._log never includes full legacy paths / character directory names /
+        # user Documents paths, only root indices/counts/entry types. Logs may enter
+        # files or telemetry; exposing local user information is unjustified.
         for legacy_root_index, legacy_root in enumerate(legacy_roots, start=1):
             source_is_readonly = str(legacy_root) in readonly_legacy_roots
             try:
@@ -1729,14 +1729,14 @@ class MigrationsMixin:
                 continue
             if not legacy_memory.exists() or not legacy_memory.is_dir():
                 continue
-            # 保护：绝不处理 runtime memory 自身（防御性重复检查）
+            # Guard: never process runtime memory itself, defensively rechecking.
             try:
                 if legacy_memory.resolve() == Path(self.memory_dir).resolve():
                     continue
             except Exception:
                 pass
 
-            # Per-root 兜底：权限错误或 I/O 错误不应中断后续 legacy roots 的迁移
+            # Per-root fallback: permission/I/O errors must not interrupt later legacy-root migration.
             try:
                 legacy_entries = list(legacy_memory.iterdir())
             except Exception as exc:
@@ -1749,18 +1749,18 @@ class MigrationsMixin:
             for entry in legacy_entries:
                 try:
                     entry_name = entry.name
-                    # 只过滤真正的隐藏条目（dot-file），其它形态的合法性交给
-                    # known_characters 裁定——用户如果把角色命名为 "_foo"，
-                    # 之前的 "_" 前缀黑名单会直接把它当临时条目静默跳过。
+                    # Filter genuine dot-hidden entries only; let known_characters decide
+                    # other validity. Users naming characters _foo
+                    # were silently skipped as temporary by the former underscore denylist.
                     if entry_name.startswith("."):
                         continue
 
-                    # 未关联条目交给手动清理按钮，此处不做任何操作
+                    # Leave unlinked entries for manual cleanup buttons; no action here.
                     if entry_name not in known_characters:
                         continue
 
-                    # runtime 角色记忆期望是目录结构（memory_dir/{name}/time_indexed.db
-                    # 等）；同名普通文件会占位并阻断后续写入，必须跳过。
+                    # Runtime character memory expects directories (memory_dir/{name}/time_indexed.db,
+                    # etc.); same-named regular files block later writes and must be skipped.
                     if not entry.is_dir():
                         non_dir_count += 1
                         self._log(
@@ -1770,13 +1770,13 @@ class MigrationsMixin:
                         continue
 
                     target = self.memory_dir / entry_name
-                    # target.exists() 对断链软链接返回 False（跟随软链找不到目标），
-                    # 但 os.replace 会直接覆盖该软链接，违反"绝不覆盖 runtime 已有
-                    # 目标"的语义。is_symlink() 不跟随，把断链也当成"已存在"。
+                    # target.exists() follows broken symlinks and returns False,
+                    # but os.replace overwrites links directly, violating never-overwrite-existing-runtime
+                    # semantics. is_symlink() does not follow, counting broken links as existing.
                     if target.exists() or target.is_symlink():
-                        # 只读根（如 CFA _readable_docs_dir）上的源永远删不掉，
-                        # target 存在是上一次成功迁移后的常态；静默跳过以免每次
-                        # 启动都打"已存在"日志噪音。可写根仍正常计数 + 打日志。
+                        # Read-only-root sources such as CFA _readable_docs_dir can never delete;
+                        # targets normally exist after successful prior migration. Skip quietly to avoid
+                        # repeated startup logs. Writable roots retain normal counts/logging.
                         if not source_is_readonly:
                             target_exists_count += 1
                             self._log(
@@ -1784,21 +1784,21 @@ class MigrationsMixin:
                                 f"目标已存在于 runtime，保留 legacy 副本避免覆盖"
                             )
                         continue
-                    # 跨盘 shutil.move 退化为 copy 时若半途失败，target 可能已
-                    # 存在但不完整，下次启动会被 target.exists() 跳过。改为
-                    # "复制到同父级临时路径 → 原子 rename → best-effort 清源"。
+                    # Cross-drive shutil.move falls back to copying; interruption can leave existing
+                    # partial targets skipped next startup. Instead copy into a sibling temporary
+                    # path, atomically rename, then best-effort remove sources.
                     temp_target = target.parent / f".{entry_name}.migrating-{uuid.uuid4().hex}"
                     try:
                         target.parent.mkdir(parents=True, exist_ok=True)
-                        # symlinks=False：跟随 legacy 源里的软链，把实际内容拷到
-                        # runtime。若保留软链（symlinks=True），legacy 里用户手动
-                        # 创建的、指向 memory_dir 外部的链接会让 runtime 的
-                        # memory_dir/{name}/time_indexed.db 写入逃出边界。
+                        # symlinks=False follows legacy links and copies actual contents into
+                        # runtime. Preserving manually created symlinks with symlinks=True
+                        # could point outside memory_dir and let runtime
+                        # memory_dir/{name}/time_indexed.db writes escape boundaries.
                         shutil.copytree(str(entry), str(temp_target), symlinks=False)
                         os.replace(str(temp_target), str(target))
-                        # 只读根（CFA _readable_docs_dir）上根本不可写，rmtree
-                        # 永远会抛 PermissionError。成功迁移后直接跳过清源，
-                        # 避免每次启动都打一遍"legacy 源清理失败"日志。
+                        # Read-only CFA _readable_docs_dir roots cannot write, so rmtree
+                        # always raises PermissionError. Skip source cleanup after successful migration,
+                        # avoiding repeated legacy-source-cleanup-failed startup logs.
                         if not source_is_readonly:
                             try:
                                 shutil.rmtree(str(entry))
@@ -1815,7 +1815,7 @@ class MigrationsMixin:
                         )
                     except Exception as exc:
                         failed_count += 1
-                        # 清理可能残留的临时目录/文件，避免下次启动误判
+                        # Remove leftover temporary files/directories to prevent misclassification next startup.
                         try:
                             if temp_target.exists():
                                 if temp_target.is_dir():

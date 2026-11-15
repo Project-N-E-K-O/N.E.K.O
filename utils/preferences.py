@@ -13,16 +13,13 @@
 # limitations under the License.
 
 import asyncio
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-import threading
 import time
 from typing import Dict, Any, Optional, List
-
-import portalocker
 
 from utils.config_manager import get_config_manager
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
@@ -35,11 +32,37 @@ from utils.conversation_settings_constants import (
     MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
 )
 from utils.file_utils import atomic_write_json
+from utils.logger_config import get_module_logger
+from utils.preferences_store_lock import (
+    PREFERENCES_THREAD_LOCK as _PREFERENCES_THREAD_LOCK,
+    PREFERENCES_LOCK_TIMEOUT_SECONDS as _PREFERENCES_LOCK_TIMEOUT_SECONDS,
+    preferences_store_lock,
+)
+from utils.preferences_sanitize import (
+    GLOBAL_CONVERSATION_KEY,
+    _MAX_SAFE_INT,
+    _NUMERIC_KEYS,
+    _PARAMETERS_MAX_KEY_LENGTH,
+    _sanitize_preferences_entries,
+    is_finite_json_number,
+    sanitize_preferences_payload,
+)
+from utils.preferences_audit import (
+    JOURNAL_KEY as _SETTINGS_JOURNAL_KEY,
+    attach_journal as _attach_settings_journal,
+    install_settings_attribution_context,
+    install_settings_capture_provider,
+    prepare_atomic_preferences as _prepare_atomic_preferences,
+    proactive_snapshot as _proactive_settings_snapshot,
+    read_journal as _read_settings_journal,
+    settings_attribution_context as _settings_attribution_context,
+    without_journal as _without_settings_journal,
+)
 
-# 初始化配置管理器
+# Initialize the configuration manager
 _config_manager = get_config_manager()
-_PREFERENCES_THREAD_LOCK = threading.RLock()
-_PREFERENCES_LOCK_TIMEOUT_SECONDS = 10
+
+logger = get_module_logger(__name__)
 
 
 def _get_preferences_read_path() -> str:
@@ -58,25 +81,32 @@ def _get_active_preferences_path() -> str:
 
 
 @contextmanager
-def _locked_preferences_store():
+def _locked_preferences_store(*, attribute=True, audit_origin="user"):
     """Serialize every user_preferences.json read-modify-write."""
     write_path = Path(_get_preferences_write_path())
-    write_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = write_path.with_name(f"{write_path.name}.lock")
-    with _PREFERENCES_THREAD_LOCK, portalocker.Lock(
-        str(lock_path),
-        mode="a+",
+    # Account fence must precede the preferences lock. Journal reads/acks do not
+    # acquire account state, and cannot reattribute already committed changes.
+    attribution = _settings_attribution_context(audit_origin) if attribute else nullcontext()
+    with attribution, preferences_store_lock(
+        write_path,
         timeout=_PREFERENCES_LOCK_TIMEOUT_SECONDS,
+        thread_lock=_PREFERENCES_THREAD_LOCK,
     ):
         yield
 
 
-# 用户偏好文件路径（从配置管理器获取）
+# User-preferences file path from the configuration manager
 PREFERENCES_FILE = _get_active_preferences_path()
+
 
 def load_user_preferences() -> List[Dict[str, Any]]:
     """
     Load user preferences
+
+    The decoded entries are sanitised in memory (see the M-001 block above): a
+    ``NaN`` / ``Infinity`` that survived a previous bad write is dropped here so
+    that readers -- and the HTTP response built from them -- stay usable. The file
+    is *not* rewritten; the next ordinary save persists the cleaned view.
 
     Returns:
         List[Dict[str, Any]]: list of per-model preference entries; empty list when the file is missing or unreadable
@@ -87,14 +117,14 @@ def load_user_preferences() -> List[Dict[str, Any]]:
         if os.path.exists(PREFERENCES_FILE):
             with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # 兼容旧格式：如果是字典格式，转换为列表格式
+                # Legacy compatibility: convert dictionary format to list format
                 if isinstance(data, dict):
                     if 'model_path' in data and 'position' in data and 'scale' in data:
-                        return [data]  # 将旧格式转换为列表
+                        return _sanitize_preferences_entries(_without_settings_journal([data]))
                     else:
                         return []
                 elif isinstance(data, list):
-                    return data
+                    return _sanitize_preferences_entries(_without_settings_journal(data))
                 else:
                     return []
     except Exception as e:
@@ -116,7 +146,16 @@ def _save_user_preferences_unlocked(preferences: List[Dict[str, Any]]) -> None:
     """Write an already-prepared preference list while the caller holds the lock."""
     global PREFERENCES_FILE
     PREFERENCES_FILE = _get_preferences_write_path()
-    atomic_write_json(PREFERENCES_FILE, preferences, ensure_ascii=False, indent=2)
+    previous = _load_preferences_data_for_write_unlocked()
+    committed = _prepare_atomic_preferences(previous, preferences)
+    # Settings and their journal share one temp-file + os.replace commit.
+    # allow_nan=False (M-001 / P0-1a): NaN / Infinity are not valid JSON and would
+    # poison the file for every later read. json.dumps() raises before
+    # atomic_write_text() touches the target, so a rejected write leaves the
+    # existing file byte-identical.
+    atomic_write_json(
+        PREFERENCES_FILE, committed, ensure_ascii=False, indent=2, allow_nan=False
+    )
 
 
 def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
@@ -131,7 +170,7 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
     """
     try:
         assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
-        # 确保配置目录存在
+        # Ensure the configuration directory exists
         _config_manager.ensure_config_directory()
         with _locked_preferences_store():
             _save_user_preferences_unlocked(preferences)
@@ -142,7 +181,7 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         print(f"保存用户偏好失败: {e}")
         return False
 
-def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
+def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None, *, parameters_mode: Optional[str] = None) -> bool:
     """Update one model without racing another preference-file writer."""
     try:
         assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
@@ -150,7 +189,7 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         with _locked_preferences_store():
             return _update_model_preferences_unlocked(
                 model_path, position, scale, parameters, display, rotation,
-                viewport, camera_position,
+                viewport, camera_position, parameters_mode=parameters_mode,
             )
     except MaintenanceModeError:
         raise
@@ -159,7 +198,7 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
         return False
 
 
-def _update_model_preferences_unlocked(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
+def _update_model_preferences_unlocked(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None, *, parameters_mode: Optional[str] = None) -> bool:
     """
     Update preferences of the given model
 
@@ -168,6 +207,7 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
         position (Dict[str, float]): position info {'x': float, 'y': float, 'z': float}
         scale (Dict[str, float]): scale info {'x': float, 'y': float, 'z': float}
         parameters (Optional[Dict[str, float]]): model parameters {'paramId': value}
+        parameters_mode (Optional[str]): 'replace' makes parameters the complete override snapshot
         display (Optional[Dict[str, float]]): display info {'screenX': float, 'screenY': float}, for multi-monitor position restore
         rotation (Optional[Dict[str, float]]): rotation info {'x': float, 'y': float, 'z': float}, for VRM model orientation
         viewport (Optional[Dict[str, float]]): viewport info {'width': float, 'height': float}, for cross-resolution position and scale normalization
@@ -176,86 +216,99 @@ def _update_model_preferences_unlocked(model_path: str, position: Dict[str, floa
         bool: True on success, False on failure
     """
     try:
-        # 拒绝保留键作为模型路径，防止破坏全局对话设置条目
+        # Reject reserved keys as model paths to avoid corrupting the global conversation-settings entry
         if model_path == GLOBAL_CONVERSATION_KEY:
             print(f"拒绝更新模型偏好：model_path 不能使用保留键 '{GLOBAL_CONVERSATION_KEY}'")
             return False
 
-        # 加载现有偏好
+        # Load existing preferences
         current_preferences = load_user_preferences()
         
-        # 查找是否已存在该模型的偏好（跳过哨兵）
+        # Find existing preferences for this model, skipping the sentinel
         model_index = -1
         for i, pref in enumerate(current_preferences):
             if pref.get('model_path') != GLOBAL_CONVERSATION_KEY and pref.get('model_path') == model_path:
                 model_index = i
                 break
         
-        # 创建新的模型偏好
+        # Create new model preferences
         new_model_pref = {
             'model_path': model_path,
             'position': position,
             'scale': scale
         }
         
-        # 如果有参数，添加到偏好中
+        # Add parameters if present
         if parameters is not None:
             new_model_pref['parameters'] = parameters
+        if parameters_mode is not None:
+            new_model_pref['parameters_mode'] = parameters_mode
 
-        # 如果有显示器信息，添加到偏好中（用于多屏幕位置恢复）
+        # Add monitor information if present, for multi-monitor position restoration
         if display is not None:
             new_model_pref['display'] = display
 
-        # 【新增】如果有旋转信息，添加到偏好中（用于VRM模型朝向）
+        # [New] Add rotation information if present, for VRM model orientation
         if rotation is not None:
             new_model_pref['rotation'] = rotation
 
-        # 如果有视口信息，添加到偏好中（用于跨分辨率位置和缩放归一化）
+        # Add viewport information if present, for position/scale normalization across resolutions
         if viewport is not None:
             new_model_pref['viewport'] = viewport
 
-        # 如果有相机位置信息，添加到偏好中（用于恢复VRM滚轮缩放状态）
+        # Add camera position if present, for restoring VRM wheel-zoom state
         if camera_position is not None:
             new_model_pref['camera_position'] = camera_position
         
         if model_index >= 0:
-            # 更新现有模型的偏好，保留已有的参数（如果新参数为None则不更新参数）
+            # Update existing model preferences, retaining parameters when the new parameters are None
             existing_pref = current_preferences[model_index]
             if parameters is not None:
                 existing_pref['parameters'] = parameters
             elif 'parameters' in existing_pref:
-                # 保留已有参数
+                # Retain existing parameters
                 new_model_pref['parameters'] = existing_pref['parameters']
-            # 处理显示器信息
+            if (
+                parameters_mode is None
+                and 'parameters_mode' in existing_pref
+                and 'parameters' in new_model_pref
+            ):
+                # Position/scale saves must not revive the legacy directory mirror.
+                # ``parameters_mode`` is a promise that ``parameters`` is a complete
+                # snapshot, so it may only travel together with the parameters it
+                # describes: copying it alone would persist an entry that can never
+                # pass ``validate_model_preferences`` again (M-001 / B-2).
+                new_model_pref['parameters_mode'] = existing_pref['parameters_mode']
+            # Handle monitor information
             if display is not None:
-                pass  # 已在上面添加到 new_model_pref
+                pass  # Already added to new_model_pref above
             elif 'display' in existing_pref:
-                # 保留已有显示器信息
+                # Retain existing monitor information
                 new_model_pref['display'] = existing_pref['display']
-            # 【新增】处理旋转信息
+            # [New] Handle rotation information
             if rotation is not None:
-                pass  # 已在上面添加到 new_model_pref
+                pass  # Already added to new_model_pref above
             elif 'rotation' in existing_pref:
-                # 保留已有旋转信息
+                # Retain existing rotation information
                 new_model_pref['rotation'] = existing_pref['rotation']
-            # 处理视口信息
+            # Handle viewport information
             if viewport is not None:
-                pass  # 已在上面添加到 new_model_pref
+                pass  # Already added to new_model_pref above
             elif 'viewport' in existing_pref:
-                # 保留已有视口信息
+                # Retain existing viewport information
                 new_model_pref['viewport'] = existing_pref['viewport']
-            # 处理相机位置信息
+            # Handle camera-position information
             if camera_position is not None:
-                pass  # 已在上面添加到 new_model_pref
+                pass  # Already added to new_model_pref above
             elif 'camera_position' in existing_pref:
-                # 保留已有相机位置信息
+                # Retain existing camera-position information
                 new_model_pref['camera_position'] = existing_pref['camera_position']
             current_preferences[model_index] = new_model_pref
         else:
-            # 添加新模型的偏好到列表开头（作为首选）
+            # Add new model preferences to the beginning of the list as the preferred model
             current_preferences.insert(0, new_model_pref)
         
-        # 保存更新后的偏好；外层持有覆盖 load→save 的锁。
+        # Save updated preferences; the outer scope holds the lock across load→save.
         _save_user_preferences_unlocked(current_preferences)
         return True
     except Exception as e:
@@ -280,13 +333,13 @@ def get_model_preferences(model_path: Optional[str] = None) -> Optional[Dict[str
         return None
     
     if model_path:
-        # 查找指定模型的偏好
+        # Find preferences for the specified model
         for pref in preferences:
             if pref.get('model_path') == model_path:
                 return pref
         return None
     else:
-        # 返回首选模型（列表第一个）的偏好，跳过哨兵
+        # Return preferences for the preferred model (first in the list), skipping the sentinel
         for pref in preferences:
             if pref.get('model_path') != GLOBAL_CONVERSATION_KEY:
                 return pref
@@ -305,34 +358,120 @@ def get_preferred_model_path() -> Optional[str]:
             return pref.get('model_path')
     return None
 
+_MAX_MODEL_PATH_LENGTH = 4096
+
+
+def _numeric_mapping_is_valid(
+    value: Any,
+    *,
+    required_keys: tuple = (),
+    positive_keys: tuple = (),
+) -> bool:
+    """Validate a JSON mapping of numbers (``position``, ``scale``, ...).
+
+    Only keys listed in :data:`_NUMERIC_KEYS` are treated as numbers; anything
+    else is ignored so that a future extra field cannot turn this into a false
+    rejection. Every numeric key present must be a finite JSON number, and the
+    ``positive_keys`` subset must also be strictly positive.
+    """
+    if not isinstance(value, dict):
+        return False
+    for key in required_keys:
+        if key not in value:
+            return False
+    for key, item in value.items():
+        if key not in _NUMERIC_KEYS:
+            continue
+        if not is_finite_json_number(item):
+            return False
+        if key in positive_keys and item <= 0:
+            return False
+    return True
+
+
 def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
     """
     Validate that model preferences contain the required fields
-    
+
+    The numeric contract lives here, in the service, and not only in the three
+    browser clients: they all guard ``position``/``scale`` with
+    ``Number.isFinite`` while ``parameters`` values reach the file unguarded, and
+    a non-finite number is what poisoned ``user_preferences.json`` in the first
+    place (M-001).
+
     Args:
         preferences (Dict[str, Any]): model preferences to validate
-        
+
     Returns:
         bool: True when valid, False otherwise
     """
-    required_fields = ['model_path', 'position', 'scale']
-    
-    # 检查必要字段是否存在
-    for field in required_fields:
-        if field not in preferences:
+    if not isinstance(preferences, dict):
+        return False
+
+    model_path = preferences.get('model_path')
+    if (
+        not isinstance(model_path, str)
+        or not model_path
+        or len(model_path) > _MAX_MODEL_PATH_LENGTH
+        or '\x00' in model_path
+    ):
+        return False
+
+    # position / scale are mandatory and carry the placement of the model.
+    if not _numeric_mapping_is_valid(preferences.get('position'), required_keys=('x', 'y')):
+        return False
+    # A scale of zero or less makes the model disappear; no client produces one.
+    if not _numeric_mapping_is_valid(
+        preferences.get('scale'), required_keys=('x', 'y'), positive_keys=('x', 'y')
+    ):
+        return False
+
+    # Optional mappings: validate whatever numeric keys they carry. An explicit
+    # JSON null is treated as "absent", which is how these were always accepted.
+    for field in ('rotation', 'camera_position', 'display'):
+        if field in preferences and preferences[field] is not None and not _numeric_mapping_is_valid(preferences[field]):
             return False
-    
-    # 检查position和scale是否包含必要的子字段
-    if not isinstance(preferences.get('position'), dict) or 'x' not in preferences['position'] or 'y' not in preferences['position']:
+
+    # viewport is meaningless without both dimensions, so require them when present.
+    if (
+        'viewport' in preferences
+        and preferences['viewport'] is not None
+        and not _numeric_mapping_is_valid(
+            preferences['viewport'],
+            required_keys=('width', 'height'),
+            positive_keys=('width', 'height'),
+        )
+    ):
         return False
-    
-    if not isinstance(preferences.get('scale'), dict) or 'x' not in preferences['scale'] or 'y' not in preferences['scale']:
+
+    # parameters is optional, but must be a dictionary of finite numbers when present
+    if 'parameters' in preferences:
+        parameters = preferences['parameters']
+        if not isinstance(parameters, dict):
+            return False
+        for key, value in parameters.items():
+            if (
+                not isinstance(key, str)
+                or len(key) > _PARAMETERS_MAX_KEY_LENGTH
+                or not is_finite_json_number(value)
+            ):
+                return False
+
+    if 'parameters_mode' in preferences and (
+        preferences['parameters_mode'] != 'replace' or 'parameters' not in preferences
+    ):
         return False
-    
-    # parameters 是可选的，但如果存在，必须是字典
-    if 'parameters' in preferences and not isinstance(preferences['parameters'], dict):
+
+    # The checks above only know the documented numeric keys. Anything else in
+    # the request (an unknown key inside ``position``, a nested value, a new
+    # top-level field) still reaches the strict writer, which would refuse it and
+    # turn bad input into a 500. Apply the writer's own rule to the whole payload
+    # so every non-finite number is a validation failure, i.e. a 400.
+    try:
+        json.dumps(preferences, allow_nan=False)
+    except (TypeError, ValueError):
         return False
-    
+
     return True
 
 def move_model_to_top(model_path: str) -> bool:
@@ -362,7 +501,7 @@ def _move_model_to_top_unlocked(model_path: str) -> bool:
     try:
         preferences = load_user_preferences()
         
-        # 查找模型索引（跳过哨兵）
+        # Find the model index, skipping the sentinel
         model_index = -1
         for i, pref in enumerate(preferences):
             if pref.get('model_path') != GLOBAL_CONVERSATION_KEY and pref.get('model_path') == model_path:
@@ -370,13 +509,13 @@ def _move_model_to_top_unlocked(model_path: str) -> bool:
                 break
         
         if model_index >= 0:
-            # 将模型移动到顶部
+            # Move the model to the top
             model_pref = preferences.pop(model_index)
             preferences.insert(0, model_pref)
             _save_user_preferences_unlocked(preferences)
             return True
         else:
-            # 如果模型不存在，返回False
+            # Return False if the model does not exist
             return False
     except Exception as e:
         if isinstance(e, MaintenanceModeError):
@@ -385,9 +524,8 @@ def _move_model_to_top_unlocked(model_path: str) -> bool:
         return False
 
 
-# ========== 全局对话设置（用于 localStorage 同步备份）==========
+# ========== Global conversation settings (localStorage synchronized backup) ==========
 
-GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
@@ -405,6 +543,8 @@ class ConversationSettingsWriteResult:
     success: bool
     conflict: bool
     snapshot: ConversationSettingsSnapshot
+    # Pre-save snapshot read under the same lock (available only after a successful write), allowing callers to detect switch transitions
+    previous: Optional[ConversationSettingsSnapshot] = None
 
 
 def _normalize_conversation_settings_revision(value: Any) -> int:
@@ -692,7 +832,7 @@ def load_global_entry_flags() -> Dict[str, Any]:
             if isinstance(data, list):
                 for pref in data:
                     if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
-                        return {k: v for k, v in pref.items() if k != "model_path"}
+                        return {k: v for k, v in pref.items() if k not in {"model_path", _SETTINGS_JOURNAL_KEY}}
     except Exception as e:
         print(f"加载全局开关集合失败: {e}")
     return {}
@@ -761,7 +901,14 @@ async def ais_privacy_mode_enabled() -> bool:
 
 
 def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:
-    """Load the latest write-root snapshot while the caller holds the lock."""
+    """Load the latest write-root snapshot while the caller holds the lock.
+
+    The snapshot is sanitised before it is handed back (M-001): every global
+    settings writer below reads this file, modifies one entry and writes the
+    whole payload again with ``allow_nan=False``. A model entry poisoned by an
+    older build would otherwise make that write fail forever, so the read heals
+    it in memory -- nothing is written here, and which file is read is unchanged.
+    """
     global PREFERENCES_FILE
     write_path = _get_preferences_write_path()
     read_path = _get_preferences_read_path()
@@ -777,11 +924,7 @@ def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:
         PREFERENCES_FILE = write_path
         data = []
 
-    if isinstance(data, dict):
-        return [data]
-    if isinstance(data, list):
-        return data
-    return []
+    return sanitize_preferences_payload(data)
 
 
 def save_global_conversation_settings_versioned(
@@ -790,6 +933,7 @@ def save_global_conversation_settings_versioned(
     expected_revision: Optional[int] = None,
     asr_decision: Optional[Dict[str, Any]] = None,
     full_snapshot: bool = False,
+    audit_origin: str = "user",
 ) -> ConversationSettingsWriteResult:
     """Compare-and-set a partial conversation-settings update."""
     empty_snapshot = ConversationSettingsSnapshot(
@@ -806,7 +950,7 @@ def save_global_conversation_settings_versioned(
         ):
             incoming_decision = None
 
-        with _locked_preferences_store():
+        with _locked_preferences_store(audit_origin=audit_origin):
             data = _load_preferences_data_for_write_unlocked()
             current = _snapshot_from_preferences_data(data)
             if expected_revision is not None and expected_revision != current.revision:
@@ -886,7 +1030,7 @@ def save_global_conversation_settings_versioned(
 
             snapshot = _snapshot_from_preferences_data(data) if changed else current
             return ConversationSettingsWriteResult(
-                success=True, conflict=False, snapshot=snapshot
+                success=True, conflict=False, snapshot=snapshot, previous=current
             )
     except MaintenanceModeError:
         raise
@@ -897,6 +1041,86 @@ def save_global_conversation_settings_versioned(
         )
 
 
-def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
+def save_global_conversation_settings(settings: Dict[str, Any], *, audit_origin: str = "user") -> bool:
     """Backward-compatible unconditional wrapper for internal writers."""
-    return save_global_conversation_settings_versioned(settings).success
+    return save_global_conversation_settings_versioned(settings, audit_origin=audit_origin).success
+
+
+def pending_settings_changes(limit: int = 100) -> List[Dict[str, Any]]:
+    """Read committed changes for all original owners; never bind anonymous history."""
+    if type(limit) is not int or not 1 <= limit <= 4096:
+        raise ValueError("Settings journal limit must be between 1 and 4096")
+    with _locked_preferences_store(attribute=False):
+        return _read_settings_journal(_load_preferences_data_for_write_unlocked())["entries"][:limit]
+
+
+def settings_capture_status() -> Dict[str, Any]:
+    """Minimal local diagnostic; no raw entries or values leave this boundary."""
+    with _locked_preferences_store(attribute=False):
+        journal = _read_settings_journal(_load_preferences_data_for_write_unlocked())
+        return {"scope": "all_local_accounts", "statistics_incomplete": bool(journal.get("incomplete")),
+                "protocol_version": journal.get("protocol_version", 1)}
+
+
+def reserve_current_settings_snapshot(owner, capture_provider) -> Dict[str, Any]:
+    """Reserve the shared revision without changing any current setting value.
+
+    Composition must already hold the credential attribution fence. This uses
+    only the preferences lock, preserving credential -> preferences -> SQLite
+    ordering. The snapshot has no custody promise until Store admission.
+    """
+    assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+    with _locked_preferences_store(attribute=False):
+        data = _load_preferences_data_for_write_unlocked()
+        journal = _read_settings_journal(data)
+        if journal["revision"] >= 2**53 - 1:
+            raise ValueError("Settings revision exhausted")
+        context = capture_provider(owner)
+        if not isinstance(context, dict) or context.get("owner_key") != owner.get("key"):
+            raise ValueError("Current settings capture unavailable")
+        snapshot = _proactive_settings_snapshot(data)
+        journal["revision"] += 1
+        committed = _attach_settings_journal(data, journal)
+        atomic_write_json(_get_preferences_write_path(), committed, ensure_ascii=False, indent=2)
+        return {"context": context, "payload": {"revision": journal["revision"], "origin": "baseline",
+                "occurred_at": time.time(), "previous": snapshot, "settings": snapshot}}
+
+
+def acknowledge_settings_changes(ids) -> int:
+    """Remove only IDs already durably handed to an outbox, or confirmed by cloud.
+
+    This function is synchronous; asynchronous workers must offload it to a
+    thread. A failed atomic write propagates and leaves the original journal.
+    """
+    confirmed = set(ids)
+    if not confirmed or any(not isinstance(value, str) for value in confirmed):
+        if confirmed:
+            raise ValueError("Settings acknowledgement IDs must be strings")
+        return 0
+    assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+    with _locked_preferences_store(attribute=False):
+        data = _load_preferences_data_for_write_unlocked()
+        journal = _read_settings_journal(data)
+        remaining = [entry for entry in journal["entries"] if entry["id"] not in confirmed]
+        count = len(journal["entries"]) - len(remaining)
+        if count:
+            journal["entries"] = remaining
+            committed = _attach_settings_journal(data, journal)
+            atomic_write_json(_get_preferences_write_path(), committed, ensure_ascii=False, indent=2)
+        return count
+
+
+async def apending_settings_changes(limit: int = 100) -> List[Dict[str, Any]]:
+    return await asyncio.to_thread(pending_settings_changes, limit)
+
+
+async def aacknowledge_settings_changes(ids) -> int:
+    return await asyncio.to_thread(acknowledge_settings_changes, ids)
+
+
+async def asave_global_conversation_settings(settings: Dict[str, Any], *, audit_origin: str = "user") -> bool:
+    return await asyncio.to_thread(save_global_conversation_settings, settings, audit_origin=audit_origin)
+
+
+async def asave_global_conversation_settings_versioned(settings: Dict[str, Any], **kwargs) -> ConversationSettingsWriteResult:
+    return await asyncio.to_thread(save_global_conversation_settings_versioned, settings, **kwargs)

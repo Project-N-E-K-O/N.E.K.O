@@ -36,7 +36,7 @@ async def test_cancel_during_a_reroll_is_not_undone_by_the_resume():
     client = _make_client()
     generation = client._begin_response_generation()
 
-    # stream_text 的 reroll：先暂停本世代，再在重试成功后恢复。
+    # For stream_text rerolls, pause this generation first and resume it after a successful retry.
     assert client._pause_response_generation(generation) is True
     await client.cancel_response()
 

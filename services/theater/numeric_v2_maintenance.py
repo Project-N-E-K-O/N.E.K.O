@@ -1,4 +1,4 @@
-"""Numeric v2 启动核查和可恢复剧本删除事务。"""  # noqa: DOCSTRING_CJK
+"""Numeric v2 startup verification and recoverable script-deletion transactions."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
+import portalocker
+
 from .numeric_v2_archive import (
     FORGET_MARKER_DIRNAME,
     PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
@@ -24,7 +26,7 @@ from .numeric_v2_archive import (
     NumericV2ArchiveStore,
     quarantined_file_name,
 )
-from .numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageError, NumericV2PackageNotFoundError
+from .numeric_v2_registry import NumericV2PackageRegistry, NumericV2PackageError, NumericV2PackageExistsError, NumericV2PackageNotFoundError
 from .numeric_v2_runtime import NumericV2RuntimeError
 from .numeric_v2_store import (
     NumericV2SessionStore,
@@ -46,9 +48,9 @@ from .numeric_v2_storage_transaction import discard_temporary_file, run_storage_
 # duplicate sessions are distinct ledgers, not copies of a surviving session, so
 # only an explicit delete or forget (in its rollback-safe transaction) erases them.
 DELETE_TRANSACTION_SCHEMA = "neko.script.delete_transaction.numeric.v2"
-# 损坏的 story_sessions.json 是可重建的派生缓存；移入独立目录保存，不参与裁剪删除。
+# Corrupt story_sessions.json is a rebuildable derived cache; preserve it in a separate directory excluded from pruning.
 INDEX_QUARANTINE_DIRNAME = "quarantine_indexes"
-# 这些状态只需清理事务目录，绝不重放备份。
+# These states require only transaction-directory cleanup; never replay backups.
 _SETTLED_DELETE_TRANSACTION_STATES = frozenset({"committed", "rolled_back", "superseded"})
 # Backup subdirectory for quarantined session files inside a delete transaction.
 _QUARANTINED_SESSION_BACKUP_DIRNAME = "quarantined_sessions"
@@ -285,8 +287,8 @@ def recover_numeric_v2_delete_transactions(theater_root: Path) -> set[str]:
     for transaction_dir in sorted(path for path in root.iterdir() if path.is_dir()):
         manifest_path = transaction_dir / "manifest.json"
         if not manifest_path.is_file():
-            # destructive 阶段只会在 prepared manifest 落盘后开始；这里仅是
-            # 备份阶段中断留下的临时目录，可以直接清理。
+            # The destructive phase starts only after a prepared manifest is persisted; this is merely
+            # a temporary directory left by interruption during backup and can be cleaned directly.
             shutil.rmtree(transaction_dir, ignore_errors=True)
             continue
         try:
@@ -705,7 +707,7 @@ def _quarantine_session(path: Path, quarantine_root: Path, reason: str) -> None:
 
 
 def _caused_by_os_error(exc: BaseException) -> bool:
-    """识别被业务异常包装的暂时性文件系统错误。"""  # noqa: DOCSTRING_CJK
+    """Identify transient filesystem errors wrapped in application exceptions."""  # noqa: DOCSTRING_CJK
 
     current: BaseException | None = exc
     seen: set[int] = set()
@@ -729,7 +731,7 @@ def audit_numeric_v2_storage(
     character_ids_by_name: Mapping[str, str] | None = None,
     skip_story_ids: frozenset[str] | set[str] = frozenset(),
 ) -> dict[str, int]:
-    """启动/维护时全盘复验；日常恢复路径不扫描 Session 目录。"""  # noqa: DOCSTRING_CJK
+    """Perform full verification on startup/maintenance; ordinary recovery does not scan the Session directory."""  # noqa: DOCSTRING_CJK
 
     session_root = Path(theater_root) / "numeric_v2" / "sessions"
     quarantine_root = Path(theater_root) / "numeric_v2" / SESSION_QUARANTINE_DIRNAME
@@ -766,7 +768,7 @@ def audit_numeric_v2_storage(
                 try:
                     package_path.stat()
                 except FileNotFoundError:
-                    # 已删除剧本留下的孤儿 Session 属于可确定的数据失效，不应当作暂时性 I/O 故障。
+                    # Orphan Sessions from deleted scripts are definitively invalid data, not temporary I/O failures.
                     raise NumericV2StoreError(
                         "numeric_session_story_missing"
                     ) from None
@@ -790,8 +792,8 @@ def audit_numeric_v2_storage(
                     "story_package_hash_mismatch",
                 }:
                     raise
-                # 合法旧 Session 不能因剧本升级被隔离；保留它供用户结束或删除，
-                # 日常恢复仍会走严格重放并拒绝继续旧版本剧情。
+                # Do not quarantine valid old Sessions because a script was upgraded; retain them for users to end or delete,
+                # while ordinary recovery still strictly replays and refuses to continue old-version stories.
                 store._validate_lifecycle_chain(stored)
             effective_character_id = summary["character_id"] or known_characters.get(
                 summary["catgirl_name"],
@@ -812,7 +814,7 @@ def audit_numeric_v2_storage(
             )
         except (NumericV2StoreError, NumericV2RuntimeError, NumericV2PackageError, NumericV2PackageNotFoundError, OSError) as exc:
             if _caused_by_os_error(exc):
-                # 权限、挂载或设备故障可能只是暂时状态；本轮中止，绝不移动仍可能有效的数据。
+                # Permission, mount, or device failures may be transient; abort this run without moving potentially valid data.
                 raise NumericV2StoreError(
                     "numeric_session_audit_read_failed"
                 ) from exc
@@ -827,7 +829,7 @@ def audit_numeric_v2_storage(
                     exc_info=True,
                 )
 
-    # 索引是派生缓存：内容损坏时隔离后按 Session 文件重建；暂时性 I/O 故障仍中止本轮。
+    # The index is a derived cache: quarantine corrupt content and rebuild from Session files; transient I/O failures still abort this run.
     old_index = _read_story_session_slots_or_quarantine(index_path)
     slots: dict[
         tuple[str, str],
@@ -872,6 +874,29 @@ def audit_numeric_v2_storage(
     return {"valid": sum(len(slots) for story_id, slots in rebuilt.items() if story_id not in unloadable_stories), "quarantined": quarantined}
 
 
+def install_bundled_numeric_v2_packages(registry: NumericV2PackageRegistry, bundled_root: Path) -> None:
+    """Seed this release's stories once, preserving imported files and later deletions."""
+    marker = registry.root.parent / "bundled_stories.json"
+    if (marker.exists() or not bundled_root.is_dir()
+            or _RECOVERY_BLOCKED_STORIES.get(str(registry.root.parent.parent.resolve()))):
+        return
+    registry.root.parent.mkdir(parents=True, exist_ok=True)
+    # Other processes may initialize the same profile; publish the marker only
+    # after every package is installed or an existing same-ID file is preserved.
+    with portalocker.Lock(str(marker.with_suffix(".lock")), mode="a", timeout=10):
+        if marker.exists():
+            return
+        story_ids = []
+        for path in sorted(bundled_root.glob("*.json")):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                registry.import_package(payload)
+            except NumericV2PackageExistsError:
+                pass
+            story_ids.append(payload["meta"]["story_id"])
+        _atomic_write_manifest(marker, {"story_ids": story_ids})
+
+
 def maintain_numeric_v2_storage_once(
     theater_root: Path,
     registry: NumericV2PackageRegistry,
@@ -880,7 +905,7 @@ def maintain_numeric_v2_storage_once(
     assert_writable: Callable[[], None] | None = None,
     write_transaction=nullcontext,
 ) -> dict[str, int] | None:
-    """每个运行根仅在冷启动初始化时执行一次恢复和全盘核查。"""  # noqa: DOCSTRING_CJK
+    """Run recovery and full verification only once per runtime root during cold-start initialization."""  # noqa: DOCSTRING_CJK
 
     key = str(Path(theater_root).resolve())
     with _MAINTENANCE_LOCK:
@@ -889,7 +914,7 @@ def maintain_numeric_v2_storage_once(
         if callable(character_ids_by_name):
             character_ids_by_name = character_ids_by_name()
         with write_transaction():
-            # 冷启动恢复、默认包安装和索引重建都会写盘，必须服从与云存档相同的写栅栏。
+            # Cold-start recovery and index rebuilding write to disk and must obey the same write fence as cloud saves.
             if assert_writable is not None:
                 assert_writable()
             blocked_stories = frozenset(recover_numeric_v2_delete_transactions(theater_root))
@@ -899,7 +924,6 @@ def maintain_numeric_v2_storage_once(
             purge_result = recover_character_purge_intents(
                 theater_root, character_ids_by_name,
             )
-            registry.ensure_default_packages()
             result = audit_numeric_v2_storage(
                 theater_root,
                 registry,
@@ -920,8 +944,8 @@ def maintain_numeric_v2_storage_once(
             result.update(archive_store.cleanup_receipts(
                 active_session_ids, skip_story_ids=blocked_stories,
             ))
-            # 损坏的公开冷档案会让角色改名/删除的严格快照对所有角色失败；
-            # 与坏档 Session 一样移入隔离区，但使用独立目录，不参与数量裁剪删除。
+            # Corrupt public cold archives cause strict character-rename/deletion snapshots to fail for every character;
+            # quarantine them like corrupt Sessions, but in a separate directory excluded from count-based pruning.
             archives_quarantined = archive_store.quarantine_invalid_public_archives(
                 Path(theater_root) / "numeric_v2" / PUBLIC_ARCHIVE_QUARANTINE_DIRNAME,
                 skip_story_ids=blocked_stories,
@@ -934,6 +958,7 @@ def maintain_numeric_v2_storage_once(
 
 
 __all__ = [
+    "install_bundled_numeric_v2_packages",
     "CHARACTER_PURGE_INTENT_SCHEMA",
     "INDEX_QUARANTINE_DIRNAME",
     "NumericV2PurgeIntentError",

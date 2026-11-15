@@ -42,10 +42,10 @@ async def check_file_exists(path: str = None):
         if not path:
             return JSONResponse(content={"exists": False}, status_code=400)
         
-        # 解码URL编码的路径
+        # Decode the URL-encoded path
         decoded_path = unquote(path)
         
-        # Windows路径处理 - normalize slashes
+        # Windows path handling - normalize slashes
         if os.name == 'nt':
             decoded_path = decoded_path.replace('/', '\\')
         
@@ -88,60 +88,60 @@ async def find_first_image(folder: str = None):
     MAX_IMAGE_SIZE = 1 * 1024 * 1024  # 1MB
     
     try:
-        # 检查参数有效性
+        # Validate parameters
         if not folder:
             logger.warning("收到空的文件夹路径请求")
             return JSONResponse(content={"success": False, "error": "无效的文件夹路径"}, status_code=400)
         
-        # 安全警告日志记录
+        # Log security warnings
         logger.warning(f"预览图片查找请求: {folder}")
         
-        # 获取基础目录和允许访问的目录列表
+        # Get the base directory and the list of accessible directories
         base_dir = _get_app_root()
         allowed_dirs = [
             os.path.realpath(os.path.join(base_dir, 'static')),
             os.path.realpath(os.path.join(base_dir, 'assets'))
         ]
         
-        # 添加"我的文档/Xiao8"目录到允许列表
-        if os.name == 'nt':  # Windows系统
+        # Add the 'My Documents/Xiao8' directory to the allowlist
+        if os.name == 'nt':  # Windows systems
             documents_path = os.path.join(os.path.expanduser('~'), 'Documents', 'Xiao8')
             if os.path.exists(documents_path):
                 real_doc_path = os.path.realpath(documents_path)
                 allowed_dirs.append(real_doc_path)
                 logger.info(f"find-first-image: 添加允许的文档目录: {real_doc_path}")
         
-        # 解码URL编码的路径
+        # Decode the URL-encoded path
         decoded_folder = unquote(folder)
         
-        # Windows路径处理
+        # Windows path handling
         if os.name == 'nt':
             decoded_folder = decoded_folder.replace('/', '\\')
         
-        # 额外的安全检查：拒绝包含路径遍历字符的请求
+        # Additional security check: reject requests containing path-traversal characters
         if '..' in decoded_folder or '//' in decoded_folder:
             logger.warning(f"检测到潜在的路径遍历攻击: {decoded_folder}")
             return JSONResponse(content={"success": False, "error": "无效的文件夹路径"}, status_code=403)
         
-        # 规范化路径以防止路径遍历攻击
+        # Normalize paths to prevent path-traversal attacks
         try:
             real_folder = os.path.realpath(decoded_folder)
         except Exception as e:
             logger.error(f"路径规范化失败: {e}")
             return JSONResponse(content={"success": False, "error": "无效的文件夹路径"}, status_code=400)
         
-        # 检查路径是否在允许的目录内 - 使用 commonpath 防止前缀攻击
+        # Check that the path is inside an allowed directory; commonpath prevents prefix attacks
         is_allowed = any(_is_path_within_base(allowed_dir, real_folder) for allowed_dir in allowed_dirs)
         
         if not is_allowed:
             logger.warning(f"访问被拒绝：路径不在允许的目录内 - {real_folder}")
             return JSONResponse(content={"success": False, "error": "无效的文件夹路径"}, status_code=403)
         
-        # 检查文件夹是否存在
+        # Check whether the folder exists
         if not os.path.exists(real_folder) or not os.path.isdir(real_folder):
             return JSONResponse(content={"success": False, "error": "无效的文件夹路径"}, status_code=400)
         
-        # 只查找指定的8个预览图片名称，按优先级顺序
+        # Search only the eight specified preview-image names, in priority order
         preview_image_names = [
             'preview.jpg', 'preview.png',
             'thumbnail.jpg', 'thumbnail.png',
@@ -152,24 +152,24 @@ async def find_first_image(folder: str = None):
         for image_name in preview_image_names:
             image_path = os.path.join(real_folder, image_name)
             try:
-                # 检查文件是否存在
+                # Check whether the file exists
                 if os.path.exists(image_path) and os.path.isfile(image_path):
-                    # 检查文件大小是否小于 1MB
+                    # Check whether the file is smaller than 1MB
                     file_size = os.path.getsize(image_path)
                     if file_size >= MAX_IMAGE_SIZE:
                         logger.info(f"跳过大于1MB的图片: {image_name} ({file_size / 1024 / 1024:.2f}MB)")
                         continue
                     
-                    # 再次验证图片文件路径是否在允许的目录内 - 使用 commonpath 防止前缀攻击
+                    # Recheck that the image path is inside an allowed directory; commonpath prevents prefix attacks
                     real_image_path = os.path.realpath(image_path)
                     if any(_is_path_within_base(allowed_dir, real_image_path) for allowed_dir in allowed_dirs):
-                        # 只返回相对路径或文件名，不返回完整的文件系统路径，避免信息泄露
-                        # 计算相对于base_dir的相对路径
+                        # Return only a relative path or filename, not a full filesystem path, to avoid information disclosure
+                        # Calculate the path relative to base_dir
                         try:
                             relative_path = os.path.relpath(real_image_path, base_dir)
                             return JSONResponse(content={"success": True, "imagePath": relative_path})
                         except ValueError:
-                            # 如果无法计算相对路径（例如跨驱动器），只返回文件名
+                            # If a relative path cannot be calculated (such as across drives), return only the filename
                             return JSONResponse(content={"success": True, "imagePath": image_name})
             except Exception as e:
                 logger.error(f"检查图片文件 {image_name} 失败: {e}")

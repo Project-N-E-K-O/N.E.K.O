@@ -105,6 +105,7 @@ test('VRM return-ball drag dispatches one terminal event with aggregated physica
     },
     cancelAnimationFrame: (id) => rafCallbacks.delete(id),
     setTimeout: () => 0,
+    _isNekoIdleCat1PlaygroundEntryOrDropActive: () => false,
     _dispatchNekoIdleReturnBallManualMove: (target, reason, detail) => {
       terminalCalls.push({ target, reason, detail });
     }
@@ -222,7 +223,9 @@ test('cat walk producer aggregates actual step path once', () => {
 });
 
 test('cat1 small move keeps plan facts after clearing its active plan', () => {
-  const finishSource = sourceBetween(
+  const finishSource = sourceBetween(journeyPath,
+    'function _pauseNekoIdleCat1JourneyForGravity', 'function _getNekoIdleCurrentLanlanName'
+  ) + sourceBetween(
     journeyPath,
     'function _finishNekoIdleCat1PairMove(button)',
     'function _stepNekoIdleCat1PairMove'
@@ -246,6 +249,7 @@ test('cat1 small move keeps plan facts after clearing its active plan', () => {
   };
   const context = {
     Math,
+    window: {},
     _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW: profile,
     _NEKO_CAT_MIND_ACTION_RESULTS: { DONE: 'done' },
     _applyNekoIdleCat1PairMovePlan: () => {},

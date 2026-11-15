@@ -50,7 +50,7 @@ TTS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash
 
 async def run(args: argparse.Namespace, log: logging.Logger) -> int:
     cfg = get_config_manager().get_core_config()
-    # DashScope key（走 ASSIST_API_KEY_QWEN），而非 AUDIO_API_KEY（= lanlan.app 免费代理 token）
+    # DashScope key via ASSIST_API_KEY_QWEN, not AUDIO_API_KEY (the lanlan.app free-proxy token).
     token = (cfg.get("ASSIST_API_KEY_QWEN") or "").strip()
     if not token:
         log.error("ASSIST_API_KEY_QWEN not set in config")

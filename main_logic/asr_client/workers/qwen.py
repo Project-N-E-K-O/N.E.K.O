@@ -35,6 +35,7 @@ from ..delivery import (
     TransportDeliveryEvidence,
     begin_transport_write,
     complete_transport_write,
+    retire_interval_deliveries,
     delivery_evidence,
     log_delivery_phase,
 )
@@ -717,7 +718,7 @@ async def _qwen_sender(
             try:
                 if request.kind == "audio":
                     state.last_utterance_id = request.utterance_id
-                    delivery = begin_transport_write(request_queue)
+                    delivery = begin_transport_write(request_queue, delivery_spans=request.delivery_spans)
                     state.delivery = delivery
                     await ws.send(
                         json.dumps(
@@ -733,6 +734,7 @@ async def _qwen_sender(
                     complete_transport_write(
                         delivery, len(request.audio), generation=request.generation,
                         buffer_epoch=request.buffer_epoch, provider="qwen",
+                            delivery_spans=request.delivery_spans, takes_ownership=True,
                     )
                     state.wire_audio_bytes += len(request.audio)
                     continue
@@ -884,6 +886,8 @@ async def _qwen_sender(
                 )
                 return "error", request
             finally:
+                if request.kind == "audio":
+                    retire_interval_deliveries(request_queue, only_spans=request.delivery_spans)
                 hold = audio_holds.pop(id(request), None)
                 if hold is not None:
                     hold.release()

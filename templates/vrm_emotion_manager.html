@@ -6,10 +6,10 @@
     <title data-i18n="vrmEmotionManager.title">VRM 情感映射管理器 - Project N.E.K.O.</title>
 
     <!-- i18next 加载器（统一处理 CDN 加载和初始化） -->
-    <script src="/static/i18n-i18next.js"></script>
+    <script src="/static/i18n-i18next.js?v={{ static_asset_version | default('0') }}"></script>
 
     <!-- 样式文件 -->
-    <link rel="stylesheet" href="/static/css/vrm_emotion_manager.css">
+    <link rel="stylesheet" href="/static/css/vrm_emotion_manager.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/window_controls.css">
     <link rel="stylesheet" href="/static/css/dark-mode.css">
     <script src="/static/theme-manager.js"></script>
@@ -56,7 +56,11 @@
                 </div>
             </div>
 
-            <div id="emotion-config" style="display: none;">
+            <div id="emotion-load-state" class="status-message status-info" role="status" aria-live="polite" hidden>
+                <span id="emotion-load-message"></span>
+                <button id="retry-load-btn" class="btn btn-secondary" data-i18n="vrmEmotionManager.retryLoad" hidden>重试加载</button>
+            </div>
+            <div id="emotion-config" style="display: none;" inert aria-disabled="true">
             <!-- Preview Section -->
             <div class="preview-section">
                 <div class="preview-header" data-i18n="vrmEmotionManager.expressionPreview">表情预览</div>
@@ -149,9 +153,10 @@
                 </div>
             </div>
 
+            <p id="unavailable-bindings" class="info-box" hidden></p>
             <div class="button-group">
-                <button id="save-btn" class="btn btn-primary" data-i18n="vrmEmotionManager.saveConfig">保存配置</button>
-                <button id="reset-btn" class="btn btn-secondary" data-i18n="vrmEmotionManager.resetToDefault">重置为默认</button>
+                <button id="save-btn" class="btn btn-primary" data-i18n="vrmEmotionManager.saveConfig" disabled>保存配置</button>
+                <button id="reset-btn" class="btn btn-secondary" data-i18n="vrmEmotionManager.resetToDefault" disabled>重置为默认</button>
             </div>
 
             <div id="status-message" class="status-message"></div>
@@ -160,7 +165,7 @@
     </div>
 
     <!-- 脚本文件 -->
-    <script src="/static/js/vrm_emotion_manager.js"></script>
+    <script src="/static/js/vrm_emotion_manager.js?v={{ static_asset_version | default('0') }}"></script>
     <script src="/static/libs/driver.min.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/tutorial/core/skip-controller.js?v={{ static_asset_version|default('0', true) }}"></script>
     <script src="/static/tutorial/avatar/reload-controller.js?v={{ static_asset_version|default('0', true) }}"></script>

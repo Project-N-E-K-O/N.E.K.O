@@ -61,6 +61,8 @@ class TestKeybookSaveLoad:
         'assistApiKeyMimoTokenPlan': 'ASSIST_API_KEY_MIMO_TOKEN_PLAN',
         'assistApiKeyGrok': 'ASSIST_API_KEY_GROK',
         'assistApiKeyRequesty': 'ASSIST_API_KEY_REQUESTY',
+        'assistApiKeyOpper': 'ASSIST_API_KEY_OPPER',
+        'assistApiKeyAtlascloud': 'ASSIST_API_KEY_ATLASCLOUD',
     }
 
     @pytest.mark.unit
@@ -84,8 +86,8 @@ class TestKeybookSaveLoad:
 
     @pytest.mark.unit
     def test_missing_keys_gated_fallback_to_core_key(self, config_manager):
-        """仅用户选中的 coreApi/assistApi 对应的槽位会回退到 CORE_API_KEY，
-        其余槽位保持空字符串，避免主 Key 被广播到 Key Book 所有栏位。"""
+        """Only slots for the selected coreApi/assistApi fall back to CORE_API_KEY;
+        all others remain empty strings so the primary key is not broadcast throughout Key Book."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
             'coreApi': 'qwen',
@@ -93,11 +95,11 @@ class TestKeybookSaveLoad:
         })
         cfg = config_manager.get_core_config()
 
-        # 选中的两个 provider 应该 fallback
+        # The two selected providers should fall back.
         assert cfg['ASSIST_API_KEY_QWEN'] == 'sk-core-master'
         assert cfg['ASSIST_API_KEY_OPENAI'] == 'sk-core-master'
 
-        # 其余所有槽位保持空，不应被 CORE_API_KEY 污染
+        # All other slots remain empty, without contamination from CORE_API_KEY.
         for upper in ['ASSIST_API_KEY_GLM', 'ASSIST_API_KEY_STEP',
                        'ASSIST_API_KEY_SILICON', 'ASSIST_API_KEY_GEMINI',
                        'ASSIST_API_KEY_KIMI', 'ASSIST_API_KEY_KIMI_CODE',
@@ -106,6 +108,8 @@ class TestKeybookSaveLoad:
                        'ASSIST_API_KEY_CLAUDE', 'ASSIST_API_KEY_OPENROUTER',
                        'ASSIST_API_KEY_ORCAROUTER',
                        'ASSIST_API_KEY_REQUESTY',
+                       'ASSIST_API_KEY_OPPER',
+                       'ASSIST_API_KEY_ATLASCLOUD',
                        'ASSIST_API_KEY_QWEN_INTL',
                        'ASSIST_API_KEY_MINIMAX', 'ASSIST_API_KEY_MINIMAX_INTL',
                        'ASSIST_API_KEY_MIMO']:
@@ -115,7 +119,7 @@ class TestKeybookSaveLoad:
 
     @pytest.mark.unit
     def test_qwen_intl_fallback_when_selected(self, config_manager):
-        """qwen_intl 是合法的 coreApi，被选中时应 fallback，对偶其他 provider。"""
+        """qwen_intl is a valid coreApi and should fall back when selected, symmetrically with other providers."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
             'coreApi': 'qwen_intl',
@@ -125,8 +129,21 @@ class TestKeybookSaveLoad:
         assert cfg['ASSIST_API_KEY_QWEN_INTL'] == 'sk-core-master'
 
     @pytest.mark.unit
+    def test_opper_never_fallbacks_when_selected(self, config_manager):
+        """Opper is assist-only and needs its own key: selected with an empty key, it must not fall back to CORE_API_KEY."""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'sk-core-master',
+            'coreApi': 'qwen',
+            'assistApi': 'opper',
+            'assistApiKeyOpper': '',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['ASSIST_API_KEY_OPPER'] == ''
+        assert cfg['OPENROUTER_API_KEY'] == ''
+
+    @pytest.mark.unit
     def test_free_core_does_not_fill_paid_assist_when_key_empty(self, config_manager):
-        """core=free 时，空的非免费 assist Key 不应回退成 free-access。"""
+        """With core=free, an empty non-free assist key must not fall back to free-access."""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': 'free',
@@ -147,7 +164,7 @@ class TestKeybookSaveLoad:
 
     @pytest.mark.unit
     def test_free_core_preserves_paid_assist_explicit_key(self, config_manager):
-        """core=free 时，显式填写的非免费 assist Key 仍应生效。"""
+        """With core=free, an explicitly supplied non-free assist key must still take effect."""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': 'free',
@@ -163,7 +180,7 @@ class TestKeybookSaveLoad:
 
     @pytest.mark.unit
     def test_qwen_intl_uses_saved_successful_us_url(self, config_manager):
-        """qwen_intl 连通性测试命中美国 URL 后，运行配置应使用该 URL。"""
+        """After qwen_intl connectivity testing selects the US URL, runtime configuration should use that URL."""
         us_url = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1'
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
@@ -178,7 +195,7 @@ class TestKeybookSaveLoad:
 
     @pytest.mark.unit
     def test_qwen_intl_ignores_resolved_url_outside_candidates(self, config_manager):
-        """保存的 resolved URL 不属于 provider 候选集时不能污染运行配置。"""
+        """A saved resolved URL outside the provider's candidates must not contaminate runtime configuration."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
             'coreApi': 'qwen_intl',
@@ -208,7 +225,8 @@ class TestKeybookSaveLoad:
         cfg = config_manager.get_core_config()
         assert cfg['OPENROUTER_URL'] == token_plan_url
         assert cfg['OPENROUTER_API_KEY'] == 'tp-mimo-token-plan'
-        assert cfg['AUDIO_API_KEY'] == 'tp-mimo-token-plan'
+        # MiMo is assist-only: its key never stands in for the CosyVoice audio key.
+        assert cfg['AUDIO_API_KEY'] == 'sk-core-master'
         assert cfg['ASSIST_API_KEY_MIMO'] == 'sk-regular-mimo'
         assert cfg['ASSIST_API_KEY_MIMO_TOKEN_PLAN'] == 'tp-mimo-token-plan'
 
@@ -235,10 +253,10 @@ class TestKeybookSaveLoad:
     @pytest.mark.unit
     @pytest.mark.parametrize('assist_api', ['minimax', 'minimax_intl'])
     def test_minimax_never_fallbacks(self, config_manager, assist_api):
-        """MiniMax 是 assist-only（TTS 专用），不在 coreApi 候选集里，
-        coreApiKey 永远不是 minimax 兼容的 key。即使 assistApi=minimax* 也不应 fallback，
-        以免把无效 key 塞进 TTS 凭证槽位导致 401。
-        parametrize 两个变体防止"仅国际版误回退"的偏置回归。"""
+        """MiniMax is assist-only (TTS-specific), outside the coreApi candidates;
+        coreApiKey is never a minimax-compatible key. Do not fall back even with assistApi=minimax*,
+        which would insert an invalid TTS credential and cause 401.
+        Parametrize both variants to prevent a regression affecting only the international version."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core-master',
             'coreApi': 'qwen',
@@ -279,7 +297,7 @@ class TestRequestyResolution:
             'correction': 'google/gemini-2.5-flash',
             'emotion': 'google/gemini-2.5-flash-lite',
             'vision': 'google/gemini-2.5-flash',
-            'agent': 'google/gemini-3-flash-preview',
+            'agent': 'google/gemini-3.8-flash',
         }.items():
             resolved = config_manager.get_model_api_config(task)
             assert resolved['api_key'] == requesty_key, task
@@ -330,6 +348,221 @@ class TestRequestyResolution:
         })
         assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
         assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
+
+
+class TestOpperResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('opper_key', ['', 'sk-opper-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, opper_key,
+    ):
+        """Resolve each Opper task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'opper',
+            'assistApiKeyOpper': opper_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['CORE_API_KEY'] == core_key
+        assert cfg['CORE_API_TYPE'] == core_provider
+        assert cfg['ASSIST_API_KEY_OPPER'] == opper_key
+        assert cfg['OPENROUTER_API_KEY'] == opper_key
+        assert cfg['AUDIO_API_KEY'] == (
+            core_key if core_provider != 'free' else ''
+        )
+        assert cfg['AGENT_MODEL_API_KEY'] == opper_key
+        for task in ('conversation', 'summary', 'correction', 'emotion', 'vision', 'agent'):
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == opper_key, task
+            assert resolved['base_url'] == 'https://api.opper.ai/v3/compat', task
+            assert resolved['model'] == 'gpt-5.4-mini', task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+    @pytest.mark.unit
+    def test_missing_key_does_not_use_legacy_assist_defaults(self, config_manager, monkeypatch):
+        """Clear legacy router defaults while retaining the independent audio key."""
+        import config
+
+        monkeypatch.setattr(config, 'DEFAULT_AUDIO_API_KEY', 'sk-legacy-audio')
+        monkeypatch.setattr(config, 'DEFAULT_OPENROUTER_API_KEY', 'sk-legacy-router')
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-other-core',
+            'assistApi': 'opper',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['AUDIO_API_KEY'] == 'sk-legacy-audio'
+        assert cfg['OPENROUTER_API_KEY'] == ''
+        assert config_manager.get_model_api_config('conversation')['api_key'] == ''
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('opper_key', ['', 'sk-opper-dedicated'])
+    def test_opper_key_preserves_cosyvoice_voice_storage(self, config_manager, opper_key):
+        """An Opper text key must not change voice buckets across assist switches."""
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'opper',
+            'assistApiKeyOpper': opper_key,
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-existing', {
+            'name': 'Existing cloned voice',
+            'provider': 'cosyvoice',
+        })
+        stored = config_manager.load_voice_storage()
+        assert 'cosyvoice-existing' in stored['sk-dashscope-core']
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_model_api_config('conversation')['api_key'] == opper_key
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'qwen',
+            'assistApiKeyOpper': opper_key,
+        })
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+        assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
+
+
+
+def _load_provider_catalog() -> dict:
+    path = os.path.join(os.path.dirname(__file__), '../../config/api_providers.json')
+    with open(path, encoding='utf-8') as f:
+        return json.load(f)
+
+
+_PROVIDER_CATALOG = _load_provider_catalog()
+# Selectable assist providers that can never be coreApi; vllm_omni is TTS-only.
+_ASSIST_ONLY_PROVIDERS = sorted(
+    set(_PROVIDER_CATALOG['assist_api_providers'])
+    - set(_PROVIDER_CATALOG['core_api_providers'])
+    - {'vllm_omni'}
+)
+
+
+class TestAtlasCloudResolution:
+    @pytest.mark.unit
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai', 'free'])
+    @pytest.mark.parametrize('atlascloud_key', ['', 'apikey-atlascloud-dedicated'])
+    def test_selected_provider_credentials_and_models(
+        self, config_manager, core_provider, atlascloud_key,
+    ):
+        """Resolve each Atlas Cloud task without borrowing another provider's key."""
+        core_key = 'free-access' if core_provider == 'free' else 'sk-other-core'
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': core_key,
+            'assistApi': 'atlascloud',
+            'assistApiKeyAtlascloud': atlascloud_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['CORE_API_KEY'] == core_key
+        assert cfg['ASSIST_API_KEY_ATLASCLOUD'] == atlascloud_key
+        assert cfg['OPENROUTER_API_KEY'] == atlascloud_key
+        assert cfg['AUDIO_API_KEY'] == (
+            core_key if core_provider != 'free' else ''
+        )
+        assert cfg['AGENT_MODEL_API_KEY'] == atlascloud_key
+        for task, model in {
+            'conversation': 'google/gemini-3.1-flash-lite',
+            'summary': 'deepseek-ai/deepseek-v4-flash',
+            'correction': 'deepseek-ai/deepseek-v4-flash',
+            'emotion': 'google/gemini-2.5-flash-lite',
+            'vision': 'google/gemini-3.1-flash-lite',
+            'agent': 'google/gemini-3-flash-preview',
+        }.items():
+            resolved = config_manager.get_model_api_config(task)
+            assert resolved['api_key'] == atlascloud_key, task
+            assert resolved['base_url'] == 'https://api.atlascloud.ai/v1', task
+            assert resolved['model'] == model, task
+            assert resolved['provider_type'] == 'openai_compatible', task
+
+
+class TestAssistOnlyKeyIsolation:
+    """coreApiKey always belongs to another vendor when the assist provider is assist-only."""
+
+    @pytest.mark.unit
+    def test_catalog_has_assist_only_providers(self):
+        assert {'deepseek', 'orcarouter', 'requesty', 'opper', 'atlascloud'} <= set(_ASSIST_ONLY_PROVIDERS)
+        assert not {'qwen', 'openai', 'free'} & set(_ASSIST_ONLY_PROVIDERS)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('provider', _ASSIST_ONLY_PROVIDERS)
+    @pytest.mark.parametrize('core_provider', ['qwen', 'openai'])
+    @pytest.mark.parametrize('dedicated_key', ['', 'sk-assist-dedicated'])
+    def test_key_never_borrows_core_or_replaces_audio(
+        self, config_manager, provider, core_provider, dedicated_key,
+    ):
+        config_field = _PROVIDER_CATALOG['api_key_registry'][provider]['config_field']
+        runtime_field = _PROVIDER_CATALOG['assist_api_key_fields'][provider]
+        _write_core_config(config_manager, {
+            'coreApi': core_provider,
+            'coreApiKey': 'sk-other-core',
+            'assistApi': provider,
+            config_field: dedicated_key,
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg[runtime_field] == dedicated_key
+        assert cfg['OPENROUTER_API_KEY'] == dedicated_key
+        assert cfg['AGENT_MODEL_API_KEY'] == dedicated_key
+        assert cfg['AUDIO_API_KEY'] == 'sk-other-core'
+        assert config_manager.get_model_api_config('conversation')['api_key'] == dedicated_key
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('provider', _ASSIST_ONLY_PROVIDERS)
+    def test_key_preserves_cosyvoice_voice_storage(self, config_manager, provider):
+        config_field = _PROVIDER_CATALOG['api_key_registry'][provider]['config_field']
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': 'qwen',
+            config_field: 'sk-assist-dedicated',
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-existing', {
+            'name': 'Existing cloned voice',
+            'provider': 'cosyvoice',
+        })
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'coreApiKey': 'sk-dashscope-core',
+            'assistApi': provider,
+            config_field: 'sk-assist-dedicated',
+        })
+        assert config_manager.get_core_config()['AUDIO_API_KEY'] == 'sk-dashscope-core'
+        assert 'cosyvoice-existing' in config_manager.get_voices_for_current_api(for_listing=True)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('provider', _ASSIST_ONLY_PROVIDERS)
+    def test_registered_voice_lands_in_listed_bucket(self, config_manager, provider):
+        """POST /voices must save into the bucket that listing and validation read."""
+        config_field = _PROVIDER_CATALOG['api_key_registry'][provider]['config_field']
+        _write_core_config(config_manager, {
+            'coreApi': 'openai',
+            'coreApiKey': 'sk-openai-core',
+            'assistApi': provider,
+            config_field: 'sk-assist-dedicated',
+        })
+        config_manager.save_voice_for_current_api('cosyvoice-registered', {
+            'name': 'Registered voice',
+            'provider': 'cosyvoice',
+        })
+        assert 'cosyvoice-registered' in config_manager.get_voices_for_current_api()
+        assert config_manager.delete_voice_for_current_api('cosyvoice-registered')
+
+    @pytest.mark.unit
+    def test_core_capable_assist_still_falls_back(self, config_manager):
+        """The same vendor on both sides keeps sharing the single core key."""
+        _write_core_config(config_manager, {
+            'coreApi': 'openai',
+            'coreApiKey': 'sk-openai-core',
+            'assistApi': 'openai',
+        })
+        cfg = config_manager.get_core_config()
+        assert cfg['ASSIST_API_KEY_OPENAI'] == 'sk-openai-core'
+        assert cfg['OPENROUTER_API_KEY'] == 'sk-openai-core'
+        assert cfg['AUDIO_API_KEY'] == 'sk-openai-core'
 
 
 # ---------------------------------------------------------------------------
@@ -590,13 +823,13 @@ class TestCustomApiToggle:
 
 
 # ---------------------------------------------------------------------------
-# 3. Assist / Core 独立选择
+# 3. Independent Assist / Core selection.
 # ---------------------------------------------------------------------------
 class TestAssistFollowsCore:
 
     @pytest.mark.unit
     def test_free_core_defaults_assist_to_free_when_empty(self, config_manager):
-        """coreApi=free + assistApi='' → 空值兜底为 free（保持免费版一键到位体验）。"""
+        """coreApi=free + assistApi='' → fall back to free for the empty value (preserving the one-step free experience)."""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': 'free',
@@ -610,7 +843,7 @@ class TestAssistFollowsCore:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_get_core_config_api_defaults_empty_assist_to_free_for_free_core(self, monkeypatch):
-        """API 管理页读取旧配置时，core=free + assistApi='' 应回填 assist=free。"""
+        """When the API management page reads legacy config, core=free + assistApi='' should backfill assist=free."""
         from main_routers.config_router import core_config as config_router
 
         async def fake_read_json_async(_path):
@@ -625,10 +858,10 @@ class TestAssistFollowsCore:
                 return 'core_config.json'
 
         monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
-        # NOTE: get_core_config_api 内部是函数内 ``from utils.config_manager
-        # import get_config_manager``，模块级 patch 从来打不进去（历史上就是
-        # no-op，靠上面的 read_json_async patch 拦截真实路径的读取）。拆包后
-        # core_config 模块不再有模块级 get_config_manager，故删除该死 patch。
+        # NOTE: get_core_config_api uses a function-local ``from utils.config_manager
+        # import get_config_manager``; module-level patches never affected it (historically a
+        # no-op; the read_json_async patch above intercepts real-path reads). After package splitting,
+        # core_config has no module-level get_config_manager, so remove this dead patch.
 
         response = await config_router.get_core_config_api()
 
@@ -656,10 +889,10 @@ class TestAssistFollowsCore:
                 return 'core_config.json'
 
         monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
-        # NOTE: get_core_config_api 内部是函数内 ``from utils.config_manager
-        # import get_config_manager``，模块级 patch 从来打不进去（历史上就是
-        # no-op，靠上面的 read_json_async patch 拦截真实路径的读取）。拆包后
-        # core_config 模块不再有模块级 get_config_manager，故删除该死 patch。
+        # NOTE: get_core_config_api uses a function-local ``from utils.config_manager
+        # import get_config_manager``; module-level patches never affected it (historically a
+        # no-op; the read_json_async patch above intercepts real-path reads). After package splitting,
+        # core_config has no module-level get_config_manager, so remove this dead patch.
 
         response = await config_router.get_core_config_api()
 
@@ -699,7 +932,7 @@ class TestAssistFollowsCore:
 
     @pytest.mark.unit
     def test_free_core_honors_explicit_assist(self, config_manager):
-        """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
+        """coreApi=free + assistApi=silicon → preserve explicit selection; agent/text use silicon."""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': 'free',
@@ -711,7 +944,7 @@ class TestAssistFollowsCore:
         assert cfg['assistApi'] == 'silicon', \
             'core=free 不应强制覆盖用户显式选择的 assist'
         assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
-        # core=free 即语音免费（is_free_voice 维度，CORE_API_TYPE=='free'），与 assist 选择无关
+        # core=free means free voice (is_free_voice dimension, CORE_API_TYPE=='free'), independent of assist selection.
         assert cfg.get('CORE_API_TYPE') == 'free'
 
     @pytest.mark.unit
@@ -730,13 +963,13 @@ class TestAssistFollowsCore:
 
 
 # ---------------------------------------------------------------------------
-# 3b. 默认兜底：coreApi 为空/缺失时保持历史默认 qwen
+# 3b. Default fallback: keep historical qwen default when coreApi is empty/missing.
 # ---------------------------------------------------------------------------
 class TestEmptyCoreApiFallsBackToDefaultQwen:
 
     @pytest.mark.unit
     def test_empty_core_api_falls_back_to_qwen(self, config_manager):
-        """coreApi/assistApi='' → 兜底到默认 qwen。"""
+        """coreApi/assistApi='' → fall back to default qwen."""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': '',
@@ -750,7 +983,7 @@ class TestEmptyCoreApiFallsBackToDefaultQwen:
 
     @pytest.mark.unit
     def test_missing_core_api_keys_fall_back_to_qwen(self, config_manager):
-        """core_config.json 缺少 coreApi/assistApi 字段 → 兜底 qwen。"""
+        """Missing coreApi/assistApi fields in core_config.json → fall back to qwen."""
         _write_core_config(config_manager, {'coreApiKey': 'free-access'})
         cfg = config_manager.get_core_config()
 
@@ -760,7 +993,7 @@ class TestEmptyCoreApiFallsBackToDefaultQwen:
 
     @pytest.mark.unit
     def test_explicit_paid_provider_still_honored(self, config_manager):
-        """用户显式选了 qwen 必须被尊重。"""
+        """Respect the user's explicit qwen selection."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-real-qwen',
             'coreApi': 'qwen',
@@ -873,7 +1106,7 @@ class TestProviderExclusion:
 
     @pytest.mark.unit
     def test_restricted_providers(self):
-        """受地区限制的 provider 应标记 restricted；默认显示的 provider 不应标记。"""
+        """Mark region-restricted providers restricted; do not mark providers displayed by default."""
         from utils.api_config_loader import get_config
         data = get_config()
         registry = data.get('api_key_registry', {})
@@ -886,6 +1119,8 @@ class TestProviderExclusion:
             'openrouter',
             'orcarouter',
             'requesty',
+            'opper',
+            'atlascloud',
             'elevenlabs',
             'qwen_intl',
             'minimax_intl',
@@ -1017,7 +1252,7 @@ class TestGetModelApiConfig:
 
     @pytest.mark.unit
     def test_tts_custom_prefers_active_qwen_intl_for_cosyvoice(self, config_manager):
-        """当前辅助 API 是 qwen_intl 时，CosyVoice 应使用国际版 key 与 URL。"""
+        """When the current assist API is qwen_intl, CosyVoice should use the international key and URL."""
         us_url = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1'
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
@@ -1083,7 +1318,7 @@ class TestAgentUrlRegionRouting:
     @pytest.mark.parametrize(
         ('non_mainland', 'url_in', 'expected'),
         [
-            # 临时保持原样：free-agent-model 走配置中的国内 lanlan.tech 文本入口。
+            # Temporarily unchanged: free-agent-model uses the configured domestic lanlan.tech text endpoint.
             (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
             (False, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
             (None, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
@@ -1100,7 +1335,7 @@ class TestAgentUrlRegionRouting:
     @pytest.mark.unit
     @pytest.mark.parametrize('non_mainland', [True, False, None])
     def test_normalize_agent_url_custom_url_untouched(self, config_manager, non_mainland):
-        """不含 lanlan 域的自定义 URL 原样返回，不受线路影响。"""
+        """Return custom URLs outside lanlan domains unchanged, regardless of selected route."""
         config_manager._check_non_mainland = lambda: non_mainland
         custom = 'https://api.openai.com/v1'
         assert config_manager._normalize_agent_url(custom) == custom
@@ -1112,7 +1347,7 @@ class TestAgentUrlRegionRouting:
 
 
 # ---------------------------------------------------------------------------
-# 7c. Free API URL region routing: 海外统一走 www.lanlan.app（含 /tts）
+# 7c. Free API URL region routing: overseas consistently uses www.lanlan.app (including /tts).
 # ---------------------------------------------------------------------------
 class TestFreeApiUrlRegionRouting:
 
@@ -1120,14 +1355,14 @@ class TestFreeApiUrlRegionRouting:
     @pytest.mark.parametrize(
         ('non_mainland', 'url_in', 'expected'),
         [
-            # 海外：lanlan.tech → lanlan.app，/tts 不再降级到裸 lanlan.app，
-            # 统一停在 www.lanlan.app（透传 voice 到 Gemini）。
+            # Overseas: lanlan.tech → lanlan.app; /tts no longer falls back to bare lanlan.app,
+            # consistently staying at www.lanlan.app (passing voice through to Gemini).
             (True, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.app/tts'),
             (True, 'wss://www.lanlan.tech/core', 'wss://www.lanlan.app/core'),
             (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.app/text/v1'),
-            # 国内：原样保留。
+            # Domestic: preserve unchanged.
             (False, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.tech/tts'),
-            # 非 lanlan.tech 自定义 URL 不受影响。
+            # Custom URLs outside lanlan.tech are unaffected.
             (True, 'wss://api.stepfun.com/v1/realtime/audio', 'wss://api.stepfun.com/v1/realtime/audio'),
         ],
     )
@@ -1301,7 +1536,7 @@ class TestVoiceCloneKeyResolution:
 
     @pytest.mark.unit
     def test_cosyvoice_clone_runtime_stays_domestic_when_active_intl(self, config_manager):
-        """声音克隆显式选国内阿里时，不跟随当前国际版辅助 API。"""
+        """Explicit domestic Alibaba voice cloning must not follow the current international assist API."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
             'coreApi': 'qwen_intl',
@@ -1319,7 +1554,7 @@ class TestVoiceCloneKeyResolution:
 
     @pytest.mark.unit
     def test_cosyvoice_intl_clone_runtime_uses_saved_region_url(self, config_manager):
-        """声音克隆显式选阿里国际版时，使用国际版 key 和已检测通过的地区 URL。"""
+        """Explicit international Alibaba voice cloning uses the international key and successfully tested regional URL."""
         us_url = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1'
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
@@ -1340,7 +1575,7 @@ class TestVoiceCloneKeyResolution:
 
     @pytest.mark.unit
     def test_cosyvoice_intl_md5_dedupe_checks_legacy_raw_key_bucket(self, config_manager):
-        """国际版 MD5 去重必须兼容旧版 raw API Key 分区。"""
+        """International MD5 deduplication must support legacy raw API Key partitions."""
         intl_key = 'sk-qwen-intl-legacy'
         audio_md5 = 'md5-legacy-audio'
         _write_core_config(config_manager, {
@@ -1387,22 +1622,22 @@ class TestVoiceCloneKeyResolution:
 # 11. follow_core / follow_assist must NOT be misclassified as 'local' realtime
 # ---------------------------------------------------------------------------
 class TestFollowProviderNotLocal:
-    """前端在 *ModelProvider=follow_core/follow_assist 时会用核心/辅助 provider 的
-    URL/Key 把 readonly 输入框联动填上并保存。后端必须把这些字段当作 UI 提示值忽略，
-    否则 get_model_api_config 在 enableCustomApi=True 时会误判 realtime=自定义=local，
-    导致 TTS 调度落到 dummy_tts_worker（"local不支持原生TTS"），声音消失。
-    """
+    """With *ModelProvider=follow_core/follow_assist, the frontend fills readonly fields with the core/assist provider's
+    URL/Key and saves them. The backend must ignore these fields as UI hints,
+    or get_model_api_config with enableCustomApi=True misclassifies realtime as custom/local,
+    sending TTS to dummy_tts_worker ('local不支持原生TTS', local lacks native TTS), losing audio.
+    """  # noqa: DOCSTRING_CJK
 
     @pytest.mark.unit
     def test_realtime_follow_core_does_not_become_local(self, config_manager):
-        """omniModelProvider=follow_core + 联动自填 omniModelUrl → realtime 仍走 core API。"""
+        """omniModelProvider=follow_core + auto-filled omniModelUrl → realtime still uses core API."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-qwen-core',
             'coreApi': 'qwen',
             'assistApi': 'qwen',
             'assistApiKeyQwen': 'sk-qwen-core',
             'enableCustomApi': True,
-            # 这些是前端 follow_core 联动 readonly 自填的值
+            # These values are auto-filled by frontend follow_core linkage into readonly fields.
             'omniModelProvider': 'follow_core',
             'omniModelUrl': 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime',
             'omniModelId': '',
@@ -1416,7 +1651,7 @@ class TestFollowProviderNotLocal:
 
     @pytest.mark.unit
     def test_tts_follow_assist_does_not_pollute_url(self, config_manager):
-        """ttsModelProvider=follow_assist + 联动自填 ttsModelUrl → TTS_MODEL_URL 不被覆盖。"""
+        """ttsModelProvider=follow_assist + auto-filled ttsModelUrl → do not override TTS_MODEL_URL."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-qwen-core',
             'coreApi': 'qwen',
@@ -1429,18 +1664,18 @@ class TestFollowProviderNotLocal:
             'ttsModelApiKey': 'sk-qwen-assist',
         })
         cfg = config_manager.get_core_config()
-        # follow_assist 时 TTS_MODEL_URL 必须保持空（DEFAULT_TTS_MODEL_URL=""，且
-        # core/assist profile 的 field_mapping 都不包含 tts_model_url，没有别的合法来源）。
-        # 任何非空值都意味着 follow_* 跳过 URL 覆盖的逻辑被绕过 → 回归。
+        # Under follow_assist, TTS_MODEL_URL must remain empty (DEFAULT_TTS_MODEL_URL="", and
+        # core/assist profiles' field_mapping excludes tts_model_url, leaving no other legitimate source).
+        # Any nonempty value means follow_* URL-override skipping was bypassed: a regression.
         assert cfg.get('TTS_MODEL_URL', '') in ('', None), \
             f"follow_assist 时 TTS_MODEL_URL 应为空，实际={cfg.get('TTS_MODEL_URL')!r}"
 
     @pytest.mark.unit
     def test_non_omni_follow_core_url_not_skipped(self, config_manager):
-        """URL skip 的 scope 必须仅限 omni/tts —— 非 omni 模型（conversation/summary/
-        correction/emotion/vision/agent）走 chat completion REST，没有 'local' 分支，
-        不该被本 PR 的 guard 触动。否则会改变它们的 follow_core 路由行为
-        （详见 PR #1084 review thread）。
+        """URL skipping must apply only to omni/tts; non-omni models (conversation/summary/
+        correction/emotion/vision/agent) use chat completion REST without a 'local' branch,
+        so this PR's guard must not affect them or change their follow_core routing
+        (see PR #1084 review thread).
         """
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-openai-core',
@@ -1449,19 +1684,19 @@ class TestFollowProviderNotLocal:
             'assistApiKeyQwen': 'sk-qwen-assist',
             'enableCustomApi': True,
             'conversationModelProvider': 'follow_core',
-            'conversationModelUrl': 'https://api.openai.com/v1',  # 前端联动填
+            'conversationModelUrl': 'https://api.openai.com/v1',  # Frontend auto-fill via linked selection.
             'conversationModelId': '',
             'conversationModelApiKey': 'sk-openai-core',
         })
         cfg = config_manager.get_core_config()
-        # conversation 不在 (omni, tts) 白名单，URL 必须被覆盖（保持原逻辑）
+        # conversation is outside the (omni, tts) allowlist, so its URL must be overwritten (preserve existing behavior).
         assert cfg.get('CONVERSATION_MODEL_URL') == 'https://api.openai.com/v1', \
             f"非 omni follow_core 的 URL 不应被本 PR 的 guard 跳过，" \
             f"实际={cfg.get('CONVERSATION_MODEL_URL')!r}"
 
     @pytest.mark.unit
     def test_explicit_custom_still_takes_effect(self, config_manager):
-        """provider=custom（用户真的填了自定义 URL）时仍然走自定义路径。"""
+        """provider=custom (the user actually supplied a custom URL) still uses the custom path."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
             'coreApi': 'qwen',
@@ -1482,9 +1717,9 @@ class TestFollowProviderNotLocal:
 
 
 # ---------------------------------------------------------------------------
-# PR #1764 reviews #3403710558 / #3404339374: get_core_config() 必须把
-# vLLM-Omni TTS raw camelCase key 透传到 normalized snapshot，否则
-# main_logic/core.py 的路由检测和 runtime key 拿不到用户保存字段。
+# PR #1764 reviews #3403710558 / #3404339374: get_core_config() must pass
+# vLLM-Omni TTS raw camelCase keys through to the normalized snapshot, otherwise
+# main_logic/core.py routing checks and runtime keys cannot access user-saved fields.
 # ---------------------------------------------------------------------------
 class TestVllmOmniRawKeyPassthrough:
 
@@ -1529,8 +1764,8 @@ class TestVllmOmniRawKeyPassthrough:
             f"缺失时应兜底为空串，实际={cfg.get('ttsModelId')!r}"
         assert cfg.get('ttsVoiceId') == '', \
             f"缺失时应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
-        # 关键：这些 key 必须存在于 dict 中（即使值为空串），
-        # 否则 _is_vllm_omni_tts_enabled 的 .get() 会返回 None 触发 .strip() 链路异常
+        # Critical: these keys must exist in the dict even with empty-string values,
+        # otherwise _is_vllm_omni_tts_enabled's .get() returns None, breaking the .strip() chain.
         assert 'ttsModelProvider' in cfg
         assert 'ttsModelUrl' in cfg
         assert 'ttsModelId' in cfg
@@ -1558,7 +1793,7 @@ class TestVllmOmniRawKeyPassthrough:
             f"None 应兜底为空串，实际={cfg.get('ttsModelId')!r}"
         assert cfg.get('ttsVoiceId') == '', \
             f"None 应兜底为空串，实际={cfg.get('ttsVoiceId')!r}"
-        # 验证下游真实消费方不会抛 AttributeError
+        # Verify the actual downstream consumer does not raise AttributeError.
         from main_logic.core import LLMSessionManager
         assert LLMSessionManager._is_vllm_omni_tts_enabled(cfg) is False
 
@@ -1778,10 +2013,10 @@ class TestVllmOmniRawKeyPassthrough:
 
 
 # ---------------------------------------------------------------------------
-# GPT-SoVITS「是否启用」收口到 ttsModelProvider 下拉单一真相：snapshot 在
-# get_core_config() 这一处把下拉（与 pre-#1830 存量旧 gptsovitsEnabled 开关）派生进
-# GPTSOVITS_ENABLED，13 个下游读点全部不动。派生语义：ttsModelProvider 非空即唯一
-# 真相，仅缺失/空串时才回落旧开关——不用纯 OR，避免存量切走下拉后旧 true 粘住。
+# GPT-SoVITS enablement uses ttsModelProvider selection as the sole source of truth: the snapshot
+# derives GPTSOVITS_ENABLED in get_core_config() alone from this dropdown (and the pre-#1830 legacy
+# gptsovitsEnabled switch), leaving all 13 downstream reads unchanged. A nonempty ttsModelProvider alone
+# determines the value; only missing/empty selection falls back to the old switch. Avoid plain OR, which preserves stale true after switching away.
 # ---------------------------------------------------------------------------
 class TestGptsovitsEnabledDerivation:
 
@@ -1837,7 +2072,7 @@ class TestGptsovitsEnabledDerivation:
         gptsovitsEnabled=true (the frontend retired that field and the backend merges
         partially). An explicit provider is the single source of truth and must derive
         False — a naive OR would let the stale true stick and leave GSV stuck on."""
-        # 这就是不用纯 OR 的原因：旧 flag 在增量合并下会粘住，显式选别家也切不掉。
+        # This is why plain OR is wrong: incremental merging retains the old flag even after explicitly selecting another provider.
         _write_core_config(config_manager, {
             'coreApi': 'qwen',
             'assistApi': 'qwen',
@@ -1897,10 +2132,10 @@ class TestGptsovitsEnabledDerivation:
 
 
 # ---------------------------------------------------------------------------
-# save choke point 惰性迁移：gptsovitsEnabled 退役后，用户经下拉显式切到非 gptsovits
-# provider（含 follow_*）保存时，把残留旧 flag 落 False——否则 get_core_config 的
-# follow_* 回落分支会把旧 true 兜回来，导致切到 follow_assist 也关不掉 GSV。对偶 #1842
-# voice_id 的 access-choke-point 惰性迁移思路。
+# Lazy migration at the save boundary: after retiring gptsovitsEnabled, saving an explicit switch to a non-gptsovits
+# provider (including follow_*) clears the residual flag to False; otherwise get_core_config's
+# follow_* fallback restores old true, preventing follow_assist from disabling GSV. Mirrors #1842's
+# lazy migration at the voice_id access boundary.
 # ---------------------------------------------------------------------------
 class TestGptsovitsEnabledSaveMigration:
 
@@ -1969,7 +2204,7 @@ class TestGptsovitsEnabledSaveMigration:
         assert resp.get('success') is True
 
         saved = config_manager.load_json_config('core_config.json', {})
-        # 切到/保持 gptsovits 不触发惰性清理，存量 true 原样保留。
+        # Switching to / retaining gptsovits does not trigger lazy cleanup; preserve existing true.
         assert saved.get('gptsovitsEnabled') is True
         config_manager._core_config_cache = None
         assert config_manager.get_core_config()['GPTSOVITS_ENABLED'] is True
@@ -1995,6 +2230,49 @@ class TestGptsovitsEnabledSaveMigration:
         assert saved.get('assistApiKeyKimiCode') == 'sk-kimi-code-test'
         config_manager._core_config_cache = None
         assert config_manager.get_core_config()['ASSIST_API_KEY_KIMI_CODE'] == 'sk-kimi-code-test'
+
+    @pytest.mark.unit
+    def test_update_core_config_deepseek_keeps_shared_custom_tts_slot(self, config_manager, monkeypatch):
+        config_router, asyncio = self._neutralize_side_effects(monkeypatch)
+        shared_slot = {
+            'ttsModelUrl': 'https://speech.example.com/v1/audio/speech',
+            'ttsModelId': 'custom-model',
+            'ttsModelApiKey': 'custom-key',
+        }
+        _write_core_config(config_manager, {
+            'coreApi': 'qwen',
+            'assistApi': 'qwen',
+            'enableCustomApi': True,
+            'ttsModelProvider': 'custom',
+            **shared_slot,
+        })
+        settings = {'enableCustomApi': True, 'coreApi': 'qwen', 'assistApi': 'qwen'}
+        for provider_fields in (
+            {'ttsModelProvider': 'deepseek', 'ttsProvider': 'deepseek'},
+            {},
+        ):
+            response = asyncio.run(config_router.update_core_config(self._FakeRequest({
+                **settings,
+                **provider_fields,
+                'ttsModelUrl': 'wss://api.deepseek.com/v1/tools/tts',
+                'ttsModelId': '',
+                'ttsModelApiKey': '',
+            })))
+            assert response.get('success') is True
+            saved = config_manager.load_json_config('core_config.json', {})
+            assert {field: saved[field] for field in shared_slot} == shared_slot
+
+        response = asyncio.run(config_router.update_core_config(self._FakeRequest({
+            **settings,
+            'ttsModelProvider': 'custom',
+            'ttsProvider': '',
+            'ttsModelUrl': 'https://updated.example.com/v1/audio/speech',
+        })))
+        assert response.get('success') is True
+        saved = config_manager.load_json_config('core_config.json', {})
+        assert saved['ttsModelUrl'] == 'https://updated.example.com/v1/audio/speech'
+        assert saved['ttsModelId'] == 'custom-model'
+        assert saved['ttsModelApiKey'] == 'custom-key'
 
     @pytest.mark.unit
     def test_update_core_config_doubao_tts_overwrites_stale_shared_tts_key(self, config_manager, monkeypatch):
@@ -2221,10 +2499,10 @@ class TestGptsovitsEnabledSaveMigration:
 
     @pytest.mark.unit
     def test_kimi_code_agent_falls_back_to_vision_model(self, config_manager):
-        # kimi_code 的 agent 槽和其它 provider 一样回退到 VISION_MODEL
-        # （= kimi-for-coding）。曾经用 AGENT_MODEL_DISABLED 把它单独关掉，
-        # 但 claude 同样走 Anthropic CUA 路径却未关，门控是不一致的半成品；
-        # 已 revert，剩余 Anthropic 路径问题在 follow-up issue 跟踪。
+        # kimi_code's agent slot falls back to VISION_MODEL like other providers
+        # (= kimi-for-coding). AGENT_MODEL_DISABLED previously disabled it alone,
+        # while claude used the same Anthropic CUA path without disabling it, leaving inconsistent, unfinished gating;
+        # reverted, with remaining Anthropic-path issues tracked in a follow-up issue.
         _write_core_config(config_manager, {
             'coreApi': 'qwen',
             'assistApi': 'kimi_code',

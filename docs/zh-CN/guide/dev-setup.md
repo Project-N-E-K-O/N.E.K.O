@@ -6,7 +6,7 @@ cd N.E.K.O
 uv sync
 ```
 
-`uv` 选择 `pyproject.toml` 固定的 Python 3.11。Python 模块、脚本、pytest 和临时命令全部通过 `uv run`。
+`uv` 选择 `pyproject.toml` 固定的 Python 3.11。Python 模块、脚本、pytest 和临时命令全部通过 `uv run`。重新构建前端需要 Node.js `^22.12.0 || >=24.0.0`（两个前端 `engines` 字段的交集；CI 使用 Node 22）。
 
 ## 构建前端
 
@@ -18,7 +18,7 @@ uv sync
 ./build_frontend.sh
 ```
 
-脚本校验/解压 `assets/yui-lolita.tar.gz` 与 `assets/yui-origin.tar.gz`，运行 `npm ci`，将 Vue plugin manager 构建到 `frontend/plugin-manager/dist/`，React chat 构建到 `static/react/neko-chat/`。
+脚本解包内置 PNGTuber 模型，校验/解压 `assets/yui-lolita.tar.gz` 与 `assets/yui-origin.tar.gz`，运行 `npm ci`，将 Vue plugin manager 构建到 `frontend/plugin-manager/dist/`，React chat 构建到 `static/react/neko-chat/`。
 
 迭代时在对应 frontend 目录运行 `npm ci && npm run dev`。Plugin manager 使用 5173，并代理到 `VITE_BACKEND_URL` 或 48916；React 使用 5174。生产 React bundle 同时由 `index.html` 和 `chat.html` 挂载。
 

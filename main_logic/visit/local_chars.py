@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 from utils.config_manager import get_config_manager
 from utils.config_manager.reserved_schema import get_character_uid
@@ -32,20 +33,22 @@ class CharactersUnreadable(OSError):
     """``characters.json`` exists but cannot be read as a character map."""
 
 
-def _check_characters_file(path: str) -> None:
+def _check_characters_file(path: str, missing_ok: bool = True) -> None:
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
-    except FileNotFoundError:
-        # 没有配置文件就是全新安装：默认角色就是这台机器真实的角色
-        return
+    except FileNotFoundError as exc:
+        # No configuration file means a fresh installation: the default character is the machine's actual character
+        if missing_ok:
+            return
+        raise CharactersUnreadable("characters.json missing") from exc
     except (OSError, ValueError, RecursionError) as exc:
         raise CharactersUnreadable(f"characters.json unreadable: {exc}") from exc
     if not isinstance(data, dict) or not isinstance(data.get("猫娘"), dict):
         raise CharactersUnreadable("characters.json has no character map")
-    # 逐个核对：枚举（load_local_characters）会静默跳过的条目——名字 / 记录坏了、
-    # 缺 id 或 id 坏了（启动时会补发，此刻缺就是异常）、id 重复——都不能当作「没有这个角色」，
-    # 否则清除全部会漏掉它还照样报成功
+    # Check each entry that enumeration (load_local_characters) silently skips: invalid names or records,
+    # missing or invalid IDs (assigned at startup, so missing now is abnormal), or duplicate IDs cannot mean the character does not exist,
+    # otherwise clearing all would miss it and still report success
     seen: set[str] = set()
     for name, entry in data["猫娘"].items():
         uid = get_character_uid(entry) if isinstance(entry, dict) else None
@@ -61,8 +64,16 @@ async def ensure_characters_readable() -> None:
     erase that enumerates "every local character" must not take those
     defaults for the real scope.
     """
-    path = str(get_config_manager().get_config_path("characters.json"))
-    await asyncio.to_thread(_check_characters_file, path)
+    await ensure_characters_file_readable(get_config_manager().get_config_path("characters.json"))
+
+
+async def ensure_characters_file_readable(path: Any, *, missing_ok: bool = True) -> None:
+    """:func:`ensure_characters_readable` for the ``characters.json`` at ``path``.
+
+    ``missing_ok=False`` also refuses a missing file (a caller that knows the
+    machine has characters: the loader would fall back to the seed profiles).
+    """
+    await asyncio.to_thread(_check_characters_file, str(path), missing_ok)
 
 
 async def load_local_characters() -> dict[str, str]:

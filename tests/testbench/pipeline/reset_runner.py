@@ -1,6 +1,6 @@
 """Three-tier reset logic for the active session (P20).
 
-Maps directly onto ``PLAN.md §6 错误处理+复位``:
+Maps directly onto ``PLAN.md section 6 错误处理+复位`` (error handling and reset):
 
 * **soft**: clear ``session.messages`` and ``session.eval_results``. Keep
   persona, memory files, clock, model_config, schema config, snapshot
@@ -31,7 +31,7 @@ Design notes:
     ``capture(trigger="send")`` debounces against a sensible neighbor.
   * Memory previews / script_state / auto_state are transient runtime
     state, always cleared.
-"""
+"""  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
 import shutil

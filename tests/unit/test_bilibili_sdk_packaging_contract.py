@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
+import tomllib
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "build-desktop.yml"
 DIST_CHECK = ROOT / "scripts" / "check_nuitka_dist.py"
+PYPROJECT = ROOT / "pyproject.toml"
 
 EXPECTED_RUNTIME_PACKAGES = (
     "bilibili_api",
@@ -26,10 +29,24 @@ def test_desktop_build_rejects_legacy_bilibili_sdk_install() -> None:
     assert uninstall in workflow
     assert reinstall in workflow
     assert workflow.index(uninstall) < workflow.index(reinstall)
-    assert 'expected = {"bilibili-api-dev": "18.0.0a1"}' in workflow
+    # The expected version comes from the pyproject pin; a second hardcoded
+    # copy in the workflow drifted on the 18.0.0a2 bump and broke nightly.
+    assert 'expected = {"bilibili-api-dev": pins[0]}' in workflow
+    assert 'tomllib.load(f)["project"]["dependencies"]' in workflow
+    assert not re.search(r'"bilibili-api-dev":\s*"\d', workflow)
     assert "uv sync --reinstall-package bilibili-api-dev" in workflow
     assert "legacy bilibili-api-python files" in workflow
     assert "from bilibili_api.login_v2 import QrCodeLogin, QrCodeLoginEvents" in workflow
+
+
+def test_bilibili_sdk_has_single_exact_pin_in_pyproject() -> None:
+    """The workflow's convergence check relies on exactly one exact pin."""
+    with PYPROJECT.open("rb") as f:
+        deps = tomllib.load(f)["project"]["dependencies"]
+
+    pins = [d for d in deps if d.replace(" ", "").startswith("bilibili-api-dev")]
+    assert len(pins) == 1
+    assert "==" in pins[0]
 
 
 def test_bilibili_login_runtime_packages_are_explicit_on_all_desktop_builds() -> None:

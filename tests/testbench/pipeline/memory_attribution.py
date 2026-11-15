@@ -1,6 +1,6 @@
 """P27.3 — Tier C reverse attribution for the memory lineage graph.
 
-When the tester clicks "分析来源" on a memory node (fact / reflection / persona
+When a tester clicks \"分析来源\" (\"Analyze sources\") on a memory node (fact / reflection / persona
 entry), find which conversation turns most plausibly produced it. This is
 **heuristic reconstruction, never true causality**: the persisted memory JSON
 has no fact->conversation link (blueprint §2 / §1.3). Every edge produced here
@@ -23,7 +23,7 @@ Two backends
 
 Discipline
 ----------
-Read only — never writes memory JSON (blueprint §1.3 "Tier C 归因是分析, 不写回").
+Read-only: never writes memory JSON (blueprint §1.3 \"Tier C attribution is analysis, not a write-back\").
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ from tests.testbench.session_store import Session
 _NON_TARGET_TYPES = frozenset({"message", "recent_memo", "correction"})
 
 _DEFAULT_TOP_K = 6
-# Batch ("推测全部源头") keeps far fewer sources per node than the single-node
+# Batch mode ("infer all sources") keeps far fewer sources per node than the single-node mode
 # button: it fires over *every* memory at once, so top_k=6 on 200+ memories
 # yields 1000+ dashed edges that turn the graph into an unreadable, unscrollable
 # hairball (user perf report). 3 strong sources per memory is plenty for a "show
@@ -107,7 +107,7 @@ def _overlap(sa: set[str], sb: set[str]) -> float:
     scores ~1.0 here, whereas Jaccard would dilute it toward 0 because the long
     turn dominates the union. This is exactly the "short distillation of a long
     source" shape Tier C is trying to surface, so dashed edges actually appear
-    for real characters (user report: 一条虚线都看不到). Deterministic.
+    for real characters (user report: not a single dotted line is visible). Deterministic.
     """  # noqa: DOCSTRING_CJK
     if not sa or not sb:
         return 0.0

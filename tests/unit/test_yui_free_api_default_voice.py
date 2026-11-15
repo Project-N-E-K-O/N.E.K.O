@@ -15,10 +15,10 @@ YUI_FREE_VOICE_ID = "voice-tone-RcH2svtsrw"
 class _FakeConfigManager:
     def __init__(self, characters: dict, core_config: dict | None = None, non_mainland: bool = False):
         self.characters = deepcopy(characters)
-        # 生产里 aget_core_config() 返回的是**组装后**的配置——URL 由 get_core_config
-        # 按 profile 填，持久化的 raw 里只有 coreApi / assistApi。替身默认也给一份带
-        # URL 的免费快照，否则「这条线路是否依赖区域判定」那道门会失真（拿不到 URL
-        # 就恒判为不依赖，把海外用户绑成大陆音色）。
+        # Production aget_core_config() returns **assembled** config: get_core_config fills URLs
+        # by profile, while persisted raw config contains only coreApi / assistApi. Stubs supply a free snapshot
+        # with URLs too, or the route-depends-on-region gate is distorted (missing URLs
+        # imply no dependency, binding overseas users to mainland voices).
         if core_config is None:
             core_config = {
                 'coreApi': 'free',
@@ -36,9 +36,9 @@ class _FakeConfigManager:
         return self._non_mainland
 
     def _region_verdict_is_provisional(self, cfg=None) -> bool:
-        # 这些用例考的是绑定逻辑本身，前提是区域判定已落定——未落定时
-        # ensure_default_yui_voice_for_free_api 会跳过绑定（避免把猜出来的区域
-        # 写成持久音色，之后不会被覆盖）。这里把该前提写明。
+        # These cases test binding logic itself, assuming regional detection has settled; before that,
+        # ensure_default_yui_voice_for_free_api skips binding to avoid persisting a guessed region's
+        # voice that would never be overwritten. State this precondition explicitly here.
         return False
 
     async def aload_characters(self):
@@ -148,9 +148,9 @@ async def test_overseas_free_binds_yui_sentinel_voice(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_overseas_free_binds_yui_with_raw_lanlan_tech_url(monkeypatch):
-    """回归 Codex P2：update_core_config 传入的 raw core_cfg 里 CORE_URL 仍是
-    lanlan.tech（区域改写在 get_core_config 才发生），此时海外用户应靠
-    _check_non_mainland 兜底判海外、绑 yui，而不是落到国内 voice-tone-* 预设。"""
+    """Codex P2 regression: raw core_cfg passed to update_core_config still has CORE_URL
+    lanlan.tech (region rewriting occurs in get_core_config); overseas users must rely on
+    _check_non_mainland to detect overseas and bind yui, not domestic voice-tone-* presets."""
     monkeypatch.setattr(
         "utils.api_config_loader.get_free_voices",
         lambda: {"yui_cn": YUI_FREE_VOICE_ID},

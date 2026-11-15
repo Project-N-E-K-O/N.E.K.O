@@ -1,7 +1,7 @@
 """Prompt injection pattern detector — P21.3 F3 (testbench-only).
 
-Testbench design principle (see PLAN.md §13 — Prompt Injection 最小化防御
-pass): **永不过滤用户内容** (never filter user content). This module is
+Testbench design principle (see PLAN.md section 13 — minimal prompt-injection defense
+pass): **Never filter user content**. This module is
 a pure detector, not a sanitizer — it reports "this text looks like it
 contains a prompt-injection pattern" so:
 

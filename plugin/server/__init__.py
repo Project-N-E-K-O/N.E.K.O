@@ -1,6 +1,6 @@
 """
-Plugin Server 模块
+Plugin Server module
 
-提供 HTTP 服务器和路由。
+Provides the HTTP server and routes.
 """
 

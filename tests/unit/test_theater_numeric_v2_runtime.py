@@ -1,4 +1,4 @@
-"""验证 Numeric v2 最少回合、确定性路线与原子持久化。"""  # noqa: DOCSTRING_CJK
+"""Validate Numeric v2 minimum turns, deterministic routes, and atomic persistence."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from utils.config_manager import ensure_catgirl_character_id, get_reserved
 
 
 def test_fact_projection_keeps_only_runtime_proven_evidence():
-    """事实投影记录输入、可见文本和确定性事件，不猜自然语言动作语义。"""  # noqa: DOCSTRING_CJK
+    """Fact projections record inputs, visible text, and deterministic events; they do not infer natural-language action semantics."""  # noqa: DOCSTRING_CJK
 
     projection = _fact_projection(
         {
@@ -58,7 +58,7 @@ def test_fact_projection_keeps_only_runtime_proven_evidence():
 
 
 def test_timeline_projection_tracks_scene_visit_without_guessing_story_date():
-    """时间线只记录 Runtime 可证明的顺序和场景访问，不从正文猜自然日期。"""  # noqa: DOCSTRING_CJK
+    """The timeline records only ordering and scene visits provable by Runtime; it does not infer natural dates from body text."""  # noqa: DOCSTRING_CJK
 
     projection = _timeline_projection({
         "result_revision": 7,
@@ -81,7 +81,7 @@ def test_timeline_projection_tracks_scene_visit_without_guessing_story_date():
 
 
 def test_numeric_v2_turn_request_validates_ephemeral_input_source():
-    """输入来源只接受自由输入和当前推荐两种 UI 事实。"""  # noqa: DOCSTRING_CJK
+    """Input sources accept only the two UI facts: free input and the current recommendation."""  # noqa: DOCSTRING_CJK
 
     legacy = TurnRequestV2.from_mapping({
         "client_turn_id": "legacy_input_source",
@@ -106,8 +106,180 @@ def test_numeric_v2_turn_request_validates_ephemeral_input_source():
         })
 
 
+async def _reviewed_proposal_session(tmp_path):
+    """Publish a native receipt without granting an Actor-generated button authority."""
+    from tests.unit.test_theater_numeric_v2_unified_pacing import story_for
+    from services.theater.numeric_v2_performance import performance_content_blocks
+
+    runtime = NumericV2Runtime(NumericV2Engine.from_mapping(story_for("下一阶段")), tmp_path)
+    current = await runtime.start_session(session_id="proposal-control", catgirl_binding=_binding(),
+        opening_performance=_opening())
+    result = runtime.prepare_turn(current, TurnRequestV2("complete", 0, "先完成眼前的事。"), (),
+        fact_operations=({"op": "set", "key": "scene:start:done", "value": True, "visibility": "public"},))
+    current = await runtime.commit_turn(result, _performance("这件事处理完了。"))
+    result = runtime.prepare_turn(current, TurnRequestV2("proposal", 1, "", "reinvite"), ())
+    result, body = runtime.engine.finalize_transition_offer_state(result,
+        {"performance": "（望向桌边）接下来一起商量下一阶段的安排吧？", "suggested_inputs": []},
+        new_offer=True, invalidate_previous_offer=True)
+    route = runtime.engine.preview_route(current.session.current_node_id, current.session.metrics,
+        facts=current.session.story_state["facts"])
+    receipt = {"kind": "reviewed_proposal", "revision": result.session.revision,
+        "route_id": route["id"], "target_node_id": route["target_node_id"],
+        "offer": body["performance"], "performance": body["performance"],
+        "visible_blocks": performance_content_blocks(body)}
+    result = replace(result, ledger_event={**result.ledger_event, "program_invitation": receipt})
+    return runtime, await runtime.commit_turn(result, body)
+
+
+def test_explicit_invitation_acceptance_request_has_no_roleplay_message():
+    request = TurnRequestV2.from_mapping({"client_turn_id": "accept-control", "base_revision": 2,
+        "message": "", "input_source": "accept_invitation"})
+    assert request.message == "" and request.input_source == "accept_invitation"
+    with pytest.raises(NumericV2RuntimeError, match="numeric_invitation_acceptance_not_available"):
+        TurnRequestV2.from_mapping({"client_turn_id": "accept-control", "base_revision": 2,
+            "message": "顺便完成全部任务。", "input_source": "accept_invitation"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["none", "missing", "legacy", "revision", "body", "visible", "offer", "route",
+    "target", "visit", "withdrawn", "suggestions", "terminal", "completion", "cross_kind_field"])
+async def test_explicit_invitation_acceptance_requires_exact_live_proposal(tmp_path, mutation):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    before = deepcopy(current)
+    events = deepcopy(current.ledger_events)
+    session = deepcopy(current.session)
+    receipt = events[-1]["program_invitation"]
+    if mutation == "missing":
+        events[-1].pop("program_invitation")
+    elif mutation == "legacy":
+        receipt.update(kind="reviewed_dynamic", accept_input="先等等。")
+    elif mutation == "revision":
+        receipt["revision"] -= 1
+    elif mutation == "body":
+        session.performance_history[-1]["performance"] += "但是先别开始。"
+    elif mutation == "visible":
+        receipt["visible_blocks"] = []
+    elif mutation == "offer":
+        receipt["offer"] = "这是未展示的另一段邀请。"
+    elif mutation == "route":
+        receipt["route_id"] = "another-route"
+    elif mutation == "target":
+        receipt["target_node_id"] = "another-target"
+    elif mutation == "visit":
+        events[-1]["visit_started_revision"] = session.revision
+    elif mutation == "withdrawn":
+        session = replace(session, transition_offered=False)
+    elif mutation == "suggestions":
+        session.performance_history[-1]["suggested_inputs"] = ["先等等。"]
+    elif mutation == "terminal":
+        runtime.engine.nodes[receipt["target_node_id"]]["terminal"] = True
+    elif mutation == "completion":
+        session.story_state["facts"]["scene:start:done"]["value"] = False
+    elif mutation == "cross_kind_field":
+        receipt["silent"] = True
+    route = runtime.engine.invitation_acceptance_route(session, ledger_events=tuple(events))
+    assert bool(route) is (mutation == "none")
+    assert current == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("contamination", ["message", "metrics", "facts", "routing_facts", "complete", "ending", "reject", "initiate"])
+async def test_explicit_invitation_acceptance_cannot_settle_other_results(tmp_path, contamination):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    path = runtime.store._path(current.session.session_id)
+    persisted = path.read_bytes()
+    request = TurnRequestV2("accept", current.session.revision, "" if contamination != "message" else "做别的事。", "accept_invitation")
+    kwargs = {"transition_intent": contamination if contamination in {"reject", "initiate"} else "accept"}
+    operation = {"op": "set", "key": "scene:start:done", "value": False, "visibility": "public"}
+    if contamination == "facts":
+        kwargs["fact_operations"] = (operation,)
+    elif contamination == "routing_facts":
+        kwargs["routing_fact_operations"] = (operation,)
+    elif contamination == "complete":
+        kwargs["scene_complete"] = True
+    elif contamination == "ending":
+        kwargs["natural_ending_ready"] = True
+    changes = (MetricChangeV2("trust", 1, "玩家兑现承诺", "增加积分"),) if contamination == "metrics" else ()
+    with pytest.raises(NumericV2RuntimeError, match="numeric_invitation_acceptance_not_available"):
+        runtime.engine.resolve_turn(current.session, request, changes, ledger_events=current.ledger_events, **kwargs)
+    assert path.read_bytes() == persisted
+
+
+@pytest.mark.asyncio
+async def test_explicit_invitation_acceptance_restores_and_forks_without_player_action(tmp_path):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    restored = await NumericV2Runtime(runtime.engine, tmp_path).restore_session(current.session.session_id)
+    assert restored == current
+    fork = await runtime.fork_session_for_test(current.session.session_id, session_id="proposal-fork", through_revision=current.session.revision)
+    for stored in (restored, fork):
+        result = runtime.prepare_turn(stored, TurnRequestV2("accept-control", stored.session.revision, "", "accept_invitation"), (), transition_intent="accept")
+        assert result.route is not None
+        assert result.session.metrics == stored.session.metrics
+        assert result.session.story_state["facts"]["scene:start:done"] == stored.session.story_state["facts"]["scene:start:done"]
+        assert result.ledger_event["player_action_projection"]["confirmed_actions"] == []
+        assert result.ledger_event["player_action_projection"]["future_references"] == []
+        committed = await runtime.commit_turn(result, _transition_performance(result.session.current_node_id))
+        assert committed.session.performance_history[-1]["input_source"] == "accept_invitation"
+        assert await runtime.restore_session(stored.session.session_id) == committed
+        accepted_fork = await runtime.fork_session_for_test(stored.session.session_id,
+            session_id=stored.session.session_id + "-accepted", through_revision=committed.session.revision)
+        assert accepted_fork.session.performance_history[-1]["input_source"] == "accept_invitation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", ["event", "performance", "both", "receipt"])
+async def test_explicit_invitation_acceptance_cannot_drop_control_provenance_on_restore(tmp_path, tamper):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    result = runtime.prepare_turn(current, TurnRequestV2("accept-control", current.session.revision, "", "accept_invitation"), (), transition_intent="accept")
+    current = await runtime.commit_turn(result, _transition_performance(result.session.current_node_id))
+    path = runtime.store._path(current.session.session_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if tamper in {"event", "both"}:
+        payload["ledger_events"][-1].pop("input_source")
+    if tamper in {"performance", "both"}:
+        payload["session"]["performance_history"][-1].pop("input_source")
+    if tamper == "receipt":
+        payload["ledger_events"][-2].pop("program_invitation")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(numeric_v2_store.NumericV2StoreError):
+        await runtime.restore_session(current.session.session_id)
+
+
+@pytest.mark.asyncio
+async def test_explicit_invitation_acceptance_unclear_requires_recorded_cancellation(tmp_path):
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    result = runtime.prepare_turn(current, TurnRequestV2("cancel-control", current.session.revision, "", "accept_invitation"), (), transition_intent="unclear")
+    assert result.route is None and result.session.current_node_id == current.session.current_node_id
+    with pytest.raises(numeric_v2_store.NumericV2StoreError):
+        await runtime.commit_turn(result, {"performance": "这段安排还需核对。", "suggested_inputs": []})
+    result, body = runtime.engine.finalize_transition_offer_state(result,
+        {"performance": "这段安排与实际入口不符，先留在这里。", "suggested_inputs": []},
+        new_offer=False, invalidate_previous_offer=True)
+    committed = await runtime.commit_turn(result, body)
+    assert not committed.session.transition_offered
+    assert await runtime.restore_session(current.session.session_id) == committed
+
+
+@pytest.mark.asyncio
+async def test_explicit_invitation_acceptance_still_obeys_required_delivery_and_duplicate_guards(tmp_path):
+    from services.theater.numeric_v2_fixed_narration import required_pending
+    from tests.unit.test_theater_numeric_v2_fixed_narration import _piece
+
+    runtime, current = await _reviewed_proposal_session(tmp_path)
+    request = TurnRequestV2("accept-control", current.session.revision, "", "accept_invitation")
+    runtime.engine.nodes["start"]["story_beat"]["fixed_narrations"] = [_piece("pending", "应先公开的记录。")]
+    assert required_pending(runtime.engine.nodes["start"], current.session)
+    with pytest.raises(NumericV2RuntimeError, match="numeric_invitation_acceptance_not_available"):
+        runtime.prepare_turn(current, request, (), transition_intent="accept")
+    runtime.engine.nodes["start"]["story_beat"].pop("fixed_narrations")
+    outcome = runtime.prepare_turn(current, request, (), transition_intent="accept")
+    committed = await runtime.commit_turn(outcome, _transition_performance(outcome.session.current_node_id))
+    with pytest.raises(NumericV2RuntimeError):
+        runtime.prepare_turn(committed, replace(request, base_revision=committed.session.revision), (), transition_intent="accept")
+
+
 def test_numeric_v2_idle_store_and_receipt_locks_are_reclaimed(tmp_path):
-    """锁在并发窗口内必须复用，调用方释放后不得按历史 ID 永久积累。"""  # noqa: DOCSTRING_CJK
+    """The lock must be reused during the concurrency window and must not accumulate permanently by historical ID after the caller releases it."""  # noqa: DOCSTRING_CJK
 
     session_path = tmp_path / "numeric_v2" / "sessions" / "lock-test.json"
     session_key = str(session_path.resolve())
@@ -119,7 +291,7 @@ def test_numeric_v2_idle_store_and_receipt_locks_are_reclaimed(tmp_path):
     receipt_lock = numeric_v2_archive._receipt_lock(receipt_path)
     assert numeric_v2_archive._receipt_lock(receipt_path) is receipt_lock
 
-    # 删除测试持有的最后强引用后，弱引用表应自动清除两个空闲条目。
+    # After the test releases its last strong reference, the weak-reference table should automatically clear both idle entries.
     del session_lock
     del receipt_lock
     gc.collect()
@@ -144,7 +316,7 @@ def test_numeric_v2_session_budget_profile_persists_and_legacy_defaults_balanced
 
 
 def test_numeric_v2_session_rejects_other_package_hash():
-    """恢复只接受当前 v2.2 包的哈希。"""  # noqa: DOCSTRING_CJK
+    """Recovery accepts only hashes from the current v2.2 package."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -159,7 +331,7 @@ def test_numeric_v2_session_rejects_other_package_hash():
 
 
 def test_numeric_v2_story_state_records_events_without_replacing_position_authority():
-    """故事状态只投影开场事件，当前位置仍由 Session.current_node_id 读取。"""  # noqa: DOCSTRING_CJK
+    """Story state projects only opening events; the current location is still read from Session.current_node_id."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -175,7 +347,7 @@ def test_numeric_v2_story_state_records_events_without_replacing_position_author
 
 
 def test_numeric_v2_apply_fact_ops_is_atomic_bounded_and_sorted():
-    """事实批次必须全量校验后再生成稳定顺序的下一版本。"""  # noqa: DOCSTRING_CJK
+    """Validate the entire fact batch before creating the next version in stable order."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -210,7 +382,7 @@ def test_numeric_v2_apply_fact_ops_is_atomic_bounded_and_sorted():
 
 
 def test_numeric_v2_apply_fact_ops_rejects_unknown_key_without_mutating_source():
-    """不在白名单内的事实操作必须拒绝，原状态保持不变。"""  # noqa: DOCSTRING_CJK
+    """Reject fact operations outside the allowlist and leave the prior state unchanged."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -236,7 +408,7 @@ def test_numeric_v2_apply_fact_ops_rejects_unknown_key_without_mutating_source()
 
 
 def test_numeric_v2_engine_applies_only_story_fact_contract_values():
-    """Engine 包装入口同时执行剧本白名单、可见性和标量类型校验。"""  # noqa: DOCSTRING_CJK
+    """The Engine wrapper entry point also validates the script allowlist, visibility, and scalar types."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -282,7 +454,7 @@ def test_numeric_v2_engine_applies_only_story_fact_contract_values():
 
 
 def test_numeric_v2_completion_contract_reads_only_committed_story_facts():
-    """完成判定只读取事实账本；缺失事实为未完成，全部命中后才成立。"""  # noqa: DOCSTRING_CJK
+    """Completion checks read only the fact ledger; missing facts mean incomplete, and completion holds only once all facts match."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -339,7 +511,7 @@ def test_numeric_v2_completion_contract_reads_only_committed_story_facts():
 
 
 def test_numeric_v2_completion_contract_absence_is_distinct_from_false():
-    """未声明完成合同与已声明但未满足保持不同结果。"""  # noqa: DOCSTRING_CJK
+    """An undeclared completion contract and a declared but unmet contract must produce different results."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -366,7 +538,7 @@ def test_numeric_v2_completion_contract_absence_is_distinct_from_false():
 
 
 def test_numeric_v2_engine_without_story_fact_contract_rejects_model_fact_ops():
-    """未声明事实合同的剧本不向模型候选开放任何事实键。"""  # noqa: DOCSTRING_CJK
+    """Scripts without a declared fact contract expose no fact keys to model candidates."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -391,7 +563,7 @@ def test_numeric_v2_engine_without_story_fact_contract_rejects_model_fact_ops():
 
 
 def test_numeric_v2_engine_adjudicates_fact_candidates_before_commit():
-    """候选必须提供完整主体四元组和可逐字核对的来源，验证后才进入唯一写入口。"""  # noqa: DOCSTRING_CJK
+    """A candidate must provide the complete subject tuple and a source that can be checked verbatim; only then may it enter the sole write path."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -437,7 +609,7 @@ def test_numeric_v2_engine_adjudicates_fact_candidates_before_commit():
 
 
 def test_numeric_v2_turn_commits_fact_operations_atomically_and_records_them():
-    """事实操作与数值、场景事件共用同一回合版本，并可从 Ledger 重放。"""  # noqa: DOCSTRING_CJK
+    """Fact operations share the same turn version as numeric and scene events and can be replayed from the Ledger."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -476,7 +648,7 @@ def test_numeric_v2_turn_commits_fact_operations_atomically_and_records_them():
 
 
 def test_numeric_v2_actor_facts_merge_with_evaluator_facts_in_one_revision():
-    """最终 Actor 候选与前置判定事实从回合起点重建，账本只增加一次 revision。"""  # noqa: DOCSTRING_CJK
+    """Rebuild the final Actor candidate and pre-decision facts from the turn start; increment the ledger revision only once."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -538,7 +710,7 @@ def test_numeric_v2_actor_facts_merge_with_evaluator_facts_in_one_revision():
 
 
 def test_numeric_v2_fact_candidate_rejects_future_tense_evidence():
-    """未来计划不能提交为完成事实，同时保留同形名词中的真实完成表述。"""  # noqa: DOCSTRING_CJK
+    """Future plans cannot be submitted as completed facts, while genuine completed statements using the same noun form are retained."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {"facts": {
@@ -600,6 +772,116 @@ def test_numeric_v2_fact_candidate_rejects_future_tense_evidence():
     assert finalized.session.story_state["facts"]["scene:start:sheltered"]["value"] is True
 
 
+@pytest.mark.parametrize(("description", "quote", "visible", "accepted"), [
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "带你出去，然后我来锁门",
+        "走吧，我带你出去，然后我来锁门。",
+        False,
+    ),
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "锁舌咔哒一声落进槽里",
+        "（跨出门槛，反手握住门把将沉重的木门缓缓合拢，锁舌咔哒一声落进槽里。拔出钥匙攥在掌心）",
+        True,
+    ),
+    (
+        "天文馆按规程完成闭馆，栀宁锁上大门，陆遥离开建筑",
+        "锁舌咔哒一声落进槽里，然后我来收钥匙",
+        "锁舌咔哒一声落进槽里，然后我来收钥匙。",
+        True,
+    ),
+    (
+        "双方完成闭馆分工，栀宁承诺负责锁门。",
+        "带你出去，然后我来锁门",
+        "走吧，我带你出去，然后我来锁门。",
+        True,
+    ),
+    ("已完成证物归还。", "然后我来归还证物", "然后我来归还证物。", False),
+    ("已完成交接并离开。", "然后我来交接了钥匙", "然后我来交接了钥匙。", True),
+    ("已完成抵达。", "然后我来到了档案室", "然后我来到了档案室。", True),
+    ("已完成此前的巡查。", "然后我来过档案室", "然后我来过档案室。", True),
+])
+def test_performance_fact_distinguishes_prospective_actor_assignment(description, quote, visible, accepted):
+    story = numeric_v2_story()
+    key = "scene:start:performed_result"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": description, "evidence_source": "performance",
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="performed-result", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("performed-turn", 0, "现在怎么样了？"), ())
+    candidates = [{"key": key, "value": True, "evidence_quote": quote}]
+    evidence_sources = {"actor_performance": visible}
+    if not accepted:
+        with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_not_completed"):
+            engine.finalize_actor_fact_candidates(session, outcome, candidates=candidates, evidence_sources=evidence_sources)
+        return
+    committed, _ = engine.finalize_actor_fact_candidates(
+        session, outcome, candidates=candidates, evidence_sources=evidence_sources,
+    )
+    assert engine.completion_contract_satisfied(committed.session)
+
+
+def test_performance_fact_requires_its_author_anchor_in_the_cited_text():
+    story = numeric_v2_story()
+    key = "scene:start:sheet_detached"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": "所有选定的拓样均已揭下并摊稳。",
+        "evidence_source": "performance", "evidence_anchor": "揭下并摊稳",
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="anchor", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("anchor-turn", 0, "就留这两块吧。"), ())
+    preparation = "（又展开一张纸盖住歪太阳的位置，指尖压住纸边固定）你按住这边，别让它跑偏了。"
+    completion = "（将选定的两张拓样逐一揭下并摊稳）好，两张都在这儿了。"
+    candidate = {"key": key, "value": True, "evidence_quote": preparation}
+    with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_anchor_missing"):
+        engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                             evidence_sources={"actor_performance": preparation + completion})
+
+    committed, _ = engine.finalize_actor_fact_candidates(
+        session, outcome, candidates=[{**candidate, "evidence_quote": completion}],
+        evidence_sources={"actor_performance": preparation + completion},
+    )
+    assert engine.completion_contract_satisfied(committed.session)
+
+
+@pytest.mark.parametrize(("quote", "accepted"), [
+    ("线条从墙面浮到纸上，拓得挺实。", False),
+    ("把薄纸揭下来，托在手里。", False),
+    ("把薄纸揭下来，等你回来再摊平。", False),
+    ("先把薄纸揭下来，然后摊平在墙根？", False),
+    ("把薄纸摊平贴在墙上，从边上揭下胶带。", False),
+    ("把纸揭下来平铺在地上。", True),
+    ("将薄纸从墙面剥离，摊平在墙根的青苔上。", True),
+    ("从墙上取下拓样，平放在墙根。", True),
+])
+def test_grouped_evidence_anchor_requires_ordered_performed_actions(quote, accepted):
+    story = numeric_v2_story()
+    key = "scene:start:first_sheet"
+    story["fact_contract"] = {"facts": {key: {
+        "value_type": "bool", "visibility": "public", "description": "首张拓样已从墙面揭下并放稳。",
+        "evidence_source": "performance",
+        "evidence_anchor": [["揭下", "从墙面剥离", "从墙上取下"], ["平铺", "摊平", "平放"]],
+    }}}
+    story["nodes"][0]["completion_contract"] = {"all": [{"key": key, "equals": True}]}
+    engine = NumericV2Engine.from_mapping(story)
+    session = engine.create_session(session_id="grouped-anchor", catgirl_binding=_binding(), opening_performance=_opening())
+    outcome = engine.resolve_turn(session, TurnRequestV2("grouped-turn", 0, "我按住纸角。"), ())
+    candidate = {"key": key, "value": True, "evidence_quote": quote}
+    if not accepted:
+        with pytest.raises(NumericV2RuntimeError, match="story_fact_candidate_evidence_anchor_missing"):
+            engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                                 evidence_sources={"actor_performance": quote})
+        return
+    committed, _ = engine.finalize_actor_fact_candidates(session, outcome, candidates=[candidate],
+                                                       evidence_sources={"actor_performance": quote})
+    assert engine.completion_contract_satisfied(committed.session)
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -609,7 +891,7 @@ def test_numeric_v2_fact_candidate_rejects_future_tense_evidence():
     ],
 )
 def test_numeric_v2_fact_candidate_rejection_does_not_write_partial_state(change):
-    """候选任一字段或证据失败时，整批事实都不落账。"""  # noqa: DOCSTRING_CJK
+    """If any candidate field or piece of evidence fails validation, commit none of the batch's facts."""  # noqa: DOCSTRING_CJK
 
     story = numeric_v2_story()
     story["fact_contract"] = {
@@ -650,7 +932,7 @@ def test_numeric_v2_fact_candidate_rejection_does_not_write_partial_state(change
 
 
 def test_numeric_v2_story_state_projects_route_transition_events():
-    """正式换幕时记录离开和进入事件，并绑定产生它们的回合。"""  # noqa: DOCSTRING_CJK
+    """When actually changing scenes, record both exit and entry events and bind them to the turn that produced them."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(_branch_story())
     session = engine.create_session(
@@ -690,7 +972,7 @@ def test_numeric_v2_story_state_projects_route_transition_events():
 
 
 def test_numeric_v2_scene_fact_projection_is_bounded_and_public_only():
-    """模型只读取有界的公开场景事件，不读取内部事实或当前节点副本。"""  # noqa: DOCSTRING_CJK
+    """The model reads only bounded, public scene events; it does not read internal facts or a copy of the current node."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -734,7 +1016,7 @@ def test_numeric_v2_scene_fact_projection_is_bounded_and_public_only():
 
 
 def test_numeric_v2_scene_fact_projection_ignores_malformed_scene_event_keys():
-    """场景事实只接受 Runtime 规定的事件键，不把相似前缀当成结构化证据。"""  # noqa: DOCSTRING_CJK
+    """Scene facts accept only event keys defined by Runtime; similar prefixes do not count as structured evidence."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -774,7 +1056,7 @@ def test_numeric_v2_scene_fact_projection_ignores_malformed_scene_event_keys():
 
 
 def test_numeric_v2_session_rejects_missing_or_misaligned_story_state():
-    """旧 Session 不隐式迁移，故事状态缺失或错位都必须重新导入失败。"""  # noqa: DOCSTRING_CJK
+    """Do not implicitly migrate old Sessions; missing or misaligned story state must make re-import fail."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
     session = engine.create_session(
@@ -810,7 +1092,7 @@ def test_numeric_v2_session_rejects_unknown_budget_profile():
 
 
 def test_numeric_v2_runtime_has_no_hard_goal_delivery_directive():
-    """Runtime 只记录自然发生的证据，不再生成强制交付指令。"""  # noqa: DOCSTRING_CJK
+    """Runtime records naturally occurring evidence only; it no longer generates mandatory-delivery instructions."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(numeric_v2_story())
 
@@ -818,7 +1100,7 @@ def test_numeric_v2_runtime_has_no_hard_goal_delivery_directive():
 
 
 def test_existing_character_id_is_persisted_in_canonical_form():
-    """已存在的合法 UUID 也要回写统一格式，避免角色绑定出现多种表示。"""  # noqa: DOCSTRING_CJK
+    """Rewrite even existing valid UUIDs in the canonical format to avoid multiple representations in character bindings."""  # noqa: DOCSTRING_CJK
     card = {
         "_reserved": {
             "character_id": "character_12345678-1234-5678-9ABC-DEF012345678",
@@ -833,7 +1115,7 @@ def test_existing_character_id_is_persisted_in_canonical_form():
 
 
 def test_numeric_v2_receipt_path_rejects_parent_directory_escape(tmp_path):
-    """结束回执只接受服务端固定格式，不能借路径片段逃逸归档目录。"""  # noqa: DOCSTRING_CJK
+    """Completion receipts accept only the server's fixed format and must not allow path fragments to escape the archive directory."""  # noqa: DOCSTRING_CJK
     store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
 
     with pytest.raises(
@@ -864,7 +1146,7 @@ def test_numeric_v2_public_archive_delete_aborts_on_read_failure(
     read_failure,
     expected_error,
 ):
-    """破坏性删除遇到不可读或损坏档案时必须中止，不能静默遗漏。"""  # noqa: DOCSTRING_CJK
+    """Abort destructive deletion if an archive is unreadable or corrupt; do not silently omit it."""  # noqa: DOCSTRING_CJK
 
     store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
     archive_path = store.public_archive_root / "transient.json"
@@ -923,7 +1205,7 @@ def test_numeric_v2_public_archive_delete_aborts_on_read_failure(
 
 
 def test_numeric_v2_legacy_archives_and_receipts_follow_character_rename(tmp_path):
-    """旧版空 character_id 的冷档案、回执和待提交档案必须随角色改名迁移。"""  # noqa: DOCSTRING_CJK
+    """Migrate cold archives, receipts, and pending archives with an empty legacy character_id when the character is renamed."""  # noqa: DOCSTRING_CJK
 
     store = numeric_v2_archive.NumericV2ArchiveStore(tmp_path)
     receipt_id = "theater_end_" + "a" * 40
@@ -973,7 +1255,7 @@ def test_numeric_v2_legacy_archives_and_receipts_follow_character_rename(tmp_pat
 
 @pytest.mark.asyncio
 async def test_numeric_v2_empty_character_id_delete_keeps_other_legacy_names(tmp_path):
-    """旧角色卡按名称删除时不能把空 character_id 扩散成全角色删除。"""  # noqa: DOCSTRING_CJK
+    """Deleting an old character card by name must not let an empty character_id expand into deletion of all characters."""  # noqa: DOCSTRING_CJK
     session_root = tmp_path / "numeric_v2" / "sessions"
     archive_root = tmp_path / "numeric_v2" / "public_archives"
     session_root.mkdir(parents=True)
@@ -1022,7 +1304,7 @@ async def test_numeric_v2_empty_character_id_delete_keeps_other_legacy_names(tmp
 
 @pytest.mark.asyncio
 async def test_numeric_v2_scoped_delete_preserves_other_story_slots(tmp_path):
-    """同时按剧本和角色删除时，只能移除交集槽位。"""  # noqa: DOCSTRING_CJK
+    """When deleting by both script and character, remove only the intersecting slots."""  # noqa: DOCSTRING_CJK
     index_path = tmp_path / "numeric_v2" / "story_sessions.json"
     numeric_v2_store._write_story_session_slots(index_path, {
         "story-a": {"character-a": "session-aa", "character-b": "session-ab"},
@@ -1154,7 +1436,7 @@ def test_numeric_v2_runtime_is_the_only_transition_offer_state_writer(
     new_offer,
     expected_offer,
 ):
-    """Actor 只提交已验证信号，三份公开状态由 Runtime 一次性同步。"""  # noqa: DOCSTRING_CJK
+    """The Actor submits only validated signals; Runtime synchronizes all three public states atomically."""  # noqa: DOCSTRING_CJK
 
     engine = NumericV2Engine.from_mapping(_branch_story())
     session = engine.create_session(
@@ -1273,7 +1555,7 @@ async def test_numeric_v2_route_change_requires_visible_transition_before_commit
         (),
         scene_complete=False,
     )
-    # 只有已提交正文中出现具体提议，下一轮接受时才允许换幕。
+    # A scene transition may be accepted next turn only if a concrete proposal appeared in the committed body.
     offered = replace(
         first,
         session=replace(first.session, transition_offered=True),
@@ -1324,7 +1606,7 @@ async def test_numeric_v2_route_change_accepts_empty_deduplicated_bridge(tmp_pat
         (),
         scene_complete=False,
     )
-    # 先把转场提议写入上一轮的可见结果，模拟 Actor 已经公开提出下一步。
+    # First write the transition proposal into the previous turn's visible result, simulating that the Actor has publicly proposed the next step.
     offered = replace(
         first,
         session=replace(first.session, transition_offered=True),
@@ -1396,7 +1678,7 @@ async def test_numeric_v2_session_creation_rolls_back_when_index_write_fails(
     tmp_path,
     monkeypatch,
 ):
-    """恢复索引发布失败时不能遗留不可达的 Session 文件。"""  # noqa: DOCSTRING_CJK
+    """If publishing the recovery index fails, do not leave an unreachable Session file behind."""  # noqa: DOCSTRING_CJK
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
 
     def _reject_index(_stories):
@@ -1437,7 +1719,7 @@ async def test_numeric_v2_story_session_index_survives_runtime_recreation(tmp_pa
 
 @pytest.mark.asyncio
 async def test_numeric_v2_session_writer_rejects_unreadable_story_index(tmp_path):
-    """损坏索引不能被新 Session 当作空索引覆盖。"""  # noqa: DOCSTRING_CJK
+    """Do not overwrite a corrupt index with an empty index for a new Session."""  # noqa: DOCSTRING_CJK
 
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     index_path = tmp_path / "numeric_v2" / "story_sessions.json"
@@ -1460,7 +1742,7 @@ async def test_numeric_v2_session_writer_rejects_unreadable_story_index(tmp_path
 
 @pytest.mark.asyncio
 async def test_numeric_v2_session_delete_rejects_unreadable_story_index(tmp_path):
-    """损坏索引时删除请求不能先移除 Session 文件。"""  # noqa: DOCSTRING_CJK
+    """When the index is corrupt, a deletion request must not remove the Session file first."""  # noqa: DOCSTRING_CJK
 
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(
@@ -1498,7 +1780,7 @@ async def test_numeric_v2_session_delete_preserves_unidentifiable_data(tmp_path,
     original_index = index_path.read_bytes()
     session_path.write_bytes(corrupt_bytes)
 
-    # 日常列表可以跳过坏文件；删除前的严格扫描不能把未知归属当作没有数据。
+    # Ordinary listing may skip corrupt files; the strict scan before deletion must not treat unknown ownership as no data.
     assert numeric_v2_store.list_numeric_v2_sessions(tmp_path) == []
     with pytest.raises(numeric_v2_store.NumericV2StoreError, match="numeric_session_read_failed"):
         await numeric_v2_store.delete_numeric_v2_sessions(
@@ -1513,7 +1795,7 @@ async def test_numeric_v2_session_delete_rejects_transient_session_read_failure(
     tmp_path,
     monkeypatch,
 ):
-    """破坏性枚举遇到暂时性 I/O 失败时必须保留 Session 和索引。"""  # noqa: DOCSTRING_CJK
+    """If temporary I/O failure occurs during destructive enumeration, preserve the Session and index."""  # noqa: DOCSTRING_CJK
 
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(
@@ -1551,7 +1833,7 @@ async def test_numeric_v2_session_delete_rejects_transient_archive_read_failure(
     tmp_path,
     monkeypatch,
 ):
-    """冷档案暂时不可读时必须在删除任何 Session 前中止级联操作。"""  # noqa: DOCSTRING_CJK
+    """If a cold archive is temporarily unreadable, abort the cascade before deleting any Session."""  # noqa: DOCSTRING_CJK
 
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(
@@ -1691,7 +1973,7 @@ async def test_turn_prepared_before_exit_cannot_commit_after_resume(tmp_path):
 
 @pytest.mark.asyncio
 async def test_numeric_v2_lifecycle_revision_rejects_delayed_end_and_resume(tmp_path):
-    """同一演绎回合内，旧的结束或继续请求不能覆盖更新的生命周期状态。"""  # noqa: DOCSTRING_CJK
+    """Within the same performance turn, an older finish or continue request must not overwrite a newer lifecycle state."""  # noqa: DOCSTRING_CJK
 
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     started = await runtime.start_session(
@@ -1841,7 +2123,7 @@ async def test_numeric_v2_startup_audit_does_not_quarantine_transient_io_failure
     tmp_path,
     monkeypatch,
 ):
-    """暂时性读取失败必须中止审计，不能把有效 Session 当作损坏数据移动。"""  # noqa: DOCSTRING_CJK
+    """A temporary read failure must abort the audit rather than move a valid Session as corrupt data."""  # noqa: DOCSTRING_CJK
 
     story = _branch_story()
     registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
@@ -1882,7 +2164,7 @@ async def test_numeric_v2_startup_audit_does_not_quarantine_transient_io_failure
 
 @pytest.mark.asyncio
 async def test_numeric_v2_startup_audit_quarantines_missing_story_session(tmp_path):
-    """剧本已确定删除的孤儿 Session 应被隔离，不能误判为暂时性 I/O 故障。"""  # noqa: DOCSTRING_CJK
+    """Quarantine an orphan Session whose script is confirmed deleted; do not mistake it for a temporary I/O failure."""  # noqa: DOCSTRING_CJK
 
     story = _branch_story()
     registry = NumericV2PackageRegistry(tmp_path / "numeric_v2" / "packages")
@@ -2035,7 +2317,7 @@ async def test_numeric_v2_restart_replaces_ended_session_in_same_catgirl_slot(tm
         base_lifecycle_revision=0,
         reason="user_exit",
     )
-    # 重开必须显式指出被替换的旧 Session，测试与生产接口保持同一条原子替换链。
+    # Reopening must explicitly identify the old Session being replaced, keeping tests and production on the same atomic replacement path.
     restarted = await runtime.replace_active_session(
         previous_session_id=old.session.session_id,
         session_id="runtime_story_reopened",
@@ -2077,7 +2359,7 @@ async def test_numeric_v2_preserves_one_session_per_story_and_catgirl(tmp_path):
     assert (await runtime.restore_story_session(_binding())).session.session_id == lan.session.session_id
     assert (await runtime.restore_story_session(other_binding)).session.session_id == mio.session.session_id
 
-    # 只替换当前猫娘的恢复槽位，另一只猫娘的 Session 必须保持不变。
+    # Replace only the current neko's recovery slot; the other neko's Session must remain unchanged.
     restarted_lan = await runtime.replace_active_session(
         previous_session_id=lan.session.session_id,
         session_id="runtime_lan_restarted",
@@ -2117,7 +2399,7 @@ async def test_numeric_v2_indexed_restore_propagates_transient_read_failure(
     tmp_path,
     monkeypatch,
 ):
-    """恢复槽位暂时不可读时必须中止，不能把有效进度当作不存在。"""  # noqa: DOCSTRING_CJK
+    """If the recovery slot is temporarily unreadable, abort rather than treat valid progress as absent."""  # noqa: DOCSTRING_CJK
 
     runtime = NumericV2Runtime(NumericV2Engine.from_mapping(_branch_story()), tmp_path)
     stored = await runtime.start_session(
@@ -2253,7 +2535,7 @@ async def test_numeric_v2_uncommitted_candidate_does_not_change_session(tmp_path
 
 @pytest.mark.asyncio
 async def test_numeric_v2_restore_replays_fact_operations_from_ledger(tmp_path):
-    """恢复存档时必须重放事实操作，不能只重算数值和场景位置。"""  # noqa: DOCSTRING_CJK
+    """When recovering an archive, replay fact operations; do not only recompute numbers and scene position."""  # noqa: DOCSTRING_CJK
 
     story = _branch_story()
     story["fact_contract"] = {
@@ -2569,13 +2851,16 @@ async def test_replacement_normalizes_character_slot(tmp_path):
 
 
 @pytest.mark.parametrize('mode', ['terminate', 'race'])
-def test_numeric_v2_exclusive_publication_is_atomic_across_processes(tmp_path, mode):
+def test_numeric_v2_exclusive_publication_is_atomic_across_processes(tmp_path, tmp_path_factory, mode):
     """A killed writer exposes no final file; racing writers never overwrite a winner."""
     from pathlib import Path
     import subprocess
     import sys
     import time
 
+    from tests.process_isolation import child_process_env
+
+    child_env = child_process_env(tmp_path_factory.mktemp('child-runtime-root'))
     worker = r'''
 import json, os, sys
 from pathlib import Path
@@ -2633,7 +2918,7 @@ except NumericV2SessionExistsError:
             # verbose child before publication. Files impose no pipe capacity.
             process = subprocess.Popen([sys.executable, '-c', worker, str(tmp_path), mode, str(marker), str(i)],
                 cwd=Path(__file__).resolve().parents[2], stdin=subprocess.PIPE,
-                stdout=stdout_log, stderr=stderr_log, text=True)
+                stdout=stdout_log, stderr=stderr_log, text=True, env=child_env)
             processes.append(process)
             # Cold imports may exceed 10 seconds on a fully loaded Windows
             # xdist runner; the publication/termination assertions stay exact.
@@ -2735,7 +3020,7 @@ def test_maintenance_quarantines_unparseable_public_archives_without_trimming(tm
     moved = {path.name.split("-", 3)[3]: path.read_bytes() for path in quarantine_root.iterdir()}
     assert moved == corrupt
     assert valid_path.read_bytes() == valid_bytes
-    # 暂时性 I/O 失败的档案可能仍然有效，必须原地保留。
+    # A temporarily unreadable archive may still be valid and must be preserved in place.
     assert locked_path.read_bytes() == locked_bytes
     assert not list((tmp_path / "numeric_v2" / "quarantine").glob("*"))
     assert numeric_v2_store.list_numeric_v2_public_archives(

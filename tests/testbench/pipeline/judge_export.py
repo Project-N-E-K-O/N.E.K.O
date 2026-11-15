@@ -417,11 +417,11 @@ def build_report_markdown(
     meta = dict(metadata or {})
     filt = dict(filter_payload or {})
 
-    # 2026-04-22 Day 8 手测 #4: 将 Markdown 导出全部改为中文 — 所有字段
-    # 标签 / 章节标题 / 表头本地化, 以符合项目约定 (UI 语言 = zh-CN, 导出
-    # 文档理应与 UI 一致, 否则用户拿到 "Overall" "By schema" 这类英文标签
-    # 会困惑). 注意: 字段 **key** (如 `overall_score`, `verdict`) 保留英文
-    # 避免破坏程序可读性; 只把 **人类可读的 heading / label** 改中文.
+    # 2026-04-22 Day 8 manual test #4: localize all Markdown exports into Chinese: field
+    # labels / section headings / table headers, following project conventions (UI language = zh-CN, so exports
+    # should match; English labels such as "Overall" and "By schema" would confuse users).
+    # Keep field keys (e.g. overall_score, verdict) in English
+    # for machine readability; translate only human-readable headings / labels.
     lines.append("# 评分报告")
     lines.append("")
     lines.append(f"_生成时间: {_now_iso()}_")
@@ -538,7 +538,7 @@ def build_report_markdown(
                     )
             lines.append("")
 
-    # 单条结果 — 只渲染核心字段让 50 条批量导出也保持可读性.
+    # Individual result: render core fields only, keeping batch exports of 50 results readable.
     lines.append("## 逐条结果")
     lines.append("")
     for idx, r in enumerate(results, start=1):

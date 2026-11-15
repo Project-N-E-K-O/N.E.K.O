@@ -14,8 +14,8 @@ from main_logic.asr_client.endpointing.smart_turn_audio_evidence import (
 
 
 def _complete_record_count(index_path: Path) -> int:
-    # 只认已经 flush 完整的整行 JSON：写线程是先 open 再 write 再 flush，
-    # 光看文件存在会读到空文件或半行。
+    # Accept only complete, flushed JSON lines: the writer opens, writes, then flushes;
+    # file existence alone can expose an empty file or partial line.
     try:
         lines = index_path.read_text("utf-8").splitlines()
     except OSError:
@@ -35,9 +35,9 @@ def _wait_for_written_run_dir(
     expected_records: int = 1,
     timeout_s: float = 10.0,
 ) -> list[Path]:
-    # 等落盘：close() 只给写线程一个很短的确认窗口，不是落盘保证。正常路径下写线程
-    # 几毫秒就写完了，但 Windows CI 上磁盘会抖到超过那个窗口，close() 一返回就
-    # iterdir 会撞上还没建出来的目录、或是刚 open 出来的空 index。
+    # Wait for persistence: close() gives the writer only a short acknowledgment window, not a disk guarantee.
+    # Writes normally finish in milliseconds, but Windows CI disk delays can exceed that window; immediately
+    # calling iterdir after close() can see an absent directory or newly opened empty index.
     deadline = time.monotonic() + timeout_s
     while True:
         try:

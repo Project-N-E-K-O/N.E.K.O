@@ -29,7 +29,7 @@ describe('plugin deletion', () => {
 })
 
 describe('plugin hosted UI API', () => {
-  it('marks aggregate refreshes as local development actions and preserves caller options', async () => {
+  it('passes caller options through to aggregate refreshes unchanged', async () => {
     const { refreshPluginsRegistry } = await import('./plugins')
     await refreshPluginsRegistry({
       timeout: 1234,
@@ -39,7 +39,7 @@ describe('plugin hosted UI API', () => {
     expect(postMock).toHaveBeenCalledWith('/plugins/refresh', undefined, {
       timeout: 1234,
       preserveMessagesOn404: true,
-      headers: { 'X-Other': 'value', 'X-Neko-Development': '1' },
+      headers: { 'X-Other': 'value' },
     })
   })
   beforeEach(() => {
@@ -95,7 +95,6 @@ describe('plugin hosted UI API', () => {
 
     expect(postMock).toHaveBeenCalledWith('/plugins/reload', undefined, {
       timeout: 0,
-      headers: { 'X-Neko-Development': '1' },
     })
   })
 

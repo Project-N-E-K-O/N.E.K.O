@@ -65,5 +65,5 @@ def on_utterance(bucket: str, event: dict) -> None:
     """
     if not _enabled():
         return
-    # 留位：未来从 event 里读 emotion / intensity 字段
+    # Placeholder: read emotion / intensity fields from the event in the future
     logger.debug("dropper: utterance event ignored (emotion rule not yet enabled): bucket=%s", bucket)

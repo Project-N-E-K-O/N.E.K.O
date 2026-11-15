@@ -857,17 +857,17 @@ async def test_aload_signal_targets_suppress_filter_applies_when_vectors_disable
     assert "reflection.r_silent" not in result_ids
 
 
-# ── per-query top-K recall (reflection synthesis 用) ─────────────────
+# ── Per-query top-K recall (used for reflection synthesis) ───────────
 
 
 @pytest.mark.asyncio
 async def test_per_query_topk_each_query_gets_independent_k():
-    """20 unabsorbed 主题分散时，max-pool 会让冷门主题挤不进 anchor；
-    per-query 配额保证每条 unabsorbed 至少能拿自己的 top-K。
+    """When 20 unabsorbed topics are dispersed, max-pool can let frequent topics crowd out rare ones;
+    per-query quotas ensure each unabsorbed topic can receive at least its own top-K.
 
-    Setup: 3 query 各指向独立方向；候选池里每个方向有 2 条高分 + 1 条
-    低分；per_query_k=2 → 每条 query 应该拿到自己方向的 2 条 top（共 6
-    条 union，无重叠 dedup 不触发）。
+    Setup: three queries point in independent directions; the candidate pool has two high-scoring and one
+    low-scoring item per direction; per_query_k=2 → each query should get its two top results in its own direction (six
+    total after union, no overlap, so deduplication is not triggered).
     """
     qmap = {
         "q_topic_A": [1.0, 0.0, 0.0],
@@ -896,23 +896,23 @@ async def test_per_query_topk_each_query_gets_independent_k():
         per_query_k=2, total_cap=20,
     )
     ids = {o["id"] for o in out}
-    # 每个主题的 high1 + high2 都应该入选（per-query top-2 各 2 条 × 3 query
-    # = 6 条，主题间互不重叠）。max-pool 全局 top-6 也会得到同样结果——但
-    # 把 total_cap 缩到 3 时差异就体现出来（见下个测试）。
+    # Each topic's high1 + high2 should be selected (2 top results per query × 3 queries
+    # = 6 items, with no overlap between topics). Global max-pool top-6 gives the same result, but
+    # the difference appears if total_cap is reduced to 3 (see the next test).
     assert {"A_high1", "A_high2", "B_high1", "B_high2", "C_high1", "C_high2"} <= ids
-    # 三个 _low 都不该被任何 query 的 top-2 选中
+    # None of the three _low items should appear in any query's top 2
     assert "A_low" not in ids and "B_low" not in ids and "C_low" not in ids
 
 
 @pytest.mark.asyncio
 async def test_per_query_topk_vs_maxpool_protects_minority_topics():
-    """关键差异点：max-pool 会被高频主题挤掉冷门主题；per-query 不会。
+    """Key difference: max-pool crowds out rare topics; per-query does not.
 
-    Setup: query_A 重复 5 次（高频），query_B 1 次（冷门）。total_cap=3
-    时——
-    - max-pool（``aretrieve_candidates``）会把 3 个 slot 全给 A 方向
-      （因为 A 方向有 5 个 query 各贡献最高分）；
-    - per-query top-1（本方法）保证 A 拿 1 + B 拿 1，至少 union >= 2。
+    Setup: query_A appears 5 times (frequent), query_B once (rare). With total_cap=3:
+    —
+    - max-pool (``aretrieve_candidates``) gives all three slots to direction A
+      (because five queries in direction A each contribute their top score);
+    - per-query top-1 (this method) guarantees A gets 1 + B gets 1, with a union of at least 2.
     """
     qmap = {"q_A": [1.0, 0.0], "q_B": [0.0, 1.0]}
     svc = _FakeService(
@@ -925,22 +925,22 @@ async def test_per_query_topk_vs_maxpool_protects_minority_topics():
         _obs("B_anchor", "tb", embedding=[0.0, 1.0]),
         _obs("noise",    "tn", embedding=[0.5, 0.5]),
     ]
-    # 5 个 A 类 query + 1 个 B 类 query
+    # Five A-type queries and one B-type query
     queries = ["q_A"] * 5 + ["q_B"]
 
     out = await r.aretrieve_per_query_topk(
         obs, queries, per_query_k=1, total_cap=3,
     )
     ids = {o["id"] for o in out}
-    # B_anchor 必须在结果里——这是 per-query 配额的核心保证
+    # B_anchor must appear in the results — this is the core guarantee of per-query quotas
     assert "B_anchor" in ids
     assert "A_anchor" in ids
 
 
 @pytest.mark.asyncio
 async def test_per_query_topk_dedups_across_queries():
-    """同一个候选被多条 query 都选中时，结果里只出现一次。"""
-    qmap = {"q1": [1.0, 0.0], "q2": [0.99, 0.01]}  # 两个 query 都指向 a
+    """A candidate selected by multiple queries appears only once in the results."""
+    qmap = {"q1": [1.0, 0.0], "q2": [0.99, 0.01]}  # Both queries point to a
     svc = _FakeService(
         available=True,
         vector_factory=lambda text: qmap.get(text, [0.0, 0.0]),
@@ -954,18 +954,18 @@ async def test_per_query_topk_dedups_across_queries():
         obs, ["q1", "q2"], per_query_k=2, total_cap=20,
     )
     ids = [o["id"] for o in out]
-    # a 不能出现两次；只 2 条候选 → union 后 ≤ 2 条结果
+    # a must not appear twice; only two candidates → at most two results after union
     assert ids.count("a") == 1
     assert set(ids) == {"a", "b"}
 
 
 @pytest.mark.asyncio
 async def test_per_query_topk_respects_total_cap():
-    """total_cap 截断生效——即使 per_query_k × Q > total_cap。
+    """The total_cap truncation applies even when per_query_k × Q > total_cap.
 
-    Setup: 5 query 各指向 5 个互相正交的方向（5D one-hot），每条 query 对应
-    2 个候选（同方向）。per_query_k=2 → 每条 query 各拿自己方向的 2 条
-    candidates → union 后 10 条（无重叠）→ total_cap=4 截到 4。
+    Setup: five queries point in five mutually orthogonal directions (5D one-hot), with each query corresponding to
+    two candidates (same direction). per_query_k=2 → each query gets its two top
+    candidates → a union of 10 (no overlap) → total_cap truncates to 4.
     """
     def _onehot(dim, idx):
         v = [0.0] * dim
@@ -981,12 +981,12 @@ async def test_per_query_topk_respects_total_cap():
     r = _make_reranker(svc)
     obs = []
     for i in range(5):
-        # 2 个高分候选指向方向 i
+        # Two high-scoring candidates point in direction i
         obs.append(_obs(
             f"c{i}_h1", f"t{i}_h1",
             embedding=_onehot(5, i), model_id="fake-5d-int8",
         ))
-        # 第二个加点噪声但仍主要指向 i，跟 q{i} cosine ≈ 0.98
+        # The second has some noise but still mostly points toward i, with cosine ≈ 0.98 to q{i}
         v = _onehot(5, i)
         v[(i + 1) % 5] = 0.2
         obs.append(_obs(
@@ -998,9 +998,9 @@ async def test_per_query_topk_respects_total_cap():
         per_query_k=2, total_cap=4,
     )
     assert len(out) == 4, f"total_cap=4 没截断；实际返回 {len(out)} 条"
-    # Round-robin 顺序：先每条 query 各出 #1，所以截到 4 时拿到的是
-    # q0~q3 的 #1（c0_h1, c1_h1, c2_h1, c3_h1）——q0 的 #2 (c0_h2) 必须
-    # 留给下一轮，但 cap 在 round 0 内就触发 → c0_h2 不该出现。
+    # Round-robin order: first emit each query's #1, so truncating at 4 yields
+    # #1 from q0–q3 (c0_h1, c1_h1, c2_h1, c3_h1); q0's #2 (c0_h2) must
+    # wait for the next round, but the cap is reached during round 0 → c0_h2 must not appear.
     ids = [o["id"] for o in out]
     assert ids == ["c0_h1", "c1_h1", "c2_h1", "c3_h1"], (
         f"round-robin ordering 违约；实际: {ids}"
@@ -1009,15 +1009,15 @@ async def test_per_query_topk_respects_total_cap():
 
 @pytest.mark.asyncio
 async def test_per_query_topk_cap_does_not_starve_late_queries():
-    """fairness regression：``total_cap`` 截断**只能**发生在 round-robin
-    之后，不能在 per-query 内部 early-return。否则前几个 query 吃光所有
-    slot，后面 query 一条 anchor 都拿不到——退化成 max-pool 那种 cold-
-    topic 饥饿。PR #1401 thread 用户原话："必须最后统一去 cap，不然便宜
-    了先判定的 fact"。
+    """Fairness regression: ``total_cap`` truncation must happen **only** after round-robin,
+    never as an early return inside per-query processing. Otherwise the first queries consume every
+    slot and later queries get no anchor at all — degenerating into max-pool's cold-
+    topic starvation. Original user wording in PR #1401 thread: \"apply the cap once at the end, or it favors
+    facts that are checked earlier.\"
 
-    Setup: 5 query 各指向独立方向，每方向 2 个 candidate（high1, high2）。
-    per_query_k=2 + total_cap=5 → 期望 round-robin 拿到 5 个 query 各自
-    的 #1（c0_h1..c4_h1），任何 _h2 都不该出现（cap 在 round 0 就满了）。
+    Setup: five queries each point in a separate direction, with two candidates per direction (high1, high2).
+    per_query_k=2 + total_cap=5 → expect round-robin to return one from each of five queries
+    of #1 (c0_h1..c4_h1); no _h2 should appear (the cap is reached during round 0).
     """
     def _onehot(dim, idx):
         v = [0.0] * dim
@@ -1049,22 +1049,22 @@ async def test_per_query_topk_cap_does_not_starve_late_queries():
         per_query_k=2, total_cap=5,
     )
     ids = [o["id"] for o in out]
-    # 每个 query 至少出 1 条 anchor（fairness 核心保证）
+    # Every query must contribute at least one anchor (the core fairness guarantee)
     for i in range(5):
         assert f"c{i}_h1" in ids, (
             f"q{i} 在 cap=5 + 5 queries 下被饿死；ids={ids}。"
             f"这就是用户在 PR #1401 thread 抓到的 fairness 退化——'便宜了先"
             f"判定的 fact'。"
         )
-    # _h2 都还在等下一轮，不该出现
+    # All _h2 items are still waiting for the next round and must not appear
     for i in range(5):
         assert f"c{i}_h2" not in ids
 
 
 @pytest.mark.asyncio
 async def test_per_query_topk_total_cap_zero_returns_empty():
-    """``total_cap <= 0`` 时必须直接返 []，不能因为先 append 后 check 而
-    漏出 1 条结果（CodeRabbit Minor on PR #1401）。"""
+    """``total_cap <= 0`` must return [] immediately; do not append first and then check, which can leak one result
+    (CodeRabbit Minor on PR #1401)."""
     qmap = {"q": [1.0, 0.0]}
     svc = _FakeService(
         available=True,
@@ -1082,9 +1082,9 @@ async def test_per_query_topk_total_cap_zero_returns_empty():
 
 @pytest.mark.asyncio
 async def test_per_query_topk_returns_empty_when_service_unavailable():
-    """关键 fallback 语义：vector 不可用时**直接返 []**，不退化到
-    evidence_score 排序——见 docstring 解释（"远期 anchor" 角色对
-    semantic 关联要求高，random anchor 比无 anchor 更糟）。"""
+    """Key fallback semantics: if vectors are unavailable, return [] **directly**; do not fall back to
+    evidence_score ordering — see the docstring (\"long-term anchor\" roles require strong semantic
+    relevance; a random anchor is worse than no anchor)."""
     svc = _FakeService(available=False)
     r = _make_reranker(svc)
     obs = [
@@ -1099,7 +1099,7 @@ async def test_per_query_topk_returns_empty_when_service_unavailable():
 
 @pytest.mark.asyncio
 async def test_per_query_topk_empty_inputs_short_circuit():
-    """无 observations / 无 query / 全是空字符串 query → 立即 []。"""
+    """No observations / no query / all queries are empty strings → return [] immediately."""
     svc = _FakeService(available=True)
     r = _make_reranker(svc)
     assert await r.aretrieve_per_query_topk([], ["q"], per_query_k=2, total_cap=20) == []
@@ -1117,8 +1117,8 @@ async def test_per_query_topk_empty_inputs_short_circuit():
 
 @pytest.mark.asyncio
 async def test_per_query_topk_skips_candidates_without_valid_embedding():
-    """No-embedding 候选不进 matrix——本方法**不**像 _coarse_rank 那样
-    保留 unembedded 候选作 LLM rerank 兜底（本方法没有 rerank 阶段）。"""
+    """Candidates without embeddings do not enter the matrix — unlike _coarse_rank, this method does **not**
+    retain unembedded candidates as a fallback for LLM reranking (this method has no reranking stage)."""
     svc = _FakeService(
         available=True,
         vector_factory=lambda text: [1.0, 0.0],

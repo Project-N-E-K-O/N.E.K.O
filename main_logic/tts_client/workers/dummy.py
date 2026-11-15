@@ -33,20 +33,20 @@ def dummy_tts_worker(request_queue, response_queue, audio_api_key, voice_id):
     """
     logger.warning("TTS Worker 未启用，不会生成语音")
     
-    # 立即发送就绪信号
+    # Send the ready signal immediately
     response_queue.put(("__ready__", True))
     
     while True:
         try:
-            # 持续清空队列以避免阻塞，但不做任何处理
+            # Keep draining the queue to avoid blocking, without processing anything
             sid, tts_text = request_queue.get()
             if sid == TTS_SHUTDOWN_SENTINEL:
                 break
-            # sid is None 是 end-of-utterance 信号，dummy 不做任何处理
+            # sid is None signals end-of-utterance; the dummy does nothing
             if sid == "__interrupt__" or sid is None:
                 continue
-            # 即便不合成音频也上报字符数 + 调用次数，方便分析"配置成无 TTS"
-            # 的用户产生了多少假装合成的请求；只传 len()，不传原文。
+            # Report character counts and call counts even without audio synthesis, to measure simulated synthesis requests
+            # from users configured with no TTS; send only len(), never the original text.
             if tts_text:
                 _record_tts_telemetry("dummy", len(tts_text))
         except Exception as e:

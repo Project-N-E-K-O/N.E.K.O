@@ -213,7 +213,7 @@ async def test_a_transaction_hands_ensure_its_own_policy(tmp_path, monkeypatch):
 
     def _ensure(folder, **kwargs):
         if folder.endswith("A"):
-            # 让 B 一定先写完，构造出「重读就会读到别人配置」的时刻。
+            # Ensure B finishes writing first, creating a moment when rereading would read someone else's config.
             b_saved.wait(timeout=1.0)
         seen.append(f"{os.path.basename(folder)}:auto={kwargs.get('auto_create')}")
         return True
@@ -277,7 +277,7 @@ def test_every_write_of_the_workshop_config_holds_the_lock():
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         if fn.name == "save_workshop_config":
-            continue  # 叶子写入本身，由调用方持锁
+            continue  # Leaf write itself; the caller holds the lock.
         saves = {
             call.lineno for call in ast.walk(fn)
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
@@ -323,7 +323,7 @@ def test_the_config_read_path_never_takes_the_lock():
         for item in node.items
         if "_workshop_config_lock" in ast.unparse(item.context_expr)
     ]
-    # 「文件不存在」那条分支写默认配置，持锁是对的；有文件的读路径不许持锁。
+    # Writing defaults for a missing file correctly holds the lock; reading an existing file must not.
     read_branch = _fn(tree, "_read_workshop_config_file")
     read_locked = [
         node.lineno
@@ -429,8 +429,8 @@ async def test_the_self_healing_write_is_skipped_on_the_event_loop(monkeypatch, 
             return {"last_migration_source": str(tmp_path / "old")}
 
         def _read_workshop_config_file(self):
-            # 必须返回真东西：否则没有守卫时也会在这里抛、被外层 except 吞掉，
-            # 两种实现都「没落盘」，用例就分辨不出来了。
+            # Return a real value, or the unguarded version also raises here and the outer except swallows it;
+            # both implementations then avoid persistence, so the test cannot distinguish them.
             return {"user_mod_folder": "old"}
 
         def save_workshop_config(self, config):
@@ -736,7 +736,7 @@ def test_an_in_flight_read_cannot_clobber_the_cache_with_a_stale_snapshot(tmp_pa
         "utils.cloudsave_runtime.assert_cloudsave_writable", lambda *a, **kw: None
     )
 
-    # 模拟「读开始 → 中途发生一次 save → 读才回来」：读到的是旧内容。
+    # Simulate read start -> intervening save -> read returns stale content.
     def _slow_read(*args, **kwargs):
         cm.save_workshop_config({"user_mod_folder": "/new"})
         return {"user_mod_folder": "/old"}
@@ -1124,7 +1124,7 @@ def test_a_persistent_access_denial_stops_looking_transient(tmp_path, monkeypatc
     clock = _FakeClock()
     monkeypatch.setattr(workshop_mixin, "time", clock)
     denied = PermissionError(13, "Access is denied")
-    denied.winerror = 5           # ← 与 os.replace 瞬时窗口同码
+    denied.winerror = 5           # Same error code as the brief os.replace window.
     monkeypatch.setattr(
         workshop_mixin, "read_json_tolerating_replace",
         lambda *a, **kw: (_ for _ in ()).throw(denied),
@@ -1133,24 +1133,24 @@ def test_a_persistent_access_denial_stops_looking_transient(tmp_path, monkeypatc
     recorder = _RecordingLogger()
     monkeypatch.setattr(workshop_mixin, "logger", recorder)
 
-    # 宽限期内：照常沿用 last-good，不吵。
+    # Within grace: reuse last-good silently.
     assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
     clock.now += workshop_mixin._WORKSHOP_CONFIG_FALLBACK_GRACE_S - 0.1
     assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
     assert not recorder.errors, "还在瞬时窗口内就报 ERROR，会把正常的 replace 竞态吵成故障"
 
-    # 撑过宽限期：值照给，但必须留下一条能查的 ERROR。
+    # Beyond grace: still provide the value, but emit an inspectable ERROR.
     clock.now += 0.2
     assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
     assert len(recorder.errors) == 1, "持续读不出来却始终只有 debug 级日志，没人会发现"
 
-    # 只报一次，别把日志刷爆。
+    # Report once to avoid flooding logs.
     clock.now += 100.0
     assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
     assert len(recorder.errors) == 1, "每次读失败都报一遍 ERROR，日志会被刷爆"
 
-    # warning 同理：这个端点被 get_workshop_path 之类反复调用，持续故障下每次一条
-    # warning 会把上面那条真正要人看的 ERROR 埋掉。只在第一次失败时说一句。
+    # The same applies to warnings: get_workshop_path and similar callers repeatedly hit this endpoint; one warning
+    # per call during sustained failure would bury the actionable ERROR above. Report only the first failure.
     assert len(recorder.warnings) == 1, "持续故障下每次读失败都打 warning，日志会被刷爆"
 
 
@@ -1184,12 +1184,12 @@ def test_a_successful_read_resets_the_fallback_streak(tmp_path, monkeypatch):
 
     monkeypatch.setattr(workshop_mixin, "read_json_tolerating_replace", _maybe_fail)
 
-    cm.load_workshop_config()                 # 开始计时
+    cm.load_workshop_config()                 # Start timing.
     clock.now += workshop_mixin._WORKSHOP_CONFIG_FALLBACK_GRACE_S - 0.1
     fail["on"] = False
-    cm.load_workshop_config()                 # 竞态过去了，读成功
+    cm.load_workshop_config()                 # The race has passed and reading succeeds.
     fail["on"] = True
-    clock.now += 0.2                          # 从头算的话还没到宽限期
+    clock.now += 0.2                          # Counting from scratch would still be within grace.
     cm.load_workshop_config()
 
     assert not recorder.errors, (

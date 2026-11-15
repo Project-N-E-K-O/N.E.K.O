@@ -151,12 +151,31 @@ class PluginModelsProtocol(Protocol):
     async def get_client(self) -> AsyncOpenAI: ...
 
 
+class ReplyTailProtocol(Protocol):
+    version: int
+
+    async def subscribe(self, entry_id: str, *, role: str | None = None,
+                        handler_timeout: float = 15.0, timeout: float = 5.0) -> dict: ...
+
+    async def unsubscribe(self, entry_id: str, *, timeout: float = 5.0) -> dict: ...
+
+    async def register(self, context: dict, *, registration_id: str, parts: list,
+                       ai_behavior: str = "blind", timeout: float = 5.0) -> dict: ...
+
+    async def status(self, context: dict, *, registration_id: str, timeout: float = 5.0) -> dict: ...
+
+    async def cancel(self, context: dict, *, registration_id: str, timeout: float = 5.0) -> dict: ...
+
+
 class PluginContextProtocol(Protocol):
     @property
     def images(self) -> PluginImagesProtocol: ...
 
     @property
     def models(self) -> PluginModelsProtocol: ...
+
+    @property
+    def reply_tail(self) -> ReplyTailProtocol: ...
 
     plugin_id: str
     metadata: Metadata
@@ -322,6 +341,7 @@ __all__ = [
     "PushMessageResult",
     "PluginImagesProtocol",
     "PluginModelsProtocol",
+    "ReplyTailProtocol",
     "PushMessageSubmitted",
     "RouterProtocol",
 ]

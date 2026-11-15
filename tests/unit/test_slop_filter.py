@@ -508,7 +508,7 @@ def test_all_static_rules_are_valid():
                         f"{rid}: \\{ref} but only {ngroups} groups"
                     )
                 # Chinese replacements must stay gender-neutral: the subject is
-                # carried by a backref (\1), never a hardcoded 他/她, so a
+                # carried by a backref (\1), never a hardcoded 他/她 (he/she), so a
                 # male/1st/2nd-person turn is never misgendered in the rewrite.
                 if lang.startswith("zh"):
                     assert "她" not in entry and "他" not in entry, (

@@ -83,7 +83,7 @@ def check_c3_positive_sorted() -> tuple[bool, str]:
         return False, f"C3 FAIL: repeated low-DF terms scored {total}, expected > 0"
     if "老虎" not in per_term:
         return False, "C3 FAIL: repeated term '老虎' missing from per_term"
-    # '老虎' (3 fg docs) should outscore '天气' (1 fg doc).
+    # '老虎' (tiger; 3 fg docs) should outscore '天气' (weather; 1 fg doc).
     if per_term.get("老虎", 0) <= per_term.get("天气", 0):
         return False, "C3 FAIL: more-frequent term did not outscore less-frequent"
     vals = list(per_term.values())
@@ -96,7 +96,7 @@ def check_c4_tf_accumulation() -> tuple[bool, str]:
     from tests.testbench.pipeline import anti_repeat_sim
 
     # IDF is computed over the BACKGROUND, TF over the FOREGROUND. To isolate TF
-    # accumulation we hold the background fixed (so '主题' keeps the same DF/IDF)
+    # accumulation we hold the background fixed (so '主题' (topic) keeps the same DF/IDF)
     # and vary only how many foreground docs contain it. All docs are len-2 so
     # avgdl + length-norm stay constant across both runs.
     bg = [["主题", "a"], ["主题", "b"], ["x", "c"], ["y", "d"], ["z", "e"]]

@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import importlib
 import sys
 import json
@@ -91,7 +92,7 @@ async def test_concurrent_downloads_serialize_before_async_apply_fence():
                 await asyncio.gather(first, second)
 
         assert fence_entries == 2
-from utils.config_manager import ConfigManager
+from utils.config_manager import ConfigManager, get_character_uid
 from utils.cloudsave_runtime import (
     MaintenanceModeError,
     bootstrap_local_cloudsave_environment,
@@ -105,6 +106,15 @@ def _fresh_cloudsave_router_module():
     sys.modules.pop("main_routers.cloudsave_router", None)
     yield
     sys.modules.pop("main_routers.cloudsave_router", None)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_character_config_lock(monkeypatch):
+    # Downloads acquire the character-configuration mutation lock; give each case a fresh lock so module-level locks cannot bind to this event loop
+    # and cause "bound to a different event loop" when later test files contend on their separate loops.
+    from utils import character_memory
+
+    monkeypatch.setattr(character_memory, "character_config_mutation_lock", asyncio.Lock())
 
 
 def _make_config_manager(tmp_root: Path):
@@ -135,7 +145,7 @@ def _write_runtime_state(cm, *, character_name="小满"):
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source", "steam_workshop")
     set_reserved(characters["猫娘"][character_name], "avatar", "asset_source_id", "123456")
     set_reserved(characters["猫娘"][character_name], "avatar", "live2d", "model_path", "example/example.model3.json")
-    # 测试夹具模拟正常保存链路，先持久化稳定身份，避免读取迁移产生随机比较噪声。
+    # Fixtures simulate normal saves, persisting stable identity first to avoid random comparisons caused by read-time migration.
     ensure_catgirl_character_id(characters["猫娘"][character_name])
     cm.save_characters(characters, bypass_write_fence=True)
 
@@ -1909,27 +1919,40 @@ async def test_cancelled_download_finishes_reload_before_propagating_cancel():
         assert get_root_mode(cm) != ROOT_MODE_BOOTSTRAP_IMPORTING
 
 
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_cloudsave_download_waits_for_a_pending_visit_retirement_of_the_name():
-    # 同名的已删除角色还在退役串门数据时，不能从云端导入同名角色（名册按名字存）
-    from main_logic.visit.char_lifecycle import retire_item
-    from main_logic.visit.subjects import add_roster_marker_item, remove_roster_marker_item
+@asynccontextmanager
+async def _visit_download_env(monkeypatch, target_name="本地角色"):
+    """Target config (tmp) holding one local character, with a cloud character exported to its cloud folder.
 
+    The persona retirement is replaced (``retire_state["fail"]`` decides) so a
+    retried retirement never resolves the real runtime directory.
+    """
+    from main_routers.visit_router import character_hooks
+    from utils import character_memory
+
+    monkeypatch.setattr(character_memory, "character_config_mutation_lock", asyncio.Lock())
+    retire_state = {"fail": True, "calls": []}
+
+    async def fake_retire_persona(uid):
+        retire_state["calls"].append(uid)
+        if retire_state["fail"]:
+            raise OSError("persona locked")
+        return True
+
+    monkeypatch.setattr(character_hooks, "retire_persona", fake_retire_persona)
     with TemporaryDirectory() as td:
         source_cm = _make_config_manager(Path(td) / "source")
         target_cm = _make_config_manager(Path(td) / "target")
         bootstrap_local_cloudsave_environment(source_cm)
         bootstrap_local_cloudsave_environment(target_cm)
         _write_runtime_state(source_cm, character_name="云端角色")
-        _write_runtime_state(target_cm, character_name="本地角色")
+        _write_runtime_state(target_cm, character_name=target_name)
+        # Startup backfills character_uid; strict pre-reconciliation reads reject characters lacking uid.
+        target_cm.backfill_character_uids()
 
         from utils.cloudsave_runtime import export_cloudsave_character_unit
 
         export_cloudsave_character_unit(source_cm, "云端角色")
         shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
-        item = retire_item("云端角色", "e" * 32)
-        await add_roster_marker_item(target_cm.config_dir, "pending_retire", item)
 
         async def _noop_init():
             return None
@@ -1948,24 +1971,282 @@ async def test_cloudsave_download_waits_for_a_pending_visit_retirement_of_the_na
                 init_one_catgirl=_noop_any,
                 remove_one_catgirl=_noop_any,
             )
-            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
-            blocked = await cloudsave_router_module.post_cloudsave_character_download(
-                "云端角色",
-                _DummyRequest({"overwrite": False, "backup_before_overwrite": True}),
-            )
-            blocked_payload = json.loads(blocked.body)
-            # 变异：去掉检查必红
-            assert blocked.status_code == 409
-            assert blocked_payload["code"] == "VISIT_DATA_BUSY"
-            _assert_localized_error_payload(blocked_payload, "cloudsave.error.visitDataBusy")
-            assert "云端角色" not in (target_cm.load_characters().get("猫娘") or {})
+            module = importlib.import_module("main_routers.cloudsave_router")
 
-            await remove_roster_marker_item(target_cm.config_dir, "pending_retire", item)
-            with patch.object(cloudsave_router_module, "_reload_after_character_download",
-                              AsyncMock(return_value=(True, ""))):
-                download = await cloudsave_router_module.post_cloudsave_character_download(
-                    "云端角色",
-                    _DummyRequest({"overwrite": False, "backup_before_overwrite": True}),
-                )
-            assert download["success"] is True
-            assert "云端角色" in (target_cm.load_characters().get("猫娘") or {})
+            async def download(overwrite=False):
+                with patch.object(module, "_reload_after_character_download", AsyncMock(return_value=(True, ""))), \
+                     patch.object(module, "release_memory_server_character", AsyncMock(return_value=True)), \
+                     patch.object(module, "notify_memory_server_reload", AsyncMock(return_value=True)):
+                    return await module.post_cloudsave_character_download(
+                        "云端角色",
+                        _DummyRequest({"overwrite": overwrite, "backup_before_overwrite": True}),
+                    )
+
+            yield target_cm, download, retire_state
+
+
+def _assert_visit_busy(response, target_cm):
+    payload = json.loads(response.body)
+    assert response.status_code == 409
+    assert payload["code"] == "VISIT_DATA_BUSY"
+    _assert_localized_error_payload(payload, "cloudsave.error.visitDataBusy")
+    assert "云端角色" not in (target_cm.load_characters().get("猫娘") or {})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_without_visit_data_is_unchanged(monkeypatch):
+    async with _visit_download_env(monkeypatch) as (target_cm, download, retire_state):
+        result = await download()
+        assert result["success"] is True
+        assert "云端角色" in (target_cm.load_characters().get("猫娘") or {})
+        # No visit data: do not read or write visit files.
+        assert not (Path(target_cm.config_dir) / "visit_peers.json").exists()
+        assert retire_state["calls"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_waits_for_a_pending_visit_retirement_of_the_name(monkeypatch):
+    # A deleted same-name character still retiring visit data prevents same-name cloud import (the roster is name-indexed).
+    from main_logic.visit.char_lifecycle import retire_item
+    from main_logic.visit.subjects import add_roster_marker_item
+
+    async with _visit_download_env(monkeypatch) as (target_cm, download, retire_state):
+        await add_roster_marker_item(target_cm.config_dir, "pending_retire", retire_item("云端角色", "e" * 32))
+        # Retirement remains incomplete: mutation removing the check must fail.
+        _assert_visit_busy(await download(), target_cm)
+        assert retire_state["calls"] == ["e" * 32]           # Retry retirement once before making the decision
+        # Retirement can now complete: finish it before allowing the download
+        retire_state["fail"] = False
+        result = await download()
+        assert result["success"] is True
+        assert "云端角色" in (target_cm.load_characters().get("猫娘") or {})
+        peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
+        assert "pending_retire" not in peers
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_waits_for_a_pending_rename_holding_the_name(monkeypatch):
+    # If rename migration is incomplete, the old name is already free: importing a character with that name would inherit the old name's peer and leave the rename marker permanently unreconcilable
+    from main_logic.visit.spool import VisitSpool
+    from main_logic.visit.subjects import set_roster_marker
+
+    async with _visit_download_env(monkeypatch) as (target_cm, download, _retire_state):
+        uid = get_character_uid(target_cm.load_characters()["猫娘"]["本地角色"])
+        marker = {"old": "云端角色", "new": "本地角色", "uid": uid}
+        await set_roster_marker(target_cm.config_dir, "pending_rename", marker)
+
+        async def locked(*_a, **_k):
+            raise OSError("spool locked")
+
+        with patch.object(VisitSpool, "rename_own_char", locked):
+            # Reconciliation still cannot complete: the mutation "name_blocked ignores the rename marker" must fail
+            _assert_visit_busy(await download(), target_cm)
+        peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
+        assert peers["pending_rename"] == marker
+        # Reconciliation can now complete: reconcile under the lock before allowing the operation
+        result = await download()
+        assert result["success"] is True
+        peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
+        assert "pending_rename" not in peers
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_rechecks_the_name_under_the_character_config_lock(monkeypatch):
+    # Concurrent deletion: write and commit the retirement marker after the decision but before publication. The decision and publication must use the same lock
+    from main_logic.visit.char_lifecycle import retire_item
+    from main_logic.visit.subjects import add_roster_marker_item
+    from utils import character_memory
+
+    async with _visit_download_env(monkeypatch) as (target_cm, download, _retire_state):
+        lock = character_memory.character_config_mutation_lock
+        async with lock:
+            task = asyncio.ensure_future(download())
+            for _ in range(200):
+                if getattr(lock, "_waiters", None):
+                    break
+                await asyncio.sleep(0.01)
+            assert lock._waiters, "download never waited for the character-config lock"
+            # The lock holder (the deletion transaction) writes and commits the same-name character's retirement marker at this point
+            await add_roster_marker_item(target_cm.config_dir, "pending_retire", retire_item("云端角色", "e" * 32))
+        # Mutation: moving the decision back outside the lock must fail
+        _assert_visit_busy(await asyncio.wait_for(task, 10), target_cm)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_is_not_blocked_by_an_unreadable_visit_roster(monkeypatch):
+    # If the roster cannot be read, allow this like other creation paths: a corrupted peer file must not permanently block a cloud download
+    async with _visit_download_env(monkeypatch) as (target_cm, download, retire_state):
+        roster_path = Path(target_cm.config_dir) / "visit_peers.json"
+        roster_path.write_text("{broken", encoding="utf-8")
+        result = await download()
+        assert result["success"] is True
+        assert "云端角色" in (target_cm.load_characters().get("猫娘") or {})
+        assert roster_path.read_text(encoding="utf-8") == "{broken"
+        assert retire_state["calls"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_overwrite_settles_the_local_characters_pending_rename_first(monkeypatch):
+    # The local "Cloud Character" is the result of a previous "old name -> Cloud Character" rename, and migration is incomplete: an overwrite download would replace its configuration
+    # (including uid), after which reconciliation could no longer tell who the old-name entries belong to, so reconcile before overwriting
+    from main_logic.visit.spool import VisitSpool
+    from main_logic.visit.subjects import set_roster_marker
+
+    async with _visit_download_env(monkeypatch, target_name="云端角色") as (target_cm, download, _retire_state):
+        target_cm.backfill_character_uids()
+        uid = get_character_uid(target_cm.load_characters()["猫娘"]["云端角色"])
+        assert uid
+        marker = {"old": "旧名", "new": "云端角色", "uid": uid}
+        await set_roster_marker(target_cm.config_dir, "pending_rename", marker)
+
+        async def locked(*_a, **_k):
+            raise OSError("spool locked")
+
+        with patch.object(VisitSpool, "rename_own_char", locked):
+            response = await download(overwrite=True)
+        # Mutation: skipping the ownership check when overwriting an existing character must fail
+        payload = json.loads(response.body)
+        assert response.status_code == 409 and payload["code"] == "VISIT_DATA_BUSY"
+        peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
+        assert peers["pending_rename"] == marker
+        assert get_character_uid(target_cm.load_characters()["猫娘"]["云端角色"]) == uid
+        # Reconciliation can now complete: migrate first, then overwrite
+        result = await download(overwrite=True)
+        assert result["success"] is True
+        peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
+        assert "pending_rename" not in peers
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_rechecks_right_before_publishing(monkeypatch):
+    # After the early check passes but before publication, a concurrent deletion commits a same-name retirement marker: the check under the lock before publication must block it
+    from main_logic.visit.char_lifecycle import retire_item
+    from main_logic.visit.subjects import add_roster_marker_item
+
+    async with _visit_download_env(monkeypatch) as (target_cm, download, _retire_state):
+        module = importlib.import_module("main_routers.cloudsave_router")
+        real = module._visit_name_refusal
+        calls = []
+
+        async def racing(config_manager, name):
+            result = await real(config_manager, name)
+            calls.append(result)
+            if len(calls) == 1:
+                await add_roster_marker_item(target_cm.config_dir, "pending_retire", retire_item(name, "e" * 32))
+            return result
+
+        monkeypatch.setattr(module, "_visit_name_refusal", racing)
+        # Mutation: removing the pre-publication recheck must fail
+        _assert_visit_busy(await download(), target_cm)
+        assert calls[0] is None and len(calls) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_download_holds_the_character_lock_through_the_import(monkeypatch):
+    # Do not release the configuration lock between the pre-publication recheck and import: otherwise a concurrent rename or creation could claim the name and then be overwritten by the import
+    from utils import character_memory
+
+    async with _visit_download_env(monkeypatch) as (_target_cm, download, _retire_state):
+        module = importlib.import_module("main_routers.cloudsave_router")
+        real_import = module.import_cloudsave_character_unit
+        held = []
+
+        def checked_import(*args, **kwargs):
+            held.append(character_memory.character_config_mutation_lock.locked())
+            return real_import(*args, **kwargs)
+
+        monkeypatch.setattr(module, "import_cloudsave_character_unit", checked_import)
+        result = await download()
+        assert result["success"] is True
+        # Mutation: releasing the lock after the recheck and before import must fail
+        assert held == [True]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_forced_overwrite_keeps_the_session_when_the_name_is_busy(monkeypatch):
+    # A name occupied by a peer marker still returns 409: do not forcibly end the user's active session first
+    from main_logic.visit.spool import VisitSpool
+    from main_logic.visit.subjects import set_roster_marker
+
+    async with _visit_download_env(monkeypatch, target_name="云端角色") as (target_cm, _download, _retire_state):
+        target_cm.backfill_character_uids()
+        uid = get_character_uid(target_cm.load_characters()["猫娘"]["云端角色"])
+        await set_roster_marker(target_cm.config_dir, "pending_rename", {"old": "旧名", "new": "云端角色", "uid": uid})
+        module = importlib.import_module("main_routers.cloudsave_router")
+        terminate = AsyncMock(return_value=(True, ""))
+
+        async def locked(*_a, **_k):
+            raise OSError("spool locked")
+
+        with patch.object(module, "_active_session_block_reason", lambda _name: "in a voice session"), \
+             patch.object(module, "_force_terminate_session", terminate), \
+             patch.object(VisitSpool, "rename_own_char", locked):
+            response = await module.post_cloudsave_character_download(
+                "云端角色",
+                _DummyRequest({"overwrite": True, "backup_before_overwrite": True, "force": True}),
+            )
+        payload = json.loads(response.body)
+        assert response.status_code == 409 and payload["code"] == "VISIT_DATA_BUSY"
+        # Mutation: removing the check before forcibly ending the session must fail
+        terminate.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_overwrite_of_a_rename_ambiguous_for_good_asks_to_delete_one(monkeypatch):
+    # The rename marker is permanently ambiguous (another character now owns the old name): overwriting would replace the character's identity (uid), after which reconciliation could never retire
+    # its data, so continue to block it; retries cannot resolve this, so say "delete one of the characters first" instead of "please try again later"
+    from main_logic.visit.subjects import set_roster_marker
+
+    async with _visit_download_env(monkeypatch, target_name="云端角色") as (target_cm, download, _retire_state):
+        characters = target_cm.load_characters()
+        characters["猫娘"]["旧名"] = copy.deepcopy(characters["猫娘"]["云端角色"])
+        characters["猫娘"]["旧名"].setdefault("_reserved", {}).pop("character_uid", None)
+        target_cm.save_characters(characters, bypass_write_fence=True)
+        target_cm.backfill_character_uids()
+        loaded = target_cm.load_characters()["猫娘"]
+        uid = get_character_uid(loaded["云端角色"])
+        assert uid and get_character_uid(loaded["旧名"]) not in (None, uid)
+        marker = {"old": "旧名", "new": "云端角色", "uid": uid}
+        await set_roster_marker(target_cm.config_dir, "pending_rename", marker)
+        response = await download(overwrite=True)
+        payload = json.loads(response.body)
+        # Mutation: allowing an ambiguous case or replying "try again later" must fail
+        assert response.status_code == 409 and payload["code"] == "VISIT_DATA_AMBIGUOUS"
+        _assert_localized_error_payload(payload, "cloudsave.error.visitDataAmbiguous")
+        # Name the other character so the user can resolve it themselves (mutation: omitting the name must fail)
+        assert payload["message_params"] == {"first": "云端角色", "second": "旧名"}
+        assert get_character_uid(target_cm.load_characters()["猫娘"]["云端角色"]) == uid
+        peers = json.loads((Path(target_cm.config_dir) / "visit_peers.json").read_text(encoding="utf-8"))
+        assert peers["pending_rename"] == marker
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_overwrite_of_an_ambiguous_chained_rename_names_the_character_that_exists(monkeypatch):
+    # Chained rename Aold -> B, which was later named Cloud Character (its current name); B is owned by another character, and Aold no longer exists.
+    # The "other character" in the message must be the actual local B, not a nonexistent Aold selected by alphabetical order (mutation: alphabetical selection must fail)
+    from main_logic.visit.subjects import set_roster_marker
+
+    async with _visit_download_env(monkeypatch, target_name="云端角色") as (target_cm, download, _retire_state):
+        characters = target_cm.load_characters()
+        characters["猫娘"]["乙"] = copy.deepcopy(characters["猫娘"]["云端角色"])
+        characters["猫娘"]["乙"].setdefault("_reserved", {}).pop("character_uid", None)
+        target_cm.save_characters(characters, bypass_write_fence=True)
+        target_cm.backfill_character_uids()
+        uid = get_character_uid(target_cm.load_characters()["猫娘"]["云端角色"])
+        marker = {"old": "Aold", "new": "乙", "uid": uid, "chained": ["云端角色"]}
+        await set_roster_marker(target_cm.config_dir, "pending_rename", marker)
+        response = await download(overwrite=True)
+        payload = json.loads(response.body)
+        assert response.status_code == 409 and payload["code"] == "VISIT_DATA_AMBIGUOUS"
+        assert payload["message_params"] == {"first": "云端角色", "second": "乙"}

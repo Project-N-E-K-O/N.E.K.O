@@ -81,10 +81,10 @@ async def _start_plugin(plugin_id: str) -> None:
         return
     from plugin.server.application.plugins.lifecycle_service import PluginLifecycleService
 
-    # 这里原本要显式清一次元数据扫描缓存：替换/回滚刚动过盘，而缓存键（路径 +
-    # mtime_ns + size）看不见目录外的依赖变化，回滚更可能把时间戳原样拷回来。
-    # 缓存没有了——刷新每次都重读盘上的 manifest 和 plugin.meta.json——所以这一步
-    # 连同它要防的那类陈旧结果一起消失了。
+    # This previously cleared metadata-scan caches explicitly after replacement/rollback changed disk content: cache keys
+    # (path + mtime_ns + size) cannot see external dependency changes, and rollback often preserves timestamps.
+    # No cache remains: every refresh rereads manifest and plugin.meta.json from disk, eliminating this step
+    # together with the stale results it prevented.
     try:
         await PluginLifecycleService().start_plugin(plugin_id)
         return
@@ -105,8 +105,8 @@ def backup_path_for(target_dir: Path, *, backup_root: Path | None = None) -> Pat
 
 async def restore_directory(backup_dir: Path, target_dir: Path) -> None:
     if not backup_dir.exists():
-        # 调用方手里有这份备份就说明旧树确实被挪走过；备份没了等于旧源码没回来，
-        # 不能当成功处理，否则回滚会被记成"代码已恢复"。
+        # A caller-held backup proves the old tree was moved; a missing backup means old source was not restored.
+        # Do not treat that as success or record rollback as code restoration.
         raise FileNotFoundError(f"plugin backup missing: {backup_dir.name}")
     await remove_directory(target_dir)
     await asyncio.to_thread(backup_dir.rename, target_dir)
@@ -202,8 +202,8 @@ async def run_rollback(
     restored = True
     try:
         await restore_directory(backup_dir, target_dir)
-        # 回滚同样是"树变了"。而且它比升级更容易骗过指纹：备份是拷回去的，时间戳
-        # 完全可能原样保留。这条路不走上面那个 invalidate_cache 阶段，所以自己清。
+        # Rollback also changes the tree and fools fingerprints more easily than upgrades because copied backups
+        # may retain timestamps. This path bypasses invalidate_cache above, so clear its own state.
         await asyncio.to_thread(_evict_replaced_plugin_modules, plugin_id)
     except Exception as exc:
         restored = False
@@ -281,11 +281,11 @@ def _evict_replaced_plugin_modules(plugin_id: str) -> None:
     from plugin.core.host import evict_cached_plugin_modules
     from plugin.sdk.shared.i18n import clear_plugin_i18n_cache
 
-    # 已导入的模块仍然要清：这个进程里可能残留着被换掉的那份代码。元数据扫描缓存
-    # 曾经也在这里一起清，现在没有那个缓存了。
+    # Imported modules still need clearing: replaced code may remain in this process. Metadata-scan caches
+    # were previously cleared here too, but no longer exist.
     evict_cached_plugin_modules(plugin_id)
-    # 语言包缓存按 stat 指纹校验；copy2/copytree 会保留时间戳，同尺寸替换可能骗过
-    # 指纹，所以换树之后显式清掉。
+    # Language-pack caches validate stat fingerprints; copy2/copytree preserve timestamps, so equal-sized replacements can
+    # fool them. Clear explicitly after tree replacement.
     clear_plugin_i18n_cache()
 
 
@@ -413,8 +413,8 @@ async def replace_plugin(
                     type(restart_exc).__name__,
                 )
         if not code_restored:
-            # 旧源码没能原样恢复：留在盘上的东西不是许可当初针对的那份。
-            # 只看插件代码目录；附带目录或重启失败不改变盘上是哪份源码。
+            # Old source was not restored exactly: remaining disk content is not what the grant originally authorized.
+            # Inspect only the plugin code directory; auxiliary directories and restart failures do not change source identity.
             _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage="backup",
@@ -442,8 +442,8 @@ async def replace_plugin(
         if was_running:
             stage = "restart"
             await _start_plugin(plugin_id)
-        # 新源码已就位：上一份自动热重载失败留下的恢复许可不再适用。放在提交
-        # 之后——完整回滚恢复的是旧源码，许可应当保留。
+        # New source is installed: recovery grants from an earlier failed automatic reload no longer apply. Do this after
+        # commit; complete rollback restores old source and must retain its grant.
         _revoke_hot_reload_recovery(plugin_id)
         stage = "cleanup"
         for backup in backups.values():
@@ -492,8 +492,8 @@ async def replace_plugin(
                     type(restart_exc).__name__,
                 )
         if not code_restored:
-            # 旧源码没能原样恢复：留在盘上的可能是失败的新包，不能凭旧许可自启。
-            # 只看插件代码目录；附带目录、缓存清理或重启失败不改变盘上是哪份源码。
+            # Old source was not restored exactly: the failed new package may remain, so old grants cannot authorize autostart.
+            # Inspect only the plugin code directory; auxiliary directories, cache cleanup, and restart failures do not change source identity.
             _revoke_hot_reload_recovery(plugin_id)
         raise ReplacePluginError(
             stage=stage,

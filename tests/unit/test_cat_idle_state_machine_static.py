@@ -33,10 +33,10 @@ def _run_node_harness(script: str) -> subprocess.CompletedProcess[str]:
     if not node_path:
         raise AssertionError("node is required to run cat mind harness tests")
 
-    # 走临时文件而不是 `node -e <script>`：这些仿真脚本会随被测行为一起变长，
-    # 最长的一条已经 34067 字符，超过 Windows CreateProcess 命令行 32767 上限，
-    # 于是 subprocess 在 node 起来之前就抛 WinError 206——断言一条都跑不到，
-    # 表现成一个与状态机无关的红。脚本内的路径都是绝对路径，cwd 仍保留。
+    # Use temporary files instead of `node -e <script>`: these simulations grow with the behavior under test,
+    # and the longest already has 34067 characters, exceeding the Windows CreateProcess command-line limit of 32767.
+    # subprocess therefore raises WinError 206 before node starts, so no assertion runs,
+    # producing a failure unrelated to the state machine. Script paths are absolute; retain cwd.
     return run_node_script(
         node_path,
         script,
@@ -1537,6 +1537,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
         const context = {{ window: win, CustomEvent: CustomEventLike, Date: {{ now: () => now }}, console }};
         vm.createContext(context);
         vm.runInContext(source, context);
+        vm.runInContext('Math.random = () => 0.99;', context);
         let providerCalls = 0;
         let actionRequests = 0;
         let actionResults = 0;
@@ -1558,6 +1559,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           }},
           dryRun(actionId) {{
             providerCalls += 1;
+            if (actionId === 'cat1_inactive_sad') return {{ allowed: false, reason: 'unit-disabled' }};
             return actionId === 'cat1_play_yarn'
               ? {{ allowed: false, reason: 'near_chat_unavailable' }}
               : {{ allowed: true, reason: 'allowed' }};
@@ -1570,9 +1572,10 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
         }}));
         timers.shift()();
         const decision = win.nekoCatMind.getDebugSnapshot().lastDecision;
-        assert.equal(providerCalls, 4);
+        assert.equal(providerCalls, 6);
             assert.equal(decision.reason, 'action_request_dispatched');
         assert.ok(decision.candidates.some((item) => item.actionId === 'cat1_eat_snack' && item.reason === 'allowed'));
+        assert.ok(decision.candidates.some((item) => item.actionId === 'cat1_inactive_sad' && item.reason === 'unit-disabled'));
         assert.ok(decision.candidates.some((item) => item.actionId === 'cat1_play_yarn' && item.reason === 'near_chat_unavailable'));
         assert.ok(decision.candidates.some((item) => item.actionId === 'cat2_nap_feedback' && item.reason === 'tier_not_allowed'));
         const rejectedPlay = decision.candidates.find((item) => item.actionId === 'cat1_play_yarn');
@@ -1608,7 +1611,7 @@ def test_cat_mind_selector_defers_provider_checks_and_requests_only_after_gates(
           }}));
           assert.equal(timers.length, 1);
           timers.shift()();
-          assert.equal(providerCalls, 4);
+          assert.equal(providerCalls, 6);
           assert.equal(actionRequests, 1);
           const gated = win.nekoCatMind.getDebugSnapshot().lastDecision;
           assert.equal(gated.outcome, 'quiet');
@@ -2517,6 +2520,9 @@ def test_cat_mind_cat1_score_feedback_forms_a_bounded_near_chat_cycle():
               return {{ ...runtimeGates }};
             }},
             dryRun(actionId) {{
+              if (actionId === 'cat1_idle_random') {{
+                return {{ allowed: false, reason: 'idle_random_disabled_for_scoring_envelope' }};
+              }}
               const allowed = providerNearChatAvailable ||
                 (profile.soloSmallMove === true && actionId === 'cat1_small_move') ||
                 actionId === 'cat1_social_ping' || actionId === 'cat1_eat_snack';

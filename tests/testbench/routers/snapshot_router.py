@@ -1,25 +1,25 @@
 """Snapshot timeline + rewind HTTP surface (P18).
 
-六个端点, 全部薄封装 :class:`pipeline.snapshot_store.SnapshotStore`:
+Six endpoints, all thin wrappers around :class:`pipeline.snapshot_store.SnapshotStore`:
 
-* ``GET    /api/snapshots``                  — 时间线 metadata 列表
-* ``POST   /api/snapshots``                  — 手动建一条 (trigger=manual)
-* ``GET    /api/snapshots/{id}``             — 单条完整 payload (含 messages/memory_files)
-* ``DELETE /api/snapshots/{id}``             — 删除单条
-* ``POST   /api/snapshots/{id}/rewind``      — 回退到该快照 (持 REWINDING 锁)
-* ``PUT    /api/snapshots/{id}/label``       — 重命名 label
+* ``GET    /api/snapshots``                  — Timeline metadata list.
+* ``POST   /api/snapshots``                  — Create manually, trigger=manual.
+* ``GET    /api/snapshots/{id}``             — Complete payload including messages/memory_files.
+* ``DELETE /api/snapshots/{id}``             — Delete one.
+* ``POST   /api/snapshots/{id}/rewind``      — Rewind under the REWINDING lock.
+* ``PUT    /api/snapshots/{id}/label``       — Rename label.
 
-锁粒度 (对齐 stage_router 风格):
-* GET 路径不进 session_operation — 只读 metadata/payload, 允许与 BUSY op 并发观测.
-* POST /snapshots (manual 建) 进 BUSY 短持锁, 与 chat/send 等互斥, 确保建快照
-  时的 messages/memory_files 是一致的瞬时状态.
-* DELETE / PUT label 也进 BUSY 短持锁 (写路径应该串行).
-* POST /rewind 进 REWINDING 独占锁 — 会 rmtree 沙盒 memory 目录, 绝不能并发.
+Lock granularity follows stage_router:
+* GET avoids session_operation, reading metadata/payload concurrently with BUSY operations.
+* Manual POST /snapshots takes a short BUSY lock, excluding chat/send etc., so snapshot
+  messages/memory_files represent one consistent instant.
+* DELETE / PUT label also take short BUSY locks, serializing writes.
+* POST /rewind takes an exclusive REWINDING lock because deleting sandbox memory cannot overlap.
 
-后端任何业务路由要**自动**建快照的话, 不走本 router, 而是直接调用
-``session.snapshot_store.capture(session, trigger=..., label=...)`` —
-参考 :mod:`tests.testbench.routers.chat_router` 里各端点末尾的 capture 调用.
-本 router 只负责 UI 发起的显式 CRUD + rewind.
+Business routes creating automatic snapshots bypass this router and call
+``session.snapshot_store.capture(session, trigger=..., label=...)`` directly;
+see endpoint-ending capture calls in :mod:`tests.testbench.routers.chat_router`.
+This router serves only explicit UI CRUD and rewind.
 """
 from __future__ import annotations
 
@@ -139,8 +139,8 @@ async def update_snapshot_config(body: _UpdateConfigBody) -> dict[str, Any]:
     Session-scoped: the change applies only to the currently active
     session's ``SnapshotStore``; a future (new) session is created with
     defaults (``DEFAULT_MAX_HOT=30`` / ``DEFAULT_DEBOUNCE_SECONDS=5``).
-    This matches the testbench's single-session model where "设置后
-    跨 session 继承" semantics would need a global config layer
+    This matches the testbench's single-session model where "inherit settings
+    across sessions" semantics would need a global config layer
     (deliberately out of P24 scope per §12.3.A — if needed later, a
     small ``tb_config`` pref or ``POST /api/config/ui_prefs`` endpoint
     can preserve the value).
@@ -276,7 +276,7 @@ async def rename_snapshot(
 async def rewind_snapshot(snapshot_id: str) -> dict[str, Any]:
     """Restore session state to ``snapshot_id``.
 
-    Uses :class:`SessionState.REWINDING` so the UI shows "回退中…" and
+    Uses :class:`SessionState.REWINDING` so the UI shows "rewinding..." and
     disables dangerous controls (save, load, other rewinds). The lock is
     held for the duration of the rmtree + file-rewrite + field swap,
     which in practice is fast (<100ms per MB of memory files) but can

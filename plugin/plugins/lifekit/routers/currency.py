@@ -1,4 +1,4 @@
-"""汇率换算 router — Frankfurter API (ECB 数据源)。"""
+"""Currency conversion router — Frankfurter API (ECB data source)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .._contracts import CurrencyConvertParams, CurrencyConvertResult
 
 
 class CurrencyRouter(PluginRouter):
-    """currency_convert entry：汇率换算。"""
+    """currency_convert entry: currency conversion."""
 
     def __init__(self):
         super().__init__(name="currency")
@@ -63,7 +63,7 @@ class CurrencyRouter(PluginRouter):
                 date=result["date"],
             )
 
-        # 推送卡片
+        # Push the card
         blocks = [
             {"type": "text", "text": f"💱 {result['amount']} {fr_label} → {result['result']} {to_label}"},
         ]

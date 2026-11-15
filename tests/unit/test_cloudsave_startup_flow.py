@@ -104,7 +104,6 @@ def test_launcher_disables_cloudsave_when_local_state_directory_fails(monkeypatc
         "report_startup_failure",
         lambda message, show_dialog=True: reported_failures.append((message, show_dialog)),
     )
-    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
     monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: False)
     monkeypatch.setattr(launcher, "SERVERS", [{"name": "Main Server", "process": None}])
     monkeypatch.setattr(launcher, "start_server", lambda server: True)
@@ -189,6 +188,118 @@ def test_launcher_resolves_committed_storage_layout_and_exports_env(monkeypatch,
             launcher.os.environ.pop("NEKO_STORAGE_CLOUDSAVE_ROOT", None)
         else:
             launcher.os.environ["NEKO_STORAGE_CLOUDSAVE_ROOT"] = original_cloudsave_env
+
+
+@pytest.mark.unit
+def test_launcher_preserves_storage_override_for_isolated_local_instance(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    runtime_dir = tmp_path / "runtime"
+    selected_root = tmp_path / "storage"
+    config_manager = SimpleNamespace(app_docs_dir=selected_root, anchor_root=selected_root)
+    observed_layout_env = []
+
+    monkeypatch.setenv("NEKO_RUNTIME_STATE_DIR", str(runtime_dir))
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(selected_root))
+    monkeypatch.delenv("NEKO_STORAGE_ANCHOR_ROOT", raising=False)
+    monkeypatch.setenv("NEKO_STORAGE_CLOUDSAVE_ROOT", str(tmp_path / "stale-cloudsave"))
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+
+    def get_config_manager(_app_name, **_kwargs):
+        observed_layout_env.append(
+            (
+                launcher.os.environ.get("NEKO_STORAGE_SELECTED_ROOT"),
+                launcher.os.environ.get("NEKO_STORAGE_ANCHOR_ROOT"),
+                launcher.os.environ.get("NEKO_STORAGE_CLOUDSAVE_ROOT"),
+            )
+        )
+        return config_manager
+
+    monkeypatch.setattr(launcher, "get_config_manager", get_config_manager)
+    migration_calls = []
+
+    def run_pending_storage_migration(_manager, **kwargs):
+        migration_calls.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(launcher, "run_pending_storage_migration", run_pending_storage_migration)
+    monkeypatch.setattr(
+        launcher,
+        "resolve_storage_layout",
+        lambda _manager: {
+            "selected_root": str(selected_root),
+            "anchor_root": str(selected_root),
+            "cloudsave_root": str(selected_root / "cloudsave"),
+            "source": "policy",
+        },
+    )
+
+    try:
+        result = launcher._resolve_storage_layout_for_launch()
+    finally:
+        for key in (
+            "NEKO_STORAGE_SELECTED_ROOT",
+            "NEKO_STORAGE_ANCHOR_ROOT",
+            "NEKO_STORAGE_CLOUDSAVE_ROOT",
+        ):
+            launcher.os.environ.pop(key, None)
+
+    expected = (
+        str(selected_root),
+        str(selected_root),
+        str(selected_root / "cloudsave"),
+    )
+    assert observed_layout_env == [expected, expected]
+    assert result["layout"]["selected_root"] == str(selected_root)
+    assert result["layout"]["source"] == "isolated_runtime"
+    assert migration_calls == [{"anchor_root": str(selected_root)}]
+
+
+@pytest.mark.unit
+def test_isolated_instance_uses_the_committed_migration_target(monkeypatch, tmp_path):
+    from launcher_core import runtime as launcher
+
+    runtime_dir = tmp_path / "runtime"
+    anchor_root = tmp_path / "storage-anchor"
+    old_root = tmp_path / "storage-old"
+    target_root = tmp_path / "storage-new"
+    stale_manager = SimpleNamespace(app_docs_dir=old_root, anchor_root=anchor_root)
+
+    monkeypatch.setenv("NEKO_RUNTIME_STATE_DIR", str(runtime_dir))
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(old_root))
+    monkeypatch.setenv("NEKO_STORAGE_ANCHOR_ROOT", str(anchor_root))
+    monkeypatch.setattr(launcher, "reset_config_manager_cache", lambda: None)
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: stale_manager)
+    monkeypatch.setattr(
+        launcher,
+        "run_pending_storage_migration",
+        lambda _manager, **_kwargs: {
+            "attempted": True,
+            "completed": True,
+            "source_root": str(old_root),
+            "target_root": str(target_root),
+            "anchor_root": str(anchor_root),
+        },
+    )
+
+    try:
+        result = launcher._resolve_storage_layout_for_launch()
+    finally:
+        for key in (
+            "NEKO_STORAGE_SELECTED_ROOT",
+            "NEKO_STORAGE_ANCHOR_ROOT",
+            "NEKO_STORAGE_CLOUDSAVE_ROOT",
+            "NEKO_RUNTIME_STATE_DIR",
+        ):
+            launcher.os.environ.pop(key, None)
+
+    assert result["layout"] == {
+        "selected_root": str(target_root.resolve()),
+        "anchor_root": str(anchor_root.resolve()),
+        "cloudsave_root": str((anchor_root / "cloudsave").resolve()),
+        "source": "isolated_runtime",
+    }
+
 
 
 @pytest.mark.unit
@@ -1221,7 +1332,6 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
     monkeypatch.setattr(launcher, "setup_job_object", lambda: None)
     monkeypatch.setattr(launcher, "_resolve_storage_layout_for_launch", lambda: {})
     monkeypatch.setattr(launcher, "_prepare_cloudsave_runtime_for_launch", lambda: {})
-    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
     monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: False)
     monkeypatch.setattr(launcher, "emit_frontend_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(
@@ -1271,3 +1381,88 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
     assert restart_schedule_calls == ["scheduled"]
     assert release_calls == []
     assert startup_failures == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("with_config_dir", [True, False])
+def test_launcher_import_records_removed_characters_for_visit_retirement(monkeypatch, tmp_path, with_config_dir):
+    from launcher_core import runtime as launcher
+
+    config_manager = SimpleNamespace(
+        app_docs_dir=tmp_path / "N.E.K.O",
+        cloudsave_manifest_path=tmp_path / "N.E.K.O" / "cloudsave" / "manifest.json",
+        ensure_local_state_directory=lambda: True,
+    )
+    if with_config_dir:
+        config_manager.config_dir = tmp_path / "N.E.K.O" / "config"
+    seen = {}
+
+    @contextmanager
+    def _fake_fence(_config_manager, *, mode, reason):
+        yield {"mode": mode}
+
+    class _DummyCloudsaveManager:
+        def import_if_needed(self, **kwargs):
+            seen.update(kwargs)
+            return {"success": True, "action": "skipped", "requested_reason": kwargs["reason"]}
+
+    monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
+    monkeypatch.setattr(launcher, "cloud_apply_fence", _fake_fence)
+    monkeypatch.setattr(launcher, "bootstrap_local_cloudsave_environment", lambda _cm: {})
+    monkeypatch.setattr(launcher, "get_cloudsave_manager", lambda _config_manager: _DummyCloudsaveManager())
+    monkeypatch.setattr(launcher, "set_root_mode", lambda _cm, mode, **updates: {"mode": mode, **updates})
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_a, **_k: None)
+
+    launcher._prepare_cloudsave_runtime_for_launch()
+
+    # Pass the visit-retirement callback with a real config directory; omit it for test doubles without one (import still works)
+    assert callable(seen["on_characters_removed"]) is with_config_dir
+    if not with_config_dir:
+        assert seen["on_characters_removed"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_main_server_startup_import_records_removed_characters_for_visit_retirement(tmp_path):
+    import contextlib
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    from app import main_server
+
+    fake_config_manager = SimpleNamespace(app_docs_dir=Path(tmp_path), config_dir=tmp_path / "config")
+    run_cloudsave_action = AsyncMock(return_value={"success": True, "action": "imported"})
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(main_server, "_runtime_startup_init_completed", False))
+        stack.enter_context(patch.object(main_server, "_config_manager", fake_config_manager))
+        stack.enter_context(patch.object(main_server, "_run_cloudsave_manager_action", run_cloudsave_action))
+        stack.enter_context(patch.object(main_server, "bootstrap_local_cloudsave_environment", Mock()))
+        stack.enter_context(
+            patch.object(main_server, "initialize_character_data", AsyncMock(side_effect=RuntimeError("stop here")))
+        )
+        with pytest.raises(RuntimeError, match="stop here"):
+            await main_server._ensure_main_server_runtime_initialized(reason="unit_test")
+
+    assert run_cloudsave_action.await_args.args == ("import_if_needed",)
+    assert callable(run_cloudsave_action.await_args.kwargs["on_characters_removed"])
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_manager_action_passes_extra_arguments_through():
+    from app import main_server
+
+    seen = {}
+
+    class _Manager:
+        def import_if_needed(self, *, reason, on_characters_removed=None):
+            seen.update(reason=reason, on_characters_removed=on_characters_removed)
+            return {"success": True}
+
+    def marker(_removed):
+        return 0
+
+    with patch.object(main_server, "_cloudsave_manager", _Manager()):
+        await main_server._run_cloudsave_manager_action("import_if_needed", reason="r", on_characters_removed=marker)
+    assert seen == {"reason": "r", "on_characters_removed": marker}

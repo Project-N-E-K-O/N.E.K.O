@@ -84,8 +84,8 @@ from config import (
 )
 
 
-# ==================== 智能静音移除 ====================
-# 用于存储裁剪任务状态的全局字典
+# ==================== Intelligent silence removal ====================
+# Global dictionary storing trim-task state.
 _trim_tasks: dict[str, dict] = {}
 
 
@@ -116,10 +116,10 @@ async def analyze_silence(file: UploadFile = File(...)):
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
 
     try:
-        # 转换为 WAV（如果需要）— 阻塞操作，放到线程中执行
+        # Convert to WAV if needed; offload blocking work to a thread.
         wav_buffer, _ = await asyncio.to_thread(convert_to_wav_if_needed, file_buffer, file.filename)
 
-        # 执行静音检测
+        # Detect silence.
         analysis = await asyncio.to_thread(detect_silence, wav_buffer)
 
         return JSONResponse({
@@ -178,7 +178,7 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
     else:
         task_id = str(uuid.uuid4())
 
-    # 立即占位，防止 TOCTOU 竞态
+    # Reserve immediately to prevent TOCTOU races.
     _trim_tasks[task_id] = {'progress': 0, 'cancelled': False, 'phase': 'queued'}
 
     try:
@@ -192,7 +192,7 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
         return JSONResponse({'error': f'读取文件失败: {e}'}, status_code=500)
 
     try:
-        # 文件读取完成，切换到分析阶段
+        # File read complete: enter analysis.
         _trim_tasks[task_id]['phase'] = 'analyzing'
 
         def progress_cb(pct: int):
@@ -200,26 +200,26 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
             if task is None:
                 return
             if task.get('phase', 'analyzing') == 'analyzing':
-                # 分析阶段占 0-40%
+                # Analysis occupies 0-40% progress.
                 task['progress'] = int(pct * 0.4)
             else:
-                # 裁剪阶段占 40-100%
+                # Trimming occupies 40-100% progress.
                 task['progress'] = 40 + int(pct * 0.6)
 
         def cancel_check() -> bool:
             return _trim_tasks.get(task_id, {}).get('cancelled', False)
 
-        # 转换为 WAV — 阻塞操作，放到线程中执行
+        # Convert to WAV; offload blocking work to a thread.
         wav_buffer, _ = await asyncio.to_thread(convert_to_wav_if_needed, file_buffer, file.filename)
 
-        # 分析静音
+        # Analyze silence.
         analysis = await asyncio.to_thread(
             detect_silence, wav_buffer,
             progress_callback=progress_cb, cancel_check=cancel_check,
         )
 
         if not analysis.silence_segments:
-            # 没有可移除的静音
+            # No removable silence.
             _trim_tasks.pop(task_id, None)
             return JSONResponse({
                 'success': True,
@@ -228,20 +228,20 @@ async def trim_silence_endpoint(file: UploadFile = File(...), task_id: str | Non
                 'task_id': task_id,
             })
 
-        # 切换到裁剪阶段
+        # Enter trimming.
         if task_id in _trim_tasks:
             _trim_tasks[task_id]['phase'] = 'trimming'
 
-        # 执行裁剪
+        # Perform trimming.
         result = await asyncio.to_thread(
             trim_silence, wav_buffer, analysis,
             progress_callback=progress_cb, cancel_check=cancel_check,
         )
 
-        # 编码为 base64
+        # Encode as base64.
         audio_b64 = b64.b64encode(result.audio_data).decode('ascii')
 
-        # 清理任务
+        # Clean up tasks.
         _trim_tasks.pop(task_id, None)
 
         return JSONResponse({
@@ -329,7 +329,7 @@ async def voice_clone(
         ref_text: transcript of the reference audio (vLLM-Omni inline clone only; must
                   correspond strictly to the audio content)
     """
-    # 流式读取上传文件（带大小限制）并增量计算 MD5
+    # Stream uploaded files with size limits while incrementally computing MD5.
     try:
         file_buffer = await _read_limited_stream(file, MAX_UPLOAD_SIZE)
     except _UploadTooLargeError as e:
@@ -340,16 +340,16 @@ async def voice_clone(
 
     audio_md5 = hashlib.md5(file_buffer.getvalue()).hexdigest()
 
-    # 提前规范化 provider 和 ref_language
+    # Normalize provider and ref_language early.
     provider = provider.lower().strip() if provider else 'cosyvoice'
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
     ref_language = ref_language.lower().strip() if ref_language else 'ch'
     if ref_language not in valid_languages:
         ref_language = 'ch'
 
-    # vLLM-Omni 克隆必填 ref_text：vLLM-Omni 服务端要求 ref_audio 与 ref_text 严格对应，
-    # 缺失 ref_text 会导致合成失败（服务端 ValueError）。前端 voice_clone.js 也做了
-    # 同步校验（L1484-1491），后端补上防止绕过前端直接调 API。
+    # vLLM-Omni cloning requires ref_text matching ref_audio exactly; missing text
+    # causes synthesis failure with server ValueError. Frontend voice_clone.js already validates
+    # this at L1484-1491; backend validation prevents direct API bypass.
     vllm_ref_text = ref_text.strip() if ref_text else ''
     if provider == 'vllm_omni':
         if not vllm_ref_text:
@@ -363,17 +363,17 @@ async def voice_clone(
                 status_code=400,
             )
 
-    # 检测是否使用本地 TTS（ws/wss 协议）
+    # Detect local TTS through ws/wss protocol.
     _config_manager = get_config_manager()
-    # 先取 core_config 快照，再让 tts_custom 从同一份解析：两次独立的读之间若发生
-    # /core_api 保存，_local_voice_clone_tts_base_url 会用旧 tts_config 的 URL，而
-    # _is_local_voice_clone_tts_config 读的是新的 ttsModelProvider，本地 TTS 注册
-    # 路径可能被跳过或打到旧端点。
+    # Snapshot core_config first and derive tts_custom from the same snapshot. Independent reads interrupted by
+    # /core_api saves can combine old tts_config URLs in _local_voice_clone_tts_base_url with
+    # new ttsModelProvider in _is_local_voice_clone_tts_config, skipping local registration
+    # or contacting stale endpoints.
     try:
         core_config = await _config_manager.aget_core_config() or {}
     except Exception:
         core_config = {}
-    # 快照拿不到时退回独立读，保持原有容错（不能把 {} 当快照传下去）
+    # Without a snapshot, fall back to independent reads for existing fault tolerance; never pass {} as a snapshot.
     tts_config = await (
         _config_manager.aget_model_api_config('tts_custom', core_config=core_config)
         if core_config
@@ -389,8 +389,8 @@ async def voice_clone(
     # it into the local /v1/speakers/register flow would silently produce a
     # local-speaker clone instead of calling the GLM voice-clone API.
     if is_local_tts and provider not in ('vllm_omni', 'glm_tts'):
-        # ==================== 本地 TTS 注册流程 ====================
-        # MD5 + ref_language 去重：检查是否已有相同音频 + 相同语言注册过的音色
+        # ==================== Local TTS registration ====================
+        # Deduplicate by MD5 + ref_language, finding voices registered with identical audio and language.
         existing = _config_manager.find_voice_by_audio_md5('__LOCAL_TTS__', audio_md5, ref_language)
         if existing:
             voice_id, voice_data = existing
@@ -402,14 +402,14 @@ async def voice_clone(
                 'is_local': True
             })
 
-        # 将 ws(s):// 转换为 http(s):// 用于 REST API 调用
+        # Convert ws(s):// into http(s):// for REST calls.
         if base_url.startswith('wss://'):
             http_base = 'https://' + base_url[6:]
         else:
             http_base = 'http://' + base_url[5:]
 
-        # 移除可能的 /v1/audio/speech/stream 路径，只保留主机部分
-        # 例如: ws://127.0.0.1:50000/v1/audio/speech/stream -> http://127.0.0.1:50000
+        # Remove /v1/audio/speech/stream if present, keeping the host only.
+        # Example: ws://127.0.0.1:50000/v1/audio/speech/stream -> http://127.0.0.1:50000.
         if '/v1/' in http_base:
             http_base = http_base.split('/v1/')[0]
 
@@ -419,7 +419,7 @@ async def voice_clone(
         try:
             file_buffer.seek(0)
 
-            # 根据用户 demo，API 格式：
+            # API format from the user's demo:
             # POST /v1/speakers/register
             # multipart/form-data: speaker_id, prompt_text, prompt_audio
             files = {
@@ -430,15 +430,15 @@ async def voice_clone(
                 'prompt_text': f"<|{ref_language}|>" if ref_language != 'ch' else "希望你以后能够做的比我还好呦。"
             }
 
-            # per-call AsyncClient: 用户手动上传音色文件触发，冷路径
+            # Per-call AsyncClient: cold path triggered by manual voice-file upload.
             async with httpx.AsyncClient(timeout=60, proxy=None, trust_env=False) as client:
                 resp = await client.post(register_url, data=data, files=files)
 
                 if resp.status_code == 200:
                     result = resp.json()
-                    voice_id = prefix  # 本地 TTS 使用 speaker_id 作为 voice_id
+                    voice_id = prefix  # Local TTS uses speaker_id as voice_id.
 
-                    # 保存到本地音色库（使用特殊的 key 标识本地 TTS）
+                    # Save to the local voice library with a special local-TTS key.
                     voice_data = {
                         'voice_id': voice_id,
                         'prefix': prefix,
@@ -478,14 +478,14 @@ async def voice_clone(
                 'error': f'本地 TTS 注册失败: {str(e)}'
             }, status_code=500)
 
-    # ==================== 云端语音克隆：按 provider 对偶分支 ====================
+    # ==================== Cloud voice cloning: symmetric provider branches ====================
 
-    # 统一通过 config_manager 获取 API Key
+    # Obtain API keys uniformly through config_manager.
     cosyvoice_runtime = None
     api_key = _config_manager.get_tts_api_key(provider)
 
     if provider in ('minimax', 'minimax_intl'):
-        # ---------- MiniMax（国服 / 国际服）----------
+        # ---------- MiniMax domestic / international ----------
         if not api_key:
             return JSONResponse({
                 'error': 'MINIMAX_API_KEY_MISSING',
@@ -497,7 +497,7 @@ async def voice_clone(
         provider_label = 'MiniMax国际服' if provider == 'minimax_intl' else 'MiniMax国服'
 
     elif provider in ('cosyvoice', 'cosyvoice_intl'):
-        # ---------- 阿里 CosyVoice（国内 / 国际）----------
+        # ---------- Alibaba CosyVoice domestic / international ----------
         cosyvoice_runtime = _config_manager.get_cosyvoice_clone_runtime(provider)
         api_key = (cosyvoice_runtime.get('api_key') or '').strip()
         if not api_key:
@@ -527,9 +527,9 @@ async def voice_clone(
                 'code': 'MIMO_API_KEY_MISSING',
                 'message': '未配置 MiMo API Key，请先在设置中填写'
             }, status_code=400)
-        # base_url 须与 api_key 同源：assistApi=mimo（含 Token Plan）时 get_core_config 已把
-        # OPENROUTER_URL 解析成对应端点（普通 / token-plan-*），get_tts_api_key('mimo') 也据此
-        # 返回配套 key；否则用默认 xiaomimimo 端点。和 _mimo_resolve 的 base_url 规则对偶。
+        # base_url and api_key must share a source: for assistApi=mimo, including Token Plan, get_core_config resolves
+        # OPENROUTER_URL to the matching ordinary/token-plan-* endpoint, and get_tts_api_key('mimo')
+        # returns its paired key. Otherwise use default xiaomimimo, symmetric with _mimo_resolve base_url rules.
         if str(core_config.get('assistApi') or '').strip().lower() == 'mimo':
             base_url = (core_config.get('OPENROUTER_URL') or '').strip()
         else:
@@ -538,13 +538,13 @@ async def voice_clone(
         provider_label = 'MiMo'
 
     elif provider == 'vllm_omni':
-        # vLLM-Omni 是本地 self-hosted 服务，没有 API key、也没有远端音色注册接口。克隆走
-        # 「内联参考音频」范式（对偶 MiMo）：参考音频 base64 + ref_text 整段落进 voice_storage
-        # 的 voice_meta，每次合成时内联进 session.config 的 ref_audio/ref_text。桶名固定
-        # __VLLM_OMNI__（无 key 后缀，因本地服务无 key 可分桶）。只有当前真正启用了
-        # vLLM-Omni 时才保留端点快照；若 TTS 正在跟随辅助 API，保存那个地址会让将来的
-        # vLLM clone 固化到一个非 WebSocket TTS 端点。此时参考样本照常保存，之后用户切到
-        # vLLM-Omni 会读取新的当前端点。
+        # vLLM-Omni is self-hosted locally without API keys or remote voice registration. Cloning uses
+        # inline reference audio, symmetric with MiMo: store full base64 audio plus ref_text in voice_storage
+        # voice_meta, then inline into session.config ref_audio/ref_text for every synthesis. Fixed bucket
+        # __VLLM_OMNI__ has no key suffix because local service has no keys. Preserve endpoint snapshots only
+        # when vLLM-Omni is actually enabled; while TTS follows assist APIs, snapshotting that URL would
+        # pin future clones to non-WebSocket TTS endpoints. Save reference samples normally and resolve
+        # the current endpoint when users later select vLLM-Omni.
         vllm_omni_active = (
             _as_bool(core_config.get('ENABLE_CUSTOM_API'), False)
             and str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
@@ -569,9 +569,9 @@ async def voice_clone(
         provider_label = '豆包语音'
 
     elif provider == 'glm_tts':
-        # 智谱 GLM 声音复刻（对偶 doubao_tts 的远端注册型克隆）：key 走
-        # get_tts_api_key('glm_tts') → ASSIST_API_KEY_GLM（core/assist=glm 时自动
-        # 回退 coreApiKey），桶名 __GLM_TTS__{key 末 8 位}。
+        # Zhipu GLM cloning, symmetric with doubao_tts remote registration: keys come from
+        # get_tts_api_key('glm_tts') -> ASSIST_API_KEY_GLM, falling back to coreApiKey when core/assist=glm;
+        # bucket __GLM_TTS__ appends the key's final eight characters.
         if not api_key:
             return JSONResponse({
                 'error': 'GLM_TTS_API_KEY_MISSING',
@@ -585,21 +585,21 @@ async def voice_clone(
     else:
         return JSONResponse({'error': f'不支持的 provider: {provider}'}, status_code=400)
 
-    # ---------- 公共流程：MD5 去重 ----------
+    # ---------- Shared MD5 deduplication ----------
     if provider in ('cosyvoice', 'cosyvoice_intl'):
         existing = _config_manager.find_cosyvoice_voice_by_audio_md5(provider, audio_md5, ref_language)
     else:
         existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
     if existing:
         voice_id_ex, voice_data_ex = existing
-        # vLLM-Omni：同音频 + 同语言但不同 ref_text 视为不同音色（转录修正场景），
-        # 不命中去重，允许用户用修正后的 ref_text 重新注册。
+        # vLLM-Omni: identical audio/language with different ref_text is a different voice for transcript correction;
+        # bypass deduplication so corrected transcripts can register anew.
         if provider == 'vllm_omni':
             existing_ref_text = str((voice_data_ex or {}).get('clone_ref_text') or '').strip()
             if existing_ref_text != vllm_ref_text:
-                # 清理旧条目：否则 find_voice_by_audio_md5 按插入顺序总是先返回
-                # 最旧的匹配条目，旧 voice 永远占位，新注册无限重复创建；
-                # 旧 voice 也仍出现在音色列表中，用户可能选到错误音色。
+                # Remove old entries, or insertion-ordered find_voice_by_audio_md5 always returns
+                # the oldest match, occupying the slot and causing unlimited duplicate registrations;
+                # stale entries also remain selectable and can give users the wrong voice.
                 try:
                     _config_manager.delete_voice_for_current_api(voice_id_ex)
                     logger.info(
@@ -620,7 +620,7 @@ async def voice_clone(
             'provider': provider
         })
 
-    # ---------- 公共流程：音频规范化 ----------
+    # ---------- Shared audio normalization ----------
     try:
         if provider in ('cosyvoice', 'cosyvoice_intl'):
             mime_type, error_msg = validate_audio_file(file_buffer, file.filename)
@@ -641,7 +641,7 @@ async def voice_clone(
         audio_meta['normalized']['sample_rate'],
     )
 
-    # ---------- 按 provider 调用对应克隆 API ----------
+    # ---------- Call provider-specific cloning APIs ----------
     try:
         if provider in ('minimax', 'minimax_intl'):
             original_prefix, minimax_prefix = build_minimax_request_voice_id(prefix, provider_label)
@@ -656,8 +656,8 @@ async def voice_clone(
             )
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': original_prefix,  # 保存原始前缀用于显示
-                'minimax_prefix': minimax_prefix,  # 保存实际提交给 MiniMax 的安全前缀
+                'prefix': original_prefix,  # Preserve original prefixes for display.
+                'minimax_prefix': minimax_prefix,  # Preserve the safe prefix actually submitted to MiniMax.
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
                 'minimax_language': minimax_lang,
@@ -687,19 +687,19 @@ async def voice_clone(
             }
 
         elif provider == 'mimo':
-            # MiMo 没有远端注册接口（已核实官方文档：voiceclone 只能每次内联参考音频，无
-            # create-voice / 远端 voice_id）。所以严格对偶 MiniMax 的做法是：把克隆身份整段
-            # 落进 voice_storage.json 的 voice_meta——MiniMax 那里存的是远端 voice_id，这里存
-            # 参考音频本身（base64）。不另起本地文件存储，voice_meta 随 voice_storage.json 一起
-            # 云同步（与 MiniMax 同构）。校验样本可用后再落库。
+            # MiMo has no remote registration API: official docs require inline reference audio on every voiceclone request,
+            # with no create-voice/remote voice_id. Symmetric with MiniMax, store the entire clone identity
+            # in voice_storage.json voice_meta: MiniMax stores remote voice_id, while MiMo stores
+            # reference audio base64. Do not create separate local files; voice_meta cloud-syncs with voice_storage.json,
+            # matching MiniMax. Persist only after sample validation.
             client = MimoVoiceCloneClient(api_key=api_key, base_url=base_url or None)
             sample_bytes = normalized_buffer.getvalue()
             await client.validate_sample(sample_bytes, mime_type='audio/wav')
-            # voice_id 维度必须与 MD5 去重键 (storage_key, audio_md5, ref_language) 一致：
-            #  - 含 key 末 8 位：同一音频在不同 MiMo key 下落不同 voice_id，避免跨 __MIMO__ 桶
-            #    同名被 delete_voice_for_current_api 按 id 扫桶误删（Codex review #1851）。
-            #  - 含 ref_language：去重带 ref_language，若 id 不带则「同音频换语言」绕过去重却又
-            #    生成同名 id，覆盖掉前一条 voice_data（CodeRabbit review #1851）。
+            # voice_id dimensions must match the MD5 deduplication key (storage_key,audio_md5,ref_language):
+            # - Include the key's last eight characters so identical audio under different MiMo keys gets distinct IDs,
+            #   avoiding cross-__MIMO__-bucket ID deletion by delete_voice_for_current_api (Codex #1851).
+            # - Include ref_language: deduplication distinguishes it, so omitting it from IDs would let language changes
+            #   bypass deduplication but overwrite previous voice_data under the same ID (CodeRabbit #1851).
             voice_id = f'mimo-clone-{api_key[-8:]}-{ref_language}-{audio_md5[:12]}'
             voice_data = {
                 'voice_id': voice_id,
@@ -708,25 +708,25 @@ async def voice_clone(
                 'ref_language': ref_language,
                 'provider': 'mimo',
                 'source': 'clone',
-                # 克隆身份：参考音频 base64（对偶 MiniMax 的远端 voice_id），dispatch/preview
-                # 读它内联进 voiceclone 请求。存进 voice_meta 即随 voice_storage.json 云同步。
+                # Clone identity is reference audio base64, symmetric with MiniMax's remote voice_id. Dispatch/preview
+                # inline it into voiceclone requests; voice_meta storage automatically cloud-syncs via voice_storage.json.
                 'clone_sample_b64': base64.b64encode(sample_bytes).decode('ascii'),
                 'clone_sample_mime': 'audio/wav',
-                # base_url 存进 voice_meta（对偶 minimax_base_url）；dispatch 在 assistApi=mimo
-                # （Token Plan 的唯一场景）时仍按当前配置重解析，保证 key/端点配套。
+                # Store base_url in voice_meta, symmetric with minimax_base_url. Dispatch still resolves current configuration
+                # for assistApi=mimo, the sole Token Plan scenario, preserving endpoint/key pairing.
                 'mimo_base_url': base_url or '',
                 'created_at': datetime.now().isoformat()
             }
 
         elif provider == 'vllm_omni':
-            # vLLM-Omni 内联克隆（对偶 MiMo）：无远端注册接口，参考音频 base64 + ref_text 整段
-            # 落进 voice_storage 的 voice_meta，dispatch 时读出来内联进 session.config 的
-            # ref_audio/ref_text。vLLM-Omni 无远端校验接口（不像 MiMo 有 validate_sample），
-            # 参考音频运行时才用，所以这里跳过校验直接落库。
+            # vLLM-Omni inline clones, symmetric with MiMo: without remote registration, store full base64 audio + ref_text
+            # in voice_storage voice_meta and read them at dispatch into session.config
+            # ref_audio/ref_text. There is no remote validation API like MiMo validate_sample;
+            # audio is used only at runtime, so skip validation and persist directly here.
             sample_bytes = normalized_buffer.getvalue()
-            # voice_id 维度与去重键一致：含 ref_language 避免同音频换语言覆盖，含
-            # ref_text hash 避免同音频不同转录命中旧 voice（转录修正场景）。
-            # 无 key 后缀（本地服务无 key），桶 __VLLM_OMNI__ 是全局唯一分区。
+            # Match deduplication dimensions: ref_language avoids same-audio language overwrite; ref_text
+            # hashes distinguish corrected transcripts from stale voices with identical audio.
+            # No key suffix for keyless local service; __VLLM_OMNI__ is the sole global partition.
             ref_text_hash = hashlib.md5(vllm_ref_text.encode('utf-8')).hexdigest()[:8]
             voice_id = f'vllm-omni-clone-{ref_language}-{audio_md5[:12]}-{ref_text_hash}'
             voice_data = {
@@ -736,15 +736,15 @@ async def voice_clone(
                 'ref_language': ref_language,
                 'provider': 'vllm_omni',
                 'source': 'clone',
-                # 克隆身份：参考音频 base64（对偶 MiMo 的 clone_sample_b64），dispatch/preview
-                # 读它内联进 session.config 的 ref_audio。存进 voice_meta 即随 voice_storage 云同步。
+                # Clone identity is reference audio base64, symmetric with MiMo clone_sample_b64; dispatch/preview
+                # inline it as session.config.ref_audio. Persisting voice_meta also cloud-syncs through voice_storage.
                 'clone_sample_b64': base64.b64encode(sample_bytes).decode('ascii'),
                 'clone_sample_mime': 'audio/wav',
-                # 参考音频原文：vLLM-Omni 克隆要求 ref_text 与音频严格对应，作 session.config.ref_text。
+                # Reference transcript: vLLM-Omni requires ref_text to match audio exactly for session.config.ref_text.
                 'clone_ref_text': vllm_ref_text,
                 'created_at': datetime.now().isoformat()
             }
-            # 仅存真正激活的 vLLM-Omni 端点快照；跟随辅助 API 时不污染克隆的运行地址。
+            # Snapshot only genuinely active vLLM-Omni endpoints; assist-following configuration must not contaminate clone runtime addresses.
             if base_url:
                 voice_data['vllm_omni_base_url'] = base_url
 
@@ -783,13 +783,13 @@ async def voice_clone(
             }
 
         elif provider == 'glm_tts':
-            # GLM 声音复刻两步流（对偶 doubao）：POST /files 上传示例音频（purpose=
-            # voice-clone-input）→ POST /voice/clone 注册远端音色。voice_name 官方要求
-            # 账号内唯一，由 build_glm_voice_name 用「neko_前缀_音频MD5片段」构造，
-            # 维度与 MD5 去重键对齐；返回的 voice 即合成时的音色 ID（/audio/speech 的
-            # voice 参数官方明确支持复刻音色，dispatch 复用 cogtts worker）。
-            # 上传接口限制示例音频 ≤10MB：规范化后的 WAV 可能比原文件大（重采样/转
-            # PCM/单声道展开），提前预检，超限直接 413，不打远端 API、不消耗配额。
+            # Two-step GLM cloning, symmetric with doubao: POST /files uploads reference audio (purpose=
+            # voice-clone-input), then POST /voice/clone registers the remote voice. Official voice_name must be
+            # account-unique; build_glm_voice_name builds neko_prefix_audioMD5fragment,
+            # matching MD5 deduplication dimensions. Returned voice is the synthesis ID: /audio/speech's
+            # voice explicitly supports clones, and dispatch reuses the cogtts worker.
+            # Uploads limit reference audio to 10MB. Normalized WAV can grow after resampling/PCM conversion/
+            # mono expansion, so preflight and return 413 above the limit without remote calls or quota consumption.
             normalized_size = len(normalized_buffer.getvalue())
             if normalized_size > GLM_VOICE_CLONE_MAX_AUDIO_BYTES:
                 return JSONResponse({
@@ -822,8 +822,8 @@ async def voice_clone(
                 get_cosyvoice_clone_model,
                 get_cosyvoice_user_preferred_model,
             )
-            # 音色注册会绑定 target_model（复刻音色不能跨模型使用），优先采用
-            # 用户在 TTS 端点填写的 cosyvoice-v* 模型，未填/填了别家 ID 时回退默认。
+            # Voice registration binds target_model (cloned voices cannot cross models); prefer the
+            # user's cosyvoice-v* model from the TTS endpoint, falling back when absent or from another vendor.
             clone_model = (
                 get_cosyvoice_user_preferred_model(provider)
                 or get_cosyvoice_clone_model(provider)
@@ -871,7 +871,7 @@ async def voice_clone(
         elif '下载' in error_detail:
             return JSONResponse({'error': error_detail, 'provider': provider}, status_code=415)
         elif provider == 'glm_tts' and '10MB' in error_detail:
-            # 预检之外的兜底：client 内部同阈值抛错时也按 413 语义返回（CodeRabbit）。
+            # Beyond preflight, client-side same-threshold exceptions also return 413 semantics (CodeRabbit).
             return JSONResponse({
                 'error': error_detail,
                 'code': 'GLM_TTS_AUDIO_TOO_LARGE',
@@ -884,25 +884,25 @@ async def voice_clone(
         logger.error(f"{provider_label} 音色注册时发生错误: {e}")
         return JSONResponse({'error': f'{provider_label}音色注册失败: {str(e)}', 'provider': provider}, status_code=500)
 
-    # ---------- 公共流程：保存到本地音色库 ----------
+    # ---------- Shared local voice-library persistence ----------
     try:
         _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
         logger.info(f"{provider_label} voice_id 已保存到音色库: {voice_id}")
     except Exception as save_error:
         logger.error(f"保存 {provider_label} voice_id 到音色库失败: {save_error}")
-        # MiMo 与其它家不同：它没有远端音色资源（克隆身份 = voice_meta 里的样本 base64，
-        # save 失败＝什么都没落库，voice_id 是本地生成、此刻指向空）。返回 200+local_save_failed
-        # 会给用户一个根本不存在的 voice_id。而且 MiMo 不存在"重试会重复创建远端资源"的代价
-        # （validate 不创建任何东西），重试是安全的——所以这里返回真失败，让客户端知道并可重试
-        # （Codex review #1851；与 PR #528「远端已创建→200 partial」规则的前提相反）。
+        # MiMo differs: no remote voice resource exists; identity is sample base64 in voice_meta. Failed saves
+        # persist nothing, leaving locally generated voice_id pointing nowhere. A 200+local_save_failed
+        # returns a nonexistent ID. MiMo retries cannot duplicate remote resources because validation
+        # creates nothing, so retries are safe: return a real failure the client can recognize and retry
+        # (Codex #1851, unlike PR #528's remote-created -> 200 partial premise).
         if provider in ('mimo', 'vllm_omni'):
             return JSONResponse({
                 'error': f'{provider_label}音色保存失败: {str(save_error)}',
                 'code': 'TTS_VOICE_SAVE_FAILED',
                 'provider': provider,
             }, status_code=500)
-        # 其它 provider（cosyvoice/minimax/elevenlabs）远端音色已创建，本地保存失败仍返回
-        # 200+local_save_failed，避免客户端重试重复创建远端资源、浪费配额（PR #528 既定规则）。
+        # Other providers (cosyvoice/minimax/elevenlabs) already created remote voices, so local-save failures still return
+        # 200+local_save_failed, preventing retries from duplicating remote resources and wasting quota (PR #528).
         return JSONResponse({
             'voice_id': voice_id,
             'message': f'{provider_label}音色注册成功，但本地保存失败',
@@ -945,7 +945,7 @@ async def voice_clone_direct(request: Request):
     ref_language = str(data.get('ref_language') or 'ch').lower().strip()
     provider = str(data.get('provider') or 'cosyvoice').lower().strip()
 
-    # 参数验证
+    # Validate parameters.
     if not direct_link:
         return JSONResponse({'error': '缺少 direct_link 参数'}, status_code=400)
     if not prefix:
@@ -961,12 +961,12 @@ async def voice_clone_direct(request: Request):
         logger.warning(f"SSRF检查失败: {e}")
         return JSONResponse({'error': '直链安全检查失败'}, status_code=400)
 
-    # 验证语言参数
+    # Validate language.
     valid_languages = ['ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru']
     if ref_language not in valid_languages:
         ref_language = 'ch'
 
-    # 验证服务商参数
+    # Validate provider.
     valid_providers = ['minimax', 'minimax_intl', 'cosyvoice', 'cosyvoice_intl', 'elevenlabs', 'glm_tts']
     if provider not in valid_providers:
         return JSONResponse({
@@ -976,7 +976,7 @@ async def voice_clone_direct(request: Request):
             'details': {'provider': provider, 'valid_providers': ', '.join(valid_providers)},
         }, status_code=400)
 
-    # 获取 API Key
+    # Get the API key.
     _config_manager = get_config_manager()
     cosyvoice_runtime = None
     if provider in ('cosyvoice', 'cosyvoice_intl'):
@@ -1013,7 +1013,7 @@ async def voice_clone_direct(request: Request):
     from utils.audio import normalize_voice_clone_api_audio
     from utils.voice_clone import MinimaxVoiceCloneError, QwenVoiceCloneError
 
-    # 设置服务商相关参数
+    # Set provider-specific parameters.
     if provider in ('minimax', 'minimax_intl'):
         from utils.voice_clone import (
             MinimaxVoiceCloneClient,
@@ -1036,13 +1036,13 @@ async def voice_clone_direct(request: Request):
         storage_key = (cosyvoice_runtime or {}).get('storage_key') or api_key
         provider_label = (cosyvoice_runtime or {}).get('provider_label') or '阿里百炼CosyVoice'
 
-    # 验证直链是否可访问（HEAD失败时回退到GET）
-    # 每一跳都固定到已校验的解析结果，避免校验后请求阶段被 DNS rebinding 绕过。
+    # Check direct-link accessibility, falling back from HEAD to GET.
+    # Pin every hop to validated DNS results, preventing rebinding between validation and requests.
     try:
         head_resp = await _request_direct_link_follow_redirects("HEAD", direct_link)
         try:
             if head_resp.status_code >= 400:
-                # HEAD失败，尝试GET
+                # HEAD failed: try GET.
                 logger.warning(f"HEAD请求失败({head_resp.status_code})，尝试GET请求: {direct_link}")
                 get_resp = await _request_direct_link_follow_redirects(
                     "GET",
@@ -1068,15 +1068,15 @@ async def voice_clone_direct(request: Request):
         }, status_code=400)
     except Exception as e:
         logger.warning(f"直链验证失败: {e}")
-        # 不阻断流程，只是警告
+        # Warn without blocking the flow.
 
-    # 根据服务商类型执行不同的克隆逻辑
+    # Execute provider-specific cloning.
     try:
         if provider in ('minimax', 'minimax_intl'):
-            # ========== MiniMax 直链克隆流程 ==========
-            # 1. 下载音频文件（使用流式读取避免内存问题）
+            # ========== MiniMax direct-link cloning ==========
+            # 1. Download audio with streaming reads to avoid memory issues.
             logger.info(f"开始下载直链音频: {direct_link}")
-            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB limit.
 
             filename, audio_bytes = await _download_direct_link_audio(
                 direct_link,
@@ -1085,10 +1085,10 @@ async def voice_clone_direct(request: Request):
 
             logger.info(f"音频下载完成: {filename}, 大小: {len(audio_bytes)} bytes")
 
-            # 2. 计算音频内容的 MD5 用于去重（与文件上传路径保持一致）
+            # 2. Compute content MD5 for deduplication, matching file uploads.
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
-            # 3. MD5 去重检查
+            # 3. MD5 deduplication check.
             existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
             if existing:
                 voice_id, voice_data = existing
@@ -1100,7 +1100,7 @@ async def voice_clone_direct(request: Request):
                     'provider': provider
                 })
 
-            # 2. 音频归一化处理（与文件上传路径保持一致）
+            # 2. Normalize audio, matching file uploads.
             original_buffer = io.BytesIO(audio_bytes)
             normalized_buffer, normalized_filename, _ = await asyncio.to_thread(
                 normalize_voice_clone_api_audio,
@@ -1109,7 +1109,7 @@ async def voice_clone_direct(request: Request):
 
             original_prefix, minimax_prefix = build_minimax_request_voice_id(prefix, provider_label)
 
-            # 4. 使用 MinimaxVoiceCloneClient 上传并注册音色
+            # 4. Upload and register through MinimaxVoiceCloneClient.
             minimax_lang = minimax_normalize_language(ref_language)
             client = MinimaxVoiceCloneClient(api_key=api_key, base_url=base_url)
 
@@ -1122,8 +1122,8 @@ async def voice_clone_direct(request: Request):
 
             voice_data = {
                 'voice_id': voice_id,
-                'prefix': original_prefix,  # 保存原始前缀用于显示
-                'minimax_prefix': minimax_prefix,  # 保存实际提交给 MiniMax 的安全前缀
+                'prefix': original_prefix,  # Preserve original prefixes for display.
+                'minimax_prefix': minimax_prefix,  # Preserve the safe prefix actually submitted to MiniMax.
                 'direct_link': direct_link,
                 'audio_md5': audio_md5,
                 'ref_language': ref_language,
@@ -1185,7 +1185,7 @@ async def voice_clone_direct(request: Request):
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
 
         elif provider == 'glm_tts':
-            # ========== GLM 直链克隆流程（照 MiniMax 模式：下载 → 上传 → 注册） ==========
+            # ========== GLM direct-link cloning: MiniMax-style download -> upload -> register ==========
             logger.info(f"开始下载直链音频用于GLM声音复刻: {direct_link}")
             filename, audio_bytes = await _download_direct_link_audio(
                 direct_link,
@@ -1210,7 +1210,7 @@ async def voice_clone_direct(request: Request):
                 io.BytesIO(audio_bytes),
                 filename,
             )
-            # 与文件上传路径同源：规范化后超 10MB 直接 413，不打远端 API。
+            # Match file uploads: normalized audio over 10MB returns 413 without remote API calls.
             normalized_size = len(normalized_buffer.getvalue())
             if normalized_size > GLM_VOICE_CLONE_MAX_AUDIO_BYTES:
                 return JSONResponse({
@@ -1243,10 +1243,10 @@ async def voice_clone_direct(request: Request):
             logger.info(f"{provider_label} 直链音色注册成功，voice_id: {voice_id}")
 
         else:  # cosyvoice / cosyvoice_intl
-            # ========== CosyVoice 直链克隆流程 ==========
-            # 1. 下载音频文件以计算内容MD5（使用流式读取避免内存问题）
+            # ========== CosyVoice direct-link cloning ==========
+            # 1. Stream audio downloads to compute content MD5 without memory issues.
             logger.info(f"开始下载直链音频用于CosyVoice: {direct_link}")
-            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB限制
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB limit.
 
             _, audio_bytes = await _download_direct_link_audio(
                 direct_link,
@@ -1255,10 +1255,10 @@ async def voice_clone_direct(request: Request):
 
             logger.info(f"音频下载完成，大小: {len(audio_bytes)} bytes")
 
-            # 2. 计算音频内容的 MD5 用于去重
+            # 2. Compute content MD5 for deduplication.
             audio_md5 = hashlib.md5(audio_bytes).hexdigest()
 
-            # 3. MD5 去重检查
+            # 3. MD5 deduplication check.
             existing = _config_manager.find_voice_by_audio_md5(storage_key, audio_md5, ref_language)
             if existing:
                 voice_id, voice_data = existing
@@ -1270,7 +1270,7 @@ async def voice_clone_direct(request: Request):
                     'provider': provider
                 })
 
-            # 4. 使用直链注册音色
+            # 4. Register the voice through the direct link.
             language_hints = qwen_language_hints(ref_language)
             client = QwenVoiceCloneClient(
                 api_key=api_key,
@@ -1282,7 +1282,7 @@ async def voice_clone_direct(request: Request):
                 get_cosyvoice_clone_model,
                 get_cosyvoice_user_preferred_model,
             )
-            # 同上：音色注册绑定 target_model，跟随用户在 TTS 端点填写的模型。
+            # As above, registration binds target_model, following the user's configured TTS model.
             clone_model = (
                 get_cosyvoice_user_preferred_model(provider)
                 or get_cosyvoice_clone_model(provider)
@@ -1313,7 +1313,7 @@ async def voice_clone_direct(request: Request):
     except DirectLinkSecurityError as e:
         logger.warning(f"{provider_label} 直链安全校验失败: {e}")
         if provider == 'glm_tts' and e.code == 'FILE_TOO_LARGE':
-            # 下载阶段就超出 GLM 10MB 上限：与规范化后超限同一响应（413 + 专用错误码）。
+            # Downloads exceeding GLM's 10MB cap return the same 413 and dedicated error code as post-normalization overflow.
             return JSONResponse({
                 'error': str(e),
                 'code': 'GLM_TTS_AUDIO_TOO_LARGE',
@@ -1349,7 +1349,7 @@ async def voice_clone_direct(request: Request):
             'provider': provider
         }, status_code=500)
     except ValueError as e:
-        # 与文件上传路径一致：音频无法解析/规范化等输入问题返回 400，而非服务器错误。
+        # Like uploads, unparseable/unnormalizable audio is invalid input and returns 400, not a server error.
         logger.warning(f"{provider_label} 直链音频无效: {e}")
         return JSONResponse({'error': str(e), 'provider': provider}, status_code=400)
     except Exception as e:
@@ -1359,7 +1359,7 @@ async def voice_clone_direct(request: Request):
             'provider': provider
         }, status_code=500)
 
-    # 保存到本地音色库
+    # Save to the local voice library.
     try:
         _config_manager.save_voice_for_api_key(storage_key, voice_id, voice_data)
         logger.info(f"{provider_label} 直链 voice_id 已保存到音色库: {voice_id}")

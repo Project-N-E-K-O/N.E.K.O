@@ -120,6 +120,21 @@ body::after {
 
 .round-button:hover { transform: translateY(-2px); background: rgba(255,255,255,.82); }
 
+.close-game {
+  position: fixed;
+  z-index: 20;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  display: grid;
+  place-items: center;
+  padding: 0;
+  -webkit-app-region: no-drag;
+}
+
+.close-game:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+
+.match-header .header-actions { margin-right: 48px; }
+
 .arcade-floor {
   width: 100%;
   max-width: 1180px;

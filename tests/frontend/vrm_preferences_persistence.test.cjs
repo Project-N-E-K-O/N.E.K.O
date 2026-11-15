@@ -241,6 +241,33 @@ const vm = require('node:vm');
         assert.equal(f.requests.length, 1);
         window.isViewerMode = false;
     }
+    // Delayed disposal releases the captured scene without clearing a newer model.
+    for (const replaced of [true, false]) {
+        const f = fixture(); const tools = deferred(); const disposedScenes = [];
+        const oldModel = { url: '/upload.vrm', vrm: { scene: f.scene } };
+        const newerScene = new THREE.Object3D();
+        const newerModel = { url: '/selected.vrm', vrm: { scene: newerScene } };
+        f.manager.scene = new THREE.Scene(); f.manager.scene.add(f.scene);
+        f.manager.currentModel = oldModel;
+        const originalGetUtils = window.VRMCore._getVRMUtils;
+        window.VRMCore._getVRMUtils = () => tools.promise;
+        try {
+            const disposing = f.manager.core.disposeVRM(); await flush();
+            assert.equal(f.scene.parent, null, 'old scene detaches before asynchronous disposal');
+            if (replaced) {
+                f.manager.currentModel = newerModel;
+                f.manager.scene.add(newerScene);
+            }
+            tools.resolve({ deepDispose: scene => disposedScenes.push(scene) });
+            await disposing;
+            assert.deepEqual(disposedScenes, [f.scene], 'only the old scene is released');
+            assert.equal(f.manager.currentModel, replaced ? newerModel : null,
+                'late disposal must preserve a replacement and clear its own model normally');
+            if (replaced) assert.equal(newerScene.parent, f.manager.scene);
+        } finally {
+            window.VRMCore._getVRMUtils = originalGetUtils;
+        }
+    }
     assert.ok(warnings.length, 'failed saves retain their diagnostics');
     console.log('VRM preferences persistence: OK (in-flight ordering, model switching, immutable snapshots and failure recovery)');
 })().catch(error => { console.error(error); process.exitCode = 1; });

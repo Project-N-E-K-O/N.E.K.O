@@ -117,6 +117,7 @@
                     case 'memory_edited':
                         await I.handleMemoryEdited(event.data.catgirl_name);
                         break;
+                    case 'request_voice_chat_active':
                     case 'voice_chat_active': {
                         // 来自另一个窗口的语音对话状态变更，同步本地 React composer 隐藏状态
                         // 校验 lanlan_name：多角色场景下避免串状态
@@ -180,6 +181,12 @@
                         var cat1PlaygroundYarnCurrentName = I.getCurrentLanlanName();
                         if (event.data.lanlan_name && (!cat1PlaygroundYarnCurrentName || event.data.lanlan_name !== cat1PlaygroundYarnCurrentName)) break;
                         dispatchIdleCat1PlaygroundYarnRequest(event.data);
+                        break;
+                    }
+                    case 'idle_cat1_playground_yarn_activate': {
+                        var cat1PlaygroundYarnActivateCurrentName = I.getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!cat1PlaygroundYarnActivateCurrentName || event.data.lanlan_name !== cat1PlaygroundYarnActivateCurrentName)) break;
+                        dispatchIdleCat1PlaygroundYarnActivate(event.data);
                         break;
                     }
                     case 'idle_chat_pair_move_bounds': {
@@ -894,6 +901,11 @@
     }
 
     function dispatchIdleChatMinimizedState(detail) {
+        // The desktop shell republishes the effective minimized target through
+        // preload after applying native window bounds and display scaling. The
+        // renderer BroadcastChannel copy still carries the Web shell's 51px
+        // geometry, so accepting both would create two competing authorities.
+        if (window.__NEKO_DESKTOP_RUNTIME__) return false;
         window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
             detail: Object.assign({
                 action: 'idle_chat_minimized_state',
@@ -908,6 +920,7 @@
                 via: 'broadcast-channel'
             })
         }));
+        return true;
     }
 
     function dispatchIdleChatCompactSurfaceState(detail) {
@@ -966,6 +979,22 @@
                 reason: 'cat1-playground-entry',
                 source: '',
                 trigger: 'cat1-question-mark',
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleCat1PlaygroundYarnActivate(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-playground-yarn-activate', {
+            detail: Object.assign({
+                action: 'idle_cat1_playground_yarn_activate',
+                activationId: detail && detail.activationId ? detail.activationId : '',
+                reason: 'cat1-playground-yarn-click',
+                source: '',
+                trigger: 'yarn-click',
                 timestamp: Date.now(),
                 via: 'broadcast-channel'
             }, detail || {}, {

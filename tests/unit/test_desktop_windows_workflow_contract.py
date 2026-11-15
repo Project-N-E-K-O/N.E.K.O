@@ -201,9 +201,9 @@ def test_windows_only_nightly_preserves_other_platform_assets() -> None:
     workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
     nightly_steps = _steps_by_name(workflow, "nightly")
 
-    assert nightly_steps["Delete old nightly release"]["if"] == (
-        "${{ !inputs.windows_only }}"
-    )
+    # The full nightly deletes the old release inside "Create nightly release",
+    # so gating that one step keeps Windows-only runs from touching other assets.
+    assert "Delete old nightly release" not in nightly_steps
     assert nightly_steps["Create nightly release"]["if"] == (
         "${{ !inputs.windows_only }}"
     )

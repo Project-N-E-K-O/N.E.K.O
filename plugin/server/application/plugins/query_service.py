@@ -15,6 +15,7 @@ from plugin.server.application.install_source import (
     _DEFAULT_INSTALL_SOURCE,
     get_install_source_manager,
 )
+from plugin.server.application.plugins.consent_service import consent_summary
 from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
@@ -313,15 +314,15 @@ def _build_entries_from_handlers(
             "metadata": metadata,
         }
 
-        # 透传 llm_result_fields 到运行时 entry，供 agent_server._lookup_llm_result_fields 读取
+        # Pass llm_result_fields to runtime entries for agent_server._lookup_llm_result_fields.
         meta_dict = getattr(meta, "metadata", None)
         if isinstance(meta_dict, dict) and "llm_result_fields" in meta_dict:
             entry_dict["llm_result_fields"] = meta_dict["llm_result_fields"]
 
-        # 这里刻意不解析 i18n：唯一的调用方（_list_plugins_payload）在拿到
-        # entries 之后，会用它自己那一份 plugin_i18n 和同一个 locale 把每个
-        # entry 再解析一遍。在循环里解析等于每个 entry 重新加载一次整个语言包
-        # ——302 个 entry 实测 554ms，其中 545ms 纯属重复。
+        # Intentionally do not resolve i18n here: the sole caller (_list_plugins_payload), after receiving
+        # entries, resolves each entry again with its own plugin_i18n and the same locale.
+        # Resolving inside the loop reloads the entire language package per entry:
+        # 302 entries measured 554 ms, of which 545 ms was redundant.
         entries.append(entry_dict)
 
     return entries, seen
@@ -441,7 +442,7 @@ def _append_entries_from_preview(
             "metadata": metadata,
         }
 
-        # 透传 llm_result_fields（来源：registry._extract_entries_preview）
+        # Pass through llm_result_fields (from registry._extract_entries_preview).
         llm_fields_obj = normalized_preview.get("llm_result_fields")
         if isinstance(llm_fields_obj, list):
             entry_dict["llm_result_fields"] = llm_fields_obj
@@ -550,6 +551,7 @@ def _prepare_plugin_projection(
     )
     plugin_info["id"] = plugin_id
     plugin_info["autostart_pending"] = plugin_id in autostart_pending_ids
+    plugin_info["consent"] = consent_summary(plugin_id, dict(plugin_meta))
     plugin_info["status"] = _resolve_plugin_status(
         plugin_id=plugin_id,
         plugin_meta=plugin_meta,
@@ -727,10 +729,8 @@ def _append_plugin_fallback(
         "description": fallback_description,
         "entries": [],
     }
-    if isinstance(plugin_meta_obj, Mapping) and (
-        plugin_meta_obj.get("source") == "development" or "development_ref" in plugin_meta_obj
-    ):
-        card["source"] = "development"
+    if isinstance(plugin_meta_obj, Mapping) and isinstance(plugin_meta_obj.get("source"), str):
+        card["source"] = plugin_meta_obj["source"]
     result.append(card)
 
 
@@ -799,16 +799,6 @@ def _build_plugin_list_sync(
             ]
 
             plugin_info["entries"] = entries
-            if plugin_meta.get("source") == "development" or "development_ref" in plugin_meta:
-                # Public cards carry display/status data, not local directory
-                # provenance or detailed runtime errors containing source paths.
-                # The guarded development endpoint provides those details.
-                for field in (
-                    "source_dir", "development_ref", "config_path",
-                    "runtime_load_error_message", "runtime_startup_error",
-                    "static_ui_config",
-                ):
-                    plugin_info.pop(field, None)
             result.append(plugin_info)
         except ServerDomainError as exc:
             _append_plugin_fallback(

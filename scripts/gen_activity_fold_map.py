@@ -75,10 +75,10 @@ def main() -> int:
         ('_TRAD_FOLD_SOURCE', wrap(trad)),
         ('_SIMP_FOLD_TARGET', wrap(simp)),
     ):
-        # ⚠️ re.sub 在不匹配时**静默**返回原文本。这里必须卡住替换次数：常量的
-        # 书写格式一变，生成器就会保留旧映射、却照常更新指纹并打印成功——指纹
-        # 测试于是变绿，而新字符对应的繁体标题仍然一条都撞不上。
-        # 这个脚本存在的唯一意义就是防静默过期，它自己不能有静默失败。
+        # ⚠️ re.sub **silently** returns the original text when nothing matches. Assert the replacement count here: changing
+        # the constant's format could leave the old mapping while updating the fingerprint and reporting success, making
+        # fingerprint tests pass even though traditional-Chinese titles containing the new characters still never match.
+        # Preventing silent staleness is this script's sole purpose; it must not fail silently itself.
         src, replaced = re.subn(
             rf'{name} = \(\n(?:.*\n)*?\)',
             f'{name} = (\n{value}\n)',

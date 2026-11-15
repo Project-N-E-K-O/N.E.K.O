@@ -46,7 +46,7 @@ async def test_natural_visit_ends_with_wrap_up_on_both_sides(tmp_path, monkeypat
         assert "wrap_up" in wire.sent_types("host")
         leave = [p for p in wire.sent["guest"] if p.get("t") == "leave"]
         assert leave and leave[0]["reason"] == "home"
-        # 两侧的转录都封存成了 .upload.json，流水已删
+        # Transcripts on both sides have been archived as .upload.json; the live logs are deleted
         for side in (host, guest):
             spool_dir = side.config_dir / "visit_spool"
             assert (spool_dir / f"{side.rt.visit_id}.upload.json").exists()

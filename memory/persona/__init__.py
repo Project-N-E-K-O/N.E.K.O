@@ -23,7 +23,7 @@ Storage is entity-agnostic: any entity key can be added at runtime
 
 Key features:
 - Dynamic entity sections: each entity stores a list of facts
-- Pending reflections injected with a "(还不太确定)" ("not too sure yet") annotation
+- Pending reflections injected with a \"(还不太确定)\" (\"not too sure yet\") annotation
 - Suppress mechanism: 5h window, >2 mentions → suppress (completely hidden from
   all rendering sections; suppress has highest priority)
 - Contradiction detection → queued for batch correction via LLM

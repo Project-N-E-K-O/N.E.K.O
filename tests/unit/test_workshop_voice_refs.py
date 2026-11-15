@@ -75,8 +75,8 @@ def _seed_existing_reference(folder, audio_name: str = "voice_sample.mp3") -> No
 
 
 def _manifest(folder) -> dict:
-    # 走容忍 replace 的读法：Windows 上 atomic_write_json 的 os.replace 与并发
-    # open() 互斥，裸 read_text 会偶发 PermissionError（见 tests/atomic_read.py）。
+    # Read with replacement tolerance: Windows atomic_write_json's os.replace conflicts with concurrent
+    # open(), making plain read_text intermittently raise PermissionError (see tests/atomic_read.py).
     return json.loads(read_text_tolerating_replace(folder / WORKSHOP_VOICE_MANIFEST_NAME))
 
 
@@ -111,7 +111,7 @@ async def test_cancelling_the_upload_cannot_leave_a_half_replaced_pair(tmp_path)
     loop = asyncio.get_running_loop()
 
     def _slow_swap(*args):
-        # 让取消**一定**落在 swap 已经开始之后。
+        # Ensure cancellation occurs after swap has begun.
         loop.call_soon_threadsafe(started.set)
         asyncio.run_coroutine_threadsafe(_wait_release(), loop).result(timeout=5)
         _replace_voice_reference(*args)
@@ -136,11 +136,11 @@ async def test_cancelling_the_upload_cannot_leave_a_half_replaced_pair(tmp_path)
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # 等 worker 自己跑完——取消的是等待方，不是线程。
+    # Wait for the worker itself to finish; cancellation affects the waiter, not the thread.
     #
-    # ⚠️ 完成信号必须盯 manifest，不能盯音频：manifest 是 swap 的**最后**一步，
-    # 音频出现时它可能还没写。盯错产物这条用例会在 CI 上间歇红（实测 run
-    # 30570157903 就是这么挂的）——和 PR #2596 修的是同一类错误。
+    # Watch manifest completion, not audio: manifest is swap's final step,
+    # and may remain unwritten after audio appears. Watching the wrong artifact caused intermittent CI failure
+    # (observed run 30570157903), the same class of issue as PR #2596.
     deadline = loop.time() + 5.0
     swapped = None
     while loop.time() < deadline:
@@ -168,8 +168,8 @@ def test_every_mutation_lives_in_the_offloaded_unit():
     synchronous helper. Moving any of them back into the coroutine — even
     "just the cleanup" — reopens the window, and nothing else would fail.
     """
-    # 用 AST 而不是文本匹配：注释和 docstring 里出现 "await" / "open(" 这些词
-    # 是常事，按子串判会把散文当代码。
+    # Use AST rather than text matching: comments/docstrings commonly contain "await" / "open(",
+    # so substring checks would mistake prose for code.
     import ast
     import inspect
 
@@ -180,9 +180,9 @@ def test_every_mutation_lives_in_the_offloaded_unit():
         node for node in module.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
-    # ⚠️ 先查重名再建字典。按名字建字典会静默留下最后一个定义 —— 一个被遮蔽的重复
-    # 实现就此对本守卫隐形，而 Python 同样只跑后一个：改到前一个副本上的修复完全
-    # 不生效，测试却照绿。这个仓库真出过（见 PR #2598 的评审）。
+    # Check duplicate names before building a dict, which silently retains only the last definition. A shadowed duplicate
+    # becomes invisible to this guard, while Python also executes only the latter; fixes applied to the earlier copy
+    # do nothing while tests stay green. This actually occurred here (PR #2598 review).
     names = [node.name for node in definitions]
     duplicated = sorted({name for name in names if names.count(name) > 1})
     assert not duplicated, (
@@ -268,9 +268,9 @@ async def test_two_uploads_to_one_folder_never_mix_halves(tmp_path, monkeypatch)
         )
 
     a = asyncio.create_task(_swap("a"))
-    await asyncio.to_thread(at_gate.wait, 5)   # A 已经卡在写 manifest 里
+    await asyncio.to_thread(at_gate.wait, 5)   # A is already blocked writing manifest.
     b = asyncio.create_task(_swap("b"))
-    await asyncio.sleep(0.05)                  # 给 B 一个真正插进来的机会
+    await asyncio.sleep(0.05)                  # Give B a real chance to interleave.
     release.set()
     await asyncio.gather(a, b)
 
@@ -315,7 +315,7 @@ async def test_a_reader_never_observes_a_half_swapped_pair(tmp_path, monkeypatch
             {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
         )
     )
-    await asyncio.to_thread(mid_swap.wait, 5)   # 旧的已删、新 manifest 还没写
+    await asyncio.to_thread(mid_swap.wait, 5)   # Old content deleted, new manifest not yet written.
 
     reader = asyncio.create_task(
         asyncio.to_thread(resolve_voice_reference_serialized, str(tmp_path))
@@ -348,9 +348,9 @@ def test_every_reader_outside_the_swap_takes_the_lock():
     from main_routers.workshop_router import ugc, voice_manifest, voice_refs
 
     allowed_unlocked = {
-        # 在锁内被调用，必须保持不加锁，否则死锁
+        # Called under the lock; remain lock-free here to avoid deadlock.
         ("voice_manifest", "_cleanup_workshop_voice_reference"),
-        # 串行化包装自己就是那把锁
+        # The serialization wrapper itself provides the lock.
         ("voice_manifest", "resolve_voice_reference_serialized"),
     }
 
@@ -666,8 +666,8 @@ def test_explicit_remove_preserves_audio_without_the_managed_marker(tmp_path):
 
 def _seed_legacy_reference(folder, audio_name: str) -> None:
     """Write the exact manifest shape shipped before the marker existed."""
-    # 改动前 upload 写的是固定名 voice_sample<ext>（见 main 的 voice_refs.py:109），
-    # manifest 里没有 marker。存量用户盘上就是这个样子。
+    # Previously upload wrote fixed voice_sample<ext> names (main voice_refs.py:109),
+    # with no manifest marker; existing users' disks have this layout.
     (folder / audio_name).write_bytes(b"legacy-audio")
     (folder / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
         json.dumps({
@@ -682,8 +682,8 @@ def _seed_legacy_reference(folder, audio_name: str) -> None:
 @pytest.mark.parametrize("audio_name", ["voice_sample.wav", "voice_sample.mp3"])
 def test_replacement_still_cleans_up_a_pre_marker_reference(tmp_path, audio_name):
     """Upgrading an existing install must not orphan the audio it already owns."""
-    # 没有这条兼容，存量用户升级后第一次换参考语音会把旧的 voice_sample.<ext> 永远留在
-    # 内容目录里；publish 是把整个目录交给 SetItemContent 的，它会跟着发出去。
+    # Without compatibility, the first post-upgrade reference replacement leaves old voice_sample.<ext> permanently
+    # in the content directory; publish passes that entire directory to SetItemContent and includes it.
     from main_routers.workshop_router import voice_refs
 
     _seed_legacy_reference(tmp_path, audio_name)
@@ -727,9 +727,9 @@ def test_explicit_remove_still_deletes_a_pre_marker_reference(tmp_path, audio_na
 
 def test_the_legacy_allowlist_is_exactly_the_two_names_the_old_code_wrote(tmp_path):
     """The compatibility set is frozen at two literals; it never widens."""
-    # 这条兼容是「保持 main 已有的删除行为」，不是「按名字形状猜所有权」。一旦有人
-    # 把它放宽成前缀/通配（voice_sample*），用户自己放进内容目录的同前缀文件就会被
-    # 静默删掉 —— 那正是 marker 要终结的东西。
+    # Compatibility preserves main's existing deletion behavior rather than inferring ownership from names. Broadening
+    # this to a prefix/glob (voice_sample*) would silently delete same-prefix files users added
+    # to content themselves, precisely what markers are intended to prevent.
     from main_routers.workshop_router import voice_refs
 
     for near_miss in ("voice_sample_extra.wav", "voice_sample.WAV.wav", "my_voice_sample.wav"):
@@ -743,12 +743,12 @@ def test_the_legacy_allowlist_is_exactly_the_two_names_the_old_code_wrote(tmp_pa
 
 def test_a_mismatched_marker_never_falls_through_to_the_legacy_allowlist(tmp_path):
     """Carrying a marker proves the manifest is not pre-marker, match or not."""
-    # 存量兼容只赦免「marker 出现之前写的」manifest。带着一个对不上的 marker 又正好
-    # 叫 voice_sample.wav 的，不算存量 —— 否则伪造一个不匹配的 marker 就能重新拿到
-    # 那条无条件删除的老路径。
-    # ⚠️ 两条路径要一起验：_current_reference_audio_path 读的是**生 manifest**，
-    # _cleanup_workshop_voice_reference 拿到的是 _normalize_... 归一化之后的。归一化
-    # 若把对不上的 marker 丢掉，后者就会把这份 manifest 误判成「没有 marker」。
+    # Legacy compatibility exempts only manifests written before markers existed. An incorrect marker that happens
+    # to be named voice_sample.wav is not legacy; otherwise a forged mismatched marker could restore
+    # the old unconditional deletion path.
+    # Verify both paths: _current_reference_audio_path reads the raw manifest,
+    # while _cleanup_workshop_voice_reference receives its _normalize_... output. If normalization
+    # drops mismatched markers, cleanup misclassifies the manifest as having no marker.
     from main_routers.workshop_router import voice_refs
     from main_routers.workshop_router.voice_manifest import (
         _cleanup_workshop_voice_reference,

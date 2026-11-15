@@ -80,7 +80,7 @@ def test_source_npc_reply_is_visible_before_catgirl_and_never_spoken_as_catgirl(
         assert text.index('记住了。') < text.index(bridge_narration) < text.index('门外吹来微风。')
     else:
         assert '两人来到门边。' not in text
-    # 空桥段不会生成播放块，后续TTS索引必须与服务端过滤后的内容一致。
+    # Empty segments produce no playback blocks; subsequent TTS indices must match the server-filtered content.
     expected_indexes = [[1], [4 if bridge_narration else 3]]
     if with_fixed_narration:
         expected_indexes[1][0] += 2
@@ -90,7 +90,7 @@ def test_source_npc_reply_is_visible_before_catgirl_and_never_spoken_as_catgirl(
         expect(history.locator('.is-system').filter(has_text='[REPORT]')).to_have_count(1)
     assert speech_indexes == expected_indexes
 
-    # 冷刷新从实际快照重建旁白，不重复播放已经保存的对白。
+    # A cold refresh rebuilds narration from the actual snapshot without replaying saved dialogue.
     mock_page.reload(wait_until='domcontentloaded')
     mock_page.wait_for_function("""() => window.nekoTheaterRuntime
         && window.nekoTheaterRuntime.getState().revision === 1

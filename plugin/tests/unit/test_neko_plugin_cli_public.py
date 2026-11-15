@@ -167,13 +167,32 @@ def test_local_metadata_named_plugin_data_is_preserved_at_every_depth():
     assert not should_skip_path(Path("data") / name, is_dir=False, rules=rules)
 
 
+def test_build_rules_skip_scaffolded_agent_kit() -> None:
+    rules = BuildRuleSet()
+
+    for path, is_dir in (
+        (Path(".agents"), True),
+        (Path(".agents/skills/neko-plugin/SKILL.md"), False),
+        (Path(".claude"), True),
+        (Path(".claude/skills/neko-plugin/SKILL.md"), False),
+        (Path("AGENTS.md"), False),
+        (Path("CLAUDE.md"), False),
+    ):
+        assert should_skip_path(path, is_dir=is_dir, rules=rules) is True
+    # Like .DS_Store, the guide names are excluded at every depth.
+    assert should_skip_path(Path("docs/AGENTS.md"), is_dir=False, rules=rules) is True
+    # A dangling or file-target symlink is walked as a file, not a directory.
+    assert should_skip_path(Path(".claude"), is_dir=False, rules=rules) is True
+    assert should_skip_path(Path(".agents"), is_dir=False, rules=rules) is True
+
+
 def _assert_probed_without_bytecode(package_path: Path, plugin_ids: list[str]) -> None:
     with zipfile.ZipFile(package_path) as archive:
         names = archive.namelist()
         leaked = [name for name in names if "__pycache__" in name or name.endswith((".pyc", ".pyo"))]
         assert leaked == []
         for plugin_id in plugin_ids:
-            # 探测真的跑成了：没有元数据的包同样不会带 .pyc，那样这条断言就是空转。
+            # Confirm the probe actually ran: packages without metadata also lack .pyc files, making this assertion vacuous otherwise.
             meta = archive.read(f"payload/plugins/{plugin_id}/plugin.meta.json").decode("utf-8")
             assert "from child from vendor" in meta
             assert f"payload/plugins/{plugin_id}/vendor/probedep/__init__.py" in names
@@ -386,6 +405,33 @@ def test_build_plugin_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Pat
     assert inspect_package(package_path).payload_hash_verified is True
 
 
+def test_build_plugin_excludes_scaffolded_agent_kit(tmp_path: Path) -> None:
+    plugin_dir = _make_plugin_dir(tmp_path)
+    (plugin_dir / "AGENTS.md").write_text("agent guide\n", encoding="utf-8")
+    (plugin_dir / "CLAUDE.md").write_text("read AGENTS.md\n", encoding="utf-8")
+    skill_file = plugin_dir / ".agents" / "skills" / "neko-plugin" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("skill\n", encoding="utf-8")
+    claude_link = plugin_dir / ".claude" / "skills"
+    claude_link.parent.mkdir(parents=True)
+    try:
+        claude_link.symlink_to(Path("..") / ".agents" / "skills", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation unavailable on this platform")
+    package_path = tmp_path / "demo_plugin.neko-plugin"
+
+    build_plugin(plugin_dir, package_path)
+
+    with zipfile.ZipFile(package_path) as archive:
+        names = set(archive.namelist())
+    assert "payload/plugins/demo_plugin/plugin.toml" in names
+    assert not any(
+        name.startswith(("payload/plugins/demo_plugin/.agents/", "payload/plugins/demo_plugin/.claude/"))
+        or name in ("payload/plugins/demo_plugin/AGENTS.md", "payload/plugins/demo_plugin/CLAUDE.md")
+        for name in names
+    )
+
+
 def test_build_bundle_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
     first = _make_importable_plugin_dir(tmp_path, "probe_one")
     second = _make_importable_plugin_dir(tmp_path, "probe_two")
@@ -398,8 +444,8 @@ def test_build_bundle_metadata_probe_leaves_no_bytecode_in_package(tmp_path: Pat
 
 
 def test_plugin_builder_default_import_mode_leaves_no_bytecode_in_package(tmp_path: Path) -> None:
-    # 直接用 PluginBuilder() 的调用方走普通导入，探测会往暂存目录写 __pycache__；
-    # 这些字节码同样不能进包。
+    # Direct PluginBuilder() callers use normal imports, so probing writes __pycache__ into staging;
+    # these bytecode files must also stay out of the package.
     plugin_dir = _make_importable_plugin_dir(tmp_path)
     package_path = tmp_path / "probe_plugin.neko-plugin"
 

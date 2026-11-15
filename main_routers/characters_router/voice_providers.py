@@ -138,7 +138,7 @@ async def _elevenlabs_synthesize_preview(
     if not raw_voice_id:
         return b'', 'TTS_VOICE_ID_MISSING'
 
-    # 优先使用传入的 base_url，否则获取默认值并去除末尾斜杠
+    # Prefer the supplied base_url; otherwise get the default and strip trailing slashes.
     base_url = (base_url or await _get_elevenlabs_base_url(config_manager)).rstrip('/')
 
     payload = {

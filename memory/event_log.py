@@ -29,6 +29,14 @@ Why it exists (see docs/design/memory-event-log-rfc.md):
   compares the log tail against the sentinel (events_applied.json) and
   replays into the views any events the views never persisted.
 
+Retention:
+  Writers only ever append. Already-applied history in front of the
+  sentinel is pruned by a low-frequency background task
+  (compact_applied_history): the sentinel's own line and every line after
+  it are kept verbatim, events_applied.json is never written, and the
+  rewrite is a single atomic replace, so replay sees exactly the same tail
+  before and after. See docs/design/memory-event-log-rfc.md, "Compaction".
+
 Non-goals:
   - Not full event sourcing (views remain the hand-editable "source of truth").
   - Not a rule engine or state-machine DSL.
@@ -53,12 +61,15 @@ Write discipline (RFC §3.4):
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import threading
 import uuid
-from datetime import datetime
-from typing import Callable
+from collections import deque
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from typing import Callable, Iterable, Iterator, NamedTuple
 
 from utils.config_manager import get_config_manager
 from utils.file_utils import atomic_write_text, atomic_write_json
@@ -88,6 +99,8 @@ EVT_CORRECTION_RESOLVED = "correction.resolved"
 EVT_REFLECTION_EVIDENCE_UPDATED = "reflection.evidence_updated"
 EVT_PERSONA_EVIDENCE_UPDATED = "persona.evidence_updated"
 EVT_PERSONA_ENTRY_UPDATED = "persona.entry_updated"
+# Retired sync event: recognized only so old journals can drain without applying it.
+EVT_LONG_TERM_MEMORY_REPLACED = "memory.long_term_replaced"
 
 ALL_EVENT_TYPES: frozenset[str] = frozenset({
     EVT_FACT_ADDED, EVT_FACT_ABSORBED, EVT_FACT_ARCHIVED,
@@ -96,32 +109,219 @@ ALL_EVENT_TYPES: frozenset[str] = frozenset({
     EVT_PERSONA_FACT_ADDED, EVT_PERSONA_FACT_MENTIONED, EVT_PERSONA_SUPPRESSED,
     EVT_CORRECTION_QUEUED, EVT_CORRECTION_RESOLVED,
     EVT_REFLECTION_EVIDENCE_UPDATED, EVT_PERSONA_EVIDENCE_UPDATED,
-    EVT_PERSONA_ENTRY_UPDATED,
+    EVT_PERSONA_ENTRY_UPDATED, EVT_LONG_TERM_MEMORY_REPLACED,
 })
 
 
-# memory-evidence-rfc §3.3.7 — source 枚举值，放在模块级常量便于未来扩展。
-# 不强制校验（event_log 不过滤），但 reconciler handler / 测试可用来核对。
+# memory-evidence-rfc §3.3.7 — source enum values, defined as module-level constants for future extension.
+# Not enforced (event_log does not filter them), but available to reconciler handlers / tests for validation.
 EVIDENCE_SOURCE_USER_FACT = "user_fact"            # Stage-2 signal (§3.4)
 EVIDENCE_SOURCE_USER_CONFIRM = "user_confirm"      # check_feedback confirmed
 EVIDENCE_SOURCE_USER_REBUT = "user_rebut"          # check_feedback denied
 EVIDENCE_SOURCE_USER_IGNORE = "user_ignore"        # check_feedback ignored
+EVIDENCE_SOURCE_USER_ENGAGE = "user_engage"        # check_feedback engaged (chatted on, no yes)
 EVIDENCE_SOURCE_USER_KEYWORD_REBUT = "user_keyword_rebut"  # negative-keyword hook
 EVIDENCE_SOURCE_MIGRATION_SEED = "migration_seed"  # §5 one-shot migration
 EVIDENCE_SOURCE_PROMOTE_MERGE = "promote_merge"    # persona.entry_updated
+# A scoped reflection seen again in others' words (synthesis judged a batch
+# covered by it); config.SCOPED_REOBSERVED_REINFORCEMENT. Not a user signal.
+EVIDENCE_SOURCE_SCOPED_REOBSERVED = "scoped_reobserved"
 
 ALL_EVIDENCE_SOURCES: frozenset[str] = frozenset({
     EVIDENCE_SOURCE_USER_FACT, EVIDENCE_SOURCE_USER_CONFIRM,
     EVIDENCE_SOURCE_USER_REBUT, EVIDENCE_SOURCE_USER_IGNORE,
+    EVIDENCE_SOURCE_USER_ENGAGE,
     EVIDENCE_SOURCE_USER_KEYWORD_REBUT, EVIDENCE_SOURCE_MIGRATION_SEED,
-    EVIDENCE_SOURCE_PROMOTE_MERGE,
+    EVIDENCE_SOURCE_PROMOTE_MERGE, EVIDENCE_SOURCE_SCOPED_REOBSERVED,
 })
 
 
-# ── Compaction thresholds (RFC §3.6) ─────────────────────────────────────
+# ── Applied-history compaction (docs/design/memory-event-log-rfc.md) ────
 
-_COMPACT_LINES_THRESHOLD = 10_000   # file line count
-_COMPACT_DAYS_THRESHOLD = 90        # age of oldest entry, days
+_EVENTS_FILENAME = 'events.ndjson'
+_SENTINEL_FILENAME = 'events_applied.json'
+
+# Trigger: a journal is examined once it reaches this size, OR once its first
+# non-empty line is this old. Size alone would never reach the small, old
+# journals, and those still carry archived entry text that should not stay
+# on disk forever.
+_COMPACT_TRIGGER_BYTES = 512 * 1024
+_COMPACT_TRIGGER_AGE_DAYS = 30
+
+# How much already-applied history in front of the sentinel survives a
+# compaction (for the funnel endpoint and for diagnosis). Pending an owner
+# decision; these two are the only knobs. Both 0 means "anchor line plus
+# pinned archive copies only".
+_RETAIN_APPLIED_DAYS = 7
+_RETAIN_APPLIED_MAX_BYTES = 256 * 1024
+
+# os.replace "target is busy" on Windows (ACCESS_DENIED / SHARING_VIOLATION).
+_BUSY_WINERRORS = frozenset({5, 32})
+
+
+class CompactionResult(NamedTuple):
+    """What one compact_applied_history call did. Counts and ids only.
+
+    outcome is one of: compacted, not_due, nothing_to_drop,
+    no_character_dir, no_journal, journal_unreadable, journal_changed,
+    write_blocked, replay_in_progress, replay_paused, sentinel_absent,
+    sentinel_null, sentinel_unreadable, sentinel_malformed,
+    sentinel_not_found, self_check_failed, busy, write_failed,
+    archives_changed. Every
+    outcome other than ``compacted`` leaves events.ndjson byte-for-byte
+    unchanged.
+    """
+
+    outcome: str
+    dropped_lines: int = 0
+    dropped_bytes: int = 0
+    kept_before_anchor: int = 0
+    pending_tail: int = 0
+    pinned: int = 0
+    pinned_event_ids: tuple[str, ...] = ()
+
+
+class _CompactionPlan(NamedTuple):
+    """A scanned, self-checked replacement body waiting for the write fence."""
+
+    body: str
+    sentinel: str
+    st0: os.stat_result
+    dropped_lines: int
+    dropped_bytes: int
+    stats: dict
+
+
+def _iter_journal_stream(
+    stream: Iterable[str],
+) -> Iterator[tuple[int, str, dict | None]]:
+    """Yield ``(lineno, raw, record_or_None)`` for every line of a journal.
+
+    ``raw`` is the line without its line terminator. ``record`` is None for
+    a blank line, a line that is not JSON, a JSON value that is not an
+    object, or an object without ``event_id`` -- the exact rule replay has
+    always used, so compaction and replay agree on what a record is.
+
+    The stream must be a text-mode file (or io.StringIO) and is iterated
+    line by line. Never switch this to ``str.splitlines()``: entry text is
+    written with ensure_ascii=False, so U+2028 / U+2029 / U+0085 can appear
+    inside a JSON string, and splitlines() breaks a record there while file
+    iteration does not.
+    """
+    for lineno, line in enumerate(stream, start=1):
+        raw = line[:-1] if line.endswith('\n') else line
+        stripped = raw.strip()
+        if not stripped:
+            yield lineno, raw, None
+            continue
+        try:
+            rec = json.loads(stripped)
+        except ValueError:
+            yield lineno, raw, None
+            continue
+        if not isinstance(rec, dict) or 'event_id' not in rec:
+            yield lineno, raw, None
+            continue
+        yield lineno, raw, rec
+
+
+def _iter_journal_lines(path: str) -> Iterator[tuple[int, str, dict | None]]:
+    """Open ``path`` in text mode and run it through _iter_journal_stream.
+
+    Raises OSError / UnicodeDecodeError to the caller; a missing file is the
+    caller's business too.
+    """
+    with open(path, encoding='utf-8') as f:
+        yield from _iter_journal_stream(f)
+
+
+def _line_bytes(raw: str) -> int:
+    """On-disk size of one journal line, counting a one-byte terminator."""
+    return len(raw.encode('utf-8')) + 1
+
+
+def _naive_local(value: datetime) -> datetime:
+    """Normalize to the journal's naive local-clock convention."""
+    if value.tzinfo is None:
+        return value
+    from memory.evidence_analytics import to_naive_local
+    return to_naive_local(value)
+
+
+def _event_ts_local(value: object) -> datetime | None:
+    """Parse a record's ``ts``; None when it is missing or not usable.
+
+    Not usable covers more than "not ISO 8601": an aware value the platform
+    cannot move to local time raises OverflowError (year 1 / 9999 next to
+    an offset) or, on Windows, OSError (anything before 1970). One such
+    hand-edited line must count as old, like any unparseable ts, instead of
+    failing every compaction of that journal.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return _naive_local(datetime.fromisoformat(value))
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _first_line_says_due(path: str, now: datetime) -> bool:
+    """Age trigger: is the first non-empty line at least the trigger age?
+
+    Reads one line, not the file. A first line that cannot be read or
+    parsed counts as due; the full scan then decides what, if anything, can
+    go. An empty journal is never due.
+    """
+    try:
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    rec = json.loads(stripped)
+                except ValueError:
+                    return True
+                ts = _event_ts_local(rec.get('ts')) if isinstance(rec, dict) else None
+                if ts is None:
+                    return True
+                return now - ts >= timedelta(days=_COMPACT_TRIGGER_AGE_DAYS)
+    except (OSError, UnicodeDecodeError):
+        return True
+    return False
+
+
+def _dir_identity(st: os.stat_result) -> tuple[int, int]:
+    """Which directory a path names right now; a recreated one differs."""
+    return (st.st_dev, st.st_ino)
+
+
+def _file_identity(st: os.stat_result) -> tuple[int, int, int]:
+    return (st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def _assemble_compacted_body(kept_lines: list[str]) -> str:
+    """Join kept lines into the replacement body, always newline-terminated."""
+    return '\n'.join(kept_lines) + '\n'
+
+
+def _body_keeps_tail(body: str, sentinel: str, old_tail_ids: list) -> bool:
+    """Pre-write self-check on the replacement body, parsed from memory.
+
+    The body is split by the same text-stream iteration replay uses. It must
+    contain a record whose event_id is the sentinel, and the ids after the
+    first such record must equal what followed the anchor before.
+    """
+    found = False
+    ids: list = []
+    for _, _, rec in _iter_journal_stream(io.StringIO(body, newline=None)):
+        if rec is None:
+            continue
+        if found:
+            ids.append(rec.get('event_id'))
+        elif rec.get('event_id') == sentinel:
+            found = True
+    return found and ids == old_tail_ids
 
 
 # ── Type aliases for _record_and_save callbacks (RFC §3.4) ───────────────
@@ -204,6 +404,14 @@ class EventLog:
         self._config_manager = get_config_manager()
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        # Reconciler rounds currently in flight, per character. Guarded by
+        # _locks_guard. A round releases the character lock between events,
+        # so the lock alone cannot tell compaction that a round is running.
+        self._replay_rounds: dict[str, int] = {}
+        # Characters whose replay paused (did not drain) at least once in
+        # this process. Guarded by _locks_guard; never cleared. The instance
+        # is reused across hot reloads, so this survives them too.
+        self._replay_paused: set[str] = set()
 
     # ── paths / locks ───────────────────────────────────────────
 
@@ -212,15 +420,24 @@ class EventLog:
         from memory import ensure_character_dir
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
-            'events.ndjson',
+            _EVENTS_FILENAME,
         )
 
     def _sentinel_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(
             ensure_character_dir(self._config_manager.memory_dir, name),
-            'events_applied.json',
+            _SENTINEL_FILENAME,
         )
+
+    def _character_dir_nocreate(self, name: str) -> str:
+        """The character directory path, WITHOUT creating it.
+
+        _events_path / _sentinel_path go through ensure_character_dir, which
+        makedirs. Compaction must never bring a deleted character's
+        directory back, so it builds every path from this one.
+        """
+        return os.path.join(str(self._config_manager.memory_dir), name)
 
     def _get_lock(self, name: str) -> threading.Lock:
         if name not in self._locks:
@@ -228,6 +445,56 @@ class EventLog:
                 if name not in self._locks:
                     self._locks[name] = threading.Lock()
         return self._locks[name]
+
+    # ── replay-round bookkeeping (read by compaction) ───────────
+
+    @contextmanager
+    def replay_round(self, name: str) -> Iterator[None]:
+        """Mark one reconciliation round for ``name`` as in flight.
+
+        Reconciler.areconcile wraps its whole round in this, including the
+        frozen rescans, exceptions and cancellation. Compaction refuses to
+        run while the count is non-zero: a round re-reads the journal from
+        its own last-applied event after a sentinel conflict, and if that
+        line had been compacted away the rescan would fall back to a full
+        replay and drop the events it still owed.
+
+        Lock order is "character lock -> _locks_guard"; nothing takes them
+        the other way round.
+        """
+        with self._locks_guard:
+            self._replay_rounds[name] = self._replay_rounds.get(name, 0) + 1
+        try:
+            yield
+        finally:
+            with self._locks_guard:
+                remaining = self._replay_rounds.get(name, 0) - 1
+                if remaining > 0:
+                    self._replay_rounds[name] = remaining
+                else:
+                    self._replay_rounds.pop(name, None)
+
+    def _replay_round_active(self, name: str) -> bool:
+        with self._locks_guard:
+            return self._replay_rounds.get(name, 0) > 0
+
+    def _record_replay_outcome(self, name: str, *, drained: bool) -> None:
+        """Remember a round that stopped before draining its tail.
+
+        Sticky for the life of the process: a later round that drains
+        cannot tell whether a live write orphaned the paused tail in
+        between (the known sentinel limitation in record_and_save), so the
+        character stays out of compaction until the next start.
+        """
+        if drained:
+            return
+        with self._locks_guard:
+            self._replay_paused.add(name)
+
+    def replay_paused_in_process(self, name: str) -> bool:
+        """Whether any reconciliation round for ``name`` paused in this process."""
+        with self._locks_guard:
+            return name in self._replay_paused
 
     # ── low-level append (no lock — caller must hold it) ────────
 
@@ -285,33 +552,28 @@ class EventLog:
         if not os.path.exists(path):
             return []
         records: list[dict] = []
-        with open(path, encoding='utf-8') as f:
-            for lineno, raw in enumerate(f, start=1):
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    rec = json.loads(raw)
-                except json.JSONDecodeError:
+        for lineno, raw, rec in _iter_journal_lines(path):
+            if rec is None:
+                if raw.strip():
+                    # Line number and length only: a journal line can carry
+                    # an archived entry's full text.
                     logger.warning(
-                        f"[EventLog] {path} 第 {lineno} 行无法解析，跳过: {raw[:120]!r}"
+                        f"[EventLog] {path} 第 {lineno} 行不是有效事件记录"
+                        f"（长度 {len(raw)}），跳过"
                     )
-                    continue
-                if not isinstance(rec, dict) or 'event_id' not in rec:
-                    logger.warning(
-                        f"[EventLog] {path} 第 {lineno} 行缺 event_id，跳过"
-                    )
-                    continue
-                records.append(rec)
+                continue
+            records.append(rec)
         return records
 
     def read_since(self, name: str, after_event_id: str | None) -> list[dict]:
         """Return events after the sentinel, in file-position order.
 
         If after_event_id is None or not found in the current body, return
-        ALL records (safe default per RFC §3.5 — apply handlers are
-        idempotent; the worst case is re-applying the compacted snapshot
-        seed set, which is bounded by live-entity count).
+        ALL records (safe default per RFC §3.5 -- apply handlers are
+        idempotent). Compaction never removes the sentinel's own line, so
+        "not found" means the sentinel and the journal disagree for some
+        other reason (hand edits, a restore that brought back only one of
+        the two files); every record in the body is then treated as unapplied.
         """
         with self._get_lock(name):
             records = self._read_all_records(self._events_path(name))
@@ -320,7 +582,8 @@ class EventLog:
         for i, rec in enumerate(records):
             if rec.get('event_id') == after_event_id:
                 return records[i + 1:]
-        # Sentinel points to an event no longer in the body (compacted away).
+        # The sentinel names an event that is not in the body. Compaction
+        # always keeps that line, so this is not its doing.
         # Safe default: replay everything currently in the body.
         logger.info(
             f"[EventLog] {name}: sentinel event_id {after_event_id} 不在当前 body，"
@@ -346,6 +609,38 @@ class EventLog:
         if last is not None and not isinstance(last, str):
             return None
         return last
+
+    def _read_sentinel_state_unlocked(self, name: str) -> tuple[str, str | None]:
+        """Strict sentinel read for compaction: ``(state, event_id)``.
+
+        state is ``absent`` (no file), ``unreadable`` (OSError or bad
+        UTF-8), ``malformed`` (not JSON, not an object, or an id that is
+        neither a string nor null), ``null`` or ``ok``. read_sentinel folds
+        all of the first four into None, which is right for replay (it then
+        replays everything) but wrong here: compaction may only cut in
+        front of an anchor it has actually read. Never creates the
+        character directory. Caller holds the character lock.
+        """
+        path = os.path.join(self._character_dir_nocreate(name), _SENTINEL_FILENAME)
+        try:
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return 'absent', None
+        except UnicodeDecodeError:
+            return 'unreadable', None
+        except ValueError:
+            return 'malformed', None
+        except OSError:
+            return 'unreadable', None
+        if not isinstance(data, dict):
+            return 'malformed', None
+        last = data.get('last_applied_event_id')
+        if last is None:
+            return 'null', None
+        if not isinstance(last, str):
+            return 'malformed', None
+        return 'ok', last
 
     def _write_sentinel_unlocked(self, name: str, event_id: str | None) -> None:
         """Unconditionally overwrite events_applied.json. Caller holds the lock.
@@ -376,9 +671,9 @@ class EventLog:
         writes is the one it just appended (the newest event by
         construction); everyone else has to reason about it.
         """
-        # 这个公开方法在生产里已无调用方（reconcile 走 apply_and_advance，
-        # record_and_save 走 _write_sentinel_unlocked），锁留在这里是为了
-        # 「默认安全」：将来任何新调用点都不会再意外造出一个无锁写者。
+        # This public method has no production callers now (reconcile uses apply_and_advance,
+        # and record_and_save uses _write_sentinel_unlocked); the lock remains here for
+        # "safe by default," so future call sites cannot accidentally create an unlocked writer.
         with self._get_lock(name):
             self._write_sentinel_unlocked(name, event_id)
 
@@ -440,20 +735,20 @@ class EventLog:
         """
         with self._get_lock(name):
             if advance:
-                # 单调性 compare-and-set：event_id 是 uuid4，无法互相比大小，
-                # 「新的哨兵是否更靠后」只能靠「盘上哨兵还是我出发时那个」来判。
-                # 不判就会出现审阅复现的死局：live writer 追加了一条本进程没注册
-                # handler 的事件并把哨兵推过去，重放再把哨兵写回旧 id → 那条事件
-                # 回到尾巴 → 之后每次开机都撞「未注册事件类型，暂停 replay」。
+                # Monotonic compare-and-set: event_id is uuid4, so IDs cannot be ordered by value;
+                # the only way to tell "whether the new sentinel is farther ahead" is to check that "the on-disk sentinel is still the one I started with."
+                # Without this check, the deadlock reproduced in review can occur: a live writer appends an event with no registered
+                # handler in this process and advances the sentinel; replay then writes the sentinel back to the old ID → that event
+                # returns to the tail → every subsequent startup hits "unregistered event type, pause replay."
                 #
-                # 判定必须排在 apply_fn **之前**。handler 是「读盘 → 改目标条目的
-                # 字段 → 整覆盖」，先跑一遍就已经把这条陈旧事件的字段写进 view 了；
-                # 如果那个更新的写者动过同一条目的同一批字段，就是拿旧值盖新值，
-                # 等 CAS 事后报冲突已经晚了（而且它那条更新的事件在哨兵后面，
-                # 不会再被重放回来纠正）。
-                # 检查和 apply 之间不会被进程内的写者插进来：record_and_save /
-                # compact_if_needed / advance_sentinel 全都要拿这把锁，而这两步
-                # 都在我们已经握住它的这段临界区里。
+                # The check must happen **before** apply_fn. A handler does "read disk → update target-entry
+                # fields → replace the whole record"; running it once already writes this stale event's fields into the view.
+                # If a newer writer changed the same set of fields on the same entry, the stale values overwrite the new ones;
+                # detecting the CAS conflict afterward is too late (and that writer's event is after the sentinel,
+                # so it will not be replayed again to correct the view).
+                # No in-process writer can interleave between the check and apply: record_and_save /
+                # compact_applied_history / advance_sentinel all acquire this lock, and both steps
+                # run inside the critical section where we already hold it.
                 current = self.read_sentinel(name)
                 if current != expected_sentinel:
                     raise SentinelConflictError(
@@ -467,139 +762,317 @@ class EventLog:
             try:
                 self._write_sentinel_unlocked(name, event_id)
             except Exception as e:
-                # handler 已经落盘了，这里失败纯粹是哨兵写的 IO 问题。
-                # 包成专用异常，免得调用方把它记成「handler 失败」。
+                # The handler has already persisted its changes; a failure here is purely an I/O problem writing the sentinel.
+                # Wrap it in a dedicated exception so callers do not record it as "handler failure."
                 raise SentinelAdvanceError(
                     f"{name}: apply of {event_id!r} persisted but the sentinel "
                     f"write failed: {e}"
                 ) from e
         return bool(changed)
 
-    # ── compaction (RFC §3.6) ───────────────────────────────────
+    # ── applied-history compaction ──────────────────────────────
 
-    def _scan_head_and_count(self, path: str) -> tuple[int, datetime | None]:
-        """Return (line_count, oldest_ts). Reads only the first line fully.
-
-        Edge cases:
-          - file missing or empty → (0, None)
-          - first line missing / unparseable → (line_count, None) + warn
-          - unreadable (OSError) → (0, None) + warn; compaction skipped
-        """
-        if not os.path.exists(path):
-            return 0, None
-        try:
-            with open(path, encoding='utf-8') as f:
-                oldest_ts: datetime | None = None
-                line_count = 0
-                first_line: str | None = None
-                for i, raw in enumerate(f):
-                    if i == 0:
-                        first_line = raw.strip()
-                    line_count += 1
-                if first_line:
-                    try:
-                        rec = json.loads(first_line)
-                        ts_str = rec.get('ts') if isinstance(rec, dict) else None
-                        if isinstance(ts_str, str):
-                            try:
-                                oldest_ts = datetime.fromisoformat(ts_str)
-                            except ValueError:
-                                logger.warning(
-                                    f"[EventLog] {path} 首行 ts 解析失败，年龄阈值暂不生效"
-                                )
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            f"[EventLog] {path} 首行损坏，年龄阈值暂不生效"
-                        )
-                return line_count, oldest_ts
-        except OSError as e:
-            logger.warning(f"[EventLog] {path} 读取失败（跳过 compact）: {e}")
-            return 0, None
-
-    def _should_compact_unlocked(self, name: str) -> bool:
-        """Lock-free version. Caller must already hold self._get_lock(name),
-        OR call from a path where concurrent mutation is impossible (e.g.
-        startup before handlers are registered)."""
-        line_count, oldest_ts = self._scan_head_and_count(self._events_path(name))
-        if line_count >= _COMPACT_LINES_THRESHOLD:
-            return True
-        if oldest_ts is not None:
-            age_days = (datetime.now() - oldest_ts).total_seconds() / 86400
-            if age_days >= _COMPACT_DAYS_THRESHOLD:
-                return True
-        return False
-
-    def should_compact(self, name: str) -> bool:
-        """Public check. Acquires the per-character lock before reading,
-        so the line-count + head-scan see a consistent file."""
-        with self._get_lock(name):
-            return self._should_compact_unlocked(name)
-
-    def compact_if_needed(
+    def compact_applied_history(
         self,
         name: str,
-        seed_events_provider: Callable[[], list[tuple[str, dict]]],
-    ) -> int:
-        """Rewrite events.ndjson as a fresh body of snapshot-start events iff
-        thresholds exceeded. Returns number of lines dropped (0 if skipped).
+        *,
+        needs_journal_copy: Callable[[dict], bool] | None = None,
+        sources_unchanged: Callable[[], bool] | None = None,
+        now: datetime | None = None,
+    ) -> CompactionResult:
+        """Drop already-applied history in front of the sentinel.
 
-        Atomicity: a single atomic_write_text (tempfile + os.replace) swaps
-        the new body onto events.ndjson. No intermediate events.snapshot
-        file — RFC §3.6.
+        Invariants, whatever the outcome:
+          - the sentinel's line and every line after it (corrupt and blank
+            lines included) survive verbatim and in order; only the line
+            terminator is normalized and a missing final newline is added;
+          - events_applied.json is never opened for writing;
+          - no event id is created;
+          - the only disk write is one atomic_write_text of events.ndjson,
+            so a crash leaves either the old body or the new one, and both
+            give read_since(sentinel) the same answer.
 
-        After the swap succeeds we reset the sentinel. A crash between swap
-        and sentinel reset is safe: the old sentinel's last_applied_event_id
-        won't be in the new body, so read_since falls through to full
-        replay (bounded by snapshot-start count).
+        In front of the anchor (the first record whose event_id equals the
+        sentinel, the same match read_since makes), a record is kept only
+        when ``needs_journal_copy(record)`` is true -- pinned regardless of
+        age or size, because the journal may hold the only copy of an
+        archived entry -- or when it falls inside the retention window
+        (_RETAIN_APPLIED_DAYS, capped at _RETAIN_APPLIED_MAX_BYTES, oldest
+        evicted first). ``memory.long_term_replaced`` is never retained.
+        Everything else in front of the anchor goes, including lines replay
+        would skip anyway.
 
-        seed_events_provider: callable that re-derives the full set of
-        snapshot-start events (event_type, payload) pairs from the CURRENT
-        view files. Caller decides what to include (e.g., only live facts,
-        only non-absorbed).
+        Skips without touching the body when the journal is not due
+        (smaller than _COMPACT_TRIGGER_BYTES and first line younger than
+        _COMPACT_TRIGGER_AGE_DAYS), when a reconciliation round is in
+        flight or paused earlier in this process, when the sentinel is not
+        a readable event id, when that id is not in the body, when the cloud
+        save write fence is up, or when the file changed under the scan.
+
+        Never creates a directory: paths come from the no-create character
+        directory, and the final write refuses to recreate a vanished
+        parent.
+
+        Two passes keep the shared write fence short. The first pass runs
+        under the character lock alone: it returns early when there is
+        nothing to do, and it warms ``needs_journal_copy`` (the archive
+        check reads each side's shards at most once and caches the index).
+        The second pass runs inside cloudsave_writable_transaction, taken
+        BEFORE the character lock -- the order a cloud import already uses
+        (fence first, character lock later, through reload and long-term
+        sync) -- and re-plans from a fresh scan before replacing, so writes
+        that landed between the passes are simply part of what it reads.
+        Under the fence the journal is read again, but an archive index the
+        first pass already built is not (a side the first pass never needed
+        is still read there on first use). Before re-planning it refuses
+        inputs swapped since the first pass: a replaced or shortened journal,
+        or -- when ``sources_unchanged`` is given -- shard files that changed,
+        as a restore would leave; the cached archive index could then vouch
+        for copies that are gone. Pass the archive check's own
+        ``sources_unchanged`` together with it.
+
+        ``needs_journal_copy`` exceptions propagate and nothing is written.
+        Blocking file IO: call from a worker thread, or use
+        acompact_applied_history.
         """
-        with self._get_lock(name):
-            if not self._should_compact_unlocked(name):
-                return 0
-            old_line_count = self._count_lines_unlocked(name)
-            seeds = seed_events_provider()
-            lines = []
-            now_iso = datetime.now().isoformat()
-            for event_type, payload in seeds:
-                if event_type not in ALL_EVENT_TYPES:
-                    raise ValueError(
-                        f"[EventLog] {name}: compact seed uses unknown event type "
-                        f"{event_type!r}; refusing to rewrite log body with "
-                        f"unreplayable seeds"
-                    )
-                rec = {
-                    'event_id': str(uuid.uuid4()),
-                    'type': event_type,
-                    'ts': now_iso,
-                    'payload': payload,
-                }
-                lines.append(json.dumps(rec, ensure_ascii=False))
-            body = ('\n'.join(lines) + '\n') if lines else ''
-            atomic_write_text(self._events_path(name), body, encoding='utf-8')
-            # Reset sentinel to null — next reconciliation will apply the seeds
-            # (all idempotent).
-            atomic_write_json(
-                self._sentinel_path(name),
-                {'last_applied_event_id': None, 'ts': now_iso},
-            )
-        dropped = old_line_count - len(lines)
-        if dropped < 0:
-            dropped = 0
-        return dropped
-
-    def _count_lines_unlocked(self, name: str) -> int:
-        path = self._events_path(name)
-        if not os.path.exists(path):
-            return 0
+        char_dir = self._character_dir_nocreate(name)
+        if not os.path.isdir(char_dir):
+            return CompactionResult('no_character_dir')
+        path = os.path.join(char_dir, _EVENTS_FILENAME)
         try:
-            with open(path, encoding='utf-8') as f:
-                return sum(1 for _ in f)
+            st = os.stat(path)
+        except FileNotFoundError:
+            return CompactionResult('no_journal')
         except OSError:
-            return 0
+            return CompactionResult('journal_unreadable')
+        now = _naive_local(now) if now is not None else datetime.now()
+        if st.st_size < _COMPACT_TRIGGER_BYTES and not _first_line_says_due(path, now):
+            return CompactionResult('not_due')
+
+        with self._get_lock(name):
+            warm = self._plan_compaction_locked(name, path, needs_journal_copy, now)
+        if isinstance(warm, CompactionResult):
+            return warm
+
+        from utils.cloudsave_runtime import (
+            MaintenanceModeError,
+            cloudsave_writable_transaction,
+        )
+        try:
+            with cloudsave_writable_transaction(
+                self._config_manager,
+                operation='compact',
+                target=f'memory/{name}/{_EVENTS_FILENAME}',
+            ):
+                with self._get_lock(name):
+                    if not os.path.isdir(char_dir):
+                        return CompactionResult('no_character_dir', **warm.stats)
+                    moved = self._moved_since_warm(path, warm, sources_unchanged)
+                    if moved is not None:
+                        return CompactionResult(moved, **warm.stats)
+                    plan = self._plan_compaction_locked(name, path, needs_journal_copy, now)
+                    if isinstance(plan, CompactionResult):
+                        return plan
+                    return self._commit_compaction_locked(name, char_dir, path, plan)
+        except MaintenanceModeError:
+            return CompactionResult('write_blocked', **warm.stats)
+
+    @staticmethod
+    def _moved_since_warm(
+        path: str,
+        warm: _CompactionPlan,
+        sources_unchanged: Callable[[], bool] | None,
+    ) -> str | None:
+        """Refuse a fenced pass whose first-pass inputs were swapped underneath it.
+
+        Appends between the passes are fine: the fenced pass re-reads the
+        journal. A replaced or shortened journal (a restore copies the whole
+        character directory) or changed archive shards are not: the archive
+        index cached by the first pass may then claim copies that no longer
+        exist. Returns the outcome to report, or None to go ahead.
+        """
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return 'journal_changed'
+        except OSError:
+            return 'journal_unreadable'
+        if st.st_ino != warm.st0.st_ino or st.st_size < warm.st0.st_size:
+            return 'journal_changed'
+        if sources_unchanged is not None and not sources_unchanged():
+            return 'archives_changed'
+        return None
+
+    def _admit_compaction_unlocked(self, name: str) -> tuple[CompactionResult | None, str | None]:
+        """Replay and sentinel gates checked on every planning pass. Caller holds the character lock."""
+        if self._replay_round_active(name):
+            return CompactionResult('replay_in_progress'), None
+        if self.replay_paused_in_process(name):
+            return CompactionResult('replay_paused'), None
+        state, sentinel = self._read_sentinel_state_unlocked(name)
+        if state != 'ok':
+            return CompactionResult(f'sentinel_{state}'), None
+        return None, sentinel
+
+    def _commit_compaction_locked(
+        self,
+        name: str,
+        char_dir: str,
+        path: str,
+        plan: _CompactionPlan,
+    ) -> CompactionResult:
+        """Replace the body planned in this same lock hold. Caller holds the fence and the character lock."""
+        try:
+            dir_before = _dir_identity(os.stat(char_dir))
+        except OSError:
+            return CompactionResult('no_character_dir', **plan.stats)
+        try:
+            st1 = os.stat(path)
+        except FileNotFoundError:
+            return CompactionResult('journal_changed', **plan.stats)
+        except OSError:
+            return CompactionResult('journal_unreadable', **plan.stats)
+        if _file_identity(st1) != _file_identity(plan.st0):
+            # Another process appended, or a restore replaced the file.
+            return CompactionResult('journal_changed', **plan.stats)
+
+        try:
+            atomic_write_text(path, plan.body, encoding='utf-8', create_parents=False)
+        except FileNotFoundError:
+            if not os.path.isdir(char_dir):
+                return CompactionResult('no_character_dir', **plan.stats)
+            return CompactionResult('write_failed', **plan.stats)
+        except PermissionError as e:
+            if getattr(e, 'winerror', None) in _BUSY_WINERRORS:
+                return CompactionResult('busy', **plan.stats)
+            return CompactionResult('write_failed', **plan.stats)
+        except OSError:
+            return CompactionResult('write_failed', **plan.stats)
+        try:
+            dir_after = _dir_identity(os.stat(char_dir))
+        except FileNotFoundError:
+            # Removed after the replace, journal included: nothing left to undo.
+            return CompactionResult('no_character_dir', **plan.stats)
+        except OSError:
+            # Cannot tell. Only a positively different directory is undone;
+            # the replace itself succeeded and the new body is valid in place.
+            dir_after = dir_before
+        if dir_after != dir_before:
+            # An unsubscribe removed the directory and a late writer (a
+            # reflection task, /cache) recreated it between the checks and the
+            # replace. The journal in the new directory can only be ours --
+            # every journal writer needs the character lock held here -- so
+            # take it back rather than hand the old history to the new one.
+            try:
+                os.remove(path)
+            except OSError:
+                # Best effort: the directory may be going away again. The
+                # outcome below still tells the loop nothing was compacted.
+                pass
+            return CompactionResult('no_character_dir', **plan.stats)
+        return CompactionResult(
+            'compacted',
+            dropped_lines=plan.dropped_lines,
+            dropped_bytes=plan.dropped_bytes,
+            **plan.stats,
+        )
+
+    def _plan_compaction_locked(
+        self,
+        name: str,
+        path: str,
+        needs_journal_copy: Callable[[dict], bool] | None,
+        now: datetime,
+    ) -> CompactionResult | _CompactionPlan:
+        """First phase: scan and self-check. Caller holds the character lock only."""
+        skip, sentinel = self._admit_compaction_unlocked(name)
+        if skip is not None:
+            return skip
+        try:
+            st0 = os.stat(path)
+        except FileNotFoundError:
+            return CompactionResult('no_journal')
+        except OSError:
+            return CompactionResult('journal_unreadable')
+
+        cutoff = now - timedelta(days=_RETAIN_APPLIED_DAYS)
+        cap = _RETAIN_APPLIED_MAX_BYTES
+        anchor_found = False
+        tail: list[str] = []
+        old_tail_ids: list = []
+        pinned: list[tuple[int, str, str]] = []
+        window: deque[tuple[int, str, int]] = deque()
+        window_bytes = 0
+        total_lines = 0
+        total_bytes = 0
+        lines = _iter_journal_lines(path)
+        try:
+            while True:
+                try:
+                    item = next(lines, None)
+                except (OSError, UnicodeDecodeError):
+                    return CompactionResult('journal_unreadable')
+                if item is None:
+                    break
+                lineno, raw, rec = item
+                size = _line_bytes(raw)
+                total_lines += 1
+                total_bytes += size
+                if anchor_found:
+                    tail.append(raw)
+                    if rec is not None:
+                        old_tail_ids.append(rec.get('event_id'))
+                    continue
+                if rec is None:
+                    continue
+                if rec.get('event_id') == sentinel:
+                    anchor_found = True
+                    tail.append(raw)
+                    continue
+                if rec.get('type') == EVT_LONG_TERM_MEMORY_REPLACED:
+                    # Reference events are no-ops once their inbox is
+                    # consumed; old head-style ones are whole snapshots.
+                    continue
+                if needs_journal_copy is not None and needs_journal_copy(rec):
+                    pinned.append((lineno, raw, str(rec.get('event_id'))))
+                    continue
+                ts = _event_ts_local(rec.get('ts'))
+                if ts is None or ts < cutoff:
+                    continue
+                window.append((lineno, raw, size))
+                window_bytes += size
+                while window and window_bytes > cap:
+                    window_bytes -= window.popleft()[2]
+        finally:
+            lines.close()
+
+        if not anchor_found:
+            return CompactionResult('sentinel_not_found')
+
+        kept_before = sorted(
+            [(lineno, raw) for lineno, raw, _ in pinned]
+            + [(lineno, raw) for lineno, raw, _ in window]
+        )
+        kept_lines = [raw for _, raw in kept_before] + tail
+        dropped_lines = total_lines - len(kept_lines)
+        stats = {
+            'kept_before_anchor': len(kept_before),
+            'pending_tail': len(old_tail_ids),
+            'pinned': len(pinned),
+            'pinned_event_ids': tuple(event_id for _, _, event_id in pinned),
+        }
+        if dropped_lines <= 0:
+            return CompactionResult('nothing_to_drop', **stats)
+        dropped_bytes = total_bytes - sum(_line_bytes(raw) for raw in kept_lines)
+
+        body = _assemble_compacted_body(kept_lines)
+        if not _body_keeps_tail(body, sentinel, old_tail_ids):
+            logger.error(
+                f"[EventLog] {name}: 压缩自检失败（新正文里锚点或其后的事件序列"
+                f"与原文不一致），放弃写盘；锚点 {sentinel}，尾巴 {len(old_tail_ids)} 条"
+            )
+            return CompactionResult('self_check_failed', **stats)
+        return _CompactionPlan(body, sentinel, st0, dropped_lines, dropped_bytes, stats)
 
     # ── _record_and_save (RFC §3.4) ─────────────────────────────
 
@@ -656,13 +1129,13 @@ class EventLog:
         """
         with self._get_lock(name):
             view = sync_load_view(name)
-            # 顺序：load → append（可能 fsync 失败抛出）→ mutate → save。
-            # append 先于 mutate 的原因：sync_load_view 常返回 manager 持有的
-            # 共享 cache，若先 mutate 再 append 而 append 抛出，cache 已脏但
-            # 事件没落盘，后续任一次正常 save 都会把"无事件对应的变更"刷盘，
-            # 破坏 event↔view 对应关系。先 append 成功再 mutate 则保证：
-            #   - append 失败：view/cache 未动，无状态泄露
-            #   - mutate/save 失败：事件已在 log，reconciler 会补齐
+            # Order: load → append (may raise on fsync failure) → mutate → save.
+            # Append first because sync_load_view often returns the manager's
+            # shared cache; if append raises after mutation, the cache is dirty but
+            # The event was not persisted; any later normal save would persist "a change with no corresponding event,"
+            # breaking the event↔view relationship. Appending successfully before mutation guarantees:
+            #   - append failure: view/cache untouched, no state leaked
+            #   - mutate/save failure: event is already in the log, and the reconciler can repair it
             event_id = self._append_unlocked(name, event_type, payload)
             sync_mutate_view(view)
             sync_save_view(name, view)
@@ -700,15 +1173,19 @@ class EventLog:
             expected_sentinel=expected_sentinel, advance=advance,
         )
 
-    async def ashould_compact(self, name: str) -> bool:
-        return await asyncio.to_thread(self.should_compact, name)
-
-    async def acompact_if_needed(
+    async def acompact_applied_history(
         self,
         name: str,
-        seed_events_provider: Callable[[], list[tuple[str, dict]]],
-    ) -> int:
-        return await asyncio.to_thread(self.compact_if_needed, name, seed_events_provider)
+        *,
+        needs_journal_copy: Callable[[dict], bool] | None = None,
+        sources_unchanged: Callable[[], bool] | None = None,
+        now: datetime | None = None,
+    ) -> CompactionResult:
+        return await asyncio.to_thread(
+            self.compact_applied_history, name,
+            needs_journal_copy=needs_journal_copy,
+            sources_unchanged=sources_unchanged, now=now,
+        )
 
     async def arecord_and_save(
         self,
@@ -730,9 +1207,9 @@ class EventLog:
 
 # ── Reconciler scaffolding (RFC §3.5) ─────────────────────────────────────
 
-# 哨兵冻结之后每扫完一轮就再朝日志末尾探一次，这是探的次数上限。只有「上一轮扫描
-# 期间又有写者落地」才会消耗一次，所以正常启动一次都用不到；给 8 次是为了让写入
-# 停下来的那一刻能收尾，同时不至于在持续写入下让启动永远卡在这里。
+# After freezing the sentinel, probe toward the log tail again after each scan; this is the maximum number of probes. Only "a writer committed
+# during the previous scan" consumes a probe, so normal startup uses none. Eight gives the process a chance to finish after writes
+# stop without letting continuous writes keep startup stuck forever.
 _MAX_FROZEN_RESCANS = 8
 
 
@@ -740,8 +1217,9 @@ class Reconciler:
     """Applies event-log tail onto views on startup.
 
     Handlers for each event type are registered externally (by memory_server
-    in P2.b). Unknown event types are logged and skipped (forward
-    compatibility: an older binary can keep running against a newer log).
+    in P2.b). An event type without a registered handler PAUSES replay for
+    that character (sentinel left on the last applied event); it is never
+    skipped, because skipping would lose it for good. See areconcile.
     """
 
     def __init__(self, event_log: EventLog):
@@ -826,45 +1304,67 @@ class Reconciler:
 
         Re-applying events that were already applied is safe by the same
         property the whole design leans on elsewhere (read_since falls back
-        to a full replay when the sentinel is missing or compacted away):
+        to a full replay when the sentinel is missing or not in the body):
         handlers carry full-snapshot payloads and are idempotent.
+
+        Round bookkeeping: the whole round runs inside
+        EventLog.replay_round, so compaction cannot cut the journal under
+        it, and a round that stops before draining its tail (any of the
+        pause / stop branches above, an exception, cancellation) is recorded
+        with EventLog._record_replay_outcome; compaction then leaves that
+        character alone for the rest of the process. The return value is
+        still just the number of events whose handler changed a view.
+        """
+        with self._event_log.replay_round(name):
+            drained = False
+            try:
+                applied_count, drained = await self._areconcile_round(name)
+            finally:
+                self._event_log._record_replay_outcome(name, drained=drained)
+        return applied_count
+
+    async def _areconcile_round(self, name: str) -> tuple[int, bool]:
+        """One reconciliation round; returns ``(applied_count, drained)``.
+
+        ``drained`` is True only when the round reached the end of the
+        journal. Every early return leaves unapplied events on disk.
         """
         last_applied = await self._event_log.aread_sentinel(name)
         tail = await self._event_log.aread_since(name, last_applied)
         applied_count = 0
-        # 每条事件都要 CAS 一次，而且是在跑 handler **之前**：expected 是「本轮
-        # replay 认为盘上哨兵应该处在的位置」，第一条是出发时读到的 last_applied，
-        # 之后是上一条刚写进去的 event_id。对不上说明有别的写者动过哨兵，这时
-        # 手上的尾巴已经陈旧，一条都不能应用，见 apply_and_advance。
+        # CAS every event, and do it **before** running its handler: expected is where this replay believes the on-disk
+        # sentinel should be — initially the last_applied read at startup,
+        # then the event_id just written by the previous event. A mismatch means another writer changed the sentinel, so
+        # this tail is stale and no event may be applied; see apply_and_advance.
         expected_sentinel = last_applied
-        # 一旦发现哨兵已经不归本轮 replay 管，就冻结哨兵，同时把待办重新从日志里
-        # 取一遍（见下面 except 分支）：手上这份尾巴已经陈旧，不能照原样应用。
+        # Once the sentinel no longer belongs to this replay, freeze it and reload pending events from the log
+        # (see the except branch below); this tail is stale and cannot be applied as-is.
         sentinel_frozen = False
-        # 冻结之后哨兵不再前进，于是「重扫到日志末尾」这句话里的「末尾」是一次快照，
-        # 而写者还在往后追加。快照之后落地的那条事件不在手上这份 tail 里，可它前面
-        # 的陈旧 payload 却还在等着被重放 —— 重放下去就是拿旧值盖掉它刚写好的 view，
-        # 而哨兵此刻停在**它**的 id 上，下次开机 read_since 从它之后开始读，那条事件
-        # 不会被重放回来纠正。丢的不是这一轮的进度，是那个写者的内容，永久性的。
-        # 所以扫完一轮要再朝末尾探一次，直到探不到新东西为止。
+        # After freezing, the sentinel no longer advances, so "scan to the end of the log" means one snapshot while
+        # writers may still append later. An event committed after that snapshot is absent from this tail, but an earlier stale
+        # payload is still waiting to be replayed — applying it would overwrite the view just written by that later event,
+        # while the sentinel now points to **its** id. At next startup, read_since begins after it, so the event
+        # will never be replayed to fix the view. What is lost is the writer's content, permanently, not this run's progress.
+        # Therefore after each scan, probe toward the tail again until no new events are found.
         rescans_left = _MAX_FROZEN_RESCANS
         i = 0
         while True:
             if i >= len(tail):
                 if not sentinel_frozen:
-                    return applied_count
+                    return applied_count, True
                 extra = await self._event_log.aread_since(name, expected_sentinel)
                 if not extra:
-                    return applied_count
+                    return applied_count, True
                 if rescans_left <= 0:
-                    # 写入一直不停时必须有个头，否则这一轮永远收不了尾、启动卡死。
-                    # 停下来是有代价的（剩下那些在哨兵前面，下次开机也不会重放），
-                    # 所以报出来，而不是静悄悄地截断。
+                    # Bound the loop so continuous writes cannot keep this scan open forever or hang startup.
+                    # Stopping has a cost (entries remaining before the sentinel will not be replayed next startup),
+                    # so report it rather than truncating silently.
                     logger.warning(
                         f"[Reconciler] {name}: 哨兵冻结后连续 {_MAX_FROZEN_RESCANS} 轮"
                         f"都有新事件追加，停止重扫；仍有 {len(extra)} 条未重放且位于"
                         f"哨兵之前，下次开机不会自动补上"
                     )
-                    return applied_count
+                    return applied_count, False
                 rescans_left -= 1
                 tail = extra
                 i = 0
@@ -878,15 +1378,15 @@ class Reconciler:
                     f"(id={event_id})，暂停 replay，sentinel 保留在上一条已应用事件；"
                     f"请检查是否需要升级到支持该类型的版本"
                 )
-                return applied_count
+                return applied_count, False
             handler = self._handlers[event_type]
             payload = event.get('payload') or {}
             try:
-                # Handler自己 load → apply → save，见 ApplyHandler 契约。
-                # 整段（handler + 哨兵推进）交给 apply_and_advance：在
-                # per-character 锁内、worker 线程上跑完，与 record_and_save
-                # 收口成同一个写者。handler 抛出时锁内的哨兵写不会执行，
-                # 异常穿过 to_thread 由下面的 except 接住 —— 失败语义不变。
+                # The handler does its own load → apply → save; see the ApplyHandler contract.
+                # Run the whole operation (handler + sentinel advancement) through apply_and_advance: under
+                # the per-character lock, on a worker thread, together with record_and_save
+                # Centralize on one writer. If the handler raises, the locked sentinel write does not run,
+                # and the exception passes through to_thread to the except below — failure semantics are unchanged.
                 changed = await self._event_log.aapply_and_advance(
                     name, event_id, lambda: handler(name, payload),
                     expected_sentinel=expected_sentinel,
@@ -897,32 +1397,32 @@ class Reconciler:
                 expected_sentinel = event_id
                 i += 1
             except SentinelConflictError as e:
-                # 不是失败，而且这一条并没有被应用（冲突判定排在 handler 之前）。
-                # 别的写者已经把哨兵推到更靠后的位置了 —— 它写哨兵时就等于声称
-                # 在它之前的都已应用，而手上这份尾巴恰恰在它后面，所以这份尾巴
-                # 现在是陈旧的：照原样应用会拿旧 payload 盖掉它刚写好的值，而它
-                # 那条更新的事件在哨兵前面，不会再被重放回来纠正。
+                # This is not a failure, and this event was not applied (the conflict check runs before the handler).
+                # Another writer already advanced the sentinel. By writing it, that writer claimed
+                # everything before it had been applied; this tail is after it and is now stale. Applying it as-is
+                # would overwrite the value the writer just stored with an old payload, while that writer's newer
+                # event is before the sentinel and will not be replayed again to correct it.
                 #
-                # 所以不是「停下」也不是「照旧应用」，而是按日志顺序重取待办：
-                # 从本轮自己的已应用位置（expected_sentinel）一直读到文件末尾。
-                # 这样排队的修复照样落盘，那个写者的事件排在它们后面被重放一遍，
-                # 同一条目的最新 payload 最后写入 —— 顺序由日志里的行位置决定，
-                # 正是事件日志本来的语义。重复应用无害：handler 是全量快照赋值、
-                # 幂等，read_since 在哨兵丢失时本来就会全量重放。
+                # So neither "stop" nor "apply as usual": reload pending work in log order,
+                # from this run's last applied position (expected_sentinel) through end of file.
+                # Queued repairs are still persisted, and that writer's event is replayed after them,
+                # so the latest payload for the same item is written last — ordering follows line position in the log,
+                # which is the event log's intended semantics. Reapplication is harmless: handlers assign full snapshots,
+                # are idempotent, and read_since already replays everything when the sentinel is lost.
                 #
-                # 哨兵从此冻结（advance=False）。写回旧 id 会让那个写者的事件回到
-                # 尾巴，其中任何一条没注册 handler 的都会让此后每次开机都停在
-                # 「未注册事件类型」上，该角色再也 reconcile 不了。收尾也不用补写：
-                # 对方已经把哨兵停在日志末尾，正是本轮重扫的终点。
+                # Freeze the sentinel from now on (advance=False). Writing the old ID would move that writer's event back to
+                # the tail, and any event without a registered handler would then make every later startup stop at
+                # "unregistered event type"; that character could never be reconciled again. No cleanup write is needed:
+                # the other writer already left the sentinel at the end of the log, which is exactly where this rescan ends.
                 if sentinel_frozen:
-                    # 结构上到不了：冻结之后 advance=False，apply_and_advance
-                    # 不再做 CAS，也就不会再抛这个异常。留一条兜底，免得将来
-                    # 有人改动 advance 的语义时把这里变成死循环。
+                    # Structurally unreachable: after freezing, advance=False, so apply_and_advance
+                    # no longer performs CAS and cannot raise this exception. Keep the fallback in case a future
+                    # change to advance semantics would otherwise turn this into an infinite loop.
                     logger.warning(
                         f"[Reconciler] {name}/{event_type}/{event_id}: 哨兵冻结后"
                         f"仍报冲突，停止本轮 replay: {e}"
                     )
-                    return applied_count
+                    return applied_count, False
                 sentinel_frozen = True
                 logger.warning(
                     f"[Reconciler] {name}/{event_type}/{event_id}: 哨兵已被其他写者"
@@ -932,16 +1432,16 @@ class Reconciler:
                 tail = await self._event_log.aread_since(name, expected_sentinel)
                 i = 0
             except SentinelAdvanceError as e:
-                # handler 成功、哨兵写失败。归因必须和 handler 失败分开：盘上
-                # 是「view 已改、哨兵没动」，下次开机幂等重放这一条。
+                # Handler succeeded but sentinel write failed. Attribute this separately from handler failure: on disk,
+                # the view changed but the sentinel did not, so replay this event idempotently next startup.
                 logger.warning(
                     f"[Reconciler] {name}/{event_type}/{event_id} 哨兵写入失败"
                     f"（handler 已成功应用）: {e}；下次开机重放该条"
                 )
-                return applied_count
+                return applied_count, False
             except Exception as e:
                 logger.warning(
                     f"[Reconciler] {name}/{event_type}/{event_id} handler 失败: {e}；"
                     f"保留 sentinel 在上一条位置，下次重试"
                 )
-                return applied_count
+                return applied_count, False

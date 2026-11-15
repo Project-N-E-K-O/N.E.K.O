@@ -537,6 +537,75 @@ async def test_bind_rejects_more_than_the_per_platform_account_limit():
     assert (await trust_store.abind_account("bili:1", entity_id))["changed"]
 
 
+def test_visit_accounts_stay_unlinkable_until_visit_forget_sends_target_epochs():
+    """Tripwire: the visit forget client sends no ``target_epochs`` (issue #3405).
+
+    A second visit account on one entity makes every visit forget fan out to
+    it, and that target gets no durable tombstone: a delayed pre-forget write
+    can then restore erased memories, silently. Lift this cap only together
+    with wiring ``target_epochs`` into ``main_logic/visit/memory_bridge.py``.
+    """
+    from config import IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM, VISIT_MEMORY_PLATFORM
+
+    limit, _reason = IDENTITY_MAX_ACCOUNTS_PER_ENTITY_BY_PLATFORM[VISIT_MEMORY_PLATFORM]
+    assert limit == 1, (
+        "neko_visit accounts must not be linked until the visit forget sends "
+        "target_epochs; see issue #3405"
+    )
+
+
+async def test_bind_refuses_a_second_visit_account_on_one_entity():
+    entity_id = await trust_store.aensure_account("neko_visit:person_a")
+    await trust_store.aensure_account("neko_visit:person_b")
+    with pytest.raises(trust_store.TrustIdentityError) as excinfo:
+        await trust_store.abind_account("neko_visit:person_b", entity_id)
+    assert excinfo.value.status_code == 409
+    assert "#3405" in str(excinfo.value)
+    snap = trust_store.trust_snapshot()
+    assert snap.same_entity("neko_visit:person_a", "neko_visit:person_b") is False
+    # Only same-platform links fan a forget out; another platform still binds.
+    await _open_gate()
+    await trust_store.aensure_account("qq:1")
+    assert (await trust_store.abind_account("qq:1", entity_id))["changed"]
+
+
+async def test_bind_refuses_a_never_seen_visit_account_on_a_visit_entity():
+    entity_id = await trust_store.aensure_account("neko_visit:person_a")
+    # Unregistered account: bind attaches it directly instead of merging.
+    with pytest.raises(trust_store.TrustIdentityError) as excinfo:
+        await trust_store.abind_account("neko_visit:never_seen", entity_id)
+    assert excinfo.value.status_code == 409
+    assert "#3405" in str(excinfo.value)
+    assert trust_store.trust_snapshot().entity_of("neko_visit:never_seen") is None
+
+
+async def test_merge_refuses_to_join_two_visit_accounts():
+    left = await trust_store.aensure_account("neko_visit:person_a")
+    right = await trust_store.aensure_account("neko_visit:person_b")
+    with pytest.raises(trust_store.TrustIdentityError) as excinfo:
+        await trust_store.amerge_entities(left, right)
+    assert excinfo.value.status_code == 409
+    assert "#3405" in str(excinfo.value)
+    snap = trust_store.trust_snapshot()
+    assert snap.same_entity("neko_visit:person_a", "neko_visit:person_b") is False
+
+
+async def test_visit_forget_does_not_fan_out_to_a_linked_account_of_another_platform():
+    from memory.scopes import MemorySubject
+    from memory.subject_identity import expand_subject
+
+    entity_id = await trust_store.aensure_account("neko_visit:person_a")
+    await _open_gate()
+    await trust_store.aensure_account("qq:1")
+    await trust_store.abind_account("qq:1", entity_id)
+    snap = trust_store.trust_snapshot()
+    assert snap.same_entity("neko_visit:person_a", "qq:1") is True
+    subject = MemorySubject.participant("neko_visit", "person_a")
+    # The forget fan-out is this expansion: a cross-platform link the visit
+    # cap allows must not widen it, so the visit forget still has no target.
+    assert expand_subject(subject, snap) == (subject,)
+
+
 async def test_same_entity_is_false_when_the_pool_is_unloaded():
     await _open_gate()
     entity_id = await trust_store.aensure_account("qq:1")

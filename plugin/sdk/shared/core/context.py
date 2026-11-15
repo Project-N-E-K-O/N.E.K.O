@@ -23,6 +23,7 @@ from .types import (
     Metadata,
     PluginContextProtocol,
     PluginModelsProtocol,
+    ReplyTailProtocol,
     PushMessageResult,
 )
 
@@ -114,6 +115,34 @@ class SdkContext:
         self._host_ctx = cast(_HostContextProtocol, host_ctx)
         self._bus_ctx: SdkBusContext | None | object = _UNSET
         self._models_ctx: PluginModelsProtocol | None = None
+        self._reply_tail_ctx: ReplyTailProtocol | None = None
+
+    async def _send_request_and_wait_async(
+        self,
+        *,
+        method_name: str,
+        request_type: str,
+        request_data: dict[str, Any],
+        timeout: float,
+        wrap_result: bool = True,
+    ) -> object:
+        """Borrow the host request lifetime without making it a required capability."""
+        from plugin.sdk.shared.models.exceptions import TransportError
+
+        request = getattr(self._host_ctx, "_send_request_and_wait_async", None)
+        if not callable(request):
+            raise TransportError(
+                "The host does not provide asynchronous control requests",
+                code="CAPABILITY_UNAVAILABLE",
+                op_name=method_name,
+            )
+        return await request(
+            method_name=method_name,
+            request_type=request_type,
+            request_data=request_data,
+            timeout=timeout,
+            wrap_result=wrap_result,
+        )
 
     @staticmethod
     def _normalize_export_metadata(
@@ -245,6 +274,15 @@ class SdkContext:
 
             self._models_ctx = PluginModels(self._host_ctx)
         return self._models_ctx
+
+    @property
+    def reply_tail(self) -> ReplyTailProtocol:
+        """Optional original-reply images; requires a v1 host-issued context."""
+        if self._reply_tail_ctx is None:
+            from .reply_tail import ReplyTailClient
+
+            self._reply_tail_ctx = ReplyTailClient(self._host_ctx)
+        return self._reply_tail_ctx
 
     async def get_own_config(self, timeout: float = 5.0) -> object:
         return await self._host_ctx.get_own_config(timeout=timeout)
@@ -390,11 +428,11 @@ class SdkContext:
         """Wrap ``data`` into a finish envelope.
 
         ``delivery`` controls how the result reaches the main AI:
-            - ``"proactive"`` (default): start a turn immediately and have the
+            - ``\"proactive\"`` (default): start a turn immediately and have the
               character report it.
-            - ``"passive"``: write into context but don't interrupt; the next
+            - ``\"passive\"``: write into context but don't interrupt; the next
               user turn will carry it.
-            - ``"silent"``: skip the LLM channel entirely (HUD/task_update
+            - ``\"silent\"``: skip the LLM channel entirely (HUD/task_update
               still fires).
         ``reply`` is the deprecated bool alias (``True``→proactive,
         ``False``→silent). When both are provided ``delivery`` wins.
@@ -406,9 +444,9 @@ class SdkContext:
         ``direct_reply`` exits), per session. Plugin code can't pick the
         right name itself — visibility filtering decides which session
         receives the text, so substitution has to happen host-side. Prefer
-        the placeholders over hardcoded ``"用户"`` / ``"master"`` /
-        ``"主人"``. See PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware
-        text") for details.
+        the placeholders over hardcoded ``\"用户\"`` / ``\"master\"`` /
+        ``\"主人\"``. See docs/plugins/push-message.md (\"Role-aware
+        text\") for details.
         """
         normalized_data = normalize_structured_data(data)
         resolved = normalize_delivery(delivery, reply)
@@ -451,12 +489,12 @@ class SdkContext:
 
         Two orthogonal axes drive the host's downstream behaviour:
 
-        * ``visibility`` (``list["chat" | "hud"]``, default ``[]``) — where
+        * ``visibility`` (``list[\"chat\" | \"hud\"]``, default ``[]``) — where
           the user sees the *plugin's* parts rendered verbatim.  Empty
           list means the user does not see the parts directly; if AI also
           responds, only the AI's reply is visible.
-        * ``ai_behavior`` (``"respond" | "read" | "blind"``, default
-          ``"respond"``) — how the LLM treats the parts: generate a turn
+        * ``ai_behavior`` (``\"respond\" | \"read\" | \"blind\"``, default
+          ``\"respond\"``) — how the LLM treats the parts: generate a turn
           immediately, ingest into context for natural mention later, or
           ignore entirely.
 
@@ -465,13 +503,13 @@ class SdkContext:
         :mod:`plugin.sdk.shared.core.push_message_schema` for full shapes.
 
         Role-aware text contract: any text field that ends up in the dialog
-        channel (``parts[*].text`` for ``ai_behavior="respond"|"read"`` /
-        ``visibility=["chat"]``) MAY contain ``{MASTER_NAME}`` /
+        channel (``parts[*].text`` for ``ai_behavior=\"respond\"|\"read\"`` /
+        ``visibility=[\"chat\"]``) MAY contain ``{MASTER_NAME}`` /
         ``{LANLAN_NAME}`` placeholders; the host expands them per session at
         the injection boundary. Plugin code can't pick the right name
         itself — visibility filtering happens host-side. Prefer the
-        placeholders over hardcoded ``"用户"`` / ``"master"`` / ``"主人"``.
-        See PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware text") for
+        placeholders over hardcoded ``\"用户\"`` / ``\"master\"`` / ``\"主人\"``.
+        See docs/plugins/push-message.md (\"Role-aware text\") for
         details.
 
         All other parameters are deprecated and emit ``DeprecationWarning``;

@@ -1,0 +1,98 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# L1c —— 路由表
+#
+# 渲染目标：/etc/nginx/neko/locations.conf
+# 被 include 进 neko-proxy.conf.template 的 server 块。
+#
+# 本文件与 TLS 完全无关：HTTP-only 与 HTTP+HTTPS 两种模式使用同一份路由表。
+# 改动这里的任何一行都会同时作用于两种模式，这正是拆分想要的效果。
+#
+# 上游端口（容器内回环）—— 全部来自环境变量，由 render.sh 注入：
+#   @@NEKO_USER_PLUGIN_SERVER_PORT@@  插件服务 / agent_server（插件 API、插件 WS、CSRF 引导）
+#   @@NEKO_MEMORY_SERVER_PORT@@       记忆服务
+#   @@NEKO_TOOL_SERVER_PORT@@         Agent / 工具服务
+#   @@NEKO_MAIN_SERVER_PORT@@         N.E.K.O 主服务（location / 兜底）
+#
+# 公共转发头、WebSocket 升级参数与超时收敛在 snippets/ 下，逐块复制已经消除：
+#   proxy-headers-basic.conf     4 个通用转发头
+#   proxy-headers-extended.conf  basic + X-Forwarded-Host
+#   proxy-websocket.conf         HTTP/1.1 + Upgrade + Connection
+#   proxy-timeouts.conf          connect / send / read 超时
+# ─────────────────────────────────────────────────────────────────────────────
+
+# CSRF 引导必须与生命周期变更请求命中同一个插件后端；保留公网 authority 并覆盖代理
+# 元数据（NAS 场景）。这里的 X-Forwarded-For 是「覆盖」而不是「追加」，与下面几条
+# 插件路由刻意不同：转发链上不能出现可被客户端伪造的伪回环地址。
+# 见 docs/design/security/local-mutation-auth.md。
+location = /security/csrf-token {
+    proxy_pass http://127.0.0.1:@@NEKO_USER_PLUGIN_SERVER_PORT@@;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+# 代理到用户插件服务 (Plugin Server, 内嵌于 agent_server 进程)
+location ~ ^/(api/model-config(?:/|$)|ui|plugins?|plugin/|available|server/|logs/|metrics|runs|packages|plugin-cli/|market/|health|market-bridge/) {
+    proxy_pass http://127.0.0.1:@@NEKO_USER_PLUGIN_SERVER_PORT@@;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-websocket.conf;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-headers-extended.conf;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-timeouts.conf;
+}
+
+# 插件 WebSocket 路径 → 插件服务器 (48916)
+location ~ ^/ws/(run|admin|logs)(/|$) {
+    proxy_pass http://127.0.0.1:@@NEKO_USER_PLUGIN_SERVER_PORT@@;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-websocket.conf;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-headers-extended.conf;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-timeouts.conf;
+}
+
+# 代理到 N.E.K.O 主服务
+location / {
+    proxy_pass http://127.0.0.1:@@NEKO_MAIN_SERVER_PORT@@;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-headers-extended.conf;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-websocket.conf;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-timeouts.conf;
+}
+
+# 代理到记忆服务
+location /memory/ {
+    proxy_pass http://127.0.0.1:@@NEKO_MEMORY_SERVER_PORT@@;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-headers-basic.conf;
+}
+
+# 代理到 Agent 服务
+location /agent/ {
+    proxy_pass http://127.0.0.1:@@NEKO_TOOL_SERVER_PORT@@;
+    include @@NGINX_NEKO_DIR@@/snippets/proxy-headers-basic.conf;
+}
+
+# 静态文件服务
+location /static/ {
+    alias /app/static/;
+    expires 30d;
+    add_header Cache-Control "public, immutable";
+    try_files $uri $uri/ =404;
+}
+
+# 健康检查端点。
+#
+# ⚠️ 必须用精确匹配（=）。前缀写法会被上面的插件正则抢先命中 —— nginx 先记住最长
+# 前缀，再按配置顺序检查正则，而正则优先，插件正则里就含 health。写成
+# location /health 时这一段永远走不到：/health 会落到插件服务上，未授权的外部
+# 探针拿到 401，"healthy" 文本根本不存在。
+#
+# 这里只证明 nginx 活着；后端是否健康由看门狗（docker/watchdog/）在容器内回环
+# 直探后端端口判断，那条路径不过实例门禁，也不需要凭据。
+location = /health {
+    access_log off;
+    return 200 "healthy\n";
+    add_header Content-Type text/plain;
+}
+
+# 阻止访问隐藏文件
+location ~ /\. {
+    deny all;
+    access_log off;
+    log_not_found off;
+}

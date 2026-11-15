@@ -170,7 +170,7 @@ SCENARIOS = (
         assert.equal(ctx.requests.length, 0, '未接管不能发送领取活动的请求');
       }
     """),
-    # 失败请求和缺报必须展示，幂等重放清零，新会话不能沿用上一份用量。
+    # Show failed requests and missing reports, reset usage on idempotent replay, and never carry usage into a new session.
     ("usage_failure_replay_and_new_session", r"""
       const ctx = createContext(); await launch(ctx);
       ctx.window.t = key => key;
@@ -333,8 +333,8 @@ SCENARIOS = (
         assert.equal(after.draftRestore.text, '');
       }
     """),
-    # 已发出的 speak-block 在退出、换 Session 或结束后才回音频时，app-websocket.js
-    # 依赖 allowsSpeechCorrelation 丢弃这段旧对白，不能按当前音频 epoch 重新入队。
+    # When an emitted speak-block returns audio after exit, a Session change, or completion, app-websocket.js
+    # relies on allowsSpeechCorrelation to discard the old dialogue rather than requeue it under the current audio epoch.
     ("late_speech_correlation_is_rejected_after_exit", r"""
       for (const exit of ['clear', 'relaunch', 'end']) {
         const ctx = createContext(); await launch(ctx);

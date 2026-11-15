@@ -609,13 +609,26 @@
         }
     }
 
-    function demoteVisualTierAfterReturnBallDrag(targetTier) {
+    function restartVisualTierCountdown(targetTier, source, reason) {
         state.dragDemotionTier = targetTier;
         state.dragDemotionStartedAt = nowMs();
         setVisualTier(targetTier, {
-            source: 'return-ball-drag-demotion',
-            reason: 'return-ball-drag-end',
+            source,
+            reason,
         });
+    }
+
+    function demoteVisualTierToCat1(source, reason) {
+        if (!isGoodbyeActive() ||
+            (state.visualTier !== TIER_CAT2 && state.visualTier !== TIER_CAT3)) {
+            return false;
+        }
+        restartVisualTierCountdown(
+            TIER_CAT1,
+            typeof source === 'string' && source ? source : 'cat-contextmenu-demotion',
+            typeof reason === 'string' && reason ? reason : 'cat1-scared-action'
+        );
+        return true;
     }
 
     function handleReturnBallDragEnd() {
@@ -629,14 +642,14 @@
             state.cat3DragReleaseCount += 1;
             if (state.cat3DragReleaseCount >= CAT3_DRAG_RELEASES_BEFORE_CAT2) {
                 state.cat3DragReleaseCount = 0;
-                demoteVisualTierAfterReturnBallDrag(TIER_CAT2);
+                restartVisualTierCountdown(TIER_CAT2, 'return-ball-drag-demotion', 'return-ball-drag-end');
             }
             return;
         }
 
         state.cat3DragReleaseCount = 0;
         if (currentTier === TIER_CAT2) {
-            demoteVisualTierAfterReturnBallDrag(TIER_CAT1);
+            restartVisualTierCountdown(TIER_CAT1, 'return-ball-drag-demotion', 'return-ball-drag-end');
         }
     }
 
@@ -645,6 +658,12 @@
 
         if (isGoodbyeActive() && normalizedSource !== 'return-click') {
             state.lastInteractionSource = normalizedSource;
+            // Keep the visual-tier countdown unchanged while the cat is active,
+            // but publish the standard activity stream for independent policies.
+            emitStateChange('user-interaction', {
+                source: normalizedSource,
+                preserveVisualTierCountdown: true,
+            });
             return;
         }
 
@@ -845,7 +864,6 @@
         }
 
         ensureInfrastructurePrimed();
-
         const goodbyeActive = isGoodbyeActive();
         const idleSuppressed = syncIdleSuppressionState('tick');
 
@@ -897,6 +915,7 @@
 
         window.addEventListener('live2d-goodbye-click', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            const isVisitCatEntry = detail.visitCatEntry === true;
             if (detail.startupDefaultForm !== 'cat' && state.startupDefaultCatRequested) {
                 // A manual goodbye is a newer user choice; never let a delayed startup retry override it.
                 cancelStartupDefaultCatRequest(true);
@@ -920,14 +939,21 @@
             } else {
                 const isStartupDefaultCat = detail.startupDefaultForm === 'cat';
                 state.autoGoodbyeTriggered = false;
-                state.lastReason = isStartupDefaultCat ? 'startup-default-cat' : 'manual-goodbye';
+                state.lastReason = isVisitCatEntry
+                    ? 'cat-visit-entry'
+                    : (isStartupDefaultCat ? 'startup-default-cat' : 'manual-goodbye');
                 clearDragTierMemory();
                 setVisualTier(TIER_CAT1, {
-                    source: isStartupDefaultCat ? 'startup-default-form' : 'manual-goodbye',
+                    source: isVisitCatEntry
+                        ? 'cat-visit-entry'
+                        : (isStartupDefaultCat ? 'startup-default-form' : 'manual-goodbye'),
                     reason: state.lastReason,
                 });
             }
-            syncGoodbyeSilentState(true, state.lastReason);
+            // Cat visits reuse the model-to-cat visual transition, but the visit
+            // already owns the socket. Emitting goodbye_state:true here would
+            // mean "leave the visit" and immediately finalize the room.
+            if (!isVisitCatEntry) syncGoodbyeSilentState(true, state.lastReason);
         });
 
         const isGreetingReturnSource = (source) => source === 'live2d-return-click'
@@ -1047,6 +1073,7 @@
         getIdleBlockReasons: getIdleBlockReasons,
         tryAutoGoodbye: tryAutoGoodbye,
         setVisualTier: setVisualTier,
+        demoteVisualTierToCat1: demoteVisualTierToCat1,
         setAutoCatEnabled: setAutoCatEnabled,
         isAutoCatEnabled: isAutoCatEnabled,
         clearTimers: clearTimers,

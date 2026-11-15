@@ -874,7 +874,7 @@ def test_voice_design_cosyvoice_enforces_metadata_prompt_max_before_submit(mock_
 
 @pytest.mark.frontend
 def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterminate(mock_page: Page, running_server: str):
-    """区域未明确识别为海外时，克隆页只展示国内可用服务商。"""
+    """When the region is not explicitly identified as overseas, the cloning page shows only providers available domestically."""
     route_voice_clone_region_dependencies(
         mock_page,
         {
@@ -908,7 +908,7 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterm
 
 @pytest.mark.frontend
 def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_request_fails(mock_page: Page, running_server: str):
-    """区域请求失败时，克隆页默认隐藏受限服务商。"""
+    """If the region request fails, the cloning page hides restricted providers by default."""
     route_voice_clone_region_dependencies(
         mock_page,
         {"success": False, "error": "region unavailable"},

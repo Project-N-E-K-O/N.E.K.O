@@ -35,7 +35,7 @@ async def test_logs_separate_lock_wait_dsp_and_missing_evidence(monkeypatch, cap
     monkeypatch.setattr(audio_input, "time", SimpleNamespace(perf_counter=lambda: clock.value))
     processor = Processor(clock)
     pipeline = audio_input.VoiceInputAudioPipeline(processor_factory=lambda: processor)
-    caplog.set_level(logging.INFO, logger=audio_input.__name__)
+    caplog.set_level(logging.DEBUG, logger=audio_input.__name__)
     source = b"private-audio-marker!" * 144
     await pipeline._lock.acquire()
     pending = asyncio.create_task(pipeline.process(source, sample_rate_hz=48_000))
@@ -69,7 +69,7 @@ async def test_16k_diagnostics_are_rate_limited_and_cannot_fail_audio(monkeypatc
     clock = SimpleNamespace(value=10.0)
     monkeypatch.setattr(audio_input, "time", SimpleNamespace(perf_counter=lambda: clock.value))
     pipeline = audio_input.VoiceInputAudioPipeline()
-    caplog.set_level(logging.INFO, logger=audio_input.__name__)
+    caplog.set_level(logging.DEBUG, logger=audio_input.__name__)
     pcm = b"\x11\x22" * 160
     try:
         for _ in range(201):
@@ -86,7 +86,7 @@ async def test_16k_diagnostics_are_rate_limited_and_cannot_fail_audio(monkeypatc
         def broken_logger(*args):
             raise OSError("log sink unavailable")
 
-        monkeypatch.setattr(audio_input.logger, "info", broken_logger)
+        monkeypatch.setattr(audio_input.logger, "debug", broken_logger)
         clock.value += 2.0
         assert (await pipeline.process(pcm, sample_rate_hz=16_000)).pcm16 == pcm
     finally:

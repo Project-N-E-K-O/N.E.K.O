@@ -7,7 +7,7 @@
     :aria-busy="loading"
     :aria-label="text || t('common.loading')"
   >
-    <el-icon class="is-loading">
+    <el-icon class="is-loading" aria-hidden="true">
       <Loading />
     </el-icon>
     <span v-if="text" class="loading-text">{{ text }}</span>
@@ -66,5 +66,10 @@ const { t } = useI18n()
     transform: rotate(360deg);
   }
 }
-</style>
 
+@media (prefers-reduced-motion: reduce) {
+  .is-loading {
+    animation: none;
+  }
+}
+</style>

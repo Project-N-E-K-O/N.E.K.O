@@ -333,8 +333,8 @@ onBeforeUnmount(() => {
     0 0 0 1px color-mix(in srgb, white 18%, transparent),
     0 18px 44px color-mix(in srgb, var(--el-text-color-primary) 16%, transparent),
     0 5px 14px color-mix(in srgb, var(--el-text-color-primary) 10%, transparent);
-  backdrop-filter: blur(18px) saturate(1.2);
   -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  backdrop-filter: blur(18px) saturate(1.2);
   transform-origin: top left;
   outline: none;
 }
@@ -502,6 +502,25 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
   font-size: 11px;
   font-weight: 800;
+}
+
+/* Dark overlays use the same neutral elevation as native poppers. The light
+ * theme's white sheen would otherwise turn into grey glare on this surface. */
+:global(html.dark .context-menu) {
+  background: var(--el-bg-color-overlay);
+  border-color: var(--el-border-color);
+  box-shadow: var(--shadow-lg);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:global(html.dark .context-menu__item) {
+  background: transparent;
+}
+
+:global(html.dark .context-menu__item:is(:hover, :focus-visible, .context-menu__item--active)) {
+  background: var(--el-color-primary-light-9);
+  box-shadow: none;
 }
 
 .context-menu-fade-enter-active,

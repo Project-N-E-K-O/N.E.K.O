@@ -23,6 +23,10 @@ fs.writeFileSync(inputPath, quietWav);
 const requests = [];
 let enrollmentId = null;
 let nextSegment = 1;
+let missingModels = false;
+let releaseRepair;
+let repairReserved;
+const repairReservationReceived = new Promise(resolve => { repairReserved = resolve; });
 
 function status() {
     return {
@@ -63,7 +67,19 @@ const server = http.createServer((request, response) => {
     // Leave the server override unset so each run exercises its browser locale.
     if (url.pathname === '/api/config/steam_language') return json(response, { uiLanguage: null });
     if (url.pathname === '/api/voice-identity/status') return json(response, status());
-    if (url.pathname === '/api/voice-identity/resources') return json(response, { can_enroll: true, wake_enabled: false, resources: { campp: { state: 'ready' }, silero: { state: 'ready' }, noise_reduction: { state: 'ready' }, wake_model: { state: 'missing' }, wake_runtime: { state: 'missing' } } });
+    if (url.pathname === '/api/voice-identity/resources') return json(response, { can_enroll: !missingModels, can_repair_models: missingModels, wake_enabled: false, resources: { campp: { state: missingModels ? 'missing' : 'ready', required: true }, silero: { state: missingModels ? 'missing' : 'ready', required: true }, noise_reduction: { state: 'ready' }, wake_model: { state: 'missing' }, wake_runtime: { state: 'missing' } } });
+    if (url.pathname === '/api/voice-identity/resources/operations') {
+        let body = '';
+        request.on('data', chunk => { body += chunk; });
+        return request.on('end', () => {
+            entry.kind = JSON.parse(body).kind;
+            const respond = () => json(response, { operation_id: 'controlled-resource-setup' });
+            if (entry.kind === 'repair') { releaseRepair = respond; repairReserved(); }
+            else respond();
+        });
+    }
+    if (url.pathname === '/api/voice-identity/resources/operations/controlled-resource-setup/start') { missingModels = false; return json(response, {}); }
+    if (url.pathname === '/api/voice-identity/resources/operations/controlled-resource-setup') return json(response, { state: 'succeeded' });
     if (url.pathname === '/api/voice-identity/audio/check/isolation') return json(response, { token: 'controlled-browser-ticket', ttl_seconds: 60 });
     if (url.pathname === '/api/voice-identity/audio/check/isolation/release') return json(response, { released: true });
     if (url.pathname === '/api/voice-identity/enrollment/cancel') {
@@ -173,8 +189,93 @@ async function main() {
         assert.equal(await page.locator('html').getAttribute('lang'), expectedPageLanguage);
         await page.waitForFunction(() => !document.getElementById('voice-identity-test').disabled);
         assert.equal(await page.locator('#voice-identity-start').isDisabled(), true);
+        const guide = page.locator('#voice-identity-guide');
+        assert.equal(await guide.evaluate(el => el.matches(':modal')), true);
+        const guideTitles = {
+            en: ['How to use', 'About voice profiles'],
+            'zh-CN': ['使用说明', '声纹说明'],
+        }[expectedPageLanguage];
+        assert.equal(await guide.locator('h2').textContent(), guideTitles[0]);
+        assert.equal(await guide.locator('h3').textContent(), guideTitles[1]);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-guide-confirm');
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-guide-close');
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.className), 'voice-identity-guide-body');
+        await page.keyboard.press('Shift+Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-guide-close');
+        await page.keyboard.press('Shift+Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-guide-confirm');
+        assert.equal(await page.evaluate(() => document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Escape', isComposing: true, bubbles: true, cancelable: true,
+        }))), false, 'IME Escape is consumed without dismissing the guide');
+        assert.equal(await guide.evaluate(el => el.open), true);
+        await page.keyboard.press('Escape');
+        await page.waitForFunction(() => !document.getElementById('voice-identity-guide').open
+            && document.activeElement.id === 'voice-identity-guide-open');
+        await page.keyboard.press('Enter');
+        assert.equal(await guide.evaluate(el => el.open), true);
+        await page.locator('#voice-identity-guide-confirm').click();
+        await page.waitForFunction(() => !document.getElementById('voice-identity-guide').open
+            && document.activeElement.id === 'voice-identity-guide-open');
+        assert.equal(await page.evaluate(() => window.__durationEvidence.streams.length), 0,
+            'opening and closing help must not capture microphone input');
+        const inputSetup = page.locator('#voice-identity-input-setup');
+        assert.equal(await inputSetup.isVisible(), false);
+        await page.screenshot({ path: path.join(scratch, 'input-setup-initial.png') });
+        await page.locator('#voice-identity-prepare').click();
+        await page.waitForFunction(() => !document.getElementById('voice-identity-prepare').disabled);
+        const completion = page.locator('#voice-identity-resource-complete');
+        await completion.waitFor({ state: 'visible' });
+        const completionShownAt = Date.now();
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-resource-complete-close');
+        const timeoutLayout = await page.evaluate(() => ({
+            timeoutTop: document.querySelector('.resource-complete-timeout').getBoundingClientRect().top,
+            buttonBottom: document.getElementById('voice-identity-resource-complete-close').getBoundingClientRect().bottom,
+        }));
+        assert.ok(timeoutLayout.timeoutTop >= timeoutLayout.buttonBottom);
+        await page.keyboard.press('Tab');
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-resource-complete-close');
+        await completion.waitFor({ state: 'hidden', timeout: 6500 });
+        assert.ok(Date.now() - completionShownAt >= 4500, 'completion notice closes after five seconds');
+        assert.equal(await inputSetup.isVisible(), true);
+        assert.equal(await inputSetup.evaluate(el => !!el.closest('.resource-card')), true);
+        assert.equal(await page.evaluate(() => window.__durationEvidence.streams.length), 0,
+            'resource preparation reveals settings without enabling the microphone');
+        for (const theme of ['light', 'dark']) for (const width of [960, 390]) {
+            await page.setViewportSize({ width, height: 900 });
+            await page.evaluate(theme => document.documentElement.setAttribute('data-theme', theme), theme);
+            const layout = await page.evaluate(() => ({
+                overflow: document.documentElement.scrollWidth > innerWidth,
+                input: document.getElementById('voice-identity-input-setup').getBoundingClientRect().toJSON(),
+                resource: document.querySelector('.resource-card').getBoundingClientRect().toJSON(),
+            }));
+            assert.equal(layout.overflow, false);
+            assert.ok(layout.input.left >= layout.resource.left && layout.input.right <= layout.resource.right);
+            await page.locator('.resource-card').screenshot({ path: path.join(scratch, `input-setup-${theme}-${width}.png`) });
+        }
+        await page.setViewportSize({ width: 960, height: 900 });
+        await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
         await page.locator('#voice-identity-test').click();
         await page.waitForFunction(() => !document.getElementById('voice-identity-start').disabled);
+        assert.equal(await inputSetup.isVisible(), false);
+        assert.equal(await page.locator('#voice-identity-input-settings').isVisible(), true);
+        assert.match(await page.locator('#voice-identity-input-summary').textContent(), /passed|通过/);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-input-settings');
+        await page.screenshot({ path: path.join(scratch, 'input-setup-completed.png') });
+        await page.waitForFunction(() => document.getElementById('voice-identity-resource-card').classList.contains('is-compact'));
+        assert.equal(await page.locator('#voice-identity-resource-summary').isVisible(), false);
+        assert.equal(await page.locator('#voice-identity-resource-message').isVisible(), false);
+        assert.equal(await page.locator('#voice-identity-input-summary').isVisible(), false);
+        assert.equal(await page.locator('#voice-identity-input-settings').isVisible(), true);
+        await page.screenshot({ path: path.join(scratch, 'input-setup-compact.png') });
+        const streamsBeforeReopen = await page.evaluate(() => window.__durationEvidence.streams.length);
+        await page.locator('#voice-identity-input-settings').click();
+        assert.equal(await inputSetup.isVisible(), true);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'voice-identity-microphone');
+        assert.equal(await page.evaluate(() => window.__durationEvidence.streams.length), streamsBeforeReopen);
+        await page.locator('#voice-identity-input-close').click();
+        assert.equal(await inputSetup.isVisible(), false);
         const check = requests.find(entry => entry.path.endsWith('/audio/check'));
         assert.equal(check.bytes, sampleRate * 3 * 2);
         assert.equal(check.ticket, 'controlled-browser-ticket');
@@ -228,6 +329,36 @@ async function main() {
         await page.waitForFunction(() => window.__durationEvidence.streams.every(stream => stream.getTracks().every(track => track.readyState === 'ended')) && window.__durationEvidence.contexts.every(context => context.state === 'closed'));
         assert.equal(enrollmentId, null);
         assert.deepEqual(pageErrors, []);
+        missingModels = true;
+        await page.reload();
+        await page.locator('#voice-identity-guide-confirm').click();
+        const repair = page.locator('#voice-identity-repair');
+        await repair.waitFor({ state: 'visible' });
+        const reservationsBeforeRepair = requests.filter(entry => entry.path.endsWith('/resources/operations')).length;
+        await repair.click();
+        await page.waitForFunction(() => document.getElementById('voice-identity-repair').classList.contains('is-loading'));
+        assert.equal(await repair.isDisabled(), true);
+        assert.equal(await page.locator('#voice-identity-resource-progress').isVisible(), true);
+        await repairReservationReceived;
+        for (const theme of ['light', 'dark']) for (const width of [960, 390]) {
+            await page.setViewportSize({ width, height: 900 });
+            await page.evaluate(theme => document.documentElement.setAttribute('data-theme', theme), theme);
+            assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+            await page.locator('.resource-card').screenshot({ path: path.join(scratch, `repair-${theme}-${width}.png`) });
+        }
+        const respondToRepair = releaseRepair; releaseRepair = null; respondToRepair();
+        await completion.waitFor({ state: 'visible' });
+        assert.equal(await completion.evaluate(element => element.classList.contains('needs-attention')), false);
+        const reservations = requests.filter(entry => entry.path.endsWith('/resources/operations'));
+        assert.equal(reservations.length, reservationsBeforeRepair + 1);
+        assert.equal(reservations.at(-1).kind, 'repair');
+        assert.equal(await page.evaluate(() => window.__durationEvidence.streams.length), 0);
+        await page.keyboard.press('Escape');
+        await completion.waitFor({ state: 'hidden' });
+        assert.equal(await repair.isVisible(), true);
+        await page.waitForFunction(() => document.getElementById('voice-identity-resource-details').open === false);
+        assert.equal(await repair.isVisible(), true);
+        assert.deepEqual(pageErrors, []);
         const report = {
             browser: await browser.version(), actualPageAndWorklet: true,
             locale: await page.evaluate(() => navigator.language),
@@ -238,12 +369,14 @@ async function main() {
             referencesHaveThreeSecondShape: true, verificationHasFiveSecondShape: true,
             rmsDurationDoesNotGateSubmission: true, cancelledResourcesReleased: true,
             finalVerificationIntentionallyRejectedByControlledApi: true,
+            completionAutoClose: true, repairUsesOneReservation: true, repairDoesNotCaptureMicrophone: true,
         };
         fs.writeFileSync(path.join(scratch, 'result.json'), JSON.stringify(report, null, 2));
         await page.screenshot({ path: path.join(scratch, 'cancelled.png') });
         console.log('VOICE_ENROLLMENT_DURATION_BROWSER ' + JSON.stringify(report));
         console.log('VOICE_ENROLLMENT_DURATION_BROWSER_ARTIFACTS ' + scratch);
     } finally {
+        if (releaseRepair) releaseRepair();
         if (browser) await browser.close();
         await new Promise(resolve => server.close(resolve));
     }

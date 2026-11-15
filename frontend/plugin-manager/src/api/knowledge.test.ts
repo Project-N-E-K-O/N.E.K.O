@@ -209,3 +209,32 @@ describe('knowledge API client', () => {
     expect(knowledgeFailureReason(new Error('boom'))).toBe('operation_failed')
   })
 })
+
+describe('knowledge market pairing', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    axiosMocks.request.mockReset()
+  })
+
+  it('asks the local server for a pairing code and builds the market link with it', async () => {
+    axiosMocks.request.mockResolvedValue({ data: { one_time_code: 'code-1', port: 48911, expires_in: 300 } })
+    const { createMarketPairing, knowledgeMarketUrl } = await loadKnowledgeApi()
+
+    const pairing = await createMarketPairing()
+    expect(axiosMocks.request.mock.calls[0]![0]).toMatchObject({ url: '/market/pair-code', method: 'POST' })
+    expect(pairing).toEqual({ one_time_code: 'code-1', port: 48911 })
+    expect(knowledgeMarketUrl('https://market.example/', pairing)).toBe(
+      'https://market.example/#/knowledge?neko_pair=code-1&neko_port=48911',
+    )
+  })
+
+  it.each([
+    { one_time_code: '', port: 48911 },
+    { one_time_code: 'c', port: 'x' },
+    { one_time_code: 'c', port: 70000 },
+  ])('rejects a malformed pairing reply %o', async (data) => {
+    axiosMocks.request.mockResolvedValue({ data })
+    const { createMarketPairing, KnowledgeApiError } = await loadKnowledgeApi()
+    await expect(createMarketPairing()).rejects.toBeInstanceOf(KnowledgeApiError)
+  })
+})

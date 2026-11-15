@@ -32,13 +32,20 @@ BACKGROUND = REPO / "main_routers" / "visit_router" / "background.py"
 
 
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    async def no_pending_invites():
+        return 0
+
+    # Startup resets invites first; never reach the real Servers (a signed-in dev machine would cancel its own).
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", no_pending_invites)
     background.cancel_visit_background_tasks()
     yield
     background.cancel_visit_background_tasks()
 
 
-# ── 静态：只以 create_task 挂到后台，启动链路上不 await ─────────────────
+# -- Static: create_task only, without awaiting on the startup path. --
 
 
 def _calls(tree: ast.AST, name: str) -> list[ast.Call]:
@@ -79,7 +86,7 @@ def test_background_module_only_creates_tasks_for_the_loops():
     tree = ast.parse(BACKGROUND.read_text(encoding="utf-8"))
     start = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                  and n.name == "start_visit_background_tasks")
-    # 同步函数：没有 await 的余地
+    # Synchronous function: awaiting is impossible.
     assert not any(isinstance(n, ast.Await) for n in ast.walk(start))
     created = [ast.unparse(c.args[0]) for c in _calls(start, "create_task")]
     assert created == ["runtime.visit_sweep_loop()", "_recover_in_background()"]
@@ -90,7 +97,7 @@ def test_visit_shutdown_runs_first_in_on_shutdown():
     on_shutdown = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "on_shutdown")
     steps = [c for c in _calls(on_shutdown, "_run_shutdown_step") if c.args]
     first_args = [ast.unparse(c.args[0]) for c in sorted(steps, key=lambda c: (c.lineno, c.col_offset))]
-    # 串门收口是第一个关机步骤（在语音身份清理之前），且有自己的期限
+    # Visit finalization is the first shutdown step, before voice-identity cleanup, with its own deadline.
     assert first_args[:2] == ["stop_visit_background_tasks", "close_voice_identity_runtime"]
     visit_step = next(c for c in steps if ast.unparse(c.args[0]) == "stop_visit_background_tasks")
     deadline = next(k for k in visit_step.keywords if k.arg == "deadline_monotonic")
@@ -98,7 +105,7 @@ def test_visit_shutdown_runs_first_in_on_shutdown():
     assert background.SHUTDOWN_STEP_BUDGET_S > background.VISIT_SHUTDOWN_BUDGET_S + background._STOP_ALL_SLACK_S
 
 
-# ── 行为 ──────────────────────────────────────────────────────────────
+# -- Behavior --
 
 
 async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypatch, tmp_path):
@@ -107,9 +114,11 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
 
     captured: dict = {}
     gate = asyncio.Event()
+    entered = asyncio.Event()
 
     async def fake_recovery(render_chips, upload_transcript=None, **kw):
         captured.update(kw, render_chips=render_chips, upload_transcript=upload_transcript)
+        entered.set()
         await gate.wait()
         return SimpleNamespace(crashed=[], chips=[], swept=0)
 
@@ -121,12 +130,11 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
     monkeypatch.setattr(runtime, "runtime_deps", lambda: SimpleNamespace(config_dir=lambda: tmp_path))
     started = time.monotonic()
     background.start_visit_background_tasks()
-    assert time.monotonic() - started < 0.1          # 不等补录
+    assert time.monotonic() - started < 0.1          # Do not wait for backfill.
     sweep, rec = background._sweep_task, background._recovery_task
-    background.start_visit_background_tasks()         # 幂等：不再起第二份
+    background.start_visit_background_tasks()         # Idempotent: do not create a second instance.
     assert background._sweep_task is sweep and background._recovery_task is rec
-    for _ in range(20):
-        await asyncio.sleep(0)
+    await asyncio.wait_for(entered.wait(), timeout=5)
     assert captured["render_chips"] is debrief.render_chips
     assert captured["upload_transcript"] is transcript_upload.upload_visit_transcript
     assert captured["is_live"] is runtime.is_visit_live
@@ -135,7 +143,7 @@ async def test_start_returns_at_once_and_injects_the_runtime_callbacks(monkeypat
     assert captured["submit_report"] is transcript_upload.submit_queued_report
     assert captured["config_dir"] == tmp_path and captured["family_names"] == ("妈妈",)
     assert callable(captured["summary_llm"]) and callable(captured["void_pending"])
-    # 删除退役补完：人设退役与角色配置变更锁（与删除事务同一把）
+    # Complete deletion retirement: persona retirement and character-configuration mutation share the deletion transaction lock.
     from main_routers.visit_router import character_hooks
     from utils import character_memory
 
@@ -154,6 +162,165 @@ async def test_recovery_failure_is_logged_not_raised(monkeypatch, caplog):
     background.start_visit_background_tasks()
     assert await background._recovery_task is None
     assert "visit recovery failed" in caplog.text
+
+
+async def test_startup_invalidates_pending_invites_before_spool_recovery(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    order = []
+
+    async def reset_invites():
+        order.append("reset")
+        return 1
+
+    async def recover():
+        order.append("recover")
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    assert await background.wait_startup_invite_reset() is None
+    assert await background._recovery_task is None
+    assert order == ["reset", "recover"]
+
+
+async def test_startup_invite_reset_timeout_does_not_block_recovery(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    cancelled = asyncio.Event()
+    recovered = asyncio.Event()
+
+    async def hanging_reset():
+        try:
+            await asyncio.sleep(60)
+        finally:
+            cancelled.set()
+
+    async def recover():
+        recovered.set()
+
+    monkeypatch.setattr(background, "_INVITE_RESET_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", hanging_reset)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    failure = await background.wait_startup_invite_reset()
+    assert isinstance(failure, credentials.VisitServersUnreachable)
+    assert failure.reason == "startup_invite_reset"
+    assert await background._recovery_task is None
+    assert cancelled.is_set() and recovered.is_set()
+
+
+async def test_failed_startup_invite_reset_is_retried_at_admission(monkeypatch):
+    # Signed out at startup, signed in later: the next admission retries the reset
+    # instead of refusing every room until restart; the failure surfaces as is.
+    from main_routers.visit_router import credentials
+
+    calls = []
+    signed_in = False
+
+    async def reset_invites():
+        calls.append("reset")
+        if not signed_in:
+            raise credentials.VisitLoginRequired("no_session")
+        return 0
+
+    async def recover():
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    assert isinstance(await background.wait_startup_invite_reset(), credentials.VisitLoginRequired)
+    assert calls == ["reset", "reset"]
+    signed_in = True
+    assert await background.wait_startup_invite_reset() is None
+    assert await background.wait_startup_invite_reset() is None
+    assert calls == ["reset", "reset", "reset"]
+
+
+async def test_concurrent_admissions_share_one_reset_retry(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    calls = []
+    release = asyncio.Event()
+
+    async def reset_invites():
+        calls.append("reset")
+        if len(calls) == 1:
+            raise credentials.VisitServersUnreachable("session_unverified")
+        await release.wait()
+        return 2
+
+    async def recover():
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    waiters = [asyncio.create_task(background.wait_startup_invite_reset()) for _ in range(3)]
+    await asyncio.sleep(0.05)
+    assert calls == ["reset", "reset"]
+    release.set()
+    assert await asyncio.gather(*waiters) == [None, None, None]
+    assert calls == ["reset", "reset"]
+
+
+async def test_successful_retry_is_recorded_before_any_waiter_resumes(monkeypatch):
+    # A finished retry plus a not-yet-cleared failure would let the next admission
+    # start a second bulk cancel while the first caller is already minting a room.
+    from main_routers.visit_router import credentials
+
+    calls = []
+
+    async def reset_invites():
+        calls.append("reset")
+        if len(calls) == 1:
+            raise credentials.VisitServersUnreachable("network")
+        return 0
+
+    async def recover():
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    background.start_visit_background_tasks()
+    first = asyncio.create_task(background.wait_startup_invite_reset())
+    while background._invite_reset_retry is None:
+        await asyncio.sleep(0)
+    assert await background._invite_reset_retry is None
+    assert background._invite_reset_error is None
+    assert await background.wait_startup_invite_reset() is None
+    assert await first is None
+    assert calls == ["reset", "reset"]
+
+
+async def test_shutdown_releases_admissions_waiting_on_a_reset_retry(monkeypatch):
+    from main_routers.visit_router import credentials
+
+    calls = []
+
+    async def reset_invites():
+        calls.append("reset")
+        if len(calls) == 1:
+            raise credentials.VisitServersUnreachable("network")
+        await asyncio.sleep(60)
+
+    async def recover():
+        return None
+
+    async def stopped(reason="shutdown"):
+        return None
+
+    monkeypatch.setattr(credentials, "cancel_pending_host_invites", reset_invites)
+    monkeypatch.setattr(background, "run_startup_recovery", recover)
+    monkeypatch.setattr(runtime, "stop_all", stopped)
+    background.start_visit_background_tasks()
+    waiter = asyncio.create_task(background.wait_startup_invite_reset())
+    await asyncio.sleep(0.05)
+    await background.stop_visit_background_tasks()
+    failure = await asyncio.wait_for(waiter, 1.0)
+    assert isinstance(failure, credentials.VisitServersUnreachable)
+    assert failure.reason == "startup_invite_reset"
 
 
 async def test_shutdown_is_bounded_even_when_stop_all_hangs(monkeypatch):
@@ -175,7 +342,7 @@ async def test_shutdown_is_bounded_even_when_stop_all_hangs(monkeypatch):
     sweep, rec = background._sweep_task, background._recovery_task
     started = time.monotonic()
     await background.stop_visit_background_tasks()
-    assert time.monotonic() - started < 1.0          # 到点不挡后面的关机钩子
+    assert time.monotonic() - started < 1.0          # Deadline expiry must not block subsequent shutdown hooks.
     assert stopped.is_set()
     await asyncio.sleep(0)
     assert sweep.cancelled() or sweep.done()
@@ -190,7 +357,7 @@ async def test_shutdown_without_any_visit_calls_no_runtime_shutdown(monkeypatch)
     assert calls == []
 
 
-# ── 登出 / 切换社区账号 ────────────────────────────────────────────────
+# -- Logout / community-account switching --
 
 
 class _FakeRt:
@@ -213,7 +380,7 @@ async def test_account_change_ends_every_visit_and_waits_for_the_seal(monkeypatc
     started = time.monotonic()
     assert await runtime.end_visits_for_account_change(timeout=1.0) == 2
     assert a.finalized == ["route_end"] and b.finalized == ["route_end"]
-    assert time.monotonic() - started >= 0.09         # 等到最慢那场封存完
+    assert time.monotonic() - started >= 0.09         # Wait until the slowest visit is archived.
 
 
 async def test_account_change_wait_is_bounded(monkeypatch, caplog):
@@ -264,7 +431,7 @@ async def test_account_change_fences_admission_and_ends_live_visits(monkeypatch)
     monkeypatch.setattr(runtime, "_runtimes", {"A": object()})
     async with runtime.account_change():
         assert ended == [True]
-        # 换账号期间建房一律拒（占位之前就拒，不动槽位）
+        # Reject all room creation during account switches before reservation, without touching slots.
         with pytest.raises(runtime.VisitRefused) as exc:
             await runtime.start_visit("A", "host")
         assert exc.value.body == {"code": "VISIT_E_BUSY", "reason": "account_change"}
@@ -296,10 +463,14 @@ async def test_start_awaiting_its_account_lookup_is_refused_after_an_account_cha
         def is_current(self):
             return True
 
+    async def _switch_on():
+        return {"visitEnabled": True}
+
     monkeypatch.setattr(persona, "persona_gate", persona_ok)
     monkeypatch.setattr(runtime, "_local_account", slow_account)
     starting = asyncio.ensure_future(runtime.start_visit("A", "host", host=Host(),
-                                                         deps=SimpleNamespace(config_dir=lambda: Path("."))))
+                                                         deps=SimpleNamespace(config_dir=lambda: Path("."),
+                                                                              settings=_switch_on)))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     async with runtime.account_change():
@@ -307,7 +478,7 @@ async def test_start_awaiting_its_account_lookup_is_refused_after_an_account_cha
         with pytest.raises(runtime.VisitRefused) as exc:
             pytest.fail(f"admitted during an account change: {await starting!r}")
     assert exc.value.body["reason"] == "account_change"
-    assert visit_route_state.get_visit_route_state("A") is None      # 占位已放掉
+    assert visit_route_state.get_visit_route_state("A") is None      # Reservation released.
     runtime._reset_for_tests()
 
 
@@ -329,14 +500,14 @@ async def test_oauth_fence_decides_relogin_with_the_fence_up(monkeypatch):
     monkeypatch.setattr(runtime, "_runtimes", {"A": object()})
     monkeypatch.setattr(runtime, "end_visits_for_account_change", spy)
     monkeypatch.setattr(accounts, "local_account", current)
-    async with community_oauth.visit_account_change():               # 登出：收尾
+    async with community_oauth.visit_account_change():               # Logout: finalize.
         assert runtime._account_changes == 1
-    async with community_oauth.visit_account_change("acct-2"):       # 换账号：收尾
+    async with community_oauth.visit_account_change("acct-2"):       # Account switch: finalize.
         pass
-    async with community_oauth.visit_account_change("acct-1"):       # 同一账号重登：不收尾，但闸照样立着
+    async with community_oauth.visit_account_change("acct-1"):       # Same-account login: no finalization, but retain the gate.
         assert runtime._account_changes == 1
     assert ended == [True, True]
-    # 账号比对在闸立起之后才做：比对期间不会有新串门被准入
+    # Compare accounts only after raising the gate, preventing new visits during comparison.
     assert fence_up_when_checked == [True, True]
 
 
@@ -367,7 +538,7 @@ async def test_seal_wait_keeps_waiting_for_a_seal_finished_in_the_background():
     asyncio.get_running_loop().call_later(0.3, sealing.set_result, {"ok": True})
     started = time.monotonic()
     assert await runtime.VisitRuntime.wait_upload_sealed(stub, 2.0) is True
-    assert time.monotonic() - started >= 0.25          # 退出流程先结束不算：等封存真的落盘
+    assert time.monotonic() - started >= 0.25          # Exit-flow completion is insufficient; wait for archive persistence.
 
 
 async def test_seal_wait_on_a_deferred_chain_times_out_instead_of_lying():
@@ -391,7 +562,7 @@ def test_every_credential_change_runs_inside_the_visit_fence():
     logout = _body_of(oauth, "async def oauth_logout_endpoint(")
     assert "async with visit_account_change():" in logout and "return await _oauth_logout()" in logout
     callback = _body_of(oauth, "async def _handle_oauth_callback(")
-    # 先拿登录锁、确认这次尝试没被新的 /oauth/start 顶掉，才立闸收尾串门，再写凭证
+    # Acquire login lock and verify this attempt was not superseded by /oauth/start before gating/finalizing visits and writing credentials.
     lock = callback.index("async with _oauth_start_lock:")
     recheck = callback.index("if not await _oauth_attempt_still_current(expected_state):", lock)
     fence = callback.index("async with visit_account_change(local_user_id):", lock)
@@ -405,7 +576,7 @@ def test_every_credential_change_runs_inside_the_visit_fence():
     assert logout2.index("async with community_oauth.visit_account_change():") < logout2.index("_clear_auth)")
 
 
-# ── 评审第 2 轮 ───────────────────────────────────────────────────────
+# -- Review round 2 --
 
 
 async def test_startup_rollback_also_cancels_upload_retry_workers():
@@ -436,7 +607,7 @@ async def test_shutdown_stops_the_recovery_before_stop_all(monkeypatch):
     rec = background._recovery_task
     await asyncio.sleep(0)
     await background.stop_visit_background_tasks()
-    # 补录先停：它不会在 stop_all 取后台任务快照之后再派生写入
+    # Stop backfill first so it cannot spawn writes after stop_all snapshots background tasks.
     assert seen == [True]
 
 
@@ -444,18 +615,18 @@ def test_sync_session_clear_rechecks_the_account_inside_the_fence():
     card = (REPO / "main_routers" / "card_drop_router.py").read_text(encoding="utf-8")
     sync = _body_of(card, "async def sync_session_endpoint(")
     fenced = sync.split("async with community_oauth.visit_account_change():", 1)[1].split("cleared = await", 1)[0]
-    # 等收尾期间别的登录可能已换账号：闸内、清除之前再核对一次令牌
+    # Another login may change accounts during finalization; recheck the token inside the gate before clearing.
     assert "_access_token" in fenced and "local_session_mismatch" in fenced
 
 
 async def test_account_changes_run_one_at_a_time(monkeypatch):
-    # 前一次变更还在等封存（那场可能已注销）：后一次不能看着空表抢先改凭证
+    # A previous change still awaits archival, possibly after deregistration; later changes cannot use an empty table to overwrite credentials early.
     order: list[str] = []
     release = asyncio.Event()
 
     async def slow_end(timeout=None):
         order.append("first:end-start")
-        monkeypatch.setattr(runtime, "_runtimes", {})          # 那场已从登记表注销
+        monkeypatch.setattr(runtime, "_runtimes", {})          # That visit is already deregistered.
         await release.wait()
         order.append("first:end-done")
         return 1
@@ -475,7 +646,7 @@ async def test_account_changes_run_one_at_a_time(monkeypatch):
     await asyncio.sleep(0.01)
     b = asyncio.ensure_future(second())
     await asyncio.sleep(0.05)
-    assert "second:write" not in order and runtime._account_changes == 2   # 后一次排队时闸照样立着
+    assert "second:write" not in order and runtime._account_changes == 2   # Keep the gate raised while the later attempt queues.
     release.set()
     await asyncio.gather(a, b)
     assert order == ["first:end-start", "first:end-done", "first:write", "second:write"]
@@ -483,7 +654,7 @@ async def test_account_changes_run_one_at_a_time(monkeypatch):
 
 
 async def test_stale_oauth_attempt_is_recognized(monkeypatch):
-    # 被新的 /oauth/start 顶掉的回调：不为它结束在飞的串门（凭证写入本来也会拒）
+    # Callback superseded by /oauth/start: do not terminate in-flight visits for it; credential writes are rejected anyway.
     from main_routers import community_oauth
 
     pending = {"state": "new-attempt"}
@@ -494,11 +665,11 @@ async def test_stale_oauth_attempt_is_recognized(monkeypatch):
     assert await community_oauth._oauth_attempt_still_current("new-attempt") is False
 
 
-# ── 评审第 5 轮 ───────────────────────────────────────────────────────
+# -- Review round 5 --
 
 
 async def test_account_change_waits_for_a_seal_of_a_recently_unregistered_visit(monkeypatch):
-    # 退出流程超过封存期限、封存还在后台写：这场已从 _runtimes 注销，但账号变更仍要等它
+    # Exit exceeded its archive deadline while background persistence continues: despite deregistration from _runtimes, account changes must still wait.
     sealing = asyncio.get_running_loop().create_future()
     stub = _SealStub(sealing=sealing, exited=True)
     stub.wait_upload_sealed = lambda timeout: runtime.VisitRuntime.wait_upload_sealed(stub, timeout)
@@ -507,7 +678,7 @@ async def test_account_change_waits_for_a_seal_of_a_recently_unregistered_visit(
     asyncio.get_running_loop().call_later(0.2, sealing.set_result, {"ok": True})
     started = time.monotonic()
     async with runtime.account_change(timeout=2.0):
-        assert sealing.done()                      # 改凭证之前已封存
+        assert sealing.done()                      # Archived before changing credentials.
     assert time.monotonic() - started >= 0.15
 
 
@@ -527,11 +698,11 @@ async def test_shutdown_cancels_upload_retry_workers(monkeypatch):
         transcript_upload._workers.pop("w" * 22, None)
 
 
-# ── 自动 Review 第 1 轮 ───────────────────────────────────────────────
+# -- Automated review round 1 --
 
 
 async def test_a_slow_runtime_shutdown_does_not_cut_off_stop_alls_cleanup(monkeypatch):
-    # 某场 shutdown() 用满预算：外层不能先超时把 stop_all 后半段（取消后台写入）截掉
+    # One shutdown() consumes its full budget: the outer timeout must not cut off stop_all's remaining background-write cancellation.
     budget = 0.3
     monkeypatch.setattr(runtime, "VISIT_SHUTDOWN_BUDGET_S", budget)
     monkeypatch.setattr(background, "VISIT_SHUTDOWN_BUDGET_S", budget)

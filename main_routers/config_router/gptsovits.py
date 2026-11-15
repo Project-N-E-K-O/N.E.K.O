@@ -32,15 +32,15 @@ async def list_gptsovits_voices(request: Request):
     from utils.gptsovits_config import is_valid_http_url
     try:
         data = await request.json()
-        # 边界规范化：转字符串(兼容 None)+trim+去尾斜杠，校验与下游请求复用同一个值，
-        # 避免 {"api_url": null} 崩 / 带空白的 URL 绕过校验后拼出畸形端点。
+        # Boundary normalization: stringify (including None), trim, remove trailing slash; reuse the same value for validation and downstream requests,
+        # avoiding {"api_url": null} crashes or whitespace URLs bypassing validation and forming malformed endpoints.
         api_url = str(data.get("api_url") or "").strip().rstrip("/")
 
         if not api_url:
             return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_REQUIRED", "code": "TTS_GPT_SOVITS_URL_REQUIRED"}, status_code=400)
 
-        # URL 校验：本地或远程均可（按维护者 SSRF posture 决定，对齐 vLLM-Omni）；
-        # 仅挡非 http(s) / 空 host，不再限制 loopback。
+        # URL validation accepts local or remote (maintainer's SSRF posture, aligned with vLLM-Omni);
+        # reject only non-http(s) schemes / empty hosts, without restricting loopback.
         if not is_valid_http_url(api_url):
             return JSONResponse({"success": False, "error": "TTS_GPT_SOVITS_URL_INVALID", "code": "TTS_GPT_SOVITS_URL_INVALID"}, status_code=400)
 
@@ -51,7 +51,7 @@ async def list_gptsovits_voices(request: Request):
                     result = await resp.json(content_type=None)
                 except Exception:
                     text = await resp.text()
-                    # 上游响应可能含 TTS 原文 echo，不写 logger
+                    # Upstream responses may echo raw TTS text; never write to logger.
                     logger.error(f"GPT-SoVITS v3 API 返回非 JSON 响应 (HTTP {resp.status}, body_len={len(text)})")
                     print(f"[GSV] API 非 JSON 响应 raw: {text[:200]}")
                     return {"success": False, "error": "Upstream TTS service error", "code": "TTS_CONNECTION_FAILED"}
@@ -80,13 +80,13 @@ async def test_gptsovits_connectivity(request: Request):
 
     try:
         data = await request.json()
-        # 边界规范化（同 list_voices）：转字符串(兼容 None)+trim+去尾斜杠后再校验与拼接。
+        # Boundary normalization (as list_voices): stringify (including None), trim, remove trailing slash before validation/concatenation.
         api_url = str(data.get("api_url") or "http://127.0.0.1:9881").strip().rstrip("/")
         voice_id = (data.get("voice_id", "") or "init").strip()
         # i18n test text
         test_text = data.get("test_text", "") or "连通性测试"
 
-        # URL 校验：本地或远程均可（SSRF posture 同 vLLM-Omni）；仅挡非 http(s) / 空 host。
+        # URL validation accepts local or remote (vLLM-Omni SSRF posture); reject only non-http(s) schemes / empty hosts.
         if not is_valid_http_url(api_url):
             return {"success": False, "error": "URL 格式无效", "error_code": "missing_params"}
 
@@ -189,8 +189,8 @@ async def test_gptsovits_connectivity(request: Request):
                 else:
                     logger.info("[ConnectivityTest] GPT-SoVITS → ❌ 未收到有效响应")
 
-                # --- 以下为编写连通测试时使用的音频播放验证代码，已确认可行（2026-04-22） ---
-                # --- 保留供后续调试使用，正常运行时不启用 ---
+                # --- Audio-playback verification used while writing connectivity tests, confirmed working 2026-04-22 ---
+                # --- Retained for later debugging; disabled during normal operation ---
                 # import base64
                 # raw_pcm = b""
                 # sample_rate = 0

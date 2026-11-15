@@ -20,6 +20,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -68,14 +69,56 @@ ACTIVE_STORAGE_MIGRATION_STATUSES = frozenset(
     }
 )
 
+_PLUGIN_INSTALLATION_ENTRIES = (".neko-plugin-installations/plugins", "plugins.lock.json")
+_PLUGIN_SCOPED_LOCK_NAME = re.compile(r"plugins\.[0-9a-f]{16}\.lock\.json")
+_PLUGIN_AUTOSTART_ENTRIES = (
+    "config/plugin_runtime_overrides.json",
+    "config/plugin_autostart_pending.json",
+)
+
 MIGRATED_RUNTIME_ENTRY_NAMES = (
     "config",
     "memory",
+    # Sync originals, sealed batches, pending deletions and fixed consent are
+    # durable user data, not a regenerable cache. Migration runs while servers
+    # are stopped and verifies the complete SQLite files before publishing.
+    # The external writer witness stays at anchor_root/state; moving it with
+    # this directory would wrongly give a retained/copied root new authority.
+    "chat_sync",
     # Public knowledge: user-imported packs and registry, plus knowledge.db.
     # The database is derived but moves with the rest: migration runs with
     # every server stopped, exactly like memory's SQLite files.
     "knowledge",
+    # NekoClaw: what it keeps as plain files, each on its own (the ledger of
+    # commissions with its write-ahead log, the permission settings, what
+    # was learned about plugins and models, the browser settings). Not the
+    # directory as a whole: below it are the task agents' working
+    # directories (virtual environments, ``node_modules``: full of links)
+    # and the profile of the browser the browser tools start (lock links on
+    # macOS and Linux), and one link fails a whole migration. Those two stay
+    # in the old root; see ``DELIBERATELY_UNMIGRATED`` in
+    # ``tests/unit/test_storage_runtime_entry_contract.py``. A commission
+    # that was taken up before the move goes on in the session it had there:
+    # the ledger records where that is (``Commission.session_dir``). The ledger's
+    # write-ahead log is no entry of its own right: see ``_COMPANION_ENTRIES``.
+    "nekoclaw/ledger.db",
+    "nekoclaw/ledger.db-wal",
+    "nekoclaw/permissions.json",
+    "nekoclaw/plugin_short_descriptions.json",
+    "nekoclaw/model_capabilities.json",
+    "nekoclaw/browser.json",
+    # What task agents keep for later commissions: rules, indexes, entries,
+    # reviews, archived projects. Plain text the host alone writes, kept in
+    # a directory of its own, apart from the session directories, so that it
+    # can move as a whole (``nekoclaw.host.paths.SpacePaths``).
+    "nekoclaw/task_agent_space",
     "plugins",
+    # What plugins publish for other plugins to read, one directory per
+    # publishing plugin (``PluginBase.shared_path``). User data like the
+    # plugins' own state, and moved the same way.
+    "plugin_shared",
+    # Installed code and its source records live outside the plugin state tree.
+    *_PLUGIN_INSTALLATION_ENTRIES,
     "live2d",
     "vrm",
     "mmd",
@@ -116,6 +159,44 @@ V1_MIGRATED_RUNTIME_ENTRY_NAMES = (
     "jukebox",
     "avatar_tools",
 )
+
+# Entries that are part of another one and go where that one goes, never
+# decided on their own. A SQLite database's write-ahead log holds its latest
+# commits and is replayed into whatever database file stands next to it:
+# beside a database from the other root it would corrupt that database. So
+# the log is copied only together with its database; where the target keeps
+# its own database, its own log (or none) stays with it.
+_COMPANION_ENTRIES = {"nekoclaw/ledger.db-wal": "nekoclaw/ledger.db"}
+
+# Completed migrations may already have different plugin approvals and code
+# at the target. Only move installed code as part of a full storage migration.
+# The same goes for an entry and its companion: the catch-up publishes entry
+# by entry, and stopped between the two it has nothing that finishes the
+# pair or takes it back, so the half that arrived would be taken for the new
+# root's own. A full migration moves both in one transaction. (A v1
+# migration was made by a build from before there was any such pair; one
+# found in its old root all the same stays there and is named by cleanup.)
+_V1_CATCH_UP_ENTRIES = tuple(
+    name for name in MIGRATED_RUNTIME_ENTRY_NAMES
+    if name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
+    and name not in _PLUGIN_INSTALLATION_ENTRIES
+    and name not in _COMPANION_ENTRIES
+    and name not in _COMPANION_ENTRIES.values()
+)
+
+
+def _is_migrated_runtime_entry(name: str) -> bool:
+    return name in MIGRATED_RUNTIME_ENTRY_NAMES or _PLUGIN_SCOPED_LOCK_NAME.fullmatch(name) is not None
+
+
+def migrated_runtime_entry_names(root: Path) -> tuple[str, ...]:
+    """List fixed migration entries and the root's execution-scoped install records."""
+    try:
+        with os.scandir(root) as entries:
+            scoped_locks = sorted(entry.name for entry in entries if _PLUGIN_SCOPED_LOCK_NAME.fullmatch(entry.name))
+    except (FileNotFoundError, NotADirectoryError):
+        scoped_locks = []
+    return (*MIGRATED_RUNTIME_ENTRY_NAMES, *scoped_locks)
 
 # Top-level runtime directories the app recreates by itself. They are not
 # migrated (logs follow the new root from the first start), and cleaning a
@@ -195,7 +276,7 @@ def private_cleanup_entry_name(name: str) -> str | None:
     if not separator or len(suffix) != 12 or any(char not in "0123456789abcdef" for char in suffix):
         return None
     entry_name = entry_name.replace(_PRIVATE_NAME_SEPARATOR, "/")
-    return entry_name if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES else None
+    return entry_name if _is_migrated_runtime_entry(entry_name) else None
 
 
 def _entry_parents(root: Path, entry_name: str) -> list[Path]:
@@ -274,9 +355,13 @@ def is_retained_root_cleanup_available(
             return False
         # An entry a stopped cleanup left under its private name still
         # needs this cleanup to be put back, even when it was the last one.
-        return any(
-            (normalized_retained_root / name).exists() for name in MIGRATED_RUNTIME_ENTRY_NAMES
-        ) or _has_private_cleanup_leftover(normalized_retained_root)
+        try:
+            names = migrated_runtime_entry_names(normalized_retained_root)
+        except OSError:
+            return True
+        return any((normalized_retained_root / name).exists() for name in names) or _has_private_cleanup_leftover(
+            normalized_retained_root
+        )
     if _path_contains(normalized_retained_root, normalized_anchor_root):
         return False
 
@@ -901,15 +986,15 @@ def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path
         return set()
     except OSError:
         # Not knowing what it says is not knowing it points nowhere.
-        return set(MIGRATED_RUNTIME_ENTRY_NAMES)
+        return set(migrated_runtime_entry_names(source_root))
     if classify_entry_no_follow(workshop_config_path) != "file":
         # A link: what it points at can change while the config directory
         # does not, so what it references cannot be followed.
-        return set(MIGRATED_RUNTIME_ENTRY_NAMES)
+        return set(migrated_runtime_entry_names(source_root))
     try:
         payload = read_json(workshop_config_path)
     except Exception:
-        return set(MIGRATED_RUNTIME_ENTRY_NAMES)
+        return set(migrated_runtime_entry_names(source_root))
     # Rebasing onto a marker root shows which values sit under the source.
     marker_root = source_root / ".neko-config-reference-probe"
     rebased = rebase_runtime_bound_workshop_config_paths(
@@ -926,8 +1011,8 @@ def _source_entries_referenced_by_config(*, config_root: Path, source_root: Path
             continue
         relative = Path(str(value)).relative_to(normalize_runtime_root(marker_root)).parts
         if not relative:
-            return set(MIGRATED_RUNTIME_ENTRY_NAMES)
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES:
+            return set(migrated_runtime_entry_names(source_root))
+        for entry_name in migrated_runtime_entry_names(source_root):
             entry_parts = tuple(entry_name.split("/"))
             if relative[: len(entry_parts)] == entry_parts:
                 referenced.add(entry_name)
@@ -1109,7 +1194,7 @@ def copy_evidence_entries(copied_entries: Any) -> dict[str, dict[str, Any]]:
     return {
         str(entry_name): proof
         for entry_name, proof in copied_entries.items()
-        if entry_name in MIGRATED_RUNTIME_ENTRY_NAMES and isinstance(proof, dict)
+        if _is_migrated_runtime_entry(str(entry_name)) and isinstance(proof, dict)
     }
 
 
@@ -1199,21 +1284,21 @@ def _rollback_interrupted_publish(
     published_entries = [
         str(entry)
         for entry in payload.get("published_entries") or []
-        if str(entry) in MIGRATED_RUNTIME_ENTRY_NAMES
+        if _is_migrated_runtime_entry(str(entry))
     ]
     publishing_entry = str(payload.get("publishing_entry") or "").strip()
-    if publishing_entry not in MIGRATED_RUNTIME_ENTRY_NAMES:
+    if not _is_migrated_runtime_entry(publishing_entry):
         publishing_entry = ""
     original_entries = {
         str(entry)
         for entry in payload.get("original_target_entries") or []
-        if str(entry) in MIGRATED_RUNTIME_ENTRY_NAMES
+        if _is_migrated_runtime_entry(str(entry))
     }
     raw_modes = payload.get("original_target_modes")
     original_modes = {
         str(entry): mode
         for entry, mode in (raw_modes.items() if isinstance(raw_modes, dict) else [])
-        if str(entry) in MIGRATED_RUNTIME_ENTRY_NAMES and isinstance(mode, int)
+        if _is_migrated_runtime_entry(str(entry)) and isinstance(mode, int)
     }
 
     def _restore_original_mode(entry_name: str, target_entry: Path) -> None:
@@ -1548,7 +1633,7 @@ def _transaction_entries_diverged_from_source(
             recorded[entry_name] = proof["source_manifest"]
     diverged: list[str] = []
     for entry_name in dict.fromkeys(entries):
-        if entry_name not in MIGRATED_RUNTIME_ENTRY_NAMES:
+        if not _is_migrated_runtime_entry(entry_name):
             continue
         source_entry = source_root / entry_name
         if not os.path.lexists(source_entry):
@@ -1600,12 +1685,37 @@ def _entry_exists(path: Path) -> bool:
     return True
 
 
-def _iter_existing_runtime_entries(root: Path) -> list[str]:
+def _is_empty_file(path: Path) -> bool:
+    """Whether ``path`` is a file of no bytes; a link is not followed."""
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(status.st_mode) and status.st_size == 0
+
+
+def _iter_existing_runtime_entries(
+    root: Path, *, excluded: tuple[str, ...] = (),
+) -> list[str]:
     return [
         name
-        for name in MIGRATED_RUNTIME_ENTRY_NAMES
-        if _entry_exists(root / name)
+        for name in migrated_runtime_entry_names(root)
+        if name not in excluded and _entry_exists(root / name)
     ]
+
+
+def _plugin_autostart_settings_match(source_root: Path, target_root: Path) -> bool:
+    for name in _PLUGIN_AUTOSTART_ENTRIES:
+        if _has_linked_parent(source_root, name) or _has_linked_parent(target_root, name):
+            return False
+        source = source_root / name
+        target = target_root / name
+        if _entry_exists(source):
+            if not _entry_exists(target) or _snapshot_path(source) != _snapshot_path(target):
+                return False
+        elif _entry_exists(target):
+            return False
+    return True
 
 
 def _is_ignorable_content_name(name: str) -> bool:
@@ -1712,7 +1822,7 @@ def _root_has_user_content(root: Path, *, config_manager) -> bool:
             return True
         # Only the entries the probe above does not know: it has its own
         # rules for config and theater defaults that must stay in force.
-        extra = [name for name in MIGRATED_RUNTIME_ENTRY_NAMES if name not in LEGACY_RUNTIME_DIR_NAMES]
+        extra = [name for name in migrated_runtime_entry_names(root) if name not in LEGACY_RUNTIME_DIR_NAMES]
         return root_has_migrated_entry_content(root, extra)
     except Exception:
         if not root.exists() or not root.is_dir():
@@ -2121,7 +2231,7 @@ def _retained_root_holds_no_migrated_entries(retained_root: Path, *, cleanup_sta
             names = [child.name for child in iterator]
     except OSError:
         return False
-    if any(name in MIGRATED_RUNTIME_ENTRY_NAMES or private_cleanup_entry_name(name) is not None for name in names):
+    if any(_is_migrated_runtime_entry(name) or private_cleanup_entry_name(name) is not None for name in names):
         return False
     return all(
         _path_is_absent(retained_root / entry_name)
@@ -2245,9 +2355,8 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     copied_entries = dict(copy_evidence_entries(payload.get("copied_entries")))
     candidates = [
         entry_name
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
-        if entry_name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
-        and entry_name not in copied_entries
+        for entry_name in _V1_CATCH_UP_ENTRIES
+        if entry_name not in copied_entries
         and entry_parents_are_real_directories(source_root, entry_name)
         and _entry_exists(source_root / entry_name)
     ]
@@ -2376,9 +2485,8 @@ def catch_up_v1_migration(config_manager, *, anchor_root: Path | str) -> list[st
     # otherwise be neither copied nor named; the next launch takes it.
     turned_up = [
         entry_name
-        for entry_name in MIGRATED_RUNTIME_ENTRY_NAMES
-        if entry_name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES
-        and entry_name not in copied_entries
+        for entry_name in _V1_CATCH_UP_ENTRIES
+        if entry_name not in copied_entries
         and entry_name not in skipped
         and entry_name not in candidates
         and _entry_exists(source_root / entry_name)
@@ -2412,7 +2520,7 @@ def v1_catch_up_unfinished_entries(payload: dict[str, Any] | None) -> list[str]:
         return []
     if str(payload.get("v1_catch_up_completed_at") or "").strip():
         return []
-    return [name for name in MIGRATED_RUNTIME_ENTRY_NAMES if name not in V1_MIGRATED_RUNTIME_ENTRY_NAMES]
+    return list(_V1_CATCH_UP_ENTRIES)
 
 
 def v1_catch_up_skipped_entries(payload: dict[str, Any] | None) -> list[str]:
@@ -2921,11 +3029,62 @@ def run_pending_storage_migration(
         _ensure_target_root_writable(target_root)
 
         source_snapshots: dict[str, dict[str, int | str]] = {}
-        existing_entries = _iter_existing_runtime_entries(source_root)
         # What the target holds before anything is staged: an entry appearing
         # while earlier (large) entries are being copied was never confirmed
         # for replacing either.
         target_entries_before_staging = set(_iter_existing_runtime_entries(target_root))
+        source_entries_before_staging = _iter_existing_runtime_entries(source_root)
+        excluded_source_entries: tuple[str, ...] = ()
+        plugin_exec_entry, plugin_lock_entry = _PLUGIN_INSTALLATION_ENTRIES
+        if use_existing_target and plugin_exec_entry in target_entries_before_staging:
+            # Keep the recovered target's installation and approval state together.
+            excluded_source_entries = _PLUGIN_INSTALLATION_ENTRIES
+        elif plugin_exec_entry in target_entries_before_staging and plugin_exec_entry not in source_entries_before_staging:
+            # A target-only install tree keeps its own source records.
+            excluded_source_entries = (plugin_lock_entry,)
+
+        def _companion_conflict(companion_entry: str) -> StorageMigrationError:
+            return StorageMigrationError(
+                "companion_entry_conflict",
+                "目标路径里留有任务账本上次没写完的日志，和要搬过去的账本不是一套，放在一起会损坏账本。"
+                f"请选择空目录后重试: {companion_entry}",
+            )
+
+        for companion_entry, owner_entry in _COMPANION_ENTRIES.items():
+            owner_is_copied = owner_entry in source_entries_before_staging and not (
+                use_existing_target and owner_entry in target_entries_before_staging
+            )
+            if not owner_is_copied:
+                # The target keeps its own (or there is none to copy): the
+                # source's companion stays behind with what it belongs to.
+                excluded_source_entries = (*excluded_source_entries, companion_entry)
+            elif (
+                companion_entry in target_entries_before_staging
+                and (use_existing_target or companion_entry not in source_entries_before_staging)
+                # One of no bytes holds nothing that could be replayed: it is
+                # left where it is, unless the source has one to put there.
+                and not (
+                    companion_entry not in source_entries_before_staging
+                    and _is_empty_file(target_root / companion_entry)
+                )
+            ):
+                # What is copied would come to stand next to a companion the
+                # target left behind (a reused target keeps what it holds,
+                # and nothing takes away an entry the source does not have).
+                raise _companion_conflict(companion_entry)
+        existing_entries = [name for name in source_entries_before_staging if name not in excluded_source_entries]
+        uncopied_install_entries = set(_PLUGIN_INSTALLATION_ENTRIES) - set(existing_entries)
+
+        def _require_no_unpaired_target_installation() -> None:
+            if len(uncopied_install_entries) == 1 and any(
+                _entry_exists(target_root / name) for name in uncopied_install_entries
+            ):
+                raise StorageMigrationError(
+                    "plugin_installation_conflict",
+                    "迁移会混用新旧目录的插件程序和安装来源记录，请选择空目录后重试。",
+                )
+
+        _require_no_unpaired_target_installation()
         # And what each of them was: the confirmation covered that version,
         # not one a sync client writes while the source is being staged.
         # Taken so it still compares once the entry sits in the backup.
@@ -3081,10 +3240,46 @@ def run_pending_storage_migration(
                     f"迁移目标的条目在挪进事务备份前后被改动，已停止迁移并放回原处: {entry_name}",
                 )
 
+        def _require_no_companion_left_by_the_target() -> None:
+            # The look before staging was at what the target held then. While
+            # the entries were copied a companion may have come to be there
+            # (a sync client putting a log back), or one of no bytes may have
+            # been written into: the owner that is published would stand next
+            # to it all the same.
+            for companion_entry, owner_entry in _COMPANION_ENTRIES.items():
+                if owner_entry not in entries_to_publish or companion_entry in entries_to_publish:
+                    # The target keeps its own pair, or gets the whole of the source's.
+                    continue
+                if not _entry_exists(target_root / companion_entry):
+                    continue
+                if companion_entry not in source_entries_before_staging and _is_empty_file(target_root / companion_entry):
+                    continue
+                raise _companion_conflict(companion_entry)
+
         def _require_sources_unchanged(published: Collection[str] = ()) -> None:
             for entry_name, expected in moved_backup_fingerprints.items():
                 _require_backup_unchanged(entry_name, expected)
-            appeared = set(_iter_existing_runtime_entries(source_root)) - set(existing_entries)
+            _require_no_unpaired_target_installation()
+            _require_no_companion_left_by_the_target()
+            if use_existing_target:
+                kept_install_entries = reused_target_entries.difference(identical_entries).intersection(
+                    _PLUGIN_INSTALLATION_ENTRIES
+                )
+                if kept_install_entries and any(name in entries_to_publish for name in _PLUGIN_INSTALLATION_ENTRIES):
+                    raise StorageMigrationError(
+                        "plugin_installation_conflict",
+                        "目标路径的插件安装内容与原路径不同，请选择空目录后重试。",
+                    )
+                if (
+                    plugin_exec_entry in entries_to_publish
+                    and "config" not in entries_to_publish
+                    and not _plugin_autostart_settings_match(source_root, target_root)
+                ):
+                    raise StorageMigrationError(
+                        "plugin_installation_conflict",
+                        "目标路径的插件自启动设置与原路径不同，请选择空目录后重试。",
+                    )
+            appeared = set(_iter_existing_runtime_entries(source_root, excluded=excluded_source_entries)) - set(existing_entries)
             if appeared:
                 # Absent when the source was first listed, so never staged: the
                 # target would go live without it.
@@ -3196,8 +3391,19 @@ def run_pending_storage_migration(
                 config_root=target_root / "config",
                 source_root=source_root,
             )
+        # Nor where a companion of the entry stays behind in the source: the
+        # identical file in the target is then not the whole of what the
+        # source holds (a ledger's log has commits its database file lacks),
+        # and cleanup would take the owner from under its companion.
+        owners_of_companions_left_behind = {
+            owner_entry
+            for companion_entry, owner_entry in _COMPANION_ENTRIES.items()
+            if companion_entry in excluded_source_entries
+            and companion_entry in source_entries_before_staging
+            and not _is_empty_file(source_root / companion_entry)
+        }
         for entry_name, proof in identical_entries.items():
-            if entry_name not in referenced_by_kept_config:
+            if entry_name not in referenced_by_kept_config and entry_name not in owners_of_companions_left_behind:
                 copied_entries[entry_name] = proof
 
         # Reusing an existing target only makes sense if it still holds runtime

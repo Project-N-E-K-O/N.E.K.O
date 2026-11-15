@@ -381,6 +381,7 @@ class UniversalTutorialManager {
         this._yuiGuideLastSceneId = null;
         this._yuiGuideLifecycleActive = false;
         this.activeAvatarFloatingGuideRound = null;
+        this._avatarFloatingGuideStartupToken = null;
         this._tutorialEndHandled = false;
         const LifecycleStateStore = typeof TutorialLifecycleStateStore === 'function'
             ? TutorialLifecycleStateStore
@@ -1257,6 +1258,7 @@ class UniversalTutorialManager {
     }
 
     prepareYuiGuideCompactChatForTutorial() {
+        const startupToken = this._avatarFloatingGuideStartupToken;
         const requestId = `tutorial-compact-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         let tutorialRunId = '';
         try {
@@ -1288,6 +1290,10 @@ class UniversalTutorialManager {
                 settled = true;
                 window.removeEventListener('neko:yui-guide:compact-chat-ready', handleReady);
                 window.clearTimeout(timeoutId);
+                if (this._avatarFloatingGuideStartupToken !== startupToken) {
+                    resolve(false);
+                    return;
+                }
                 const response = detail && typeof detail === 'object' ? detail : {};
                 // 只在握手完成后保存启动前形态；上一轮迟到回执不能覆盖本轮恢复目标。
                 this._avatarFloatingChatSurfaceSnapshot = {
@@ -1760,8 +1766,14 @@ class UniversalTutorialManager {
 
         this.closeDay1SystrayIntroModal({ notify: false });
 
+        const platformApi = window.homeTutorialPlatformCapabilities;
+        const isMac = !!(platformApi && platformApi.detectPlatform() === 'macos');
         const t = (key, fallback) => this.t(key, fallback);
         const escape = (text) => this.safeEscapeHtml(t(text.key, text.fallback));
+        const platformEscape = (text) => escape({
+            key: isMac ? text.key.replace('tutorial.systray.', 'tutorial.systray.macos.') : text.key,
+            fallback: isMac ? text.macFallback : text.fallback
+        });
         const overlay = document.createElement('div');
         overlay.id = 'neko-day1-systray-intro-modal';
         overlay.className = 'neko-day1-systray-intro-modal';
@@ -1776,19 +1788,19 @@ class UniversalTutorialManager {
                 <div class="neko-day1-systray-layout">
                     <div class="neko-day1-systray-media">
                         <div class="neko-day1-systray-location-copy">
-                            <h2 id="neko-day1-systray-intro-title">${escape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置' })}</h2>
-                            <p>${escape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。' })}</p>
-                            <p class="neko-day1-systray-note">${escape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。' })}</p>
+                            <h2 id="neko-day1-systray-intro-title">${platformEscape({ key: 'tutorial.systray.location.title', fallback: '📍 托盘图标位置', macFallback: '📍 菜单栏图标位置' })}</h2>
+                            <p>${platformEscape({ key: 'tutorial.systray.location.desc', fallback: 'N.E.K.O 的图标会出现在屏幕右下角的系统托盘里，点击一下就能找到它。', macFallback: 'N.E.K.O 的图标位于屏幕顶部的 macOS 菜单栏。' })}</p>
+                            <p class="neko-day1-systray-note">${platformEscape({ key: 'tutorial.systray.location.note', fallback: '如果看不到，可以先展开托盘的小箭头，查看全部图标。', macFallback: '在顶部菜单栏找到图中的 N.E.K.O 图标。' })}</p>
                         </div>
                         <img
-                            src="/static/assets/tutorial/systray/stray_intro.png"
-                            alt="${escape({ key: 'tutorial.systray.location.alt', fallback: '系统托盘位置示意图' })}"
+                            src="${isMac ? '/static/assets/tutorial/systray/macos_intro.png' : '/static/assets/tutorial/systray/stray_intro.png'}"
+                            alt="${platformEscape({ key: 'tutorial.systray.location.alt', fallback: '系统托盘位置示意图', macFallback: 'macOS 菜单栏图标和菜单示意图' })}"
                         >
                     </div>
                     <div class="neko-day1-systray-content">
                         <section class="neko-day1-systray-menu" aria-labelledby="neko-day1-systray-menu-title">
-                            <h3 id="neko-day1-systray-menu-title">${escape({ key: 'tutorial.systray.menu.title', fallback: '📋 托盘菜单' })}</h3>
-                            <p>${escape({ key: 'tutorial.systray.menu.desc', fallback: '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：' })}</p>
+                            <h3 id="neko-day1-systray-menu-title">${platformEscape({ key: 'tutorial.systray.menu.title', fallback: '📋 托盘菜单', macFallback: '📋 菜单栏菜单' })}</h3>
+                            <p>${platformEscape({ key: 'tutorial.systray.menu.desc', fallback: '右键点击系统托盘（见上一步提示）中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：', macFallback: '点击菜单栏中的 N.E.K.O 图标即可打开菜单。以下是一些常用功能：' })}</p>
                             <div class="neko-day1-systray-menu-panel">
                                 <div class="neko-day1-systray-menu-item">
                                     <strong>${escape({ key: 'tutorial.systray.resetPosition', fallback: '重置角色位置' })}</strong>
@@ -1799,12 +1811,12 @@ class UniversalTutorialManager {
                                     <span>${escape({ key: 'tutorial.systray.openChatDesc', fallback: '打开独立的对话框进行文字对话~' })}</span>
                                 </div>
                                 <div class="neko-day1-systray-menu-item">
-                                    <strong>${escape({ key: 'tutorial.systray.hotkey', fallback: '快捷键设置' })}</strong>
-                                    <span>${escape({ key: 'tutorial.systray.hotkeyDesc', fallback: '设置全局快捷键，更高效地控制 N.E.K.O~' })}</span>
+                                    <strong>${escape({ key: 'tutorial.systray.settings', fallback: '设置' })}</strong>
+                                    <span>${escape({ key: 'tutorial.systray.settingsDesc', fallback: '打开设置，调整 N.E.K.O 的使用偏好~' })}</span>
                                 </div>
                                 <div class="neko-day1-systray-menu-item neko-day1-systray-menu-item--danger">
                                     <strong>${escape({ key: 'tutorial.systray.exit', fallback: '退出' })}</strong>
-                                    <span>${escape({ key: 'tutorial.systray.exitDesc', fallback: '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~' })}</span>
+                                    <span>${platformEscape({ key: 'tutorial.systray.exitDesc', fallback: '关闭 N.E.K.O。托盘菜单是退出应用的主要方式~', macFallback: '关闭 N.E.K.O，可从菜单栏菜单中选择退出。' })}</span>
                                 </div>
                             </div>
                         </section>
@@ -3463,6 +3475,9 @@ class UniversalTutorialManager {
         }
     }
 
+    /**
+     * @returns {Promise<boolean|null>} null when superseded, so callers must not recover or release startup gates.
+     */
     async startAvatarFloatingGuideRound(day, options = {}) {
         if (window.isNekoClickGuideActive) return false;
         const round = normalizeAvatarFloatingGuideRound(day);
@@ -3496,6 +3511,10 @@ class UniversalTutorialManager {
             }
         }
 
+        // A restarted round can outlive the previous round's pending startup work.
+        const startupToken = {};
+        this._avatarFloatingGuideStartupToken = startupToken;
+        const ownsStartup = () => this._avatarFloatingGuideStartupToken === startupToken;
         this._isDestroyed = false;
         this._tutorialEndHandled = false;
         this.lifecycleStateStore.resetEndReason();
@@ -3512,6 +3531,8 @@ class UniversalTutorialManager {
         const autoReservationId = source === 'auto'
             ? `auto-${round}-${Date.now()}-${Math.random().toString(36).slice(2)}`
             : '';
+        const isCancelled = () => this._tutorialEndHandled || this._isDestroyed
+            || !this.isTutorialRunning || window.isInTutorial !== true;
 
         try {
             if (source === 'auto') {
@@ -3528,31 +3549,11 @@ class UniversalTutorialManager {
             this.isTutorialRunning = true;
             window.isInTutorial = true;
             this.lockBodyScroll();
-            if (source === 'auto') {
-                const stateApi = getSevenDayTutorialStateApi();
-                if (typeof stateApi.flush === 'function') {
-                    await stateApi.flush();
-                }
-            }
-            // prepare 已绑定当前教程生命周期；重启教程时聊天桥仍处于上一轮 closed 状态，
-            // 必须先只打开本轮 PC/chat lifecycle，否则 prepare 会被当作迟到消息丢弃。
-            // 用户可见的 tutorial-started 事件仍等胶囊准备成功后再发，避免失败启动被记录为已开始。
-            this.relayYuiGuideTutorialLifecycleStarted('home', source);
-            // 必须先让 PC 原生窗口完成毛球→胶囊，再开启固定布局；反过来会让固定锁
-            // 与展开请求竞争，表现为教程仍显示毛球或胶囊位置闪烁。
-            const compactChatReady = await this.prepareYuiGuideCompactChatForTutorial();
-            if (
-                this._tutorialEndHandled
-                || this._isDestroyed
-                || !this.isTutorialRunning
-                || window.isInTutorial !== true
-            ) {
-                // skip/远程结束可能发生在 prepare 等待期间；迟到回执刚写入的形态快照
-                // 仍需补恢复，但不能再走 catch 重复 teardown，更不能继续固定布局并启动 director。
-                this.restoreYuiGuideCompactChatSurface('tutorial-start-cancelled-after-prepare');
+            const cancelStartup = async (reason) => {
+                if (!ownsStartup()) return null;
+                // Teardown may finish before a pending prepare acknowledgement arrives.
+                this.restoreYuiGuideCompactChatSurface(reason);
                 if (directTutorialBoot) {
-                    // teardown 已接管取消流程；这里只释放提前建立的 claim，并保留已跳过模型标记，
-                    // 让调用方既有的 result=false recovery 在拆除后恢复用户模型。
                     this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-start-cancelled', {
                         keepUserModelBootSkipped: true,
                         suppressPrediction: true
@@ -3565,7 +3566,28 @@ class UniversalTutorialManager {
                         await stateApi.flush();
                     }
                 }
-                return false;
+                return ownsStartup() ? false : null;
+            };
+            if (source === 'auto') {
+                const stateApi = getSevenDayTutorialStateApi();
+                if (typeof stateApi.flush === 'function') {
+                    await stateApi.flush();
+                }
+            }
+            if (!ownsStartup()) return null;
+            if (isCancelled()) {
+                return await cancelStartup('tutorial-start-cancelled-before-prepare');
+            }
+            // prepare 已绑定当前教程生命周期；重启教程时聊天桥仍处于上一轮 closed 状态，
+            // 必须先只打开本轮 PC/chat lifecycle，否则 prepare 会被当作迟到消息丢弃。
+            // 用户可见的 tutorial-started 事件仍等胶囊准备成功后再发，避免失败启动被记录为已开始。
+            this.relayYuiGuideTutorialLifecycleStarted('home', source);
+            // 必须先让 PC 原生窗口完成毛球→胶囊，再开启固定布局；反过来会让固定锁
+            // 与展开请求竞争，表现为教程仍显示毛球或胶囊位置闪烁。
+            const compactChatReady = await this.prepareYuiGuideCompactChatForTutorial();
+            if (!ownsStartup()) return null;
+            if (isCancelled()) {
+                return await cancelStartup('tutorial-start-cancelled-after-prepare');
             }
             if (!compactChatReady) {
                 throw new Error('tutorial_compact_chat_not_ready');
@@ -3585,14 +3607,18 @@ class UniversalTutorialManager {
             if (!director || typeof director.playAvatarFloatingRound !== 'function') {
                 throw new Error('avatar_floating_director_unavailable');
             }
-            await this.playAvatarFloatingRoundPrelude(round, source, director, {
+            const preludeCompleted = await this.playAvatarFloatingRoundPrelude(round, source, director, {
                 skipSourceModelFade: directTutorialBoot
             });
-            const completed = await director.playAvatarFloatingRound(round, {
-                source,
-                surfaceReady: true,
-                revealPrepared: () => this.revealTutorialLive2dPrepared()
-            });
+            if (!ownsStartup()) return null;
+            const completed = preludeCompleted !== false && !director.isStopping()
+                ? await director.playAvatarFloatingRound(round, {
+                    source,
+                    surfaceReady: true,
+                    revealPrepared: () => this.revealTutorialLive2dPrepared()
+                })
+                : false;
+            if (!ownsStartup()) return null;
             if (directTutorialBoot) {
                 this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
                     suppressPrediction: true
@@ -3608,8 +3634,10 @@ class UniversalTutorialManager {
                     );
                 await this.requestTutorialDestroy(endReason);
             }
+            if (!ownsStartup()) return null;
             return completed;
         } catch (error) {
+            if (!ownsStartup()) return null;
             console.error('[Tutorial] 悬浮窗教程启动失败:', error);
             if (source === 'auto' && !tutorialStarted) {
                 this.rollbackAvatarFloatingGuideRoundAutoShown(round, autoReservationId);
@@ -3618,6 +3646,7 @@ class UniversalTutorialManager {
                     await stateApi.flush();
                 }
             }
+            if (!ownsStartup()) return null;
             if (directTutorialBoot) {
                 this.releaseDirectAvatarFloatingTutorialBoot('avatar-floating-before-teardown', {
                     keepUserModelBootSkipped: true,
@@ -3627,9 +3656,11 @@ class UniversalTutorialManager {
             if (!this._tutorialEndHandled) {
                 await this.requestTutorialDestroy('destroy');
             }
+            if (!ownsStartup()) return null;
             if (directTutorialBoot) {
                 await this.recoverUserModelAfterDirectTutorialBootFailure('avatar-floating-start-failed');
             }
+            if (!ownsStartup()) return null;
             throw error;
         }
     }
@@ -3656,6 +3687,8 @@ class UniversalTutorialManager {
         return controller.play(round, {
             source: source,
             director: director || null,
+            // Loading may finish after Escape has already torn down this tutorial.
+            cancelCheck: () => this._isDestroyed || this._tutorialEndHandled || !!(director && director.isStopping()),
             deferRevealPrepared: true,
             skipSourceModelFade: options && options.skipSourceModelFade === true
         });
@@ -4239,6 +4272,18 @@ class UniversalTutorialManager {
 
         // 清除全局引导标记
         window.isInTutorial = false;
+
+        // teardown 直接清全局标志、不经过任何抑制层的 begin/end：必须刷新
+        // 交互锁并广播转变。调度重排/视觉补挂挂在 lock-changed(locked:false)
+        // 这个最终释放边上——各来源的 features-suppressed false 事件都可能
+        // 早于最终解锁到达（scheduleProactiveChat 在闸门仍关时直接返回、
+        // 不留定时器），漏掉这次广播会让聊天/视觉定时器死到下一次无关操作。
+        try {
+            const interactionRuntime = window.NekoHomeTutorialRuntime;
+            if (interactionRuntime && typeof interactionRuntime.refreshInteractionLock === 'function') {
+                interactionRuntime.refreshInteractionLock('tutorial-teardown');
+            }
+        } catch (_) { }
 
         // 恢复页面滚动
         this.unlockBodyScroll();

@@ -616,7 +616,7 @@ async def test_concurrent_local_interactions_share_resource_verification_cooldow
     assert strict_reads == 1
 
 
-# intensity 和 touch_zone 是 wire 枚举；本地道具的即时提示词与记忆概括都不使用它们。
+# intensity and touch_zone are wire enums; neither local-prop instant prompts nor memory summaries use them.
 _WIRE_INTENSITIES = ("normal", "rapid")
 _WIRE_TOUCH_ZONES = ("ear", "head", "face", "body")
 _PROMPT_LOCALES = ("zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
@@ -630,7 +630,7 @@ _LOCAL_MEMORY_NOTES = {
     "es": "[小明 interactuó contigo usando la herramienta personalizada «小羽毛»]",
     "pt": "[小明 interagiu com você usando a ferramenta personalizada “小羽毛”]",
 }
-# 干净的探针记录：名称和含义不带拉丁字母，避免用户数据本身混进泄漏断言。
+# Clean probe records: names and meanings contain no Latin letters, preventing user data contaminating leakage assertions.
 _LEAK_PROBE_RECORD = {"name": "小羽毛", "meaning": "轻轻挠一下"}
 
 
@@ -678,7 +678,7 @@ async def test_maintenance_mode_during_deferred_recovery_is_absorbed(monkeypatch
 
     class FencedStore:
         def read_record(self, _tool_id, *, verify_resources=False):
-            # 启动时写围栏挡下了 recovery，read_record 会经 ensure() 抛这个。
+            # The startup write fence blocked recovery; read_record raises this through ensure().
             raise MaintenanceModeError("maintenance", operation="recover", target="avatar_tools")
 
         record_revision = staticmethod(AvatarToolStore.record_revision)
@@ -755,8 +755,8 @@ async def test_a_stalled_local_rejection_ack_does_not_hold_the_gate(monkeypatch)
     follower = asyncio.create_task(
         harness.handle_avatar_interaction(_payload(interactionId="local-interaction-2"))
     )
-    # 这条路径里有 asyncio.to_thread，得给真正的线程调度留时间；若 follower 被
-    # 挡在闸门上，它会一直等到 stalled 放行，也就等到超时。
+    # This path uses asyncio.to_thread, so allow real thread scheduling time. If the follower is
+    # gated, it waits until stalled is released, hence until timeout.
     done, _pending = await asyncio.wait({follower}, timeout=2)
 
     assert follower in done, "a stalled local rejection ack still blocks the interaction gate"

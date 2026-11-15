@@ -81,7 +81,7 @@ async def send_reload_page_notice(
     if not session or not session.websocket:
         return False
 
-    # 检查 WebSocket 连接状态
+    # Check WebSocket connection state.
     if not hasattr(session.websocket, 'client_state') or session.websocket.client_state != session.websocket.client_state.CONNECTED:
         return False
 
@@ -160,9 +160,9 @@ async def release_memory_server_character(
         claim_token = derived_task_claim_token or create_derived_task_claim_token()
         claim_generation = _capture_derived_task_claim_generation(character_name)
         encoded_name = quote(character_name, safe="")
-        # 复用进程级单例避免 per-call SSLContext 冷启动（实测 ~1.1s/次）。
-        # 单例在 on_shutdown 末尾由 aclose_internal_http_client 统一关闭，
-        # release/upload 阶段之前都可安全共享；无需 async with。
+        # Reuse the process singleton to avoid per-call SSLContext cold starts (measured ~1.1s each).
+        # aclose_internal_http_client closes it at the end of on_shutdown;
+        # safe to share through release/upload, without async with.
         client = get_internal_http_client()
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/release_character/{encoded_name}",

@@ -18,13 +18,13 @@ from fastapi.templating import Jinja2Templates
 class _NoCacheStaticFiles(StaticFiles):
     """StaticFiles with ``Cache-Control: no-cache, must-revalidate``.
 
-    踩点 (P12 多次): 开发期改完 JS / CSS 文件, 浏览器 (尤其 Edge/Chrome 的 ES
-    module loader) 会命中强缓存直接用旧副本, 导致 "代码已经合并、手动刷新多
-    次、仍然看不到新 UI" 的假 bug — 测试人员还会以为是后端数据没对. 调试一
-    圈绕一圈最后只是 Ctrl+Shift+R 清缓存. testbench 是开发/测试工具, 静态资
-    源体积小且改得频繁, 统一强制走 "revalidate" — 浏览器每次请求都带上
-    If-Modified-Since/ETag, 未变返回 304 (几乎不费流量), 变了立即拉新版本.
-    这样就彻底杜绝 "UI 代码已更新但用户看不到" 的假象.
+    Repeated P12 pitfall: after editing JS/CSS during development, browsers (especially Edge/Chrome's ES
+    module loader) reuse strong-cache copies, creating false bugs where merged UI updates remain invisible
+    despite repeated refreshes. Testers may suspect backend data; prolonged debugging
+    ends with Ctrl+Shift+R clearing the cache. Testbench is a development/testing tool with small,
+    frequently changing static resources, so force revalidation: every browser request sends
+    If-Modified-Since/ETag, receiving a cheap 304 if unchanged or the new version immediately.
+    This eliminates the illusion of updated UI code remaining invisible to users.
     """
 
     def file_response(self, *args, **kwargs):  # noqa: ANN001, ANN202

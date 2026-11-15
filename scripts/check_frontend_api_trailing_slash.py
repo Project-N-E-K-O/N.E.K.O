@@ -102,6 +102,9 @@ EXCLUDE_DIRS = {
 
 EXCLUDE_FILES: set[str] = {
     "scripts/check_frontend_api_trailing_slash.py",
+    # Vendored TRTC SDK, byte-identical to the npm release (THIRD_PARTY_NOTICES.md);
+    # its "/api/v1/" literal is a Tencent Cloud URL, not a call to our backend.
+    "static/libs/trtc.js",
 }
 
 # File extensions worth scanning. We deliberately skip ``.json`` (locale

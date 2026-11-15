@@ -6,7 +6,7 @@ def test_api_key_settings(mock_page: Page, running_server: str):
     """Test that the API key settings page loads and can save configurations."""
     # Capture console logs
     mock_page.on("console", lambda msg: print(f"Browser Console: {msg.text}"))
-    # 该用例关注 API 设置保存链路，不验证首次教程流程；先标记教程已读，避免保存按钮被教程锁住。
+    # This tests API-settings saving, not first-run tutorials; mark the tutorial read so it cannot lock the save button.
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     
     # Go to the settings page (route is /api_key)
@@ -803,7 +803,7 @@ def test_key_book_shortcut_targets_active_mimo_token_plan_key(
 
 @pytest.mark.frontend
 def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, running_server: str):
-    """普通 HTTP TTS 配置在 GPT-SoVITS 关闭时不应被编码成占位串。"""
+    """Ordinary HTTP TTS configuration must not become a placeholder string when GPT-SoVITS is disabled."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
@@ -831,8 +831,8 @@ def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, run
         }
     """)
 
-    # GSV「是否启用」迁到 ttsModelProvider 下拉后，启用状态 = 下拉是否选中 gptsovits；
-    # 这里选的是 custom，故未启用（旧的独立 #gptsovitsEnabled 开关已移除）。
+    # After moving GSV enablement into ttsModelProvider, it is enabled exactly when gptsovits is selected;
+    # custom is selected here, so it is disabled (the separate #gptsovitsEnabled switch was removed).
     assert mock_page.evaluate("document.getElementById('ttsModelProvider').value") == "custom"
 
     payload = mock_page.evaluate("""
@@ -853,7 +853,7 @@ def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, run
     """)
 
     assert payload["enableCustomApi"] is True
-    # gptsovitsEnabled 已退役，保存不再外发；启用状态由 ttsModelProvider 表达（这里 custom，未选 GSV）。
+    # gptsovitsEnabled is retired and no longer sent on save; ttsModelProvider expresses enablement, custom here rather than GSV.
     assert "gptsovitsEnabled" not in payload
     assert payload["ttsModelProvider"] == "custom"
     assert payload["ttsModelUrl"] == "https://example.com/v1/audio/speech"
@@ -864,7 +864,7 @@ def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, run
 
 @pytest.mark.frontend
 def test_assist_free_disables_assist_api_key_input(mock_page: Page, running_server: str):
-    """辅助 API 选择免费版时应禁用辅助 API Key 输入框。"""
+    """Selecting free auxiliary API should disable the auxiliary API key input."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     url = f"{running_server}/api_key"
     mock_page.goto(url)
@@ -1000,7 +1000,7 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
     mock_page.goto(url)
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
 
-    # 建立干净基线：免费版配置 + 清空 qwen 辅助 Key，隔离 session 级 server 的残留状态。
+    # Establish a clean baseline: free-service configuration plus cleared qwen auxiliary key, isolating residual session-server state.
     baseline = mock_page.evaluate("""
         async () => {
             const r = await fetch('/api/config/core_api', {
@@ -1021,7 +1021,7 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
     mock_page.wait_for_selector("#coreApiSelect option[value='qwen']", state="attached", timeout=10000)
     expect(mock_page.locator("#coreApiSelect")).to_have_value("free", timeout=5000)
 
-    # 切到付费 core，assist 保持 free
+    # Switch core to paid while assist remains free.
     mock_page.evaluate("""
         () => {
             const core = document.getElementById('coreApiSelect');
@@ -1031,7 +1031,7 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
     """)
     expect(mock_page.locator("#assistApiSelect")).to_have_value("free", timeout=5000)
 
-    # 空 Key 保存必须被拦截：assist=free 不豁免付费 core 的 Key 要求
+    # Block saving an empty key: assist=free does not exempt paid core's key requirement.
     blocked = mock_page.evaluate("""
         async () => {
             window.__captured = null;
@@ -1044,7 +1044,7 @@ def test_paid_core_key_not_overwritten_by_free_assist_on_save(mock_page: Page, r
     """)
     assert blocked, "付费 core 空 Key 被 assist=free 放行保存了"
 
-    # 填入真实 Key 后保存：coreApiKey 必须是真实 Key，不得被 free-access 覆盖
+    # Save with a real key: coreApiKey must remain that key, never be replaced with free-access.
     test_key = "sk-test-paid-core-with-free-assist"
     mock_page.fill("#apiKeyInput", test_key)
     payload = mock_page.evaluate("""
@@ -1199,7 +1199,7 @@ def test_mimo_token_plan_keeps_settings_scroll_container_stable(mock_page: Page,
         }
     """)
 
-    # 前提：该视口下内容本就需要滚动，否则 before/after 都为 0，断言失去意义。
+    # Precondition: content must require scrolling at this viewport, or before/after both equal 0 and the assertion is meaningless.
     assert metrics["beforeMaxScroll"] > 0
     assert abs(metrics["beforeScrollTop"] - metrics["beforeMaxScroll"]) <= 2
     assert metrics["afterMaxScroll"] > metrics["beforeMaxScroll"]
@@ -1250,9 +1250,9 @@ def test_mimo_token_plan_does_not_force_scroll_when_not_scrollable(mock_page: Pa
         }
     """)
 
-    # 前提：展开前容器不可滚动（maxScroll≈0），覆盖 isApiSettingsScrolledToBottom 的吸底守卫。
+    # Precondition: before expansion, the container cannot scroll (maxScroll approximately 0), covering isApiSettingsScrolledToBottom's bottom-stick guard.
     assert metrics["beforeMaxScroll"] <= 4
-    # 修复点：用户原本在顶部且不可滚动，启用 Token Plan 后不得被强制吸到底部。
+    # Fix target: users initially at the top without scrolling must not be forced to the bottom after enabling Token Plan.
     assert metrics["afterScrollTop"] <= 2
     assert metrics["customDisplay"] != "none"
 
@@ -1434,16 +1434,17 @@ def test_explicit_mimo_provider_ignores_assist_token_plan(mock_page: Page, runni
 
 
 @pytest.mark.frontend
-def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str):
-    """Saving explicit MiMo TTS must preserve ttsProvider so runtime dispatch selects MiMo."""
+@pytest.mark.parametrize("provider_key", ["mimo", "deepseek"])
+def test_explicit_hosted_tts_provider_is_saved_for_runtime_routing(mock_page: Page, running_server: str, provider_key):
+    """Saving an explicit hosted TTS choice must preserve its runtime routing."""
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
     mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
-    mock_page.wait_for_selector("#ttsModelProvider option[value='mimo']", state="attached", timeout=10000)
+    mock_page.wait_for_selector(f"#ttsModelProvider option[value='{provider_key}']", state="attached", timeout=10000)
 
     payload = mock_page.evaluate("""
-        async () => {
+        async (providerKey) => {
             document.getElementById('enableCustomApi').checked = true;
             toggleCustomApi();
 
@@ -1452,7 +1453,7 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
             assist.dispatchEvent(new Event('change', { bubbles: true }));
 
             const provider = document.getElementById('ttsModelProvider');
-            provider.value = 'mimo';
+            provider.value = providerKey;
             provider.dispatchEvent(new Event('change', { bubbles: true }));
 
             window.__capturedSavePayload = null;
@@ -1468,11 +1469,94 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
             await save_button_down({ preventDefault() {} });
             return window.__capturedSavePayload;
         }
-    """)
+    """, provider_key)
 
     assert payload["assistApi"] == "qwen"
-    assert payload["ttsModelProvider"] == "mimo"
-    assert payload["ttsProvider"] == "mimo"
+    assert payload["ttsModelProvider"] == provider_key
+    assert payload["ttsProvider"] == provider_key
+    if provider_key == "deepseek":
+        assert "ttsModelApiKey" not in payload
+        assert "ttsModelId" not in payload
+        assert "ttsModelUrl" not in payload
+        expect(mock_page.locator("#ttsModelUrl")).to_have_value("wss://api.deepseek.com/v1/tools/tts")
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize("intermediate_provider", [None, "gptsovits"])
+def test_deepseek_tts_preserves_saved_custom_slot_in_ui(
+    mock_page: Page, running_server: str, intermediate_provider,
+):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    custom_url = "https://custom.example.com/v1/audio/speech"
+
+    def seed_core_config(route):
+        response = route.fetch()
+        data = response.json()
+        data.update(
+            enableCustomApi=True,
+            ttsModelProvider="deepseek",
+            ttsProvider="deepseek",
+            ttsModelUrl=custom_url,
+            ttsModelId="custom-voice-model",
+            ttsModelApiKey="__NEKO_SECRET_MASKED__",
+        )
+        route.fulfill(response=response, json=data)
+
+    mock_page.route("**/api/config/core_api", seed_core_config)
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    url = mock_page.locator("#ttsModelUrl")
+    model = mock_page.locator("#ttsModelId")
+    expect(provider).to_have_value("deepseek")
+    expect(url).to_have_value("wss://api.deepseek.com/v1/tools/tts")
+    provider.select_option("custom", force=True, timeout=5000)
+    expect(url).to_have_value(custom_url)
+    expect(model).to_have_value("custom-voice-model")
+    assert mock_page.evaluate("getRealKey(document.getElementById('ttsModelApiKey'))") == "__NEKO_SECRET_MASKED__"
+
+    draft_url = "https://draft.example.com/v1/audio/speech"
+    url.evaluate("(input, value) => { input.value = value; }", draft_url)
+    model.evaluate("(input) => { input.value = 'draft-model'; }")
+    mock_page.evaluate("setMaskedInput(document.getElementById('ttsModelApiKey'), 'draft-key')")
+    provider.select_option("deepseek", force=True, timeout=5000)
+    if intermediate_provider:
+        provider.select_option(intermediate_provider, force=True, timeout=5000)
+    provider.select_option("custom", force=True, timeout=5000)
+
+    payload = mock_page.evaluate("""async () => {
+        window.saveApiKey = async (params) => { window.__capturedSavePayload = params; };
+        document.getElementById('current-api-key').dataset.hasKey = 'false';
+        await save_button_down({ preventDefault() {} });
+        return window.__capturedSavePayload;
+    }""")
+    assert payload["ttsModelProvider"] == "custom"
+    assert payload["ttsModelUrl"] == draft_url
+    assert payload["ttsModelId"] == "draft-model"
+    assert payload["ttsModelApiKey"] == "draft-key"
+
+
+@pytest.mark.frontend
+def test_deepseek_tts_voice_placeholder_follows_provider_and_locale(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    voice = mock_page.locator("#ttsVoiceId")
+    provider.select_option("deepseek", force=True, timeout=5000)
+    expect(voice).to_have_attribute("placeholder", "如：stella / tide")
+    voice.evaluate("(input) => { input.value = 'tide'; }")
+
+    mock_page.evaluate("window.changeLanguage('en')")
+    expect(voice).to_have_attribute("placeholder", "e.g., stella / tide")
+    expect(provider).to_have_value("deepseek")
+    expect(voice).to_have_value("tide")
+
+    provider.select_option("follow_assist", force=True, timeout=5000)
+    expect(voice).to_have_attribute("placeholder", "e.g., Chinese Female, alloy")
+    expect(voice).to_have_value("tide")
 
 
 @pytest.mark.frontend
@@ -1516,6 +1600,44 @@ def test_custom_tts_uses_openai_speech_probe_and_protocol_hint(mock_page: Page, 
     assert result["hintVisible"] is True
     assert result["hintKey"] == "api.ttsProtocolHintOpenAI"
     assert "/v1/audio/speech" in result["hintText"]
+
+
+@pytest.mark.frontend
+def test_custom_tts_without_voice_explains_core_voice_fallback(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key?lang=zh-CN")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='custom']", state="attached", timeout=10000)
+
+    provider = mock_page.locator("#ttsModelProvider")
+    hint = mock_page.locator("#tts-voice-fallback-hint")
+
+    def type_voice(value):
+        # The settings section may be collapsed; fire the same input event a user edit does.
+        mock_page.evaluate(
+            """(value) => {
+                const input = document.getElementById('ttsVoiceId');
+                input.value = value;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            }""",
+            value,
+        )
+
+    type_voice("")
+    provider.select_option("custom", force=True, timeout=5000)
+    expect(hint).to_have_css("display", "block")
+    expect(hint).to_have_text("Voice ID 未填写时，没有设置音色的角色将使用核心 API 自带的声音。")
+
+    mock_page.evaluate("window.changeLanguage('en')")
+    expect(hint).to_contain_text("Core API's built-in voice")
+
+    type_voice("af_heart")
+    expect(hint).to_have_css("display", "none")
+    type_voice("")
+    expect(hint).to_have_css("display", "block")
+
+    provider.select_option("follow_assist", force=True, timeout=5000)
+    expect(hint).to_have_css("display", "none")
 
 
 @pytest.mark.frontend
@@ -1578,7 +1700,7 @@ def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, 
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/api_key")
     expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
-    # registry-only provider 必须进 TTS 下拉
+    # Registry-only providers must appear in the TTS dropdown.
     mock_page.wait_for_selector("#ttsModelProvider option[value='gptsovits']", state="attached", timeout=10000)
 
     visibility = mock_page.evaluate("""
@@ -1626,8 +1748,8 @@ def test_gptsovits_dropdown_shows_gsv_fields_and_saves_enabled(mock_page: Page, 
 
     assert payload["ttsModelProvider"] == "gptsovits"
     assert payload["ttsProvider"] == "gptsovits"
-    # gptsovitsEnabled 已退役，保存不再外发；启用收口到 ttsModelProvider=='gptsovits' 单一真相，
-    # 后端 snapshot 据此派生 GPTSOVITS_ENABLED（见 utils/config_manager.py）。
+    # Retired gptsovitsEnabled is no longer sent; ttsModelProvider=='gptsovits' is the sole enablement source,
+    # from which the backend snapshot derives GPTSOVITS_ENABLED (see utils/config_manager.py).
     assert "gptsovitsEnabled" not in payload
     assert payload["ttsModelUrl"] == "http://127.0.0.1:9881"
     assert payload["ttsVoiceId"] == "my_voice"
@@ -1895,20 +2017,21 @@ def test_capability_dropdowns_hide_providers_with_no_implementation(
         }
     """)
 
-    # 纯文本 LLM 厂商没有任何 TTS worker，不该出现在 TTS 下拉里
-    for pk in ('deepseek', 'kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
+    # Text-only LLM providers have no TTS workers and must not appear in the TTS dropdown.
+    for pk in ('kimi', 'kimi_code', 'claude', 'openrouter', 'silicon'):
         assert pk not in options['tts'], f"TTS 下拉仍暴露无 TTS 能力的 {pk}"
 
-    # 实时全模态下拉不提供**任何**具名服务商。这个槽的取值会变成进程级的
-    # core api type，而那个身份同时决定 TTS worker / 原生音色 / 音频凭证——
-    # 它们都跟着核心 API 走。选一个与核心不同的厂商会把音频链路撕成两半
-    # （Qwen TTS worker 拿着 OpenAI 的 key），所以连真正有 realtime 端点的
-    # qwen / glm 也不摆出来。
+    # The realtime omni dropdown offers no named providers. This slot becomes the process-wide
+    # core API type, which also controls TTS workers, native voices, and audio credentials;
+    # all follow core API identity. Selecting a different provider splits the audio chain,
+    # e.g. a Qwen TTS worker receives an OpenAI key. Thus even qwen / glm,
+    # which genuinely have realtime endpoints, are omitted.
     for pk in ('deepseek', 'kimi', 'claude', 'minimax', 'elevenlabs', 'openrouter',
                'gemini', 'qwen', 'glm', 'step', 'grok', 'openai'):
         assert pk not in options['omni'], f"实时全模态下拉不该暴露具名服务商 {pk}"
 
-    # 反向断言：真正有能力的项必须还在，避免"全都过滤掉"也能让上面的断言通过
+    # Negative assertion: retain genuinely capable choices, preventing removal of everything from passing the checks above.
+    assert 'deepseek' in options['tts'], "DeepSeek 被误过滤"
     assert 'gptsovits' in options['tts'], "GPT-SoVITS 被误过滤"
     assert 'vllm_omni' in options['tts'], "vLLM-Omni 被误过滤"
     assert 'custom' in options['tts'], "自定义 TTS 被误过滤"
@@ -1937,11 +2060,11 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
         response = route.fetch()
         data = response.json()
         data['enableCustomApi'] = True
-        # 存量：TTS / omni 槽各选了一个后端根本没有实现的服务商，
-        # 连带被自动填进去的是该厂商的 LLM 端点与凭证
-        data['ttsModelProvider'] = 'deepseek'
-        data['ttsModelUrl'] = 'https://api.deepseek.com/v1'
-        data['ttsModelApiKey'] = 'sk-stale-deepseek'
+        # Legacy state: TTS / omni each select a provider with no backend implementation,
+        # automatically filling that provider's LLM endpoint and credentials too.
+        data['ttsModelProvider'] = 'kimi'
+        data['ttsModelUrl'] = 'https://api.moonshot.cn/v1'
+        data['ttsModelApiKey'] = 'sk-stale-kimi'
         data['omniModelProvider'] = 'claude'
         data['omniModelUrl'] = 'https://api.anthropic.com/v1'
         data['omniModelApiKey'] = 'sk-stale-claude'
@@ -1975,12 +2098,12 @@ def test_saved_incapable_provider_falls_back_and_clears_stale_credentials(
     assert state['omniProvider'] == 'follow_core', (
         f"无能力的 omni 选择应回落该槽默认值，实际={state['omniProvider']!r}"
     )
-    # 关键：绝不能落到 'custom' —— 那会把一个 LLM 端点坐实成自配 TTS/实时端点
+    # Never fall back to 'custom', which would legitimize an LLM endpoint as a configured TTS/realtime endpoint.
     assert state['ttsProvider'] != 'custom' and state['omniProvider'] != 'custom'
-    assert 'deepseek' not in (state['ttsUrl'] or ''), (
+    assert 'moonshot' not in (state['ttsUrl'] or ''), (
         f"残留的 LLM 端点应被跟随方的值覆盖，实际 ttsUrl={state['ttsUrl']!r}"
     )
-    assert 'sk-stale-deepseek' not in (state['ttsKey'] or ''), (
+    assert 'sk-stale-kimi' not in (state['ttsKey'] or ''), (
         f"残留凭证应被覆盖，实际 ttsKey={state['ttsKey']!r}"
     )
     assert 'anthropic' not in (state['omniUrl'] or ''), (

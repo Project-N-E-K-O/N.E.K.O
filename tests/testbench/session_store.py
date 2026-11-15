@@ -8,7 +8,7 @@ and a coordinating :class:`asyncio.Lock` that every mutating operation
 acquire before touching shared state.
 
 State enum values (``idle / busy / loading / saving / rewinding /
-resetting``) line up with the states listed in ``PLAN.md §技术点 1``. The
+resetting``) line up with the states listed in ``PLAN.md section Technical Point 1``. The
 UI reads :meth:`SessionStore.get_state` to disable risky buttons while an
 operation is in flight, and long-running endpoints return HTTP 409 when
 they'd collide with another owner of the lock.
@@ -102,23 +102,23 @@ class Session:
     # Filled by /api/persona in P05; empty dict means "never edited, form blank".
     persona: dict[str, Any] = field(default_factory=dict)
 
-    # P14: Stage Coach 引导状态. 结构:
+    # P14 Stage Coach guidance state. Shape:
     #   {
-    #     "current": Stage,                  # 六阶段之一
-    #     "updated_at": iso_str,             # 最近一次 advance/skip/rewind 的
-    #                                        # 真实时钟时间 (非虚拟时钟)
-    #     "history": [                       # 追加式, 不截断; rewind 也只追加
+    #     "current": Stage,                  # One of six stages.
+    #     "updated_at": iso_str,             # Latest advance/skip/rewind's
+    #                                        # real-clock time, not virtual time.
+    #     "history": [                       # Append-only, unbounded; rewind also appends.
     #        {"stage": Stage, "at": iso_str, "action": "init"|"advance"|
     #         "skip"|"rewind", "op_id": str | None, "skipped": bool,
     #         "note": str | None},
     #        ...,
     #     ],
     #   }
-    # `SessionStore.create` 会初始化为 :func:`stage_coordinator.initial_stage_state`
-    # 的返回值 (current=persona_setup + 一条 action="init" 的 history 根锚).
-    # P21 存档会带上; 加载回来时 Stage chip 自动回到上次的 stage.
-    # **只由 /api/stage/{advance,skip,rewind} 端点写**; chat/auto/script
-    # 等业务端点绝不自动触达 — PLAN §P14 "永远只建议 + 预览 + 等确认".
+    # SessionStore.create initializes from stage_coordinator.initial_stage_state,
+    # setting current=persona_setup plus an action="init" history root anchor.
+    # P21 archives retain it; loaded Stage chips restore the previous stage.
+    # Written only by /api/stage/{advance,skip,rewind}; chat/auto/script
+    # endpoints never advance automatically, per PLAN P14: suggest, preview, await confirmation.
     stage_state: dict[str, Any] = field(default_factory=dict)
 
     # P10: memory op preview cache. Key = op id (e.g. "facts.extract"), value =
@@ -128,38 +128,38 @@ class Session:
     # in-memory only (not persisted) — previews are intentionally transient.
     memory_previews: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    # P12: currently loaded dialog script state (None = 没加载脚本). Shape:
+    # P12 current dialog-script state; None means no loaded script. Shape:
     #   {
-    #     "template_name": str,              # 当前加载的脚本 name
+    #     "template_name": str,              # Loaded script name.
     #     "template_source": "builtin"|"user",
-    #     "turns": [ {role, content?, expected?, time?}, ... ],  # 完整 turns
-    #     "cursor": int,                     # 0-based, 指向"下一条待处理"
-    #     "turns_count": int,                # len(turns), 便于前端展示 N
-    #     "pending_reference": str | None,   # 跨 role=assistant turn 累积的
-    #                                        # expected 文本, 等下次 LLM 回
-    #                                        # 复落盘时回填 reference_content
+    #     "turns": [{role, content?, expected?, time?}, ...],  # Complete turns.
+    #     "cursor": int,                     # Zero-based next pending turn.
+    #     "turns_count": int,                # len(turns), displaying N in frontend.
+    #     "pending_reference": str | None,   # Expected text accumulated across
+    #                                        # role=assistant turns, populating
+    #                                        # reference_content after the next LLM reply persists.
     #     "loaded_at": ISO str (virtual clock),
     #     "description": str,
     #     "user_persona_hint": str,
     #   }
-    # 不挪进 sandbox (bootstrap 已经作用到 clock 上), 也不自动持久化 — 脚本
-    # 只是一次性运行时状态; 会话被 destroy/重建时随之清空.
+    # Keep outside sandbox, since bootstrap already affects clocks, without automatic persistence;
+    # script state is one-shot runtime data, cleared on session destruction/recreation.
     script_state: dict[str, Any] | None = None
 
-    # P13: 当前活跃的双 AI 自动对话运行态. None = 没跑 Auto-Dialog. Shape:
+    # P13 active dual-AI Auto-Dialog runtime state; None means stopped. Shape:
     #   {
-    #     "total_turns": int,              # 目标 target 回复次数
-    #     "completed_turns": int,          # 已完成 target 回复数 (进度分子)
-    #     "next_kind": "simuser"|"target", # 下一步是谁
-    #     "config": dict,                  # AutoDialogConfig.to_dict() 快照
-    #     "started_at_real": float,        # time.monotonic() 监测起点
-    #     "running_event": asyncio.Event,  # set = 跑, clear = pause 卡门
-    #     "stop_event": asyncio.Event,     # set = 请求停止
+    #     "total_turns": int,              # Target reply count.
+    #     "completed_turns": int,          # Completed target replies, progress numerator.
+    #     "next_kind": "simuser"|"target", # Next actor.
+    #     "config": dict,                  # AutoDialogConfig.to_dict() snapshot.
+    #     "started_at_real": float,        # time.monotonic() monitoring origin.
+    #     "running_event": asyncio.Event,  # Set runs; clear pauses at gate.
+    #     "stop_event": asyncio.Event,     # Set requests stop.
     #   }
-    # `describe()` 和对外序列化接口会过滤掉两个 asyncio.Event (不可 JSON 化).
-    # 整个 dict 只在 pipeline/auto_dialog.py 的 generator try/finally 里生死,
-    # 外部只应**只读**观测, 通过独立的 pause/resume/stop HTTP 端点修改两个
-    # Event. 直接改 dict 字段会 race 坏运行中的 generator.
+    # describe()/external serializers filter both non-JSON asyncio.Event objects.
+    # The dict lives only within pipeline/auto_dialog.py generator try/finally;
+    # external observers read only and modify Events via pause/resume/stop HTTP
+    # endpoints. Direct dict mutation races the running generator.
     auto_state: dict[str, Any] | None = None
 
     # P18: per-session snapshot timeline. Concrete SnapshotStore instance
@@ -178,35 +178,35 @@ class Session:
     # the op succeeded); direct writers must call notify() themselves.
     autosave_scheduler: AutosaveScheduler | None = None
 
-    # P25 Day 2 polish r4 (L36 §7.25 语义契约 — "预览 = 真实").
-    # 最近一次**真正送进 LLM** 的 wire 快照. 不要把这个当成历史记录; 它是
-    # "上一次的 Ground truth", 存在原因是: 有些 LLM 调用路径 (external
-    # event 的 instruction 注入 / auto-dialog 的 ephemeral nudge) 会把
-    # 一次性 user 消息挂在 wire 末尾但**不写进 session.messages**. 那种
-    # 情况下 ``build_prompt_bundle`` 从 ``session.messages`` 反推出来的
-    # "预览 wire" 会**缺**这条 user (预览与真实 LLM 入口脱节). Prompt
-    # Preview 面板承诺的语义是"让 tester 看到真正发给 AI 的完整 wire",
-    # 不该是"下次 send 的预估 wire". 所以每条 LLM 调用路径都在调 LLM 前
-    # 把即将发的 wire 写到这里, Prompt Preview 的 Raw wire 视图从这里
-    # 读, 而不是从 session.messages 派生.
+    # P25 Day 2 polish r4, L36 section 7.25: preview equals reality.
+    # Latest wire snapshot actually sent to LLM, not history. It represents
+    # the last ground truth because some LLM paths, such as external-event
+    # instruction injection/Auto-Dialog ephemeral nudges, append one-shot user
+    # messages to wire without session.messages persistence. In those cases,
+    # build_prompt_bundle deriving previews from session.messages
+    # omits that user message and differs from actual LLM input. Prompt
+    # Preview promises testers the complete actual AI-bound wire,
+    # not estimated next-send wire. Thus every LLM path records
+    # imminent wire here before calling; Prompt Preview Raw wire reads
+    # this field instead of deriving session.messages.
     #
-    # Shape (None = 本会话还没调过 LLM):
+    # Shape; None means no LLM call yet in this session:
     #     {
     #       "wire_messages": list[dict],  # OpenAI-style, role+content
     #       "source": str,                # "chat.send" / "avatar_event" /
     #                                     # "agent_callback" / "proactive_chat" /
     #                                     # "auto_dialog_target" / "auto_dialog_simuser" ...
-    #       "recorded_at_real": iso_str,  # 真实时钟, 方便 tester 对时间戳
-    #       "recorded_at_virtual": iso_str,  # 虚拟时钟 (session.clock)
-    #       "reply_chars": int,           # LLM 回复字符数 (-1 = 还没回复/失败)
-    #       "note": str | None,           # 可选, 附加 tag (比如
+    #       "recorded_at_real": iso_str,     # Real clock for timestamp comparison.
+    #       "recorded_at_virtual": iso_str,  # Virtual session.clock.
+    #       "reply_chars": int,             # Reply characters; -1 means pending/failure.
+    #       "note": str | None,             # Optional extra tags, e.g.
     #                                     # "avatar:fist+context+reward")
     #     }
     #
-    # **RUNTIME only** — 不入 save / snapshot / export. 会话存档 reload
-    # 回来的 session 这个字段为 None 直到 tester 再触发一次 LLM 调用 —
-    # 这是故意的, 存档本就是"还原会话内容", 不应带"上次运行时的外部 LLM 交互"
-    # (敏感: prompt 可能含 system_prompt 全文).
+    # Runtime only, omitted from saves/snapshots/exports. Reloaded session
+    # archives keep None until another LLM call, intentionally:
+    # archives restore session contents, not previous external runtime LLM interactions,
+    # whose prompts may expose complete system_prompt text.
     last_llm_wire: dict[str, Any] | None = None
 
     # Mutated directly by SessionStore under its own lock.

@@ -33,22 +33,22 @@ class PluginRouter:
         self._tags = tags or []
         self._name = name or self.__class__.__name__
         self._entries: dict[str, _EntryRecord] = {}
-        # 存放 @plugin_entry 装饰过的方法（原始 id + 原始 meta + 绑定的 bound 方法喵）。
-        # 不在 __init__ 里把它们写进 self._entries，因为 Base.include_router 随后可能调
-        # set_prefix() 改 prefix —— 提前写入会让后续 prefix 没机会生效。
-        # 改为在 collect_entries() 时按当前 prefix 懒解析。
+        # Store methods decorated with @plugin_entry (original id + original meta + bound method, meow).
+        # Do not insert them into self._entries in __init__, because Base.include_router may subsequently call
+        # set_prefix() to change prefix; early insertion would prevent that later prefix from taking effect.
+        # Instead resolve lazily in collect_entries() using the current prefix.
         self._decorated_entries: list[tuple[str, EventMeta, RouteHandler]] = []
         self._main_plugin: object | None = None
         self._collect_decorated_entries()
 
     def _collect_decorated_entries(self) -> None:
-        """扫描子类上带有 EVENT_META_ATTR 的方法，暂存到 `_decorated_entries`。
+        """Scan subclass methods carrying EVENT_META_ATTR and retain them in `_decorated_entries`.
 
-        设计理由：
-        - 子类通常用 `@plugin_entry(id=...)` 声明 entry；`PluginRouter.collect_entries`
-          原先只返回 `self._entries`，装饰器信息完全被忽略了喵。
-        - 这里只做一次静态扫描，保留 `add_entry` 的动态注册能力；prefix 解析和
-          id 规范化延迟到 `collect_entries()`。
+        Rationale:
+        - Subclasses normally declare entries using `@plugin_entry(id=...)`; `PluginRouter.collect_entries`
+          previously returned only `self._entries`, completely ignoring decorator metadata, meow.
+        - Perform one static scan here while preserving dynamic `add_entry` registration; defer prefix resolution and
+          ID normalization to `collect_entries()`.
         """
         for attr_name, class_value in inspect.getmembers_static(type(self)):
             if attr_name.startswith("_"):
@@ -82,7 +82,7 @@ class PluginRouter:
 
     @property
     def entry_ids(self) -> list[str]:
-        # 动态 add_entry 注册的 id + 装饰器在当前 prefix 下解析得到的 id
+        # IDs dynamically registered by add_entry + decorator IDs resolved under the current prefix
         return list(self._resolved_entries().keys())
 
     @property
@@ -174,18 +174,18 @@ class PluginRouter:
         }
 
     def _resolved_entries(self) -> dict[str, _EntryRecord]:
-        """合并动态 (add_entry) 条目与 @plugin_entry 装饰的条目。
+        """Merge dynamic (add_entry) entries with @plugin_entry-decorated entries.
 
-        装饰器条目在此时才按当前 prefix 解析 id、并规范化 meta.id 与字典 key；
-        重复 id（装饰器内部自冲突 或 装饰器 vs add_entry 冲突）会抛 EntryConflictError，
-        保持与 `add_entry` 的冲突语义一致喵。
+        Only now resolve decorator-entry IDs using the current prefix and normalize meta.id and dictionary keys;
+        duplicate IDs (between decorators or between a decorator and add_entry) raise EntryConflictError,
+        matching `add_entry` conflict semantics, meow.
         """
         resolved: dict[str, _EntryRecord] = dict(self._entries)
         for raw_id, meta, handler in self._decorated_entries:
             entry_id = self._resolve_entry_id(raw_id)
             if entry_id in resolved:
                 raise EntryConflictError(f"duplicate entry id: {entry_id!r}")
-            # 规范化：确保 meta.id 与 dict key 一致（两者都带 prefix）
+            # Normalize meta.id and dictionary keys to match, including prefix in both
             normalized = EventMeta(
                 event_type=meta.event_type,
                 id=entry_id,

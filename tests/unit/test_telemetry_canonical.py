@@ -1,10 +1,10 @@
-"""canonical identity 身份聚合 storage 层测试。
+"""Canonical-identity aggregation storage tests.
 
-覆盖 device⟷steam / device⟷device 边构建、union-find 连通分量、代表元确定性、
-denylist 防复活、归一化类型守卫、canonical 口径去重。
+Cover device/Steam and device/device edge construction, union-find components, deterministic representatives,
+denylist resurrection prevention, normalization type guards, and canonical-based deduplication.
 
-telemetry_server 用扁平 import（from storage import ...），这里把它的目录插进
-sys.path 后直接 import storage，用临时文件库跑，不碰生产。
+telemetry_server uses flat imports (from storage import ...); insert its directory into
+sys.path and import storage directly, using temporary database files without touching production.
 """
 import json
 import sys
@@ -25,7 +25,7 @@ def store(tmp_path):
 
 
 def _report(store, device_id, *, steam=None, legacy=None, day=None):
-    """模拟一次上报：events.payload 带 steam_user_id / device_id_legacy。"""
+    """Simulate a report with steam_user_id / device_id_legacy in events.payload."""
     payload = {"device_id": device_id}
     if steam is not None:
         payload["steam_user_id"] = steam
@@ -55,30 +55,30 @@ def _canon_of(store, device_id):
 
 @pytest.mark.parametrize("raw,expected", [
     ("76561198000000001", "76561198000000001"),
-    ("0076561198000000001", "76561198000000001"),  # 去前导零
-    ("0", ""),            # 哨兵
+    ("0076561198000000001", "76561198000000001"),  # Remove leading zeros.
+    ("0", ""),            # Sentinel.
     ("00", ""),
     ("", ""),
     ("abc", ""),
     ("123abc", ""),
-    ("9" * 21, ""),       # 超长 DoS guard
-    ("99999999999999999999", ""),  # 超 u64
-    (123, ""),            # 非字符串：number
-    (None, ""),           # 非字符串：null
-    (["x"], ""),          # 非字符串：list
-    ("²", ""),       # Unicode 上标 '²'：isdigit()=True 但 int() 抛 ValueError
-    ("１２３", ""),   # 全角数字
-    ("١٢٣", ""),   # 阿拉伯-印度数字
+    ("9" * 21, ""),       # Oversized-input DoS guard.
+    ("99999999999999999999", ""),  # Exceeds u64.
+    (123, ""),            # Nonstring: number.
+    (None, ""),           # Nonstring: null.
+    (["x"], ""),          # Nonstring: list.
+    ("²", ""),       # Unicode superscript '²': isdigit()=True but int() raises ValueError.
+    ("１２３", ""),   # Fullwidth digits.
+    ("١٢٣", ""),   # Arabic-Indic digits.
 ])
 def test_normalize(raw, expected):
-    # 关键：非法输入只能返回 ''，绝不抛异常（否则 ingest 500 / build_edges 卡死）
+    # Invalid input must return '' without exceptions, avoiding ingest 500 responses or stuck build_edges.
     assert normalize_steam_id(raw) == expected
 
 
-# ---------------- 边构建 + union-find ----------------
+# -- Edge construction and union-find --
 
 def test_two_devices_one_steam_merge(store):
-    """两 device 登同一 steam → 同一 canonical。"""
+    """Two devices logging into one Steam account share a canonical identity."""
     _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000001")
     _report(store, "deviceBBBBBBBBBBBB", steam="76561198000000001")
     store.build_edges_from_events()
@@ -87,9 +87,9 @@ def test_two_devices_one_steam_merge(store):
 
 
 def test_device_legacy_alias_merge(store):
-    """device_id_legacy → device⟷device 别名边 → 同一 canonical。"""
+    """device_id_legacy creates device/device alias edges yielding one canonical identity."""
     _report(store, "deviceNEWNEWNEWNEW", legacy="deviceOLDOLDOLDOLD")
-    # 老 device 也单独上报过（这样它在 devices 表里有行）
+    # The old device reported independently too, giving it a devices-table row.
     _report(store, "deviceOLDOLDOLDOLD")
     store.build_edges_from_events()
     store.recompute_canonical()
@@ -97,7 +97,7 @@ def test_device_legacy_alias_merge(store):
 
 
 def test_multihop_union(store):
-    """A-X、B-X、B-Y：A B X Y 全归一个 canonical（多对多连通分量）。"""
+    """A-X, B-X, B-Y: A B X Y share one canonical identity through a many-to-many component."""
     _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000001")  # A-X
     _report(store, "deviceBBBBBBBBBBBB", steam="76561198000000001")  # B-X
     _report(store, "deviceBBBBBBBBBBBB", steam="76561198000000002")  # B-Y
@@ -106,12 +106,12 @@ def test_multihop_union(store):
     ca = _canon_of(store, "deviceAAAAAAAAAAAA")
     cb = _canon_of(store, "deviceBBBBBBBBBBBB")
     assert ca == cb
-    # 代表元应是最小 steam 节点
+    # Representative should be the minimum Steam node.
     assert ca == "s:76561198000000001"
 
 
 def test_canonical_id_deterministic(store):
-    """重算两次 canonical_id 不抖（确定性代表元）。"""
+    """Repeated recomputation leaves canonical_id stable through deterministic representative selection."""
     _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000009")
     _report(store, "deviceBBBBBBBBBBBB", steam="76561198000000009")
     store.build_edges_from_events()
@@ -122,31 +122,31 @@ def test_canonical_id_deterministic(store):
 
 
 def test_device_only_is_own_canonical(store):
-    """没登录过 Steam 的 device 自成一个 canonical（指标全量覆盖）。"""
+    """Devices never logged into Steam remain their own canonical identities, covering all metrics."""
     _report(store, "deviceLONELYXXXXXX")
     store.build_edges_from_events()
     store.recompute_canonical()
     assert _canon_of(store, "deviceLONELYXXXXXX") == "d:deviceLONELYXXXXXX"
 
 
-# ---------------- denylist 防复活 ----------------
+# -- Denylist prevents resurrection --
 
 def test_denylist_blocks_resurrection(store):
-    """删号后重新扫 events（payload 里仍有该 steam）不得再产边。"""
+    """Rescanning events containing deleted Steam IDs must not recreate edges."""
     _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000001")
     _report(store, "deviceBBBBBBBBBBBB", steam="76561198000000001")
     store.build_edges_from_events()
     store.recompute_canonical()
     assert _canon_of(store, "deviceAAAAAAAAAAAA") == _canon_of(store, "deviceBBBBBBBBBBBB")
 
-    # 删号
+    # Delete account.
     store.add_steam_id_to_denylist("76561198000000001")
-    # 边被删
+    # Edges deleted.
     cnt = store._get_conn().execute(
         "SELECT COUNT(*) c FROM device_steam_edges WHERE steam_user_id='76561198000000001'"
     ).fetchone()["c"]
     assert cnt == 0
-    # 游标重置 + 重新全量扫 events（payload 仍含被删 ID），denylist 必须挡住
+    # Reset cursor and rescan all events whose payload still contains the deleted ID; denylist must block it.
     store._get_conn().execute("UPDATE edge_build_cursor SET last_event_id=0")
     store._get_conn().commit()
     store.build_edges_from_events()
@@ -155,12 +155,12 @@ def test_denylist_blocks_resurrection(store):
     ).fetchone()["c"]
     assert cnt2 == 0, "denylist 未挡住回填复活"
     store.recompute_canonical()
-    # 两 device 不再因该 steam 相连
+    # These devices no longer connect through this Steam account.
     assert _canon_of(store, "deviceAAAAAAAAAAAA") != _canon_of(store, "deviceBBBBBBBBBBBB")
 
 
 def test_malformed_payload_does_not_crash(store):
-    """伪造/异常 payload（steam_user_id 是 number/null）不能让边构建崩。"""
+    """Forged/abnormal numeric/null steam_user_id payloads must not crash edge construction."""
     store.store_event(
         device_id="deviceWEIRDXXXXXX",
         app_version="1.0",
@@ -179,17 +179,17 @@ def test_malformed_payload_does_not_crash(store):
         payload_json="not even json",
         daily_stats={},
     )
-    # 不抛异常，且没产出垃圾边
+    # No exceptions or garbage edges.
     n = store.build_edges_from_events()
     assert n == 3
     edges = store._get_conn().execute("SELECT COUNT(*) c FROM device_steam_edges").fetchone()["c"]
     assert edges == 0
 
 
-# ---------------- canonical 口径指标去重 ----------------
+# -- Canonical-metric deduplication --
 
 def test_canonical_metrics_dedup(store):
-    """同一真人两 device 同日活跃：device DAU=2，canonical DAU=1。"""
+    """One person active on two devices the same day yields device DAU=2, canonical DAU=1."""
     today = date.today().isoformat()
     _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000001", day=today)
     _report(store, "deviceBBBBBBBBBBBB", steam="76561198000000001", day=today)
@@ -204,10 +204,10 @@ def test_canonical_metrics_dedup(store):
 
 
 def test_drain_loop_catches_up(store):
-    """build_all_pending_edges 必须 drain 全部，不能只吃一页（游标落后 bug）。"""
+    """build_all_pending_edges must drain all pages, guarding against cursor lag."""
     for i in range(12):
         _report(store, f"device{i:012d}", steam=f"765611980000000{i:02d}")
-    # 单页只吃 5 条，但 build_all_pending_edges 应循环到追平 12 条
+    # Pages contain only 5 entries, but build_all_pending_edges must loop until all 12 are consumed.
     total = store.build_all_pending_edges(batch_limit=5)
     assert total == 12
     cursor = store._get_conn().execute(
@@ -220,18 +220,18 @@ def test_drain_loop_catches_up(store):
 
 
 def test_build_edges_normalizes_payload(store):
-    """events.payload 里的原始未归一化 steam_user_id 必须归一化后再建边。
+    """Normalize raw steam_user_id in events.payload before edge construction.
 
-    '0076561198000000001' 与 '76561198000000001' 应归并到同一 canonical；
-    哨兵 '0' 不产边。这是身份拆分/污染的回归点。
+    '0076561198000000001' and '76561198000000001' must share a canonical identity;
+    sentinel '0' creates no edges. This guards identity splitting/pollution.
     """
-    _report(store, "deviceLEADINGZERO0", steam="0076561198000000001")  # 前导零
-    _report(store, "deviceNORMALXXXXXX", steam="76561198000000001")     # 规范形
-    _report(store, "deviceSENTINELXXXX", steam="0")                     # 哨兵
+    _report(store, "deviceLEADINGZERO0", steam="0076561198000000001")  # Leading zeros.
+    _report(store, "deviceNORMALXXXXXX", steam="76561198000000001")     # Canonical form.
+    _report(store, "deviceSENTINELXXXX", steam="0")                     # Sentinel.
     store.build_edges_from_events()
     store.recompute_canonical()
     assert _canon_of(store, "deviceLEADINGZERO0") == _canon_of(store, "deviceNORMALXXXXXX")
-    # 哨兵不产边 → 自成 canonical
+    # Sentinel creates no edges, remaining its own canonical identity.
     assert _canon_of(store, "deviceSENTINELXXXX") == "d:deviceSENTINELXXXX"
     edges = store._get_conn().execute(
         "SELECT DISTINCT steam_user_id FROM device_steam_edges"
@@ -240,7 +240,7 @@ def test_build_edges_normalizes_payload(store):
 
 
 def test_denylist_collapses_in_store_event(store):
-    """删号后该 Steam64 不得经后续上报写回 devices 列（脱敏不被覆盖）。"""
+    """Deleted Steam64 IDs must not reenter devices through later reports, preserving redaction."""
     store.add_steam_id_to_denylist("76561198000000001")
     _report(store, "deviceXXXXXXXXXXXX", steam="76561198000000001")
     val = store._get_conn().execute(
@@ -250,10 +250,10 @@ def test_denylist_collapses_in_store_event(store):
 
 
 def test_denylist_atomic_guard_on_insert(store):
-    """denylist 已有的 ID，即使 events 里有，build 也不得插入（原子 WHERE NOT EXISTS）。"""
-    # 先把某 steam 加入 denylist
+    """Denylisted IDs must not be inserted even if events contain them, through atomic WHERE NOT EXISTS."""
+    # First denylist a Steam ID.
     store.add_steam_id_to_denylist("76561198000000001")
-    # 再来一批含该 ID 的 events（模拟删号后又上报 / 回填扫到旧事件）
+    # Then submit events containing it, simulating post-deletion reports or historical backfill.
     _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000001")
     _report(store, "deviceBBBBBBBBBBBB", steam="76561198000000002")
     store.build_edges_from_events()
@@ -266,13 +266,13 @@ def test_denylist_atomic_guard_on_insert(store):
 
 
 def test_device_legacy_length_validated(store):
-    """device_id_legacy 绕过 Pydantic，长度须在 16..128 内才建 device_alias_edges。"""
-    # 拒：超长（>128）/ 太短（<16）
+    """device_id_legacy bypasses Pydantic; create device_alias_edges only for lengths 16..128."""
+    # Reject lengths >128 or <16.
     _report(store, "deviceMAINXXXXXXX", legacy="x" * 200)
     _report(store, "deviceMAIN2XXXXXX", legacy="short")
-    # 准：合法长度
+    # Accept valid lengths.
     _report(store, "deviceMAIN3XXXXXX", legacy="deviceLEGACYOKXXX")
-    # 边界值：正好 16（最小合法）/ 正好 128（最大合法）—— 防 off-by-one
+    # Boundaries: exactly 16 minimum / 128 maximum, preventing off-by-one errors.
     _report(store, "deviceMAIN4XXXXXX", legacy="a" * 16)
     _report(store, "deviceMAIN5XXXXXX", legacy="b" * 128)
     store.build_edges_from_events()
@@ -286,30 +286,30 @@ def test_device_legacy_length_validated(store):
 
 
 def test_alias_repointed_when_canonical_removed(store):
-    """删号删掉某 canonical 后，指向它的旧 alias 不得悬空，要重指/删除。
+    """Deleting a canonical identity must redirect/remove its old aliases, never leave them dangling.
 
-    Codex 序列：d1、d2 先各自成 canonical，再都登 S 合并到 s:S（产生 alias
-    d:d1->s:S、d:d2->s:S）；denylist S 后 d1/d2 退回各自 canonical，
-    resolve_canonical('d:d1') 必须回到 d:d1，绝不能返回已死的 s:S。
+    Codex sequence: d1/d2 first become canonical, then both log into S and merge into s:S, generating aliases
+    d:d1->s:S and d:d2->s:S. Denylisting S restores each device's own canonical identity;
+    resolve_canonical('d:d1') must return d:d1, never deleted s:S.
     """
-    # 阶段 1：d1、d2 各自先成独立 canonical
+    # Stage 1: d1/d2 independently become canonical identities.
     _report(store, "deviceD1XXXXXXXXX")
     _report(store, "deviceD2XXXXXXXXX")
     store.build_edges_from_events()
     store.recompute_canonical()
-    # 阶段 2：都登 S → 合并到 s:S，旧 device canonical 写 alias 指向 s:S
+    # Stage 2: both log into S -> merge into s:S, with old device canonical aliases pointing to s:S.
     _report(store, "deviceD1XXXXXXXXX", steam="76561198000000001")
     _report(store, "deviceD2XXXXXXXXX", steam="76561198000000001")
     store.build_edges_from_events()
     store.recompute_canonical()
     assert store.resolve_canonical("d:deviceD1XXXXXXXXX") == "s:76561198000000001"
-    # 阶段 3：删号 S → 分量炸开，d1/d2 复活为各自 canonical
+    # Stage 3: delete S -> split the component, restoring d1/d2 as their own canonical identities.
     store.add_steam_id_to_denylist("76561198000000001")
     store.recompute_canonical()
     assert store.resolve_canonical("d:deviceD1XXXXXXXXX") == "d:deviceD1XXXXXXXXX"
     assert store.resolve_canonical("d:deviceD2XXXXXXXXX") == "d:deviceD2XXXXXXXXX"
     assert _canon_of(store, "deviceD1XXXXXXXXX") == "d:deviceD1XXXXXXXXX"
-    # 不应残留任何指向已删 s:S 的 alias
+    # No alias may remain pointing to deleted s:S.
     dangling = store._get_conn().execute(
         "SELECT COUNT(*) c FROM canonical_alias WHERE new_canonical_id='s:76561198000000001'"
     ).fetchone()["c"]
@@ -317,9 +317,9 @@ def test_alias_repointed_when_canonical_removed(store):
 
 
 def test_edge_uses_event_time_not_now(store):
-    """边 first_seen 取 events.received_at，不是 job 墙上时间。"""
+    """Use events.received_at for edge first_seen, not job wall-clock time."""
     _report(store, "deviceAAAAAAAAAAAA", steam="76561198000000001")
-    # 手动把事件 received_at 改成一个月前，模拟历史回填
+    # Set received_at one month earlier to simulate historical backfill.
     old = (date.today() - timedelta(days=30)).isoformat() + "T00:00:00.000+08:00"
     conn = store._get_conn()
     conn.execute("UPDATE events SET received_at=?", (old,))

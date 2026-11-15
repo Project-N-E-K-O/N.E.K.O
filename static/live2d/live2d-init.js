@@ -18,6 +18,12 @@ window.live2dManager.onModelLoaded = (model) => {
     window.LanLan1.live2dModel = model;
     window.LanLan1.currentModel = model;
     window.LanLan1.emotionMapping = window.live2dManager.getEmotionMapping();
+    // 外观热切换会销毁旧模型；有效语音仍由桥接持有，并交给新模型。
+    if (_live2dLipSyncOwner && _getActiveModelType() === 'live2d' &&
+        window.live2dManager.currentModel === model && !model.destroyed) {
+        window.live2dManager.beginLipSync(_live2dLipSyncOwner);
+        window.live2dManager.setMouth(_live2dLipSyncValue, _live2dLipSyncOwner);
+    }
     console.log('[Live2D Init] 全局模型引用已更新');
 };
 
@@ -314,9 +320,43 @@ window.LanLan1.clearExpression = function() {
     if (window.live2dManager) window.live2dManager.clearExpression();
 };
 
-// 4. 嘴型控制
-window.LanLan1.setMouth = function(value) {
+// 4. 嘴型控制。owner 只用于 Live2D，旧的单参数调用仍保留原有调度。
+let _live2dLipSyncOwner = null;
+let _live2dLipSyncValue = 0;
+
+window.LanLan1.beginLipSync = function(owner) {
+    if (!owner || (typeof owner !== 'object' && typeof owner !== 'function') ||
+        _getActiveModelType() !== 'live2d') return false;
+    if (_live2dLipSyncOwner === owner) return true;
+    _live2dLipSyncOwner = owner;
+    _live2dLipSyncValue = 0;
+    if (window.live2dManager) window.live2dManager.beginLipSync(owner);
+    return true;
+};
+
+window.LanLan1.endLipSync = function(owner) {
+    if (!owner || _live2dLipSyncOwner !== owner) return false;
+    _live2dLipSyncOwner = null;
+    _live2dLipSyncValue = 0;
+    if (window.live2dManager) window.live2dManager.endLipSync(owner);
+    return true;
+};
+
+window.LanLan1.setMouth = function(value, owner) {
     const activeType = _getActiveModelType();
+    if (owner !== undefined) {
+        if (!owner || _live2dLipSyncOwner !== owner) return false;
+        if (activeType !== 'live2d') {
+            window.LanLan1.endLipSync(owner);
+            return false;
+        }
+        _live2dLipSyncValue = Math.max(0, Math.min(1, Number(value) || 0));
+        if (window.live2dManager && window.live2dManager.currentModel) {
+            window.live2dManager.setMouth(_live2dLipSyncValue, owner);
+        }
+        return true;
+    }
+    if (_live2dLipSyncOwner && activeType === 'live2d') return false;
     // MMD 嘴型：通过 morph target 控制
     if (activeType === 'mmd') {
         if (window.mmdManager && window.mmdManager.expression) {
@@ -327,7 +367,7 @@ window.LanLan1.setMouth = function(value) {
     if (activeType === 'pngtuber') return;
     // VRM 的嘴型通常由 Audio 分析自动控制 (vrm-animation.js)，这里主要服务 Live2D
     if (window.live2dManager && window.live2dManager.currentModel) {
-        window.live2dManager.setMouth(value);
+        return window.live2dManager.setMouth(value);
     }
 };
 
@@ -803,6 +843,17 @@ async function _initLive2DModelInner() {
 
         // 设置页面卸载时的自动清理（确保资源正确释放）
         revealInitialLive2DModelWhenUiReady('initial-live2d-load');
+
+        // 主页面初始模型加载完成后的触摸配置刷新钩子：启动初始化最多只等模型 5 秒，
+        // 慢加载时原生 HitArea 监听会一直处于未接线状态；触摸数据刚拉取过时这里只补
+        // 接线，过期则顺带重拉。模型管理页自己管理 touchSet（见 page-controller），
+        // 不走此钩子。
+        if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
+            window.nekoRefreshLive2DTouchSet({ allowLive2DReload: true }).catch((touchSetError) => {
+                console.warn('[Live2D Init] 刷新触摸配置失败:', touchSetError)
+            })
+        }
+
         window.live2dManager.setupUnloadCleanup();
         // 加载成功后再用看门狗兜底"加载完仍不可见"（yui-guide 残留 / 卡在 minimized）。
         ensureLive2DVisibleSoon('post-load');

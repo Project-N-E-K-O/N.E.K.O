@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any, Callable, Generic, Iterable, Mapping, Protocol, TypeVar, cast
 
 from plugin._types.bus_sort import bus_sort_key
@@ -289,9 +290,9 @@ class SdkBusFrameRecord:
     frame_id: str | None = None
     type: str = "provider_frame"
     timestamp: float | None = None
-    # 和 timestamp 同值，两个名字都留着：``timestamp`` 是所有 bus record 共用的
-    # 排序字段，``captured_at`` 是 frames 自己的对外字段名（core 的 FrameRecord
-    # 有它，SDK 文档也写了它）。只折成 timestamp 的话，照文档写的插件会直接
+    # Keep both names with the same value: ``timestamp`` is the shared sorting field
+    # for all bus records, while ``captured_at`` is the public field for frames (present on core's FrameRecord
+    # and documented in the SDK). Collapsing it to timestamp alone would cause plugins written according to the docs to
     # AttributeError。
     captured_at: float | None = None
     source: str | None = None
@@ -352,8 +353,11 @@ class SdkBusMemoryRecord:
 
     @classmethod
     def from_raw(cls, raw: object) -> "SdkBusMemoryRecord":
-        if isinstance(raw, Mapping):
-            return cls(payload={str(key): value for key, value in raw.items()})
+        if isinstance(raw, cls):
+            return raw
+        payload = raw if isinstance(raw, Mapping) else getattr(raw, "raw", None)
+        if isinstance(payload, Mapping):
+            return cls(payload={str(key): value for key, value in payload.items()})
         return cls(payload={"value": raw})
 
     def dump(self) -> dict[str, Any]:
@@ -901,6 +905,14 @@ class SdkBusContext:
         self.conversations = SdkConversationsBus(getattr(raw_bus, "conversations", object()), host_ctx=host_ctx)
         self.frames = SdkFramesBus(getattr(raw_bus, "frames", object()), host_ctx=host_ctx)
         self.memory = SdkMemoryBus(getattr(raw_bus, "memory", object()), host_ctx=host_ctx)
+
+    @cached_property
+    def conversations_v2(self):
+        from plugin.sdk.shared.conversations.client import SdkConversationsV2Bus
+
+        return SdkConversationsV2Bus(
+            getattr(self._raw_bus, "conversations_v2", object()), host_ctx=self._host_ctx,
+        )
 
 
 def ensure_sdk_bus_context(raw_bus: object | None, *, host_ctx: object) -> SdkBusContext:

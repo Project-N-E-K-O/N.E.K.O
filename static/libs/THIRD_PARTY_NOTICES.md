@@ -1,7 +1,8 @@
-# Third-party notices for the bundled MMD libraries
+# Third-party notices for the bundled MMD libraries and visit vendor SDKs
 
-These notices cover the two three-mmd bundles below and the babylon-mmd code
-embedded in the core bundle. This is not an inventory of every library in
+These notices cover the two three-mmd bundles below, the babylon-mmd code
+embedded in the core bundle, and the two real-time SDKs that the visit
+transport page loads (`trtc.js`, `livekit-client.umd.js`). This is not an inventory of every library in
 `static/libs`. These components retain their upstream licenses; the project's
 root Apache-2.0 license does not replace them.
 
@@ -67,6 +68,46 @@ original upstream release or its pre-import patch history.
 - License: MIT; full text from `package/LICENSE` is retained in
   [BABYLON-MMD-LICENSE.txt](licenses/BABYLON-MMD-LICENSE.txt) and the core
   bundle's leading comment.
+
+## trtc-sdk-v5 (visit transport, mainland China)
+
+- File: `trtc.js`
+- Source: <https://github.com/LiteAVSDK/TRTC_Web>
+- Version: `5.20.1`, pinned. The file is byte-for-byte `package/trtc.js` of
+  the npm release.
+- Release: <https://registry.npmjs.org/trtc-sdk-v5/-/trtc-sdk-v5-5.20.1.tgz>
+- SHA-256: `9a79b7f20e258aed4579d352d59ac2482d58937e534417a68b2e61e98f4a6c25`
+  (the same digest, base64-encoded, is the `integrity` attribute that
+  `static/visit/transport/loader.js` sets when it inserts the script).
+- Local changes: none.
+- License: ISC (`package.json`; the release ships no separate license file).
+  The ISC text applied to the declared author is in
+  [TRTC.LICENSE](licenses/TRTC.LICENSE), together with the embedded
+  dependencies (core-js MIT, webrtc-adapter BSD-3-Clause).
+- Loaded only inside the same-origin visit transport iframe, only when the
+  backend's credentials select `transport: 'trtc'`; it is never referenced by a
+  template. The iframe is not an isolation boundary, so this file is treated as
+  privileged code: never loaded from a CDN, and upgrades go through the same
+  review as any new third-party code (record the new version and digest here
+  and in `loader.js`, and attach a change summary to the pull request).
+
+## livekit-client (visit transport, outside mainland China)
+
+- File: `livekit-client.umd.js`
+- Source: <https://github.com/livekit/client-sdk-js>
+- Version: `2.22.3`, pinned. The file is byte-for-byte
+  `package/dist/livekit-client.umd.js` of the npm release (its trailing
+  `sourceMappingURL` comment is kept; the map is not shipped).
+- Release: <https://registry.npmjs.org/livekit-client/-/livekit-client-2.22.3.tgz>
+- SHA-256: `7fa17e37af5e996d8a25f15a637dcc0620215bc01b394e5d209f726afe7dc04d`
+  (also pinned as the `integrity` attribute in `loader.js`).
+- Local changes: none.
+- License: Apache-2.0; full text from `package/LICENSE` is in
+  [LIVEKIT.LICENSE](licenses/LIVEKIT.LICENSE). The bundle embeds its declared
+  dependencies (`@livekit/protocol`, `@livekit/mutex`, `events`, `jose`,
+  `loglevel`, `machina`, `sdp-transform`, `tslib`, `typed-emitter`,
+  `webrtc-adapter`) under their own permissive licenses.
+- Loaded the same way as `trtc.js`, only for `transport: 'livekit'`.
 
 ## Distribution and updates
 

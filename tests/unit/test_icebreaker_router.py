@@ -336,7 +336,7 @@ async def test_icebreaker_context_preserves_user_request_ingress_time(monkeypatc
 
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
-    # 取入口时刻的 request_arrival_time = time.time() 就写在 icebreaker_context 里。
+    # icebreaker_context records entry-time request_arrival_time = time.time() directly.
     patch_module_clock(monkeypatch, icebreaker_router, time=lambda: clock["now"])
 
     async def fake_cache_memory(**_kwargs):
@@ -376,7 +376,7 @@ async def test_icebreaker_choice_records_user_engagement(monkeypatch):
 
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
-    # choice_arrival_time = time.time() 同样在 icebreaker_choice 函数体内。
+    # choice_arrival_time = time.time() likewise lives inside icebreaker_choice.
     patch_module_clock(monkeypatch, icebreaker_router, time=lambda: clock["now"])
 
     def record_choice(payload):
@@ -420,7 +420,7 @@ async def test_icebreaker_choice_write_failure_still_records_user_engagement(
 
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
-    # 同上：读时钟的是 icebreaker_choice 自己。
+    # As above: icebreaker_choice itself reads the clock.
     patch_module_clock(monkeypatch, icebreaker_router, time=lambda: 123.0)
 
     def fail_record_choice(_payload):

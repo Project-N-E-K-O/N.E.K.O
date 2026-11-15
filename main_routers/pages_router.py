@@ -23,7 +23,7 @@ URL convention: routes declared WITHOUT trailing slash. The literal root
 codebase (it serves ``index.html``); the lint exempts it explicitly. Every
 other page route uses ``@router.get('/voice_clone')``, ``@router.get('/api_key')``,
 etc. See ``main_routers/characters_router.py`` docstring or
-``.agent/rules/neko-guide.md`` (§"API URL 末尾不带斜杠") for the rationale;
+``.agent/rules/neko-guide.md`` (API URLs omit trailing slashes) for the rationale;
 enforced by ``scripts/check_api_trailing_slash.py``.
 """  # noqa: DOCSTRING_CJK
 
@@ -32,10 +32,11 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .shared_state import get_templates
+from .visit_router.local_guard import require_visit_enabled
 
 router = APIRouter(tags=["pages"])
 
@@ -153,6 +154,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/fish-cookie.png",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/toy-mouse.png",
     _PROJECT_ROOT / "static/css/character_card_manager.css",
+    _PROJECT_ROOT / "static/css/chat_sync.css",
     *_CHARACTER_CARD_MANAGER_JS_PATHS,
     _PROJECT_ROOT / "static/css/character_personality_onboarding.css",
     _PROJECT_ROOT / "static/js/character_personality_onboarding.js",
@@ -175,8 +177,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     *_CAT_RESOURCE_ASSET_PATHS,
     _PROJECT_ROOT / "static/css/theater_selector.css",
     _PROJECT_ROOT / "static/js/theater_selector.js",
-    _PROJECT_ROOT / "static/css/theater_settings.css",
-    _PROJECT_ROOT / "static/js/theater_settings.js",
+    _PROJECT_ROOT / "static/js/theater_market.js",
     _PROJECT_ROOT / "static/app/app-theater-runtime.js",
     _PROJECT_ROOT / "static/vrm/motion/player.js",
     *_TUTORIAL_RUNTIME_ASSET_PATHS,
@@ -301,19 +302,9 @@ async def get_model_manager(request: Request):
 
 @router.get("/theater", response_class=HTMLResponse)
 async def get_theater(request: Request):
-    """渲染唯一的 Numeric v2 剧本选择页。"""  # noqa: DOCSTRING_CJK
+    """Render the single Numeric v2 story-selection page."""  # noqa: DOCSTRING_CJK
     templates = get_templates()
     return templates.TemplateResponse(request, "templates/theater.html", {
-        "request": request,
-        **_static_assets_ctx(),
-    })
-
-
-@router.get("/theater/settings", response_class=HTMLResponse)
-async def get_theater_settings(request: Request):
-    """渲染小剧场独立设置页。"""  # noqa: DOCSTRING_CJK
-    templates = get_templates()
-    return templates.TemplateResponse(request, "templates/theater_settings.html", {
         "request": request,
         **_static_assets_ctx(),
     })
@@ -455,6 +446,16 @@ async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     })
 
 
+@router.get('/visit_persona', response_class=HTMLResponse)
+async def visit_persona_page(request: Request):
+    """Standalone N.E.K.O tool window for reviewing the visit persona."""
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/visit_persona.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
 async def cloudsave_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
@@ -496,6 +497,27 @@ async def get_chat_page(request: Request):
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
         **_react_chat_assets_ctx(),
+    })
+
+
+@router.get("/social_hub", response_class=HTMLResponse)
+async def get_social_hub_page(request: Request):
+    """Standalone mutual-friend visit panel for the desktop floating window."""
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/social_hub.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
+
+
+# Behind the same NEKO_VISIT_ENABLED release switch as the transport WebSocket: 404 while visits are off
+@router.get("/visit/transport", response_class=HTMLResponse, dependencies=[Depends(require_visit_enabled)])
+async def get_visit_transport_page(request: Request):
+    """Same-origin transport iframe of a visit (vendor SDK, frame packing, peer layer)."""
+    templates = get_templates()
+    return templates.TemplateResponse(request, "templates/visit_transport.html", {
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -596,7 +618,7 @@ async def get_toast_page(request: Request):
 
 @router.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
-    # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
+    # Extract lanlan_name from the URL; frontend retrieves configuration through the API.
     templates = get_templates()
     return templates.TemplateResponse(request, "templates/index.html", {
         "request": request,

@@ -190,9 +190,21 @@ def _base64_decoded_size(encoded: str) -> int:
     while end and encoded[end - 1] in string.whitespace:
         end -= 1
     padding = 0
-    while end and padding < 2 and encoded[end - 1] == "=":
-        end -= 1
-        padding += 1
+    # Walk back over the padding, skipping whitespace between padding characters.
+    # ``_decode_base64_source`` removes all ASCII whitespace before decoding, so
+    # ``YQ=\n=`` is one data byte, not two: counting only the trailing run of ``=``
+    # over-estimated it, and the upload limit then refused a payload that was in fact
+    # inside the limit (r4576821307).
+    scan = end
+    while scan and padding < 2:
+        char = encoded[scan - 1]
+        if char == "=":
+            padding += 1
+            scan -= 1
+        elif char in string.whitespace:
+            scan -= 1
+        else:
+            break
     whitespace = sum(encoded.count(ch) for ch in string.whitespace)
     return (len(encoded) - whitespace) * 3 // 4 - padding
 

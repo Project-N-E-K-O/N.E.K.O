@@ -87,17 +87,17 @@ class PackagedPluginMetadata:
     """Validated contents of one plugin's ``plugin.meta.json``."""
 
     entries: list[dict[str, object]] = field(default_factory=list)
-    # 打包时那份 plugin.toml 声明的 entries 表的摘要，用来判断用户的配置覆盖
-    # 有没有动过它。
+    # Digest of the entries table declared in plugin.toml at packaging time, used to detect
+    # changes introduced by user configuration overrides.
     entries_config_sha256: str = ""
-    # 注册进 state.event_handlers 的那份元数据，以及 entry_id -> 方法名。
-    # 启动一个插件本来要为这两样再 import 它一次——插件进程自己已经 import 过，
-    # 那一次纯属重复（codex）。带上之后 start_plugin 只剩宿主进程那一次导入。
+    # Metadata registered in state.event_handlers, plus entry_id -> method name.
+    # Starting a plugin previously imported it again for these two values, despite the plugin process already importing it.
+    # This was redundant (Codex); carrying them leaves only the host process's import in start_plugin.
     handlers: dict[str, dict[str, object]] = field(default_factory=dict)
     entry_methods: dict[str, str] = field(default_factory=dict)
     sdk_version: str = ""
     source_sha256: str = ""
-    # 打包机和这台机器是不是同一套 (os, python, arch)。
+    # Whether the packaging and current machine share (os, python, arch).
     built_in_this_environment: bool = False
 
 
@@ -136,14 +136,14 @@ def _iter_source_files(
 ) -> tuple[list[tuple[str, str, os.stat_result]], bool, list[str]]:
     # Include data files as well as code: module-level plugin registration may
     # derive entries from YAML, CSV, templates or other packaged resources.
-    # 手写 scandir 下降而不是 rglob：忽略目录必须在下降**之前**剪掉，否则一个带
-    # 大 object database 的开发目录每次都要先枚举完才轮到忽略判断。
+    # Descend with explicit scandir rather than rglob: prune ignored directories before descent,
+    # or development directories with large object databases must be fully enumerated before filtering.
     #
-    # 软链不跟进去，但要留痕：跟进去可能撞上 site-packages 那种巨树或者成环，而
-    # 只是跳过的话，把软链重指到另一份代码不会引起任何可见变化。留痕的做法是让
-    # 调用方直接把整棵树判成"不可信"。
-    # saw_symlink 是"这棵树不可信"的旗子，软链只是最常见的那个来源：读不了的目录、
-    # 以及 FIFO/socket/设备节点这类非普通文件也会把它立起来。
+    # Do not follow symlinks, but record them: following may enter huge site-packages trees or cycles,
+    # while silently skipping would make retargeting a symlink invisible. Record their presence so
+    # callers mark the entire tree untrusted.
+    # saw_symlink flags an untrusted tree; symlinks are only its commonest source. Unreadable directories
+    # and nonregular files such as FIFOs/sockets/device nodes also set it.
     root = str(plugin_dir)
     vendor = str(plugin_dir / "vendor")
     files: list[tuple[str, str, os.stat_result]] = []
@@ -176,10 +176,10 @@ def _iter_source_files(
                         continue
                     if entry.name not in SOURCE_IGNORED_DIRS:
                         stack.append(entry.path)
-                        # 目录自己的 mtime 也要看。删掉一个文件不会让任何**幸存**
-                        # 文件变新，于是纯看文件 mtime 的快路径会放过"源码少了一
-                        # 块"这种改动，宿主继续端着按删除前推出来的 schema
-                        # （codex）。增删条目都会更新父目录的 mtime。
+                        # Check directories' own mtime too. Deleting a file updates no surviving
+                        # file, so a file-mtime-only fast path misses missing source and leaves
+                        # the host using schema inferred before deletion
+                        # (Codex). Adding/removing entries updates the parent directory's mtime.
                         dirs.append(entry.path)
                     continue
                 if (
@@ -189,16 +189,16 @@ def _iter_source_files(
                 ):
                     continue
                 if entry.name in _GENERATED_METADATA_NAMES and current == root:
-                    # 生成物不参与它自己的新鲜度判定——但只有根部那一份是生成物。
-                    # 按文件名一刀切会把插件自己带的 data/plugin.meta.json 这种运行
-                    # 时文件也排除掉，而打包管线照样把它放进包里：改它的内容不会让
-                    # 任何指纹变化（codex）。
+                    # Generated output does not determine its own freshness, but only the root copy is generated.
+                    # Excluding by filename everywhere also removes runtime files such as a plugin's own
+                    # data/plugin.meta.json, while packaging still includes them: changing their contents
+                    # would change no fingerprint (Codex).
                     continue
                 if not entry.is_file(follow_symlinks=False):
-                    # ⚠️ 只收普通文件。FIFO、socket、设备节点都能通过 stat()，而摘要
-                    # 那一步是 read_bytes()——没有写端的 FIFO 上它会永久阻塞，而刷新
-                    # 现在整段握着 _REGISTRY_REFRESH_LOCK，一个命名管道就能把整个插件
-                    # 注册表焊死（coderabbit）。和软链同样处理：留痕，让整棵树不可信。
+                    # ⚠️ Accept only regular files. FIFOs, sockets, and device nodes pass stat(), but hashing uses
+                    # read_bytes(): a FIFO with no writer blocks forever. Refresh now holds
+                    # _REGISTRY_REFRESH_LOCK throughout, so one named pipe could freeze the entire plugin
+                    # registry (CodeRabbit). Treat like symlinks: record it and mark the tree untrusted.
                     saw_symlink = True
                     continue
                 stat_result = entry.stat(follow_symlinks=False)
@@ -206,11 +206,11 @@ def _iter_source_files(
                 saw_symlink = True
                 continue
             rel_path = os.path.relpath(entry.path, str(plugin_dir)).replace(os.sep, "/")
-            # 记录用 NFC 拼写，读盘用文件系统给的那个。打包器写进包里的档案名已经
-            # 是 NFC（normalize_relative_posix），而 macOS 交出来的常常是分解形式：
-            # 不归一化的话，同一个文件名在两边算出两份清单和两份摘要，元数据条条
-            # 被判过时（codex）。反过来，用归一化后的名字去 open() 在保留原拼写的
-            # 文件系统上会直接找不到文件，所以两个拼写都要留着。
+            # Record NFC names, but read using filesystem spelling. Archive filenames are already NFC
+            # (normalize_relative_posix), whereas macOS often returns decomposed names:
+            # without normalization the same file yields different manifests/digests, falsely marking
+            # every metadata entry stale (Codex). Conversely, opening the normalized spelling may fail
+            # on filesystems preserving original spelling, so retain both.
             files.append(
                 (unicodedata.normalize("NFC", rel_path), rel_path, stat_result)
             )
@@ -350,14 +350,14 @@ def compute_source_sha256(plugin_dir: Path) -> str:
         digest.update(key.encode("utf-8"))
         digest.update(b"\0")
         try:
-            # 行尾归一化之后再摘要。这个仓库用 .gitattributes 把文本钉成 LF，但哈希
-            # 不该依赖那份配置：作者在 Windows 上打的包一旦带着 CRLF 算出来的摘要，
-            # 到 Linux 用户机器上就会条条判成"源码变了"，全部退化成占位。
+            # Normalize line endings before hashing. .gitattributes pins repository text to LF, but hashing
+            # must not depend on it: Windows-authored packages hashed with CRLF would otherwise
+            # appear changed on Linux users' machines, degrading everything to placeholders.
             #
-            # ⚠️ 只折 CRLF，不折裸 CR。把 CR 也当 LF 会让"把每个 LF 换成 CR"这种
-            # 改动和原文摘要相同——路径、字节数、内容哈希全对得上，慢路径也拦不住
-            # （codex）。而 git 的行尾翻译只在 LF↔CRLF 之间发生，从不产生裸 CR，
-            # 所以少折这一层不影响它本来要解决的问题。
+            # ⚠️ Fold CRLF only, never bare CR. Treating CR as LF would let replacing every LF with CR
+            # preserve the digest: paths, byte counts, and hashes would all match, bypassing even
+            # the slow path (Codex). Git translates only LF↔CRLF and never creates bare CR,
+            # so omitting that fold preserves the intended fix.
             raw = (plugin_dir / real_rel).read_bytes()
             if Path(real_rel).suffix.lower() in TEXT_SUFFIXES_FOR_HASHING:
                 raw = raw.replace(_CRLF, _LF)

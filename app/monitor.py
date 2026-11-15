@@ -53,7 +53,7 @@ from utils.logger_config import setup_logging
 from utils.static_asset_aliases import LegacyStaticAssetAliasMixin
 logger, log_config = setup_logging(service_name="Monitor", log_level=logging.INFO)
 
-# 获取资源路径（支持打包后的环境）
+# Get the resource path (supports packaged environments)
 def get_resource_path(relative_path):
     """Get the absolute path of a resource, supporting both dev and packaged environments.
 
@@ -63,15 +63,15 @@ def get_resource_path(relative_path):
     all resources to the top level of ``sys._MEIPASS``, so that path is unchanged.
     """
     if getattr(sys, 'frozen', False):
-        # 打包后的环境
+        # Packaged environment
         if hasattr(sys, '_MEIPASS'):
             # PyInstaller
             base_path = sys._MEIPASS
         else:
-            # Nuitka standalone：app/ 是子包，资源在父目录
+            # Nuitka standalone: app/ is a subpackage, and resources are in the parent directory
             base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     else:
-        # 开发环境：app/monitor.py 的祖父目录就是项目根
+        # Development environment: the grandparent of app/monitor.py is the project root
         base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base_path, relative_path)
 
@@ -142,24 +142,24 @@ class _StaticRootFiles(LegacyStaticAssetAliasMixin, StaticFiles):
     pass
 
 
-# 挂载静态文件（旧素材路径映射到迁移后的文件，见 utils/static_asset_aliases.py）
+# Mount static files (map old asset paths to migrated files; see utils/static_asset_aliases.py)
 app.mount("/static", _StaticRootFiles(directory=get_resource_path("static")), name="static")
 _config_manager = get_config_manager()
 
-# 挂载用户Live2D目录（与 main_server 包保持一致，CFA感知）
+# Mount the user's Live2D directory (consistent with the main_server package and CFA-aware)
 _readable_live2d = _config_manager.readable_live2d_dir
 _serve_live2d_path = str(_readable_live2d) if _readable_live2d else str(_config_manager.live2d_dir)
 if os.path.exists(_serve_live2d_path):
     app.mount("/user_live2d", StaticFiles(directory=_serve_live2d_path), name="user_live2d")
     logger.info(f"已挂载用户Live2D目录: {_serve_live2d_path}")
-# CFA 场景：可写回退目录额外挂载
+# CFA scenario: also mount the writable fallback directory
 if _readable_live2d and str(_config_manager.live2d_dir) != _serve_live2d_path:
     _writable_live2d_path = str(_config_manager.live2d_dir)
     if os.path.exists(_writable_live2d_path):
         app.mount("/user_live2d_local", StaticFiles(directory=_writable_live2d_path), name="user_live2d_local")
         logger.info(f"已挂载本地Live2D目录(CFA回退): {_writable_live2d_path}")
 
-# 挂载创意工坊目录（与 main_server 包保持一致）
+# Mount the workshop directory (consistent with the main_server package)
 workshop_path = get_default_workshop_folder()
 if workshop_path and os.path.exists(workshop_path):
     app.mount("/workshop", StaticFiles(directory=workshop_path), name="workshop")
@@ -173,13 +173,13 @@ async def get_subtitle():
 async def get_page_config(lanlan_name: str = ""):
     """Get page config (lanlan_name and model_path)"""
     try:
-        # 获取角色数据
+        # Get character data
         _, her_name, _, lanlan_basic_config, _, _, _, _, _ = await _config_manager.aget_character_data()
         
-        # 如果提供了 lanlan_name 参数，使用它；否则使用当前角色
+        # If lanlan_name is provided, use it; otherwise use the current character
         target_name = lanlan_name if lanlan_name else her_name
         
-        # 获取 live2d 字段（兼容 _reserved 新结构）
+        # Get the live2d field (compatible with the new _reserved structure)
         live2d_model_path = get_reserved(
             lanlan_basic_config.get(target_name, {}),
             'avatar',
@@ -202,10 +202,10 @@ async def get_page_config(lanlan_name: str = ""):
         if live2d in LEGACY_DEFAULT_LIVE2D_MODELS:
             live2d = DEFAULT_LIVE2D_MODEL
         
-        # 查找所有模型
+        # Find all models
         models = find_models()
         
-        # 根据 live2d 字段查找对应的 model path
+        # Find the corresponding model path based on the live2d field
         model_path = next((m["path"] for m in models if m["name"] == live2d), find_model_config_file(live2d))
         if not model_path and live2d != DEFAULT_LIVE2D_MODEL:
             model_path = next(
@@ -232,12 +232,12 @@ async def get_preferences():
 def get_emotion_mapping(model_name: str):
     """Get the emotion mapping config"""
     try:
-        # 使用 find_model_directory 在 static、用户文档目录、创意工坊目录中查找模型
+        # Use find_model_directory to search static, user documents, and workshop directories
         model_dir, _ = find_model_directory(model_name)
         if not model_dir or not os.path.exists(model_dir):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型目录不存在"})
         
-        # 查找.model3.json文件
+        # Find the .model3.json file
         model_json_path = None
         for file in os.listdir(model_dir):
             if file.endswith('.model3.json'):
@@ -250,13 +250,13 @@ def get_emotion_mapping(model_name: str):
         with open(model_json_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
 
-        # 优先使用 EmotionMapping；若不存在则从 FileReferences 推导
+        # Prefer EmotionMapping; if absent, derive from FileReferences
         emotion_mapping = config_data.get('EmotionMapping')
         if not emotion_mapping:
             derived_mapping = {"motions": {}, "expressions": {}}
             file_refs = config_data.get('FileReferences', {}) or {}
 
-            # 从标准 Motions 结构推导
+            # Derive from the standard Motions structure
             motions = file_refs.get('Motions', {}) or {}
             for group_name, items in motions.items():
                 files = []
@@ -269,7 +269,7 @@ def get_emotion_mapping(model_name: str):
                         continue
                 derived_mapping["motions"][group_name] = files
 
-            # 从标准 Expressions 结构推导（按 Name 的前缀进行分组，如 happy_xxx）
+            # Derive from the standard Expressions structure (group by the Name prefix, such as happy_xxx)
             expressions = file_refs.get('Expressions', []) or []
             for item in expressions:
                 if not isinstance(item, dict):
@@ -279,11 +279,11 @@ def get_emotion_mapping(model_name: str):
                 if not file_path:
                     continue
                 file_path = file_path.replace('\\', '/')
-                # 根据第一个下划线拆分分组
+                # Split the group at the first underscore
                 if '_' in name:
                     group = name.split('_', 1)[0]
                 else:
-                    # 无前缀的归入 neutral 组，避免丢失
+                    # Put entries without a prefix in the neutral group to avoid losing them
                     group = 'neutral'
                 derived_mapping["expressions"].setdefault(group, []).append(file_path)
 
@@ -296,14 +296,14 @@ def get_emotion_mapping(model_name: str):
 
 @app.get("/{lanlan_name}", response_class=HTMLResponse)
 async def get_index(request: Request, lanlan_name: str):
-    # lanlan_name 将从 URL 中提取，前端会通过 API 获取配置
+    # lanlan_name is extracted from the URL; the frontend gets the configuration through the API
     return templates.TemplateResponse(request, "templates/viewer.html", {
         "request": request,
         **_viewer_static_assets_ctx(),
     })
 
 
-# 存储所有连接的客户端
+# Store all connected clients
 connected_clients = set()
 subtitle_clients = set()
 current_subtitle = ""
@@ -328,19 +328,19 @@ async def subtitle_websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print(f"字幕客户端已连接: {websocket.client}")
 
-    # 添加到字幕客户端集合
+    # Add to the subtitle client set
     subtitle_clients.add(websocket)
 
     try:
-        # 发送当前字幕（如果有）
+        # Send the current subtitle, if any
         if current_subtitle:
             await websocket.send_json({
                 "type": "subtitle",
                 "text": current_subtitle
             })
 
-        # 保持连接（keep-alive：忽略帧内容，容忍任意帧类型——
-        # receive_text() 收到二进制帧会抛 KeyError 杀掉字幕连接）
+        # Keep the connection alive (keep-alive: ignore frame contents and tolerate any frame type —
+        # receive_text() raises KeyError on a binary frame, which would kill the subtitle connection)
         while True:
             await _receive_ws_frame(websocket)
     except WebSocketDisconnect:
@@ -349,25 +349,25 @@ async def subtitle_websocket_endpoint(websocket: WebSocket):
         subtitle_clients.discard(websocket)
 
 
-# 广播字幕到所有字幕客户端
+# Broadcast the subtitle to all subtitle clients
 async def broadcast_subtitle():
     global current_subtitle, should_clear_next
     if should_clear_next:
         await clear_subtitle()
         should_clear_next = False
-        # 给一个短暂的延迟让清空动画完成
+        # Briefly delay to let the clearing animation finish
         await asyncio.sleep(0.3)
 
     await broadcast_subtitle_text(current_subtitle)
 
 
-# 清空字幕
+# Clear the subtitle
 async def clear_subtitle():
     global current_subtitle
     current_subtitle = ""
     await _broadcast(subtitle_clients, lambda client: client.send_json({"type": "clear"}), "SUBTITLE")
 
-# 主服务器连接端点
+# Main server connection endpoint
 @app.websocket("/sync/{lanlan_name}")
 async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
     await websocket.accept()
@@ -380,24 +380,24 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
                 message = await asyncio.wait_for(_receive_ws_frame(websocket), timeout=25)
                 data = message.get("text")
                 if data is None:
-                    # 非文本帧（如二进制）：忽略，不让 KeyError 杀掉同步连接
+                    # Ignore non-text frames such as binary data; do not let KeyError kill the sync connection
                     continue
 
-                # 广播到所有连接的客户端
+                # Broadcast to all connected clients
                 data = json.loads(data)
                 msg_type = data.get("type", "unknown")
 
 
                 if msg_type == "gemini_response":
-                    # 发送到字幕显示
+                    # Send to the subtitle display
                     subtitle_text = data.get("text", "")
                     current_subtitle += subtitle_text
                     if subtitle_text:
                         await broadcast_subtitle()
 
                 elif msg_type == "turn end":
-                    # 处理回合结束：字幕已随每个 gemini_response 增量广播，
-                    # 此处只标记清空。
+                    # Handle end of turn: subtitles have already been broadcast incrementally with each gemini_response,
+                    # so only mark them for clearing here.
                     global should_clear_next
                     should_clear_next = True
 
@@ -411,7 +411,7 @@ async def sync_endpoint(websocket: WebSocket, lanlan_name:str):
         logger.error(f"❌ [SYNC] 同步端点错误: {e}")
 
 
-# 二进制数据同步端点
+# Binary data sync endpoint
 @app.websocket("/sync_binary/{lanlan_name}")
 async def sync_binary_endpoint(websocket: WebSocket, lanlan_name:str):
     await websocket.accept()
@@ -423,7 +423,7 @@ async def sync_binary_endpoint(websocket: WebSocket, lanlan_name:str):
                 message = await asyncio.wait_for(_receive_ws_frame(websocket), timeout=25)
                 data = message.get("bytes")
                 if data is None:
-                    # 非二进制帧（如文本）：忽略，不让 KeyError 杀掉同步连接
+                    # Ignore non-binary frames such as text; do not let KeyError kill the sync connection
                     continue
                 if len(data)>4:
                     await broadcast_binary(data)
@@ -435,18 +435,18 @@ async def sync_binary_endpoint(websocket: WebSocket, lanlan_name:str):
         logger.error(f"❌ [BINARY] 二进制同步端点错误: {e}")
 
 
-# 客户端连接端点
+# Client connection endpoint
 @app.websocket("/ws/{lanlan_name}")
 async def websocket_endpoint(websocket: WebSocket, lanlan_name:str):
     await websocket.accept()
     print(f"✅ [CLIENT] 查看客户端已连接: {websocket.client}, 当前总数: {len(connected_clients) + 1}")
 
-    # 添加到连接集合
+    # Add to the connection set
     connected_clients.add(websocket)
 
     try:
-        # 保持连接直到客户端断开（keep-alive：忽略帧内容，容忍任意帧类型；
-        # 断连由 _receive_ws_frame 转成 WebSocketDisconnect 抛到外层收尾）
+        # Keep the connection alive until the client disconnects (keep-alive: ignore frame contents and tolerate any frame type;
+        # disconnects are converted by _receive_ws_frame into WebSocketDisconnect and raised to outer cleanup)
         while True:
             await _receive_ws_frame(websocket)
     except WebSocketDisconnect:
@@ -454,13 +454,13 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name:str):
     except Exception as e:
         print(f"❌ [CLIENT] 客户端连接异常: {e}")
     finally:
-        # 安全地移除客户端（即使已经被移除也不会报错）
+        # Safely remove a client (does not raise if it has already been removed)
         connected_clients.discard(websocket)
         print(f"🗑️ [CLIENT] 已移除客户端，当前剩余: {len(connected_clients)}")
 
 
-# 单个客户端发送（带超时），供并发广播复用
-# 串行 await 会被慢客户端拖住整条管线（队头阻塞），并发 fan-out + 超时让慢的不再拖快的
+# Send to one client (with timeout), for reuse by concurrent broadcasts
+# Serial await lets a slow client stall the whole pipeline (head-of-line blocking); concurrent fan-out plus a timeout prevents slow clients from holding up fast ones
 async def _send_to_client(client, sender, label):
     try:
         await asyncio.wait_for(sender(client), timeout=2.0)
@@ -482,7 +482,7 @@ async def _broadcast(client_set, sender, label, success_msg=None):
     success_count = sum(1 for _, ok in results if ok)
     disconnected_clients = [client for client, ok in results if not ok]
 
-    # 移除所有断开/超时的客户端
+    # Remove all disconnected or timed-out clients
     for client in disconnected_clients:
         client_set.discard(client)
         print(f"🗑️ [{label}] 移除断开的客户端: {client.client}")
@@ -492,22 +492,22 @@ async def _broadcast(client_set, sender, label, success_msg=None):
         print(success_msg.format(success_count) + (f", 失败并移除 {fail_count} 个" if fail_count > 0 else ""))
 
 
-# 广播字幕到字幕客户端（并发，与主广播共用超时 fan-out，避免某个字幕客户端卡住拖住 sync_endpoint）
+# Broadcast subtitles to subtitle clients (concurrently, sharing the main broadcast's timeout fan-out to prevent one stuck subtitle client from blocking sync_endpoint)
 async def broadcast_subtitle_text(text):
     await _broadcast(subtitle_clients, lambda client: client.send_json({"type": "subtitle", "text": text}), "SUBTITLE")
 
 
-# 广播消息到所有客户端
+# Broadcast a message to all clients
 async def broadcast_message(message):
     await _broadcast(connected_clients, lambda client: client.send_json(message), "BROADCAST", "✅ [BROADCAST] 成功广播到 {} 个客户端")
 
 
-# 广播二进制数据到所有客户端
+# Broadcast binary data to all clients
 async def broadcast_binary(data):
     await _broadcast(connected_clients, lambda client: client.send_bytes(data), "BINARY BROADCAST", "✅ [BINARY BROADCAST] 成功广播音频到 {} 个客户端")
 
 
-# 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
+# Keep fire-and-forget tasks from being garbage-collected by Python 3.11+
 _bg_tasks: set = set()
 
 
@@ -524,7 +524,7 @@ def _fire_task(coro):
 async def cleanup_disconnected_clients():
     while True:
         try:
-            # 检查并移除已断开的客户端
+            # Check for and remove disconnected clients
             for client in list(connected_clients):
                 try:
                     await client.send_json({"type": "heartbeat"})
@@ -533,14 +533,14 @@ async def cleanup_disconnected_clients():
                     # discard() avoids KeyError if the client was already
                     # removed concurrently; connected_clients is a set.
                     connected_clients.discard(client)
-            await asyncio.sleep(60)  # 每分钟检查一次
+            await asyncio.sleep(60)  # Check once per minute
         except Exception as e:
             print(f"清理客户端错误: {e}")
             await asyncio.sleep(60)
 
 
 if __name__ == "__main__":
-    # 在打包环境中，直接传递 app 对象而不是字符串
+    # In a packaged environment, pass the app object directly instead of a string
     # The monitor server is a read-only status receiver designed to be
     # reachable by external clients, so MONITOR_HOST defaults to 0.0.0.0.
     # Set it to 127.0.0.1 for local-only use, and MONITOR_TOKEN to require

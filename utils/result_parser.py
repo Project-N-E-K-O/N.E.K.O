@@ -14,22 +14,24 @@
 # limitations under the License.
 
 """
-Agent result parser — converts dicts returned by ComputerUse / BrowserUse / Plugin
-into human-readable natural-language summaries, keeping raw JSON from polluting the
-LLM context.
+Agent result parser — converts dicts returned by plugins into human-readable
+natural-language summaries, keeping raw JSON from polluting the LLM context.
 
 All functions are pure: no LLM dependency, no exceptions raised.
 All model-facing strings go through the prompts_sys i18n dictionary.
 
 History
 ----
-This module originally lived at ``brain/result_parser.py``. These functions are really
-pure formatters (dict in → string out) whose only dependency is
-``config.prompts.prompts_sys``, with no brain runtime coupling.
-``plugin/server/messaging/proactive_bridge.py`` also legitimately needs to reuse
-``parse_push_message_content``, but plugin (L4) must not depend on brain (L5)
-(see ``scripts/check_module_layering.py``). With the module sunk into ``utils``,
-all consumers use allowed directions: app/plugin/brain → utils.
+This module originally lived in the former ``brain`` package, next to the
+keyboard-and-mouse and browser loops whose results it also summarized. Those
+loops are gone (the tools are now called step by step by a task agent, which
+reads their plain results itself), and their two parsers went with them. What
+is left are pure formatters (dict in → string out) whose only dependency is
+``config.prompts.prompts_sys``.
+``plugin/server/messaging/proactive_bridge.py`` reuses
+``parse_push_message_content``, and plugin (L4) must not depend on the agent
+layer (L5, see ``scripts/check_module_layering.py``); in ``utils`` every
+consumer imports in an allowed direction.
 """
 from __future__ import annotations
 
@@ -44,7 +46,7 @@ from config.prompts.prompts_sys import (
 )
 
 
-# ── 语言工具 ──────────────────────────────────────────────────────────
+# -- Language helpers --
 
 def _get_lang(lang: str | None) -> str:
     """Get the current language code. Prefers the explicitly passed value, then the global setting, falling back to 'zh'."""
@@ -68,7 +70,7 @@ def _phrase(key: str, lang: str, **kwargs: Any) -> str:
         return template
 
 
-# ── 辅助 ────────────────────────────────────────────────────────────────
+# -- Helpers --
 
 def _try_extract_error_message(error: str, lang: str) -> str:
     """If error is a JSON string, extract the human-readable part; otherwise return as-is."""
@@ -107,14 +109,14 @@ def _format_error(error: Any, lang: str) -> str:
     s = str(error).strip()
     if not s:
         return ""
-    # 已知错误码精确匹配
+    # Exact match against known error codes.
     if s in RESULT_PARSER_ERROR_CODES:
         return _loc(RESULT_PARSER_ERROR_CODES[s], lang)
-    # 已知子串匹配
+    # Match known substrings.
     for substr, i18n_dict in RESULT_PARSER_ERROR_SUBSTRINGS.items():
         if substr in s:
             return _loc(i18n_dict, lang)
-    # 可能是 JSON 字符串
+    # Possibly a JSON string.
     return _try_extract_error_message(s, lang)
 
 
@@ -138,51 +140,6 @@ def _truncate(s: str, limit: int | None = None) -> str:
     if limit <= suffix_tokens:
         return truncate_to_tokens(s, limit)
     return truncate_to_tokens(s, limit - suffix_tokens) + suffix
-
-
-# ── ComputerUse / BrowserUse 共用 ───────────────────────────────────────
-
-def _parse_tool_result(res: Any, lang: str) -> tuple[bool, str]:
-    """Parse ComputerUse / BrowserUse return values → (succeeded, natural-language summary).
-    Returns a 2-tuple so callers can distinguish success/failure, putting detail and error_message into the right fields.
-    """
-    if not isinstance(res, dict):
-        return False, _phrase('no_result', lang)
-
-    if res.get("success"):
-        result = _truncate(str(res.get("result") or "").strip())
-        steps = res.get("steps")
-        if steps and result:
-            return True, _phrase('steps_done_with', lang, n=steps, detail=result)
-        if steps:
-            return True, _phrase('steps_done', lang, n=steps)
-        if result:
-            return True, _phrase('completed_with', lang, detail=result)
-        return True, _phrase('completed', lang)
-
-    raw_err = res.get("error")
-    err = _format_error(raw_err, lang)
-    if not err:
-        # ComputerUse 的 terminate(status="failure", answer=CODE) 把失败原因放进
-        # res["result"] 而非 res["error"]（见 brain/computer_use.py run_instruction 的
-        # 返回结构）。若 result 恰好是已知错误码（如 AGENT_QUOTA_EXCEEDED），同样翻成
-        # 本地化人话；普通自由文本失败仍走下面的通用 'exec_failed'，不外泄原始文本。
-        result_code = str(res.get("result") or "").strip()
-        if result_code in RESULT_PARSER_ERROR_CODES:
-            err = _loc(RESULT_PARSER_ERROR_CODES[result_code], lang)
-    if err:
-        return False, _phrase('failed', lang, detail=_truncate(err))
-    return False, _phrase('exec_failed', lang)
-
-
-def parse_computer_use_result(res: Any, *, lang: str | None = None) -> tuple[bool, str]:
-    """Parse a ComputerUse run_instruction return value → (succeeded, natural-language summary)."""
-    return _parse_tool_result(res, _get_lang(lang))
-
-
-def parse_browser_use_result(res: Any, *, lang: str | None = None) -> tuple[bool, str]:
-    """Parse a BrowserUse run_instruction return value → (succeeded, natural-language summary)."""
-    return _parse_tool_result(res, _get_lang(lang))
 
 
 # ── Plugin ──────────────────────────────────────────────────────────────
@@ -210,7 +167,7 @@ def parse_plugin_result(
     """Parse a Plugin execution result → natural-language summary."""
     lang = _get_lang(lang)
 
-    # 失败路径
+    # Failure path.
     if error:
         err = _format_error(error, lang)
         return _phrase('failed', lang, detail=_truncate(err)) if err else _phrase('exec_error', lang)
@@ -240,7 +197,7 @@ def parse_plugin_result(
     if not parts:
         return fallback
 
-    # 单字段：直接输出值（不带字段名）
+    # Single field: output its value directly, without the field name.
     if len(parts) == 1:
         return _truncate(parts[0][1])
 

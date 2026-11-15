@@ -20,8 +20,8 @@ from config.prompts import prompts_emotion as P
 from utils.language_utils import detect_prompt_language, language_context
 
 TRADITIONAL_ONLY = "開興歡愛難傷嗚遺喪負氣煩惱惡會這麼貼嬌並僅過驚憤靜裡閉憐別沒來"
-# 有意不含 `里`：它在两种写法里都是正字（公里／里長），拿它当简体标记会把将来
-# 合法的繁体词条判成违规。`裡` 只在繁体侧出现，所以只放在上面那一串里。
+# Deliberately omit 里: valid in both orthographies (公里／里長), so treating it as Simplified-only would reject future
+# valid Traditional entries. 裡 occurs only in Traditional, so belongs only in the preceding string.
 SIMPLIFIED_ONLY = "开兴欢爱难伤呜遗丧负气烦恼恶会这么贴娇并仅过惊愤静闭怜别没来"
 
 def _chinese_tables():
@@ -45,8 +45,8 @@ def _chinese_tables():
 FLAT_TABLES = _chinese_tables()
 
 
-# 这些表的词条**不含任何繁简有别的字**，两侧逐字相同是正确结果而不是漏转换。
-# 例：`不了解` / `不了了之` 六个字在两种写法里完全一样。
+# These tables contain no characters differing between Simplified and Traditional; identical spelling is correct, not missed conversion.
+# E.g. 不了解 / 不了了之 use identical characters in both orthographies.
 ORTHOGRAPHY_NEUTRAL_TABLES = {"EMOTION_NEGATION_SUFFIX_EXCEPTIONS_BY_LANG"}
 
 
@@ -301,8 +301,8 @@ def test_negation_flattening_preserves_the_previous_vocabulary():
     # The Korean set is what the move had to preserve; the Chinese postposed
     # forms are a later, deliberate addition on top of it.
     korean = set(P.EMOTION_NEGATION_SUFFIXES_BY_LANG["ko"])
-    # 按内容断言而不是按条数：这里要守的是「搬家没丢词」，多收一条合法韩语否定
-    # 不该让它变红。
+    # Assert contents rather than counts: guard against words lost in relocation; adding a valid Korean negation
+    # must not fail the test.
     assert {"지 않", "지않", "않", "않아", "않다", "아니다", "아닌"} <= korean
     assert korean <= set(P.get_emotion_negation_suffixes_flat())
 
@@ -1052,7 +1052,7 @@ def test_portuguese_spanish_and_contracted_english_negation(label, confidence):
     assert _label(label, confidence) == "neutral"
 
 
-# --- 否定识别的三处反转（来自主动扫描，逐条对 origin/main 复核过） ---
+# --- Three negation-recognition inversions (from proactive scan, individually verified against origin/main) ---
 
 
 @pytest.mark.parametrize("confidence", CONFIDENCES)
@@ -1140,7 +1140,7 @@ def test_latin_negations_still_negate(text):
     assert _infer_emotion_from_text(text)[0] is None
 
 
-# --- 否定的作用域：小句边界与日语丁宁体 ---
+# --- Negation scope: clause boundaries and Japanese polite forms ---
 
 
 @pytest.mark.parametrize("confidence", CONFIDENCES)
@@ -1200,7 +1200,7 @@ def test_a_postposed_veto_still_crosses_a_clause_break(confidence):
     assert _label("我難過不起來但很開心", confidence) == "happy"
 
 
-# --- 两条管线各自的作用域缺口（来自一轮 45 agent 的扫描 + Codex 四条 P2） ---
+# --- Scope gaps in both pipelines (45-agent scan + four Codex P2 findings) ---
 
 
 def _heur(text):
@@ -1231,7 +1231,7 @@ def test_real_anger_survives_the_false_friend_list(text):
     cost of the literary reading. Pinned so the trade-off is not silently
     reversed.
     """
-    # 台湾华语 `有 + 动词` 是完成体（`他有生氣` ＝ 他生气了），不是「有生机」。
+    # Taiwanese Mandarin 有 + verb is perfective (他有生氣 = he got angry), not the positive adjective 有生机.
     assert _heur(text) == "angry"
 
 
@@ -1326,8 +1326,8 @@ def test_chinese_inability_is_a_negation(label, confidence):
     "no estoy feliz", "ni triste ni feliz", "tampoco estoy feliz",
     "neither sad nor happy", "ninguno feliz", "nada feliz",
     "no estoy triste ni enojado", "nem triste nem feliz",
-    # `sin` / `sem` 曾经在这份清单里，后来整条撤出两张表 ——
-    # 见 test_a_preposition_is_not_a_negation
+    # sin / sem used to appear here, then were removed entirely from both tables;
+    # see test_a_preposition_is_not_a_negation.
 ])
 def test_the_two_negation_tables_agree(text):
     """One table feeds the label parser, the other the heuristic — same words.
@@ -1349,7 +1349,7 @@ def test_the_wider_negation_vocabulary_does_not_swallow_assertions(text):
     assert _heur(text) == "happy"
 
 
-# --- 上一轮补的否定词自己带来的三处反转 ---
+# --- Three inversions introduced by negations added in the previous round ---
 
 
 @pytest.mark.parametrize("text, expected", [
@@ -1566,7 +1566,7 @@ def test_a_keyword_formed_across_a_compound_boundary_is_not_one(text):
     Substring matching has no notion of a word boundary, so the left-hand word
     has to be removed before scoring.
     """
-    # 具体例子：`困難` + `過程` 的接缝里浮出一个 `難過`。
+    # Concrete example: joining 困難 + 過程 creates the cross-boundary substring 難過.
     assert _heur(text) is None
 
 

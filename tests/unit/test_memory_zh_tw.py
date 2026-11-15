@@ -549,11 +549,20 @@ async def test_new_dialog_request_preserves_locale_provenance(
     manager._conversation_render_language = render_language
 
     assert await manager._start_session_fetch_new_dialog("Neko", 48912) == "ok"
-    expected_kwargs = {"timeout": 5.0}
-    if expected_params is not None:
-        expected_kwargs["params"] = expected_params
+    # Session start waits for /new_dialog, so it preempts a summary holding the settle lock.
+    expected_kwargs = {
+        "timeout": 5.0,
+        "params": {**(expected_params or {}), "preempt_summary": "true"},
+    }
     assert calls == [expected_kwargs]
     assert manager._new_dialog_request_kwargs() == expected_kwargs
+    # Hot-swap preparation runs beside the live session: it waits for the summary instead.
+    from main_logic.core._shared import _HOT_SWAP_NEW_DIALOG_TIMEOUT_S
+
+    hot_swap_kwargs = {"timeout": _HOT_SWAP_NEW_DIALOG_TIMEOUT_S}
+    if expected_params is not None:
+        hot_swap_kwargs["params"] = expected_params
+    assert manager._new_dialog_request_kwargs(foreground=False) == hot_swap_kwargs
 
 
 def test_sync_connector_omits_seeded_fallback_locale(monkeypatch):
@@ -4086,7 +4095,7 @@ def test_signal_loop_rejects_stale_locale_worker(monkeypatch, tmp_path):
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
 
-    # 升级前入队的旧任务没有顺序号，也不能覆盖已有的新状态。
+    # Old tasks queued before the upgrade lack sequence numbers and must not overwrite newer existing state.
     signal_extraction._signal_check_record_turn("Neko", language="ja")
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
@@ -4235,9 +4244,9 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
     monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
     monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", powerful_enabled)
     def _spawn_stub(coroutine):
-        # 不真起 task（下面手动 await _safe_auto_promote），但仍要返回一个
-        # 已完成的 awaitable：调用点会把它登记进 per-character registry，
-        # 已完成的 future 会立刻触发登记表的自清理回调。
+        # Do not actually start a task (manually await _safe_auto_promote below), but still return
+        # a completed awaitable: the caller adds it to the per-character registry,
+        # and a completed future immediately triggers the registry's self-cleanup callback.
         coroutine.close()
         finished = asyncio.get_running_loop().create_future()
         finished.set_result(None)
@@ -4259,43 +4268,6 @@ async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_wechat_plugin_without_session_locale_omits_process_fallback(monkeypatch):
-    import httpx
-
-    from plugin.plugins.wechat_integration import WechatIntegrationPlugin
-    from utils import language_utils
-
-    calls = []
-
-    class Response:
-        is_success = True
-        text = "memory"
-
-    class Client:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def get(self, url, **kwargs):
-            calls.append((url, kwargs))
-            return Response()
-
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: Client())
-    monkeypatch.setattr(language_utils, "get_global_language", lambda: "zh")
-    monkeypatch.setattr(
-        language_utils,
-        "get_global_language_full",
-        lambda: "zh-TW",
-    )
-
-    assert await WechatIntegrationPlugin._fetch_memory_context("Neko") == "memory"
-
-    assert all("params" not in kwargs for _url, kwargs in calls)
-
-
-@pytest.mark.asyncio
 async def test_plugin_memory_query_omits_process_locale(monkeypatch):
     """The plugin server must not push its own process locale across the boundary.
 
@@ -4303,8 +4275,7 @@ async def test_plugin_memory_query_omits_process_locale(monkeypatch):
     server has no session locale to contribute. Its ``get_global_language_full()``
     also misses the Steam resolver that only the main server registers, so on a
     Steam=Traditional / system=English machine it resolves to ``en`` and would
-    override the memory server's own (correct) resolution. Same contract as the
-    WeChat bridge assertion directly above.
+    override the memory server's own (correct) resolution.
     """
     from plugin.server.application.messages import memory_query_service
     from plugin.utils.http_imports import load_httpx

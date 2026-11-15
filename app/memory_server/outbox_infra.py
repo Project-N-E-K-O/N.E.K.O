@@ -35,13 +35,13 @@ from ._shared import logger
 
 # ── Outbox handler registry + replay (P1.c) ────────────────────────
 
-# op_type → async handler(name: str, payload: dict) -> None. Handler 必须幂等。
+# op_type -> async handler(name: str, payload: dict) -> None. Handlers must be idempotent.
 OutboxHandler = Callable[[str, dict], Awaitable[None]]
 _OUTBOX_HANDLERS: dict[str, OutboxHandler] = {}
 
-# 启动期补跑 fan-out 并发上限：防止 24h 停机后的 outbox 洪水冲击 LLM 后端。
+# Startup replay fan-out concurrency limit prevents outbox floods after 24-hour downtime from overwhelming LLM backends.
 _REPLAY_CONCURRENCY = 2
-_replay_semaphore: asyncio.Semaphore | None = None  # 懒构造（event loop-bound）
+_replay_semaphore: asyncio.Semaphore | None = None  # Construct lazily, bound to the event loop.
 
 
 def register_outbox_handler(op_type: str, handler: OutboxHandler) -> None:
@@ -77,12 +77,12 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
         logger.warning(f"[Outbox] {name}: 未注册的 op type {op_type}, 跳过 {op_id}")
         return
 
-    # CodeRabbit: 已达 dead-letter 阈值的 op 直接补写 done，不要再跑 handler。
-    # 边缘 case：上一轮 ``aappend_attempt`` 成功把 _attempt_count 推到 N，但
-    # 紧接着 ``aappend_done`` 写盘失败（IO transient）→ op 留在 pending →
-    # 重启 replay 看到 ``_attempt_count=N`` 又进 handler 再失败再尝试 done。
-    # 对幂等 handler 只是浪费一次调用；对非幂等 handler（outbox 契约要求幂等
-    # 但不保证）就是真重复副作用。进门先短路保证"达阈值后绝不再执行"。
+    # CodeRabbit: for ops already at the dead-letter threshold, append done directly without rerunning the handler.
+    # Edge case: a previous ``aappend_attempt`` raised _attempt_count to N successfully, but
+    # subsequent ``aappend_done`` failed transiently, leaving the op pending;
+    # restart replay sees _attempt_count=N and reruns the handler, fails, then attempts done again.
+    # For idempotent handlers this wastes a call; nonidempotent ones violate the required but unenforced outbox contract
+    # and duplicate side effects. Short-circuit at entry to guarantee no execution after reaching the threshold.
     if prior_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
         logger.warning(
             f"[Outbox] {name}/{op_type}/{op_id}: 进入时已达 dead-letter 阈值 "
@@ -116,13 +116,13 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
                     f"[Outbox] {name}/{op_type}/{op_id}: append_attempt 失败: {ae}"
                 )
 
-            # Codex P1：不能基于"未落盘的 +1"触发 dead-letter。
-            # 如果本次 aappend_attempt 失败 + 接着 aappend_done 成功 →
-            # 重启后只看到磁盘上 prior_attempts 个 attempt 行 + 1 个 done →
-            # op 永久丢失而磁盘记录看起来"只失败了 N-1 次就 done"，违背 "≥ N
-            # 次失败才放弃" 的契约。Attempt 没落盘 → 本次失败按 transient 处理
-            # （保留 pending，下次重试自然再走一次 attempt），不进 dead-letter
-            # 判定。
+            # Codex P1: never trigger dead-letter from an unpersisted increment.
+            # If aappend_attempt fails but aappend_done then succeeds,
+            # restart sees only prior_attempts attempt rows plus one done row;
+            # the op is permanently lost despite disk state showing done after N-1 failures, violating the requirement
+            # to give up only after >= N failures. If attempt persistence fails, treat this failure as transient:
+            # retain pending so the next retry naturally writes another attempt, without entering dead-letter
+            # evaluation.
             if not attempt_persisted:
                 logger.warning(
                     f"[Outbox] {name}/{op_type}/{op_id} 执行失败（attempt 持久化"
@@ -155,7 +155,7 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
         try:
             await runtime.outbox.aappend_done(name, op_id)
         except Exception as e:
-            # append_done 失败不致命：下次启动重放这个 op，handler 幂等。
+            # append_done failure is nonfatal: replay next startup, relying on handler idempotence.
             logger.warning(f"[Outbox] {name}/{op_type}/{op_id}: append_done 失败: {e}")
     finally:
         if acquired and sem is not None:
@@ -182,8 +182,8 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
         names.update(character_data.get('猫娘', {}).keys())
     except Exception as e:
         logger.warning(f"[Outbox] 启动补跑：加载角色列表失败: {e}")
-        # 即便 config 加载失败，仍允许走磁盘扫描兜底——这正是 config
-        # 变化后仍需保证 crash-recovery 的场景。
+        # Even if config loading fails, allow disk-scan fallback; crash recovery must still work
+        # after config changes.
 
     try:
         memory_dir = runtime._config_manager.memory_dir
@@ -198,7 +198,7 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
     if not names:
         return spawned
 
-    # Semaphore 在 event loop 里构造（不能在模块级构造）
+    # Construct Semaphore inside the event loop, never at module level.
     if _replay_semaphore is None:
         _replay_semaphore = asyncio.Semaphore(_REPLAY_CONCURRENCY)
 
@@ -209,8 +209,8 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
             logger.warning(f"[Outbox] {name}: 读取 pending ops 失败: {e}")
             continue
         if not pending:
-            # 机会性 compact：文件可能累积了很多 done 行。失败不影响主流程
-            # （compact 仅是空间回收），debug 级别记录便于观测。
+            # Opportunistic compaction handles accumulated done rows. Failure affects only space reclamation,
+            # not the main flow; log at debug for observability.
             try:
                 dropped = await runtime.outbox.amaybe_compact(name)
                 if dropped:
@@ -228,8 +228,8 @@ async def _replay_pending_outbox() -> list[asyncio.Task]:
                 if op.get("type") == OP_PERSIST_PROMPT_LOCALE
                 else _replay_semaphore
             )
-            # 按角色登记：改名/删除撞上一次长补跑时，release 才排得空它，
-            # 否则补跑会在 dispose 之后继续给旧身份写文件、把目录重建出来。
+            # Register by character so release can drain long replays before rename/deletion;
+            # otherwise replay keeps writing under the old identity after dispose and recreates directories.
             from . import post_turn
 
             spawned.append(

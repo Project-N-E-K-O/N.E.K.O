@@ -1,15 +1,15 @@
 """
-生活助手插件 (Life Kit)
+Life Kit assistant plugin.
 
-基于地理位置的多功能生活服务：
-- 当前天气 + 每日预报 (get_weather)
-- 逐小时预报 (hourly_forecast)
-- 穿衣 / 带伞 / 紫外线等出行建议 (travel_advice)
-- 路线规划 (trip_advice)
-- 常用地点管理 (list/add/remove/set_default_location)
-- 附近 POI 搜索 (search_nearby)
+Location-based everyday services:
+- Current weather and daily forecasts (get_weather).
+- Hourly forecasts (hourly_forecast).
+- Clothing, umbrellas, UV, and other travel advice (travel_advice).
+- Route planning (trip_advice).
+- Saved-location management (list/add/remove/set_default_location).
+- Nearby POI searches (search_nearby).
 
-模块化架构：entry 通过 Router 注册，便于横向扩展。
+Modular architecture: entries register through Routers for easy expansion.
 """
 
 from __future__ import annotations
@@ -97,10 +97,10 @@ def _public_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 @neko_plugin
 class LifeKitPlugin(NekoPluginBase):
-    """生活助手插件 — 生命周期 + 共享基础设施。"""
+    """Life Kit plugin: lifecycle and shared infrastructure."""
 
     class Settings(PluginSettings):
-        """生活助手配置 — hot 字段会自动出现在聊天面板中。"""
+        """Life Kit configuration: hot fields appear automatically in the chat panel."""
         model_config = {"toml_section": "lifekit"}
 
         default_city: str = SettingsField("", hot=True, description="Default city / 默认城市 / 既定の都市")
@@ -125,7 +125,7 @@ class LifeKitPlugin(NekoPluginBase):
             "", description="Baidu Maps API key / 百度密钥 / Baidu Maps API キー",
         )
 
-    # 声明 router 类，供主进程静态扫描 entry 元数据
+    # Declare router classes for static entry-metadata scanning by the main process.
     __routers__ = [
         CurrentWeatherRouter, TravelAdviceRouter, HourlyForecastRouter,
         LocationsRouter, TripRouter, NearbyRouter,
@@ -150,17 +150,17 @@ class LifeKitPlugin(NekoPluginBase):
             default_text=lambda: clean_text(self._cfg.get("default_city", "")),
         )
 
-        # 注册 routers — 必须在 __init__ 中，collect_entries 在 startup 之前调用
+        # Register routers in __init__: collect_entries runs before startup.
         for router_cls in self.__routers__:
             self.include_router(router_cls())
 
-    # ── 生命周期 ──
+    # -- Lifecycle --
 
     @lifecycle(id="startup")
     async def startup(self, **_):
         await self._reload_config()
 
-        # 尝试从配置启用 store（如果配置中明确启用但 init 时未生效）
+        # Try enabling the store from configuration if explicitly enabled but ineffective during init.
         if not self.store.enabled:
             store_cfg = (await self.config.dump(timeout=5.0) or {}).get("plugin", {})
             store_cfg = store_cfg.get("store", {}) if isinstance(store_cfg, dict) else {}
@@ -170,7 +170,7 @@ class LifeKitPlugin(NekoPluginBase):
             else:
                 self.logger.info("Store is disabled — location save/load will be unavailable")
 
-        # 从主干查询全局语言
+        # Query the host's global language.
         lang = self._get_host_locale()
         self._resolve_locale()
         self.logger.info(
@@ -192,13 +192,13 @@ class LifeKitPlugin(NekoPluginBase):
         cfg = await self.config.dump(timeout=5.0)
         cfg = cfg if isinstance(cfg, dict) else {}
         self._cfg = cfg.get("lifekit", {}) if isinstance(cfg.get("lifekit"), dict) else {}
-        # locale 配置可能在 config_change 里改动，必须立刻生效，否则要重启才切换喵
+        # Apply locale changes in config_change immediately rather than requiring restart.
         self._resolve_locale()
 
-    # ── locale 解析（供 routers 调用）──
+    # -- Locale resolution for routers --
 
     def _resolve_locale(self) -> None:
-        """优先级：force_locale > host lang > toml locale > 系统时区"""
+        """Priority: force_locale > host language > TOML locale > system timezone."""
         force = bool(self._cfg.get("force_locale", False))
         configured = str(self._cfg.get("locale", "")).strip()
 
@@ -232,7 +232,7 @@ class LifeKitPlugin(NekoPluginBase):
             self.logger.debug("LifeKit host locale lookup failed", exc_info=True)
             return ""
 
-    # ── 共享：位置解析（供 routers 调用）──
+    # -- Shared location resolution for routers --
 
     async def _resolve_location(
         self,
@@ -328,10 +328,10 @@ class LifeKitPlugin(NekoPluginBase):
             timezone=clean_text(loc.get("ip_timezone")),
         )
 
-    # ── 共享：天气数据（LRU 缓存，供 routers 调用）──
+    # -- Shared weather data with LRU caching for routers --
 
     async def _get_weather_data(self, loc: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], str]:
-        """获取天气数据。返回 (data, error_key)。"""
+        """Retrieve weather data. Return (data, error_key)."""
         ttl = clamp_int(self._cfg.get("cache_ttl_seconds", 1800), 1800, 0, 86400)
         days = clamp_int(self._cfg.get("forecast_days", 3), 3, 1, 7)
         tz = timezone_name(loc.get("timezone"), self._cfg.get("timezone"))
@@ -411,7 +411,7 @@ class LifeKitPlugin(NekoPluginBase):
             "locale": self._i18n.locale,
         }
 
-    # ── 配置读写（供 Web UI 调用）──
+    # -- Configuration reading/writing for Web UI --
 
     @ui.action(
         label=tr("actions.getConfig.label", default="Get config"),

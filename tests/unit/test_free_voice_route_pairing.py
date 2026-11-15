@@ -137,11 +137,11 @@ def _flip_mgr(voice_id, is_free_preset, exists_in_storage=False):
 
 @pytest.mark.unit
 @pytest.mark.parametrize('old_url, new_url, voice, preset', [
-    # 双向都要锁：单向实现（只认 .tech→.app）在反向翻转时会静默放行
-    (MAINLAND_URL, OVERSEAS_URL, 'voice-tone-RcH2svtsrw', True),   # 大陆预设 → 海外
-    (OVERSEAS_URL, MAINLAND_URL, 'yui', False),                    # 海外默认 → 大陆
-    # 非 yui 的 Gemini 原生免费音色：不设 _is_free_preset_voice、也不是 yui
-    # 字面量，靠 registry 按旧路由（free_intl）判归属
+    # Guard both directions: a one-way .tech-to-.app implementation silently allows reverse switching.
+    (MAINLAND_URL, OVERSEAS_URL, 'voice-tone-RcH2svtsrw', True),   # Mainland preset -> overseas.
+    (OVERSEAS_URL, MAINLAND_URL, 'yui', False),                    # Overseas default -> mainland.
+    # Non-yui native Gemini free voice: neither _is_free_preset_voice nor a yui
+    # literal is set; registry ownership uses the old free_intl route.
     (OVERSEAS_URL, MAINLAND_URL, 'Puck', False),
 ])
 def test_route_flip_clears_free_catalog_voice(old_url, new_url, voice, preset):

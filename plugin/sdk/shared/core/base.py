@@ -30,6 +30,35 @@ class _EventMetaLike(Protocol):
     id: str
 
 
+def _router_event_handler(key: str, handler: object) -> EventHandler | None:
+    if isinstance(handler, EventHandler):
+        return handler
+    if not callable(handler):
+        return None
+    meta = getattr(handler, EVENT_META_ATTR, None)
+    if not isinstance(meta, _EventMetaLike):
+        meta = EventMeta(event_type="plugin_entry", id=key, name=key)
+    return EventHandler(meta=meta, handler=handler)
+
+
+def _is_plugin_entry(handler: EventHandler) -> bool:
+    return (getattr(handler.meta, "event_type", None) or "plugin_entry") == "plugin_entry"
+
+
+def _router_handler_replaces(existing: EventHandler, incoming: EventHandler, *, existing_from_class: bool) -> bool:
+    """Decide a router id clash the way the host's scan_static_metadata does.
+
+    All event types share one id table here, while the host keys plugin_entry
+    separately and always registers one when any side declares it, so a
+    plugin_entry wins over other event types. Within one event type the plugin
+    class wins over routers, and a later router wins over an earlier one.
+    """
+    existing_is_entry = _is_plugin_entry(existing)
+    if existing_is_entry != _is_plugin_entry(incoming):
+        return not existing_is_entry
+    return not existing_from_class
+
+
 @dataclass(slots=True)
 class PluginMeta:
     id: str
@@ -37,9 +66,9 @@ class PluginMeta:
     version: str = DEFAULT_PLUGIN_VERSION
     sdk_version: str = SDK_VERSION
     description: str = ""
-    short_description: str = ""  # 简短描述（<300字符），用于 agent 两阶段插件筛选
-    keywords: list[str] = field(default_factory=list)  # 关键词正则表达式列表
-    passive: bool = False  # 被动插件，不参与 agent 主动分派
+    short_description: str = ""  # Short description (<300 characters), used by the agent's two-stage plugin selection.
+    keywords: list[str] = field(default_factory=list)  # List of keyword regular expressions.
+    passive: bool = False  # Passive plugin; excluded from proactive agent dispatch.
     sdk_recommended: str | None = None
     sdk_supported: str | None = None
     sdk_untested: str | None = None
@@ -187,35 +216,24 @@ class NekoPluginBase:
                 if callable(value):
                     entries[str(meta.id)] = EventHandler(meta=meta, handler=value)
 
+        class_entry_ids = set(entries)
         for router in self._routers:
             collect_entries = getattr(router, "collect_entries", None)
             if callable(collect_entries):
-                router_entries = collect_entries()
-                for key, handler in router_entries.items():
-                    if isinstance(handler, EventHandler):
-                        entries[str(key)] = handler
-                    elif callable(handler):
-                        meta = getattr(handler, EVENT_META_ATTR, None)
-                        if isinstance(meta, _EventMetaLike):
-                            entries[str(key)] = EventHandler(meta=meta, handler=handler)
-                        else:
-                            entries[str(key)] = EventHandler(
-                                meta=EventMeta(event_type="plugin_entry", id=str(key), name=str(key)),
-                                handler=handler,
-                            )
-                continue
-
-            for key, handler in router.iter_handlers().items():
-                if not callable(handler):
+                router_items = collect_entries().items()
+            else:
+                router_items = ((key, handler) for key, handler in router.iter_handlers().items() if callable(handler))
+            for key, handler in router_items:
+                router_handler = _router_event_handler(str(key), handler)
+                if router_handler is None:
                     continue
-                meta = getattr(handler, EVENT_META_ATTR, None)
-                if isinstance(meta, _EventMetaLike):
-                    entries[str(key)] = EventHandler(meta=meta, handler=handler)
-                else:
-                    entries[str(key)] = EventHandler(
-                        meta=EventMeta(event_type="plugin_entry", id=str(key), name=str(key)),
-                        handler=handler,
-                    )
+                existing = entries.get(str(key))
+                if existing is not None and not _router_handler_replaces(
+                    existing, router_handler, existing_from_class=str(key) in class_entry_ids
+                ):
+                    continue
+                entries[str(key)] = router_handler
+                class_entry_ids.discard(str(key))
         return entries
 
     def enable_file_logging(

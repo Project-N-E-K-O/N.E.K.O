@@ -171,8 +171,8 @@ async def test_handler_reports_arrears_at_once_and_blames_the_rejected_round(
     await asyncio.gather(task, return_exceptions=True)
 
     assert [n["code"] for n in notices] == ["API_ARREARS"]
-    # marker 分支和 error 分支都会把这一轮标成投递失败——两次都必须落在被拒的那一
-    # 轮上，而不是已经开跑的 next-round。
+    # Both the marker and error branches mark this round as a delivery failure; both must apply to the rejected
+    # round, rather than the next round that has already started.
     assert set(failed_rounds) == {_SID}
     assert "next-round" not in failed_rounds
     assert mgr._last_tts_error_code == "API_ARREARS"
@@ -222,7 +222,7 @@ class _RefusingSocket(_Socket):
     async def send(self, payload):
         event_type = json.loads(payload)["type"]
         if event_type in self._fail_on:
-            # 发送侧先看见关闭：正是现场日志里那条 1007 走的路径。
+            # The sending side sees closure first: the exact 1007 path observed in the incident logs.
             self.observed.set()
         await super().send(payload)
         if event_type == "input_text_buffer.commit":
@@ -332,7 +332,7 @@ async def test_handler_shows_close_code_not_provider_text(monkeypatch):
     mgr._tts_replay_speech_id = None
     mgr._tts_replay_sentence_audio_emitted = False
     mgr._last_tts_error_code = ""
-    mgr._tts_retry_notify_count = 2  # 跳过「前两次静默」门槛，只看展示内容
+    mgr._tts_retry_notify_count = 2  # Skip the 'first two occurrences are silent' threshold and check only displayed content
     mgr._tts_runtime_is_current = lambda _runtime: True
     mgr._activate_configured_tts_fallback_after_capacity = AsyncMock(return_value=False)
     mgr._confirm_pending_ai_voice_echo = lambda *_a: None

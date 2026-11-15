@@ -1,21 +1,60 @@
-"""Numeric v2 表现内容块的兼容读取工具。"""  # noqa: DOCSTRING_CJK
+"""Compatibility readers for Numeric v2 performance content blocks."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from typing import Any, Mapping
 
 
 MAX_CONTENT_BLOCKS = 16
+_DIRECT_SCENE_SPEECH = re.compile(
+    r"(?:^|(?<=[。！？\n”’」]))\s*(?P<lead>[^。！？：“”‘’「」\n]{2,45}?)"
+    r"(?:说道|说|回答道?|答道|接话道?|问道|开口道)\s*[：:]\s*(?P<speech>“[^”]+”|‘[^’]+’|「[^」]+」)"
+)
+_REPORTED_SCENE_SPEECH = re.compile(r"曾|刚才|此前|之前|先前|昨天|据说|听说|转述|回忆|提到过|说过|已经")
+
+
+def is_current_scene_speech(text: str, quote: str, *, excluded_speakers: tuple[str, ...] = ()) -> bool:
+    """Recognize explicit speech delivered in this narration, excluding retrospective attribution."""
+    start = text.find(quote)
+    if start < 0 or not quote:
+        return False
+    end = start + len(quote)
+    for match in _DIRECT_SCENE_SPEECH.finditer(text):
+        lead_start = match.start("lead")
+        inside_speech = match.start("speech") <= start and end <= match.end("speech")
+        includes_lead = start <= lead_start < end and not text[start:lead_start].strip("。！？ \n")
+        if not inside_speech and not includes_lead:
+            continue
+        lead = match["lead"].lstrip()
+        excluded = ("玩家", "你", "我", *excluded_speakers)
+        if _REPORTED_SCENE_SPEECH.search(lead) or any(name and lead.startswith(name) for name in excluded):
+            return False
+        return True
+    return False
+
+
+def performance_fingerprint(performance: Mapping[str, Any]) -> str:
+    """Bind a review to the exact delivered body, independently of suggestions."""
+    fields = {key: performance[key] for key in (
+        "performance", "scene_narration", "scene_update", "segments", "fixed_narrations",
+        "source_performance", "source_scene_narration", "bridge_scene_narration",
+        "target_performance", "target_scene_narration",
+    ) if key in performance}
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode()).hexdigest()
 
 
 def transition_source_dialogue_policy(dialogue_policy: str) -> str:
-    """来源幕只需自然收住互动；原本禁言时仍不得凭空开口。"""  # noqa: DOCSTRING_CJK
+    """The source scene need only naturally conclude interaction; an existing speech prohibition still applies."""  # noqa: DOCSTRING_CJK
 
     return "forbidden" if dialogue_policy == "forbidden" else "optional"
 
 
 def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
-    """把“括号微动作 + 括号外对白”解析成确定性的内部内容块。"""  # noqa: DOCSTRING_CJK
+    """Parse parenthesized micro-actions plus external dialogue into deterministic internal blocks."""  # noqa: DOCSTRING_CJK
 
     text = str(value or "").strip()
     if not text:
@@ -33,8 +72,10 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
         if not segment:
             return block_type == "dialogue"
         if block_type == "action":
-            # performance 括号内始终是当前猫娘的可见微动作，不是环境旁白。
-            # 明确分型后，Evaluator 才不会把抬手、侧耳等角色动作误当成环境目标证据。
+            # An action block belongs to the catgirl, including its stated direct
+            # visible effect; independent NPC/world events belong to narration.
+            # Ownership is not proof of success: evaluation still checks the
+            # wording and evidence instead of treating every gesture as a result.
             blocks.append({"type": "action", "text": segment})
         else:
             blocks.append({
@@ -47,7 +88,7 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
     for char in text:
         if expected_close:
             if char in openers:
-                # 微动作不允许嵌套括号，避免 TTS 边界和展示边界产生歧义。
+                # Micro-actions forbid nested parentheses to keep TTS and display boundaries unambiguous.
                 return []
             if char in closers:
                 if char != expected_close or not flush("action"):
@@ -71,23 +112,33 @@ def mixed_performance_blocks(value: Any) -> list[dict[str, str]]:
 
 
 def fixed_narration_blocks(container: Mapping[str, Any], position: str) -> list[dict[str, str]]:
-    """Read server-owned text verbatim; it never becomes catgirl dialogue."""
+    """Read server-owned text verbatim; it never becomes neko dialogue."""
     return [{"type": "narration", "text": item["text"]}
             for item in container.get("fixed_narrations", []) if item["position"] == position]
 
 
+def scene_narration_text(container: Mapping[str, Any]) -> str:
+    """Omit only an exact dynamic echo of a before-position original in this container."""
+
+    text = str(container.get("scene_narration") or "").strip()
+    if text and any(item["position"] == "before" and item["text"] == text
+                    for item in container.get("fixed_narrations", [])):
+        return ""
+    return text
+
+
 def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
-    """优先解析新混合正文；旧记录继续按原内容块或分离字段读取。"""  # noqa: DOCSTRING_CJK
+    """Prefer new mixed narrative; read legacy records using existing blocks or separated fields."""  # noqa: DOCSTRING_CJK
 
     if "scene_narration" in container or "performance" in container:
         blocks: list[dict[str, str]] = []
-        scene_narration = str(container.get("scene_narration") or "").strip()
+        scene_narration = scene_narration_text(container)
         if scene_narration:
             blocks.append({"type": "narration", "text": scene_narration})
         blocks.extend(fixed_narration_blocks(container, "before"))
         blocks.extend(mixed_performance_blocks(container.get("performance")))
         blocks.extend(fixed_narration_blocks(container, "after"))
-        # 完整场景旁白是独立字段，不占混合 performance 自身的 16 块上限。
+        # Full scene narration uses a separate field, outside mixed performance's 16-block limit.
         return blocks
 
     raw_content = container.get("content")
@@ -130,7 +181,7 @@ def content_blocks(container: Mapping[str, Any]) -> list[dict[str, str]]:
 
 
 def performance_content_blocks(performance: Mapping[str, Any]) -> list[dict[str, str]]:
-    """按玩家实际看到的顺序展开普通或换场 performance。"""  # noqa: DOCSTRING_CJK
+    """Expand ordinary or transition performance in the player's actual display order."""  # noqa: DOCSTRING_CJK
 
     segments = performance.get("segments")
     if isinstance(segments, list):
@@ -183,14 +234,18 @@ def valid_ordered_content(
 def valid_mixed_performance_policy(
     container: Mapping[str, Any],
     dialogue_policy: str,
+    *,
+    allow_empty: bool = False,
 ) -> bool:
-    """按当前角色状态校验对白；禁言时仍必须有可见动作，不能提交空正文。"""  # noqa: DOCSTRING_CJK
+    """Validate dialogue policy; only explicitly permitted optional/forbidden segments may omit acting."""
 
     if dialogue_policy not in {"required", "optional", "forbidden"}:
         return False
     raw = container.get("performance")
-    if not isinstance(raw, str) or not raw.strip():
+    if not isinstance(raw, str):
         return False
+    if not raw.strip():
+        return allow_empty and dialogue_policy in {"optional", "forbidden"}
     blocks = mixed_performance_blocks(raw)
     if not blocks:
         return False
@@ -207,7 +262,7 @@ def valid_scene_narration(
     *,
     allow_empty: bool = False,
 ) -> bool:
-    """场景旁白使用独立字段，不能夹带未声明的结构。"""  # noqa: DOCSTRING_CJK
+    """Scene narration uses its own field and must not embed undeclared structure."""  # noqa: DOCSTRING_CJK
 
     return (
         isinstance(container.get("scene_narration"), str)
@@ -215,11 +270,35 @@ def valid_scene_narration(
     )
 
 
+def is_silent_invitation_control(event: Mapping[str, Any], performance: Mapping[str, Any]) -> bool:
+    """Allow an empty body only for a program-issued button-only control turn."""
+    receipt = event.get("program_invitation")
+    return bool(
+        event.get("input_source") == "reinvite"
+        and event.get("from_node_id") == event.get("to_node_id")
+        and isinstance(receipt, Mapping) and receipt.get("silent") is True
+        and receipt.get("offer") == "" and receipt.get("performance") == ""
+        and receipt.get("revision") == event.get("result_revision")
+        and isinstance(receipt.get("route_id"), str) and receipt["route_id"]
+        and isinstance(receipt.get("accept_input"), str) and receipt["accept_input"].strip()
+        and receipt.get("visible_blocks") == []
+        and performance.get("performance") == ""
+        and not any(key in performance for key in ("scene_narration", "scene_update", "segments", "content", "fixed_narrations"))
+        and performance.get("suggested_inputs") == [receipt["accept_input"]]
+        and performance.get("transition_offered") is True
+        and event.get("transition_offered") is True
+        and performance.get("transition_offer_presented") is True
+        and event.get("transition_offer_presented") is True
+    )
+
+
 __all__ = [
     "MAX_CONTENT_BLOCKS",
     "content_blocks",
+    "is_silent_invitation_control",
     "mixed_performance_blocks",
     "performance_content_blocks",
+    "scene_narration_text",
     "transition_source_dialogue_policy",
     "valid_mixed_performance_policy",
     "valid_ordered_content",

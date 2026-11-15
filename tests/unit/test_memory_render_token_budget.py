@@ -411,12 +411,12 @@ async def test_total_gate_drops_a_trailing_subject_whole(twin):
 @pytest.mark.parametrize('twin', _TWINS)
 @pytest.mark.asyncio
 async def test_five_subjects_all_over_budget_skip_the_tail_whole(twin):
-    """读侧扩到 [群, 当前发言人, 最近 3 人] = 5 个 subject 后总闸真正开始
-    咬的形态：每个 subject 的语料都超出自己的 per-subject 池（persona 与
-    reflection 双双超额），总闸只够前 4 个拿满配额，第 5 个必须整段跳过
-    ——绝不是每个 subject 各渲染半截。分配是 caller order 先到先得，群排
-    最前，这是调用方唯一的优先级旋钮；按比例摊薄的"等价"实现会让第 5
-    个 subject 渲染出内容、且前 4 个渲染不满，两头都会红。"""  # noqa: DOCSTRING_CJK
+    """After expanding reads to [group, current speaker, 3 recent speakers] = 5 subjects, the overall cap
+    actually binds: each subject's corpus exceeds its own per-subject pool (both persona and
+    reflection overflow), and the overall cap fits the first 4 subjects' full quotas; skip subject 5 entirely,
+    rather than rendering part of each subject. Allocation follows caller order, first come first served, with the group
+    first; this is the caller's only priority control. A supposedly equivalent proportional split would render subject 5
+    and underfill subjects 1–4, failing both assertions."""  # noqa: DOCSTRING_CJK
     from memory.scopes import MemorySubject
 
     subjects = [MemorySubject.group_chat("qq", "7788")] + [
@@ -450,9 +450,9 @@ async def test_five_subjects_all_over_budget_skip_the_tail_whole(twin):
             for j, text in enumerate(reflection_texts)
         )
 
-    # 每个 subject 的池：恰好装下前 2 条 facts / 前 1 条 reflection —— 第
-    # 3 条 fact 与第 2 条 reflection 双双超额。文本只差一个数字，token 数
-    # 必须全体一致，否则"恰好装下"对某些 subject 不成立。
+    # Each subject's pool fits exactly the first 2 facts / first 1 reflection; the
+    # third fact and second reflection both exceed it. Text differs only in one digit, so token counts
+    # must be identical for every subject or 'fits exactly' would fail for some subjects.
     fact_texts0, reflection_texts0 = _texts(0)
     persona_pool = _pool(*fact_texts0[:2])
     reflection_pool = _pool(reflection_texts0[0])
@@ -482,16 +482,16 @@ async def test_five_subjects_all_over_budget_skip_the_tail_whole(twin):
 
     for i in range(4):
         fact_texts, reflection_texts = _texts(i)
-        # 前 4 个 subject 拿满自己的配额：per-subject 池内的条目一条不少。
+        # The first 4 subjects receive their full quotas, retaining every entry within their per-subject pools.
         assert fact_texts[0] in rendered and fact_texts[1] in rendered, (
             f"subject {i} 没拿满配额——按比例摊薄的分配会走到这里"
         )
         assert reflection_texts[0] in rendered
-        # 超出 per-subject 池的部分照常被池裁掉。
+        # Entries exceeding per-subject pools are still trimmed normally.
         assert fact_texts[2] not in rendered
         assert reflection_texts[1] not in rendered
-    # 第 5 个 subject（最近发言人名单的最后一位）整段消失：facts 与
-    # reflections 一条都不得渲染——半截 persona 比缺席更糟。
+    # The fifth subject (last in the recent-speaker list) disappears entirely: neither facts nor
+    # reflections may render; a partial persona is worse than none.
     tail_fact_texts, tail_reflection_texts = _texts(4)
     for text in tail_fact_texts + tail_reflection_texts:
         assert text not in rendered, f"尾部 subject 渲染了半截: {text!r}"

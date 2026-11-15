@@ -2,7 +2,7 @@
  * 泛型网格工作台（过滤 + 分组 + 选择 + 布局）
  *
  * 提供与业务无关的"过滤栏 + 网格"状态管理，支撑：
- * - 简单文本搜索 / 正则搜索 / 白名单-黑名单模式
+ * - 文本搜索（`-` 前缀排除）
  * - 进阶 `key:value` 限定词（例如 `is:running -author:foo`），由调用方注入 matcher
  * - 分组可见性切换（支持重叠 predicate，item 可同时属于多个分组）
  * - 多选、全选、反选、按可见项裁剪
@@ -14,10 +14,7 @@
 import { computed, getCurrentScope, onScopeDispose, ref, toValue, watch, type MaybeRefOrGetter, type Ref } from 'vue'
 import type { PinyinSearch } from '@/utils/pinyinSearch'
 
-import { tryCompileSafeRegex, warnReDoSOnce } from '@/utils/safeRegex'
-
 export type LayoutMode = 'list' | 'single' | 'double' | 'compact'
-export type FilterMode = 'whitelist' | 'blacklist'
 export type GroupSelectionMode = 'single' | 'multiple'
 
 export interface GridWorkbenchItemBase {
@@ -63,16 +60,12 @@ export interface GridWorkbenchConfig<T extends GridWorkbenchItemBase> {
   /** 初始默认值。 */
   defaults?: {
     filterText?: string
-    useRegex?: boolean
-    filterMode?: FilterMode
     layoutMode?: LayoutMode
   }
 }
 
 interface ScopedState {
   filterText: Ref<string>
-  useRegex: Ref<boolean>
-  filterMode: Ref<FilterMode>
   selectedGroupIds: Ref<string[]>
   layoutMode: Ref<LayoutMode>
   selectedIds: Ref<string[]>
@@ -85,8 +78,6 @@ function getOrCreateScope(
   scope: string,
   initial: {
     filterText: string
-    useRegex: boolean
-    filterMode: FilterMode
     selectedGroupIds: string[]
     layoutMode: LayoutMode
   },
@@ -95,8 +86,6 @@ function getOrCreateScope(
   if (cached) return cached
   const created: ScopedState = {
     filterText: ref(initial.filterText),
-    useRegex: ref(initial.useRegex),
-    filterMode: ref(initial.filterMode),
     selectedGroupIds: ref([...initial.selectedGroupIds]),
     layoutMode: ref(initial.layoutMode),
     selectedIds: ref([]),
@@ -145,8 +134,6 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
 ) {
   const defaults = {
     filterText: config.defaults?.filterText ?? '',
-    useRegex: config.defaults?.useRegex ?? false,
-    filterMode: config.defaults?.filterMode ?? ('whitelist' as FilterMode),
     layoutMode: config.defaults?.layoutMode ?? ('compact' as LayoutMode),
     selectedGroupIds: [
       ...(config.defaultSelectedGroupIds ?? config.groups.map((g) => g.id)),
@@ -251,16 +238,6 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
 
   const availableIdSet = computed(() => new Set(items.value.map((item) => item.id)))
 
-  const regexError = computed(() => {
-    if (!state.useRegex.value || !state.filterText.value.trim()) return false
-    try {
-      new RegExp(state.filterText.value.trim(), 'i')
-      return false
-    } catch {
-      return true
-    }
-  })
-
   function matchQualifier(item: T, key: string, value: string): boolean {
     const matcher = qualifierMatchers[key]
     if (!matcher) return false
@@ -296,32 +273,8 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
     const visibleByGroup = items.value.filter((item) => belongsToAnySelectedGroup(item))
     if (!text) return visibleByGroup
 
-    if (state.useRegex.value) {
-      const re = tryCompileSafeRegex(text, 'i')
-      if (!re) {
-        // ReDoS guard or compile error — fall back to case-insensitive
-        // substring matching so the user still gets *some* filtering
-        // instead of an unfiltered list (or a frozen UI on adversarial
-        // input). One-time console warn keeps devs aware without
-        // spamming the console on every keystroke.
-        warnReDoSOnce(text)
-        const lowered = text.toLowerCase()
-        const matches = (item: T) => (item.searchIndex || '').toLowerCase().includes(lowered)
-        return state.filterMode.value === 'blacklist'
-          ? visibleByGroup.filter((item) => !matches(item))
-          : visibleByGroup.filter(matches)
-      }
-      const matches = (item: T) => re.test(item.searchIndex || '')
-      return state.filterMode.value === 'blacklist'
-        ? visibleByGroup.filter((item) => !matches(item))
-        : visibleByGroup.filter(matches)
-    }
-
     const tokens = tokenizeQuery(text.toLowerCase())
-    const matches = (item: T) => matchesAdvancedQuery(item, tokens)
-    return state.filterMode.value === 'blacklist'
-      ? visibleByGroup.filter((item) => !matches(item))
-      : visibleByGroup.filter(matches)
+    return visibleByGroup.filter((item) => matchesAdvancedQuery(item, tokens))
   })
 
   // 每个分组的总数（不受 filterText / selectedGroupIds 影响，用于显示徽标）
@@ -405,14 +358,11 @@ export function useGridWorkbench<T extends GridWorkbenchItemBase>(
   return {
     items,
     filterText: state.filterText,
-    useRegex: state.useRegex,
-    filterMode: state.filterMode,
     selectedGroupIds: state.selectedGroupIds,
     layoutMode: state.layoutMode,
     multiSelectEnabled: state.multiSelectEnabled,
     selectedIds,
     selectedCount,
-    regexError,
     groupCounts,
     filteredItems,
     filteredByGroup,

@@ -64,7 +64,7 @@ def test_an_end_signal_before_the_other_segment_is_registered_is_kept():
     h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
     h.attach_speech("ritual", "sp-r")
     h.mark_queued("ritual", 2000)
-    ih.route_progress("sp-r", ended=True, final=True)          # 仪式句很快播完，简述还在生成
+    ih.route_progress("sp-r", ended=True, final=True)          # Ritual phrase finishes quickly; brief still generating.
     assert not h.due()
     clock.now += 8
     h.attach_speech("debrief", "sp-d")
@@ -76,13 +76,13 @@ def test_an_end_signal_before_the_other_segment_is_registered_is_kept():
 def test_a_skipped_voiced_segment_does_not_hold_the_text_fallback():
     clock = Clock()
     h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
-    h.attach_speech("ritual", "sp-r")                # 仪式句开了 TTS 流
+    h.attach_speech("ritual", "sp-r")                # Ritual phrase opened TTS stream.
     h.mark_queued("ritual", 2000)
-    h.skip("ritual")                                 # 推流被拒：这段跳过，简述改走文字
-    h.mark_queued("debrief", 3000)                   # 简述只上屏
-    clock.now += 5.1                                 # 过了文字的估时（远不到 VISIT_INBOX_HANDOFF_MAX_S）
+    h.skip("ritual")                                 # Stream rejected: skip segment, brief uses text instead.
+    h.mark_queued("debrief", 3000)                   # Brief displays only.
+    clock.now += 5.1                                 # Past text's estimated duration, far below VISIT_INBOX_HANDOFF_MAX_S.
     assert clock.now - 100.0 < VISIT_INBOX_HANDOFF_MAX_S
-    assert h.due()                                   # 按文字估时交还，不为那段已结束的语音等满上限
+    assert h.due()                                   # Hand back at text estimate, without waiting max for ended speech.
 
 
 def test_twenty_second_cap_counts_from_the_second_segment_and_respects_playback():
@@ -90,14 +90,14 @@ def test_twenty_second_cap_counts_from_the_second_segment_and_respects_playback(
     h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
     h.attach_speech("ritual", "sp-r")
     h.mark_queued("ritual", 2000)
-    clock.now += 8                                   # 简述生成 8 s：不计入
+    clock.now += 8                                   # Brief generation takes eight seconds: excluded.
     h.attach_speech("debrief", "sp-d")
     h.mark_queued("debrief", 2000)
     clock.now += VISIT_INBOX_HANDOFF_MAX_S - 1
     assert not h.due()
     clock.now += 2
-    assert h.due()                                   # 没有任何在播的进度
-    ih.route_progress("sp-d", ended=False, final=False)           # 还在播：不交还
+    assert h.due()                                   # No active playback progress.
+    ih.route_progress("sp-d", ended=False, final=False)           # Still playing: no handback.
     assert not h.due()
 
 
@@ -159,14 +159,14 @@ def test_skipped_segments_count_as_done():
 
 
 def test_a_drained_queue_is_not_the_end_of_the_segment():
-    # ended{final:false} 只是音频队列暂时排空、之后还会接着播：不算这一段结束
+    # ended{final:false} means temporary audio-queue drain with more playback coming, not segment completion.
     clock = Clock()
     h = _voiced(clock)
     assert ih.route_progress("sp-r", ended=True, final=False)
     assert ih.route_progress("sp-d", ended=True, final=False)
     assert not h.due()
     clock.now += VISIT_INBOX_HANDOFF_MAX_S + 1
-    ih.route_progress("sp-d", ended=False, final=False)  # 接着播：20 s 兜底也不交还
+    ih.route_progress("sp-d", ended=False, final=False)  # Playback resumes: even 20s fallback does not hand back.
     assert not h.due()
     ih.route_progress("sp-r", ended=True, final=True)
     ih.route_progress("sp-d", ended=True, final=True)
@@ -178,14 +178,14 @@ def test_abandon_skips_only_the_segments_not_queued_yet():
     h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
     h.attach_speech("ritual", "sp-r")
     h.mark_queued("ritual", 2000)
-    h.abandon()                                      # 收尾中途失败：简述不会再来
-    assert not h.due()                               # 仪式句还没播完
+    h.abandon()                                      # Finalization fails midway; brief will never arrive.
+    assert not h.due()                               # Ritual phrase not finished playing.
     ih.route_progress("sp-r", ended=True, final=True)
     assert h.due()
 
 
 async def test_home_segment_whose_stream_fails_later_is_not_waited_for():
-    # finish() 当场返回 True（流还没认领 TTS 轮次），之后才发现 TTS 起不来：交还不再等这一段
+    # finish() initially returns True before TTS-turn claim, then discovers TTS cannot start: handback stops waiting for segment.
     from types import SimpleNamespace
 
     from main_routers.visit_router.line_speaker import VoiceState
@@ -207,13 +207,13 @@ async def test_home_segment_whose_stream_fails_later_is_not_waited_for():
 
 
 def test_a_segment_failing_after_it_was_queued_adds_no_wait():
-    # 仪式句入队（登记了估时）后流才报失败：跳过时估时一并清掉，交还不为没出声的那段多等
+    # Stream fails after ritual phrase enqueues with estimated time: skipping clears estimate, avoiding extra wait for unplayed speech.
     clock = Clock()
     h = ih.InboxHandoff("v" * 22, finalize_at=clock(), clock=clock)
     h.attach_speech("ritual", "sp-r")
     h.mark_queued("ritual", 8000)
     h.skip("ritual")
-    h.mark_queued("debrief", 2000)                 # 之后回落为只上屏
+    h.mark_queued("debrief", 2000)                 # Later falls back to display-only.
     clock.now += 2.5
     assert h.due()
 

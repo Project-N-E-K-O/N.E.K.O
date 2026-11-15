@@ -1,11 +1,13 @@
-"""复核链等待优化：时限位置、改写后证据保留与整回合复核预算。  # noqa: DOCSTRING_CJK
+"""Review-chain wait optimization: deadline placement, retained evidence after rewrites, and whole-turn review budget.  # noqa: DOCSTRING_CJK
 
-这些改动只约束等待与第二次判定看到的材料，不改变玩家授权、去向公开、数值结算或原子提交。
+These changes constrain only waiting and second-pass review material, not player authorization, destination disclosure, numeric settlement, or atomic commits.
 """
 
 from dataclasses import replace
+from copy import deepcopy
 import asyncio
 import json
+from tests.utils.theater_prompt import prompt_payload
 from types import SimpleNamespace
 
 import pytest
@@ -31,7 +33,7 @@ def _long_history_session(engine, session, prose_repeats=20):
 
 
 def _payload(messages):
-    return json.loads(messages[1].content.split('：', 1)[1])
+    return prompt_payload(messages[1].content)
 
 
 def _judge_payload(engine, session, outcome, candidate, **kwargs):
@@ -42,7 +44,7 @@ def _judge_payload(engine, session, outcome, candidate, **kwargs):
 
 
 def test_rewritten_candidate_preserves_full_review_evidence():
-    """复检仍承担完整判断，必须与初检使用同一历史及完整性标记。"""  # noqa: DOCSTRING_CJK
+    """Rechecks retain full judgment responsibilities and must use the same history and completeness markers as initial checks."""  # noqa: DOCSTRING_CJK
 
     engine, session, outcome, candidate = _fixture(50)
     session = _long_history_session(engine, session)
@@ -58,7 +60,7 @@ def test_rewritten_candidate_preserves_full_review_evidence():
 
 
 def test_review_budget_trimming_marks_history_incomplete(monkeypatch):
-    """总预算压力仍可整轮裁剪，但不能额外清空复检历史。"""  # noqa: DOCSTRING_CJK
+    """Total-budget pressure may still trim the whole turn, but cannot additionally clear recheck history."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_budget import NUMERIC_V2_ACTOR_BUDGET_PROFILES
 
@@ -71,7 +73,7 @@ def test_review_budget_trimming_marks_history_incomplete(monkeypatch):
 
 
 def test_missed_initiation_recheck_keeps_full_history():
-    """补查漏判必须先看完整公开历史，不能套用改写后的定向收窄。"""  # noqa: DOCSTRING_CJK
+    """Supplementary missed-case checks must first inspect complete public history, without targeted narrowing for rewritten material."""  # noqa: DOCSTRING_CJK
 
     engine, session, outcome, candidate = _fixture(200)
     session = _long_history_session(engine, session)
@@ -81,7 +83,7 @@ def test_missed_initiation_recheck_keeps_full_history():
 
 @pytest.mark.asyncio
 async def test_judge_messages_are_built_before_client_and_deadline_covers_close(monkeypatch):
-    """消息构造不占用时限，且连接、请求与关闭同属一个时限。"""  # noqa: DOCSTRING_CJK
+    """Message construction is outside the deadline; connection, request, and closing share one deadline."""  # noqa: DOCSTRING_CJK
 
     engine, session, outcome, candidate = _fixture()
     built = []
@@ -96,11 +98,13 @@ async def test_judge_messages_are_built_before_client_and_deadline_covers_close(
             return self
 
         async def __aexit__(self, *args):
-            # 旧实现里关闭发生在时限之外，这里可以拖过时限而不报超时。
+            # Old implementation closed outside the deadline, letting this exceed it without timeout.
             await asyncio.sleep(0.5)
             return False
 
         async def ainvoke(self, messages):
+            if prompt_payload(messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps(dict(
                 offer_present=False, valid=False, body_violations=[],
                 unsafe_suggestion_indexes=[], failure_reason='')))
@@ -125,8 +129,8 @@ async def test_judge_messages_are_built_before_client_and_deadline_covers_close(
             engine=engine, session=session, message='好。',
             actor_performance=candidate, transition_outcome=outcome)
 
-    # 先装配消息再建立连接，且关闭时间计入时限。
-    assert order == [True]
+    # Assemble messages before connecting; closing time belongs within the deadline.
+    assert order == [True, True]
 
 
 @pytest.mark.asyncio
@@ -147,6 +151,8 @@ async def test_review_call_accepts_remaining_budget_timeout(monkeypatch):
             return False
 
         async def ainvoke(self, _messages):
+            if prompt_payload(_messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
             return SimpleNamespace(content=json.dumps({
                 'offer_present': False,
                 'offer_quote': '',
@@ -171,6 +177,111 @@ async def test_review_call_accepts_remaining_budget_timeout(monkeypatch):
     assert captured['timeout'] == 1.5
 
 
+@pytest.mark.asyncio
+async def test_workflow_review_pack_timeout_never_connects_or_commits(tmp_path, monkeypatch):
+    """Native packing consumes the fast-check deadline, with no late request or partial commit."""
+
+    import threading
+    from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
+    from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
+
+    case = initiation_case()
+    runtime = NumericV2Runtime(case['engine'], tmp_path)
+    current = await runtime.start_session(
+        session_id='review_pack_timeout', catgirl_binding=_binding(),
+        opening_performance=case['session'].opening_performance)
+    before = {path.relative_to(tmp_path): path.read_bytes()
+              for path in tmp_path.rglob('*') if path.is_file()}
+    entered = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    loop = asyncio.get_running_loop()
+    real_build = evaluator._build_transition_judge_messages
+    factories = []
+
+    def slow_build(*args, **kwargs):
+        try:
+            messages = real_build(*args, **kwargs)
+            loop.call_soon_threadsafe(entered.set)
+            release.wait(2.0)
+            return messages
+        finally:
+            finished.set()
+
+    async def evaluate(self, **kwargs):
+        return evaluator.NumericV2EvaluationResult((), False)
+
+    async def generate(self, **kwargs):
+        return {'performance': '我听着，你先说。', 'suggested_inputs': []}
+
+    async def propose(self, **kwargs):
+        return []
+
+    async def review_on():
+        return {**await _all_off(), 'evaluator': True, 'review': True}
+
+    async def config(_):
+        return {'model': 'test', 'base_url': 'http://test.invalid'}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def ainvoke(self, _messages, **_kwargs):
+            if prompt_payload(_messages[1].content).get("review_task") == "player_actions":
+                return SimpleNamespace(content=json.dumps({"body_violations": [], "failure_reason": ""}))
+            return SimpleNamespace(content=json.dumps({
+                'offer_present': False, 'offer_quote': '', 'valid': False,
+                'body_violations': [], 'unsafe_suggestion_indexes': [], 'failure_reason': '',
+                'missed_initiation': False, 'player_request_quote': '',
+                'approved_narrative_event_indexes': [], 'narrative_review_complete': True,
+            }))
+
+    async def factory(*args, **kwargs):
+        factories.append(kwargs)
+        return Client()
+
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2MetricEvaluator, 'evaluate', evaluate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, 'generate_turn', generate)
+    monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
+    monkeypatch.setattr(numeric_v2_workflow, 'aload_theater_module_options', review_on)
+    monkeypatch.setattr(evaluator, '_build_transition_judge_messages', slow_build)
+    monkeypatch.setattr(evaluator, '_model_config', config)
+    monkeypatch.setattr(evaluator, 'create_chat_llm_async', factory)
+    monkeypatch.setattr(evaluator, 'NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS', 0.05)
+    monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS', 0.05)
+
+    diagnostics = {}
+    task = asyncio.create_task(numeric_v2_workflow._execute_numeric_v2_turn(
+        config_manager=object(), runtime=runtime, current=current,
+        turn=TurnRequestV2('new', current.session.revision, '我还想再聊聊。'),
+        ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2.0)
+        await asyncio.sleep(0.08)
+        release.set()
+        with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
+            await task
+    finally:
+        # Cancelling to_thread does not stop its worker; finish it before monkeypatch teardown.
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert await asyncio.to_thread(finished.wait, 2.0)
+
+    assert factories == []
+    assert diagnostics['transition_review_results'][-1]['failure_reason'] == 'numeric_v2_transition_judge_timeout'
+    assert {path.relative_to(tmp_path): path.read_bytes()
+            for path in tmp_path.rglob('*') if path.is_file()} == before
+    assert await NumericV2Runtime(case['engine'], tmp_path).restore_session('review_pack_timeout') == current
+
+
+
+
 def _violating_review(**kwargs):
     return evaluator.NumericV2TransitionOfferReview(
         False, False, ('author_boundary',), (), '需要修正初稿。')
@@ -181,25 +292,18 @@ async def _all_off() -> dict:
         'evaluator', 'review', 'dispute', 'suggestion_fill', 'history_lookup', 'actor_retry')}
 
 
-def test_only_metric_judgment_is_on_by_default():
-    """除"回复"外的每个可选模块默认关闭。"""  # noqa: DOCSTRING_CJK
-
+def test_pipeline_modules_are_all_enabled_by_default():
     from services.theater.numeric_v2_options import default_options
 
-    options = default_options()
-    # 数值增减来自前置判定，必须保留；其余可选模块默认关闭。
-    assert options['evaluator'] is True
-    assert {key: value for key, value in options.items() if key != 'evaluator'} == {
-        'review': False, 'dispute': False, 'review_delivery': False, 'review_contract': False,
-        'suggestion_fill': False, 'history_lookup': False, 'actor_retry': False}
+    assert all(default_options().values())
 
 
 def test_evaluator_off_does_not_authorize_an_unverified_first_suggestion():
-    """推荐的位置不证明玩家授权；没有作者合同核验时保持当前幕。"""  # noqa: DOCSTRING_CJK
+    """Recommendation position does not prove player authorization; retain the current act without author-contract verification."""  # noqa: DOCSTRING_CJK
 
     engine, session, _outcome, _candidate = _fixture(50)
     suggestion = '（点头）好，带路吧。'
-    # 提议必须来自最近一次提交且自带 transition_offered，避免接受更早回合的旧提议。
+    # Proposals must come from the latest commit with transition_offered, avoiding acceptance of stale proposals.
     session = replace(session, transition_offered=True,
                       performance_history=({'revision': 1, 'transition_offered': True,
                                             'suggested_inputs': [suggestion, '再等等。']},))
@@ -211,7 +315,7 @@ def test_evaluator_off_does_not_authorize_an_unverified_first_suggestion():
     stalled = numeric_v2_workflow._evaluation_without_evaluator(
         current, SimpleNamespace(message='我想再看看别的地方。'))
     assert stalled.transition_intent == 'unclear'
-    # 没有待确认提议时，即使文本相同也不放行。
+    # Without a pending proposal, identical text still does not pass.
     session = replace(session, transition_offered=False)
     blocked = numeric_v2_workflow._evaluation_without_evaluator(
         SimpleNamespace(session=session), SimpleNamespace(message=suggestion))
@@ -219,7 +323,7 @@ def test_evaluator_off_does_not_authorize_an_unverified_first_suggestion():
 
 
 def test_pending_followup_keeps_original_acceptance_button_first():
-    """追问回复可以更新推荐，但不能覆盖仍有效邀请的原始接受按钮。"""  # noqa: DOCSTRING_CJK
+    """Follow-up replies can update recommendations but cannot replace original acceptance buttons on still-valid invitations."""  # noqa: DOCSTRING_CJK
 
     _engine, session, _outcome, _candidate = _fixture(50)
     acceptance = '（起身）好，我们现在出发。'
@@ -252,7 +356,7 @@ def test_pending_followup_keeps_original_acceptance_button_first():
 
 
 def test_pending_acceptance_button_is_not_kept_after_offer_lifecycle_ends():
-    """换幕、撤下旧邀请或公开新邀请时，由调用方终止按钮继承。"""  # noqa: DOCSTRING_CJK
+    """Callers stop inheriting buttons on act transitions, withdrawal of old invites, or disclosure of new ones."""  # noqa: DOCSTRING_CJK
 
     _engine, session, _outcome, _candidate = _fixture(50)
     session = replace(
@@ -280,7 +384,7 @@ def test_pending_acceptance_button_is_not_kept_after_offer_lifecycle_ends():
 
 
 def test_verified_offer_gets_the_authored_acceptance_button():
-    """有效新邀请使用作者写定的接受输入，其余可见选择保持原顺序。"""  # noqa: DOCSTRING_CJK
+    """Valid new invitations use the author's fixed acceptance input; other visible choices retain their order."""  # noqa: DOCSTRING_CJK
 
     result, changed = numeric_v2_workflow._insert_verified_offer_acceptance_suggestion({
         'performance': '我们现在离开这里，好吗？',
@@ -298,7 +402,7 @@ def test_verified_offer_gets_the_authored_acceptance_button():
 @pytest.mark.parametrize('acceptance', ['我知道了，我会好好分析的。', '（收起星图）我会再核对坐标。'])
 @pytest.mark.parametrize('already_committed', [False, True])
 def test_consumed_pending_acceptance_does_not_return(acceptance, already_committed):
-    """本轮或邀请后已提交的同一句输入，不能被按钮保留逻辑重新引入。"""  # noqa: DOCSTRING_CJK
+    """Button preservation must not reintroduce identical input already committed this turn or since the invitation."""  # noqa: DOCSTRING_CJK
 
     _engine, session, _outcome, _candidate = _fixture(50)
     offer = {
@@ -335,7 +439,7 @@ def test_authored_acceptance_does_not_repeat_current_input():
 
 
 def test_new_invitation_resets_consumed_acceptance_boundary():
-    """旧邀请期间用过的话不限制后来重新公开的邀请。"""  # noqa: DOCSTRING_CJK
+    """Inputs used during an old invitation do not restrict a later newly disclosed invitation."""  # noqa: DOCSTRING_CJK
 
     _engine, session, _outcome, _candidate = _fixture(50)
     acceptance = '（点头）好，我们出发。'
@@ -356,7 +460,7 @@ def test_new_invitation_resets_consumed_acceptance_boundary():
 
 
 def test_fallback_does_not_treat_replacement_first_option_as_acceptance():
-    """接受按钮退场后，判定故障不能把顶上首位的暂缓按钮当成授权。"""  # noqa: DOCSTRING_CJK
+    """After the accept button disappears, decision failures must not treat the now-first defer button as authorization."""  # noqa: DOCSTRING_CJK
 
     _engine, session, _outcome, _candidate = _fixture(50)
     offer = {
@@ -381,7 +485,7 @@ def test_fallback_does_not_treat_replacement_first_option_as_acceptance():
 async def test_consumed_acceptance_stays_removed_across_commits_and_restore(
     tmp_path, monkeypatch, acceptance, offer,
 ):
-    """两类卡幕样本沿真实提交与恢复链路去掉旧按钮，不追加采样也不强行换幕。"""  # noqa: DOCSTRING_CJK
+    """Remove stale buttons in both stuck-act samples through real commit/recovery paths, without extra sampling or forced act changes."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -408,7 +512,8 @@ async def test_consumed_acceptance_stays_removed_across_commits_and_restore(
 
     async def review(self, **kwargs):
         calls.append('review')
-        return evaluator.NumericV2TransitionOfferReview(False, False, (), ())
+        return evaluator.NumericV2TransitionOfferReview(False, False, (), (),
+            approved_suggestion_texts=tuple(kwargs['actor_performance'].get('suggested_inputs') or []))
 
     async def review_on():
         return {**await _all_off(), 'evaluator': True, 'review': True}
@@ -441,7 +546,7 @@ async def test_consumed_acceptance_stays_removed_across_commits_and_restore(
 
 @pytest.mark.asyncio
 async def test_workflow_inserts_acceptance_only_after_offer_review(tmp_path, monkeypatch):
-    """Workflow 只为复核确认有效的新邀请插入固定接受按钮。"""  # noqa: DOCSTRING_CJK
+    """Workflow inserts fixed acceptance buttons only for new invitations confirmed valid by review."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -477,7 +582,8 @@ async def test_workflow_inserts_acceptance_only_after_offer_review(tmp_path, mon
         }
 
     async def review(self, **_kwargs):
-        return evaluator.NumericV2TransitionOfferReview(True, True, (), ())
+        return evaluator.NumericV2TransitionOfferReview(True, True, (), (),
+            approved_suggestion_texts=tuple(_kwargs['actor_performance'].get('suggested_inputs') or []))
 
     async def review_on():
         return {
@@ -517,7 +623,7 @@ async def test_workflow_inserts_acceptance_only_after_offer_review(tmp_path, mon
 @pytest.mark.parametrize('authored', [False, True])
 @pytest.mark.parametrize('followup', ['', '（歪头）你觉得呢？'])
 async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path, monkeypatch, authored, followup):
-    """判定故障时只核验作者合同，不把 Actor 推荐首位当成接受权限。"""  # noqa: DOCSTRING_CJK
+    """On decision failure, verify only the author contract; never treat Actor's first recommendation as acceptance permission."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -605,7 +711,7 @@ async def test_evaluator_failure_only_accepts_verified_authored_button(tmp_path,
 
 @pytest.mark.asyncio
 async def test_all_modules_off_keeps_only_the_actor_call(tmp_path, monkeypatch):
-    """模块全关时只剩一次演员调用：判定与复核都不发请求，回合仍原子提交。"""  # noqa: DOCSTRING_CJK
+    """With every module off, only one actor call remains: neither decisions nor review send requests, yet turns still commit atomically."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -650,14 +756,14 @@ async def test_all_modules_off_keeps_only_the_actor_call(tmp_path, monkeypatch):
     assert len(generations) == 1
     assert diagnostics['theater_module_options'] == await _all_off()
     assert diagnostics['evaluator_skipped'] is True and diagnostics['review_skipped'] is True
-    # 演员内部也不再补推荐（开关随本轮传入）。
+    # Actors no longer add recommendations internally either (switch passed in this round).
     assert generations[0]['allow_suggestion_fill'] is False
     assert result.stored.session.revision == current.session.revision + 1
 
 
 @pytest.mark.asyncio
 async def test_review_budget_skips_later_rechecks_without_committing_unreviewed_rewrite(tmp_path, monkeypatch):
-    """首次快检执行，预算不足以复检新稿时保留原事务，不复用旧稿判定。"""  # noqa: DOCSTRING_CJK
+    """Run the first fast check; if budget cannot recheck the new draft, retain the original transaction without reusing old-draft judgments."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -693,12 +799,12 @@ async def test_review_budget_skips_later_rechecks_without_committing_unreviewed_
 
     diagnostics = {}
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
             ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
 
-    # 不加调用；新稿没有被审查，原数值、位置、邀请、正文和Ledger一并保留。
+    # Add no calls: the new draft is unreviewed; retain original values, location, invite, body, and Ledger together.
     assert len(reviews) == 1
     assert len(generations) == 2
     assert diagnostics['review_budget_skips'] == 1
@@ -709,7 +815,7 @@ async def test_review_budget_skips_later_rechecks_without_committing_unreviewed_
 
 @pytest.mark.asyncio
 async def test_review_budget_exhaustion_keeps_transition_rollback(tmp_path, monkeypatch):
-    """正式转场不能因预算跳过复检而提交：沿用未完成复核的回滚语义。"""  # noqa: DOCSTRING_CJK
+    """Formal transitions cannot commit when budget skips rechecking: retain rollback semantics for incomplete review."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -725,7 +831,7 @@ async def test_review_budget_exhaustion_keeps_transition_rollback(tmp_path, monk
     generations = []
 
     async def evaluate(self, **kwargs):
-        # 必须真的跨幕，才能覆盖正式转场的"未完成复核不提交"分支。
+        # Actually cross acts to cover the formal transition's no-commit-without-completed-review branch.
         return evaluator.NumericV2EvaluationResult(
             (MetricChangeV2('trust', 2, '玩家兑现承诺', '我来帮你。'),), False,
             transition_intent='initiate', )
@@ -744,17 +850,18 @@ async def test_review_budget_exhaustion_keeps_transition_rollback(tmp_path, monk
     monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_REVIEW_BUDGET_SECONDS', 0.0)
 
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_review_failed'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
             ensure_current_binding=lambda _: _binding())
-    # 事务回滚：未提交的换场不能进入存档。
+    # Transaction rollback: uncommitted scene changes must not enter saves.
     assert await runtime.restore_session('review_budget_transition') == current
 
 
 @pytest.mark.asyncio
-async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypatch):
-    """The second review cannot receive the full dispute timeout after a slow fast check."""
+@pytest.mark.parametrize('slow_dispute', [False, True])
+async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypatch, slow_dispute):
+    """Disputes share the remaining deadline; a late recheck cannot erase the fast verdict."""
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -781,6 +888,8 @@ async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypat
         if not kwargs.get('dispute_review'):
             await asyncio.sleep(0.1)
         if kwargs.get('dispute_review'):
+            if slow_dispute:
+                await asyncio.sleep(0.08)
             return evaluator.NumericV2TransitionOfferReview(False, False, (), ())
         return _violating_review(**kwargs)
 
@@ -795,28 +904,39 @@ async def test_dispute_review_receives_only_remaining_budget(tmp_path, monkeypat
     monkeypatch.setattr(numeric_v2_workflow.NumericV2Actor, '_character_profile', lambda self: '温和。')
     monkeypatch.setattr(numeric_v2_workflow, 'aload_theater_module_options', options)
     monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_REVIEW_BUDGET_SECONDS', 3.0)
+    monkeypatch.setattr(numeric_v2_workflow, 'NUMERIC_V2_DISPUTE_TIMEOUT_CAP_SECONDS',
+                        0.05 if slow_dispute else 0.5)
 
-    await numeric_v2_workflow.execute_numeric_v2_turn(
+    result = await numeric_v2_workflow.execute_numeric_v2_turn(
         config_manager=object(), runtime=runtime, current=current,
         turn=TurnRequestV2('new', current.session.revision, '我来帮你。'),
         ensure_current_binding=lambda _: _binding())
 
-    assert len(calls) >= 2
-    fast, dispute = calls[:2]
+    assert len(calls) == 3
+    fast, repaired, dispute = calls
     assert fast.get('dispute_review') is not True
+    assert repaired.get('dispute_review') is not True
+    assert repaired['timeout_seconds'] < fast['timeout_seconds']
     assert dispute.get('dispute_review') is True
     assert dispute['timeout_seconds'] < evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS
+    if slow_dispute:
+        assert result.diagnostics['dispute_review_degraded'] is True
+        first, repaired, degraded = result.diagnostics['transition_review_results']
+        assert repaired['body_violations'] == ['author_boundary']
+        assert first['body_violations'] == ['author_boundary']
+        assert degraded == {'review_mode': 'dispute', 'degraded': True,
+                            'failure_reason': 'numeric_v2_transition_judge_timeout'}
 
 
 def test_review_budget_is_a_wait_limit_only():
-    """预算只限制等待，不替代授权、去向或提交判定。"""  # noqa: DOCSTRING_CJK
+    """Budgets constrain waiting only, never replace authorization, destination, or commit decisions."""  # noqa: DOCSTRING_CJK
 
     assert NUMERIC_V2_REVIEW_BUDGET_SECONDS > 0
     assert evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS < NUMERIC_V2_REVIEW_BUDGET_SECONDS
     assert evaluator.NUMERIC_V2_DISPUTE_JUDGE_TIMEOUT_SECONDS > evaluator.NUMERIC_V2_TRANSITION_JUDGE_TIMEOUT_SECONDS
 
 def test_delivery_check_finds_authored_props_only_from_contract():
-    """交付校验只核对本轮必须交付的道具；保留项无需逐幕复述。"""  # noqa: DOCSTRING_CJK
+    """Delivery validation checks only props required this turn; retained items need no repetition every act."""  # noqa: DOCSTRING_CJK
 
     from types import SimpleNamespace
 
@@ -837,7 +957,7 @@ def test_delivery_check_finds_authored_props_only_from_contract():
     assert contract_required_names(node, 'mainline_03') == ()
     assert missing_contract_names(node, 'mainline_03', {'performance': '继续前行。'}, session) == ()
 
-    # 作者明确要求本轮交付时才检查；三段正文与旁白都属于玩家实际可见内容。
+    # Check only when authors explicitly request delivery this round; all three body paragraphs and narration are player-visible.
     node['route_gates'][0]['transition_contract']['must_deliver'].append(
         '关键道具“传统风筝图谱”[kite_blueprint]：本轮必须交给老匠人。'
     )
@@ -851,7 +971,7 @@ def test_delivery_check_finds_authored_props_only_from_contract():
 
 
 def test_contract_check_accepts_only_authored_boundary_items():
-    """窄判定只接受逐字来自作者禁令列表的条目，模型自造的违规被丢弃。"""  # noqa: DOCSTRING_CJK
+    """Narrow decisions accept only verbatim entries from author prohibitions, discarding model-invented violations."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_evaluator import _parse_contract_check_output
 
@@ -864,7 +984,7 @@ def test_contract_check_accepts_only_authored_boundary_items():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('include_all_segments', [False, True])
 async def test_boundary_check_reads_author_boundaries_and_reports_violation(monkeypatch, include_all_segments):
-    """窄判定必须真的读到作者禁令，并把逐字命中的违规返回给调用方。"""  # noqa: DOCSTRING_CJK
+    """Narrow decisions must actually read author prohibitions and return verbatim matches to callers."""  # noqa: DOCSTRING_CJK
 
     captured = {}
 
@@ -911,7 +1031,7 @@ async def test_boundary_check_reads_author_boundaries_and_reports_violation(monk
     assert '不得描述已到达终点平台' in sent
     assert '两人抵达观景坡顶端的平台。' in sent
     assert ('这是第0条已经确认的消息。' in sent) == include_all_segments
-    # 没有禁令的幕不发请求，直接返回空。
+    # Acts without prohibitions make no request and return empty directly.
     captured.clear()
     assert await worker.verify_contract_boundaries(
         node={'story_beat': {}}, actor_performance={'performance': '随便。'},
@@ -920,8 +1040,8 @@ async def test_boundary_check_reads_author_boundaries_and_reports_violation(monk
 
 
 @pytest.mark.asyncio
-async def test_contract_switch_checks_stay_turns_and_rewrites_once(tmp_path, monkeypatch):
-    """留幕回合也要核对作者禁令：命中一次就共用一次改稿，复检结果单独留诊断。"""  # noqa: DOCSTRING_CJK
+async def test_contract_checks_scene_changes_in_stay_turns_and_rewrites_once(tmp_path, monkeypatch):
+    """A proposed scene change still uses the bounded contract rewrite."""
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -941,7 +1061,9 @@ async def test_contract_switch_checks_stay_turns_and_rewrites_once(tmp_path, mon
 
     async def generate(self, **kwargs):
         generations.append(kwargs.get('retry_hint', ''))
-        return {'performance': '（指向远处的平台）我们到了最高的地方。', 'suggested_inputs': []}
+        return {'performance': ('（指向远处的平台）我们到了最高的地方。' if len(generations) == 1
+                                else '（停在山脚）先在这里休息。'), 'suggested_inputs': [],
+                **({'scene_narration': '脚下已经是最高处的平台。'} if len(generations) == 1 else {})}
 
     async def boundaries(self, **kwargs):
         boundary_calls.append(kwargs)
@@ -968,12 +1090,12 @@ async def test_contract_switch_checks_stay_turns_and_rewrites_once(tmp_path, mon
     assert diagnostics['contract_violated'] == ['不得直接到达最高处平台']
     assert diagnostics['contract_violated_after_rewrite'] == []
     assert diagnostics['semantic_rewrite_attempts'] == 1
-    assert '作者禁令' in generations[1]
+    assert '正文合同' in generations[1]
 
 
 @pytest.mark.asyncio
 async def test_contract_switch_off_sends_no_boundary_call(tmp_path, monkeypatch):
-    """开关关闭时留幕回合不发窄判定请求。"""  # noqa: DOCSTRING_CJK
+    """With the switch off, stay-in-act turns send no narrow-decision request."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -1016,29 +1138,17 @@ async def test_contract_switch_off_sends_no_boundary_call(tmp_path, monkeypatch)
     assert called == []
 
 
-def test_source_side_delivery_drops_the_target_opening():
-    """换场边界核对只保留来源回应与桥段，目标幕开场不参与来源幕禁令核对。"""  # noqa: DOCSTRING_CJK
-
-    full = {'segments': [
-        {'phase': 'source_response', 'performance': '（点头）好。'},
-        {'phase': 'transition_bridge', 'scene_narration': '窗外的雨渐渐停了。'},
-        {'phase': 'target_opening', 'performance': '（望向窗外）终于可以歇一会儿了。'},
-    ]}
-    view = numeric_v2_workflow._source_side_delivery(full)
-    assert [segment['phase'] for segment in view['segments']] == ['source_response', 'transition_bridge']
-    # 留幕候选没有三段结构时原样返回，不做裁剪。
-    plain = {'performance': '（点头）好。'}
-    assert numeric_v2_workflow._source_side_delivery(plain) is plain
 
 
 @pytest.mark.asyncio
-async def test_transition_boundary_check_never_sends_the_target_opening(tmp_path, monkeypatch):
-    """换场窄判定收到的材料必须没有目标幕开场，否则正常换场会被来源幕禁令误判。"""  # noqa: DOCSTRING_CJK
+async def test_transition_boundary_check_sends_all_phases_with_target_contract(tmp_path, monkeypatch):
+    """Narrow transition checks must exclude target-act openings, or source prohibitions misclassify normal transitions."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2, MetricChangeV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
 
     case = initiation_case()
+    original_nodes = deepcopy(case['engine'].nodes)
     runtime = NumericV2Runtime(case['engine'], tmp_path)
     current = await runtime.start_session(
         session_id='contract_transition', catgirl_binding=_binding(),
@@ -1053,6 +1163,10 @@ async def test_transition_boundary_check_never_sends_the_target_opening(tmp_path
 
     async def boundaries(self, **kwargs):
         payloads.append(kwargs['actor_performance'])
+        assert kwargs['target_node']['id'] == 'ending_leave'
+        assert kwargs['target_node']['story_beat']['opening_scene'] == original_nodes['ending_leave']['story_beat']['opening_scene']
+        for key, value in original_nodes['start']['route_gates'][1]['transition_contract'].items():
+            assert kwargs['transition_contract'][key] == value
         return ()
 
     async def generate(self, **kwargs):
@@ -1087,14 +1201,15 @@ async def test_transition_boundary_check_never_sends_the_target_opening(tmp_path
         ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
 
     assert payloads, '换场回合必须做一次边界核对'
+    assert case['engine'].nodes == original_nodes
     for payload in payloads:
         phases = [segment['phase'] for segment in payload['segments']]
-        assert phases == ['source_response', 'transition_bridge']
+        assert phases == ['source_response', 'transition_bridge', 'target_opening']
 
 
 @pytest.mark.asyncio
 async def test_transition_bridge_leak_after_rewrite_rolls_back(tmp_path, monkeypatch):
-    """结构重复改写后仍存在时，正式转场必须回滚而不是走末稿兜底提交。"""  # noqa: DOCSTRING_CJK
+    """If structural repetition survives rewriting, formal transitions must roll back instead of using final-draft fallback commits."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_runtime import NumericV2Runtime, TurnRequestV2
     from tests.unit.test_theater_numeric_v2_player_transition import initiation_case
@@ -1133,7 +1248,7 @@ async def test_transition_bridge_leak_after_rewrite_rolls_back(tmp_path, monkeyp
 
     diagnostics = {}
     with pytest.raises(NumericV2ActorOutputError, match='numeric_v2_transition_segment_overlap'):
-        await numeric_v2_workflow.execute_numeric_v2_turn(
+        await numeric_v2_workflow._execute_numeric_v2_turn(
             config_manager=object(), runtime=runtime, current=current,
             turn=TurnRequestV2('new', current.session.revision, '带路吧。'),
             ensure_current_binding=lambda _: _binding(), diagnostics_sink=diagnostics)
@@ -1146,7 +1261,7 @@ async def test_transition_bridge_leak_after_rewrite_rolls_back(tmp_path, monkeyp
 
 
 def test_boundary_items_exclude_player_agency_and_style_rules():
-    """窄判定只核对世界事实类禁令；玩家授权与写作风格要求不进入，避免把正常邀请判成越界。"""  # noqa: DOCSTRING_CJK
+    """Narrow checks cover only world-fact prohibitions, excluding player authorization and style requirements to avoid rejecting normal invitations."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_context import contract_boundary_items
 
@@ -1161,7 +1276,7 @@ def test_boundary_items_exclude_player_agency_and_style_rules():
 
 
 def test_contract_boundary_projection_has_one_public_order_and_fact_scope():
-    """运行端各消费者共享顺序；窄复核只保留可核对的事实边界。"""  # noqa: DOCSTRING_CJK
+    """Runtime consumers share ordering; narrow review retains only verifiable factual boundaries."""  # noqa: DOCSTRING_CJK
 
     from services.theater.numeric_v2_context import project_contract_boundaries
 

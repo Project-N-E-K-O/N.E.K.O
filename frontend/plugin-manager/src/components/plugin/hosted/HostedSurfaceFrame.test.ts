@@ -29,6 +29,9 @@ vi.mock('@element-plus/icons-vue', () => ({
 }))
 
 type MountedFrame = {
+  container: HTMLDivElement
+  errors: ReturnType<typeof vi.fn>
+  openLogs: ReturnType<typeof vi.fn>
   dispatchRequest: (data: Record<string, unknown>) => void
   postMessage: ReturnType<typeof vi.fn>
   iframe: () => HTMLIFrameElement | null
@@ -55,6 +58,15 @@ function makeSurface(id = 'main', url = 'data:text/html,<html></html>'): PluginU
 
 function makeDocumentSurface(permissions = ['document:parse']): PluginUiSurface {
   return { ...makeSurface(), permissions }
+}
+
+function makeHostedSurface(id = 'main'): PluginUiSurface {
+  return { ...makeSurface(id), mode: 'hosted-tsx', entry: 'ui/panel.tsx', url: undefined }
+}
+
+const hostedSource = {
+  source: 'export default function Panel(props) { return <div>{props.state?.label || "ready"}</div> }',
+  dependencies: [],
 }
 
 function makeNotRunningError() {
@@ -93,7 +105,7 @@ async function flushPromises() {
   await nextTick()
 }
 
-async function mountFrame(initialSurface = makeSurface()): Promise<MountedFrame> {
+async function mountFrame(initialSurface = makeSurface(), options: { requireIframe?: boolean } = {}): Promise<MountedFrame> {
   const state = reactive({
     pluginId: 'study_companion',
     surface: initialSurface,
@@ -103,6 +115,8 @@ async function mountFrame(initialSurface = makeSurface()): Promise<MountedFrame>
   const container = document.createElement('div')
   document.body.appendChild(container)
   const frameRef = ref<{ refreshContext: () => Promise<void> } | null>(null)
+  const errors = vi.fn()
+  const openLogs = vi.fn()
   const app = createApp(defineComponent({
     setup() {
       return () => h(HostedSurfaceFrame, {
@@ -111,6 +125,8 @@ async function mountFrame(initialSurface = makeSurface()): Promise<MountedFrame>
         surface: state.surface,
         active: state.active,
         activationRevision: state.activationRevision,
+        onError: errors,
+        onOpenLogs: openLogs,
       })
     },
   }))
@@ -118,6 +134,11 @@ async function mountFrame(initialSurface = makeSurface()): Promise<MountedFrame>
   app.component('el-alert', elementStub)
   app.component('el-icon', elementStub)
   app.component('el-tag', elementStub)
+  app.component('el-button', defineComponent({
+    setup(_props, { slots }) {
+      return () => h('button', null, slots.default?.())
+    },
+  }))
   app.mount(container)
   await nextTick()
   await flushPromises()
@@ -127,14 +148,18 @@ async function mountFrame(initialSurface = makeSurface()): Promise<MountedFrame>
   }
 
   const iframe = container.querySelector('iframe') as HTMLIFrameElement | null
-  if (!iframe?.contentWindow) throw new Error('Hosted surface iframe was not mounted')
-  const iframeWindow = iframe.contentWindow
+  if (options.requireIframe !== false && !iframe?.contentWindow) throw new Error('Hosted surface iframe was not mounted')
+  const iframeWindow = iframe?.contentWindow
   const postMessage = vi.fn()
-  iframeWindow.postMessage = postMessage
+  if (iframeWindow) iframeWindow.postMessage = postMessage
 
   let active = true
   const mounted: MountedFrame = {
+    container,
+    errors,
+    openLogs,
     dispatchRequest(data) {
+      if (!iframeWindow) throw new Error('Cannot dispatch an iframe request before the iframe mounts')
       window.dispatchEvent(new MessageEvent('message', {
         data,
         origin: 'null',
@@ -820,5 +845,270 @@ describe('HostedSurfaceFrame automatic startup retry', () => {
     expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledTimes(2)
     expect(frame.iframe()?.getAttribute('srcdoc')).toContain('伴学入门')
     frame.unmount()
+  })
+
+  it('resets the phase deadline while retaining available actions and focus between stages', async () => {
+    const source = deferred<typeof hostedSource>()
+    const context = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValue(source.promise)
+    apiMocks.getPluginHostedSurfaceContext.mockReturnValue(context.promise)
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    const placeholder = () => frame.container.querySelector<HTMLElement>('[data-testid="surface-placeholder"]')
+
+    expect(frame.iframe()).toBeNull()
+    expect(placeholder()?.dataset.loadPhase).toBe('resources')
+    expect(frame.container.textContent).toContain('plugins.ui.loadingResources')
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBeNull()
+    expect(apiMocks.getPluginHostedSurfaceContext).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(2999)
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).not.toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+    const retry = frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-retry"]')!
+    const logs = frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-open-logs"]')!
+    retry.focus()
+    frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-open-logs"]')!.click()
+    expect(frame.openLogs).toHaveBeenCalledOnce()
+
+    source.resolve(hostedSource)
+    await flushPromises()
+    expect(apiMocks.getPluginHostedSurfaceContext).toHaveBeenCalledOnce()
+    expect(placeholder()?.dataset.loadPhase).toBe('context')
+    expect(frame.container.textContent).toContain('plugins.ui.loadingContext')
+    expect(frame.iframe()).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBe(retry)
+    expect(frame.container.querySelector('[data-testid="surface-open-logs"]')).toBe(logs)
+    expect(document.activeElement).toBe(retry)
+    logs.click()
+    expect(frame.openLogs).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(2999)
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).not.toBeNull()
+
+    context.resolve({ state: { label: 'loaded after context' } })
+    await flushPromises()
+    expect(frame.iframe()?.srcdoc).toContain('loaded after context')
+    expect(placeholder()).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(frame.errors).not.toHaveBeenCalled()
+  })
+
+  it('keeps the per-phase threshold when successive waits each take less than three seconds', async () => {
+    const source = deferred<typeof hostedSource>()
+    const context = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValue(source.promise)
+    apiMocks.getPluginHostedSurfaceContext.mockReturnValue(context.promise)
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    await vi.advanceTimersByTimeAsync(2900)
+    source.resolve(hostedSource)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(2900)
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBeNull()
+    context.resolve({ state: { label: 'ready' } })
+    await flushPromises()
+    expect(frame.iframe()?.srcdoc).toContain('ready')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retries immediately after a slow resources phase, resets actions, and ignores retired context', async () => {
+    const source = deferred<typeof hostedSource>()
+    const oldContext = deferred<{ state: { label: string } }>()
+    const newContext = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValueOnce(source.promise).mockResolvedValue(hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockReturnValueOnce(oldContext.promise).mockReturnValueOnce(newContext.promise)
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    await vi.advanceTimersByTimeAsync(5000)
+    const retry = frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-retry"]')!
+    source.resolve(hostedSource)
+    await flushPromises()
+    const oldSignal = apiMocks.getPluginHostedSurfaceContext.mock.calls[0]![2].signal as AbortSignal
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBe(retry)
+    retry.click()
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledTimes(2)
+    expect(apiMocks.getPluginHostedSurfaceContext).toHaveBeenCalledTimes(2)
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-open-logs"]')).toBeNull()
+    oldContext.reject(new Error('retired context'))
+    await flushPromises()
+    expect(frame.errors).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).not.toBeNull()
+    newContext.resolve({ state: { label: 'replacement' } })
+    await flushPromises()
+    expect(frame.iframe()?.srcdoc).toContain('replacement')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['resolve', 'reject'] as const)('retries a slow context request, aborts its controller, and ignores an old %s', async (settlement) => {
+    const oldContext = deferred<{ state: { label: string } }>()
+    const newContext = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockReturnValueOnce(oldContext.promise).mockReturnValueOnce(newContext.promise)
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    const oldSignal = apiMocks.getPluginHostedSurfaceContext.mock.calls[0]![2].signal as AbortSignal
+    await vi.advanceTimersByTimeAsync(3000)
+    frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-retry"]')!.click()
+    await flushPromises()
+
+    expect(oldSignal.aborted).toBe(true)
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledTimes(2)
+    expect(apiMocks.getPluginHostedSurfaceContext).toHaveBeenCalledTimes(2)
+    const newSignal = apiMocks.getPluginHostedSurfaceContext.mock.calls[1]![2].signal as AbortSignal
+    expect(newSignal.aborted).toBe(false)
+    if (settlement === 'resolve') oldContext.resolve({ state: { label: 'obsolete context' } })
+    else oldContext.reject(new Error('obsolete context rejection'))
+    await flushPromises()
+    expect(frame.iframe()).toBeNull()
+    expect(frame.container.querySelector<HTMLElement>('[data-testid="surface-placeholder"]')?.dataset.loadPhase).toBe('context')
+    expect(frame.errors).not.toHaveBeenCalled()
+    expect(newSignal.aborted).toBe(false)
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).not.toBeNull()
+
+    newContext.resolve({ state: { label: 'replacement context' } })
+    await flushPromises()
+    expect(frame.iframe()?.srcdoc).toContain('replacement context')
+    expect(frame.iframe()?.srcdoc).not.toContain('obsolete context')
+    expect(frame.errors).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['resolve', 'reject'] as const)('retries a slow source request and ignores its late %s after the replacement mounts', async (settlement) => {
+    const oldSource = deferred<typeof hostedSource>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValueOnce(oldSource.promise).mockResolvedValueOnce(hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({ state: { label: 'replacement source' } })
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    const oldSignal = apiMocks.getPluginHostedSurfaceSource.mock.calls[0]![2].signal as AbortSignal
+    await vi.advanceTimersByTimeAsync(3000)
+    frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-retry"]')!.click()
+    await flushPromises()
+    await flushPromises()
+    const replacement = frame.iframe()
+    expect(replacement).not.toBeNull()
+    expect(oldSignal.aborted).toBe(true)
+    if (settlement === 'resolve') oldSource.resolve({ source: 'export default function Panel() { throw Error("obsolete source") }', dependencies: [] })
+    else oldSource.reject(new Error('obsolete source rejection'))
+    await flushPromises()
+    expect(frame.iframe()).toBe(replacement)
+    expect(frame.iframe()?.srcdoc).toContain('replacement source')
+    expect(apiMocks.getPluginHostedSurfaceContext).toHaveBeenCalledOnce()
+    expect(frame.errors).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['resources', 'context'] as const)('retires the %s wait and its timer when replaced by a static surface', async (phase) => {
+    const pendingSource = deferred<typeof hostedSource>()
+    const pendingContext = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValue(phase === 'resources' ? pendingSource.promise : Promise.resolve(hostedSource))
+    apiMocks.getPluginHostedSurfaceContext.mockReturnValue(pendingContext.promise)
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    const config = phase === 'resources' ? apiMocks.getPluginHostedSurfaceSource.mock.calls[0]![2] : apiMocks.getPluginHostedSurfaceContext.mock.calls[0]![2]
+    expect(vi.getTimerCount()).toBe(1)
+    await frame.setSurface(makeSurface('replacement-static'))
+    const replacement = frame.iframe()
+    expect(config.signal.aborted).toBe(true)
+    // happy-dom schedules a zero-delay load task for the new static iframe.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(vi.getTimerCount()).toBe(0)
+    pendingSource.resolve(hostedSource)
+    if (phase === 'context') pendingContext.reject(new Error('retired request'))
+    else pendingContext.resolve({ state: { label: 'unused context' } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(frame.iframe()).toBe(replacement)
+    expect(frame.errors).not.toHaveBeenCalled()
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
+  })
+
+  it.each(['resources', 'context'] as const)('aborts the %s request and clears its timer on unmount', async (phase) => {
+    const source = deferred<typeof hostedSource>()
+    const context = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValue(phase === 'resources' ? source.promise : Promise.resolve(hostedSource))
+    apiMocks.getPluginHostedSurfaceContext.mockReturnValue(context.promise)
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    const signal = (phase === 'resources' ? apiMocks.getPluginHostedSurfaceSource.mock.calls[0]![2] : apiMocks.getPluginHostedSurfaceContext.mock.calls[0]![2]).signal as AbortSignal
+    expect(vi.getTimerCount()).toBe(1)
+    frame.unmount()
+    expect(signal.aborted).toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+    source.resolve(hostedSource)
+    if (phase === 'context') context.reject(new Error('disposed request'))
+    else context.resolve({ state: { label: 'unused context' } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(frame.errors).not.toHaveBeenCalled()
+  })
+
+  it.each(['resources', 'context', 'render'] as const)('keeps the failed %s stage visible, clears its timer, and offers retry plus logs', async (phase) => {
+    const failure = new Error(`${phase} failed`)
+    if (phase === 'resources') apiMocks.getPluginHostedSurfaceSource.mockRejectedValueOnce(failure)
+    else apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(phase === 'render' ? { source: 'export default function(', dependencies: [] } : hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockImplementation(() => phase === 'context' ? Promise.reject(failure) : Promise.resolve({ state: {} }))
+    const frame = await mountFrame(makeHostedSurface(), { requireIframe: false })
+    expect(frame.iframe()).toBeNull()
+    expect(frame.container.querySelector<HTMLElement>('[data-testid="surface-placeholder"]')?.dataset.loadPhase).toBe(phase)
+    expect(frame.errors).toHaveBeenCalledOnce()
+    expect(frame.container.textContent).toContain('plugins.ui.loadStageError')
+    expect(vi.getTimerCount()).toBe(0)
+    expect(frame.container.querySelector('[data-testid="surface-retry"]')).not.toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-open-logs"]')).not.toBeNull()
+    frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-open-logs"]')!.click()
+    expect(frame.openLogs).toHaveBeenCalledOnce()
+
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValue({ state: { label: 'recovered' } })
+    frame.container.querySelector<HTMLButtonElement>('[data-testid="surface-retry"]')!.click()
+    await flushPromises()
+    await flushPromises()
+    expect(frame.iframe()?.srcdoc).toContain('recovered')
+    expect(frame.container.querySelector('[data-testid="surface-placeholder"]')).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps the mounted iframe identity during a slow context refresh', async () => {
+    const refresh = deferred<{ state: { label: string } }>()
+    apiMocks.getPluginHostedSurfaceSource.mockResolvedValue(hostedSource)
+    apiMocks.getPluginHostedSurfaceContext.mockResolvedValueOnce({ state: { label: 'initial' } }).mockReturnValueOnce(refresh.promise)
+    const frame = await mountFrame(makeHostedSurface())
+    const original = frame.iframe()!
+    original.dataset.localDraft = 'unsaved user draft'
+    const refreshing = frame.refreshContext()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(frame.iframe()).toBe(original)
+    expect(frame.iframe()?.dataset.localDraft).toBe('unsaved user draft')
+    expect(frame.container.querySelector('[data-testid="surface-placeholder"]')).toBeNull()
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).toBeNull()
+    expect(apiMocks.getPluginHostedSurfaceSource).toHaveBeenCalledOnce()
+    refresh.resolve({ state: { label: 'fresh' } })
+    await refreshing
+    expect(frame.iframe()).toBe(original)
+    expect(frame.postMessage).toHaveBeenCalledWith({ type: 'neko-hosted-surface-context', context: { state: { label: 'fresh' } } }, '*')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('shows slow Markdown resource loading, renders after source arrives, and never requests context', async () => {
+    const source = deferred<{ source: string; dependencies: [] }>()
+    apiMocks.getPluginHostedSurfaceSource.mockReturnValue(source.promise)
+    const frame = await mountFrame({ ...makeSurface(), kind: 'guide', mode: 'markdown', entry: 'guide.md', url: undefined }, { requireIframe: false })
+    expect(frame.iframe()).toBeNull()
+    expect(frame.container.querySelector<HTMLElement>('[data-testid="surface-placeholder"]')?.dataset.loadPhase).toBe('resources')
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(frame.container.querySelector('[data-testid="surface-load-slow"]')).not.toBeNull()
+    source.resolve({ source: '# Markdown ready', dependencies: [] })
+    await flushPromises()
+    expect(frame.iframe()?.srcdoc).toContain('<h1>Markdown ready</h1>')
+    expect(apiMocks.getPluginHostedSurfaceContext).not.toHaveBeenCalled()
+    expect(frame.container.querySelector('[data-testid="surface-placeholder"]')).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

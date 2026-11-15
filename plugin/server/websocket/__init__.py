@@ -1,7 +1,7 @@
 """
-WebSocket 服务模块
+WebSocket service module
 
-提供 WebSocket 端点实现。
+Provides WebSocket endpoint implementations.
 """
 from plugin.server.websocket.admin import ws_admin_endpoint
 

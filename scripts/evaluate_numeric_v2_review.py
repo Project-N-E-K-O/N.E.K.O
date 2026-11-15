@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""用冻结正反例评测 Numeric v2 普通正文复核的误杀、漏放和耗时。"""  # noqa: DOCSTRING_CJK
+"""Evaluate false rejections, false acceptances, and latency of Numeric v2 narrative review using frozen positive/negative cases."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ BODY_VIOLATIONS = ("player_action", "scene_boundary", "author_boundary")
 
 @dataclass(frozen=True, slots=True)
 class ReviewCase:
-    """一条冻结样本；期望值只描述普通复核直接负责的可见正文与推荐。"""  # noqa: DOCSTRING_CJK
+    """One frozen sample; expectations describe only visible narrative and recommendations directly governed by ordinary review."""  # noqa: DOCSTRING_CJK
 
     case_id: str
     category: str
@@ -64,8 +64,8 @@ class ReviewCase:
     expected_unsafe_indexes: tuple[int, ...] = ()
 
 
-# v2 不修改 v1 的句子与期望，只让显式移动样本走生产链已有的主动转场补查。
-# 后续不得按模型答案修改句子；扩充或纠正语义必须再次提升版本号。
+# v2 preserves v1 sentences and expectations, routing only explicit-movement samples through production's proactive-transition follow-up check.
+# Never adjust sentences to model answers; bump the version again for semantic additions or corrections.
 FIXED_CASES = (
     ReviewCase(
         case_id="legal_explicit_movement",
@@ -192,7 +192,7 @@ FIXED_CASES = (
 
 
 def _evaluation_story() -> dict[str, Any]:
-    """构造只服务普通复核评测的最小剧本，不读取用户安装包。"""  # noqa: DOCSTRING_CJK
+    """Build a minimal script solely for ordinary-review evaluation without reading user-installed packages."""  # noqa: DOCSTRING_CJK
 
     metric = {
         "name": "协作度",
@@ -314,7 +314,7 @@ def _evaluation_story() -> dict[str, Any]:
 
 
 def _body_contract_matches(case: ReviewCase, actual: Iterable[str]) -> bool:
-    """按拒绝与必含／禁含枚举共同评分，避免只看是否非空。"""  # noqa: DOCSTRING_CJK
+    """Score jointly against rejection and required/forbidden enums rather than checking only nonemptiness."""  # noqa: DOCSTRING_CJK
 
     actual_set = set(actual)
     return (
@@ -328,7 +328,7 @@ def _normalize_review(
     candidate: Mapping[str, Any],
     review: NumericV2TransitionOfferReview,
 ) -> NumericV2TransitionOfferReview:
-    """只应用生产 Workflow 已接入的两条窄归一，分别报告模型与框架结果。"""  # noqa: DOCSTRING_CJK
+    """Apply only the two narrow normalizations integrated into production Workflow; report model and framework outcomes separately."""  # noqa: DOCSTRING_CJK
 
     if _review_denies_narration_only_offer(candidate, review):
         review = replace(review, offer_present=False, valid=False, offer_quote="", failure_reason="")
@@ -338,7 +338,7 @@ def _normalize_review(
 
 
 def _binary_metrics(expected: Iterable[bool], actual: Iterable[bool]) -> dict[str, Any]:
-    """计算二元判断的精确率、召回率和准确率。"""  # noqa: DOCSTRING_CJK
+    """Calculate precision, recall, and accuracy for binary judgments."""  # noqa: DOCSTRING_CJK
 
     pairs = list(zip(expected, actual))
     true_positive = sum(want and got for want, got in pairs)
@@ -357,7 +357,7 @@ def _binary_metrics(expected: Iterable[bool], actual: Iterable[bool]) -> dict[st
 
 
 def _result_summary(rows: list[Mapping[str, Any]], prefix: str) -> dict[str, Any]:
-    """汇总一套原始或归一结果，并列出可直接回放的错误样本。"""  # noqa: DOCSTRING_CJK
+    """Summarize one raw or normalized result set and list directly replayable failure samples."""  # noqa: DOCSTRING_CJK
 
     body_expected = [bool(row["expect_body_rejection"]) for row in rows]
     body_actual = [bool(row[f"{prefix}_body_violations"]) for row in rows]
@@ -402,7 +402,7 @@ def _result_summary(rows: list[Mapping[str, Any]], prefix: str) -> dict[str, Any
 
 
 def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """同时汇总模型原始结论、Workflow 有效结论和单次调用耗时。"""  # noqa: DOCSTRING_CJK
+    """Summarize raw model decisions, effective Workflow decisions, and individual-call latency together."""  # noqa: DOCSTRING_CJK
 
     successful = [row for row in rows if not row.get("error")]
     durations = sorted(float(row["duration_ms"]) for row in successful)
@@ -426,7 +426,7 @@ async def _run_case(
     case: ReviewCase,
     repetition: int,
 ) -> dict[str, Any]:
-    """运行一次真实普通快检，并应用生产中的确定性归一。"""  # noqa: DOCSTRING_CJK
+    """Run one real ordinary quick check and apply production deterministic normalization."""  # noqa: DOCSTRING_CJK
 
     session = engine.create_session(
         session_id=f"review_eval_{case.case_id}_{repetition}",
@@ -459,7 +459,7 @@ async def _run_case(
                 check_missed_initiation=case.check_missed_initiation,
             )
             effective = _normalize_review(candidate, raw)
-        except Exception as exc:  # 单例错误写入报告，固定集继续运行。
+        except Exception as exc:  # Record per-case errors and continue the fixed set.
             error = f"{type(exc).__name__}:{exc}"
         trace_event(
             "ordinary_review_eval.result",

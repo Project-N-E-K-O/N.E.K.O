@@ -31,18 +31,18 @@ logger = logging.getLogger("neko.facts_sync")
 # ---- tunables ----
 SYNC_INTERVAL_SEC = 5 * 60  # 5 min
 BATCH_SIZE = 50
-# NEKO 端 importance 用 0-10 int 评分（memory/facts.py safe_importance default=5）；
-# Servers schema 限 [0,1] float。这里阈值按 NEKO scale 走 5（中等以上），
-# 推送前在 _select_unsynced_facts 里归一化到 [0,1]。
-MIN_IMPORTANCE = 5.0  # NEKO 0-10 scale；服务端再过 importance >= 0.3（归一化后）
+# NEKO scores importance as 0-10 integers (memory/facts.py safe_importance defaults to 5);
+# Servers schema requires [0,1] floats. Use NEKO's threshold 5 (medium or higher),
+# normalizing to [0,1] in _select_unsynced_facts before pushing.
+MIN_IMPORTANCE = 5.0  # NEKO's 0-10 scale; the server also checks importance >=0.3 after normalization.
 MAX_FAILED_ATTEMPTS = 5
 HTTP_TIMEOUT_SEC = 15.0
 
 # ---- M2-i fix: bootstrap register with Servers before pushing facts ----
-# Servers 端 X-Client-Id 鉴权要求 client 已 register 过；否则 401。
-# 注册实现已移到 main_logic.client_registration（锻造扣券 / OAuth 绑定共用同一份
-# 缓存），这里直接别名同一个 dict：401 失效逻辑必须作用在共享缓存上，否则下一轮
-# sweep 会读到别处写入的 stale "已注册"。
+# Servers X-Client-Id authentication requires prior client registration, otherwise 401.
+# Registration moved to main_logic.client_registration (coupon deductions / OAuth binding share
+# one cache). Alias that same dict directly: 401 invalidation must affect the shared cache, or the next
+# sweep reads a stale registered value written elsewhere.
 _client_registered = client_registration._registered
 
 
@@ -132,8 +132,8 @@ def _select_unsynced_facts(
         importance_raw = _coerce_importance(fact.get("importance"))
         if importance_raw < MIN_IMPORTANCE:
             continue
-        # NEKO 0-10 → Servers 0-1 归一化；对已经在 [0,1] 范围的值无影响。
-        # 单调，不破坏排序；clamp 到 [0,1] 应对偶发越界值。
+        # Normalize NEKO 0-10 -> Servers 0-1; values already within [0,1] are unaffected.
+        # Monotonic, preserving order; clamp to [0,1] for occasional out-of-range values.
         if importance_raw > 1.0:
             importance = min(importance_raw / 10.0, 1.0)
         else:
@@ -186,7 +186,7 @@ async def _post_facts_batch(
     headers = {
         "X-Client-Id": client_id,
         "Content-Type": "application/json",
-        # 后续 M3+ 把 NEKO-PC 拿到的 JWT 通过 IPC 传过来时这里加 Authorization
+        # Add Authorization here when M3+ passes the NEKO-PC JWT over IPC.
     }
     payload = {"lanlan_name": lanlan_name, "facts": batch}
     try:
@@ -222,8 +222,8 @@ async def _sync_one_lanlan(
     if not facts_path.exists():
         return
 
-    # CodeRabbit Major: facts/state JSON read 是同步磁盘 IO，包到 asyncio.to_thread
-    # 防止卡事件循环（同时也是 NEKO repo async-blocking lint 红线）。
+    # CodeRabbit Major: synchronous facts/state JSON disk reads go through asyncio.to_thread
+    # to avoid blocking the event loop (also a NEKO async-blocking lint requirement).
     facts_data = await asyncio.to_thread(_read_json, facts_path, [])
     if not isinstance(facts_data, list):
         logger.warning("facts_sync: %s is not a list, skipping", facts_path)
@@ -250,7 +250,7 @@ async def _sync_one_lanlan(
 
     pending_path = lanlan_dir / "facts_sync_pending.jsonl"
 
-    # 拆批
+    # Split into batches.
     for i in range(0, len(candidates), BATCH_SIZE):
         batch = candidates[i : i + BATCH_SIZE]
         ok, _resp = await _post_facts_batch(base_url, client_id, lanlan_name, batch)
@@ -300,7 +300,7 @@ async def _sweep_once() -> None:
         return
     client_id, client_proof = credentials
 
-    # M2-i fix: bootstrap register before pushing；失败则跳过本轮，下次再试。
+    # M2-i fix: bootstrap registration before pushing; skip this cycle on failure and retry next time.
     if not await _ensure_client_registered(base_url, client_id, client_proof):
         logger.warning("facts_sync: client not registered with Servers; skipping sweep")
         return
@@ -336,7 +336,7 @@ async def start_facts_sync_worker() -> None:
         "facts_sync: starting (interval=%ds, batch=%d, min_importance=%.2f)",
         SYNC_INTERVAL_SEC, BATCH_SIZE, MIN_IMPORTANCE,
     )
-    # 首次延迟启动 30 秒，避开主服务启动忙时
+    # Delay the first startup by 30 seconds, avoiding the main service's busy startup period.
     try:
         await asyncio.sleep(30.0)
     except asyncio.CancelledError:

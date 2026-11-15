@@ -165,6 +165,41 @@ function createHarness() {
     return { context, handoffCalls, roundCalls, sceneCalls, window };
 }
 
+test('late chat readiness cannot suppress a stopped director', async () => {
+    for (const stopFlag of ['destroyed', 'terminationRequested']) {
+        for (const rejectReadiness of [false, true]) {
+            const { window } = createHarness();
+            const director = window.createYuiGuideDirector({ page: 'settings' });
+            const events = [];
+            window.dispatchEvent = (event) => events.push(event);
+            let settle;
+            director.ensureChatVisible = () => new Promise((resolve, reject) => {
+                settle = () => rejectReadiness ? reject(new Error('chat unavailable')) : resolve();
+            });
+            const pending = director.ensureAvatarFloatingGuideSurfaceReady(1);
+            director[stopFlag] = true;
+            settle();
+            await pending;
+            assert.equal(events.length, 0, `${stopFlag}: no fallback suppression after cancellation`);
+        }
+    }
+    const { window } = createHarness();
+    const director = window.createYuiGuideDirector({ page: 'settings' });
+    let enforceCalls = 0;
+    window.NekoHomeTutorialFeatureController = { enforce() { enforceCalls += 1; } };
+    let resolve;
+    director.ensureChatVisible = () => new Promise((done) => { resolve = done; });
+    const pending = director.ensureAvatarFloatingGuideSurfaceReady(1);
+    director.terminationRequested = true;
+    resolve();
+    await pending;
+    assert.equal(enforceCalls, 0, 'the feature controller must not restart suppression either');
+    director.terminationRequested = false;
+    director.ensureChatVisible = async () => {};
+    await director.ensureAvatarFloatingGuideSurfaceReady(1);
+    assert.equal(enforceCalls, 1, 'a live director still suppresses after chat readiness');
+});
+
 test('director parts load in dependency order and preserve class prototype descriptors', () => {
     const { window } = createHarness();
     assert.equal(typeof window.createYuiGuideDirector, 'function');

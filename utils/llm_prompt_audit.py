@@ -101,12 +101,12 @@ def _content_to_text(content: Any) -> str:
             if ptype in ("text", "input_text", "output_text"):
                 out.append(str(part.get("text") or ""))
             else:
-                # 见函数 docstring：非 text 类一律占位，不 json.dumps，
-                # 不试图细分图片/音频/视频——白名单比黑名单安全。
+                # See the function docstring: replace every non-text type with a placeholder, without json.dumps,
+                # or distinguishing images/audio/video; allowlists are safer than denylists.
                 out.append(f"[{ptype or 'unknown'}]")
         return "\n".join(out)
     if isinstance(content, dict):
-        # 镜像 list 分支：上游偶尔直接传单个 part dict（不是 list 包裹）。
+        # Mirror the list branch: upstream sometimes passes one part dict directly, without a list wrapper.
         ptype = content.get("type")
         if ptype in ("text", "input_text", "output_text"):
             return str(content.get("text") or "")
@@ -121,9 +121,9 @@ def _safe_count_tokens(text: str) -> int:
     except Exception:
         # Self-contained fallback when `utils.tokenize` itself fails to
         # import (otherwise count_tokens already has its own heuristic).
-        # Mirror tokenize._count_tokens_heuristic 的口径（CJK 1.5 /
-        # 其他 0.25，向上取整），不直接 import utils.cjk 以保证此分支
-        # 始终可用。
+        # Mirror tokenize._count_tokens_heuristic (CJK 1.5 /
+        # others 0.25, rounded up), without importing utils.cjk directly, keeping this branch
+        # always available.
         if not text:
             return 0
         cjk = sum(
@@ -134,7 +134,7 @@ def _safe_count_tokens(text: str) -> int:
         )
         non_cjk = len(text) - cjk
         # 1.5 * cjk + 0.25 * non_cjk = (6 * cjk + non_cjk) / 4，
-        # +3 // 4 等价向上取整。
+        # +3 // 4 is equivalent to rounding up.
         return max(1, (cjk * 6 + non_cjk + 3) // 4)
 
 
@@ -224,11 +224,11 @@ def record_llm_request(
                 f.write(line)
                 f.write("\n")
     except Exception as e:
-        # 审计永远不能影响主流程：jsonl 写盘 / token 计数 / encoding
-        # 任意一步失败都吞掉，main LLM call 必须能继续。
+        # Auditing must never affect the main flow: swallow failures in jsonl writes / token counting / encoding,
+        # letting the main LLM call continue.
         try:
             print(f"[LLM_PROMPT_AUDIT] record failed: {e}", flush=True)
         except Exception:
-            # 连 print 都失败（stdout 关闭等极端情况）→ 也吞掉。
-            # 这是临时调试模块，丢失一条审计记录不影响任何业务正确性。
+            # Even failed print calls (closed stdout, etc.) are swallowed.
+            # This temporary debugging module can lose an audit record without affecting business correctness.
             pass

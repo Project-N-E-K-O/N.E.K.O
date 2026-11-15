@@ -59,7 +59,7 @@ async def _read_json_object_or_400(request: Request):
 
 
 def _profile_name_units(name: str) -> int:
-    # 计数规则与前端保持一致：ASCII(<=0x7F) 计 1，其它字符计 2
+    # Match frontend counting: ASCII (<=0x7F) counts as 1; other characters count as 2.
     return sum(1 if ord(ch) <= 0x7F else 2 for ch in name)
 
 

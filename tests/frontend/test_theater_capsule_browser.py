@@ -1,4 +1,4 @@
-"""验证 Numeric v2 演绎真正进入现有 React 胶囊与历史面板。"""  # noqa: DOCSTRING_CJK
+"""Verify Numeric v2 performance actually enters the existing React capsule and history panel."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -57,36 +57,22 @@ def test_targeted_launch_only_claims_one_web_runtime(mock_page: Page, running_se
 
 @pytest.mark.frontend
 @pytest.mark.parametrize('page_path', ['/', '/chat'])
-@pytest.mark.parametrize('failure', [None, 'numeric_base_revision_mismatch', 'numeric_reinvitation_not_available', 'invalid', 'network'])
-def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, running_server: str, page_path, failure):
+def test_recovery_is_not_injected_and_generated_suggestions_submit_normally(mock_page: Page, running_server: str, page_path):
     calls = []
     snapshot = _snapshot(revision=1)
-    snapshot['suggested_inputs'] = []
-    snapshot['invitation_recovery_available'] = True
+    snapshot.update(suggested_inputs=['先看看周围。'], invitation_recovery_available=True)
 
     def handler(route: Route):
         path = route.request.url.split('?')[0]
         payload = snapshot
         if path.endswith('/session/input'):
-            body = json.loads(route.request.post_data or '{}')
-            calls.append(body)
-            if failure == 'network':
-                route.abort()
-                return
-            if failure:
-                route.fulfill(status=409 if failure == 'numeric_base_revision_mismatch' else 400,
-                    content_type='application/json', body=json.dumps({'ok': False, 'reason': failure}))
-                return
-            record = {'revision': 2, 'input_text': '',
-                      'performance': '再请你一起去阅览室。', 'suggested_inputs': ['好，带路吧。']}
+            calls.append(json.loads(route.request.post_data or '{}'))
+            record = {'revision': 2, 'input_text': '先看看周围。',
+                      'performance': '周围保持安静。', 'suggested_inputs': ['我再观察一下。']}
             payload = _snapshot(revision=2, performance_history=[record])
-            payload.update(performance=record, suggested_inputs=record['suggested_inputs'],
-                           invitation_recovery_available=False)
+            payload.update(performance=record, suggested_inputs=record['suggested_inputs'])
         elif path.endswith('/session/speak-block') or path.endswith('/session/release'):
             payload = {'ok': True, 'audio_queued': False}
-        elif calls and failure in ('numeric_base_revision_mismatch', 'numeric_reinvitation_not_available'):
-            payload = _snapshot(revision=2)
-            payload.update(suggested_inputs=['先看看周围。'], invitation_recovery_available=False)
         route.fulfill(status=200, content_type='application/json', body=json.dumps(payload, ensure_ascii=False))
 
     mock_page.route('**/api/theater-numeric/**', handler)
@@ -109,26 +95,11 @@ def test_explicit_reinvitation_click_only_issues_acceptance(mock_page: Page, run
     }""")
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
     label = mock_page.evaluate("() => { const value = window.i18next && window.i18next.t('theater.reinvite'); return value && value !== 'theater.reinvite' ? value : '重新邀请'; }")
-    mock_page.get_by_role('button', name=label, exact=True).click()
-    if failure:
-        mock_page.wait_for_function("() => !!window.nekoTheaterRuntime.getState().draftRestore")
-        state = mock_page.evaluate('window.nekoTheaterRuntime.getState()')
-        assert state['draftRestore']['text'] == ''
-        assert all(row.get('text') != label for row in state['history'])
-        assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'
-        if failure in ('numeric_base_revision_mismatch', 'numeric_reinvitation_not_available'):
-            assert state['revision'] == 2
-            assert state['invitationRecoveryAvailable'] is False
-            expect(mock_page.get_by_role('button', name=label, exact=True)).to_have_count(0)
-            expect(mock_page.get_by_role('button', name='先看看周围。', exact=True)).to_be_visible()
-            assert state['errorMessage'] == mock_page.evaluate(
-                "window.i18next.t('theater.numericSessionUpdatedControl')")
-        return
-    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 2 && window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
-    assert len(calls) == 1 and calls[0]['input_source'] == 'reinvite'
-    assert mock_page.evaluate('window.nekoTheaterRuntime.getState().scene.id') == 'mainline_01'
-    expect(mock_page.get_by_role('button', name='好，带路吧。', exact=True)).to_be_visible()
     expect(mock_page.get_by_role('button', name=label, exact=True)).to_have_count(0)
+    mock_page.get_by_role('button', name='先看看周围。', exact=True).click()
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 2")
+    assert len(calls) == 1 and calls[0]['input_source'] == 'suggestion'
+    assert calls[0]['message'] == '先看看周围。'
 
 
 def _snapshot(
@@ -178,11 +149,77 @@ def _snapshot(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize('page_path', ['/', '/chat'])
+def test_playback_has_no_expand_button_and_still_yields_to_player_input(mock_page: Page, running_server: str, page_path):
+    calls = []
+    records = []
+    text = '这段已经提交的对白可以立即完整显示。' * 12
+
+    def handler(route: Route):
+        path = route.request.url.split('?')[0]
+        if path.endswith('/session/speak-block'):
+            body = json.loads(route.request.post_data or '{}')
+            payload = {'ok': True, 'audio_queued': True, 'speech_id': body['playback_request_id']}
+        elif path.endswith('/session/release'):
+            payload = {'ok': True}
+        elif path.endswith('/session/input'):
+            body = json.loads(route.request.post_data or '{}')
+            calls.append(body)
+            record = {'revision': len(calls) + 1, 'input_text': body['message'], 'performance': text,
+                      'suggested_inputs': ['继续。']}
+            records.append(record)
+            payload = _snapshot(revision=len(calls) + 1, performance_history=records)
+            payload['performance'] = record
+        else:
+            payload = _snapshot(revision=1)
+        route.fulfill(status=200, content_type='application/json', body=json.dumps(payload, ensure_ascii=False))
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.route('**/api/seven-day-tutorial/state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({
+            'success': True, 'initialized': True, 'revision': 1,
+            'state': {'completedRounds': list(range(1, 8))}})))
+    mock_page.route('**/api/characters/persona-onboarding-state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body='{"success":true,"state":{"status":"completed"}}'))
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}{page_path}', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    mock_page.evaluate("""() => {
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'playback-controls', story_id:'capsule-browser-story',
+            session_id:'capsule-browser-session', revision:1}, window.location.origin);
+    }""")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    composer = mock_page.locator('.composer-input:visible')
+    composer.fill('开始这一轮。')
+    composer.press('Enter')
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'performing'")
+    expect(composer).to_be_editable()
+    composer.fill('边听边写的草稿。')
+    skip = mock_page.locator('[data-compact-hit-region-id="history:theater-skip-playback"]')
+    expect(skip).to_have_count(0)
+    expect(composer).to_have_value('边听边写的草稿。')
+    assert len(calls) == 1
+
+    composer.press('Enter')
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'performing' && window.nekoTheaterRuntime.getState().revision === 3")
+    composer.fill('打断播放后再继续。')
+    composer.press('Enter')
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().revision === 4")
+    assert [body['base_revision'] for body in calls] == [1, 2, 3]
+    assert calls[-1]['message'] == '打断播放后再继续。'
+    assert mock_page.evaluate('(text) => window.nekoTheaterRuntime.getState().history.filter(row => row.text === text).length', text) == 2
+    mock_page.evaluate("window.nekoTheaterRuntime.clear('test-cleanup')")
+
+
+@pytest.mark.frontend
 def test_theater_capsule_drops_ordinary_reply_preview_on_takeover(
     mock_page: Page,
     running_server: str,
 ):
-    """小剧场接管胶囊时，不得继续展示此前普通聊天的猫娘回复。"""  # noqa: DOCSTRING_CJK
+    """When theater owns the capsule, do not continue displaying the neko's previous normal-chat reply."""  # noqa: DOCSTRING_CJK
 
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
@@ -236,7 +273,7 @@ def test_theater_capsule_drops_ordinary_reply_preview_on_takeover(
     expect(mock_page.locator(".compact-chat-capsule-text")).not_to_contain_text(
         ordinary_preview
     )
-    # 接管只改变当前展示职责，普通聊天消息仍留在宿主历史中供退出剧场后恢复。
+    # Takeover changes only current presentation duties; ordinary chat remains in host history for restoration after theater exit.
     assert mock_page.evaluate(
         """() => window.reactChatWindowHost.getState().messages.some(
             (message) => message.id === 'ordinary-assistant-before-theater'
@@ -251,7 +288,7 @@ def test_runtime_enters_theater_loading_before_start_model_response(
     running_server: str,
     cancel_opening: bool,
 ):
-    """本体先展示准备态并接管请求，不能让选剧窗口陪模型响应一起等待。"""  # noqa: DOCSTRING_CJK
+    """The main app first shows preparation and owns the request, keeping the script-selection window from waiting for model responses."""  # noqa: DOCSTRING_CJK
 
     pending: dict[str, Route] = {}
 
@@ -295,6 +332,7 @@ def test_runtime_enters_theater_loading_before_start_model_response(
     mock_page.wait_for_function("() => window.__startReady.length === 1")
     state = mock_page.evaluate("window.nekoTheaterRuntime.getState()")
     assert state["active"] is True
+    expect(mock_page.locator(".focus-thinking-history-row .focus-thinking-dot")).to_have_count(3)
     assert state["storyTitle"] == "雨巷来信"
     assert state["history"][0]["id"] == "opening-loading-capsule-browser-session"
     for _ in range(50):
@@ -328,6 +366,7 @@ def test_runtime_enters_theater_loading_before_start_model_response(
         assert 'end' in pending
         assert json.loads(pending['end'].request.post_data)['session_id'] == 'capsule-browser-session'
         assert mock_page.evaluate('window.nekoTheaterRuntime.getState().active') is False
+        expect(mock_page.locator('.focus-thinking-history-row')).to_have_count(0)
         return
     mock_page.wait_for_function(
         "() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'",
@@ -336,6 +375,84 @@ def test_runtime_enters_theater_loading_before_start_model_response(
     assert mock_page.evaluate(
         "window.nekoTheaterRuntime.getState().history.some(entry => entry.id.startsWith('opening-loading-'))"
     ) is False
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize('page_path', ['/', '/chat'])
+@pytest.mark.parametrize('fails', [False, True])
+def test_waiting_bubble_and_free_input_hint_follow_the_real_turn(
+    mock_page: Page, running_server: str, page_path, fails,
+):
+    pending = {}
+
+    def handler(route: Route):
+        path = route.request.url.split('?')[0]
+        if path.endswith('/session/input'):
+            pending['input'] = route
+            return
+        payload = (_snapshot(revision=1) if path.endswith('/session/capsule-browser-session')
+                   else {'ok': True, 'audio_queued': False})
+        route.fulfill(status=200, content_type='application/json', body=json.dumps(payload))
+
+    mock_page.route('**/api/theater-numeric/**', handler)
+    mock_page.route('**/api/seven-day-tutorial/state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({
+            'success': True, 'initialized': True, 'revision': 1,
+            'state': {'completedRounds': list(range(1, 8))}})))
+    mock_page.route('**/api/characters/persona-onboarding-state', lambda route: route.fulfill(
+        status=200, content_type='application/json', body=json.dumps({
+            'success': True, 'state': {'status': 'completed'}})))
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f'{running_server}{page_path}', wait_until='domcontentloaded')
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime && window.reactChatWindowHost')
+    mock_page.evaluate("""() => {
+        window.isMainUIHiddenByModelManager = () => false;
+        document.body.classList.remove('neko-main-ui-hidden-by-model-manager');
+        window.postMessage({schema:'neko.theater.interpage.v1', action:'theater:launch-request',
+            launch_id:'waiting-launch', story_id:'capsule-browser-story',
+            session_id:'capsule-browser-session', revision:1}, window.location.origin);
+    }""")
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    if mock_page.locator('.composer-input:visible').count() == 0:
+        mock_page.locator('.compact-chat-capsule-button').click()
+    text_input = mock_page.locator('.composer-input:visible')
+    text_input.fill('我想知道旧信的来历。')
+    text_input.press('Enter')
+    dots = mock_page.locator('.focus-thinking-history-row .focus-thinking-dot')
+    expect(dots).to_have_count(3)
+    expect(dots.first).to_be_visible()
+    assert dots.evaluate_all('(nodes) => nodes.map(n => getComputedStyle(n).animationDelay)') == ['0s', '0.18s', '0.36s']
+    assert dots.first.evaluate('(n) => getComputedStyle(n).animationName') == 'focus-thinking-dot-pulse'
+    expect(mock_page.locator('.compact-chat-capsule-button')).to_be_disabled()
+    mock_page.wait_for_function('() => window.nekoTheaterRuntime.getState().phase === "evaluating"')
+    assert 'input' in pending
+    if fails:
+        payload = {'ok': False, 'reason': 'numeric_v2_actor_timeout'}
+    else:
+        record = {'revision': 2, 'input_text': '我想知道旧信的来历。',
+                  'performance': '是你母亲留下的。', 'suggested_inputs': []}
+        payload = _snapshot(revision=2, performance_history=[record])
+        payload.update(performance=record, suggested_inputs=[])
+    pending['input'].fulfill(status=200, content_type='application/json', body=json.dumps(payload))
+    mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'awaiting_player'")
+    expect(dots).to_have_count(0)
+    hint = mock_page.evaluate("() => window.i18next.t('theater.freeInputHint')")
+    if mock_page.locator('.composer-input:visible').count() == 0:
+        if not fails:
+            expect(mock_page.locator('.compact-chat-capsule-button')).to_have_text(hint)
+        mock_page.locator('.compact-chat-capsule-button').click()
+    if fails:
+        expect(text_input).not_to_have_attribute('placeholder', hint)
+        expect(text_input).to_have_value('我想知道旧信的来历。')
+    else:
+        expect(text_input).to_have_attribute('placeholder', hint)
+        expect(text_input).to_have_value('')
+        expect(mock_page.locator('.composer-galgame-option')).to_have_count(0)
+        text_input.fill('我愿意听。')
+        expect(text_input).to_have_value('我愿意听。')
+    mock_page.evaluate("() => window.nekoTheaterRuntime.clear('test-complete')")
+    expect(dots).to_have_count(0)
+    expect(mock_page.get_by_placeholder(hint, exact=True)).to_have_count(0)
 
 
 @pytest.mark.frontend
@@ -378,7 +495,7 @@ def test_start_replaces_retired_session_in_real_capsule(mock_page: Page, running
 @pytest.mark.frontend
 @pytest.mark.parametrize('setting', ['花店柜台旁的旧信', '轨道站舷窗外的星图'])
 def test_opening_prefix_does_not_delay_first_dialogue(mock_page: Page, running_server: str, setting):
-    """长开场前缀完整保留，但不再逐字挡住首句对白和 TTS 请求。"""  # noqa: DOCSTRING_CJK
+    """Preserve the full long opening prefix without typewriter output blocking the first dialogue sentence and TTS request."""  # noqa: DOCSTRING_CJK
 
     snapshot = _snapshot(revision=0)
     narration = f'{setting}映着微光。' * 8
@@ -427,7 +544,7 @@ def test_theater_capsule_reasserts_composer_visibility_on_active_render(
     mock_page: Page,
     running_server: str,
 ):
-    """外部 goodbye 状态隐藏输入区后，下一次剧场渲染必须立即重新显示。"""  # noqa: DOCSTRING_CJK
+    """After an external goodbye state hides input, the next theater render must immediately show it again."""  # noqa: DOCSTRING_CJK
 
     def handler(route: Route) -> None:
         path = route.request.url.split("?", 1)[0]
@@ -485,7 +602,7 @@ def test_theater_capsule_stops_ordinary_voice_before_launch(
     mock_page: Page,
     running_server: str,
 ):
-    """剧场接管前必须先停止准备中的普通语音，并在活跃期间拒绝重新开麦。"""  # noqa: DOCSTRING_CJK
+    """Before theater takeover, stop pending normal voice preparation and reject microphone restarts while active."""  # noqa: DOCSTRING_CJK
 
     def handler(route: Route) -> None:
         path = route.request.url.split("?", 1)[0]
@@ -558,7 +675,7 @@ def test_theater_capsule_restores_committed_turn_after_end_failure(
     mock_page: Page,
     running_server: str,
 ):
-    """逐字播放期间结束失败后，必须恢复完整正文和推荐输入。"""  # noqa: DOCSTRING_CJK
+    """If ending fails during typewriter playback, restore the complete body and recommended input."""  # noqa: DOCSTRING_CJK
 
     performance = "（她把旧信压在桌角）这封信我一直没有拆开，因为我想等你回来亲手确认最后一页。"
     turn = {
@@ -654,7 +771,7 @@ def test_theater_capsule_ignores_late_turn_after_launching_another_session(
     running_server: str,
     turn_before_preview: bool,
 ):
-    """A 回合等待期间切到 B 后，A 的迟到响应只能留在服务端。"""  # noqa: DOCSTRING_CJK
+    """After switching from pending turn A to B, late responses for A may remain only on the server."""  # noqa: DOCSTRING_CJK
 
     pending_input: dict[str, Route] = {}
     pending_preview: dict[str, Route] = {}
@@ -768,7 +885,7 @@ def test_theater_capsule_ignores_late_launch_snapshot(
     mock_page: Page,
     running_server: str,
 ):
-    """先发起的启动快照迟到时，不能覆盖后启动的 Session。"""  # noqa: DOCSTRING_CJK
+    """A late snapshot from an earlier start must not overwrite a subsequently started Session."""  # noqa: DOCSTRING_CJK
 
     pending_launch: dict[str, Route] = {}
 
@@ -843,7 +960,7 @@ def test_theater_capsule_rejects_stale_launch_without_replacing_active_runtime(
     mock_page: Page,
     running_server: str,
 ):
-    """同 Session 的旧 revision 启动不能清空健康演绎或中断当前音频。"""  # noqa: DOCSTRING_CJK
+    """Starting the same Session at an older revision must not clear healthy performance or interrupt current audio."""  # noqa: DOCSTRING_CJK
 
     turn = {
         "revision": 1,
@@ -928,7 +1045,7 @@ def test_theater_capsule_ignores_pointer_restore_superseded_by_launch(
     mock_page: Page,
     running_server: str,
 ):
-    """启动指针的迟到快照不能覆盖选剧页随后启动的新 Session。"""  # noqa: DOCSTRING_CJK
+    """A late startup-pointer snapshot must not overwrite a new Session subsequently started from script selection."""  # noqa: DOCSTRING_CJK
 
     pending_pointer: dict[str, Route] = {}
 
@@ -1003,7 +1120,7 @@ def test_theater_capsule_does_not_restore_persisted_pointer_after_app_restart(
     mock_page: Page,
     running_server: str,
 ):
-    """旧版长期指针不能让完整退出后的新程序自动进入小剧场。"""  # noqa: DOCSTRING_CJK
+    """Legacy persistent pointers must not automatically enter theater on a new app run after complete exit."""  # noqa: DOCSTRING_CJK
 
     session_requests: list[str] = []
 
@@ -1038,7 +1155,7 @@ def test_desktop_pet_relays_restart_to_the_visible_compact_chat_runtime(
     mock_page: Page,
     running_server: str,
 ):
-    """桌面本体收到重新开始后，应由独立胶囊窗口唯一播放并显示开场。"""  # noqa: DOCSTRING_CJK
+    """When the desktop main app receives restart, the separate capsule window alone must play/display the opening."""  # noqa: DOCSTRING_CJK
 
     speak_blocks: list[int] = []
 
@@ -1116,7 +1233,7 @@ def test_theater_capsule_ignores_end_confirmation_after_session_switch(
     mock_page: Page,
     running_server: str,
 ):
-    """旧 Session 的确认框迟到后，不能结束确认期间切入的新 Session。"""  # noqa: DOCSTRING_CJK
+    """Late confirmation for an old Session must not end a new Session entered while confirmation was pending."""  # noqa: DOCSTRING_CJK
 
     end_requests: list[dict] = []
 
@@ -1212,7 +1329,7 @@ def test_theater_capsule_rebuilds_committed_history_after_idempotent_retry(
     mock_page: Page,
     running_server: str,
 ):
-    """提交成功但响应丢失时，重试快照必须补回已提交的猫娘回复。"""  # noqa: DOCSTRING_CJK
+    """If commit succeeds but the response is lost, retry snapshots must restore the committed neko reply."""  # noqa: DOCSTRING_CJK
 
     input_ids: list[str] = []
     first_response_lost = {"value": False}
@@ -1322,7 +1439,7 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
     end_messages: list[dict] = []
     end_fails = {"value": False}
 
-    # 本例从正常聊天开始；完成首次引导，避免教程或人格选择遮挡剧场交互。
+    # Begin in normal chat and complete onboarding so tutorials/personality selection do not obstruct theater interaction.
     mock_page.route("**/api/seven-day-tutorial/state", lambda route: route.fulfill(
         status=200, content_type="application/json", body=json.dumps({
             "success": True, "initialized": True, "revision": 1,
@@ -1390,8 +1507,8 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
         " && window.appButtons && window.appChat && window.appState"
         " && typeof window.sendTextPayload === 'function'"
     )
-    # 共享前端夹具的外部资源探测可能返回 502，并残留与本测试无关的模型管理启动闸门；
-    # 这里先释放闸门，再打开真实 React 胶囊宿主来验证小剧场桥接。
+    # External-resource probes in the shared frontend fixture may return 502 and leave an unrelated model-manager startup gate;
+    # release that gate before opening the real React capsule host to verify theater bridging.
     mock_page.evaluate(
         """() => {
             window.isMainUIHiddenByModelManager = () => false;
@@ -1469,7 +1586,7 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
             };
         }"""
     )
-    # 直接派发点击事件，避免 Playwright 的可操作性等待吞掉短暂的逐字输出中间态。
+    # Dispatch clicks directly so Playwright actionability waits do not hide brief typewriter-output intermediate states.
     mock_page.locator(".composer-galgame-option").first.dispatch_event("click")
     expect(mock_page.locator(".composer-input")).to_have_value("")
     mock_page.wait_for_function(
@@ -1536,7 +1653,7 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
     assert 0 <= button_box["x"] < viewport["width"], (button_box, viewport)
     assert 0 <= button_box["y"] < viewport["height"], (button_box, viewport)
 
-    # 取消确认必须保留当前 Session，不能清空历史或调用结束接口。
+    # Cancelling confirmation must preserve the current Session without clearing history or calling the end endpoint.
     end_button.click()
     mock_page.wait_for_function("() => window.__theaterEndConfirmCalls.length === 1")
     assert mock_page.evaluate("() => window.nekoTheaterRuntime.getState().active") is True
@@ -1561,7 +1678,7 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
     expect(mock_page.locator(".app-shell")).to_have_attribute("data-theater-active", "true")
     assert len(mock_page.evaluate("() => window.__theaterSelectorOpenCalls")) == 1
 
-    # 结束请求恢复后再次点击；若剧本页被拦截，保留只读历史和“返回剧本页”重试入口。
+    # Click again after the end request recovers; if the script page is blocked, retain read-only history and a 'Back to scripts' retry entry.
     end_fails["value"] = False
     end_button.click()
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().phase === 'ended'")
@@ -1572,8 +1689,8 @@ def test_theater_capsule_keeps_chat_draft_and_speaks_dialogue_only(
     mock_page.evaluate("() => { window.__theaterSelectorOpenShouldFail = false; }")
     end_button.click()
     mock_page.wait_for_function("() => window.nekoTheaterRuntime.getState().active === false")
-    # 首页恢复 full 宿主时可能移除临时属性，独立聊天宿主则保留 false；
-    # 两种 DOM 形态都只需保证剧场样式不再处于 true。
+    # Restoring the full host on the main page may remove the temporary attribute, while standalone chat retains false;
+    # both DOM forms need only ensure theater styling is no longer true.
     assert mock_page.locator(".app-shell").get_attribute("data-theater-active") != "true"
     expect(mock_page.locator(".composer-input")).to_have_value("普通聊天草稿")
     expect(mock_page.locator(".composer-attachment-card")).to_have_count(1)
@@ -1607,7 +1724,7 @@ def test_theater_end_confirm_is_transparent_and_clickable(
     mock_page: Page,
     running_server: str,
 ):
-    """结束确认框必须进入透明桌面窗口的原生命中区域。"""  # noqa: DOCSTRING_CJK
+    """The end-confirmation dialog must enter the transparent desktop window's native hit region."""  # noqa: DOCSTRING_CJK
 
     mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
     mock_page.goto(f"{running_server}/", wait_until="domcontentloaded")
@@ -1672,7 +1789,7 @@ def test_theater_capsule_restores_action_and_scene_narration_without_mixing(
     running_server: str,
     legacy_actions: bool,
 ):
-    """恢复历史时也必须按换场 phase 区分括号动作和独立场景旁白。"""  # noqa: DOCSTRING_CJK
+    """History restoration must also distinguish parenthesized actions from standalone scene narration by transition phase."""  # noqa: DOCSTRING_CJK
 
     transition = {
         "revision": 1,
@@ -1765,7 +1882,7 @@ def test_theater_capsule_restores_action_and_scene_narration_without_mixing(
     system_messages = history.locator(".compact-export-history-message.is-system")
     expect(assistant_messages).to_have_count(3)
     expect(system_messages).to_have_count(2 if legacy_actions else 3)
-    # 已有括号不能被重复包装，换场桥和目标开场也不能误显示成微动作。
+    # Do not double-wrap existing parentheses or misdisplay transition bridges/target openings as micro-actions.
     source_response_message = assistant_messages.nth(1)
     expect(source_response_message).to_contain_text("（她收好旧信。）")
     expect(source_response_message).not_to_contain_text("（（她收好旧信。））")
@@ -1789,7 +1906,7 @@ def test_theater_capsule_skips_empty_deduplicated_transition_bridge(
     running_server: str,
     bridge_narration: str,
 ):
-    """空桥段和旧占位记录都直接进入目标开场，不生成额外系统气泡。"""  # noqa: DOCSTRING_CJK
+    """Empty bridges and legacy placeholder records go directly to target openings without extra system bubbles."""  # noqa: DOCSTRING_CJK
 
     transition = {
         "revision": 1,
@@ -1946,7 +2063,8 @@ def test_long_dialogue_waits_for_speech_completion(mock_page: Page, running_serv
         }, location.origin)""")
     mock_page.clock.run_for(16000)
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"
-    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().suggestedInputs") == []
+    assert mock_page.evaluate("window.nekoTheaterRuntime.getState().suggestedInputs") == snapshot["suggested_inputs"]
+    expect(mock_page.locator('.composer-galgame-option').first).to_be_visible()
     mock_page.evaluate("""() => window.dispatchEvent(new CustomEvent(
         'neko-assistant-speech-end', {detail:{turnId:'unrelated-speech'}}))""")
     assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"
@@ -1956,7 +2074,7 @@ def test_long_dialogue_waits_for_speech_completion(mock_page: Page, running_serv
         mock_page.clock.run_for(100)
         assert mock_page.evaluate("window.nekoTheaterRuntime.getState().phase") == "performing"
     if completion == "timeout":
-        # 完成事件丢失时仍有有限兜底，不永久锁住玩家输入。
+        # A bounded fallback still handles missing completion events without permanently locking player input.
         mock_page.clock.run_for(100000)
     else:
         mock_page.evaluate("""kind => window.dispatchEvent(new CustomEvent(

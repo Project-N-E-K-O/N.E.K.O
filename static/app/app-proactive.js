@@ -24,10 +24,10 @@
     const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
-    const MUSIC_CANDIDATE_FALLBACK_BUDGET_MS = 10000;
-    const MUSIC_CANDIDATE_ATTEMPT_TIMEOUT_MS = 3000;
 
     function isMusicOccupiedNow() {
+        if (window.nekoMusicRecommendations && typeof window.nekoMusicRecommendations.hasPending === 'function'
+            && window.nekoMusicRecommendations.hasPending()) return true;
         if (typeof window.isMusicOccupied === 'function') return window.isMusicOccupied();
         return ((typeof window.isMusicPlaying === 'function') && window.isMusicPlaying())
             || ((typeof window.isMusicPending === 'function') && window.isMusicPending())
@@ -56,8 +56,10 @@
     const PROACTIVE_LEADER_HEARTBEAT_MS = 5000;
     const PROACTIVE_LEADER_TTL_MS = 15000;
     const PROACTIVE_LEADER_RECHECK_MS = 8000; // 非 leader 的自检周期
-    const PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS = 30;
+    // 打字时下次搭话距最后一次聚焦/输入至少留这么久；剩余时间本来更长的不受影响。
     const PROACTIVE_CHAT_INPUT_MIN_DELAY_MS = 30000;
+    // 定时器可能略早于截止时间触发。这个余量内视为同一窗口已经结束，避免聚焦状态下多等一轮。
+    const PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS = 250;
 
     const PROACTIVE_SELF_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
@@ -103,7 +105,7 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
-    let _homeTutorialFeatureSuppressedByEvent = false;
+    const _homeTutorialSuppressionSources = new Set();
 
     function isProactiveVisionEnabledNow() {
         // 跨窗口时 leader 可能还没收到 storage 事件；以 localStorage 的最新保存值兜底。
@@ -123,14 +125,58 @@
         return !!S.proactiveVisionEnabled;
     }
 
+    mod.isProactiveVisionEnabledNow = isProactiveVisionEnabledNow;
+
+    // 每次撤回授权递增。截图之后递增过，这张图就属于撤权前：即使随后又重新
+    // 开启，也不能随请求发出——后端只能察觉它收到请求之后的撤权。
+    var proactiveVisionRevocationSeq = 0;
+
+    function noteProactiveVisionConsent(enabled) {
+        if (enabled === false) proactiveVisionRevocationSeq += 1;
+    }
+
+    function currentProactiveVisionRevocationSeq() {
+        return proactiveVisionRevocationSeq;
+    }
+
+    // vision 与 window 同属视觉授权（见 latestModes），撤权时两者一起去掉。
+    function discardVisionRevokedSince(requestBody, seqAtCapture) {
+        var modes = requestBody.enabled_modes || [];
+        if (!requestBody.screenshot_data && !requestBody.window_title
+            && modes.indexOf('vision') === -1 && modes.indexOf('window') === -1) return false;
+        // 另一窗口的撤权先落 localStorage，本窗口的同步事件可能还没到，序号未变。
+        if (seqAtCapture === proactiveVisionRevocationSeq && isProactiveVisionEnabledNow()) return false;
+        delete requestBody.screenshot_data;
+        delete requestBody.screenshot_allow_desktop_fallback;
+        delete requestBody.avatar_position;
+        delete requestBody.window_title;
+        requestBody.enabled_modes = modes.filter(function (m) { return m !== 'vision' && m !== 'window'; });
+        return true;
+    }
+
+    mod.noteProactiveVisionConsent = noteProactiveVisionConsent;
+    mod.currentProactiveVisionRevocationSeq = currentProactiveVisionRevocationSeq;
+    mod.discardVisionRevokedSince = discardVisionRevokedSince;
+
     function isHomeTutorialFeatureSuppressed() {
         if (window.isNekoClickGuideActive === true) return true;
         try {
-            if (_homeTutorialFeatureSuppressedByEvent) {
+            if (_homeTutorialSuppressionSources.size > 0) {
                 return true;
             }
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                return true;
+            }
+            // 头像重载层的运行时抑制：覆盖它单独抑制的窗口（feature controller
+            // begin 之前）以及 teardown 时持久化护栏已提前放行、但模型恢复
+            // 尚未完成的窗口——期间经其他入口重排的定时器触发时也要被拦下，
+            // 不能对着仍在展示的临时教程模型开口。仅本窗口的触发闸门，
+            // 不进 leader 心跳广播、不影响剧场语音守卫。
+            const manager = window.universalTutorialManager;
+            const reloadController = manager ? manager._tutorialAvatarReloadController : null;
+            if (reloadController && typeof reloadController.isProactiveRuntimeHeld === 'function'
+                && reloadController.isProactiveRuntimeHeld()) {
                 return true;
             }
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -303,12 +349,9 @@
                     } catch (e) {
                         console.warn('[Proactive] 处理 user_input_reset IPC 失败:', e);
                     }
-                } else if (data.type === 'chat_input_focus_slowdown'
-                        && S.proactiveChatEnabled
-                        && hasAnyChatModeEnabled()
-                        && Number(S.proactiveChatInterval) <= PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-                    _markChatInputSlowdownWindow(S.proactiveChatInterval);
-                    scheduleProactiveChat();
+                } else if (data.type === 'chat_input_focus_slowdown') {
+                    // 其他窗口的聚焦或继续输入。只刷新本窗口的截止时间，不再向外广播。
+                    _refreshChatInputSlowdown({ fromPeer: true });
                 }
             };
         }
@@ -393,43 +436,57 @@
         return element.disabled !== true && element.readOnly !== true;
     }
 
-    function _getFocusedChatInputElement() {
-        try {
-            const active = document.activeElement;
-            if (!active || !_isChatInputElement(active)) return null;
-            if (document.hasFocus && !document.hasFocus()) return null;
-            return active;
-        } catch (_) {
-            return null;
-        }
+    function _getChatInputSlowdownDelay() {
+        // 截止时间只在聚焦或实际输入时刷新。复查和再次排程都取剩余时间，
+        // 输入框还聚焦也不能把等待重置成完整的 30 秒。
+        return Math.max(0, _chatInputSlowdownUntil - Date.now());
     }
 
-    function _getChatInputSlowdownDelay(baseIntervalSeconds) {
-        const interval = Number(baseIntervalSeconds);
-        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-            return 0;
-        }
-        const minDelay = Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
-        return _getFocusedChatInputElement()
-            ? minDelay
-            : Math.max(0, _chatInputSlowdownUntil - Date.now());
+    function _markChatInputSlowdownWindow() {
+        _chatInputSlowdownUntil = Date.now() + PROACTIVE_CHAT_INPUT_MIN_DELAY_MS;
     }
 
-    function _markChatInputSlowdownWindow(baseIntervalSeconds) {
-        const interval = Number(baseIntervalSeconds);
-        if (!isFinite(interval) || interval > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) {
-            return;
+    function _chatInputSlowdownApplies() {
+        return !!(S.proactiveChatEnabled && hasAnyChatModeEnabled());
+    }
+
+    // 聚焦或每次实际输入都把截止时间刷新到 30 秒后，不论搭话间隔多长。
+    // 已排好的定时器不重排：剩余时间不足 30 秒的，到点时由
+    // _deferProactiveChatForInputSlowdown 补到窗口结束再判；本来就超过 30 秒的照原时间触发。
+    function _refreshChatInputSlowdown(options) {
+        if (!_chatInputSlowdownApplies()) return;
+        _markChatInputSlowdownWindow();
+        if (!options || options.fromPeer !== true) {
+            _proactiveBroadcast('chat_input_focus_slowdown');
         }
-        _chatInputSlowdownUntil = Date.now() + Math.max(PROACTIVE_CHAT_INPUT_MIN_DELAY_MS, interval * 1000);
+        if (S.proactiveChatTimer) return;
+        scheduleProactiveChat();
+    }
+
+    function _inputSlowdownStillBlocksSend() {
+        return _chatInputSlowdownUntil - Date.now() > PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS;
+    }
+
+    function _deferProactiveChatForInputSlowdown(label, retry) {
+        const remaining = _chatInputSlowdownUntil - Date.now();
+        if (remaining <= PROACTIVE_CHAT_INPUT_SLOWDOWN_SLACK_MS) {
+            return false;
+        }
+        // 短合并可能留下一个比新截止时间更早的定时器。这里只补到窗口结束再判定，
+        // 不走 scheduleProactiveChat：那条路径在输入框仍聚焦时会再给一整段最小延迟。
+        console.log(label);
+        S.proactiveChatTimer = setTimeout(retry, remaining);
+        return true;
     }
 
     document.addEventListener('focusin', function (event) {
         if (!_isChatInputElement(event.target)) return;
-        if (!S.proactiveChatEnabled || !hasAnyChatModeEnabled()) return;
-        if (Number(S.proactiveChatInterval) > PROACTIVE_CHAT_INPUT_SLOW_THRESHOLD_SECONDS) return;
-        _markChatInputSlowdownWindow(S.proactiveChatInterval);
-        scheduleProactiveChat();
-        _proactiveBroadcast('chat_input_focus_slowdown');
+        _refreshChatInputSlowdown();
+    }, true);
+
+    document.addEventListener('input', function (event) {
+        if (!_isChatInputElement(event.target)) return;
+        _refreshChatInputSlowdown();
     }, true);
 
     function _purgeStaleProactivePeers() {
@@ -626,7 +683,7 @@
         return S.proactiveVisionChatEnabled || S.proactiveNewsChatEnabled || S.proactiveCommunityChatEnabled ||
             S.proactiveVideoChatEnabled || S.proactivePersonalChatEnabled ||
             S.proactiveMusicEnabled || S.proactiveMemeEnabled ||
-            S.proactiveMiniGameInviteEnabled;
+            S.proactiveMiniGameInviteEnabled || S.proactiveTheaterInviteEnabled;
     }
     mod.hasAnyChatModeEnabled = hasAnyChatModeEnabled;
 
@@ -740,7 +797,7 @@
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return false;
         }
 
@@ -748,7 +805,7 @@
         if (S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return isProactiveVisionEnabledNow();
         }
 
@@ -756,7 +813,7 @@
         if (!S.proactiveVisionChatEnabled && !S.proactiveNewsChatEnabled && !S.proactiveCommunityChatEnabled &&
             !S.proactiveVideoChatEnabled && S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
-            !S.proactiveMiniGameInviteEnabled) {
+            !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
             return S.proactivePersonalChatEnabled;
         }
 
@@ -831,7 +888,7 @@
             var delay = S.proactiveChatInterval * 1000;
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
-            S.proactiveChatTimer = setTimeout(async function () {
+            S.proactiveChatTimer = setTimeout(async function retryProactiveVoiceTick() {
                 // setTimeout firing does not clear our stored handle.
                 S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
@@ -853,6 +910,9 @@
                 if (_isUserRecentlySpeaking()) {
                     console.log('[ProactiveChat] 语音模式：用户最近在发声，本次 nudge 跳过（不计数），继续下一 tick');
                     scheduleProactiveChat();
+                    return;
+                }
+                if (_deferProactiveChatForInputSlowdown('[ProactiveChat] 语音模式：用户仍在输入，本次跳过，重新判定', retryProactiveVoiceTick)) {
                     return;
                 }
                 S.isProactiveChatRunning = true;
@@ -978,7 +1038,7 @@
 
         // 输入放缓 floor 跟 fixed/tier 模式正交：用户在打字时不该被主动搭话打断，
         // 不管处于屏幕专注态还是常规态。两边都套这个下限。
-        var inputSlowdownDelay = _getChatInputSlowdownDelay(baseInterval);
+        var inputSlowdownDelay = _getChatInputSlowdownDelay();
         if (inputSlowdownDelay > 0) {
             delay = Math.max(delay, inputSlowdownDelay);
         }
@@ -989,7 +1049,7 @@
             console.log('主动搭话：' + (delay / 1000).toFixed(1) + '秒后触发（基础间隔：' + baseInterval + '秒，退避级别：' + level + '，cap1：' + cap1 + '，cap2：' + cap2 + '，启动延迟：' + (startupDelay / 1000) + '秒，输入放缓：' + (inputSlowdownDelay ? ((inputSlowdownDelay / 1000) + '秒') : '无') + '）');
         }
 
-        S.proactiveChatTimer = setTimeout(async function () {
+        S.proactiveChatTimer = setTimeout(async function retryProactiveTextTick() {
             // setTimeout firing does not clear our stored handle.
             S.proactiveChatTimer = null;
             // 双重检查锁：定时器触发时再次检查是否正在执行
@@ -1006,6 +1066,11 @@
             if (_isAssistantSpeaking()) {
                 console.log('[ProactiveChat] 文本模式：AI 正在播放语音，本次跳过（不累加退避），继续下一 tick', _dumpSpeakingGateState());
                 scheduleProactiveChat();
+                return;
+            }
+            // 输入发生在本次排程之后时，旧定时器仍可能到点。这里再看一次截止时间：
+            // 窗口还有效就重新排定，不把已经在打的字打断。仅聚焦且窗口已结束时照常触发。
+            if (_deferProactiveChatForInputSlowdown('[ProactiveChat] 文本模式：用户仍在输入，本次跳过，重新判定', retryProactiveTextTick)) {
                 return;
             }
 
@@ -1093,7 +1158,18 @@
 
     async function triggerProactiveChat() {
         var requestSent = false;
+        var proactiveScreenTimeBeforeInputCancel = null;
+        function restoreScreenCooldownAfterInputCancel() {
+            if (proactiveScreenTimeBeforeInputCancel !== null) {
+                S._lastProactiveChatScreenTime = proactiveScreenTimeBeforeInputCancel;
+            }
+        }
         try {
+            // Capture before any await: clearing chat or switching character retires
+            // this response's card offers even when its dialogue already committed.
+            var canOfferRecommendations = window.nekoRecommendations
+                && typeof window.nekoRecommendations.captureOfferContext === 'function'
+                ? window.nekoRecommendations.captureOfferContext() : function () { return false; };
             if (isHomeTutorialFeatureSuppressed()) {
                 console.log('[ProactiveChat] 首页新手教程接管中，跳过主动搭话');
                 return false;
@@ -1143,6 +1219,7 @@
                     voice_mode: true,
                     // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                     // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                    theater_invite_enabled: !!S.proactiveTheaterInviteEnabled,
                     mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
                 };
                 _applyProactiveLanguagePayload(voiceProactivePayload, lanlanName);
@@ -1153,6 +1230,10 @@
                     if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
                         try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
                     }
+                    // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
+                    if (_inputSlowdownStillBlocksSend()) {
+                        return null;
+                    }
                     return fetch('/api/proactive_chat', {
                         method: 'POST',
                         headers: hdrs,
@@ -1161,6 +1242,10 @@
                 }
 
                 var resp = await _sendVoiceProactive();
+                if (!resp) {
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    return false;
+                }
 
                 // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
                 // 时调 refreshToken() + 重试一次。其它 403（业务规则、反代、WAF）走
@@ -1174,6 +1259,10 @@
                         await voiceProactiveSec.refreshToken();
                         resp = await _sendVoiceProactive();
                     } catch (_) { /* fall through to 403 handling below */ }
+                }
+                if (!resp) {
+                    console.log('[ProactiveChat] 语音模式：等待请求头期间用户开始输入，取消本次搭话');
+                    return false;
                 }
 
                 // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
@@ -1199,6 +1288,11 @@
                 }
                 requestSent = true;
                 var result = await resp.json();
+                if (result.success && result.action === 'chat' && canOfferRecommendations() && window.nekoRecommendations) {
+                    (result.proactive_recommendations || []).slice(0, 3).forEach(function (item) {
+                        window.nekoRecommendations.offer(item, result.turn_id);
+                    });
+                }
                 S._voiceProactiveLastResult = result.action || 'unknown';
                 console.log('[ProactiveChat] 语音模式结果:', S._voiceProactiveLastResult);
                 return true;
@@ -1263,7 +1357,7 @@
             // 如果没有选择任何搭话方式，跳过本次搭话——除非 mini-game 邀请独立开着
             // （那条路径与 enabled_modes 解耦，后端短路通道仍可能掷骰投递邀请）。
             if (availableModes.length === 0) {
-                if (!S.proactiveMiniGameInviteEnabled) {
+                if (!S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
                     console.log('未选择任何搭话方式，跳过本次搭话');
                     return;
                 }
@@ -1282,6 +1376,7 @@
                 music_cooldown: (typeof window.isMusicCooldown === 'function') ? window.isMusicCooldown() : false,
                 // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
                 // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                theater_invite_enabled: !!S.proactiveTheaterInviteEnabled,
                 mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled,
                 // 屏幕专注态后端会按 [0, 0.5×base] 注入间隔抖动，需要知道
                 // 当前用户配置的 baseInterval。后端 propensity 非屏幕专注态
@@ -1305,6 +1400,9 @@
                     }
                 }
             }
+
+            // 截图开始前记下撤权序号，发送前比对（见 discardVisionRevokedSince）。
+            var visionRevocationSeqAtCapture = proactiveVisionRevocationSeq;
 
             // 如果包含 vision 模式，需要在前端获取截图和窗口标题
             if (availableModes.includes('vision') || availableModes.includes('window')) {
@@ -1377,6 +1475,9 @@
                     var screenshotDataUrl = screenshotResult.dataUrl;
                     if (screenshotDataUrl) {
                         requestBody.screenshot_data = screenshotDataUrl;
+                        // 先传窗口约束，Phase 2 前端失联时后端也不能扩大到整屏。
+                        requestBody.screenshot_allow_desktop_fallback =
+                            screenshotResult.allowDesktopFallback !== false;
                         // captureType 由截图函数在抓帧那一刻定好（见 resolveCaptureTypeFor）。
                         // 这里不再二次推断：抓帧是异步的，等到这一步 S 里的流 / 源
                         // 可能已经换人，拿它解释这张旧图会叠错或漏叠。
@@ -1417,8 +1518,10 @@
                     return;
                 }
 
-                // 更新屏幕感知时间戳（仅当 vision/window 实际保留时才消耗冷却）
+                // 先占上冷却，避免截图还在飞时下一轮又抓一帧。若请求最终没发出
+                // （例如取请求头期间用户开始输入），下面会把这个时间戳还回去。
                 if (availableModes.includes('vision') || availableModes.includes('window')) {
+                    proactiveScreenTimeBeforeInputCancel = S._lastProactiveChatScreenTime || 0;
                     S._lastProactiveChatScreenTime = Date.now();
                 }
             }
@@ -1448,7 +1551,7 @@
             requestBody.music_cooldown = !!musicCooldownBeforeRequest;
             if (musicOccupiedBeforeRequest || musicRateLimitedBeforeRequest || musicCooldownBeforeRequest) {
                 requestBody.enabled_modes = requestBody.enabled_modes.filter(function (mode) { return mode !== 'music'; });
-                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled) {
+                if (requestBody.enabled_modes.length === 0 && !S.proactiveMiniGameInviteEnabled && !S.proactiveTheaterInviteEnabled) {
                     return;
                 }
             }
@@ -1461,6 +1564,15 @@
                 if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
                     try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
                 }
+                // 取请求头是异步的。这段时间里用户开始输入会刷新截止时间，不能再把搭话送出去。
+                if (_inputSlowdownStillBlocksSend()) {
+                    return null;
+                }
+                // 截图、取 header、CSRF 重试期间都可能撤权后又重新开启。
+                if (discardVisionRevokedSince(requestBody, visionRevocationSeqAtCapture)) {
+                    console.log('截图后视觉授权被撤回过，本次请求不带截图和窗口信息');
+                    proactiveBody = JSON.stringify(requestBody);
+                }
                 return fetch('/api/proactive_chat', {
                     method: 'POST',
                     headers: hdrs,
@@ -1469,6 +1581,11 @@
             }
 
             var response = await _sendProactive();
+            if (!response) {
+                restoreScreenCooldownAfterInputCancel();
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                return false;
+            }
 
             // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
             // 时调 refreshToken() + 重试一次。其它 403 走真实失败分支，避免把所有
@@ -1482,6 +1599,11 @@
                     await proactiveSec.refreshToken();
                     response = await _sendProactive();
                 } catch (_) { /* fall through to 403 handling below */ }
+            }
+            if (!response) {
+                restoreScreenCooldownAfterInputCancel();
+                console.log('[ProactiveChat] 等待请求头期间用户开始输入，取消本次搭话');
+                return false;
             }
 
             // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
@@ -1526,129 +1648,29 @@
                 if (result.action === 'chat') {
                     console.log('主动搭话已发送:', result.message, result.source_mode ? '(来源: ' + result.source_mode + ')' : '');
 
-                    var dispatchedTrackUrl = null;
-                    var proactiveMusicCardScopeId = 'proactive:' + (
-                        result.turn_id || (Date.now() + '-' + Math.random().toString(36).slice(2, 8))
-                    );
-
-                    // 如果模式包含音乐信号，按顺序尝试音轨；候选 URL 或媒体自身
-                    // 的错误（包括加载超时）才回退，播放器/调度错误结束本轮推荐。
-                    if ((result.source_mode === 'music' || result.source_mode === 'both') && result.source_links && Array.isArray(result.source_links)) {
-                        var normalizedLinks = result.source_links.filter(Boolean);
-                        var musicLinks = normalizedLinks.filter(function (link) {
-                            return link && link.url && (link.artist || link.source === '音乐推荐');
+                    // A proactive recommendation never starts audio before the user accepts.
+                    if (canOfferRecommendations() && window.nekoRecommendations) {
+                        (result.proactive_recommendations || []).slice(0, 3).forEach(function (item) {
+                            window.nekoRecommendations.offer(item, result.turn_id);
                         });
-                        // 兼容未带 artist/source 标记的旧服务端响应。旧版本可能
-                        // 同时返回多个普通 { title, url, cover } 候选。
-                        if (musicLinks.length === 0) {
-                            musicLinks = normalizedLinks.filter(function (link) {
-                                return link && link.url;
-                            });
-                        }
-
-                        if (musicLinks.length > 0) {
-                            await new Promise(function (resolve) {
-                                setTimeout(resolve, 50 + Math.floor(Math.random() * 120));
-                            });
-                            var musicBusyBeforeDispatch =
-                                isMusicOccupiedNow() ||
-                                ((typeof window.isMusicRecommendRateLimited === 'function') && window.isMusicRecommendRateLimited()) ||
-                                ((typeof window.isMusicCooldown === 'function') && window.isMusicCooldown());
-                            if (musicBusyBeforeDispatch) {
-                                console.log('[ProactiveChat] 音乐 dispatch 前检测到播放器已占用，跳过本次音乐链接');
-                            } else {
-                                var unknownTrack = window.t ? window.t('music.unknownTrack') : 'Unknown Track';
-                                var unknownArtist = window.t ? window.t('music.unknownArtist') : 'Unknown Artist';
-                                if (!unknownTrack || unknownTrack === 'music.unknownTrack') unknownTrack = 'Unknown Track';
-                                if (!unknownArtist || unknownArtist === 'music.unknownArtist') unknownArtist = 'Unknown Artist';
-
-                                var proactiveMusicFallbackDeadlineAt = Date.now() + MUSIC_CANDIDATE_FALLBACK_BUDGET_MS;
-                                var lastAttemptedMusicTrack = null;
-                                try {
-                                    for (var musicIndex = 0; musicIndex < musicLinks.length; musicIndex++) {
-                                        var musicLink = musicLinks[musicIndex];
-                                        var hasNextMusicCandidate = musicIndex < musicLinks.length - 1;
-                                        var track = {
-                                            name: musicLink.title || unknownTrack,
-                                            artist: musicLink.artist || unknownArtist,
-                                            url: musicLink.url,
-                                            cover: musicLink.cover
-                                        };
-                                        lastAttemptedMusicTrack = track;
-                                        console.log('[ProactiveChat] 尝试音乐候选 ' + (musicIndex + 1) + '/' + musicLinks.length + ':', track);
-                                        var dispatchResult;
-                                        if (typeof window.dispatchMusicPlayDetailed === 'function') {
-                                            dispatchResult = await window.dispatchMusicPlayDetailed(track, {
-                                                source: 'proactive',
-                                                cardScopeId: proactiveMusicCardScopeId,
-                                                hasNextCandidate: hasNextMusicCandidate,
-                                                fallbackDeadlineAt: hasNextMusicCandidate
-                                                    ? proactiveMusicFallbackDeadlineAt
-                                                    : undefined,
-                                                candidateTimeoutMs: hasNextMusicCandidate
-                                                    ? MUSIC_CANDIDATE_ATTEMPT_TIMEOUT_MS
-                                                    : undefined
-                                            });
-                                        } else {
-                                            var legacyAccepted = await window.dispatchMusicPlay(track, { source: 'proactive' });
-                                            dispatchResult = {
-                                                ok: legacyAccepted === true,
-                                                reason: legacyAccepted === true ? '' : 'player_error',
-                                                canTryNextCandidate: false
-                                            };
-                                        }
-
-                                        if (dispatchResult.ok === true) {
-                                            dispatchedTrackUrl = musicLink.url;
-                                            break;
-                                        }
-                                        if (dispatchResult.canTryNextCandidate !== true) {
-                                            console.warn('[ProactiveChat] 音乐派发因非候选错误停止:', dispatchResult.reason, musicLink.url);
-                                            break;
-                                        }
-                                        console.warn('[ProactiveChat] 音乐候选不可用，尝试下一条:', dispatchResult.reason, musicLink.url);
-                                    }
-                                } finally {
-                                    if (
-                                        !dispatchedTrackUrl
-                                        && lastAttemptedMusicTrack
-                                        && typeof window.finalizeMusicCandidateCardFailure === 'function'
-                                    ) {
-                                        window.finalizeMusicCandidateCardFailure(lastAttemptedMusicTrack, {
-                                            source: 'proactive',
-                                            cardScopeId: proactiveMusicCardScopeId
-                                        });
-                                    }
-                                }
-                            }
+                    }
+                    if (canOfferRecommendations() && (result.source_mode === 'music' || result.source_mode === 'both')) {
+                        var normalizedLinks = (result.source_links || []).filter(Boolean);
+                        var musicLinks = normalizedLinks.filter(function (link) {
+                            return link.url && (link.artist || link.source === '音乐推荐');
+                        });
+                        if (!musicLinks.length) musicLinks = normalizedLinks.filter(function (link) { return link.url; });
+                        if (result.music_recommendation && window.nekoMusicRecommendations) {
+                            window.nekoMusicRecommendations.offer(result.music_recommendation, result.turn_id);
+                        } else if (musicLinks.length && typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(window.t ? window.t('music.recommendation.unavailable') : 'This recommendation is no longer available', 3000);
                         }
                     }
 
-                    // 【重构】统一处理链接，使用服务端返回的 turn_id 绑定，解决 HTTP/WS 竞态
-                    var captureTurnId = result.turn_id || 'fallback';
-                    var processed = _processProactiveLinks(result.source_links || [], dispatchedTrackUrl);
-
-                    // 暂存待展示附件，等待对应的 turn_id 建立后统一 flush
-                    if (!window._proactiveAttachmentBuffer) {
-                        window._proactiveAttachmentBuffer = {};
-                    }
-                    if (!window._proactiveAttachmentBuffer[captureTurnId]) {
-                        window._proactiveAttachmentBuffer[captureTurnId] = { memes: [], links: [] };
-                    }
-                    
-                    if (processed.memeLinks.length > 0) {
-                        var MAX_MEME_BUBBLES = 2;
-                        window._proactiveAttachmentBuffer[captureTurnId].memes = processed.memeLinks.slice(0, MAX_MEME_BUBBLES);
-                    }
-                    
-                    if (processed.otherLinks.length > 0) {
-                        window._proactiveAttachmentBuffer[captureTurnId].links = processed.otherLinks;
-                    }
-
-                    // 如果当前 turn 已经就绪（例如主动搭话回复极快），直接 flush
-                    if (window.realisticGeminiCurrentTurnId === captureTurnId) {
-                        _flushProactiveAttachments(captureTurnId);
-                    }
+                    // Raw source_links are candidate material, not permission to
+                    // display it. If registration or a card offer failed, keep
+                    // the committed dialogue without bypassing the user's choice
+                    // through legacy image/source attachments.
 
                     // 后端会直接通过session发送消息和TTS，前端无需处理显示
                 } else if (result.action === 'pass') {
@@ -1695,139 +1717,26 @@
     // ======================== source link card ========================
 
     /**
-     * 在聊天区域临时显示来源链接卡片（旁路，不进入 AI 记忆）
-     */
-    /**
-     * 将原始链接处理为分类好的安全链接对象
-     */
-    function _processProactiveLinks(links, dispatchedUrl) {
-        var isSameUrl = function (u1, u2) {
-            if (!u1 || !u2) return false;
-            if (u1 === u2) return true;
-            try {
-                var url1 = new URL(u1, window.location.origin);
-                var url2 = new URL(u2, window.location.origin);
-                var getRef = function (u) { return (u.hostname + u.pathname.replace(/\/$/, '') + u.search).toLowerCase(); };
-                return getRef(url1) === getRef(url2);
-            } catch (e) { return u1 === u2; }
-        };
-
-        var memeLinks = [];
-        var otherLinks = [];
-
-        for (var i = 0; i < links.length; i++) {
-            var link = links[i];
-            if (!link) continue;
-
-            var isMusicLink = link.artist || link.source === '音乐推荐' || (dispatchedUrl && isSameUrl(link.url, dispatchedUrl));
-            if (isMusicLink) continue;
-
-            var isMemeLink = link.type === 'meme' || link.type === 'gif';
-            if (!isMemeLink) {
-                var memeSourceKeywords = ['表情包', '斗图吧', '发表情', 'Imgflip', 'meme', 'sticker'];
-                var linkSource = String(link.source || '').toLowerCase();
-                for (var k = 0; k < memeSourceKeywords.length; k++) {
-                    if (linkSource.indexOf(memeSourceKeywords[k].toLowerCase()) !== -1) {
-                        isMemeLink = true;
-                        break;
-                    }
-                }
-            }
-            if (!isMemeLink && link.url) {
-                // 2026-04-16: doutub.com 域名易主挂黑产，停用（'qn.doutub.com', 'doutub.com'）；新增 doutupk.com（斗图啦）
-                var memeDomains = ['img.soutula.com', 'i.imgflip.com', 'fabiaoqing.com', 'soutula.com', 'img.doutupk.com', 'doutupk.com'];
-                var linkHost = '';
-                try {
-                    var tempUrl = new URL(String(link.url), window.location.origin);
-                    linkHost = tempUrl.hostname.toLowerCase();
-                } catch (e) {}
-                for (var m = 0; m < memeDomains.length; m++) {
-                    if (linkHost === memeDomains[m] || linkHost.endsWith('.' + memeDomains[m])) {
-                        isMemeLink = true;
-                        break;
-                    }
-                }
-            }
-
-            var safeUrl = null;
-            var rawUrl = String(link.url || '').trim();
-            if (rawUrl && (rawUrl.startsWith('http://') || rawUrl.startsWith('https://'))) {
-                try {
-                    var u = new URL(rawUrl);
-                    if (u.protocol === 'http:' || u.protocol === 'https:') {
-                        safeUrl = u.href;
-                    }
-                } catch (e) {}
-            }
-
-            if (safeUrl) {
-                if (isMemeLink) {
-                    memeLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
-                } else {
-                    otherLinks.push(Object.assign({}, link, { safeUrl: safeUrl }));
-                }
-            }
-        }
-        return { memeLinks: memeLinks, otherLinks: otherLinks };
-    }
-
-    /**
      * 在聊天区域临时显示来源链接卡片
      */
     function _showProactiveSourceCards(otherLinks, targetTurnId) {
         try {
             if (window.realisticGeminiCurrentTurnId !== targetTurnId) return;
-            var chatContent = document.getElementById('chat-content-wrapper');
-            if (!chatContent || otherLinks.length === 0) return;
-
-            var MAX_LINK_CARDS = 3;
-            var existingCards = chatContent.querySelectorAll('.proactive-source-link-card');
-            var overflow = existingCards.length - MAX_LINK_CARDS + 1;
-            if (overflow > 0) {
-                for (var j = 0; j < overflow; j++) {
-                    existingCards[j].remove();
-                }
-            }
-
-            var linkCard = document.createElement('div');
-            linkCard.className = 'proactive-source-link-card';
-            linkCard.style.cssText =
-                'margin: 6px 12px; padding: 8px 14px; background: var(--bg-secondary, rgba(255,255,255,0.08));' +
-                'border-left: 3px solid var(--accent-color, #6c8cff); border-radius: 8px;' +
-                'font-size: 12px; opacity: 0; transition: opacity 0.4s ease; max-width: 320px; position: relative;';
-
-            var closeBtn = document.createElement('span');
-            closeBtn.textContent = '\u2715';
-            closeBtn.style.cssText = 'position: absolute; top: 6px; right: 6px; cursor: pointer; color: var(--text-secondary, rgba(200,200,200,0.8)); font-size: 14px; font-weight: bold; line-height: 1; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: rgba(255,255,255,0.08); transition: color 0.2s, background 0.2s; z-index: 1;';
-            closeBtn.addEventListener('click', function () { linkCard.style.opacity = '0'; setTimeout(function () { linkCard.remove(); }, 300); });
-            linkCard.appendChild(closeBtn);
-
-            for (var k = 0; k < otherLinks.length; k++) {
-                (function (vl) {
-                    var a = document.createElement('a');
-                    a.href = vl.safeUrl;
-                    a.textContent = '\uD83D\uDD17 ' + (vl.source ? '[' + vl.source + '] ' : '') + (vl.title || vl.url);
-                    a.style.cssText = 'display: block; color: var(--accent-color, #6c8cff); text-decoration: none; padding: 3px 0; padding-right: 20px; word-break: break-all; font-size: 12px; cursor: pointer;';
-                    a.addEventListener('click', function (e) {
-                        e.preventDefault();
-                        if (window.electronShell && window.electronShell.openExternal) { window.electronShell.openExternal(vl.safeUrl); }
-                        else { window.open(vl.safeUrl, '_blank', 'noopener,noreferrer'); }
-                    });
-                    linkCard.appendChild(a);
-                })(otherLinks[k]);
-            }
-
-            chatContent.appendChild(linkCard);
-            chatContent.scrollTop = chatContent.scrollHeight;
-
-            if (window.currentTurnGeminiAttachments) {
-                window.currentTurnGeminiAttachments.push(linkCard);
-            }
-
-            requestAnimationFrame(function () { linkCard.style.opacity = '1'; });
-            setTimeout(function () { linkCard.style.opacity = '0'; setTimeout(function () { linkCard.remove(); }, 500); }, 5 * 60 * 1000);
+            var host = window.reactChatWindowHost;
+            if (!host || typeof host.appendMessage !== 'function' || !otherLinks.length) return;
+            var message = {
+                id: 'proactive-source-' + targetTurnId, role: 'assistant',
+                author: (window.lanlan_config && window.lanlan_config.lanlan_name) || 'Neko',
+                time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                turnId: targetTurnId === 'fallback' ? undefined : String(targetTurnId),
+                blocks: otherLinks.slice(0, 3).map(function (link) {
+                    return { type: 'link', url: link.safeUrl, title: link.title || link.url, siteName: link.source || '' };
+                })
+            };
+            if (typeof window.__nekoMirrorChatAppend === 'function') window.__nekoMirrorChatAppend(host, message);
+            else host.appendMessage(message);
         } catch (e) {
-            console.warn('显示来源链接失败:', e);
+            console.warn('Proactive source card could not be displayed:', e);
         }
     }
 
@@ -2196,8 +2105,16 @@
                 }
             }
 
-            if (!isProactiveVisionEnabledNow() || !S.isRecording) {
+            // 教程可能在本次异步采集途中开始：stop 停得掉 interval、停不掉
+            // 已在飞的调用，而新方案下设置内存保持真值（开），发送前
+            // 必须显式复查抑制闸门，否则这一帧会落在教程期间。命中时还要
+            // 把竞态中已存入的屏幕流一并释放（抑制开始时的释放看不到尚未
+            // 存入的流），否则 OS 采集指示灯会亮到空闲清理。
+            var suppressedByTutorial = isHomeTutorialFeatureSuppressed();
+            var visionDisabled = !isProactiveVisionEnabledNow();
+            if (visionDisabled || !S.isRecording || suppressedByTutorial) {
                 stopProactiveVisionDuringSpeech();
+                if (suppressedByTutorial || visionDisabled) releaseProactiveVisionStream();
                 return;
             }
             if (rememberedWindowCapture && rememberedWindowCapture.required
@@ -2242,6 +2159,13 @@
             return;
         }
 
+        // 首页教程/头像重载运行时抑制期间禁止启动（含 teardown 的模型恢复
+        // 窗口：该窗口持久化护栏已放行、内存标志已恢复，但临时教程模型仍在
+        // 展示，此时开始的语音会话不应触发屏幕帧推送）。
+        if (isHomeTutorialFeatureSuppressed()) {
+            return;
+        }
+
         // 仅在条件满足时启动：已开启主动视觉 && 正在录音 && 未手动屏幕共享
         if (!isProactiveVisionEnabledNow() || !S.isRecording) return;
         var screenButton = document.getElementById('screenButton');
@@ -2249,7 +2173,8 @@
 
         S.proactiveVisionFrameTimer = setInterval(async function () {
             // 在每次执行前再做一次检查，避免竞态
-            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()) {
+            if (!isProactiveVisionEnabledNow() || !S.isRecording || isGoodbyeActive()
+                || isHomeTutorialFeatureSuppressed()) {
                 stopProactiveVisionDuringSpeech();
                 return;
             }
@@ -2361,16 +2286,28 @@
         return (!stream && !sourceId) ? 'screen' : null;
     }
 
-    async function captureProactiveChatScreenshotWithSource() {
+    function isProactiveScreenshotBlocked() {
+        return isHomeTutorialFeatureSuppressed() || !isProactiveVisionEnabledNow();
+    }
+
+    function declinedProactiveScreenshot() {
+        // “不允许”必须保留到后端；普通空图仍表示技术失败、允许原有兜底。
+        return { dataUrl: null, via: null, captureType: null, declined: true, allowDesktopFallback: false };
+    }
+
+    async function captureProactiveChatScreenshotWithSourceInternal() {
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
+            if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
             if (rememberedWindowCapture && rememberedWindowCapture.required
                 && !rememberedWindowCapture.allowed) {
                 console.warn('[主动搭话截图] 记忆窗口无法唯一确认，停止本次截图');
-                return { dataUrl: null, via: null, captureType: null };
+                return declinedProactiveScreenshot();
             }
         }
+
+        var allowDesktopFallback = !(rememberedWindowCapture && rememberedWindowCapture.required);
 
         function rememberedCaptureStillCurrent() {
             return !rememberedWindowCapture
@@ -2395,7 +2332,7 @@
                     var cachedFrame = await captureFrameFromStream(cachedStream, 0.85);
                     if (cachedFrame && cachedFrame.dataUrl) {
                         if (discardSupersededRememberedFrame('缓存流截图')) {
-                            return { dataUrl: null, via: null, captureType: null };
+                            return declinedProactiveScreenshot();
                         }
                         S.screenCaptureStreamLastUsed = Date.now();
                         if (window.scheduleScreenCaptureIdleCheck) window.scheduleScreenCaptureIdleCheck();
@@ -2403,6 +2340,7 @@
                         return {
                             dataUrl: cachedFrame.dataUrl,
                             via: 'stream',
+                            allowDesktopFallback: allowDesktopFallback,
                             captureType: resolveCaptureTypeFor('stream', cachedStream, cachedSourceId)
                         };
                     }
@@ -2411,6 +2349,7 @@
         }
 
         // 策略 0b: 桌面壳直接捕获选中源（Electron / Tauri）
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var desktopProvider = getDesktopProvider();
         if (S.selectedScreenSourceId && desktopProvider
             && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
@@ -2424,12 +2363,13 @@
                 );
                 if (direct && direct.success && direct.dataUrl) {
                     if (discardSupersededRememberedFrame('主进程直接捕获')) {
-                        return { dataUrl: null, via: null, captureType: null };
+                        return declinedProactiveScreenshot();
                     }
                     console.log('[主动搭话截图] 主进程直接捕获成功:', nativeSourceId);
                     return {
                         dataUrl: direct.dataUrl,
                         via: 'native',
+                        allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('native', null, nativeSourceId)
                     };
                 } else if (direct && direct.error) {
@@ -2442,19 +2382,25 @@
         }
 
         // 策略1: 缓存流 / Electron窗口ID / getDisplayMedia（非user gesture不弹窗）
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var stream = await acquireOrReuseCachedStream({ allowPrompt: false });
+        if (isProactiveScreenshotBlocked()) {
+            releaseProactiveVisionStream();
+            return declinedProactiveScreenshot();
+        }
         if (stream) {
             // 快照必须取在 acquireOrReuseCachedStream 之后——它自己就会改写这个字段。
             var streamSourceId = S.selectedScreenSourceId;
             var frame = await captureFrameFromStream(stream, 0.85);
             if (frame && frame.dataUrl) {
                 if (discardSupersededRememberedFrame('前端流截图')) {
-                    return { dataUrl: null, via: null, captureType: null };
+                    return declinedProactiveScreenshot();
                 }
                 console.log('[主动搭话截图] 前端截图成功');
                 return {
                     dataUrl: frame.dataUrl,
                     via: 'stream',
+                    allowDesktopFallback: allowDesktopFallback,
                     captureType: resolveCaptureTypeFor('stream', stream, streamSourceId)
                 };
             }
@@ -2465,18 +2411,24 @@
                 S.screenCaptureStream = null;
                 S.screenCaptureStreamLastUsed = null;
             }
+            if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
             // 重试：会走 Electron sourceId 路径
             stream = await acquireOrReuseCachedStream({ allowPrompt: false });
+            if (isProactiveScreenshotBlocked()) {
+                releaseProactiveVisionStream();
+                return declinedProactiveScreenshot();
+            }
             if (stream) {
                 var retrySourceId = S.selectedScreenSourceId;
                 frame = await captureFrameFromStream(stream, 0.85);
                 if (frame && frame.dataUrl) {
                     if (discardSupersededRememberedFrame('前端流重试截图')) {
-                        return { dataUrl: null, via: null, captureType: null };
+                        return declinedProactiveScreenshot();
                     }
                     return {
                         dataUrl: frame.dataUrl,
                         via: 'stream',
+                        allowDesktopFallback: allowDesktopFallback,
                         captureType: resolveCaptureTypeFor('stream', stream, retrySourceId)
                     };
                 }
@@ -2493,11 +2445,18 @@
         // Remember-window is a fail-closed boundary. A validated window whose
         // direct/stream capture failed must not widen to a desktop screenshot.
         if (rememberedWindowCapture && rememberedWindowCapture.required) {
+            // 截图期间记忆窗口已换：旧图属于未确认的窗口，必须明确拒绝。
+            if (discardSupersededRememberedFrame('记忆窗口捕获失败')) {
+                return declinedProactiveScreenshot();
+            }
             console.warn('[主动搭话截图] 记忆窗口捕获失败，停止整桌面兜底');
-            return { dataUrl: null, via: null, captureType: null };
+            // 窗口仍是同一个、只是这次没截到：属于技术失败，不是拒绝。后端仍可回用
+            // 本轮同窗口旧图，allowDesktopFallback=false 保证不扩大到整桌面。
+            return { dataUrl: null, via: null, captureType: null, allowDesktopFallback: false };
         }
 
         // 策略2: 后端 pyautogui 兜底
+        if (isProactiveScreenshotBlocked()) return declinedProactiveScreenshot();
         var backendResult = await fetchBackendScreenshot();
         if (backendResult.dataUrl) {
             console.log('[主动搭话截图] 后端截图成功');
@@ -2510,6 +2469,19 @@
 
         console.warn('[主动搭话截图] 所有截图方式均失败');
         return { dataUrl: null, via: null, captureType: null };
+    }
+    async function captureProactiveChatScreenshotWithSource() {
+        if (isProactiveScreenshotBlocked()) {
+            return declinedProactiveScreenshot();
+        }
+        var shot = await captureProactiveChatScreenshotWithSourceInternal();
+        // 统一结果闸门：缓存帧、原生捕获、前端流和后端截图的所有异步
+        // 成功路径都经过这里，避免教程/隐私在抓帧期间开启后返回屏幕内容。
+        if (isProactiveScreenshotBlocked()) {
+            releaseProactiveVisionStream();
+            return declinedProactiveScreenshot();
+        }
+        return shot;
     }
     mod.captureProactiveChatScreenshotWithSource = captureProactiveChatScreenshotWithSource;
 
@@ -2527,6 +2499,7 @@
      * 开启时：优先测试后端 pyautogui（静默无弹窗），不可用则通过前端流获取（用户手势上下文可弹 getDisplayMedia）
      */
     async function acquireProactiveVisionStream() {
+        if (isHomeTutorialFeatureSuppressed()) return false;
         var rememberedWindowCapture = { required: false, allowed: true };
         if (typeof window.prepareRememberedWindowCapture === 'function') {
             rememberedWindowCapture = await window.prepareRememberedWindowCapture();
@@ -2536,10 +2509,12 @@
                 return false;
             }
         }
+        if (isHomeTutorialFeatureSuppressed()) return false;
 
         // 策略1: 无记忆窗口约束时测试后端 pyautogui（静默，无弹窗）
         if (!rememberedWindowCapture || !rememberedWindowCapture.required) {
             var backendResult = await fetchBackendScreenshot();
+            if (isHomeTutorialFeatureSuppressed()) return false;
             if (backendResult.dataUrl) {
                 console.log('[主动视觉] 后端 pyautogui 可用，无需前端流');
                 return true;
@@ -2548,6 +2523,12 @@
 
         // 策略2: 后端不可用，尝试前端流（用户手势上下文，可弹 getDisplayMedia）
         var stream = await acquireOrReuseCachedStream({ allowPrompt: true });
+        // 采集授权/原生流创建期间教程可能开始，开始时的释放看不到晚到的流。
+        // 在统一入口复查并释放，覆盖开麦、换麦和视觉开关的所有调用方。
+        if (isHomeTutorialFeatureSuppressed()) {
+            releaseProactiveVisionStream();
+            return false;
+        }
         if (stream) {
             if (rememberedWindowCapture && rememberedWindowCapture.required
                 && typeof rememberedWindowCapture.isCurrent === 'function'
@@ -2575,15 +2556,21 @@
         }
 
         var privacyBlocksVision = !isProactiveVisionEnabledNow();
+        // 教程抑制期间设置内存保持用户真值（开），但视觉属于被暂停面：
+        // 不能因「设置仍开着」而保留屏幕流，抑制期的 stop 三件套必须真正释放。
+        // 浏览器 getDisplayMedia 流释放后需要新的用户手势才能重新申请。
+        // 若后端截图也不可用，教程结束后的静默重排无法恢复这条来源，需
+        // 用户重新开麦或启用视觉；这里仍释放自动采集以停止 OS 录屏指示。
+        var suppressionBlocksVision = isHomeTutorialFeatureSuppressed();
 
         // 如果正在录音（语音模式），流可能正在被使用，不释放
-        if (S.isRecording && !privacyBlocksVision) {
+        if (S.isRecording && !privacyBlocksVision && !suppressionBlocksVision) {
             console.log('[主动视觉] 语音模式活跃中，不释放流');
             return;
         }
 
         // 如果主动搭话+主动视觉Chat仍活跃，保留流
-        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision) {
+        if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && !privacyBlocksVision && !suppressionBlocksVision) {
             console.log('[主动视觉] 主动搭话视觉仍活跃，不释放流');
             return;
         }
@@ -2609,17 +2596,88 @@
     }
     mod.releaseProactiveVisionStream = releaseProactiveVisionStream;
 
+    function rearmProactiveVisionAfterSuppression() {
+        // 抑制期间开始的录音被视觉闸门拒建定时器，且此后没有周期性重试：
+        // 释放时若录音仍在进行必须补挂，否则该会话在用户重开麦克风之前
+        // 永远不推视觉帧。启动函数内部会自查 leader/视觉开关/goodbye/
+        // 手动共享等全部条件，这里只负责补一次机会。
+        // 可静默重建的桌面源/后端截图可以恢复；浏览器 getDisplayMedia
+        // 不能由教程解锁事件重新授权，后端不可用时需用户手势重新获取。
+        try {
+            if (S.isRecording) {
+                startProactiveVisionDuringSpeech();
+            }
+        } catch (e) {
+            console.warn('[Proactive] 教程抑制解除后补挂主动视觉失败:', e);
+        }
+    }
+
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
-            _homeTutorialFeatureSuppressedByEvent = true;
+            _homeTutorialSuppressionSources.add(detail.source || 'default');
             stopProactiveChatSchedule();
             stopProactiveVisionDuringSpeech();
-        } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
-            _homeTutorialFeatureSuppressedByEvent = false;
-            scheduleProactiveChat();
         } else if (detail.active === false) {
-            _homeTutorialFeatureSuppressedByEvent = false;
+            _homeTutorialSuppressionSources.delete(detail.source || 'default');
+            if (_homeTutorialSuppressionSources.size > 0) return;
+            if (S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+                scheduleProactiveChat();
+            }
+            rearmProactiveVisionAfterSuppression();
+        }
+    });
+
+    // click-guide 的抑制源是 isNekoClickGuideActive（不走 home-tutorial 事件面），
+    // 视觉 tick 闸门会在导览期间停表：它自己的释放事件必须同样补挂，
+    // 否则导览期间进行中的录音在其余下会话里永远不再推帧。
+    // 聊天定时器若在导览期间到点，触发和重排都会被闸门拦下、不留新表，
+    // 释放时也必须重排；调度器尚未初始化时由初始化器负责首次排程。
+    window.addEventListener('neko:click-guide-active', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        if (detail.active === true) {
+            stopProactiveVisionDuringSpeech();
+            releaseProactiveVisionStream();
+            return;
+        }
+        if (detail.active !== false) return;
+        if (S._proactiveSchedulerInitialized === true && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            scheduleProactiveChat();
+        }
+        rearmProactiveVisionAfterSuppression();
+    });
+
+    // 教程的最终释放边：teardown 直接清 isInTutorial/isTutorialRunning，
+    // 不经过任何抑制层的 end；而各来源的 features-suppressed false 事件
+    // 都可能早于这次最终解锁到达——scheduleProactiveChat 在闸门仍关时
+    // 直接返回、不留定时器，早到的重排等于白白停摆。交互锁的 locked:false
+    // 转变聚合了全部锁层（pending / isInTutorial / suppression / isTutorialRunning），
+    // 是唯一可靠的统一重排与补挂时机。
+    // 只认「先锁→后解」的转变：home-tutorial-runtime 模块加载时会同步派发
+    // locked:false（reason:'init'），那不是教程释放——彼时 app.js ready()
+    // 还没过存储/页面配置屏障，提前武装会吃掉启动宽限（_proactiveStartupDelayApplied），
+    // 甚至让定时器在 WebSocket 初始化前就挂着。
+    var _homeTutorialLockObserved = null;
+    window.addEventListener('neko:home-tutorial-lock-changed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        var locked = detail.locked === true;
+        var wasLocked = _homeTutorialLockObserved === true;
+        _homeTutorialLockObserved = locked;
+        if (locked || !wasLocked) return;
+        try {
+            // 首启的 pending-lock 超时转变可能早于 app.js ready() 调
+            // initProactiveChatScheduler()：调度器未初始化时跳过——初始化器
+            // 随后会按设计完成排程（含 _proactiveStartupDelayApplied 启动
+            // 宽限），此处强行 scheduleProactiveChat 会吃掉宽限、在
+            // WebSocket 就绪前挂上定时器。真正的教程抑制释放必然发生在
+            // ready() 之后，不受影响。
+            if (S._proactiveSchedulerInitialized !== true) return;
+            if (S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+                scheduleProactiveChat();
+            }
+            rearmProactiveVisionAfterSuppression();
+        } catch (e) {
+            console.warn('[Proactive] 教程锁释放后恢复调度/补挂视觉失败:', e);
         }
     });
 
@@ -2635,6 +2693,11 @@
     window.scheduleProactiveChat = scheduleProactiveChat;
     window.isProactiveLeader = isProactiveLeader;
     window.isProactiveChatSuppressed = isProactiveChatSuppressed;
+    // 教程抑制的统一运行时闸门，供 app-screen / app-buttons / app-audio-capture
+    // 等按设置值决定保留/申请屏幕流的路径复用（新方案下教程不再改写设置内存，
+    // 所有「因为开关是开的所以保留资源」的判断都要显式过这道闸）。
+    window.isNekoHomeTutorialProactiveSuppressed = isHomeTutorialFeatureSuppressed;
+    mod.isHomeTutorialFeatureSuppressed = isHomeTutorialFeatureSuppressed;
     window.captureCanvasFrame = captureCanvasFrame;
     window.fetchBackendScreenshot = fetchBackendScreenshot;
     window.scheduleScreenCaptureIdleCheck = scheduleScreenCaptureIdleCheck;

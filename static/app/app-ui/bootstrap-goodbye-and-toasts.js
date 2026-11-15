@@ -41,9 +41,22 @@ I.mod = window.appUi;
     I.NEKO_GOODBYE_IDLE_APPEARANCE_ATTR = 'data-neko-goodbye-idle-appearance';
     I.NEKO_GOODBYE_IDLE_BALL_ASSET = '/static/icons/expand_icon_off_ball.png';
     I.publishCatLocalActive = function publishCatLocalActive(active, detail = {}) {
+        let currentTier = typeof detail.tier === 'string' ? detail.tier : '';
+        if (!currentTier) {
+            try {
+                const goodbyeState = window.nekoAutoGoodbye
+                    && typeof window.nekoAutoGoodbye.getState === 'function'
+                    ? window.nekoAutoGoodbye.getState()
+                    : null;
+                currentTier = goodbyeState && typeof goodbyeState.visualTier === 'string'
+                    ? goodbyeState.visualTier
+                    : '';
+            } catch (_) {}
+        }
         window.dispatchEvent(new CustomEvent('neko:cat-local-active-change', {
             detail: Object.assign({}, detail, {
                 active: active === true,
+                ...(currentTier ? { tier: currentTier } : {}),
                 timestamp: Number(detail.timestamp) || Date.now()
             })
         }));

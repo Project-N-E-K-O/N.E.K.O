@@ -25,6 +25,24 @@
     let memorySaveStatusTimer = 0;
     let memorySaveStatusHideTimer = 0;
     let memoryHasUnsavedChanges = false;
+    try {
+        if (typeof BroadcastChannel !== 'undefined') {
+            const recentMemoryChannel = new BroadcastChannel('neko_page_channel');
+            recentMemoryChannel.onmessage = function (event) {
+                const data = event.data;
+                if (data && data.action === 'recent_memory_changed' && data.catgirl_name === currentCatName
+                        && !memoryHasUnsavedChanges && !memorySaveInFlight && !memoryRowExitInProgress
+                        && !window._memoryImportInProgress) {
+                    refreshImportedMemoryView(currentCatName).catch(function () {});
+                }
+            };
+            window.addEventListener('pagehide', function (event) {
+                if (!event.persisted) recentMemoryChannel.close();
+            });
+        }
+    } catch (error) {
+        console.warn('[MemoryBrowser] Recent-memory refresh channel unavailable', error);
+    }
     let pendingMemorySelection = null;
     let pendingMemoryClose = false;
     let memoryUnsavedSwitchRestoreFocus = null;
@@ -46,6 +64,7 @@
     };
     let storagePreflightState = null;
     let storagePreflightBusy = false;
+    let storageLocationModalOpener = null;
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
     const MEMORY_ROLE_COMPACT_MEDIA_QUERY = window.__memoryRoleCompactMediaQuery;
     const memoryRoleCompactMediaQuery = window.matchMedia
@@ -67,7 +86,7 @@
     let memoryRoleHoverCloseTimer = 0;
     let memoryRolePanelInitialized = false;
     let memoryRoleListRequestId = 0;
-    const MEMORY_AUXILIARY_PANEL_NAMES = ['settings', 'guide', 'import', 'insights'];
+    const MEMORY_AUXILIARY_PANEL_NAMES = ['settings', 'guide', 'import', 'insights', 'visit'];
     let activeMemoryAuxiliaryPanel = '';
     let memoryAuxiliaryPanelOpener = null;
     let repetitionInsightsReport = null;
@@ -103,6 +122,1109 @@
         'selection_required',
         'recovery_required'
     ]);
+
+    // ── 串门记忆面板（docs/design/visit-infrastructure.md §5 PR-15、§3.7.5~3.7.7）──────────
+    // 界面只显示 display_name 与 6 位短码（short_id / peer_short_code）。完整 peer_uid 只留在内存里
+    // 的行对象上，作为「清除这个人 / 拉黑」请求体的参数，不写进任何可见文本、title、aria-* 或 data-*。
+    // 所有动态文本一律 textContent 写入。只清本机；不做记忆查看 / 编辑 / 回滚（一期一会）。
+    const VISIT_PEERS_URL = '/api/visit/memory/peers';
+    const VISIT_FORGET_URL = '/api/visit/memory/forget';
+    const VISIT_FORGET_ALL_URL = '/api/visit/memory/forget_all';
+    const VISIT_DISCARD_UNREADABLE_URL = '/api/visit/memory/forget/discard_unreadable';
+    const VISIT_FORGET_RECORD_UNREADABLE = 'forget_record_unreadable';
+    const VISIT_BLOCK_URL = '/api/visit/contacts/block';
+    const VISIT_HISTORY_URL = '/api/visit/history';
+    const VISIT_REPORT_URL = '/api/visit/report';
+    const VISIT_REPORT_REASONS = ['harassment', 'sexual', 'privacy', 'spam', 'other'];
+    const VISIT_REPORT_NOTE_MAX_CHARS = 500;
+    const visitMemoryState = {
+        catgirl: '',
+        peers: [],
+        peersPhase: 'idle',
+        peersError: '',
+        peersRequestId: 0,
+        busy: false,
+        pendingAction: null,
+        history: [],
+        historyCursor: '',
+        historyPhase: 'idle',
+        historyError: '',
+        historyRequestId: 0,
+        reportOpenFor: '',
+        reportStates: new Map(),
+        reportMessages: new Map(),
+        // 举报表单草稿（按场次）：提交失败后重建表单时回填，成功 / 排队 / 取消时丢掉
+        reportDrafts: new Map(),
+        // 正在提交的举报（按场次）：期间表单被重建（刷新列表等）也不能再提交一次
+        reportInFlight: new Set(),
+        details: null,
+        detailsRequestId: 0
+    };
+    let visitCsrfToken = '';
+
+    function visitText(key, fallback, options) {
+        return translate('memory.visit.' + key, fallback, options);
+    }
+
+    function visitLocale() {
+        return (window.i18n && window.i18n.language) || undefined;
+    }
+
+    function visitDateFromSeconds(ts) {
+        if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null;
+        const date = new Date(ts > 1e12 ? ts : ts * 1000);
+        return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    function formatVisitDate(ts) {
+        const date = visitDateFromSeconds(ts);
+        if (!date) return '';
+        try {
+            return date.toLocaleDateString(visitLocale(), { year: 'numeric', month: 'numeric', day: 'numeric' });
+        } catch (_) {
+            return date.toISOString().slice(0, 10);
+        }
+    }
+
+    function formatVisitDateTime(ts) {
+        const date = visitDateFromSeconds(ts);
+        if (!date) return '';
+        try {
+            return date.toLocaleString(visitLocale(), {
+                year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit'
+            });
+        } catch (_) {
+            return date.toISOString().slice(0, 16).replace('T', ' ');
+        }
+    }
+
+    function visitCount(value) {
+        return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+    }
+
+    function setVisitStatus(id, text, tone) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = text || '';
+        el.classList.toggle('is-error', tone === 'error');
+        el.classList.toggle('is-success', tone === 'success');
+    }
+
+    function createVisitElement(tag, className, text) {
+        const el = document.createElement(tag);
+        if (className) el.className = className;
+        if (text !== undefined && text !== null) el.textContent = String(text);
+        return el;
+    }
+
+    // CSRF token 与 voice_identity.js / app-prompt-shared.js 同一来源：page_config 的
+    // autostart_csrf_token。/api/visit/* 的读写端点都过 local_guard.http_denied →
+    // _validate_local_mutation_request，GET 也要带 X-CSRF-Token 头。
+    async function loadVisitCsrfToken() {
+        const response = await fetch('/api/config/page_config', {
+            cache: 'no-store',
+            credentials: 'same-origin'
+        });
+        if (!response.ok) throw new Error('page_config_unavailable');
+        const payload = await response.json();
+        visitCsrfToken = payload && typeof payload.autostart_csrf_token === 'string'
+            ? payload.autostart_csrf_token
+            : '';
+        return visitCsrfToken;
+    }
+
+    async function visitRequest(url, options) {
+        const config = options || {};
+        async function sendOnce() {
+            if (!visitCsrfToken) await loadVisitCsrfToken();
+            const headers = { 'X-CSRF-Token': visitCsrfToken };
+            const init = {
+                method: config.method || 'GET',
+                headers: headers,
+                cache: 'no-store',
+                credentials: 'same-origin'
+            };
+            if (config.body !== undefined) {
+                headers['Content-Type'] = 'application/json';
+                init.body = JSON.stringify(config.body);
+            }
+            const response = await fetch(url, init);
+            let payload = null;
+            try {
+                payload = await response.json();
+            } catch (_) {
+                payload = null;
+            }
+            return {
+                status: response.status,
+                payload: payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}
+            };
+        }
+        let result = await sendOnce();
+        if (result.status === 403 && result.payload.error_code === 'csrf_validation_failed') {
+            // token 过期（后端重启换了 token）：重新取一次再试一次
+            visitCsrfToken = '';
+            result = await sendOnce();
+        }
+        return result;
+    }
+
+    function visitResultCode(result) {
+        const payload = result && result.payload ? result.payload : {};
+        if (typeof payload.code === 'string') return payload.code;
+        if (typeof payload.error_code === 'string') return payload.error_code;
+        return '';
+    }
+
+    function visitErrorText(result) {
+        if (!result) {
+            return visitText('errorNetwork', '连接本机服务失败，请稍后重试。');
+        }
+        const code = visitResultCode(result);
+        if (isVisitForgetRecordUnreadable(result)) {
+            // 读不出的清除记录挡住了清除：重试永远失败，出口是丢弃它（见 showVisitDiscardEntry）
+            return visitText('errorForgetRecordUnreadable',
+                '有一份损坏的清除记录挡住了清除，重试也不会成功。可以先丢弃这份损坏记录，再重新清除。');
+        }
+        if (code === 'visit_active') {
+            return visitText('errorVisitActive', '正在串门中，请先结束这场串门再操作。');
+        }
+        if (code === 'VISIT_LOGIN_REQUIRED') {
+            return visitText('errorLoginRequired', '请先登录社区账号。');
+        }
+        if (code === 'forget_pending') {
+            return visitText('errorForgetPending', '清除已经开始但还没全部完成，稍后会自动补完；也可以稍后再试一次。');
+        }
+        if (code === 'blocklist_unavailable') {
+            return visitText('errorBlocklistUnavailable', '黑名单暂时读写不了，请稍后重试。');
+        }
+        if (code === 'servers_unreachable') {
+            return visitText('errorServersUnreachable', '暂时连不上串门服务器，请稍后重试。');
+        }
+        if (code === 'unknown_catgirl') {
+            return visitText('errorUnknownCatgirl', '找不到这个角色，请刷新后重试。');
+        }
+        if (code === 'not_participant') {
+            return visitText('errorNotParticipant', '当前社区账号不是这一场的参与者，无法查看。');
+        }
+        if (code === 'unknown_visit') {
+            return visitText('errorUnknownVisit', '服务器上找不到这一场（可能已过保留期）。');
+        }
+        if (result.status === 503) {
+            // 503 {retry:true}：记忆服务 / 信赖池还没加载好（fail closed）
+            return visitText('errorRetryLater', '记忆服务暂时不可用（可能还在加载），请稍后重试。');
+        }
+        if (result.status === 403) {
+            return visitText('errorForbidden', '请求没有通过本机校验：串门记忆只能在这台电脑上打开的页面里管理。请刷新页面后重试。');
+        }
+        return visitText('errorGeneric', '操作失败，请稍后重试。');
+    }
+
+    function isVisitForgetRecordUnreadable(result) {
+        return !!(result && result.payload && result.payload.reason === VISIT_FORGET_RECORD_UNREADABLE);
+    }
+
+    function showVisitDiscardEntry(show) {
+        const button = document.getElementById('memory-visit-discard-unreadable');
+        if (button) button.hidden = !show;
+    }
+
+    function visitPeerLabel(peer) {
+        const rawName = peer && typeof peer.display_name === 'string' ? peer.display_name.trim() : '';
+        const code = peer && typeof peer.short_id === 'string' ? peer.short_id : '';
+        return { name: rawName || visitText('unnamed', '未命名'), code: code };
+    }
+
+    function visitPeerCatGroups(peer) {
+        // 按 pair 分组，组内按对方猫娘去重
+        const groups = [];
+        const byPair = new Map();
+        (Array.isArray(peer && peer.chars) ? peer.chars : []).forEach(function (row) {
+            if (!row || typeof row !== 'object') return;
+            const pairKey = typeof row.pair_id === 'string' ? row.pair_id : '';
+            let group = byPair.get(pairKey);
+            if (!group) {
+                group = { cats: [] };
+                byPair.set(pairKey, group);
+                groups.push(group);
+            }
+            group.cats.push(row);
+        });
+        return groups;
+    }
+
+    function visitPeerCatCount(peer) {
+        const seen = new Set();
+        (Array.isArray(peer && peer.chars) ? peer.chars : []).forEach(function (row) {
+            if (row && typeof row.peer_char_id === 'string' && row.peer_char_id) seen.add(row.peer_char_id);
+        });
+        return seen.size;
+    }
+
+    function setVisitBusy(busy) {
+        visitMemoryState.busy = !!busy;
+        const panel = document.getElementById('memory-visit-panel');
+        if (!panel) return;
+        panel.querySelectorAll('.memory-visit-mutation').forEach(function (button) {
+            button.disabled = visitMemoryState.busy;
+        });
+        const ok = document.getElementById('memory-visit-confirm-ok');
+        if (ok) ok.disabled = visitMemoryState.busy;
+    }
+
+    // ── 串过门的人 / 黑名单 ──
+
+    async function loadVisitPeers() {
+        const catgirl = currentCatName || '';
+        const requestId = ++visitMemoryState.peersRequestId;
+        visitMemoryState.catgirl = catgirl;
+        visitMemoryState.peers = [];
+        visitMemoryState.peersError = '';
+        visitMemoryState.peersPhase = catgirl ? 'loading' : 'idle';
+        renderVisitPeers();
+        if (!catgirl) return;
+        let result = null;
+        try {
+            result = await visitRequest(VISIT_PEERS_URL + '?catgirl=' + encodeURIComponent(catgirl));
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit peers request failed:', error);
+        }
+        if (requestId !== visitMemoryState.peersRequestId) return;
+        if (result && result.status === 200 && Array.isArray(result.payload.peers)) {
+            // 按社区账号分区由后端做：未登录社区账号时后端返回空列表
+            visitMemoryState.peers = result.payload.peers.filter(function (peer) {
+                return peer && typeof peer === 'object' && typeof peer.peer_uid === 'string' && peer.peer_uid;
+            });
+            visitMemoryState.peersPhase = 'ready';
+        } else {
+            visitMemoryState.peersPhase = 'error';
+            visitMemoryState.peersError = visitErrorText(result);
+        }
+        renderVisitPeers();
+    }
+
+    function renderVisitPeers() {
+        const title = document.getElementById('memory-visit-peers-title');
+        const list = document.getElementById('memory-visit-peers');
+        const empty = document.getElementById('memory-visit-peers-empty');
+        const blockList = document.getElementById('memory-visit-blocklist-list');
+        const blockEmpty = document.getElementById('memory-visit-blocklist-empty');
+        if (!list || !empty || !blockList || !blockEmpty) return;
+        const catgirl = visitMemoryState.catgirl;
+        if (title) {
+            title.textContent = catgirl
+                ? visitText('peersTitleFor', '「{{name}}」串过门的人', { name: catgirl })
+                : visitText('peersTitle', '串过门的人');
+        }
+        list.textContent = '';
+        blockList.textContent = '';
+        const phase = visitMemoryState.peersPhase;
+        let emptyText = '';
+        if (!catgirl) {
+            emptyText = visitText('noCharacter', '请先在左侧选择一个角色。');
+        } else if (phase === 'loading') {
+            emptyText = visitText('loading', '加载中…');
+        } else if (phase === 'error') {
+            emptyText = visitMemoryState.peersError;
+        } else if (!visitMemoryState.peers.length) {
+            emptyText = visitText('peersEmpty', '她还没有和别人串过门。未登录社区账号时这里也是空的。');
+        }
+        [empty, blockEmpty].forEach(function (el) {
+            el.hidden = !emptyText;
+            el.textContent = emptyText;
+            el.classList.toggle('is-error', phase === 'error');
+        });
+        if (!emptyText) {
+            visitMemoryState.peers.forEach(function (peer, index) {
+                list.appendChild(renderVisitPeerRow(peer, index));
+                blockList.appendChild(renderVisitBlockRow(peer));
+            });
+        }
+        const forgetAll = document.getElementById('memory-visit-forget-all');
+        if (forgetAll) forgetAll.hidden = !catgirl;
+        setVisitBusy(visitMemoryState.busy);
+    }
+
+    function renderVisitPeerRow(peer, index) {
+        const label = visitPeerLabel(peer);
+        const item = createVisitElement('li', 'memory-visit-item');
+        const row = createVisitElement('div', 'memory-visit-row');
+        const toggle = createVisitElement('button', 'memory-visit-peer-toggle');
+        toggle.type = 'button';
+        const detailsId = 'memory-visit-peer-details-' + index;
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.setAttribute('aria-controls', detailsId);
+        toggle.appendChild(createVisitElement('span', 'memory-visit-name', label.name));
+        const metaParts = [label.code];
+        metaParts.push(visitText('catCount', '{{count}} 只猫娘', { count: visitPeerCatCount(peer) }));
+        const lastSeen = formatVisitDate(peer.last_seen);
+        if (lastSeen) metaParts.push(visitText('lastSeen', '最近 {{date}}', { date: lastSeen }));
+        toggle.appendChild(createVisitElement('span', 'memory-visit-meta', metaParts.filter(Boolean).join(' · ')));
+        if (peer.blocked === true) {
+            toggle.appendChild(createVisitElement('span', 'memory-visit-badge', visitText('blockedBadge', '已拉黑')));
+        }
+        const forget = createVisitElement('button', 'memory-visit-link memory-visit-link-danger memory-visit-mutation',
+            visitText('forgetPerson', '清除这个人'));
+        forget.type = 'button';
+        forget.addEventListener('click', function () {
+            requestVisitForgetPerson(peer);
+        });
+        row.appendChild(toggle);
+        row.appendChild(forget);
+        item.appendChild(row);
+
+        const details = createVisitElement('div', 'memory-visit-peer-details');
+        details.id = detailsId;
+        details.hidden = true;
+        const summaryParts = [visitText('visitCount', '串门 {{count}} 次', { count: visitCount(peer.visits) })];
+        const firstSeen = formatVisitDate(peer.first_seen);
+        if (firstSeen) summaryParts.push(visitText('firstSeen', '首次 {{date}}', { date: firstSeen }));
+        summaryParts.push(visitText('factCount', '{{count}} 条记忆', { count: visitCount(peer.fact_count) }));
+        details.appendChild(createVisitElement('p', 'memory-visit-note', summaryParts.join(' · ')));
+        const groups = visitPeerCatGroups(peer);
+        if (!groups.length) {
+            details.appendChild(createVisitElement('p', 'memory-visit-note', visitText('charsEmpty', '还没有记下对方的猫娘。')));
+        }
+        groups.forEach(function (group, groupIndex) {
+            if (groups.length > 1) {
+                details.appendChild(createVisitElement('p', 'memory-visit-pair-title',
+                    visitText('pairTitle', '第 {{index}} 组串门关系', { index: groupIndex + 1 })));
+            }
+            const cats = createVisitElement('ul', 'memory-visit-cats');
+            group.cats.forEach(function (cat) {
+                const catName = typeof cat.display_name === 'string' && cat.display_name.trim()
+                    ? cat.display_name.trim()
+                    : visitText('unnamed', '未命名');
+                const parts = [catName];
+                const catLast = formatVisitDate(cat.last_visit_at);
+                if (catLast) parts.push(visitText('lastSeen', '最近 {{date}}', { date: catLast }));
+                parts.push(visitText('factCount', '{{count}} 条记忆', { count: visitCount(cat.fact_count) }));
+                cats.appendChild(createVisitElement('li', '', parts.join(' · ')));
+            });
+            details.appendChild(cats);
+        });
+        item.appendChild(details);
+        toggle.addEventListener('click', function () {
+            details.hidden = !details.hidden;
+            toggle.setAttribute('aria-expanded', details.hidden ? 'false' : 'true');
+        });
+        return item;
+    }
+
+    function renderVisitBlockRow(peer) {
+        const label = visitPeerLabel(peer);
+        const item = createVisitElement('li', 'memory-visit-item');
+        const row = createVisitElement('div', 'memory-visit-row');
+        const text = createVisitElement('span', 'memory-visit-row-label');
+        text.appendChild(createVisitElement('span', 'memory-visit-name', label.name));
+        text.appendChild(createVisitElement('span', 'memory-visit-meta', label.code));
+        if (peer.blocked === true) {
+            text.appendChild(createVisitElement('span', 'memory-visit-badge', visitText('blockedBadge', '已拉黑')));
+        }
+        const button = createVisitElement('button', 'memory-visit-link memory-visit-mutation',
+            peer.blocked === true ? visitText('unblock', '解除拉黑') : visitText('block', '拉黑'));
+        button.type = 'button';
+        if (peer.blocked !== true) button.classList.add('memory-visit-link-danger');
+        button.addEventListener('click', function () {
+            if (peer.blocked === true) {
+                submitVisitBlock(peer, false);
+            } else {
+                requestVisitBlock(peer);
+            }
+        });
+        row.appendChild(text);
+        row.appendChild(button);
+        item.appendChild(row);
+        return item;
+    }
+
+    // ── 二次确认（清除这个人 / 清除全部 / 拉黑）：确认之前不发任何请求 ──
+
+    function openVisitConfirm(action) {
+        visitMemoryState.pendingAction = action;
+        renderVisitConfirm();
+        const box = document.getElementById('memory-visit-confirm');
+        const cancel = document.getElementById('memory-visit-confirm-cancel');
+        if (box && typeof box.scrollIntoView === 'function') box.scrollIntoView({ block: 'nearest' });
+        if (cancel) cancel.focus({ preventScroll: true });
+    }
+
+    function closeVisitConfirm() {
+        visitMemoryState.pendingAction = null;
+        renderVisitConfirm();
+    }
+
+    function renderVisitConfirm() {
+        const box = document.getElementById('memory-visit-confirm');
+        const message = document.getElementById('memory-visit-confirm-message');
+        const scope = document.getElementById('memory-visit-confirm-scope');
+        const scopeLabel = document.getElementById('memory-visit-confirm-scope-label');
+        const ok = document.getElementById('memory-visit-confirm-ok');
+        if (!box || !message || !scope || !scopeLabel || !ok) return;
+        const action = visitMemoryState.pendingAction;
+        box.hidden = !action;
+        if (!action) return;
+        scope.hidden = true;
+        if (action.kind === 'forget') {
+            const label = visitPeerLabel(action.peer);
+            message.textContent = visitText('forgetPersonConfirm',
+                '只清她（当前角色「{{catgirl}}」）对「{{name}} · {{code}}」的串门记忆，并连带清掉本机这边与这个人的串门史（名册条目、上次串门摘要）；其他角色对这个人的串门记忆不受影响。只清本机：对方机器上的副本无法远程清除。本机已保存的串门转录正文不会被删除，黑名单也不受影响。',
+                { catgirl: action.catgirl, name: label.name, code: label.code });
+            ok.textContent = visitText('confirmForget', '确认清除');
+        } else if (action.kind === 'forget_all') {
+            message.textContent = visitText('forgetAllConfirm',
+                '将清除本机的串门记忆（串门记忆区、名册、上次串门摘要），并连带清掉本机这边的串门史。只清本机：对方机器上的副本无法远程清除。本机已保存的串门转录正文不会被删除，黑名单也不受影响。');
+            scope.hidden = !action.catgirl;
+            scopeLabel.textContent = visitText('forgetAllOnlyCurrent', '只清当前角色「{{name}}」（不勾选则清除这台电脑上所有角色的串门记忆）',
+                { name: action.catgirl });
+            ok.textContent = visitText('confirmForget', '确认清除');
+        } else if (action.kind === 'discard_unreadable') {
+            message.textContent = visitText('discardUnreadableConfirm',
+                '这会把读不出的清除记录挪进隔离目录（不删除文件）。损坏记录里那次清除可能没做完；需要的话，丢弃后请重新清除。');
+            ok.textContent = visitText('confirmDiscard', '确认丢弃');
+        } else if (action.kind === 'block') {
+            const label = visitPeerLabel(action.peer);
+            message.textContent = visitText('blockConfirm',
+                '拉黑「{{name}} · {{code}}」后，对方不能再和这台电脑上的猫娘串门，正在进行的串门会立刻结束。拉黑不会清除串门记忆。',
+                { name: label.name, code: label.code });
+            ok.textContent = visitText('confirmBlock', '确认拉黑');
+        }
+        ok.disabled = visitMemoryState.busy;
+    }
+
+    function requestVisitForgetPerson(peer) {
+        if (visitMemoryState.busy || !visitMemoryState.catgirl) return;
+        openVisitConfirm({ kind: 'forget', peer: peer, catgirl: visitMemoryState.catgirl });
+    }
+
+    function requestVisitForgetAll() {
+        if (visitMemoryState.busy) return;
+        const scopeCheckbox = document.getElementById('memory-visit-confirm-scope-checkbox');
+        if (scopeCheckbox) scopeCheckbox.checked = true;
+        openVisitConfirm({ kind: 'forget_all', catgirl: visitMemoryState.catgirl });
+    }
+
+    function requestVisitDiscardUnreadable() {
+        if (visitMemoryState.busy) return;
+        openVisitConfirm({ kind: 'discard_unreadable' });
+    }
+
+    function requestVisitBlock(peer) {
+        if (visitMemoryState.busy) return;
+        openVisitConfirm({ kind: 'block', peer: peer });
+    }
+
+    async function confirmVisitAction() {
+        const action = visitMemoryState.pendingAction;
+        if (!action || visitMemoryState.busy) return;
+        const scopeCheckbox = document.getElementById('memory-visit-confirm-scope-checkbox');
+        const onlyCurrent = !!(scopeCheckbox && scopeCheckbox.checked);
+        closeVisitConfirm();
+        if (action.kind === 'forget') {
+            await submitVisitForget(action);
+        } else if (action.kind === 'forget_all') {
+            await submitVisitForgetAll(onlyCurrent ? action.catgirl : '');
+        } else if (action.kind === 'block') {
+            await submitVisitBlock(action.peer, true);
+        } else if (action.kind === 'discard_unreadable') {
+            await submitVisitDiscardUnreadable();
+        }
+    }
+
+    async function submitVisitForget(action) {
+        const peer = action.peer;
+        if (!action.catgirl || action.catgirl !== visitMemoryState.catgirl) return;
+        setVisitBusy(true);
+        setVisitStatus('memory-visit-status', visitText('working', '处理中…'));
+        let result = null;
+        try {
+            result = await visitRequest(VISIT_FORGET_URL, {
+                method: 'POST',
+                body: { catgirl: action.catgirl, peer_uid: peer.peer_uid }
+            });
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit forget request failed:', error);
+        }
+        setVisitBusy(false);
+        showVisitDiscardEntry(isVisitForgetRecordUnreadable(result));
+        if (result && result.status === 200 && result.payload.ok === true) {
+            setVisitStatus('memory-visit-status', visitText('forgetPersonDone', '已清除她对这个人的串门记忆（只清本机）。'), 'success');
+        } else {
+            setVisitStatus('memory-visit-status', visitErrorText(result), 'error');
+        }
+        await loadVisitPeers();
+    }
+
+    async function submitVisitForgetAll(catgirl) {
+        setVisitBusy(true);
+        setVisitStatus('memory-visit-status', visitText('working', '处理中…'));
+        let result = null;
+        try {
+            result = await visitRequest(VISIT_FORGET_ALL_URL, {
+                method: 'POST',
+                body: catgirl ? { catgirl: catgirl } : {}
+            });
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit forget_all request failed:', error);
+        }
+        setVisitBusy(false);
+        showVisitDiscardEntry(isVisitForgetRecordUnreadable(result));
+        if (result && result.status === 200 && result.payload.ok === true) {
+            setVisitStatus('memory-visit-status', visitText('forgetAllDone', '已清除 {{count}} 人的串门记忆（只清本机）。',
+                { count: visitCount(result.payload.forgotten) }), 'success');
+        } else {
+            setVisitStatus('memory-visit-status', visitErrorText(result), 'error');
+        }
+        await loadVisitPeers();
+    }
+
+    async function submitVisitDiscardUnreadable() {
+        if (visitMemoryState.busy) return;
+        setVisitBusy(true);
+        setVisitStatus('memory-visit-status', visitText('working', '处理中…'));
+        let result = null;
+        try {
+            result = await visitRequest(VISIT_DISCARD_UNREADABLE_URL, {
+                method: 'POST',
+                body: { confirm: true }
+            });
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit discard_unreadable request failed:', error);
+        }
+        setVisitBusy(false);
+        if (result && result.status === 200 && result.payload.ok === true) {
+            showVisitDiscardEntry(false);
+            setVisitStatus('memory-visit-status', visitText('discardDone', '已丢弃 {{count}} 份损坏的清除记录，可以重新清除了。',
+                { count: visitCount(result.payload.discarded) }), 'success');
+        } else if (result && visitResultCode(result) === 'discard_failed') {
+            setVisitStatus('memory-visit-status', visitText('errorDiscardFailed', '有损坏记录没能挪走（已挪走 {{count}} 份），请稍后再试。',
+                { count: visitCount(result.payload.discarded) }), 'error');
+        } else {
+            setVisitStatus('memory-visit-status', visitErrorText(result), 'error');
+        }
+        await loadVisitPeers();
+    }
+
+    async function submitVisitBlock(peer, blocked) {
+        if (visitMemoryState.busy) return;
+        setVisitBusy(true);
+        setVisitStatus('memory-visit-status', visitText('working', '处理中…'));
+        let result = null;
+        try {
+            result = await visitRequest(VISIT_BLOCK_URL, {
+                method: 'POST',
+                body: { peer_uid: peer.peer_uid, blocked: blocked }
+            });
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit block request failed:', error);
+        }
+        setVisitBusy(false);
+        if (result && result.status === 200 && result.payload.ok === true) {
+            let message = blocked ? visitText('blockDone', '已拉黑。') : visitText('unblockDone', '已解除拉黑。');
+            if (blocked && result.payload.ended === false) {
+                message = visitText('blockEndFailed', '已拉黑，但正在进行的串门没能自动结束，请手动结束。');
+            }
+            setVisitStatus('memory-visit-status', message, 'success');
+        } else {
+            setVisitStatus('memory-visit-status', visitErrorText(result), 'error');
+        }
+        await loadVisitPeers();
+    }
+
+    // ── 每场记录：只取本机代理 GET /api/visit/history（代转 Servers），不从本机数据拼 ──
+
+    async function loadVisitHistory(append) {
+        const requestId = ++visitMemoryState.historyRequestId;
+        const cursor = append ? visitMemoryState.historyCursor : '';
+        if (!append) {
+            visitMemoryState.history = [];
+            visitMemoryState.historyCursor = '';
+            visitMemoryState.reportOpenFor = '';
+        }
+        visitMemoryState.historyPhase = 'loading';
+        visitMemoryState.historyError = '';
+        renderVisitHistory();
+        let result = null;
+        try {
+            result = await visitRequest(VISIT_HISTORY_URL + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit history request failed:', error);
+        }
+        if (requestId !== visitMemoryState.historyRequestId) return;
+        if (result && result.status === 200 && Array.isArray(result.payload.items)) {
+            const items = result.payload.items.filter(function (item) {
+                return item && typeof item === 'object' && typeof item.visit_id === 'string' && item.visit_id;
+            });
+            visitMemoryState.history = visitMemoryState.history.concat(items);
+            const next = result.payload.next_cursor;
+            visitMemoryState.historyCursor = typeof next === 'string' && next ? next : '';
+            visitMemoryState.historyPhase = 'ready';
+        } else if (visitResultCode(result) === 'VISIT_LOGIN_REQUIRED') {
+            visitMemoryState.historyPhase = 'login';
+        } else {
+            visitMemoryState.historyPhase = 'error';
+            visitMemoryState.historyError = visitErrorText(result);
+        }
+        renderVisitHistory();
+    }
+
+    function visitRoleLabel(role) {
+        if (role === 'host') return visitText('roleHost', '接待');
+        if (role === 'guest') return visitText('roleGuest', '做客');
+        return '';
+    }
+
+    function renderVisitHistory() {
+        const list = document.getElementById('memory-visit-history');
+        const empty = document.getElementById('memory-visit-history-empty');
+        const more = document.getElementById('memory-visit-history-more');
+        if (!list || !empty || !more) return;
+        list.textContent = '';
+        visitMemoryState.history.forEach(function (item) {
+            list.appendChild(renderVisitHistoryRow(item));
+        });
+        const phase = visitMemoryState.historyPhase;
+        let emptyText = '';
+        if (phase === 'loading') {
+            emptyText = visitText('loading', '加载中…');
+        } else if (phase === 'login') {
+            emptyText = visitText('historyLoginRequired', '登录社区账号后可以查看每场记录。');
+        } else if (phase === 'error') {
+            emptyText = visitMemoryState.historyError;
+        } else if (phase === 'ready' && !visitMemoryState.history.length) {
+            emptyText = visitText('historyEmpty', '还没有串门记录。');
+        }
+        empty.hidden = !emptyText;
+        empty.textContent = emptyText;
+        empty.classList.toggle('is-error', phase === 'error');
+        more.hidden = !visitMemoryState.historyCursor || phase === 'login';
+        more.disabled = phase === 'loading';
+    }
+
+    function renderVisitHistoryRow(item) {
+        const visitId = item.visit_id;
+        const li = createVisitElement('li', 'memory-visit-item');
+        const row = createVisitElement('div', 'memory-visit-row');
+        const label = createVisitElement('span', 'memory-visit-row-label');
+        const name = typeof item.peer_display_name === 'string' && item.peer_display_name.trim()
+            ? item.peer_display_name.trim()
+            : visitText('unnamed', '未命名');
+        label.appendChild(createVisitElement('span', 'memory-visit-name', name));
+        const metaParts = [
+            typeof item.peer_short_code === 'string' ? item.peer_short_code : '',
+            visitRoleLabel(item.role),
+            formatVisitDateTime(item.started_at)
+        ];
+        label.appendChild(createVisitElement('span', 'memory-visit-meta', metaParts.filter(Boolean).join(' · ')));
+        const actions = createVisitElement('span', 'memory-visit-row-actions');
+        const detailsButton = createVisitElement('button', 'memory-visit-link memory-visit-link-quiet',
+            visitText('viewDetails', '查看详情'));
+        detailsButton.type = 'button';
+        detailsButton.addEventListener('click', function () {
+            openVisitDetails(visitId);
+        });
+        const reportState = visitMemoryState.reportStates.get(visitId) || '';
+        let reportText = visitText('report', '举报');
+        if (reportState === 'queued') reportText = visitText('reportQueuedButton', '已排队');
+        if (reportState === 'sent') reportText = visitText('reportSentButton', '已举报');
+        const reportButton = createVisitElement('button', 'memory-visit-link memory-visit-link-quiet', reportText);
+        reportButton.type = 'button';
+        reportButton.disabled = !!reportState;
+        reportButton.setAttribute('aria-expanded', visitMemoryState.reportOpenFor === visitId ? 'true' : 'false');
+        reportButton.addEventListener('click', function () {
+            visitMemoryState.reportOpenFor = visitMemoryState.reportOpenFor === visitId ? '' : visitId;
+            renderVisitHistory();
+        });
+        actions.appendChild(detailsButton);
+        actions.appendChild(reportButton);
+        row.appendChild(label);
+        row.appendChild(actions);
+        li.appendChild(row);
+        const message = visitMemoryState.reportMessages.get(visitId);
+        if (message) {
+            const status = createVisitElement('p', 'memory-visit-status', message.text);
+            status.classList.toggle('is-error', message.tone === 'error');
+            status.classList.toggle('is-success', message.tone === 'success');
+            li.appendChild(status);
+        }
+        if (visitMemoryState.reportOpenFor === visitId && !reportState) {
+            li.appendChild(renderVisitReportForm(visitId));
+        }
+        return li;
+    }
+
+    function renderVisitReportForm(visitId) {
+        const form = createVisitElement('form', 'memory-visit-report-form');
+        const reasonLabel = createVisitElement('label', 'memory-visit-field');
+        reasonLabel.appendChild(createVisitElement('span', '', visitText('reportReason', '举报原因')));
+        const reason = document.createElement('select');
+        VISIT_REPORT_REASONS.forEach(function (value) {
+            const option = createVisitElement('option', '', visitText('reportReasons.' + value, value));
+            option.value = value;
+            reason.appendChild(option);
+        });
+        reasonLabel.appendChild(reason);
+        const noteLabel = createVisitElement('label', 'memory-visit-field');
+        noteLabel.appendChild(createVisitElement('span', '', visitText('reportNote', '补充说明（可选）')));
+        const note = document.createElement('textarea');
+        note.maxLength = VISIT_REPORT_NOTE_MAX_CHARS;
+        note.rows = 3;
+        noteLabel.appendChild(note);
+        const includeLabel = createVisitElement('label', 'memory-visit-check');
+        const include = document.createElement('input');
+        include.type = 'checkbox';
+        include.checked = true;
+        includeLabel.appendChild(include);
+        includeLabel.appendChild(createVisitElement('span', '',
+            visitText('reportIncludeTranscript', '请服务器参考这一场已保存的双方转录')));
+        const draft = visitMemoryState.reportDrafts.get(visitId);
+        if (draft) {
+            if (VISIT_REPORT_REASONS.indexOf(draft.reason) !== -1) reason.value = draft.reason;
+            note.value = draft.note;
+            include.checked = draft.include_transcript;
+        }
+        const saveDraft = function () {
+            visitMemoryState.reportDrafts.set(visitId, {
+                reason: reason.value,
+                note: note.value,
+                include_transcript: include.checked
+            });
+        };
+        reason.addEventListener('change', saveDraft);
+        note.addEventListener('input', saveDraft);
+        include.addEventListener('change', saveDraft);
+        const actions = createVisitElement('div', 'memory-visit-confirm-actions');
+        const cancel = createVisitElement('button', 'memory-visit-button', visitText('cancel', '取消'));
+        cancel.type = 'button';
+        cancel.addEventListener('click', function () {
+            visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
+            renderVisitHistory();
+        });
+        const submit = createVisitElement('button', 'memory-visit-button memory-visit-danger', visitText('reportSubmit', '提交举报'));
+        submit.type = 'submit';
+        submit.disabled = visitMemoryState.reportInFlight.has(visitId);
+        actions.appendChild(cancel);
+        actions.appendChild(submit);
+        form.appendChild(reasonLabel);
+        form.appendChild(noteLabel);
+        form.appendChild(includeLabel);
+        form.appendChild(actions);
+        form.addEventListener('submit', function (event) {
+            event.preventDefault();
+            submit.disabled = true;
+            saveDraft();
+            submitVisitReport(visitId, {
+                reason: reason.value,
+                note: note.value,
+                include_transcript: include.checked
+            });
+        });
+        return form;
+    }
+
+    async function submitVisitReport(visitId, fields) {
+        if (visitMemoryState.reportInFlight.has(visitId)) return;
+        visitMemoryState.reportInFlight.add(visitId);
+        let result = null;
+        try {
+            result = await visitRequest(VISIT_REPORT_URL, {
+                method: 'POST',
+                body: {
+                    visit_id: visitId,
+                    reason: fields.reason,
+                    note: fields.note,
+                    include_transcript: fields.include_transcript
+                }
+            });
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit report request failed:', error);
+        } finally {
+            visitMemoryState.reportInFlight.delete(visitId);
+        }
+        const code = visitResultCode(result);
+        if (result && result.status === 202 && result.payload.queued === true) {
+            // 202 {queued:true} 不是错误：举报已进本机待提交队列，后台与下次启动会重试
+            visitMemoryState.reportStates.set(visitId, 'queued');
+            visitMemoryState.reportMessages.set(visitId, {
+                text: visitText('reportQueued', '举报已记录，网络恢复后自动提交。'),
+                tone: 'success'
+            });
+            visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
+        } else if (result && result.status === 200 && result.payload.ok === true) {
+            visitMemoryState.reportStates.set(visitId, 'sent');
+            visitMemoryState.reportMessages.set(visitId, { text: visitText('reportSent', '举报已提交。'), tone: 'success' });
+            visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
+        } else if (code === 'VISIT_LOGIN_REQUIRED' && result.payload.queued === true) {
+            // 举报已进本机队列，只是登录失效传不上去：按已排队显示，原账号登录后由后台接着提交
+            visitMemoryState.reportStates.set(visitId, 'queued');
+            visitMemoryState.reportMessages.set(visitId, {
+                text: visitText('reportQueuedLogin', '举报已记录；重新登录社区账号后会自动提交。'),
+                tone: 'success'
+            });
+            visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
+        } else if (code === 'already_queued') {
+            visitMemoryState.reportStates.set(visitId, 'queued');
+            visitMemoryState.reportMessages.set(visitId, {
+                text: visitText('reportAlreadyQueued', '这一场的举报已经在排队，网络恢复后自动提交。'),
+                tone: 'success'
+            });
+            visitMemoryState.reportOpenFor = '';
+            visitMemoryState.reportDrafts.delete(visitId);
+        } else if (code === 'report_persist_failed') {
+            visitMemoryState.reportMessages.set(visitId, {
+                text: visitText('reportPersistFailed', '举报没能保存到本机，请重试。'),
+                tone: 'error'
+            });
+        } else {
+            visitMemoryState.reportMessages.set(visitId, { text: visitErrorText(result), tone: 'error' });
+        }
+        renderVisitHistory();
+    }
+
+    // ── 查看详情：点开某一场才调 GET /api/visit/details/{visit_id}，转录按 next_cursor 翻页 ──
+
+    function openVisitDetails(visitId) {
+        const main = document.getElementById('memory-visit-main');
+        const view = document.getElementById('memory-visit-details');
+        if (!main || !view) return;
+        visitMemoryState.details = { visitId: visitId, cursors: [''], page: 0, nextCursor: '', data: null, phase: 'loading', error: '' };
+        main.hidden = true;
+        view.hidden = false;
+        renderVisitDetails();
+        const back = document.getElementById('memory-visit-details-back');
+        if (back) back.focus({ preventScroll: true });
+        loadVisitDetailsPage();
+    }
+
+    function closeVisitDetails() {
+        visitMemoryState.details = null;
+        visitMemoryState.detailsRequestId++;
+        const main = document.getElementById('memory-visit-main');
+        const view = document.getElementById('memory-visit-details');
+        if (main) main.hidden = false;
+        if (view) view.hidden = true;
+    }
+
+    async function loadVisitDetailsPage() {
+        const details = visitMemoryState.details;
+        if (!details) return;
+        const requestId = ++visitMemoryState.detailsRequestId;
+        const cursor = details.cursors[details.page] || '';
+        details.phase = 'loading';
+        details.error = '';
+        renderVisitDetails();
+        let result = null;
+        try {
+            result = await visitRequest('/api/visit/details/' + encodeURIComponent(details.visitId)
+                + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
+        } catch (error) {
+            console.warn('[MemoryBrowser] visit details request failed:', error);
+        }
+        if (requestId !== visitMemoryState.detailsRequestId || visitMemoryState.details !== details) return;
+        if (result && result.status === 200 && result.payload.visit_id === details.visitId) {
+            details.data = result.payload;
+            const next = result.payload.next_cursor;
+            details.nextCursor = typeof next === 'string' && next ? next : '';
+            details.phase = 'ready';
+        } else {
+            details.data = null;
+            details.nextCursor = '';
+            details.phase = 'error';
+            details.error = visitErrorText(result);
+        }
+        renderVisitDetails();
+    }
+
+    function stepVisitDetailsPage(delta) {
+        const details = visitMemoryState.details;
+        if (!details || details.phase === 'loading') return;
+        if (delta > 0) {
+            if (!details.nextCursor) return;
+            details.cursors[details.page + 1] = details.nextCursor;
+            details.page += 1;
+        } else {
+            if (details.page <= 0) return;
+            details.page -= 1;
+        }
+        loadVisitDetailsPage();
+    }
+
+    function visitSpeakerLabel(uploaderRole, from, requesterRole) {
+        const otherRole = uploaderRole === 'host' ? 'guest' : 'host';
+        let side = '';
+        let kind = '';
+        if (from === 'own_cat') { side = uploaderRole; kind = 'cat'; }
+        if (from === 'own_human') { side = uploaderRole; kind = 'human'; }
+        if (from === 'peer_cat') { side = otherRole; kind = 'cat'; }
+        if (from === 'peer_human') { side = otherRole; kind = 'human'; }
+        if (!side) return visitText('speakerUnknown', '未知');
+        const mine = side === requesterRole;
+        if (kind === 'cat') {
+            return mine ? visitText('speakerOwnCat', '我方猫娘') : visitText('speakerPeerCat', '对方猫娘');
+        }
+        return mine ? visitText('speakerOwnHuman', '我') : visitText('speakerPeerHuman', '对方');
+    }
+
+    function renderVisitTranscriptHalf(half, uploaderRole, requesterRole, versionLabel) {
+        const row = createVisitElement('div', 'memory-visit-line-text');
+        if (versionLabel) row.appendChild(createVisitElement('span', 'memory-visit-line-version', versionLabel));
+        row.appendChild(createVisitElement('span', 'memory-visit-line-speaker',
+            visitSpeakerLabel(uploaderRole, half.from, requesterRole)));
+        row.appendChild(createVisitElement('span', 'memory-visit-line-body', typeof half.text === 'string' ? half.text : ''));
+        if (half.truncated === true) {
+            row.appendChild(createVisitElement('span', 'memory-visit-line-flag', visitText('truncated', '（被截断）')));
+        }
+        return row;
+    }
+
+    function renderVisitTranscriptLine(line, requesterRole) {
+        const li = createVisitElement('li', 'memory-visit-line');
+        const peerRole = requesterRole === 'host' ? 'guest' : 'host';
+        const mine = line[requesterRole] && typeof line[requesterRole] === 'object' ? line[requesterRole] : null;
+        const theirs = line[peerRole] && typeof line[peerRole] === 'object' ? line[peerRole] : null;
+        if (line.status === 'differ' && mine && theirs) {
+            li.classList.add('is-differ');
+            li.appendChild(createVisitElement('span', 'memory-visit-line-flag', visitText('statusDiffer', '双方记录不一致')));
+            li.appendChild(renderVisitTranscriptHalf(mine, requesterRole, requesterRole, visitText('versionMine', '我方记录')));
+            li.appendChild(renderVisitTranscriptHalf(theirs, peerRole, requesterRole, visitText('versionPeer', '对方记录')));
+            return li;
+        }
+        const half = mine || theirs;
+        if (!half) return null;
+        li.appendChild(renderVisitTranscriptHalf(half, mine ? requesterRole : peerRole, requesterRole, ''));
+        if (line.status === 'only_host' || line.status === 'only_guest') {
+            li.appendChild(createVisitElement('span', 'memory-visit-line-flag', line.status === 'only_' + requesterRole
+                ? visitText('statusOnlyMine', '仅我方有记录')
+                : visitText('statusOnlyPeer', '仅对方有记录')));
+        }
+        return li;
+    }
+
+    function appendVisitSummaryRow(list, term, value) {
+        list.appendChild(createVisitElement('dt', '', term));
+        list.appendChild(createVisitElement('dd', '', value));
+    }
+
+    function renderVisitDetails() {
+        const details = visitMemoryState.details;
+        const summary = document.getElementById('memory-visit-details-summary');
+        const lines = document.getElementById('memory-visit-details-lines');
+        const prev = document.getElementById('memory-visit-details-prev');
+        const next = document.getElementById('memory-visit-details-next');
+        const page = document.getElementById('memory-visit-details-page');
+        if (!details || !summary || !lines || !prev || !next || !page) return;
+        summary.textContent = '';
+        lines.textContent = '';
+        if (details.phase === 'loading') {
+            setVisitStatus('memory-visit-details-status', visitText('loading', '加载中…'));
+        } else if (details.phase === 'error') {
+            setVisitStatus('memory-visit-details-status', details.error, 'error');
+        } else {
+            setVisitStatus('memory-visit-details-status', '');
+        }
+        const data = details.data;
+        if (data) {
+            const started = formatVisitDateTime(data.started_at);
+            if (started) appendVisitSummaryRow(summary, visitText('detailsStarted', '开始时间'), started);
+            const duration = visitCount(data.duration_s);
+            appendVisitSummaryRow(summary, visitText('detailsDuration', '时长'),
+                visitText('detailsDurationValue', '{{minutes}} 分 {{seconds}} 秒',
+                    { minutes: Math.floor(duration / 60), seconds: duration % 60 }));
+            appendVisitSummaryRow(summary, visitText('detailsFreeMinutes', '扣减的免费分钟'),
+                String(visitCount(data.free_minutes_deducted)));
+            const usage = data.usage && typeof data.usage === 'object' ? data.usage : null;
+            appendVisitSummaryRow(summary, visitText('detailsUsage', '用量'), usage
+                ? visitText('detailsUsageValue', '输入 {{input}} / 输出 {{output}} tokens，语音 {{tts}} 次（{{chars}} 字）', {
+                    input: visitCount(usage.llm_input_tokens),
+                    output: visitCount(usage.llm_output_tokens),
+                    tts: visitCount(usage.tts_requests),
+                    chars: visitCount(usage.tts_chars)
+                })
+                : visitText('detailsUsagePending', '用量待本机记录上传后可见。'));
+            const requesterRole = data.requester_role === 'guest' ? 'guest' : 'host';
+            let rendered = 0;
+            (Array.isArray(data.lines) ? data.lines : []).forEach(function (line) {
+                if (!line || typeof line !== 'object') return;
+                const li = renderVisitTranscriptLine(line, requesterRole);
+                if (li) {
+                    lines.appendChild(li);
+                    rendered += 1;
+                }
+            });
+            if (!rendered) {
+                lines.appendChild(createVisitElement('li', 'memory-visit-empty', visitText('detailsTranscriptEmpty', '这一页没有转录。')));
+            }
+        }
+        prev.hidden = details.page <= 0;
+        next.hidden = !details.nextCursor;
+        prev.disabled = details.phase === 'loading';
+        next.disabled = details.phase === 'loading';
+        page.textContent = (details.page > 0 || details.nextCursor)
+            ? visitText('detailsPage', '第 {{page}} 页', { page: details.page + 1 })
+            : '';
+    }
+
+    // ── 面板生命周期 ──
+
+    function syncVisitMemoryTrigger() {
+        const trigger = document.getElementById('memory-visit-trigger');
+        if (trigger) trigger.disabled = !currentCatName;
+        if (activeMemoryAuxiliaryPanel === 'visit' && visitMemoryState.catgirl !== (currentCatName || '')) {
+            closeVisitConfirm();
+            loadVisitPeers();
+        }
+    }
+
+    function openVisitMemoryPanel() {
+        closeVisitDetails();
+        closeVisitConfirm();
+        setVisitStatus('memory-visit-status', '');
+        loadVisitPeers();
+        loadVisitHistory(false);
+    }
+
+    function renderVisitMemoryPanel() {
+        renderVisitPeers();
+        renderVisitHistory();
+        renderVisitConfirm();
+        if (visitMemoryState.details) renderVisitDetails();
+    }
+
+    function initVisitMemoryPanel() {
+        const bind = function (id, handler) {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('click', handler);
+        };
+        bind('memory-visit-refresh', function () {
+            loadVisitPeers();
+            loadVisitHistory(false);
+        });
+        bind('memory-visit-forget-all', requestVisitForgetAll);
+        bind('memory-visit-discard-unreadable', requestVisitDiscardUnreadable);
+        bind('memory-visit-confirm-cancel', closeVisitConfirm);
+        bind('memory-visit-confirm-ok', function () {
+            confirmVisitAction();
+        });
+        bind('memory-visit-history-more', function () {
+            loadVisitHistory(true);
+        });
+        bind('memory-visit-details-back', function () {
+            closeVisitDetails();
+            const panel = document.getElementById('memory-visit-panel');
+            if (panel) panel.focus({ preventScroll: true });
+        });
+        bind('memory-visit-details-prev', function () {
+            stepVisitDetailsPage(-1);
+        });
+        bind('memory-visit-details-next', function () {
+            stepVisitDetailsPage(1);
+        });
+        syncVisitMemoryTrigger();
+    }
 
     function interpolateText(text, options) {
         const values = options && typeof options === 'object' ? options : {};
@@ -1211,6 +2333,20 @@
             // everything around it is disabled.
             if (control) control.disabled = repetitionInsightsBusy || !ready;
         });
+        notifyHabitualPhrasePanel(false);
+    }
+
+    // The habitual-phrase section (memory_habitual_phrases.js) follows the same
+    // target and the same storage / import locks as the analyzer around it.
+    // `reload` asks it to refetch even when neither changed: the panel opened.
+    function notifyHabitualPhrasePanel(reload) {
+        document.dispatchEvent(new CustomEvent('neko:habitual-phrases-target', {
+            detail: {
+                name: repetitionInsightsTarget(),
+                ready: !memoryStorageLimited && !window._memoryImportInProgress,
+                reload: !!reload
+            }
+        }));
     }
 
     function setRepetitionInsightsBusy(busy) {
@@ -2003,7 +3139,11 @@
         activeMemoryAuxiliaryPanel = name;
         memoryAuxiliaryPanelOpener = opener || trigger;
         document.body.classList.add('memory-aux-panel-open');
-        if (name === 'insights') syncRepetitionInsightsControls();
+        if (name === 'insights') {
+            syncRepetitionInsightsControls();
+            notifyHabitualPhrasePanel(true);
+        }
+        if (name === 'visit') openVisitMemoryPanel();
         panel.focus({ preventScroll: true });
     }
 
@@ -2055,16 +3195,17 @@
         }
 
         document.addEventListener('keydown', function (event) {
-            if (!activeMemoryAuxiliaryPanel) return;
-            const storageModal = document.getElementById('storage-location-modal');
-            if (storageModal && !storageModal.hidden) return;
-            if (event.key === 'Escape') {
+            if (event.key !== 'Tab' && event.key !== 'Escape') return;
+            const storageDialog = document.querySelector('#storage-location-overlay:not([hidden])')
+                || document.querySelector('#storage-location-modal:not([hidden])');
+            if (!storageDialog && !activeMemoryAuxiliaryPanel) return;
+            if (event.key === 'Escape' && !storageDialog) {
                 event.preventDefault();
                 closeMemoryAuxiliaryPanel(true, true);
                 return;
             }
             if (event.key !== 'Tab') return;
-            const panel = getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
+            const panel = storageDialog || getMemoryAuxiliaryPanel(activeMemoryAuxiliaryPanel);
             const focusable = getMemoryPanelFocusableElements(panel);
             if (!focusable.length) {
                 event.preventDefault();
@@ -2521,7 +3662,7 @@
         renderStorageRestartButton();
     }
 
-    function openStorageLocationManager() {
+    function openStorageLocationManager(opener) {
         const state = storageLocationState || {};
         const bootstrap = state.bootstrap || {};
         const blockingReason = String(state.blockingReason || '').trim();
@@ -2532,7 +3673,7 @@
         }
 
         const modal = document.getElementById('storage-location-modal');
-        if (!modal) return;
+        if (!modal || !modal.hidden) return;
         setElementText('storage-modal-current-root', displayPath(bootstrap.current_root));
 
         const input = document.getElementById('storage-target-root-input');
@@ -2544,11 +3685,13 @@
         setStoragePreflightBusy(false);
         setStoragePreflightResult('', '');
         renderStorageRestartButton();
+        storageLocationModalOpener = opener;
         modal.hidden = false;
         document.body.classList.add('storage-location-memory-modal-open');
+        (input || document.getElementById('storage-location-modal-close'))?.focus({ preventScroll: true });
     }
 
-    function closeStorageLocationManager() {
+    function closeStorageLocationManager(restoreFocus = true) {
         const modal = document.getElementById('storage-location-modal');
         if (modal) {
             modal.hidden = true;
@@ -2558,6 +3701,35 @@
         if (input) {
             input.disabled = false;
         }
+        if (restoreFocus) restoreMemoryAuxiliaryPanelFocus(storageLocationModalOpener, true);
+        storageLocationModalOpener = null;
+    }
+
+    function openStorageLocationFromHash() {
+        if (window.location.hash !== '#change-storage-location') return;
+        if (pendingMemorySelection || pendingMemoryClose) return;
+        if (activeMemoryAuxiliaryPanel !== 'settings') openMemoryAuxiliaryPanel('settings');
+        if (activeMemoryAuxiliaryPanel !== 'settings') return;
+        window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+        openStorageLocationManager(document.getElementById('storage-location-manage-btn'));
+    }
+
+    function initStorageLocationControls() {
+        document.getElementById('storage-location-open-btn')?.addEventListener('click', openCurrentStorageRoot);
+        const manageButton = document.getElementById('storage-location-manage-btn');
+        manageButton?.addEventListener('click', () => openStorageLocationManager(manageButton));
+        document.getElementById('storage-location-modal-close')?.addEventListener('click', () => closeStorageLocationManager());
+        const modal = document.getElementById('storage-location-modal');
+        modal?.addEventListener('click', function (event) {
+            if (event.target === modal) closeStorageLocationManager();
+        });
+        document.getElementById('storage-location-pick-btn')?.addEventListener('click', pickStorageTargetDirectory);
+        document.getElementById('storage-target-root-input')?.addEventListener('input', function () {
+            storagePreflightState = null;
+            setStoragePreflightResult('', '');
+            renderStorageRestartButton();
+        });
+        document.getElementById('storage-location-restart-btn')?.addEventListener('click', preflightAndRestartWithStorageLocation);
     }
 
     async function pickStorageTargetDirectory() {
@@ -2829,7 +4001,6 @@
                 }
             } catch (_) {}
         }
-        document.body.classList.remove('storage-location-memory-modal-open');
         await showStandaloneStorageMaintenanceOverlay(payload);
     }
 
@@ -2872,6 +4043,11 @@
                 && typeof window.appStorageLocation.enterExternalMaintenanceMode === 'function'
             ) {
                 window.appStorageLocation.enterExternalMaintenanceMode(payload || {});
+                const overlay = document.querySelector('#storage-location-overlay:not([hidden])');
+                if (overlay) {
+                    closeStorageLocationManager(false);
+                    overlay.querySelector('.storage-location-close')?.focus({ preventScroll: true });
+                }
             }
         } catch (e) {
             console.warn('[MemoryBrowser] standalone storage maintenance overlay failed:', e);
@@ -3003,6 +4179,22 @@
             metadata = data && typeof data === 'object' ? data.metadata : null;
         }
         return !!metadata && typeof metadata === 'object' && metadata.source === THEATER_MEMORY_SOURCE;
+    }
+
+    function formatRecentMemoryTime(item) {
+        let metadata = item.metadata;
+        if (!metadata || typeof metadata !== 'object') {
+            metadata = item.data && typeof item.data === 'object' ? item.data.metadata : null;
+        }
+        const raw = metadata && metadata.recent_memory_time;
+        if (typeof raw !== 'string' || !/^[0-9]{1,16}$/.test(raw)) return '';
+        const millis = Number(raw);
+        if (!Number.isSafeInteger(millis)) return '';
+        const date = new Date(millis);
+        if (!Number.isFinite(date.getTime())) return '';
+        const pad = value => String(value).padStart(2, '0');
+        const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
+        return `[${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())} ${weekday} ${pad(date.getHours())}:${pad(date.getMinutes())}]`;
     }
 
     function setMemoryRowDeleteButtonsEnabled(enabled) {
@@ -3189,7 +4381,8 @@
     const MEMORY_ROLE_ORIGIN_KEYS = {
         self: 'character.cardOriginSelf',
         imported: 'character.cardOriginImported',
-        steam: 'character.cardOriginSteam'
+        steam: 'character.cardOriginSteam',
+        molili: 'character.cardOriginMolili'
     };
 
     function syncMemoryRoleNameOverflow(button) {
@@ -3235,6 +4428,12 @@
                 ['circle', { cx: '17', cy: '15.5', r: '1' }]
             ],
             imported: [
+                ['path', { d: 'M12 3v12' }],
+                ['path', { d: 'm7 10 5 5 5-5' }],
+                ['path', { d: 'M5 18v2h14v-2' }]
+            ],
+            // Molili 导入与通用导入共用同一下载箭头图形（提示文案已区分来源）
+            molili: [
                 ['path', { d: 'M12 3v12' }],
                 ['path', { d: 'm7 10 5 5 5-5' }],
                 ['path', { d: 'M5 18v2h14v-2' }]
@@ -3423,7 +4622,7 @@
         if (valueEl) {
             valueEl.textContent = selectedValue === 'auto'
                 ? translate('memory.externalImportAuto', 'Auto detect')
-                : (selectedValue === 'openclaw' ? 'OpenClaw' : 'Hermes');
+                : (selectedValue === 'openclaw' ? 'OpenClaw' : selectedValue === 'molili' ? 'Molili' : 'Hermes');
         }
         cascader.querySelectorAll('[data-external-memory-format]').forEach(function (option) {
             const selected = option.dataset.externalMemoryFormat === selectedValue;
@@ -3439,6 +4638,7 @@
         if (panelTrigger) {
             panelTrigger.disabled = !currentCatName;
         }
+        syncVisitMemoryTrigger();
         if (button) {
             // 导入进行中一律保持禁用——否则切角色 / 换文件会重新启用按钮，放行第二
             // 次导入去撞后端正在跑的 fold/CAS（Codex P2）。
@@ -3485,7 +4685,13 @@
             if (selected.length !== 1) {
                 throw new Error(translate('memory.externalImportZipOnly', 'Choose one ZIP archive, or one or more Markdown files.'));
             }
-            if (zipFiles[0].size > 8 * 1024 * 1024) {
+            // 上限与后端 _decode_external_archive 的 archive_cap 对齐：auto/molili
+            // 放行到 MAX_ZIP_BYTES（64 MiB，Molili 导出本体就带几 MB 图片附件），
+            // 其余格式仍按 Markdown 预算 8 MiB。
+            const formatValue = format ? String(format.value || 'auto') : 'auto';
+            const zipCapBytes = (formatValue === 'molili' || formatValue === 'auto')
+                ? 64 * 1024 * 1024 : 8 * 1024 * 1024;
+            if (zipFiles[0].size > zipCapBytes) {
                 throw new Error(translate('memory.externalImportTooLarge', 'The selected archive is too large.'));
             }
             const payload = {
@@ -3518,6 +4724,23 @@
         return payload;
     }
 
+    function externalImportDayNotes(partial) {
+        const notes = [];
+        const failedDays = Number(partial && partial.failed_days) || 0;
+        const oversizedDays = Number(partial && partial.oversized_days) || 0;
+        if (failedDays > 0) {
+            notes.push(translate('memory.externalImportFailedDaysNote',
+                '{{count}} of those journal days failed extraction and will be retried on the next import.',
+                { count: failedDays }));
+        }
+        if (oversizedDays > 0) {
+            notes.push(translate('memory.externalImportOversizedDaysNote',
+                '{{count}} more journal days each exceed the single-import limit; split those days first.',
+                { count: oversizedDays }));
+        }
+        return notes.length ? ' ' + notes.join(' ') : '';
+    }
+
     function broadcastExternalMemoryEdited(characterName) {
         if (typeof BroadcastChannel !== 'undefined') {
             let channel = null;
@@ -3539,6 +4762,7 @@
     async function refreshImportedMemoryView(characterName) {
         if (!characterName || characterName !== currentCatName) return;
         await loadMemoryFileList();
+        if (characterName !== currentCatName) return;
         const button = Array.from(document.querySelectorAll('#memory-file-list .cat-btn')).find(
             item => item.dataset.catname === characterName
         );
@@ -3644,7 +4868,7 @@
             // daily 日记每天一次 LLM 抽取；MEMORY.md facts 不调 LLM。
             // ⚠️ 后端两类调用都已并发执行（persona gather、daily 有界并发），但这里
             // 刻意按「全部串行」sum 估算——保守高估是产品决策（宁可提前完成也不要
-            // 卡超预估），改并发系数前先确认这一点。固定标注 240s 后端上限；
+            // 卡超预估），改并发系数前先确认这一点。固定标注 8 分钟后端上限；
             // 0 次 LLM 调用（纯 MEMORY.md 导入）不显示预估。
             const fusionCalls = Number(preview.persona_fusion_calls) || 0;
             const personaTokens = Number(preview.persona_candidate_tokens) || 0;
@@ -3653,7 +4877,7 @@
             const llmCalls = fusionCalls + dailyCalls;
             const llmTokens = personaTokens + dailyTokens;
             const etaSeconds = llmCalls > 0
-                ? Math.min(230, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
+                ? Math.min(470, Math.max(8, Math.round(llmCalls * 10 + llmTokens / 300)))
                 : 0;
             const workingStartedAt = Date.now();
             // 状态区追加「勿关闭」提示——现代 Chromium 会忽略 beforeunload 的自定义
@@ -3669,7 +4893,7 @@
                     const elapsed = Math.round((Date.now() - workingStartedAt) / 1000);
                     etaText = ' ' + translate(
                         'memory.externalImportEta',
-                        'Estimated ~{{est}}s (up to 4 min) · {{elapsed}}s elapsed.',
+                        'Estimated ~{{est}}s (up to 8 min) · {{elapsed}}s elapsed.',
                         { est: etaSeconds, elapsed }
                     );
                 }
@@ -3679,7 +4903,7 @@
             if (etaSeconds > 0) {
                 etaTimer = window.setInterval(renderWorkingStatus, 1000);
             }
-            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=240s），
+            // 前端超时略大于后端 commit 转发窗口（memory_router timeout=480s），
             // 覆盖 persona 融合的整段耗时。
             // The UI locale is only a render fallback. Read it at commit time so a
             // language switch made while reviewing the preview is not stale, and
@@ -3694,7 +4918,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
-            }, 270000);
+            }, 540000);
             // 融合网络返回即停表（成功/失败/太大都已无意义再计时）；finally 兜底覆盖
             // commit fetch 抛错（超时/网络）根本没走到这行的情况。
             if (etaTimer) { window.clearInterval(etaTimer); etaTimer = null; }
@@ -3709,11 +4933,22 @@
                         persistedCharacterName = partial.character_name;
                         broadcastExternalMemoryEdited(partial.character_name);
                     }
+                    // 分段续导：超过单次调用上限的日记天顺延到下次，提示用户再导一次接着导
+                    const remainingDays = Number(partial.remaining_days) || 0;
+                    // 抽取失败的天 / 单独超上限的天：后端都有计数，一并告诉用户
+                    const dayNotes = externalImportDayNotes(partial);
+                    if (remainingDays > 0) {
+                        throw new Error(translate(
+                            'memory.externalImportContinue',
+                            'Part of the import is done: {{persona}} persona entries and {{facts}} facts were saved, and {{days}} journal days are left for the next run. Import again to continue; imported content is skipped.',
+                            { persona: partial.added_persona || 0, facts: partial.added_facts || 0, days: remainingDays }
+                        ) + dayNotes);
+                    }
                     throw new Error(translate(
                         'memory.externalImportPartial',
                         'The import stopped after {{persona}} persona entries and {{facts}} facts were saved. Retry to finish; duplicates will be skipped.',
                         { persona: partial.added_persona || 0, facts: partial.added_facts || 0 }
-                    ));
+                    ) + dayNotes);
                 }
                 if (result.error_code === 'external_import_too_large') {
                     // 确定性「太大」失败：重试无益，提示拆分 workspace（Codex P2）。
@@ -3722,10 +4957,11 @@
                         persistedCharacterName = big.character_name;
                         broadcastExternalMemoryEdited(big.character_name);
                     }
+                    // 与 partial 分支、Molili 向导对称：带上单独超上限的天数说明
                     throw new Error(translate(
                         'memory.externalImportTooLargeToFuse',
                         'This import has too many memories to fuse in one pass. Split the workspace into smaller files and import them separately.'
-                    ));
+                    ) + externalImportDayNotes(big));
                 }
                 throw new Error(result.error || translate('memory.externalImportFailed', 'Import failed.'));
             }
@@ -3762,6 +4998,7 @@
                 if (formatSelect) formatSelect.disabled = false;
                 updateExternalImportButton();
                 syncRepetitionInsightsControls();
+                openStorageLocationFromHash();
             }
         }
     }
@@ -3955,7 +5192,7 @@
                 conversationPosition += 1;
                 // 提取时间戳和正文，健壮处理
                 const m = msg.text.match(/^(\[[^\]]+\])([\s\S]*)$/);
-                const timeStr = m ? m[1] : '';
+                const timeStr = m ? m[1] : msg.displayTime || '';
                 const content = (m && m[2]) ? (m[2] || '').trim() : msg.text;
 
                 const contentWrapper = document.createElement('div');
@@ -4282,6 +5519,22 @@
         selectMemoryFile(filename, li, catName, options);
     }
 
+    function cancelMemoryUnsavedSwitch() {
+        if (memoryUnsavedSwitchBusy) return;
+        closeMemoryUnsavedSwitchDialog(true);
+        openStorageLocationFromHash();
+    }
+
+    function finishMemoryUnsavedSwitch(selection, closeRequested, suppressUnsavedPrompt) {
+        closeMemoryUnsavedSwitchDialog(false);
+        if (closeRequested) {
+            performCloseMemoryBrowser(suppressUnsavedPrompt);
+            return;
+        }
+        selectMemoryFile(selection.filename, findMemoryRoleListItem(selection.filename), selection.catName);
+        openStorageLocationFromHash();
+    }
+
     function initMemoryUnsavedSwitchDialog() {
         const dialog = document.getElementById('memory-unsaved-switch-dialog');
         const cancel = document.getElementById('memory-unsaved-switch-cancel');
@@ -4289,23 +5542,10 @@
         const save = document.getElementById('memory-unsaved-switch-save');
         if (!dialog || !cancel || !discard || !save) return;
 
-        cancel.addEventListener('click', function () {
-            if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
-        });
+        cancel.addEventListener('click', cancelMemoryUnsavedSwitch);
         discard.addEventListener('click', function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
-            const selection = pendingMemorySelection;
-            const closeRequested = pendingMemoryClose;
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(true);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(pendingMemorySelection, pendingMemoryClose, true);
         });
         save.addEventListener('click', async function () {
             if (memoryUnsavedSwitchBusy || (!pendingMemorySelection && !pendingMemoryClose)) return;
@@ -4325,23 +5565,14 @@
                 save.focus();
                 return;
             }
-            closeMemoryUnsavedSwitchDialog(false);
-            if (closeRequested) {
-                performCloseMemoryBrowser(false);
-            } else {
-                selectMemoryFile(
-                    selection.filename,
-                    findMemoryRoleListItem(selection.filename),
-                    selection.catName
-                );
-            }
+            finishMemoryUnsavedSwitch(selection, closeRequested, false);
         });
         document.addEventListener('keydown', function (event) {
             if (dialog.hidden) return;
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopImmediatePropagation();
-                if (!memoryUnsavedSwitchBusy) closeMemoryUnsavedSwitchDialog(true);
+                cancelMemoryUnsavedSwitch();
                 return;
             }
             if (event.key !== 'Tab') return;
@@ -4460,6 +5691,9 @@
                     // source_index 指向本次快照里的原始条目，服务端据此原样保留剧场胶囊。
                     chatItem.source_index = index;
                     chatItem.theater = isTheaterMemoryItem(item);
+                    if (chatItem.role === 'ai' && !chatItem.theater) {
+                        chatItem.displayTime = formatRecentMemoryTime(item);
+                    }
                     return chatItem;
                 }).filter(Boolean);
                 renderChatEdit();
@@ -4548,7 +5782,11 @@
             && memoryEditRevision === saveContentRevision
         );
         const savedRows = chatData.slice();
-        const saveChat = chatData.map(msg => ({ ...msg }));
+        const saveChat = chatData.map(msg => {
+            const saved = { ...msg };
+            delete saved.displayTime;
+            return saved;
+        });
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
@@ -4854,13 +6092,17 @@
         initMemoryRolePanel();
         initMemoryUnsavedSwitchDialog();
         initRepetitionInsights();
+        initVisitMemoryPanel();
         initMemoryAuxiliaryPanels();
+        initStorageLocationControls();
         const chatEditor = document.getElementById('memory-chat-edit');
         if (chatEditor) {
             chatEditor.addEventListener('scroll', syncMemoryChatScrollMask, { passive: true });
             window.addEventListener('resize', syncMemoryChatScrollMask);
         }
         const storagePanelState = await initStorageLocationPanel();
+        window.addEventListener('hashchange', openStorageLocationFromHash);
+        openStorageLocationFromHash();
         if (storagePanelState && storagePanelState.limited) {
             renderMemoryBrowserLimitedState(storagePanelState);
         } else {
@@ -4880,6 +6122,8 @@
                     const current = await response.json();
                     currentCatName = current.current_catgirl || '';
                     syncRepetitionInsightsControls();
+                    // 没有私聊记忆文件的角色也要能用「导入记忆」与「串门记忆」入口（两者都在这里同步）
+                    updateExternalImportButton();
                 } catch (error) {
                     console.warn('[MemoryBrowser] Failed to resolve external-memory target:', error);
                 }
@@ -4898,6 +6142,7 @@
                 refreshTutorialCascaderDayLabels();
                 syncTutorialResetCascader();
                 syncExternalMemoryFormatDropdown();
+                renderVisitMemoryPanel();
                 syncMemoryRoleTriggerLabel();
                 if (!repetitionInsightsLanguageTouched && !repetitionInsightsReport) {
                     const insightsLanguage = document.getElementById('memory-insights-language');
@@ -4912,6 +6157,7 @@
             refreshTutorialCascaderDayLabels();
             syncTutorialResetCascader();
             syncExternalMemoryFormatDropdown();
+            renderVisitMemoryPanel();
             syncMemoryRoleTriggerLabel();
             syncMemoryRoleSourceCopies();
             if (!repetitionInsightsLanguageTouched && !repetitionInsightsReport) {
@@ -4980,53 +6226,6 @@
             externalImport.addEventListener('click', importExternalMemory);
         }
         updateExternalImportButton();
-
-        const openStorageBtn = document.getElementById('storage-location-open-btn');
-        if (openStorageBtn) {
-            openStorageBtn.addEventListener('click', function () {
-                openCurrentStorageRoot();
-            });
-        }
-        const manageStorageBtn = document.getElementById('storage-location-manage-btn');
-        if (manageStorageBtn) {
-            manageStorageBtn.addEventListener('click', function () {
-                openStorageLocationManager();
-            });
-        }
-        const closeStorageModalBtn = document.getElementById('storage-location-modal-close');
-        if (closeStorageModalBtn) {
-            closeStorageModalBtn.addEventListener('click', function () {
-                closeStorageLocationManager();
-            });
-        }
-        const storageModal = document.getElementById('storage-location-modal');
-        if (storageModal) {
-            storageModal.addEventListener('click', function (event) {
-                if (event.target === storageModal) {
-                    closeStorageLocationManager();
-                }
-            });
-        }
-        const pickStorageBtn = document.getElementById('storage-location-pick-btn');
-        if (pickStorageBtn) {
-            pickStorageBtn.addEventListener('click', function () {
-                pickStorageTargetDirectory();
-            });
-        }
-        const storageTargetInput = document.getElementById('storage-target-root-input');
-        if (storageTargetInput) {
-            storageTargetInput.addEventListener('input', function () {
-                storagePreflightState = null;
-                setStoragePreflightResult('', '');
-                renderStorageRestartButton();
-            });
-        }
-        const restartStorageBtn = document.getElementById('storage-location-restart-btn');
-        if (restartStorageBtn) {
-            restartStorageBtn.addEventListener('click', function () {
-                preflightAndRestartWithStorageLocation();
-            });
-        }
 
         // 监听新手引导重置级联选择器变化
         const tutorialSelect = document.getElementById('tutorial-reset-select');

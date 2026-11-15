@@ -1,4 +1,4 @@
-"""轻量 i18n 模块：从 locales/*.json 加载翻译。"""
+"""Lightweight i18n module: load translations from locales/*.json."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _CACHE_MAX_ENTRIES = 32
 
 
 class LRUCache:
-    """简易 LRU 缓存，带 TTL 和容量上限。"""
+    """Simple LRU cache with TTL and capacity limits."""
 
     def __init__(self, max_size: int = _CACHE_MAX_ENTRIES):
         self._store: OrderedDict[str, Tuple[Any, float]] = OrderedDict()
@@ -39,7 +39,7 @@ class LRUCache:
 
 
 class I18n:
-    """从 locales/*.json 加载翻译，支持 dot-path 取值和 {key} 模板插值。"""
+    """Load locales/*.json translations with dot-path lookup and {key} template interpolation."""
 
     def __init__(self, locales_dir: Path, default: str = _DEFAULT_LOCALE):
         self._bundles: Dict[str, Dict[str, Any]] = {}

@@ -1,30 +1,30 @@
 """
-插件系统统一类型定义
+Unified type definitions for the plugin system
 
-提供插件核心使用的公共类型和异常。
-这是 types/ 层的入口，所有类型定义都应该从这里导入。
+Provides common types and exceptions used by the plugin core.
+This is the types/ layer entry point; import all type definitions from here.
 
 Usage:
     from plugin._types import (
-        # 错误码
+        # Error codes
         ErrorCode, ERROR_NAMES, get_error_name, get_http_status,
-        # 异常
+        # Exceptions
         PluginError, PluginNotFoundError, PluginTimeoutError,
-        # 事件
+        # Events
         EventMeta, EventHandler, EventType, EVENT_META_ATTR,
         # Protocol
         PluginContextProtocol,
-        # 模型
+        # Models
         PluginMeta, PluginAuthor, PluginDependency,
-        # 版本
+        # Version
         SDK_VERSION,
     )
 """
 
-# 版本
+# Version
 from .version import SDK_VERSION
 
-# 错误码
+# Error codes
 from .errors import (
     ErrorCode,
     ERROR_NAMES,
@@ -32,7 +32,7 @@ from .errors import (
     get_http_status,
 )
 
-# 异常
+# Exceptions
 from .exceptions import (
     PluginError,
     PluginNotFoundError,
@@ -49,7 +49,7 @@ from .exceptions import (
     PluginQueueError,
 )
 
-# 事件
+# Events
 from .events import (
     EVENT_META_ATTR,
     STANDARD_EVENT_TYPES,
@@ -64,15 +64,15 @@ from .protocols import (
     PluginContextProtocol,
 )
 
-# 模型
+# Models
 from .plugin_types import (
     PluginType,
     SCAFFOLDABLE_PLUGIN_TYPES,
     SUPPORTED_PLUGIN_TYPES,
 )
 
-# .models 是服务端 API 用的 pydantic 模型，导入要两百多毫秒；插件子进程经
-# plugin._types 下的轻量子模块（如 bus_sort）进来时用不到它，所以按需导入。
+# .models contains server-API pydantic models and takes over 200 ms to import; plugin subprocesses entering
+# through lightweight plugin._types submodules (such as bus_sort) do not need it, so import on demand.
 _LAZY_MODEL_EXPORTS = frozenset({
     "RunStatus",
     "RunCreateRequest",
@@ -101,14 +101,14 @@ def __dir__():
     return sorted(set(globals()) | _LAZY_MODEL_EXPORTS)
 
 __all__ = [
-    # 版本
+    # Version
     "SDK_VERSION",
-    # 错误码
+    # Error codes
     "ErrorCode",
     "ERROR_NAMES",
     "get_error_name",
     "get_http_status",
-    # 异常
+    # Exceptions
     "PluginError",
     "PluginNotFoundError",
     "PluginNotRunningError",
@@ -122,7 +122,7 @@ __all__ = [
     "PluginEntryNotFoundError",
     "PluginMetadataError",
     "PluginQueueError",
-    # 事件
+    # Events
     "EVENT_META_ATTR",
     "STANDARD_EVENT_TYPES",
     "StandardEventType",
@@ -131,7 +131,7 @@ __all__ = [
     "EventHandler",
     # Protocol
     "PluginContextProtocol",
-    # 模型
+    # Models
     "RunStatus",
     "RunCreateRequest",
     "RunCreateResponse",

@@ -1,7 +1,7 @@
 """
-插件性能监控服务
+Plugin performance-monitoring service.
 
-提供插件性能指标的收集和查询功能。
+Collects and queries plugin performance metrics.
 """
 import asyncio
 import threading
@@ -44,32 +44,32 @@ def _safe_metric_timestamp_utc(value: str) -> datetime | None:
 
 @dataclass
 class PluginMetrics:
-    """插件性能指标"""
+    """Plugin performance metrics."""
     plugin_id: str
     timestamp: str
     
-    # 进程信息
+    # Process information.
     pid: int | None = None
     cpu_percent: float = 0.0
     memory_mb: float = 0.0
     memory_percent: float = 0.0
     num_threads: int = 0
     
-    # 执行统计（需要从其他地方获取）
+    # Execution statistics, obtained elsewhere.
     total_executions: int = 0
     successful_executions: int = 0
     failed_executions: int = 0
     avg_execution_time: float = 0.0
     
-    # 队列状态
+    # Queue state.
     pending_requests: int = 0
     queue_size: int = 0
 
 
 class MetricsCollector:
-    """性能指标收集器"""
+    """Performance-metrics collector."""
     
-    # 每个插件保留的最大历史记录数
+    # Maximum history entries retained per plugin.
     MAX_HISTORY_SIZE = 1000
     
     def __init__(self, interval: float = 5.0):
@@ -79,10 +79,10 @@ class MetricsCollector:
         self._task: asyncio.Task[None] | None = None
         self._plugin_hosts_getter: Callable[[], dict[str, object]] | None = None
         
-        # 缓存机制：减少锁竞争
+        # Caching reduces lock contention.
         self._cache: list[dict[str, object]] = []
         self._cache_timestamp: float = 0.0
-        self._cache_ttl: float = 0.5  # 500ms 缓存
+        self._cache_ttl: float = 0.5  # 500ms cache.
         # Appends bump this. A full-query cache publish must not replace a
         # snapshot that was taken later.
         self._history_version = 0
@@ -91,8 +91,8 @@ class MetricsCollector:
         # it moves, so an ordinary append does not discard an in-flight snapshot.
         self._liveness_version = 0
 
-        # 按 plugin_id 复用 psutil.Process（值为 (pid, Process)），
-        # 以便 cpu_percent(interval=None) 基于上次采样计算差值而不阻塞。
+        # Reuse psutil.Process per plugin_id, storing (pid, Process),
+        # so cpu_percent(interval=None) computes a nonblocking delta from the previous sample.
         self._ps_processes: dict[str, tuple[int, object]] = {}
         # Plugins that produced a sample in the latest collection tick, or whose
         # process is still the one behind their last sample and only missed this
@@ -101,22 +101,22 @@ class MetricsCollector:
         self._live_plugin_ids: set[str] = set()
     
     async def start(self, plugin_hosts_getter: Callable[[], dict[str, object]]) -> None:
-        """启动指标收集任务"""
+        """Start the metrics-collection task."""
         if not PSUTIL_AVAILABLE:
             logger.warning("psutil not available, metrics collection disabled")
             return
         
         self._plugin_hosts_getter = plugin_hosts_getter
         if self._task is None or self._task.done():
-            # 每轮任务独占一份新缓存：stop() 取消协程不会停止仍在运行的
-            # to_thread 采样线程，旧线程晚到时只能写/删旧缓存。
+            # Every collection round owns a new cache: stop() cancels the coroutine but not the running
+            # to_thread sampler, so late old threads may write/delete only their old cache.
             ps_processes: dict[str, tuple[int, object]] = {}
             self._ps_processes = ps_processes
             self._task = asyncio.create_task(self._collect_loop(ps_processes))
             logger.info("Metrics collector started")
     
     async def stop(self):
-        """停止指标收集任务"""
+        """Stop the metrics-collection task."""
         if self._task and not self._task.done():
             self._task.cancel()
             try:
@@ -126,7 +126,7 @@ class MetricsCollector:
             logger.info("Metrics collector stopped")
     
     async def _collect_loop(self, ps_processes: dict[str, tuple[int, object]]):
-        """定期收集指标"""
+        """Collect metrics periodically."""
         while True:
             try:
                 if not self._plugin_hosts_getter:
@@ -159,14 +159,14 @@ class MetricsCollector:
                                     self._metrics_history[plugin_id] = []
                                 self._metrics_history[plugin_id].append(metrics)
                                 self._history_version += 1
-                                # 只保留最近 MAX_HISTORY_SIZE 条记录
+                                # Retain only the latest MAX_HISTORY_SIZE records.
                                 if len(self._metrics_history[plugin_id]) > self.MAX_HISTORY_SIZE:
                                     self._metrics_history[plugin_id].pop(0)
                                 if PLUGIN_LOG_SERVER_DEBUG:
                                     logger.debug(f"Successfully collected and stored metrics for plugin {plugin_id}")
                             live_plugin_ids.add(plugin_id)
                         else:
-                            # 记录为什么没有收集到指标
+                            # Record why metrics were not collected.
                             process = getattr(host, "process", None)
                             if not process:
                                 if PLUGIN_LOG_SERVER_DEBUG:
@@ -218,7 +218,7 @@ class MetricsCollector:
         plugin_hosts: dict[str, object],
         ps_processes: dict[str, tuple[int, object]] | None = None,
     ) -> None:
-        """丢弃已不在 plugin_hosts 中的插件的 psutil.Process 缓存"""
+        """Discard cached psutil.Process entries for plugins absent from plugin_hosts."""
         cache = self._ps_processes if ps_processes is None else ps_processes
         with self._lock:
             for stale_id in [cached_id for cached_id in cache if cached_id not in plugin_hosts]:
@@ -231,7 +231,7 @@ class MetricsCollector:
     def _get_ps_process(
         self, plugin_id: str, pid: int, ps_processes: dict[str, tuple[int, object]]
     ) -> object:
-        """获取（或新建并缓存）plugin_id 对应 pid 的 psutil.Process；pid 变化时重建"""
+        """Get or create/cache psutil.Process for plugin_id's PID, recreating on PID change."""
         with self._lock:
             cached = ps_processes.get(plugin_id)
             if cached is not None and cached[0] == pid:
@@ -247,9 +247,9 @@ class MetricsCollector:
         host: object,
         ps_processes: dict[str, tuple[int, object]] | None = None,
     ) -> PluginMetrics | None:
-        """收集单个插件的性能指标。
+        """Collect performance metrics for one plugin.
 
-        ps_processes 为调用方所属采样轮次的缓存；缺省时使用当前缓存。
+        ps_processes is the caller's sampling-round cache; defaults to the current cache.
         """
         cache = self._ps_processes if ps_processes is None else ps_processes
         if not PSUTIL_AVAILABLE:
@@ -258,7 +258,7 @@ class MetricsCollector:
             return None
         
         try:
-            # 获取进程信息
+            # Get process information.
             process = getattr(host, "process", None)
             if not process:
                 self._drop_ps_process(plugin_id, cache)
@@ -273,11 +273,11 @@ class MetricsCollector:
             
             pid = process.pid
             
-            # 使用psutil获取进程信息
+            # Get process information with psutil.
             try:
                 ps_process = self._get_ps_process(plugin_id, pid, cache)
-                # 非阻塞采样：返回自上次调用以来的 CPU 占用。
-                # 新进程（或 pid 变化后）的首次调用仅用于建立基线，返回 0.0。
+                # Nonblocking sampling returns CPU usage since the previous call.
+                # The first call for a new process or changed PID establishes a baseline and returns 0.0.
                 cpu_percent = ps_process.cpu_percent(interval=None)
                 memory_info = ps_process.memory_info()
                 memory_mb = memory_info.rss / 1024 / 1024
@@ -292,11 +292,11 @@ class MetricsCollector:
                 logger.warning(f"Access denied when collecting metrics for plugin {plugin_id} (pid: {pid})")
                 return None
             
-            # 获取队列状态
+            # Get queue state.
             comm_manager = getattr(host, "comm_manager", None)
             pending_requests = 0
             if comm_manager:
-                # 使用公共方法获取待处理请求数，保持封装性
+                # Use the public pending-request count method to preserve encapsulation.
                 if hasattr(comm_manager, "get_pending_requests_count"):
                     try:
                         pending_requests = comm_manager.get_pending_requests_count()
@@ -320,7 +320,7 @@ class MetricsCollector:
             return None
     
     def get_current_metrics(self, plugin_id: str | None = None) -> list[dict[str, object]]:
-        """获取当前性能指标（带缓存，减少锁竞争）"""
+        """Get current performance metrics with caching to reduce lock contention."""
         import time
         now = time.time()
         
@@ -341,9 +341,9 @@ class MetricsCollector:
                 )
             return []
         else:
-            # 全量查询，使用缓存减少锁竞争。缓存列表和它的时间戳要在锁内一起读：
-            # 分开读的话，可能拿到失效前的旧列表配上新发布的时间戳，把已停止的
-            # 插件当成新鲜数据返回。
+            # Full query uses caching to reduce lock contention. Read cached list and timestamp together under lock:
+            # separate reads could combine an invalidated old list with a new timestamp and return stopped
+            # plugins as fresh data.
             with self._lock:
                 cached = self._cache
                 cached_at = self._cache_timestamp
@@ -388,7 +388,7 @@ class MetricsCollector:
         start_time: str | None = None,
         end_time: str | None = None
     ) -> list[dict[str, object]]:
-        """获取性能指标历史"""
+        """Get performance-metrics history."""
         if limit <= 0:
             return []
 
@@ -402,7 +402,7 @@ class MetricsCollector:
             # enough to isolate filtering from later collector appends.
             history = list(self._metrics_history.get(plugin_id, []))
 
-        # 时间过滤（基于 UTC datetime 比较）
+        # Time filtering using UTC datetime comparison.
         filtered = history
         if start_dt is not None:
             next_filtered: list[PluginMetrics] = []
@@ -427,14 +427,14 @@ class MetricsCollector:
                     next_filtered.append(metrics)
             filtered = next_filtered
 
-        # 限制数量
+        # Limit count.
         if len(filtered) > limit:
             filtered = filtered[-limit:]
 
         return [self._metrics_to_dict(m) for m in filtered]
     
     def _metrics_to_dict(self, metrics: PluginMetrics) -> dict[str, object]:
-        """将指标对象转换为字典"""
+        """Convert a metrics object into a dictionary."""
         return {
             "plugin_id": metrics.plugin_id,
             "timestamp": metrics.timestamp,
@@ -452,5 +452,5 @@ class MetricsCollector:
         }
 
 
-# 全局指标收集器实例
+# Global metrics-collector instance.
 metrics_collector = MetricsCollector()

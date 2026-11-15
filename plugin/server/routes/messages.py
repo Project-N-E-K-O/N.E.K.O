@@ -1,5 +1,5 @@
 """
-消息队列路由
+Message-queue routes.
 """
 from __future__ import annotations
 

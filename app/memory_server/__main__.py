@@ -42,27 +42,27 @@ from app.memory_server._shared import logger
 from config import MEMORY_SERVER_PORT
 
 if __name__ == "__main__":
-    # 解析命令行参数
+    # Parse command-line arguments.
     parser = argparse.ArgumentParser(description='Memory Server')
     parser.add_argument('--enable-shutdown', action='store_true',
                        help='启用响应退出请求功能（仅在终端用户环境使用）')
     args = parser.parse_args()
 
-    # 设置全局变量（/shutdown 端点经 `global enable_shutdown` 读 runtime 模块属性）
+    # Set globals (/shutdown reads runtime module attributes via `global enable_shutdown`).
     runtime.enable_shutdown = args.enable_shutdown
 
-    # 创建一个后台线程来监控关闭信号
+    # Create a background thread to monitor shutdown signals.
     def monitor_shutdown():
         while not runtime.shutdown_event.is_set():
             time.sleep(0.1)
         logger.info("检测到关闭信号，正在关闭memory_server...")
-        # 发送SIGTERM信号给当前进程
+        # Send SIGTERM to the current process.
         os.kill(os.getpid(), signal.SIGTERM)
 
-    # 只有在启用关闭功能时才启动监控线程
+    # Start the monitoring thread only when shutdown is enabled.
     if runtime.enable_shutdown:
         shutdown_monitor = threading.Thread(target=monitor_shutdown, daemon=True)
         shutdown_monitor.start()
 
-    # 启动服务器
+    # Start the server.
     uvicorn.run(runtime.app, host="127.0.0.1", port=MEMORY_SERVER_PORT)

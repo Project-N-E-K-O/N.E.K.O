@@ -124,12 +124,12 @@ class ProactiveBridge:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
-        # SUB/PUSH 创建、connect 和 SUBSCRIBE 调用成功之后才置位（不保证远端
-        # 已连接或处理订阅）。启动顺序要用它：autostart 插件可以在
-        # startup 钩子里 push_message()，而 PUB 对缺席的订阅方是直接丢弃 ——
-        # 那扇窗口里推的消息角色永远不会说，push_message() 却已经回了
-        # submitted=True。只把 bridge 挪到插件前面只是让计时更早开始，窗口
-        # 本身还在（SUBSCRIBE 传播到 PUB 侧之前那一小段）。
+        # Set only after SUB/PUSH creation, connect, and SUBSCRIBE all succeed (this does
+        # not guarantee that the remote side is connected or has processed the subscription). Startup order depends on this:
+        # an autostart plugin may call push_message() in its startup hook, while PUB silently drops messages sent to absent subscribers —
+        # a character may never speak a message pushed in that window, even though push_message() returned
+        # submitted=True. Moving the bridge before plugins only starts the timer earlier; the window
+        # remains (the brief period before SUBSCRIBE propagates to the PUB side).
         self._subscribed = threading.Event()
         self._startup_finished = threading.Event()
 
@@ -139,16 +139,16 @@ class ProactiveBridge:
             return
         if self._thread is not None and self._thread.is_alive():
             return
-        # 新事件，而不是 clear() 掉共用的那个：stop() 的 join 是有界的，超时时
-        # 旧线程可能还在收尾。清掉它正在等的事件会把它拉回收发循环——订阅的
-        # 还是退休前那个 PUB 端点，而且和新线程一起往同一个 PUSH 上投递。它
-        # 自己那个事件保持置位，于是按自己的节奏退出，且不会被叫回来。
+        # Use a new event instead of clearing the shared one: stop() has a bounded join, and after a timeout
+        # the old thread may still be shutting down. Clearing the event it waits on would pull it back into the send/receive loop — its subscription
+        # still targets the retired PUB endpoint, and it would publish to the same PUSH alongside the new thread. Its
+        # own event remains set, so it exits on its own schedule and cannot be revived.
         self._stop = threading.Event()
-        # _subscribed 同样每代新建，而不是 clear() 掉共用的那个：退休线程握的是
-        # 它自己那代的事件，即便它在 stop 之后才跑到就绪置位，也只置位自己那代
-        # （已作废）的事件，碰不到新代的——wait_until_subscribed() 读的是
-        # self._subscribed（新代），不会被上一条命误认证就绪。这与上面 _stop 每
-        # 代重绑是同一套设计；无需再加锁去保护代际切换。
+        # _subscribed is also recreated for each generation instead of clearing a shared event: the retired thread holds
+        # its own generation's event; even if it reaches the ready signal after stop, it sets only its own
+        # invalidated event and cannot affect the new generation. wait_until_subscribed() reads
+        # self._subscribed (the new generation), so a previous run cannot falsely signal readiness. This is the same design as rebinding _stop
+        # for every generation; no extra lock is needed to protect generation changes.
         subscribed = threading.Event()
         self._subscribed = subscribed
         # Wake startup waiters on either setup success or failure, without
@@ -173,10 +173,10 @@ class ProactiveBridge:
         caller must not be blocked by a bridge that is disabled or already
         dead, only by one that is still coming up.
 
-        ⚠️ 这不是数学上的关闭。ZMQ 的 SUBSCRIBE 返回不代表 PUB 端已经处理完
-        这条订阅（经典的 slow joiner），所以极窄的一段仍在。要真正关死得让
-        bridge 起来后补读一次 store 并按 message_id 去重 —— 那会引入重复投递
-        的风险（角色把同一句说两遍），不在这次范围内。
+        ⚠️ This is not a mathematically airtight close. A successful ZMQ SUBSCRIBE does not mean the PUB side has processed
+        the subscription yet (the classic slow joiner), so a very small gap remains. To close it completely, the bridge would need to
+        read the store once after startup and deduplicate by message_id — which risks duplicate delivery
+        (the character says the same sentence twice) and is outside this change's scope.
         """
         t = self._thread
         subscribed = self._subscribed
@@ -204,8 +204,8 @@ class ProactiveBridge:
 
     def stop(self) -> None:
         self._stop.set()
-        # 醒掉任何在等订阅的人：bridge 停了就不会再有订阅了，让它们继续跑，
-        # 别把关停变成一次 timeout 长的挂起。
+        # Wake anyone waiting for subscription: once the bridge stops, there will be no subscription, so let them proceed
+        # instead of turning shutdown into a timeout-length hang.
         self._startup_finished.set()
         t = self._thread
         self._thread = None

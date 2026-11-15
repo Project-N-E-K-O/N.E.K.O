@@ -16,6 +16,11 @@ from typing import Any
 
 import httpx
 
+from config.prompts.prompts_memory import get_forge_scope_hint
+from config.visit_settings import VISIT_MEMORY_PLATFORM
+from memory.scopes import subject_from_entry
+from utils.language_utils import get_global_language_full
+
 logger = logging.getLogger("neko.card_forge_facts")
 
 
@@ -135,6 +140,14 @@ async def resolve_active_neko_context(
     )
 
 
+def _without_cold_copies(rows: list[dict[str, Any]], path: Path) -> list[dict[str, Any]]:
+    """Drop rows also held in cold storage next to ``path``: a cold copy is never shown."""
+    from memory import cold_store
+    from memory.facts import _fact_scoped_identity
+    return cold_store.without_cold_copies(str(Path(path).parent), "fact", rows, lambda row: row.get("entity"),
+                                          identity=_fact_scoped_identity)
+
+
 def _load_facts_json(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
@@ -200,6 +213,27 @@ def _safe_importance(value: Any) -> int:
 
 def _importance_weight(item: dict[str, Any]) -> float:
     return 1.0 + max(0, _safe_importance(item.get("importance")))
+
+
+_UNSHAREABLE_ORIGINS = frozenset({"neko_visit"})
+"""Fact origins never sampled into a community card: a visit's facts are about the neighbour's home."""
+
+
+def _shareable_facts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``items`` without facts whose ``origin`` must not leave this machine (same list when none)."""
+    if not any(isinstance(item, dict) and item.get("origin") in _UNSHAREABLE_ORIGINS for item in items):
+        return items
+    return [item for item in items if not (isinstance(item, dict) and item.get("origin") in _UNSHAREABLE_ORIGINS)]
+
+
+def _forge_text(item: dict[str, Any], lang: str) -> str:
+    """The fact text sent to the forge: scoped facts get a hint naming who they are about."""
+    subject = subject_from_entry(item)
+    if subject is None:
+        return item["text"]
+    platform = subject.subject_id.split(":", 1)[0]
+    hint = get_forge_scope_hint(subject.kind, visit=platform == VISIT_MEMORY_PLATFORM, lang=lang)
+    return hint + item["text"]
 
 
 def _weighted_pick(items: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
@@ -403,7 +437,9 @@ def _select_forge_facts_with_stats(
     exclude_ids: set[str] | None = None,
     exclude_hashes: set[str] | None = None,
     exclude_keys: set[_FactKey] | None = None,
+    lang: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    lang = lang or get_global_language_full()
     exclude_ids = exclude_ids or set()
     exclude_hashes = exclude_hashes or set()
     exclude_keys = exclude_keys or set()
@@ -551,7 +587,7 @@ def _select_forge_facts_with_stats(
     facts = [
         {
             "id": item["_forge_wire_id"],
-            "text": item["text"],
+            "text": _forge_text(item, lang),
             "importance": _safe_importance(item.get("importance")),
             "entity": str(item.get("entity", "")),
             "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
@@ -588,6 +624,7 @@ def _select_archive_facts(
     exclude_hashes: set[str],
     fill_count: int = 0,
     exclude_keys: set[_FactKey] | None = None,
+    lang: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     if not raw_archive:
         return [], {"archiveRawCount": 0, "archiveFilteredCount": 0}
@@ -609,8 +646,9 @@ def _select_archive_facts(
         exclude_ids=exclude_ids,
         exclude_hashes=exclude_hashes,
         exclude_keys=exclude_keys,
+        lang=lang,
     )
-    dated = [item for item in candidates if _fact_memory_datetime(item) is not None]
+    dated =[item for item in candidates if _fact_memory_datetime(item) is not None]
     archive_stats = {
         "archiveRawCount": archive_raw_count,
         "archiveFilteredCount": stats.get("filteredCount", 0),
@@ -738,7 +776,7 @@ async def build_forge_facts_payload(
         if path is None:
             error = "facts_source_not_configured"
         else:
-            raw = await asyncio.to_thread(_load_facts_json, path)
+            raw = await asyncio.to_thread(lambda: _without_cold_copies(_load_facts_json(path), path))
             if not raw and error is None:
                 error = "facts_file_empty_or_missing"
 
@@ -749,25 +787,35 @@ async def build_forge_facts_payload(
     )
     # Local archives only belong to the local fallback, never to a remote pool.
     if archive_path is not None and not remote_facts_used:
-        raw_archive = await asyncio.to_thread(_load_facts_json, archive_path)
+        raw_archive = await asyncio.to_thread(
+            lambda: _without_cold_copies(_load_facts_json(archive_path), archive_path))
 
     excluded_ids = _parse_csv_set(exclude_fact_ids)
     excluded_hashes = _parse_csv_set(exclude_hashes)
     total_memory_count, active_ids, active_hashes = await asyncio.to_thread(
         _memory_identity_stats, raw, raw_archive,
     )
+    shareable_raw = _shareable_facts(raw)
+    if shareable_raw is not raw:
+        # Only shareable active rows shadow archived facts: excluded visit facts must not hide identical ordinary archived facts (totals still use the full pool)
+        _, active_ids, active_hashes = await asyncio.to_thread(
+            _memory_identity_stats, shareable_raw, [],
+        )
     legacy_excluded_keys = await asyncio.to_thread(
         _legacy_excluded_fact_keys, raw, raw_archive, excluded_ids,
     )
+    # A cold language cache probes the OS synchronously (subprocesses on macOS): keep it off the event loop.
+    lang = await asyncio.to_thread(get_global_language_full)
     facts, stats = await asyncio.to_thread(
         _select_forge_facts_with_stats,
-        raw,
+        shareable_raw,
         min_importance=min_importance,
         include_absorbed=include_absorbed,
         limit=limit,
         exclude_ids=excluded_ids,
         exclude_hashes=excluded_hashes,
         exclude_keys=legacy_excluded_keys,
+        lang=lang,
     )
     archive_facts: list[dict[str, Any]] = []
     archive_stats = {
@@ -775,19 +823,20 @@ async def build_forge_facts_payload(
         "archiveFilteredCount": 0,
     }
     if limit >= 5 and raw_archive:
-        # 排除集取自**全部**活跃 facts，而不是这次抽中的那几条：归档的两文件
-        # 提交（先 facts_archive.json 再 facts.json）被打断时同一行会同时留在
-        # 两个文件里，最长到下一次成功归档才收敛。只按抽中的几条排除的话，
-        # 那种行只要这轮没被抽中，就会作为"久远记忆"发出去，而它其实还活着。
+        # Build exclusions from **all** active facts, not just this sample: if the archive's two-file
+        # commit (facts_archive.json before facts.json) is interrupted, the same row can remain in
+        # both files until the next successful archive. Excluding only sampled rows would
+        # deliver any unsampled such row as an 'old memory', even though it remains active.
         archive_facts, archive_stats = await asyncio.to_thread(
             _select_archive_facts,
-            raw_archive,
+            _shareable_facts(raw_archive),
             min_importance=min_importance,
             include_absorbed=include_absorbed,
             exclude_ids=excluded_ids,
             exclude_keys=active_ids | legacy_excluded_keys,
             exclude_hashes=excluded_hashes | active_hashes,
             fill_count=max(0, limit - len(facts)),
+            lang=lang,
         )
         if archive_facts:
             facts = [*facts[: limit - len(archive_facts)], *archive_facts]

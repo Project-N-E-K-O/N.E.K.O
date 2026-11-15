@@ -103,7 +103,7 @@ REPORT_FIELDS = (
 TERMINAL_UPLOAD_REPLIES: frozenset[tuple[int, str]] = frozenset({
     (413, "transcript_budget_exceeded"),
     (400, "parts_out_of_range"),
-    # 上传前已核对登录账号就是转录的占房账号：Servers 仍说不是本房这个 role / 没签发过这一场，重传不会变
+    # Login account was verified against the transcript's room-owning account before upload; Servers still reports wrong role / no issuance for this visit, so retry cannot help.
     (403, "not_participant"),
     (404, "unknown_visit"),
 })
@@ -143,7 +143,7 @@ def _chmod_private(path: Path) -> None:
     try:
         os.chmod(path, 0o600)
     except OSError as exc:
-        # 与凭证 / spool 文件同一立场：权限位尽力而为（Windows 上本就无效）
+        # Same policy as credentials / spool files: permissions are best effort (ineffective on Windows anyway).
         logger.debug("visit upload: chmod 0600 failed for %s: %s", path.name, exc)
 
 
@@ -175,7 +175,7 @@ def _finite(value: Any) -> bool:
         return False
 
 
-# ── 上传流水 ───────────────────────────────────────────────────────────
+# ── Upload log ───────────────────────────────────────────────────────────
 
 
 _open_streams: set[str] = set()
@@ -224,7 +224,7 @@ class UploadJournal:
     def role(self) -> str | None:
         return self._role
 
-    # 写线程上的同步操作
+    # Synchronous operations on the writer thread.
 
     def _open_sync(self, data: bytes) -> int:
         self.stream_path.parent.mkdir(parents=True, exist_ok=True)
@@ -249,17 +249,17 @@ class UploadJournal:
         _open_streams.discard(self.visit_id)
 
     def _seal_sync(self, doc: dict) -> None:
-        # 先原子写 .upload.json、再删流水（§3.2.6 第 22 条第 3 步）：两步之间崩溃时两份都在，
-        # 补录认得已封存的那份并删掉流水
+        # Atomically write .upload.json before deleting the log (§3.2.6 item 22 step 3): a crash between leaves both,
+        # and recovery recognizes the sealed copy and deletes the log.
         try:
             _write_private_json(self.sealed_path, doc)
         finally:
-            # 写失败时流水原样留着（下次启动补录从它封存），fd 照样关掉
+            # On write failure, retain log unchanged for sealing during next startup recovery; still close the fd.
             self._close_sync()
         try:
             self.stream_path.unlink(missing_ok=True)
         except OSError as exc:
-            # 上传文件已写好：流水删不掉也照常上传（Servers 按 visit_id + role 幂等）
+            # Upload file already written: upload even if log deletion fails (Servers idempotency by visit_id + role).
             logger.warning("visit upload %s: sealed but cannot delete the stream: %s", self.visit_id, exc)
 
     def _submit(self, fn: Callable[..., Any], *args: Any) -> asyncio.Future:
@@ -276,10 +276,10 @@ class UploadJournal:
         if fut.cancelled() or fut.exception() is None:
             return
         self._failed_writes += 1
-        # 内存副本仍完整：封存时按内存写 .upload.json，丢的只是崩溃补录能看到的那几行
+        # Memory copy remains complete: seal .upload.json from memory; only crash recovery misses those rows.
         logger.warning("visit upload %s: stream write failed: %s", self.visit_id, type(fut.exception()).__name__)
 
-    # 公开接口
+    # Public interface.
 
     async def open(
         self,
@@ -302,7 +302,7 @@ class UploadJournal:
             "transport": transport,
         }
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="visit-upload")
-        # 先登记再建文件：流水一出现在磁盘上，重试轮次就必须认得它还开着，不能趁建文件的间隙重封
+        # Register before creating the file: once the log appears on disk, retry passes must know it remains open, never resealing during file creation.
         added = self.visit_id not in _open_streams
         _open_streams.add(self.visit_id)
         open_job = executor.submit(self._open_sync, _encode_record(header))
@@ -310,24 +310,24 @@ class UploadJournal:
         try:
             self._fd = await asyncio.shield(opening)
         except BaseException:
-            # 被取消时线程里的建文件可能还在跑：等它结束（等的过程中再被取消也照等），关掉拿到的 fd、
-            # 删掉只写了头的流水，之后才撤销登记——否则重试轮次会把一份仍开着的流水当成孤立文件重封。
-            # 关机时（abandon_open）不等：进程马上退出，本进程没有重试轮次，留下的流水由下次启动补录。
-            # 这只让事件循环不被挂住；卡在建文件里的线程池线程不是 daemon，解释器退出时仍会等它
+            # Cancellation may leave file creation running in its thread: await completion despite repeated cancellation, close the obtained fd,
+            # delete the header-only log, then unregister; otherwise retry would reseal an open log as orphaned.
+            # Do not wait on shutdown (abandon_open): process exits immediately without more retry passes; next startup recovers remaining logs.
+            # This only frees the event loop; pool threads stuck creating files are not daemons, so interpreter exit still waits for them.
             while not opening.done() and not self._open_abandoned:
                 try:
                     await asyncio.shield(opening)
                 except asyncio.CancelledError:
                     continue
-                except BaseException:  # noqa: BLE001 - 建文件本身失败：下面按没有 fd 处理
+                except BaseException:  # noqa: BLE001 - File creation itself failed: handle below as no fd.
                     break
             fd = opening.result() if opening.done() and not opening.cancelled() \
                 and opening.exception() is None else None
             if self._open_abandoned:
-                # 关机放弃：等上传头期间攒下的记录（可能为空）排在建文件之后由写线程补上（同一条单线程队列，
-                # 先头后行）再关 fd。建成的流水一律留着给下次启动补录（只有头也要留：零行转录与用量也得上传）；
-                # 没建成就什么都不写。登记一直留到补写关掉 fd 之后：这期间上传 worker 不会把还在写的流水
-                # 当孤立文件重封（建文件卡住就一直留着，进程马上退出，下次启动的补录照常处理）
+                # Shutdown abandonment: queue records accumulated while awaiting upload header (possibly none) after file creation on the same single-writer queue,
+                # header before rows, then close fd. Keep every created log for next startup recovery, even header-only (empty transcripts and usage still upload);
+                # if creation failed, write nothing. Retain registration until the queued recovery write closes fd, preventing upload workers from
+                # resealing a still-writing log as orphaned (keep registration if creation stalls; process exits soon and next startup recovers normally).
                 finishing = executor.submit(self._finish_abandoned_open, open_job, list(self._abandoned_tail))
                 if added:
                     visit_id = self.visit_id
@@ -352,7 +352,7 @@ class UploadJournal:
     ) -> None:
         """Record one final line (either side) and wait until it is written."""
         record = self._book(lp=lp, side=side, speaker=speaker, ts=ts, text=text, truncated=truncated)
-        # 已登记的一行不因调用方被取消而撤回
+        # Do not withdraw an accepted row because its caller was cancelled.
         await asyncio.shield(self._submit(self._append_sync, _encode_record(record)))
 
     def book_line(
@@ -394,16 +394,16 @@ class UploadJournal:
 
     @staticmethod
     def _finish_abandoned_open(open_job: concurrent.futures.Future, tail: list[bytes]) -> None:
-        # 写线程上、排在建文件之后：建成了就把攒下的记录补上再关 fd；建失败就什么都不做
+        # On writer thread, queued after creation: if successful, append accumulated records then close fd; otherwise do nothing.
         try:
             fd = open_job.result()
-        except Exception:  # noqa: BLE001 - 建文件失败 / 被取消（concurrent 的 CancelledError 也是 Exception）：没有流水可补
+        except Exception:  # noqa: BLE001 - Creation failed / cancelled (concurrent CancelledError also inherits Exception): no log to complete.
             return
         try:
             for data in tail:
                 _write_all(fd, data)
         except OSError as exc:
-            # 补录出来的转录会缺这些行：留一条日志，事后查得到
+            # Recovered transcripts miss these rows; leave a log for later investigation.
             logger.warning("visit upload: buffered records not written after an abandoned open: %s",
                            type(exc).__name__)
         finally:
@@ -439,7 +439,7 @@ class UploadJournal:
         self._last_ts = when
         for key, value in clean.items():
             self._usage[key] += value
-            # 遥测只记低基数维度，不带 visit_id（转录上传才是唯一带 visit_id 的用量记录）
+            # Telemetry records low-cardinality dimensions only, without visit_id (transcript upload is the sole usage record with visit_id).
             counter(f"visit_{key}", value, role=self._role or "-")
         self._fire(record)
 
@@ -493,7 +493,7 @@ class UploadJournal:
         which has no finalize time, uses the last record instead.
         """
         if self._seal_write is not None:
-            # 已经在封存（或封存过）：等同一次写盘，不另起、也不返回 None 冒充「封存完了」
+            # Already sealing/sealed: await the same persistence operation instead of launching another or returning None as though complete.
             return await asyncio.shield(self._seal_write)
         if self._sealed or self._executor is None:
             return None
@@ -504,7 +504,7 @@ class UploadJournal:
         remember_anomalies(self.visit_id, doc["request"].get("anomalies"), doc.get("own_visit_uid"))
         self._sealed = True
         write = self._seal_write = asyncio.ensure_future(self._write_seal(doc, finalized_reason))
-        write.add_done_callback(lambda t: t.cancelled() or t.exception())  # 调用方都被取消时也取走异常
+        write.add_done_callback(lambda t: t.cancelled() or t.exception())  # Retrieve exceptions even when all callers were cancelled.
         return await asyncio.shield(write)
 
     async def _write_seal(self, doc: dict, finalized_reason: str) -> dict:
@@ -549,7 +549,7 @@ def remember_anomalies(visit_id: str, count: Any, owner: Any = None) -> None:
 
 
 def _write_all(fd: int, data: bytes) -> None:
-    # 一次 write 写完整行；普通文件极少短写，短写时续写剩余部分
+    # Write a whole line at once; regular files rarely short-write, but write the remainder if they do.
     view = memoryview(data)
     while view:
         view = view[os.write(fd, view):]
@@ -564,7 +564,7 @@ def build_visit_usage(journal: UploadJournal, *, now: float | None = None) -> di
     return journal.usage(now=now)
 
 
-# ── 分块 ───────────────────────────────────────────────────────────────
+# ── Chunking ───────────────────────────────────────────────────────────────
 
 
 def _encode_body(body: Mapping[str, Any]) -> bytes:
@@ -600,7 +600,7 @@ def plan_parts(request: Mapping[str, Any], *, start: int = 1, chunk_bytes: int =
     return min(parts, VISIT_UPLOAD_MAX_PARTS)
 
 
-# ── 上传 ───────────────────────────────────────────────────────────────
+# ── Upload ───────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -656,11 +656,11 @@ def _persist_progress(path: Path, doc: dict, parts: int, accepted: set[int]) -> 
         try:
             before = path.stat()
         except FileNotFoundError:
-            # 文件已被别处删掉（上传成功 / 放弃）：不重建
+            # File deleted elsewhere (upload succeeded / abandoned): do not recreate.
             return
         _write_private_json(path, doc)
         try:
-            # 分片进度不是一次重试：7 天保留期照旧按原来的 mtime 算
+            # Chunk progress is not a retry; calculate the 7-day retention from original mtime.
             os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
         except OSError as exc:
             logger.warning("visit upload: cannot keep the age of %s: %s", path.name, exc)
@@ -702,7 +702,7 @@ async def _upload(visit_id: str, doc: dict, config_dir: Path) -> UploadResult:
         return UploadResult()
     owner = doc.get("own_visit_uid")
     if not owner or await accounts.lookup_visit_uid(session.account) != owner:
-        # 只有占这个 role 的账号能上传（Servers 只认原账号）：换号 / 登出时原样保留，等原账号回来
+        # Only the account owning this role may upload (Servers recognizes only that account); retain on logout/account switch until it returns.
         memory_bridge.diag("upload_account_mismatch", visit_id=visit_id)
         return UploadResult()
     return replace(await _send_upload(visit_id, doc, config_dir, session), sent=True)
@@ -721,8 +721,8 @@ async def _send_upload(visit_id: str, doc: dict, config_dir: Path, session: Any)
     url = f"{session.base_url}/api/visit/transcripts"
     for _round in range(_MAX_SEND_ROUNDS):
         if len(accepted) >= parts:
-            # 块都收下了却还没见到 complete（本轮之前的回执、或上次重试落盘的进度）：只有 Servers
-            # 拼好整组才算完成。重发最后一块（按块幂等）换一份带 complete 的回执，不空转一轮
+            # All chunks accepted but no complete seen (earlier receipts or progress saved by a previous retry): only Servers'
+            # assembled group counts as complete. Resend the last chunk idempotently for a complete receipt instead of wasting a pass.
             accepted.discard(parts - 1)
         for part in range(parts):
             if part in accepted:
@@ -737,7 +737,7 @@ async def _send_upload(visit_id: str, doc: dict, config_dir: Path, session: Any)
             code = _code(body)
             if 200 <= status < 300:
                 if not _upload_receipt(status, body):
-                    # 不合契约的 2xx（204、代理的 HTML 页……）不是受理回执：文件留着、稍后重试
+                    # Noncontractual 2xx (204, proxy HTML, etc.) is not acceptance; retain file and retry later.
                     logger.warning("visit upload %s: status=%s without a valid receipt, kept for retry",
                                    visit_id, status)
                     return UploadResult()
@@ -745,7 +745,7 @@ async def _send_upload(visit_id: str, doc: dict, config_dir: Path, session: Any)
                     return UploadResult(done=True)
                 server_view = _accepted_parts(body, parts)
                 if server_view is None:
-                    # 分块上传的每个成功响应都带 accepted_parts：缺了就不替 Servers 认定
+                    # Every successful chunk response includes accepted_parts; do not infer Servers acceptance when missing.
                     logger.warning("visit upload %s: chunk receipt without accepted_parts, kept for retry",
                                    visit_id)
                     return UploadResult()
@@ -757,7 +757,7 @@ async def _send_upload(visit_id: str, doc: dict, config_dir: Path, session: Any)
             if status == 413 and code == "too_large":
                 if parts >= VISIT_UPLOAD_MAX_PARTS:
                     return UploadResult(terminal="too_large")
-                # 新一代分块：整组重切重传，已受理集合清空（幂等键含 parts，不会与上一代撞）
+                # New chunk generation: rechunk and resend the whole group, clearing accepted set (parts in idempotency key prevents collision with old generation).
                 parts, accepted = parts * 2, set()
                 await asyncio.to_thread(_persist_progress, path, doc, parts, accepted)
                 break
@@ -769,12 +769,12 @@ async def _send_upload(visit_id: str, doc: dict, config_dir: Path, session: Any)
             if status == 429:
                 return UploadResult(retry_after_s=cr._retry_after(body, resp))
             if status == 401:
-                # 原账号的登录失效：文件留着，提示重新登录（附转录的举报也在等它）
+                # Original account's login expired: retain file and prompt login (reports attaching transcript are also waiting).
                 return UploadResult(login_required=True)
             if status < 500:
                 logger.warning("visit upload %s: status=%s code=%s, kept for retry", visit_id, status, cr._diag_code(code))
             return UploadResult()
-    # 几轮都没拿到带 complete 的回执：留着下次再试
+    # No complete receipt after several rounds: retain for another attempt.
     return UploadResult()
 
 
@@ -788,20 +788,20 @@ async def upload_visit_transcript(visit_id: str, upload_doc: dict) -> bool | str
     """
     visit_id = require_visit_id(visit_id)
     config_dir = Path(config_dir_provider())
-    # 与重试轮次同一把逐场锁：分块进度的落盘与上传结清不能和另一轮交错
+    # Share per-visit lock with retry passes; chunk-progress persistence and upload settlement cannot interleave with another pass.
     async with visit_lock(visit_id):
         owner = upload_doc.get("own_visit_uid")
         if isinstance(owner, str) and owner:
-            # 补录为老文件补上的归属只在内存里：先写进文件，后台重试重读文件时才认得原账号；写不成就
-            # 记在进程内，后台轮次接着用它、接着补写
+            # Recovery-added ownership for legacy files is memory-only: persist first so background rereads identify the original account; if persistence fails,
+            # retain in process for background passes to use and retry writing.
             await _record_owner(config_dir, visit_id, owner)
         result = await _upload(visit_id, upload_doc, config_dir)
     _note_upload_retry_after(visit_id, result.retry_after_s, owner)
     if result.terminal:
-        # 补录删掉封存文件后，原因只剩这一份：之后才提交的附转录举报照样带上
+        # After recovery deletes sealed file, this is the only remaining reason; later reports attaching transcript must include it too.
         remember_terminal_reason(visit_id, result.terminal, owner if isinstance(owner, str) and owner else None)
-    # 补录只跑一轮，本进程里接着由后台检查：没传上去的接着传；传上去 / 终态结清的，补录随后删文件若被
-    # 占用而失败，后台下一轮重传得 duplicate 再删（文件已删时这一轮什么也不做就退出）
+    # Recovery runs once; background checks continue in this process. Continue unfinished uploads; if deletion after upload / terminal settlement
+    # fails due to file locking, the next pass resends for duplicate acknowledgement and deletes (do nothing if already deleted).
     schedule_visit_retry(visit_id, config_dir=config_dir,
                          initial_delay_s=max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], result.retry_after_s or 0))
     return result.callback_value
@@ -823,7 +823,7 @@ async def _record_owner(config_dir: Path, visit_id: str, owner: str) -> bool:
     return True
 
 
-# ── 举报队列 ───────────────────────────────────────────────────────────
+# ── Report queue ───────────────────────────────────────────────────────────
 
 
 def report_path(config_dir: Path, visit_id: str) -> Path:
@@ -843,8 +843,8 @@ def _queue_report_sync(path: Path, doc: dict) -> None:
                 queued = None
             if _valid_report(queued, doc["visit_id"]):
                 raise ReportAlreadyQueued(path.name)
-            # 内容坏了 / 不是这一场的举报：队列列表看不到它、也无法重试或放弃，不能让它永远挡住
-            # 这场的新举报。改名留底后照常入队（读文件出 OSError 时原样抛出，按落盘失败处理）
+            # Corrupt / wrong-visit report is invisible in queue listings and cannot be retried or abandoned; it must not permanently block
+            # new reports for this visit. Rename as evidence and enqueue normally (propagate OSError on reading as persistence failure).
             if move_aside(path, "invalid") is None:
                 raise OSError(f"cannot move {path.name} aside")
             logger.warning("visit report queue: unreadable %s moved aside", path.name)
@@ -854,19 +854,19 @@ def _queue_report_sync(path: Path, doc: dict) -> None:
 async def queue_report(config_dir: Path, doc: dict) -> None:
     """Write a new queued report (before any request is sent); raises if one is queued already."""
     await asyncio.to_thread(_queue_report_sync, report_path(config_dir, doc["visit_id"]), doc)
-    # 新的一份举报：上一份（已放弃 / 已受理）拿到的 retry_after 不再适用
+    # New report: retry_after from the prior abandoned / accepted report no longer applies.
     restart_retry_deadline(doc["visit_id"])
 
 
 def _valid_report(doc: Any, visit_id: str) -> bool:
-    # 没有可用的归属（账号 / visit_uid 都缺）的举报谁都看不到、提交不了也放弃不了：按坏文件处理
+    # Reports without usable ownership (both account and visit_uid absent) are invisible, unsubmitable, and unabandonable: treat as corrupt files.
     return (
         isinstance(doc, dict) and doc.get("visit_id") == visit_id
         and doc.get("reason") in REPORT_REASONS and isinstance(doc.get("include_transcript"), bool)
         and any(isinstance(doc.get(k), str) and doc.get(k) for k in ("own_account", "own_visit_uid"))
-        # queued_at 是举报的身份字段之一：NaN 与自己都不相等，同一份举报会被认成换了一份
+        # queued_at is part of report identity: NaN differs from itself, making one report appear replaced.
         and _finite_or_absent(doc.get("queued_at"))
-        # 与收举报时同一套备注检查：旧版 / 改坏的文件里写不进请求的备注会让每次提交都在本地出错
+        # Apply the same note validation as report intake: notes invalid for requests in legacy/corrupt files would make every submission fail locally.
         and _valid_note(doc.get("note"))
     )
 
@@ -927,10 +927,10 @@ def _mark_unavailable_sync(path: Path, visit_id: str, reason: str, owner: str | 
     with path_lock(path):
         doc = _load_json(path)
         if not _valid_report(doc, visit_id) or doc.get("transcript_unavailable") or not doc["include_transcript"]:
-            # 不附转录的举报不记转录的原因
+            # Reports without transcript attachment do not record transcript absence reasons.
             return
         if owner is not None and doc.get("own_visit_uid") and doc["own_visit_uid"] != owner:
-            # 共用电脑上另一账号排的举报：这份转录不是它那一侧的，不替它记原因（举报的归属未知时照记）
+            # Report queued by another account on a shared computer: this transcript is not its side; do not record reasons for it (record if ownership unknown).
             return
         _write_private_json(path, {**doc, "transcript_unavailable": reason})
 
@@ -949,7 +949,7 @@ def _set_rejected_sync(path: Path, visit_id: str, reason: str | None, expect: Ma
         if not _valid_report(doc, visit_id) or doc.get("rejected") == reason:
             return
         if expect is not None and not same_report(doc, expect):
-            # 提交期间这份已被放弃、换成了另一份（别的账号 / 重新举报）：不能给新的那份记拒收
+            # Report abandoned and replaced during submission (other account / new report): do not mark the replacement rejected.
             return
         doc = {k: v for k, v in doc.items() if k != "rejected"}
         if reason is not None:
@@ -1034,7 +1034,7 @@ def report_request(doc: Mapping[str, Any]) -> dict:
         body["note"] = note
     unavailable = doc.get("transcript_unavailable")
     if body["include_transcript"] and isinstance(unavailable, str) and unavailable:
-        # 只有附转录的举报才说明转录为什么没有：不附转录的带上这个字段自相矛盾
+        # Only reports attaching transcripts explain their absence; adding this field without attachment would contradict the request.
         body["transcript_unavailable"] = unavailable
     return body
 
@@ -1063,7 +1063,7 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
     except cr.VisitServersError:
         return ReportResult()
     if not await _report_owner_signed_in(doc, session.account):
-        # 只用举报时登录的那个账号提交（Servers 只认参与者本人）：换号 / 登出时原样保留
+        # Submit only with the account logged in at reporting time (Servers recognizes actual participants); retain on account switch/logout.
         memory_bridge.diag("report_account_mismatch", visit_id=str(doc.get("visit_id")))
         return ReportResult()
     try:
@@ -1078,7 +1078,7 @@ async def send_report(doc: Mapping[str, Any]) -> ReportResult:
     if receipt:
         return ReportResult(accepted=True, report_id=report_id, attempted=True)
     if 200 <= resp.status_code < 300:
-        # 不合契约的 2xx 不算受理：排队文件留着、稍后重提
+        # Noncontractual 2xx is not acceptance: retain queued file and retry later.
         logger.warning("visit report: status=%s without a valid receipt, kept queued", resp.status_code)
         return ReportResult(attempted=True)
     if resp.status_code == 404 and _code(body) == "unknown_visit":
@@ -1124,26 +1124,26 @@ async def submit_queued_report(visit_id: str, report_doc: dict) -> bool:
     visit_id = require_visit_id(visit_id)
     config_dir = Path(config_dir_provider())
     async with visit_lock(visit_id):
-        # 与端点的放弃 / 重试同一把逐场锁；等锁期间这份可能已被放弃或换成另一份
+        # Share per-visit lock with endpoint abandon / retry; report may be abandoned or replaced while waiting.
         current, unreadable = await _read_report(config_dir, visit_id)
         if unreadable:
-            # 一时读不了（被占用）不等于没了：补录只跑一轮，交给后台等能读了再核对、再交
+            # Temporarily unreadable (locked) does not mean absent: recovery runs once; background rechecks and submits when readable.
             schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
             return False
         if current is None or not same_report(current, report_doc) or current.get("rejected"):
             return False
         result = await send_report(report_doc)
         if result.accepted:
-            # 受理即在锁内删（补录随后的删除只会扑空），不给锁外的新举报留被误删的窗口
+            # On acceptance delete under lock (later recovery deletion finds nothing), closing the window for deleting a new report outside lock.
             await _delete_accepted_report(config_dir, visit_id)
             return True
         if result.unknown_visit:
             if not await set_report_rejected(config_dir, visit_id, "unknown_visit", expect=report_doc):
-                # 拒收标记没写成（磁盘 / 权限）：补录只跑一轮，交给后台下一轮再记
+                # Rejection marker write failed (disk / permissions): recovery runs once; let the next background pass retry recording.
                 schedule_visit_retry(visit_id, config_dir=config_dir,
                                      initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
             return False
-    # 网络 / 5xx / 429 / 登录失效：补录留着文件，本进程里接着由后台重试，不等下次启动
+    # Network / 5xx / 429 / expired login: recovery retains file; background retries in this process rather than waiting for restart.
     schedule_visit_retry(visit_id, config_dir=config_dir,
                          initial_delay_s=max(VISIT_UPLOAD_RETRY_BACKOFF_S[0], result.retry_after_s or 0))
     return False
@@ -1167,10 +1167,10 @@ async def finish_report(config_dir: Path, visit_id: str, result: ReportResult, d
     """Apply one submission's outcome to the queued file; True when it is gone (accepted)."""
     if result.accepted:
         await _delete_accepted_report(config_dir, visit_id)
-        # 拒收原因没能记进举报而留着的封存文件：举报已受理，它再没有用处，别占待上传容量
+        # Sealed file retained because rejection reason could not be recorded: report now accepted, so it is useless; free pending-upload capacity.
         if not await asyncio.to_thread(_drop_rejected_sealed_sync, config_dir, visit_id,
                                        _terminal_reasons.get(visit_id)):
-            # 删不掉（被占用）：记成「已结清待删」，后续轮次只重删、不重传
+            # Cannot delete (locked): mark settled-pending-deletion; subsequent passes retry deletion only, without upload.
             _settled_leftovers.add(visit_id)
             schedule_visit_retry(visit_id, config_dir=config_dir, initial_delay_s=VISIT_UPLOAD_RETRY_BACKOFF_S[0])
         return True
@@ -1179,7 +1179,7 @@ async def finish_report(config_dir: Path, visit_id: str, result: ReportResult, d
     return False
 
 
-# ── 进程内重试 ─────────────────────────────────────────────────────────
+# ── In-process retry ─────────────────────────────────────────────────────────
 
 
 def _file_age_s(path: Path, now: float) -> float | None:
@@ -1202,16 +1202,16 @@ def _drop_rejected_sealed_sync(
         except ValueError:
             return True
         marked = isinstance(doc, dict) and isinstance(doc.get("rejected"), str) and doc["rejected"]
-        # 归属未知（None）不算一致：没有拒收标记、归属又对不上号的文件不删
+        # Unknown ownership (None) is not a match: retain files without rejection markers whose ownership cannot be matched.
         same_owner = (
             isinstance(doc, dict) and known_terminal is not None and known_terminal[1] is not None
             and doc.get("own_visit_uid") == known_terminal[1]
         )
         if marked or same_owner:
-            # 拒收标记没写成、但本进程知道它已终态结清（known_terminal，且归属一致——共用电脑上不碰
-            # 另一账号那一侧的转录）的同样删。
-            # 封存时没删掉的流水也是这份已拒收转录的：一并删，免得之后被重封、重传。先删流水，带拒收标记的
-            # 封存文件最后删——流水删不掉时标记还在，重启后补录不会把它当成未上传的转录重封
+            # Also delete when rejection marking failed but this process knows terminal settlement (known_terminal, matching ownership; do not touch
+            # another account's side of the transcript on shared computers).
+            # Any log left from sealing belongs to this rejected transcript too; delete to prevent resealing/reupload. Delete log first and marked
+            # sealed file last, so failed log deletion retains the marker and startup recovery cannot reseal it as unuploaded.
             stream = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSONL_SUFFIX)
             for target in (stream, path):
                 try:
@@ -1232,7 +1232,7 @@ def _mark_sealed_rejected_sync(path: Path, reason: str) -> None:
         if not isinstance(doc, dict):
             return
         _write_private_json(path, {**doc, "rejected": reason})
-        # 记标记不是一次重试：7 天期限照旧按原来的 mtime 算
+        # Recording a marker is not a retry; preserve the 7-day deadline from original mtime.
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 
 
@@ -1303,7 +1303,7 @@ class UploadRound:
         """
         report_owner = report.get("own_visit_uid") if report is not None else None
         if report is None or self.owner is None or not report_owner or self.owner == report_owner:
-            # 任一边归属未知（举报排队时本机还没有 visit_uid 映射）：按同一侧处理
+            # Unknown ownership on either side (no local visit_uid mapping when report queued): treat as the same side.
             return self
         return replace(self, pending=False, unavailable=None, login_required=False)
 
@@ -1320,7 +1320,7 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     sealed = visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX)
     stream = visit_path(spool_dir, visit_id, UPLOAD_JSONL_SUFFIX)
     if visit_id in _settled_leftovers:
-        # 已结清、只是上次没删掉：直接再删，不重传（换号 / 登出时重传进不去，文件会一直占着容量）
+        # Settled, prior deletion merely failed: retry deletion directly without upload (logout/account switching prevents upload and would leave capacity occupied).
         if not await _drop_settled_files(visit_id, sealed, stream):
             return UploadRound(pending=False, retryable=True)
         _settled_leftovers.discard(visit_id)
@@ -1328,27 +1328,27 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     age = await asyncio.to_thread(_file_age_s, sealed, now)
     if age is None:
         if not await asyncio.to_thread(stream.exists):
-            # 转录早已结清：若是终态拒收 / 过期，之后才排的举报也要带上原因
+            # Transcript already settled: terminal rejection / expiry reasons must also reach reports queued afterward.
             reason, owner = _terminal_reasons.get(visit_id, (None, None))
             return UploadRound(pending=False, unavailable=reason, owner=owner)
         if is_live(visit_id) or visit_id in _open_streams:
-            # 还在写的流水（场次进行中）：等收尾封存，绝不提前重封
+            # Log still being written during active visit: wait for final sealing; never reseal early.
             return UploadRound(pending=True)
-        # 场次已结束、只留下流水（封存时写上传文件失败）：按补录同一规则从流水重封，再接着上传
+        # Visit ended with only log left (failed upload-file write during sealing): reseal from log using recovery rules, then upload.
         status, stream_owner = await reseal_orphan_stream(config_dir, visit_id)
         if status == "corrupt":
-            # 归属从流水头 / state.json 带出：共用电脑上不把这份转录的失败记到另一账号的举报上
+            # Carry ownership from log header / state.json so shared computers do not record this transcript's failure on another account's report.
             remember_terminal_reason(visit_id, "corrupt", stream_owner)
             marked = await mark_report_transcript_unavailable(config_dir, visit_id, "corrupt", stream_owner)
             return UploadRound(pending=False, unavailable=None if marked else "corrupt", owner=stream_owner)
         age = await asyncio.to_thread(_file_age_s, sealed, now) if status == "sealed" else None
         if age is None:
-            # 一时封不了：归属取流水头 / state.json 给的，另一账号的附转录举报不必等这份
+            # Temporarily cannot seal: use ownership from header / state.json; another account's transcript-attaching report need not wait on this file.
             return UploadRound(pending=True, retryable=True, owner=stream_owner)
     try:
         doc = await asyncio.to_thread(_load_json, sealed)
     except OSError as exc:
-        # 一时读不了（被占用 / 权限）不是坏文件：这一轮算没传上去，worker 接着试
+        # Temporarily unreadable (lock / permissions) is not corruption: count as not uploaded this pass and let worker retry.
         logger.warning("visit upload %s: cannot read %s: %s", visit_id, sealed.name, type(exc).__name__)
         return UploadRound(pending=True, retryable=True)
     except ValueError:
@@ -1356,24 +1356,24 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     if sealed_upload_doc_usable(doc, visit_id):
         matches, state_owner = await sealed_upload_doc_matches_state(config_dir, visit_id, doc)
         if matches is None:
-            # state.json 在、却一时读不了 / 读不懂：核对做不了，不能当核对通过就传，这一轮留着
+            # state.json exists but is temporarily unreadable/unrecognized: verification is impossible; do not upload as though verified; retain this pass.
             logger.warning("visit upload %s: visit state unreadable, upload deferred", visit_id)
             return UploadRound(pending=True, retryable=True)
         if not matches:
-            # 本场格式、却与 state.json 记的角色 / 账号对不上（复制来的 / 别的账号的文件）：不传、不信它写的
-            # 账号，按 state 的账号报，交给启动补录判（隔离或重封）
+            # Matching visit format but character/account disagrees with state.json (copied / another account's file): do not upload or trust its account;
+            # report state's account and let startup recovery decide quarantine/reseal.
             logger.warning("visit upload %s: sealed file disagrees with the visit state, left to recovery", visit_id)
             return UploadRound(pending=True, owner=state_owner)
         if not doc.get("own_visit_uid") and state_owner:
-            # 旧版本封出来的无主文件：与启动补录一样用 state.json 记的账号补上并写回，否则谁登录都传不了
+            # Legacy ownerless sealed file: supplement from state.json and persist like startup recovery, or no logged-in account can upload.
             await _record_owner(config_dir, visit_id, state_owner)
             doc = {**doc, "own_visit_uid": state_owner}
-    # 只信本场的文件（含本版本留着不动的新版本文件）里写的账号：别场 / 坏文件写的不算，按未知处理
+    # Trust accounts only in files for this visit (including newer-version files retained unchanged); wrong-visit / corrupt accounts are unknown.
     doc_trusted = sealed_upload_doc_usable(doc, visit_id) or sealed_upload_doc_from_another_version(doc, visit_id)
     owner = doc.get("own_visit_uid") if doc_trusted else None
     owner = owner if isinstance(owner, str) and owner else None
     if owner is None and doc_trusted and visit_id in _pending_owners:
-        # 补录补上的归属还没写进文件：先用内存里的，顺手再补写一次
+        # Recovery-supplied ownership not yet persisted: use memory ownership and retry persistence opportunistically.
         owner = _pending_owners[visit_id]
         await _record_owner(config_dir, visit_id, owner)
         doc = {**doc, "own_visit_uid": owner}
@@ -1381,23 +1381,23 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
     if (aged and visit_id not in _aged_attempted and not sealed_upload_doc_usable(doc, visit_id)
             and not (is_live(visit_id) or visit_id in _open_streams)
             and await asyncio.to_thread(stream.exists)):
-        # 过期的封存文件坏了、旁边还留着完整的流水（封存后没删掉流水，之后封存文件又坏了）：与启动补录
-        # 一样先从流水重封，再按「先试传一次」处理，别把唯一能恢复的转录直接按过期删掉
+        # Expired sealed file corrupt, with intact log beside it (log deletion failed after sealing, then sealed file corrupted): like startup recovery,
+        # reseal from log first, then attempt upload once before expiry; do not delete the only recoverable transcript untried.
         status, stream_owner = await reseal_orphan_stream(config_dir, visit_id)
         if status == "failed":
-            # 一时封不了（读写出错）：留着两份等下一轮，别落到下面按过期把还能恢复的流水删掉。
-            # 坏文件推不出归属时用流水头 / state.json 给的
+            # Temporarily cannot seal (read/write errors): retain both for next pass, avoiding expiry deletion of a recoverable log below.
+            # If corrupt file cannot provide ownership, use header / state.json.
             return UploadRound(pending=True, retryable=True, owner=owner or stream_owner)
         if status == "corrupt":
-            # 旁边的流水也坏了（已被重封函数删掉）：这场转录已无法恢复，按损坏结清，归属用流水头 /
-            # state.json 给的（坏封存文件推不出归属）
+            # Adjacent log also corrupt (resealer deleted it): transcript is unrecoverable; settle as corrupt, taking ownership from header /
+            # state.json because corrupt sealed file cannot supply it.
             return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="corrupt"),
                                         owner=owner or stream_owner)
         if status == "sealed":
             try:
                 doc = await asyncio.to_thread(_load_json, sealed)
             except OSError as exc:
-                # 刚重封好的文件一时读不了（被占用）：不是坏文件，别按过期删掉，下一轮再读
+                # Newly resealed file temporarily unreadable (locked): not corrupt; retain past expiry and reread next pass.
                 logger.warning("visit upload %s: cannot read %s: %s", visit_id, sealed.name, type(exc).__name__)
                 return UploadRound(pending=True, retryable=True, owner=owner or stream_owner)
             except ValueError:
@@ -1408,28 +1408,28 @@ async def attempt_upload(visit_id: str, *, config_dir: Path, now: float | None =
         memory_bridge.diag("upload_expired", visit_id=visit_id)
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
     if not sealed_upload_doc_usable(doc, visit_id):
-        # 读不出 / 结构不对 / 别的场次或别的版本的封存文件：不直接传，交给启动补录判
-        # （它能对照流水与 state.json 重封、隔离，或留给新版本）。别场 / 坏文件里写的账号不可信，
-        # 归属按未知报（附转录的举报照旧等）；本场的新版本文件补录会原样留着，它写的账号可信
+        # Unreadable / invalid structure / wrong-visit or different-version sealed file: do not upload directly; let startup recovery decide
+        # by comparing log and state.json to reseal, quarantine, or retain for newer versions. Wrong-visit / corrupt file accounts are untrusted;
+        # report unknown ownership (transcript-attaching reports keep waiting). Recovery retains this visit's newer-version files; their account is trusted.
         return UploadRound(pending=True, owner=owner)
     rejected = doc.get("rejected")
     if isinstance(rejected, str) and rejected:
-        # 上一轮已终态拒收、只是原因没记进举报：不再整份重传，接着记原因、删文件
+        # Previous pass reached terminal rejection but could not record the reason in report: no full reupload; continue reason recording and deletion.
         result = UploadResult(terminal=rejected)
     else:
         result = await _upload(visit_id, doc, config_dir)
     attempted = result.sent or result.done or result.terminal is not None
     if aged and attempted:
-        # 过了保留期的转录先试传一次再判过期（与启动补录同一顺序：应用关得久，刚启动就提交的举报
-        # 不能让唯一一份转录不试就丢）。真发过请求才算试过：本地准备时出错、没登录 / 登的是别的账号
-        # 都没传，留着等原账号
+        # Try uploading once before expiring retained transcripts (same order as startup recovery: after long app downtime, a report submitted on startup
+        # must not lose its only transcript untried). Only an actual request counts: local preparation failure, no login, or another account
+        # means no upload attempt; retain for original account.
         _aged_attempted.add(visit_id)
     if result.done or result.terminal is not None:
         return await _settled_round(config_dir, visit_id, sealed, result, owner=owner)
     if aged and attempted:
         memory_bridge.diag("upload_expired", visit_id=visit_id)
         return await _settled_round(config_dir, visit_id, sealed, UploadResult(terminal="expired"), owner=owner)
-    # 转录自己拿到的 Retry-After 记在上传截止表里（端点的同步尝试、重试轮次都经这里）
+    # Record transcript's own Retry-After in upload deadline table (shared by synchronous endpoint attempts and retry passes).
     _note_upload_retry_after(visit_id, result.retry_after_s, owner)
     return UploadRound(pending=True, retryable=True, retry_after_s=result.retry_after_s,
                        login_required=result.login_required, owner=owner)
@@ -1441,9 +1441,9 @@ async def _settled_round(
     if result.terminal is not None:
         remember_terminal_reason(visit_id, result.terminal, owner)
     unmarked = await _settle_upload(config_dir, visit_id, sealed, result, owner)
-    # 已结清（传上去、过期，或终态原因已记进举报）但封存文件 / 封存时没删掉的流水还在（被占用）：转录不再挡
-    # 举报，但这一轮仍要重来清理，否则它们一直占着待上传容量。原因没记进举报而有意留着的那份不算
-    # （它带 rejected 标记）
+    # Settled (uploaded, expired, or terminal reason saved in report), but sealed file / leftover log remains locked: transcript no longer blocks
+    # report, but retry cleanup this pass or they occupy pending-upload capacity forever. Exclude intentionally retained files whose reason is not yet saved
+    # (marked rejected).
     stream = visit_path(_spool_dir(config_dir), visit_id, UPLOAD_JSONL_SUFFIX)
     leftover = False
     if unmarked is None:
@@ -1503,7 +1503,7 @@ async def _upload_round(visit_id: str, config_dir: Path, now: float | None) -> U
     try:
         return await attempt_upload(visit_id, config_dir=config_dir, now=now)
     except (OSError, ValueError) as exc:
-        # 上传的本地记账出错（磁盘满等）：转录这一轮算没传上去，但不附转录的举报照样提交
+        # Local upload bookkeeping fails (e.g. full disk): count transcript as not uploaded this pass, but still submit reports without attachments.
         logger.warning("visit upload %s: attempt failed: %s", visit_id, type(exc).__name__)
         return UploadRound(pending=True, retryable=True)
 
@@ -1528,25 +1528,25 @@ async def retry_visit_once(
     async with visit_lock(visit_id):
         deferred = upload_deferred_s(visit_id)
         if deferred > 0:
-            # 转录自己的 Retry-After 还没到（手动重试也一样）：这一轮不重传，按待传、剩余时间后再来
+            # Transcript's Retry-After not reached (manual retry too): skip upload this pass, remain pending, and retry after remaining delay.
             upload = UploadRound(pending=True, retryable=True, retry_after_s=math.ceil(deferred),
                                  owner=_upload_deadline_owner.get(visit_id))
         else:
             upload = await _upload_round(visit_id, config_dir, now)
-        # 举报文件暂时读不了（同一次读取的结果）：当成还有事没办完，worker 别退出，等能读了再提交 / 补记
+        # Report temporarily unreadable (same read result): unfinished work remains; worker must stay alive and submit / record when readable.
         report, unreadable = await _read_report(config_dir, visit_id)
         upload = upload.for_report(report)
         if report is not None and manual and expect is not None and not same_report(report, expect):
-            # 等锁期间用户点重试的那份被放弃、又排了一份新的：不替新的那份提交（原因 / 附转录选择可能不同）
+            # While awaiting lock, manually retried report was abandoned and replaced: do not submit replacement (reason / attachment selection may differ).
             report = None
         if report is not None and owner is not None and not await report_belongs_to(report, owner):
-            # 等锁期间原举报没了、换成了另一账号排的：不替它提交，也不动它的拒收标记
+            # While awaiting lock, original report replaced by another account's: neither submit nor change its rejection marker.
             report = None
-        # 用户要求重试、但拒收标记没能清掉（磁盘 / 权限）：后台轮次对同一份举报照手动重试处理，别因为
-        # 标记还在就跳过。只认那一份：举报没了 / 换了一份就作废
+        # User requested retry but clearing rejection marker failed (disk / permissions): background treats the same report as manual retry despite
+        # retained marker. Match that specific report only; invalidate if absent/replaced.
         pending_manual = _manual_retries.get(visit_id)
         if unreadable:
-            # 读不了不等于没了：保留，等能读了再认；用户这次手动重试的那份也记下，后台接着按手动重试处理
+            # Unreadable is not absent: retain until identifiable; remember this manually retried report for continuing background manual-retry handling.
             if manual and expect is not None:
                 _manual_retries[visit_id] = dict(expect)
         elif report is None or not same_report(report, pending_manual):
@@ -1556,37 +1556,37 @@ async def retry_visit_once(
         if report is not None and report.get("rejected") and not manual:
             report = None
         report_pending = report is not None
-        # 附转录的举报在等转录：转录因登录失效传不上去时同样要提示重新登录
+        # Transcript-attaching report waits for transcript: expired login blocking upload must also prompt login.
         login_required = upload.login_required and report_pending and bool(report["include_transcript"])
         report_retry_after: int | None = None
         rejected_again = False
         report_wait = report_deferred_s(visit_id, report) if report is not None else 0.0
         if report is not None and report_wait > 0 and not (upload.pending and report["include_transcript"]):
-            # 这份举报自己的 Retry-After 还没到（手动重试也一样）：这一轮不重提，按剩余时间再来
+            # This report's own Retry-After not reached (manual retry too): do not resubmit this pass; wait remaining time.
             report_retry_after = math.ceil(report_wait)
         elif report is not None and not (upload.pending and report["include_transcript"]):
             if upload.unavailable and report["include_transcript"] and not report.get("transcript_unavailable"):
-                # 原因还没在举报文件里（之前没写成，或是转录先于举报结清、原因只在内存里）：先补写进文件，
-                # 写不成提交的这份也照样带上
+                # Reason absent from report file (prior persistence failed, or transcript settled first with reason in memory only): persist first,
+                # but include it in submission even if persistence fails.
                 await mark_report_transcript_unavailable(config_dir, visit_id, upload.unavailable)
                 report = {**report, "transcript_unavailable": upload.unavailable}
             result = await send_report(report)
             if result.accepted or result.unknown_visit:
-                # 受理了，或又被拒（等用户再决定）：之前那次手动重试到此为止
+                # Accepted or rejected again (awaiting user's next choice): this manual retry ends here.
                 _manual_retries.pop(visit_id, None)
             login_required = login_required or result.login_required
             rejected_again = result.unknown_visit
             report_retry_after = result.retry_after_s
             if await finish_report(config_dir, visit_id, result, report) or (
                     result.unknown_visit and await rejection_recorded(config_dir, visit_id)):
-                # 受理了但本地文件没删掉（被占用）：这一轮的 worker 别退出，下一轮重提拿 duplicate 回执再删
-                # 读不了（被占用）同样当作文件还在
+                # Accepted but local deletion failed (locked): worker stays alive, resubmits next pass for duplicate receipt, then deletes.
+                # Unreadable (locked) also means file still exists.
                 current, still_unreadable = await _read_report(config_dir, visit_id)
                 report_pending = result.accepted and (still_unreadable or same_report(current, report))
             elif (manual and report.get("rejected") and result.attempted and not result.login_required
                   and not result.unknown_visit):
-                # 用户手动重试、请求发出去了且这回没被拒（网络 / 5xx）：回到普通的排队重试。
-                # 没发出去（未登录 / 换了账号）或登录失效时拒收标记照留
+                # Manual retry sent a request without another rejection (network / 5xx): return to normal queued retries.
+                # Preserve rejection marker if unsent (logged out / different account) or login expired.
                 if await set_report_rejected(config_dir, visit_id, None, expect=report):
                     _manual_retries.pop(visit_id, None)
                 else:
@@ -1625,7 +1625,7 @@ def _reset_for_tests() -> None:
     _pending_owners.clear()
     _open_streams.clear()
     _manual_retries.clear()
-    # 上一个测试的事件循环里残留的任务可能还握着锁：换新的锁表，不跨事件循环复用
+    # Previous test's event loop may leave tasks holding locks: replace lock table instead of sharing across event loops.
     _VISIT_LOCKS.clear()
     _not_before.clear()
     _upload_not_before.clear()
@@ -1679,7 +1679,7 @@ def restart_retry_deadline(visit_id: str) -> None:
     abandoned under a long ``retry_after`` does not hold back the next one
     for the same visit.
     """
-    # 转录自己拿到的 Retry-After 照守：每轮先传转录，不能因为来了新举报就提前重传
+    # Honor transcript's own Retry-After: each pass uploads transcript first; a new report cannot trigger early retransmission.
     upload_floor = _upload_not_before.get(visit_id, 0.0)
     now = time.monotonic()
     task = _workers.get(visit_id)
@@ -1723,15 +1723,15 @@ async def _retry_loop(visit_id: str, config_dir: Path | None) -> None:
             if wait > 0:
                 await _wait(visit_id, wait)
             if _not_before.get(visit_id, deadline) != deadline:
-                # 等待期间又被推后（手动重试拿到了更长的 retry_after）：按新时间再等
+                # Deadline extended while waiting (manual retry received longer retry_after): wait for the new time.
                 continue
             _not_before.pop(visit_id, None)
         if is_live(visit_id):
-            # 在飞场次的转录还没封存：finalize 封存后会重新排上
+            # In-flight visit's transcript not yet sealed: finalize requeues it after sealing.
             return
         try:
             outcome = await retry_visit_once(visit_id, config_dir=config_dir)
-        except Exception as exc:  # noqa: BLE001 - 后台重试：记一笔，下一轮再来
+        except Exception as exc:  # noqa: BLE001 - Background retry: record and retry next pass.
             logger.warning("visit upload %s: retry round failed: %s", visit_id, type(exc).__name__)
             outcome = RetryRound(pending=True)
         if not outcome.pending:
@@ -1765,7 +1765,7 @@ def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
     def _done(t: asyncio.Task) -> None:
         if _workers.get(visit_id) is t:
             del _workers[visit_id]
-            # 唤醒事件只给在等的后台任务用：任务结束就拿掉，别随场次数一直攒着
+            # Wake events serve waiting background tasks only: remove on task completion instead of accumulating with visit count.
             _wakeups.pop(visit_id, None)
             _upload_not_before.pop(visit_id, None)
             _upload_deadline_owner.pop(visit_id, None)
@@ -1775,7 +1775,7 @@ def schedule_visit_retry(visit_id: str, *, config_dir: Path | None = None,
     return task
 
 
-# ── 给端点与运行时的查询 ───────────────────────────────────────────────
+# ── Queries for endpoints and runtime ───────────────────────────────────────────────
 
 
 def upload_pending_sync(config_dir: Path, visit_id: str) -> bool:
@@ -1804,11 +1804,11 @@ def _anomalies_sync(config_dir: Path, visit_id: str) -> tuple[int, str | None, b
     try:
         doc = _load_json(visit_path(spool_dir, visit_id, UPLOAD_JSON_SUFFIX))
     except (OSError, ValueError):
-        # 封存文件坏了 / 一时读不了：旁边若还留着流水（封存后没删掉），计数从流水里数
+        # Sealed file corrupt / temporarily unreadable: if a log remains (not deleted after sealing), count rows from it.
         doc = None
     if not (sealed_upload_doc_usable(doc, visit_id) or sealed_upload_doc_from_another_version(doc, visit_id)):
-        # 别场 / 结构不对的文件里的计数不是这一场的：按没有封存文件处理，改从流水数。
-        # 本场的新版本文件（降级后留着的）计数照用
+        # Counts in wrong-visit / malformed files do not belong here: treat as no sealed file and count from log instead.
+        # Still use counts from this visit's newer-version files retained after downgrade.
         doc = None
     request = doc.get("request") if isinstance(doc, dict) else None
     if isinstance(request, dict) and isinstance(request.get("anomalies"), int):
@@ -1849,8 +1849,8 @@ async def visit_anomalies(config_dir: Path, visit_id: str, owner: str | None = N
     if found is None:
         found = recent
     elif pending[2] and recent is not None and (not recent[1] or not found[1] or recent[1] == found[1]):
-        # 只能从流水数（流水可能少写了几行）：本进程封存时记下的同一侧计数是完整的，优先用它。
-        # 记下的是另一账号那一侧的（共用电脑）就不拿来盖这份流水
+        # Only log count available (possibly missing rows): prefer the complete same-side count recorded when sealing in this process.
+        # Do not overwrite this log with a recorded count from another account's side on a shared computer.
         found = recent
     if found is None:
         return 0

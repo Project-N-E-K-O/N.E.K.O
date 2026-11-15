@@ -2,15 +2,17 @@
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Mapping
 import json
 
 from starlette.responses import JSONResponse
 
 from .numeric_v2_trace import invoke_with_trace
+from .numeric_v2_turn_control import reserve_model_call
+from .numeric_v2_latency import model_call_timing, reported_tokens
 
 
-# 请求间隔离，子任务共享本请求容器；普通聊天未进入作用域时完全不参与统计。
+# Isolate requests; subtasks share their request container. Ordinary chat outside the scope is excluded entirely.
 _usage_calls: ContextVar[list[dict[str, Any]] | None] = ContextVar("numeric_v2_usage_calls", default=None)
 
 
@@ -28,22 +30,21 @@ def numeric_v2_usage_scope():
 async def invoke_with_usage(client: Any, messages: list[Any], *, stage: str,
                             response_format: dict[str, Any] | None = None):
     """Read only reported client usage; timeout or missing provider data stays unknown rather than becoming an estimate presented as actual consumption."""
-    # Actor/Evaluator 在调用前已按会话档位检查完整 messages；这里仅观察，不二次裁剪或改写证据。
+    reserve_model_call(stage)
+    # Actor/Evaluator already validate full messages against session tiers before calling; observe only, without trimming or rewriting evidence.
     calls = _usage_calls.get()
-    if calls is None:
-        return await invoke_with_trace(client, messages, stage=stage, response_format=response_format)
-    row = {"stage": stage, "input_tokens": None, "output_tokens": None}
-    calls.append(row)
-    response = await invoke_with_trace(client, messages, stage=stage, response_format=response_format)
-    usage = (getattr(response, "response_metadata", None) or {}).get("token_usage") or {}
-    # 客户端对 Anthropic 也提供 OpenAI 别名；兼容原生字段时输入包含缓存创建和读取。
-    prompt = usage.get("prompt_tokens")
-    if prompt is None and isinstance(usage.get("input_tokens"), int):
-        prompt = sum(usage.get(key) or 0 for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
-    completion = usage.get("completion_tokens", usage.get("output_tokens"))
-    for key, value in (("input_tokens", prompt), ("output_tokens", completion)):
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-            row[key] = value
+    row = {"stage": stage, "input_tokens": None, "output_tokens": None} if calls is not None else None
+    if calls is not None:
+        calls.append(row)
+    with model_call_timing(stage) as timing:
+        response = await invoke_with_trace(client, messages, stage=stage, response_format=response_format)
+        if row is not None or timing is not None:
+            metadata = getattr(response, "response_metadata", None)
+            tokens = reported_tokens(metadata.get("token_usage") if isinstance(metadata, Mapping) else None)
+            if row is not None:
+                row.update({key: tokens[key] for key in ("input_tokens", "output_tokens")})
+            if timing is not None:
+                timing.update(tokens)
     return response
 
 
@@ -56,7 +57,7 @@ def with_numeric_v2_usage(response: Any, calls: list[dict[str, Any]]):
         "calls": calls,
     }
     if isinstance(response, JSONResponse):
-        # 沿用原错误码和安全头，仅重算附加用量后的正文长度。
+        # Preserve existing error codes and security headers; recalculate only body length after adding usage.
         body = json.loads(response.body)
         return JSONResponse({**body, "token_usage": usage}, status_code=response.status_code,
                             headers={k: v for k, v in response.headers.items() if k != "content-length"},

@@ -1,4 +1,4 @@
-"""follow_* 自定义模型 URL 派生的回归测试。"""
+"""Regression tests for follow_* custom-model URL derivation."""
 
 import json
 import shutil
@@ -28,7 +28,7 @@ def _manager_with_core_config(config_dir: Path, data: dict) -> ConfigManager:
 
 
 def test_follow_assist_uses_resolved_provider_url_instead_of_stale_saved_url():
-    """follow_assist 必须吃保存过的可用地域 URL，而不是历史联动填入的旧 URL。"""
+    """follow_assist must use the saved, available regional URL instead of the old URL populated by historical synchronization."""
     us_url = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
     config_dir = _make_workspace_temp_dir()
     try:
@@ -151,7 +151,7 @@ def test_follow_core_uses_saved_model_id_for_text_tiers():
 
 
 def test_follow_core_non_omni_still_uses_core_provider_http_url():
-    """非 omni 的 follow_core 仍应解析为核心 provider 对应的 HTTP 兼容地址。"""
+    """Non-omni follow_core must still resolve to the core provider's HTTP-compatible address."""
     config_dir = _make_workspace_temp_dir()
     try:
         cm = _manager_with_core_config(config_dir, {
@@ -172,7 +172,7 @@ def test_follow_core_non_omni_still_uses_core_provider_http_url():
 
 
 def test_tts_custom_non_active_qwen_intl_uses_saved_resolved_url():
-    """非当前 assist 的阿里国际 TTS 也要使用保存过的可用地域 URL。"""
+    """Alibaba international TTS outside the current assist provider must also use the saved, available regional URL."""
     us_url = "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
     config_dir = _make_workspace_temp_dir()
     try:

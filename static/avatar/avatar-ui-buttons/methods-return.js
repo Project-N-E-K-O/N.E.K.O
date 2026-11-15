@@ -112,6 +112,74 @@ function _getNekoIdleReturnDragContinuousVirtualPoint(
     };
 }
 
+// Formal manual context-menu adapter. These user-requested presentation-only
+// actions are independent weighted samples and deliberately bypass Cat Mind's
+// autonomous scoring/cooldown state.
+const _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS = Object.freeze([
+    'requestCat1Cosplay1',
+    'requestCat1Change',
+    'requestCat1Cosplay2',
+    'requestCat1LionDance',
+    'requestCat1Wave'
+]);
+const _NEKO_IDLE_CAT1_VISUAL_ACTION_PRIMARY_REQUEST = 'requestCat1Stroke';
+
+function _pickNekoIdleCat1VisualActionContextMenuRequest() {
+    const roll = Math.random();
+    if (roll < 0.5) return _NEKO_IDLE_CAT1_VISUAL_ACTION_PRIMARY_REQUEST;
+    const otherCount = _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS.length;
+    const otherIndex = Math.floor(roll * otherCount * 2) - otherCount;
+    return _NEKO_IDLE_CAT1_VISUAL_ACTION_OTHER_RANDOM_REQUESTS[otherIndex];
+}
+
+function _handleNekoIdleSleepTierScaredContextMenu(button, event) {
+    if (!button || !event || event.button !== 2) return false;
+    if (_isNekoIdleThoughtBubbleEventHit(button, event)) return false;
+    if (_isNekoGoodbyeIdleBallButton(button)) return false;
+    const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    if (tier !== _NEKO_IDLE_TIER_CAT2 && tier !== _NEKO_IDLE_TIER_CAT3) return false;
+    if (_isNekoCatMindTransitionActive(button)) return false;
+
+    const presentation = window.NekoCatIdlePresentation;
+    const request = presentation && presentation.requestCat1Scared;
+    const autoGoodbye = window.nekoAutoGoodbye;
+    if (typeof request !== 'function' || !autoGoodbye ||
+        typeof autoGoodbye.demoteVisualTierToCat1 !== 'function') return false;
+
+    const started = request.call(presentation, {
+        animateEntry: true,
+        button,
+        userInitiated: true,
+        prepareCat1: () => autoGoodbye.demoteVisualTierToCat1(
+            'cat-contextmenu-demotion',
+            'cat1-scared-action'
+        ) === true
+    }) === true;
+    if (!started) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+}
+
+function _handleNekoIdleCat1VisualActionRandomContextMenu(button, event) {
+    if (!button || !event || event.button !== 2) return false;
+    if (_isNekoIdleThoughtBubbleEventHit(button, event)) return false;
+    if (_isNekoGoodbyeIdleBallButton(button)) return false;
+    const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    if (tier !== _NEKO_IDLE_TIER_CAT1) return false;
+
+    const presentation = window.NekoCatIdlePresentation;
+    const requestName = _pickNekoIdleCat1VisualActionContextMenuRequest();
+    const request = presentation && presentation[requestName];
+    if (typeof request !== 'function') return false;
+
+    const started = request.call(presentation, { button, userInitiated: true }) === true;
+    if (!started) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+}
+
 Object.assign(AvatarButtonMixin.methods, {
     returnButton(ManagerPrototype, prefix, options) {
         ManagerPrototype.createReturnButton = function() {
@@ -185,6 +253,11 @@ Object.assign(AvatarButtonMixin.methods, {
                 }
             });
 
+            returnBtn.addEventListener('contextmenu', (event) => {
+                if (_handleNekoIdleSleepTierScaredContextMenu(returnBtn, event)) return;
+                _handleNekoIdleCat1VisualActionRandomContextMenu(returnBtn, event);
+            });
+
             returnBtn.addEventListener('click', (e) => {
                 if (_isNekoIdleThoughtBubbleEventHit(returnBtn, e)) {
                     e.preventDefault();
@@ -206,29 +279,36 @@ Object.assign(AvatarButtonMixin.methods, {
                     return;
                 }
                 e.stopPropagation();
-                const desktopInteractions = window.NekoDesktopWindowInteractions;
-                if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
-                    desktopInteractions.cancel(returnBtn, {
-                        reason: 'return-click',
-                        restoreArt: false
-                    });
-                } else {
-                    [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
-                        if (runner && typeof runner.cancel === 'function') {
-                            runner.cancel(returnBtn, {
-                                reason: 'return-click',
-                                restoreArt: false
-                            });
-                        }
-                    });
+                const commitReturn = () => {
+                    const desktopInteractions = window.NekoDesktopWindowInteractions;
+                    if (desktopInteractions && typeof desktopInteractions.cancel === 'function') {
+                        desktopInteractions.cancel(returnBtn, {
+                            reason: 'return-click',
+                            restoreArt: false
+                        });
+                    } else {
+                        [window.NekoDesktopWindowTopEdgePerch, window.NekoDesktopWindowEdgePeek].forEach((runner) => {
+                            if (runner && typeof runner.cancel === 'function') {
+                                runner.cancel(returnBtn, {
+                                    reason: 'return-click',
+                                    restoreArt: false
+                                });
+                            }
+                        });
+                    }
+                    window.NekoDesktopWindowGravity?.cancel(returnBtn);
+                    _clearNekoIdleCat1QuestionMark(returnBtn);
+                    _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1VisualAction(returnBtn, { restoreArt: false, reason: 'return-click' });
+                    _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
+                    _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
+                    _cancelNekoIdleCat1Journey(returnBtn);
+                    _dispatchNekoIdleReturnClickFromButton(returnBtn);
+                };
+                if (!_guardNekoVisitCatReturn(commitReturn)) {
+                    commitReturn();
                 }
-                _clearNekoIdleCat1QuestionMark(returnBtn);
-                _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
-                _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
-                _cancelNekoIdleCat1Journey(returnBtn);
-                _dispatchNekoIdleReturnClickFromButton(returnBtn);
             });
 
             const thoughtBubble = document.createElement('span');
@@ -282,9 +362,11 @@ Object.assign(AvatarButtonMixin.methods, {
             document.body.appendChild(returnButtonContainer);
             this._returnButtonContainer = returnButtonContainer;
             _applyNekoIdleReturnPresentation(returnBtn, currentTier);
-            if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()) {
-                this._setupReturnButtonDrag(returnButtonContainer);
-            }
+            // Keep the DOM drag owner available on every platform. The native
+            // capture listener still stops ordinary multi-window drags before
+            // they reach it; cat visits deliberately release that capture so
+            // only the local cat moves inside the shared Pet window.
+            this._setupReturnButtonDrag(returnButtonContainer);
 
             return returnButtonContainer;
         };
@@ -682,6 +764,7 @@ Object.assign(AvatarButtonMixin.methods, {
                     const dispatchTop = parseFloat(container.style.top);
                     _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end', {
                         dragSessionId: safetyToken,
+                        releasedAt: Number.isFinite(dragActivity.releasedAt) ? dragActivity.releasedAt : Date.now(),
                         movedDistancePx: Math.hypot(
                             (Number.isFinite(dispatchLeft) ? dispatchLeft : containerStartX) - containerStartX,
                             (Number.isFinite(dispatchTop) ? dispatchTop : containerStartY) - containerStartY
@@ -924,8 +1007,15 @@ Object.assign(AvatarButtonMixin.methods, {
                 dragSafetyToken = safetyToken;
                 startDragActivity(safetyToken, rect.left, rect.top);
                 _restoreNekoIdleCat1EdgePeekBeforeDrag(container);
+                const dragScreenPoint = getDragScreenPointFromVirtualPoint(
+                    rect.left + dragVisualWidth / 2, rect.top + dragVisualHeight / 2,
+                    sourceEvent, clientX, clientY
+                );
                 _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start', {
-                    dragSessionId: safetyToken
+                    dragSessionId: safetyToken,
+                    screenX: dragScreenPoint.x,
+                    screenY: dragScreenPoint.y,
+                    timestamp: Date.now()
                 });
                 isDragging = true;
                 dragActiveDispatched = false;
@@ -965,6 +1055,7 @@ Object.assign(AvatarButtonMixin.methods, {
                 stopDragCursorPolling();
                 if (!isDragging || dragReleasePending) return;
                 const safetyToken = dragSafetyToken;
+                if (dragActivity) dragActivity.releasedAt = Date.now();
                 const movedPastThreshold = container.getAttribute('data-dragging') === 'true';
                 if (movedPastThreshold && dragCropHoldPending) {
                     // The pointer can be released before Niri confirms the full
@@ -992,7 +1083,7 @@ Object.assign(AvatarButtonMixin.methods, {
                 dragUsesGlobalCursor = false;
                 clearDragCropHoldPending();
                 container.style.cursor = 'grab';
-                if (movedPastThreshold) {
+                if (movedPastThreshold && !window.NekoDesktopWindowGravity?.usesContinuousDrag?.(container)) {
                     // Let the final virtual position paint while the full carrier
                     // is still active. Releasing the crop hold in the same frame
                     // can make shape collection observe the previous kitten rect.
@@ -1002,7 +1093,7 @@ Object.assign(AvatarButtonMixin.methods, {
                         });
                     });
                 } else {
-                    finishDragState(false, safetyToken);
+                    finishDragState(movedPastThreshold, safetyToken);
                 }
             };
 

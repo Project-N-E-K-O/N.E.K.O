@@ -149,7 +149,11 @@
         },
         VISIT_DATA_BUSY: {
             key: 'cloudsave.error.visitDataBusy',
-            fallback: 'A deleted character with the same name is still having its visit data cleaned up. Please try again later.',
+            fallback: 'Visit data under this name is still being sorted out (a character with this name was just deleted or renamed). Please try again later.',
+        },
+        VISIT_DATA_AMBIGUOUS: {
+            key: 'cloudsave.error.visitDataAmbiguous',
+            fallback: 'An unfinished rename between "{{first}}" and "{{second}}" left their visit data impossible to separate automatically. Delete one of the two characters, then download again.',
         },
         CLOUD_CHARACTER_EXISTS: {
             key: 'cloudsave.error.cloudCharacterExists',

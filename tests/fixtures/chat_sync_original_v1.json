@@ -1,0 +1,361 @@
+{
+  "$comment": "Shared v1 golden bytes. Invalid cases shallow-patch the first valid record; no user chat is included.",
+  "valid": [
+    {
+      "name": "unicode-and-whitespace",
+      "record": {
+        "schemaVersion": 1,
+        "ownerId": "00000000-0000-4000-8000-000000000001",
+        "characterSyncId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "channel": "chat",
+        "scope": "private-chat",
+        "messageId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "originStreamId": "cccccccccccccccccccccccccccccccc",
+        "originSeq": 1,
+        "role": "user",
+        "text": "  \u4f60\u597d\n\ud83d\ude42 e\u0301 \u00e9\u2028\u2029\t\r\u0000\"\\/  ",
+        "originalTime": null,
+        "timezone": null,
+        "conversationId": null,
+        "replyToMessageId": null
+      },
+      "canonical": "{\"channel\":\"chat\",\"characterSyncId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"conversationId\":null,\"messageId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"originSeq\":1,\"originStreamId\":\"cccccccccccccccccccccccccccccccc\",\"originalTime\":null,\"ownerId\":\"00000000-0000-4000-8000-000000000001\",\"replyToMessageId\":null,\"role\":\"user\",\"schemaVersion\":1,\"scope\":\"private-chat\",\"text\":\"  \u4f60\u597d\\n\ud83d\ude42 e\u0301 \u00e9\u2028\u2029\\t\\r\\u0000\\\"\\\\/  \",\"timezone\":null}",
+      "sha256": "7f6ef7e1ce3a4f25ce7995db21ff5cc9cd4ae3bfc303d21c9f9bfa6597f15ce9"
+    },
+    {
+      "name": "known-local-time",
+      "record": {
+        "schemaVersion": 1,
+        "ownerId": "00000000-0000-4000-8000-000000000001",
+        "characterSyncId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "channel": "chat",
+        "scope": "private-chat",
+        "messageId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "originStreamId": "cccccccccccccccccccccccccccccccc",
+        "originSeq": 1,
+        "role": "assistant",
+        "text": "\u539f\u6837\u4fdd\u7559",
+        "originalTime": "2026-10-09 16:20:30",
+        "timezone": "Asia/Shanghai",
+        "conversationId": "existing-conversation",
+        "replyToMessageId": "dddddddddddddddddddddddddddddddd"
+      },
+      "canonical": "{\"channel\":\"chat\",\"characterSyncId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"conversationId\":\"existing-conversation\",\"messageId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"originSeq\":1,\"originStreamId\":\"cccccccccccccccccccccccccccccccc\",\"originalTime\":\"2026-10-09 16:20:30\",\"ownerId\":\"00000000-0000-4000-8000-000000000001\",\"replyToMessageId\":\"dddddddddddddddddddddddddddddddd\",\"role\":\"assistant\",\"schemaVersion\":1,\"scope\":\"private-chat\",\"text\":\"\u539f\u6837\u4fdd\u7559\",\"timezone\":\"Asia/Shanghai\"}",
+      "sha256": "d23e6a38a0ffda846a7f892d7d3f501642ce955f1518dc85e0e585a6e380d00a"
+    },
+    {
+      "name": "mobile-millisecond-time",
+      "record": {
+        "schemaVersion": 1,
+        "ownerId": "00000000-0000-4000-8000-000000000001",
+        "characterSyncId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "channel": "chat",
+        "scope": "private-chat",
+        "messageId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "originStreamId": "cccccccccccccccccccccccccccccccc",
+        "originSeq": 9007199254740991,
+        "role": "user",
+        "text": "",
+        "originalTime": "1791534030123",
+        "timezone": null,
+        "conversationId": null,
+        "replyToMessageId": null
+      },
+      "canonical": "{\"channel\":\"chat\",\"characterSyncId\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"conversationId\":null,\"messageId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"originSeq\":9007199254740991,\"originStreamId\":\"cccccccccccccccccccccccccccccccc\",\"originalTime\":\"1791534030123\",\"ownerId\":\"00000000-0000-4000-8000-000000000001\",\"replyToMessageId\":null,\"role\":\"user\",\"schemaVersion\":1,\"scope\":\"private-chat\",\"text\":\"\",\"timezone\":null}",
+      "sha256": "9a6725bc4bc28cfd4703c24cb84dd7b5a438f52c33fd3c46cd7494dbad6b90d9"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "context-projection",
+      "changes": {
+        "contextText": "derived"
+      }
+    },
+    {
+      "name": "summary",
+      "changes": {
+        "summary": "derived"
+      }
+    },
+    {
+      "name": "attachment-path",
+      "changes": {
+        "imageUris": [
+          "file:///private/image.png"
+        ]
+      }
+    },
+    {
+      "name": "system-memo",
+      "changes": {
+        "role": "system"
+      }
+    },
+    {
+      "name": "tool-role",
+      "changes": {
+        "role": "tool"
+      }
+    },
+    {
+      "name": "memory-channel",
+      "changes": {
+        "channel": "memory"
+      }
+    },
+    {
+      "name": "theater-scope",
+      "changes": {
+        "scope": "theater"
+      }
+    },
+    {
+      "name": "future-version",
+      "changes": {
+        "schemaVersion": 2
+      }
+    },
+    {
+      "name": "boolean-version",
+      "changes": {
+        "schemaVersion": true
+      }
+    },
+    {
+      "name": "string-version",
+      "changes": {
+        "schemaVersion": "1"
+      }
+    },
+    {
+      "name": "boolean-sequence",
+      "changes": {
+        "originSeq": true
+      }
+    },
+    {
+      "name": "fractional-sequence",
+      "changes": {
+        "originSeq": 1.5
+      }
+    },
+    {
+      "name": "zero-sequence",
+      "changes": {
+        "originSeq": 0
+      }
+    },
+    {
+      "name": "negative-sequence",
+      "changes": {
+        "originSeq": -1
+      }
+    },
+    {
+      "name": "unsafe-sequence",
+      "changes": {
+        "originSeq": 9007199254740992
+      }
+    },
+    {
+      "name": "string-sequence",
+      "changes": {
+        "originSeq": "1"
+      }
+    },
+    {
+      "name": "invalid-owner",
+      "changes": {
+        "ownerId": "owner-a"
+      }
+    },
+    {
+      "name": "uppercase-owner",
+      "changes": {
+        "ownerId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaA"
+      }
+    },
+    {
+      "name": "owner-newline",
+      "changes": {
+        "ownerId": "00000000-0000-4000-8000-000000000001\n"
+      }
+    },
+    {
+      "name": "uppercase-character",
+      "changes": {
+        "characterSyncId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      }
+    },
+    {
+      "name": "character-newline",
+      "changes": {
+        "characterSyncId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+      }
+    },
+    {
+      "name": "empty-message-id",
+      "changes": {
+        "messageId": ""
+      }
+    },
+    {
+      "name": "short-stream-id",
+      "changes": {
+        "originStreamId": "ccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "name": "invalid-reply-id",
+      "changes": {
+        "replyToMessageId": "local-message-id"
+      }
+    },
+    {
+      "name": "non-string-text",
+      "changes": {
+        "text": 42
+      }
+    },
+    {
+      "name": "null-text",
+      "changes": {
+        "text": null
+      }
+    },
+    {
+      "name": "lone-high-surrogate",
+      "changes": {
+        "text": "\ud800"
+      }
+    },
+    {
+      "name": "lone-low-surrogate",
+      "changes": {
+        "text": "\udfff"
+      }
+    },
+    {
+      "name": "surrogate-conversation",
+      "changes": {
+        "conversationId": "\ud800"
+      }
+    },
+    {
+      "name": "empty-time",
+      "changes": {
+        "originalTime": ""
+      }
+    },
+    {
+      "name": "numeric-time",
+      "changes": {
+        "originalTime": 1791534030123
+      }
+    },
+    {
+      "name": "timezone-without-time",
+      "changes": {
+        "timezone": "UTC"
+      }
+    },
+    {
+      "name": "empty-timezone",
+      "changes": {
+        "originalTime": "0",
+        "timezone": ""
+      }
+    },
+    {
+      "name": "empty-conversation",
+      "changes": {
+        "conversationId": ""
+      }
+    },
+    {
+      "name": "missing-schemaVersion",
+      "remove": [
+        "schemaVersion"
+      ]
+    },
+    {
+      "name": "missing-ownerId",
+      "remove": [
+        "ownerId"
+      ]
+    },
+    {
+      "name": "missing-characterSyncId",
+      "remove": [
+        "characterSyncId"
+      ]
+    },
+    {
+      "name": "missing-channel",
+      "remove": [
+        "channel"
+      ]
+    },
+    {
+      "name": "missing-scope",
+      "remove": [
+        "scope"
+      ]
+    },
+    {
+      "name": "missing-messageId",
+      "remove": [
+        "messageId"
+      ]
+    },
+    {
+      "name": "missing-originStreamId",
+      "remove": [
+        "originStreamId"
+      ]
+    },
+    {
+      "name": "missing-originSeq",
+      "remove": [
+        "originSeq"
+      ]
+    },
+    {
+      "name": "missing-role",
+      "remove": [
+        "role"
+      ]
+    },
+    {
+      "name": "missing-text",
+      "remove": [
+        "text"
+      ]
+    },
+    {
+      "name": "missing-originalTime",
+      "remove": [
+        "originalTime"
+      ]
+    },
+    {
+      "name": "missing-timezone",
+      "remove": [
+        "timezone"
+      ]
+    },
+    {
+      "name": "missing-conversationId",
+      "remove": [
+        "conversationId"
+      ]
+    },
+    {
+      "name": "missing-replyToMessageId",
+      "remove": [
+        "replyToMessageId"
+      ]
+    }
+  ]
+}

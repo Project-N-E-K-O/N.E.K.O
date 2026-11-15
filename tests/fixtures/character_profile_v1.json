@@ -1,0 +1,67 @@
+{
+  "valid": [
+    {
+      "profile": {
+        "schemaVersion": 1,
+        "name": "Synthetic",
+        "nickname": "",
+        "systemPrompt": "Original static prompt",
+        "fields": [],
+        "persona": null
+      },
+      "canonical": "{\"fields\":[],\"name\":\"Synthetic\",\"nickname\":\"\",\"persona\":null,\"schemaVersion\":1,\"systemPrompt\":\"Original static prompt\"}",
+      "sha256": "61b1ce5a26c32548447a53cdc37e5f4699daa1ac4fbe9d719c42404a7ad171ea"
+    },
+    {
+      "profile": {
+        "schemaVersion": 1,
+        "name": "  合成🙂  ",
+        "nickname": "哥哥",
+        "systemPrompt": "原始\n é",
+        "fields": [
+          {
+            "key": "设定",
+            "value": "静态原文"
+          },
+          {
+            "key": "昵称",
+            "value": "literal field"
+          }
+        ],
+        "persona": {
+          "presetId": "synthetic-style",
+          "promptGuidance": "  保留空格  ",
+          "fields": [
+            {
+              "key": "说话方式",
+              "value": "简洁"
+            }
+          ]
+        }
+      },
+      "canonical": "{\"fields\":[{\"key\":\"设定\",\"value\":\"静态原文\"},{\"key\":\"昵称\",\"value\":\"literal field\"}],\"name\":\"  合成🙂  \",\"nickname\":\"哥哥\",\"persona\":{\"fields\":[{\"key\":\"说话方式\",\"value\":\"简洁\"}],\"presetId\":\"synthetic-style\",\"promptGuidance\":\"  保留空格  \"},\"schemaVersion\":1,\"systemPrompt\":\"原始\\n é\"}",
+      "sha256": "f95492e129f6b4215cfece354f3064f9a976b709ff7a06adbbe7d9d028f85e05"
+    },
+    {
+      "profile": {
+        "schemaVersion": 1,
+        "name": "🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂",
+        "nickname": "",
+        "systemPrompt": "",
+        "fields": [
+          {
+            "key": "last",
+            "value": "\u0000\r\n\t  "
+          }
+        ],
+        "persona": {
+          "presetId": "",
+          "promptGuidance": "",
+          "fields": []
+        }
+      },
+      "canonical": "{\"fields\":[{\"key\":\"last\",\"value\":\"\\u0000\\r\\n\\t  \"}],\"name\":\"🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂🙂\",\"nickname\":\"\",\"persona\":{\"fields\":[],\"presetId\":\"\",\"promptGuidance\":\"\"},\"schemaVersion\":1,\"systemPrompt\":\"\"}",
+      "sha256": "ec0e045b5b185d9dc0405e713accb7fa84bc938a060700e1c1dc6f370fefad8e"
+    }
+  ]
+}

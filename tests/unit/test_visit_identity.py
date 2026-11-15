@@ -136,7 +136,7 @@ class SpyBlocklist:
         return uid in self.blocked
 
 
-# ── 基本通过 ──
+# ── Basic acceptance ──
 
 
 def test_valid_ticket_returns_claims(priv, pubkeys, blocklist):
@@ -153,7 +153,7 @@ def test_wire_format_is_two_segments_and_signs_first_segment(priv):
     assert "=" not in ticket
 
 
-# ── 五种变异必红 ──
+# ── All five mutations must fail ──
 
 
 def test_tampered_sub_rejected(priv, pubkeys, blocklist):
@@ -188,7 +188,7 @@ def test_unknown_kid_rejected(priv, pubkeys, blocklist):
         _verify(mint_ticket(_claims(kid="other"), priv), pubkeys=pubkeys, blocklist=blocklist)
 
 
-# ── 时钟容差 ──
+# ── Clock tolerance ──
 
 
 def test_iat_299s_in_future_passes_301s_rejected(priv, pubkeys, blocklist):
@@ -205,7 +205,7 @@ def test_exp_plus_299s_passes_301s_rejected(priv, pubkeys, blocklist):
         _verify(ticket, pubkeys=pubkeys, blocklist=blocklist, now=c["exp"] + 301)
 
 
-# ── jti 窗口 ──
+# ── jti window ──
 
 
 def test_same_room_same_vid_may_replay_jti(priv, pubkeys, blocklist):
@@ -255,7 +255,7 @@ def test_jti_window_evicts_oldest():
     assert not window.check("c", visit_id="other", vid=VID)
 
 
-# ── 黑名单与核验顺序 ──
+# ── Denylist and verification order ──
 
 
 async def test_blocklist_hit_is_peer_blocked(priv, pubkeys, tmp_path):
@@ -317,7 +317,7 @@ def test_revoked_checked_before_unknown_kid(priv):
         _verify(mint_ticket(_claims(kid="gone"), priv), pubkeys=pk, blocklist=SpyBlocklist())
 
 
-# ── v / iss / aud / transport 各自篡改（签名有效）──
+# ── Tamper with v / iss / aud / transport independently (valid signature) ──
 
 
 @pytest.mark.parametrize("claim,value", [
@@ -342,7 +342,7 @@ def test_transport_must_match_the_room(priv, pubkeys, blocklist):
         _verify(ticket, pubkeys=pubkeys, blocklist=blocklist, expect_transport="trtc")
 
 
-# ── 吊销与钥匙有效期 ──
+# ── Revocation and key validity ──
 
 
 def test_builtin_kid_in_revoked_list_is_rejected(priv):
@@ -359,7 +359,7 @@ def test_iat_before_key_not_before_rejected(priv, blocklist):
 
 
 def test_iat_after_key_not_after_rejected(priv, blocklist):
-    # 下线后泄露的旧私钥新签的票：iat 在钥匙 not_after 之后。
+    # A ticket newly signed by a leaked retired private key: iat is after the key's not_after.
     pk = PubkeySet.build(now=NOW, fetched=_fresh(), builtin=_builtin(priv, na=NOW - 100))
     with pytest.raises(KeyOutOfWindow):
         _verify(mint_ticket(_claims(iat=NOW - 60), priv), pubkeys=pk, blocklist=blocklist)
@@ -368,7 +368,7 @@ def test_iat_after_key_not_after_rejected(priv, blocklist):
 def test_key_accepted_until_one_longest_ticket_after_retirement(priv, blocklist):
     na = NOW - 1000
     pk_at = PubkeySet.build(now=NOW, fetched=_fresh(), builtin=_builtin(priv, na=na))
-    # 最长的票是 host 票（50 min）
+    # Host tickets have the longest lifetime (50 min)
     c = _claims(role="host", iat=na, exp=na + VISIT_HOST_CREDENTIAL_TTL_S)
     ticket = mint_ticket(c, priv)
     last_ok = na + VISIT_HOST_CREDENTIAL_TTL_S + 300
@@ -377,7 +377,7 @@ def test_key_accepted_until_one_longest_ticket_after_retirement(priv, blocklist)
         _verify(ticket, pubkeys=pk_at, blocklist=blocklist, now=last_ok + 1, expect_role="host")
 
 
-# ── 公钥集合：过期、合并、开发键 ──
+# ── Public-key sets: expiration, merging, development keys ──
 
 
 def test_pubkeys_stale_after_cache_window(priv):
@@ -412,17 +412,17 @@ def test_fetched_key_without_window_is_skipped_and_revoked(priv):
 
 @pytest.mark.parametrize(("ttl", "expected"), [
     (60, 60.0),
-    (10 ** 300, float(VISIT_PUBKEYS_CACHE_S)),  # 合法但偏大：截到上限
-    (10 ** 400, float(VISIT_PUBKEYS_CACHE_S)),  # 超出 float 范围：同样截到上限，不溢出
+    (10 ** 300, float(VISIT_PUBKEYS_CACHE_S)),  # Valid but large: clamp to the limit
+    (10 ** 400, float(VISIT_PUBKEYS_CACHE_S)),  # Beyond float range: also clamp to the limit without overflowing
     (math.inf, float(VISIT_PUBKEYS_CACHE_S)),
-    (-(10 ** 400), float(VISIT_PUBKEYS_CACHE_S)),  # 负数 / NaN / 非数字：回落默认
+    (-(10 ** 400), float(VISIT_PUBKEYS_CACHE_S)),  # Negative / NaN / nonnumeric: use the default
     (-math.inf, float(VISIT_PUBKEYS_CACHE_S)),
     (math.nan, float(VISIT_PUBKEYS_CACHE_S)),
     ("60", float(VISIT_PUBKEYS_CACHE_S)),
     (True, float(VISIT_PUBKEYS_CACHE_S)),
 ], ids=["normal", "1e300", "1e400", "inf", "neg-1e400", "neg-inf", "nan", "str", "bool"])
 def test_fetched_ttl_is_capped_or_defaulted_without_failing(ttl, expected):
-    # ttl_s 坏不能让整次拉取作废：吊销名单照常生效
+    # An invalid ttl_s must not discard the entire fetch: the revocation list still takes effect
     fetched = parse_pubkeys_response({"keys": [], "revoked": ["x"], "ttl_s": ttl}, fetched_at=NOW)
     assert fetched.ttl_s == expected
     assert fetched.revoked == frozenset({"x"})
@@ -478,7 +478,7 @@ def test_dev_key_uses_the_same_verification_path(tmp_path, blocklist):
     with pytest.raises(BadSignature):
         _verify(mint_ticket(_claims(kid=VISIT_DEV_KID), Ed25519PrivateKey.generate()),
                 pubkeys=pk, blocklist=blocklist)
-    # 开发键同样受吊销与公钥表过期约束。
+    # Development keys are also subject to revocation and public-key table expiration.
     stale = PubkeySet.build(now=NOW, fetched=None, builtin={}, dev_public_key=dev.public_key())
     with pytest.raises(PubkeysStale):
         _verify(mint_ticket(_claims(kid=VISIT_DEV_KID), dev), pubkeys=stale, blocklist=blocklist)
@@ -498,7 +498,7 @@ def test_dev_keyfile_formats(tmp_path, fmt):
         dev.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
-# ── 畸形票据 ──
+# ── Malformed tickets ──
 
 
 @pytest.mark.parametrize("ticket", [
@@ -542,7 +542,7 @@ def test_every_rejection_is_a_ticket_rejected():
 
 @pytest.mark.parametrize("role,ttl", [("guest", 2400), ("host", 3000)])
 def test_ticket_lifetime_is_capped_by_role(priv, pubkeys, tmp_path, role, ttl):
-    # 签名有效但 exp 远超协议寿命（guest 40 / host 50 min）的票不能一直被认
+    # Validly signed tickets with exp far beyond protocol lifetime (guest 40 / host 50 min) must not remain accepted indefinitely
     iat = NOW - 60
     ok = mint_ticket(_claims(role=role, iat=iat, exp=iat + ttl), priv)
     _verify(ok, pubkeys=pubkeys, blocklist=Blocklist(tmp_path), expect_role=role)
@@ -553,7 +553,7 @@ def test_ticket_lifetime_is_capped_by_role(priv, pubkeys, tmp_path, role, ttl):
 
 @pytest.mark.parametrize("revoked", [None, ["k1", ""], ["k1", 7]])
 def test_incomplete_revocation_list_is_a_failed_refresh(revoked):
-    # 吊销名单缺失或有坏条目 = 不知道最新吊销状态：按刷新失败处理，不当空名单
+    # A missing revocation list or invalid entries means unknown revocation state: treat as refresh failure, not an empty list
     from main_logic.visit.identity import parse_pubkeys_response
 
     payload = {"keys": [], "ttl_s": 86400}
@@ -565,7 +565,7 @@ def test_incomplete_revocation_list_is_a_failed_refresh(revoked):
 
 
 def test_a_malformed_fetched_entry_revokes_its_kid(priv):
-    # 坏条目若只是被跳过，内置表里同名的旧钥匙仍会被放行
+    # Merely skipping invalid entries would still allow an old built-in key with the same name
     from main_logic.visit.identity import parse_pubkeys_response
 
     fetched = parse_pubkeys_response(
@@ -607,7 +607,7 @@ def test_an_encrypted_dev_keyfile_is_skipped_not_fatal(tmp_path, monkeypatch):
 
 
 def test_blocklist_unavailable_is_one_exception_family(priv):
-    # 两个模块的同名异常是继承关系：接哪个名字都接得住
+    # The same-named exceptions in both modules have an inheritance relationship: either name catches them
     from main_logic.visit import limits
     from main_logic.visit.identity import BlocklistUnavailable
 
@@ -624,7 +624,7 @@ def test_blocklist_unavailable_is_one_exception_family(priv):
 
 
 def test_deeply_nested_claims_are_a_malformed_ticket(pubkeys):
-    # json.loads 对深层嵌套抛 RecursionError：要按 TicketRejected 拒绝，不能冲出去
+    # json.loads raises RecursionError for deep nesting: reject as TicketRejected instead of letting it escape
     ticket = b64url_encode(b"[" * 1400) + "." + b64url_encode(b"\x00" * 64)
     assert len(ticket) <= 2048
     with pytest.raises(TicketRejected):

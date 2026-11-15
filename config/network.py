@@ -23,14 +23,14 @@ import uuid
 
 from .application import logger
 
-# 从 Electron userData 目录读取端口覆盖配置（由前端端口设置窗口写入）
+# Read port overrides from Electron userData (written by frontend port settings).
 def _read_port_overrides() -> dict:
     try:
-        # 用 sys.platform 而不是 platform.system()：后者在 Windows 上会走
-        # platform.uname() -> win32_ver() -> _syscmd_ver()，**spawn 一个
-        # `cmd /c ver` 子进程**。实测首调 54 ms，杀软介入时观测到 224 ms。
-        # 这个模块被 config 包顶层 import，坐在 launcher 启动链的最前面。
-        # sys.platform 是解释器常量，零成本，三分支判据完全等价。
+        # Use sys.platform, not platform.system(): on Windows the latter follows
+        # platform.uname() → win32_ver() → _syscmd_ver(), spawning
+        # a `cmd /c ver` subprocess. First call measured 54ms, with antivirus observed 224ms.
+        # Config imports this module at top level, at the very start of launcher startup.
+        # sys.platform is zero-cost interpreter constant; all three branch conditions are equivalent.
         if sys.platform == "win32":
             appdata = os.environ.get("APPDATA") or os.path.join(
                 os.path.expanduser("~"), "AppData", "Roaming"
@@ -55,10 +55,10 @@ def _read_port_overrides() -> dict:
 _PORT_FILE_OVERRIDES = _read_port_overrides()
 
 
-# 运行时端口覆盖支持：
-# - 首选键：NEKO_<PORT_NAME>
-# - 兼容键：<PORT_NAME>
-# - 回退：Electron 前端写入的 port_config.json
+# Runtime port overrides:
+# - Preferred key: NEKO_<PORT_NAME>
+# - Compatibility key: <PORT_NAME>.
+# - Fallback: port_config.json written by Electron frontend.
 def _read_port_env(port_name: str, default: int) -> int:
     for key in (f"NEKO_{port_name}", port_name):
         raw = os.getenv(key)
@@ -70,7 +70,7 @@ def _read_port_env(port_name: str, default: int) -> int:
                 return value
         except Exception:
             continue
-    # 回退：从 Electron 前端写入的 port_config.json 读取
+    # Fallback: read port_config.json written by Electron frontend.
     override = _PORT_FILE_OVERRIDES.get(port_name)
     if override is not None:
         try:
@@ -139,8 +139,8 @@ def _read_bool_env(var_name: str, default: bool) -> bool:
         if val in ("0", "false", "no", "off"):
             return False
         if val:
-            # 非空但不可识别（如 typo "ture"）：警告并回退，别静默吞掉让用户
-            # 摸不着头脑"为什么开关没生效"。与 _read_str_env 的 allowed 行为一致。
+            # Nonempty unrecognized values (e.g. typo "ture"): warn and fall back, never silently leave users
+            # wondering why the switch failed. Matches _read_str_env allowed-value behavior.
             logger.warning(
                 "Ignoring %s=%r (not a boolean); using default %s",
                 key, raw, default,
@@ -179,7 +179,7 @@ def _monitor_dial_host(bind_host: str) -> str:
     return f"[{address}]" if address.version == 6 else str(address)
 
 
-# 服务器端口配置
+# Server port configuration.
 MAIN_SERVER_PORT = _read_port_env("MAIN_SERVER_PORT", 48911)
 MEMORY_SERVER_PORT = _read_port_env("MEMORY_SERVER_PORT", 48912)
 MONITOR_SERVER_PORT = _read_port_env("MONITOR_SERVER_PORT", 48913)
@@ -233,10 +233,10 @@ def resolve_user_plugin_base() -> str:
             return f"http://127.0.0.1:{port}"
     return USER_PLUGIN_BASE.rstrip("/")
 
-# 实例 ID：同一次启动的所有服务共享。
-# launcher 会在拉起子进程前写入 NEKO_INSTANCE_ID 环境变量。
-# 若源码直跑绕过 launcher，则每次导入使用随机回退值，确保 /health
-# 始终返回有效 id。
+# Instance ID shared by all services in one launch.
+# Launcher sets NEKO_INSTANCE_ID before starting child processes.
+# Source launches bypassing launcher use a random import-time fallback, ensuring /health
+# always returns a valid ID.
 INSTANCE_ID = os.getenv("NEKO_INSTANCE_ID") or uuid.uuid4().hex
 AUTOSTART_CSRF_TOKEN = os.getenv("NEKO_AUTOSTART_CSRF_TOKEN") or INSTANCE_ID
 AUTOSTART_EXPLICIT_ALLOWED_ORIGINS = _read_list_env("AUTOSTART_ALLOWED_ORIGINS")

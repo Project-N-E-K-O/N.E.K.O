@@ -24,6 +24,8 @@ from the asyncio thread (local TCP latency is very low).
 
 import asyncio
 import concurrent.futures
+import contextvars
+import json
 import os
 import threading
 import time
@@ -41,8 +43,8 @@ except Exception:  # pragma: no cover - optional dependency at runtime
 
 logger = get_module_logger(__name__, "Main")
 
-# ZMQ 地址：支持环境变量覆盖，便于 launcher 在默认端口落入
-# Hyper-V 保留区时进行迁移。
+# ZMQ addresses support environment overrides so launchers can migrate defaults
+# falling within Hyper-V reserved port ranges.
 def _zmq_addr(env_key: str, default_port: int) -> str:
     raw = os.getenv(env_key, "").strip()
     if raw:
@@ -56,7 +58,7 @@ def _zmq_addr(env_key: str, default_port: int) -> str:
 
 SESSION_PUB_ADDR  = _zmq_addr("NEKO_ZMQ_SESSION_PUB_PORT", 48961)   # main -> agent（PUB/SUB）
 AGENT_PUSH_ADDR   = _zmq_addr("NEKO_ZMQ_AGENT_PUSH_PORT", 48962)    # agent -> main（PUSH/PULL）
-ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> agent（PUSH/PULL，可靠分析队列）
+ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> agent (PUSH/PULL, reliable analysis queue).
 
 # Declared here rather than beside its publisher below because the agent-side
 # receive thread needs it to tell a frame apart from every other session event.
@@ -91,34 +93,34 @@ def _int_env(env_key: str, default: int, *, minimum: int) -> int:
 # nothing else. The value is not derived from that setting: main_logic sits
 # below ``plugin`` in the layering and cannot read it.
 # Env: NEKO_AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT, default=8
-# 单张帧允许进 session PUB 的最大 base64 体积。
+# Maximum base64 size of one frame allowed into session PUB.
 #
-# 这条 socket 是**会话事件共用**的，所以不能靠压 SNDHWM 来约束帧——那会连
-# 文本事件一起提前丢。而 PUB 的默认 SNDHWM 是 1000 条：订阅方一停，多兆的帧
-# 能在 socket 里堆成几百 MB，而在途任务上限（下面那个）拦不住，因为每个任务
-# 在 send(NOBLOCK) 入队的瞬间就结束了。
+# This socket is **shared by session events**, so lowering SNDHWM to constrain frames also
+# drops text prematurely. PUB defaults to 1000 messages; stopped subscribers let multi-megabyte
+# frames pile into hundreds of MB, beyond the in-flight task cap below because every task
+# finishes as soon as send(NOBLOCK) enqueues its message.
 #
-# 所以闸放在**入队之前**。这不损失任何行为：超过 message plane 记录上限的帧
-# 到了远端本来就会被 bridge 拒收，早拒只是省掉一次穿越和一段驻留。取值与
-# 工具图的投递上限一致（见 tool_calling._TOOL_IMAGE_DELIVER_MAX_B64_BYTES，
-# 那边有一条用例钉住两者相等），并留在 plane 的 512 KiB 之下——那个界按整条
-# 打包记录算，像素旁边还有 mime / turn_id / metadata。
-# 图片自己的预算，也就是对外文档承诺的那个 500 KiB。
+# Gate **before enqueueing**. No behavior is lost: remote bridges already reject frames above the
+# message-plane record cap; early rejection saves transport and residency. Match
+# tool-image delivery limits (tool_calling._TOOL_IMAGE_DELIVER_MAX_B64_BYTES,
+# pinned equal by a test there), staying below the plane's 512KiB limit, which measures whole
+# packed records with mime / turn_id / metadata alongside pixels.
+# The image's own budget, the externally promised 500KiB.
 PROVIDER_FRAME_MAX_IMAGE_B64_BYTES = 500 * 1024
 
-# 事件里除了像素还有 event_id / source / mime / turn_id / generation /
-# metadata / lanlan_name。实测今天是 264 字节；留 1 KiB 给更长的 turn_id 与
+# Events also contain event_id / source / mime / turn_id / generation /
+# metadata / lanlan_name. Measured today at 264 bytes; reserve 1KiB for longer turn_id and
 # metadata。
 PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES = 1024
 
-# 整条事件的上限 = 图片预算 + 信封。**方向别记反**：信封不从图片预算里扣，
-# 而是加在事件这一侧——因为「图片 500 KiB vs plane 记录 512 KiB」之间那 12 KB
-# 差额本来就是为它留的（见 tool_calling 里投递上限的说明）。从图片预算里扣等
-# 于把同一笔钱付两遍，还会让对外承诺的 500 KiB 悄悄缩水成 499 KiB。
+# Whole-event limit = image budget + envelope. **Keep the direction straight**: do not deduct the envelope
+# from image budget; add it to event budget. The 12KB gap between image 500KiB and plane record 512KiB
+# already reserves it (see tool_calling's delivery-limit explanation). Deducting it from image budget
+# pays twice and silently shrinks the promised 500KiB to 499KiB.
 #
-# 这一条踩过两次：先是两个常量都写 500 KiB、一个量图片一个量整条事件，于是
-# 阶梯刚好压到上限的图在发布处被静默丢掉；改对之后又把信封记错了侧。守卫因此
-# 是**造一条满额事件再量**、并且一路量到 plane 记录，而不是比常量。
+# This failed twice: initially both constants were 500KiB, one measuring images and the other entire events,
+# silently dropping images compressed exactly to the cap. After that fix, envelope accounting used the wrong side. The guard
+# therefore **constructs and measures a full-budget event**, through the plane record, rather than comparing constants.
 PROVIDER_FRAME_MAX_B64_BYTES = (
     PROVIDER_FRAME_MAX_IMAGE_B64_BYTES + PROVIDER_FRAME_ENVELOPE_HEADROOM_BYTES
 )
@@ -142,11 +144,16 @@ _ack_waiters_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
-#  main_server 侧桥接器
+# main_server-side bridge.
 # ---------------------------------------------------------------------------
 
 class MainServerAgentBridge:
-    """Runs inside the main_server process; binds PUB, PUSH(analyze), PULL(agent→main)."""
+    """Runs inside the main_server process; binds PUB, PUSH(analyze), PULL(agent→main).
+
+    The PUSH socket is the acknowledged request channel. It still carries the
+    name of the analyzer it was built for; what travels on it now is the
+    request to check a finished turn (``publish_turn_check_reliably``).
+    """
 
     def __init__(self, on_agent_event: Callable[[Dict[str, Any]], Awaitable[None]]) -> None:
         self.on_agent_event = on_agent_event
@@ -190,7 +197,7 @@ class MainServerAgentBridge:
         self._recv_thread.start()
         logger.info("[EventBus] Main bridge started (pid=%s)", os.getpid())
 
-    # -- 后台接收（agent → main） -------------------------------------------
+    # -- Background reception (agent -> main) -------------------------------------------
 
     def _recv_thread_fn(self) -> None:
         while not self._stop.is_set():
@@ -207,7 +214,7 @@ class MainServerAgentBridge:
                     logger.debug("[EventBus] main recv thread error: %s", e)
                     time.sleep(0.05)
 
-    # -- 发送辅助函数（在 asyncio 线程中调用） -------------------------------
+    # -- Sending helpers (called in the asyncio thread) -------------------------------
 
     async def publish_session_event(self, event: Dict[str, Any]) -> bool:
         if not self.ready or self.pub is None:
@@ -263,7 +270,7 @@ class MainServerAgentBridge:
 
 
 # ---------------------------------------------------------------------------
-#  agent_server 侧桥接器
+# agent_server-side bridge.
 # ---------------------------------------------------------------------------
 
 class AgentServerEventBridge:
@@ -370,7 +377,7 @@ class AgentServerEventBridge:
             self._inflight_frames.clear()
         logger.debug("[EventBus] Agent bridge stopped")
 
-    # -- 跨线程投递（接收线程 -> agent 事件循环） ---------------------------
+    # -- Cross-thread delivery (receive thread -> agent event loop) ---------------------------
 
     def _discard_inflight_frame(
         self, fut: "concurrent.futures.Future[Any]",
@@ -441,7 +448,7 @@ class AgentServerEventBridge:
             )
         return False
 
-    # -- 后台接收线程 -------------------------------------------------------
+    # -- Background receive thread -------------------------------------------------------
 
     def _recv_sub_fn(self) -> None:
         while not self._stop.is_set():
@@ -461,12 +468,11 @@ class AgentServerEventBridge:
             try:
                 msg = orjson.loads(self.analyze_pull.recv())
                 if isinstance(msg, dict):
-                    if msg.get("event_type") == "analyze_request":
-                        logger.info(
-                            "[EventBus] analyze_request dequeued on agent: event_id=%s lanlan=%s trigger=%s",
+                    if msg.get("event_type") == "turn_check_request":
+                        logger.debug(
+                            "[EventBus] turn_check_request dequeued on agent: event_id=%s lanlan=%s",
                             msg.get("event_id"),
                             msg.get("lanlan_name"),
-                            msg.get("trigger"),
                         )
                     self._submit_to_loop(msg)
             except zmq.Again:
@@ -476,7 +482,7 @@ class AgentServerEventBridge:
                     logger.debug("[EventBus] agent analyze recv thread error: %s", e)
                     time.sleep(0.05)
 
-    # -- 发送辅助函数（在 asyncio 线程中调用） -------------------------------
+    # -- Sending helpers (called in the asyncio thread) -------------------------------
 
     async def emit_to_main(self, event: Dict[str, Any]) -> bool:
         if not self.ready or self.push is None:
@@ -489,7 +495,7 @@ class AgentServerEventBridge:
 
 
 # ---------------------------------------------------------------------------
-#  模块级辅助函数（API 保持不变）
+# Module-level helpers (unchanged API).
 # ---------------------------------------------------------------------------
 
 def set_main_bridge(bridge: Optional[MainServerAgentBridge]) -> None:
@@ -512,7 +518,7 @@ async def publish_session_event_threadsafe(event: Dict[str, Any]) -> bool:
     return await bridge.publish_session_event(event)
 
 
-def notify_analyze_ack(event_id: str) -> None:
+def notify_turn_check_ack(event_id: str) -> None:
     if not event_id:
         return
     waiter = None
@@ -630,62 +636,55 @@ def dispatch_text_user_message(
     return None
 
 
-async def publish_analyze_request_reliably(
+async def publish_turn_check_reliably(
     lanlan_name: str,
-    trigger: str,
-    messages: list[dict],
     *,
+    user_text: str,
+    reply_text: str,
     ack_timeout_s: float = 0.8,
     retries: int = 1,
     conversation_id: Optional[str] = None,
     external_intent: Optional[float] = None,
-    proactive: bool = False,
     language: Optional[str] = None,
 ) -> bool:
-    """Reliably publish analyze_request: carries event_id + ack, with short retries.
+    """Reliably ask the agent process to check a finished turn: event_id + ack, with short retries.
 
-    ``external_intent`` (0..1, or ``None``) is the cheap pre-gate hint produced by
-    the master-emotion call that already ran at input-time. It rides this same
-    payload so the agent can cheaply decide whether to skip its expensive
-    assessment. ``None`` (reading unavailable / no usable signal) is omitted from
-    the event → the agent gate fails open (runs the assessment).
+    Sent for a turn in which she called no task tool. The agent process decides
+    whether the turn is worth a look at all and what follows (see
+    ``nekoclaw.host.task_brain.TaskBrain.check_turn``). A request sent again
+    after a slow acknowledgement carries the same ``event_id``, which the
+    agent process uses to check the turn once.
 
-    ``proactive`` marks a self-initiated (no fresh user input) turn. The agent
-    routes these through a separate throttled path instead of the user-turn
-    dedupe; omitted (not set) for ordinary user turns.
+    ``external_intent`` (0..1, or ``None``) is the hint the master-emotion call
+    produced at input-time for the user's sentence. ``None`` (reading
+    unavailable / no usable signal) is omitted from the event, and the gate on
+    the other side then lets the turn through.
 
     ``language`` is the live session locale (the frontend i18n truth held in
     ``session_manager[...].user_language``, a full code like ``zh-TW``). The agent
     runs in its own process, so it cannot see that value — its own
     ``get_global_language()`` only derives NEKO_LANGUAGE / Steam / system locale,
-    which is wrong whenever the UI language differs. It rides this payload so the
-    analyzer's prompts follow the language the user is actually reading. Omitted
-    (``None``) → the agent falls back to its process-global value.
+    which is wrong whenever the UI language differs. Omitted (``None``) → the
+    agent falls back to its process-global value.
     """
     event_id = uuid.uuid4().hex
     sent_at = time.perf_counter()
 
     for attempt in range(max(retries, 0) + 1):
         event = {
-            "event_type": "analyze_request",
+            "event_type": "turn_check_request",
             "event_id": event_id,
-            "trigger": trigger,
             "lanlan_name": lanlan_name,
-            "messages": messages,
+            "user_text": user_text,
+            "reply_text": reply_text,
         }
         if conversation_id:
             event["conversation_id"] = conversation_id
-        # Only an optimization hint; omitted when None so the agent fails open.
+        # Only an optimization hint; omitted when None so the gate lets the turn through.
         if external_intent is not None:
             event["external_intent"] = external_intent
-        # Self-initiated turn marker; omitted for ordinary user turns so the
-        # agent's user-turn path is byte-for-byte unchanged when disabled.
-        if proactive:
-            event["proactive"] = True
         # Live session locale; omitted when unknown so the agent keeps its
-        # process-global fallback. Not part of the analyze dedupe fingerprint
-        # (that hashes messages + trigger only), so adding it cannot change
-        # which turns get analyzed.
+        # process-global fallback.
         if language:
             event["language"] = language
 
@@ -718,10 +717,10 @@ async def publish_analyze_request_reliably(
                         sent = await asyncio.wrap_future(cf)
                     except Exception as e:
                         coro.close()
-                        logger.debug("[EventBus] publish_analyze_request threadsafe failed: %s", e)
+                        logger.debug("[EventBus] turn_check_request threadsafe publish failed: %s", e)
                         sent = False
             except Exception as e:
-                logger.debug("[EventBus] publish_analyze_request threadsafe failed: %s", e)
+                logger.debug("[EventBus] turn_check_request threadsafe publish failed: %s", e)
                 sent = False
 
         if not sent:
@@ -731,11 +730,10 @@ async def publish_analyze_request_reliably(
 
         try:
             await asyncio.wait_for(waiter, timeout=ack_timeout_s)
-            logger.info(
-                "[EventBus] analyze_request acked: event_id=%s lanlan=%s trigger=%s latency_ms=%.1f",
+            logger.debug(
+                "[EventBus] turn_check_request acked: event_id=%s lanlan=%s latency_ms=%.1f",
                 event_id,
                 lanlan_name,
-                trigger,
                 (time.perf_counter() - sent_at) * 1000.0,
             )
             return True
@@ -743,11 +741,10 @@ async def publish_analyze_request_reliably(
             with _ack_waiters_lock:
                 _ack_waiters.pop(event_id, None)
             logger.info(
-                "[EventBus] analyze_request ack timeout (attempt %d): event_id=%s lanlan=%s trigger=%s",
+                "[EventBus] turn_check_request ack timeout (attempt %d): event_id=%s lanlan=%s",
                 attempt + 1,
                 event_id,
                 lanlan_name,
-                trigger,
             )
 
     return False
@@ -826,9 +823,9 @@ async def publish_provider_frame_observed_best_effort(
     if not b64:
         return False
     if len(b64) > PROVIDER_FRAME_MAX_B64_BYTES:
-        # 拒在入队之前，理由见 PROVIDER_FRAME_MAX_B64_BYTES 的说明：这条 PUB
-        # 是共用的，靠 SNDHWM 约束帧会牵连文本事件；而这么大的帧到了远端也是
-        # 被拒。debug 而不是 warning：调用方全是 best-effort 抄送，用户看不见。
+        # Reject before enqueueing; see PROVIDER_FRAME_MAX_B64_BYTES: this shared PUB cannot constrain frames
+        # via SNDHWM without affecting text; remote recipients reject such oversized frames anyway.
+        # Use debug, not warning: all callers perform best-effort copies, invisible to users.
         logger.debug(
             "[EventBus] provider frame too large for the session channel: "
             "%d > %d (source=%s)",
@@ -853,18 +850,18 @@ async def publish_provider_frame_observed_best_effort(
     if metadata:
         event["metadata"] = dict(metadata)
 
-    # 上面那道闸只量了像素，而 metadata 是调用方给的、会被原样拷进同一条事件
-    # ——一张 400 KiB 的图配 1 MiB 的 metadata 就能绕过它，把超限记录塞进共用
-    # 的 PUB 路径。真正的判据是**整条事件**序列化之后的字节，也就是这条 socket
-    # 实际要装的东西。
+    # The preceding gate measures only pixels, while caller-supplied metadata is copied unchanged into the same event;
+    # a 400KiB image plus 1MiB metadata bypasses it, injecting an oversized record into the shared
+    # PUB path. The true criterion is serialized bytes of the **whole event**, exactly what this socket
+    # must hold.
     #
-    # 这里多做一次 dumps。代价可接受：这条路是 best-effort 抄送、在途还封在
-    # AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT 之内；而换成「按别的口径估算整条事件」
-    # 只会再引入一个会漂的数字。
+    # Serialize once more here. Cost is acceptable: this best-effort copy path is bounded by
+    # AGENT_FRAME_HANDOFF_MAX_IN_FLIGHT; estimating the whole event using another measure
+    # merely introduces another drifting number.
     try:
         event_size = len(orjson.dumps(event))
     except Exception:
-        # 序列化不了的东西发出去也是对面报错，就地丢掉。
+        # Unserializable content would fail remotely anyway; discard locally.
         return False
     if event_size > PROVIDER_FRAME_MAX_B64_BYTES:
         logger.debug(
@@ -943,6 +940,77 @@ def spawn_bounded_frame_copy(coro, inflight: set, *, label: str, spawn=None):
     return task
 
 
+conversation_reply_observation = contextvars.ContextVar("conversation_reply_observation", default=None)
+conversation_reply_origin = contextvars.ContextVar("conversation_reply_origin", default=None)
+
+CONVERSATION_FACT_OBSERVED_EVENT = "conversation_fact_observed"
+# Observation work is dropped under load, never queued without a bound.
+_conversation_fact_tasks: set[asyncio.Task] = set()
+_CONVERSATION_FACT_MAX_TASKS = 128
+_CONVERSATION_FACT_MAX_TEXT = 65536
+# Match ConversationService's serialized UTF-8 payload budget.
+_CONVERSATION_FACT_MAX_BYTES = 64 * 1024
+
+
+async def publish_conversation_fact_observed_best_effort(
+    lanlan_name: str, *, fact: str, payload: dict,
+) -> bool:
+    """Publish a detached observation using the existing session channel."""
+    try:
+        event = {
+            "event_type": CONVERSATION_FACT_OBSERVED_EVENT,
+            "event_id": uuid.uuid4().hex,
+            "lanlan_name": lanlan_name,
+            "fact": fact,
+            "payload": dict(payload),
+            "ts": time.time(),
+        }
+        return await publish_session_event_threadsafe(event)
+    except Exception:
+        logger.debug("[EventBus] conversation fact not published", exc_info=True)
+        return False
+
+
+def schedule_conversation_fact_observed_best_effort(
+    lanlan_name: str, *, fact: str, payload: dict,
+) -> bool:
+    """Schedule a small fact without awaiting or accumulating unbounded tasks."""
+    if len(_conversation_fact_tasks) >= _CONVERSATION_FACT_MAX_TASKS:
+        return False
+    text = payload.get("text")
+    if isinstance(text, str) and fact in ("reply.started", "reply.closed", "reply.updated"):
+        try:
+            oversized = len(text) > _CONVERSATION_FACT_MAX_TEXT or len(
+                json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            ) > _CONVERSATION_FACT_MAX_BYTES
+        except (TypeError, ValueError, UnicodeError):
+            return False
+        if oversized:
+            payload = {**payload, "text": None}
+            if fact in ("reply.closed", "reply.updated"):
+                payload["text_incomplete"] = True
+    # This channel is for small facts; in particular do not queue huge text.
+    if any(isinstance(value, str) and len(value) > _CONVERSATION_FACT_MAX_TEXT
+           for value in payload.values()):
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    coroutine = publish_conversation_fact_observed_best_effort(
+        lanlan_name, fact=fact, payload=dict(payload),
+    )
+    try:
+        task = loop.create_task(coroutine)
+    except Exception:
+        coroutine.close()
+        logger.debug("[EventBus] could not schedule conversation fact", exc_info=True)
+        return False
+    _conversation_fact_tasks.add(task)
+    task.add_done_callback(_conversation_fact_tasks.discard)
+    return True
+
+
 CONVERSATION_TURN_OBSERVED_EVENT = "conversation_turn_observed"
 
 
@@ -956,6 +1024,7 @@ async def publish_conversation_turn_observed_best_effort(
     message_count: int = 0,
     metadata: Optional[Dict[str, Any]] = None,
     ts: Optional[float] = None,
+    event_id: Optional[str] = None,
 ) -> bool:
     """Copy one message of an already-handled turn onto the plugin bus.
 
@@ -1004,13 +1073,16 @@ async def publish_conversation_turn_observed_best_effort(
 
     Best effort in the same strong sense as the frame publisher: ``True`` means
     "handed to the socket", never "a plugin will see it".
+
+    ``event_id`` may be supplied when the same observation is also delivered
+    locally, so consumers can deduplicate the two paths.
     """
     text = str(content or "")
     if not text.strip():
         return False
     event: Dict[str, Any] = {
         "event_type": CONVERSATION_TURN_OBSERVED_EVENT,
-        "event_id": uuid.uuid4().hex,
+        "event_id": event_id or uuid.uuid4().hex,
         "lanlan_name": lanlan_name,
         "source": str(source or "unknown"),
         "conversation_id": str(conversation_id or ""),

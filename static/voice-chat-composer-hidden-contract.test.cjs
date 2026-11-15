@@ -34,7 +34,7 @@ function createEventTarget() {
     };
 }
 
-function loadHarness() {
+function loadHarness({ pathname = '/chat_full', voiceBridge, BroadcastChannel } = {}) {
     const windowTarget = createEventTarget();
     const documentTarget = createEventTarget();
     let composerHidden = null;
@@ -67,7 +67,8 @@ function loadHarness() {
         window: null,
         document,
         console,
-        location: { pathname: '/chat_full', origin: 'http://localhost', search: '', href: 'http://localhost/chat_full' },
+        location: { pathname, origin: 'http://localhost', search: '', href: 'http://localhost' + pathname },
+        nekoElectronVoiceChatComposerHidden: voiceBridge,
         appState: {
             lanlan_name: '',
             isRecording: false,
@@ -144,6 +145,7 @@ function loadHarness() {
         cancelAnimationFrame: window.cancelAnimationFrame,
         localStorage: window.localStorage,
         sessionStorage: window.sessionStorage,
+        BroadcastChannel,
     };
     vm.runInNewContext(runtimeSource, context, { filename: 'app/app-interpage' });
     return {
@@ -219,6 +221,91 @@ test('voice chat composer helper applies active state through the shared effecti
     harness.window.appInterpage.applyVoiceComposerHiddenFromActive(false);
     assert.equal(harness.composerHidden, false);
     assert.equal(harness.window.appState.voiceChatActive, false);
+});
+
+for (const pathname of ['/chat', '/chat_full']) {
+    test(`${pathname} requests the current voice state after config injection and when shown again`, () => {
+        const sent = [];
+        const harness = loadHarness({ pathname, voiceBridge: { send: (data) => sent.push(data) } });
+        const { window } = harness;
+        assert.equal(sent.length, 0, 'wait for a character identity before requesting state');
+
+        window.appState.lanlan_name = 'A';
+        window.dispatchEvent(new window.CustomEvent('neko:config-injected', { detail: { lanlan_name: 'A' } }));
+        window.dispatchEvent(new window.CustomEvent('focus'));
+        window.document.hidden = true;
+        window.document.dispatchEvent(new window.CustomEvent('visibilitychange'));
+        window.document.hidden = false;
+        window.document.dispatchEvent(new window.CustomEvent('visibilitychange'));
+
+        assert.deepEqual(sent.map((data) => [data.action, data.lanlan_name]), [
+            ['request_voice_chat_active', 'A'],
+            ['request_voice_chat_active', 'A'],
+            ['request_voice_chat_active', 'A'],
+        ]);
+    });
+}
+
+test('the main page restores a newly opened chat from its live voice state over Electron IPC', () => {
+    let chat;
+    const responses = [];
+    const main = loadHarness({
+        pathname: '/',
+        voiceBridge: { send(data) {
+            responses.push(data);
+            chat.window.dispatchEvent(new chat.window.CustomEvent('neko:electron-voice-chat-composer-hidden', {
+                detail: data,
+            }));
+        } },
+    });
+    chat = loadHarness({ voiceBridge: { send(data) {
+        main.window.dispatchEvent(new main.window.CustomEvent('neko:electron-voice-chat-composer-hidden', {
+            detail: data,
+        }));
+    } } });
+    main.window.appState.lanlan_name = 'A';
+    main.window.appState.isRecording = true;
+    chat.window.appState.lanlan_name = 'A';
+
+    chat.window.dispatchEvent(new chat.window.CustomEvent('neko:config-injected', { detail: { lanlan_name: 'A' } }));
+    assert.equal(chat.composerHidden, true);
+    assert.equal(chat.window.appState.voiceChatActive, true);
+    assert.equal(responses.length, 1, 'chat mirrors must not answer state requests');
+
+    main.window.appState.isRecording = false;
+    main.window.appInterpage.syncVoiceChatComposerHidden(false);
+    assert.equal(chat.composerHidden, false);
+    assert.equal(chat.window.appState.voiceChatActive, false);
+});
+
+test('voice state requests use BroadcastChannel in the web host and stay scoped to the main page character', async () => {
+    const sent = [];
+    const channels = [];
+    class BroadcastChannel {
+        constructor() { channels.push(this); }
+        postMessage(data) { sent.push(data); }
+    }
+    const main = loadHarness({ pathname: '/', BroadcastChannel });
+    main.window.appState.lanlan_name = 'A';
+    main.window.appState.voiceStartPending = true;
+    const request = { action: 'request_voice_chat_active', lanlan_name: 'A', timestamp: Date.now() };
+    await channels[0].onmessage({ data: request });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].action, 'voice_chat_active');
+    assert.equal(sent[0].active, true);
+    assert.equal(sent[0].lanlan_name, 'A');
+
+    main.window.appInterpage.handleVoiceChatComposerHiddenMessage({ ...request, lanlan_name: 'B' });
+    main.window.appInterpage.handleVoiceChatComposerHiddenMessage({ ...request, lanlan_name: '' });
+    assert.equal(sent.length, 1, 'ignore requests for an unknown or different character');
+
+    const chat = loadHarness({ BroadcastChannel });
+    chat.window.appState.lanlan_name = 'A';
+    const messagesBeforeRequest = sent.length;
+    chat.window.appInterpage.handleVoiceChatComposerHiddenMessage(request);
+    assert.equal(sent.length, messagesBeforeRequest, 'a stale chat mirror cannot publish authoritative voice state');
+    assert.equal(chat.window.appInterpage.requestVoiceChatComposerHiddenState(), true);
+    assert.equal(sent.at(-1).action, 'request_voice_chat_active');
 });
 
 test('goodbye cat snapshot waits for matching config instead of being dropped', () => {

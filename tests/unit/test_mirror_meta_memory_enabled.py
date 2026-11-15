@@ -30,7 +30,7 @@ def _frozen_payload_bool_from_keys(data: dict, *keys: str) -> Optional[bool]:
 
 
 def _frozen_is_mirror_event_memory_disabled(event: dict) -> bool:
-    # 改动前的实现逐字照抄：无显式键的事件必须与它逐个相等
+    # Copy the previous implementation verbatim: events without explicit keys must match it individually.
     has_user_input = event.get("hasUserSpeech") is True or event.get("hasUserText") is True
     if has_user_input:
         player_interaction_enabled = _frozen_payload_bool_from_keys(
@@ -80,7 +80,7 @@ def test_explicit_false_disables_memory_even_with_user_input():
 
 @pytest.mark.unit
 def test_explicit_true_cannot_opt_a_line_into_memory():
-    # 显式键只能「关」：外部控制器（小游戏）塞 True 绕不过宿主自己的记忆策略
+    # Explicit keys may only disable: an external controller (mini-game) cannot bypass host memory policy with True.
     game_off = {"hasUserSpeech": True, "game_memory_enabled": False}
     assert is_mirror_event_memory_disabled({**game_off, "memory_enabled": True}) is True
     assert is_mirror_event_memory_disabled({"memory_enabled": True}) is _frozen_is_mirror_event_memory_disabled({})
@@ -112,3 +112,15 @@ def test_anything_but_false_falls_back_to_the_previous_rules(value):
     for base in ({}, {"hasUserSpeech": True}, {"game_memory_enabled": False}):
         event = {**base, "memory_enabled": value}
         assert is_mirror_event_memory_disabled(event) is _frozen_is_mirror_event_memory_disabled(base)
+
+
+@pytest.mark.unit
+def test_main_logic_mirror_meta_is_a_pure_reexport_of_utils():
+    """services imports utils.mirror_meta; main_logic must hand out the same objects, not a drifting copy."""
+    from main_logic import mirror_meta as shim
+    from utils import mirror_meta as schema
+
+    assert shim.build_mirror_meta is schema.build_mirror_meta
+    assert set(shim.__all__) <= set(vars(schema))
+    for name in shim.__all__:
+        assert getattr(shim, name) is getattr(schema, name), name

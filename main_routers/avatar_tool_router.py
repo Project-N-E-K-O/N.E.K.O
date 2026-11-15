@@ -76,7 +76,7 @@ def _parse_v3_manifest(raw: str | None, *, expected_tool_id: str | None = None) 
         raise AvatarToolStoreError("manifest_invalid", "Avatar tool manifest is invalid", field="manifest")
     try:
         manifest = json.loads(raw)
-    # 64 KiB 以内就能塞下几千层嵌套数组，json.loads 会抛 RecursionError。
+    # Thousands of nested array levels fit within 64 KiB, causing json.loads to raise RecursionError.
     except (TypeError, ValueError, json.JSONDecodeError, RecursionError) as exc:
         raise AvatarToolStoreError("manifest_invalid", "Avatar tool manifest is invalid", field="manifest") from exc
     if (
@@ -493,8 +493,8 @@ async def delete_avatar_tool(request: Request, tool_id: str):
 
     store = get_avatar_tool_store(get_config_manager())
     try:
-        # 可选的 ?base_revision=：带上时只删除仍停在该 revision 的记录，旧修改页
-        # 不能删掉另一个窗口刚保存的新版本；不带时保持原有行为。
+        # Optional ?base_revision=: when supplied, delete only records still at that revision, so a stale edit page
+        # cannot delete a new version just saved in another window; omission preserves existing behavior.
         base_revisions = request.query_params.getlist("base_revision")
         if len(base_revisions) > 1:
             raise AvatarToolStoreError(

@@ -91,8 +91,8 @@ from utils.tokenize import count_tokens, truncate_to_tokens
 
 from ._shared import logger
 
-# 只有 master(USER.md) / neko(SOUL.md) 走外部融合。relationship 不产 persona
-# 分支（见 memory/external_markdown_import.py 的分类），不在此表即跳过。
+# Only master (USER.md) / neko (SOUL.md) use external fusion. relationship does not produce a persona
+# branch (see classification in memory/external_markdown_import.py); skip it unless listed here.
 _ENTITY_BUDGET = {
     "master": EXTERNAL_IMPORT_PERSONA_MASTER_MAX_TOKENS,
     "neko": EXTERNAL_IMPORT_PERSONA_NEKO_MAX_TOKENS,
@@ -159,7 +159,7 @@ class ExternalFusionMixin:
 
         fingerprint = self._fusion_fingerprint(cands)
 
-        # ── Phase 1 (locked): 快照外部导入桶 + folded 指纹幂等判定 ──
+        # ── Phase 1 (locked): snapshot the external-import bucket + folded-fingerprint idempotency check ──
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
             existing_external = [
@@ -168,7 +168,7 @@ class ExternalFusionMixin:
             ]
             base_folded = self._collect_folded_fingerprints(existing_external)
             if fingerprint in base_folded:
-                # 该源此版本已折叠进桶 → 严格幂等 no-op，不进 LLM
+                # This source was already folded into the bucket in this version → strict idempotent no-op; do not call the LLM
                 return {"added": 0, "skipped": len(cands), "fused": False}
             existing_texts = [
                 str(f.get("text") or "").strip()
@@ -176,24 +176,24 @@ class ExternalFusionMixin:
                 if str(f.get("text") or "").strip()
             ]
 
-        # ── Phase 2 (unlocked): 融合「已存桶 + 新候选」（几十秒，绝不持锁）──
-        # 已存桶放前面：_allm_call_fusion 按 token 上限从**尾部**截断，把已累积的多源
-        # digest 放头部保证不被截掉——否则一次超大新导入会把旧源挤出融合输入，而
-        # Phase 3 又会清空整个桶、按只见过新源的 LLM 输出重写，静默抹掉旧源（Codex
-        # P2）。已存桶被 per-entity 预算钉死(≤budget≪输入上限)，恒有余量给新候选；
-        # 真溢出时被截的是本次新素材尾部，而非已累积状态。
+        # ── Phase 2 (unlocked): fuse "existing bucket + new candidates" (takes tens of seconds; never hold the lock) ──
+        # Put the existing bucket first: _allm_call_fusion truncates from the **end** to fit the token limit, keeping accumulated multi-source
+        # digests at the front so they are not truncated — otherwise a huge new import could push old sources out of the fusion input,
+        # and Phase 3 would then clear the whole bucket and rewrite it from LLM output that saw only the new source, silently erasing old sources (Codex
+        # P2). A per-entity budget caps the existing bucket (≤budget≪input limit), leaving room for new candidates;
+        # in a true overflow, truncation affects the tail of this new material, not accumulated state.
         fold_input = [{"text": t} for t in existing_texts] + list(cands)
         fused = await self._allm_call_fusion(name, entity, fold_input, budget)
         if fused is None:
             raise ExternalMemoryFusionError(f"persona fusion LLM failed: {name}/{entity}")
         fused = self._trim_fused_to_budget(fused, budget)
         if not fused:
-            # LLM 成功但融合出 0 条 —— 视为可重试的终态失败，不静默丢用户数据
+            # LLM succeeded but fusion produced zero entries — treat this as a terminal failure that can be retried, not as silent user-data loss
             raise ExternalMemoryFusionError(
                 f"persona fusion produced no entries: {name}/{entity}"
             )
 
-        # ── Phase 3 (locked): CAS folded 集合 + 剔旧桶 + 写新 digest，原子 save ──
+        # ── Phase 3 (locked): CAS the folded set + remove old bucket + write new digest, then save atomically ──
         imported_at = datetime.now().astimezone().isoformat()
         new_folded = sorted(base_folded | {fingerprint})
         source_files = sorted(
@@ -216,16 +216,16 @@ class ExternalFusionMixin:
                 f for f in section_facts
                 if isinstance(f, dict) and f.get("source") == "external_import"
             ]
-            # CAS：Phase 2 基于 base_folded 快照融合。若期间并发导入改了外部桶
-            # （folded 集合变了），本次结果陈旧（会丢对方叠加的源）→ 抛可重试错误，
-            # 绝不静默覆盖。同源重导仍走上面的幂等 skip。
+            # CAS: Phase 2 fused against a base_folded snapshot. If a concurrent import changes the external bucket
+            # (the folded set changes), this result is stale (it would lose the other import's additions) → raise a retryable error,
+            # never overwrite silently. Re-importing the same source still uses the idempotent skip above.
             if self._collect_folded_fingerprints(current_external) != base_folded:
                 raise ExternalMemoryFusionError(
                     f"persona fusion base changed under concurrent import: {name}/{entity}"
                 )
-            # 先按守卫过滤出幸存条目，**不动**旧桶：与角色卡矛盾的丢弃、与非角色卡
-            # persona 事实矛盾的入纠正队列。对照「非外部导入」条目（旧桶待替换、不参与
-            # 判定）；复用 aadd_fact 同一道轻量守卫（Codex P2）。
+            # First filter candidates through the guard; leave the old bucket **untouched**: discard conflicts with the character card and send conflicts with
+            # non-character-card persona facts to the correction queue. Compare with "non-external-import" entries (the old bucket will be replaced and is not part of
+            # the decision); reuse the same lightweight guard as aadd_fact (Codex P2).
             non_external = [
                 f for f in section_facts
                 if not (isinstance(f, dict) and f.get("source") == "external_import")
@@ -233,24 +233,24 @@ class ExternalFusionMixin:
             stop_names = await self._aget_entity_stop_names(name)
             survivors: list[dict] = []
             for item in fused:
-                # 对照「非外部导入条目 + 已接受的幸存者」——防同一批融合里两条互相
-                # 矛盾的条目都被接受、并存渲染（Codex P2）。
+                # Compare against "non-external-import entries + accepted survivors" — prevent two mutually
+                # contradictory entries in the same fusion batch from both being accepted and rendered together (Codex P2).
                 code, old_text = self._evaluate_fact_contradiction(
                     name, item["text"], non_external + survivors, stop_names,
                 )
                 if code == self.FACT_REJECTED_CARD:
                     continue
                 if code == self.FACT_QUEUED_CORRECTION:
-                    # 已在锁内 → 用 _locked 版；交 LLM 裁决，不并存两个相反陈述。
+                    # Already under the lock → use the _locked version; let the LLM decide, rather than rendering two opposing statements together.
                     await self._aqueue_correction_locked(name, old_text, item["text"], entity)
                     continue
                 survivors.append(item)
             if not survivors:
-                # 融合结果全被角色卡拒绝 / 入了纠正队列 → 保留旧桶原样、不清空、不记
-                # 指纹（否则一次全冲突的二次导入会抹掉已导入的 digest）(Codex P2)。
+                # If the character card rejects every fusion result or all enter the correction queue, preserve the old bucket unchanged, do not clear it, and do not update
+                # the fingerprint (otherwise a second import that fully conflicts could erase the already imported digest) (Codex P2).
                 return {"added": 0, "skipped": len(cands), "fused": False}
-            # 有幸存者才替换：剔旧桶 + 写新 digest，原子 save（旧桶内容已折叠进新
-            # digest；protected / 对话积累 / reflection 不动）。
+            # Replace only if there are survivors: remove the old bucket + write the new digest, then save atomically (the old bucket has been folded into the new
+            # digest; protected data / conversation accumulation / reflection remain untouched).
             section_facts[:] = non_external
             added = 0
             for item in survivors:
@@ -304,7 +304,7 @@ class ExternalFusionMixin:
         """
         from memory.thinking_llm import ainvoke_thinking
 
-        # names（避免物化：master 缺名用中性占位，不抄 rendering 的 '主人' 兜底）
+        # names (avoid objectifying people: if master has no name, use a neutral placeholder instead of rendering's "主人" fallback)
         try:
             _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         except Exception:
@@ -314,8 +314,8 @@ class ExternalFusionMixin:
 
         lines = []
         for idx, cand in enumerate(candidates, 1):
-            # 面包屑单独按 token 上界截断，防大量长标题候选把输入池吃光、挤掉后段
-            # 候选正文（尾部截断 → 后段记忆永久漏掉）(Greptile P1)。
+            # Truncate breadcrumbs separately by token limit so many long candidate titles cannot consume the input pool and push out later items
+            # Candidate body text (tail truncation → later memories are permanently lost) (Greptile P1).
             section = truncate_to_tokens(
                 str(cand.get("source_section") or "").strip(),
                 EXTERNAL_IMPORT_FUSION_BREADCRUMB_MAX_TOKENS,
@@ -331,9 +331,9 @@ class ExternalFusionMixin:
         lang = _detect_fusion_prompt_language(locale_text)
         entity_label = get_persona_fusion_entity_label(entity, lang)
         if count_tokens(cand_text) > EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS:
-            # 候选超过单次融合输入池：尾部会被截掉、但整批指纹仍会记 folded，后段记忆
-            # 永久漏掉。宁可抛可重试错误（→ external_import_partial，提示用户拆分
-            # workspace），也不静默丢数据（Greptile P1）。批量无损融合是后续方向。
+            # If candidates exceed the single-call fusion input pool, the tail will be truncated but the whole-batch fingerprint will still be recorded as folded, permanently losing later memories.
+            # Prefer a retryable error (→ external_import_partial, prompting the user to split the
+            # workspace) over silent data loss (Greptile P1). Lossless batch fusion is future work.
             raise ExternalMemoryImportTooLargeError(
                 f"external import too large for a single fusion pass: {name}/{entity}"
             )
@@ -347,27 +347,27 @@ class ExternalFusionMixin:
         )
 
         set_call_type("persona_external_fusion")
-        # 客户端构造（含 correction 模型配置读取）也可能抛（配置非法等）；必须与
-        # ainvoke 一样收敛成 None，否则异常绕过 ExternalMemoryFusionError——在第二个
-        # entity 上（第一个已落盘）会让端点返 generic 500 而非 external_import_partial，
-        # 丢掉前端重试所需的 partial 元数据（Codex P2）。
+        # Client construction (including reading correction-model config) can also raise (e.g. invalid configuration); handle it
+        # like ainvoke and return None, or it bypasses ExternalMemoryFusionError — for the second
+        # entity (after the first has been persisted), the endpoint would return generic 500 instead of external_import_partial,
+        # losing the partial metadata needed by the frontend to retry (Codex P2).
         try:
             api_config = await self._config_manager.aget_model_api_config("correction")
         except Exception as exc:
             logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 构造失败: {exc}")
             return None
         try:
-            # 显式开 thinking，额度与回退见 memory.thinking_llm。
-            # noqa 理由：cand_text 已 truncate_to_tokens 到 EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS
+            # Explicitly enable thinking; token budget and fallback are in memory.thinking_llm.
+            # noqa rationale: cand_text was already truncated_to_tokens to EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS
             resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET
                 api_config, prompt,
                 timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,
                 call_label=f"{name}/{entity} persona_external_fusion",
             )
         except Exception as exc:
-            # 构造、调用任一步抛错都收敛成 None：异常绕过 ExternalMemoryFusionError
-            # 会让端点返 generic 500 而非 external_import_partial，丢掉前端重试所需
-            # 的 partial 元数据（Codex P2）。关闭失败由 helper 吞掉，不会盖掉结果。
+            # Any error during construction or invocation returns None: otherwise the exception bypasses ExternalMemoryFusionError
+            # and the endpoint returns generic 500 instead of external_import_partial, losing the partial metadata needed for frontend retry
+            # (Codex P2). The helper swallows failures when disabling, so the result is not overwritten.
             logger.warning(f"[PersonaFusion] {name}/{entity} 融合 LLM 调用失败: {exc}")
             return None
 

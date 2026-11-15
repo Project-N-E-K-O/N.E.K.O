@@ -42,11 +42,13 @@ class ProactiveChatCommand:
     current_track: Any = None
     music_cooldown: bool = False
     mini_game_invite_enabled: bool = True
+    theater_invite_enabled: bool = False
     base_interval_seconds: Any = None
     enabled_modes: Any = None
     enabled_modes_provided: bool = False
     content_type: Any = None
     screenshot_data: Any = None
+    screenshot_allow_desktop_fallback: bool = True
     use_window_search: bool = False
     use_personal_dynamic: bool = False
     avatar_position: Any = None
@@ -69,11 +71,15 @@ class ProactiveChatCommand:
             mini_game_invite_enabled=bool(
                 payload.get("mini_game_invite_enabled", True)
             ),
+            theater_invite_enabled=bool(payload.get("theater_invite_enabled", False)),
             base_interval_seconds=payload.get("base_interval_seconds"),
             enabled_modes=payload.get("enabled_modes"),
             enabled_modes_provided="enabled_modes" in payload,
             content_type=payload.get("content_type"),
             screenshot_data=payload.get("screenshot_data"),
+            screenshot_allow_desktop_fallback=(
+                payload.get("screenshot_allow_desktop_fallback", True) is True
+            ),
             use_window_search=bool(payload.get("use_window_search", False)),
             use_personal_dynamic=bool(
                 payload.get("use_personal_dynamic", False)
@@ -146,10 +152,10 @@ _PROACTIVE_REASON_STAGE: dict[str, str] = {
     PROACTIVE_REASON_PASS_MODEL_PASS: PROACTIVE_STAGE_MODEL_DECISION,
     PROACTIVE_REASON_PASS_GENERATION_EMPTY: PROACTIVE_STAGE_GENERATION,
     PROACTIVE_REASON_PASS_DUPLICATE: PROACTIVE_STAGE_DEDUP,
-    # 归到 dedup 而不是另开 stage：这道闸和字面查重 / BM25 站在同一个位置
-    # （Phase 2 出稿之后的出口过滤），stage 描述的是"卡在流程哪一段"，不是
-    # "按什么判据卡的"。新开一个 stage 会让所有按 stage 聚合的观测面多一个
-    # 只有一条 reason 的桶。
+    # Classify this as dedup rather than a new stage: this gate occupies the same position as literal/BM25 deduplication
+    # (output filtering after Phase 2 drafting). Stage describes where processing stopped,
+    # not the criterion that stopped it. A new stage would add a bucket containing just one reason
+    # to every monitoring view aggregated by stage.
     PROACTIVE_REASON_PASS_USER_DIRECTIVE: PROACTIVE_STAGE_DEDUP,
     PROACTIVE_REASON_DELIVERY_PREEMPTED: PROACTIVE_STAGE_DELIVERY,
     PROACTIVE_REASON_DELIVERY_FAILED: PROACTIVE_STAGE_DELIVERY,

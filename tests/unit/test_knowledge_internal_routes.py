@@ -332,3 +332,35 @@ async def test_imports_take_only_json_or_multipart_bodies(client):
         response = await http.post("/internal/knowledge/packs/import", content=json.dumps(PACK), headers=headers)
         assert response.status_code == 400
     assert service.list_jobs() == []
+
+
+def test_turn_context_route_is_mounted_on_the_memory_server_app():
+    from app.memory_server import runtime
+    from tests.fastapi_routes import effective_path, iter_routes
+
+    paths = {effective_path(route) for route in iter_routes(runtime.app.routes)}
+    assert "/internal/knowledge/turn_context" in paths
+    assert "/internal/memory/{lanlan_name}/turn_context" in paths
+
+
+async def test_turn_context_route_validates_and_passes_exclusions(client, monkeypatch):
+    http, service = client
+    response = await http.post("/internal/knowledge/turn_context", json={"text": 3})
+    assert response.status_code == 400
+    seen = {}
+
+    async def fake(**kwargs):
+        seen.update(kwargs)
+        return {"result": "miss"}
+
+    monkeypatch.setattr(service, "turn_context", fake)
+    excluded = ["a/1", 5, *[f"p/{i}" for i in range(400)]]
+    body = (await http.post(
+        "/internal/knowledge/turn_context",
+        json={"text": "你好", "exclude_card_ids": excluded, "budget_ms": True, "language": "en"},
+    )).json()
+    assert body["result"] == "miss" and "tool_available" in body
+    assert seen["text"] == "你好" and seen["language"] == "en"
+    assert seen["budget_ms"] == 1000, "a non-integer budget falls back to the default"
+    assert seen["exclude_card_ids"][0] == "a/1" and 5 not in seen["exclude_card_ids"]
+    assert len(seen["exclude_card_ids"]) == 256

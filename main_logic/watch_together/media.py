@@ -164,7 +164,18 @@ def _speech(payload, output):
                 wav.writeframes(converted.to_ndarray().tobytes())
 
 
-_OPERATIONS = {"duration": _duration, "probe": _probe, "frames": _frames,
+def _probe_many(items):
+    """Probe (path, role) pairs in one worker; None marks an item whose probe raised."""
+    results = []
+    for path, role in items:
+        try:
+            results.append(bool(_probe(path, role)))
+        except Exception:
+            results.append(None)
+    return results
+
+
+_OPERATIONS = {"duration": _duration, "probe": _probe, "probe_many": _probe_many, "frames": _frames,
                "frame": _frame, "mux": _mux, "speech": _speech}
 
 

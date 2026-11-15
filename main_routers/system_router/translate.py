@@ -62,17 +62,17 @@ async def translate_text_api(request: Request):
                 "target_lang": target_lang
             }
         
-        # 归一化目标语言代码（复用公共函数）
+        # Normalize the target language code with the shared helper.
         target_lang_normalized = normalize_language_code(target_lang, format='short')
         
-        # 检测源语言（如果未提供）
+        # Detect source language if not supplied.
         if source_lang is None:
             detected_source_lang = detect_language(text)
         else:
-            # 归一化源语言代码（复用公共函数）
+            # Normalize the source language code with the shared helper.
             detected_source_lang = normalize_language_code(source_lang, format='short')
         
-        # 如果源语言和目标语言相同，不需要翻译
+        # No translation is needed when source and target languages match.
         if detected_source_lang == target_lang_normalized or detected_source_lang == 'unknown':
             return {
                 "success": True,
@@ -81,10 +81,10 @@ async def translate_text_api(request: Request):
                 "target_lang": target_lang_normalized
             }
         
-        # 检查是否跳过 Google 翻译（前端传递的会话级失败标记）
+        # Check whether to skip Google translation (frontend session-level failure flag).
         skip_google = data.get('skip_google', False)
         
-        # 调用翻译服务
+        # Call the translation service.
         try:
             translated, google_failed = await translate_text(
                 text, 
@@ -97,11 +97,11 @@ async def translate_text_api(request: Request):
                 "translated_text": translated,
                 "source_lang": detected_source_lang,
                 "target_lang": target_lang_normalized,
-                "google_failed": google_failed  # 告诉前端 Google 翻译是否失败
+                "google_failed": google_failed  # Tell the frontend whether Google translation failed.
             }
         except Exception as e:
             logger.error(f"翻译失败: {e}")
-            # 翻译失败时返回原文
+            # Return the original text if translation fails.
             return {
                 "success": False,
                 "error": str(e),

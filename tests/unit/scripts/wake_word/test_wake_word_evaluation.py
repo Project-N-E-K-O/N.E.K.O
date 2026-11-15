@@ -87,7 +87,7 @@ def test_word_and_window_endpoints_are_inclusive():
 
 def test_near_pronunciation_uses_accepted_output_alias_not_spelling_of_speech():
     fixture = positive(occurrence(keywords=["悠宜", "yui"]))
-    # Near-pronunciation keyword lines map to 悠宜; the input transcript is unnecessary.
+    # Near-pronunciation keyword lines map to 悠宜 (Yui); the input transcript is unnecessary.
     assert evaluation.score_detections(fixture, [hit(keyword="悠宜")], 4)["matched_occurrences"] == 1
     assert evaluation.score_detections(fixture, [hit(keyword="yui")], 4)["matched_occurrences"] == 1
     assert evaluation.score_detections(fixture, [hit(keyword="different")], 4)["matched_occurrences"] == 0

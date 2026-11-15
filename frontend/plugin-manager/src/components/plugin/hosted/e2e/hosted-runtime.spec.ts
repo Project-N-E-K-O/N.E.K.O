@@ -1,11 +1,13 @@
 import { expect, test, type FrameLocator, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { transform } from 'sucrase'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../../..')
-const runtimeSource = readFileSync(resolve(repoRoot, 'frontend/plugin-manager/src/components/plugin/hosted/ui-kit/runtime.js'), 'utf8')
+const displayClientFactory = createRequire(import.meta.url)(resolve(repoRoot, 'static/plugin-ui-sdk/display.js'))
+const runtimeSource = `const createPluginDisplayClient = ${displayClientFactory.toString()};\n${readFileSync(resolve(repoRoot, 'frontend/plugin-manager/src/components/plugin/hosted/ui-kit/runtime.js'), 'utf8')}`
 const styles = readFileSync(resolve(repoRoot, 'frontend/plugin-manager/src/components/plugin/hosted/ui-kit/styles.css'), 'utf8')
 
 function normalizeSource(source: string) {

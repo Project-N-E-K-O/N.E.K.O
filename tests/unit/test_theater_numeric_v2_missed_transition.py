@@ -1,6 +1,7 @@
 """Recover only the current uncommitted candidate, still requiring source verification, formal review and one atomic commit."""
 
 import json
+from tests.utils.theater_prompt import prompt_payload
 
 import pytest
 
@@ -43,7 +44,7 @@ def test_legacy_review_does_not_invent_recovery():
 
 @pytest.mark.parametrize("index", [-1, 1, True, "0", None])
 def test_invalid_evidence_index_does_not_authorize(index):
-    # 布尔值也是Python整数的子类，不能被当作编号；越界或缺失同样不恢复。
+    # Booleans are also Python integer subclasses and must not count as IDs; out-of-range and missing values do not restore either.
     payload = dict(offer_present=False, valid=False, body_violations=[], unsafe_suggestion_indexes=[],
                    missed_initiation=True, public_destination_index=index, player_request_quote="带路吧。")
     result = ev._parse_transition_judge_output(json.dumps(payload), recovery_session=initiation_case()["session"],
@@ -51,23 +52,30 @@ def test_invalid_evidence_index_does_not_authorize(index):
     assert not result.missed_initiation and not result.public_destination_quote
 
 
-def test_numbered_evidence_excludes_player_and_candidate():
+@pytest.mark.parametrize("player_input", ["带我去新秘密房间。", "带我去新秘密房间，但先别出门。"])
+def test_numbered_evidence_excludes_player_and_candidate(player_input):
     case = initiation_case()
     messages, evidence = ev._build_transition_judge_messages(
-        case["engine"], case["session"], player_input="带我去新秘密房间。",
+        case["engine"], case["session"], player_input=player_input,
         actor_performance={"performance": "新秘密房间已经开放。", "suggested_inputs": []},
         check_missed_initiation=True)
-    data = json.loads(messages[1].content.split("：", 1)[1])
+    data = prompt_payload(messages[1].content)
     recovery_check = data["missed_initiation_check"]
-    assert recovery_check["player_request"] == "带我去新秘密房间。"
-    assert recovery_check["required_exit"]["chapter"] == case["target"]
+    assert set(recovery_check) == {"public_destination_evidence"}
+    assert data["player_input"] == player_input
+    assert data["next_scene_direction"]["chapter"] == case["target"]
     assert recovery_check["public_destination_evidence"]
     assert all(text in case["session"].opening_performance["performance"]
                for text in recovery_check["public_destination_evidence"])
     assert "新秘密房间" not in str(recovery_check["public_destination_evidence"])
     assert evidence == tuple(recovery_check["public_destination_evidence"])
     assert messages[0].content.startswith("本次先独立核对 JSON 开头的 missed_initiation_check")
-    assert "保留原八字段并增加 player_request_quote、missed_initiation 与 public_destination_index" in messages[0].content
+    assert "顶层 player_input" in messages[0].content
+    assert "顶层 next_scene_direction" in messages[0].content
+    system = messages[0].content
+    assert set(json.JSONDecoder().raw_decode(system[system.index("{"):])[0]) >= {
+        "player_request_quote", "missed_initiation", "public_destination_index",
+    }
 
 
 def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparation():
@@ -79,12 +87,12 @@ def test_recovery_checks_actual_entry_even_when_route_reason_only_names_preparat
         actor_performance={"performance": "（点头）登记信息确认好了。", "suggested_inputs": []},
         check_missed_initiation=True,
     )
-    data = json.loads(messages[1].content.split("：", 1)[1])
-    required = data["missed_initiation_check"]["required_exit"]
-    # 补查会触发昂贵的正式演绎，必须先看到接受后真正抵达的地点与阶段。
+    data = prompt_payload(messages[1].content)
+    required = data["next_scene_direction"]
+    # Follow-up checks trigger expensive official enactment; first observe the location and phase actually reached after acceptance.
     assert required["direction"] == "一起确认登记信息后继续下一步。"
-    assert required["bridge_boundary"] == data["next_scene_direction"]["bridge_boundary"]
-    assert required["opening_boundary"] == data["next_scene_direction"]["opening_boundary"]
+    assert required["bridge_boundary"] == route["transition_contract"]["bridge_scene_narration"]
+    assert required["opening_boundary"] == case["engine"].nodes["ending_leave"]["story_beat"]["opening_scene"]
     assert "阅览室" in required["bridge_boundary"]
     assert "阅览室" in required["opening_boundary"]
 
@@ -97,8 +105,8 @@ async def test_recovery_uses_sent_evidence_without_parsing_prompt_prefix(monkeyp
 
     def build_with_another_prefix(*args, **kwargs):
         messages, evidence = build_messages(*args, **kwargs)
-        # 展示前缀不属于恢复协议，编号仍取自同一次装箱的证据。
-        data = json.loads(messages[1].content.split("：", 1)[1])
+        # The display prefix is outside the recovery protocol; obtain the ID from evidence packed in the same operation.
+        data = prompt_payload(messages[1].content)
         assert evidence == tuple(data["missed_initiation_check"]["public_destination_evidence"])
         messages[1] = type(messages[1])(content="Review data\n" + json.dumps(data, ensure_ascii=False))
         sent_evidence.extend(evidence)
@@ -140,7 +148,7 @@ async def test_recovery_uses_sent_evidence_without_parsing_prompt_prefix(monkeyp
 @pytest.mark.parametrize("formal_failure", [False, "timeout", "body"])
 @pytest.mark.parametrize("recover_after_rewrite", [False, True])
 async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp_path, monkeypatch, formal_failure, recover_after_rewrite):
-    # 补查误判仍会被正式复核指出；持续语义否定按用户决策兜底，技术故障仍回滚。
+    # Official review still catches false-positive follow-up checks; persistent semantic rejection uses the user's fallback decision, while technical failures roll back.
     case = initiation_case(message="我们能去阅览室吗？" if formal_failure == "body" else "带路吧。")
     engine = case["engine"]; runtime = NumericV2Runtime(engine, tmp_path)
     current = await runtime.start_session(session_id="recover", catgirl_binding=_binding(),
@@ -158,7 +166,7 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
     async def review(self, **kwargs):
         reviews.append(kwargs)
         if kwargs.get("check_missed_initiation"):
-            # 普通稿先耗尽改稿额度再补查换幕时，正式稿不能再次改写或再次争议复查。
+            # If a normal draft exhausts edits before a transition follow-up check, the official draft cannot be rewritten or receive another dispute review.
             if recover_after_rewrite and len(actor_nodes) == 1:
                 return ev.NumericV2TransitionOfferReview(False, False, ("author_boundary",), (), "普通稿存在冲突。")
             return ev.NumericV2TransitionOfferReview(False, False, (), (), missed_initiation=True,
@@ -176,12 +184,12 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
     monkeypatch.setattr(workflow.NumericV2Actor, "_character_profile", lambda self: "温和。")
     kwargs = dict(config_manager=object(), runtime=runtime, current=current,
                   turn=TurnRequestV2("go", 0, case["message"]), ensure_current_binding=lambda _: _binding())
-    if formal_failure == "timeout":
+    if formal_failure in {"timeout", "body"}:
         with pytest.raises(NumericV2ActorOutputError, match="numeric_v2_transition_(review_failed|fact_boundary)"):
-            await workflow.execute_numeric_v2_turn(**kwargs)
+            await workflow._execute_numeric_v2_turn(**kwargs)
         assert await runtime.restore_session("recover") == current
     else:
-        result = await workflow.execute_numeric_v2_turn(**kwargs)
+        result = await workflow._execute_numeric_v2_turn(**kwargs)
         assert result.stored.session.revision == 1 and len(result.stored.ledger_events) == 1
         assert result.stored.session.current_node_id == "ending_leave"
         assert result.diagnostics["missed_initiation_recoveries"] == 1
@@ -194,7 +202,7 @@ async def test_recovery_restarts_from_original_state_and_commits_only_formal(tmp
     assert actor_nodes == (["start", "start", "ending_leave"] if recover_after_rewrite
                            else ["start", "ending_leave", "ending_leave"] if formal_failure == "body"
                            else ["start", "ending_leave"])
-    assert len(reviews) == (4 if formal_failure == "body" or recover_after_rewrite else 2)
+    assert len(reviews) == (4 if formal_failure == "body" else 3 if recover_after_rewrite else 2)
 
 
 @pytest.mark.parametrize("request_quote,allowed", [

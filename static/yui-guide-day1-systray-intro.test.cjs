@@ -90,7 +90,7 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
   assert.match(universalManagerSource, /tutorial\.systray\.menu\.desc/);
   assert.match(universalManagerSource, /tutorial\.systray\.resetPosition/);
   assert.match(universalManagerSource, /tutorial\.systray\.openChat/);
-  assert.match(universalManagerSource, /tutorial\.systray\.hotkey/);
+  assert.match(universalManagerSource, /tutorial\.systray\.settings/);
   assert.match(universalManagerSource, /tutorial\.systray\.exit/);
   assert.match(universalManagerSource, /\/static\/assets\/tutorial\/systray\/stray_intro\.png/);
   assert.doesNotMatch(universalManagerSource, /neko菜单面板/);
@@ -161,5 +161,105 @@ test('Day1 system tray intro modal combines the tray location and menu guidance'
     assert.ok(locale.tutorial.systray.location.desc.trim(), `${code} systray location desc should not be empty`);
     assert.doesNotMatch(locale.tutorial.systray.location.desc, /right-click|clic derecho|右クリック|오른쪽 버튼|botão direito|правой кнопкой|鼠标右击|滑鼠右鍵/i);
     assert.doesNotMatch(locale.tutorial.systray.location.desc, /menu panel|panel del menú|メニューパネル|메뉴 패널|painel do menu|панель меню|菜单面板|選單面板/i);
+  }
+});
+
+test('Day1 systray intro menu labels match the desktop tray menu text', () => {
+  // 弹窗教用户去托盘里找同名菜单项，所以这几项必须逐字等于桌面端托盘菜单的文字。
+  // 期望值抄自 N.E.K.O.-PC 8995de27f0cc 的 src/main/tray-menu-locales.js
+  // （settings / resetModelPosition / openChatWindow / exit）；那边改了文字，这里要一起改。
+  const trayMenuLabels = {
+    en: { settings: 'Settings', resetPosition: 'Reset Avatar Position', openChat: 'Open Chat Window', exit: 'Exit' },
+    es: { settings: 'Ajustes', resetPosition: 'Restablecer posición del avatar', openChat: 'Abrir chat', exit: 'Salir' },
+    ja: { settings: '設定', resetPosition: 'アバター位置をリセット', openChat: 'チャットウィンドウを開く', exit: '終了' },
+    ko: { settings: '설정', resetPosition: '아바타 위치 초기화', openChat: '채팅 창 열기', exit: '종료' },
+    pt: { settings: 'Configurações', resetPosition: 'Redefinir posição do avatar', openChat: 'Abrir chat', exit: 'Sair' },
+    ru: { settings: 'Настройки', resetPosition: 'Сбросить позицию аватара', openChat: 'Открыть чат', exit: 'Выход' },
+    'zh-CN': { settings: '设置', resetPosition: '重置角色位置', openChat: '打开对话框', exit: '退出' },
+    'zh-TW': { settings: '設定', resetPosition: '重置角色位置', openChat: '開啟對話框', exit: '結束' },
+  };
+  assert.deepEqual(Object.keys(trayMenuLabels).sort(), [...localeCodes].sort());
+
+  for (const [code, labels] of Object.entries(trayMenuLabels)) {
+    const systray = JSON.parse(localeSources[code]).tutorial.systray;
+    for (const [key, expected] of Object.entries(labels)) {
+      assert.equal(systray[key], expected, `${code} tutorial.systray.${key} should match the tray menu`);
+    }
+  }
+});
+
+
+test('Day1 intro renders the matching platform image and localized guidance', () => {
+  const method = getMethodBlock(universalManagerSource, 'showDay1SystrayIntroModal');
+  for (const [code, source] of Object.entries(localeSources)) {
+    const locale = JSON.parse(source);
+    for (const platform of ['macos', 'windows']) {
+      const overlay = {
+        setAttribute() {}, addEventListener() {},
+        querySelectorAll() { return []; }, querySelector() { return null; }
+      };
+      const document = {
+        createElement() { return overlay; },
+        body: { appendChild() {}, classList: { add() {} } }
+      };
+      const window = { homeTutorialPlatformCapabilities: { detectPlatform: () => platform } };
+      const manager = new Function('window', 'document', `return ({${method}});`)(window, document);
+      manager.shouldShowDay1SystrayIntro = () => true;
+      manager.closeDay1SystrayIntroModal = () => {};
+      manager.safeEscapeHtml = value => value;
+      manager.t = key => {
+        const value = key.split('.').reduce((current, part) => current && current[part], locale);
+        assert.equal(typeof value, 'string', `${code}: missing ${key}`);
+        return value;
+      };
+      manager.showDay1SystrayIntroModal({ reason: 'complete' }, { day: 1 });
+      const expected = platform === 'macos' ? locale.tutorial.systray.macos : locale.tutorial.systray;
+      assert.ok(overlay.innerHTML.includes(expected.location.desc));
+      assert.ok(overlay.innerHTML.includes(expected.menu.desc));
+      assert.ok(overlay.innerHTML.includes(locale.tutorial.systray.settings));
+      const image = platform === 'macos' ? 'macos_intro.png' : 'stray_intro.png';
+      assert.ok(overlay.innerHTML.includes(`/static/assets/tutorial/systray/${image}`));
+      assert.ok(fs.existsSync(path.join(repoRoot, 'static/assets/tutorial/systray', image)));
+      if (platform === 'macos') {
+        assert.ok(!overlay.innerHTML.includes(locale.tutorial.systray.location.desc));
+        assert.ok(!overlay.innerHTML.includes('stray_intro.png'));
+      }
+    }
+  }
+});
+
+test('Day1 intro keeps platform guidance correct when translations are unavailable', () => {
+  const method = getMethodBlock(universalManagerSource, 'showDay1SystrayIntroModal');
+  const locale = JSON.parse(zhCnLocaleSource);
+  for (const platform of ['macos', 'windows']) {
+    const overlay = {
+      setAttribute() {}, addEventListener() {},
+      querySelectorAll() { return []; }, querySelector() { return null; }
+    };
+    const document = {
+      createElement() { return overlay; },
+      body: { appendChild() {}, classList: { add() {} } }
+    };
+    const window = { homeTutorialPlatformCapabilities: { detectPlatform: () => platform } };
+    const manager = new Function('window', 'document', `return ({${method}});`)(window, document);
+    manager.shouldShowDay1SystrayIntro = () => true;
+    manager.closeDay1SystrayIntroModal = () => {};
+    manager.safeEscapeHtml = value => value;
+    manager.t = (key, fallback) => fallback;
+    manager.showDay1SystrayIntroModal({ reason: 'complete' }, { day: 1 });
+    const expected = platform === 'macos' ? locale.tutorial.systray.macos : locale.tutorial.systray;
+    for (const value of Object.values(expected.location)) {
+      assert.ok(overlay.innerHTML.includes(value));
+    }
+    assert.ok(overlay.innerHTML.includes(expected.exitDesc));
+    assert.ok(overlay.innerHTML.includes(expected.menu.desc));
+    assert.ok(overlay.innerHTML.includes(locale.tutorial.systray.settings));
+    const image = platform === 'macos' ? 'macos_intro.png' : 'stray_intro.png';
+    assert.ok(overlay.innerHTML.includes(`/static/assets/tutorial/systray/${image}`));
+    assert.ok(fs.existsSync(path.join(repoRoot, 'static/assets/tutorial/systray', image)));
+    if (platform === 'macos') {
+      assert.ok(!overlay.innerHTML.includes(locale.tutorial.systray.location.desc));
+      assert.ok(!overlay.innerHTML.includes('stray_intro.png'));
+    }
   }
 });

@@ -706,8 +706,9 @@ I.mod = window.appInterpage;
      * and postMessage code paths).
      *
      * @param {string} catgirlName  - name of the character whose memory was edited
+     * @param {Object} options - silent suppresses notices for automatic sync
      */
-    I.handleMemoryEdited = async function handleMemoryEdited(catgirlName) {
+    I.handleMemoryEdited = async function handleMemoryEdited(catgirlName, options = {}) {
         console.log(
             window.t('console.memoryEditedRefreshContext'),
             catgirlName
@@ -718,7 +719,7 @@ I.mod = window.appInterpage;
 
         // Stop current mic capture
         if (I.S.isRecording && typeof window.stopMicCapture === 'function') {
-            window.stopMicCapture();
+            window.stopMicCapture({ normalEnd: false });
         }
 
         // Tell backend to drop old context
@@ -744,10 +745,12 @@ I.mod = window.appInterpage;
 
         // If was in voice mode, wait for session teardown then re-connect
         if (wasRecording) {
-            window.showStatusToast(
-                window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...',
-                3000
-            );
+            if (!options.silent) {
+                window.showStatusToast(
+                    window.t ? window.t('memory.refreshingContext') : '正在刷新上下文...',
+                    3000
+                );
+            }
             // Wait for backend session to fully end
             await new Promise(function (resolve) { setTimeout(resolve, 1500); });
             // Trigger full startup flow via micButton click
@@ -757,7 +760,7 @@ I.mod = window.appInterpage;
             } catch (e) {
                 console.error('[Memory] 自动重连语音失败:', e);
             }
-        } else {
+        } else if (!options.silent) {
             window.showStatusToast(
                 window.t ? window.t('memory.refreshed') : '记忆已更新，下次对话将使用新记忆',
                 4000
@@ -823,12 +826,15 @@ I.mod = window.appInterpage;
         var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;
         var deferRevealPrepared = !!reloadOptions.deferRevealPrepared;
         var throwOnError = !!reloadOptions.throwOnError;
+        var currentSwitchAttempt = window.appState?._switchAttemptCounter || 0;
         var reloadKey = JSON.stringify({
             lanlan_name: targetLanlanName,
             temporaryConfig: temporaryConfig || null,
             skipIdleRestore: skipIdleRestore,
             skipPersistentExpressions: skipPersistentExpressions,
-            deferRevealPrepared: deferRevealPrepared
+            deferRevealPrepared: deferRevealPrepared,
+            preservePreviousUntilLoaded: !!reloadOptions.preservePreviousUntilLoaded,
+            switchAttempt: reloadOptions.preservePreviousUntilLoaded ? currentSwitchAttempt : null
         });
 
         if (window._lastModelReloadKey === reloadKey && Date.now() - (window._lastModelReloadAt || 0) < 1000) {
@@ -870,6 +876,12 @@ I.mod = window.appInterpage;
             window._pendingModelReload = {
                 targetLanlanName: targetLanlanName,
                 reloadOptions: reloadOptions,
+                isCurrentRole: function () {
+                    return !reloadOptions.preservePreviousUntilLoaded ||
+                        (!window.appState?.isSwitchingCatgirl &&
+                            (window.appState?._switchAttemptCounter || 0) === currentSwitchAttempt &&
+                            (window.lanlan_config?.lanlan_name || '') === currentLanlanName);
+                },
                 resolve: pendingResolve,
                 reject: pendingReject
             };
@@ -890,6 +902,7 @@ I.mod = window.appInterpage;
         let mmdRequestSessionId = '';
         let activeMmdLoadingSessionId = '';
         var reloadSucceeded = false;
+        var preparedLive2DModel = null;
 
         function ensureLive2DRenderActive(reason) {
             try {
@@ -962,6 +975,13 @@ I.mod = window.appInterpage;
                 var newModelType = (data.model_type || 'live2d').toLowerCase();
                 var live3dSubType = (data.live3d_sub_type || '').toLowerCase();
                 var oldModelType = window.lanlan_config?.model_type || 'live2d';
+                if (reloadOptions.preservePreviousUntilLoaded && newModelType === 'live2d' && newModelPath) {
+                    if (!window.Live2DModel || typeof window.Live2DModel.from !== 'function') throw new Error('live2d_loader_unavailable');
+                    preparedLive2DModel = await window.Live2DModel.from(newModelPath, { autoFocus: false });
+                    if (window.appState?.isSwitchingCatgirl ||
+                        (window.appState?._switchAttemptCounter || 0) !== currentSwitchAttempt ||
+                        (window.lanlan_config?.lanlan_name || '') !== currentLanlanName) throw new Error('model_role_changed');
+                }
                 var nextLighting = (temporaryConfig && !Object.prototype.hasOwnProperty.call(data, 'lighting'))
                     ? (window.lanlan_config?.lighting || null)
                     : ((data.lighting && typeof data.lighting === 'object')
@@ -1471,13 +1491,19 @@ I.mod = window.appInterpage;
                             } catch (prefError) {
                                 console.warn('[Model] 读取 Live2D 用户偏好失败，将继续加载模型:', prefError);
                             }
+                            if (reloadOptions.preservePreviousUntilLoaded && (window.appState?.isSwitchingCatgirl ||
+                                (window.appState?._switchAttemptCounter || 0) !== currentSwitchAttempt ||
+                                (window.lanlan_config?.lanlan_name || '') !== currentLanlanName)) throw new Error('model_role_changed');
 
                             await window.live2dManager.loadModel(newModelPath, {
+                                preparedModel: preparedLive2DModel,
+                                preservePreviousUntilLoaded: !!reloadOptions.preservePreviousUntilLoaded,
                                 preferences: modelPreferences,
                                 isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
                                 suppressInitialIdle: skipIdleRestore,
                                 suppressPersistentExpressions: skipPersistentExpressions
                             });
+                            preparedLive2DModel = null;
                             if (live2dContainer2) {
                                 live2dContainer2.classList.remove('hidden');
                                 live2dContainer2.style.display = 'block';
@@ -1517,6 +1543,15 @@ I.mod = window.appInterpage;
                             // 恢复 Live2D 待机动作。教程临时模型不读取用户模型的待机动作，避免把不匹配的动作套到 yui-lolita。
                             if (!skipIdleRestore) {
                                 restoreLive2DIdleAnimationOnMainPage();
+                            }
+
+                            // 模型热切换完成后的触摸配置刷新钩子：模型管理页保存的 touch_set
+                            // 只落盘不推送，主页面启动快照不会自动更新；切换后强制重拉一次，
+                            // 让新保存的自定义触摸区域无需手动刷新主页面即生效。
+                            if (typeof window.nekoRefreshLive2DTouchSet === 'function') {
+                                window.nekoRefreshLive2DTouchSet({ forceRefetch: true, allowLive2DReload: true }).catch(function (touchSetError) {
+                                    console.warn('[Model] 刷新触摸配置失败:', touchSetError)
+                                })
                             }
                         } else {
                             console.error('[Model] Live2D 管理器初始化失败');
@@ -1573,12 +1608,16 @@ I.mod = window.appInterpage;
                 activeMmdLoadingSessionId = '';
             }
             // 回滚提前写入的 config，防止残留错误的模型类型
-            if (typeChanged && window.lanlan_config) {
+            var canRestoreModelConfig = !reloadOptions.preservePreviousUntilLoaded ||
+                (!window.appState?.isSwitchingCatgirl &&
+                    (window.appState?._switchAttemptCounter || 0) === currentSwitchAttempt &&
+                    (window.lanlan_config?.lanlan_name || '') === currentLanlanName);
+            if (typeChanged && window.lanlan_config && canRestoreModelConfig) {
                 window.lanlan_config.model_type = oldModelType;
                 window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
                 console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
             }
-            if (typeChanged && oldModelType === 'pngtuber') {
+            if (typeChanged && oldModelType === 'pngtuber' && canRestoreModelConfig) {
                 try {
                     if (window.lanlan_config && window.lanlan_config.pngtuber && typeof window.loadPNGTuberAvatar === 'function') {
                         await window.loadPNGTuberAvatar(window.lanlan_config.pngtuber);
@@ -1611,6 +1650,15 @@ I.mod = window.appInterpage;
                 throw error;
             }
         } finally {
+            if (preparedLive2DModel && window.live2dManager?.currentModel !== preparedLive2DModel) {
+                // loadModel may already have destroyed a superseded candidate; a second
+                // destroy throws and must not skip the in-flight cleanup below.
+                try {
+                    preparedLive2DModel.destroy({ children: true });
+                } catch (destroyError) {
+                    console.warn('[Model] 清理未使用的预加载模型失败:', destroyError);
+                }
+            }
             // Clear in-flight flag
             window._modelReloadInFlight = false;
             activeMMDReloadCanvasSessionId = '';
@@ -1644,6 +1692,10 @@ I.mod = window.appInterpage;
                 var pendingReload = window._pendingModelReload;
                 window._pendingModelReload = null;
                 setTimeout(function () {
+                    if (!pendingReload.isCurrentRole()) {
+                        pendingReload.resolve(false);
+                        return;
+                    }
                     I.handleModelReload(pendingReload.targetLanlanName, pendingReload.reloadOptions)
                         .then(function (result) {
                             if (typeof pendingReload.resolve === 'function') pendingReload.resolve(result);
@@ -1663,17 +1715,39 @@ I.mod = window.appInterpage;
             return false;
         }
 
+        // An error can become stale while propagating from reload to this catch.
+        // A readiness error has no reload ticket, so retain its original owner too.
+        var model = manager.currentModel;
+        var internalModel = model?.internalModel;
+        var coreModel = internalModel?.coreModel;
+        var modelPath = manager._lastLoadedModelPath;
+        var modelName = manager.modelName;
+        var reloadSequence = manager._parameterReloadSequence;
+        var configRevision = manager._parameterConfigRevision;
+
         try {
             var result = await manager.reloadModelParameters({
                 model_name: message && message.model_name,
                 model_path: message && message.model_path
             });
-            if (result && result.reason === 'model_mismatch') {
-                console.log('[Live2D] 忽略非当前模型的参数热刷新消息');
+            if (result && (result.reason === 'model_mismatch' || result.reason === 'superseded')) {
+                console.log('[Live2D] 忽略已被接管的参数热刷新消息');
                 return false;
             }
             return !!(result && result.applied);
         } catch (error) {
+            if (window.live2dManager !== manager || manager.currentModel !== model ||
+                model?.internalModel !== internalModel || internalModel?.coreModel !== coreModel ||
+                manager._lastLoadedModelPath !== modelPath || manager.modelName !== modelName) {
+                return false;
+            }
+            var ticket = error && error._parameterReloadTicket;
+            if (ticket && typeof manager._getParameterReloadTicketStatus === 'function') {
+                if (manager._getParameterReloadTicketStatus(ticket) !== 'active') return false;
+            } else if (manager._parameterReloadSequence !== reloadSequence ||
+                manager._parameterConfigRevision !== configRevision) {
+                return false;
+            }
             console.warn('[Live2D] 参数轻量热刷新失败，降级为完整模型重载:', error);
             await I.handleModelReload(message && message.lanlan_name);
             return false;
@@ -1742,7 +1816,13 @@ I.mod = window.appInterpage;
             const shouldContinue = options && typeof options.shouldContinue === 'function'
                 ? options.shouldContinue
                 : null;
+            const expectedManager = window.live2dManager;
+            const expectedModel = expectedManager?.getCurrentModel();
+            const restoreSequence = (expectedManager?._idleAnimationRestoreSequence || 0) + 1;
+            if (expectedManager) expectedManager._idleAnimationRestoreSequence = restoreSequence;
             const canContinue = () => {
+                if (window.live2dManager !== expectedManager || expectedManager?.getCurrentModel() !== expectedModel) return false;
+                if (expectedManager && expectedManager._idleAnimationRestoreSequence !== restoreSequence) return false;
                 if (!shouldContinue) return true;
                 try {
                     return shouldContinue() !== false;
@@ -1818,6 +1898,7 @@ I.mod = window.appInterpage;
             const motionFiles = modelFilesData?.motion_files || [];
             if (!live2dIdleAnimation) {
                 if (hasExplicitIdleAnimation) {
+                    if (expectedManager) expectedManager._userIdleAnimations = [];
                     console.log('[Live2D Main] 待机动作已明确清空');
                     return;
                 }
@@ -1830,6 +1911,7 @@ I.mod = window.appInterpage;
                     live2dIdleAnimation = singleMotion;
                     console.log('[Live2D Main] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
                 } else {
+                    if (expectedManager) expectedManager._userIdleAnimations = [];
                     console.log('[Live2D Main] 没有保存的待机动作');
                     return;
                 }
@@ -1839,6 +1921,7 @@ I.mod = window.appInterpage;
 
             const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
             if (motionIndex < 0) {
+                if (expectedManager) expectedManager._userIdleAnimations = [];
                 console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
                 return;
             }
@@ -1880,6 +1963,9 @@ I.mod = window.appInterpage;
                 return;
             }
 
+            // 将保存的选择交给统一待机调度器，表情或动作结束后可自动重试。
+            live2dManager._userIdleAnimations = [live2dIdleAnimation];
+
             // 7. 设置循环播放
             const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
             if (motionInstance) {
@@ -1891,7 +1977,8 @@ I.mod = window.appInterpage;
             }
 
             // 8. 以 IDLE 优先级恢复；普通动作占用时不抢占
-            if (live2dManager.hasActiveActionMotion(live2dModel)) return;
+            if (live2dManager.hasActiveActionMotion(live2dModel)
+                || live2dManager.hasActiveTransientExpression?.(live2dModel)) return;
             const motionState = motionManager.state;
             if (
                 (Number(motionState?.currentPriority || 0) === 1 || motionState?.reservedIdleGroup !== undefined)

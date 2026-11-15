@@ -1,7 +1,7 @@
 """
-插件配置服务
+Plugin configuration service.
 
-提供插件配置的读取和更新功能。
+Provides reading and updating of plugin configuration.
 """
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -43,14 +43,14 @@ def deep_merge(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
 
 def validate_config_strict(config_data: Dict[str, Any], plugin_id: str) -> None:
     """
-    严格验证插件配置（验证失败会抛出异常）
+    Strictly validate plugin configuration, raising on failure.
     
     Args:
-        config_data: 配置数据字典
-        plugin_id: 插件ID
+        config_data: Configuration dictionary.
+        plugin_id: Plugin ID.
     
     Raises:
-        HTTPException: 验证失败时抛出 400 错误
+        HTTPException: Raise 400 on validation failure.
     """
     try:
         from plugin.config.schema import validate_plugin_config, ConfigValidationError

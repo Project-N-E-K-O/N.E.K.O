@@ -38,6 +38,8 @@ DEFAULT_CORE_CONFIG = {
     "assistApiKeyClaude": "",
     "assistApiKeyOrcarouter": "",
     "assistApiKeyRequesty": "",
+    "assistApiKeyOpper": "",
+    "assistApiKeyAtlascloud": "",
     "assistApiKeyGrok": "",
     "assistApiKeyDoubao": "",
     "assistApiKeyDoubaoTts": "",
@@ -59,7 +61,7 @@ DEFAULT_USER_PREFERENCES = []
 
 DEFAULT_VOICE_STORAGE = {}
 
-# 默认API配置（供 utils.api_config_loader 作为回退选项使用）
+# Default API configuration (fallback for utils.api_config_loader).
 DEFAULT_CORE_API_PROFILES = {
     'free': {
         'CORE_URL': "wss://www.lanlan.tech/core",
@@ -87,7 +89,7 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_MODEL': "stepaudio-3-realtime-preview",
     },
     'gemini': {
-        # Gemini 使用 google-genai SDK，而非原生 WebSocket
+        # Gemini uses google-genai SDK rather than native WebSocket.
         'CORE_MODEL': "gemini-3.8-live",
     },
     'grok': {
@@ -104,8 +106,8 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "free-model",
         'EMOTION_MODEL': "free-mini-model",
         'VISION_MODEL': "free-vision-model",
-        # 必须与 api_providers.json 的 free agent_model 及 _free_agent_model_name 一致，
-        # 否则 json 缺失回退到本 defaults 时免费 agent 不计配额、is_agent_free 误判。
+        # Must match api_providers.json free agent_model and _free_agent_model_name,
+        # or fallback to these defaults when JSON is missing skips free-agent quota and misclassifies is_agent_free.
         'AGENT_MODEL': "free-agent-model",
         'AUDIO_API_KEY': "free-access",
         'OPENROUTER_API_KEY': "free-access",
@@ -171,11 +173,11 @@ DEFAULT_ASSIST_API_PROFILES = {
     'gemini': {
         'OPENROUTER_URL': "https://generativelanguage.googleapis.com/v1beta/openai/",
         'CONVERSATION_MODEL': "gemini-3.1-flash-lite",
-        'SUMMARY_MODEL': "gemini-2.5-flash",
-        'CORRECTION_MODEL': "gemini-3-flash-preview",
+        'SUMMARY_MODEL': "gemini-3.1-flash-lite",
+        'CORRECTION_MODEL': "gemini-3.8-flash",
         'EMOTION_MODEL': "gemini-2.5-flash-lite",
         'VISION_MODEL': "gemini-3.1-flash-lite",
-        'AGENT_MODEL': "gemini-3.5-flash",
+        'AGENT_MODEL': "gemini-3.8-flash",
     },
     'kimi': {
         'OPENROUTER_URL': "https://api.moonshot.cn/v1",
@@ -222,7 +224,7 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "deepseek/deepseek-v4-flash",
         'EMOTION_MODEL': "qwen/qwen3.5-9b",
         'VISION_MODEL': "google/gemini-2.5-flash",
-        'AGENT_MODEL': "google/gemini-3-flash-preview",
+        'AGENT_MODEL': "google/gemini-3.8-flash",
     },
     'orcarouter': {
         'OPENROUTER_URL': "https://api.orcarouter.ai/v1",
@@ -240,6 +242,24 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "google/gemini-2.5-flash",
         'EMOTION_MODEL': "google/gemini-2.5-flash-lite",
         'VISION_MODEL': "google/gemini-2.5-flash",
+        'AGENT_MODEL': "google/gemini-3.8-flash",
+    },
+    'opper': {
+        'OPENROUTER_URL': "https://api.opper.ai/v3/compat",
+        'CONVERSATION_MODEL': "gpt-5.4-mini",
+        'SUMMARY_MODEL': "gpt-5.4-mini",
+        'CORRECTION_MODEL': "gpt-5.4-mini",
+        'EMOTION_MODEL': "gpt-5.4-mini",
+        'VISION_MODEL': "gpt-5.4-mini",
+        'AGENT_MODEL': "gpt-5.4-mini",
+    },
+    'atlascloud': {
+        'OPENROUTER_URL': "https://api.atlascloud.ai/v1",
+        'CONVERSATION_MODEL': "google/gemini-3.1-flash-lite",
+        'SUMMARY_MODEL': "deepseek-ai/deepseek-v4-flash",
+        'CORRECTION_MODEL': "deepseek-ai/deepseek-v4-flash",
+        'EMOTION_MODEL': "google/gemini-2.5-flash-lite",
+        'VISION_MODEL': "google/gemini-3.1-flash-lite",
         'AGENT_MODEL': "google/gemini-3-flash-preview",
     },
     'vllm_omni': {
@@ -323,6 +343,8 @@ DEFAULT_ASSIST_API_KEY_FIELDS = {
     'openrouter': 'ASSIST_API_KEY_OPENROUTER',
     'orcarouter': 'ASSIST_API_KEY_ORCAROUTER',
     'requesty': 'ASSIST_API_KEY_REQUESTY',
+    'opper': 'ASSIST_API_KEY_OPPER',
+    'atlascloud': 'ASSIST_API_KEY_ATLASCLOUD',
     'grok': 'ASSIST_API_KEY_GROK',
     'doubao': 'ASSIST_API_KEY_DOUBAO',
     'doubao_tts': 'ASSIST_API_KEY_DOUBAO_TTS',

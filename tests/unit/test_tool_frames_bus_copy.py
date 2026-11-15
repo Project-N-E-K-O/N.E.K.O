@@ -238,7 +238,7 @@ async def test_a_tool_image_reaches_the_bus_once_the_next_request_answers(
     assert len(published) == 1, "the delivered tool image never reached the bus"
     frame = published[0]
     assert frame["image_base64"] == JPEG_B64
-    # 来源标签：插件提供的媒体，不是用户共享的画面。
+    # Source label: plugin-provided media rather than a user-shared screen.
     assert frame["source"] == "plugin"
     assert frame["mime"] == "image/jpeg"
     assert frame["metadata"] == {"tool_name": "demo_tool"}
@@ -291,8 +291,8 @@ async def test_a_request_the_provider_rejected_publishes_nothing(monkeypatch):
     )
     with pytest.raises(RuntimeError):
         await _drain(client)
-    # 异常路径不经过 _drain 里的 settle，这里补上——否则"没发布"可能只是
-    # 后台任务还没轮到，而不是它真的没被创建。
+    # This exception path bypasses _drain's settle; add it here, or missing publication could simply
+    # mean the background task has not run yet, rather than never having been created.
     await _settle()
 
     assert published == [], "published a frame no provider ever took"
@@ -625,7 +625,7 @@ async def test_genai_publishes_nothing_when_no_follow_up_request_runs(
         pass
     await _settle()
 
-    # 封顶后仍会跑 forced-finalize，所以"没有后继请求"在这条路上不存在；
-    # 真正的非投递是那次请求一个 chunk 都没吐出来。
+    # Forced finalization still runs after the cap, so this path always has a successor request;
+    # true non-delivery means that request produced no chunks.
     assert len(calls) == 2, "前提没成立：forced-finalize 没跑"
     assert published == [], "published a frame nothing came back from"

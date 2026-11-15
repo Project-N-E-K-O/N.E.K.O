@@ -73,6 +73,7 @@ def _download_verified(
     *,
     expected_size: int,
     expected_sha256: str,
+    on_progress=None,
 ) -> None:
     if urlsplit(source).scheme.lower() != "https":
         raise CampPlusAssetError("manifest_invalid")
@@ -85,11 +86,22 @@ def _download_verified(
     last_error: Exception | None = None
     for attempt in range(3):
         try:
+            if on_progress is not None:
+                on_progress({"phase": "downloading", "downloaded_bytes": 0, "total_bytes": expected_size, "attempt": attempt + 1})
             with urllib.request.urlopen(request, timeout=60) as response:
                 if urlsplit(response.geturl()).scheme.lower() != "https":
                     raise CampPlusAssetError("manifest_invalid")
                 with temporary.open("wb") as output:
-                    shutil.copyfileobj(response, output, length=1024 * 1024)
+                    received = 0
+                    while chunk := response.read(min(1024 * 1024, expected_size - received + 1)):
+                        received += len(chunk)
+                        if received > expected_size:
+                            raise CampPlusAssetError("asset_size_mismatch")
+                        output.write(chunk)
+                        if on_progress is not None:
+                            on_progress({"phase": "downloading", "downloaded_bytes": received, "total_bytes": expected_size, "attempt": attempt + 1})
+            if on_progress is not None:
+                on_progress({"phase": "verifying", "downloaded_bytes": received, "total_bytes": expected_size, "attempt": attempt + 1})
             _verify_transfer(
                 temporary,
                 expected_size=expected_size,
@@ -135,6 +147,7 @@ def prepare_speaker_model(
     *,
     offline: bool = False,
     source_cache: Path | None = None,
+    on_progress=None,
 ) -> Path:
     """Prepare one pinned asset; release callers use ``offline`` to hard-fail."""
 
@@ -161,6 +174,7 @@ def prepare_speaker_model(
             destination,
             expected_size=manifest.size_bytes,
             expected_sha256=manifest.sha256,
+            **({"on_progress": on_progress} if on_progress is not None else {}),
         )
     return verify_campplus_asset(directory, manifest)
 

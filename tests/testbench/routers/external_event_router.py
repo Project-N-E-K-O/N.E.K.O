@@ -24,7 +24,7 @@ Design notes
   upstream ``timeout`` to bound it rather than a client-driven abort.
 * **Single entry point for three kinds**: keeps API surface small and
   makes the UI tab switcher trivial (one fetch helper shared across
-  three forms). See P25_BLUEPRINT §2.6 "三类一个抽象".
+  three forms). See P25_BLUEPRINT §2.6 \"one abstraction for three kinds\".
 * **Frontend mutation rule (L19) enforcement is the UI's job** —
   see :mod:`static/ui/chat/external_events_panel.js` Day 2 for the
   no-AbortController convention on the three Simulate buttons.
@@ -191,15 +191,15 @@ async def post_external_event(body: _ExternalEventRequest) -> dict[str, Any]:
                     "message": f"unexpected kind={kind!r}",
                 })
             # Wire shape: flat SimulationResult fields + a sibling "kind"
-            # discriminator at the top level. P25_BLUEPRINT §2.6 "一个响应
-            # 结构 — SimulationResult dataclass 三类共用, UI 前端按字段渲染
-            # 不按 kind 分支": return SimulationResult keys directly; do NOT
+            # discriminator at the top level. P25_BLUEPRINT §2.6 'one response
+            # structure, shared SimulationResult dataclass for all three kinds; UI renders fields
+            # instead of branching on kind': return SimulationResult keys directly; do NOT
             # wrap them inside a "result" envelope (that was the L36 shape
             # drift bug caught during 2026-04-23 manual P25 Day 2 UI
             # testing — the UI's ``state.lastResult = resp.data`` then
             # accessed ``r.accepted`` / ``r.persisted`` which were
             # ``undefined`` under the envelope, silently surfacing
-            # "未处理 / 未写入 session.messages / 本次未产出 assistant
+            # 'not handled / not written into session.messages / no assistant generated this time'
             # reply" for every successful simulation).
             #
             # ``kind`` is kept as a top-level sibling for audit/log clarity
@@ -222,9 +222,9 @@ async def post_external_event_preview(
     would emit — **without** touching ``session.messages``, ``last_llm_wire``,
     or the dedupe cache, and **without** calling the LLM.
 
-    Contract (L36 §7.25 第 5 层 "预览=真实"):
+    Contract (L36 §7.25 layer 5, \"preview equals reality\"):
 
-      The returned ``wire_preview[-1]["content"]`` MUST equal the ``content``
+      The returned ``wire_preview[-1][\"content\"]`` MUST equal the ``content``
       field of the wire entry that a subsequent ``POST /external-event`` call
       with the same ``(kind, payload)`` would record via
       :func:`tests.testbench.pipeline.wire_tracker.record_last_llm_wire`
@@ -255,7 +255,7 @@ async def post_external_event_preview(
     # to_dict shape mirrors SimulationResult.to_dict — flat fields, no
     # envelope. Fields a UI panel cares about: wire_preview (list of
     # {role, content}), instruction_final (str), instruction_template_raw
-    # (str, for "模板 vs 填完后的差异" toggle if ever added), coerce_info
+    # (str, for a future 'template versus expanded' toggle), coerce_info
     # (list of rule-application notes to render in a hint strip). When
     # the preview fails pre-LLM (invalid_payload / empty_callbacks /
     # persona_not_ready), ``reason`` / ``error_code`` / ``error_message``
@@ -318,12 +318,12 @@ async def post_dedupe_reset() -> _DedupeResetResponse:
         ) as session:
             summary = reset_dedupe(session)
             cleared = int(summary.get("cleared", 0))
-            # P25 Day 2 hotfix: audit trail. session_operation() 只是把
-            # "external_event.dedupe_reset" 作为 busy_op 标签占锁, 不写
-            # JSONL. 但 tester 需要在 Logs 页看到 "何时重置过缓存" 才能
-            # 复现 "为什么上一次 avatar 事件没被去重" 这类调试问题. 本
-            # 行把动作写入 session JSONL, 和其它 external_event.* 家族
-            # 保持对称 (avatar/agent_callback/proactive 都走 log_sync).
+            # P25 Day 2 hotfix: audit trail. session_operation() only uses
+            # "external_event.dedupe_reset" as a busy_op lock label, without writing
+            # JSONL. Testers need cache-reset times in Logs to reproduce
+            # issues such as why a previous avatar event was not deduplicated. This
+            # line records the action in session JSONL, symmetric with the other external_event.* operations
+            # (avatar/agent_callback/proactive all use log_sync).
             session.logger.log_sync(
                 "external_event.dedupe_reset",
                 payload={"cleared": cleared},

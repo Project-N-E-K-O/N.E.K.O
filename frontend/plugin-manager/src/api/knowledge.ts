@@ -48,6 +48,7 @@ export const KNOWLEDGE_FAILURE_REASONS = [
   'invalid_entry',
   'unexpected_entry_field',
   'duplicate_title',
+  'subscription_identity_mismatch',
   'csrf_validation_failed',
   'operation_failed',
 ] as const
@@ -173,8 +174,26 @@ export interface KnowledgePack {
   chunks_failed: number
   vector_state: KnowledgeVectorState
   broken: boolean
+  /** Set for a pack installed from the plugin market; null for a local import. */
+  subscription: KnowledgeSubscription | null
   installed_at: string
   updated_at: string
+}
+
+export interface KnowledgeSubscription {
+  provider: string
+  provider_package_id: string
+  remote_id: string
+  pack_id: string
+  version: string
+  channel: string
+  artifact_sha256: string
+  material_type: KnowledgeMaterialType
+}
+
+export interface KnowledgeMarketPairing {
+  one_time_code: string
+  port: number
 }
 
 export interface KnowledgePackJob {
@@ -340,6 +359,27 @@ async function request<T extends KnowledgeEnvelope>(
 
 function post<T extends KnowledgeEnvelope>(path: string, data: unknown): Promise<T> {
   return request<T>(path, { method: 'POST', data })
+}
+
+/**
+ * Ask the local plugin server for a one-time pairing code to hand to the
+ * remote Market page, which exchanges it for the bridge token. The returned
+ * port is Main's (the page reaches the plugin server through Main's proxy).
+ */
+export async function createMarketPairing(): Promise<KnowledgeMarketPairing> {
+  const response = await axios.request({ url: '/market/pair-code', method: 'POST', timeout: 5000 })
+  const code = String(response.data?.one_time_code || '')
+  const port = Number(response.data?.port)
+  if (!code || !Number.isInteger(port) || port <= 0 || port > 65535) {
+    throw new KnowledgeApiError('knowledge_invalid_response')
+  }
+  return { one_time_code: code, port }
+}
+
+/** Market page URL that opens the knowledge section paired with this client. */
+export function knowledgeMarketUrl(base: string, pairing: KnowledgeMarketPairing): string {
+  const query = new URLSearchParams({ neko_pair: pairing.one_time_code, neko_port: String(pairing.port) })
+  return `${base.replace(/\/+$/, '')}/#/knowledge?${query}`
 }
 
 export const knowledgeApi = {

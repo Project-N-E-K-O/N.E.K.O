@@ -41,6 +41,8 @@ from memory._reflection.refine import (
     build_merge_reflection,
     build_split_reflection,
 )
+from memory.evidence import merged_evidence_state
+from memory.introspection import is_permanently_suppressed
 
 
 
@@ -87,10 +89,13 @@ class RefinementMixin:
         produce: dict,
         entity: str,
         now: datetime,
+        *,
+        absorbed_facts: list[dict] | tuple = (),
     ) -> dict:
         """Build a reflection produced by merge; merges source_fact_ids (including
         absorbed_from_fact_ids), status takes the highest (promoted > confirmed >
-        pending), reinforcement takes the max."""
+        pending), reinforcement takes the max. ``absorbed_facts`` (the fact
+        dicts, when known) join the evidence-source accounting."""
         return build_merge_reflection(
             srcs,
             fact_source_ids,
@@ -99,7 +104,187 @@ class RefinementMixin:
             now,
             id_factory=self._refine_reflection_id,
             normalizer=self._normalize_reflection,
+            absorbed_facts=list(absorbed_facts),
         )
+
+    @staticmethod
+    def _apply_refine_modify(
+        src: dict, new_text: str, reason: str, now_iso: str,
+        *, absorbed_fact_ids: list[str] | tuple = (),
+        absorbed_facts: list[dict] | tuple = (),
+    ) -> None:
+        """Rewrite ``src`` in place; the old text goes to ``modification_history``.
+
+        Shared by refine ``modify`` and introspection ``rewrite`` — the
+        reflection twin of ``PersonaManager._apply_refine_modify``.
+        ``absorbed_facts`` are the dicts behind ``absorbed_fact_ids`` when
+        known; the ones not yet counted join ``fact_source_counts``. A fact of
+        the absorbed batch the line did not rest on (``based_on``) is in
+        ``source_fact_ids`` but not counted, so dedupe is by
+        ``counted_fact_ids``.
+        """
+        from memory.evidence import counted_fact_ids, merge_fact_source_counts
+
+        absorbed = list(absorbed_fact_ids)
+        old_text = src.get('text', '')
+        src['text'] = new_text
+        existing_sources = list(src.get('source_fact_ids') or [])
+        already_counted = counted_fact_ids(src)
+        new_facts = [
+            f for f in absorbed_facts
+            if isinstance(f, dict) and f.get('id') not in already_counted
+        ]
+        if new_facts and isinstance(src.get('fact_source_counts'), dict):
+            counts = merge_fact_source_counts([src], new_facts)
+            if counts is not None:
+                src['fact_source_counts'] = counts
+                src['counted_fact_ids'] = sorted(
+                    already_counted | {f['id'] for f in new_facts if f.get('id')}
+                )
+        src['source_fact_ids'] = sorted(set(existing_sources + absorbed))
+        if absorbed:
+            # Facts of unknown age joined: the line is no longer known to
+            # rest only on facts newer than a retirement (see the render).
+            src['source_facts_oldest_at'] = None
+        mod_history = list(src.get('modification_history') or [])
+        mod_history.append({
+            'old_text': old_text,
+            'modified_at': now_iso,
+            'reason': reason,
+            'absorbed_fact_ids': absorbed,
+        })
+        src['modification_history'] = mod_history
+        # Changed text invalidates embeddings; re-embed on the next worker scan
+        src['embedding'] = None
+        src['embedding_text_sha256'] = None
+        src['embedding_model_id'] = None
+
+    async def aapply_introspection_actions(
+        self, name: str, actions: list[dict],
+    ) -> dict:
+        """Apply introspection actions already checked against the number map.
+
+        Twin of ``PersonaManager.aapply_introspection_actions``: every target
+        ``(reflection_id, text_at_render)`` must still be active with that
+        exact text under the subject the model saw (``entity``), not already
+        suppressed and not claimed by an earlier action of this batch, or the
+        whole action is skipped as stale.
+        ``rewrite`` / ``merge`` reuse the refine helpers; a merge also keeps
+        each source text in the new reflection's ``modification_history``
+        and deletes nothing: its sources stay, permanently suppressed with
+        ``merged_into``.
+        Reflections have no event type for suppression, so all three write
+        straight to the view, as refine does.
+        A scoped review's actions carry ``subject``: every target must still
+        be stamped with it (all of a kind's reflections share one
+        ``entity``), and a merged reflection gets the stamp and the speaker
+        provenance; its observation days and source counts come with the
+        shared merge builder. A rewrite is no new sighting.
+
+        Returns ``{'applied': n, 'stale': m}``.
+        """
+        from memory.introspection import (
+            ACTION_MERGE,
+            ACTION_REWRITE,
+            ACTION_SUPPRESS,
+            PERMANENT_SUPPRESSION_KEY,
+            build_permanent_suppression,
+        )
+
+        from memory.scopes import entry_matches_subject
+
+        applied = 0
+        stale = 0
+        async with self._get_alock(name):
+            reflections = await self.aload_reflections(name)
+            refl_by_id = {
+                r.get('id'): r for r in reflections
+                if isinstance(r, dict) and r.get('id')
+            }
+            now = datetime.now()
+            now_iso = now.isoformat()
+            consumed: set[str] = set()
+            produced: list[dict] = []
+            for act in actions:
+                srcs: list[dict] = []
+                for rid, text in act.get('targets') or ():
+                    src = refl_by_id.get(rid)
+                    if (
+                        src is None
+                        or rid in consumed
+                        or is_permanently_suppressed(src)
+                        or src.get('text') != text
+                        # A sync may move a row to another subject keeping
+                        # its id and text; the model judged the old one.
+                        or ('entity' in act and src.get('entity') != act['entity'])
+                        or (
+                            act.get('subject') is not None
+                            and not entry_matches_subject(src, act['subject'])
+                        )
+                    ):
+                        srcs = []
+                        break
+                    srcs.append(src)
+                if not srcs:
+                    stale += 1
+                    continue
+                verb = act.get('action')
+                reason = f"introspection: {act.get('reason') or verb}"
+                if verb == ACTION_SUPPRESS:
+                    srcs[0][PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
+                        act.get('reason') or verb, now_iso, issue=act.get('issue'),
+                    )
+                elif verb == ACTION_REWRITE:
+                    self._apply_refine_modify(srcs[0], act['text'], reason, now_iso)
+                elif verb == ACTION_MERGE:
+                    if any(src.get('suppress') for src in srcs):
+                        # Same rule as persona: a source in mention cooldown
+                        # (it can enter one after the render) would come out
+                        # of the merge as a fresh, uncooled reflection.
+                        stale += 1
+                        continue
+                    merged = self._build_merge_reflection(
+                        srcs, [], {'text': act['text']},
+                        srcs[0].get('entity') or 'master', now,
+                    )
+                    # The refine builder keeps only the top reinforcement;
+                    # dropping a source's disputation or decay clock here
+                    # could lift a disputed line to promotion.
+                    merged.update(merged_evidence_state(srcs))
+                    if act.get('subject') is not None:
+                        # Unstamped rows fail closed on scoped reads; a
+                        # scoped line is confirmed on creation.
+                        from memory.speaker_trust import provenance_of_entries
+                        merged.update(provenance_of_entries(srcs))
+                        merged.update(act['subject'].as_entry_fields())
+                        if merged.get('status') == 'confirmed':
+                            merged.setdefault('confirmed_at', now_iso)
+                            merged['auto_confirmed'] = True
+                    merged['modification_history'] = [
+                        {
+                            'old_text': src.get('text', ''),
+                            'modified_at': now_iso,
+                            'reason': reason,
+                            'absorbed_fact_ids': [],
+                            'merged_from_id': src.get('id'),
+                        }
+                        for src in srcs
+                    ]
+                    produced.append(merged)
+                    # Sources stay, retired, as on the persona side.
+                    for src in srcs:
+                        src[PERMANENT_SUPPRESSION_KEY] = build_permanent_suppression(
+                            act.get('reason') or verb, now_iso,
+                            merged_into=merged['id'],
+                        )
+                else:
+                    stale += 1
+                    continue
+                consumed.update(src.get('id') for src in srcs)
+                applied += 1
+            if applied:
+                await self.asave_reflections(name, reflections + produced)
+        return {'applied': applied, 'stale': stale}
 
     async def apply_refine_actions(
         self,
@@ -128,12 +313,13 @@ class RefinementMixin:
             and e.get(REFINE_TYPE_KEY) == 'reflection'
             and e.get('id')
         }
-        cluster_fact_ids = {
-            e.get('id') for e in cluster
+        cluster_facts = {
+            e.get('id'): e for e in cluster
             if isinstance(e, dict)
             and e.get(REFINE_TYPE_KEY) == 'fact'
             and e.get('id')
         }
+        cluster_fact_ids = set(cluster_facts)
 
         async with self._get_alock(name):
             reflections = await self.aload_reflections(name)
@@ -156,7 +342,7 @@ class RefinementMixin:
                     logger.warning(f"[Refine apply] reflection: 非法 action {act!r}")
                     continue
 
-                # fact 不可作 split / discard / modify 的 source_id —— 代码层硬拦
+                # Facts cannot be source_id for split / discard / modify; enforce this in code
                 if act in ('split', 'discard', 'modify'):
                     sid = act_obj.get('source_id')
                     if sid in cluster_fact_ids:
@@ -170,12 +356,14 @@ class RefinementMixin:
                     if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
                         continue
                     src = refl_by_id.get(src_id)
-                    if not src:
+                    # A source suppressed since the cluster was gathered must
+                    # not come back as fresh, unflagged pieces.
+                    if not src or is_permanently_suppressed(src):
                         continue
                     produce = act_obj.get('produce')
                     if not isinstance(produce, list) or len(produce) < 2:
                         continue
-                    # 先过滤出有效 produce items，再以实际数量作 split_count
+                    # Filter valid produced items first, then use their actual count as split_count
                     valid_produce = [
                         p for p in produce
                         if isinstance(p, dict) and str(p.get('text', '')).strip()
@@ -196,11 +384,18 @@ class RefinementMixin:
                     src_ids_raw = act_obj.get('source_ids') or []
                     if not isinstance(src_ids_raw, list):
                         continue
-                    # source_ids 必须全是 reflection；含 fact id → 拒绝整个 action
+                    # Every source_id must identify a reflection; a fact ID rejects the entire action
                     if any(sid in cluster_fact_ids for sid in src_ids_raw):
                         logger.warning(
                             "[Refine apply] reflection: merge source_ids 含 fact，拒绝"
                         )
+                        continue
+                    if any(
+                        is_permanently_suppressed(refl_by_id.get(sid))
+                        for sid in src_ids_raw
+                    ):
+                        # Same rule as persona: the merged text carries the
+                        # retired source's content, so the whole merge goes.
                         continue
                     valid_refl_ids = [
                         sid for sid in src_ids_raw
@@ -222,9 +417,18 @@ class RefinementMixin:
                     text = str(produce.get('text', '')).strip()
                     if not text:
                         continue
+                    merge_srcs = [refl_by_id[sid] for sid in valid_refl_ids]
+                    from memory.evidence import counted_fact_ids
+                    already_counted: set[str] = set()
+                    for merge_src in merge_srcs:
+                        already_counted |= counted_fact_ids(merge_src)
                     new_refl = self._build_merge_reflection(
-                        [refl_by_id[sid] for sid in valid_refl_ids],
+                        merge_srcs,
                         valid_fact_sources, produce, entity, now,
+                        absorbed_facts=[
+                            cluster_facts[fid] for fid in dict.fromkeys(valid_fact_sources)
+                            if fid not in already_counted
+                        ],
                     )
                     produced.append(new_refl)
                     consumed.update(valid_refl_ids)
@@ -235,7 +439,7 @@ class RefinementMixin:
                     if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
                         continue
                     src = refl_by_id.get(src_id)
-                    if not src:
+                    if not src or is_permanently_suppressed(src):
                         continue
                     produce = act_obj.get('produce')
                     if not isinstance(produce, dict):
@@ -250,39 +454,31 @@ class RefinementMixin:
                         fid for fid in absorbed_fact_ids if fid in cluster_fact_ids
                     ]
                     reason = str(act_obj.get('reason') or 'refine_modify')
-                    old_text = src.get('text', '')
-                    src['text'] = new_text
-                    existing_sources = list(src.get('source_fact_ids') or [])
-                    src['source_fact_ids'] = sorted(
-                        set(existing_sources + valid_fact_sources)
+                    self._apply_refine_modify(
+                        src, new_text, reason, now_iso,
+                        absorbed_fact_ids=valid_fact_sources,
+                        absorbed_facts=[
+                            cluster_facts[fid]
+                            for fid in dict.fromkeys(valid_fact_sources)
+                        ],
                     )
-                    mod_history = list(src.get('modification_history') or [])
-                    mod_history.append({
-                        'old_text': old_text,
-                        'modified_at': now_iso,
-                        'reason': reason,
-                        'absorbed_fact_ids': valid_fact_sources,
-                    })
-                    src['modification_history'] = mod_history
-                    # 文本变 → embedding 失效（下次 worker 扫描重 embed）
-                    src['embedding'] = None
-                    src['embedding_text_sha256'] = None
-                    src['embedding_model_id'] = None
                     applied += 1
 
                 elif act == 'discard':
                     src_id = act_obj.get('source_id')
                     if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
                         continue
+                    if is_permanently_suppressed(refl_by_id.get(src_id)):
+                        continue
                     consumed.add(src_id)
                     applied += 1
 
-            # Stamp 决策（Codex P1 + P2 #1392 合并语义）：
-            # - applied > 0：有变化，必 stamp + save
-            # - applied == 0 + actions 为空：LLM 明确 no-op，stamp 防
-            #   cluster_hash skip 失效（Codex P1）
-            # - applied == 0 + actions 非空：所有 action 全 reject = LLM
-            #   语义垃圾，不 stamp 等下轮重试（Codex P2）
+            # Stamp decisions (combined Codex P1 + P2 #1392 semantics):
+            # - applied > 0: changes occurred; always stamp + save
+            # - applied == 0 with empty actions: explicit LLM no-op; stamp to prevent
+            #   cluster_hash skip failure (Codex P1)
+            # - applied == 0 with nonempty actions: every action rejected as LLM
+            #   semantic garbage; do not stamp, allowing retry next round (Codex P2)
             if applied == 0 and actions:
                 return 0
 
@@ -300,7 +496,7 @@ class RefinementMixin:
                 if rid in cluster_refl_ids and rid not in consumed:
                     r['last_refine_cluster_hash'] = cluster_hash
                     r['last_refine_at'] = now_iso
-                    # 成功 stamp → 清 Site 4 liveness 计数器（对偶
+                    # Successful stamping clears Site 4 liveness counters (symmetric with
                     # PersonaManager.apply_refine_actions）
                     if r.get('refine_attempts'):
                         r['refine_attempts'] = 0
@@ -332,9 +528,9 @@ class RefinementMixin:
         from memory.facts import safe_int_field
         from memory.refine import REFINE_TYPE_KEY
 
-        # fact 不计 attempts（fact 是 readonly 信息源，refine 永远不改它）；
-        # 只 bump reflection 成员。reflection 不分 entity section 单独存（全
-        # 在一个 list 里按 entity 字段区分），所以收集 set[rid] 即可。
+        # Facts do not count attempts: they are read-only information sources that refine never changes;
+        # bump only reflection members. Reflections are not stored in separate entity sections, but together in one
+        # list distinguished by entity fields, so collecting set[rid] suffices.
         member_rids: set[str] = set()
         for e in cluster:
             if not isinstance(e, dict):
@@ -355,8 +551,8 @@ class RefinementMixin:
                     continue
                 new_attempts = safe_int_field(r, 'refine_attempts') + 1
                 r['refine_attempts'] = new_attempts
-                # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed），对偶
-                # persona 侧——一次性宕机顶到 MAX 后过 5h 冷却重新 probe。
+                # Stamp failure time for dead-letter time-based recovery (cooldown_elapsed), symmetric with
+                # persona: after a one-off outage reaches MAX, probe again after a 5h cooldown.
                 r['last_refine_attempt_at'] = datetime.now().isoformat()
                 modified = True
                 if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
@@ -368,12 +564,12 @@ class RefinementMixin:
                         f"不再选入，避免毒 cluster 占用名额。"
                     )
             if modified:
-                # CodeRabbit: 传 active-only 给 ``asave_reflections``。
-                # ``_prepare_save_reflections`` 把 input 当 "想要存活的 active 集",
-                # all_on_disk 里 id 在 input set 中的会跳过归档判断。如果传
-                # full list（含 terminal），``to_archive`` 永远是空，老 promoted/
-                # denied 永远 archive 不掉，跟 arecord_mentions / aupdate_suppressions
-                # 走同一约定保证归档流程正常推进。
+                # CodeRabbit: pass active-only entries to ``asave_reflections``.
+                # ``_prepare_save_reflections`` treats input as the desired surviving active set;
+                # all_on_disk IDs present in input skip archival checks. Passing
+                # the full list (including terminal entries) leaves ``to_archive`` permanently empty, so old promoted/
+                # denied entries never archive. Follow the same convention as arecord_mentions / aupdate_suppressions
+                # to let archival proceed normally.
                 active = [
                     r for r in reflections
                     if r.get('status') not in REFLECTION_TERMINAL_STATUSES

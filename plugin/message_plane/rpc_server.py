@@ -24,17 +24,38 @@ from .protocol import (
     PROTOCOL_VERSION,
     BusGetRecentArgs,
     BusQueryArgs,
+    ConversationGetArgs,
+    ConversationGetMessageArgs,
     err_response,
     ok_response,
 )
+
 from .pub_server import MessagePlanePubServer
 from .stores import (
     HOST_OWNED_STORE_NAMES,
+    CONVERSATIONS_STORE_NAME,
     StoreRegistry,
     TopicStore,
     build_default_store_registry,
 )
 from .validation import validate_rpc_envelope
+
+
+_CONVERSATION_READ_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _conversation_response(req_id: str, result: Any) -> Dict[str, Any]:
+    """Bound new reads before packing a potentially large retained window."""
+    items = result["items"] if isinstance(result, dict) and "items" in result else [result]
+    size = 256  # Response envelope and snapshot metadata.
+    try:
+        for item in items:
+            size += len(json.dumps(item, ensure_ascii=False, allow_nan=False).encode("utf-8")) + 1
+            if size > _CONVERSATION_READ_MAX_BYTES:
+                return err_response(req_id, "Conversation read exceeds size limit", code="RESPONSE_TOO_LARGE")
+    except (TypeError, ValueError, UnicodeError):
+        return err_response(req_id, "Invalid conversation response", code="PROTOCOL_ERROR")
+    return ok_response(req_id, result)
 
 
 class MessagePlaneRpcServer:
@@ -159,13 +180,13 @@ class MessagePlaneRpcServer:
             if st is None:
                 return err_response(req_id, "invalid store")
             if st.name in HOST_OWNED_STORE_NAMES:
-                # 这条 op 没有调用方身份：RPC socket 是 loopback，任何插件进程连上
-                # 都能发，payload 里的 plugin_id 是自己写的。宿主自有 store 的记录
-                # 会直接变成用户听到的一句话（messages）、模型"看过的画面"
-                # （frames）或对话上下文（conversations），所以在这里一律拒绝，
-                # 而不是事后去猜哪条是伪造的。
+                # This operation lacks caller identity: any plugin process can connect to the loopback RPC socket
+                # and send a self-chosen plugin_id in its payload. Host-owned store records directly become
+                # speech heard by the user (messages), images 'seen' by the model
+                # (frames), or conversation context (conversations), so reject all such writes here
+                # instead of trying to identify forged records afterward.
                 #
-                # 宿主自己不受影响：它走 ingest socket（带 token），不走这条。
+                # The host is unaffected: it uses the token-protected ingest socket, not this path.
                 return err_response(req_id, "store is host-owned")
             topic = str(args.get("topic") or "")
             payload = args.get("payload")
@@ -194,6 +215,28 @@ class MessagePlaneRpcServer:
             if self._pub is not None:
                 self._pub.publish(f"{st.name}.{topic}", event)
             return ok_response(req_id, {"accepted": True, "event": event})
+
+        if op in ("bus.conversations.get", "bus.conversations.get_message"):
+            try:
+                model = (ConversationGetArgs if op.endswith(".get") else ConversationGetMessageArgs).model_validate(args)
+            except ValidationError:
+                return err_response(req_id, "invalid args", code="BAD_ARGS", details={"op": op})
+            store = self._stores.get(CONVERSATIONS_STORE_NAME)
+            if store is None:
+                return err_response(req_id, "conversations store unavailable")
+            if op.endswith(".get"):
+                values = model.model_dump()
+                items, snapshot_seq = store.conversation_messages(
+                    filters=values,
+                    limit=min(values["max_count"], MESSAGE_PLANE_GET_RECENT_MAX_LIMIT),
+                    order=values["order"],
+                )
+                return _conversation_response(req_id, {
+                    "items": items,
+                    "snapshot_seq": snapshot_seq,
+                    "effective_limit": min(values["max_count"], MESSAGE_PLANE_GET_RECENT_MAX_LIMIT),
+                })
+            return _conversation_response(req_id, store.conversation_message(model.message_id))
 
         if op == "bus.get_recent":
             if validate_mode in ("warn", "strict"):

@@ -65,12 +65,12 @@ def test_soft_flush_finishes_the_held_tail_without_closing_the_round(worker):
     request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
     _wait_for(lambda: synth.finish_payloads, "FINISH from the soft flush")
 
-    # 服务端放完尾包：这只是一次软 flush，本轮没结束，不能宣告音频流关闭
+    # The server released its trailing packet: this is only a soft flush, not the turn's end, so do not announce audio-stream closure.
     synth.callback.on_complete()
     _settle()
     assert _audio_done_ids(_drain(response_queue)) == []
 
-    # 真正的收尾到了：旧流已经放干净，直接补收尾，同一条连接不再发第二个 FINISH
+    # Actual finalization arrives: the old stream is drained; finish directly without sending a second FINISH on the same connection.
     request_queue.put((None, None))
     seen = []
     _wait_for(lambda: (seen.extend(_drain(response_queue)) or _audio_done_ids(seen) == ["speech-a"]),
@@ -87,7 +87,7 @@ def test_round_end_while_the_soft_finished_stream_drains_waits_for_its_completio
     request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
     _wait_for(lambda: synth.finish_payloads, "FINISH from the soft flush")
 
-    # 收尾先于完成通知到达：尾包还在路上，此刻宣告关闭就是早发
+    # Finalization precedes the completion notification: trailing audio is still in transit, so declaring closure now is premature.
     request_queue.put((None, None))
     _settle()
     assert _audio_done_ids(_drain(response_queue)) == []
@@ -108,13 +108,13 @@ def test_text_after_soft_flush_waits_for_the_drain_then_continues_on_a_new_strea
     request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
     _wait_for(lambda: first.finish_payloads, "FINISH from the soft flush")
 
-    # 同一轮又来文本：旧流还没放干净，不能往已 FINISH 的连接里塞，也不能开新流
+    # More text in the same turn: the old stream is not drained; neither feed its FINISHed connection nor start a new stream.
     request_queue.put(("speech-a", "同一轮后面还有话。"))
     _settle()
     assert len(_FakeSynthesizer.instances) == 1
     assert first.spoken == [_LONG_ENOUGH + "第一段。"]
 
-    # 旧流放干净 → 新 synthesizer 接着说攒下的文本
+    # Old stream drained -> a new synthesizer speaks the accumulated text.
     first.callback.on_complete()
     _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation synthesizer")
     second = _FakeSynthesizer.instances[1]
@@ -143,7 +143,7 @@ def test_stale_close_from_the_drained_stream_does_not_mark_the_new_one_lost(work
     _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation synthesizer")
     second = _FakeSynthesizer.instances[1]
 
-    # 服务端这时才关掉旧连接：这是上一代的事，当代连接没有断
+    # The server closes the old connection only now: this belongs to the previous generation; the current connection remains open.
     first.callback.on_close()
     first.callback.on_error("request timeout after 23 seconds")
     _settle()
@@ -170,7 +170,7 @@ def test_late_pages_from_the_retired_stream_do_not_reach_the_continuation(worker
     _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation synthesizer")
     _drain(response_queue)
 
-    first.callback.on_data(b"X" * 4096)  # 旧连接迟到的页
+    first.callback.on_data(b"X" * 4096)  # Late page from the old connection.
     _settle()
     leaked = [item for item in _drain(response_queue)
               if isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__" and b"X" in item[2]]
@@ -187,7 +187,7 @@ def test_soft_flush_arriving_during_the_drain_is_applied_to_the_continuation(wor
     request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
     _wait_for(lambda: first.finish_payloads, "FINISH from the soft flush")
 
-    # 排空期间：续接文本到达，随后 core 为它武装的定时器也到了
+    # During draining: continuation text arrives, followed by the timer core armed for it.
     request_queue.put(("speech-a", "同一轮后面还有话。"))
     request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
     _settle()
@@ -197,7 +197,7 @@ def test_soft_flush_arriving_during_the_drain_is_applied_to_the_continuation(wor
     _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation synthesizer")
     second = _FakeSynthesizer.instances[1]
     assert second.spoken == ["同一轮后面还有话。"]
-    # 没有 (None, None)：续接流的尾句靠排空期间记下的软 flush 释放
+    # No (None, None): the continuation stream's final sentence releases through the soft flush recorded during draining.
     _wait_for(lambda: second.finish_payloads, "FINISH carried over to the continuation stream")
 
 
@@ -214,7 +214,7 @@ def test_text_after_a_pending_soft_flush_supersedes_it(worker):
     request_queue.put(("speech-a", "第二段"))
     request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
     request_queue.put(("speech-a", "，还没说完"))
-    _settle()  # 三条都要在旧流放干净之前被 worker 消化掉，顺序才是这条用例要钉的
+    _settle()  # The worker must consume all three before the old stream drains; this ordering is the test's target.
     first.callback.on_complete()
     _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "continuation synthesizer")
     second = _FakeSynthesizer.instances[1]
@@ -238,7 +238,7 @@ def test_soft_flush_whose_finish_fails_to_send_drops_the_dead_stream(worker):
     request_queue.put((TTS_SOFT_FLUSH_SENTINEL, "speech-a"))
     _wait_for(lambda: first.closed, "the dead stream is released")
 
-    # 后续文本不该被扣到 2.5s 排空期限，立刻走新 synthesizer
+    # Subsequent text must not wait for the 2.5-second drain deadline; use the new synthesizer immediately.
     request_queue.put(("speech-a", _LONG_ENOUGH + "接着说。"))
     _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "new synthesizer right away", timeout=1.0)
     assert _FakeSynthesizer.instances[1].spoken == [_LONG_ENOUGH + "接着说。"]
@@ -323,7 +323,7 @@ def test_timeout_retirement_waits_for_an_in_flight_completion(fake_dashscope, mo
         request_queue.put(("speech-a", "同一轮后面还有话。"))
         _settle()
 
-        # 完成通知已过 generation 检查、卡在清理里；此时排空期限到期
+        # Completion notification passed the generation check and is stuck in cleanup when the drain deadline expires.
         entered, release = _block_next_reset(first.callback._inner)
         threading.Thread(target=first.callback.on_complete, daemon=True).start()
         assert entered.wait(2)
@@ -385,7 +385,7 @@ def _make_mgr() -> LLMSessionManager:
     mgr._tts_soft_flush_supported = True
     mgr._tts_soft_flush_task = None
     mgr._bg_tasks = set()
-    # _request_tts_done_locked 的 stripper 依赖
+    # Stripper dependencies for _request_tts_done_locked.
     mgr._tts_markdown_stripper = MagicMock()
     mgr._tts_markdown_stripper.flush.return_value = ""
     mgr._tts_bracket_stripper = MagicMock()
@@ -433,7 +433,7 @@ async def test_round_end_cancels_the_pending_soft_flush(fast_idle):
     mgr = _make_mgr()
     LLMSessionManager._arm_tts_soft_flush(mgr, "s1")
     assert LLMSessionManager._request_tts_done_locked(mgr) == "queued"
-    # 定时器在 done 入队的同一步被撤掉，而不是留到点火时再靠 flag 自查
+    # Remove the timer in the same step that enqueues done, rather than leaving it to self-check a flag on firing.
     assert mgr._tts_soft_flush_task is None
     await asyncio.sleep(0.2)
     assert _queued(mgr) == [(None, None)], "the real FINISH makes the soft one pointless"
@@ -459,8 +459,8 @@ async def test_soft_flush_stands_down_once_done_is_queued_or_deferred(fast_idle)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("field, value", [
-    ("_tts_soft_flush_supported", False),  # worker 不认这个哨兵（会当成新 sid）
-    ("input_mode", "text"),                # 文本模式的 completion 紧跟最后一个 chunk
+    ("_tts_soft_flush_supported", False),  # The worker does not recognize this sentinel and would treat it as a new sid.
+    ("input_mode", "text"),                # Text-mode completion immediately follows the final chunk.
 ])
 async def test_soft_flush_is_not_armed_where_it_cannot_help(fast_idle, field, value):
     mgr = _make_mgr()
@@ -485,5 +485,5 @@ def test_registry_declares_soft_flush_only_for_workers_that_handle_it():
     from main_logic.tts_client import TTS_PROVIDER_REGISTRY
 
     supporting = {name for name, meta in TTS_PROVIDER_REGISTRY.items() if meta.soft_flush}
-    # 加 provider 时同步扩这个集合，并给它的 worker 补 TTS_SOFT_FLUSH_SENTINEL 分支。
+    # Extend this set when adding a provider and add its worker's TTS_SOFT_FLUSH_SENTINEL branch too.
     assert supporting == {"cosyvoice"}

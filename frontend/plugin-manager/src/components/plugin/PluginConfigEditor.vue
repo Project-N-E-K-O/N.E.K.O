@@ -808,7 +808,7 @@ onBeforeUnmount(() => {
 }
 .config-toolbar :deep(.el-input__wrapper) {
   min-height: 36px;
-  border-radius: 8px;
+  border-radius: var(--radius-control);
 }
 .toolbar-spacer {
   flex: 1;
@@ -834,7 +834,7 @@ onBeforeUnmount(() => {
 }
 :global(.profile-manager-dialog) {
   padding: 24px;
-  border-radius: 12px;
+  border-radius: var(--radius-card);
 }
 :global(.profile-manager-dialog .el-dialog__header) {
   padding: 0 28px 22px 0;
@@ -851,7 +851,7 @@ onBeforeUnmount(() => {
 :global(.profile-manager-dialog .el-dialog__footer) {
   margin-top: 24px;
   padding-top: 20px;
-  border-top: 1px solid var(--el-border-color-lighter);
+  border-top: 1px solid var(--surface-border);
 }
 .profile-label {
   display: block;
@@ -868,13 +868,13 @@ onBeforeUnmount(() => {
 }
 .profile-picker-row :deep(.el-select__wrapper) {
   min-height: 40px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 .profile-picker-row > .el-button,
 .profile-dialog-actions > .el-button {
   height: 40px;
   margin: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 .profile-current-row {
   display: flex;
@@ -923,7 +923,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  border-right: 1px solid var(--el-border-color-lighter);
+  border-right: 1px solid var(--surface-border);
   padding: 8px 12px 12px 0;
 }
 .config-nav-title {
@@ -938,7 +938,7 @@ onBeforeUnmount(() => {
   gap: 8px;
   text-align: left;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   padding: 10px;
   background: transparent;
   color: var(--el-text-color-regular);
@@ -989,7 +989,7 @@ onBeforeUnmount(() => {
     max-height: 88px;
     padding: 0 0 8px;
     border-right: 0;
-    border-bottom: 1px solid var(--el-border-color-lighter);
+    border-bottom: 1px solid var(--surface-border);
     overflow: auto;
   }
   .config-nav-title {
@@ -1023,8 +1023,8 @@ onBeforeUnmount(() => {
   padding: 12px 0;
   flex-shrink: 0;
 
-  background: var(--el-bg-color);
-  border-top: 1px solid var(--el-border-color-lighter);
+  background: var(--surface-card);
+  border-top: 1px solid var(--surface-border);
 }
 .footer-status {
   min-width: 0;
@@ -1074,7 +1074,7 @@ onBeforeUnmount(() => {
   min-height: 32px;
   white-space: normal;
   margin-left: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-control);
 }
 .change-review {
   max-height: 55vh;
@@ -1087,9 +1087,9 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  background: var(--el-bg-color);
+  background: var(--surface-card);
   padding: 12px 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  border-bottom: 1px solid var(--surface-border);
 }
 .change-review h3 {
   margin: 0;
@@ -1154,9 +1154,9 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-secondary);
 }
 .config-json {
-  background: var(--el-fill-color-extra-light);
+  background: var(--surface-inset);
   padding: 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   max-height: 55vh;
   overflow: auto;
   font: 12px/1.6 monospace;

@@ -203,14 +203,16 @@
 这部分由 `UniversalTutorialManager` 单独生成，不计入第 1 天的 10 个场景。
 
 - 触发条件：第 1 天以 `complete` 或 `skip` 结束，教程清理完成后显示。
-- 展示系统托盘位置示意图，以及“找不到图标时展开小箭头”的提示。
-- 介绍右键托盘菜单中的 4 项：**重置角色位置、打开对话框、快捷键设置、退出**。
+- 按宿主系统区分位置说明（`homeTutorialPlatformCapabilities.detectPlatform()`）：
+  - macOS：展示菜单栏示意图（`macos_intro.png`），说明图标在屏幕顶部菜单栏，点击图标打开菜单；文案走 `tutorial.systray.macos.*`。
+  - 其他系统：展示系统托盘示意图（`stray_intro.png`），说明图标在屏幕右下角托盘，找不到时展开小箭头，右键图标打开菜单。
+- 介绍菜单中的 4 项：**重置角色位置、打开对话框、设置、退出**（两种平台共用前三项，“退出”的说明按平台区分）。
 - 用户点击确认、关闭按钮或弹窗外遮罩关闭；这是用户控制的说明弹窗，不会要求实际点到系统托盘。
 - 第 1 天正常完成后需要启动破冰对话时，会等这个说明弹窗关闭。
 
-依据：`static/tutorial/core/universal-manager.js` 的 `shouldShowDay1SystrayIntro()` 与 `showDay1SystrayIntroModal()`，以及 `tutorial.systray.*` 文案。
+依据：`static/tutorial/core/universal-manager.js` 的 `shouldShowDay1SystrayIntro()` 与 `showDay1SystrayIntroModal()`，以及 `tutorial.systray.*`、`tutorial.systray.macos.*` 文案。
 
-当前中文说明采用“屏幕右下角托盘”的口径，不能直接当成 macOS、Linux 与浏览器端通用位置。本文只记录现状，未验证各宿主平台的实际托盘表现。
+非 macOS 的说明采用“屏幕右下角托盘”的口径，Linux 与浏览器端也走这一套，不能当成这些宿主的实际位置。本文只记录现状，未验证 Linux 与浏览器端的实际托盘表现。
 
 ### 5.2 每天正常完成后的破冰对话
 

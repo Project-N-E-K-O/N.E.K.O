@@ -1,4 +1,4 @@
-"""Numeric v2 Story Package 的独立安全注册表。"""  # noqa: DOCSTRING_CJK
+"""Independent secure registry for Numeric v2 Story Packages."""  # noqa: DOCSTRING_CJK
 
 from __future__ import annotations
 
@@ -17,86 +17,30 @@ from .numeric_v2_storage_transaction import discard_temporary_file
 
 
 _STORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_DEFAULT_PACKAGE_ROOT = Path(__file__).with_name("default_numeric_v2_packages")
-_DEFAULT_PACKAGES_INITIALIZED_MARKER = ".defaults_initialized"
-_DEFAULT_PACKAGES_MARKER_SCHEMA = "neko.theater.numeric.v2.default-packages"
 # Real v2.2 packages are tens of KB (each prompt field is capped at 384 tokens);
 # 8 MiB leaves ample headroom while bounding what an import may make us parse.
 MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
-def _read_default_package_ids(marker: Path) -> set[str]:
-    """读取已处理的内置剧本 ID；兼容旧版本创建的空标记。"""  # noqa: DOCSTRING_CJK
-
-    if not marker.is_file():
-        return set()
-    raw = marker.read_text(encoding="utf-8").strip()
-    if not raw:
-        return set()
-    payload = json.loads(raw)
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != _DEFAULT_PACKAGES_MARKER_SCHEMA
-        or not isinstance(payload.get("story_ids"), list)
-    ):
-        return set()
-    return {
-        story_id
-        for story_id in payload["story_ids"]
-        if isinstance(story_id, str) and _STORY_ID_RE.fullmatch(story_id)
-    }
-
-
-def _write_default_package_ids(marker: Path, story_ids: set[str]) -> None:
-    """原子记录已处理的内置剧本，供后续版本只补装新增项。"""  # noqa: DOCSTRING_CJK
-
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=marker.parent,
-            prefix=".defaults-",
-            suffix=".tmp",
-            mode="w",
-            encoding="utf-8",
-            delete=False,
-        ) as temporary:
-            json.dump(
-                {
-                    "schema": _DEFAULT_PACKAGES_MARKER_SCHEMA,
-                    "story_ids": sorted(story_ids),
-                },
-                temporary,
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            temporary.flush()
-            os.fsync(temporary.fileno())
-            temporary_path = Path(temporary.name)
-        os.replace(temporary_path, marker)
-        temporary_path = None
-    finally:
-        discard_temporary_file(temporary_path)
-
-
 class NumericV2PackageError(ValueError):
-    """Numeric v2 包无法复验或写入。"""  # noqa: DOCSTRING_CJK
+    """Numeric v2 package cannot be revalidated or written."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2PackageUpgradeRequiredError(NumericV2PackageError):
-    """旧版剧本包必须先升级到 v2.2 才能导入或运行。"""  # noqa: DOCSTRING_CJK
+    """Legacy story packages must upgrade to v2.2 before import or execution."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2PackageExistsError(NumericV2PackageError):
-    """目标 story_id 已存在，默认不允许覆盖。"""  # noqa: DOCSTRING_CJK
+    """The target story_id exists; overwriting is disallowed by default."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2PackageNotFoundError(NumericV2PackageError):
-    """指定 Numeric v2 包不存在。"""  # noqa: DOCSTRING_CJK
+    """The specified Numeric v2 package does not exist."""  # noqa: DOCSTRING_CJK
 
 
 class NumericV2PackageRegistry:
-    """只管理 ``numeric_v2/packages``，不读取 v1 包或 Session。"""  # noqa: DOCSTRING_CJK
+    """Manage only ``numeric_v2/packages``, without reading v1 packages or Sessions."""  # noqa: DOCSTRING_CJK
 
     def __init__(self, root: Path, compiler: NumericV2Compiler | None = None):
         self.root = Path(root)
@@ -104,7 +48,7 @@ class NumericV2PackageRegistry:
 
     @staticmethod
     def _declares_v2_2(payload: Mapping[str, Any]) -> bool:
-        """识别新生成包，确保导入时不会退回旧版宽松限幅。"""  # noqa: DOCSTRING_CJK
+        """Identify newly generated packages, preventing import fallback to older permissive clamping."""  # noqa: DOCSTRING_CJK
 
         meta = payload.get("meta") if isinstance(payload, Mapping) else None
         return isinstance(meta, Mapping) and meta.get("contract_version") == "v2.2"
@@ -113,53 +57,17 @@ class NumericV2PackageRegistry:
         self,
         payload: Mapping[str, Any],
     ):
-        """导入入口只接受 v2.2，旧包统一返回可操作的升级错误。"""  # noqa: DOCSTRING_CJK
+        """Import accepts only v2.2; all legacy packages receive actionable upgrade errors."""  # noqa: DOCSTRING_CJK
 
         if not self._declares_v2_2(payload):
-            # 旧包文件保留在磁盘上供作者升级，但不能再进入运行时或安装槽位。
+            # Keep old package files on disk for authors to upgrade, but exclude them from runtime and install slots.
             raise NumericV2PackageUpgradeRequiredError(
                 "numeric_v2_upgrade_required"
             )
         return self.compiler.compile_v2_2(payload)
 
-    def ensure_default_packages(self) -> None:
-        """首次使用 Numeric v2 时安装仓库内置剧本，绝不覆盖用户剧本。"""  # noqa: DOCSTRING_CJK
-
-        marker = self.root / _DEFAULT_PACKAGES_INITIALIZED_MARKER
-        try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            bundled_sources = (
-                sorted(_DEFAULT_PACKAGE_ROOT.glob("*.json"))
-                if _DEFAULT_PACKAGE_ROOT.is_dir()
-                else []
-            )
-            # 当前发行物没有内置包时不写完成标记，后续版本加入默认剧本后仍能自动补装。
-            if not bundled_sources:
-                return
-            handled_story_ids = _read_default_package_ids(marker)
-            for source in bundled_sources:
-                payload = json.loads(source.read_text(encoding="utf-8"))
-                # 内置包也必须沿用导入入口的版本门禁；旧内置包跳过安装，不能绕过升级要求。
-                try:
-                    compiled = self.compile_for_import(payload)
-                except NumericV2PackageUpgradeRequiredError:
-                    continue
-                if compiled.story_id in handled_story_ids:
-                    continue
-                target = self.package_path(compiled.story_id)
-                if not target.exists():
-                    try:
-                        self.import_package(compiled.story)
-                    except NumericV2PackageExistsError:
-                        # 多进程首次启动可能同时安装同一默认包；另一进程已写入即视为初始化成功。
-                        pass
-                handled_story_ids.add(compiled.story_id)
-            _write_default_package_ids(marker, handled_story_ids)
-        except (OSError, UnicodeError, json.JSONDecodeError, NumericV2CompileError) as exc:
-            raise NumericV2PackageError("numeric_v2_default_package_invalid") from exc
-
     def delete_package(self, story_id: str) -> None:
-        """删除一个已安装剧本；Session 由调用方在同一业务动作中级联清理。"""  # noqa: DOCSTRING_CJK
+        """Delete one installed story; the caller cascades Session cleanup in the same business action."""  # noqa: DOCSTRING_CJK
 
         target = self.package_path(story_id)
         try:
@@ -206,7 +114,7 @@ class NumericV2PackageRegistry:
         }
 
     def list_packages(self) -> list[dict[str, Any]]:
-        """只列出能够重新通过当前 v2 合同的包。"""  # noqa: DOCSTRING_CJK
+        """List only packages that still pass the current v2 contract."""  # noqa: DOCSTRING_CJK
 
         if not self.root.is_dir():
             return []
@@ -216,7 +124,7 @@ class NumericV2PackageRegistry:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 result.append(self.validate_package(payload))
             except NumericV2PackageUpgradeRequiredError:
-                # 旧包文件保留给作者升级，但不出现在可运行剧本列表中。
+                # Retain old files for author upgrades, but omit them from runnable story lists.
                 continue
             except Exception as exc:
                 # One unreadable or malformed file must not hide every other story.
@@ -229,7 +137,7 @@ class NumericV2PackageRegistry:
         return result
 
     def load_engine(self, story_id: str):
-        """从 v2 私有目录加载确定性 Engine，不兼容旧包。"""  # noqa: DOCSTRING_CJK
+        """Load the deterministic Engine from the v2 private directory, without legacy-package compatibility."""  # noqa: DOCSTRING_CJK
 
         from .numeric_v2_runtime import NumericV2Engine
 
@@ -238,7 +146,7 @@ class NumericV2PackageRegistry:
             if not self.package_file_exists(story_id):
                 raise NumericV2PackageNotFoundError("numeric_story_not_found")
             payload = json.loads(path.read_text(encoding="utf-8"))
-            # 运行时加载与导入使用同一版本门禁，旧包只能先经过作者升级流程。
+            # Runtime loading and import share one version gate; old packages must first undergo the author's upgrade flow.
             compiled = self.compile_for_import(payload)
             if compiled.story_id != story_id:
                 # A copied or renamed file would run under another story's sessions.

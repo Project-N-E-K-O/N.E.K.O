@@ -52,21 +52,21 @@ def replace_corner_mark(text):
     text = text.replace('³', '立方')
     return text
 
-# 语音合成会把这些符号念出来（「井号」「竖线」「百分号」…），入队前删掉：
-# - ``\p{S}`` 里的 emoji、装饰符、箭头、修饰符号等
-# - 另列一批 ``\p{P}`` 里不是句读停顿的技术符号（# @ & * _ | / \ ~ 〜 等）
-# 句读标点（。，、！？；：.!?,;: … · 引号）不在其中，停顿和语调照常。
-# 删掉会改变意思、TTS 本来就念得对的符号保留：
-# - 货币符号（``\p{Sc}``）：「$100」「€20」念成「一百美元」「二十欧元」；
-# - 百分号 % ％：「50%」念成「百分之五十」，删掉就成了「五十」；
-# - 常用运算符 + − × ÷ = ≠ ≈ ± ≤ ≥：算式要念得出来；
-# - 温度 / 度数 ℃ ℉ °（「22°C」的度数符号也是 °），以及 CJK 兼容单位
-#   （U+3380–33FF，如 ㎡ ㎏ ㎞）；
-# - 负号、比较号（<= >= != 先换成 ≤ ≥ ≠；夹在两个操作数之间的 < >）和
-#   C# 这类名字里的 #：见 ``_kept_symbols``。
-# 复合 emoji（❤️、👩‍💻、1️⃣）里跟在符号后面的变体选择符、零宽连接符、键帽
-# 组合符一起删掉，否则会剩下不可见字符被送进 TTS。只在紧跟符号时删，
-# 天城文等文字里正常使用的零宽连接符不受影响。
+# Speech synthesis reads these symbols aloud (hash, vertical bar, percent sign, etc.); remove them before enqueueing:
+# - emoji, decorative symbols, arrows, modifiers, etc. in ``\p{S}``
+# - additional technical symbols from ``\p{P}`` that do not represent sentence pauses (# @ & * _ | / \ ~ 〜 etc.)
+# Sentence punctuation (。，、！？；：.!?,;: … · and quotes) remains, preserving pauses and intonation.
+# Retain symbols whose removal changes meaning and that TTS already reads correctly:
+# - Currency symbols (``\p{Sc}``): "$100" and "€20" read as one hundred dollars and twenty euros;
+# - Percent signs % ％: "50%" reads as fifty percent; removing it yields fifty;
+# - Common operators + − × ÷ = ≠ ≈ ± ≤ ≥: equations must remain speakable;
+# - Temperature / degree symbols ℃ ℉ ° ("22°C" also uses °), plus CJK compatibility units
+#   (U+3380–33FF, e.g. ㎡ ㎏ ㎞);
+# - Minus and comparison signs (convert <= >= != to ≤ ≥ ≠ first; < > between operands) and
+#   # in names such as C#: see ``_kept_symbols``.
+# Remove variation selectors, zero-width joiners, and enclosing keycaps following symbols in compound emoji
+# (❤️, 👩‍💻, 1️⃣), or invisible characters would reach TTS. Remove only immediately after symbols,
+# preserving zero-width joiners used normally in scripts such as Devanagari.
 _TTS_KEPT_SYMBOLS = "℃℉°+＋−×÷=＝≠≈±≤≥%％\u3380-\u33ff"
 _TTS_MUTED_SYMBOL_CLASS = (
     r"(?![" + _TTS_KEPT_SYMBOLS + r"])(?!\p{Sc})["
@@ -77,18 +77,18 @@ _TTS_MUTED_SYMBOL_CLASS = (
     r"•●○◆◇★☆※§¶†‡"
     r"]"
 )
-# 变体选择符和键帽组合符只影响显示（1️⃣ 的「1」后面就跟着它们），单独出现也删。
+# Variation selectors and enclosing keycaps affect display only (they also follow the 1 in 1️⃣); remove them even alone.
 _TTS_MUTED_SYMBOL_RE = regex.compile(
     r"(?:" + _TTS_MUTED_SYMBOL_CLASS + r")"
     r"(?:" + _TTS_MUTED_SYMBOL_CLASS + r"|[\u200d\ufe0e\ufe0f\u20e3])*"
     r"|[\ufe0e\ufe0f\u20e3]+"
 )
 
-# 复合 emoji 被流式切开（「👩」「‍💻」）时，后一块开头的零宽连接符 / 变体选择符
-# 前面已经没有符号，上面的正则不会删它。由调用方记住上一块是否以被删的符号结尾，
-# 再用下面两个函数处理。
-# 只认 emoji 类符号（\p{So}，保留的单位除外）或连接符结尾：「%」「#」这类删掉的符号
-# 后面紧跟的零宽连接符属于正常文字（如天城文 क्%ष 被切开），不能当 emoji 残余删掉。
+# When streaming splits compound emoji ("👩", "‍💻"), the second chunk's leading joiner / variation selector
+# no longer follows a symbol, so the regex above cannot remove it. The caller remembers whether the previous chunk
+# ended in a removed symbol, then uses the following two functions.
+# Recognize only trailing emoji symbols (\p{So}, excluding retained units) or joiners: a zero-width joiner immediately
+# after removed symbols like % or # belongs to normal text (e.g. split Devanagari क्%ष), not emoji residue to remove.
 _TTS_TRAILING_EMOJI_RE = regex.compile(
     r"(?:(?![" + _TTS_KEPT_SYMBOLS + r"])\p{So}|[\u200d\ufe0e\ufe0f\u20e3])\Z")
 _TTS_LEADING_JOINERS_RE = regex.compile(r"\A[\u200d\ufe0e\ufe0f\u20e3]+")
@@ -104,13 +104,13 @@ def strip_leading_emoji_joiners(text: str) -> str:
     return _TTS_LEADING_JOINERS_RE.sub("", text) if text else text
 
 
-# 不靠空格分词的文字（汉字、假名、泰文等）：这些字之间删掉符号后不补空格。
+# Scripts without space-delimited words (Han, Kana, Thai, etc.): do not insert spaces after removing symbols between characters.
 _TTS_UNSPACED_SCRIPT_RE = regex.compile(
     r"[\p{Han}\p{Hiragana}\p{Katakana}\p{Thai}\p{Lao}\p{Khmer}\p{Myanmar}]"
 )
 _TTS_WORD_CHAR_RE = regex.compile(r"[\p{L}\p{N}\p{M}]")
-# 「50%」这样的百分数：% 挨着被删的符号时和数字一样算操作数，「50%-60%」
-# 念「50% 60%」，不会把 - 当负号、也不会粘成「50%60%」。
+# Percentages such as "50%": % next to a removed symbol counts as an operand like digits. "50%-60%"
+# reads as "50% 60%", without treating - as a minus sign or joining into "50%60%".
 _TTS_PERCENT_SIGNS = frozenset("%％")
 
 
@@ -123,7 +123,7 @@ def is_tts_word_char(char: str) -> bool:
     """
     return (
         len(char) == 1
-        # 组合标记也算：天城文等词尾常是元音符号（ौ），它不是 isalnum。
+        # Include combining marks: Devanagari words often end with vowel signs (ौ), which are not isalnum.
         and _TTS_WORD_CHAR_RE.match(char) is not None
         and _TTS_UNSPACED_SCRIPT_RE.match(char) is None
     )
@@ -140,22 +140,22 @@ def is_tts_operand_char(char: str) -> bool:
 
 _TTS_MINUS_SIGNS = frozenset("-－﹣")
 _TTS_HASH_SIGNS = frozenset("#＃")
-# 范围连接符：「-10~-5℃」里第二个负号前面的 ~。
+# Range separator: ~ before the second minus sign in "-10~-5℃".
 _TTS_RANGE_SIGNS = frozenset("~～〜")
 _TTS_COMPARISON_SIGNS = frozenset("<>＜＞")
 _TTS_EQUALS_SIGNS = frozenset("=＝")
-# 「<=」「>=」「!=」先换成单个比较符号，否则 < > ! 被删后只剩「=」，意思就反了。
+# Convert "<=", ">=", "!=" to single comparison symbols first; otherwise removing < > ! leaves "=", reversing meaning.
 _TTS_COMPARISON_DIGRAPH_RE = regex.compile(r"[<＜][=＝]|[>＞][=＝]|[!！][=＝]")
 _TTS_COMPARISON_DIGRAPHS = {"<": "≤", "＜": "≤", ">": "≥", "＞": "≥", "!": "≠", "！": "≠"}
 
 
-# 只由 emoji、零宽连接符、变体选择符组成的一段（「🌡️」）。
+# A segment containing only emoji, zero-width joiners, and variation selectors ("🌡️").
 _TTS_EMOJI_RUN_RE = regex.compile(r"(?:\p{So}|[\u200d\ufe0e\ufe0f\u20e3])+")
 
 
 def _is_name_hash_context(prev_char: str, prev2: str) -> bool:
-    # 「C#」「F#」「用C#」：# 前面是单独成词的一个英文字母。
-    # 「tag#」「#AI#」「#C#」这类是话题标签或普通词，不算名字。
+    # "C#", "F#", "用C#": # follows a single English letter forming a standalone word.
+    # "tag#", "#AI#", "#C#" are hashtags or ordinary words, not names.
     return (
         prev_char.isascii()
         and prev_char.isalpha()
@@ -269,22 +269,22 @@ def tts_first_unmuted_char(text: str) -> str:
 
 
 def _muted_symbol_replacement(match, before: str = "") -> str:
-    # 夹在两个字母 / 数字之间的符号换成空格而不是直接删：
-    # 「3~5」「9/28」「well-known」「по-русски」删成「35」「928」「wellknown」「порусски」
-    # 会被念成另一个数 / 词。汉字、假名这类本来就不用空格分词的文字不补。
-    # 流式分块可能正好切在符号上，所以块首 / 块尾按「另一侧是字母数字」处理。
+    # Replace symbols between letters / digits with spaces rather than deleting directly:
+    # deleting separators in "3~5", "9/28", "well-known", "по-русски" yields "35", "928", "wellknown", "порусски",
+    # pronounced as different numbers / words. Do not add spaces in scripts such as Han and Kana that do not delimit words with spaces.
+    # Streaming may split exactly at a symbol, so treat chunk boundaries as having a letter/digit on the other side.
     text = match.string
     start, end = match.span()
     symbol = match.group(0)
     context = (before or "") + text[:start]
     prev_char = context[-1:]
     next_char = text[end] if end < len(text) else ""
-    # C# 的「#」和负号保留（「C#」「-5℃」「🌡️-5°C」），规则见 _kept_symbols。
+    # Retain # in C# and minus signs ("C#", "-5℃", "🌡️-5°C"); see _kept_symbols.
     kept = _kept_symbols(symbol, prev_char, next_char, context[-2:-1])
     if kept is not None:
         return kept
     if symbol in _TTS_COMPARISON_SIGNS:
-        # 「3<5」「a > b」「=>」：夹在两个操作数之间、或挨着等号的 < > 是比较号。
+        # "3<5", "a > b", "=>": < > between operands or adjacent to equals signs are comparison operators.
         left = context.rstrip(" ")[-1:]
         right = text[end:].lstrip(" ")[:1]
         if (
@@ -321,7 +321,7 @@ def strip_tts_muted_symbols(text: str, before: str = "") -> str:
     cleaned = _TTS_MUTED_SYMBOL_RE.sub(
         lambda match: _muted_symbol_replacement(match, before), text
     )
-    # 删掉符号留下的连续空格压成一个，不动块首块尾原有的空格。
+    # Collapse consecutive spaces left by symbol removal without changing original spaces at chunk boundaries.
     return regex.sub(r" {2,}", " ", cleaned)
 
 def estimate_speech_time(text, unit_duration=0.2):
@@ -361,7 +361,7 @@ def remove_bracket(text):
 
 def count_words_and_chars(text: str) -> int:
     """
-    统计混合文本长度：中文字符计1、英文单词计1
+    Measure mixed text length: one per Chinese character and one per English word.
     """
     if not text:
         return 0
@@ -377,7 +377,7 @@ def count_words_and_chars(text: str) -> int:
 # 1. per sentence max len token_max_n, min len token_min_n, merge if last sentence len less than merge_len
 # 2. cal sentence len according to lang
 # 3. split sentence according to punctuation
-# 4. 返回（要处理的文本，剩余buffer）
+# 4. Return (text to process, remaining buffer).
 def split_paragraph(text: str, force_process=False, lang="zh", token_min_n=2.5, comma_split=True):
     def calc_utt_length(_text: str):
         return estimate_speech_time(_text)
@@ -402,32 +402,32 @@ def split_paragraph(text: str, force_process=False, lang="zh", token_min_n=2.5, 
             else:
                 st = i + 1
 
-    if len(utts) == 0: # 没有一个标点
+    if len(utts) == 0: # No punctuation.
         if force_process:
             return text, ""
         else:
             return "", text
-    elif calc_utt_length(utts[-1]) > token_min_n: #如果最后一个utt长度达标
-        # print(f"💼后端进行切割：|| {''.join(utts)} || {text[st:]}")
+    elif calc_utt_length(utts[-1]) > token_min_n: # If the final utterance meets the length requirement.
+        # print(f"💼Backend splitting: || {''.join(utts)} || {text[st:]}")
         return ''.join(utts), text[st:]
-    elif len(utts)==1: #如果长度不达标，但没有其他utt
+    elif len(utts)==1: # If it is too short but there are no other utterances.
         if force_process:
             return text, ""
         else:
             return "", text
     else:
-        # print(f"💼后端进行切割：|| {''.join(utts[:-1])} || {utts[-1] + text[st:]}")
+        # print(f"💼Backend splitting: || {''.join(utts[:-1])} || {utts[-1] + text[st:]}")
         return ''.join(utts[:-1]), utts[-1] + text[st:]
 
 # remove blank between chinese character
 def replace_blank(text: str):
-    """保留两侧都是"非空格 ASCII 字符"的空格，其余 ASCII 空格一律去掉。
+    """Retain spaces with non-space ASCII characters on both sides; remove all other ASCII spaces.
 
-    用于处理 Gemini Live output transcript 之类把中文词中间插入空格、
-    以及中英交界处的 ASCII 空格场景——这些空格会让 TTS 把中文读断。
+    Handles Gemini Live output transcripts inserting spaces within Chinese words
+    or at Chinese/English boundaries, where spaces break Chinese speech in TTS.
 
-    边界字符（i==0 或 i==末尾）没有对应侧的邻居，一律按"非 ASCII/空格"处理
-    直接丢弃，避免 Python 负索引或 IndexError。
+    Boundary characters (i==0 or i==last) lack a neighbor on one side; always treat it as non-ASCII/space
+    and discard, avoiding Python negative indexing or IndexError.
     """
     n = len(text)
     out_str = []
@@ -443,9 +443,9 @@ def replace_blank(text: str):
     return "".join(out_str)
 
 
-# "Glue-to-adjacent" 字符范围：这些脚本里出现的 ASCII 空格几乎一定是 tokenizer
-# artifact（Gemini Live 把中文 token 切开的那种），不是语义分词。
-# 刻意不包含：Hangul（韩语用空格分词）、Cyrillic / Arabic / Thai / Devanagari 等。
+# "Glue-to-adjacent" character ranges: ASCII spaces in these scripts are almost certainly tokenizer
+# artifacts (as Gemini Live splits Chinese tokens), rather than semantic word separators.
+# Intentionally exclude Hangul (Korean separates words with spaces), Cyrillic / Arabic / Thai / Devanagari, etc.
 _CJK_GLUE_RANGES = (
     (0x3040, 0x30FF),  # Hiragana + Katakana
     (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
@@ -465,29 +465,29 @@ def _is_cjk_glue_char(c: str) -> bool:
 
 
 def drop_cjk_boundary_spaces(text: str) -> str:
-    """去掉至少一侧是 CJK 汉字 / 日文假名的 ASCII 空格（含连续空格串）。
+    """Remove ASCII spaces, including consecutive runs, adjacent to CJK Han / Japanese Kana on at least one side.
 
-    专治 Gemini Live 这类 realtime 后端在输出转录里把中文 token 切开
-    （"你 好 世 界"）的 artifact。相比 :func:`replace_blank`：
+    Targets artifacts from realtime backends such as Gemini Live splitting Chinese tokens
+    ("你 好 世 界") in output transcripts. Compared with :func:`replace_blank`:
 
-    - 前者只在两侧均为 ASCII 非空格字符时保留空格，会误伤 Korean /
-      Cyrillic / Arabic / Thai 等"非 ASCII 但靠空格分词"的脚本
-      （"안녕하세요 여러분" → "안녕하세요여러분"）。
-    - 本函数只在 CJK 汉字/假名邻接的情况下删空格，其余场景一律保留。
+    - That function retains spaces only between non-space ASCII characters, damaging Korean /
+      Cyrillic / Arabic / Thai scripts that are non-ASCII but separate words with spaces
+      ("안녕하세요 여러분" -> "안녕하세요여러분").
+    - This function removes spaces only next to CJK Han/Kana, preserving all others.
 
-    判邻居时会**跳过连续空格**找到最近的非空格字符，这样
-    ``"你好   世界"`` 整段 3 个空格都会被删掉，而不是只删掉最外侧两个。
-    """
+    Neighbor detection **skips consecutive spaces** to the nearest non-space character, ensuring
+    all three spaces in ``"你好   世界"`` are removed rather than only the outer two.
+    """  # noqa: DOCSTRING_CJK
     n = len(text)
     out = []
     for i, c in enumerate(text):
         if c == " ":
-            # 向左跳过连续空格找最近非空格
+            # Skip consecutive spaces leftward to find the nearest non-space character.
             j = i - 1
             while j >= 0 and text[j] == " ":
                 j -= 1
             left = text[j] if j >= 0 else ""
-            # 向右跳过连续空格找最近非空格
+            # Skip consecutive spaces rightward to find the nearest non-space character.
             j = i + 1
             while j < n and text[j] == " ":
                 j += 1
@@ -499,23 +499,23 @@ def drop_cjk_boundary_spaces(text: str) -> str:
 
 
 class TtsStreamNormalizer:
-    """跨 chunk 安全的 TTS 文本规范化器。
+    """TTS text normalizer safe across chunk boundaries.
 
-    Gemini Live 等 realtime 后端的 output transcript 会在中文 token 之间
-    插入 ASCII 空格（"你 好 世 界"），MiniMax / CosyVoice 等 streaming
-    TTS 会把这些断开的中文读成顿挫的短片段。该 normalizer 用
-    :func:`drop_cjk_boundary_spaces` 去除 CJK 邻接的 ASCII 空格，同时
-    针对 streaming 场景做了两项关键处理：
+    Realtime backends such as Gemini Live insert ASCII spaces between Chinese tokens
+    ("你 好 世 界") in output transcripts; streaming TTS such as MiniMax / CosyVoice
+    reads these separated characters as choppy fragments. This normalizer uses
+    :func:`drop_cjk_boundary_spaces` to remove CJK-adjacent ASCII spaces while
+    handling two crucial streaming cases:
 
-    1. 尾部空格**延后决策**：chunk 末尾的 ASCII 空格暂存到下一个 chunk
-       出现时，再结合后一个字符判断是否保留。
-    2. 左侧上下文**跨 chunk 继承**：用上一次 emit 出的最后一个非空格字符
-       作为下个 chunk 首位空格的"左邻居"，避免在 chunk 边界误判。
+    1. **Defer trailing-space decisions**: buffer trailing ASCII spaces until the next chunk
+       arrives, then decide retention using its following character.
+    2. **Carry left context across chunks**: use the last emitted non-space character
+       as the next chunk's leading space's left neighbor, avoiding boundary misclassification.
 
-    刻意**不碰**非 CJK 脚本（Korean / Cyrillic / Arabic / Thai 等）的空格，
-    它们靠 ASCII 空格做分词，删掉会让 TTS 彻底读不对。每个新的 TTS 轮次
-    （speech_id 切换）必须调用 :meth:`reset`。
-    """
+    Deliberately leave spaces in non-CJK scripts (Korean / Cyrillic / Arabic / Thai, etc.) untouched:
+    they delimit words with ASCII spaces, and removal breaks TTS. Call :meth:`reset` for every new TTS turn
+    (speech_id change).
+    """  # noqa: DOCSTRING_CJK
 
     __slots__ = ("_last_nonspace", "_pending_spaces")
 
@@ -524,25 +524,25 @@ class TtsStreamNormalizer:
         self._pending_spaces = ""
 
     def reset(self) -> None:
-        """清空状态。新 speech_id 或中断时调用。"""
+        """Clear state. Call on a new speech_id or interruption."""
         self._last_nonspace = ""
         self._pending_spaces = ""
 
     def feed(self, chunk: str) -> str:
-        """输入一个新 chunk，返回当前可安全 emit 的已规范化文本。"""
+        """Feed a new chunk and return normalized text currently safe to emit."""
         if not chunk:
             return ""
 
         work = self._pending_spaces + chunk
 
-        # 尾部 ASCII 空格暂存，等下一个 chunk 的首字符决定去留
+        # Buffer trailing ASCII spaces; the next chunk's first character determines whether to retain them.
         stripped = work.rstrip(" ")
         self._pending_spaces = work[len(stripped):]
         if not stripped:
             return ""
 
-        # 用上次 emit 的末位非空格字符当左邻居；非空格保证
-        # drop_cjk_boundary_spaces 不会丢掉 prefix 本身，可以用长度精确剥离。
+        # Use the last emitted non-space character as the left neighbor; being non-space ensures
+        # drop_cjk_boundary_spaces retains the prefix itself, allowing exact removal by length.
         prefix = self._last_nonspace
         filtered = drop_cjk_boundary_spaces(prefix + stripped)
         if prefix and filtered.startswith(prefix):
@@ -556,35 +556,35 @@ class TtsStreamNormalizer:
         return filtered
 
     def flush(self) -> str:
-        """轮次结束收尾：丢弃悬挂的尾部空格并清空状态。"""
+        """Finish the turn: discard pending trailing spaces and clear state."""
         self._pending_spaces = ""
         self._last_nonspace = ""
         return ""
 
 
 class TtsBracketStripper:
-    """跨 chunk 安全的 TTS 括号剥离器。
+    """TTS bracket stripper safe across chunk boundaries.
 
-    括号内容连同括号本身**整体不读**（含常见半角/全角括号类型，包含
-    嵌套；书名号 ``《》`` 例外）。流式输入下一句 ``她（笑）说`` 可能被切成 ``她（``、``笑``、
-    ``）说`` 三个 chunk，本类用 ``depth`` 计数维持嵌套状态，跨 chunk
-    不丢失。
+    **Do not speak entire bracketed segments**, including brackets (common half/fullwidth types,
+    nested brackets included, except title brackets ``《》``). Streaming ``她（笑）说`` may split into ``她（``, ``笑``,
+    and ``）说``; this class maintains nesting with ``depth`` across chunk
+    boundaries.
 
-    每个新 TTS 轮次（``speech_id`` 切换）必须调 :meth:`reset`，否则
-    上一轮悬挂的 open bracket 会把新一轮的开头一段静音掉。
-    :meth:`flush` 在 turn end 前调一次，把残留的未闭合括号 depth 直接
-    清零（半个 ``（thinking...`` 不读比读半个更安全）。
+    Call :meth:`reset` on each new TTS turn (``speech_id`` change), or an
+    unmatched opener from the previous turn can silence the beginning of the new turn.
+    Call :meth:`flush` once before turn end to zero remaining unclosed bracket depth
+    (omitting a partial ``（thinking...`` is safer than speaking it).
 
-    设计上和 markdown 剥离解耦：``[`` ``]`` 的"剥外壳保内容"语义留给
-    :class:`TtsMarkdownStripper` 处理（markdown 链接 ``[文本](URL)``
-    需要保留 ``文本``）。本类把 ``[`` ``]`` 视作整段不读的括号，因此
-    ``TtsMarkdownStripper`` 必须串在前面，先把链接等剥成纯文本再交给
-    本类，否则链接文本会被吃掉。
-    """
+    Decoupled from Markdown stripping: retaining content while removing ``[`` ``]`` belongs to
+    :class:`TtsMarkdownStripper` (Markdown links ``[文本](URL)``
+    must retain ``文本``). This class treats ``[`` ``]`` as brackets whose entire content is silent, so
+    ``TtsMarkdownStripper`` must precede it, converting links etc. to plain text before this
+    class; otherwise link text disappears.
+    """  # noqa: DOCSTRING_CJK
 
-    # 半角 + 全角 + 各类引用括号 → 配对的 close。刻意不含 `{` `｛`
-    # `}` `｝`（编程语境会出现，朗读时反而希望保留），也不含书名号
-    # `《` `》`（书名、歌名等标题应进入 TTS）。
+    # Halfwidth / fullwidth / quotation brackets map to paired closers. Intentionally omit `{` `｛`
+    # `}` `｝` (useful to retain for spoken programming contexts), as well as title brackets
+    # `《` `》` (book/song titles should reach TTS).
     _PAIRS = {
         "(": ")",
         "（": "）",
@@ -605,17 +605,17 @@ class TtsBracketStripper:
         self._stack = []
 
     def reset(self) -> None:
-        """清空 opener stack。新 speech_id 或中断时调。"""
+        """Clear the opener stack. Call on a new speech_id or interruption."""
         self._stack.clear()
 
     def feed(self, chunk: str) -> str:
-        """逐字符扫描，返回当前可 emit 的文本（opener stack 非空时为空）。
+        """Scan character by character and return currently emittable text (empty while the opener stack is nonempty).
 
-        opener stack 替代单纯 depth 计数，做 type-pair 校验：close 只有
-        与 stack 顶 opener 配对时才弹栈，否则按字面 emit（depth 0 时）
-        或随括号内容一起丢（depth > 0 时）。这样 ``（旁白]继续`` 里的
-        ``]`` 不会被误当成 ``（`` 的合法闭合而提前结束括号态。
-        """
+        The opener stack replaces simple depth counting with type-pair validation: pop only
+        when a closer matches the top opener; otherwise emit literally at depth 0
+        or discard with bracketed content at depth > 0. Thus ``]`` in ``（旁白]继续``
+        cannot incorrectly close ``（`` and prematurely end bracketed state.
+        """  # noqa: DOCSTRING_CJK
         if not chunk:
             return ""
         out = []
@@ -627,103 +627,103 @@ class TtsBracketStripper:
                 if stack and stack[-1] == c:
                     stack.pop()
                 elif not stack:
-                    # 落单的 close 括号：当成普通标点 emit，避免把
-                    # ``50)`` 这种数学/列表写法的 ``)`` 整个吃掉。
+                    # Emit unmatched closing brackets as ordinary punctuation, avoiding loss of
+                    # the ) in mathematical/list notation such as ``50)``.
                     out.append(c)
-                # else: 在括号内但与 top opener 不配对（``（旁白]``），
-                # 当成括号内的一个标点字符随上下文一起丢。
+                # else: inside brackets but mismatching the top opener (``（旁白]``),
+                # discard as a punctuation character within the bracketed context.
             elif not stack:
                 out.append(c)
-            # else: 在括号里，整个丢
+            # else: inside brackets; discard entirely.
         return "".join(out)
 
     def flush(self) -> str:
-        """轮次收尾：清空 stack，返回 ``""``。
+        """Finish the turn: clear the stack and return ``""``.
 
-        未闭合括号的悬挂内容已经在 feed 阶段被丢弃，这里只需重置状态。
+        Unclosed bracket content was already discarded during feed; only reset state here.
         """
         self._stack.clear()
         return ""
 
 
 class TtsMarkdownStripper:
-    """跨 chunk 安全的 markdown 剥离器（best effort）。
+    """Best-effort Markdown stripper safe across chunk boundaries.
 
-    剥外壳保内容：``**X**`` → ``X``、``[X](url)`` → ``X`` 等。
-    覆盖以下模式（顺序 = 优先级）：
+    Remove markup and retain content: ``**X**`` -> ``X``, ``[X](url)`` -> ``X``, etc.
+    Covers these patterns in priority order:
 
-    1. 三反引号 fence ``` ```lang\\nbody``` ``` → 整段丢（朗读代码无意义）
-    2. 行内 fence ``` ``X`` ``` → ``X``
-    3. 图片 ``![alt](url)`` → 整段丢（含 alt）
-    4. 链接 ``[text](url)`` → ``text``
-    5. ``**X**`` / ``__X__`` → ``X``
-    6. ``*X*`` / ``_X_`` → ``X``（``_`` 严格要求两侧非字母数字，避开变量名）
-    7. ``~~X~~`` → ``X``
-    8. 行首 ``#``/``##``/...``/``>``/``-``/``*``/``\\d+.`` 列表/标题/引用前缀 → 删
+    1. Triple-backtick fence ``` ```lang\\nbody``` ``` -> discard entirely (speaking code is pointless)
+    2. Inline fence ``` ``X`` ``` -> ``X``
+    3. Image ``![alt](url)`` -> discard entirely, including alt
+    4. Link ``[text](url)`` -> ``text``
+    5. ``**X**`` / ``__X__`` -> ``X``
+    6. ``*X*`` / ``_X_`` -> ``X`` (``_`` strictly requires non-alphanumeric neighbors, avoiding variable names)
+    7. ``~~X~~`` -> ``X``
+    8. Line-leading ``#``/``##``/...``/``>``/``-``/``*``/``\\d+.`` list/heading/quote prefixes -> remove
 
-    流式策略：用 ``_safe_split`` 找出"从最早未配对的 marker 起到 buf 末"的位置，
-    那段 hold 成 pending 等下个 chunk；前面的 emit。pending 上限 ``_MAX_PENDING``
-    防止模型半天不闭合一直憋着——超限就强制 emit + reset，避免内存膨胀。
-    :meth:`flush` 在 turn end 前调一次，把 pending strip 一遍并把残留的孤立
-    marker 字符（``*`` ``_`` ``~`` ``\\``` ``[`` ``]`` ``(`` ``)``）删掉再 emit。
+    Streaming: ``_safe_split`` locates the earliest unpaired marker through buf's end;
+    hold that segment pending the next chunk and emit the preceding segment. ``_MAX_PENDING``
+    prevents indefinite buffering when the model never closes markup; force emit + reset above the limit to avoid memory growth.
+    Call :meth:`flush` once before turn end, stripping pending content and removing remaining isolated
+    marker characters (``*`` ``_`` ``~`` ``\\``` ``[`` ``]`` ``(`` ``)``) before emitting.
 
-    刻意 best effort：嵌套 emphasis、跨 fence 的复杂场景不保证完美——LLM
-    很少这么写，过度工程化得不偿失。完全不会"吃"用户内容（坏情况只是漏剥）。
+    Deliberately best-effort: nested emphasis and complex cross-fence cases are not guaranteed perfect; LLMs
+    rarely produce them, and overengineering is not worthwhile. Never swallows user content (worst case: unstripped markup).
     """
 
     __slots__ = ("_pending",)
 
-    # pending 字节上限，防止模型不闭合时无限累加。超限直接 emit + reset。
+    # Pending byte limit prevents unbounded accumulation when the model never closes a marker; emit + reset on overflow.
     _MAX_PENDING = 256
 
-    # 多字符 marker（必须先于单字符匹配，否则 ``**`` 会被算成两个 ``*``）。
+    # Multicharacter markers must match before single characters, or ``**`` becomes two ``*`` markers.
     _MULTI_MARKERS = ("```", "**", "__", "~~")
     _SINGLE_MARKERS = ("*", "_", "~", "`")
 
-    # _strip 用的完整正则模式（顺序敏感）
+    # Complete regex pattern used by _strip (order matters).
     _PATTERNS = (
-        # 多行 fence（含语言标签）整段删
+        # Remove entire multiline fences, including language tags.
         (re.compile(r"```[^\n]*\n[\s\S]*?```"), ""),
-        # 行内 fence 保留内容
+        # Retain inline-fence content.
         (re.compile(r"```([^`\n]*?)```"), r"\1"),
-        # 图片整段删（包括 alt 文本，避免朗读 "alt-text"）
+        # Remove whole images, including alt text, to avoid reading alt-text aloud.
         (re.compile(r"!\[[^\]]*?\]\([^)]*?\)"), ""),
-        # 链接保留 text，丢 url
+        # Retain link text and discard the URL.
         (re.compile(r"\[([^\]]+?)\]\([^)]*?\)"), r"\1"),
-        # bold（先于 italic 处理，避免 ``**X**`` 被当成两个 ``*X*``）
+        # Process bold before italic, preventing ``**X**`` from becoming two ``*X*`` matches.
         (re.compile(r"\*\*([^*\n]+?)\*\*"), r"\1"),
         (re.compile(r"__([^_\n]+?)__"), r"\1"),
         # italic
         (re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)"), r"\1"),
-        # ``_`` 两侧必须非字母数字，否则会吃掉 ``foo_bar`` 这种变量名
+        # ``_`` must have non-alphanumeric neighbors on both sides, avoiding variable names such as ``foo_bar``.
         (re.compile(r"(?<![A-Za-z0-9_])_([^_\n]+?)_(?![A-Za-z0-9_])"), r"\1"),
         # strikethrough
         (re.compile(r"~~([^~\n]+?)~~"), r"\1"),
         # inline code
         (re.compile(r"`+([^`\n]+?)`+"), r"\1"),
-        # 行首 marker（heading / blockquote / list）
+        # Line-leading markers (heading / blockquote / list).
         (re.compile(r"(?m)^[ \t]*(?:#{1,6}|>+|[-*+]|\d+\.)[ \t]+"), ""),
     )
 
-    # flush 兜底：删掉残留的孤立 marker 字符
+    # Flush fallback: remove leftover isolated marker characters.
     _DANGLING_RE = re.compile(r"[*_~`\[\]()]+")
-    # 只删括号类：括号留下会被 TtsBracketStripper 当成开括号吞掉后文。
+    # Remove bracket characters only: leftover brackets would make TtsBracketStripper treat them as openers and swallow following text.
     _DANGLING_BRACKET_RE = re.compile(r"[\[\]()]+")
 
     def __init__(self):
         self._pending = ""
 
     def reset(self) -> None:
-        """清空 pending。新 speech_id 或中断时调。"""
+        """Clear pending. Call on a new speech_id or interruption."""
         self._pending = ""
 
     def feed(self, chunk: str) -> str:
-        """喂入新 chunk，返回当前可安全 emit 的已剥离文本。"""
+        """Feed a new chunk and return stripped text currently safe to emit."""
         if not chunk:
             return ""
         buf = self._pending + chunk
 
-        # pending 撑满兜底：模型一直不闭合时强制 emit + reset，避免内存膨胀
+        # Pending-capacity fallback: force emit + reset if the model never closes the marker, avoiding memory growth.
         if len(buf) > self._MAX_PENDING:
             out = self._strip(buf)
             self._pending = ""
@@ -744,7 +744,7 @@ class TtsMarkdownStripper:
         dangling ``*``, ``_``, ``~`` and backticks are left for the downstream
         ``strip_tts_muted_symbols``, which knows how the previous chunk ended.
         """
-        # 「3」「~5」：这里直接删「~」会把两边连成「35」，交给符号过滤才能补空格。
+        # "3", "~5": deleting ~ here joins them as "35"; leave it to symbol filtering to insert a space.
         if not self._pending:
             return ""
         out = self._strip(self._pending)
@@ -755,15 +755,15 @@ class TtsMarkdownStripper:
 
     @classmethod
     def _safe_split(cls, buf: str) -> int:
-        """找出 buf 中"从最早未配对 marker 到末尾"的起点。
+        """Find the start of the segment from the earliest unpaired marker to buf's end.
 
-        前面的部分是"已经能确定不会被后续 chunk 改变"的，可以直接 emit；
-        从这个位置起到 buf 末是 pending，等更多 chunk 决定如何 strip。
+        The preceding segment is confirmed immune to future chunks and can be emitted directly;
+        the segment from this position to buf's end remains pending until more chunks determine stripping.
         """
         split = len(buf)
         work = list(buf)
 
-        # 多字符 marker：parity 检查。配对的 black-out，避免单字符再次计入。
+        # Multicharacter markers: check parity and black out pairs to prevent recounting individual characters.
         for marker in cls._MULTI_MARKERS:
             mlen = len(marker)
             positions = []
@@ -778,7 +778,7 @@ class TtsMarkdownStripper:
             if not positions:
                 continue
             if len(positions) % 2:
-                # 末尾一个未配对，从它起 hold
+                # Hold from the final unpaired marker.
                 split = min(split, positions[-1])
                 paired = positions[:-1]
             else:
@@ -788,17 +788,17 @@ class TtsMarkdownStripper:
                     if 0 <= p + k < len(work):
                         work[p + k] = "\0"
 
-        # 单字符 marker（已 black-out 多字符配对的视图）
+        # Single-character markers (view with paired multicharacter markers blacked out).
         work_str = "".join(work)
         for marker in cls._SINGLE_MARKERS:
             if marker == "_":
-                # ``_`` 两侧紧贴 ASCII alnum 时属于 identifier（``foo_bar``），不当 italic marker。
-                # 边界判定必须与 _strip 的 italic underscore 正则严格对齐：
-                # 那里用 ``[A-Za-z0-9_]``（ASCII-only），CJK / 西里尔等
-                # Unicode letter 不算 word boundary。如果这里改用
-                # ``str.isalnum()``（含 CJK），``你_好_`` 的开 `_` 在 split
-                # 阶段会被误判成 identifier 跳过，结果整段 emit 后 _strip
-                # 又把它认成 marker——两边语义不一致 emphasis 漏剥。
+                # ``_`` immediately between ASCII alphanumeric characters belongs to an identifier (``foo_bar``), not italic markup.
+                # Boundary detection must exactly match _strip's italic-underscore regex:
+                # it uses ``[A-Za-z0-9_]`` (ASCII-only), so CJK / Cyrillic and other
+                # Unicode letters do not count as word boundaries. Switching here to
+                # ``str.isalnum()`` (including CJK) would misclassify the opening _ in ``你_好_``
+                # as an identifier during splitting and skip it; after emitting the whole segment, _strip
+                # would recognize markup again, leaving inconsistent semantics and unstripped emphasis.
                 positions = []
                 for i, c in enumerate(work_str):
                     if c != "_":
@@ -809,19 +809,19 @@ class TtsMarkdownStripper:
                         and cls._is_ascii_word_char(work_str[i + 1])
                     )
                     if left_alnum and right_alnum:
-                        continue  # identifier 内的 _，不算 marker
+                        continue  # Underscores inside identifiers are not markers.
                     positions.append(i)
             else:
                 positions = [i for i, c in enumerate(work_str) if c == marker]
             if len(positions) % 2:
                 split = min(split, positions[-1])
 
-        # ``[ ... ]`` 链接识别：从最早未确认非链接的 ``[`` 起 hold pending。
-        # 必须在 ``]`` 之后看到非 ``(`` 字符才能确认"不是链接"——否则
-        # chunk1 = ``...[docs]`` / chunk2 = ``(url)`` 这种切法会让上一块
-        # 把 ``[docs]`` 提前 emit 给下游 bracket stripper，被当成普通方括
-        # 号整段吞掉，``docs`` 永远朗读不出来。``](`` 已出现且 ``)`` 未到
-        # 时同样 hold（链接 URL 还没写完）。
+        # ``[ ... ]`` link detection: hold pending from the earliest [ not yet confirmed to be a non-link.
+        # A non-( character after ] is required to confirm a non-link; otherwise
+        # chunk1 = ``...[docs]`` / chunk2 = ``(url)`` lets the previous chunk
+        # emit [docs] prematurely to the downstream bracket stripper, which swallows the whole ordinary
+        # bracketed segment, preventing docs from ever being spoken. Also hold when ]( exists but ) has not
+        # arrived, as the link URL is incomplete.
         positions = []
         i = 0
         while i < len(work_str):
@@ -831,15 +831,15 @@ class TtsMarkdownStripper:
                 i += 1
             elif c == "]" and positions:
                 if i + 1 >= len(work_str):
-                    break  # ``]`` 在 buf 末尾，下个 chunk 可能是 ``(`` → hold
+                    break  # ``]`` ends buf; the next chunk may start with ``(``, so hold.
                 if work_str[i + 1] == "(":
                     close = work_str.find(")", i + 2)
                     if close < 0:
-                        break  # ``](url`` 还没闭合 → hold from ``[``
+                        break  # ``](url`` is not closed yet: hold from ``[``.
                     positions.pop()
                     i = close + 1
                 else:
-                    # ``]X`` 且 X != ``(`` → 不是链接，settled
+                    # ``]X`` with X != ``(``: confirmed non-link, settled.
                     positions.pop()
                     i += 1
             else:
@@ -857,10 +857,10 @@ class TtsMarkdownStripper:
 
     @staticmethod
     def _is_ascii_word_char(c: str) -> bool:
-        """ASCII ``[A-Za-z0-9_]`` 字符判定，刻意不含 CJK / 其他 Unicode letter。
+        """Test ASCII ``[A-Za-z0-9_]`` characters, deliberately excluding CJK / other Unicode letters.
 
-        必须与 _PATTERNS 里 italic underscore 正则的 ``[A-Za-z0-9_]`` 字符类
-        语义一致——不要换成 ``str.isalnum()``（会把 CJK / Cyrillic 等当 alnum）。
+        Must match the semantics of ``[A-Za-z0-9_]`` in _PATTERNS' italic-underscore regex;
+        do not replace with ``str.isalnum()``, which includes CJK / Cyrillic, etc.
         """
         return ("a" <= c <= "z") or ("A" <= c <= "Z") or ("0" <= c <= "9") or c == "_"
 
@@ -873,13 +873,13 @@ def is_only_punctuation(text):
 
 def calculate_text_similarity(text1: str, text2: str) -> float:
     """
-    计算两段文本的相似度（使用字符级 trigram 的 Jaccard 相似度）。
-    返回 0.0 到 1.0 之间的值。
+    Calculate text similarity using character-trigram Jaccard similarity.
+    Return a value between 0.0 and 1.0.
     """
     if not text1 or not text2:
         return 0.0
     
-    # 生成字符级 trigrams
+    # Generate character-level trigrams.
     def get_trigrams(text: str) -> set:
         text = text.lower().strip()
         if len(text) < 3:
@@ -900,24 +900,24 @@ def calculate_text_similarity(text1: str, text2: str) -> float:
 
 def find_models():
     """
-    递归扫描 'static' 文件夹、用户文档下的 'live2d' 文件夹、Steam创意工坊目录和用户mod路径，
-    查找所有包含 '.model3.json' 文件的子目录。
+    Recursively scan 'static', 'live2d' under user Documents, Steam Workshop directories, and user mod paths
+    for subdirectories containing '.model3.json' files.
     """
     from utils.config_manager import get_config_manager
     
     found_models = []
     search_dirs = []
     
-    # 添加static目录
+    # Add the static directory.
     static_dir = 'static'
     if os.path.exists(static_dir):
         search_dirs.append(('static', static_dir, '/static'))
     else:
         logging.warning(f"警告：static文件夹路径不存在: {static_dir}")
     
-    # 添加用户文档目录下的live2d文件夹
-    # CFA (反勒索防护) 感知：如果原始 Documents 不可写但可读，
-    # 从原始路径读取模型（/user_live2d），可写回退路径作为辅助（/user_live2d_local）
+    # Add the live2d folder under the user's Documents directory.
+    # CFA (Controlled Folder Access) awareness: if original Documents is readable but not writable,
+    # read models from the original path (/user_live2d), using the writable fallback as an auxiliary (/user_live2d_local).
     try:
         config_mgr = get_config_manager()
         config_mgr.ensure_live2d_directory()
@@ -935,52 +935,52 @@ def find_models():
                 continue
 
             if readable_live2d_str and _norm(live2d_root_str) == _norm(writable_live2d) and _norm(writable_live2d) != _norm(readable_live2d_str):
-                # CFA 场景的可写回退目录（优先）
+                # Writable fallback directory for CFA scenarios (preferred).
                 search_dirs.append(('documents_local', live2d_root_str, '/user_live2d_local'))
             elif readable_live2d_str and _norm(live2d_root_str) == _norm(readable_live2d_str):
-                # CFA 场景的只读原始目录（回退）
+                # Read-only original directory for CFA scenarios (fallback).
                 search_dirs.append(('documents_legacy', live2d_root_str, '/user_live2d'))
             else:
                 search_dirs.append(('documents', live2d_root_str, '/user_live2d'))
     except Exception as e:
         logging.warning(f"无法访问用户文档live2d目录: {e}")
     
-    # 添加Steam创意工坊目录
+    # Add the Steam Workshop directory.
     workshop_search_dir = _resolve_workshop_search_dir()
     if workshop_search_dir and os.path.exists(workshop_search_dir):
         search_dirs.append(('workshop', workshop_search_dir, '/workshop'))
     
-    # 遍历所有搜索目录
+    # Traverse all search directories.
     for source, search_root_dir, url_prefix in search_dirs:
         try:
-            # os.walk会遍历指定的根目录下的所有文件夹和文件
+            # os.walk traverses all directories and files under the specified root.
             for root, dirs, files in os.walk(search_root_dir):
                 for file in files:
                     if file.endswith('.model3.json'):
-                        # 获取模型名称 (使用其所在的文件夹名，更加直观)
+                        # Get the model name from its containing folder for clarity.
                         folder_name = os.path.basename(root)
                         
-                        # 使用文件夹名作为模型名称和显示名称
+                        # Use the folder name as both model name and display name.
                         display_name = folder_name
                         model_name = folder_name
                         
-                        # 构建可被浏览器访问的URL路径
-                        # 1. 计算文件相对于 search_root_dir 的路径
+                        # Build a browser-accessible URL path.
+                        # 1. Calculate the path relative to search_root_dir.
                         relative_path = os.path.relpath(os.path.join(root, file), search_root_dir)
-                        # 2. 将本地路径分隔符 (如'\\') 替换为URL分隔符 ('/')
+                        # 2. Replace local path separators (e.g. '\\') with URL separators ('/').
                         model_path = relative_path.replace(os.path.sep, '/')
                         
-                        # 如果模型名称已存在，添加来源后缀以区分
+                        # Add a source suffix to distinguish an existing model name.
                         existing_names = [m["name"] for m in found_models]
                         final_name = model_name
                         if model_name in existing_names:
                             final_name = f"{model_name}_{source}"
-                            # 如果加后缀后还是重复，再加个数字后缀
+                            # If the suffixed name still duplicates another, add a numeric suffix.
                             counter = 1
                             while final_name in existing_names:
                                 final_name = f"{model_name}_{source}_{counter}"
                                 counter += 1
-                            # 同时更新display_name以区分
+                            # Update display_name too for distinction.
                             display_name = f"{display_name} ({source})"
                         
                         model_entry = {
@@ -997,7 +997,7 @@ def find_models():
                         
                         found_models.append(model_entry)
                         
-                        # 优化：一旦在某个目录找到模型json，就无需再继续深入该目录的子目录
+                        # Optimization: after finding model JSON in a directory, do not descend further into its subdirectories.
                         dirs[:] = []
                         break
         except Exception as e:
@@ -1007,38 +1007,38 @@ def find_models():
 
 def _is_within(base: str, target: str) -> bool:
     """
-    检查 target 路径是否在 base 路径内（用于路径遍历防护）
+    Check whether target is inside base, preventing path traversal.
     
-    在 Windows 上，如果 base 和 target 位于不同驱动器，os.path.commonpath 会抛出 ValueError。
-    此函数捕获该异常并返回 False，安全地处理跨驱动器的情况。
+    On Windows, os.path.commonpath raises ValueError when base and target reside on different drives.
+    Catch it and return False to handle cross-drive cases safely.
     
     Args:
-        base: 基础路径（目录）
-        target: 目标路径（要检查的路径）
+        base: Base path (directory)
+        target: Target path to check
         
     Returns:
-        True 如果 target 在 base 内，False 否则（包括跨驱动器的情况）
+        True if target is inside base, otherwise False (including different drives)
     """
     try:
         return os.path.commonpath([target, base]) == base
     except ValueError:
-        # 跨驱动器或其他无法比较的情况
+        # Different drives or other incomparable cases.
         return False
 
 
 def is_user_imported_model(model_path: str, config_manager=None) -> bool:
     """
-    检查模型路径是否在用户导入的模型目录下
+    Check whether a model path is under the user-imported model directory.
     
-    用于验证模型是否属于用户导入的模型（而非系统模型或创意工坊模型），
-    以便进行权限检查（如删除、保存配置等操作）。
+    Verify that the model is user-imported rather than a system/Workshop model,
+    for permission checks on deletion, configuration saving, etc.
     
     Args:
-        model_path: 模型目录的路径（字符串）
-        config_manager: 配置管理器实例。如果为 None，会从 get_config_manager() 获取
+        model_path: Model directory path (string)
+        config_manager: Configuration manager instance; obtain from get_config_manager() if None
         
     Returns:
-        True 如果模型在用户导入目录下，False 否则（包括异常情况）
+        True if inside the user-import directory, otherwise False (including exceptions)
     """
     try:
         if config_manager is None:
@@ -1049,18 +1049,18 @@ def is_user_imported_model(model_path: str, config_manager=None) -> bool:
         user_live2d_dir = os.path.realpath(str(config_manager.live2d_dir))
         model_path_real = os.path.realpath(model_path)
         
-        # 使用 _is_within 来安全地检查路径（处理跨驱动器情况）
+        # Safely check paths with _is_within, handling different drives.
         return _is_within(user_live2d_dir, model_path_real)
     except Exception:
-        # 任何异常都返回 False，表示不是用户导入的模型
+        # Any exception returns False: not a user-imported model.
         return False
 
 
 def _resolve_workshop_search_dir() -> str:
     """
-    获取创意工坊搜索目录
+    Get Workshop search directories.
     
-    优先级: user_mod_folder(配置) > Steam运行时路径 > user_workshop_folder(缓存文件) > default_workshop_folder(配置) > 默认workshop目录
+    Priority: user_mod_folder (configuration) > Steam runtime path > user_workshop_folder (cache file) > default_workshop_folder (configuration) > default workshop directory
     """
     from utils.config_manager import get_workshop_path
     workshop_path = get_workshop_path()
@@ -1071,14 +1071,14 @@ def _resolve_workshop_search_dir() -> str:
 
 def find_model_directory(model_name: str):
     """
-    查找模型目录，优先在用户文档目录，其次在创意工坊目录，最后在static目录
-    返回 (实际路径, URL前缀) 元组
+    Find a model directory, preferring user Documents, then Workshop, then static.
+    Return an (actual path, URL prefix) tuple.
     """
     from utils.config_manager import get_config_manager
     
-    # 验证模型名称，防止路径遍历攻击
-    # 允许：字母、数字、下划线、中日韩字符、连字符、空格、括号（半角和全角）、点、逗号等常见字符
-    # 拒绝：路径分隔符 / \ 和路径遍历 ..
+    # Validate model names to prevent path traversal.
+    # Allow common characters: letters, digits, underscores, CJK characters, hyphens, spaces, half/fullwidth parentheses, dots, commas, etc.
+    # Reject path separators / \ and path traversal ..
     if not model_name or not model_name.strip():
         logging.warning("模型名称为空")
         return (None, None)
@@ -1089,10 +1089,10 @@ def find_model_directory(model_name: str):
     
     WORKSHOP_SEARCH_DIR = _resolve_workshop_search_dir()
     
-    # 定义允许的基础目录列表
+    # Define the allowed base directories.
     allowed_base_dirs = []
 
-    # 获取 CFA 场景下的可读 live2d 目录（可能为 None）
+    # Get the readable live2d directory for CFA scenarios (possibly None).
     readable_live2d = None
     try:
         config_mgr = get_config_manager()
@@ -1100,7 +1100,7 @@ def find_model_directory(model_name: str):
     except Exception:
         pass
 
-    # Live2D 路径查找：优先可写运行时目录，回退只读 legacy 目录
+    # Live2D lookup: prefer the writable runtime directory, falling back to the read-only legacy directory.
     try:
         config_mgr = get_config_manager()
         writable_live2d = os.path.normcase(os.path.normpath(str(config_mgr.live2d_dir)))
@@ -1124,33 +1124,33 @@ def find_model_directory(model_name: str):
     except Exception as e:
         logging.warning(f"检查文档目录模型时出错: {e}")
 
-    # 然后尝试创意工坊目录
+    # Then try Workshop directories.
     try:
         if WORKSHOP_SEARCH_DIR and os.path.exists(WORKSHOP_SEARCH_DIR):
             workshop_search_real = os.path.realpath(WORKSHOP_SEARCH_DIR)
-            # 直接匹配（如果模型名称恰好与文件夹名相同）
+            # Direct match when model name equals folder name.
             workshop_model_dir = os.path.join(WORKSHOP_SEARCH_DIR, model_name)
             if os.path.exists(workshop_model_dir):
                 workshop_model_dir_real = os.path.realpath(workshop_model_dir)
                 if os.path.commonpath([workshop_model_dir_real, workshop_search_real]) == workshop_search_real:
                     return (workshop_model_dir, '/workshop')
             
-            # 递归搜索创意工坊目录下的所有子文件夹（处理Steam工坊使用物品ID命名的情况）
+            # Recursively search all Workshop subfolders, handling Steam Workshop's item-ID folder names.
             for item_id in os.listdir(WORKSHOP_SEARCH_DIR):
                 item_path = os.path.join(WORKSHOP_SEARCH_DIR, item_id)
                 item_path_real = os.path.realpath(item_path)
                 if os.path.isdir(item_path_real):
-                    # 检查子文件夹中是否包含与模型名称匹配的文件夹
+                    # Check whether a subfolder contains a folder matching the model name.
                     potential_model_path = os.path.join(item_path, model_name)
                     if os.path.exists(potential_model_path):
                         potential_model_path_real = os.path.realpath(potential_model_path)
                         if os.path.commonpath([potential_model_path_real, workshop_search_real]) == workshop_search_real:
                             return (potential_model_path, '/workshop')
                     
-                    # 检查子文件夹本身是否就是模型目录（包含.model3.json文件）
+                    # Check whether the subfolder itself is a model directory containing .model3.json.
                     for file in os.listdir(item_path):
                         if file.endswith('.model3.json'):
-                            # 提取模型名称（不带后缀）
+                            # Extract the model name without its suffix.
                             potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
                             if potential_model_name == model_name:
                                 if os.path.commonpath([item_path_real, workshop_search_real]) == workshop_search_real:
@@ -1158,35 +1158,35 @@ def find_model_directory(model_name: str):
     except Exception as e:
         logging.warning(f"检查创意工坊目录模型时出错: {e}")
     
-    # 然后尝试用户mod路径
+    # Then try the user mod path.
     try:
         config_mgr = get_config_manager()
         user_mods_path = config_mgr.get_workshop_path()
         if user_mods_path and os.path.exists(user_mods_path):
             user_mods_path_real = os.path.realpath(user_mods_path)
-            # 直接匹配（如果模型名称恰好与文件夹名相同）
+            # Direct match when model name equals folder name.
             user_mod_model_dir = os.path.join(user_mods_path, model_name)
             if os.path.exists(user_mod_model_dir):
                 user_mod_model_dir_real = os.path.realpath(user_mod_model_dir)
                 if os.path.commonpath([user_mod_model_dir_real, user_mods_path_real]) == user_mods_path_real:
                     return (user_mod_model_dir, '/user_mods')
             
-            # 递归搜索用户mod目录下的所有子文件夹
+            # Recursively search all subfolders in the user mod directory.
             for mod_folder in os.listdir(user_mods_path):
                 mod_path = os.path.join(user_mods_path, mod_folder)
                 mod_path_real = os.path.realpath(mod_path)
                 if os.path.isdir(mod_path_real):
-                    # 检查子文件夹中是否包含与模型名称匹配的文件夹
+                    # Check whether a subfolder contains a folder matching the model name.
                     potential_model_path = os.path.join(mod_path, model_name)
                     if os.path.exists(potential_model_path):
                         potential_model_path_real = os.path.realpath(potential_model_path)
                         if os.path.commonpath([potential_model_path_real, user_mods_path_real]) == user_mods_path_real:
                             return (potential_model_path, '/user_mods')
                     
-                    # 检查子文件夹本身是否就是模型目录（包含.model3.json文件）
+                    # Check whether the subfolder itself is a model directory containing .model3.json.
                     for file in os.listdir(mod_path):
                         if file.endswith('.model3.json'):
-                            # 提取模型名称（不带后缀）
+                            # Extract the model name without its suffix.
                             potential_model_name = os.path.splitext(os.path.splitext(file)[0])[0]
                             if potential_model_name == model_name:
                                 if os.path.commonpath([mod_path_real, user_mods_path_real]) == user_mods_path_real:
@@ -1194,7 +1194,7 @@ def find_model_directory(model_name: str):
     except Exception as e:
         logging.warning(f"检查用户mod目录模型时出错: {e}")
     
-    # 最后尝试static目录
+    # Finally try the static directory.
     static_dir = 'static'
     static_dir_real = os.path.realpath(static_dir)
     static_model_dir = os.path.join(static_dir, model_name)
@@ -1203,66 +1203,66 @@ def find_model_directory(model_name: str):
         if os.path.commonpath([static_model_dir_real, static_dir_real]) == static_dir_real:
             return (static_model_dir, '/static')
     
-    # 如果都不存在，返回None
+    # Return None if none exists.
     return (None, None)
 
 def find_workshop_item_by_id(item_id: str) -> tuple:
     """
-    根据物品ID查找Steam创意工坊物品文件夹
+    Find a Steam Workshop item folder by item ID.
     
     Args:
-        item_id: Steam创意工坊物品ID
+        item_id: Steam Workshop item ID
         
     Returns:
-        (物品路径, URL前缀) 元组，即使找不到也会返回默认值
+        (item path, URL prefix) tuple; return defaults even if not found
     """
     try:
         workshop_dir = _resolve_workshop_search_dir()
         
-        # 如果路径不存在或为空，使用默认的static目录
+        # Use the default static directory if the path is empty or absent.
         if not workshop_dir or not os.path.exists(workshop_dir):
             logging.warning(f"创意工坊目录不存在或无效: {workshop_dir}，使用默认路径")
             default_path = os.path.join("static", item_id)
             return (default_path, '/static')
         
-        # 直接使用物品ID作为文件夹名查找
+        # Search directly using the item ID as folder name.
         item_path = os.path.join(workshop_dir, item_id)
         if os.path.isdir(item_path):
-            # 检查是否包含.model3.json文件
+            # Check for a .model3.json file.
             has_model_file = any(file.endswith('.model3.json') for file in os.listdir(item_path))
             if has_model_file:
                 return (item_path, '/workshop')
             
-            # 检查子文件夹中是否有模型文件
+            # Check subfolders for model files.
             for subdir in os.listdir(item_path):
                 subdir_path = os.path.join(item_path, subdir)
                 if os.path.isdir(subdir_path):
-                    # 检查子文件夹中是否有模型文件
+                    # Check subfolders for model files.
                     if any(file.endswith('.model3.json') for file in os.listdir(subdir_path)):
                         return (item_path, '/workshop')
         
-        # 如果找不到匹配的文件夹，返回默认路径
+        # Return the default path if no matching folder is found.
         default_path = os.path.join(workshop_dir, item_id)
         return (default_path, '/workshop')
     except Exception as e:
         logging.error(f"查找创意工坊物品ID {item_id} 时出错: {e}")
-        # 出错时返回默认路径
+        # Return the default path on error.
         default_path = os.path.join("static", item_id)
         return (default_path, '/static')
 
 
 def find_model_by_workshop_item_id(item_id: str) -> str:
     """
-    根据物品ID查找模型配置文件URL
+    Find a model configuration file URL by item ID.
     
     Args:
-        item_id: Steam创意工坊物品ID
+        item_id: Steam Workshop item ID
         
     Returns:
-        模型配置文件的URL路径，如果找不到返回None
+        Model configuration URL path, or None if not found
     """
     try:
-        # 使用find_workshop_item_by_id查找物品文件夹
+        # Find the item folder through find_workshop_item_by_id.
         item_result = find_workshop_item_by_id(item_id)
         if not item_result:
             logging.warning(f"未找到创意工坊物品ID: {item_id}")
@@ -1270,22 +1270,22 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
         
         model_dir, url_prefix = item_result
         
-        # 查找.model3.json文件
+        # Find the .model3.json file
         model_files = []
         for root, _, files in os.walk(model_dir):
             for file in files:
                 if file.endswith('.model3.json'):
-                    # 计算相对路径
+                    # Calculate the relative path.
                     relative_path = os.path.relpath(os.path.join(root, file), model_dir)
                     model_files.append(os.path.normpath(relative_path).replace('\\', '/'))
         
         if model_files:
-            # 优先返回与文件夹同名的模型文件
+            # Prefer a model file with the same name as the folder.
             folder_name = os.path.basename(model_dir)
             for model_file in model_files:
                 if model_file.endswith(f"{folder_name}.model3.json"):
                     return f"{url_prefix}/{item_id}/{model_file}"
-            # 否则返回第一个找到的模型文件
+            # Otherwise return the first model file found.
             return f"{url_prefix}/{item_id}/{model_files[0]}"
         
         logging.warning(f"创意工坊物品 {item_id} 中未找到模型配置文件")
@@ -1297,21 +1297,21 @@ def find_model_by_workshop_item_id(item_id: str) -> str:
 
 def find_model_config_file(model_name: str) -> str:
     """
-    在模型目录中查找.model3.json配置文件
-    返回可访问的URL路径
+    Find a .model3.json configuration file in a model directory.
+    Return an accessible URL path.
     """
     model_dir, url_prefix = find_model_directory(model_name)
     
     if not model_dir or not os.path.exists(model_dir):
-        # 如果找不到模型目录，返回 None 或空字符串，而不是默认路径
+        # If no model directory is found, return None or an empty string rather than a default path.
         return None
     
-    # 查找.model3.json文件
+    # Find the .model3.json file
     for file in os.listdir(model_dir):
         if file.endswith('.model3.json'):
             return f"{url_prefix}/{model_name}/{file}"
     
-    # 如果没找到，返回默认路径
+    # Return the default path if nothing is found.
     return f"{url_prefix}/{model_name}/{model_name}.model3.json"
 
 def get_timestamp():

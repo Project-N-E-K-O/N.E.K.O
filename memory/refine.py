@@ -84,7 +84,7 @@ logger = get_module_logger(__name__, "Memory")
 REFINE_TYPE_KEY = '_refine_type'      # 'persona' | 'reflection' | 'fact'
 REFINE_ENTITY_KEY = '_refine_entity'  # 'master' | 'neko' | 'relationship'
 
-# 四件套合法 action set；apply 层用这个集合 reject 越界 action。
+# Valid four-action set; apply rejects actions outside this set.
 VALID_REFINE_ACTIONS = frozenset({'split', 'merge', 'modify', 'discard'})
 
 
@@ -135,13 +135,13 @@ ApplyFn = Callable[[list[dict], list[dict], str], Awaitable[set[str]]]
 
 # Manager-supplied failure callback signature.
 # Args: cluster (annotated entries), cluster_hash.
-# Triggered when ``_resolve_cluster`` returns False（LLM 输出空 / parse 失败 /
-# 非 list）**或**抛异常（LLM 超时 / apply_fn 持久化异常等）。先前只在 False
-# 时调、异常按 transient 不计（Codex P1 round-3 on PR #1412），但持续性故障
-# （模型快照下线一直超时）那样会变成每 30min 无限重打；现在异常也计入预算。
+# Trigger when _resolve_cluster returns False (empty LLM output / parse failure /
+# non-list) or raises (LLM timeout / apply_fn persistence error, etc.). Previously only False
+# counted, with exceptions treated as transient (Codex P1, round 3 on PR #1412). Persistent failures
+# such as retired model snapshots timing out would retry every 30 minutes forever; exceptions now consume budget too.
 # Manager bumps ``refine_attempts`` on each non-fact cluster member (and
 # saves persona/reflection file), so the next refine pass can filter
-# out entries that have repeatedly failed (Site 4 liveness 兜底)。
+# out entries that repeatedly fail (Site 4 liveness fallback).
 FailureFn = Callable[[list[dict], str], Awaitable[None]]
 
 
@@ -254,10 +254,10 @@ class MemoryRefineEngine:
         resolved = 0
         failed = 0
         for entity, cluster, cluster_hash in to_process:
-            # _resolve_cluster 返 False（LLM 输出空 / parse 失败 / 非 list）
-            # 或抛异常（LLM 超时 / apply_fn 持久化失败）都 bump refine_attempts。
-            # 持续性故障必须计入预算才能 dead-letter（见函数 docstring）；偶发
-            # 抖动靠 N 次预算 + cluster 内容变即复位兜住，不会冤枉。
+            # Both _resolve_cluster returning False (empty LLM output / parse failure / non-list)
+            # and raising (LLM timeout / apply_fn persistence failure) increment refine_attempts.
+            # Persistent failures must consume budget for dead-lettering (see docstring); occasional
+            # failures are protected by N attempts plus reset on cluster-content changes.
             cluster_failed = False
             try:
                 ok = await self._resolve_cluster(
@@ -278,7 +278,7 @@ class MemoryRefineEngine:
             if cluster_failed and failure_fn is not None:
                 try:
                     await failure_fn(cluster, cluster_hash)
-                except Exception as fe:  # noqa: BLE001 — failure_fn 是兜底，自己再失败也不该挂主路径
+                except Exception as fe:  # noqa: BLE001 - failure_fn is a fallback; its own failure must not break the main path.
                     logger.warning(
                         f"[Refine] {scope_label} cluster {cluster_hash} "
                         f"failure_fn 异常: {fe}"
@@ -463,13 +463,13 @@ class MemoryRefineEngine:
             .replace('{CLUSTER}', cluster_text)
         )
 
-        # refine 跟 persona correction 同性质：后果不可逆（split/merge/
-        # modify/discard 直接改 persona/reflection 写盘），值得用 correction
-        # tier + thinking + 长 timeout。对齐 PersonaManager.resolve_corrections
-        # 的调用配置。
+        # Refinement resembles persona correction: irreversible split/merge/modify/discard operations
+        # directly persist persona/reflection changes, warranting the correction tier,
+        # thinking, and a long timeout. Match PersonaManager.resolve_corrections
+        # call configuration.
         set_call_type("memory_refine")
         api_config = await self._cm.aget_model_api_config('correction')
-        # 显式开 thinking（同 correction），额度与回退见 memory.thinking_llm。
+        # Enable thinking explicitly, as for correction; see memory.thinking_llm for budgets and fallback.
         resp, _ = await ainvoke_thinking(  # noqa: LLM_INPUT_BUDGET  # prompt assembled from token-capped memory components (refine clusters bounded upstream).
             api_config, prompt,
             timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS,

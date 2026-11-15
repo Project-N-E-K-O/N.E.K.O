@@ -19,6 +19,12 @@ unabsorbed-facts → pending-reflections synthesis pass.
 """
 
 import asyncio
+import functools
+import hashlib
+import json
+from contextlib import nullcontext
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from config import (
     MEMORY_REFINE_CLUSTERS_PER_PASS,
@@ -27,13 +33,17 @@ from config import (
     SCOPED_REFINE_CRON_INTERVAL_SECONDS,
 )
 
-from . import gates, runtime
+from . import gates, review, runtime
 from ._shared import logger
+from .rows import _extract_visible_timed_messages_from_rows
+from utils.language_utils import language_context
+
 from .locale_state import (
     aget_subject_prompt_locale,
     run_with_character_prompt_locale,
 )
 from .gates import (
+    _INITIAL_DELAY_INTROSPECTION,
     _INITIAL_DELAY_PERSONA_REFINE,
     _INITIAL_DELAY_REFLECTION_REFINE,
     _INITIAL_DELAY_REFLECTION_SYNTHESIS,
@@ -48,7 +58,7 @@ def _scoped_prompt_trust_band(entry: dict) -> str:
     return scoped_prompt_trust_band(entry)
 
 
-# ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────
+# ── Phase A-4 / A-5: Connect MemoryRefineEngine to cron ─────────────────────
 
 _reflection_refine_subject_cursor: dict[
     str,
@@ -59,11 +69,15 @@ _reflection_refine_subject_cursor: dict[
 async def _run_persona_refine_for_character(character: str) -> None:
     """Single-character persona refine pass. Embedding unavailable / all
     cluster_hash skipped / not enough candidates → the whole pass is a no-op."""
+    from memory import organizer
+    if not organizer.allowed(character):
+        return
     from config import (
         MEMORY_LIVENESS_MAX_ATTEMPTS,
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
     )
     from memory.facts import safe_int_field
+    from memory.introspection import is_permanently_suppressed
     from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
@@ -78,18 +92,21 @@ async def _run_persona_refine_for_character(character: str) -> None:
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
         section = pm._get_section_facts(persona, entity)
-        # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
-        # entry 不再进 cluster gather。Site 4 dead-letter——同 entry 在多
-        # cluster 反复 LLM 失败后被 frozen，避免持续占用 starvation-first
-        # ordering 名额空跑 LLM。recovery 路径：apply_refine_actions 在
-        # stamp 成功时会清回 0；或人工编辑 persona.json；或时间自愈——
-        # 冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 放行一次 probe，让
-        # 一次性 correction 模型宕机恢复后自愈（不再永久冻死无辜 entry）。
+        # Liveness filter: entries with refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS
+        # are no longer included in cluster gathering. Site 4 dead-letter: after repeated LLM failures for the same entry across
+        # clusters, freeze it so it cannot keep consuming LLM calls in starvation-first
+        # ordering. Recovery paths: apply_refine_actions resets the count to 0 when
+        # stamping succeeds; or manually edit persona.json; or recover with time —
+        # after MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS in the frozen state, allow one probe so
+        # a one-off correction-model outage can self-heal (do not permanently freeze an innocent entry).
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section
             if isinstance(e, dict)
             and not e.get('protected')
+            # Retired by introspection: merging or splitting it would bring
+            # the text back as a fresh, unflagged entry.
+            and not is_permanently_suppressed(e)
             and e.get('id')
             and (
                 safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
@@ -107,7 +124,7 @@ async def _run_persona_refine_for_character(character: str) -> None:
     engine = MemoryRefineEngine(runtime._config_manager)
 
     async def _apply(cluster, actions, cluster_hash):
-        # cluster 内成员同 entity（engine 强制），从第一个非空成员读
+        # Members within a cluster share the same entity (enforced by the engine); read from the first non-empty member
         ent = next(
             (e.get(REFINE_ENTITY_KEY) for e in cluster
              if isinstance(e, dict) and e.get(REFINE_ENTITY_KEY)),
@@ -160,6 +177,8 @@ async def _periodic_persona_refine_loop():
                     _run_persona_refine_for_character,
                     name,
                 )
+                from .long_term_sync import queue_capture
+                queue_capture(name)
             except Exception as e:
                 logger.warning(f"[PersonaRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
@@ -174,11 +193,15 @@ async def _run_reflection_refine_for_character(
     """Single-character reflection refine pass. The cluster may mix in absorbed
     facts of the same entity as a read-only information source (facts cannot be
     split/discarded/modified; the apply layer enforces this as a backstop)."""
+    from memory import organizer
+    if not organizer.allowed(character, subject):
+        return 0
     from config import (
         MEMORY_LIVENESS_MAX_ATTEMPTS,
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
     )
     from memory.facts import safe_int_field
+    from memory.introspection import is_permanently_suppressed
     from memory.scopes import entry_matches_subject
     from memory.temporal import cooldown_elapsed
     from memory.refine import (
@@ -187,7 +210,7 @@ async def _run_reflection_refine_for_character(
         annotate_entry,
     )
 
-    # 用 `engine_ref` 而不是 `re` —— 后者遮蔽 Python 内置 `re` 模块
+    # Use `engine_ref` instead of `re` — the latter shadows Python's built-in `re` module
     # （CodeRabbit nitpick #1392）。
     engine_ref = runtime.reflection_engine
     fs = runtime.fact_store
@@ -201,17 +224,18 @@ async def _run_reflection_refine_for_character(
 
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
-        # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
-        # reflection 不再进 cluster gather（同 persona refine）。fact 不算
-        # ——fact 是 readonly 信息源，不会被 refine 改，自然不会 bump
-        # attempts。时间自愈：冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
-        # 放行一次 probe，让一次性宕机恢复后自愈。
+        # Liveness filter: reflections with refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS
+        # are no longer included in cluster gathering (same as persona refinement). Facts do not count
+        # — facts are read-only information sources and are not changed by refinement, so their
+        # attempt count is naturally never bumped. Time-based recovery: after MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS in the frozen state,
+        # allow one probe so it can self-heal after a transient outage recovers.
         entity_refls = [
             annotate_entry(r, type_='reflection', entity=entity)
             for r in refls
             if isinstance(r, dict)
             and r.get('entity') == entity
             and r.get('id')
+            and not is_permanently_suppressed(r)
             and entry_matches_subject(r, subject)
             and (
                 safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
@@ -228,7 +252,7 @@ async def _run_reflection_refine_for_character(
             and f.get('absorbed') and f.get('id')
             and entry_matches_subject(f, subject)
         ]
-        if entity_refls:  # 至少要有 reflection；fact 是只读补料
+        if entity_refls:  # At least one reflection is required; facts are read-only supplementary material
             candidates_by_entity[entity] = entity_refls + entity_facts
     if not candidates_by_entity:
         return 0
@@ -379,13 +403,15 @@ async def _periodic_reflection_refine_loop():
                     _run_reflection_refine_with_subject_locales,
                     name,
                 )
+                from .long_term_sync import queue_capture
+                queue_capture(name)
             except Exception as e:
                 logger.warning(f"[ReflectionRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
 
 
-# scoped refine 的进程内轮转游标（对偶 synthesize_scoped_reflections 的
-# _scoped_synth_cursor：重启从头轮即可，无须持久化）。
+# In-process round-robin cursor for scoped refinement (paired with
+# _scoped_synth_cursor in synthesize_scoped_reflections; restart from the beginning is fine, so persistence is unnecessary).
 _scoped_refine_cursor: dict[str, tuple] = {}
 _scoped_refine_character_cursor: str | None = None
 
@@ -421,8 +447,8 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
     lite = ScopedLiteRefineEngine(runtime._config_manager)
 
     async def _apply(bucket, cluster, actions, cluster_hash):
-        # 返回应用成功的 action 数：engine 用它把「非空 actions 全被拒」
-        # 判成 cluster 失败（计 refine_attempts，防毒 cluster 无限重打）。
+        # Return the number of actions successfully applied: the engine uses this to treat "all non-empty actions were rejected"
+        # as a cluster failure (increment refine_attempts to prevent a toxic cluster from being retried forever).
         if bucket.store == STORE_PERSONA:
             return await apply_scoped_persona_merge(
                 pm, character, bucket.subject, cluster, actions, cluster_hash,
@@ -451,7 +477,7 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
         scope_label=f"scoped/{character}",
         failure_fn=_failure,
         start_after=_scoped_refine_cursor.get(character),
-        # prompt 只看 coarse band；精确值仅供 apply 的代码侧 margin 仲裁。
+        # The prompt sees only coarse bands; exact values are used only by code-side margin arbitration during apply.
         trust_of=_scoped_prompt_trust_band,
         prompt_locale_resolver=_prompt_locale,
     )
@@ -519,6 +545,650 @@ async def _periodic_scoped_refine_loop():
         await asyncio.sleep(interval)
 
 
+# ── Weekly introspection over the injected memory block ─────────────
+
+_INTROSPECTION_LAST_RUN_KEY = 'introspection_last_run_at'
+_INTROSPECTION_LAST_FAILURE_KEY = 'introspection_last_failure_at'
+_INTROSPECTION_FAILURES_KEY = 'introspection_transient_failures'
+
+
+@dataclass(frozen=True)
+class _ReviewStateKeys:
+    """Where one weekly review keeps its clock in the maintenance map."""
+
+    last_run: str
+    last_failure: str
+    failures: str
+
+
+_INTROSPECTION_KEYS = _ReviewStateKeys(
+    _INTROSPECTION_LAST_RUN_KEY, _INTROSPECTION_LAST_FAILURE_KEY, _INTROSPECTION_FAILURES_KEY,
+)
+_BEHAVIOR_REVIEW_KEYS = _ReviewStateKeys(
+    'behavior_review_last_run_at',
+    'behavior_review_last_failure_at',
+    'behavior_review_transient_failures',
+)
+
+
+def _parse_maint_time(value, now: datetime) -> datetime | None:
+    """A stored timestamp, or None when missing, malformed or in the future.
+
+    A future stamp (clock moved back) is ignored rather than trusted: trusting
+    it would postpone the character's review by however far the clock jumped.
+    """
+    try:
+        parsed = datetime.fromisoformat(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
+    if parsed is None or parsed > now:
+        return None
+    return parsed
+
+
+def _introspection_due(name: str, now: datetime) -> bool:
+    """Never run → due now (the upgrade path); otherwise one interval after
+    the last finished run, and after a transient failure not before its step
+    of the backoff ladder has passed."""
+    from config import MEMORY_INTROSPECTION_INTERVAL_SECONDS
+
+    view = gates._maint_view(name)
+    last_run = _parse_maint_time(view.get(_INTROSPECTION_LAST_RUN_KEY), now)
+    if (
+        last_run is not None
+        and (now - last_run).total_seconds() < MEMORY_INTROSPECTION_INTERVAL_SECONDS
+    ):
+        return False
+    return _retry_backoff_passed(view, _INTROSPECTION_KEYS, now)
+
+
+def _retry_backoff_passed(view, keys: "_ReviewStateKeys", now: datetime) -> bool:
+    """Whether the step of the retry ladder after a transient failure has passed."""
+    from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
+
+    try:
+        failures = int(view.get(keys.failures) or 0)
+    except (TypeError, ValueError):
+        failures = 0
+    last_failure = _parse_maint_time(view.get(keys.last_failure), now)
+    if failures > 0 and last_failure is not None:
+        ladder = MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
+        wait = ladder[min(failures, len(ladder)) - 1]
+        if (now - last_failure).total_seconds() < wait:
+            return False
+    return True
+
+
+def _finish_review_state(keys: "_ReviewStateKeys", state: dict, stamp: str) -> None:
+    state[keys.last_run] = stamp
+    state.pop(keys.last_failure, None)
+    state.pop(keys.failures, None)
+
+
+def _mutate_review_finished(
+    keys: "_ReviewStateKeys", stamp: str, state: dict,
+) -> tuple[bool, None]:
+    """Mutator: the run is over for this cycle, whether it succeeded or failed
+    in a way a retry would not fix; the next run is a week away."""
+    _finish_review_state(keys, state, stamp)
+    return True, None
+
+
+def _mutate_review_transient_failure(
+    keys: "_ReviewStateKeys", stamp: str, max_retries: int, state: dict,
+) -> tuple[bool, bool]:
+    """Mutator: count one transient failure. Past ``max_retries`` the cycle is
+    given up and the next run waits for the weekly interval; returns whether
+    that happened."""
+    try:
+        failures = int(state.get(keys.failures) or 0) + 1
+    except (TypeError, ValueError):
+        failures = 1
+    if failures > max_retries:
+        _finish_review_state(keys, state, stamp)
+        return True, True
+    state[keys.failures] = failures
+    state[keys.last_failure] = stamp
+    return True, False
+
+
+async def _astamp_review(
+    name: str, keys: "_ReviewStateKeys", *, transient_failure: bool,
+) -> bool:
+    """Record how a run ended; True when a transient failure used up the
+    retries and the cycle was given up."""
+    from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
+
+    stamp = datetime.now().isoformat()
+    if not transient_failure:
+        await gates._amutate_maint_state(
+            name, functools.partial(_mutate_review_finished, keys, stamp),
+        )
+        return False
+    return await gates._amutate_maint_state(
+        name,
+        functools.partial(
+            _mutate_review_transient_failure, keys, stamp,
+            len(MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS),
+        ),
+    )
+
+
+async def _astamp_introspection(name: str, *, transient_failure: bool) -> bool:
+    return await _astamp_review(name, _INTROSPECTION_KEYS, transient_failure=transient_failure)
+
+
+async def _run_introspection_for_character(character: str) -> None:
+    """One introspection run, then record when it ended and how.
+
+    A run cancelled midway (the process exiting, a character release) records
+    nothing, so it starts over at the next idle moment.
+    """
+    from memory import organizer
+    if not organizer.allowed(character):
+        # Nothing is recorded, so the review runs here once this device organizes.
+        return
+    from memory.introspection import FAILURE_TRANSIENT, arun_introspection
+
+    from .long_term_sync import queue_capture
+
+    pm = runtime.persona_manager
+    engine_ref = runtime.reflection_engine
+    if pm is None or engine_ref is None:
+        return
+    try:
+        result = await arun_introspection(
+            character,
+            persona_manager=pm,
+            reflection_engine=engine_ref,
+            config_manager=runtime._config_manager,
+            pinned_fact_store=runtime.pinned_fact_store,
+        )
+    except Exception:
+        # Outside the model call (a save hitting a busy or read-only store):
+        # worth another try soon. An earlier round may already have saved its
+        # actions, so they still go to the capture; one with nothing new
+        # publishes nothing.
+        queue_capture(character)
+        await _astamp_introspection(character, transient_failure=True)
+        raise
+    gave_up = await _astamp_introspection(
+        character, transient_failure=result.failure == FAILURE_TRANSIENT,
+    )
+    logger.info(
+        f"[Introspection] {character}: 结束 rounds={result.rounds} "
+        f"applied={result.applied} rejected={dict(result.rejected)} "
+        f"failure={result.failure}({result.failure_reason})"
+        + ("，重试次数用完，等下一周期" if gave_up else "")
+    )
+    if result.applied:
+        queue_capture(character)
+
+
+# ── Weekly behavior review, right after the private introspection ──
+#
+# Due once per finished private introspection, so it keeps that weekly rhythm
+# without a second clock to fall out of step with, and needs no week of waiting
+# after an upgrade. It has its own retry state: a failure here must not rerun
+# the introspection, and one there must not keep this from its own retries.
+
+
+def _behavior_review_due(name: str, now: datetime) -> bool:
+    """A private introspection finished since this review last did."""
+    view = gates._maint_view(name)
+    last_introspection = _parse_maint_time(view.get(_INTROSPECTION_LAST_RUN_KEY), now)
+    if last_introspection is None:
+        return False
+    last_run = _parse_maint_time(view.get(_BEHAVIOR_REVIEW_KEYS.last_run), now)
+    if last_run is not None and last_run >= last_introspection:
+        return False
+    return _retry_backoff_passed(view, _BEHAVIOR_REVIEW_KEYS, now)
+
+
+async def _abehavior_review_enabled() -> bool:
+    """The review follows "natural expression", the user's opt-out for this area;
+    the tick has already checked powerful memory."""
+    from utils.slop_filter import is_slop_filter_enabled
+
+    return bool(await asyncio.to_thread(is_slop_filter_enabled))
+
+
+async def _aread_behavior_review_messages(character: str, now: datetime) -> list:
+    """The private conversation inside the review window, oldest first."""
+    from config import MEMORY_BEHAVIOR_REVIEW_ROW_LIMIT, MEMORY_BEHAVIOR_REVIEW_WINDOW_SECONDS
+    from memory.behavior_notes import ReviewMessage
+
+    since = now - timedelta(seconds=MEMORY_BEHAVIOR_REVIEW_WINDOW_SECONDS)
+    rows = await runtime.time_manager.aretrieve_latest_original_since(
+        character, since, MEMORY_BEHAVIOR_REVIEW_ROW_LIMIT,
+    )
+    return [
+        ReviewMessage(at=message['at'], role=message['role'], text=message['text'])
+        for message in _extract_visible_timed_messages_from_rows(rows)
+        # The row filter compares stored text; this compares the parsed time.
+        if message['at'] >= since
+    ]
+
+
+async def _run_behavior_review_for_character(character: str) -> None:
+    """One behavior review, then record when it ended and how.
+
+    As with introspection, a run cancelled midway records nothing.
+    """
+    from memory.behavior_notes import FAILURE_TRANSIENT, arun_behavior_review
+
+    from .habitual_phrase_loop import _aresolve_mining_language
+
+    pm = runtime.persona_manager
+    engine_ref = runtime.reflection_engine
+    if pm is None or engine_ref is None or runtime.time_manager is None:
+        return
+    try:
+        language = await _aresolve_mining_language(character)
+        if language is None:
+            await _astamp_review(character, _BEHAVIOR_REVIEW_KEYS, transient_failure=False)
+            return
+        messages = await _aread_behavior_review_messages(character, datetime.now())
+        result = await arun_behavior_review(
+            character,
+            messages=messages,
+            language=language,
+            config_manager=runtime._config_manager,
+            persona_manager=pm,
+            reflection_engine=engine_ref,
+        )
+    except Exception:
+        # Outside the model call (a history read or a save hitting a busy or
+        # read-only store): worth another try soon.
+        await _astamp_review(character, _BEHAVIOR_REVIEW_KEYS, transient_failure=True)
+        raise
+    gave_up = await _astamp_review(
+        character, _BEHAVIOR_REVIEW_KEYS,
+        transient_failure=result.failure == FAILURE_TRANSIENT,
+    )
+    logger.info(
+        f"[BehaviorNotes] {character}: 结束 skipped={result.skipped or None} "
+        f"added={result.added} renewed={result.renewed} retired={result.retired} "
+        f"rejected={dict(result.rejected)} "
+        f"failure={result.failure}({result.failure_reason})"
+        + ("，重试次数用完，等下一周期" if gave_up else "")
+    )
+
+
+# ── Weekly introspection of scoped subjects (groups, members, people) ──
+#
+# One state value per subject in the character's maintenance map, a JSON
+# string (the map holds scalars only): when its last review ended ("at"), a
+# fingerprint of the content that review was given ("fp"), whether the model
+# was shown only part of it ("partial"), and the transient-failure count and
+# time ("n", "fail_at"). A subject is due when it was never reviewed, or a
+# week has passed since and its content differs from what was reviewed (new
+# impressions, a promotion, a merge, or the review's own edits, which are
+# checked once more) or the review did not see all of it (a line in mention
+# cooldown, outside the render budget); same retry ladder as the private
+# review. A review that did not complete records no fingerprint, so the next
+# week reviews the subject whatever its content.
+
+_SCOPED_INTROSPECTION_PREFIX = 'scoped_introspection:'
+
+
+def _scoped_introspection_state_key(subject) -> str:
+    return f"{_SCOPED_INTROSPECTION_PREFIX}{subject.key}|{subject.scope}"
+
+
+def _scoped_introspection_state(view, key: str) -> dict:
+    raw = view.get(key)
+    if not isinstance(raw, str):
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+async def _scoped_introspection_subjects(name: str) -> list[tuple]:
+    """``(subject, content fingerprint)`` of every scoped subject with
+    reviewable memory; see ``_scoped_introspection_contents``."""
+    return [
+        (subject, fingerprint)
+        for subject, fingerprint, _entries in await _scoped_introspection_contents(name)
+    ]
+
+
+async def _scoped_introspection_contents(name: str) -> list[tuple]:
+    """``(subject, content fingerprint, entries)`` of every scoped subject
+    with reviewable memory: active impressions and editable persona lines,
+    retired ones left out. ``entries`` holds ``(kind, id, text)`` as the
+    review's numbered lines name them (``IntrospectionResult.shown``). An
+    archived subject's rows have moved out of both stores, so it does not
+    appear."""
+    from memory.introspection import KIND_PERSONA, KIND_REFLECTION
+    from memory.introspection import is_permanently_suppressed
+    from memory.scopes import SCOPED_PERSONA_PREFIX, subject_from_entry
+
+    pm = runtime.persona_manager
+    engine_ref = runtime.reflection_engine
+    if pm is None or engine_ref is None:
+        return []
+    persona = await pm.aget_persona(name)
+    reflections = await engine_ref.aload_reflections(name)
+    content: dict = {}
+
+    def _add(entry: dict, kind: str) -> None:
+        subject = subject_from_entry(entry)
+        if subject is None:
+            return
+        _subject, lines, entries = content.setdefault(
+            (subject.key, subject.scope), (subject, [], set()),
+        )
+        lines.append(f"{kind}:{entry.get('id')}:{entry.get('text')}")
+        entries.add((
+            KIND_PERSONA if kind == 'p' else KIND_REFLECTION,
+            str(entry.get('id') or ''), str(entry.get('text') or ''),
+        ))
+
+    for section_key, section in (persona or {}).items():
+        if not (
+            isinstance(section, dict)
+            and str(section_key).startswith(SCOPED_PERSONA_PREFIX)
+        ):
+            continue
+        for entry in section.get('facts') or ():
+            if (
+                isinstance(entry, dict)
+                and not entry.get('protected')
+                and not is_permanently_suppressed(entry)
+            ):
+                _add(entry, 'p')
+    for reflection in reflections or ():
+        if (
+            isinstance(reflection, dict)
+            and reflection.get('status') in ('pending', 'confirmed')
+            and not is_permanently_suppressed(reflection)
+        ):
+            _add(reflection, 'r')
+    return [
+        (
+            subject,
+            hashlib.sha256("\n".join(sorted(lines)).encode('utf-8')).hexdigest()[:16],
+            frozenset(entries),
+        )
+        for subject, lines, entries in content.values()
+    ]
+
+
+def _scoped_introspection_due(view, subject, fingerprint: str, now: datetime) -> bool:
+    from config import (
+        MEMORY_INTROSPECTION_INTERVAL_SECONDS,
+        MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS,
+    )
+
+    state = _scoped_introspection_state(view, _scoped_introspection_state_key(subject))
+    last_run = _parse_maint_time(state.get('at'), now)
+    if last_run is not None and (
+        (now - last_run).total_seconds() < MEMORY_INTROSPECTION_INTERVAL_SECONDS
+        or (state.get('fp') == fingerprint and not state.get('partial'))
+    ):
+        return False
+    try:
+        failures = int(state.get('n') or 0)
+    except (TypeError, ValueError):
+        failures = 0
+    last_failure = _parse_maint_time(state.get('fail_at'), now)
+    if failures > 0 and last_failure is not None:
+        ladder = MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
+        wait = ladder[min(failures, len(ladder)) - 1]
+        if (now - last_failure).total_seconds() < wait:
+            return False
+    return True
+
+
+async def _next_scoped_introspection_subject(name: str, now: datetime):
+    """The scoped subject of ``name`` to review next, or None: the one whose
+    last review is oldest (never reviewed first)."""
+    try:
+        subjects = await _scoped_introspection_subjects(name)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[Introspection] {name}: 读取群聊记忆失败: {e}")
+        return None
+    view = gates._maint_view(name)
+    due = [
+        (subject, fingerprint) for subject, fingerprint in subjects
+        if _scoped_introspection_due(view, subject, fingerprint, now)
+    ]
+    if not due:
+        return None
+    due.sort(key=lambda item: str(_scoped_introspection_state(
+        view, _scoped_introspection_state_key(item[0]),
+    ).get('at') or ''))
+    return due[0][0]
+
+
+def _mutate_scoped_introspection(
+    key: str, stamp: str, fingerprint: str | None, transient_failure: bool,
+    max_retries: int, live_keys: frozenset | None, state: dict,
+    partial: bool = False,
+) -> tuple[bool, bool]:
+    """Mutator: record how one subject's review ended; returns whether a
+    transient failure used up the retries. ``fingerprint`` is the content
+    the review was given, None when it did not complete; a cycle given up
+    after transient failures records none either. Drops the state of
+    subjects that no longer have reviewable memory; ``live_keys`` None
+    (memory could not be read) drops nothing, or every other subject would
+    look never reviewed."""
+    if live_keys is not None:
+        for stale_key in [
+            k for k in state
+            if k.startswith(_SCOPED_INTROSPECTION_PREFIX) and k not in live_keys
+        ]:
+            state.pop(stale_key, None)
+    current = _scoped_introspection_state(state, key)
+    gave_up = False
+    if transient_failure:
+        try:
+            failures = int(current.get('n') or 0) + 1
+        except (TypeError, ValueError):
+            failures = 1
+        if failures <= max_retries:
+            current['n'] = failures
+            current['fail_at'] = stamp
+            state[key] = json.dumps(current, ensure_ascii=False)
+            return True, False
+        gave_up = True
+        # Not reviewed: wait for next week, then review whatever is there.
+        fingerprint = None
+    record = {'at': stamp, 'fp': fingerprint}
+    if partial and fingerprint is not None:
+        record['partial'] = True
+    state[key] = json.dumps(record, ensure_ascii=False)
+    return True, gave_up
+
+
+async def _ascoped_introspection_fingerprints(name: str) -> dict | None:
+    """``state key -> (content fingerprint, entries)`` of every reviewable
+    subject; None when the memory could not be read."""
+    try:
+        contents = await _scoped_introspection_contents(name)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[Introspection] {name}: 读取群聊记忆失败: {e}")
+        return None
+    return {
+        _scoped_introspection_state_key(s): (fp, entries)
+        for s, fp, entries in contents
+    }
+
+
+async def _astamp_scoped_introspection(
+    name: str, subject, *, transient_failure: bool,
+    reviewed_fingerprint: str | None, partial: bool = False,
+) -> bool:
+    """Record how a review ended. ``reviewed_fingerprint`` is the content
+    the review started from, taken before it ran, never re-read afterwards:
+    an impression written while the model was answering was not shown to it
+    and must still count as new. ``partial``: some of that content never
+    reached the model."""
+    from config import MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS
+
+    fingerprints = await _ascoped_introspection_fingerprints(name)
+    key = _scoped_introspection_state_key(subject)
+    live_keys = None if fingerprints is None else frozenset(fingerprints) | {key}
+    return await gates._amutate_maint_state(
+        name,
+        functools.partial(
+            _mutate_scoped_introspection, key, datetime.now().isoformat(),
+            reviewed_fingerprint, transient_failure,
+            len(MEMORY_INTROSPECTION_RETRY_BACKOFF_SECONDS), live_keys,
+            partial=partial,
+        ),
+    )
+
+
+async def _run_scoped_introspection_for_subject(character: str, subject) -> None:
+    """One scoped subject's review, in that subject's prompt locale (the
+    language its headings render in), then record how it ended."""
+    from memory.introspection import FAILURE_TRANSIENT, arun_introspection
+
+    from .long_term_sync import queue_capture
+
+    pm = runtime.persona_manager
+    engine_ref = runtime.reflection_engine
+    if pm is None or engine_ref is None:
+        return
+    selected_locale = None
+    try:
+        selected_locale = await aget_subject_prompt_locale(character, subject)
+    except Exception as locale_error:  # noqa: BLE001
+        logger.warning(
+            f"[Introspection] {character}/{subject.key}: scoped prompt locale "
+            f"解析失败，使用角色 locale: {locale_error}"
+        )
+    # What the review is given, fixed before it runs (see _astamp_scoped_introspection).
+    before, before_entries = (
+        await _ascoped_introspection_fingerprints(character) or {}
+    ).get(_scoped_introspection_state_key(subject), (None, frozenset()))
+    try:
+        with language_context(selected_locale) if selected_locale else nullcontext():
+            result = await arun_introspection(
+                character,
+                persona_manager=pm,
+                reflection_engine=engine_ref,
+                config_manager=runtime._config_manager,
+                subject=subject,
+            )
+    except Exception:
+        queue_capture(character)
+        await _astamp_scoped_introspection(
+            character, subject, transient_failure=True, reviewed_fingerprint=None,
+        )
+        raise
+    gave_up = await _astamp_scoped_introspection(
+        character, subject,
+        transient_failure=result.failure == FAILURE_TRANSIENT,
+        # Only a completed review counts as having seen the content, and
+        # only what it was shown: a line in mention cooldown or outside the
+        # render budget is checked again next week.
+        reviewed_fingerprint=before if result.completed else None,
+        partial=bool(before_entries - result.shown),
+    )
+    logger.info(
+        f"[Introspection] {character} [{subject.kind}/{subject.subject_id}]: 结束 "
+        f"rounds={result.rounds} applied={result.applied} "
+        f"rejected={dict(result.rejected)} "
+        f"failure={result.failure}({result.failure_reason})"
+        + ("，重试次数用完，等下一周期" if gave_up else "")
+    )
+    if result.applied:
+        queue_capture(character)
+
+
+async def _run_introspection_tick() -> None:
+    """Start at most one due review, and only while idle: a character's
+    private block, or else her behavior review, or else one of her scoped
+    subjects."""
+    from memory import organizer
+    if not gates._is_idle():
+        return
+    if not await gates._ais_powerful_memory_enabled():
+        return
+    try:
+        character_data = await runtime._config_manager.aload_characters()
+        catgirl_names = list(character_data.get('猫娘', {}).keys())
+    except Exception as e:
+        logger.debug(f"[Introspection] 加载角色列表失败: {e}")
+        return
+    now = datetime.now()
+    for name in catgirl_names:
+        scoped_subject = None
+        behavior_review = False
+        # The private block is the organizer's; on any other device it stays due
+        # forever and must not keep the behavior review and group subjects waiting.
+        if not _introspection_due(name, now) or not organizer.allowed(name):
+            behavior_review = (
+                _behavior_review_due(name, now) and await _abehavior_review_enabled()
+            )
+            if not behavior_review:
+                scoped_subject = await _next_scoped_introspection_subject(name, now)
+                if scoped_subject is None:
+                    continue
+        # Spawn under the lock character release takes: a name already
+        # retired (renamed / deleted) is skipped, and a run registered here
+        # is cancelled and drained by the release instead of applying its
+        # actions to the old identity after the model returns.
+        async with review._get_review_spawn_lock(name):
+            if name in review._retired_derived_task_names:
+                continue
+            # A rename / delete that finished between the roster read above
+            # and this lock has already lifted its retirement: ask the roster
+            # again, since rendering a removed name recreates its persona file.
+            try:
+                current_data = await runtime._config_manager.aload_characters()
+            except Exception as e:
+                logger.debug(f"[Introspection] 重新加载角色列表失败: {e}")
+                return
+            if name not in (current_data.get('猫娘') or {}):
+                continue
+            existing = review.introspection_tasks.get(name)
+            if existing is not None and not existing.done():
+                return
+            if behavior_review:
+                run = run_with_character_prompt_locale(
+                    name, _run_behavior_review_for_character, name,
+                )
+            elif scoped_subject is None:
+                run = run_with_character_prompt_locale(
+                    name, _run_introspection_for_character, name,
+                )
+            else:
+                run = run_with_character_prompt_locale(
+                    name, _run_scoped_introspection_for_subject, name, scoped_subject,
+                )
+            task = runtime._spawn_background_task(run)
+            review.introspection_tasks[name] = task
+        # wait(), not await: a release cancelling the run must not cancel
+        # this loop with it.
+        await asyncio.wait({task})
+        if review.introspection_tasks.get(name) is task:
+            review.introspection_tasks.pop(name, None)
+        # One character per tick: idleness is re-checked before the next.
+        return
+
+
+async def _periodic_introspection_loop():
+    """Weekly review of each character's injected memory (see
+    ``memory.introspection``). Polls at the idle-check cadence so a character
+    that has never been reviewed — every existing one right after the upgrade
+    — is picked up at the first idle moment; gated on powerful_memory like
+    the refine crons."""
+    await asyncio.sleep(_INITIAL_DELAY_INTROSPECTION)
+    while True:
+        try:
+            await _run_introspection_tick()
+        except Exception as e:
+            logger.warning(f"[Introspection] 本轮异常: {e}")
+        await asyncio.sleep(gates.IDLE_CHECK_INTERVAL)
+
+
 async def _periodic_reflection_synthesis_loop():
     """Run one reflection synthesis round per character every N seconds.
 
@@ -574,9 +1244,9 @@ async def _periodic_reflection_synthesis_loop():
                         name,
                     )
                 except Exception as legacy_error:
-                    # 两遍隔离：legacy 侧的持久失败（例如手改出的无 id
-                    # 事实让 sorted(f['id']) 抛错）不得饿死 scoped 侧——
-                    # 否则该角色的群/成员反思永远不产出。
+                    # Two-pass isolation: persistent failures on the legacy side (for example, a manually edited fact without an id
+                    # causing sorted(f['id']) to raise) must not starve the scoped side —
+                    # otherwise that character's group/member reflections would never be produced.
                     logger.warning(
                         f"[ReflectionSynth] {name} legacy 合成异常: {legacy_error}"
                     )
@@ -600,6 +1270,6 @@ async def _periodic_reflection_synthesis_loop():
                         "（legacy=pending / scoped=confirmed）"
                     )
             except Exception as e:
-                # 单角色合成失败不阻塞其他角色 / 下轮重试
+                # A failure for one character does not block other characters or the next retry
                 logger.warning(f"[ReflectionSynth] {name} 合成异常: {e}")
         await asyncio.sleep(interval)

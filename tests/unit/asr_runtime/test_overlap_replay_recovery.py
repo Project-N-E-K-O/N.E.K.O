@@ -51,18 +51,18 @@ async def test_replay_drops_the_pending_slot_when_the_transport_identity_moves_o
     assert component._asr_overlap_onset_at is not None
     await runtime._handle_independent_asr_endpoint(epoch)
 
-    # monotonic 在这台机器上一整个测试跑下来只走一格，靠时钟自然推进区分不了
-    # 「陈旧 onset」和「新回合 onset」。按仓库既有做法直接注入一个明显靠前的
-    # 时刻，后面那条继承断言才有分辨力。
+    # This machine's monotonic clock advances only one tick during the whole test, insufficient to distinguish
+    # stale onset from new-turn onset naturally. Following repository practice, inject a clearly earlier
+    # time so the later inheritance assertion discriminates correctly.
     recorded_onset = time.monotonic() - 5.0
     component._asr_overlap_onset_at = recorded_onset
 
     component._asr_session.is_ready = False
     lifecycle_ref = runtime._asr_lifecycle
 
-    # ACTIVE 广播飞在半空时来一次「仅关传输」：换掉 _asr_session、bump
-    # transport_generation，epoch 与 lifecycle 对象都不动 —— 这正是
-    # _close_transport_only 干的事，也是唯一能让 delivered 为假的那条腿。
+    # Close only transport while ACTIVE broadcast is in flight: replace _asr_session and bump
+    # transport_generation without changing epoch/lifecycle, exactly what
+    # _close_transport_only does and the only path making delivered false.
     real_on_lifecycle = component._callbacks.on_lifecycle
     drifted = False
 
@@ -83,18 +83,18 @@ async def test_replay_drops_the_pending_slot_when_the_transport_identity_moves_o
     await runtime._wait_asr_transcript_dispatch_idle()
 
     assert drifted is True
-    # 走的确实是「传输身份漂移」这条腿，不是 detach / fail-closed 那条
-    # （那两条会 bump epoch、换 lifecycle，并且自己会跑 _reset_asr_turn_state）。
+    # Confirm this is transport-identity drift rather than detach/fail-closed,
+    # which bump epoch, replace lifecycle, and invoke _reset_asr_turn_state themselves.
     assert runtime._asr_session_epoch == epoch
     assert runtime._asr_lifecycle is lifecycle_ref
 
-    # 挂起槽必须已经腾空 —— 没人会再来兑付它。
+    # The pending slot must already be empty; nobody will redeem it later.
     assert component._asr_pending_speech_confirmed is False
     assert component._asr_pending_speech_onset_at is None
-    # 而用户真实开口的时刻一点没丢：它在 await 之前就装进了 _asr_turn_onset_at。
+    # Actual user onset is preserved in _asr_turn_onset_at before the await.
     assert component._asr_turn_onset_at == recorded_onset
 
-    # 行为层：走完这一轮，下一次**不相干**的开口不能继承那个陈旧时刻。
+    # Behavioral check: after completing this turn, the next unrelated utterance must not inherit stale onset.
     component._asr_session = type("Asr", (), {"is_ready": True})()
     await runtime._handle_independent_asr_endpoint(epoch)
     await runtime._handle_independent_asr_final("second", epoch, "openai")
@@ -127,7 +127,7 @@ async def test_credit_redemption_drops_the_pending_slot_when_the_transport_ident
         SpeechActivityEvent.SPEECH_STARTED,
         epoch,
     )
-    # 后继在上一轮还 ACTIVE 时开口又停顿：攒下一张 completed-overlap credit。
+    # The successor starts and pauses while the preceding turn is ACTIVE, accumulating a completed-overlap credit.
     await runtime._handle_independent_asr_activity(
         SpeechActivityEvent.SPEECH_RESUMED,
         epoch,
@@ -142,7 +142,7 @@ async def test_credit_redemption_drops_the_pending_slot_when_the_transport_ident
     assert runtime._asr_overlap_completed_turns == 1
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
 
-    # 同上：注入一个明显靠前的时刻，后面那条继承断言才有分辨力。
+    # Likewise inject a clearly earlier time to make the inheritance assertion meaningful.
     recorded_onset = time.monotonic() - 5.0
     component._asr_overlap_completed_onsets[0] = recorded_onset
 
@@ -164,7 +164,7 @@ async def test_credit_redemption_drops_the_pending_slot_when_the_transport_ident
         on_lifecycle=_drift_transport_midflight,
     )
 
-    # 后继自己的 endpoint 兑付这张 credit，重放停在 PREWARMING 后就地补确认。
+    # The successor endpoint redeems that credit; if replay stops at PREWARMING, confirm it in place.
     await runtime._handle_independent_asr_endpoint(epoch)
 
     assert drifted is True
@@ -173,14 +173,14 @@ async def test_credit_redemption_drops_the_pending_slot_when_the_transport_ident
     assert component._asr_pending_speech_confirmed is False
     assert component._asr_pending_speech_onset_at is None
     assert component._asr_turn_onset_at == recorded_onset
-    # 确认已经落地（lifecycle 是 ACTIVE，这一轮会照常封口），所以那张 credit
-    # 必须跟着确认一起记掉，不能被身份漂移那条 return 跳过。
+    # Confirmation succeeded (lifecycle ACTIVE, allowing normal closure), so consume the credit
+    # with confirmation rather than skipping accounting through the identity-drift return.
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
     assert runtime._asr_overlap_completed_turns == 0
     assert not component._asr_overlap_completed_onsets
 
-    # 身份漂移让这一轮停在 ACTIVE（那次 return 越过了随后的封口）。恢复身份、
-    # 把它正常走完，才谈得上「下一次不相干的开口」。
+    # Identity drift leaves this turn ACTIVE, bypassing later closure. Restore identity
+    # and finish it normally before testing the next unrelated utterance.
     component._asr_session = type("Asr", (), {"is_ready": True})()
     await runtime._handle_independent_asr_endpoint(epoch)
     await runtime._handle_independent_asr_final("second", epoch, "openai")
@@ -195,8 +195,8 @@ async def test_credit_redemption_drops_the_pending_slot_when_the_transport_ident
     assert component._asr_turn_onset_at != recorded_onset
     assert component._asr_turn_onset_at >= fresh_floor
 
-    # 行为层：后面一次**真实**的 overlap 兑付必须拿到它自己的 onset。credit 若
-    # 被漏记，这张陈旧的会按 FIFO 排在前面先被兑走，这一轮就拿错了开口时刻。
+    # Behavioral check: the next real overlap must redeem its own onset. An unconsumed stale credit
+    # would redeem first in FIFO order, assigning the wrong speech onset to this turn.
     await runtime._handle_independent_asr_activity(
         SpeechActivityEvent.SPEECH_RESUMED,
         epoch,
@@ -243,7 +243,7 @@ async def test_direct_overlap_replay_seals_when_the_session_is_not_ready() -> No
         SpeechActivityEvent.SPEECH_STARTED,
         epoch,
     )
-    # 后继在上一轮还 ACTIVE 时开口：它的 onset 被记下来等直接重放。
+    # The successor starts while the previous turn remains ACTIVE; retain its onset for direct replay.
     await runtime._handle_independent_asr_activity(
         SpeechActivityEvent.SPEECH_RESUMED,
         epoch,
@@ -252,28 +252,28 @@ async def test_direct_overlap_replay_seals_when_the_session_is_not_ready() -> No
     assert recorded_onset is not None
     await runtime._handle_independent_asr_endpoint(epoch)
 
-    # 两条有序回调之间传输掉线：重放会停在 PREWARMING 并挂起确认。
+    # Transport disconnects between two ordered callbacks; replay pauses at PREWARMING with confirmation pending.
     component._asr_session.is_ready = False
 
     await runtime._handle_independent_asr_final("first", epoch, "openai")
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    # 重放就地补完了确认：回合醒着，后继排在 FIFO 里的 endpoint 才封得了口。
-    # （HEAD 上这里是 PREWARMING，封不了口，那条 final 会被整条丢弃。）
+    # Replay completes confirmation in place; the awakened turn can then close on the successor's FIFO endpoint.
+    # (At HEAD this remains PREWARMING, preventing closure and discarding the entire final.)
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
-    # 这一刻还没 prepare 是对的：直接重放只负责唤醒，prepare 由后继自己的
-    # endpoint 完成（_handle_independent_asr_endpoint 的 not _asr_turn_prepared
-    # 分支）。断言它已 prepare 属于对契约的过度主张。
-    # 用的是用户当初真实开口的时刻，不是这次重放的时刻。
+    # Not preparing yet is correct: direct replay only awakens, while the successor's own
+    # endpoint prepares through _handle_independent_asr_endpoint's not _asr_turn_prepared
+    # branch. Requiring preparation here overstates the contract.
+    # Use the user's original speech onset, not replay time.
     assert component._asr_turn_onset_at == recorded_onset
     assert component._asr_pending_speech_onset_at is None
-    # 没走 fail-closed 出口（那条会 bump epoch、拆掉 session）。
+    # Did not take fail-closed, which bumps epoch and tears down the session.
     assert runtime._asr_session_epoch == epoch
 
-    # 后继自己的 endpoint 紧随其后到达 —— 这一步才封口。
+    # The successor's own endpoint arrives next; only this step closes speech.
     await runtime._handle_independent_asr_endpoint(epoch)
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
-    # 忙窗口有定时器兜底。
+    # The busy window has a timer fallback.
     assert component._asr_final_watchdog_task is not None
 
     await runtime._handle_independent_asr_final("second", epoch, "openai")
@@ -402,17 +402,17 @@ async def test_overlap_credit_survives_a_replay_that_never_activates() -> None:
     await runtime._wait_asr_transcript_dispatch_idle()
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
 
-    # 重放唤不醒这一轮（会话暂时不可用）。
+    # Replay cannot awaken this turn while the session is temporarily unavailable.
     async def refuse_to_wake(*_args, **_kwargs):
         return None
 
     runtime._asr_runtime._handle_independent_asr_activity = refuse_to_wake
     await runtime._handle_independent_asr_endpoint(epoch)
 
-    # credit 和 onset 都原样留着，等下一次兑付。
+    # Retain both credit and onset unchanged for the next redemption.
     assert runtime._asr_overlap_completed_turns == 1
     assert list(runtime._asr_overlap_completed_onsets) == onset_before
-    # 借出去的 onset 也收回了，不会被后面不相干的回合继承。
+    # Reclaim the borrowed onset too, preventing inheritance by unrelated later turns.
     assert runtime._asr_pending_speech_onset_at is None
 
 
@@ -459,25 +459,25 @@ async def test_an_unwoken_redemption_still_seals_and_delivers_the_queued_final()
     assert component._asr_overlap_completed_turns == 1
     recorded_onset = component._asr_overlap_completed_onsets[0]
 
-    # 不打桩：跑真实控制流，只让传输在两条有序回调之间掉线。
+    # No stubbing: run real control flow, disconnecting transport only between two ordered callbacks.
     component._asr_session.is_ready = False
 
     await runtime._handle_independent_asr_endpoint(epoch)
 
-    # 仍然封口，那条排在后面的 final 才有 DRAINING 可落。
+    # Speech still closes, giving the later final a DRAINING state to enter.
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DRAINING
-    # 恰好兑付一次，不多不少。
+    # Redeem exactly once.
     assert component._asr_overlap_completed_turns == 0
     assert list(component._asr_overlap_completed_onsets) == []
     assert component._asr_overlap_completed_token is None
-    # onset 被本轮消费掉，不会被后面某个不相干的回合当成自己的起点。
+    # This turn consumes onset so unrelated later turns cannot use it as their own start.
     assert component._asr_pending_speech_onset_at is None
-    # 用的是用户当初真实开口的时刻，不是这次重放的时刻。
+    # Use the user's original speech onset, not replay time.
     assert component._asr_turn_onset_at == recorded_onset
-    # 忙窗口有定时器兜底（HEAD 上这里是 None）。
+    # The busy window has a timer fallback (None here at HEAD).
     assert component._asr_final_watchdog_task is not None
-    # 没走 fail-closed 出口：那条会 bump epoch、拆掉 session、把语音判死。
-    # 只有这组断言能区分两条出口——错误出口也会发同名 status。
+    # Did not take fail-closed, which bumps epoch, tears down the session, and declares voice unusable.
+    # Only these assertions distinguish the two exits; the wrong exit emits the same status name too.
     assert runtime._asr_session_epoch == epoch
     assert runtime._asr_lifecycle is not None
 
@@ -487,7 +487,7 @@ async def test_an_unwoken_redemption_still_seals_and_delivers_the_queued_final()
     assert [
         call.args[0] for call in runtime.handle_input_transcript.await_args_list
     ] == ["first", "second"]
-    # 收尾不留忙标志。
+    # Finalization leaves no busy flag.
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
 
 

@@ -116,20 +116,20 @@ async def _init_and_mount_workshop():
     - other code that needs the path calls get_workshop_path()
     """
     try:
-        # 1. 获取订阅的创意工坊物品列表
+        # 1. Get the list of subscribed Workshop items.
         workshop_items_result = await get_subscribed_workshop_items()
 
-        # 2. 提取物品列表传给 utils 层
+        # 2. Extract the item list for the utils layer.
         subscribed_items = []
         if isinstance(workshop_items_result, dict) and workshop_items_result.get(
             "success", False
         ):
             subscribed_items = workshop_items_result.get("items", [])
 
-        # 3. 调用 utils 层函数获取/计算路径（路径会被持久化到 config）
+        # 3. Call the utils layer to get/calculate paths (persisted in config).
         workshop_path = await get_workshop_root_async(subscribed_items)
 
-        # 4. 挂载静态文件目录
+        # 4. Mount the static file directory.
         if (
             workshop_path
             and os.path.exists(workshop_path)
@@ -148,7 +148,7 @@ async def _init_and_mount_workshop():
             )
     except Exception as e:
         logger.error(f"初始化创意工坊目录时出错: {e}")
-        # 降级：确保至少有一个默认路径可用
+        # Fallback: ensure at least one default path is available.
         workshop_path = await get_workshop_path_async()
         logger.info(f"使用配置中的默认路径: {workshop_path}")
         if (

@@ -27,8 +27,12 @@ Why a separate module (instead of inside `evidence.py`):
 V1 scope (RFC §3.10.4):
 - Exposes only the single aggregation function `funnel_counts`; no UI / CLI /
   cross-character aggregation
-- Linear scan at read time, O(N); the events.ndjson compaction threshold is
-  10k lines, a full scan takes <200ms (RFC §3.10.3), no dedicated index needed
+- Linear scan at read time, O(N); background compaction normally keeps
+  events.ndjson around 512 KiB or less (the largest real journal measured,
+  641 KB, parsed in ~4 ms), so no dedicated index is needed
+- Counts only what is still in the journal: already-applied history older than
+  the retention window (7 days / 256 KiB by default, see
+  EventLog.compact_applied_history) has been pruned
 
 Forward compatibility notes (PR-2 / PR-3 coordination):
 - `persona_entries_archived` depends on PR-2 writing the `archive_shard_path`
@@ -55,7 +59,7 @@ __all__ = ["funnel_counts", "to_naive_local"]
 
 
 # Bucket schema — the keys in the returned dict, frozen by RFC §3.10.2.
-# 列表式定义保证 zero-init 时 11 个 bucket 都有 0，调用方遍历不会 KeyError。
+# List definition ensures all 11 buckets start at 0; caller iteration cannot raise KeyError.
 _FUNNEL_BUCKETS: tuple[str, ...] = (
     "facts_added",
     "reflections_synthesized",
@@ -70,9 +74,9 @@ _FUNNEL_BUCKETS: tuple[str, ...] = (
 )
 
 
-# `reflection.state_changed.payload['to']` 值 → bucket 名。
-# 不在表里的 `to` 值（例如 'pending' / 'promote_blocked' / 未来扩展）
-# 静默跳过——funnel 只统计 RFC §3.10.2 列出的终态转换，不是全状态机。
+# reflection.state_changed.payload['to'] value → bucket name.
+# Unlisted 'to' values (e.g. pending / promote_blocked / future extensions)
+# are silently skipped: funnel counts only RFC §3.10.2 terminal transitions, not the entire state machine.
 _STATE_TO_BUCKET: dict[str, str] = {
     "confirmed": "reflections_confirmed",
     "promoted": "reflections_promoted",
@@ -92,7 +96,7 @@ def _events_path(lanlan_name: str) -> str:
     is an independent sibling, the pure-function evidence.py would still pick
     up an indirect dependency through second-order re-exports).
     """
-    # 局部 import 避开 memory/__init__.py ↔ memory/* 的循环依赖
+    # Local imports avoid memory/__init__.py ↔ memory/* circular dependencies.
     from memory import ensure_character_dir
     cm = get_config_manager()
     return os.path.join(
@@ -185,8 +189,12 @@ def funnel_counts(
           payload carries `archive_shard_path`, the archive convention
           PR-2 introduces).
 
-    Performance: O(N) over file lines, no indexing.  RFC §3.10.3 budgets
-    <200ms for the 10k-line compaction threshold.
+    Retention: events pruned by journal compaction are not counted; with
+    the default window only the last 7 days (at most 256 KiB) of applied
+    history remain, plus pinned archive events and any unapplied tail.
+
+    Performance: O(N) over file lines, no indexing. Compaction bounds the
+    journal at roughly 512 KiB, a few milliseconds to scan.
     """
     counts: dict = {bucket: 0 for bucket in _FUNNEL_BUCKETS}
     path = _events_path(lanlan_name)
@@ -230,7 +238,7 @@ def funnel_counts(
                 continue
             ts = _parse_ts(rec.get("ts"))
             if ts is None:
-                # 没法落进时间窗 → 直接跳，不计入任何 bucket
+                # Cannot fit into the time window: skip without counting any bucket.
                 continue
             if ts < since or ts > until:
                 continue
@@ -246,18 +254,18 @@ def funnel_counts(
                 bucket = _STATE_TO_BUCKET.get(payload.get("to"))
                 if bucket is not None:
                     counts[bucket] += 1
-                # else: 未识别的 state 值（pending / promote_blocked / 未来扩展）
-                # 静默跳过——funnel 只统计 RFC §3.10.2 enumerate 的终态
+                # else: unrecognized state value (pending / promote_blocked / future extensions).
+                # Silently skip: funnel counts only terminal states enumerated in RFC §3.10.2.
             elif evt_type == "persona.fact_added":
-                # PR-2 引入的 archive 路径在 payload 里带 `archive_shard_path`
-                # 字段；缺字段一律视作主 view 添加（PR-2 未合并时分支永远走
-                # main 即可，archive 桶恒为 0）
+                # PR-2's archive path adds archive_shard_path to payload;
+                # a missing field means addition to the main view (before PR-2 merges,
+                # always use main, leaving archive buckets at 0).
                 if payload.get("archive_shard_path"):
                     counts["persona_entries_archived"] += 1
                 else:
                     counts["persona_entries_added"] += 1
             elif evt_type == "persona.entry_updated":
                 counts["persona_entries_rewritten"] += 1
-            # else: 未知事件类型 → 静默跳过（forward-compat）
+            # else: unknown event type → silently skip for forward compatibility.
 
     return counts

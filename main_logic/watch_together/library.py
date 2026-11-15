@@ -18,6 +18,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from urllib.parse import quote, unquote
+from collections import OrderedDict
 from functools import lru_cache
 from threading import Lock
 
@@ -26,24 +27,85 @@ JOB_ID = re.compile(r"[a-f0-9]{32}")
 # engine enforces the same limits before it marks a job ready.
 MAX_REACTION_AUDIO_FILES = 256
 MAX_REACTION_AUDIO_BYTES = 64 * 1024 * 1024
+_PLAYABLE_ROLES = {'.mp4': 'video', '.webm': 'video',
+                   '.wav': 'audio', '.mp3': 'audio', '.ogg': 'audio', '.m4a': 'audio'}
+# Objects probed per batch worker; a failed batch falls back to one worker per object.
+_PROBE_BATCH = 128
+_PROBE_CACHE_SIZE = 4096
+# Objects prewarmed before their rows are validated. A history page can name more objects
+# than the cache holds (every ready job may carry MAX_REACTION_AUDIO_FILES reaction files),
+# so pages are prewarmed and validated a chunk at a time, well inside the cache.
+_PREWARM_CHUNK = 1024
 
 
 _library_lock = Lock()
+# Probe results keyed by (path, size, mtime_ns, role): objects are immutable, stat
+# changes invalidate damaged files, and failures to run a probe are never stored.
+_probe_cache: OrderedDict = OrderedDict()
+_probe_cache_lock = Lock()
+# One batch prewarm at a time, so concurrent cold history requests share the work.
+_prewarm_lock = Lock()
+# Objects whose probe raised inside a batch. Prewarming skips them later (non-ready rows
+# keep such files and would otherwise cost a worker on every listing); validation still
+# probes them one by one, so a transient failure is retried there.
+_prewarm_raised: OrderedDict = OrderedDict()
+
+
+def _cached_probe(key):
+    with _probe_cache_lock:
+        if key not in _probe_cache:
+            return None
+        _probe_cache.move_to_end(key)
+        return _probe_cache[key]
+
+
+def _remember_probe(key, result):
+    with _probe_cache_lock:
+        _probe_cache[key] = result
+        _probe_cache.move_to_end(key)
+        while len(_probe_cache) > _PROBE_CACHE_SIZE:
+            _probe_cache.popitem(last=False)
 
 
 def _probe_media(path, size, modified, role):
+    key = (path, size, modified, role)
+    known = _cached_probe(key)
+    if known is not None:
+        return known
+    from . import media
     try:
-        return _probe_media_cached(path, size, modified, role)
+        result = media.run("probe", path, role, timeout=10)
     except (OSError, ValueError, RuntimeError, TimeoutError):
         # Transient worker failures must be retried even if the file is unchanged.
         return False
+    _remember_probe(key, result)
+    return result
 
 
-@lru_cache(maxsize=4096)
-def _probe_media_cached(path, size, modified, role):
-    """Probe immutable objects once; stat keys invalidate damaged files."""
+def _prewarm_probes(keys):
+    """Probe uncached objects in a few batch workers instead of one worker each.
+
+    Results land in the same cache ``_probe_media`` reads. Objects whose probe
+    raised, and every object of a batch whose worker failed, stay uncached and
+    are probed individually afterwards, so one bad file cannot hide the others.
+    """
     from . import media
-    return media.run("probe", path, role, timeout=10)
+    with _prewarm_lock:
+        pending = list(dict.fromkeys(key for key in keys if _cached_probe(key) is None and key not in _prewarm_raised))
+        for start in range(0, len(pending), _PROBE_BATCH):
+            batch = pending[start:start + _PROBE_BATCH]
+            try:
+                results = media.run("probe_many", [(key[0], key[3]) for key in batch],
+                                    timeout=10 + len(batch))
+            except (OSError, ValueError, RuntimeError, TimeoutError):
+                continue
+            for key, result in zip(batch, results):
+                if isinstance(result, bool):
+                    _remember_probe(key, result)
+                else:
+                    _prewarm_raised[key] = True
+                    while len(_prewarm_raised) > _PROBE_CACHE_SIZE:
+                        _prewarm_raised.popitem(last=False)
 
 
 @lru_cache(maxsize=8)
@@ -71,6 +133,9 @@ class Library:
         self.root = root.resolve()
         self.objects = self.root / "objects"
         self.objects.mkdir(parents=True, exist_ok=True)
+        # Versions are immutable, so a title read once stays valid; bounded like the probe cache.
+        self._titles: OrderedDict = OrderedDict()
+        self._titles_lock = Lock()
         with self.connect() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS versions (
@@ -340,21 +405,75 @@ class Library:
     def history(self) -> list[dict]:
         return self.history_page()['analyses']
 
+    def _probe_targets(self, manifest) -> list:
+        """Probe keys for every playable object a manifest names (a superset of a timeline's references)."""
+        targets = []
+        for name, entry in manifest.items() if isinstance(manifest, dict) else ():
+            role = _PLAYABLE_ROLES.get(Path(str(name)).suffix.lower())
+            if role is None or not isinstance(entry, dict):
+                continue
+            path = self.objects / str(entry.get("sha256", ""))
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if path.is_file():
+                targets.append((path, stat.st_size, stat.st_mtime_ns, role))
+        return targets
+
+    def _prewarmed_rows(self, rows):
+        """Yield rows once their objects are prewarmed, a chunk at a time.
+
+        A chunk gathers rows until their distinct uncached objects would exceed
+        _PREWARM_CHUNK (a single larger row forms its own chunk). Prewarming a whole
+        page up front could evict its first results before those rows are validated,
+        costing one worker per evicted object on top of the batch.
+        """
+        chunk, pending = [], {}
+        for row in rows:
+            try:
+                row_targets = self._probe_targets(json.loads(row["manifest"]))
+            except ValueError:
+                row_targets = []
+            # Versions of one job share objects; only objects still to probe count toward the chunk.
+            fresh = {key: None for key in row_targets if key not in pending and _cached_probe(key) is None}
+            if chunk and len(pending) + len(fresh) > _PREWARM_CHUNK:
+                _prewarm_probes(pending)
+                yield from chunk
+                chunk, pending = [], {}
+            chunk.append(row)
+            pending.update(fresh)
+        if chunk:
+            _prewarm_probes(pending)
+            yield from chunk
+
     def history_page(self, limit=50, offset=0) -> dict:
         limit = max(1, min(100, int(limit)))
         offset = max(0, int(offset))
         with self.connect() as db:
-            rows = db.execute("SELECT job, version FROM versions ORDER BY rowid DESC LIMIT ? OFFSET ?",
+            rows = db.execute("SELECT job, version, manifest FROM versions ORDER BY rowid DESC LIMIT ? OFFSET ?",
                               (limit + 1, offset)).fetchall()
         result = []
-        for row in rows[:limit]:
+        # Validation below still probes each reference; prewarming only makes those probes cache hits.
+        for row in self._prewarmed_rows(rows[:limit]):
             try:
                 timeline = self.timeline(row["job"], row["version"])
             except (KeyError, ValueError, OSError):
                 timeline = {"status": "incomplete"}
+            ready = timeline.get("status") == "ready"
+            duration = timeline.get("duration")
+            try:
+                # Imported timelines may hold any JSON number; a huge integer overflows float().
+                duration = float(duration) if type(duration) in (int, float) else None
+            except OverflowError:
+                duration = None
             result.append({"job": row["job"], "version": row["version"],
                            "title": timeline.get("title", row["job"]),
                            "status": timeline.get("status"), "usage": timeline.get("usage"),
+                           "cover": timeline.get("cover"), "bvid": timeline.get("bvid"),
+                           "duration": duration if duration is not None and math.isfinite(duration) and duration > 0 else None,
+                           # Only the count: reaction text would spoil the video before it is watched.
+                           "reactions": len(timeline["events"]) if ready and isinstance(timeline.get("events"), list) else None,
                            "progress": None, "last_watched": None, "completed": None})
         return {'analyses': result, 'next_offset': offset + limit if len(rows) > limit else None}
 
@@ -384,6 +503,28 @@ class Library:
     def watches(self, limit=50, offset=0) -> list[dict]:
         return self.watch_page(limit, offset)['watches']
 
+    def title(self, job: str, version: str):
+        """Display title read from the timeline JSON alone, without media probes; None if unreadable."""
+        key = (job, version)
+        with self._titles_lock:
+            if key in self._titles:
+                self._titles.move_to_end(key)
+                return self._titles[key]
+        try:
+            path = self.resource(job, version, "timeline.json")
+            if path.stat().st_size > 8 * 1024 * 1024:
+                return None
+            data = json.loads(path.read_text(encoding="utf-8-sig"), parse_constant=lambda value: None)
+        except (KeyError, ValueError, OSError, RecursionError):
+            return None
+        title = data.get("title") if isinstance(data, dict) else None
+        title = re.sub(r'[\ud800-\udfff]', '�', title)[:500] if isinstance(title, str) else None
+        with self._titles_lock:
+            self._titles[key] = title
+            while len(self._titles) > 1024:
+                self._titles.popitem(last=False)
+        return title
+
     def watch_page(self, limit=50, offset=0) -> dict:
         limit = max(1, min(100, int(limit)))
         offset = max(0, int(offset))
@@ -391,6 +532,8 @@ class Library:
             rows = [dict(row) for row in db.execute(
                 "SELECT id,job,version,character,progress,last_watched,completed FROM watches "
                 "ORDER BY last_watched DESC, id DESC LIMIT ? OFFSET ?", (limit + 1, offset))]
+        for row in rows[:limit]:
+            row["title"] = self.title(row["job"], row["version"])
         return {'watches': rows[:limit], 'next_offset': offset + limit if len(rows) > limit else None}
 
     def verify(self) -> dict:

@@ -1,6 +1,6 @@
 """P29.1 — read-only memory **system overview** aggregator (chokepoint of chokepoints).
 
-Builds the dashboard payload behind the "系统概况" sub-page of the 记忆系统分析
+Builds the dashboard payload behind the \"系统概况\" (System Overview) subpage of Memory Analysis
 workspace. This module performs **no raw reads of its own** beyond what the two
 downstream chokepoints already do: it calls :func:`memory_lineage.build_lineage_snapshot`
 (P27, structural truth) and :func:`embedding_space._build_space` (P28, vector
@@ -15,9 +15,9 @@ Design rails (blueprint P29):
   * **Honest contradiction tiering** (blueprint §6): only L0 (recorded on disk:
     corrections / denied reflections / suppressed persona) is labelled a real
     contradiction. L1 (same-topic high-similarity pairs) is surfaced as
-    "待核对候选" — a retrieval, never a judgement. L2 is the LLM endpoint.
+    \"待核对候选\" (pending review) is a retrieval result, never a judgement. L2 is the LLM endpoint.
   * **Transparency over a black-box score** (blueprint §1.2): no single 0-100
-    health number. Instead "N 项需关注" + per-finding severity + an explicit
+    health number. Instead, show \"N items need attention\" + per-finding severity + an explicit
     *conclusion credibility* card stating what data was / wasn't available.
   * **Functional-stage tagging** (blueprint §4.0): every finding carries a
     ``stage`` (extract/dedup/reflect/promote/correct/embed/structure) so the UI
@@ -370,7 +370,7 @@ def build_overview(character: str) -> dict[str, Any]:
     # merge (no longer a standalone reflection node), yet its real sources live
     # in ``merged_from_ids`` and ARE drawn as ``merged_from`` edges. Checking
     # only ``source_id`` falsely flagged such merged entries as "no source"
-    # while the溯源图 clearly shows their sources (blueprint §3.1 / LESSONS
+    # while the provenance graph clearly shows their sources (blueprint §3.1 / LESSONS
     # §7.25: don't recompute a relation the chokepoint already settled).
     linked_persona_ids = {
         e.get("target") for e in edges
@@ -744,7 +744,7 @@ def _confidence(
     """Conclusion-credibility meta (blueprint §1.2): say what we could/couldn't see.
 
     ``level`` ∈ high/medium/low; ``notes`` is a list of stable codes the UI maps
-    to a sentence ("没有向量 → A/C/E.split/G 不可用", etc.).
+    explanation sentence (\"No vectors → A/C/E.split/G unavailable,\" etc.).
     """  # noqa: DOCSTRING_CJK
     notes: list[str] = []
     ratio = (embedded / total) if total else 0.0

@@ -223,6 +223,9 @@
           <input ref="fileInput" type="file" accept="application/json,.json" hidden @change="importSelectedPack" />
           <el-button type="primary" :loading="importing" @click="fileInput?.click()">{{ t('knowledge.importPack') }}</el-button>
           <span class="toolbar__hint">{{ t('knowledge.importHint') }}</span>
+          <el-button class="toolbar__end" :loading="marketOpening" @click="openKnowledgeMarket">
+            {{ t('knowledge.openMarket') }}
+          </el-button>
         </div>
 
         <section v-if="activeJobs.length" class="job-panel job-panel--active" aria-live="polite">
@@ -286,6 +289,11 @@
                     <strong :title="scope.row.pack_id">{{ scope.row.source?.name || scope.row.pack_id }}</strong>
                     <el-tooltip v-if="scope.row.broken" :content="t('knowledge.brokenHint')" placement="top">
                       <el-tag type="danger" size="small">{{ t('knowledge.brokenTag') }}</el-tag>
+                    </el-tooltip>
+                    <el-tooltip v-if="scope.row.subscription" :content="t('knowledge.subscribedHint')" placement="top">
+                      <el-tag type="success" size="small" effect="plain">
+                        {{ t('knowledge.subscribedTag', { version: scope.row.subscription.version }) }}
+                      </el-tag>
                     </el-tooltip>
                   </div>
                   <span class="pack-identity__meta">{{ scope.row.pack_id }}</span>
@@ -545,10 +553,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import dayjs from 'dayjs'
 import {
+  createMarketPairing,
   isActiveKnowledgeJob,
   isKnownKnowledgeReason,
   knowledgeApi,
   knowledgeFailureReason,
+  knowledgeMarketUrl,
   type KnowledgeDiagnosticQuery,
   type KnowledgeEntry,
   type KnowledgeEntryDetail,
@@ -570,7 +580,8 @@ import {
   vectorStateTagType,
   visibleDiagnosticQueries,
 } from '@/utils/knowledgeDisplay'
-import { openExternalUrl } from '@/utils/openExternal'
+import { openExternalUrl, prepareExternalWindow } from '@/utils/openExternal'
+import { getMarketUrl } from '@/api/market'
 
 const MATERIAL_FOLLOW = '__follow__'
 const EMPTY_MARK = '—'
@@ -603,6 +614,7 @@ const pendingPacks = reactive(new Set<string>())
 const packJobs = ref<KnowledgePackJob[]>([])
 const pendingJobs = reactive(new Set<string>())
 const importing = ref(false)
+const marketOpening = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const queries = ref<KnowledgeDiagnosticQuery[]>([])
@@ -776,6 +788,7 @@ function queryResultLabel(result: string): string {
 function queryModeLabel(mode: string): string {
   if (mode === 'lookup') return t('knowledge.modeLookup')
   if (mode === 'sample') return t('knowledge.modeSample')
+  if (mode === 'passive') return t('knowledge.autoContext')
   return mode || EMPTY_MARK
 }
 
@@ -1058,6 +1071,31 @@ async function toggleEntry(row: KnowledgeEntry, disabled: boolean) {
   }
 }
 
+async function openKnowledgeMarket() {
+  // Before any await: a browser only allows a popup inside the click itself.
+  const target = prepareExternalWindow()
+  if (target.blocked) {
+    // No window to show the Market in: do not issue a pairing code for nothing.
+    ElMessage.error(t('knowledge.marketPopupBlocked'))
+    return
+  }
+  marketOpening.value = true
+  try {
+    const base = await getMarketUrl()
+    if (!base) {
+      target.cancel()
+      ElMessage.error(t('knowledge.marketUnavailable'))
+      return
+    }
+    target.open(knowledgeMarketUrl(base, await createMarketPairing()))
+  } catch {
+    target.cancel()
+    ElMessage.error(t('knowledge.marketPairFailed'))
+  } finally {
+    marketOpening.value = false
+  }
+}
+
 async function importSelectedPack(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -1228,16 +1266,16 @@ onUnmounted(() => {
 
 <style scoped>
 .knowledge-manager {
-  --knowledge-surface: var(--el-bg-color);
-  --knowledge-surface-muted: var(--el-fill-color-extra-light);
-  --knowledge-line: var(--el-border-color-lighter);
+  --knowledge-surface: var(--surface-card);
+  --knowledge-surface-muted: var(--surface-inset);
+  --knowledge-line: var(--surface-border);
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 18px;
   width: 100%;
   min-width: 0;
-  padding: 24px 24px 72px;
+  padding: var(--spacing-lg) var(--spacing-lg) 72px;
   overflow-x: clip;
 }
 
@@ -1266,16 +1304,16 @@ onUnmounted(() => {
 .knowledge-tabs {
   min-width: 0;
   border: 1px solid var(--knowledge-line);
-  border-radius: 10px;
+  border-radius: var(--radius-card);
   background: var(--knowledge-surface);
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+  box-shadow: var(--surface-shadow);
 }
 
 .knowledge-tabs :deep(.el-tabs__header) {
   margin: 0;
   padding: 8px;
   border-bottom: 1px solid var(--knowledge-line);
-  border-radius: 10px 10px 0 0;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
   background: var(--knowledge-surface-muted);
 }
 
@@ -1307,7 +1345,7 @@ onUnmounted(() => {
   min-width: 104px;
   height: 36px;
   padding: 0 12px;
-  border-radius: 7px;
+  border-radius: var(--radius-control);
   color: var(--el-text-color-regular);
   font-size: 14px;
   font-weight: 500;
@@ -1325,7 +1363,7 @@ onUnmounted(() => {
 .knowledge-tabs :deep(.el-tabs__item.is-active) {
   color: var(--el-color-primary);
   background: var(--knowledge-surface);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  box-shadow: var(--surface-shadow);
 }
 
 .knowledge-tabs :deep(.el-tabs__item.is-active::after) {
@@ -1350,7 +1388,7 @@ onUnmounted(() => {
 
 .status-card {
   border-color: transparent;
-  border-radius: 10px;
+  border-radius: var(--radius-panel);
   box-shadow: none;
 }
 
@@ -1372,7 +1410,7 @@ onUnmounted(() => {
 }
 
 .overview-alert {
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
 }
 
 .global-switch {
@@ -1382,7 +1420,7 @@ onUnmounted(() => {
   gap: 16px;
   padding: 14px 16px;
   border: 1px solid var(--el-color-primary-light-7);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   background: var(--el-color-primary-light-9);
 }
 
@@ -1413,7 +1451,7 @@ onUnmounted(() => {
 
 .status-metric {
   padding: 16px;
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   background: var(--knowledge-surface-muted);
 }
 
@@ -1444,7 +1482,7 @@ dd {
   min-width: 0;
   padding: 14px 16px;
   border: 1px solid var(--knowledge-line);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   background: var(--knowledge-surface);
 }
 
@@ -1585,7 +1623,7 @@ dd {
   margin-bottom: 14px;
   padding: 12px;
   border: 1px solid var(--knowledge-line);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   background: var(--knowledge-surface-muted);
 }
 
@@ -1614,7 +1652,7 @@ dd {
   min-width: 0;
   margin-bottom: 14px;
   padding: 14px;
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
 }
 
 .job-panel--active {
@@ -1647,7 +1685,7 @@ dd {
   min-width: 0;
   padding: 10px 12px;
   border: 1px solid var(--knowledge-line);
-  border-radius: 7px;
+  border-radius: var(--radius-control);
   background: var(--knowledge-surface);
 }
 
@@ -1683,7 +1721,7 @@ dd {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--knowledge-line);
-  border-radius: 10px;
+  border-radius: var(--radius-panel);
   background: var(--knowledge-surface);
 }
 
@@ -1813,7 +1851,7 @@ dd {
 }
 
 .result-tag {
-  border-radius: 6px;
+  border-radius: var(--radius-chip);
   font-weight: 500;
 }
 
@@ -1834,9 +1872,9 @@ dd {
 }
 
 :global(.knowledge-entry-drawer) {
-  --knowledge-surface: var(--el-bg-color);
-  --knowledge-surface-muted: var(--el-fill-color-extra-light);
-  --knowledge-line: var(--el-border-color-lighter);
+  --knowledge-surface: var(--surface-card);
+  --knowledge-surface-muted: var(--surface-inset);
+  --knowledge-line: var(--surface-border);
   min-width: 0;
 }
 
@@ -1878,7 +1916,7 @@ dd {
 .entry-drawer-meta :deep(.el-tag),
 .chip-list :deep(.el-tag) {
   max-width: 100%;
-  border-radius: 6px;
+  border-radius: var(--radius-chip);
 }
 
 .chip-list :deep(.el-tag__content) {
@@ -1900,7 +1938,7 @@ dd {
   min-width: 0;
   padding: 16px 18px;
   border: 1px solid var(--knowledge-line);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   background: var(--knowledge-surface-muted);
 }
 
@@ -1943,7 +1981,7 @@ dd {
   padding: 12px 14px;
   overflow: auto;
   border: 1px solid var(--el-border-color-extra-light);
-  border-radius: 8px;
+  border-radius: var(--radius-panel);
   background: var(--knowledge-surface);
   color: var(--el-text-color-regular);
   font-size: 13px;
@@ -1977,7 +2015,7 @@ dd {
 
 @media (max-width: 640px) {
   .knowledge-manager {
-    padding: 16px 16px calc(128px + env(safe-area-inset-bottom));
+    padding: var(--spacing-md) var(--spacing-md) calc(128px + env(safe-area-inset-bottom));
   }
 
   :global(.knowledge-entry-drawer) {

@@ -74,8 +74,8 @@ def test_directive_patterns_are_not_compiled_at_import_time() -> None:
     )
     assert "AFTER=True" in out, "取过 DIRECTIVE_PATTERNS 之后缓存仍是空的"
 
-    # 惰性不能顺手改变模板集合：条数必须和原始表一一对应。少一条就是少一条封禁
-    # 规则，而那种缺失在功能测试里只表现为"这句没被拦住"，很难归因。
+    # Lazy loading must preserve the template set one-to-one: a missing entry removes a prohibition rule,
+    # appearing merely as one unblocked sentence in functional tests and becoming hard to diagnose.
     count = next(line for line in out.splitlines() if line.startswith("COUNT="))
     raw = next(line for line in out.splitlines() if line.startswith("RAW="))
     assert count.split("=")[1] == raw.split("=")[1], (
@@ -128,7 +128,7 @@ def test_warmup_touches_the_attribute_not_just_the_import(
         f"带属性的预热条目没有真的求值，只是 import 了一遍：touched={touched}"
     )
 
-    # 不带冒号的条目保持原样：只 import，不去乱碰属性。
+    # Preserve colonless entries: import only, without touching attributes.
     touched.clear()
     module_warmup._warm_one("neko_fake_warm_target")
     assert touched == [], f"无属性条目不该访问任何属性，却碰了 {touched}"
@@ -164,12 +164,12 @@ def test_the_startup_gate_catches_a_module_scope_import_of_the_lazy_symbol() -> 
     assert len(violations) == 1, f"gate missed the module-scope import: {violations}"
     assert "DIRECTIVE_PATTERNS" in violations[0][2]
 
-    # 同一个模块里的其它名字必须放行——生产的两处 importer 就是这么用的，规则一宽
-    # 就会立刻把 main 打红。
+    # Allow other names from the same module, as both production importers use them;
+    # broadening the rule immediately breaks main.
     innocent = "from config.prompts.prompts_directives import extract_directives\n"
     assert _check(innocent) == [], "规则太宽，合法的轻量导入被打红了"
 
-    # 函数体内的导入正是被认可的惰性写法。
+    # Imports inside function bodies are the intended lazy-loading form.
     lazy = (
         "def f():\n"
         "    from config.prompts.prompts_directives import DIRECTIVE_PATTERNS\n"
@@ -177,7 +177,7 @@ def test_the_startup_gate_catches_a_module_scope_import_of_the_lazy_symbol() -> 
     )
     assert _check(lazy) == [], "函数内导入被误判——那是这条规则要引导人去写的形式"
 
-    # 逃生阀照旧生效。
+    # The escape hatch still applies.
     escaped = (
         "from config.prompts.prompts_directives import (  # noqa: STARTUP_LAZY_IMPORT\n"
         "    DIRECTIVE_PATTERNS,\n"
@@ -206,14 +206,14 @@ def test_the_startup_gate_is_not_bypassed_by_an_aliased_attribute_read() -> None
     assert len(violations) == 1, f"别名属性读法绕过了闸门：{violations}"
     assert "DIRECTIVE_PATTERNS" in violations[0][2]
 
-    # 不带 as 的写法：`import a.b.c` 只绑定 `a`，使用点把全路径又拼了一遍。
+    # Without as, `import a.b.c` binds only `a`, and use sites spell the full path again.
     spelled_out = (
         "import config.prompts.prompts_directives\n"
         "PATTERNS = config.prompts.prompts_directives.DIRECTIVE_PATTERNS\n"
     )
     assert len(_check(spelled_out)) == 1, "全路径属性读法没被认出来"
 
-    # 函数体内读它正是被引导的写法，必须放行。
+    # Reading it inside a function is the intended pattern and must be allowed.
     lazy = (
         "import config.prompts.prompts_directives as directives\n"
         "def f():\n"
@@ -221,7 +221,7 @@ def test_the_startup_gate_is_not_bypassed_by_an_aliased_attribute_read() -> None
     )
     assert _check(lazy) == [], "函数内属性读被误判"
 
-    # 同名符号挂在别的模块上，不该命中——规则是 (模块, 符号) 对，不是符号名。
+    # Identically named symbols from other modules must not match: rules identify (module, symbol) pairs.
     lookalike = (
         "import some.other.module as d\n"
         "PATTERNS = d.DIRECTIVE_PATTERNS\n"
@@ -283,7 +283,7 @@ def test_the_lazy_symbol_still_survives_a_wildcard_import() -> None:
     assert result.returncode == 0, result.stderr[-2000:]
     out = result.stdout
 
-    # 声明 __all__ 不能把惰性弄没了——它只是一张名字表，不该触发求值。
+    # Declaring __all__ must not defeat laziness: it is only a list of names and must not evaluate them.
     assert "LAZY=True" in out, "加了 __all__ 之后 import 期就编译了"
     assert "WILDCARD=True" in out, (
         "通配导入里没有 DIRECTIVE_PATTERNS——下游 `import *` 的消费者会在用到时才 NameError"
@@ -312,7 +312,7 @@ def test_the_startup_gate_does_not_fire_inside_type_checking() -> None:
     )
     assert _check(type_checking_only) == [], "TYPE_CHECKING 分支被当成运行时访问了"
 
-    # 但真会执行的模块作用域分支必须照抓——别把豁免开得比 TYPE_CHECKING 还宽。
+    # Still catch executable module-scope branches; do not expand exemptions beyond TYPE_CHECKING.
     really_runs = (
         "import config.prompts.prompts_directives as d\n"
         "if True:\n"
@@ -320,7 +320,7 @@ def test_the_startup_gate_does_not_fire_inside_type_checking() -> None:
     )
     assert len(_check(really_runs)) == 1, "会执行的 if 分支里的访问被漏掉了"
 
-    # TYPE_CHECKING 的 else 分支是会执行的，同样要抓。
+    # TYPE_CHECKING's else branch executes and must also be caught.
     else_branch = (
         "from typing import TYPE_CHECKING\n"
         "import config.prompts.prompts_directives as d\n"
@@ -331,9 +331,9 @@ def test_the_startup_gate_does_not_fire_inside_type_checking() -> None:
     )
     assert len(_check(else_branch)) == 1, "TYPE_CHECKING 的 else 分支被一起豁免了"
 
-    # if 的判断表达式一定执行，而且它是唯一只能从 If 节点本身看到的位置——body 里的
-    # 语句外层迭代器会单独 yield 一遍，test 不会。跳过 If 时把 test 一起丢掉，这里就
-    # 漏了。
+    # An if condition always executes and is visible only from the If node itself: the outer iterator yields body
+    # statements separately but not test. Skipping If together with test would
+    # miss this case.
     in_the_test = (
         "import config.prompts.prompts_directives as d\n"
         "if d.DIRECTIVE_PATTERNS:\n"
@@ -359,12 +359,12 @@ def test_the_startup_gate_catches_a_wildcard_import_of_the_lazy_module() -> None
     assert len(violations) == 1, f"通配导入绕过了闸门：{violations}"
     assert "DIRECTIVE_PATTERNS" in violations[0][2]
 
-    # 函数体内的通配导入是语法错误，所以没有对应的放行用例；换一个方向：别的模块
-    # 的通配导入不该命中。
+    # Wildcard imports inside functions are syntax errors, so there is no allowed counterpart; instead verify that
+    # wildcard imports from other modules do not match.
     other = "from some.other.module import *\n"
     assert _check(other) == [], "任何通配导入都被打红了"
 
-    # 逃生阀对通配这条同样要管用。
+    # The escape hatch applies to wildcard imports too.
     escaped = (
         "from config.prompts.prompts_directives import *  # noqa: STARTUP_LAZY_IMPORT\n"
     )
@@ -400,14 +400,14 @@ def test_a_nested_noqa_cannot_suppress_an_import_time_read() -> None:
     )
     assert len(_check(in_if_test)) == 1, "if 体里的 noqa 压掉了判断表达式里的读取"
 
-    # 写在读取那一行的 noqa 必须照常生效——否则这条规则就没有逃生阀了。
+    # noqa on the read line must still work, or this rule has no escape hatch.
     on_the_line = (
         "import config.prompts.prompts_directives as d\n"
         "P = d.DIRECTIVE_PATTERNS  # noqa: STARTUP_LAZY_IMPORT\n"
     )
     assert _check(on_the_line) == [], "读取点自己那行的 noqa 失效了"
 
-    # 多行 import 仍然整条语句范围生效。
+    # Multiline imports still apply across the entire statement.
     multiline = (
         "from config.prompts.prompts_directives import (  # noqa: STARTUP_LAZY_IMPORT\n"
         "    DIRECTIVE_PATTERNS,\n"

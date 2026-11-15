@@ -1266,9 +1266,9 @@ async def _finalize_game_route_state_inner(
         _clear_route_activity_flags(state)
         await _cancel_route_game_speech_preloads(state)
         await _cancel_route_game_speech(state, mgr)
-        # 推 closed 事件让前端还原 chat.html 折叠态 + 显回 pet 容器。所有 finalize
-        # 路径（/route/end / heartbeat sweep / supersede）都走本 inner，与 active
-        # flag 翻 false 同源，不会出现"已结束但 UI 仍锁着收缩态"的孤岛。
+        # Push closed so the frontend restores chat.html's collapsed state and shows the pet container. All finalize
+        # paths (/route/end / heartbeat sweep / supersede) use this inner function, sharing the active
+        # flag's transition to false so the UI cannot remain locked in its contracted state after completion.
         await _push_game_window_state_change(
             mgr,
             action="closed",
@@ -1300,8 +1300,8 @@ async def _finalize_game_route_state_inner(
         # handing it back to core would pull its microphone input away.
         realtime_restore["reason"] = "takeover_held_by_newer_route"
     elif callable(resume_voice) and not _game_voice_lease_release_needed(mgr):
-        # realtime-STT 游戏租约从未离开 Core：跳过 resume，避免 core->core
-        # 空转换清掉在途麦克风 PCM（见 ``_game_voice_lease_release_needed``）。
+        # A realtime-STT game lease never left Core: skip resume to avoid a core->core
+        # no-op transition clearing in-flight microphone PCM (see ``_game_voice_lease_release_needed``).
         realtime_restore["reason"] = "voice_lease_not_taken"
     elif callable(resume_voice):
         realtime_restore["attempted"] = True

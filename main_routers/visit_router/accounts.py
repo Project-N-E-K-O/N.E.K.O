@@ -111,23 +111,23 @@ def _record_sync(path: Path, account: str, visit_uid: str) -> bool:
         try:
             accounts = _read_sync(path, strict=True)
         except _MapUnreadable as exc:
-            # 暂时读不了：不拿只有这一个账号的表覆盖它（其余账号的映射会丢）；报给调用方，由它稍后补写。
-            # 带上底层原因：共享冲突这类会自己好，PermissionError / 目录只读会一直失败，排查时要分得清
-            # Windows 上文件被占用（WinError 32）、替换瞬间的冲突与真正的权限拒绝（都可能是 WinError 5）全是
-            # PermissionError：errno / winerror 一并写上帮助排查；是不是一直失败还得看它是否反复出现
+            # Temporarily unreadable: never overwrite with a one-account table, losing other mappings; let the caller retry later.
+            # Include the root cause: sharing conflicts may self-resolve, while PermissionError / read-only directories persist.
+            # On Windows, occupied files (WinError 32), replacement races, and actual permission denial (both possibly WinError 5) all
+            # raise PermissionError. Include errno / winerror for diagnosis; recurrence distinguishes persistent failures.
             c = exc.__cause__
             cause = (f"{type(c).__name__}(errno={getattr(c, 'errno', None)}, winerror={getattr(c, 'winerror', None)})"
                      if c is not None else "unknown")
             raise AccountMapDeferred(f"visit accounts map unreadable: {cause}") from exc
         except _MapCorrupt:
-            # 内容坏了、读不出任何映射：原文件改名留底，再从这个账号重新记起；改名都做不到就报给调用方稍后补写
+            # Corrupt content with no readable mappings: rename the original as backup, then record this account anew; if rename fails, ask the caller to retry later.
             if move_aside(path, "corrupt") is None:
                 raise AccountMapDeferred("corrupt visit accounts map not moved aside") from None
             accounts = {}
         if accounts.get(account) == visit_uid:
             return False
         if account in accounts:
-            # Servers 承诺 visit_uid 对同一账号稳定：变了多半是本机文件被改过，以 Servers 刚给的为准并记一笔
+            # Servers guarantee stable visit_uid per account: changes likely mean local edits; trust the new server value and log the change.
             logger.warning("visit accounts map: visit_uid of an account changed, replaced")
         accounts[account] = visit_uid
         atomic_write_json(path, {"accounts": accounts})
@@ -173,7 +173,7 @@ async def local_account() -> str | None:
     """Community ``local_user_id`` of the saved desktop session (local file only, no network)."""
     try:
         return await asyncio.to_thread(_local_account_sync)
-    except Exception as exc:  # noqa: BLE001 - 会话文件读不出就当没登录
+    except Exception as exc:  # noqa: BLE001 - Treat unreadable session files as logged out.
         logger.warning("visit accounts: session snapshot unreadable: %s", type(exc).__name__)
         return None
 
