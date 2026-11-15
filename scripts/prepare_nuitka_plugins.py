@@ -11,7 +11,7 @@ requirements:
 
 ``prepare`` creates that filtered payload and a generated launcher containing
 Nuitka project directives for Python modules excluded by the same rules. It
-also stages the authored agent kit (``.agent/skills/neko-plugin``) into
+also stages the authored neko-plugin skill (``.agent/skills/neko-plugin``) into
 ``plugin/neko_plugin_cli/agent_kit`` so the frozen CLI can scaffold it.
 ``install`` atomically replaces ``dist/.../plugin/plugins`` with the staged
 payload after Nuitka finishes.
@@ -37,6 +37,7 @@ if str(_REPOSITORY_ROOT) not in sys.path:
 
 from plugin.core.python_dependencies import load_pyproject_toml
 from plugin.neko_plugin_cli.core.build_rules import BuildRuleSet, load_build_rules, should_skip_path
+from plugin.neko_plugin_cli.templates.agent_kit import SKILL_IGNORE_PATTERNS
 
 
 DEFAULT_STAGE_DIR = Path("build/nuitka-plugins")
@@ -239,7 +240,8 @@ def stage_agent_kit(*, project_root: Path) -> Path:
     shutil.copytree(
         source_dir,
         destination_dir,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
+        # Same selection as the scaffold snapshot (skips .DS_Store, swap files).
+        ignore=shutil.ignore_patterns(*SKILL_IGNORE_PATTERNS),
     )
     return destination_dir
 

@@ -284,6 +284,7 @@ jobs:
           # Agent kit staged by prepare_nuitka_plugins.py prepare; the frozen
           # CLI copies it into every scaffolded plugin (see templates/agent_kit.py).
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=plugin/neko_plugin_cli/templates/agent_guides=plugin/neko_plugin_cli/templates/agent_guides"
           # Plugin manager UI (vite dist; gitignored)
           if [ -d "frontend/plugin-manager/dist" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=frontend/plugin-manager/dist=frontend/plugin-manager/dist"

@@ -114,10 +114,11 @@ _REQUIRED_ASSETS: tuple[tuple[str, str | None], ...] = (
     ("frontend/plugin-manager/dist", "index.html"),
     ("plugin/plugins", None),
     ("static/plugin-ui-sdk", "display.js"),
-    # Agent kit staged by prepare_nuitka_plugins.py prepare; without it the
-    # frozen workbench cannot scaffold AGENTS.md and the neko-plugin skill.
+    # Skill staged by prepare_nuitka_plugins.py prepare plus the guide
+    # templates; without them the frozen workbench cannot scaffold the agent kit.
     ("plugin/neko_plugin_cli/agent_kit", "SKILL.md"),
-    ("plugin/neko_plugin_cli/agent_kit", "AGENTS.md"),
+    ("plugin/neko_plugin_cli/templates/agent_guides", "AGENTS.md.tmpl"),
+    ("plugin/neko_plugin_cli/templates/agent_guides", "CLAUDE.md.tmpl"),
 )
 
 # Every subdirectory in the bundled plugins directory must contain plugin.toml; catches cases where the entire ``plugin/plugins``

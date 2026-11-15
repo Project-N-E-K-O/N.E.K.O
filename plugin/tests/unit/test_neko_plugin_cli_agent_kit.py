@@ -23,10 +23,11 @@ def _write_kit(root: Path, *, with_skill: bool = True) -> None:
     if with_skill:
         (root / "SKILL.md").write_text("skill v1\n", encoding="utf-8")
     (root / "references" / "topic.md").write_text("reference v1\n", encoding="utf-8")
-    (root / "AGENTS.md").write_text("guide {plugin_id}: {check_command}\n", encoding="utf-8")
-    (root / "CLAUDE.md").write_text("claude\n", encoding="utf-8")
     (root / "__pycache__").mkdir()
     (root / "__pycache__" / "junk.pyc").write_bytes(b"\x00")
+    # Binary Finder metadata and editor swap files must never be read as text.
+    (root / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1\xff\xfe")
+    (root / "references" / ".topic.md.swp").write_bytes(b"\xff\xfe\x00")
 
 
 def test_authored_kit_loads_from_source_checkout() -> None:
@@ -37,10 +38,15 @@ def test_authored_kit_loads_from_source_checkout() -> None:
     assert all(
         path.parts[:2] == (".agents", "skills") for path in files
     )
-    assert not any(
-        path.name in ("AGENTS.md", "CLAUDE.md") and path.parent == agent_kit.SKILL_TARGET_DIR
-        for path in files
-    )
+    assert not any(path.name in ("AGENTS.md", "CLAUDE.md") for path in files)
+
+
+def test_skill_directory_holds_no_plugin_guides() -> None:
+    # Live AGENTS.md / CLAUDE.md there would be loaded by agents maintaining
+    # the skill in the main repository and tell them they are inside a plugin.
+    authored = agent_kit._kit_root()
+    assert not (authored / "AGENTS.md").exists()
+    assert not (authored / "CLAUDE.md").exists()
 
 
 def test_agents_template_substitutes_every_placeholder() -> None:
@@ -51,6 +57,18 @@ def test_agents_template_substitutes_every_placeholder() -> None:
     assert "uv run neko-plugin sync market_demo --clean" in content
     assert ".agents/skills/neko-plugin/" in content
     assert "plugin/plugins/<plugin_id>/" in content
+
+
+def test_agents_template_does_not_resubstitute_inserted_values() -> None:
+    commands = dict(
+        _COMMANDS,
+        check_command='uv run --project "../../{plugin_id}/neko" neko-plugin check .',
+    )
+
+    content = agent_kit.render_agents_md("demo", **commands)
+
+    assert '--project "../../{plugin_id}/neko"' in content
+    assert "../../demo/neko" not in content
 
 
 def test_claude_template_points_at_agents_guide() -> None:
@@ -66,7 +84,7 @@ def test_kit_root_prefers_authored_source_over_staged_copy() -> None:
     assert agent_kit._kit_root() == cli_root.parent.parent / ".agent" / "skills" / "neko-plugin"
 
 
-def test_kit_excludes_root_templates_and_reads_fresh(
+def test_kit_skips_caches_and_dot_files_and_reads_fresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kit = tmp_path / "agent_kit"
@@ -77,14 +95,23 @@ def test_kit_excludes_root_templates_and_reads_fresh(
         agent_kit.SKILL_TARGET_DIR / "SKILL.md": "skill v1\n",
         agent_kit.SKILL_TARGET_DIR / "references" / "topic.md": "reference v1\n",
     }
-    assert agent_kit.render_agents_md("demo", **_COMMANDS) == (
-        "guide demo: uv run neko-plugin check market_demo\n"
-    )
 
     (kit / "references" / "topic.md").write_text("reference v2\n", encoding="utf-8")
     assert agent_kit.skill_files()[
         agent_kit.SKILL_TARGET_DIR / "references" / "topic.md"
     ] == "reference v2\n"
+
+
+def test_non_text_kit_file_raises_actionable_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kit = tmp_path / "agent_kit"
+    _write_kit(kit)
+    (kit / "references" / "diagram.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff")
+    monkeypatch.setattr(agent_kit, "_kit_root", lambda: kit)
+
+    with pytest.raises(agent_kit.AgentKitUnavailableError, match="diagram.png"):
+        agent_kit.skill_files()
 
 
 def test_kit_without_skill_entry_raises(
@@ -102,10 +129,11 @@ def test_missing_kit_raises_actionable_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(agent_kit, "_kit_root", lambda: tmp_path / "absent")
+    monkeypatch.setattr(agent_kit, "GUIDES_DIR", tmp_path / "absent_guides")
 
     with pytest.raises(agent_kit.AgentKitUnavailableError, match="prepare_nuitka_plugins"):
         agent_kit.skill_files()
-    with pytest.raises(agent_kit.AgentKitUnavailableError, match="AGENTS.md"):
+    with pytest.raises(agent_kit.AgentKitUnavailableError, match="AGENTS.md.tmpl"):
         agent_kit.render_agents_md("demo", **_COMMANDS)
 
 

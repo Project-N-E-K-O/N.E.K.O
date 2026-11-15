@@ -327,8 +327,10 @@ def test_desktop_workflows_use_filtered_plugin_stage() -> None:
 
 def test_desktop_workflows_bundle_the_staged_agent_kit() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    include_line = (
-        "--include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit"
+    include_lines = (
+        "--include-data-dir=plugin/neko_plugin_cli/agent_kit=plugin/neko_plugin_cli/agent_kit",
+        "--include-data-dir=plugin/neko_plugin_cli/templates/agent_guides="
+        "plugin/neko_plugin_cli/templates/agent_guides",
     )
     expectations = {
         ".github/workflows/build-desktop.yml": 2,  # unix and windows legs
@@ -338,16 +340,18 @@ def test_desktop_workflows_bundle_the_staged_agent_kit() -> None:
     for relative, count in expectations.items():
         workflow = (repo_root / relative).read_text(encoding="utf-8")
         assert "scripts/prepare_nuitka_plugins.py prepare" in workflow
-        assert workflow.count(include_line) == count
+        for include_line in include_lines:
+            assert workflow.count(include_line) == count
 
 
 def test_stage_agent_kit_copies_authored_skill_without_caches(tmp_path: Path) -> None:
     project_root = tmp_path / "repo"
     source = project_root / ".agent" / "skills" / "neko-plugin"
     _write(source / "SKILL.md", "skill\n")
-    _write(source / "AGENTS.md", "guide for {plugin_id}\n")
     _write(source / "references" / "topic.md", "reference\n")
     _write(source / "__pycache__" / "junk.pyc", "cache\n")
+    _write(source / ".DS_Store", "finder metadata\n")
+    _write(source / "references" / ".topic.md.swp", "swap\n")
     staged_before = project_root / "plugin" / "neko_plugin_cli" / "agent_kit"
     _write(staged_before / "stale.md", "stale\n")
 
@@ -358,6 +362,8 @@ def test_stage_agent_kit_copies_authored_skill_without_caches(tmp_path: Path) ->
     assert (destination / "references" / "topic.md").is_file()
     assert not (destination / "stale.md").exists()
     assert not (destination / "__pycache__").exists()
+    assert not (destination / ".DS_Store").exists()
+    assert not (destination / "references" / ".topic.md.swp").exists()
 
 
 def test_stage_agent_kit_requires_authored_source(tmp_path: Path) -> None:
