@@ -1681,11 +1681,15 @@ async def test_a_project_archived_right_before_the_process_stopped_is_the_one_th
     await space.file_entry("Blog", title="New stack", content="Hugo.")
     clock.now += 60
 
-    def stopped(self, index, target):
-        raise RuntimeError("the process stopped here")
+    put = TaskAgentSpace._put_project
 
-    # The directory is moved, and the process stops before anything after that is written.
-    monkeypatch.setattr(TaskAgentSpace, "_index_remove", stopped)
+    def stopped_after_the_move(self, directory, project):
+        # The directory is in the archive: the process stops before anything after the move is written.
+        if "archive" in directory.parts:
+            raise RuntimeError("the process stopped here")
+        return put(self, directory, project)
+
+    monkeypatch.setattr(TaskAgentSpace, "_put_project", stopped_after_the_move)
     with pytest.raises(RuntimeError):
         await space.archive_project("Blog", summary="the second")
     monkeypatch.undo()
@@ -1845,3 +1849,93 @@ async def test_an_entry_that_cannot_be_removed_where_it_was_keeps_its_line_there
     assert daily.read_text(encoding="utf-8") == before
     assert [entry.id for entry in await space.list_entries("Budget app")] == ["stack"]
     assert "- [Stack](memory/stack.md) — It uses Flask." in await space.read_index("Budget app")
+
+
+# ---------------------------------------------------------------------------
+# The seventeenth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_text_that_only_occurs_inside_what_an_entry_says_is_still_added(space, root, clock):
+    first = await space.submit(_commission(id="c-1"), _lesson("Running the tests", "Use pytest-xdist for parallel runs."))
+    clock.now += 86400
+
+    # Shorter, and a part of what is there: another thing to know all the same.
+    second = await space.submit(_commission(id="c-2"), _lesson("Running the tests", "Use pytest"))
+    # Word for word what was added, and word for word what it said first.
+    third = await space.submit(_commission(id="c-3"), _lesson("Running the tests", "Use pytest"))
+    fourth = await space.submit(_commission(id="c-4"), _lesson("Running the tests", "  Use pytest-xdist for parallel runs.\n"))
+
+    assert first == "kept in project _daily as running-the-tests.md"
+    assert second == "added to running-the-tests.md in project _daily"
+    assert third == fourth == "already in running-the-tests.md in project _daily, word for word; nothing was added"
+    entry = await space.read_entry("running-the-tests", DEFAULT_PROJECT)
+    assert entry.content.count("Use pytest-xdist for parallel runs.") == 1
+    assert entry.content.rstrip().endswith("Use pytest") and entry.content.count("## ") == 1
+    # Who filed it is noted all the same.
+    assert entry.sources == ("c-1", "c-2", "c-3", "c-4")
+
+
+async def test_what_the_space_keeps_about_its_upkeep_is_not_written_over_when_it_cannot_be_read(space, root, monkeypatch):
+    await space.write_state(upkeep_at=10.0, since=5.0, sessions_to_retry=["c-1", "c-2"])
+    state = root / "state.json"
+    before = state.read_bytes()
+    read = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == state:
+            raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    with pytest.raises(OSError):
+        await space.read_state()
+    with pytest.raises(OSError):
+        await space.write_state(upkeep_at=99.0)
+
+    monkeypatch.undo()
+    assert state.read_bytes() == before
+    kept = await space.read_state()
+    assert (kept["upkeep_at"], kept["since"], kept["sessions_to_retry"]) == (10.0, 5.0, ["c-1", "c-2"])
+
+
+@pytest.mark.parametrize("content", [b"not json at all", b"[1, 2]", b"\xff\xfe\x00broken"])
+async def test_a_state_file_that_is_not_what_the_space_writes_is_begun_anew(space, root, content):
+    root.mkdir(parents=True)
+    (root / "state.json").write_bytes(content)
+
+    assert await space.read_state() == {}
+    await space.write_state(upkeep_at=7.0)
+
+    assert (await space.read_state())["upkeep_at"] == 7.0
+
+
+async def test_an_entry_saved_once_more_while_its_line_moves_stays_where_it_was(space, root):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.touch_project("Budget app")
+    daily = root / "projects" / DEFAULT_PROJECT / "MEMORY.md"
+    old = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    listed = daily.read_text(encoding="utf-8")
+    real = space._signature
+    looks: list[int] = []
+
+    def signature(checked):
+        if Path(checked) == old:
+            looks.append(len(looks) + 1)
+            if len(looks) == 3:
+                # Copied, compared, its line moved: the user saves it once more before it is removed.
+                old.write_text(old.read_text(encoding="utf-8").replace("It uses Flask.", "It uses FastAPI now."), encoding="utf-8")
+        return real(checked)
+
+    space._signature = signature
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == ["stack"]
+
+    del space._signature
+    assert len(looks) == 3
+    # What the user saved last is still there, and still listed there.
+    assert "It uses FastAPI now." in old.read_text(encoding="utf-8")
+    assert daily.read_text(encoding="utf-8") == listed
+    # The project has what was copied before that.
+    assert (await space.read_entry("stack", "Budget app")).content.strip() == "It uses Flask."

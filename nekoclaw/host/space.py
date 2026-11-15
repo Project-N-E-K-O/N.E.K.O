@@ -317,6 +317,11 @@ def _entry_type(value: Any) -> str:
     return kind if kind in ENTRY_TYPES else _DEFAULT_TYPE
 
 
+# The heading of what was added to an entry on a later day.
+_ADDITION_HEADING = re.compile(r"(?m)^## \d{4}-\d{2}-\d{2}[ \t]*$")
+# What became of an entry that was filed: a new file, added to one, or there already.
+_CREATED, _ADDED, _THERE = "created", "added", "there"
+
 # What the target of a link is made of when it can be written as it is:
 # letters and digits of any script, and the few marks the paths here have.
 _PLAIN_TARGET = re.compile(r"[\w./~-]+")
@@ -592,11 +597,14 @@ class TaskAgentSpace:
         kind: str,
         description: str = "",
         source: str | None = None,
-    ) -> tuple[Entry, bool]:
-        """Keep one entry. Returns it and whether a new file was made for it.
+    ) -> tuple[Entry, str]:
+        """Keep one entry. Returns it and what became of it: a new file, added to one, or there already.
 
         An entry about the same topic is added to: it gets a section with
-        today's date at its end, and what it said before stays.
+        today's date at its end, and what it said before stays. Only a
+        text that is there word for word, as what the entry said first or
+        as one of its additions, is not added again; one that merely
+        occurs inside a longer text is.
         """
         from config.nekoclaw_settings import (
             SPACE_ENTRY_CONTENT_MAX_TOKENS,
@@ -617,9 +625,13 @@ class TaskAgentSpace:
         if existing is not None:
             path = directory / f"{existing.id}.md"
 
+            fresh_text: list[bool] = []
+
             def add(text: str) -> str:
                 document = _parse_document(text)
-                fresh = content not in document.body
+                said = [part.strip() for part in _ADDITION_HEADING.split(document.body)]
+                fresh = content.strip() not in said
+                fresh_text[:] = [fresh]
                 if fresh:
                     addition = f"## {today}\n\n{content}"
                     document.body = f"{document.body.rstrip()}\n\n{addition}\n"
@@ -646,7 +658,7 @@ class TaskAgentSpace:
                 f"{paths.MEMORY_DIR}/{existing.id}.md",
             )
             entry = self._entry_from(path, project, with_content=True)
-            return entry or existing, False
+            return entry or existing, _ADDED if fresh_text and fresh_text[0] else _THERE
         try:
             wanted = slug(title)
         except ValueError:
@@ -671,7 +683,7 @@ class TaskAgentSpace:
         entry = self._entry_from(path, project, with_content=True)
         if entry is None:
             raise SpaceError("the entry could not be read back")
-        return entry, True
+        return entry, _CREATED
 
     async def submit(self, commission: Commission, lesson: dict[str, Any]) -> str | None:
         """Keep what a task agent filed with ``note_lesson``; the ``LessonSink`` of the manager.
@@ -684,7 +696,7 @@ class TaskAgentSpace:
         everywhere = scope == "global" and _entry_type(kind) != "progress"
         project = None if everywhere else (commission.project or DEFAULT_PROJECT)
         try:
-            entry, created = await self._write(
+            entry, how = await self._write(
                 lambda: self._file_entry(
                     project,
                     title=str(lesson.get("title") or ""),
@@ -703,10 +715,21 @@ class TaskAgentSpace:
             await self._ledger.append_event(
                 commission.id,
                 "lesson",
-                {**dict(lesson), "entry": entry.id, "project": project, "created": created},
+                {
+                    **dict(lesson),
+                    "entry": entry.id,
+                    "project": project,
+                    "created": how == _CREATED,
+                    "added": how != _THERE,
+                },
             )
         where = "the space of every project" if project is None else f"project {project}"
-        return f"kept in {where} as {entry.id}.md" if created else f"added to {entry.id}.md in {where}"
+        if how == _CREATED:
+            return f"kept in {where} as {entry.id}.md"
+        if how == _ADDED:
+            return f"added to {entry.id}.md in {where}"
+        # Said as it is: the task agent is not told something was kept that was not.
+        return f"already in {entry.id}.md in {where}, word for word; nothing was added"
 
     async def file_entry(
         self,
@@ -720,13 +743,14 @@ class TaskAgentSpace:
     ) -> tuple[Entry, bool]:
         """Keep one entry; see ``_file_entry``. Raises ``SpaceError`` for one that cannot be kept."""
         try:
-            return await self._write(
+            entry, how = await self._write(
                 lambda: self._file_entry(
                     project, title=title, content=content, kind=kind, description=description, source=source
                 )
             )
         except ValueError as exc:
             raise SpaceError(str(exc)) from exc
+        return entry, how == _CREATED
 
     async def refile_entries(self, commission_id: str, source: str, target: str) -> list[str]:
         """Move what one commission alone filed under a project to another project. Returns the ids there.
@@ -803,6 +827,13 @@ class TaskAgentSpace:
                         line = line.replace(mark, f"]({_link(link)})")
                 self._index_add(paths.index(target), line, link)
                 moved.append(name)
+                if same and self._signature(old) != before:
+                    # Saved once more while its line was moved: what is at
+                    # the target is no longer what the file says, so the
+                    # file stays, and its line is put back.
+                    same = False
+                    if taken:
+                        self._index_add(paths.index(source), taken[0], was)
                 if not same:
                     # It kept being saved: it stays where it was as well.
                     logger.warning("an entry copied to another project kept changing; it is left where it was too")
@@ -1671,29 +1702,42 @@ class TaskAgentSpace:
 
     # -- upkeep state ------------------------------------------------------
 
+    @staticmethod
+    def _state_in(path: Path) -> dict[str, Any]:
+        """Return what the state file holds; empty when there is none, or it is not what this writes.
+
+        Raises OSError when the file is there and cannot be read (held open
+        by another program for a moment). Taken for empty, the next write
+        would drop what it holds: when the space was last tidied, how far
+        the cleaning got and what it is to try again, from when on
+        commissions are reviewed.
+        """
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except ValueError:
+            # Not JSON, or not in the encoding this writes: begun anew.
+            return {}
+        return data if isinstance(data, dict) else {}
+
     async def read_state(self) -> dict[str, Any]:
-        """Return what the space remembers about its own upkeep; empty when nothing is kept."""
+        """Return what the space remembers about its own upkeep; empty when nothing is kept.
 
-        def work() -> dict[str, Any]:
-            try:
-                data = json.loads(self._paths().state_file().read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                return {}
-            return data if isinstance(data, dict) else {}
-
-        return await self._read(work)
+        Raises OSError when it is kept and cannot be read; see ``_state_in``.
+        """
+        return await self._read(lambda: self._state_in(self._paths().state_file()))
 
     async def write_state(self, **values: Any) -> None:
+        """Keep values among what the space remembers about its own upkeep.
+
+        Raises OSError, with nothing written, when what is kept cannot be read.
+        """
         from utils.file_utils import atomic_write_json
 
         def work() -> None:
             path = self._paths().state_file()
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                data = {}
-            if not isinstance(data, dict):
-                data = {}
+            data = self._state_in(path)
             data.update(values)
             data["version"] = _STATE_FILE_VERSION
             path.parent.mkdir(parents=True, exist_ok=True)

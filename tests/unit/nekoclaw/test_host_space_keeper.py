@@ -1902,3 +1902,26 @@ async def test_a_review_is_kept_though_what_the_commission_filed_could_not_be_mo
     assert (last["status"], last["project"]) == ("written", "Budget app") and "refiled" not in last
     assert (await world.space.read_review(commission.id)).project == "Budget app"
     assert [entry.id for entry in await world.space.list_entries(DEFAULT_PROJECT)] == ["stack"]
+
+
+async def test_no_tidying_while_what_the_space_keeps_about_it_cannot_be_read(world, monkeypatch):
+    assert await world.keeper.tidy(force=True) is True
+    state = world.root / "state.json"
+    before = state.read_bytes()
+    read = Path.read_text
+
+    def read_text(self, *args: Any, **kwargs: Any) -> str:
+        if self == state:
+            raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    world.clock.now += 86400
+
+    # A new host process, which has not read it yet: it does not begin from nothing.
+    assert await world.new_keeper().tidy(force=True) is False
+
+    monkeypatch.undo()
+    assert state.read_bytes() == before
+    assert await world.new_keeper().tidy(force=True) is True
+    assert (await world.space.read_state())["since"] == json.loads(before)["since"]

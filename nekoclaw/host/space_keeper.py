@@ -606,7 +606,13 @@ class SpaceKeeper:
         self._tidying = True
         try:
             now = self._clock()
-            state = await self._space.read_state()
+            try:
+                state = await self._space.read_state()
+            except OSError:
+                # Not begun from nothing: that would forget how far the
+                # cleaning got and from when on commissions are reviewed.
+                logger.warning("what the task agent space keeps about its upkeep cannot be read; no tidying this time")
+                return False
             if self._last_upkeep is None:
                 stored = state.get("upkeep_at")
                 self._last_upkeep = float(stored) if isinstance(stored, (int, float)) else 0.0
