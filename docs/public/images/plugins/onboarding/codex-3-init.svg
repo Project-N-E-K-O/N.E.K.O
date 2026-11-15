@@ -2,17 +2,20 @@
   <rect width="880" height="360" rx="14" fill="#0F172A"/>
   <rect x="1" y="1" width="878" height="358" rx="13" stroke="#334155" stroke-width="2"/>
   <rect x="1" y="1" width="878" height="40" rx="13" fill="#1E293B"/>
-  <text x="28" y="26" fill="#F8FAFC" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Codex Execution — Scaffolding via neko-plugin init</text>
+  <text x="28" y="26" fill="#F8FAFC" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Codex Activity — Scaffolding water_reminder</text>
+  <circle cx="830" cy="21" r="5" fill="#4ADE80"/>
+  <text x="806" y="25" text-anchor="end" fill="#94A3B8" font-family="system-ui, -apple-system, sans-serif" font-size="11">working…</text>
 
-  <text x="32" y="74" fill="#38BDF8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5">$ git clone --filter=blob:none https://github.com/Project-N-E-K-O/N.E.K.O.git</text>
-  <text x="32" y="98" fill="#38BDF8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5">$ cd N.E.K.O &amp;&amp; uv sync &amp;&amp; uv run neko-plugin --help</text>
-  <text x="32" y="128" fill="#F472B6" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700">$ uv run neko-plugin init water_reminder --type plugin --name "Water Reminder"</text>
+  <rect x="32" y="60" width="816" height="86" rx="10" fill="#1E293B" stroke="#334155"/>
+  <text x="52" y="88" fill="#4ADE80" font-family="system-ui, -apple-system, sans-serif" font-size="13">✓ Prepared the N.E.K.O repository (cloned and synced dependencies)</text>
+  <text x="52" y="112" fill="#4ADE80" font-family="system-ui, -apple-system, sans-serif" font-size="13">✓ Verified the official neko-plugin tool is ready</text>
+  <text x="52" y="134" fill="#38BDF8" font-family="system-ui, -apple-system, sans-serif" font-size="13">▸ Codex is now running neko-plugin init water_reminder…</text>
 
-  <rect x="32" y="148" width="816" height="182" rx="10" fill="#1E293B" stroke="#475569"/>
-  <text x="52" y="176" fill="#4ADE80" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5" font-weight="700">[OK] Created plugin scaffold: plugin/plugins/water_reminder/</text>
-  <text x="52" y="204" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">├── .git/ &amp; .github/workflows/{verify.yml, release.yml}</text>
-  <text x="52" y="228" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">├── plugin.toml          # id = "water_reminder", entry = "...:WaterReminderPlugin"</text>
-  <text x="52" y="252" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">├── config.example.toml  # initial user config template</text>
-  <text x="52" y="276" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">├── __init__.py          # @neko_plugin async entry class</text>
-  <text x="52" y="300" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">└── tests/test_smoke.py  # ready-to-run pytest suite</text>
+  <rect x="32" y="166" width="816" height="164" rx="10" fill="#1E293B" stroke="#475569"/>
+  <text x="52" y="194" fill="#4ADE80" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5" font-weight="700">[OK] Created plugin scaffold: plugin/plugins/water_reminder/</text>
+  <text x="52" y="222" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">├── .git/ &amp; .github/workflows/{verify.yml, release.yml}</text>
+  <text x="52" y="246" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">├── plugin.toml          # id = "water_reminder", entry = "...:WaterReminderPlugin"</text>
+  <text x="52" y="270" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">├── config.example.toml  # initial user config template</text>
+  <text x="52" y="294" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">├── __init__.py          # @neko_plugin async entry class</text>
+  <text x="52" y="316" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">└── tests/test_smoke.py  # ready-to-run pytest suite</text>
 </svg>

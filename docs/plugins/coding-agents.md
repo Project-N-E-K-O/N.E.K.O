@@ -1,11 +1,11 @@
 ---
 title: Build Plugins with Coding Agents
-description: Build your first N.E.K.O plugin with Coding Agents such as Codex, DeepSeek Harness, Trae, Claude Code, and Cursor using a one-click neko-plugin CLI setup prompt.
+description: Build your first N.E.K.O plugin with Coding Agents such as Codex, DeepSeek Harness, Trae, Claude Code, and Cursor using a one-click guided Setup Prompt.
 ---
 
 # Build Plugins with Coding Agents
 
-You do not need prior Python framework experience to create a N.E.K.O plugin. Pick the coding agent you already use, copy the **Setup Prompt**, and let your agent set up the repository and run the official `neko-plugin` CLI for you.
+You do not need prior Python framework experience to create a N.E.K.O plugin. Pick the coding agent you already use, copy the **Setup Prompt**, and let the AI set up the repository and drive the official `neko-plugin` tooling for you.
 
 <CodingAgentOnboarding />
 
@@ -13,10 +13,10 @@ You do not need prior Python framework experience to create a N.E.K.O plugin. Pi
 
 When you paste the Setup Prompt, your agent follows the same workflow as experienced N.E.K.O plugin authors:
 
-1. **Environment & repository check** — verifies `git` and `uv`, clones or reuses `Project-N-E-K-O/N.E.K.O`, runs `uv sync`, and checks `uv run neko-plugin --help`.
-2. **Official CLI scaffolding** — runs `uv run neko-plugin init <plugin_id> --type plugin --name "<Name>"` to create `plugin/plugins/<plugin_id>/` with `plugin.toml`, `config.example.toml`, `__init__.py`, tests, and GitHub workflows.
+1. **Environment & repository check** — verifies `git` and `uv` (installing them itself when missing), clones or reuses `Project-N-E-K-O/N.E.K.O`, syncs dependencies, and confirms the `neko-plugin` tooling is ready.
+2. **Official scaffolding** — uses the official `neko-plugin` scaffold to create `plugin/plugins/<plugin_id>/` with `plugin.toml`, `config.example.toml`, `__init__.py`, tests, and GitHub workflows.
 3. **SDK-compliant implementation** — reads the local documentation under `docs/plugins/` and implements async `@plugin_entry` or `@llm_tool` handlers on `plugin.sdk.plugin`.
-4. **Automated verification & packaging** — runs `uv run neko-plugin check`, `lint`, and `pytest` until zero errors remain, and builds a `.neko-plugin` archive whenever you want to import it into Plugin Center.
+4. **Automated verification & packaging** — runs the plugin checks, lint, and tests until zero errors remain, and builds a `.neko-plugin` archive whenever you want to import it into Plugin Center.
 
 ## Next steps
 

@@ -2,17 +2,17 @@
   <rect width="880" height="350" rx="14" fill="#0F172A"/>
   <rect x="1" y="1" width="878" height="348" rx="13" stroke="#334155" stroke-width="2"/>
   <rect x="1" y="1" width="878" height="40" rx="13" fill="#1E293B"/>
-  <text x="28" y="26" fill="#F8FAFC" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Codex Summary — Implementation &amp; CLI Checks Passed</text>
+  <text x="28" y="26" fill="#F8FAFC" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700">Codex Summary — Implementation &amp; Checks Passed</text>
 
   <rect x="32" y="60" width="816" height="108" rx="10" fill="#1E293B" stroke="#334155"/>
   <text x="52" y="86" fill="#F472B6" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5" font-weight="700">Edited plugin/plugins/water_reminder/__init__.py</text>
   <text x="52" y="112" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">+ @plugin_entry(id="remind_now") async def remind_now(self, note: str = "", **_)</text>
   <text x="52" y="136" fill="#E2E8F0" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">+ @llm_tool(name="set_water_reminder") async def set_water_reminder(self, minutes: int = 45, **_)</text>
 
-  <text x="32" y="198" fill="#38BDF8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5">$ uv run neko-plugin check water_reminder &amp;&amp; uv run neko-plugin lint water_reminder</text>
+  <text x="32" y="198" fill="#38BDF8" font-family="system-ui, -apple-system, sans-serif" font-size="13.5">▸ Codex ran neko-plugin check &amp; lint for water_reminder</text>
   <rect x="28" y="210" width="824" height="36" rx="6" fill="#052E16" stroke="#22C55E" stroke-width="1.5"/>
   <text x="44" y="233" fill="#4ADE80" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700">[OK] water_reminder: check found 0 error(s), 4 warning(s) · All ruff checks passed!</text>
 
-  <text x="32" y="276" fill="#38BDF8" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5">$ uv run pytest plugin/plugins/water_reminder/tests</text>
+  <text x="32" y="276" fill="#38BDF8" font-family="system-ui, -apple-system, sans-serif" font-size="13.5">▸ Codex ran the plugin test suite</text>
   <text x="32" y="302" fill="#4ADE80" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700">✓ 3 passed in 0.38s — Ready to run in N.E.K.O or package via neko-plugin build</text>
 </svg>

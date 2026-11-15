@@ -6,7 +6,7 @@
 
   <rect x="32" y="66" width="816" height="206" rx="12" fill="#1F2937" stroke="#D966C6" stroke-width="2"/>
   <text x="54" y="96" fill="#F472B6" font-family="system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="700">Paste N.E.K.O Plugin Setup Prompt (Ctrl+V / Cmd+V)</text>
-  <text x="54" y="124" fill="#F9FAFB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">You are my N.E.K.O plugin development assistant. Use neko-plugin CLI...</text>
+  <text x="54" y="124" fill="#F9FAFB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">[Rule] I cannot use a terminal — run all commands yourself. You are my N.E.K.O plugin assistant...</text>
   <text x="54" y="150" fill="#D1D5DB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">## 1. Check git &amp; uv, clone/reuse Project-N-E-K-O/N.E.K.O, run uv sync</text>
   <text x="54" y="174" fill="#D1D5DB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">## 2. Scaffold with: uv run neko-plugin init water_reminder --type plugin</text>
   <text x="54" y="198" fill="#D1D5DB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">## 3-5. Follow plugin.sdk.plugin rules, run check / lint / pytest / build</text>

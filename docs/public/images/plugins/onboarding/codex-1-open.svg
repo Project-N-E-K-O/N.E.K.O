@@ -15,7 +15,7 @@
   <text x="56" y="150" fill="#9CA3AF" font-family="system-ui, -apple-system, sans-serif" font-size="13">Empty folder ready — or open your existing N.E.K.O checkout directly.</text>
 
   <rect x="32" y="196" width="816" height="112" rx="12" fill="#0B0F19" stroke="#374151"/>
-  <text x="56" y="226" fill="#60A5FA" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5">~/neko-work $ codex</text>
-  <text x="56" y="254" fill="#E5E7EB" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.5">&gt; Ready in ~/neko-work. What would you like to build?</text>
-  <text x="56" y="284" fill="#9CA3AF" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12.5">Tip: Works identically in the Codex desktop app or terminal CLI.</text>
+  <text x="56" y="228" fill="#F9FAFB" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="700">What would you like to build?</text>
+  <rect x="52" y="244" width="776" height="42" rx="8" fill="#1F2937" stroke="#4B5563"/>
+  <text x="72" y="270" fill="#9CA3AF" font-family="system-ui, -apple-system, sans-serif" font-size="13">Paste your N.E.K.O Setup Prompt here...</text>
 </svg>

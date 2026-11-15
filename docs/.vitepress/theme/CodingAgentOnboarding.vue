@@ -184,22 +184,6 @@ onBeforeUnmount(() => {
               <span class="NekoAgentOnboarding-stepText">{{ step.text }}</span>
             </div>
 
-            <div v-if="step.code" class="NekoAgentOnboarding-codeBar">
-              <code>{{ step.code }}</code>
-              <button
-                type="button"
-                class="NekoAgentOnboarding-inlineCopy"
-                :class="{ 'is-copied': copiedKey === `step-${activeAgent.id}-${sIdx}` }"
-                @click="writeClipboard(step.code, `step-${activeAgent.id}-${sIdx}`)"
-              >
-                {{
-                  copiedKey === `step-${activeAgent.id}-${sIdx}`
-                    ? `✓ ${copy.copiedCode}`
-                    : copy.copyCode
-                }}
-              </button>
-            </div>
-
             <div v-if="step.isPromptStep" class="NekoAgentOnboarding-promptBox">
               <div class="NekoAgentOnboarding-promptTop">
                 <div class="NekoAgentOnboarding-promptInfo">
@@ -262,21 +246,6 @@ onBeforeUnmount(() => {
               >
                 <div class="NekoAgentOnboarding-fallbackItemTitle">{{ item.label }}</div>
                 <div class="NekoAgentOnboarding-fallbackItemDesc">{{ item.description }}</div>
-                <div v-if="item.code" class="NekoAgentOnboarding-codeBar">
-                  <code>{{ item.code }}</code>
-                  <button
-                    type="button"
-                    class="NekoAgentOnboarding-inlineCopy"
-                    :class="{ 'is-copied': copiedKey === `fb-${fIdx}-${iIdx}` }"
-                    @click="writeClipboard(item.code, `fb-${fIdx}-${iIdx}`)"
-                  >
-                    {{
-                      copiedKey === `fb-${fIdx}-${iIdx}`
-                        ? `✓ ${copy.copiedCode}`
-                        : copy.copyCode
-                    }}
-                  </button>
-                </div>
               </div>
             </div>
           </details>
@@ -568,47 +537,6 @@ onBeforeUnmount(() => {
   line-height: 1.55;
 }
 
-.NekoAgentOnboarding-codeBar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 10px;
-  margin-left: 36px;
-  padding: 8px 12px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 8px;
-  background: var(--vp-code-block-bg);
-}
-
-.NekoAgentOnboarding-codeBar code {
-  overflow-x: auto;
-  padding: 0 !important;
-  background: transparent !important;
-  color: var(--vp-c-text-1);
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.NekoAgentOnboarding-inlineCopy {
-  flex: 0 0 auto;
-  padding: 4px 11px;
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 6px;
-  background: var(--vp-c-bg);
-  color: var(--vp-c-text-1);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: border-color 0.15s ease, color 0.15s ease;
-}
-
-.NekoAgentOnboarding-inlineCopy:hover,
-.NekoAgentOnboarding-inlineCopy.is-copied {
-  border-color: var(--vp-c-brand-1);
-  color: var(--vp-c-brand-1);
-}
-
 .NekoAgentOnboarding-promptBox {
   margin-top: 12px;
   margin-left: 36px;
@@ -782,11 +710,6 @@ onBeforeUnmount(() => {
   font-size: 12.5px;
 }
 
-.NekoAgentOnboarding-fallbackItem .NekoAgentOnboarding-codeBar {
-  margin-left: 0;
-  margin-top: 6px;
-}
-
 .NekoAgentOnboarding-walkthroughBanner {
   display: flex;
   flex-wrap: wrap;
@@ -856,7 +779,6 @@ onBeforeUnmount(() => {
     padding: 16px;
   }
 
-  .NekoAgentOnboarding-codeBar,
   .NekoAgentOnboarding-promptBox {
     margin-left: 0;
   }
