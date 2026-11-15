@@ -62,6 +62,20 @@ def _validate_slot(payload: dict) -> ModelSlot:
         ) from exc
 
 
+def _check_host_follow_save_temperature(slot: ModelSlot) -> None:
+    """Save-path limit: the main app may resolve to Anthropic at any moment.
+
+    Kept out of the domain validators so a legacy document with a higher
+    default stays readable (and updatable) for explicit request overrides.
+    """
+    temperature = slot.defaults.temperature
+    if slot.source == "host_follow" and temperature is not None and temperature > 1:
+        raise ServerDomainError(
+            "MODEL_SLOT_INVALID", "Invalid model slot fields", 422,
+            {"fields": ["defaults.temperature"]},
+        )
+
+
 class ModelConfigService:
     def __init__(
         self,
@@ -159,6 +173,7 @@ class ModelConfigService:
 
     def create_slot(self, payload: dict) -> dict:
         slot = _validate_slot(payload)
+        _check_host_follow_save_temperature(slot)
         slot_id = "slot_" + uuid4().hex
 
         def change(config):
@@ -199,6 +214,12 @@ class ModelConfigService:
                 merged["protocol"] = updates.get("protocol", "openai_chat")
                 merged["host_api"] = None
             slot = _validate_slot(merged)
+            if slot.source == "host_follow" and (
+                old.source != "host_follow" or slot.defaults.temperature != old.defaults.temperature
+            ):
+                # A new/changed host-follow default must meet the intersection;
+                # unrelated edits preserve an untouched legacy value.
+                _check_host_follow_save_temperature(slot)
             if old.source == "manual" and slot.source == "manual" and old.api_key and "api_key" not in updates and (
                 old.protocol != slot.protocol or not same_endpoint(old.base_url, slot.base_url)
             ):

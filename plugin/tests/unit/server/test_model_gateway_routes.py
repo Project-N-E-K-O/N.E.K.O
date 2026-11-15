@@ -1162,3 +1162,27 @@ async def test_anthropic_host_legacy_default_rejected_only_when_effective(http_c
     assert bad.json()["error"]["code"] == "model_defaults_incompatible"
     assert len(setup_gateway.calls) == calls_before
     assert consumed == ["plugin:alpha:analysis", "plugin:alpha:analysis"]
+
+
+async def test_legacy_high_default_document_reads_and_explicit_temperature_calls(http_client, setup_gateway, monkeypatch):
+    # A document written before the save-time intersection limit must remain
+    # readable end to end, and an explicit valid temperature must still work.
+    consumed = patch_host_config(monkeypatch, {
+        "model": "real-model", "base_url": "https://upstream.test/v1",
+        "api_key": "free-access", "provider_type": "anthropic",
+    })
+    bind_host_slot(setup_gateway, defaults={"temperature": 1.0})
+    object.__setattr__(setup_gateway.config.slots[HOST_SLOT_ID].defaults, "temperature", 1.5)
+
+    async def anthropic_upstream(request):
+        assert json.loads(request.content)["temperature"] == 0.5
+        return httpx.Response(200, json={
+            "id": "msg-1", "type": "message", "role": "assistant", "model": "real-model",
+            "content": [{"type": "text", "text": "hello"}], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 6, "output_tokens": 1},
+        })
+
+    setup_gateway.upstream.handler = anthropic_upstream
+    response = await http_client.post(PREFIX + "/chat/completions", headers=auth(setup_gateway), json=body(temperature=0.5))
+    assert response.status_code == 200, response.text
+    assert consumed == ["plugin:alpha:analysis"]

@@ -656,3 +656,31 @@ def test_host_follow_save_rejects_temperature_above_protocol_intersection(config
     # Manual OpenAI slots keep their own 0–2 range.
     manual = service.create_slot(slot_payload(defaults={"temperature": 1.5}))
     assert manual["defaults"]["temperature"] == 1.5
+
+
+def test_legacy_high_temperature_document_stays_readable_and_updatable(config_env):
+    cm, service, _ = config_env
+    slot_id = "slot_" + "e" * 32
+    cm.config_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(cm.get_runtime_config_path(CONFIG_FILENAME), {
+        "schema_version": 1, "seed_version": 1,
+        "slots": {slot_id: {
+            "name": "Legacy host", "source": "host_follow", "host_api": "assist",
+            "defaults": {"temperature": 1.5},
+        }},
+        "bindings": {}, "binding_versions": {},
+    })
+    # Reading must not reject the whole document over an unused legacy default.
+    listed = service.list_slots()
+    legacy = next(slot for slot in listed["slots"] if slot["id"] == slot_id)
+    assert legacy["defaults"]["temperature"] == 1.5
+    # An unrelated edit preserves the untouched legacy value.
+    renamed = service.update_slot(slot_id, {"name": "Renamed legacy"})
+    assert renamed["defaults"]["temperature"] == 1.5
+    assert service.store.read().slots[slot_id].defaults.temperature == 1.5
+    # Explicitly changing the default enforces the save-time intersection.
+    with pytest.raises(ServerDomainError) as error:
+        service.update_slot(slot_id, {"defaults": {"temperature": 1.8}})
+    assert error.value.code == "MODEL_SLOT_INVALID"
+    fixed = service.update_slot(slot_id, {"defaults": {"temperature": 0.7}})
+    assert fixed["defaults"]["temperature"] == 0.7
