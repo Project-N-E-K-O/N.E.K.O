@@ -782,6 +782,7 @@
         "audioMessageMicrophoneError": "El micrófono no está disponible. Revisa el permiso y vuelve a intentarlo.",
         "exportAudioOmitted": "La exportación no incluye mensajes de voz ni transcripciones. Puedes consultarlos en el historial del chat.",
         "audioMessageSendError": "No se pudo confirmar la entrega. Revisa la conversación antes de volver a grabar.",
+        "audioMessageExpired": "Esta solicitud de envío ha caducado. Revisa la conversación, cierra la vista previa y vuelve a grabar.",
         "audioMessageBusy": "La conversación está ocupada. Vuelve a enviar la grabación cuando esté lista.",
         "miniGameInviteTitle": "Invitación a minijuego",
         "miniGameInviteHint": "¿Jugamos juntos?",

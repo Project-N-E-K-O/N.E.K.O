@@ -144,6 +144,36 @@ describe('recording draft submission', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  it('explains an expired retry without replacing its ID or sending the recording again', async () => {
+    const now = Date.now();
+    const send = vi.fn(async (payload: AudioMessagePayload) => {
+      const reason = Date.now() - Number(payload.requestId.split('-')[0]) > 15 * 60_000 ? 'expired' : 'busy';
+      const error = new Error(reason);
+      error.name = 'AudioMessageRejected';
+      throw error;
+    });
+    render(<AudioMessageComposer target="YUI" disabled={false} send={send} onBusyChange={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Record a voice message' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Stop/ }));
+    const retry = await screen.findByRole('button', { name: 'Send recording' });
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 16 * 60_000);
+    try {
+      fireEvent.click(retry);
+      await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('This send request has expired'));
+      expect(showStatusToast).toHaveBeenLastCalledWith(screen.getByRole('alert').textContent, expect.any(Number));
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send.mock.calls[1][0]).toEqual(send.mock.calls[0][0]);
+      expect(screen.getByRole('button', { name: 'Preview recording' })).toBeVisible();
+      expect(screen.queryByRole('button', { name: 'Send recording' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Close preview' }));
+      expect(screen.getByRole('button', { name: 'Record a voice message' })).toBeEnabled();
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recording');
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it.each(['full', 'compact'] as const)('explains the independent ASR restriction in the %s chat', mode => {
     const { rerender } = render(<App chatSurfaceMode={mode} audioMessageTarget="YUI"
       onComposerAudioMessage={vi.fn()} audioMessageIndependentAsrBlocked />);

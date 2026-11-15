@@ -155,7 +155,9 @@ export function useAudioMessageComposer({ target, disabled, independentAsrBlocke
         return;
       }
       setPhase('failed');
-      reportError(i18n('chat.audioMessageSendError', 'Delivery could not be confirmed. Check the conversation before recording again.'));
+      reportError(failure instanceof Error && failure.name === 'AudioMessageRejected' && failure.message === 'expired'
+        ? i18n('chat.audioMessageExpired', 'This send request has expired. Check the conversation, then close the preview to record again.')
+        : i18n('chat.audioMessageSendError', 'Delivery could not be confirmed. Check the conversation before recording again.'));
     }
   }
 

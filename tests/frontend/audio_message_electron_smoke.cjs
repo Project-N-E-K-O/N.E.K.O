@@ -121,8 +121,10 @@ app.whenReady().then(async () => {
     const pcm = Buffer.from(message.audio, 'base64');
     assert.ok(pcm.length >= 3200);
     if (failNextSend) {
+      const expired = failNextSend === 'expired';
       failNextSend = false;
-      socket.send(JSON.stringify({ type: 'audio_message_result', request_id: message.request_id, state: 'failed' }));
+      socket.send(JSON.stringify({ type: 'audio_message_result', request_id: message.request_id,
+        state: expired ? 'rejected' : 'failed', code: expired ? 'expired' : '' }));
       return;
     }
     received.push(message);
@@ -280,12 +282,17 @@ app.whenReady().then(async () => {
       await waitFor(win, "document.querySelectorAll('.message-audio-block').length === 0");
       await waitFor(windows[0], "document.querySelectorAll('.message-audio-block').length === 0");
     }
-    failNextSend = true;
-    await capture(win);
-    await win.webContents.executeJavaScript("document.querySelector('.audio-message-stop').click()", true);
-    await assertRecordingAlert(win, 'Delivery could not be confirmed');
-    await win.webContents.executeJavaScript("document.querySelector('.audio-message-cancel').click()", true);
-    await waitFor(win, "document.querySelector('.audio-message-mic') && !document.querySelector('.audio-message-announcement').textContent");
+    for (const failure of [true, 'expired']) {
+      const sentBefore = received.length;
+      failNextSend = failure;
+      await capture(win);
+      await win.webContents.executeJavaScript("document.querySelector('.audio-message-stop').click()", true);
+      await assertRecordingAlert(win, failure === 'expired' ? 'This send request has expired' : 'Delivery could not be confirmed');
+      assert.equal(await win.webContents.executeJavaScript("!!document.querySelector('.audio-message-play') && !document.querySelector('.audio-message-send')"), true);
+      assert.equal(received.length, sentBefore, 'terminal errors never cause an automatic resubmission');
+      await win.webContents.executeJavaScript("document.querySelector('.audio-message-cancel').click()", true);
+      await waitFor(win, "document.querySelector('.audio-message-mic') && !document.querySelector('.audio-message-announcement').textContent");
+    }
     console.log('Audio message Electron ' + mode + ' passed');
   }
   assert.deepEqual(errors, []);
