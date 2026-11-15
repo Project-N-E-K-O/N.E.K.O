@@ -318,9 +318,13 @@ def cap_result_blocks(
     fit is cut down and saved whole, like a result of one block.
 
     ``first_whole_up_to`` is a size up to which the first block is never
-    cut, whatever the cap: a block the runtime would never prune must not
-    arrive cut either (a model with a window so small that a quarter of it
-    is less than that gets a result over its cap, by this much at the most).
+    cut, whatever the rest needs of the cap: a block the runtime would
+    never prune must not arrive cut either. A session passes that size
+    and a cap that is no less, the cap a result of one block has: what
+    follows a first block gets what the block left of the same length one
+    text may have, not less. So a result is over the cap only when its
+    first block took more than the cap less what is kept back for the
+    rest, and then by what is kept back at the most.
 
     Blocking: tokenizes and writes the spill files.
     """
@@ -574,29 +578,30 @@ class ContextManager:
         if tool_name in _UNCAPPED_TOOLS:
             return result
         images = [block for block in result.content if isinstance(block, ImageContent)]
+        # What the text of one result may be, in one block or several. A
+        # text small enough never to be pruned is not cut here either,
+        # however small the window (below 8192 tokens a quarter of it is
+        # less than that): a group of tools loaded by its name, or handed
+        # over in place of a call, is one text and has to arrive whole.
+        cap = max(self.policy.result_cap, self.policy.prune_threshold_tokens)
+        hint = f"{tool_name}-{call_id}"
         parts = first_block_and_rest(result.content)
         if parts is not None:
-            # Its first block and the rest, each capped by itself.
+            # Its first block and the rest share that cap, each cut by itself.
             fitted = await asyncio.to_thread(
                 partial(
                     cap_result_blocks,
                     *parts,
-                    self.policy.result_cap,
+                    cap,
                     self.spill,
-                    f"{tool_name}-{call_id}",
+                    hint,
                     first_whole_up_to=self.policy.prune_threshold_tokens,
                 )
             )
             if fitted is None:
                 return result
             return result.model_copy(update={"content": [*(TextContent(text=part) for part in fitted), *images]})
-        text = result.text
-        # A text small enough never to be pruned is not cut here either,
-        # however small the window (below 8192 tokens a quarter of it is
-        # less than that): a group of tools loaded by its name, or handed
-        # over in place of a call, is one text and has to arrive whole.
-        cap = max(self.policy.result_cap, self.policy.prune_threshold_tokens)
-        capped = await asyncio.to_thread(cap_result_text, text, cap, self.spill, f"{tool_name}-{call_id}")
+        capped = await asyncio.to_thread(cap_result_text, result.text, cap, self.spill, hint)
         if capped is None:
             return result
         return result.model_copy(update={"content": [TextContent(text=capped), *images]})

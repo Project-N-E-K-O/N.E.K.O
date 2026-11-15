@@ -326,9 +326,16 @@ async def test_a_group_arrives_whole_in_the_smallest_window_there_is_however_it_
         policy=policy, spill=SpillStore(tmp_path / "outputs"), summarize=no_summary, new_entry_id=lambda: "entry"
     )
     assert policy.result_cap == 1_000
-    # What is said in front of a group handed over in place of a call. With
-    # it, a group at its largest is still a text the runtime never cuts.
-    said = count_tokens(TOOL_GROUP_NOT_LOADED.format(tool=BROWSER_SCREENSHOT_TOOL_NAME, name="browser")) + 4
+    # What is said in front of a group handed over in place of a call,
+    # whichever shipped tool was called. With it, a group at its largest is
+    # still a text the runtime never cuts: an answer that is an error is
+    # one text to the runtime, so the group cannot be a block of its own
+    # there, and this is what keeps it whole.
+    said = 4 + max(
+        count_tokens(TOOL_GROUP_NOT_LOADED.format(tool=definition["name"], name=group))
+        for group, definitions in SHIPPED.items()
+        for definition in definitions
+    )
     assert GATEWAY_TOOL_GROUP_MAX_TOKENS + said <= policy.prune_threshold_tokens
 
     for group, tool in (("browser", "browser_click"), ("desktop", COMPUTER_TOOL_NAME)):
@@ -434,7 +441,7 @@ def test_the_first_call_of_each_group_is_a_shipped_tool_called_the_way_it_is_def
 
     assert set(BUILTIN_GROUP_FIRST_CALLS) == set(BUILTIN_GROUPS)
     for group, first in BUILTIN_GROUP_FIRST_CALLS.items():
-        assert set(first) == {"name", "arguments", "example"}
+        assert set(first) == {"name", "arguments", "given", "example"}
         definition = next(item for item in shipped[group] if item["name"] == first["name"])
         parameters = definition["parameters"]
         # What a model is shown is a call the tool takes: arguments it
@@ -444,8 +451,23 @@ def test_the_first_call_of_each_group_is_a_shipped_tool_called_the_way_it_is_def
         assert set(parameters.get("required", [])) <= set(example)
         for key, value in example.items():
             assert value in parameters["properties"][key].get("enum", [value])
-        # And the call it is shown is the step that counts as the first call.
-        assert first["arguments"].items() <= example.items()
+        # What makes a call that step is said of arguments the tool has,
+        # in values it allows (``None``: the argument left out).
+        assert set(first["arguments"]) | set(first["given"]) <= set(parameters["properties"])
+        for key, allowed in first["arguments"].items():
+            assert isinstance(allowed, tuple) and allowed
+            assert {value for value in allowed if value is not None} <= set(parameters["properties"][key]["enum"])
+        for key in first["given"]:
+            assert parameters["properties"][key]["type"] == "string"
+        # And the call a model is shown is that step.
+        assert all(example.get(key) in allowed for key, allowed in first["arguments"].items())
+        assert all(isinstance(example.get(key), str) and example[key].strip() for key in first["given"])
+    # The browser's tool does more under the same name than go to an
+    # address, and none of it is the first call.
+    navigate = BUILTIN_GROUP_FIRST_CALLS[BUILTIN_GROUP_BROWSER]
+    kinds = set(BROWSER_TOOLS[0]["parameters"]["properties"]["type"]["enum"])
+    assert BROWSER_TOOLS[0]["name"] == navigate["name"] and kinds == {"url", "back", "forward", "reload"}
+    assert navigate["arguments"] == {"type": ("url", None)} and navigate["given"] == ("url",)
 
 
 def test_how_a_group_is_used_is_no_longer_a_paragraph_of_the_system_prompt():

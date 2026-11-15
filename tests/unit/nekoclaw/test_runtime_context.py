@@ -264,7 +264,9 @@ async def test_a_first_block_small_enough_never_to_be_pruned_arrives_whole_whate
     first, rest = capped.content
     assert first == TextContent(text=group)
     assert rest.text.startswith("PAGE-START") and texts.SPILL_GAP in rest.text
-    assert count_tokens(rest.text) <= 256 + 64
+    # The page got what the group left of the length one text may have.
+    left = never_pruned - count_tokens(group)
+    assert left > 256 and count_tokens(rest.text) <= left + 64
 
     # A first block over that size is cut down to it, like any text.
     huge = "HUGE-START " + _words(3_000, "h") + " HUGE-END\n"
@@ -276,6 +278,57 @@ async def test_a_first_block_small_enough_never_to_be_pruned_arrives_whole_whate
     assert first.text.startswith("HUGE-START") and texts.SPILL_GAP in first.text
     assert count_tokens(first.text) <= never_pruned + 64
     assert rest == TextContent(text="a note")
+
+
+async def test_what_follows_a_first_block_gets_what_it_left_of_the_length_one_text_may_have(tmp_path: Path) -> None:
+    # The smallest window there can be. One text may be as long as an old
+    # result is left whole at, which is twice a quarter of this window.
+    manager = _blocks_manager(tmp_path, 4_096)
+    cap, never_pruned = manager.policy.result_cap, manager.policy.prune_threshold_tokens
+    assert (cap, never_pruned) == (1_024, 2_048)
+    # A group handed over with a first call that is alone over a quarter of
+    # the window, and a page behind it longer than what is kept back for
+    # the text after a first block whatever that block took.
+    group = "GROUP-START " + _words(750, "tool") + " GROUP-END\n"
+    page = "PAGE-START " + _words(150) + " PAGE-END"
+    assert cap < count_tokens(group) and 256 < count_tokens(page)
+    assert count_tokens(group + page) <= never_pruned
+    whole = AgentToolResult(content=[TextContent(text=group), TextContent(text=page)])
+
+    # Together no longer than one text may be: whole, as that text would be.
+    single = AgentToolResult(content=group + page)
+    assert await manager.cap_tool_result("capability_call", "c1", whole) is whole
+    assert await manager.cap_tool_result("bash", "c2", single) is single
+    assert not (tmp_path / "outputs").exists() or not list((tmp_path / "outputs").iterdir())
+
+    # A longer page is cut to what the group left of that length, not to
+    # what is kept back for it.
+    long = "PAGE-START " + _words(3_000) + " PAGE-END"
+    capped = await manager.cap_tool_result(
+        "capability_call", "c3", AgentToolResult(content=[TextContent(text=group), TextContent(text=long)])
+    )
+
+    first, rest = capped.content
+    left = never_pruned - count_tokens(group)
+    assert first == TextContent(text=group)
+    assert rest.text.startswith("PAGE-START") and texts.SPILL_GAP in rest.text and "PAGE-END" in rest.text
+    assert 256 + 64 < count_tokens(rest.text) <= left + 64
+    assert count_tokens(first.text) + count_tokens(rest.text) <= never_pruned + 64
+
+    # With a first block that leaves next to nothing, the text after it
+    # still has what is kept back for it, and that is all a result is ever
+    # over the length one text may have.
+    full = "GROUP-START " + _words(1_000, "tool") + " GROUP-END\n"
+    assert never_pruned - 256 < count_tokens(full) <= never_pruned
+    capped = await manager.cap_tool_result(
+        "capability_call", "c4", AgentToolResult(content=[TextContent(text=full), TextContent(text=long)])
+    )
+
+    first, rest = capped.content
+    assert first == TextContent(text=full)
+    assert rest.text.startswith("PAGE-START") and texts.SPILL_GAP in rest.text
+    assert count_tokens(rest.text) <= 256 + 64
+    assert count_tokens(first.text) + count_tokens(rest.text) <= never_pruned + 256 + 64
 
 
 async def test_a_text_small_enough_never_to_be_pruned_is_not_capped_either_whatever_the_window(

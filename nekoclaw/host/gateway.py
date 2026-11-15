@@ -36,13 +36,14 @@ What the gateway serves:
   ``GATEWAY_TOOL_GROUP_MAX_TOKENS``), in one of three ways, and its tools
   are from then on called by name through ``capability_call``:
   ``capability_search`` with ``group`` hands it over by itself; the group's
-  first call (open a page, take a screenshot: a step that only looks) is
+  first call (going to an address, taking a screenshot, and nothing else
+  the same tool can do) is
   carried out and, when it went well, answered with the group in front of
   its result, so that a task which starts that way spends no request on
   loading (one that failed is answered as any failed call, and the group is
   still to be handed over); any other call
   to a tool of a group this token has not been handed is not carried out
-  and is answered with the group, so that nothing but that first look is
+  and is answered with the group, so that nothing but that first step is
   done before the task agent has read how the tools are used, and it can
   call again at once. A call is one small step, carried out by the
   provider the host was given; stopping the commission stops it. The
@@ -257,7 +258,11 @@ def _is_first_call(capability: Capability, arguments: dict[str, Any]) -> bool:
     found = _first_call(capability.group or "", [capability])
     if found is None:
         return False
-    return all(arguments.get(key) == value for key, value in found[1]["arguments"].items())
+    first = found[1]
+    # Only the step itself: the tool can do more under the same name.
+    if any(arguments.get(key) not in allowed for key, allowed in first["arguments"].items()):
+        return False
+    return all(isinstance(arguments.get(key), str) and arguments[key].strip() for key in first["given"])
 
 
 def _group_text(group: str, tools: list[Capability]) -> str:
@@ -679,9 +684,9 @@ class CapabilityGateway:
             grant.loaded_groups.add(group)
             refusal = TOOL_GROUP_NOT_LOADED.format(tool=name, name=_group_name(group))
             return _text(f"{refusal}\n\n{handed_over}", error=True)
-        # The first call only looks (it opens a page, it takes a screenshot)
-        # and is carried out like any call, the user asked first and the
-        # group occupied. The group is put in front of what it returns, as
+        # The first call (going to an address, taking a screenshot) is
+        # carried out like any call, the user asked first and the group
+        # occupied. The group is put in front of what it returns, as
         # a block of its own: each is capped by itself, and the runtime
         # keeps them apart (``GatewayResult.parts``), so that when it cuts
         # old results down the group stays whole next to a long page.

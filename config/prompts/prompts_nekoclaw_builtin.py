@@ -369,17 +369,24 @@ BUILTIN_GROUP_SUMMARIES: dict[str, str] = {
     ),
 }
 
-# The first call of each group: the step a task with the group starts with,
-# and one that only looks (it opens a page, it takes a screenshot). It is
-# carried out although the group was not loaded, and when it went well it is
-# answered with the group in front of its result, so that loading costs such
-# a task no request of its own. (One that failed is answered as any failed
-# call; the group is handed over with the next call.) Any other call to a
-# group that was not loaded is not carried out.
+# The first call of each group: the step a task with the group starts with
+# (going to an address, taking a screenshot), which a model can write from
+# the one line it was shown. It is carried out although the group was not
+# loaded, and when it went well it is answered with the group in front of
+# its result, so that loading costs such a task no request of its own. (One
+# that failed is answered as any failed call; the group is handed over with
+# the next call.) Any other call to a group that was not loaded is not
+# carried out.
 #
-# ``arguments`` are what the call must carry to be that step (the
-# keyboard-and-mouse tool does everything under one name; any navigation is
-# the browser's); ``example`` is how a model is shown the call's arguments.
+# Only that step, not everything the tool can do. The keyboard-and-mouse
+# tool does everything under one name. The browser's goes back, forward and
+# reloads as well, on whatever page is open: that page was not looked at,
+# and a reload can send a form again or drop what was typed into it.
+#
+# ``arguments`` are, for an argument, the values a call may carry to be that
+# step (``None``: left out); ``given`` are the arguments it must carry, each
+# a text that is not empty; ``example`` is how a model is shown the call's
+# arguments.
 #
 # The first call is made through the gateway's call tool like every other:
 # no tool of a group is among a task agent's tools. Listing the browser's
@@ -389,8 +396,18 @@ BUILTIN_GROUP_SUMMARIES: dict[str, str] = {
 # calling the one browser tool it had over and over instead of going
 # through the call tool for the others.
 BUILTIN_GROUP_FIRST_CALLS: dict[str, dict] = {
-    "browser": {"name": "browser_navigate_page", "arguments": {}, "example": '{"url": "..."}'},
-    "keyboard_mouse": {"name": "computer", "arguments": {"action": "screenshot"}, "example": '{"action": "screenshot"}'},
+    "browser": {
+        "name": "browser_navigate_page",
+        "arguments": {"type": ("url", None)},
+        "given": ("url",),
+        "example": '{"url": "..."}',
+    },
+    "keyboard_mouse": {
+        "name": "computer",
+        "arguments": {"action": ("screenshot",)},
+        "given": (),
+        "example": '{"action": "screenshot"}',
+    },
 }
 
 # Put in front of the lines about the groups, in the description of the

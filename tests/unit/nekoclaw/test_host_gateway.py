@@ -1293,7 +1293,7 @@ PICTURE = {"type": "image", "data": "QUJD", "mimeType": "image/jpeg"}
     ("tool", "arguments", "group", "name"),
     [
         ("browser_navigate_page", {"url": "https://example.com"}, "browser", "browser"),
-        ("browser_navigate_page", {"type": "back"}, "browser", "browser"),
+        ("browser_navigate_page", {"type": "url", "url": "https://example.com", "timeout": 5000}, "browser", "browser"),
         ("computer", {"action": "screenshot"}, "keyboard_mouse", "desktop"),
     ],
 )
@@ -1356,6 +1356,44 @@ async def test_only_looking_at_the_screen_is_the_first_call_of_the_desktop(built
     )
     assert builtin_host.provider.calls == [] and asker.asked == []
     assert builtin_host.leases.occupied() == {}
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"type": "back"},
+        {"type": "forward"},
+        {"type": "reload"},
+        {"type": "reload", "url": "https://example.com"},
+        {"type": "URL", "url": "https://example.com"},
+        {"type": "url"},
+        {},
+        {"url": "  "},
+        {"url": ["https://example.com"]},
+    ],
+)
+async def test_only_going_to_an_address_is_the_first_call_of_the_browser(builtin_host, arguments):
+    asker = Asker("once")
+    builtin_host.permissions.set_asker(asker)
+    grant = _grant(builtin_host, await _commission(builtin_host), images=True, loaded=())
+
+    refused = await _call(builtin_host, grant, CALL_TOOL, {"name": "browser_navigate_page", "arguments": arguments})
+
+    # The tool goes back, forward and reloads too, on whatever page is
+    # open; that, and a call without an address to go to, waits until how
+    # the browser is used was handed over.
+    assert refused["isError"] is True
+    assert _text(refused).startswith(
+        "Nothing was done: browser_navigate_page is one of the browser tools, which were not loaded yet."
+    )
+    assert builtin_host.provider.calls == [] and asker.asked == []
+    assert builtin_host.leases.occupied() == {}
+    # With the group in hand the same call is carried out.
+    assert grant.loaded_groups == {"browser"}
+    await _call(builtin_host, grant, CALL_TOOL, {"name": "browser_navigate_page", "arguments": arguments})
+    assert [(tool, given) for tool, _cid, given in builtin_host.provider.calls] == [
+        ("browser_navigate_page", arguments)
+    ]
 
 
 async def test_a_group_handed_over_with_its_first_call_holds_only_what_the_model_can_use(builtin_host):
