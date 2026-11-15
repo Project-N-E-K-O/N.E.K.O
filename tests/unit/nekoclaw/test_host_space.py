@@ -458,7 +458,7 @@ async def test_a_project_is_made_once_and_listed_in_the_index_of_the_space(space
     assert again.last_commission_at == clock.now and again.created_at == clock.now - 100
     index = (root / "MEMORY.md").read_text(encoding="utf-8")
     assert index == (
-        "- [project: Budget app](projects/Budget app/MEMORY.md) — a small app that tracks spending; files in D:/w\n"
+        "- [project: Budget app](<projects/Budget app/MEMORY.md>) — a small app that tracks spending; files in D:/w\n"
     )
     assert [item.name for item in await space.list_projects()] == ["Budget app"]
 
@@ -546,7 +546,7 @@ async def test_an_idle_project_is_archived_and_comes_back_when_it_is_named(space
     assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "An app that tracks spending.\n"
     assert (home / "memory" / "database.md").is_file()
     assert (root / "MEMORY.md").read_text(encoding="utf-8") == (
-        f"- [archived project: Budget app](archive/{year}/Budget app/SUMMARY.md) — spending tracker, paused\n"
+        f"- [archived project: Budget app](<archive/{year}/Budget app/SUMMARY.md>) — spending tracker, paused\n"
     )
     assert [(item.name, item.status) for item in await space.list_projects()] == [("Budget app", "archived")]
     assert await space.list_projects(include_archived=False) == []
@@ -560,7 +560,7 @@ async def test_an_idle_project_is_archived_and_comes_back_when_it_is_named(space
     assert (root / "projects" / "Budget app" / "memory" / "database.md").is_file()
     assert not home.exists()
     assert (root / "MEMORY.md").read_text(encoding="utf-8") == (
-        "- [project: Budget app](projects/Budget app/MEMORY.md) — tracks spending; files in D:/w\n"
+        "- [project: Budget app](<projects/Budget app/MEMORY.md>) — tracks spending; files in D:/w\n"
     )
 
 
@@ -660,8 +660,10 @@ async def test_a_project_record_that_cannot_be_read_is_never_written_over(space,
     with pytest.raises(OSError):
         await space.assign_project(_commission(dispatch_text="go on with the budget app"))
     assert record.read_bytes() == unreadable
-    assert await space.note_archive_attempt("Budget app") == 1
+    assert await space.note_archive_attempt("Budget app") == 0
     assert record.read_bytes() == unreadable
+    # Nor is it archived by a round of tidying, which cannot tell how long it was idle.
+    assert await space.archive_project("Budget app", unless_touched_since=0.0) is None
 
     # Archived and brought back, its record travels as it is.
     archived = await space.archive_project("Budget app", summary="s")
@@ -674,6 +676,54 @@ async def test_a_project_record_that_cannot_be_read_is_never_written_over(space,
     record.write_text('{"name": "Budget app", "workdir": "D:/w", "description": "tracks spending"}', encoding="utf-8")
     project = await space.touch_project("Budget app")
     assert (project.workdir, project.description) == ("D:/w", "tracks spending")
+
+
+@pytest.mark.parametrize("action", ["touch", "assign", "use", "attempt", "restore"])
+async def test_a_record_that_could_not_be_read_a_moment_ago_is_not_written_over(space, root, monkeypatch, action):
+    await space.touch_project("Budget app", description="tracks spending", workdir="D:/w")
+    if action == "restore":
+        await space.archive_project("Budget app", summary="s")
+    (record,) = list(root.rglob("project.json"))
+    before = record.read_bytes()
+    read = Path.read_text
+    failures = {"left": 1}
+
+    def read_text(self, *args, **kwargs):
+        # Held by another program for a moment: the first read fails, the next works.
+        if self.name == "project.json" and failures["left"] > 0:
+            failures["left"] -= 1
+            raise PermissionError(13, "in use")
+        return read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+
+    if action == "touch":
+        with pytest.raises(OSError):
+            await space.touch_project("Budget app")
+    elif action == "assign":
+        # Here the read that fails is the one that lists the projects. The
+        # record is then read once, whole, and written back with all it had.
+        filed = await space.assign_project(_commission(dispatch_text="go on with the budget app"))
+        assert (filed.workdir, filed.description, filed.commissions) == ("D:/w", "tracks spending", 2)
+    elif action == "use":
+        await space.use_project("Budget app")
+    elif action == "attempt":
+        assert await space.note_archive_attempt("Budget app") == 0
+    else:
+        failures["left"] = 0
+        # Listed while it could be read; unreadable for a moment once it is back.
+        (archived,) = [item for item in await space.list_projects() if item.status == "archived"]
+        failures["left"] = 1
+        await asyncio.to_thread(space._restore, archived)
+        (record,) = list(root.rglob("project.json"))
+
+    assert failures["left"] == 0
+    monkeypatch.undo()
+    project = (await space.list_projects())[0]
+    assert (project.workdir, project.description) == ("D:/w", "tracks spending")
+    if action != "assign":
+        assert record.read_bytes() == before
+        assert project.commissions == 1
 
 
 async def test_using_a_project_that_is_not_there_makes_nothing(space, root):
@@ -700,7 +750,7 @@ def test_a_copy_to_another_volume_is_published_whole_or_not_at_all(tmp_path, mon
     rename = os.replace
 
     def other_volume(first, second):
-        if str(first) == str(source):
+        if (str(first), str(second)) == (str(source), str(target)):
             raise OSError(errno.EXDEV, "cross-device link")
         return rename(first, second)
 
@@ -728,6 +778,79 @@ def test_a_copy_to_another_volume_is_published_whole_or_not_at_all(tmp_path, mon
     assert (target / "memory" / "stack.md").read_text(encoding="utf-8") == "Flask."
     assert not source.exists()
     assert sorted(item.name for item in target.parent.iterdir()) == ["Budget app"]
+    assert sorted(item.name for item in source.parent.iterdir()) == []
+
+
+def test_a_source_that_cannot_be_set_aside_stays_whole_and_nothing_is_published(tmp_path, monkeypatch):
+    import errno
+    import os
+
+    from nekoclaw.host.space import _move
+
+    source, target = tmp_path / "projects" / "Budget app", tmp_path / "archive" / "Budget app"
+    (source / "memory").mkdir(parents=True)
+    (source / "memory" / "stack.md").write_text("Flask.", encoding="utf-8")
+    target.parent.mkdir()
+    rename = os.replace
+
+    def other_volume_and_in_use(first, second):
+        if (str(first), str(second)) == (str(source), str(target)):
+            raise OSError(errno.EXDEV, "cross-device link")
+        if str(first) == str(source):
+            raise PermissionError(13, "a file in it is held open")
+        return rename(first, second)
+
+    monkeypatch.setattr(os, "replace", other_volume_and_in_use)
+
+    with pytest.raises(PermissionError):
+        _move(source, target)
+
+    assert (source / "memory" / "stack.md").is_file()
+    assert sorted(item.name for item in target.parent.iterdir()) == []
+    assert sorted(item.name for item in source.parent.iterdir()) == ["Budget app"]
+
+
+async def test_what_is_left_of_a_project_copied_elsewhere_is_not_the_project(space, root, clock, monkeypatch):
+    import errno
+    import os
+    import shutil
+
+    await space.touch_project("Budget app", description="tracks spending")
+    await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+    await space.file_entry("Budget app", title="Export", content="CSV with a BOM.")
+    rename = os.replace
+    remove = shutil.rmtree
+
+    def other_volume(first, second):
+        # The archive is on another volume than the projects.
+        parents = {Path(first).parent.name, Path(second).parent.parent.name, Path(first).parent.parent.name, Path(second).parent.name}
+        if {"projects", "archive"} <= parents and not Path(first).name.startswith(".") and not Path(second).name.startswith("."):
+            raise OSError(errno.EXDEV, "cross-device link")
+        return rename(first, second)
+
+    def half_removed(path, *args, **kwargs):
+        # Removing what was set aside stops half way: one file is gone, the rest is held open.
+        if Path(path).name.startswith(".removing-"):
+            (Path(path) / "memory" / "stack.md").unlink(missing_ok=True)
+            return None
+        return remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", other_volume)
+    monkeypatch.setattr(shutil, "rmtree", half_removed)
+
+    archived = await space.archive_project("Budget app", summary="s")
+
+    # Archived whole. What is left among the projects is no project, and is not used as one.
+    assert archived is not None and archived.status == "archived"
+    assert sorted(item.name for item in (root / "projects").iterdir()) == [".removing-Budget app"]
+    assert [(item.name, item.status) for item in await space.list_projects()] == [("Budget app", "archived")]
+
+    # A commission of it is taken up again: the whole project comes back from the archive.
+    monkeypatch.setattr(shutil, "rmtree", remove)
+    await space.use_project("Budget app")
+
+    assert sorted(entry.id for entry in await space.list_entries("Budget app")) == ["export", "stack"]
+    assert [(item.name, item.status) for item in await space.list_projects()] == [("Budget app", "active")]
 
 
 async def test_a_copy_that_was_cut_off_is_not_taken_for_a_project(space, root):
@@ -836,7 +959,7 @@ def test_a_directory_that_cannot_be_renamed_is_not_copied_and_removed_instead(tm
     rename = os.replace
 
     def other_volume(first, second):
-        if str(first) == str(source):
+        if (str(first), str(second)) == (str(source), str(target)):
             raise OSError(errno.EXDEV, "cross-device link")
         return rename(first, second)
 
@@ -1001,3 +1124,151 @@ async def test_state_is_remembered(space):
 async def test_entry_errors_are_space_errors(space):
     with pytest.raises(SpaceError):
         await space.file_entry(None, title="", content="text")
+
+
+# ---------------------------------------------------------------------------
+# The ninth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_link_to_a_project_whose_name_has_spaces_or_brackets_is_still_a_link(space, root):
+    await space.touch_project("My App (v2)", description="second try")
+    await space.touch_project("blog")
+
+    lines = (root / "MEMORY.md").read_text(encoding="utf-8").splitlines()
+
+    assert lines == [
+        "- [project: blog](projects/blog/MEMORY.md)",
+        "- [project: My App (v2)](<projects/My App (v2)/MEMORY.md>) — second try",
+    ]
+    # One line each, however often they are used; and the line goes when the project does.
+    await space.touch_project("My App (v2)")
+    assert (root / "MEMORY.md").read_text(encoding="utf-8").splitlines() == lines
+    archived = await space.archive_project("My App (v2)", summary="s")
+    index = (root / "MEMORY.md").read_text(encoding="utf-8")
+    assert "projects/My App (v2)/" not in index
+    assert f"(<archive/{archived.archive_year}/My App (v2)/SUMMARY.md>)" in index
+    await space.use_project("My App (v2)")
+    index = (root / "MEMORY.md").read_text(encoding="utf-8")
+    assert "archive/" not in index and index.count("(<projects/My App (v2)/MEMORY.md>)") == 1
+
+
+async def test_a_line_the_user_wrote_without_angle_brackets_is_the_projects_line_all_the_same(space, root):
+    await space.touch_project("Budget app")
+    index = root / "MEMORY.md"
+    index.write_text("- [my budget thing](projects/Budget app/MEMORY.md) — my own words\n", encoding="utf-8")
+    # Its record is gone, so it is made anew, and its line is looked for.
+    (root / "projects" / "Budget app" / "project.json").unlink()
+
+    await space.touch_project("Budget app")
+
+    assert index.read_text(encoding="utf-8") == "- [my budget thing](projects/Budget app/MEMORY.md) — my own words\n"
+    await space.archive_project("Budget app", summary="s")
+    assert "my budget thing" not in index.read_text(encoding="utf-8")
+
+
+async def test_an_entry_of_an_archived_project_is_changed_and_removed_where_it_is(space, root):
+    await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+    await space.file_entry("Budget app", title="Export", content="CSV with a BOM.")
+    archived = await space.archive_project("Budget app", summary="s")
+    year, directory = archived.archive_year, archived.directory
+    home = root / "archive" / year / directory
+
+    edited = await space.edit_entry("stack", directory, archive_year=year, title="The stack", content="FastAPI now.")
+
+    assert (edited.title, edited.content) == ("The stack", "FastAPI now.")
+    assert "FastAPI now." in (home / "memory" / "stack.md").read_text(encoding="utf-8")
+    assert "- [The stack](memory/stack.md)" in (home / "MEMORY.md").read_text(encoding="utf-8")
+
+    assert await space.delete_entry("export", directory, archive_year=year) is True
+    assert await space.delete_entry("export", directory, archive_year=year) is False
+
+    assert [entry.id for entry in await space.list_entries(directory, archive_year=year)] == ["stack"]
+    assert "export.md" not in (home / "MEMORY.md").read_text(encoding="utf-8")
+    # Changed where it is: nothing was brought back, nothing was made among the projects.
+    assert [(item.name, item.status) for item in await space.list_projects()] == [("Budget app", "archived")]
+    assert not (root / "projects" / "Budget app").exists()
+    # Without the year it is the active project of that name that is meant, and there is none.
+    assert await space.edit_entry("stack", "Budget app", content="x") is None
+    assert await space.delete_entry("stack", "Budget app") is False
+
+
+async def test_a_project_that_cannot_be_moved_stays_and_the_summary_that_came_to_nothing_is_counted(space, root, monkeypatch):
+    import nekoclaw.host.space as module
+
+    await space.touch_project("Budget app", description="tracks spending", workdir="D:/w")
+    await space.file_entry("Budget app", title="Stack", content="Flask and SQLite.")
+
+    def held_open(source, target):
+        raise PermissionError(13, "a file in it is held open")
+
+    monkeypatch.setattr(module, "_move", held_open)
+
+    # Asked by hand, without a summary: nothing was spent, nothing is counted.
+    assert await space.archive_project("Budget app") is None
+    assert (await space.get_project("Budget app")).archive_attempts == 0
+    # With a summary, which a model was asked for: counted.
+    assert await space.archive_project("Budget app", summary="An app.") is None
+    assert await space.archive_project("Budget app", summary="An app.") is None
+
+    project = await space.get_project("Budget app")
+    assert (project.archive_attempts, project.status, project.workdir) == (2, "active", "D:/w")
+    assert [entry.id for entry in await space.list_entries("Budget app")] == ["stack"]
+    assert "[project: Budget app]" in (root / "MEMORY.md").read_text(encoding="utf-8")
+    # In use again: the count starts anew.
+    assert (await space.touch_project("Budget app")).archive_attempts == 0
+
+
+async def test_a_summary_that_cannot_be_saved_leaves_the_project_and_is_counted(space, root, monkeypatch):
+    await space.touch_project("Budget app")
+    put = TaskAgentSpace._put_text
+
+    def no_summary(path, text):
+        if path.name == "SUMMARY.md":
+            raise PermissionError(13, "in use")
+        return put(path, text)
+
+    monkeypatch.setattr(TaskAgentSpace, "_put_text", staticmethod(no_summary))
+
+    assert await space.archive_project("Budget app", summary="An app.") is None
+
+    project = await space.get_project("Budget app")
+    assert (project.status, project.archive_attempts) == ("active", 1)
+    assert not (root / "archive").exists()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "printf 'x' >> {root}/MEMORY.md",
+        "printf 'x' >> {backslashes}\\MEMORY.md",
+        'Add-Content "{upper}/memory/a.md" x',
+        "cat /d/Documents/data/nekoclaw/task_agent_space/AGENTS.md",
+        "echo x > nekoclaw/task_agent_space/AGENTS.md",
+        "echo x > nekoclaw\\\\task_agent_space\\\\AGENTS.md",
+        "cd ~/data/NekoClaw/Task_Agent_Space && ls",
+    ],
+)
+async def test_a_command_that_names_the_space_is_seen_however_the_path_is_written(tmp_path, command):
+    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "nekoclaw" / "task_agent_space"))
+    root = (tmp_path / "nekoclaw" / "task_agent_space").as_posix()
+    command = command.format(root=root, backslashes=root.replace("/", "\\"), upper=root.upper())
+
+    assert await space.named_in(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls",
+        "python -m pytest tests/unit/nekoclaw/test_host_space.py",
+        "grep -rn task_agent_space nekoclaw/",
+        "cat nekoclaw/task_agents/projects/_daily/sessions/1/work/notes.txt",
+        "",
+    ],
+)
+async def test_a_command_about_something_else_is_not_taken_for_one_about_the_space(tmp_path, command):
+    space = TaskAgentSpace(lambda: SpacePaths(tmp_path / "nekoclaw" / "task_agent_space"))
+
+    assert await space.named_in(command) is False

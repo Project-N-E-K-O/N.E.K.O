@@ -50,6 +50,13 @@ SPACE_WRITE_REFUSED = (
     "the task agent space is written by the host only; submit what should be kept with note_lesson"
 )
 
+# What a task agent is told when a shell command of its names the space or
+# would run inside it. A command is not looked into, so it is refused whole.
+SPACE_COMMAND_REFUSED = (
+    "a command that names the task agent space, or runs inside it, is not run: "
+    "read its files with read, glob and grep, and submit what should be kept with note_lesson"
+)
+
 # ---------------------------------------------------------------------------
 # The review of a finished commission. One call writes the review, names the
 # entries worth keeping and says which project the commission belongs to.

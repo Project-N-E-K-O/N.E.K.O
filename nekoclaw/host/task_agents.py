@@ -1584,6 +1584,20 @@ class TaskAgentManager:
             # What was kept for task agents is read like the files a task
             # agent works on: nobody is asked.
             category = "workdir_files"
+        if self._space is not None and category == "run_command":
+            command, cwd = payload.get("command"), payload.get("cwd")
+            if (isinstance(command, str) and await self._space.named_in(command)) or (
+                isinstance(cwd, str) and cwd and await self._space.contains(cwd)
+            ):
+                # What a shell command does is not looked into, so one that
+                # names the space, or runs inside it, is refused whole,
+                # whatever the settings allow: an approval of commands must
+                # not be a way to write past the host. A command that puts
+                # the path together itself is not seen here; that is left
+                # to whoever approves the command.
+                from config.prompts.prompts_nekoclaw_space import SPACE_COMMAND_REFUSED
+
+                return {"allow": False, "reason": SPACE_COMMAND_REFUSED}
         decision = await self._permissions.check(session_id, category, detail=detail)
         return decision.to_json()
 

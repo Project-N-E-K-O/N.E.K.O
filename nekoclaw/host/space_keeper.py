@@ -52,7 +52,14 @@ from typing import Any
 from nekoclaw.host.decision import TIER_ARCHIVE, TIER_REVIEW
 from nekoclaw.host.ledger import ACTIVE_STATUSES, ENDED_STATUSES, Commission, Ledger, LedgerEvent
 from nekoclaw.host.paths import DEFAULT_PROJECT, TRANSCRIPT_NAME, safe_segment
-from nekoclaw.host.space import ENTRY_TYPES, Project, SpaceError, TaskAgentSpace, normalize_name
+from nekoclaw.host.space import (
+    ENTRY_TYPES,
+    PROJECT_ARCHIVED,
+    Project,
+    SpaceError,
+    TaskAgentSpace,
+    normalize_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +75,8 @@ _CLEANABLE = frozenset({"done", "failed", "cancelled"})
 _REMOVED, _NOTHING, _NOT_REMOVED = "removed", "nothing", "not_removed"
 _EVENT_PAGE = 500
 _CLEAN_BATCH = 200
+# How many of a project's reviews, the newest, its summary is written from.
+_ARCHIVE_REVIEWS = 12
 # Sorts after every commission id (ids are hex digits).
 _AFTER_EVERY_ID = "~"
 _LANGUAGES = {
@@ -456,11 +465,14 @@ class SpaceKeeper:
         ]
 
     async def _target_project(self, commission: Commission, data: dict[str, Any]) -> str:
-        """Return the project a review is kept under, making or restoring the project it names.
+        """Return the project a review is kept under, making the project it names when that is new.
 
         A commission that was filed under a project when it started stays
         there. One of ``_daily`` goes where the review says, if it names a
-        project; a name that cannot be a directory name is ignored.
+        project; a name that cannot be a directory name is ignored. So is
+        the name of an archived project: what a model answered does not
+        bring a project back from the archive, only naming it in a
+        commission does.
         """
         from config.nekoclaw_settings import SPACE_PROJECT_NAME_MAX_TOKENS
 
@@ -479,8 +491,11 @@ class SpaceKeeper:
         except ValueError:
             return current
         wanted = normalize_name(name)
+        # The active ones come first: an active project of the name wins.
         for known in await self._space.list_projects():
             if normalize_name(known.name) == wanted:
+                if known.status == PROJECT_ARCHIVED:
+                    return current
                 name = known.name
                 break
         project = await self._space.open_project(
@@ -603,11 +618,10 @@ class SpaceKeeper:
         from utils.tokenize import count_tokens, truncate_to_tokens
 
         nothing = texts.TASK_AGENT_REVIEW_NOTHING
-        reviews = []
-        for item in (await self._space.list_reviews(project.name))[:12]:
-            review = await self._space.read_review(item.commission_id)
-            if review is not None:
-                reviews.append(f"- {review.title} ({review.status}): {_cut(review.content, 150)}")
+        reviews = [
+            f"- {review.title} ({review.status}): {_cut(review.content, 150)}"
+            for review in await self._space.list_reviews(project.name, with_content=True, limit=_ARCHIVE_REVIEWS)
+        ]
         system = texts.SPACE_ARCHIVE_SYSTEM_PROMPT.format(
             language="the language its index and reviews are written in",
             max_entries=min(2, TASK_AGENT_REVIEW_MAX_ENTRIES),
@@ -669,19 +683,51 @@ class SpaceKeeper:
             return {item.project for item in await self._ledger.select(statuses=ACTIVE_STATUSES)}
 
         in_use = await busy()
-        archived = 0
+        # A round asks for so many summaries and moves so many projects. The
+        # two are counted apart: a project that is asked about and then
+        # cannot be moved has used a summary, not a move, and one that is no
+        # longer asked about uses neither, so it does not keep the ones
+        # after it from their turn.
+        asked = moved = 0
         for project in idle:
-            if project.name in in_use or archived >= SPACE_ARCHIVES_PER_UPKEEP:
+            if moved >= SPACE_ARCHIVES_PER_UPKEEP:
+                break
+            if project.name in in_use:
                 continue
-            archived += 1
+            ask = self._llm is not None and project.archive_attempts < SPACE_ARCHIVE_MAX_ATTEMPTS
+            if ask and asked >= SPACE_ARCHIVES_PER_UPKEEP:
+                continue
             data = None
-            if self._llm is not None and project.archive_attempts < SPACE_ARCHIVE_MAX_ATTEMPTS:
+            if ask:
+                asked += 1
                 data = await self._summarize(project)
                 if data is None and await self._space.note_archive_attempt(project.name) < SPACE_ARCHIVE_MAX_ATTEMPTS:
                     # Left where it is; a later round asks again.
                     continue
             summary = truncate_to_tokens(str((data or {}).get("summary") or "").strip(), 400)
             line = _cut((data or {}).get("line"), SPACE_PROJECT_DESCRIPTION_MAX_TOKENS)
+            # The summary took a while. A commission taken up again meanwhile
+            # shows in the ledger; one filed under the project meanwhile
+            # shows in the project's own record, which the space looks at
+            # under the same lock it moves the directory under.
+            if project.name in await busy():
+                continue
+            try:
+                archived = await self._space.archive_project(
+                    project.name, summary=summary, description=line, unless_touched_since=project.last_commission_at
+                )
+            except (SpaceError, OSError) as exc:
+                # This project's trouble is not the next one's.
+                logger.warning("archiving a project of the task agent space failed (%s)", type(exc).__name__)
+                continue
+            if archived is None:
+                # In use after all, or it could not be moved; the space
+                # counted the summary that came to nothing.
+                continue
+            moved += 1
+            logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary))
+            # Only now, with the project archived: a round that could not
+            # move it would otherwise file the same entries again each time.
             entries = (data or {}).get("entries")
             for item in (entries if isinstance(entries, list) else [])[:2]:
                 if not isinstance(item, dict):
@@ -697,17 +743,6 @@ class SpaceKeeper:
                     )
                 except (SpaceError, OSError) as exc:
                     logger.warning("an entry of a project's summary could not be kept (%s)", type(exc).__name__)
-            # The summary took a while. A commission taken up again meanwhile
-            # shows in the ledger; one filed under the project meanwhile
-            # shows in the project's own record, which the space looks at
-            # under the same lock it moves the directory under.
-            if project.name in await busy():
-                continue
-            moved = await self._space.archive_project(
-                project.name, summary=summary, description=line, unless_touched_since=project.last_commission_at
-            )
-            if moved is not None:
-                logger.info("archived an idle project of the task agent space (summary: %s)", bool(summary))
 
     def _ended_long_ago(
         self, conn: sqlite3.Connection, after: float, after_id: str, until: float

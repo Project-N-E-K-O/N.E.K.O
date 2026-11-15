@@ -603,3 +603,26 @@ async def test_shutting_down_does_not_wait_for_a_review(hosts, tmp_path):
 
     assert host.space_keeper._tasks == set()
     assert not (_space_root(tmp_path) / "projects").exists()
+
+
+async def test_a_shell_command_that_names_the_space_or_runs_inside_it_is_refused_whatever_is_allowed(hosts, tmp_path):
+    root = _space_root(tmp_path)
+    host = _host(hosts, tmp_path, ScriptedLLM([_report()]))
+    await host.space.file_entry(None, title="Use uv", content="Run Python through uv.")
+    # The user allowed every command; that is no way to write the space past the host.
+    await host.permission_store.set_mode("run_command", "allow")
+
+    async def decide(command: str, cwd: Path) -> dict[str, Any]:
+        payload = {"tool": "bash", "category": "run_command", "command": command, "cwd": str(cwd)}
+        return await host.task_agents._cb_permission("no-such-session", payload)
+
+    named = await decide(f"printf 'x' >> '{root.as_posix()}/MEMORY.md'", tmp_path)
+    relative = await decide("echo x > nekoclaw/task_agent_space/AGENTS.md", tmp_path)
+    inside = await decide("echo x > AGENTS.md", root / "memory")
+
+    for refused in (named, relative, inside):
+        assert refused["allow"] is False
+        assert refused["reason"].startswith("a command that names the task agent space, or runs inside it, is not run")
+        assert "note_lesson" in refused["reason"]
+    # Any other command goes the way the settings say.
+    assert (await decide("ls", tmp_path))["allow"] is True

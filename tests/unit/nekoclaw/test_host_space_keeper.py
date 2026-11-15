@@ -244,7 +244,7 @@ async def test_a_review_can_start_a_project(world, tmp_path):
     assert project.last_commission_at == commission.ended_at
     assert (world.root / "projects" / "Budget app" / "reviews" / f"{commission.id}.md").is_file()
     assert (world.root / "projects" / "Budget app" / "memory" / "stack.md").is_file()
-    assert "[project: Budget app](projects/Budget app/MEMORY.md)" in await world.space.read_index()
+    assert "[project: Budget app](<projects/Budget app/MEMORY.md>)" in await world.space.read_index()
     assert not (world.root / "projects" / DEFAULT_PROJECT).exists()
     # Where the session is kept follows from the ledger's project, which stays.
     assert (await world.ledger.get(commission.id)).project is None
@@ -261,15 +261,39 @@ async def test_a_review_that_names_a_known_project_uses_that_project(world):
     assert (await world.space.get_project("Budget app")).commissions == 2
 
 
-async def test_a_review_that_names_an_archived_project_brings_it_back(world):
+async def test_a_review_that_names_an_archived_project_does_not_bring_it_back(world):
+    await world.space.touch_project("Budget app", description="tracks spending")
+    archived = await world.space.archive_project("Budget app", summary="s")
+    world.llm.answers[TIER_REVIEW] = [
+        {
+            "review": "It went on with it.",
+            "project": "budget APP",
+            "entries": [{"title": "Export", "type": "lesson", "content": "CSV with a BOM."}],
+        }
+    ]
+
+    commission = await world.finished("go on with that thing")
+
+    # What a model answered is not what brings a project back; naming it in a commission is.
+    projects = [(item.name, item.status, item.commissions) for item in await world.space.list_projects()]
+    assert ("Budget app", "archived", 1) in projects
+    assert [name for name, status, _count in projects if status == "active"] in ([], [DEFAULT_PROJECT])
+    assert not (world.root / "projects" / "Budget app").exists()
+    assert (world.root / "archive" / archived.archive_year / "Budget app").is_dir()
+    assert (await world.space.read_review(commission.id)).project == DEFAULT_PROJECT
+    assert (await world.reviews(commission.id))[-1]["status"] == "written"
+
+
+async def test_a_review_that_names_a_project_goes_to_the_active_one_of_two_of_that_name(world):
     await world.space.touch_project("Budget app")
     await world.space.archive_project("Budget app", summary="s")
-    world.llm.answers[TIER_REVIEW] = [{"review": "It went on with it.", "project": "Budget app"}]
+    await world.space.touch_project("Budget app")
+    world.llm.answers[TIER_REVIEW] = [{"review": "It went on with it.", "project": "budget app"}]
 
-    commission = await world.finished("go on with that app")
+    commission = await world.finished("go on with that thing")
 
-    assert [(item.name, item.status) for item in await world.space.list_projects()] == [("Budget app", "active")]
     assert (await world.space.read_review(commission.id)).project == "Budget app"
+    assert (await world.space.get_project("Budget app")).commissions == 2
 
 
 async def test_a_commission_filed_under_a_project_stays_there(world):
@@ -811,7 +835,7 @@ async def test_an_idle_project_is_archived_with_a_summary(world):
     assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "An app that tracks spending. It has an export.\n"
     assert (home / "reviews" / f"{review.id}.md").is_file() and (home / "memory" / "stack.md").is_file()
     index = await world.space.read_index()
-    assert f"[archived project: Budget app](archive/{archived.archive_year}/Budget app/SUMMARY.md) — spending tracker with CSV export, paused" in index
+    assert f"[archived project: Budget app](<archive/{archived.archive_year}/Budget app/SUMMARY.md>) — spending tracker with CSV export, paused" in index
     assert "[project: Budget app]" not in index
     # What holds beyond the project went to the space of every project.
     assert [entry.id for entry in await world.space.list_entries()] == ["csv-on-windows"]
@@ -1410,3 +1434,207 @@ async def test_closing_stops_what_is_under_way(world):
     await world.work(other.id)
     await world.ledger.transition(other.id, "done", reason="test")
     assert world.keeper._tasks == set()
+
+
+# ---------------------------------------------------------------------------
+# The ninth review round
+# ---------------------------------------------------------------------------
+
+
+async def test_a_project_that_cannot_be_moved_is_asked_about_a_few_times_and_does_not_hold_up_the_others(world, monkeypatch):
+    import nekoclaw.host.space as module
+    from config.nekoclaw_settings import (
+        SPACE_ARCHIVE_MAX_ATTEMPTS,
+        SPACE_ARCHIVES_PER_UPKEEP,
+        SPACE_PROJECT_IDLE_SECONDS,
+    )
+
+    stuck = [f"Alpha {number}" for number in range(SPACE_ARCHIVES_PER_UPKEEP)]
+    for name in (*stuck, "Gamma"):
+        await world.space.touch_project(name)
+    world.llm.answers[TIER_ARCHIVE] = [
+        {
+            "summary": "A project.",
+            "line": "a project",
+            "entries": [{"title": "CSV on Windows", "type": "lesson", "content": "Write a BOM."}],
+        }
+    ]
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    move = module._move
+
+    def held_open(source, target):
+        # On Windows: a file in it is open in another program.
+        if source.name in stuck:
+            raise PermissionError(13, "a file in it is held open")
+        return move(source, target)
+
+    monkeypatch.setattr(module, "_move", held_open)
+
+    async def active() -> list[str]:
+        return [item.name for item in await world.space.list_projects() if item.status == "active"]
+
+    # While they are still asked about, the stuck ones use up the round's summaries.
+    for attempt in range(1, SPACE_ARCHIVE_MAX_ATTEMPTS + 1):
+        await world.keeper.tidy(force=True)
+        assert world.llm.count(TIER_ARCHIVE) == attempt * SPACE_ARCHIVES_PER_UPKEEP
+        assert await active() == [*stuck, "Gamma"]
+        assert [(await world.space.get_project(name)).archive_attempts for name in stuck] == [attempt] * len(stuck)
+        # What a summary says holds everywhere is kept once its project is archived, not before.
+        assert await world.space.list_entries() == []
+
+    # Then they are not asked about any more, and the next one has its turn.
+    await world.keeper.tidy(force=True)
+
+    asked = SPACE_ARCHIVE_MAX_ATTEMPTS * SPACE_ARCHIVES_PER_UPKEEP + 1
+    assert world.llm.count(TIER_ARCHIVE) == asked
+    assert await active() == stuck
+    assert "Project: Gamma" in world.llm.last(TIER_ARCHIVE)[1]["content"]
+    assert [entry.id for entry in await world.space.list_entries()] == ["csv-on-windows"]
+
+    # And no round after that asks a model about them again.
+    await world.keeper.tidy(force=True)
+    assert world.llm.count(TIER_ARCHIVE) == asked
+
+    # Once the file is let go, they are archived, with the summary written the last time.
+    monkeypatch.setattr(module, "_move", move)
+    await world.keeper.tidy(force=True)
+
+    assert world.llm.count(TIER_ARCHIVE) == asked
+    assert await active() == []
+    (first, *_rest) = [item for item in await world.space.list_projects() if item.name == stuck[0]]
+    home = world.root / "archive" / first.archive_year / stuck[0]
+    assert (home / "SUMMARY.md").read_text(encoding="utf-8") == "A project.\n"
+
+
+async def test_a_summary_that_cannot_be_saved_does_not_end_the_round(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    await world.space.touch_project("Alpha")
+    await world.space.touch_project("Beta")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    put = TaskAgentSpace._put_text
+
+    def no_summary_for_alpha(path, text):
+        if path.name == "SUMMARY.md" and path.parent.name == "Alpha":
+            raise PermissionError(13, "in use")
+        return put(path, text)
+
+    monkeypatch.setattr(TaskAgentSpace, "_put_text", staticmethod(no_summary_for_alpha))
+
+    await world.keeper.tidy(force=True)
+
+    assert [(item.name, item.status) for item in await world.space.list_projects()] == [
+        ("Alpha", "active"),
+        ("Beta", "archived"),
+    ]
+    assert (await world.space.get_project("Alpha")).archive_attempts == 1
+
+
+async def test_archiving_that_fails_outright_does_not_end_the_round(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+
+    await world.space.touch_project("Alpha")
+    await world.space.touch_project("Beta")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    archive = TaskAgentSpace._archive
+
+    def broken_for_alpha(self, name, *args, **kwargs):
+        if name == "Alpha":
+            raise OSError(5, "the disk said no")
+        return archive(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(TaskAgentSpace, "_archive", broken_for_alpha)
+
+    await world.keeper.tidy(force=True)
+
+    assert [(item.name, item.status) for item in await world.space.list_projects()] == [
+        ("Alpha", "active"),
+        ("Beta", "archived"),
+    ]
+
+
+async def test_without_a_model_projects_that_cannot_be_moved_do_not_use_up_the_round(tmp_path, monkeypatch):
+    import nekoclaw.host.space as module
+    from config.nekoclaw_settings import SPACE_ARCHIVES_PER_UPKEEP, SPACE_PROJECT_IDLE_SECONDS
+
+    world = World(tmp_path, None)
+    try:
+        stuck = [f"Alpha {number}" for number in range(SPACE_ARCHIVES_PER_UPKEEP)]
+        for name in (*stuck, "Gamma"):
+            await world.space.touch_project(name)
+        world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+        move = module._move
+
+        def held_open(source, target):
+            if source.name in stuck:
+                raise PermissionError(13, "a file in it is held open")
+            return move(source, target)
+
+        monkeypatch.setattr(module, "_move", held_open)
+
+        await world.keeper.tidy(force=True)
+
+        assert [item.name for item in await world.space.list_projects() if item.status == "archived"] == ["Gamma"]
+        # Nothing was asked of a model, so there is nothing to count.
+        assert [(await world.space.get_project(name)).archive_attempts for name in stuck] == [0] * len(stuck)
+    finally:
+        await world.keeper.aclose()
+        await world.ledger.close()
+
+
+async def test_a_summary_is_written_from_the_newest_reviews_read_in_one_pass(world, monkeypatch):
+    from config.nekoclaw_settings import SPACE_PROJECT_IDLE_SECONDS
+    from nekoclaw.host.space_keeper import _ARCHIVE_REVIEWS
+
+    await world.space.touch_project("Budget app")
+    for number in range(_ARCHIVE_REVIEWS + 3):
+        commission = await world.file(f"task number {number:02d}")
+        world.clock.now += 60
+        await world.space.write_review("Budget app", replace_ended(commission, world.clock.now), f"what was done in {number:02d}")
+    for number in range(5):
+        await world.space.touch_project(f"Other {number}")
+    world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+    for number in range(5):
+        await world.space.touch_project(f"Other {number}")
+    listed: list[int] = []
+    directories = TaskAgentSpace._review_directories
+
+    def counted(self):
+        listed.append(1)
+        return directories(self)
+
+    monkeypatch.setattr(TaskAgentSpace, "_review_directories", counted)
+
+    await world.keeper.tidy(force=True)
+
+    user = world.llm.last(TIER_ARCHIVE)[1]["content"]
+    for number in range(3):
+        assert f"task number {number:02d}" not in user
+    for number in range(3, _ARCHIVE_REVIEWS + 3):
+        assert f"- task number {number:02d} (" in user and f"what was done in {number:02d}" in user
+    # The projects were gone through once for it, not once per review.
+    assert len(listed) == 1
+
+
+def replace_ended(commission: Any, ended_at: float) -> Any:
+    from dataclasses import replace
+
+    return replace(commission, ended_at=ended_at)
+
+
+async def test_without_a_model_too_at_most_a_few_projects_are_archived_per_round(tmp_path):
+    from config.nekoclaw_settings import SPACE_ARCHIVES_PER_UPKEEP, SPACE_PROJECT_IDLE_SECONDS
+
+    world = World(tmp_path, None)
+    try:
+        for number in range(SPACE_ARCHIVES_PER_UPKEEP + 2):
+            await world.space.touch_project(f"Project {number}")
+        world.clock.now += SPACE_PROJECT_IDLE_SECONDS + 60
+
+        await world.keeper.tidy(force=True)
+
+        statuses = [item.status for item in await world.space.list_projects()]
+        assert statuses.count("archived") == SPACE_ARCHIVES_PER_UPKEEP
+    finally:
+        await world.keeper.aclose()
+        await world.ledger.close()

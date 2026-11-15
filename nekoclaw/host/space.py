@@ -74,9 +74,12 @@ _PROJECT_FILE_VERSION = 1
 _STATE_FILE_VERSION = 1
 _SLUG_MAX_CHARS = 60
 _WRITE_ATTEMPTS = 3
-# The name a directory has while it is copied to another volume; not a
-# project's name (a name cannot begin with a dot).
+# The names a directory has while it is copied to another volume, and while
+# what it was copied from is removed. Neither is a project's name (a name
+# cannot begin with a dot), and a directory whose name begins with a dot is
+# not taken for a project.
 _UNFINISHED_PREFIX = ".unfinished-"
+_REMOVING_PREFIX = ".removing-"
 _WRITE_RETRY_SECONDS = 0.05
 # Characters that cannot be in a file name, white space, and what Markdown
 # would read as part of a link.
@@ -297,13 +300,23 @@ def _entry_type(value: Any) -> str:
     return kind if kind in ENTRY_TYPES else _DEFAULT_TYPE
 
 
-def _index_target(scope: str) -> str:
-    return f"]({scope})"
+def _link(target: str) -> str:
+    """Write the target of a link so that it is one: in angle brackets when it has a space or a bracket in it.
+
+    A project's name is part of the path its line points at, and may have
+    both (``My App (v2)``).
+    """
+    return f"<{target}>" if any(char in target for char in " ()") else target
+
+
+def _index_marks(target: str) -> tuple[str, str]:
+    """What a line of an index that points at ``target`` has in it, whichever way the target is written."""
+    return f"]({target})", f"](<{target}>)"
 
 
 def _index_line(title: str, target: str, description: str) -> str:
     title = _one_line(title).replace("[", "(").replace("]", ")")
-    line = f"- [{title}]({target})"
+    line = f"- [{title}]({_link(target)})"
     description = _one_line(description)
     return f"{line} — {description}" if description else line
 
@@ -438,11 +451,11 @@ class TaskAgentSpace:
 
     def _index_add(self, index: Path, line: str, target: str) -> None:
         """Add a line to an index unless one already points at ``target``. New lines go first."""
-        mark = _index_target(target)
+        marks = _index_marks(target)
 
         def change(text: str) -> str:
             lines = text.split("\n") if text else []
-            if any(mark in item for item in lines):
+            if any(mark in item for item in lines for mark in marks):
                 return text
             position = next((number for number, item in enumerate(lines) if item.startswith("- ")), None)
             if position is None:
@@ -459,12 +472,12 @@ class TaskAgentSpace:
 
     def _index_set(self, index: Path, line: str, target: str) -> None:
         """Put a line into an index in place of the one that points at ``target``, or first."""
-        mark = _index_target(target)
+        marks = _index_marks(target)
 
         def change(text: str) -> str:
             lines = text.split("\n") if text else []
             for number, item in enumerate(lines):
-                if mark in item:
+                if any(mark in item for mark in marks):
                     lines[number] = line
                     return "\n".join(lines)
             return text
@@ -473,12 +486,12 @@ class TaskAgentSpace:
             self._index_add(index, line, target)
 
     def _index_remove(self, index: Path, target: str) -> None:
-        mark = _index_target(target)
+        marks = _index_marks(target)
 
         def change(text: str) -> str:
             if not text:
                 return text
-            return "\n".join(item for item in text.split("\n") if mark not in item)
+            return "\n".join(item for item in text.split("\n") if not any(mark in item for mark in marks))
 
         if index.exists():
             self._edit_text(index, change)
@@ -712,6 +725,7 @@ class TaskAgentSpace:
         entry_id: str,
         project: str | None = None,
         *,
+        archive_year: str | None = None,
         title: str | None = None,
         description: str | None = None,
         kind: str | None = None,
@@ -721,11 +735,13 @@ class TaskAgentSpace:
 
         Returns the entry, or None when there is none of that id. Its line
         in the index is rewritten when the title or the description changed.
+        An entry of an archived project is named as for ``list_entries``
+        and changed where it is: the project stays archived.
         """
 
         def work() -> Entry | None:
-            paths = self._paths()
-            path = paths.memory_dir(project) / f"{safe_segment(entry_id)}.md"
+            scope = self._scope(project, archive_year)
+            path = scope / SpacePaths.MEMORY_DIR / f"{safe_segment(entry_id)}.md"
             text = self._read_text(path)
             if text is None:
                 return None
@@ -744,24 +760,31 @@ class TaskAgentSpace:
             self._put_text(path, _render_document(document))
             entry = self._entry_from(path, project, with_content=True)
             if entry is not None and (title is not None or description is not None):
-                target = f"{paths.MEMORY_DIR}/{entry.id}.md"
-                self._index_set(paths.index(project), _index_line(entry.title, target, entry.description), target)
+                target = f"{SpacePaths.MEMORY_DIR}/{entry.id}.md"
+                self._index_set(
+                    scope / SpacePaths.INDEX_NAME, _index_line(entry.title, target, entry.description), target
+                )
             return entry
 
         return await self._write(work)
 
-    async def delete_entry(self, entry_id: str, project: str | None = None) -> bool:
-        """Remove an entry and its line in the index, as the user asks. Returns whether there was one."""
+    async def delete_entry(
+        self, entry_id: str, project: str | None = None, *, archive_year: str | None = None
+    ) -> bool:
+        """Remove an entry and its line in the index, as the user asks. Returns whether there was one.
+
+        An entry of an archived project is named as for ``list_entries``.
+        """
 
         def work() -> bool:
-            paths = self._paths()
+            scope = self._scope(project, archive_year)
             name = safe_segment(entry_id)
-            path = paths.memory_dir(project) / f"{name}.md"
+            path = scope / SpacePaths.MEMORY_DIR / f"{name}.md"
             try:
                 path.unlink()
             except FileNotFoundError:
                 return False
-            self._index_remove(paths.index(project), f"{paths.MEMORY_DIR}/{name}.md")
+            self._index_remove(scope / SpacePaths.INDEX_NAME, f"{SpacePaths.MEMORY_DIR}/{name}.md")
             return True
 
         return await self._write(work)
@@ -781,11 +804,33 @@ class TaskAgentSpace:
     # -- projects ---------------------------------------------------------
 
     def _project_from(self, directory: Path, *, archive_year: str | None = None) -> Project:
-        """Read a project's file; a directory without a readable one is a project of its name."""
+        """Read a project's file, to show the project; a directory without a readable one is a project of its name.
+
+        Not for a record that is to be written back: see ``_project_to_change``.
+        """
+        data, _readable = self._project_data(directory)
+        return self._project_of(data, directory, archive_year)
+
+    def _project_to_change(self, directory: Path) -> tuple[Project, bool]:
+        """Read a project's file once, to change it and write it back. Returns it and whether there is a file.
+
+        Raises OSError when the file is there and cannot be read. What a
+        failed read gives are defaults; written back, they would replace
+        the project's working directory and description with nothing. And
+        reading again before the write proves nothing: a file that could
+        not be read a moment ago and can be now would be written over with
+        the defaults of the first read.
+        """
+        data, readable = self._project_data(directory)
+        if not readable:
+            raise OSError(f"the file of project {directory.name} cannot be read; it is left as it is")
+        return self._project_of(data, directory, None), data is not None
+
+    @staticmethod
+    def _project_of(data: dict[str, Any] | None, directory: Path, archive_year: str | None) -> Project:
         base = Project(name=directory.name, archive_year=archive_year, directory=directory.name)
         if archive_year is not None:
             base = replace(base, status=PROJECT_ARCHIVED)
-        data, _readable = self._project_data(directory)
         if data is None:
             return base
 
@@ -815,7 +860,7 @@ class TaskAgentSpace:
         ``(None, True)`` when there is no file. ``(None, False)`` when there
         is one and it cannot be read or is not what this writes: the
         project then shows by its directory's name alone, and its file is
-        not written over (``_put_project``).
+        not written over (``_project_to_change``).
         """
         try:
             data = json.loads((directory / SpacePaths.PROJECT_FILE).read_text(encoding="utf-8"))
@@ -825,27 +870,15 @@ class TaskAgentSpace:
             return None, False
         return (data, True) if isinstance(data, dict) else (None, False)
 
-    def _put_project(self, directory: Path, project: Project, *, must: bool = False) -> bool:
-        """Write a project's file. Returns whether it was written.
-
-        A file that is there and cannot be read is left as it is: what was
-        read from it were defaults, and written back they would replace the
-        project's working directory and description with nothing. With
-        ``must`` that raises OSError instead of returning False.
-        """
+    def _put_project(self, directory: Path, project: Project) -> None:
+        """Write a project's file. The project was read with ``_project_to_change``, or is new."""
         from utils.file_utils import atomic_write_json
 
-        if not self._project_data(directory)[1]:
-            if must:
-                raise OSError(f"the file of project {directory.name} cannot be read; it is left as it is")
-            logger.warning("the file of a project cannot be read; it is left as it is")
-            return False
         data = project.to_json()
         data.pop("archive_year", None)
         data.pop("directory", None)
         directory.mkdir(parents=True, exist_ok=True)
         atomic_write_json(directory / SpacePaths.PROJECT_FILE, {"version": _PROJECT_FILE_VERSION, **data}, ensure_ascii=False, indent=2)
-        return True
 
     def _active_projects(self) -> list[Project]:
         try:
@@ -936,8 +969,11 @@ class TaskAgentSpace:
         paths = self._paths()
         now = self._clock() if at is None else at
         directory = paths.project_dir(name)
-        known = directory.is_dir() and (directory / paths.PROJECT_FILE).is_file()
-        project = self._project_from(directory) if known else Project(name=name, created_at=now)
+        # Read once, and not at all filed under when its record cannot be
+        # read: a commission must not start without where its files are.
+        project, known = self._project_to_change(directory)
+        if not known:
+            project = Project(name=name, created_at=now)
         project = replace(
             project,
             name=name,
@@ -951,9 +987,7 @@ class TaskAgentSpace:
             archive_year=None,
             archive_attempts=0,
         )
-        # A commission is about to be filed under it: without its record
-        # (where its files are) that must not go ahead.
-        self._put_project(directory, project, must=True)
+        self._put_project(directory, project)
         if not known and name != DEFAULT_PROJECT:
             line, target = self._project_line(project)
             self._index_add(paths.index(None), line, target)
@@ -1006,10 +1040,24 @@ class TaskAgentSpace:
             return self._project_from(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         _move(source, target)
-        restored = replace(
-            project, status=PROJECT_ACTIVE, archived_at=None, archive_year=None, archive_attempts=0, directory=target.name
-        )
-        self._put_project(target, restored)
+        try:
+            # As its file has it now, not as it was listed a while ago.
+            current, _known = self._project_to_change(target)
+        except OSError:
+            # Its record cannot be read: it is back, and its file as it was.
+            logger.warning("the file of a project brought back cannot be read; it is left as it is")
+            restored = replace(project, status=PROJECT_ACTIVE, archived_at=None, archive_year=None, directory=target.name)
+        else:
+            restored = replace(
+                current,
+                name=current.name if _known else project.name,
+                status=PROJECT_ACTIVE,
+                archived_at=None,
+                archive_year=None,
+                archive_attempts=0,
+                directory=target.name,
+            )
+            self._put_project(target, restored)
         self._index_remove(paths.index(None), f"archive/{project.archive_year}/{source.name}/{paths.SUMMARY_NAME}")
         line, link = self._project_line(restored)
         self._index_add(paths.index(None), line, link)
@@ -1032,11 +1080,13 @@ class TaskAgentSpace:
         def work() -> None:
             self._revive(name)
             directory = self._paths().project_dir(name)
-            if not (directory / SpacePaths.PROJECT_FILE).is_file():
+            try:
+                project, known = self._project_to_change(directory)
+            except OSError:
+                logger.warning("the file of a project in use cannot be read; it is left as it is")
                 return
-            project = self._project_from(directory)
             now = self._clock()
-            if now > project.last_commission_at:
+            if known and now > project.last_commission_at:
                 self._put_project(directory, replace(project, last_commission_at=now))
 
         await self._write(work)
@@ -1092,29 +1142,45 @@ class TaskAgentSpace:
         With ``unless_touched_since``, a project a commission was filed under
         after that time stays where it is. Filing and this run under the same
         lock, so the look and the move are one step.
+
+        A project that cannot be moved (on Windows, while a file in it is
+        held open) stays where it is. When a summary came with it, that is
+        counted in ``archive_attempts``: the summary was asked of a model,
+        and a project that can never be moved must not be asked about in
+        every round.
         """
         paths = self._paths()
         source = paths.project_dir(name)
         if not source.is_dir():
             return None
-        project = self._project_from(source)
-        if unless_touched_since is not None and project.last_commission_at > unless_touched_since:
+        try:
+            project, _known = self._project_to_change(source)
+            readable = True
+        except OSError:
+            # Moved all the same when the caller says so; its file goes along as it is.
+            project, readable = self._project_from(source), False
+        if unless_touched_since is not None and (not readable or project.last_commission_at > unless_touched_since):
             return None
         now = self._clock()
         year = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y")
-        if summary.strip():
-            self._put_text(source / paths.SUMMARY_NAME, redact(summary).strip() + "\n")
         root = paths.archive_dir() / year
-        root.mkdir(parents=True, exist_ok=True)
-        target = root / source.name
-        number = 2
-        while target.exists():
-            target = root / f"{source.name}-{number}"
-            number += 1
         try:
+            if summary.strip():
+                self._put_text(source / paths.SUMMARY_NAME, redact(summary).strip() + "\n")
+            root.mkdir(parents=True, exist_ok=True)
+            target = root / source.name
+            number = 2
+            while target.exists():
+                target = root / f"{source.name}-{number}"
+                number += 1
             _move(source, target)
         except OSError as exc:
             logger.warning("a project could not be moved to the archive (%s); it stays where it is", type(exc).__name__)
+            if summary.strip() and readable:
+                try:
+                    self._put_project(source, replace(project, archive_attempts=project.archive_attempts + 1))
+                except OSError:
+                    logger.warning("an attempt to archive a project could not be counted", exc_info=True)
             return None
         archived = replace(
             project,
@@ -1124,7 +1190,8 @@ class TaskAgentSpace:
             archive_year=year,
             directory=target.name,
         )
-        self._put_project(target, archived)
+        if readable:
+            self._put_project(target, archived)
         _line, link = self._project_line(project)
         self._index_remove(paths.index(None), link)
         archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME}"
@@ -1155,7 +1222,10 @@ class TaskAgentSpace:
             directory = self._paths().project_dir(name)
             if not directory.is_dir():
                 return 0
-            project = self._project_from(directory)
+            try:
+                project, _known = self._project_to_change(directory)
+            except OSError:
+                return 0
             project = replace(project, archive_attempts=project.archive_attempts + 1)
             self._put_project(directory, project)
             return project.archive_attempts
@@ -1223,11 +1293,17 @@ class TaskAgentSpace:
         ]
         return directories
 
-    async def list_reviews(self, project: str | None = None) -> list[Review]:
-        """Return the reviews of a project, or of every project, newest first, without their text."""
+    async def list_reviews(
+        self, project: str | None = None, *, with_content: bool = False, limit: int | None = None
+    ) -> list[Review]:
+        """Return the reviews of a project, or of every project, newest first; the first ``limit`` when given.
+
+        Without their text unless ``with_content``: the text is read of the
+        ones returned only.
+        """
 
         def work() -> list[Review]:
-            reviews: list[Review] = []
+            found: list[tuple[Review, Path]] = []
             for directory, name, year in self._review_directories():
                 if project is not None and name != project:
                     continue
@@ -1238,8 +1314,17 @@ class TaskAgentSpace:
                 for item in files:
                     review = self._review_from(item, name, year, with_content=False)
                     if review is not None:
-                        reviews.append(review)
-            return sorted(reviews, key=lambda review: review.ended, reverse=True)
+                        found.append((review, item))
+            found.sort(key=lambda pair: pair[0].ended, reverse=True)
+            if limit is not None:
+                found = found[: max(limit, 0)]
+            if not with_content:
+                return [review for review, _path in found]
+            whole = (
+                self._review_from(path, review.project, review.archive_year, with_content=True)
+                for review, path in found
+            )
+            return [review for review in whole if review is not None]
 
         return await self._read(work)
 
@@ -1363,6 +1448,26 @@ class TaskAgentSpace:
         except (OSError, ValueError):
             return False
 
+    async def named_in(self, command: str) -> bool:
+        """Whether a shell command names the space: the end of the space's path occurs in it.
+
+        The last two parts of the path (``nekoclaw/task_agent_space``), with
+        either slash and in any case. So a path written from another
+        starting point is seen too: with the drive spelled another way
+        (``/d/...``), from the home directory, or relative to a working
+        directory above the space. A command that puts the path together
+        itself is not seen.
+        """
+
+        def work() -> bool:
+            root = self._paths().root
+            return _spelled(f"{root.parent.name}/{root.name}") in _spelled(command)
+
+        try:
+            return await self._read(work)
+        except (OSError, ValueError):
+            return False
+
     # -- upkeep state ------------------------------------------------------
 
     async def read_state(self) -> dict[str, Any]:
@@ -1400,31 +1505,66 @@ class TaskAgentSpace:
         return await self._read(lambda: self._paths().root.is_dir())
 
 
+def _spelled(text: str) -> str:
+    """Return a path or a command with one kind of slash and in one case, to look for the one in the other."""
+    return re.sub(r"[\\/]+", "/", text).casefold()
+
+
 def _is_project(directory: Path) -> bool:
-    """Whether a directory among the projects is one: not a copy still being made (``_copy_across``)."""
-    return directory.is_dir() and not directory.name.startswith(_UNFINISHED_PREFIX)
+    """Whether a directory among the projects is one.
+
+    Not one whose name begins with a dot: a copy still being made, or what
+    is left of a directory that was copied elsewhere (``_copy_across``).
+    """
+    return directory.is_dir() and not directory.name.startswith(".")
+
+
+def _set_aside_name(source: Path) -> Path:
+    """Return a name next to ``source`` that nothing has, for it to be removed under."""
+    aside = source.with_name(f"{_REMOVING_PREFIX}{source.name}")
+    shutil.rmtree(aside, ignore_errors=True)
+    number = 2
+    while aside.exists():
+        aside = source.with_name(f"{_REMOVING_PREFIX}{source.name}-{number}")
+        number += 1
+    return aside
 
 
 def _copy_across(source: Path, target: Path) -> None:
-    """Move a directory to another volume: copied whole under another name, then given its name.
+    """Move a directory to another volume, so that it is whole in one place at every moment.
 
-    A copy that stops half way (the volume is full) is removed again and
-    the source stays as it is; ``target`` is never there unless it is
-    complete. The source is removed last: if that fails, the project is at
-    the target, whole, and what is left of the source is left where it is.
+    1. Copied whole under another name on the target's volume. A copy that
+       stops half way (the volume is full) is removed again.
+    2. The source is renamed out of sight where it is. That is one step on
+       its own volume: it happens whole or not at all. If it cannot be done
+       (a file in it is held open), the copy is removed and the source stays.
+    3. The copy is given the target's name.
+    4. What was set aside is removed. Removing can stop half way; what is
+       left then has a name that is no project's.
+
+    So ``target`` is never there unless complete, and the source is never
+    there in part: removing it under its own name could leave half of an
+    active project behind, which would be taken for the project itself.
     """
     unfinished = target.with_name(f"{_UNFINISHED_PREFIX}{target.name}")
     shutil.rmtree(unfinished, ignore_errors=True)
+    aside = _set_aside_name(source)
     try:
         shutil.copytree(source, unfinished)
-        os.replace(unfinished, target)
+        os.replace(source, aside)
     except BaseException:
         shutil.rmtree(unfinished, ignore_errors=True)
         raise
     try:
-        shutil.rmtree(source)
-    except OSError:
-        logger.warning("a project was copied to another volume, but its old directory could not be removed", exc_info=True)
+        os.replace(unfinished, target)
+    except BaseException:
+        try:
+            os.replace(aside, source)
+        except OSError:
+            logger.warning("a project set aside to be moved could not be put back", exc_info=True)
+        shutil.rmtree(unfinished, ignore_errors=True)
+        raise
+    shutil.rmtree(aside, ignore_errors=True)
 
 
 def _move(source: Path, target: Path) -> None:
