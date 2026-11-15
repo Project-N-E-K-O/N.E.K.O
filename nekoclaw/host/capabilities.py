@@ -464,23 +464,28 @@ class CapabilityRegistry:
             logger.warning("asking whether the browser was closed by the user failed", exc_info=True)
             return False
 
-    def browser_reopen_agreed(self) -> None:
-        """Tell the provider that the user agreed to the browser being opened again."""
+    def browser_reopen_agreed(self) -> Any:
+        """Tell the provider that the user agreed to the browser being opened again.
+
+        Returns what the provider calls this agreement (or None), to be
+        handed back with ``browser_reopen_agreement_over``.
+        """
         agreed = getattr(self._builtins, "browser_reopen_agreed", None)
         if agreed is None:
-            return
+            return None
         try:
-            agreed()
+            return agreed()
         except Exception:  # noqa: BLE001 - the call is then refused by the browser tools, and says so
             logger.warning("telling the provider that the browser may be opened again failed", exc_info=True)
+            return None
 
-    def browser_reopen_agreement_over(self) -> None:
-        """Tell the provider that the call the user agreed for is over."""
+    def browser_reopen_agreement_over(self, agreement: Any = None) -> None:
+        """Tell the provider that the call the user agreed for is over; ``agreement`` is what it called that agreement."""
         over = getattr(self._builtins, "browser_reopen_agreement_over", None)
         if over is None:
             return
         try:
-            over()
+            over(agreement)
         except Exception:  # noqa: BLE001 - the call's own outcome stands
             logger.warning("ending the agreement to open the browser again failed", exc_info=True)
 

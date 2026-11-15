@@ -997,6 +997,27 @@ async def test_a_browser_whose_windows_the_user_closed_is_given_none_by_a_start_
     assert world.browser.since(sent) == [] and world.browser.pages == {}
 
 
+async def test_a_call_that_ends_late_does_not_end_an_agreement_that_was_given_since(
+    tools: BrowserTools, world: BrowserWorld
+) -> None:
+    await on_the_order_form(tools)
+    world.browser.disconnect()
+    first = tools.reopen_agreed()
+    assert (await call(tools, "take_snapshot")).success
+    # The call the user agreed for goes on (it waits for something on the page). They close the
+    # browser again, and agree to another task opening it; that task still waits its turn.
+    world.browser.disconnect()
+    second = tools.reopen_agreed()
+    assert second != first
+
+    tools.reopen_agreement_over(first)
+
+    # The agreement that stands is the other call's to use, or to end.
+    assert tools.closed_by_user() is False
+    tools.reopen_agreement_over(second)
+    assert tools.closed_by_user() is True
+
+
 async def test_an_agreement_that_opened_the_browser_is_used_up_and_nothing_is_left_to_end(
     tools: BrowserTools, world: BrowserWorld
 ) -> None:

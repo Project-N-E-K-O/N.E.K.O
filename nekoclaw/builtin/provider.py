@@ -346,15 +346,20 @@ class BuiltinToolProvider:
         """
         return self._browser is not None and self._browser.closed_by_user()
 
-    def browser_reopen_agreed(self) -> None:
-        """The user agreed to the browser they closed being opened again: the next call starts it."""
-        if self._browser is not None:
-            self._browser.reopen_agreed()
+    def browser_reopen_agreed(self) -> int | None:
+        """The user agreed to the browser they closed being opened again: the next call starts it.
 
-    def browser_reopen_agreement_over(self) -> None:
+        Returns which agreement this is, to be handed back when the call it
+        was given for is over (``browser_reopen_agreement_over``).
+        """
+        if self._browser is None:
+            return None
+        return self._browser.reopen_agreed()
+
+    def browser_reopen_agreement_over(self, agreement: int | None = None) -> None:
         """The call the user agreed for is over: an agreement that opened no browser is not kept for a later one."""
         if self._browser is not None:
-            self._browser.reopen_agreement_over()
+            self._browser.reopen_agreement_over(agreement)
 
     def browser_no_longer_wanted(self) -> None:
         """The user has said the browser is not to be used any more; ``close_browser`` follows. Does not block.

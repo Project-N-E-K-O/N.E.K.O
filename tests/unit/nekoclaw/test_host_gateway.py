@@ -934,15 +934,19 @@ class Builtins:
     def browser_closed_by_user(self) -> bool:
         return self.closed_by_user
 
-    def browser_reopen_agreed(self) -> None:
+    def browser_reopen_agreed(self) -> str:
         self.agreed += 1
         self.closed_by_user = False
+        return f"agreement-{self.agreed}"
 
     # What had been carried out each time a call of a browser tool was said to be over.
     over: list[int] = []
+    # Which agreements were said to be over, in order.
+    ended: list[Any] = []
 
-    def browser_reopen_agreement_over(self) -> None:
+    def browser_reopen_agreement_over(self, agreement: Any = None) -> None:
         self.over = [*self.over, len(self.calls)]
+        self.ended = [*self.ended, agreement]
 
 
 @pytest.fixture
@@ -2054,6 +2058,42 @@ async def test_the_provider_is_told_when_a_call_of_a_browser_tool_is_over_howeve
     builtin_host.provider.closed_by_user = True
     await _call(builtin_host, other_grant, "browser_navigate_page", {"url": "https://example.com"})
     assert builtin_host.provider.over == [1, 3]
+    # Each call ended the agreement that was given for it.
+    assert builtin_host.provider.ended == ["agreement-1", "agreement-2"]
+
+
+async def test_a_call_that_ends_late_ends_its_own_agreement_and_not_the_one_given_since(builtin_host):
+    await builtin_host.permission_store.set_mode("browser", "allow")
+    builtin_host.permissions.set_asker(Asker("once"))
+    first = await _commission(builtin_host)
+    grant = _grant(builtin_host, first, images=True)
+    builtin_host.provider.closed_by_user = True
+    # The call that was agreed to takes its time (it waits for something on the page).
+    builtin_host.provider.hold = asyncio.Event()
+    waiting = asyncio.ensure_future(_call(builtin_host, grant, "browser_navigate_page", {"url": "https://example.com"}))
+    await asyncio.wait_for(builtin_host.provider.started.wait(), 5.0)
+
+    # Meanwhile the user closes the window again, and agrees to another task opening it.
+    other = await _commission(builtin_host, title="book the hotel")
+    other_grant = _grant(builtin_host, other, images=True)
+    builtin_host.provider.closed_by_user = True
+    queued = asyncio.ensure_future(
+        _call(builtin_host, other_grant, "browser_navigate_page", {"url": "https://example.com/hotel"})
+    )
+    for _ in range(400):
+        if builtin_host.provider.agreed == 2:
+            break
+        await asyncio.sleep(0.005)
+    assert builtin_host.provider.agreed == 2 and builtin_host.provider.ended == []
+
+    builtin_host.provider.hold.set()
+    await asyncio.wait_for(waiting, 5.0)
+
+    # What the first call ended is the agreement it was given, by its name.
+    assert builtin_host.provider.ended == ["agreement-1"]
+    builtin_host.leases.release(first.id)
+    await asyncio.wait_for(queued, 5.0)
+    assert builtin_host.provider.ended == ["agreement-1", "agreement-2"]
 
 
 async def test_a_provider_that_fails_when_told_of_the_agreement_does_not_fail_the_call(builtin_host, monkeypatch):

@@ -395,6 +395,9 @@ class BrowserSession:
         # True once the user has agreed to a browser they closed being
         # opened again (``closed_by_user``), until there is a tab again.
         self._reopen_agreed = False
+        # Which agreement that is, counted up: the call it was given for
+        # ends that one and no other (``reopen_agreement_over``).
+        self._reopen_agreement = 0
         # True from when what such a browser left was cleared away
         # (``close``) until the user agrees: with nothing of it held any
         # more, nothing else says that it was the user who closed it.
@@ -941,13 +944,23 @@ class BrowserSession:
             and (connection.closed or (self._tabs_known and not self._tabs))
         )
 
-    def reopen_agreed(self) -> None:
-        """The user agreed to the browser they closed being opened again. Does not block."""
-        self._reopen_agreed = True
-        self._closed_by_user_noted = False
+    def reopen_agreed(self) -> int:
+        """The user agreed to the browser they closed being opened again. Does not block.
 
-    def reopen_agreement_over(self) -> None:
+        Returns which agreement this is, for ``reopen_agreement_over``.
+        """
+        self._reopen_agreed = True
+        self._reopen_agreement += 1
+        self._closed_by_user_noted = False
+        return self._reopen_agreement
+
+    def reopen_agreement_over(self, agreement: int | None = None) -> None:
         """The call the user agreed for is over: an agreement that opened no browser is not kept. Does not block.
+
+        ``agreement`` is what ``reopen_agreed`` returned for that call.
+        Another agreement may have been given since (the browser was opened,
+        closed again, and another task asked): that one is its own call's
+        to end. Without it, whatever agreement there is ends.
 
         The call may have ended before it got to the browser (it was
         stopped, or the browser was in use by another task for too long).
@@ -955,7 +968,7 @@ class BrowserSession:
         without asking. (A call that did get to the browser has used it up:
         there is a window again, see ``start``.)
         """
-        if self._reopen_agreed:
+        if self._reopen_agreed and agreement in (None, self._reopen_agreement):
             self._reopen_agreed = False
             if not self.connected:
                 # Nothing else says so. Of one that is still connected to,

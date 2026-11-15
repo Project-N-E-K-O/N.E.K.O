@@ -951,3 +951,20 @@ async def test_a_browser_closed_for_changed_settings_is_started_again_without_as
     assert stage.provider.browser_closed_by_user() is False
     outcome = await stage.browse(url=THANKS)
     assert outcome.success and len(world.launched) == 2
+
+
+async def test_the_provider_ends_the_agreement_it_is_handed_back_and_no_other(stage: Any, world: BrowserWorld) -> None:
+    await _on_the_order_form(stage)
+    world.browser.disconnect()
+    first = stage.provider.browser_reopen_agreed()
+    assert (await stage.browse(url=THANKS)).success
+    # Closed again while the call that was agreed to goes on, and agreed to once more for another task.
+    world.browser.disconnect()
+    second = stage.provider.browser_reopen_agreed()
+    assert first is not None and second not in (None, first)
+
+    stage.provider.browser_reopen_agreement_over(first)
+    assert stage.provider.browser_closed_by_user() is False
+
+    stage.provider.browser_reopen_agreement_over(second)
+    assert stage.provider.browser_closed_by_user() is True
