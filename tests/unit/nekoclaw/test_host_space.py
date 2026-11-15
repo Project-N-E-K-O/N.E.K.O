@@ -1939,3 +1939,84 @@ async def test_an_entry_saved_once_more_while_its_line_moves_stays_where_it_was(
     assert daily.read_text(encoding="utf-8") == listed
     # The project has what was copied before that.
     assert (await space.read_entry("stack", "Budget app")).content.strip() == "It uses Flask."
+
+
+# ---------------------------------------------------------------------------
+# The eighteenth review round
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("step", ["archived", "brought back"])
+async def test_a_project_is_moved_though_the_index_of_the_space_cannot_be_changed(space, root, monkeypatch, step):
+    await space.touch_project("Budget app")
+    await space.file_entry("Budget app", title="Stack", content="Flask.")
+    if step == "brought back":
+        await space.archive_project("Budget app", summary="s")
+    index = root / "MEMORY.md"
+    before = index.read_text(encoding="utf-8")
+    edit = TaskAgentSpace._edit_text
+
+    def keeps_changing(self, path, change):
+        if path == index:
+            raise OSError("MEMORY.md kept changing while it was being written")
+        return edit(self, path, change)
+
+    monkeypatch.setattr(TaskAgentSpace, "_edit_text", keeps_changing)
+
+    if step == "archived":
+        moved = await space.archive_project("Budget app", summary="s")
+        assert moved is not None and moved.status == "archived"
+    else:
+        await space.use_project("Budget app")
+
+    monkeypatch.undo()
+    # Moved, whole; only the line in the index is as it was.
+    (project,) = await space.list_projects()
+    assert project.status == ("archived" if step == "archived" else "active")
+    where = (project.directory, project.archive_year) if step == "archived" else ("Budget app", None)
+    assert [entry.id for entry in await space.list_entries(where[0], archive_year=where[1])] == ["stack"]
+    assert index.read_text(encoding="utf-8") == before
+
+
+async def test_the_copy_of_an_entry_that_went_away_while_it_was_moved_is_not_left_behind(space, root):
+    await space.submit(_commission(id="c-1"), _lesson("Stack", "It uses Flask."))
+    await space.touch_project("Budget app")
+    old = root / "projects" / DEFAULT_PROJECT / "memory" / "stack.md"
+    real = space._signature
+    looks: list[int] = []
+
+    def signature(checked):
+        if Path(checked) == old:
+            looks.append(len(looks) + 1)
+            if len(looks) == 2:
+                # Copied; before it is compared the user removes the file.
+                old.unlink()
+        return real(checked)
+
+    space._signature = signature
+
+    assert await space.refile_entries("c-1", DEFAULT_PROJECT, "Budget app") == []
+
+    del space._signature
+    assert len(looks) >= 2
+    assert await space.list_entries("Budget app") == []
+    assert not (root / "projects" / "Budget app" / "memory" / "stack.md").exists()
+    assert "stack.md" not in await space.read_index("Budget app")
+
+
+async def test_a_summary_kept_does_not_hold_for_a_commission_filed_later_though_it_ended_earlier(space, clock, monkeypatch):
+    await space.touch_project("Budget app")
+
+    def held_open(source, target):
+        raise PermissionError(13, "a file in it is held open")
+
+    monkeypatch.setattr("nekoclaw.host.space._move", held_open)
+    assert await space.archive_project("Budget app", summary="An app.") is None
+    monkeypatch.undo()
+    last = (await space.get_project("Budget app")).last_commission_at
+
+    # A review, a day late, of a commission that ended before the one the project had last.
+    project = await space.open_project("Budget app", at=last - 3600)
+
+    assert (project.commissions, project.last_commission_at) == (2, last)
+    assert (await space.get_project("Budget app")).kept_summary() is None

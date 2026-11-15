@@ -782,17 +782,25 @@ class TaskAgentSpace:
                 # Written where it goes before it is removed where it was,
                 # and removed there only as the file that was copied: one
                 # the user saved from an editor in between is copied again.
-                same = False
+                same = copied = False
                 for _attempt in range(_WRITE_ATTEMPTS):
                     before = self._signature(old)
                     text = self._read_text(old)
                     if text is None:
                         break
                     self._put_text(destination / f"{name}.md", text)
+                    copied = True
                     same = self._signature(old) == before
                     if same:
                         break
                 if text is None:
+                    if copied:
+                        # There a moment ago, gone or unreadable now: the
+                        # copy made of it is not left behind with no line.
+                        try:
+                            (destination / f"{name}.md").unlink()
+                        except OSError:
+                            logger.warning("the copy of an entry that is gone could not be removed", exc_info=True)
                     continue
                 link = f"{paths.MEMORY_DIR}/{name}.md"
                 was = f"{paths.MEMORY_DIR}/{entry.id}.md"
@@ -1168,6 +1176,9 @@ class TaskAgentSpace:
             archived_at=None,
             archive_year=None,
             archive_attempts=0,
+            # A summary kept is of the project before this commission, even
+            # when the commission ended before the one the project had last.
+            pending_archive=None if count else project.pending_archive,
         )
         self._put_project(directory, project)
         if not known and name != DEFAULT_PROJECT:
@@ -1247,9 +1258,15 @@ class TaskAgentSpace:
                 pending_archive=None,
             )
             self._put_project(target, restored)
-        self._index_remove(paths.index(None), f"archive/{project.archive_year}/{source.name}/{paths.SUMMARY_NAME}")
-        line, link = self._project_line(restored)
-        self._index_add(paths.index(None), line, link)
+        try:
+            self._index_remove(
+                paths.index(None), f"archive/{project.archive_year}/{source.name}/{paths.SUMMARY_NAME}"
+            )
+            line, link = self._project_line(restored)
+            self._index_add(paths.index(None), line, link)
+        except OSError:
+            # The project is back all the same, and is used.
+            logger.warning("a project was brought back, but its line in the index of the space was not changed", exc_info=True)
         return restored
 
     async def use_project(self, name: str) -> None:
@@ -1425,13 +1442,17 @@ class TaskAgentSpace:
             except OSError:
                 logger.warning("the record of an archived project still holds the summary it was archived with", exc_info=True)
         _line, link = self._project_line(project)
-        self._index_remove(paths.index(None), link)
-        archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME}"
-        self._index_add(
-            paths.index(None),
-            _index_line(f"archived project: {name}", archive_link, _one_line(description) or archived.description),
-            archive_link,
-        )
+        try:
+            self._index_remove(paths.index(None), link)
+            archive_link = f"archive/{year}/{target.name}/{paths.SUMMARY_NAME}"
+            self._index_add(
+                paths.index(None),
+                _index_line(f"archived project: {name}", archive_link, _one_line(description) or archived.description),
+                archive_link,
+            )
+        except OSError:
+            # The project is archived all the same; it is not said to have failed.
+            logger.warning("a project was archived, but its line in the index of the space was not changed", exc_info=True)
         return archived
 
     async def archive_project(
