@@ -600,6 +600,7 @@ def test_explicit_unbind_survives_reinstall_auto_bind(config_env):
     assert service.get_bindings("beta")["bindings"] == {}
 
 
+@pytest.mark.host_model_autobind
 def test_install_hook_auto_bind_runs_off_the_calling_thread(monkeypatch):
     import threading
 
@@ -622,6 +623,7 @@ def test_install_hook_auto_bind_runs_off_the_calling_thread(monkeypatch):
     assert seen["probe"] != caller_thread
 
 
+@pytest.mark.host_model_autobind
 def test_install_hook_auto_bind_failure_is_swallowed(monkeypatch):
     import threading
 
@@ -686,6 +688,7 @@ def test_legacy_high_temperature_document_stays_readable_and_updatable(config_en
     assert fixed["defaults"]["temperature"] == 0.7
 
 
+@pytest.mark.host_model_autobind
 def test_install_hook_auto_bind_uses_manifest_id_over_directory_name(monkeypatch, tmp_path):
     import threading
 
@@ -708,6 +711,7 @@ def test_install_hook_auto_bind_uses_manifest_id_over_directory_name(monkeypatch
     assert seen["id"] == "declared_id"
 
 
+@pytest.mark.host_model_autobind
 def test_install_hook_auto_bind_falls_back_to_directory_id_without_manifest(monkeypatch, tmp_path):
     import threading
 
@@ -729,6 +733,7 @@ def test_install_hook_auto_bind_falls_back_to_directory_id_without_manifest(monk
     assert seen["id"] == "directory_name"
 
 
+@pytest.mark.host_model_autobind
 def test_install_hook_auto_bind_pins_installed_manifest_for_unregistered_plugin(monkeypatch, tmp_path):
     import threading
 

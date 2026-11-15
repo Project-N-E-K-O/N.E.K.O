@@ -19,7 +19,7 @@ from .observation import AttemptObservation
 
 _FALLBACK_ERRORS = frozenset({
     "upstream_connection_error", "upstream_timeout", "upstream_rate_limited", "upstream_error",
-    # The primary was rejected before any upstream request or output, so a
+    # The attempt was rejected before any content reached the plugin, so a
     # configured (e.g. paid manual) backup can safely serve the call instead.
     "agent_quota_exceeded",
 })
@@ -36,7 +36,8 @@ class ResolvedModelCall:
     ``fallback_slot`` may be an unresolved host-follow slot: it is materialized
     lazily so a misconfigured backup cannot reject a healthy primary.
     ``before_attempt`` runs after an attempt's slot is executable and before any
-    upstream request (quota reservation); its errors are final, never fallback.
+    upstream request (quota reservation); its errors follow the normal fallback
+    rules — quota exhaustion on the primary can switch to a configured backup.
     """
 
     plugin_id: str
@@ -389,8 +390,8 @@ class ModelExecutor:
             try:
                 async with budget:
                     if call_before_attempt is not None:
-                        # Reservation errors (e.g. quota exhaustion) are final
-                        # and must surface before any upstream request.
+                        # Reservation runs before this send; exhaustion follows
+                        # the fallback rules like other pre-output rejections.
                         await call_before_attempt(slot_id, slot)
                     if stream is None:
                         return await self.gateway.complete(slot, body, observation=observation)
