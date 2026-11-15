@@ -633,28 +633,12 @@ class TaskAgentSpace:
         so their change is not written over. So it is when the file holds
         something else right after it was replaced: the change is made
         again to what is there then. A file that could not be looked at
-        after it was replaced is read once more: when it holds what was
-        written, or still cannot be read, the change is in it.
+        after it was replaced is read once more, see ``_holds``.
         """
         written = False
-        # What was written and could not be looked at, as it is read here.
-        unseen: str | None = None
         for _attempt in range(_WRITE_ATTEMPTS):
             before = self._signature(path)
-            try:
-                text = self._text_to_change(path)
-            except OSError:
-                if unseen is None:
-                    raise
-                # Replaced a moment ago and still held by another program:
-                # written, as far as can be told.
-                return True
-            if unseen is not None and text == unseen:
-                # It holds what was written a moment ago, so the change is
-                # in it. Not made a second time: not every change is one
-                # that leaves alone a text that has it already.
-                return True
-            unseen = None
+            text = self._text_to_change(path)
             changed = change(text)
             if changed == text:
                 # Nothing to change, or it holds the change already.
@@ -667,11 +651,26 @@ class TaskAgentSpace:
                 # Something else was saved right after it.
                 written = True
                 continue
-            if seen:
+            # Told right here, whichever try this was: the last one too is
+            # written when it was replaced and nothing says otherwise.
+            if seen or self._holds(path, changed):
                 return True
+            # Something else was saved while it could not be looked at.
             written = True
-            unseen = _plain_lines(changed)
         raise OSError(f"{path.name} kept changing while it was being written")
+
+    def _holds(self, path: Path, text: str) -> bool:
+        """Whether a file that was replaced and could not be looked at holds ``text``, as far as can be told.
+
+        Read once more. When it holds what was written, the change is in
+        it and is not made a second time: not every change is one that
+        leaves alone a text that has it already. One that still cannot be
+        read (held by another program) is taken to hold it.
+        """
+        try:
+            return self._text_to_change(path) == _plain_lines(text)
+        except OSError:
+            return True
 
     # -- the index --------------------------------------------------------
 

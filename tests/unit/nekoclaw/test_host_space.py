@@ -3401,3 +3401,42 @@ async def test_a_line_is_added_to_an_index_that_cannot_be_looked_at_for_long_aft
     assert created is True and entry.id == "second"
     lines = index.read_text(encoding="utf-8").splitlines()
     assert lines == ["- [Second](memory/second.md) — Two.", "- [First](memory/first.md) — One."]
+
+
+# ---------------------------------------------------------------------------
+# The thirty-fourth review round
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("looks", [3, 8])
+def test_the_last_try_counts_as_written_when_the_file_was_replaced_and_could_not_be_looked_at(
+    space, root, monkeypatch, looks
+):
+    root.mkdir(parents=True)
+    path = root / "notes.md"
+    path.write_text("one\n", encoding="utf-8")
+    signature = TaskAgentSpace._signature
+    asked: list[int] = []
+
+    def changing(target):
+        # Saved by someone else during the first two tries: seen before the file is written, both times.
+        asked.append(1)
+        found = signature(target)
+        return (found, len(asked)) if len(asked) in (2, 4) else found
+
+    monkeypatch.setattr(TaskAgentSpace, "_signature", staticmethod(changing))
+    # Read once in each of the three tries; the looks after the third replaced it fail.
+    reads = _not_read_back(monkeypatch, path, before=3, looks=looks)
+    given: list[str] = []
+
+    def change(text: str) -> str:
+        given.append(text)
+        return text + "more\n"
+
+    changed = space._edit_text(path, change)
+
+    monkeypatch.undo()
+    assert len(asked) == 6 and len(reads) == 7
+    assert changed is True
+    assert given == ["one\n"] * 3
+    assert path.read_text(encoding="utf-8") == "one\nmore\n"
