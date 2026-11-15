@@ -18,8 +18,10 @@ Design: ``docs/design/nekoclaw-rewrite.md``, section 11. Each capability is a
 group of small tools (take a screenshot, click, type; open a page, read it,
 click an element). A task agent calls them one step at a time from its own
 loop, through the host's capability gateway, so the built-in runtime and any
-other runtime get the same tools. Nothing here runs a loop of its own and
-nothing here calls a model.
+other runtime get the same tools. A group is not among the tools a task agent
+is listed: it loads the group through the gateway when it needs it, and is
+then handed the tools' definitions and how the group is used. Nothing here
+runs a loop of its own and nothing here calls a model.
 
 Modules:
 
@@ -31,9 +33,9 @@ Modules:
 * ``provider``  - lists the tools for the host and carries their calls out
   (``nekoclaw.host.capabilities.BuiltinCapabilities``).
 
-The definitions of the tools as a model sees them, and the paragraphs of
-guidance that go with them, are in ``config/prompts/prompts_nekoclaw_builtin.py``
-and ``config/prompts/prompts_nekoclaw.py``.
+The definitions of the tools as a model sees them, the line a task agent is
+told about each group and how a group is used are in
+``config/prompts/prompts_nekoclaw_builtin.py``.
 
 The package may use ``config``, ``utils`` and ``nekoclaw.host.capabilities``
 (the types the host is handed). It is used by the agent process, which tells

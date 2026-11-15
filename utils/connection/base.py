@@ -189,7 +189,17 @@ class ConnectionBase(ABC):
     async def send_group_ark_card(
         self, group_id: str, ark_obj: dict[str, Any], **_: Any
     ) -> bool:
-        """Send a group Ark rich card. Open Platform only (``supports_ark_cards`` True);
+        """Send a group card built from an ark-shaped request.
+
+        The flag that gates this is not ``supports_ark_cards`` any more: v2 removed
+        ark from the send side, so that flag reports ``False`` honestly and
+        ``supports_card_messages`` reports the image-text card (``msg_type=8``) the
+        Open Platform still accepts. A caller that only consults
+        ``supports_ark_cards`` degrades every card to text and never reaches this
+        method -- on the official channel that is the whole card feature lost. Gate on
+        ``supports_card_messages`` instead, or accept the ark shape as input and let
+        the connector translate it, which is what this method does.
+
         OneBot backends degrade to text before reaching this method, so it raises
         NotImplementedError as a fallback."""
         raise NotImplementedError("Ark rich cards are supported only on the Open Platform channel")

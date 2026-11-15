@@ -88,6 +88,10 @@ class _FakeHTTP:
         self.calls.append(("PUT", url, content))
         return self._answer("PUT", url, content)
 
+    async def request(self, method, url, headers=None, json=None):
+        self.calls.append((method, url, json))
+        return self._answer(method, url, json)
+
     def posts(self):
         return [(url, body) for method, url, body in self.calls if method == "POST"]
 
@@ -720,9 +724,9 @@ def _legacy_ok_for_put(method, url, body):
     return _legacy_ok() if method == "POST" else {"file_info": "FI-legacy"}
 
 
-def test_the_token_is_ensured_once_per_send(tmp_path):
-    """The image send path no longer asks for a token twice (once outside, once inside
-    the upload)."""
+def test_the_image_send_ensures_the_token_once_per_request(tmp_path):
+    """An image send is two requests (upload, then the `_api` message), so the cheap
+    `_ensure_token` check runs twice."""
     sticker = tmp_path / "a.png"
     sticker.write_bytes(b"y" * 16)
 
@@ -742,7 +746,7 @@ def test_the_token_is_ensured_once_per_send(tmp_path):
             _run(connection.send_private_message_segments(
                 "U1", [{"type": "image", "data": {"file": str(sticker)}}], record_sent=False,
             ))
-        assert len(calls) == 1, f"the {send} path ensured the token {len(calls)} times"
+        assert len(calls) == 2, f"the {send} path ensured the token {len(calls)} times"
 
 
 def test_a_dead_legacy_protocol_is_not_retried_for_every_image(tmp_path):

@@ -674,6 +674,9 @@ class TaskAgentSession(SessionInbox):
             self._repeat.reset()
         elif isinstance(message, AssistantMessage):
             self._last_assistant = message
+            if self._gateway is not None:
+                # The tool calls that follow were written in this reply.
+                self._gateway.next_reply()
             usage = message.usage
             prompt_tokens = usage.input + usage.cache_read + usage.cache_write
             if prompt_tokens or usage.output:
